@@ -33,5 +33,12 @@ nve-docs-site = { version = "0.1.0", path = "../../../examples/nve-docs-site", d
 nve-example-kitchen-sink = { workspace = true, features = ["web"] }
 nve-studio-workspace = { workspace = true, features = ["web"] }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "rsx_diff_bench"
+harness = false
+
 [lints]
 workspace = true

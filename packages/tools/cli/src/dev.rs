@@ -458,12 +458,17 @@ fn classify_watch_changes(
         return (Vec::new(), Some("unspecified path event".into()));
     }
     let mut tier1_patches = Vec::new();
+    // Typed change log, printed only once the whole batch stays Tier-1.
+    let mut typed_changes = Vec::new();
     for path in changed_paths {
         match std::fs::read_to_string(path) {
             Ok(new_src) => match rsx_cache.diff_file(path, &new_src, next_generation) {
                 rsx_diff::DiffOutcome::NoOp => {}
-                rsx_diff::DiffOutcome::Tier1Patch(msg) => {
-                    tier1_patches.push((path.clone(), msg));
+                rsx_diff::DiffOutcome::Tier1Patch { patch, messages } => {
+                    let file = path.display();
+                    typed_changes.extend(patch.attr_changes.iter().map(|c| format!("{file}: {c}")));
+                    typed_changes.extend(patch.text_changes.iter().map(|c| format!("{file}: {c}")));
+                    tier1_patches.extend(messages.into_iter().map(|msg| (path.clone(), msg)));
                 }
                 rsx_diff::DiffOutcome::RequireTier2Rebuild { reason } => {
                     return (Vec::new(), Some(reason));
@@ -476,6 +481,9 @@ fn classify_watch_changes(
                 );
             }
         }
+    }
+    for change in typed_changes {
+        println!("[tier-1] {change}");
     }
     (tier1_patches, None)
 }

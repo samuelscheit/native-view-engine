@@ -155,6 +155,47 @@ fn watch_classifier_forces_tier2_rebuild_until_first_build_succeeds() {
 }
 
 #[test]
+fn watch_classifier_forwards_one_message_per_changed_element_for_typed_edits() {
+    let dir = std::env::temp_dir().join(format!("nve-dev-watch-typed-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("ui.rs");
+    let base = "fn ui() -> Element {\n    rsx! {\n        view { test_id: \"a\", padding: 8.0 }\n        view { test_id: \"b\", color: rgb(1, 2, 3) }\n    }\n}\n";
+    std::fs::write(&file, base).expect("write temp rs");
+    let mut cache = rsx_diff::RsxWatchCache::new();
+    cache.seed_dir(&dir);
+
+    let edited = base.replace("padding: 8.0", "padding: px(-4.0)").replace("rgb(1, 2, 3)", "hex(0x0a0b0c)");
+    std::fs::write(&file, &edited).expect("rewrite temp rs");
+    let (patches, reason) = classify_watch_changes(true, std::slice::from_ref(&file), &mut cache, 5);
+    assert_eq!(reason, None);
+    let updates: Vec<_> = patches
+        .iter()
+        .map(|(path, msg)| match msg {
+            HotPatchMsg::TemplatePatch { attr_updates, target_test_id, .. } => {
+                assert_eq!(path, &file);
+                (target_test_id.clone(), attr_updates.clone())
+            }
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        updates,
+        vec![
+            (Some("a".to_owned()), vec![("padding".to_owned(), "-4px".to_owned())]),
+            (Some("b".to_owned()), vec![("color".to_owned(), "#0a0b0c".to_owned())]),
+        ]
+    );
+
+    // A non-constant value in the next save forces Tier-2 and keeps the typed baseline.
+    std::fs::write(&file, edited.replace("px(-4.0)", "px(gap)")).expect("rewrite temp rs");
+    let (patches, reason) = classify_watch_changes(true, std::slice::from_ref(&file), &mut cache, 6);
+    assert!(patches.is_empty());
+    assert!(reason.is_some_and(|r| r.contains("not a Tier-1 constant")));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn web_dev_redirect_wires_bare_urls_to_the_daemon_socket_and_respects_explicit_modes() {
     let r = |target, host| web_dev_redirect(target, host, 8089);
     assert_eq!(r("/", Some("127.0.0.1:8088")).as_deref(), Some("/?ws=ws://127.0.0.1:8089"));

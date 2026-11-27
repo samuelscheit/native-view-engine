@@ -1,19 +1,27 @@
-//! Zero-dependency Rust lexer and `rsx! { ... }` token differ for Tier-1 (`< 10ms`) hot-patching.
+//! Zero-dependency Rust lexer and span-based typed `rsx! { ... }` differ for Tier-1 (`< 10ms`)
+//! hot-patching.
 //!
 //! Compares the cached baseline `.rs` source against the newly saved source:
 //! - Ignores comments and whitespace (comment/whitespace-only edits return [`DiffOutcome::NoOp`]).
-//! - Verifies all non-string tokens outside and inside `rsx! { ... }` are 100% identical, and that
-//!   delimiter nesting and literals are syntactically valid.
-//! - Emits [`DiffOutcome::Tier1Patch`] with targeted `target_test_id`, `node_path`,
-//!   `text_replacements`, `text_updates`, and `attr_updates` when ONLY pure static string literals
-//!   (no `{expr}` interpolation braces) inside `rsx! { ... }` changed.
-//! - Immediately falls back to [`DiffOutcome::RequireTier2Rebuild`] for any Rust logic, control
-//!   flow, event handler, interpolated literal, structural/key/`test_id`, or syntax change.
+//! - Indexes every patchable span of the baseline: static text children and native-element style
+//!   attribute values ([`attrs`]) of any token count, with template coordinates.
+//! - Requires every token outside those spans to match token for token; values inside them may
+//!   change token count and are evaluated by the const evaluator ([`eval`]) into typed values.
+//! - Emits [`DiffOutcome::Tier1Patch`] with the [`TypedRsxPatch`] and its lowering to
+//!   `HotPatchMsg::TemplatePatch` messages (one for text, one per changed element).
+//! - Falls back to [`DiffOutcome::RequireTier2Rebuild`] for any Rust logic, control flow, event
+//!   handler, component prop, interpolated or non-constant value, identity (`key`/`test_id`),
+//!   structural or syntax change.
 
+mod attrs;
+mod eval;
 mod lexer;
 mod matcher;
 mod parser;
+mod patch;
 
+#[cfg(test)]
+pub(crate) mod fixture;
 #[cfg(test)]
 mod tests;
 
@@ -23,15 +31,20 @@ use std::path::{Path, PathBuf};
 use nve_engine::HotPatchMsg;
 
 pub use matcher::diff_rsx_source;
+pub use patch::TypedRsxPatch;
 
 /// Classification of a watched `.rs` file save for 2-tier hot reload.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffOutcome {
-    /// Comment-only, whitespace-only, or byte-identical save (no patch or rebuild needed).
+    /// Comment-only, whitespace-only, or semantically identical save (no patch or rebuild needed).
     NoOp,
-    /// Pure static text/style literal edit inside `rsx! { ... }` — broadcast via Tier-1 WebSocket.
-    Tier1Patch(HotPatchMsg),
-    /// Any logic, structural, interpolation, multi-element attr, or syntax change — run Tier-2 build.
+    /// Constant text/style value edits inside `rsx! { ... }`: the typed patch plus its
+    /// `TemplatePatch` lowering, broadcast via the Tier-1 WebSocket.
+    Tier1Patch {
+        patch: TypedRsxPatch,
+        messages: Vec<HotPatchMsg>,
+    },
+    /// Any logic, structural, interpolation, non-constant value or syntax change: Tier-2 build.
     RequireTier2Rebuild { reason: String },
 }
 
@@ -113,7 +126,7 @@ impl RsxWatchCache {
 
         let template_id = path.to_string_lossy().into_owned();
         let outcome = diff_rsx_source(&template_id, old_source, new_source, generation);
-        if matches!(outcome, DiffOutcome::NoOp | DiffOutcome::Tier1Patch(_)) {
+        if matches!(outcome, DiffOutcome::NoOp | DiffOutcome::Tier1Patch { .. }) {
             self.files.insert(key, new_source.to_owned());
         }
         outcome

@@ -14,6 +14,36 @@ pub(super) struct LexResult<'a> {
     /// For every `Punct('{')`, `Punct('(')`, or `Punct('[')` at index `i`, stores the index of its
     /// matching closing delimiter (`0` for non-opening tokens).
     pub(super) matching_close: Vec<usize>,
+    /// Source byte offset of every token's first byte (diagnostic lines, template coordinates).
+    pub(super) starts: Vec<u32>,
+}
+
+impl<'a> LexResult<'a> {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            tokens: Vec::with_capacity(cap),
+            matching_close: Vec::with_capacity(cap),
+            starts: Vec::with_capacity(cap),
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, kind: TokenKind<'a>, start: usize) {
+        self.tokens.push(kind);
+        self.matching_close.push(0);
+        self.starts.push(start as u32);
+    }
+}
+
+/// 1-based `(line, column)` of byte `offset` in `src`, matching `line!()` / `column!()` (column
+/// counts chars).
+pub(super) fn line_col(src: &str, offset: usize) -> (u32, u32) {
+    let offset = offset.min(src.len());
+    let before = src.as_bytes()[..offset].iter();
+    let line = 1 + before.filter(|&&b| b == b'\n').count();
+    let line_start = src[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let column = 1 + src.get(line_start..offset).map_or(0, |s| s.chars().count());
+    (line as u32, column as u32)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +52,7 @@ pub(super) enum LexError {
     UnterminatedBlockComment,
     UnterminatedChar,
     UnbalancedDelimiter,
+    SourceTooLarge,
 }
 
 impl LexError {
@@ -31,6 +62,7 @@ impl LexError {
             Self::UnterminatedBlockComment => "unterminated block comment",
             Self::UnterminatedChar => "unterminated char literal",
             Self::UnbalancedDelimiter => "unbalanced delimiter",
+            Self::SourceTooLarge => "source file exceeds 4 GiB",
         }
     }
 }
@@ -48,9 +80,11 @@ fn is_ident_continue(b: u8) -> bool {
 pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
     let bytes = src.as_bytes();
     let len = bytes.len();
+    if len > u32::MAX as usize {
+        return Err(LexError::SourceTooLarge);
+    }
     let mut pos = 0usize;
-    let mut tokens = Vec::with_capacity((len / 6).max(16));
-    let mut matching_close = Vec::with_capacity((len / 6).max(16));
+    let mut out = LexResult::with_capacity((len / 6).max(16));
     let mut delim_stack: Vec<(char, usize)> = Vec::with_capacity(32);
 
     while pos < len {
@@ -105,22 +139,26 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
         if b == b'"' {
             let start = pos;
             pos = scan_quoted_string(bytes, pos)?;
-            tokens.push(TokenKind::StringLit {
-                raw: &src[start..pos],
-                is_raw: false,
-            });
-            matching_close.push(0);
+            out.push(
+                TokenKind::StringLit {
+                    raw: &src[start..pos],
+                    is_raw: false,
+                },
+                start,
+            );
             continue;
         }
 
         // 5. Raw string (`r"..."`, `r#"..."#`) or raw identifier (`r#ident`).
         if b == b'r' {
             if let Some(end) = try_scan_raw_string(bytes, pos)? {
-                tokens.push(TokenKind::StringLit {
-                    raw: &src[pos..end],
-                    is_raw: true,
-                });
-                matching_close.push(0);
+                out.push(
+                    TokenKind::StringLit {
+                        raw: &src[pos..end],
+                        is_raw: true,
+                    },
+                    pos,
+                );
                 pos = end;
                 continue;
             }
@@ -130,8 +168,7 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
                 while pos < len && is_ident_continue(bytes[pos]) {
                     pos += 1;
                 }
-                tokens.push(TokenKind::Ident(&src[start..pos]));
-                matching_close.push(0);
+                out.push(TokenKind::Ident(&src[start..pos]), start);
                 continue;
             }
         }
@@ -141,24 +178,21 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
             if pos + 1 < len && bytes[pos + 1] == b'"' {
                 let start = pos;
                 pos = scan_quoted_string(bytes, pos + 1)?;
-                tokens.push(TokenKind::OtherLit(&src[start..pos]));
-                matching_close.push(0);
+                out.push(TokenKind::OtherLit(&src[start..pos]), start);
                 continue;
             }
             if pos + 1 < len
                 && bytes[pos + 1] == b'r'
                 && let Some(end) = try_scan_raw_string(bytes, pos + 1)?
             {
-                tokens.push(TokenKind::OtherLit(&src[pos..end]));
-                matching_close.push(0);
+                out.push(TokenKind::OtherLit(&src[pos..end]), pos);
                 pos = end;
                 continue;
             }
             if b == b'b' && pos + 1 < len && bytes[pos + 1] == b'\'' {
                 let start = pos;
                 pos = scan_char_literal(src, pos + 1)?;
-                tokens.push(TokenKind::OtherLit(&src[start..pos]));
-                matching_close.push(0);
+                out.push(TokenKind::OtherLit(&src[start..pos]), start);
                 continue;
             }
         }
@@ -167,8 +201,7 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
         if b == b'\'' {
             let start = pos;
             if let Some(end) = try_scan_char_literal(src, pos)? {
-                tokens.push(TokenKind::OtherLit(&src[start..end]));
-                matching_close.push(0);
+                out.push(TokenKind::OtherLit(&src[start..end]), start);
                 pos = end;
                 continue;
             }
@@ -178,12 +211,10 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
                 while pos < len && is_ident_continue(bytes[pos]) {
                     pos += 1;
                 }
-                tokens.push(TokenKind::OtherLit(&src[start..pos]));
-                matching_close.push(0);
+                out.push(TokenKind::OtherLit(&src[start..pos]), start);
                 continue;
             }
-            tokens.push(TokenKind::Punct('\''));
-            matching_close.push(0);
+            out.push(TokenKind::Punct('\''), start);
             pos += 1;
             continue;
         }
@@ -197,9 +228,8 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
                 if c.is_ascii_alphanumeric()
                     || c == b'_'
                     || (c == b'.'
-                        && pos + 1 < len
-                        && bytes[pos + 1] != b'.'
-                        && !is_ident_start(bytes[pos + 1]))
+                        && (pos + 1 >= len
+                            || (bytes[pos + 1] != b'.' && !is_ident_start(bytes[pos + 1]))))
                     || ((c == b'+' || c == b'-')
                         && pos > start
                         && (bytes[pos - 1] == b'e' || bytes[pos - 1] == b'E'))
@@ -209,8 +239,7 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
                     break;
                 }
             }
-            tokens.push(TokenKind::OtherLit(&src[start..pos]));
-            matching_close.push(0);
+            out.push(TokenKind::OtherLit(&src[start..pos]), start);
             continue;
         }
 
@@ -227,8 +256,7 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
                 };
                 pos += c.len_utf8();
             }
-            tokens.push(TokenKind::Ident(&src[start..pos]));
-            matching_close.push(0);
+            out.push(TokenKind::Ident(&src[start..pos]), start);
             continue;
         }
 
@@ -236,7 +264,7 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
         let Some(ch) = src[pos..].chars().next() else {
             break;
         };
-        let tok_idx = tokens.len();
+        let tok_idx = out.tokens.len();
         match ch {
             '{' | '(' | '[' => {
                 delim_stack.push((ch, tok_idx));
@@ -245,20 +273,18 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
                 let expected = match ch {
                     '}' => '{',
                     ')' => '(',
-                    ']' => '[',
-                    _ => unreachable!(),
+                    _ => '[',
                 };
                 match delim_stack.pop() {
                     Some((open_ch, open_idx)) if open_ch == expected => {
-                        matching_close[open_idx] = tok_idx;
+                        out.matching_close[open_idx] = tok_idx;
                     }
                     _ => return Err(LexError::UnbalancedDelimiter),
                 }
             }
             _ => {}
         }
-        tokens.push(TokenKind::Punct(ch));
-        matching_close.push(0);
+        out.push(TokenKind::Punct(ch), pos);
         pos += ch.len_utf8();
     }
 
@@ -266,10 +292,7 @@ pub(super) fn tokenize(src: &str) -> Result<LexResult<'_>, LexError> {
         return Err(LexError::UnbalancedDelimiter);
     }
 
-    Ok(LexResult {
-        tokens,
-        matching_close,
-    })
+    Ok(out)
 }
 
 fn scan_quoted_string(bytes: &[u8], open_quote: usize) -> Result<usize, LexError> {
@@ -350,6 +373,27 @@ fn try_scan_char_literal(src: &str, quote_pos: usize) -> Result<Option<usize>, L
     Ok(None)
 }
 
+/// Borrows the contents of a string literal that needs no unescaping (raw, or escape-free normal);
+/// `None` when unescaping would be required.
+pub(super) fn string_lit_inner(raw: &str, is_raw: bool) -> Option<&str> {
+    if is_raw {
+        let open = raw.find('"')?;
+        let close = raw.rfind('"')?;
+        return (close > open).then(|| &raw[open + 1..close]);
+    }
+    let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+    (!inner.contains('\\')).then_some(inner)
+}
+
+/// Applies `rsx!` format-string brace escapes (`{{` -> `{`, `}}` -> `}`) to a literal that
+/// [`has_interpolation_braces`] already proved interpolation-free: the value the app renders.
+pub(super) fn unescape_format_braces(mut s: String) -> String {
+    if s.contains("{{") || s.contains("}}") {
+        s = s.replace("{{", "{").replace("}}", "}");
+    }
+    s
+}
+
 /// Unescapes a Rust normal (`"..."`) or raw (`r#"..."#`) string literal into its string value.
 pub(super) fn unescape_string_literal(raw: &str, is_raw: bool) -> Result<String, LexError> {
     if is_raw {
@@ -402,7 +446,8 @@ pub(super) fn unescape_string_literal(raw: &str, is_raw: bool) -> Result<String,
                 let h2 = chars.next().ok_or(LexError::UnterminatedString)?;
                 let mut buf = [0u8; 2];
                 let hex = format!("{}{}", h1.encode_utf8(&mut buf[..1]), h2);
-                let byte = u8::from_str_radix(&hex, 16).map_err(|_| LexError::UnterminatedString)?;
+                let byte =
+                    u8::from_str_radix(&hex, 16).map_err(|_| LexError::UnterminatedString)?;
                 out.push(byte as char);
             }
             'u' => {

@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
-use std::time::Instant;
+//! Static text/string-style Tier-1 behavior carried over from the string-only differ.
 
-use nve_engine::HotPatchMsg;
+use std::path::PathBuf;
 
-use super::{diff_rsx_source, DiffOutcome, RsxWatchCache};
+use super::super::{DiffOutcome, RsxWatchCache, diff_rsx_source};
+use super::{expect_patch, expect_tier1};
 
-const SAMPLE_COMPONENT: &str = r##"
+pub(super) const SAMPLE_COMPONENT: &str = r##"
 use nve_dioxus::prelude::*;
 
 #[component]
@@ -31,39 +31,6 @@ pub fn DemoCard() -> Element {
     }
 }
 "##;
-
-struct PatchView {
-    generation: u64,
-    template_id: String,
-    attr_updates: Vec<(String, String)>,
-    text_updates: Vec<(usize, String)>,
-    target_test_id: Option<String>,
-    node_path: Vec<usize>,
-    text_replacements: Vec<(String, String)>,
-}
-
-fn expect_patch(outcome: DiffOutcome) -> PatchView {
-    match outcome {
-        DiffOutcome::Tier1Patch(HotPatchMsg::TemplatePatch {
-            generation,
-            template_id,
-            attr_updates,
-            text_updates,
-            target_test_id,
-            node_path,
-            text_replacements,
-        }) => PatchView {
-            generation,
-            template_id,
-            attr_updates,
-            text_updates,
-            target_test_id,
-            node_path,
-            text_replacements,
-        },
-        other => panic!("expected Tier1Patch, got {other:?}"),
-    }
-}
 
 fn assert_tier2(template_id: &str, old_src: &str, new_src: &str, generation: u64) {
     assert!(matches!(
@@ -108,7 +75,12 @@ fn tier1_style_and_attr_literal_edits_target_exact_test_id() {
 
     // Direct typed attribute (`background_color` -> normalized `background-color`).
     let updated_attr = SAMPLE_COMPONENT.replace("\"#2563eb\"", "\"#16a34a\"");
-    let attr_patch = expect_patch(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated_attr, 4));
+    let attr_patch = expect_patch(diff_rsx_source(
+        "demo.rs",
+        SAMPLE_COMPONENT,
+        &updated_attr,
+        4,
+    ));
     assert_eq!(
         attr_patch.attr_updates,
         vec![("background-color".into(), "#16a34a".into())]
@@ -117,7 +89,7 @@ fn tier1_style_and_attr_literal_edits_target_exact_test_id() {
 }
 
 #[test]
-fn tier1_multiple_edits_in_one_save() {
+fn tier1_multiple_edits_in_one_save_split_text_and_element_messages() {
     let updated = SAMPLE_COMPONENT
         .replace(
             "color: #ffffff; font-size: 16px;",
@@ -126,20 +98,33 @@ fn tier1_multiple_edits_in_one_save() {
         .replace("\"# engineering\"", "\"# platform\"")
         .replace("\"Ship It\"", "\"Deploy Now\"");
 
-    let patch = expect_patch(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated, 5));
+    let (patch, messages) = expect_tier1(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated, 5));
+    assert_eq!(patch.attr_changes.len(), 1);
+    assert_eq!(patch.text_changes.len(), 2);
+    assert_eq!(messages.len(), 2, "one text message + one element message");
+
+    // Text owners differ (`channel-title` vs `cta-btn`): untargeted exact-text replacement, so the
+    // `style` edit's `test_id` can never scope the text search to the wrong subtree.
+    let text = &messages[0];
+    assert!(text.attr_updates.is_empty());
+    assert_eq!(text.target_test_id, None);
+    assert!(text.node_path.is_empty());
     assert_eq!(
-        patch.attr_updates,
-        vec![("style".into(), "color: #38bdf8; font-size: 18px;".into())]
-    );
-    assert_eq!(patch.target_test_id.as_deref(), Some("channel-title"));
-    assert_eq!(
-        patch.text_replacements,
+        text.text_replacements,
         vec![
             ("# engineering".into(), "# platform".into()),
             ("Ship It".into(), "Deploy Now".into()),
         ]
     );
-    assert_eq!(patch.text_updates.len(), 2);
+    assert_eq!(text.text_updates.len(), 2);
+
+    let attr = &messages[1];
+    assert_eq!(
+        attr.attr_updates,
+        vec![("style".into(), "color: #38bdf8; font-size: 18px;".into())]
+    );
+    assert_eq!(attr.target_test_id.as_deref(), Some("channel-title"));
+    assert!(attr.text_replacements.is_empty() && attr.text_updates.is_empty());
 }
 
 #[test]
@@ -169,7 +154,10 @@ fn interpolated_literal_structural_logic_handler_and_syntax_edits_fallback_to_ti
     assert_tier2(
         "demo.rs",
         SAMPLE_COMPONENT,
-        &SAMPLE_COMPONENT.replace("text { \"Ship It\" }", "text { \"Ship It\" } text { \"New\" }"),
+        &SAMPLE_COMPONENT.replace(
+            "text { \"Ship It\" }",
+            "text { \"Ship It\" } text { \"New\" }",
+        ),
         2,
     );
     // 5. Editing `test_id` itself -> Tier-2.
@@ -196,11 +184,26 @@ fn interpolated_literal_structural_logic_handler_and_syntax_edits_fallback_to_ti
     let with_rust_str = format!("const LABEL: &str = \"hello\";\n{SAMPLE_COMPONENT}");
     let with_rust_str_edited = format!("const LABEL: &str = \"world\";\n{SAMPLE_COMPONENT}");
     assert_tier2("demo.rs", &with_rust_str, &with_rust_str_edited, 2);
-    // 8. Attribute edits spanning two different elements -> Tier-2 (never mis-target).
+}
+
+#[test]
+fn attribute_edits_on_two_elements_emit_one_targeted_message_per_element() {
     let two_elems = SAMPLE_COMPONENT
         .replace("padding: 12px;", "padding: 20px;")
         .replace("\"#2563eb\"", "\"#ef4444\"");
-    assert_tier2("demo.rs", SAMPLE_COMPONENT, &two_elems, 2);
+    let (patch, messages) =
+        expect_tier1(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &two_elems, 2));
+    assert_eq!(patch.attr_changes.len(), 2);
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].target_test_id.as_deref(), Some("card-root"));
+    assert_eq!(messages[0].node_path, vec![0]);
+    assert_eq!(messages[0].attr_updates[0].0, "style");
+    assert_eq!(messages[1].target_test_id.as_deref(), Some("cta-btn"));
+    assert_eq!(messages[1].node_path, vec![0, 1]);
+    assert_eq!(
+        messages[1].attr_updates,
+        vec![("background-color".into(), "#ef4444".into())]
+    );
 }
 
 #[test]
@@ -233,6 +236,7 @@ pub fn RawDemo() -> Element {
 "###;
 
     // 1. Editing raw string text containing quotes, backslashes, and escaped `{{}}` -> Tier-1.
+    //    Values are the rendered text: `rsx!` format escapes `{{`/`}}` collapse to `{`/`}`.
     let edited_text = base.replace(
         r###"r#"Say "hello" with \slashes\ and {{braces}}"#"###,
         r###"r##"Say "world" with \paths\ and {{ok}}"##"###,
@@ -242,8 +246,8 @@ pub fn RawDemo() -> Element {
     assert_eq!(
         patch.text_replacements,
         vec![(
-            r#"Say "hello" with \slashes\ and {{braces}}"#.into(),
-            r#"Say "world" with \paths\ and {{ok}}"#.into(),
+            r#"Say "hello" with \slashes\ and {braces}"#.into(),
+            r#"Say "world" with \paths\ and {ok}"#.into(),
         )]
     );
 
@@ -252,7 +256,10 @@ pub fn RawDemo() -> Element {
         r###"r#"width: 100%; background-color: #0f172a;"#"###,
         r#""width: 100%; background-color: #0f172a;""#,
     );
-    assert_eq!(diff_rsx_source("raw.rs", base, &normalized, 3), DiffOutcome::NoOp);
+    assert_eq!(
+        diff_rsx_source("raw.rs", base, &normalized, 3),
+        DiffOutcome::NoOp
+    );
 
     // 3. Adding unescaped `{expr}` interpolation inside a raw string -> Tier-2.
     assert_tier2("raw.rs", base, &base.replace("{{braces}}", "{count}"), 4);
@@ -343,7 +350,10 @@ pub fn NestedDemo(show: bool) -> Element {
         &base.replace("\"Direct Child\"", "\"Direct Updated\""),
         5,
     ));
-    assert_eq!(direct_patch.target_test_id.as_deref(), Some("direct-nested"));
+    assert_eq!(
+        direct_patch.target_test_id.as_deref(),
+        Some("direct-nested")
+    );
     assert_eq!(
         direct_patch.text_replacements,
         vec![("Direct Child".into(), "Direct Updated".into())]
@@ -434,70 +444,17 @@ fn watch_cache_chains_consecutive_tier1_patches_and_protects_baseline_on_error()
 }
 
 #[test]
-fn diff_latency_on_real_studio_workspace_ui_rs_is_under_10ms() {
-    let ui_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../examples/studio-workspace/src/ui_chrome.rs");
-    let original = std::fs::read_to_string(&ui_path)
-        .unwrap_or_else(|e| panic!("failed reading {}: {e}", ui_path.display()));
-
-    // 1. Static text edit inside `rsx!` ("LOCAL-FIRST | NVE" -> "LOCAL-FIRST | LIVE")
-    let edited_text = original.replacen("\"LOCAL-FIRST | NVE\"", "\"LOCAL-FIRST | LIVE\"", 1);
-    assert_ne!(original, edited_text);
-    let t0 = Instant::now();
-    let text_patch = expect_patch(diff_rsx_source(
-        "examples/studio-workspace/src/ui_chrome.rs",
-        &original,
-        &edited_text,
+fn rsx_text_children_inside_components_and_nested_blocks_get_patched() {
+    let base = "pub fn A() -> Element {\n    rsx! {\n        Card { variant: CardVariant::Outlined, \"Inside component\" }\n    }\n}\n";
+    let patch = expect_patch(diff_rsx_source(
+        "comp.rs",
+        base,
+        &base.replace("Inside component", "Inside card"),
         2,
     ));
-    let elapsed = t0.elapsed();
-    assert!(text_patch.attr_updates.is_empty());
     assert_eq!(
-        text_patch.text_replacements,
-        vec![("LOCAL-FIRST | NVE".into(), "LOCAL-FIRST | LIVE".into())]
+        patch.text_replacements,
+        vec![("Inside component".into(), "Inside card".into())]
     );
-    assert!(
-        elapsed.as_millis() < 10,
-        "expected Tier-1 diff on real ui_chrome.rs ({} bytes) in < 10ms, took {:?}",
-        original.len(),
-        elapsed
-    );
-
-    // 2. Static style edit inside `rsx!` (`style: "flex-direction: row; align-items: center; gap: 8px;"`)
-    let edited_style = original.replacen(
-        "style: \"flex-direction: row; align-items: center; gap: 8px;\"",
-        "style: \"flex-direction: row; align-items: center; gap: 12px;\"",
-        1,
-    );
-    assert_ne!(original, edited_style);
-    let t1 = Instant::now();
-    let style_patch = expect_patch(diff_rsx_source(
-        "examples/studio-workspace/src/ui_chrome.rs",
-        &original,
-        &edited_style,
-        3,
-    ));
-    let style_elapsed = t1.elapsed();
-    assert_eq!(
-        style_patch.attr_updates,
-        vec![(
-            "style".into(),
-            "flex-direction: row; align-items: center; gap: 12px;".into()
-        )]
-    );
-    assert!(
-        style_elapsed.as_millis() < 10,
-        "expected Tier-1 style diff on ui_chrome.rs in < 10ms, took {:?}",
-        style_elapsed
-    );
-
-    // 3. Rust logic / string data edit outside `rsx!` falls back cleanly to Tier-2.
-    let edited_outside = original.replacen("\"Close\"", "\"Hide\"", 1);
-    assert_ne!(original, edited_outside);
-    assert_tier2(
-        "examples/studio-workspace/src/ui_chrome.rs",
-        &original,
-        &edited_outside,
-        4,
-    );
+    assert_eq!(patch.node_path, vec![0, 0]);
 }
