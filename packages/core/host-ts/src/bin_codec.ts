@@ -61,6 +61,8 @@ export class BinReader {
   private pos = 0;
   /** Reads stop here: `bytes.length`, or the enclosing container's end while validating. */
   private limit: number;
+  /** Active container nesting depth across `readArray` / `readMap` scopes. */
+  private depth = 0;
 
   constructor(bytes: Uint8Array) {
     this.bytes = bytes;
@@ -189,6 +191,22 @@ export class BinReader {
     return this.openContainer(BinTag.Map, 5)[0];
   }
 
+  /**
+   * Reads an `Array` container within its declared payload boundary: enforces `BIN_VALUE_MAX_DEPTH`,
+   * prevents elements from escaping the container, and throws `trailingBytes` on slack bytes.
+   */
+  readArray<T>(body: (count: number) => T): T {
+    return this.inContainer(BinTag.Array, 1, body);
+  }
+
+  /**
+   * Reads a `Map` container within its declared payload boundary: enforces `BIN_VALUE_MAX_DEPTH`,
+   * prevents entries from escaping the container, and throws `trailingBytes` on slack bytes.
+   */
+  readMap<T>(body: (count: number) => T): T {
+    return this.inContainer(BinTag.Map, 5, body);
+  }
+
   readMapKey(): string {
     return this.utf8(this.length());
   }
@@ -212,23 +230,52 @@ export class BinReader {
     }
   }
 
-  /** View of the next complete encoded value. */
+  /** View of the next complete encoded value (O(1) skip without validating nested contents). */
   readRawValue(): Uint8Array {
     const start = this.pos;
     this.skipValue();
     return this.bytes.subarray(start, this.pos);
   }
 
+  /** Fully validates and returns a view of the next encoded value. */
+  readCheckedValue(): Uint8Array {
+    const start = this.pos;
+    this.checkValue();
+    return this.bytes.subarray(start, this.pos);
+  }
+
+  /** Throws `trailingBytes` unless the cursor has consumed its whole buffer or container. */
+  requireEnd(): void {
+    if (!this.atEnd) throw new BinCodecError('trailingBytes', `${this.remaining} bytes`);
+  }
+
   /** Fully validates and consumes the next value (Rust `BinValueView::parse` rules). */
   checkValue(): void {
-    this.checkAt(0);
+    this.checkAt(this.depth);
   }
 
   /** Throws unless `bytes` holds exactly one valid `NveBinValue`. */
   static validate(bytes: Uint8Array): void {
     const r = new BinReader(bytes);
     r.checkValue();
-    if (!r.atEnd) throw new BinCodecError('trailingBytes', `${r.remaining} bytes`);
+    r.requireEnd();
+  }
+
+  private inContainer<T>(tag: BinTag, minEntryBytes: number, body: (count: number) => T): T {
+    if (this.depth >= BIN_VALUE_MAX_DEPTH) throw new BinCodecError('maxDepth', `depth ${this.depth}`);
+    const [count, end] = this.openContainer(tag, minEntryBytes);
+    const outer = this.limit;
+    this.limit = end;
+    this.depth += 1;
+    let out: T;
+    try {
+      out = body(count);
+    } finally {
+      this.depth -= 1;
+      this.limit = outer;
+    }
+    if (this.pos !== end) throw new BinCodecError('trailingBytes', `${end - this.pos} bytes`);
+    return out;
   }
 
   /** Rejects NaN / fractional / negative counts too, so `pos` can never stop being an integer. */

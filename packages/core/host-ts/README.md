@@ -27,7 +27,8 @@ leading BOM.
 | `src/bin_codec.ts` | `BinReader` / `BinWriter`, the `NveBinValue` format, `BinMark` (generation-checked container marks) |
 | `src/table_reader.ts` | `FieldKind`, `FieldSpec`, `decodeLength`, `rgba`, `TableReader` |
 | `src/scene_reader.ts` | `SceneReader` over slabs or `SceneReader.fromLinearMemory(memory, ptr, layout, schema)` |
-| `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |
+| `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue`, WASM linear-memory hybrid call helpers |
+| `src/js_value.ts` | 53-bit-safe plain JS <-> `NveBinValue` codec (`encodeJsValue`, `decodeJsValue`, `writeJsValue`, `readJsValue`) |
 
 ## Generated data
 
