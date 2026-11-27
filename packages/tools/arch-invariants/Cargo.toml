@@ -1,0 +1,14 @@
+[package]
+name = "nve-arch-invariants"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+guppy = "0.19"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["full", "visit"] }
+
+[lints]
+workspace = true

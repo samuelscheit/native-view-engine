@@ -44,8 +44,9 @@ jobs:
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
-      - name: Run L2 hybrid lints (ast-grep + cargo-deny)
+      - name: Run L2 hybrid lints (arch-invariants + ast-grep + cargo-deny)
         run: |
+          cargo test --locked -p nve-arch-invariants
           npm install -g @ast-grep/cli
           ast-grep test && ast-grep scan
           cargo deny check
