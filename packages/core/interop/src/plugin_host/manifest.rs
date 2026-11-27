@@ -3,17 +3,14 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 
 use nve_abi::{
-    NveComponentApi, NveDevApi, NveGetInterfaceFn, NveLayoutApi, NveSurfaceApi, SurfaceId,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    InterfaceId, NveComponentApi, NveDevApi, NveGetInterfaceFn, NveLayoutApi, NveSurfaceApi,
+    SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
 use crate::error::InteropError;
 
 /// Unique handle identifying a mounted plugin inside [`super::NvePluginHost`].
 pub type PluginId = u32;
-
-/// Default starting `SurfaceId` reserved for isolated plugin slots.
-pub const DEFAULT_PLUGIN_SURFACE_BASE: SurfaceId = SurfaceId(10_000);
 
 /// Probed ABI capability bitmap discovered via `nve_get_interface(uint32_t)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,9 +71,10 @@ pub enum PluginError {
     MissingSurfaceInterface,
     MissingRequiredInterface {
         interface_name: &'static str,
-        interface_id: u32,
+        interface_id: InterfaceId,
     },
     NullHandleReturned,
+    SurfaceSlotsExhausted,
     PluginNotFound(PluginId),
     DuplicatePluginName(String),
     InvalidPluginName(String),
@@ -98,10 +96,14 @@ impl fmt::Display for PluginError {
                 interface_id,
             } => write!(
                 f,
-                "plugin missing required interface {interface_name} ({interface_id})"
+                "plugin missing required interface {interface_name} ({})",
+                interface_id.raw()
             ),
             Self::NullHandleReturned => {
                 f.write_str("plugin NveSurfaceApi::create returned a null handle")
+            }
+            Self::SurfaceSlotsExhausted => {
+                f.write_str("plugin host exhausted all generational surface slots")
             }
             Self::PluginNotFound(id) => write!(f, "plugin {id} not found"),
             Self::DuplicatePluginName(name) => write!(f, "plugin '{name}' is already registered"),

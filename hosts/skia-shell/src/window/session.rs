@@ -75,7 +75,7 @@ pub struct DesktopSession<A: DesktopApp> {
     status_banner: Option<String>,
     show_hud: bool,
     last_frame_bytes: Vec<u8>,
-    frame_counter: u64,
+    frame_counter: FrameId,
     last_telemetry: Option<FrameTelemetry>,
     #[cfg(feature = "skia")]
     skia_renderer: SkiaCanvasRenderer,
@@ -143,7 +143,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             status_banner: None,
             show_hud,
             last_frame_bytes,
-            frame_counter: 0,
+            frame_counter: FrameId::ZERO,
             last_telemetry: None,
             #[cfg(feature = "skia")]
             skia_renderer: SkiaCanvasRenderer::new(),
@@ -288,10 +288,15 @@ impl<A: DesktopApp> DesktopSession<A> {
     ) -> Result<StateSaveOutcome, DesktopHostError> {
         let mut store =
             NativeInstantBootStore::open(user_dir, schema_version, StateStoreConfig::default())?;
+        let frame_id = if self.frame_counter == FrameId::ZERO {
+            self.next_frame_id
+        } else {
+            self.frame_counter
+        };
         let scene_buf = self.replica.backend().layout_tree().export_scene_reloc(
             self.replica.store(),
             schema_version,
-            FrameId(self.frame_counter.max(1)),
+            frame_id,
             app_tag,
             self.clear_color,
         )?;
@@ -500,14 +505,14 @@ impl<A: DesktopApp> DesktopSession<A> {
             draw_hud_banner(&mut self.pixel_buffer, self.viewport.scale_factor, banner);
         }
         let elapsed_us = t0.elapsed().as_micros() as u64;
-        self.frame_counter += 1;
+        self.frame_counter = self.frame_counter.next();
         self.last_telemetry = Some(FrameTelemetry {
             backend: if painted_via_skia {
                 active_kind
             } else {
                 GpuBackendKind::Softbuffer
             },
-            frame_index: self.frame_counter,
+            frame_index: self.frame_counter.raw(),
             width: self.pixel_buffer.width(),
             height: self.pixel_buffer.height(),
             scale_factor: self.viewport.scale_factor,

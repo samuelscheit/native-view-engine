@@ -1,4 +1,4 @@
-use nve_abi::SurfaceId;
+use nve_abi::{SurfaceId, TimestampUs};
 
 use super::types::{FastKeyMap, SurfaceChain, INLINE_CHAIN_CAP};
 use super::*;
@@ -6,7 +6,9 @@ use crate::surface::FrameworkKind;
 
 #[test]
 fn surface_chain_inline_and_heap_spill_preserve_order_and_retain() {
-    let small: Vec<SurfaceId> = (1..=INLINE_CHAIN_CAP as u32).map(SurfaceId).collect();
+    let small: Vec<SurfaceId> = (1..=INLINE_CHAIN_CAP as u32)
+        .map(|i| SurfaceId::new(i, 0))
+        .collect();
     let mut inline_chain = SurfaceChain::from_slice(&small);
     assert!(matches!(inline_chain, SurfaceChain::Inline { .. }));
     assert_eq!(inline_chain.as_slice(), small.as_slice());
@@ -14,7 +16,9 @@ fn surface_chain_inline_and_heap_spill_preserve_order_and_retain() {
     let expected_small: Vec<SurfaceId> = small.into_iter().filter(|id| id.raw() % 2 == 0).collect();
     assert_eq!(inline_chain.as_slice(), expected_small.as_slice());
 
-    let deep: Vec<SurfaceId> = (1..=(INLINE_CHAIN_CAP as u32 + 5)).map(SurfaceId).collect();
+    let deep: Vec<SurfaceId> = (1..=(INLINE_CHAIN_CAP as u32 + 5))
+        .map(|i| SurfaceId::new(i, 0))
+        .collect();
     let mut heap_chain = SurfaceChain::from_slice(&deep);
     assert!(matches!(heap_chain, SurfaceChain::Heap(_)));
     assert_eq!(heap_chain.as_slice(), deep.as_slice());
@@ -62,7 +66,7 @@ fn fast_u32_map_inline_spill_remove_and_retain() {
 fn gesture_arbitrator_handles_deep_chains_and_many_surfaces_across_spill() {
     let mut arb = GestureArbitrator::new();
     // Register 24 surfaces (> inline cap 16) and 12 active pointers (> inline cap 8).
-    let chain: Vec<SurfaceId> = (1..=24u32).map(SurfaceId).collect();
+    let chain: Vec<SurfaceId> = (1..=24u32).map(|i| SurfaceId::new(i, 0)).collect();
     for &sid in &chain {
         let mut caps = GestureCapabilities::vertical_scroll(FrameworkKind::Nve);
         if sid.raw() < 20 {
@@ -81,10 +85,10 @@ fn gesture_arbitrator_handles_deep_chains_and_many_surfaces_across_spill() {
                 y: 100.0,
                 delta_x: 0.0,
                 delta_y: 0.0,
-                timestamp_us: u64::from(ptr) * 1000,
+                timestamp_us: TimestampUs(u64::from(ptr) * 1000),
             },
         );
-        assert_eq!(down.winner, Some(SurfaceId(1)));
+        assert_eq!(down.winner, Some(SurfaceId::ROOT));
 
         let mv = arb.arbitrate(
             &chain,
@@ -95,17 +99,17 @@ fn gesture_arbitrator_handles_deep_chains_and_many_surfaces_across_spill() {
                 y: 60.0,
                 delta_x: 0.0,
                 delta_y: -40.0,
-                timestamp_us: u64::from(ptr) * 1000 + 500,
+                timestamp_us: TimestampUs(u64::from(ptr) * 1000 + 500),
             },
         );
-        assert_eq!(mv.winner, Some(SurfaceId(20)));
+        assert_eq!(mv.winner, Some(SurfaceId::new(20, 0)));
         assert_eq!(mv.innermost_disposition, GestureDisposition::DeferToParent);
-        assert_eq!(mv.cancelled_surfaces, vec![SurfaceId(1)]);
+        assert_eq!(mv.cancelled_surfaces, vec![SurfaceId::ROOT]);
     }
     assert_eq!(arb.active_pointer_count(), 12);
 
     // Unregistering winner clears it from every active pointer.
-    arb.unregister_surface(SurfaceId(20));
+    arb.unregister_surface(SurfaceId::new(20, 0));
     for ptr in 1..=12u32 {
         let end = arb.arbitrate(
             &chain,
@@ -116,7 +120,7 @@ fn gesture_arbitrator_handles_deep_chains_and_many_surfaces_across_spill() {
                 y: 60.0,
                 delta_x: 0.0,
                 delta_y: 0.0,
-                timestamp_us: 99_000,
+                timestamp_us: TimestampUs(99_000),
             },
         );
         assert_eq!(end.winner, None);

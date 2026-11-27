@@ -14,7 +14,7 @@ use nve_backend_skia::SkiaBackend;
 use nve_engine::{StoreBackend, Viewport};
 
 let mut backend = SkiaBackend::new();
-backend.set_viewport(SurfaceId(1), Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
+backend.set_viewport(SurfaceId::ROOT, Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
 assert_eq!(backend.viewport().scale_factor, 2.0);
 ```
 

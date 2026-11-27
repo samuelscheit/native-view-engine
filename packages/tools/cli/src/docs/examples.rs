@@ -402,11 +402,11 @@ fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
             backend.render_ssr(&store)
         }
         "kitchen-sink" => {
-            let mut app = KitchenSinkModule::create(SurfaceId(1));
+            let mut app = KitchenSinkModule::create(SurfaceId::ROOT);
             let mut web = WebBackend::new();
             nve_web_html_web::register_web_html_systems(web.table_registry_mut());
             web.register_table_system(nve_canvas_web::CanvasWebSystem);
-            web.set_viewport(SurfaceId(1), vp);
+            web.set_viewport(SurfaceId::ROOT, vp);
             app.commit_to(FrameId(1), &mut web)
                 .map_err(|e| format!("failed to commit kitchen-sink Frame-0 SSG: {e}"))?;
             web.render_ssr(app.surface().store())

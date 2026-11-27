@@ -1,10 +1,10 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
-    NveEventBatch, NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry,
-    NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT,
-    NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    FrameId, InterfaceId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
+    NveEventBatch, NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
+    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_components::tables::TextContent;
 use nve_store::wire::{WireDecoder, WireEncoder};
@@ -130,7 +130,13 @@ unsafe extern "C" fn p_set_props(
 unsafe extern "C" fn p_drain_events(handle: NveAppHandle) -> NveEventBatch {
     // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    st.out_events = vec![NveDirectEvent::press(st.surface_id, NodeId(st.counter), 0, 0.0, 0.0)];
+    st.out_events = vec![NveDirectEvent::press(
+        st.surface_id,
+        NodeId::new(st.counter, 0),
+        0,
+        0.0,
+        0.0,
+    )];
     NveEventBatch::from_slice(&st.out_events)
 }
 
@@ -179,7 +185,7 @@ static P_DEV: NveDevApi = NveDevApi {
     restore_state: p_restore,
 };
 
-unsafe extern "C" fn plugin_v1_get_interface(id: u32) -> *const c_void {
+unsafe extern "C" fn plugin_v1_get_interface(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => &P1_SURFACE as *const _ as *const c_void,
         NVE_IFACE_LAYOUT => &P_LAYOUT as *const _ as *const c_void,
@@ -189,7 +195,7 @@ unsafe extern "C" fn plugin_v1_get_interface(id: u32) -> *const c_void {
     }
 }
 
-unsafe extern "C" fn plugin_v2_get_interface(id: u32) -> *const c_void {
+unsafe extern "C" fn plugin_v2_get_interface(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => &P2_SURFACE as *const _ as *const c_void,
         NVE_IFACE_LAYOUT => &P_LAYOUT as *const _ as *const c_void,
@@ -199,14 +205,14 @@ unsafe extern "C" fn plugin_v2_get_interface(id: u32) -> *const c_void {
     }
 }
 
-unsafe extern "C" fn surface_only_get_interface(id: u32) -> *const c_void {
+unsafe extern "C" fn surface_only_get_interface(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => &P1_SURFACE as *const _ as *const c_void,
         _ => std::ptr::null(),
     }
 }
 
-unsafe extern "C" fn broken_missing_surface_get_interface(_id: u32) -> *const c_void {
+unsafe extern "C" fn broken_missing_surface_get_interface(_id: InterfaceId) -> *const c_void {
     std::ptr::null()
 }
 
@@ -221,7 +227,7 @@ static BROKEN_NULL_HANDLE_SURFACE: NveSurfaceApi = NveSurfaceApi {
     dispatch_events: p_dispatch,
 };
 
-unsafe extern "C" fn broken_null_handle_get_interface(id: u32) -> *const c_void {
+unsafe extern "C" fn broken_null_handle_get_interface(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => &BROKEN_NULL_HANDLE_SURFACE as *const _ as *const c_void,
         _ => std::ptr::null(),
@@ -230,7 +236,7 @@ unsafe extern "C" fn broken_null_handle_get_interface(id: u32) -> *const c_void 
 
 #[test]
 fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
-    let mut host = NvePluginHost::with_surface_base(SurfaceId(20_000));
+    let mut host = NvePluginHost::new();
 
     // 1. Reject plugin missing NVE_IFACE_SURFACE.
     assert_eq!(
@@ -264,12 +270,13 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
         )
         .unwrap();
     let min_slot = host.get(p_min).unwrap();
-    assert_eq!(min_slot.surface_id(), SurfaceId(20_000));
+    let min_sid = min_slot.surface_id();
+    assert!(!min_sid.is_null());
     assert!(min_slot.capabilities().surface);
     assert!(!min_slot.capabilities().component);
     assert!(!min_slot.capabilities().layout);
 
-    // 4. Full-featured plugin gets a distinct isolated SurfaceId (20_001).
+    // 4. Full-featured plugin gets a distinct generational SurfaceId.
     let p_full = host
         .register_in_process(
             "studio-inspector-plugin",
@@ -280,7 +287,8 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     assert_eq!(host.active_count(), 2);
 
     let slot = host.get_mut(p_full).unwrap();
-    assert_eq!(slot.surface_id(), SurfaceId(20_001));
+    let full_sid = slot.surface_id();
+    assert_ne!(full_sid, min_sid);
     assert!(slot.capabilities().component && slot.capabilities().dev && slot.capabilities().layout);
     assert_eq!(
         slot.measure(NveSizeConstraints::loose(400.0, 200.0)),
@@ -333,12 +341,13 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     assert_eq!(gen2, 2);
 
     let v2_slot = host.get_mut(p_full).unwrap();
-    assert_eq!(v2_slot.surface_id(), SurfaceId(20_001));
+    assert_eq!(v2_slot.surface_id(), full_sid);
     assert_eq!(v2_slot.generation(), 2);
     let f2 = v2_slot.render(FrameId(3)).unwrap().to_vec();
     assert_eq!(decode_first_text(&f2), "v2:count=43");
 
-    // 7. Duplicate name rejected; unload cleans up cleanly.
+    // 7. Duplicate name rejected; unload destroys the generational surface so re-registering
+    // never aliases the unloaded SurfaceId!
     assert!(matches!(
         host.register_in_process(
             "studio-inspector-plugin",
@@ -349,6 +358,19 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     ));
     let unloaded = host.unload(p_full).unwrap();
     assert_eq!(unloaded.generation, 2);
+    assert!(host.surfaces().get(full_sid).is_none());
     assert_eq!(host.active_count(), 1);
     assert!(host.find_by_name("studio-inspector-plugin").is_none());
+
+    let p_reborn = host
+        .register_in_process(
+            "studio-inspector-plugin",
+            plugin_v1_get_interface,
+            PluginRequirement::SURFACE_ONLY,
+        )
+        .unwrap();
+    let reborn_sid = host.get(p_reborn).unwrap().surface_id();
+    assert_ne!(reborn_sid, full_sid);
+    assert!(reborn_sid.generation() > 0 || reborn_sid.index() != full_sid.index());
+    assert!(host.surfaces().get(full_sid).is_none());
 }

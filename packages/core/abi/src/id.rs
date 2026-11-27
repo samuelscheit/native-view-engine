@@ -50,7 +50,7 @@ impl fmt::Display for NodeIndex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct NodeId(pub u32);
+pub struct NodeId(u32);
 
 impl NodeId {
     pub const NULL: Self = Self(0);
@@ -59,9 +59,49 @@ impl NodeId {
     pub const INDEX_BITS: u32 = 24;
     pub const MAX_INDEX: u32 = (1 << Self::INDEX_BITS) - 1;
 
+    /// Constructs a `NodeId` from a 24-bit slot index and 8-bit generation.
+    ///
+    /// Debug-asserts `index <= MAX_INDEX` so overflowing indices never silently mask to `NULL`.
+    /// For untrusted inputs, use [`Self::try_new`] or [`Self::from_raw`].
     #[inline(always)]
     pub const fn new(index: u32, generation: u8) -> Self {
+        debug_assert!(
+            index <= Self::MAX_INDEX,
+            "NodeId index exceeds 24-bit MAX_INDEX"
+        );
         Self(((generation as u32) << Self::INDEX_BITS) | (index & Self::MAX_INDEX))
+    }
+
+    /// Fallible constructor rejecting null index `0` and any index `> MAX_INDEX`.
+    #[inline(always)]
+    pub const fn try_new(index: u32, generation: u8) -> Option<Self> {
+        if index == 0 || index > Self::MAX_INDEX {
+            None
+        } else {
+            Some(Self(((generation as u32) << Self::INDEX_BITS) | index))
+        }
+    }
+
+    /// Decodes a raw `u32` at FFI/wire ingress, rejecting any handle whose 24-bit index is `0`
+    /// (both `0` and non-zero generations paired with index `0`).
+    #[inline(always)]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        if (raw & Self::MAX_INDEX) == 0 {
+            None
+        } else {
+            Some(Self(raw))
+        }
+    }
+
+    /// Decodes a nullable raw `u32` at FFI/wire ingress, canonicalizing any index-`0` value to
+    /// [`Self::NULL`].
+    #[inline(always)]
+    pub const fn from_raw_or_null(raw: u32) -> Self {
+        if (raw & Self::MAX_INDEX) == 0 {
+            Self::NULL
+        } else {
+            Self(raw)
+        }
     }
 
     #[inline(always)]
@@ -89,9 +129,10 @@ impl NodeId {
         (self.0 >> Self::INDEX_BITS) as u8
     }
 
+    /// Returns `true` when the 24-bit slot index is `0` (including non-zero generations with index `0`).
     #[inline(always)]
     pub const fn is_null(self) -> bool {
-        self.0 == 0
+        self.index_u32() == 0
     }
 
     #[inline(always)]
@@ -102,7 +143,11 @@ impl NodeId {
 
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        if self.is_null() {
+            f.write_str("node(null)")
+        } else {
+            write!(f, "node({},{})", self.index_u32(), self.generation())
+        }
     }
 }
 
@@ -112,12 +157,12 @@ pub const ROOT_NODE_ID: NodeId = NodeId::ROOT;
 /// Generational surface identity: `index: 24 | generation: 8`. Raw `0` is [`SurfaceId::NULL`].
 ///
 /// Raw FFI structs keep `SurfaceId` as a plain `u32` (never `NonZeroU32` inside `extern "C"` POD
-/// so zero-initialized C buffers never trigger UB); ingress validation rejects [`SurfaceId::NULL`].
+/// so zero-initialized C buffers never trigger UB); ingress validation rejects any index-`0` value.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct SurfaceId(pub u32);
+pub struct SurfaceId(u32);
 
 impl SurfaceId {
     pub const NULL: Self = Self(0);
@@ -126,9 +171,49 @@ impl SurfaceId {
     pub const INDEX_BITS: u32 = 24;
     pub const MAX_INDEX: u32 = (1 << Self::INDEX_BITS) - 1;
 
+    /// Constructs a `SurfaceId` from a 24-bit slot index and 8-bit generation.
+    ///
+    /// Debug-asserts `index <= MAX_INDEX` so overflowing indices never silently mask to `NULL`.
+    /// For untrusted inputs, use [`Self::try_new`] or [`Self::from_raw`].
     #[inline(always)]
     pub const fn new(index: u32, generation: u8) -> Self {
+        debug_assert!(
+            index <= Self::MAX_INDEX,
+            "SurfaceId index exceeds 24-bit MAX_INDEX"
+        );
         Self(((generation as u32) << Self::INDEX_BITS) | (index & Self::MAX_INDEX))
+    }
+
+    /// Fallible constructor rejecting null index `0` and any index `> MAX_INDEX`.
+    #[inline(always)]
+    pub const fn try_new(index: u32, generation: u8) -> Option<Self> {
+        if index == 0 || index > Self::MAX_INDEX {
+            None
+        } else {
+            Some(Self(((generation as u32) << Self::INDEX_BITS) | index))
+        }
+    }
+
+    /// Decodes a raw `u32` at FFI/JS/wire ingress, rejecting any handle whose 24-bit index is `0`
+    /// (both `0` and non-zero generations paired with index `0`).
+    #[inline(always)]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        if (raw & Self::MAX_INDEX) == 0 {
+            None
+        } else {
+            Some(Self(raw))
+        }
+    }
+
+    /// Decodes a nullable raw `u32` at FFI/wire ingress, canonicalizing any index-`0` value to
+    /// [`Self::NULL`].
+    #[inline(always)]
+    pub const fn from_raw_or_null(raw: u32) -> Self {
+        if (raw & Self::MAX_INDEX) == 0 {
+            Self::NULL
+        } else {
+            Self(raw)
+        }
     }
 
     #[inline(always)]
@@ -146,9 +231,10 @@ impl SurfaceId {
         (self.0 >> Self::INDEX_BITS) as u8
     }
 
+    /// Returns `true` when the 24-bit slot index is `0` (including non-zero generations with index `0`).
     #[inline(always)]
     pub const fn is_null(self) -> bool {
-        self.0 == 0
+        self.index_u32() == 0
     }
 
     #[inline(always)]
@@ -159,7 +245,11 @@ impl SurfaceId {
 
 impl fmt::Display for SurfaceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        if self.is_null() {
+            f.write_str("surface(null)")
+        } else {
+            write!(f, "surface({},{})", self.index_u32(), self.generation())
+        }
     }
 }
 
@@ -178,9 +268,11 @@ impl FrameId {
         self.0
     }
 
+    /// Advances to the next non-zero frame identifier, skipping `0` on `u64::MAX` wrap-around.
     #[inline(always)]
     pub const fn next(self) -> Self {
-        Self(self.0.wrapping_add(1))
+        let next = self.0.wrapping_add(1);
+        Self(if next == 0 { 1 } else { next })
     }
 }
 
@@ -385,7 +477,7 @@ impl ArenaOffset {
     }
 }
 
-/// 32-bit byte or element length across ABI headers and arenas.
+/// 32-bit byte length across ABI headers and arenas (never element counts).
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -506,21 +598,25 @@ impl PropFieldId {
 }
 
 const _: () = {
-    assert!(size_of::<NodeIndex>() == 4 && align_of::<NodeIndex>() == 4);
-    assert!(size_of::<NodeId>() == 4 && align_of::<NodeId>() == 4);
-    assert!(size_of::<SurfaceId>() == 4 && align_of::<SurfaceId>() == 4);
-    assert!(size_of::<FrameId>() == 8 && align_of::<FrameId>() == 8);
-    assert!(size_of::<TimestampUs>() == 8 && align_of::<TimestampUs>() == 8);
-    assert!(size_of::<DurationUs>() == 8 && align_of::<DurationUs>() == 8);
-    assert!(size_of::<DurationMs>() == 4 && align_of::<DurationMs>() == 4);
-    assert!(size_of::<TimestampMs>() == 8 && align_of::<TimestampMs>() == 8);
-    assert!(size_of::<EventId>() == 4 && align_of::<EventId>() == 4);
-    assert!(size_of::<EventFlags>() == 4 && align_of::<EventFlags>() == 4);
-    assert!(size_of::<ArenaOffset>() == 4 && align_of::<ArenaOffset>() == 4);
-    assert!(size_of::<ByteLen>() == 4 && align_of::<ByteLen>() == 4);
-    assert!(size_of::<ShortLen>() == 2 && align_of::<ShortLen>() == 2);
-    assert!(size_of::<PrimarySlot>() == 1 && align_of::<PrimarySlot>() == 1);
-    assert!(size_of::<ZIndex>() == 4 && align_of::<ZIndex>() == 4);
-    assert!(size_of::<InterfaceId>() == 4 && align_of::<InterfaceId>() == 4);
-    assert!(size_of::<PropFieldId>() == 2 && align_of::<PropFieldId>() == 2);
+    assert!(size_of::<NodeIndex>() == 4 && align_of::<NodeIndex>() == align_of::<u32>());
+    assert!(size_of::<NodeId>() == 4 && align_of::<NodeId>() == align_of::<u32>());
+    assert!(size_of::<SurfaceId>() == 4 && align_of::<SurfaceId>() == align_of::<u32>());
+    assert!(size_of::<FrameId>() == 8 && align_of::<FrameId>() == align_of::<u64>());
+    assert!(size_of::<TimestampUs>() == 8 && align_of::<TimestampUs>() == align_of::<u64>());
+    assert!(size_of::<DurationUs>() == 8 && align_of::<DurationUs>() == align_of::<u64>());
+    assert!(size_of::<DurationMs>() == 4 && align_of::<DurationMs>() == align_of::<u32>());
+    assert!(size_of::<TimestampMs>() == 8 && align_of::<TimestampMs>() == align_of::<u64>());
+    assert!(size_of::<EventId>() == 4 && align_of::<EventId>() == align_of::<u32>());
+    assert!(size_of::<EventFlags>() == 4 && align_of::<EventFlags>() == align_of::<u32>());
+    assert!(size_of::<ArenaOffset>() == 4 && align_of::<ArenaOffset>() == align_of::<u32>());
+    assert!(size_of::<ByteLen>() == 4 && align_of::<ByteLen>() == align_of::<u32>());
+    assert!(size_of::<ShortLen>() == 2 && align_of::<ShortLen>() == align_of::<u16>());
+    assert!(size_of::<PrimarySlot>() == 1 && align_of::<PrimarySlot>() == align_of::<u8>());
+    assert!(size_of::<ZIndex>() == 4 && align_of::<ZIndex>() == align_of::<i32>());
+    assert!(size_of::<InterfaceId>() == 4 && align_of::<InterfaceId>() == align_of::<u32>());
+    assert!(size_of::<PropFieldId>() == 2 && align_of::<PropFieldId>() == align_of::<u16>());
 };
+
+#[cfg(test)]
+#[path = "id_tests.rs"]
+mod tests;

@@ -18,7 +18,7 @@ use nve_engine::{
     DynLayoutEngine, LayoutRect, NveApp, StoreBackend, StoreLayoutEngine, StoreWireReplica,
     TextMeasurer, Viewport,
 };
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeStore};
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
     AccentTheme, ActiveView, CornerRadiusMode, DensityMode, LayoutEngineMode,
@@ -42,9 +42,9 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     };
 
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(SurfaceId(1), vp);
+    backend.set_viewport(SurfaceId::ROOT, vp);
     let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
     let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1)
@@ -58,7 +58,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).expect("node layout");
         let ev = [NveDirectEvent::press(
-            SurfaceId(1),
+            SurfaceId::ROOT,
             nid,
             fid * 16_000,
             rect.x + rect.width * 0.5,
@@ -88,7 +88,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     let saved_state_bytes = app.snapshot_state().to_vec();
     assert!(!saved_state_bytes.is_empty());
 
-    let mut freeze_app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut freeze_app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     freeze_app.restore_state(&saved_state_bytes);
     let frame0_bytes = freeze_app.render(FrameId(1)).to_vec();
     assert!(frame0_bytes.len() > 24);
@@ -104,7 +104,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     write_reloc_atomic(&snap_path, &bundle).expect("write studio NVERELOC atomically");
 
     let mut cold_backend = HeadlessBackend::new();
-    cold_backend.set_viewport(SurfaceId(1), vp);
+    cold_backend.set_viewport(SurfaceId::ROOT, vp);
     let mut cold_host =
         StoreWireReplica::new(cold_backend, nve_components::tables::core_realization_order());
 
@@ -132,7 +132,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     assert!(frame0_tree.contains("X-Ray HUD: ON"));
     assert!(frame0_tree.contains("Snapshot 7 / 7"));
 
-    let mut cold_app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut cold_app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let t_state_start = Instant::now();
     cold_app.restore_state(snap.state());
     let t_state = t_state_start.elapsed();
@@ -159,7 +159,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         let cpp_snap = RelocBundleView::from_view(cpp_mapped.view()).expect("parse C++ bundle");
         assert_eq!(cpp_snap.meta(), b"cpp-roundtrip");
         let mut verify_backend = HeadlessBackend::new();
-        verify_backend.set_viewport(SurfaceId(1), vp);
+        verify_backend.set_viewport(SurfaceId::ROOT, vp);
         let mut verify_host = StoreWireReplica::new(
             verify_backend,
             nve_components::tables::core_realization_order(),
@@ -170,7 +170,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         let verify_tree = verify_host.backend().render_ascii_tree(verify_host.store());
         assert!(verify_tree.contains("# engineering"));
         assert!(verify_tree.contains("X-Ray HUD: ON"));
-        let mut verify_app = StudioWorkspaceModule::create(SurfaceId(1));
+        let mut verify_app = StudioWorkspaceModule::create(SurfaceId::ROOT);
         verify_app.restore_state(cpp_snap.state());
         assert_eq!(verify_app.state_snapshot(), expected_state);
     }
@@ -238,7 +238,7 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
 
         let t0 = Instant::now();
         let handled = h.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id: nid,
             timestamp_us: h.next_frame * 16_000,
             kind: NativeEventKind::Press,
@@ -365,11 +365,11 @@ impl StoreLayoutEngine for HostMirrorLayoutEngine {
         self.inner.sync_changes(store, changes);
     }
 
-    fn compute_layout(&mut self, store: &NodeStore, root: StoreNodeId, viewport: Viewport) {
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) {
         self.inner.compute_layout(store, root, viewport);
     }
 
-    fn layout_of(&self, id: StoreNodeId) -> Option<LayoutRect> {
+    fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
         self.inner.layout_of(id)
     }
 
@@ -393,10 +393,10 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         scale_factor: 1.0,
     };
 
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let mut dyn_backend: HeadlessBackend<DynLayoutEngine> =
         HeadlessBackend::with_layout(Box::new(TaffyStoreLayout::new()));
-    dyn_backend.set_viewport(SurfaceId(1), vp);
+    dyn_backend.set_viewport(SurfaceId::ROOT, vp);
     let mut replica =
         StoreWireReplica::new(dyn_backend, nve_components::tables::core_realization_order());
 
@@ -414,7 +414,7 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = replica.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
-            SurfaceId(1),
+            SurfaceId::ROOT,
             nid,
             fid * 16_000,
             rect.x + rect.width * 0.5,

@@ -1,4 +1,4 @@
-use nve_abi::{ColorRgba, FrameId, NodeId, SurfaceId, NVE_PRIMARY_SLOT_NONE};
+use nve_abi::{ColorRgba, DurationMs, FrameId, NodeId, SurfaceId, TimestampMs, NVE_PRIMARY_SLOT_NONE};
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 
 use crate::reloc::{
@@ -16,7 +16,7 @@ fn make_node<'a>(
     children: &'a [u32],
 ) -> SceneRelocNodeInput<'a> {
     SceneRelocNodeInput {
-        node_id: NodeId(node_id),
+        node_id: NodeId::new(node_id, 0),
         parent_index,
         primary_slot,
         flags: 0,
@@ -67,68 +67,69 @@ fn timeline_archive_roundtrip_binary_search_and_integrity() {
         &[
             // Intentionally unsorted input to verify encoder sorts ascending.
             NveTimelineEntryInput {
-                activate_at_unix_ms: 2_000,
+                activate_at_unix_ms: TimestampMs(2_000),
                 patches: vec![
-                    NveTimelinePatchInput::text(2, "14 - 10"),
-                    NveTimelinePatchInput::text(3, "Q2 04:15"),
-                    NveTimelinePatchInput::bg_rgba(1, 0x1E293BFF),
+                    NveTimelinePatchInput::text(NodeId::new(2, 0), "14 - 10"),
+                    NveTimelinePatchInput::text(NodeId::new(3, 0), "Q2 04:15"),
+                    NveTimelinePatchInput::bg_rgba(NodeId::ROOT, 0x1E293BFF),
                 ],
             },
             NveTimelineEntryInput {
-                activate_at_unix_ms: 1_000,
+                activate_at_unix_ms: TimestampMs(1_000),
                 patches: vec![
-                    NveTimelinePatchInput::text(2, "7 - 0"),
-                    NveTimelinePatchInput::text(3, "Q1 08:30"),
+                    NveTimelinePatchInput::text(NodeId::new(2, 0), "7 - 0"),
+                    NveTimelinePatchInput::text(NodeId::new(3, 0), "Q1 08:30"),
                 ],
             },
             NveTimelineEntryInput {
-                activate_at_unix_ms: 3_000,
+                activate_at_unix_ms: TimestampMs(3_000),
                 patches: vec![
-                    NveTimelinePatchInput::text(2, "21 - 17"),
-                    NveTimelinePatchInput::opacity(3, 0.75).with_transition_ms(220),
+                    NveTimelinePatchInput::text(NodeId::new(2, 0), "21 - 17"),
+                    NveTimelinePatchInput::opacity(NodeId::new(3, 0), 0.75)
+                        .with_transition_ms(DurationMs(220)),
                 ],
             },
         ],
-        500,
-        10_000,
+        TimestampMs(500),
+        TimestampMs(10_000),
         1,
     )
     .expect("build timeline");
 
     let view = archive.view(VerifyMode::Full).expect("verify full");
     assert_eq!(view.entries().len(), 3);
-    assert_eq!(view.entries()[0].activate_at_unix_ms, 1_000);
-    assert_eq!(view.entries()[1].activate_at_unix_ms, 2_000);
-    assert_eq!(view.entries()[2].activate_at_unix_ms, 3_000);
+    assert_eq!(view.entries()[0].activate_at_unix_ms, TimestampMs(1_000));
+    assert_eq!(view.entries()[1].activate_at_unix_ms, TimestampMs(2_000));
+    assert_eq!(view.entries()[2].activate_at_unix_ms, TimestampMs(3_000));
 
     let scene = view.base_scene().expect("open embedded base scene");
     assert_eq!(scene.nodes().len(), 3);
     assert_eq!(scene.text_of(&scene.nodes()[1]).unwrap(), "0 - 0");
 
     // Binary search before, at, between, and after scheduled timestamps.
-    assert!(view.active_entry_at(999).is_none());
-    assert_eq!(view.active_patches_at(999).unwrap().len(), 0);
+    assert!(view.active_entry_at(TimestampMs(999)).is_none());
+    assert_eq!(view.active_patches_at(TimestampMs(999)).unwrap().len(), 0);
 
-    let (idx1, _) = view.active_entry_at(1_000).unwrap();
+    let (idx1, _) = view.active_entry_at(TimestampMs(1_000)).unwrap();
     assert_eq!(idx1, 0);
-    let p1 = view.active_patches_at(1_500).unwrap();
+    let p1 = view.active_patches_at(TimestampMs(1_500)).unwrap();
     assert_eq!(p1.len(), 2);
     assert_eq!(view.patch_str(&p1[0]).unwrap(), "7 - 0");
     assert_eq!(view.patch_str(&p1[1]).unwrap(), "Q1 08:30");
 
-    let (idx2, _) = view.active_entry_at(2_999).unwrap();
+    let (idx2, _) = view.active_entry_at(TimestampMs(2_999)).unwrap();
     assert_eq!(idx2, 1);
-    let p2 = view.active_patches_at(2_999).unwrap();
+    let p2 = view.active_patches_at(TimestampMs(2_999)).unwrap();
     assert_eq!(view.patch_str(&p2[0]).unwrap(), "14 - 10");
     assert_eq!(p2[2].value_lo, 0x1E293BFF);
 
-    let (idx3, _) = view.active_entry_at(9_999).unwrap();
+    let (idx3, _) = view.active_entry_at(TimestampMs(9_999)).unwrap();
     assert_eq!(idx3, 2);
-    let p3 = view.active_patches_at(9_999).unwrap();
+    let p3 = view.active_patches_at(TimestampMs(9_999)).unwrap();
     assert_eq!(p3[1].as_f32(), 0.75);
-    assert_eq!(p3[1].transition_ms, 220);
-    assert!(!view.is_expired_at(9_999));
-    assert!(view.is_expired_at(10_000));
+    assert_eq!(p3[1].transition_ms, DurationMs(220));
+    assert!(!view.is_expired_at(TimestampMs(9_999)));
+    assert!(view.is_expired_at(TimestampMs(10_000)));
 
     // Corrupt checksum must fail Full verification.
     let mut corrupt = archive.as_slice().to_vec();
@@ -148,16 +149,16 @@ fn timeline_rejects_corrupt_oob_and_unsorted_entries() {
         base.as_slice(),
         &[
             NveTimelineEntryInput {
-                activate_at_unix_ms: 1_000,
-                patches: vec![NveTimelinePatchInput::text(2, "A")],
+                activate_at_unix_ms: TimestampMs(1_000),
+                patches: vec![NveTimelinePatchInput::text(NodeId::new(2, 0), "A")],
             },
             NveTimelineEntryInput {
-                activate_at_unix_ms: 2_000,
-                patches: vec![NveTimelinePatchInput::text(2, "B")],
+                activate_at_unix_ms: TimestampMs(2_000),
+                patches: vec![NveTimelinePatchInput::text(NodeId::new(2, 0), "B")],
             },
         ],
-        100,
-        0,
+        TimestampMs(100),
+        TimestampMs::ZERO,
         1,
     )
     .unwrap();

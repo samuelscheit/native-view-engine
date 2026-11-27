@@ -25,7 +25,7 @@ mod native {
                 for id in 1..=256u32 {
                     table
                         .upsert_node(SceneNodeInput {
-                            node_id: NodeId(id),
+                            node_id: NodeId::new(id, 0),
                             primary_slot: PrimarySlot::NONE,
                             x: (id as f32) * 4.0,
                             y: (id as f32) * 2.0,
@@ -70,8 +70,8 @@ mod native {
     fn bench_direct_event_conversion(c: &mut Criterion) {
         let events: Vec<NativeEvent> = (0..32u32)
             .map(|i| NativeEvent {
-                surface_id: SurfaceId(1),
-                node_id: NodeId(i + 1),
+                surface_id: SurfaceId::ROOT,
+                node_id: NodeId::new(i + 1, 0),
                 timestamp_us: u64::from(i) * 1000,
                 kind: NativeEventKind::Press,
                 payload: EventPayload::Point {

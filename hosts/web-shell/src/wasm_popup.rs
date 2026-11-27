@@ -185,7 +185,8 @@ pub fn open_popup_window(
     width: u32,
     height: u32,
 ) -> Result<WebPopupController, JsValue> {
-    let surface_id = SurfaceId(surface_id);
+    let surface_id = SurfaceId::from_raw(surface_id)
+        .ok_or_else(|| JsValue::from_str(&PopupWindowError::InvalidSurfaceId.to_string()))?;
     let spec = PopupWindowSpec::new(surface_id, title, width, height)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
@@ -248,7 +249,9 @@ pub fn open_popup_window(
 /// Closes a previously opened popup window and unregisters its handle.
 #[wasm_bindgen]
 pub fn close_popup_window(surface_id: u32) {
-    let surface_id = SurfaceId(surface_id);
+    let Some(surface_id) = SurfaceId::from_raw(surface_id) else {
+        return;
+    };
     if let Some(entry) = POPUP_WINDOWS.with(|popups| popups.borrow_mut().remove(&surface_id)) {
         let _ = entry.window.close();
         let _ = WINDOW_MANAGER.with(|wm| wm.borrow_mut().close_window(entry.handle));

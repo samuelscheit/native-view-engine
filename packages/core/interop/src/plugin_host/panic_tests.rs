@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    FrameId, NveDirectEvent, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
+    FrameId, InterfaceId, NveDirectEvent, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
     NveSizeConstraints, SurfaceId,
 };
 use nve_components::tables::TextContent;
@@ -207,14 +207,14 @@ nve_engine::export_nve_app!(
 );
 
 unsafe extern "C" {
-    fn nve_test_flaky_plugin_iface(interface_id: u32) -> *const c_void;
-    fn nve_test_healthy_plugin_iface(interface_id: u32) -> *const c_void;
+    fn nve_test_flaky_plugin_iface(interface_id: InterfaceId) -> *const c_void;
+    fn nve_test_healthy_plugin_iface(interface_id: InterfaceId) -> *const c_void;
 }
 
 #[test]
 fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_healthy() {
     set_host_panic_mode(HostPanicMode::Healthy);
-    let mut host = NvePluginHost::with_surface_base(SurfaceId(30_000));
+    let mut host = NvePluginHost::new();
 
     // Mount healthy sibling plugin first.
     let healthy_id = host
@@ -270,8 +270,10 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     ));
 
     // 4. Panicking `dispatch_events`.
+    let flaky_sid = host.get(flaky_id).unwrap().surface_id();
+    let healthy_sid = host.get(healthy_id).unwrap().surface_id();
     set_host_panic_mode(HostPanicMode::PanicDispatchEvents);
-    let direct_ev = [NveDirectEvent::press(SurfaceId(30_001), NodeId(2), 100, 1.0, 2.0)];
+    let direct_ev = [NveDirectEvent::press(flaky_sid, NodeId::new(2, 0), 100, 1.0, 2.0)];
     let ev_err: InteropError = host
         .get_mut(flaky_id)
         .unwrap()
@@ -353,7 +355,7 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     let sibling_frame = sibling.render(FrameId(1)).unwrap().to_vec();
-    assert_eq!(sibling.surface_id(), SurfaceId(30_000));
+    assert_eq!(sibling.surface_id(), healthy_sid);
     assert_eq!(decode_first_text(&sibling_frame), "healthy:ticks=2");
 
     // 9. Panicking `destroy` during `unload` survives cleanly and leaves sibling intact.

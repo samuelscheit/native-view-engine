@@ -290,7 +290,7 @@ mod tests {
             {
                 let mut tx = store.tx();
                 let root = NodeId::ROOT;
-                let n2 = NodeId(2);
+                let n2 = NodeId::new(2, 0);
                 let _ = tx.create_at(root);
                 let _ = tx.create_at(n2);
                 tx.set(n2, Layout::WIDTH, Length::points(200.0));

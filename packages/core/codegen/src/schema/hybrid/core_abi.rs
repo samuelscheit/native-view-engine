@@ -115,7 +115,7 @@ pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
         h.update(b"|");
         h.update(f.name.as_bytes());
         h.update(b":");
-        h.update(scene_canonical_type_name(&f.ty).as_bytes());
+        h.update(scene_canonical_type_name(&f.ty, &spec.aliases).as_bytes());
         h.update(b"@");
         let off = f
             .offset
@@ -128,7 +128,7 @@ pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
         h.update(b"|");
         h.update(f.name.as_bytes());
         h.update(b":");
-        h.update(scene_canonical_type_name(&f.ty).as_bytes());
+        h.update(scene_canonical_type_name(&f.ty, &spec.aliases).as_bytes());
         if let Some(off) = f.offset {
             h.update(b"@");
             h.update_u64(off as u64);
@@ -143,7 +143,7 @@ pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
         h.update(b"|");
         h.update(f.name.as_bytes());
         h.update(b":");
-        h.update(scene_canonical_type_name(&f.ty).as_bytes());
+        h.update(scene_canonical_type_name(&f.ty, &spec.aliases).as_bytes());
         if let Some(off) = f.offset {
             h.update(b"@");
             h.update_u64(off as u64);
@@ -159,7 +159,7 @@ pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
         h.update(b"|");
         h.update(f.name.as_bytes());
         h.update(b":");
-        h.update(scene_canonical_type_name(&f.ty).as_bytes());
+        h.update(scene_canonical_type_name(&f.ty, &spec.aliases).as_bytes());
         h.update(b"@");
         let off = f
             .offset
@@ -169,8 +169,15 @@ pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
     h.digest()
 }
 
-fn scene_canonical_type_name(ty: &HybridType) -> String {
+fn scene_canonical_type_name(
+    ty: &HybridType,
+    aliases: &[super::HybridAliasSpec],
+) -> String {
     match ty {
+        HybridType::Handle(name) => aliases
+            .iter()
+            .find(|a| a.name == *name)
+            .map_or_else(|| name.clone(), |a| scene_canonical_type_name(&a.target, aliases)),
         HybridType::U8 => "u8".to_string(),
         HybridType::U16 => "u16".to_string(),
         HybridType::U32 => "u32".to_string(),
@@ -179,7 +186,7 @@ fn scene_canonical_type_name(ty: &HybridType) -> String {
         HybridType::F32 => "f32".to_string(),
         HybridType::ConstPtr(inner) => match inner.as_ref() {
             HybridType::Struct(name) => format!("*const {name}"),
-            other => format!("*const {}", scene_canonical_type_name(other)),
+            other => format!("*const {}", scene_canonical_type_name(other, aliases)),
         },
         other => other.canonical_signature(),
     }

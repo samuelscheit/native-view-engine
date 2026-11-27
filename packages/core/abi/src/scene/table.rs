@@ -558,7 +558,7 @@ impl NveSceneTable {
             dirty_count: self.dirty_indices.len() as u32,
             removed_count: self.removed_ids.len() as u32,
             text_slab_len: ByteLen(text_slab.len() as u32),
-            children_slab_len: ByteLen(self.children_slab.len() as u32),
+            children_slab_len: self.children_slab.len() as u32,
             table_count: 0,
             nodes: if self.nodes.is_empty() {
                 std::ptr::null()

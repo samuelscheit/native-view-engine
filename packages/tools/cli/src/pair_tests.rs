@@ -3,7 +3,7 @@ use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{core_realization_order, register_core_tables, TextContent};
 use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeId, NodeStore};
 use nve_wire::{
     format_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportKind,
 };
@@ -63,7 +63,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     let (ctrl_tx, ctrl_rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
     let server_thread = std::thread::spawn(move || {
-        let surface = DioxusSurface::new(SurfaceId(1), InspectDemo);
+        let surface = DioxusSurface::new(SurfaceId::ROOT, InspectDemo);
         let mut session = PairSession::start(
             surface,
             "127.0.0.1",
@@ -107,7 +107,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -127,7 +127,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
 
     let make_tap = |ts: u64| {
         encode_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id: btn_node,
             timestamp_us: ts,
             kind: NativeEventKind::Press,
@@ -190,23 +190,23 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
     }
 
     impl PairedApp for TelemetryMockApp {
-        fn render(&mut self, _frame_id: u64) -> Cow<'_, [u8]> {
+        fn render(&mut self, _frame_id: nve_abi::FrameId) -> Cow<'_, [u8]> {
             register_core_tables();
             let mut store = NodeStore::new();
             let mut changes = ChangeSet::default();
             {
                 let mut tx = store.tx();
-                let _ = tx.create_at(StoreNodeId::ROOT);
-                let _ = tx.create_at(StoreNodeId(2));
+                let _ = tx.create_at(NodeId::ROOT);
+                let _ = tx.create_at(NodeId::new(2, 0));
                 tx.set_str(
-                    StoreNodeId(2),
+                    NodeId::new(2, 0),
                     TextContent::TEXT,
                     &format!(
                         "peers={}",
                         self.updates.last().map(|u| u.peers).unwrap_or(-1)
                     ),
                 );
-                tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+                tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
                 tx.commit_into(&mut changes);
             }
             let mut out = Vec::new();

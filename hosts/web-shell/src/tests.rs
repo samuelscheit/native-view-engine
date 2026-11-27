@@ -45,10 +45,10 @@ use nve_backend_web::WebBackend;
     feature = "scene-view"
 ))]
 use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeStore};
 
 pub(crate) fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
-    fn walk(store: &NodeStore, id: StoreNodeId, target: &str) -> Option<NodeId> {
+    fn walk(store: &NodeStore, id: NodeId, target: &str) -> Option<NodeId> {
         if !store.is_live(id) {
             return None;
         }
@@ -65,7 +65,7 @@ pub(crate) fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<No
         }
         None
     }
-    walk(store, StoreNodeId::ROOT, target)
+    walk(store, NodeId::ROOT, target)
 }
 
 #[cfg(all(
@@ -87,7 +87,7 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
         "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
     );
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id,
         timestamp_us,
         kind: NativeEventKind::Press,
@@ -214,7 +214,7 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
 #[test]
 fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
     let mut session =
-        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
+        WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     let init = session.render_initial().unwrap();
     assert!(init.op_count > 0);
     assert!(init.mutation_count > 0);
@@ -255,7 +255,7 @@ fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
 #[test]
 fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     let mut session =
-        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
+        WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
     assert_scene_view_matches_store(&session);
 
@@ -355,7 +355,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
         scale_factor: 1.0,
     };
     let mut session =
-        WebAppSession::new_studio_workspace(SurfaceId(1), WebBackend::new(), viewport);
+        WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::new(), viewport);
 
     let init = session.render_initial().unwrap();
     assert!(init.op_count > 0);
@@ -447,7 +447,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
 #[test]
 fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
     let mut session =
-        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
+        WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     let ptr_before = session.scene().view_ptr();
     // SAFETY: `ptr_before` points to the session's stable `NveSceneView`.
     let empty_view = unsafe { *ptr_before };
@@ -480,7 +480,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         scale_factor: 2.0,
     };
     let mut session =
-        WebAppSession::new_studio_workspace(SurfaceId(1), WebBackend::new(), desktop_vp);
+        WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::new(), desktop_vp);
     session.render_initial().unwrap();
     assert_scene_view_matches_store(&session);
 
@@ -505,7 +505,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     // 2. Board TextInput search + custom task create via `submit` (and empty submit is a safe no-op).
     let search_id = find_node_by_test_id(session.store(), "board-search-input").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: search_id,
         timestamp_us: 1000,
         kind: NativeEventKind::TextChange,
@@ -519,7 +519,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(session.render_html().contains("AET-101"));
 
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: ROOT_NODE_ID,
         timestamp_us: 1600,
         kind: NativeEventKind::Submit,
@@ -529,7 +529,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
 
     let new_task_id = find_node_by_test_id(session.store(), "board-new-task-input").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: new_task_id,
         timestamp_us: 1700,
         kind: NativeEventKind::TextChange,
@@ -537,7 +537,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     });
     session.pump_events().unwrap().expect("draft update");
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: new_task_id,
         timestamp_us: 1800,
         kind: NativeEventKind::Submit,
@@ -557,7 +557,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
 
     let pal_in = find_node_by_test_id(session.store(), "palette-input").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: pal_in,
         timestamp_us: 2000,
         kind: NativeEventKind::TextChange,
@@ -590,7 +590,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(session.render_html().contains("STR-99999"));
     let stream_vp = find_node_by_test_id(session.store(), "stream-viewport").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: stream_vp,
         timestamp_us: 4300,
         kind: NativeEventKind::Scroll,
@@ -705,9 +705,9 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
     }
 
     let gate = StepGate::default();
-    let surface = DioxusSurface::new(SurfaceId(1), BurstAsyncApp).with_context(gate.clone());
+    let surface = DioxusSurface::new(SurfaceId::ROOT, BurstAsyncApp).with_context(gate.clone());
     let mut session =
-        WebAppSession::new(SurfaceId(1), surface, WebBackend::new(), Viewport::default());
+        WebAppSession::new(SurfaceId::ROOT, surface, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
 
     let waker = Waker::noop();

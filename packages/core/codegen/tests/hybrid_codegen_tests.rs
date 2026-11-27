@@ -883,6 +883,20 @@ fn real_compiler_verifies_generated_rust_against_nve_abi_with_zero_warnings() {
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
     let rust_out = generate_hybrid_target(&spec, HybridTarget::Rust).unwrap();
 
+    let generated_rs = &rust_out.files[0].content;
+    assert!(
+        generated_rs.contains(
+            "surface_id: nve_abi::SurfaceId, node_id: nve_abi::NodeId, timestamp_us: nve_abi::TimestampUs"
+        ),
+        "generated Rust hybrid emitter must use typed ABI handles"
+    );
+    assert!(
+        !generated_rs.contains("surface_id: u32")
+            && !generated_rs.contains("node_id: u32")
+            && !generated_rs.contains("timestamp_us: u64"),
+        "generated Rust hybrid emitter must not expose bare primitive handle parameters"
+    );
+
     let dir = temp_test_dir("rust");
     rust_out.write_to_dir(&dir).unwrap();
     let rs_file = dir.join("crypto_hybrid.generated.rs");
@@ -1070,12 +1084,19 @@ fn main() {
         assert_eq!(ev_view.get("position_ms").unwrap().as_i64(), Some(1200));
         assert_eq!(ev_view.get("duration_ms").unwrap().as_i64(), Some(9000));
         let mut saw_direct = false;
-        emit_video_surface_on_progress(1, 2, 333, 1200, 9000, |d| {
-            saw_direct = true;
-            assert_eq!(d.surface_id, nve_abi::SurfaceId(1));
-            assert_eq!(d.node_id, nve_abi::NodeId(2));
-            assert_eq!(d.timestamp_us, 333);
-        });
+        emit_video_surface_on_progress(
+            nve_abi::SurfaceId::ROOT,
+            nve_abi::NodeId::new(2, 0),
+            nve_abi::TimestampUs(333),
+            1200,
+            9000,
+            |d| {
+                saw_direct = true;
+                assert_eq!(d.surface_id, nve_abi::SurfaceId::ROOT);
+                assert_eq!(d.node_id, nve_abi::NodeId::new(2, 0));
+                assert_eq!(d.timestamp_us, 333);
+            },
+        );
         assert!(saw_direct);
 
         (vvt.destroy)(vh);
@@ -1670,11 +1691,11 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
 
     // Verify core modular interfaces keep exact fixed IDs 1..=5
     assert_eq!(core.modules.len(), 5);
-    assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE);
-    assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT);
-    assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT);
-    assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV);
-    assert_eq!(core.modules[4].interface_id(), nve_abi::NVE_IFACE_HOST);
+    assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE.raw());
+    assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT.raw());
+    assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT.raw());
+    assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV.raw());
+    assert_eq!(core.modules[4].interface_id(), nve_abi::NVE_IFACE_HOST.raw());
 
     // Verify scene node layout descriptors
     let render_node = scene.find_struct("NveRenderNode").expect("NveRenderNode");

@@ -289,11 +289,30 @@ pub struct EnvironmentOverrides {
     pub locale: Option<String>,
 }
 
+impl EnvironmentOverrides {
+    /// Applies any explicitly set override fields onto `env`.
+    pub(crate) fn apply_to(&self, env: &mut SurfaceEnvironment) {
+        if let Some(theme) = &self.theme {
+            env.theme = theme.clone();
+        }
+        if let Some(safe_area) = self.safe_area {
+            env.safe_area = safe_area;
+        }
+        if let Some(scale) = self.scale_factor {
+            env.scale_factor = scale;
+        }
+        if let Some(locale) = &self.locale {
+            env.locale = locale.clone();
+        }
+    }
+}
+
 /// Registration parameters for a new surface in [`super::SurfaceOrchestrator`].
+///
+/// Surface IDs are allocated exclusively by [`super::SurfaceOrchestrator`]'s generational slab
+/// allocator (`index:24 | generation:8`) so stale handles can never be resurrected.
 #[derive(Debug, Clone)]
 pub struct SurfaceDescriptor {
-    /// Optional explicit surface ID. When `None`, the orchestrator allocates a monotonic ID.
-    pub id: Option<SurfaceId>,
     pub parent: Option<SurfaceId>,
     pub framework: FrameworkKind,
     pub component_name: String,
@@ -308,7 +327,6 @@ pub struct SurfaceDescriptor {
 impl SurfaceDescriptor {
     pub fn new(framework: FrameworkKind, component_name: impl Into<String>) -> Self {
         Self {
-            id: None,
             parent: None,
             framework,
             component_name: component_name.into(),
@@ -319,11 +337,6 @@ impl SurfaceDescriptor {
             #[cfg(feature = "window")]
             presentation: SurfacePresentation::Embedded,
         }
-    }
-
-    pub fn with_id(mut self, id: SurfaceId) -> Self {
-        self.id = Some(id);
-        self
     }
 
     pub fn with_parent(mut self, parent: SurfaceId) -> Self {

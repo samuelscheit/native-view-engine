@@ -21,7 +21,6 @@ mod panic_tests;
 
 pub use manifest::{
     PluginCapabilities, PluginError, PluginId, PluginMetadata, PluginRequirement, PluginSourceKind,
-    DEFAULT_PLUGIN_SURFACE_BASE,
 };
 pub use reload::NvePluginHost;
 pub use sandbox::NvePluginSlot;

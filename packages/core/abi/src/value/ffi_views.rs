@@ -1,4 +1,4 @@
-use crate::{NativeEventKind, NodeId, SurfaceId};
+use crate::{NativeEventKind, NodeId, PropFieldId, SurfaceId};
 
 use super::ffi_events::{
     NveDirectEvent, NveEventBatch, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE,
@@ -300,14 +300,14 @@ impl<'a> NvePropSliceRef<'a> {
     #[inline] pub const fn len(&self) -> usize { self.entries.len() }
     #[inline] pub const fn is_empty(&self) -> bool { self.entries.is_empty() }
     /// Zero-allocation `O(n)` lookup by `field_id`.
-    #[inline] pub fn get(&self, field_id: u16) -> Option<NveValueRef<'a>> {
-        self.entries.iter().find_map(|e| (e.field_id.raw() == field_id).then_some(NveValueRef { raw: &e.value }))
+    #[inline] pub fn get(&self, field_id: PropFieldId) -> Option<NveValueRef<'a>> {
+        self.entries.iter().find_map(|e| (e.field_id == field_id).then_some(NveValueRef { raw: &e.value }))
     }
-    #[inline] pub fn entry(&self, index: usize) -> Option<(u16, NveValueRef<'a>)> {
-        self.entries.get(index).map(|e| (e.field_id.raw(), NveValueRef { raw: &e.value }))
+    #[inline] pub fn entry(&self, index: usize) -> Option<(PropFieldId, NveValueRef<'a>)> {
+        self.entries.get(index).map(|e| (e.field_id, NveValueRef { raw: &e.value }))
     }
-    #[inline] pub fn iter(&self) -> impl ExactSizeIterator<Item = (u16, NveValueRef<'a>)> + 'a {
-        self.entries.iter().map(|e| (e.field_id.raw(), NveValueRef { raw: &e.value }))
+    #[inline] pub fn iter(&self) -> impl ExactSizeIterator<Item = (PropFieldId, NveValueRef<'a>)> + 'a {
+        self.entries.iter().map(|e| (e.field_id, NveValueRef { raw: &e.value }))
     }
 }
 

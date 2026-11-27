@@ -10,8 +10,8 @@ use nve_abi::{
     DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice, NveComponentApi, NveDevApi,
     NveDirectEvent, NveEventBatch, NveEventBatchRef, NveGestureDisposition, NveHostApi,
     NveHostCallbacks, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    InterfaceId, NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT,
+    NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_engine::{
     BackendApplyStats, BackendError, FrameProfiler, FrameTiming, HotPatchMsg, LayoutRect, NveApp,
@@ -120,7 +120,7 @@ impl NveApp for RoutingTestApp {
             patches_received: Vec::new(),
             state: b"initial".to_vec(),
             frame_buf,
-            emitted: vec![NveDirectEvent::press(surface_id, NodeId(2), 10, 1.0, 2.0)],
+            emitted: vec![NveDirectEvent::press(surface_id, NodeId::new(2, 0), 10, 1.0, 2.0)],
         }
     }
 
@@ -167,7 +167,7 @@ impl NveApp for RoutingTestApp {
 nve_engine::export_nve_app!(RoutingTestApp, symbol = nve_engine_test_get_interface);
 
 unsafe extern "C" {
-    fn nve_engine_test_get_interface(interface_id: u32) -> *const c_void;
+    fn nve_engine_test_get_interface(interface_id: InterfaceId) -> *const c_void;
 }
 
 #[test]
@@ -176,8 +176,8 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
     // valid stack-backed FFI slices, and balanced create/destroy lifecycle.
     unsafe {
         // Unknown interface IDs return NULL.
-        assert!(nve_engine_test_get_interface(0).is_null());
-        assert!(nve_engine_test_get_interface(999).is_null());
+        assert!(nve_engine_test_get_interface(InterfaceId(0)).is_null());
+        assert!(nve_engine_test_get_interface(InterfaceId(999)).is_null());
 
         let surface = *(nve_engine_test_get_interface(NVE_IFACE_SURFACE) as *const NveSurfaceApi);
         let layout = *(nve_engine_test_get_interface(NVE_IFACE_LAYOUT) as *const NveLayoutApi);
@@ -201,14 +201,14 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         assert_eq!((dev.snapshot_state)(null).len, 0);
         (dev.restore_state)(null, NveBufferSlice::EMPTY);
 
-        let handle = (surface.create)(SurfaceId(7));
+        let handle = (surface.create)(SurfaceId::new(7, 0));
         assert!(!handle.is_null());
 
         // Direct zero-copy event dispatch & props update via C ABI
         let payload_entries = [NveMapEntry::new("ok", NveValue::bool(true))];
         let direct_events = [NveDirectEvent::custom(
-            SurfaceId(7),
-            NodeId(42),
+            SurfaceId::new(7, 0),
+            NodeId::new(42, 0),
             1234,
             "onPing",
             NveValue::map(&payload_entries),
@@ -476,14 +476,14 @@ fn surface_runner_sequences_frames_records_profiler_and_propagates_errors() {
         scale_factor: 2.0,
     };
     let mut runner = SurfaceRunner::new(
-        SurfaceId(9),
+        SurfaceId::new(9, 0),
         vp,
         StubBackend {
             viewport: Viewport::default(),
             fail_next: false,
         },
     );
-    assert_eq!(runner.surface_id(), SurfaceId(9));
+    assert_eq!(runner.surface_id(), SurfaceId::new(9, 0));
     assert_eq!(runner.backend().viewport, vp);
 
     let f1 = runner.next_frame_id();
@@ -565,7 +565,7 @@ impl NveApp for HostCapableApp {
 nve_engine::export_nve_app!(HostCapableApp, symbol = nve_engine_host_test_get_interface);
 
 unsafe extern "C" {
-    fn nve_engine_host_test_get_interface(interface_id: u32) -> *const c_void;
+    fn nve_engine_host_test_get_interface(interface_id: InterfaceId) -> *const c_void;
 }
 
 #[test]

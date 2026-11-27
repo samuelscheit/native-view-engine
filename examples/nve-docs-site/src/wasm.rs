@@ -10,8 +10,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
-    ROOT_NODE_ID, SurfaceId,
+    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NVE_KEY_MOD_CTRL,
+    NVE_KEY_MOD_META, ROOT_NODE_ID, SurfaceId,
 };
 use nve_backend_web::{HydrationReport, WebBackend};
 use nve_canvas_web::CanvasWebSystem;
@@ -20,7 +20,6 @@ use nve_dioxus::DioxusSurface;
 use nve_docs::{DocsRoute, DocsViewport};
 use nve_engine::{StoreBackend, Viewport};
 use nve_router::web::{BrowserHistoryBackend, WebHistoryAdapter};
-use nve_store::NodeId as StoreNodeId;
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_web_html_web::register_web_html_systems;
 use wasm_bindgen::JsCast;
@@ -30,7 +29,7 @@ use wasm_bindgen::prelude::*;
 use crate::create_nve_docs_surface_full;
 use crate::site::{embedded_compiled_site, nve_docs_site_config};
 
-const DOCS_SURFACE_ID: SurfaceId = 1;
+const DOCS_SURFACE_ID: SurfaceId = SurfaceId::ROOT;
 
 struct DocsWebSession {
     base_path: String,
@@ -46,31 +45,31 @@ struct DocsWebSession {
 
 impl DocsWebSession {
     fn render_next_frame(&mut self) -> Result<(), String> {
-        self.frame_id = self.frame_id.saturating_add(1);
+        self.frame_id = self.frame_id.next();
         self.surface
             .commit_to(self.frame_id, &mut self.backend)
             .map_err(|e| format!("WebBackend commit_to failed: {e}"))?;
         Ok(())
     }
 
-    fn find_node_by_test_id(&self, tid: &str) -> Option<nve_abi::NodeId> {
+    fn find_node_by_test_id(&self, tid: &str) -> Option<NodeId> {
         let store = self.surface.store();
-        let mut stack = vec![StoreNodeId::ROOT];
+        let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
-            if id != StoreNodeId::ROOT
+            if id != NodeId::ROOT
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
         None
     }
 
-    fn data_attr_of(&self, id: nve_abi::NodeId, key: &str) -> Option<String> {
+    fn data_attr_of(&self, id: NodeId, key: &str) -> Option<String> {
         let store = self.surface.store();
-        let res = store.try_row::<HtmlDataAttrs>(StoreNodeId(id))?.entries();
+        let res = store.try_row::<HtmlDataAttrs>(id)?.entries();
         let list = store.resource::<DataAttrList>(res)?;
         let stripped = key.strip_prefix("data-").unwrap_or(key);
         list.0
@@ -419,7 +418,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         surface,
         backend,
         history,
-        frame_id: 0,
+        frame_id: FrameId::ZERO,
         viewport: actual_vp,
         dark_mode: true,
         last_route: initial_route.as_str().to_string(),

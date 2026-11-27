@@ -379,7 +379,7 @@ impl PairedWebSession {
         self.scene.sync(
             self.replica.store(),
             self.replica.last_changes(),
-            FrameId(frame_id.raw().max(1)),
+            frame_id,
         );
         #[cfg(not(feature = "scene-view"))]
         let _ = frame_id;

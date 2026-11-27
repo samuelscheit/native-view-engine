@@ -18,13 +18,13 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
     for id in 1..=1000u32 {
         let label = if id % 2 == 0 { "even" } else { "odd" };
         let children: &[NodeId] = if id == 1 {
-            &[NodeId(2), NodeId(3), NodeId(4)]
+            &[NodeId::new(2, 0), NodeId::new(3, 0), NodeId::new(4, 0)]
         } else {
             &[]
         };
         table
             .upsert_node(SceneNodeInput {
-                node_id: NodeId(id),
+                node_id: NodeId::new(id, 0),
                 primary_slot: if id == 1 {
                     PrimarySlot::NONE
                 } else if id % 3 == 0 {
@@ -63,7 +63,7 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
     for &id in &[10u32, 42, 999] {
         table
             .upsert_node(SceneNodeInput {
-                node_id: NodeId(id),
+                node_id: NodeId::new(id, 0),
                 primary_slot: PrimarySlot(1),
                 flags: NVE_NODE_LEAF_TEXT,
                 opacity_u8: 200,
@@ -86,7 +86,7 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
     // Also upsert an identical node: must NOT be marked dirty or grow text_slab.
     table
         .upsert_node(SceneNodeInput {
-            node_id: NodeId(2),
+            node_id: NodeId::new(2, 0),
             primary_slot: PrimarySlot(1),
             flags: NVE_NODE_LEAF_TEXT,
             opacity_u8: 255,
@@ -120,30 +120,43 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
     // SAFETY: `view` borrows `table` which remains alive and unmutated for `reader`.
     let reader = unsafe { NveSceneRef::from_raw(view) }.expect("valid raw view");
     let dirty_ids: Vec<NodeId> = reader.dirty_nodes().map(|(_, n)| n.node_id).collect();
-    assert_eq!(dirty_ids, vec![NodeId(10), NodeId(42), NodeId(999)]);
+    assert_eq!(
+        dirty_ids,
+        vec![NodeId::new(10, 0), NodeId::new(42, 0), NodeId::new(999, 0)]
+    );
+    // `children_slab_len` is an element count (`NodeId` entries), NOT a byte length.
+    assert_eq!(view.children_slab_len, 3);
+    assert_eq!(reader.children_slab().len(), view.children_slab_len as usize);
+    assert_ne!(
+        view.children_slab_len as usize,
+        std::mem::size_of_val(reader.children_slab())
+    );
     for (_, node) in reader.dirty_nodes() {
         assert_eq!(reader.node_text(node).unwrap(), "updated");
         assert_eq!(node.opacity_u8, 200);
     }
-    let root = reader.node(table.index_of(NodeId(1)).unwrap()).unwrap();
+    let root = reader.node(table.index_of(NodeId::ROOT).unwrap()).unwrap();
     assert_eq!(
         reader.node_children(root).unwrap(),
-        &[NodeId(2), NodeId(3), NodeId(4)]
+        &[NodeId::new(2, 0), NodeId::new(3, 0), NodeId::new(4, 0)]
     );
 
     // Frame 3: remove nodes 10 and 1000 via swap-remove.
     table.begin_frame(FrameId(3));
-    assert!(table.remove_node(NodeId(10)));
-    assert!(table.remove_node(NodeId(1000)));
-    assert!(!table.remove_node(NodeId(10)));
+    assert!(table.remove_node(NodeId::new(10, 0)));
+    assert!(table.remove_node(NodeId::new(1000, 0)));
+    assert!(!table.remove_node(NodeId::new(10, 0)));
     assert_eq!(table.len(), 998);
     let reader3 = table.as_ref();
-    assert_eq!(reader3.removed_ids(), &[NodeId(10), NodeId(1000)]);
-    assert!(table.index_of(NodeId(10)).is_none());
-    assert!(table.index_of(NodeId(1000)).is_none());
+    assert_eq!(
+        reader3.removed_ids(),
+        &[NodeId::new(10, 0), NodeId::new(1000, 0)]
+    );
+    assert!(table.index_of(NodeId::new(10, 0)).is_none());
+    assert!(table.index_of(NodeId::new(1000, 0)).is_none());
     // Node 999 was swapped into slot of 10 (after 1000 moved into slot of 10, then 1000 removed).
-    let idx999 = table.index_of(NodeId(999)).unwrap();
-    assert_eq!(reader3.node(idx999).unwrap().node_id, NodeId(999));
+    let idx999 = table.index_of(NodeId::new(999, 0)).unwrap();
+    assert_eq!(reader3.node(idx999).unwrap().node_id, NodeId::new(999, 0));
     assert_eq!(
         reader3.node_text(reader3.node(idx999).unwrap()).unwrap(),
         "updated"
@@ -158,20 +171,20 @@ fn sync_frame_and_compaction_preserve_live_data() {
             FrameId(1),
             [
                 SceneNodeInput {
-                    node_id: NodeId(1),
+                    node_id: NodeId::ROOT,
                     primary_slot: PrimarySlot::NONE,
-                    children: &[NodeId(2), NodeId(3)],
+                    children: &[NodeId::new(2, 0), NodeId::new(3, 0)],
                     ..Default::default()
                 },
                 SceneNodeInput {
-                    node_id: NodeId(2),
+                    node_id: NodeId::new(2, 0),
                     primary_slot: PrimarySlot(1),
                     flags: NVE_NODE_LEAF_TEXT,
                     text: "hello",
                     ..Default::default()
                 },
                 SceneNodeInput {
-                    node_id: NodeId(3),
+                    node_id: NodeId::new(3, 0),
                     primary_slot: PrimarySlot(1),
                     flags: NVE_NODE_LEAF_TEXT,
                     text: "world",
@@ -188,13 +201,13 @@ fn sync_frame_and_compaction_preserve_live_data() {
             FrameId(2),
             [
                 SceneNodeInput {
-                    node_id: NodeId(1),
+                    node_id: NodeId::ROOT,
                     primary_slot: PrimarySlot::NONE,
-                    children: &[NodeId(2)],
+                    children: &[NodeId::new(2, 0)],
                     ..Default::default()
                 },
                 SceneNodeInput {
-                    node_id: NodeId(2),
+                    node_id: NodeId::new(2, 0),
                     primary_slot: PrimarySlot(1),
                     flags: NVE_NODE_LEAF_TEXT,
                     text: "updated 🚀",
@@ -204,14 +217,14 @@ fn sync_frame_and_compaction_preserve_live_data() {
         )
         .unwrap();
     assert_eq!(table.len(), 2);
-    assert_eq!(table.as_ref().removed_ids(), &[NodeId(3)]);
+    assert_eq!(table.as_ref().removed_ids(), &[NodeId::new(3, 0)]);
 
     table.compact_text_slab();
     table.compact_children_slab();
     let reader = table.as_ref();
     assert_eq!(reader.text_slab(), "updated 🚀".as_bytes());
-    assert_eq!(reader.children_slab(), &[NodeId(2)]);
-    let n2 = reader.node(table.index_of(NodeId(2)).unwrap()).unwrap();
+    assert_eq!(reader.children_slab(), &[NodeId::new(2, 0)]);
+    let n2 = reader.node(table.index_of(NodeId::new(2, 0)).unwrap()).unwrap();
     assert_eq!(reader.node_text(n2).unwrap(), "updated 🚀");
 }
 
@@ -237,7 +250,7 @@ fn raw_scene_ref_rejects_corrupt_views() {
 
     // Out-of-bounds text & invalid UTF-8 checks.
     let mut node = NveRenderNode::zeroed();
-    node.node_id = NodeId(7);
+    node.node_id = NodeId::new(7, 0);
     node.text_offset = 0;
     node.text_len = ShortLen(2);
     let bad_utf8: [u8; 2] = [0xFF, 0xFE];
@@ -248,7 +261,7 @@ fn raw_scene_ref_rejects_corrupt_views() {
         dirty_count: 0,
         removed_count: 0,
         text_slab_len: ByteLen(2),
-        children_slab_len: ByteLen::ZERO,
+        children_slab_len: 0,
         table_count: 0,
         nodes: &node,
         text_slab: bad_utf8.as_ptr(),
@@ -261,7 +274,9 @@ fn raw_scene_ref_rejects_corrupt_views() {
     let reader = unsafe { NveSceneRef::from_raw(valid_view) }.unwrap();
     assert_eq!(
         reader.node_text(&reader.nodes()[0]).unwrap_err(),
-        SceneError::InvalidUtf8 { node_id: NodeId(7) }
+        SceneError::InvalidUtf8 {
+            node_id: NodeId::new(7, 0),
+        }
     );
 
     node.text_len = ShortLen(10);
@@ -274,7 +289,7 @@ fn raw_scene_ref_rejects_corrupt_views() {
     assert_eq!(
         oob_reader.node_text(&oob_reader.nodes()[0]).unwrap_err(),
         SceneError::TextOutOfBounds {
-            node_id: NodeId(7),
+            node_id: NodeId::new(7, 0),
             offset: 0,
             len: ShortLen(10),
             slab_len: 2,
@@ -308,7 +323,7 @@ fn external_text_slab_view_and_ref_roundtrip() {
     let idx = table
         .upsert_node_external_text(
             SceneNodeInput {
-                node_id: NodeId(10),
+                node_id: NodeId::new(10, 0),
                 primary_slot: PrimarySlot(1),
                 flags: NVE_NODE_LEAF_TEXT,
                 ..Default::default()
@@ -332,14 +347,14 @@ fn external_text_slab_panics_after_internal_upsert() {
     let mut table = NveSceneTable::new();
     table
         .upsert_node(SceneNodeInput {
-            node_id: NodeId(1),
+            node_id: NodeId::ROOT,
             text: "internal",
             ..Default::default()
         })
         .unwrap();
     let _ = table.upsert_node_external_text(
         SceneNodeInput {
-            node_id: NodeId(2),
+            node_id: NodeId::new(2, 0),
             ..Default::default()
         },
         0,
@@ -355,7 +370,7 @@ fn internal_upsert_panics_after_external_text_slab() {
     table
         .upsert_node_external_text(
             SceneNodeInput {
-                node_id: NodeId(1),
+                node_id: NodeId::ROOT,
                 ..Default::default()
             },
             0,
@@ -364,7 +379,7 @@ fn internal_upsert_panics_after_external_text_slab() {
         )
         .unwrap();
     let _ = table.upsert_node(SceneNodeInput {
-        node_id: NodeId(2),
+        node_id: NodeId::new(2, 0),
         text: "internal",
         ..Default::default()
     });
@@ -377,7 +392,7 @@ fn as_view_panics_in_external_text_slab_mode() {
     table
         .upsert_node_external_text(
             SceneNodeInput {
-                node_id: NodeId(1),
+                node_id: NodeId::ROOT,
                 ..Default::default()
             },
             0,
@@ -395,7 +410,7 @@ fn as_ref_panics_in_external_text_slab_mode() {
     table
         .upsert_node_external_text(
             SceneNodeInput {
-                node_id: NodeId(1),
+                node_id: NodeId::ROOT,
                 ..Default::default()
             },
             0,

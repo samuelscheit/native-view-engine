@@ -144,7 +144,9 @@ pub fn nve_web_scene_view_ptr() -> usize {
 #[cfg(feature = "scene-view")]
 #[wasm_bindgen]
 pub fn nve_web_scene_view_ptr_for_surface(surface_id: u32) -> usize {
-    let surface_id = SurfaceId(surface_id);
+    let Some(surface_id) = SurfaceId::from_raw(surface_id) else {
+        return 0;
+    };
     ACTIVE_SHELLS.with(|shells| {
         shells
             .borrow()
@@ -558,9 +560,11 @@ pub fn start_studio_workspace_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
+    let surface_id = SurfaceId::from_raw(surface_id)
+        .ok_or_else(|| JsValue::from_str("surface_id must have a non-zero 24-bit index"))?;
     start_surface_app_inner(
         "StudioWorkspaceApp",
-        SurfaceId(surface_id),
+        surface_id,
         mount_id,
         ws_url,
         false,
@@ -584,9 +588,11 @@ pub fn start_kitchen_sink_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
+    let surface_id = SurfaceId::from_raw(surface_id)
+        .ok_or_else(|| JsValue::from_str("surface_id must have a non-zero 24-bit index"))?;
     start_surface_app_inner(
         "KitchenSinkApp",
-        SurfaceId(surface_id),
+        surface_id,
         mount_id,
         ws_url,
         false,

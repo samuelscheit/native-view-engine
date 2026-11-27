@@ -70,10 +70,10 @@ impl StudioHarness {
             scale_factor: 1.0,
         };
         let mut headless = HeadlessBackend::new();
-        headless.set_viewport(SurfaceId(1), viewport);
+        headless.set_viewport(SurfaceId::ROOT, viewport);
 
         let mut h = Self {
-            surface: create_surface_with_services(SurfaceId(1), Arc::clone(&store), host_services),
+            surface: create_surface_with_services(SurfaceId::ROOT, Arc::clone(&store), host_services),
             headless,
             store,
             memory,
@@ -124,7 +124,7 @@ impl StudioHarness {
         assert_eq!(hit, node_id, "hit_test mismatch for '{test_id}'");
 
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id: hit,
             timestamp_us: self.next_frame * 16_000,
             kind: NativeEventKind::Press,
@@ -261,7 +261,7 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     assert_eq!(restored.current_route(), &StudioRoute::Doc { id: 2 });
 
     // 4. Deep-link navigation via `StudioWorkspaceModule` direct props.
-    let mut module = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut module = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let _ = module.render(FrameId(1));
     let entries = [NveMapEntry::new("route", NveValue::from_str("aether://studio/doc/2"))];
     // SAFETY: `entries` outlives the synchronous `set_props` call.
@@ -324,10 +324,10 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     assert!(compact_layout.compact_header);
 
     // 2. Live `StudioWorkspaceModule::dispatch_events`: 1px desktop drags do NOT churn surface.
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let _ = app.render(FrameId(1));
     let dispatch_resize = |app: &mut StudioWorkspaceModule, w: f32, h: f32, ts: u64| {
-        let ev = [NveDirectEvent::layout(SurfaceId(1), ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
+        let ev = [NveDirectEvent::layout(SurfaceId::ROOT, ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
         // SAFETY: `ev` stack array outlives the synchronous `dispatch_events` call.
         app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) })
     };
@@ -350,7 +350,7 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     let frame = app.render(FrameId(2)).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -412,10 +412,10 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
         }
     }
 
-    let mut surface = DioxusSurface::new(SurfaceId(1), TraitScopeProbeApp);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, TraitScopeProbeApp);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 800.0,
             height: 400.0,
@@ -509,7 +509,7 @@ fn clipboard_client_markdown_export_and_deep_link_url_roundtrip() {
 
 #[test]
 fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
-    let mut module = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut module = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let _ = module.render(FrameId(1));
     assert!(!module.host_services().is_ffi_bound());
 
@@ -554,7 +554,7 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
     let frame_bytes = module.render(FrameId(2)).to_vec();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 1280.0,
             height: 800.0,

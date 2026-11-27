@@ -41,7 +41,7 @@ mod native {
         let child_indices: Vec<u32> = (1..64u32).collect();
         let nodes: Vec<SceneRelocNodeInput<'_>> = (0..64u32)
             .map(|idx| SceneRelocNodeInput {
-                node_id: NodeId(idx + 1),
+                node_id: NodeId::new(idx + 1, 0),
                 parent_index: if idx == 0 { -1 } else { 0 },
                 primary_slot: 0,
                 flags: 0,

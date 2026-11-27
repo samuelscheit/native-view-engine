@@ -16,7 +16,7 @@ use nve_components::tables::{
     core_realization_order, register_core_tables, Interaction, TextContent,
 };
 use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeStore};
 use nve_wire::{
     parse_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportError,
 };
@@ -196,7 +196,7 @@ fn spawn_pair_and_wait_ready(extra_args: &[&str]) -> (ChildGuard, Vec<String>, R
 fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
     fn walk(
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
         nearest_pressable: Option<NodeId>,
         label: &str,
     ) -> Option<NodeId> {
@@ -224,7 +224,7 @@ fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
         }
         None
     }
-    walk(store, StoreNodeId::ROOT, None, label)
+    walk(store, NodeId::ROOT, None, label)
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
     register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -284,7 +284,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
 
     let send_press = |client: &NveWireClient, node_id: NodeId, ts: u64| {
         let ev_ring = encode_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id,
             timestamp_us: ts,
             kind: NativeEventKind::Press,

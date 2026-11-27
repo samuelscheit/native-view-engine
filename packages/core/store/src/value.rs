@@ -109,11 +109,11 @@ impl WordValue for crate::NodeId {
     const KIND: FieldKind = FieldKind::Node;
     #[inline(always)]
     fn to_bits(self) -> u32 {
-        self.0
+        self.raw()
     }
     #[inline(always)]
     fn from_bits(bits: u32) -> Self {
-        Self(bits)
+        Self::from_raw_or_null(bits)
     }
 }
 

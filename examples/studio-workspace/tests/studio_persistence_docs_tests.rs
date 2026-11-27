@@ -98,7 +98,7 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
 
     // Verify NVE2 wire roundtrip of the Canvas + DrawList resource through StudioWorkspaceModule.
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let metrics_entries = [NveMapEntry::new("view", NveValue::from_str("metrics"))];
     // SAFETY: `metrics_entries` outlives the synchronous `set_props` call.
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&metrics_entries) }));
@@ -328,7 +328,7 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
 
     let mod_dir = unique_test_dir("module-persist");
     {
-        let mut app = StudioWorkspaceModule::create_with_persist_dir(SurfaceId(1), &mod_dir)
+        let mut app = StudioWorkspaceModule::create_with_persist_dir(SurfaceId::ROOT, &mod_dir)
             .expect("create module");
         let _ = app.render(FrameId(1));
         let docs_entries = [
@@ -341,7 +341,7 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
         assert!(app.persist_store().expect("persist store").generation() >= 2);
     }
     {
-        let app2 = StudioWorkspaceModule::create_with_persist_dir(SurfaceId(1), &mod_dir)
+        let app2 = StudioWorkspaceModule::create_with_persist_dir(SurfaceId::ROOT, &mod_dir)
             .expect("reopen module");
         let snap = app2.state_snapshot();
         assert_eq!(snap.current.studio.accent, AccentTheme::Green);
@@ -420,10 +420,10 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(md.contains("- [x] Eliminate JSON scene descriptors"));
     assert!(md.contains("- [ ] Enable crash-safe NVERELOC"));
 
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let _ = app.render(FrameId(1));
     let cmd_k = [NveDirectEvent::key_down(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         ROOT_NODE_ID,
         1000,
         "k",

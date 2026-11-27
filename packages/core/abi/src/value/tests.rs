@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use crate::{DecodeError, NodeId, NveBufferSlice, SurfaceId};
+use crate::{DecodeError, NodeId, NveBufferSlice, PropFieldId, SurfaceId};
 
 use super::*;
 
@@ -9,7 +9,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     let valid_u8 = [1u8, 2, 3, 4];
     let valid_val = NveValue::i64(42);
     let valid_entry = NveMapEntry::new("ok", NveValue::bool(true));
-    let valid_ev = NveDirectEvent::press(SurfaceId(1), NodeId(2), 3, 4.0, 5.0);
+    let valid_ev = NveDirectEvent::press(SurfaceId::ROOT, NodeId::new(2, 0), 3, 4.0, 5.0);
 
     // SAFETY: Adversarial boundary test — every FFI view method validates null, alignment, and
     // `isize::MAX` overflow before constructing any Rust slice, and valid stack buffers outlive all refs.
@@ -206,7 +206,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
         };
         let batch_ref = NveEventBatchRef::try_from_raw(valid_batch).expect("valid batch");
         assert_eq!(batch_ref.len(), 1);
-        assert_eq!(batch_ref.get(0).unwrap().node_id(), NodeId(2));
+        assert_eq!(batch_ref.get(0).unwrap().node_id(), NodeId::new(2, 0));
     }
 }
 
@@ -216,10 +216,10 @@ fn prop_slice_and_command_slice_zero_copy_roundtrip_and_guards() {
     let label = "hello-zero-copy";
     let payload = [0xDEu8, 0xAD, 0xBE, 0xEF];
     let prop_entries = [
-        NvePropEntry::new(1, NveValue::bool(true)),
-        NvePropEntry::new(7, NveValue::i64(-12345)),
-        NvePropEntry::new(42, NveValue::from_str(label)),
-        NvePropEntry::new(99, NveValue::from_bytes(&payload)),
+        NvePropEntry::new(PropFieldId(1), NveValue::bool(true)),
+        NvePropEntry::new(PropFieldId(7), NveValue::i64(-12345)),
+        NvePropEntry::new(PropFieldId(42), NveValue::from_str(label)),
+        NvePropEntry::new(PropFieldId(99), NveValue::from_bytes(&payload)),
     ];
     let raw_props = NvePropSlice::from_slice(&prop_entries);
     assert_eq!(raw_props.len, 4);
@@ -230,24 +230,44 @@ fn prop_slice_and_command_slice_zero_copy_roundtrip_and_guards() {
         let props_ref = NvePropSliceRef::try_from_raw(raw_props).expect("valid prop slice");
         assert_eq!(props_ref.len(), 4);
         assert!(!props_ref.is_empty());
-        assert_eq!(props_ref.get(1).and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(props_ref.get(7).and_then(|v| v.as_i64()), Some(-12345));
-        let borrowed_str = props_ref.get(42).and_then(|v| v.as_str()).unwrap();
+        assert_eq!(
+            props_ref.get(PropFieldId(1)).and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            props_ref.get(PropFieldId(7)).and_then(|v| v.as_i64()),
+            Some(-12345)
+        );
+        let borrowed_str = props_ref
+            .get(PropFieldId(42))
+            .and_then(|v| v.as_str())
+            .unwrap();
         assert_eq!(borrowed_str, label);
         assert_eq!(borrowed_str.as_ptr(), label.as_ptr(), "must be zero-copy");
-        let borrowed_bytes = props_ref.get(99).and_then(|v| v.as_bytes()).unwrap();
+        let borrowed_bytes = props_ref
+            .get(PropFieldId(99))
+            .and_then(|v| v.as_bytes())
+            .unwrap();
         assert_eq!(borrowed_bytes, &payload);
         assert_eq!(borrowed_bytes.as_ptr(), payload.as_ptr(), "must be zero-copy");
-        assert!(props_ref.get(404).is_none());
-        assert_eq!(props_ref.entry(2).map(|(id, _)| id), Some(42));
+        assert!(props_ref.get(PropFieldId(404)).is_none());
+        assert_eq!(props_ref.entry(2).map(|(id, _)| id), Some(PropFieldId(42)));
         assert!(props_ref.entry(4).is_none());
-        let ids: Vec<u16> = props_ref.iter().map(|(id, _)| id).collect();
-        assert_eq!(ids, vec![1, 7, 42, 99]);
+        let ids: Vec<PropFieldId> = props_ref.iter().map(|(id, _)| id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                PropFieldId(1),
+                PropFieldId(7),
+                PropFieldId(42),
+                PropFieldId(99)
+            ]
+        );
 
         // Empty / null / misaligned guards for NvePropSlice.
         let empty_props = NvePropSliceRef::try_from_raw(NvePropSlice::EMPTY).expect("empty");
         assert!(empty_props.is_empty());
-        assert!(empty_props.get(1).is_none());
+        assert!(empty_props.get(PropFieldId(1)).is_none());
 
         let null_non_empty = NvePropSlice {
             entries: std::ptr::null(),

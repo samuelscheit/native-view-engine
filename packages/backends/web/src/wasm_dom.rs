@@ -51,8 +51,8 @@ impl WebBackend {
                     && let Ok(el) = node.dyn_into::<web_sys::Element>()
                     && let Some(raw) = el.get_attribute("data-nve-id")
                     && let Ok(raw_id) = raw.parse::<u32>()
+                    && let Some(id) = NodeId::from_raw(raw_id)
                 {
-                    let id = NodeId(raw_id);
                     self.live_elements.insert(id, el);
                     self.unverified_ssr_ids.insert(id);
                 }

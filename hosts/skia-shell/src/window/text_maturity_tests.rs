@@ -7,7 +7,7 @@ use nve_components::tables::{
 };
 use nve_engine::Viewport;
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 use winit::event::Ime;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -54,59 +54,59 @@ impl DesktopApp for TextMaturityApp {
         let mut tx = self.store.tx();
         if !self.initialized {
             for id in [1u32, 2, 10, 11] {
-                let _ = tx.create_at(StoreNodeId(id));
+                let _ = tx.create_at(NodeId::new(id, 0));
             }
-            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::WIDTH, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::percent(100.0));
             let p12 = Length::points(12.0);
-            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p12);
-            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p12);
-            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p12);
-            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p12);
-            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(10.0));
-            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(10.0));
-            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
-            tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
+            tx.set(NodeId::new(2, 0), Layout::PADDING_TOP, p12);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_RIGHT, p12);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_BOTTOM, p12);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_LEFT, p12);
+            tx.set(NodeId::new(2, 0), Layout::ROW_GAP, Length::points(10.0));
+            tx.set(NodeId::new(2, 0), Layout::COLUMN_GAP, Length::points(10.0));
+            tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(NodeId::new(2, 0), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
 
             // Node 10: single-line TextInput
-            tx.attach::<TextInput>(StoreNodeId(10));
-            tx.set(StoreNodeId(10), Layout::WIDTH, Length::points(340.0));
-            tx.set(StoreNodeId(10), Layout::HEIGHT, Length::points(36.0));
-            tx.set(StoreNodeId(10), Layout::PADDING_LEFT, Length::points(10.0));
-            tx.set(StoreNodeId(10), Layout::PADDING_RIGHT, Length::points(10.0));
-            tx.set(StoreNodeId(10), Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
-            tx.set(StoreNodeId(10), Typography::COLOR, Rgba::WHITE);
-            tx.set(StoreNodeId(10), Typography::FONT_SIZE, 16.0);
+            tx.attach::<TextInput>(NodeId::new(10, 0));
+            tx.set(NodeId::new(10, 0), Layout::WIDTH, Length::points(340.0));
+            tx.set(NodeId::new(10, 0), Layout::HEIGHT, Length::points(36.0));
+            tx.set(NodeId::new(10, 0), Layout::PADDING_LEFT, Length::points(10.0));
+            tx.set(NodeId::new(10, 0), Layout::PADDING_RIGHT, Length::points(10.0));
+            tx.set(NodeId::new(10, 0), Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+            tx.set(NodeId::new(10, 0), Typography::COLOR, Rgba::WHITE);
+            tx.set(NodeId::new(10, 0), Typography::FONT_SIZE, 16.0);
             tx.set(
-                StoreNodeId(10),
+                NodeId::new(10, 0),
                 Interaction::EVENT_MASK,
                 (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION)
                     as u32,
             );
 
             // Node 11: multiline TextInput
-            tx.attach::<TextInput>(StoreNodeId(11));
-            tx.set(StoreNodeId(11), Layout::WIDTH, Length::points(340.0));
-            tx.set(StoreNodeId(11), Layout::HEIGHT, Length::points(60.0));
-            tx.set(StoreNodeId(11), Layout::PADDING_LEFT, Length::points(10.0));
-            tx.set(StoreNodeId(11), Layout::PADDING_RIGHT, Length::points(10.0));
-            tx.set(StoreNodeId(11), Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
-            tx.set(StoreNodeId(11), Typography::COLOR, Rgba::WHITE);
-            tx.set(StoreNodeId(11), Typography::FONT_SIZE, 16.0);
-            tx.set(StoreNodeId(11), TextInput::MULTILINE, true);
+            tx.attach::<TextInput>(NodeId::new(11, 0));
+            tx.set(NodeId::new(11, 0), Layout::WIDTH, Length::points(340.0));
+            tx.set(NodeId::new(11, 0), Layout::HEIGHT, Length::points(60.0));
+            tx.set(NodeId::new(11, 0), Layout::PADDING_LEFT, Length::points(10.0));
+            tx.set(NodeId::new(11, 0), Layout::PADDING_RIGHT, Length::points(10.0));
+            tx.set(NodeId::new(11, 0), Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+            tx.set(NodeId::new(11, 0), Typography::COLOR, Rgba::WHITE);
+            tx.set(NodeId::new(11, 0), Typography::FONT_SIZE, 16.0);
+            tx.set(NodeId::new(11, 0), TextInput::MULTILINE, true);
             tx.set(
-                StoreNodeId(11),
+                NodeId::new(11, 0),
                 Interaction::EVENT_MASK,
                 (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION)
                     as u32,
             );
 
-            tx.set_children(StoreNodeId(2), &[StoreNodeId(10), StoreNodeId(11)]);
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.set_children(NodeId::new(2, 0), &[NodeId::new(10, 0), NodeId::new(11, 0)]);
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             self.initialized = true;
         }
-        tx.set_str(StoreNodeId(10), TextInput::VALUE, &self.single_val);
-        tx.set_str(StoreNodeId(11), TextInput::VALUE, &self.multi_val);
+        tx.set_str(NodeId::new(10, 0), TextInput::VALUE, &self.single_val);
+        tx.set_str(NodeId::new(11, 0), TextInput::VALUE, &self.multi_val);
         tx.commit_into(&mut self.changes);
         self.frame_buf.clear();
         self.encoder
@@ -120,9 +120,9 @@ impl DesktopApp for TextMaturityApp {
             match (ev.kind(), ev.payload_tag()) {
                 (Some(NativeEventKind::TextChange), 3) => {
                     let t = ev.text().to_owned();
-                    if ev.node_id() == NodeId(10) {
+                    if ev.node_id() == NodeId::new(10, 0) {
                         self.single_val = t.clone();
-                    } else if ev.node_id() == NodeId(11) {
+                    } else if ev.node_id() == NodeId::new(11, 0) {
                         self.multi_val = t.clone();
                     }
                     self.events_log.push((ev.node_id(), NativeEventKind::TextChange, t));
@@ -189,7 +189,7 @@ fn grapheme_safe_editing_for_zwj_family_flag_skin_tone_and_combining_accent() {
     let initial = format!("{family}{flag}{wave}{accent}");
 
     let mut session = new_session(&initial, "");
-    session.focus_node(Some(NodeId(10))).unwrap();
+    session.focus_node(Some(NodeId::new(10, 0))).unwrap();
     let none = ModifiersState::empty();
     let shift = ModifiersState::SHIFT;
 
@@ -240,7 +240,7 @@ fn grapheme_safe_editing_for_zwj_family_flag_skin_tone_and_combining_accent() {
 #[test]
 fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
     let mut session = new_session("hello world_42 test", "line one\nline two");
-    let r10 = session.layout_of(NodeId(10)).unwrap();
+    let r10 = session.layout_of(NodeId::new(10, 0)).unwrap();
     let click_x = r10.x + 28.0;
     let click_y = r10.y + r10.height * 0.5;
 
@@ -272,7 +272,7 @@ fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
     assert_eq!(session.app().single_val, "alpha beta gamma delta");
 
     // Paste with CRLF + CR into multiline (node 11) normalizes line endings to `\n`.
-    session.focus_node(Some(NodeId(11))).unwrap();
+    session.focus_node(Some(NodeId::new(11, 0))).unwrap();
     session
         .handle_keyboard_input(&Key::Character("a".into()), None, ModifiersState::SUPER)
         .unwrap();
@@ -291,7 +291,7 @@ fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
 #[test]
 fn bidi_visual_navigation_and_backspace_never_panic_or_split_clusters() {
     let mut session = new_session("Hello مرحبا world", "");
-    session.focus_node(Some(NodeId(10))).unwrap();
+    session.focus_node(Some(NodeId::new(10, 0))).unwrap();
     let none = ModifiersState::empty();
 
     // Sweep ArrowLeft from end to start, then ArrowRight back to end.
@@ -328,7 +328,7 @@ fn bidi_visual_navigation_and_backspace_never_panic_or_split_clusters() {
 #[test]
 fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_caret_rect() {
     let mut session = new_session("", "");
-    session.focus_node(Some(NodeId(10))).unwrap();
+    session.focus_node(Some(NodeId::new(10, 0))).unwrap();
     session.app_mut().events_log.clear();
 
     let r0 = session.ime_cursor_rect_logical().expect("focused caret rect");
@@ -359,10 +359,10 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (NodeId(10), NativeEventKind::CompositionStart, "ni".into()),
-            (NodeId(10), NativeEventKind::CompositionUpdate, "nihao".into()),
-            (NodeId(10), NativeEventKind::CompositionEnd, "你好".into()),
-            (NodeId(10), NativeEventKind::TextChange, "你好".into()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "ni".into()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionUpdate, "nihao".into()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, "你好".into()),
+            (NodeId::new(10, 0), NativeEventKind::TextChange, "你好".into()),
         ]
     );
 
@@ -377,14 +377,14 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (NodeId(10), NativeEventKind::CompositionStart, "zhong".into()),
-            (NodeId(10), NativeEventKind::CompositionEnd, String::new()),
-            (NodeId(10), NativeEventKind::Blur, String::new()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "zhong".into()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, String::new()),
+            (NodeId::new(10, 0), NativeEventKind::Blur, String::new()),
         ]
     );
 
     // 5. Empty Preedit and Ime::Disabled mid-composition both emit clean CompositionEnd("").
-    session.focus_node(Some(NodeId(10))).unwrap();
+    session.focus_node(Some(NodeId::new(10, 0))).unwrap();
     session.app_mut().events_log.clear();
     assert!(session
         .handle_ime(&Ime::Preedit("ka".into(), Some((0, 2))))
@@ -397,10 +397,10 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (NodeId(10), NativeEventKind::CompositionStart, "ka".into()),
-            (NodeId(10), NativeEventKind::CompositionEnd, String::new()),
-            (NodeId(10), NativeEventKind::CompositionStart, "ki".into()),
-            (NodeId(10), NativeEventKind::CompositionEnd, String::new()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "ka".into()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, String::new()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "ki".into()),
+            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, String::new()),
         ]
     );
 }

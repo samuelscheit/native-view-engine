@@ -439,6 +439,7 @@ suite_rust_wasm() {
   cd "$REPO_ROOT"
   cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
   cargo check --locked -p nve-web-shell --no-default-features --features app-issues --target wasm32-unknown-unknown
+  cargo check --locked -p nve-docs-site --target wasm32-unknown-unknown
   cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-http-web -p nve-query-dioxus -p nve-example-issues-api -p nve-example-issues-client --target wasm32-unknown-unknown
 }
 

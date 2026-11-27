@@ -33,7 +33,7 @@ pub const NVE_NODE_CLIP_BOUNDS: u8 = 1 << 2;
 
 /// Sentinel `NveRenderNode::primary_slot` value meaning plain container with no realizing table.
 /// Any value in `0..128` is a uniform `TableSlot` index into `NveSceneView::tables` / `factories[]`.
-pub const NVE_PRIMARY_SLOT_NONE: u8 = 0xFF;
+pub const NVE_PRIMARY_SLOT_NONE: u8 = PrimarySlot::NONE.raw();
 
 /// One 64-byte (single cache line) zero-decode render node shared across all host ABIs.
 #[repr(C, align(64))]
@@ -41,10 +41,10 @@ pub const NVE_PRIMARY_SLOT_NONE: u8 = 0xFF;
 #[nve_abi(size = 64)]
 pub struct NveRenderNode {
     /// Stable node identifier (`NVE_ROOT_NODE_ID == 1`).
-    #[nve_abi(offset = 0, c_type = "u32")]
+    #[nve_abi(offset = 0)]
     pub node_id: NodeId,
     /// Highest-priority realizing `TableSlot` (`0..127`), or `NVE_PRIMARY_SLOT_NONE` (`0xFF`) for a plain container.
-    #[nve_abi(offset = 4, c_type = "u8")]
+    #[nve_abi(offset = 4)]
     pub primary_slot: PrimarySlot,
     /// Bitmask of `NVE_NODE_LEAF_TEXT`, `NVE_NODE_INTERACTIVE`, `NVE_NODE_CLIP_BOUNDS`.
     #[nve_abi(offset = 5)]
@@ -89,7 +89,7 @@ pub struct NveRenderNode {
     #[nve_abi(offset = 48)]
     pub text_offset: u32,
     /// UTF-8 byte length inside `text_slab`.
-    #[nve_abi(offset = 52, c_type = "u16")]
+    #[nve_abi(offset = 52)]
     pub text_len: ShortLen,
     /// Number of child `u32` IDs inside `children_slab`.
     #[nve_abi(offset = 54)]
@@ -98,7 +98,7 @@ pub struct NveRenderNode {
     #[nve_abi(offset = 56)]
     pub child_offset: u32,
     /// Stacking z-index order.
-    #[nve_abi(offset = 60, c_type = "i32")]
+    #[nve_abi(offset = 60)]
     pub z_index: ZIndex,
 }
 
@@ -218,7 +218,7 @@ pub struct NveSceneView {
     #[nve_abi(offset = 0)]
     pub schema_hash: u64,
     /// Monotonic frame counter.
-    #[nve_abi(offset = 8, c_type = "u64")]
+    #[nve_abi(offset = 8)]
     pub frame_id: FrameId,
     /// Total live nodes in `nodes`.
     #[nve_abi(offset = 16)]
@@ -230,11 +230,11 @@ pub struct NveSceneView {
     #[nve_abi(offset = 24)]
     pub removed_count: u32,
     /// Byte length of `text_slab`.
-    #[nve_abi(offset = 28, c_type = "u32")]
+    #[nve_abi(offset = 28)]
     pub text_slab_len: ByteLen,
-    /// Element count (`u32` entries) of `children_slab`.
-    #[nve_abi(offset = 32, c_type = "u32")]
-    pub children_slab_len: ByteLen,
+    /// Element count (`NveNodeId` entries, NOT byte length) of `children_slab`.
+    #[nve_abi(offset = 32)]
+    pub children_slab_len: u32,
     /// Number of published `NveTableView` entries in `tables`.
     #[nve_abi(offset = 36)]
     pub table_count: u32,
@@ -242,13 +242,11 @@ pub struct NveSceneView {
     pub nodes: *const NveRenderNode,
     /// Contiguous UTF-8 text byte slab.
     pub text_slab: *const u8,
-    /// Contiguous `u32` child node ID slab.
-    #[nve_abi(c_type = "*const u32")]
+    /// Contiguous `NveNodeId` child node ID slab.
     pub children_slab: *const NodeId,
     /// Indices into `nodes` modified during `frame_id`.
     pub dirty_indices: *const u32,
     /// Node IDs removed during `frame_id`.
-    #[nve_abi(c_type = "*const u32")]
     pub removed_ids: *const NodeId,
     /// Contiguous array of `table_count` zero-copy [`crate::table::NveTableView`] entries.
     pub tables: *const crate::table::NveTableView,
@@ -272,31 +270,31 @@ const _: () = {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, NveAbi)]
 #[nve_abi(size = 64)]
 pub struct NveNodeMeta {
-    #[nve_abi(offset = 0, c_type = "u32")]
+    #[nve_abi(offset = 0)]
     pub node_id: NodeId,
     #[nve_abi(offset = 4)]
     pub flags: u32,
     #[nve_abi(offset = 8)]
     pub label_offset: u32,
-    #[nve_abi(offset = 12, c_type = "u16")]
+    #[nve_abi(offset = 12)]
     pub label_len: ShortLen,
-    #[nve_abi(offset = 14, c_type = "u16")]
+    #[nve_abi(offset = 14)]
     pub role_len: ShortLen,
     #[nve_abi(offset = 16)]
     pub role_offset: u32,
     #[nve_abi(offset = 20)]
     pub hint_offset: u32,
-    #[nve_abi(offset = 24, c_type = "u16")]
+    #[nve_abi(offset = 24)]
     pub hint_len: ShortLen,
-    #[nve_abi(offset = 26, c_type = "u16")]
+    #[nve_abi(offset = 26)]
     pub state_desc_len: ShortLen,
     #[nve_abi(offset = 28)]
     pub state_desc_offset: u32,
     #[nve_abi(offset = 32)]
     pub placeholder_offset: u32,
-    #[nve_abi(offset = 36, c_type = "u16")]
+    #[nve_abi(offset = 36)]
     pub placeholder_len: ShortLen,
-    #[nve_abi(offset = 38, c_type = "u16")]
+    #[nve_abi(offset = 38)]
     pub test_id_len: ShortLen,
     #[nve_abi(offset = 40)]
     pub test_id_offset: u32,

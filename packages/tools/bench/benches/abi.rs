@@ -188,7 +188,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
 
     let mut table = NveSceneTable::with_capacity(1000);
     table.begin_frame(FrameId(1));
-    let children_root: Vec<NodeId> = (2..=1000u32).map(NodeId).collect();
+    let children_root: Vec<NodeId> = (2..=1000u32).map(|i| NodeId::new(i, 0)).collect();
     for id in 1..=1000u32 {
         let label = if id == 1 {
             ""
@@ -200,7 +200,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
         let children: &[NodeId] = if id == 1 { &children_root } else { &[] };
         table
             .upsert_node(SceneNodeInput {
-                node_id: NodeId(id),
+                node_id: NodeId::new(id, 0),
                 primary_slot: if id == 1 || id % 4 == 0 {
                     PrimarySlot::NONE
                 } else {
@@ -234,7 +234,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
     for &id in &[17u32, 333, 987] {
         table
             .upsert_node(SceneNodeInput {
-                node_id: NodeId(id),
+                node_id: NodeId::new(id, 0),
                 primary_slot: text_slot,
                 flags: NVE_NODE_LEAF_TEXT,
                 opacity_u8: 240,

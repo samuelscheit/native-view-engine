@@ -249,10 +249,12 @@ const CORE_ALIASES: &[AbiAliasDescriptor] = &[
     AbiAliasDescriptor { name: "NveSurfaceId", target: "u32", doc: Some("Generational surface identifier (`index:24 | generation:8`; `0` is null).") },
     AbiAliasDescriptor { name: "NveFrameId", target: "u64", doc: Some("Monotonic 64-bit frame counter.") },
     AbiAliasDescriptor { name: "NveTimestampUs", target: "u64", doc: Some("Monotonic timestamp in microseconds.") },
+    AbiAliasDescriptor { name: "NveDurationUs", target: "u64", doc: Some("Elapsed duration in microseconds.") },
     AbiAliasDescriptor { name: "NveEventId", target: "u32", doc: Some("Table-scoped event discriminant (`0..32`).") },
     AbiAliasDescriptor { name: "NveEventFlags", target: "u32", doc: Some("Bitflags for event modifiers, pointer buttons, capture, and IME composition.") },
     AbiAliasDescriptor { name: "NveArenaOffset", target: "u32", doc: Some("Byte offset inside an event batch byte arena.") },
     AbiAliasDescriptor { name: "NveByteLen", target: "u32", doc: Some("32-bit byte length across ABI arenas and slices.") },
+    AbiAliasDescriptor { name: "NveInterfaceId", target: "u32", doc: Some("Modular C ABI interface identifier passed to `nve_get_interface`.") },
     AbiAliasDescriptor { name: "NveAppHandle", target: "*mut c_void", doc: Some("Opaque handle to an instantiated NVE app/component.") },
     AbiAliasDescriptor { name: "NveFabricHostHandle", target: "*mut c_void", doc: Some("Opaque handle to a C++20 `nve-fabric-bridge` host instance.") },
     AbiAliasDescriptor { name: "NveHostInvokeFn", target: "*const c_void", doc: Some("Host capability invocation callback function pointer (`NveHostCallbacks::invoke`).") },
@@ -290,7 +292,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Surface",
         trait_name: "NveSurfaceApiSpec",
-        interface_id: InterfaceId(NVE_IFACE_SURFACE),
+        interface_id: NVE_IFACE_SURFACE,
         c_name: "NveSurfaceApi",
         doc: Some("Required core surface interface (`NVE_IFACE_SURFACE = 1`)."),
         methods: &[
@@ -303,7 +305,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Layout",
         trait_name: "NveLayoutApiSpec",
-        interface_id: InterfaceId(NVE_IFACE_LAYOUT),
+        interface_id: NVE_IFACE_LAYOUT,
         c_name: "NveLayoutApi",
         doc: Some("Optional layout & gesture interface (`NVE_IFACE_LAYOUT = 2`). Zero-serialization register calls."),
         methods: &[
@@ -314,7 +316,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Component",
         trait_name: "NveComponentApiSpec",
-        interface_id: InterfaceId(NVE_IFACE_COMPONENT),
+        interface_id: NVE_IFACE_COMPONENT,
         c_name: "NveComponentApi",
         doc: Some("Optional embedded component props & outbound event interface (`NVE_IFACE_COMPONENT = 3`)."),
         methods: &[
@@ -325,7 +327,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Dev",
         trait_name: "NveDevApiSpec",
-        interface_id: InterfaceId(NVE_IFACE_DEV),
+        interface_id: NVE_IFACE_DEV,
         c_name: "NveDevApi",
         doc: Some("Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds)."),
         methods: &[
@@ -344,7 +346,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Host",
         trait_name: "NveHostApiSpec",
-        interface_id: InterfaceId(NVE_IFACE_HOST),
+        interface_id: NVE_IFACE_HOST,
         c_name: "NveHostApi",
         doc: Some("Optional binary host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`)."),
         methods: &[
@@ -393,6 +395,12 @@ const SCENE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_META_RESIZE_MODE_MASK", NVE_META_RESIZE_MODE_MASK as u64, true, None),
 ];
 
+const SCENE_ALIASES: &[AbiAliasDescriptor] = &[
+    AbiAliasDescriptor { name: "NveNodeId", target: "u32", doc: Some("Generational node identifier (`index:24 | generation:8`; `0` is null).") },
+    AbiAliasDescriptor { name: "NveFrameId", target: "u64", doc: Some("Monotonic 64-bit frame counter.") },
+    AbiAliasDescriptor { name: "NveByteLen", target: "u32", doc: Some("32-bit byte length across ABI arenas and slices.") },
+];
+
 const SCENE_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveRenderNode as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<crate::table::NveTableView as NveStructSchema>::SCHEMA),
@@ -420,7 +428,7 @@ pub const fn scene_abi_descriptor() -> AbiFileDescriptor {
     AbiFileDescriptor {
         namespace: Some("NveSceneAbi"),
         consts: SCENE_CONSTS,
-        aliases: &[],
+        aliases: SCENE_ALIASES,
         enums: &[],
         records: SCENE_RECORDS,
         modules: &[],

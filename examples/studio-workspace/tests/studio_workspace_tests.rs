@@ -213,7 +213,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     state.scrub_redo();
     assert_eq!(state.cursor, MAX_HISTORY - 1);
 
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let measured = app.measure(NveSizeConstraints {
         min_w: 320.0,
         max_w: 960.0,
@@ -256,7 +256,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         "snapshot_state must emit binary NWS1 binary format"
     );
 
-    let mut restored_app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut restored_app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     restored_app.restore_state(b"{not-valid-binary");
     assert_eq!(
         restored_app.state_snapshot().current.studio.accent,
@@ -286,7 +286,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     let frame = restored_app.render(FrameId(3));
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 960.0,
             height: 640.0,
@@ -338,10 +338,10 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     };
     register_studio_tables();
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(SurfaceId(1), vp);
+    backend.set_viewport(SurfaceId::ROOT, vp);
     let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
 
-    let mut inst = HotAppInstance::load(&dylib_path, SurfaceId(1), 1, None).expect("load gen 1");
+    let mut inst = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).expect("load gen 1");
     let f1 = inst.render(FrameId(1));
     assert!(!f1.is_empty());
     host.submit_nve2_frame(f1).unwrap();
@@ -356,7 +356,7 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
-            SurfaceId(1),
+            SurfaceId::ROOT,
             nid,
             fid * 16_000,
             rect.x + rect.width * 0.5,
@@ -379,7 +379,7 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     assert_eq!(inst.generation(), 2);
 
     let mut backend2 = HeadlessBackend::new();
-    backend2.set_viewport(SurfaceId(1), vp);
+    backend2.set_viewport(SurfaceId::ROOT, vp);
     let mut host2 =
         StoreWireReplica::new(backend2, nve_components::tables::core_realization_order());
     let f5 = inst.render(FrameId(5));

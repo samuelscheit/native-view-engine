@@ -223,9 +223,9 @@ fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists(
 #[test]
 fn interaction_tracker_handles_hover_drag_cancel_touch_focus_modality_disabled_and_unmount() {
     let mut t = InteractionTracker::new();
-    let n10 = NodeId(10);
-    let n20 = NodeId(20);
-    let n30 = NodeId(30);
+    let n10 = NodeId::new(10, 0);
+    let n20 = NodeId::new(20, 0);
+    let n30 = NodeId::new(30, 0);
 
     // 1. Hover enter, repeat (no dirty), switch, and leave.
     assert_eq!(t.pointer_move(Some(n10)), vec![n10]);
@@ -303,5 +303,5 @@ fn interaction_tracker_handles_hover_drag_cancel_touch_focus_modality_disabled_a
     assert_eq!(t.hovered(), None);
     assert!(!t.is_disabled(n20));
     assert_eq!(t.state(n20), InteractionState::NONE);
-    assert!(t.remove_node(NodeId(999)).is_empty());
+    assert!(t.remove_node(NodeId::new(999, 0)).is_empty());
 }

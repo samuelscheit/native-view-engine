@@ -1,6 +1,8 @@
 #[cfg(feature = "channel")]
 use std::sync::{Arc, Mutex};
 
+use nve_abi::TimestampUs;
+
 use super::*;
 
 #[cfg(feature = "channel")]
@@ -224,7 +226,7 @@ fn gesture_arbitration_nested_vertical_scroll_handoff_and_orthogonal_axis() {
                 y: 200.0,
                 delta_x: 0.0,
                 delta_y: 0.0,
-                timestamp_us: 1000,
+                timestamp_us: TimestampUs(1000),
             },
         )
         .unwrap();
@@ -240,7 +242,7 @@ fn gesture_arbitration_nested_vertical_scroll_handoff_and_orthogonal_axis() {
                 y: 170.0,
                 delta_x: 0.0,
                 delta_y: -30.0,
-                timestamp_us: 2000,
+                timestamp_us: TimestampUs(2000),
             },
         )
         .unwrap();
@@ -267,7 +269,7 @@ fn gesture_arbitration_nested_vertical_scroll_handoff_and_orthogonal_axis() {
                 y: 140.0,
                 delta_x: 0.0,
                 delta_y: -30.0,
-                timestamp_us: 3000,
+                timestamp_us: TimestampUs(3000),
             },
         )
         .unwrap();
@@ -292,7 +294,7 @@ fn gesture_arbitration_nested_vertical_scroll_handoff_and_orthogonal_axis() {
                 y: 140.0,
                 delta_x: 0.0,
                 delta_y: 0.0,
-                timestamp_us: 4000,
+                timestamp_us: TimestampUs(4000),
             },
         )
         .unwrap();
@@ -310,7 +312,7 @@ fn gesture_arbitration_nested_vertical_scroll_handoff_and_orthogonal_axis() {
                 y: 200.0,
                 delta_x: 0.0,
                 delta_y: 0.0,
-                timestamp_us: 5000,
+                timestamp_us: TimestampUs(5000),
             },
         )
         .unwrap();
@@ -324,7 +326,7 @@ fn gesture_arbitration_nested_vertical_scroll_handoff_and_orthogonal_axis() {
                 y: 202.0,
                 delta_x: -40.0,
                 delta_y: 2.0,
-                timestamp_us: 6000,
+                timestamp_us: TimestampUs(6000),
             },
         )
         .unwrap();
@@ -356,8 +358,10 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
     let received_b = Arc::new(Mutex::new(Vec::<ChannelMessage>::new()));
 
     let ra = Arc::clone(&received_a);
+    let s10 = SurfaceId::new(10, 0);
+    let s20 = SurfaceId::new(20, 0);
     let sub_a = bus
-        .subscribe(TOPIC_AUTH, Some(SurfaceId(10)), true, move |msg| {
+        .subscribe(TOPIC_AUTH, Some(s10), true, move |msg| {
             ra.lock().unwrap().push(msg.clone());
         })
         .unwrap();
@@ -374,12 +378,12 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
     let ra2 = Arc::clone(&received_a);
     let rb2 = Arc::clone(&received_b);
     let sub_custom_a = bus
-        .subscribe_by_id(custom_id, Some(SurfaceId(10)), false, move |m| {
+        .subscribe_by_id(custom_id, Some(s10), false, move |m| {
             ra2.lock().unwrap().push(m.clone());
         })
         .unwrap();
     let _sub_custom_b = bus
-        .subscribe_by_id(custom_id, Some(SurfaceId(20)), false, move |m| {
+        .subscribe_by_id(custom_id, Some(s20), false, move |m| {
             rb2.lock().unwrap().push(m.clone());
         })
         .unwrap();
@@ -412,6 +416,6 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
     assert_eq!(count_after, 1);
 
     // Unsubscribe by surface cleans up remaining subscriber for surface 20.
-    assert_eq!(bus.unsubscribe_surface(SurfaceId(20)), 1);
+    assert_eq!(bus.unsubscribe_surface(s20), 1);
     assert_eq!(bus.subscriber_count("metrics.frame_timing"), 0);
 }

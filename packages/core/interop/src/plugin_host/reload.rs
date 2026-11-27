@@ -4,16 +4,16 @@ use std::path::Path;
 
 use nve_abi::{NveGetInterfaceFn, SurfaceId};
 
-use super::manifest::{
-    PluginError, PluginId, PluginMetadata, PluginRequirement, DEFAULT_PLUGIN_SURFACE_BASE,
-};
+use crate::surface::{FrameworkKind, SurfaceEnvironment, SurfaceOrchestrator};
+
+use super::manifest::{PluginError, PluginId, PluginMetadata, PluginRequirement};
 use super::sandbox::NvePluginSlot;
 
 /// Safe, typed registry hosting isolated `nve_get_interface` plugin slots with transactional
-/// zero-downtime hot-swapping.
+/// zero-downtime hot-swapping and generational [`SurfaceOrchestrator`] surface allocation.
 pub struct NvePluginHost {
     next_plugin_id: PluginId,
-    next_surface_id: SurfaceId,
+    surfaces: SurfaceOrchestrator,
     slots: HashMap<PluginId, NvePluginSlot>,
     name_index: HashMap<String, PluginId>,
 }
@@ -26,17 +26,17 @@ impl Default for NvePluginHost {
 
 impl NvePluginHost {
     pub fn new() -> Self {
-        Self::with_surface_base(DEFAULT_PLUGIN_SURFACE_BASE)
-    }
-
-    /// Creates a plugin host whose isolated surface IDs start at `base_surface_id`.
-    pub fn with_surface_base(base_surface_id: SurfaceId) -> Self {
         Self {
             next_plugin_id: 1,
-            next_surface_id: SurfaceId(base_surface_id.raw().max(1)),
+            surfaces: SurfaceOrchestrator::new(),
             slots: HashMap::default(),
             name_index: HashMap::default(),
         }
+    }
+
+    /// Returns the underlying generational [`SurfaceOrchestrator`] managing plugin surface IDs.
+    pub fn surfaces(&self) -> &SurfaceOrchestrator {
+        &self.surfaces
     }
 
     fn validate_name(&self, name: &str) -> Result<(), PluginError> {
@@ -49,17 +49,14 @@ impl NvePluginHost {
         Ok(())
     }
 
-    fn peek_ids(&self) -> (PluginId, SurfaceId) {
-        (self.next_plugin_id, self.next_surface_id)
-    }
-
-    fn commit_ids(&mut self) {
-        self.next_plugin_id = self.next_plugin_id.saturating_add(1);
-        self.next_surface_id = SurfaceId(self.next_surface_id.raw().saturating_add(1));
+    fn alloc_surface(&mut self, name: &str) -> Result<SurfaceId, PluginError> {
+        self.surfaces
+            .register_root(FrameworkKind::Nve, name, SurfaceEnvironment::default())
+            .map_err(|_| PluginError::SurfaceSlotsExhausted)
     }
 
     /// Registers an in-process `nve_get_interface` plugin with ABI capability validation and a
-    /// freshly allocated isolated `SurfaceId`.
+    /// freshly allocated generational `SurfaceId`.
     pub fn register_in_process(
         &mut self,
         name: impl Into<String>,
@@ -68,9 +65,10 @@ impl NvePluginHost {
     ) -> Result<PluginId, PluginError> {
         let name = name.into();
         self.validate_name(&name)?;
-        let (plugin_id, surface_id) = self.peek_ids();
+        let plugin_id = self.next_plugin_id;
+        let surface_id = self.alloc_surface(&name)?;
 
-        let slot = NvePluginSlot::from_in_process(
+        let slot = match NvePluginSlot::from_in_process(
             plugin_id,
             name.clone(),
             surface_id,
@@ -78,8 +76,14 @@ impl NvePluginHost {
             get_interface,
             req,
             None,
-        )?;
-        self.commit_ids();
+        ) {
+            Ok(slot) => slot,
+            Err(err) => {
+                let _ = self.surfaces.destroy_surface(surface_id);
+                return Err(err);
+            }
+        };
+        self.next_plugin_id = self.next_plugin_id.saturating_add(1);
         self.name_index.insert(name, plugin_id);
         self.slots.insert(plugin_id, slot);
         Ok(plugin_id)
@@ -95,9 +99,10 @@ impl NvePluginHost {
     ) -> Result<PluginId, PluginError> {
         let name = name.into();
         self.validate_name(&name)?;
-        let (plugin_id, surface_id) = self.peek_ids();
+        let plugin_id = self.next_plugin_id;
+        let surface_id = self.alloc_surface(&name)?;
 
-        let slot = NvePluginSlot::from_dylib(
+        let slot = match NvePluginSlot::from_dylib(
             plugin_id,
             name.clone(),
             surface_id,
@@ -105,8 +110,14 @@ impl NvePluginHost {
             dylib_path,
             req,
             None,
-        )?;
-        self.commit_ids();
+        ) {
+            Ok(slot) => slot,
+            Err(err) => {
+                let _ = self.surfaces.destroy_surface(surface_id);
+                return Err(err);
+            }
+        };
+        self.next_plugin_id = self.next_plugin_id.saturating_add(1);
         self.name_index.insert(name, plugin_id);
         self.slots.insert(plugin_id, slot);
         Ok(plugin_id)
@@ -183,7 +194,7 @@ impl NvePluginHost {
         Ok(next_gen)
     }
 
-    /// Unloads and destroys a mounted plugin slot cleanly.
+    /// Unloads and destroys a mounted plugin slot cleanly, retiring or bumping its surface generation.
     pub fn unload(&mut self, plugin_id: PluginId) -> Result<PluginMetadata, PluginError> {
         let slot = self
             .slots
@@ -192,6 +203,7 @@ impl NvePluginHost {
         let meta = slot.metadata().clone();
         self.name_index.remove(&meta.name);
         drop(slot);
+        let _ = self.surfaces.destroy_surface(meta.surface_id);
         Ok(meta)
     }
 

@@ -87,12 +87,12 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
     h.press("btn-toggle-studio");
     assert!(h.find_by_test_id("studio-panel").is_none());
 
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let _ = app.render(FrameId(1));
     assert!(!app.state_snapshot().is_mobile_portrait());
 
     let resize_mobile = [NveDirectEvent::layout(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         ROOT_NODE_ID,
         1000,
         0.0,
@@ -107,7 +107,7 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
     let mobile_frame = app.render(FrameId(2)).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -131,7 +131,7 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
 fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     let h = MultiBackendHarness::new(960.0, 640.0);
 
-    let mut snap_app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut snap_app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let f1 = snap_app.render(FrameId(1)).to_vec();
     let p1 = NveWireFrame::new(NveWireKind::CommandDelta, 1, f1.clone())
         .encode()
@@ -142,7 +142,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     let nid = h.find_by_test_id("task-status-2").unwrap();
     let rect = h.headless.layout_of(nid).unwrap();
     let ev = [NveDirectEvent::press(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         nid,
         16_000,
         rect.x + rect.width * 0.5,
@@ -204,12 +204,13 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         assert!(status.success());
     }
 
-    let mut plugin_host = NvePluginHost::with_surface_base(SurfaceId(50_000));
+    let mut plugin_host = NvePluginHost::new();
     let pid = plugin_host
         .load_dynamic("aether-studio", &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("load studio cdylib as plugin");
     let slot = plugin_host.get_mut(pid).unwrap();
-    assert_eq!(slot.surface_id(), SurfaceId(50_000));
+    let plugin_sid = slot.surface_id();
+    assert!(!plugin_sid.is_null());
     assert!(slot.capabilities().surface);
     assert!(slot.capabilities().layout);
     assert!(slot.capabilities().component);
@@ -229,13 +230,13 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         .expect("hot-swap studio plugin");
     assert_eq!(gen2, 2);
     let slot2 = plugin_host.get_mut(pid).unwrap();
-    assert_eq!(slot2.surface_id(), SurfaceId(50_000));
+    assert_eq!(slot2.surface_id(), plugin_sid);
     let pf2 = slot2.render(FrameId(2)).unwrap().to_vec();
 
     register_studio_tables();
     let mut verify_host = HeadlessBackend::new();
     verify_host.set_viewport(
-        SurfaceId(50_000),
+        plugin_sid,
         Viewport {
             width: 960.0,
             height: 640.0,
@@ -267,9 +268,9 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
         scale_factor: 1.0,
     };
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(SurfaceId(1), vp);
+    backend.set_viewport(SurfaceId::ROOT, vp);
     let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
     let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1).unwrap();
@@ -282,7 +283,7 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
                         ctrl: bool,
                         fid: u64| {
         let ev = [NveDirectEvent::key_down(
-            SurfaceId(1),
+            SurfaceId::ROOT,
             ROOT_NODE_ID,
             fid * 16_000,
             key,
@@ -305,7 +306,7 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
                    fid: u64| {
         let nid = find_in_store(host.store(), tid)
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
-        let ev = [NveDirectEvent::text_change(SurfaceId(1), nid, fid * 16_000, text)];
+        let ev = [NveDirectEvent::text_change(SurfaceId::ROOT, nid, fid * 16_000, text)];
         // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
         let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
         assert!(app.dispatch_events(batch), "text change on '{tid}' not handled");
@@ -400,10 +401,10 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     assert!(h.ascii().contains("PNG avatars + Cmd+K contrast look crisp."));
 
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 960.0,
             height: 640.0,
@@ -416,7 +417,7 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
 
     let new_task_nid = find_in_store(host.store(), "board-new-task-input").unwrap();
     let ev_type = [NveDirectEvent::text_change(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         new_task_nid,
         16_000,
         "Persist across hot-swap",
@@ -426,7 +427,7 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     let f2 = app.render(FrameId(2)).to_vec();
     host.submit_nve2_frame(&f2).unwrap();
 
-    let ev_submit = [NveDirectEvent::submit(SurfaceId(1), new_task_nid, 32_000, "")];
+    let ev_submit = [NveDirectEvent::submit(SurfaceId::ROOT, new_task_nid, 32_000, "")];
     // SAFETY: `ev_submit` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_submit) }));
     let _ = app.render(FrameId(3));
@@ -438,7 +439,7 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     host.submit_nve2_frame(&f4).unwrap();
     let chat_nid = find_in_store(host.store(), "chat-composer-input").unwrap();
     let ev_chat = [NveDirectEvent::text_change(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         chat_nid,
         48_000,
         "Live typed message survives reload",
@@ -446,13 +447,13 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     // SAFETY: `ev_chat` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_chat) }));
     let _ = app.render(FrameId(5));
-    let ev_chat_submit = [NveDirectEvent::submit(SurfaceId(1), chat_nid, 64_000, "")];
+    let ev_chat_submit = [NveDirectEvent::submit(SurfaceId::ROOT, chat_nid, 64_000, "")];
     // SAFETY: `ev_chat_submit` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_chat_submit) }));
     let _ = app.render(FrameId(6));
 
     let saved = app.snapshot_state().to_vec();
-    let mut restored = StudioWorkspaceModule::create(SurfaceId(1));
+    let mut restored = StudioWorkspaceModule::create(SurfaceId::ROOT);
     restored.restore_state(&saved);
     let snap = restored.state_snapshot();
     assert!(snap

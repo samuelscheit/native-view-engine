@@ -109,10 +109,10 @@ fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
     );
     let path = compile_test_cdylib(dir.path(), "surface_only_app", &src);
 
-    let mut inst = HotAppInstance::load(&path, SurfaceId(5), 1, Some(b"ignored")).expect("load surface-only");
+    let mut inst = HotAppInstance::load(&path, SurfaceId::new(5, 0), 1, Some(b"ignored")).expect("load surface-only");
     assert_eq!(inst.generation(), 1);
     assert_eq!(inst.render(FrameId(9)), 9u64.to_le_bytes());
-    let tap = [NveDirectEvent::press(SurfaceId(5), NodeId(2), 10, 1.0, 2.0)];
+    let tap = [NveDirectEvent::press(SurfaceId::new(5, 0), NodeId::new(2, 0), 10, 1.0, 2.0)];
     assert!(inst.dispatch_events(&tap));
     assert!(!inst.dispatch_events(&[]));
 
@@ -257,11 +257,11 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
 
     let props = [NveMapEntry::new("counter", NveValue::i64(5))];
     assert!(inst.set_props(&props));
-    let tap = [NveDirectEvent::press(SurfaceId::ROOT, NodeId(2), 10, 1.0, 2.0)];
+    let tap = [NveDirectEvent::press(SurfaceId::ROOT, NodeId::new(2, 0), 10, 1.0, 2.0)];
     assert!(inst.dispatch_events(&tap));
     let emitted = inst.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
-    assert_eq!(emitted[0].node_id, NodeId(6));
+    assert_eq!(emitted[0].node_id, NodeId::new(6, 0));
 
     let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }
         .to_bytes()

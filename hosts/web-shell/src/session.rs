@@ -575,7 +575,7 @@ impl WebAppSession {
     }
 
     fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
-        self.frame_id = FrameId(self.frame_id.next().raw().max(1));
+        self.frame_id = self.frame_id.next();
         let frame_id = self.frame_id;
         let (reconcile_us, stats) = self.app.commit_to_timed(frame_id, &mut self.backend)?;
         self.sync_scene(frame_id);

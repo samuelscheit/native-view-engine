@@ -171,7 +171,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
 mod tests {
     use super::*;
     use nve_store::wire::{WireEncoder, MAGIC};
-    use nve_store::{NodeId as StoreNodeId, NveTable};
+    use nve_store::{NveTable};
 
     #[allow(dead_code)]
     #[derive(NveTable)]
@@ -209,7 +209,7 @@ mod tests {
         let child = {
             let mut tx = src.tx();
             let c = tx.create();
-            tx.set_children(StoreNodeId::ROOT, &[c]);
+            tx.set_children(NodeId::ROOT, &[c]);
             tx.edit::<TestTag>(c).val(42);
             tx.commit_into(&mut changes);
             c

@@ -90,9 +90,11 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     let core = core_abi_descriptor();
     assert_eq!(core.namespace, Some("NveCoreAbi"));
     assert_eq!(core.consts.len(), 13);
-    assert_eq!(core.aliases.len(), 12);
+    assert_eq!(core.aliases.len(), 14);
     assert_eq!(core.aliases[0].name, "NveNodeId");
     assert_eq!(core.aliases[1].name, "NveSurfaceId");
+    assert_eq!(core.aliases[4].name, "NveDurationUs");
+    assert_eq!(core.aliases[9].name, "NveInterfaceId");
     assert_eq!(core.enums.len(), 4);
     assert_eq!(core.records.len(), 17);
     assert_eq!(core.modules.len(), 5);
@@ -107,6 +109,7 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     let scene = scene_abi_descriptor();
     assert_eq!(scene.namespace, Some("NveSceneAbi"));
     assert_eq!(scene.consts.len(), 14);
+    assert_eq!(scene.aliases.len(), 3);
     assert_eq!(scene.records.len(), 4);
 
     let render = <NveRenderNode as NveStructSchema>::SCHEMA;

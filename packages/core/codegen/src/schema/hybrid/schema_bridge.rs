@@ -187,19 +187,30 @@ fn parse_abi_type(raw: &str) -> HybridType {
             other => HybridType::Vec(Box::new(other)),
         };
     }
-    match s {
+    let base = s.rsplit("::").next().unwrap_or(s);
+    match base {
         "bool" => HybridType::Bool,
-        "u8" => HybridType::U8,
-        "u16" => HybridType::U16,
+        "u8" | "PrimarySlot" => HybridType::U8,
+        "u16" | "ShortLen" | "PropFieldId" => HybridType::U16,
         "usize" => HybridType::Usize,
-        "i32" => HybridType::I32,
-        "u32" => HybridType::U32,
+        "i32" | "ZIndex" => HybridType::I32,
+        "u32" | "NodeIndex" => HybridType::U32,
         "i64" => HybridType::I64,
         "u64" => HybridType::U64,
         "f32" => HybridType::F32,
         "f64" => HybridType::F64,
         "String" | "str" => HybridType::String,
         "NveValue" => HybridType::Value,
+        "NodeId" => HybridType::Struct("NveNodeId".to_owned()),
+        "SurfaceId" => HybridType::Struct("NveSurfaceId".to_owned()),
+        "FrameId" => HybridType::Struct("NveFrameId".to_owned()),
+        "TimestampUs" => HybridType::Struct("NveTimestampUs".to_owned()),
+        "DurationUs" => HybridType::Struct("NveDurationUs".to_owned()),
+        "EventId" => HybridType::Struct("NveEventId".to_owned()),
+        "EventFlags" => HybridType::Struct("NveEventFlags".to_owned()),
+        "ArenaOffset" => HybridType::Struct("NveArenaOffset".to_owned()),
+        "ByteLen" => HybridType::Struct("NveByteLen".to_owned()),
+        "InterfaceId" => HybridType::Struct("NveInterfaceId".to_owned()),
         ident => HybridType::Struct(ident.to_owned()),
     }
 }

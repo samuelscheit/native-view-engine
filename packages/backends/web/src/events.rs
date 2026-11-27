@@ -127,8 +127,8 @@ fn collect_ancestors(
     while let Some(el) = cur {
         if let Some(raw) = el.get_attribute("data-nve-id")
             && let Ok(raw_id) = raw.parse::<u32>()
+            && let Some(id) = NodeId::from_raw(raw_id)
         {
-            let id = NodeId(raw_id);
             let meta = meta_map.get(&id).copied().unwrap_or_default();
             out.push((id, meta, el.clone()));
         }

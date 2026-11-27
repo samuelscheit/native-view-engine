@@ -150,7 +150,7 @@ impl WebStoreRenderer {
         let (tag, _ns) = self.registry.resolve_tag(store, node);
         out.push('<');
         out.push_str(tag);
-        let _ = write!(out, " data-nve-id=\"{}\"", node.0);
+        let _ = write!(out, " data-nve-id=\"{}\"", node.raw());
 
         write_core_ssr_attrs(store, node, out);
 

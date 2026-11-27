@@ -16,7 +16,7 @@ use nve_components::tables::{
 use nve_engine::loader::LoaderError;
 use nve_engine::{HotPatchMsg, RelocError, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 use tungstenite::Message;
 
 use super::{
@@ -65,42 +65,42 @@ impl DesktopApp for MockCounterApp {
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         let mut tx = self.store.tx();
         if !self.initialized {
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(2));
-            let _ = tx.create_at(StoreNodeId(3));
-            let _ = tx.create_at(StoreNodeId(4));
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(2, 0));
+            let _ = tx.create_at(NodeId::new(3, 0));
+            let _ = tx.create_at(NodeId::new(4, 0));
 
-            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::WIDTH, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::percent(100.0));
             let p = Length::points(20.0);
-            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
-            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
-            tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
+            tx.set(NodeId::new(2, 0), Layout::PADDING_TOP, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_RIGHT, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_BOTTOM, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_LEFT, p);
+            tx.set(NodeId::new(2, 0), Layout::ROW_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::COLUMN_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(NodeId::new(2, 0), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
 
-            tx.set(StoreNodeId(3), Typography::COLOR, Rgba::WHITE);
-            tx.set(StoreNodeId(3), Typography::FONT_SIZE, 20.0);
+            tx.set(NodeId::new(3, 0), Typography::COLOR, Rgba::WHITE);
+            tx.set(NodeId::new(3, 0), Typography::FONT_SIZE, 20.0);
 
-            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(160.0));
-            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(48.0));
-            tx.set(StoreNodeId(4), Visual::BORDER_RADIUS, 10.0);
-            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            tx.set(NodeId::new(4, 0), Layout::WIDTH, Length::points(160.0));
+            tx.set(NodeId::new(4, 0), Layout::HEIGHT, Length::points(48.0));
+            tx.set(NodeId::new(4, 0), Visual::BORDER_RADIUS, 10.0);
+            tx.set(NodeId::new(4, 0), Interaction::EVENT_MASK, EventMask::PRESS as u32);
 
-            tx.set_children(StoreNodeId(2), &[StoreNodeId(3), StoreNodeId(4)]);
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.set_children(NodeId::new(2, 0), &[NodeId::new(3, 0), NodeId::new(4, 0)]);
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             self.initialized = true;
         }
         tx.set_str(
-            StoreNodeId(3),
+            NodeId::new(3, 0),
             TextContent::TEXT,
             &format!("{}: {}", self.label, self.count),
         );
         tx.set(
-            StoreNodeId(4),
+            NodeId::new(4, 0),
             Visual::BACKGROUND,
             Rgba::new(
                 self.button_color.r,
@@ -119,7 +119,7 @@ impl DesktopApp for MockCounterApp {
     fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            if ev.node_id() == NodeId(4) && ev.kind() == Some(NativeEventKind::Press) {
+            if ev.node_id() == NodeId::new(4, 0) && ev.kind() == Some(NativeEventKind::Press) {
                 self.count += 1;
                 self.button_color = ColorRgba::rgb(16, 185, 129);
                 handled = true;
@@ -185,7 +185,7 @@ fn hit_test_click_dispatches_press_and_rerenders_pixels() {
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(NodeId(4)).expect("button layout");
+    let btn = session.layout_of(NodeId::new(4, 0)).expect("button layout");
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
 
@@ -220,7 +220,7 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(NodeId(4)).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());
@@ -360,7 +360,7 @@ fn resize_updates_hidpi_viewport_and_scales_pixel_buffer() {
     assert_eq!(session.pixel_buffer().width(), 600);
     assert_eq!(session.pixel_buffer().height(), 400);
 
-    let btn = session.layout_of(NodeId(4)).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(session.pixel_buffer().get_rgb(px, py), Some((37, 99, 235)));
@@ -422,7 +422,7 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
 
     let mut readback = PixelBuffer::new(1, 1);
     sw.copy_to_pixel_buffer(&mut readback).unwrap();
-    let btn = session.layout_of(NodeId(4)).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(readback.get_rgb(px, py), Some((37, 99, 235)));
@@ -444,7 +444,7 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(NodeId(4)).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());

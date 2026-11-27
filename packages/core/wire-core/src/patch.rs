@@ -6,6 +6,7 @@
 //! - `patches: [NveNodePatch; patch_count]` (`24 * patch_count` bytes)
 //! - `string_table: [u8; string_table_len]` (UTF-8 bytes referenced by `NveNodePatch::value_lo/hi`)
 
+use nve_abi::{DurationMs, NodeId};
 use nve_codec::{ByteReader, ByteWriter};
 use nve_engine::{NveNodePatch, NveNodePatchField, NVE_NODE_PATCH_FLAG_STRING_SPAN};
 
@@ -44,37 +45,42 @@ impl NveNodePatchDeltaBuilder {
         self.patches.is_empty()
     }
 
-    pub fn set_text(&mut self, node_id: u32, text: &str) -> &mut Self {
-        self.push_string(node_id, NveNodePatchField::Text, text, 0)
+    pub fn set_text(&mut self, node_id: NodeId, text: &str) -> &mut Self {
+        self.push_string(node_id, NveNodePatchField::Text, text, DurationMs::ZERO)
     }
 
-    pub fn set_image_src(&mut self, node_id: u32, src: &str) -> &mut Self {
-        self.push_string(node_id, NveNodePatchField::ImageSrc, src, 0)
+    pub fn set_image_src(&mut self, node_id: NodeId, src: &str) -> &mut Self {
+        self.push_string(node_id, NveNodePatchField::ImageSrc, src, DurationMs::ZERO)
     }
 
-    pub fn set_bg_rgba(&mut self, node_id: u32, rgba: u32) -> &mut Self {
+    pub fn set_bg_rgba(&mut self, node_id: NodeId, rgba: u32) -> &mut Self {
         self.patches.push(NveNodePatch::scalar(
             node_id,
             NveNodePatchField::BackgroundRgba,
             rgba,
             0,
-            0,
+            DurationMs::ZERO,
         ));
         self
     }
 
-    pub fn set_text_rgba(&mut self, node_id: u32, rgba: u32) -> &mut Self {
+    pub fn set_text_rgba(&mut self, node_id: NodeId, rgba: u32) -> &mut Self {
         self.patches.push(NveNodePatch::scalar(
             node_id,
             NveNodePatchField::TextRgba,
             rgba,
             0,
-            0,
+            DurationMs::ZERO,
         ));
         self
     }
 
-    pub fn set_opacity(&mut self, node_id: u32, opacity: f32, transition_ms: u32) -> &mut Self {
+    pub fn set_opacity(
+        &mut self,
+        node_id: NodeId,
+        opacity: f32,
+        transition_ms: DurationMs,
+    ) -> &mut Self {
         self.patches.push(NveNodePatch::scalar(
             node_id,
             NveNodePatchField::Opacity,
@@ -85,18 +91,23 @@ impl NveNodePatchDeltaBuilder {
         self
     }
 
-    pub fn set_visible(&mut self, node_id: u32, visible: bool) -> &mut Self {
+    pub fn set_visible(&mut self, node_id: NodeId, visible: bool) -> &mut Self {
         self.patches.push(NveNodePatch::scalar(
             node_id,
             NveNodePatchField::Visibility,
             u32::from(!visible),
             0,
-            0,
+            DurationMs::ZERO,
         ));
         self
     }
 
-    pub fn set_rect_width(&mut self, node_id: u32, width: f32, transition_ms: u32) -> &mut Self {
+    pub fn set_rect_width(
+        &mut self,
+        node_id: NodeId,
+        width: f32,
+        transition_ms: DurationMs,
+    ) -> &mut Self {
         self.patches.push(NveNodePatch::scalar(
             node_id,
             NveNodePatchField::RectWidth,
@@ -109,10 +120,10 @@ impl NveNodePatchDeltaBuilder {
 
     pub fn push_string(
         &mut self,
-        node_id: u32,
+        node_id: NodeId,
         field: NveNodePatchField,
         value: &str,
-        transition_ms: u32,
+        transition_ms: DurationMs,
     ) -> &mut Self {
         let offset = self.strings.len() as u32;
         let len = value.len() as u32;
@@ -143,12 +154,12 @@ impl NveNodePatchDeltaBuilder {
         w.write_u32(self.patches.len() as u32);
         w.write_u32(self.strings.len() as u32);
         for p in &self.patches {
-            w.write_u32(p.node_id);
+            w.write_u32(p.node_id.raw());
             w.write_u16(p.field_tag);
             w.write_u16(p.flags);
             w.write_u32(p.value_lo);
             w.write_u32(p.value_hi);
-            w.write_u32(p.transition_ms);
+            w.write_u32(p.transition_ms.raw());
             w.write_u32(p.reserved);
         }
         w.write_raw(&self.strings);
@@ -198,13 +209,15 @@ impl<'a> NveNodePatchDeltaView<'a> {
         let string_table = &bytes[str_start..];
         let mut patches = Vec::with_capacity(patch_count);
         for _ in 0..patch_count {
+            let node_id = NodeId::from_raw(r.read_u32()?)
+                .ok_or(NveWireError::InvalidPayload("null node_id in NveNodePatch"))?;
             let p = NveNodePatch {
-                node_id: r.read_u32()?,
+                node_id,
                 field_tag: r.read_u16()?,
                 flags: r.read_u16()?,
                 value_lo: r.read_u32()?,
                 value_hi: r.read_u32()?,
-                transition_ms: r.read_u32()?,
+                transition_ms: DurationMs(r.read_u32()?),
                 reserved: r.read_u32()?,
             };
             if p.field().is_none() || p.reserved != 0 {

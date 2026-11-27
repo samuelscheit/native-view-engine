@@ -6,6 +6,8 @@
 
 use std::mem::{align_of, offset_of, size_of};
 
+use nve_abi::{DurationMs, NodeId, TimestampMs};
+
 use super::format::{RelocBuf, RelocSlice, RelocStr, RelocWriter, RELOC_BUF_ALIGN, RELOC_KIND_TIMELINE};
 use super::scene::SceneRelocView;
 use super::view::RelocView;
@@ -76,7 +78,7 @@ impl NveNodePatchField {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NveNodePatch {
-    pub node_id: u32,
+    pub node_id: NodeId,
     pub field_tag: u16,
     pub flags: u16,
     /// Scalar value (`u32`, `f32::to_bits`, or low 32 bits) or UTF-8 string byte offset.
@@ -84,18 +86,18 @@ pub struct NveNodePatch {
     /// Secondary scalar value (high 32 bits) or UTF-8 string byte length.
     pub value_hi: u32,
     /// Optional spring/easing transition hint in milliseconds (`0` = immediate).
-    pub transition_ms: u32,
+    pub transition_ms: DurationMs,
     pub reserved: u32,
 }
 
 impl NveNodePatch {
     #[inline]
     pub const fn scalar(
-        node_id: u32,
+        node_id: NodeId,
         field: NveNodePatchField,
         value_lo: u32,
         value_hi: u32,
-        transition_ms: u32,
+        transition_ms: DurationMs,
     ) -> Self {
         Self {
             node_id,
@@ -110,11 +112,11 @@ impl NveNodePatch {
 
     #[inline]
     pub const fn string_span(
-        node_id: u32,
+        node_id: NodeId,
         field: NveNodePatchField,
         str_offset: u32,
         str_len: u32,
-        transition_ms: u32,
+        transition_ms: DurationMs,
     ) -> Self {
         Self {
             node_id,
@@ -157,7 +159,7 @@ impl NveNodePatch {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NveTimelineEntry {
-    pub activate_at_unix_ms: u64,
+    pub activate_at_unix_ms: TimestampMs,
     pub patches: RelocSlice<NveNodePatch>,
 }
 
@@ -169,9 +171,9 @@ pub struct NveTimelineRoot {
     pub base_scene: RelocSlice<u8>,
     /// Entries sorted in non-decreasing `activate_at_unix_ms` order.
     pub entries: RelocSlice<NveTimelineEntry>,
-    pub created_at_unix_ms: u64,
+    pub created_at_unix_ms: TimestampMs,
     /// Optional archive expiry timestamp (`0` = never expires).
-    pub expires_at_unix_ms: u64,
+    pub expires_at_unix_ms: TimestampMs,
 }
 
 // SAFETY: `NveNodePatch` is `#[repr(C)]` (24 bytes) with fixed-width fields and zero implicit padding.
@@ -219,59 +221,59 @@ pub enum NveNodePatchValue {
 /// High-level node patch input for [`encode_timeline_archive`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct NveTimelinePatchInput {
-    pub node_id: u32,
+    pub node_id: NodeId,
     pub field: NveNodePatchField,
     pub value: NveNodePatchValue,
-    pub transition_ms: u32,
+    pub transition_ms: DurationMs,
 }
 
 impl NveTimelinePatchInput {
-    pub fn text(node_id: u32, text: impl Into<String>) -> Self {
+    pub fn text(node_id: NodeId, text: impl Into<String>) -> Self {
         Self {
             node_id,
             field: NveNodePatchField::Text,
             value: NveNodePatchValue::Text(text.into()),
-            transition_ms: 0,
+            transition_ms: DurationMs::ZERO,
         }
     }
 
-    pub fn bg_rgba(node_id: u32, rgba: u32) -> Self {
+    pub fn bg_rgba(node_id: NodeId, rgba: u32) -> Self {
         Self {
             node_id,
             field: NveNodePatchField::BackgroundRgba,
             value: NveNodePatchValue::Rgba(rgba),
-            transition_ms: 0,
+            transition_ms: DurationMs::ZERO,
         }
     }
 
-    pub fn text_rgba(node_id: u32, rgba: u32) -> Self {
+    pub fn text_rgba(node_id: NodeId, rgba: u32) -> Self {
         Self {
             node_id,
             field: NveNodePatchField::TextRgba,
             value: NveNodePatchValue::Rgba(rgba),
-            transition_ms: 0,
+            transition_ms: DurationMs::ZERO,
         }
     }
 
-    pub fn opacity(node_id: u32, opacity: f32) -> Self {
+    pub fn opacity(node_id: NodeId, opacity: f32) -> Self {
         Self {
             node_id,
             field: NveNodePatchField::Opacity,
             value: NveNodePatchValue::F32(opacity),
-            transition_ms: 0,
+            transition_ms: DurationMs::ZERO,
         }
     }
 
-    pub fn visible(node_id: u32, visible: bool) -> Self {
+    pub fn visible(node_id: NodeId, visible: bool) -> Self {
         Self {
             node_id,
             field: NveNodePatchField::Visibility,
             value: NveNodePatchValue::Bool(visible),
-            transition_ms: 0,
+            transition_ms: DurationMs::ZERO,
         }
     }
 
-    pub fn with_transition_ms(mut self, transition_ms: u32) -> Self {
+    pub fn with_transition_ms(mut self, transition_ms: DurationMs) -> Self {
         self.transition_ms = transition_ms;
         self
     }
@@ -280,7 +282,7 @@ impl NveTimelinePatchInput {
 /// One timestamped patch batch input for [`encode_timeline_archive`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct NveTimelineEntryInput {
-    pub activate_at_unix_ms: u64,
+    pub activate_at_unix_ms: TimestampMs,
     pub patches: Vec<NveTimelinePatchInput>,
 }
 
@@ -297,8 +299,8 @@ impl NveTimelineArchive {
     pub fn build(
         base_scene_bytes: &[u8],
         entries: &[NveTimelineEntryInput],
-        created_at_unix_ms: u64,
-        expires_at_unix_ms: u64,
+        created_at_unix_ms: TimestampMs,
+        expires_at_unix_ms: TimestampMs,
         schema_version: u32,
     ) -> Result<Self, RelocError> {
         let buf = encode_timeline_archive(
@@ -346,8 +348,8 @@ impl NveTimelineArchive {
 pub fn encode_timeline_archive(
     base_scene_bytes: &[u8],
     entries: &[NveTimelineEntryInput],
-    created_at_unix_ms: u64,
-    expires_at_unix_ms: u64,
+    created_at_unix_ms: TimestampMs,
+    expires_at_unix_ms: TimestampMs,
     schema_version: u32,
 ) -> Result<RelocBuf, RelocError> {
     // Validate base scene up front so corrupt scenes never enter a timeline archive.
@@ -457,7 +459,7 @@ impl<'a> NveTimelineArchiveView<'a> {
         let entries = view.slice(root.entries)?;
 
         // Enforce non-decreasing timestamps so binary search is always sound.
-        let mut prev_ts = 0u64;
+        let mut prev_ts = TimestampMs::ZERO;
         for (i, entry) in entries.iter().enumerate() {
             if i > 0 && entry.activate_at_unix_ms < prev_ts {
                 return Err(RelocError::OutOfBounds("timeline_entries_unsorted"));
@@ -520,7 +522,7 @@ impl<'a> NveTimelineArchiveView<'a> {
 
     /// Binary-searches the latest timeline entry whose `activate_at_unix_ms <= now_unix_ms`.
     #[inline]
-    pub fn active_entry_at(&self, now_unix_ms: u64) -> Option<(usize, &'a NveTimelineEntry)> {
+    pub fn active_entry_at(&self, now_unix_ms: TimestampMs) -> Option<(usize, &'a NveTimelineEntry)> {
         let count = self
             .entries
             .partition_point(|e| e.activate_at_unix_ms <= now_unix_ms);
@@ -533,7 +535,7 @@ impl<'a> NveTimelineArchiveView<'a> {
     }
 
     /// Returns the active [`NveNodePatch`] slice at `now_unix_ms`, or an empty slice before the first entry.
-    pub fn active_patches_at(&self, now_unix_ms: u64) -> Result<&'a [NveNodePatch], RelocError> {
+    pub fn active_patches_at(&self, now_unix_ms: TimestampMs) -> Result<&'a [NveNodePatch], RelocError> {
         match self.active_entry_at(now_unix_ms) {
             Some((_, entry)) => self.patches_for(entry),
             None => Ok(&[]),
@@ -541,8 +543,9 @@ impl<'a> NveTimelineArchiveView<'a> {
     }
 
     #[inline]
-    pub fn is_expired_at(&self, now_unix_ms: u64) -> bool {
-        self.root.expires_at_unix_ms != 0 && now_unix_ms >= self.root.expires_at_unix_ms
+    pub fn is_expired_at(&self, now_unix_ms: TimestampMs) -> bool {
+        self.root.expires_at_unix_ms != TimestampMs::ZERO
+            && now_unix_ms >= self.root.expires_at_unix_ms
     }
 }
 

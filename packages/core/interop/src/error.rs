@@ -13,13 +13,12 @@ pub type SubscriptionId = u64;
 pub enum InteropError {
     InvalidSurfaceId(SurfaceId),
     SurfaceNotFound(SurfaceId),
-    DuplicateSurface(SurfaceId),
+    SurfaceSlotsExhausted,
     ParentNotFound(SurfaceId),
     InvalidParentCycle {
         surface: SurfaceId,
         proposed_parent: SurfaceId,
     },
-    SurfaceDestroyed(SurfaceId),
     InvalidLifecycleTransition {
         surface: SurfaceId,
         from: LifecycleState,
@@ -48,7 +47,9 @@ impl fmt::Display for InteropError {
         match self {
             Self::InvalidSurfaceId(id) => write!(f, "invalid surface id {id}"),
             Self::SurfaceNotFound(id) => write!(f, "surface {id} not found"),
-            Self::DuplicateSurface(id) => write!(f, "surface {id} is already registered"),
+            Self::SurfaceSlotsExhausted => {
+                f.write_str("all 24-bit generational surface slots have been exhausted or retired")
+            }
             Self::ParentNotFound(id) => write!(f, "parent surface {id} not found"),
             Self::InvalidParentCycle {
                 surface,
@@ -57,7 +58,6 @@ impl fmt::Display for InteropError {
                 f,
                 "cannot reparent surface {surface} under {proposed_parent}: would create a cycle"
             ),
-            Self::SurfaceDestroyed(id) => write!(f, "surface {id} has already been destroyed"),
             Self::InvalidLifecycleTransition { surface, from, to } => write!(
                 f,
                 "invalid lifecycle transition for surface {surface}: {from:?} -> {to:?}"

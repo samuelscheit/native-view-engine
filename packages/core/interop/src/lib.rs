@@ -44,8 +44,8 @@ pub use layout::{
 };
 #[cfg(feature = "plugin-host")]
 pub use plugin_host::{
-    DEFAULT_PLUGIN_SURFACE_BASE, NvePluginHost, NvePluginSlot, PluginCapabilities, PluginError,
-    PluginId, PluginMetadata, PluginRequirement, PluginSourceKind,
+    NvePluginHost, NvePluginSlot, PluginCapabilities, PluginError, PluginId, PluginMetadata,
+    PluginRequirement, PluginSourceKind,
 };
 #[cfg(all(feature = "reconcile", feature = "crdt"))]
 pub use reconcile::{CrdtReconcileAdapter, hlc_to_logical_clock};
@@ -116,8 +116,17 @@ impl InteropRuntime {
         innermost_surface: SurfaceId,
         sample: PointerSample,
     ) -> Result<ArbitrationDecision, InteropError> {
-        let chain = self.surfaces.ancestor_chain(innermost_surface)?;
-        Ok(self.gestures.arbitrate(&chain, sample))
+        let mut stack_chain = [SurfaceId::NULL; SurfaceOrchestrator::INLINE_ANCESTOR_CAP];
+        match self
+            .surfaces
+            .ancestor_chain_into(innermost_surface, &mut stack_chain)?
+        {
+            Some(len) => Ok(self.gestures.arbitrate(&stack_chain[..len], sample)),
+            None => {
+                let chain = self.surfaces.ancestor_chain(innermost_surface)?;
+                Ok(self.gestures.arbitrate(&chain, sample))
+            }
+        }
     }
 
     /// Negotiates layout for `surface_id` using its inherited display scale factor,

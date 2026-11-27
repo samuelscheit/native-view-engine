@@ -453,8 +453,8 @@ pub fn decode_events(bytes: &[u8]) -> Result<Vec<NativeEvent>, DecodeError> {
     let count = read_u32(&mut pos)? as usize;
     let mut out = Vec::with_capacity(count.min(4096));
     for _ in 0..count {
-        let surface_id = SurfaceId(read_u32(&mut pos)?);
-        let node_id = NodeId(read_u32(&mut pos)?);
+        let surface_id = SurfaceId::from_raw_or_null(read_u32(&mut pos)?);
+        let node_id = NodeId::from_raw_or_null(read_u32(&mut pos)?);
         let timestamp_us = read_u64(&mut pos)?;
         let kind = NativeEventKind::from_u8(take(&mut pos, 1)?[0])?;
         let ptag = take(&mut pos, 1)?[0];

@@ -48,9 +48,9 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
     {
         let mut tx = store.tx();
         let root = NodeId::ROOT;
-        let card = NodeId(2);
-        let heading = NodeId(3);
-        let link = NodeId(4);
+        let card = NodeId::new(2, 0);
+        let heading = NodeId::new(3, 0);
+        let link = NodeId::new(4, 0);
         let _ = tx.create_at(root);
         let _ = tx.create_at(card);
         let _ = tx.create_at(heading);
@@ -150,13 +150,13 @@ pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
     {
         let mut tx = store.tx();
         let root = NodeId::ROOT;
-        let n2 = NodeId(2);
-        let n3 = NodeId(3);
-        let n4 = NodeId(4);
-        let n5 = NodeId(5);
-        let n6 = NodeId(6);
-        let n7 = NodeId(7);
-        let n8 = NodeId(8);
+        let n2 = NodeId::new(2, 0);
+        let n3 = NodeId::new(3, 0);
+        let n4 = NodeId::new(4, 0);
+        let n5 = NodeId::new(5, 0);
+        let n6 = NodeId::new(6, 0);
+        let n7 = NodeId::new(7, 0);
+        let n8 = NodeId::new(8, 0);
         for id in [root, n2, n3, n4, n5, n6, n7, n8] {
             let _ = tx.create_at(id);
         }
@@ -202,11 +202,11 @@ pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
                 "7".into(),
             )])),
         );
-        tx.set_children(NodeId(8), &[NodeId(6)]);
-        tx.set(NodeId(3), TextInput::SECURE, true);
-        tx.set(NodeId(3), TextInput::SECURE, false);
-        tx.set_str(NodeId(6), TextContent::TEXT, "replaced own text");
-        tx.set_str(NodeId(2), TextContent::TEXT, "restored text");
+        tx.set_children(NodeId::new(8, 0), &[NodeId::new(6, 0)]);
+        tx.set(NodeId::new(3, 0), TextInput::SECURE, true);
+        tx.set(NodeId::new(3, 0), TextInput::SECURE, false);
+        tx.set_str(NodeId::new(6, 0), TextContent::TEXT, "replaced own text");
+        tx.set_str(NodeId::new(2, 0), TextContent::TEXT, "restored text");
         tx.commit_into(&mut changes);
     }
     web.commit(&store, &changes)
@@ -214,7 +214,7 @@ pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
 
     {
         let mut tx = store.tx();
-        tx.set_children(NodeId(2), &[]);
+        tx.set_children(NodeId::new(2, 0), &[]);
         tx.commit_into(&mut changes);
     }
     web.commit(&store, &changes)

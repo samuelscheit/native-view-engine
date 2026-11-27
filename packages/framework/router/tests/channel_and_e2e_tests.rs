@@ -160,21 +160,21 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     assert_eq!(bus.channel_id(TOPIC_NAVIGATION), Some(CHANNEL_ID_NAVIGATION));
 
     let mut router_a = RouterState::new(E2eRoute::Home);
-    let mut bridge_a = RouterChannelBridge::attach(&mut bus, SurfaceId(10), false).unwrap();
+    let mut bridge_a = RouterChannelBridge::attach(&mut bus, SurfaceId::new(10, 0), false).unwrap();
 
     let tr = router_a.push(E2eRoute::Profile).unwrap();
     bridge_a.publish_transition(&mut bus, &tr).unwrap();
     assert!(bridge_a.drain_inbound().is_empty());
 
     let retained = bus.retained(TOPIC_NAVIGATION).expect("retained nav state");
-    assert_eq!(retained.sender_surface, Some(SurfaceId(10)));
+    assert_eq!(retained.sender_surface, Some(SurfaceId::new(10, 0)));
     assert_eq!(retained.encoding, PayloadEncoding::Binary);
     let retained_pkt = decode_nav_packet(retained.as_bytes()).unwrap();
     assert_eq!(retained_pkt.uri, "/settings/profile");
     assert!(retained_pkt.can_go_back);
 
     // Late joiner replays retained NVN1 state.
-    let bridge_b = RouterChannelBridge::attach(&mut bus, SurfaceId(20), true).unwrap();
+    let bridge_b = RouterChannelBridge::attach(&mut bus, SurfaceId::new(20, 0), true).unwrap();
     let mut router_b = RouterState::new(E2eRoute::Home);
     let outcomes = bridge_b.apply_inbound_to_router(&mut router_b, None);
     assert_eq!(outcomes.len(), 1);
@@ -197,7 +197,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     };
     bus.publish_by_id(
         CHANNEL_ID_NAVIGATION,
-        Some(SurfaceId(99)),
+        Some(SurfaceId::new(99, 0)),
         PayloadEncoding::Binary,
         ChannelPayload::from_vec(os_pkt.encode().unwrap()),
         true,
@@ -205,7 +205,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     .unwrap();
     bus.publish_by_id(
         CHANNEL_ID_NAVIGATION,
-        Some(SurfaceId(99)),
+        Some(SurfaceId::new(99, 0)),
         PayloadEncoding::Binary,
         ChannelPayload::from_slice(b"BAD!"),
         false,
@@ -234,7 +234,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
         E2eTab::Home,
     )
     .unwrap();
-    let tab_bridge = RouterChannelBridge::attach(&mut bus, SurfaceId(30), false).unwrap();
+    let tab_bridge = RouterChannelBridge::attach(&mut bus, SurfaceId::new(30, 0), false).unwrap();
     let switch_pkt = NavPacket {
         action: NavigationAction::SwitchTab,
         can_go_back: false,
@@ -247,7 +247,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     };
     bus.publish_by_id(
         CHANNEL_ID_NAVIGATION,
-        Some(SurfaceId(99)),
+        Some(SurfaceId::new(99, 0)),
         PayloadEncoding::Binary,
         ChannelPayload::from_vec(switch_pkt.encode().unwrap()),
         true,

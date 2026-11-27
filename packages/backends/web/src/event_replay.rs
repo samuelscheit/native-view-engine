@@ -204,8 +204,11 @@ extern "C" {
 pub(crate) fn drain_browser_pre_hydration_events() -> Vec<CapturedPreHydrationEvent> {
     let out = std::cell::RefCell::new(Vec::new());
     let mut push_press = |node_id: u32, x: f32, y: f32, age_ms: f64| {
+        let Some(node_id) = NodeId::from_raw(node_id) else {
+            return;
+        };
         out.borrow_mut().push(CapturedPreHydrationEvent::Press {
-            node_id: NodeId(node_id),
+            node_id,
             x,
             y,
             age_ms: if age_ms.is_finite() && age_ms >= 0.0 {
@@ -217,8 +220,11 @@ pub(crate) fn drain_browser_pre_hydration_events() -> Vec<CapturedPreHydrationEv
     };
     let mut push_key =
         |node_id: u32, key: String, meta: bool, ctrl: bool, shift: bool, alt: bool, age_ms: f64| {
+            let Some(node_id) = NodeId::from_raw(node_id) else {
+                return;
+            };
             out.borrow_mut().push(CapturedPreHydrationEvent::KeyDown {
-                node_id: NodeId(node_id),
+                node_id,
                 key,
                 meta,
                 ctrl,
@@ -232,8 +238,11 @@ pub(crate) fn drain_browser_pre_hydration_events() -> Vec<CapturedPreHydrationEv
             });
         };
     let mut push_submit = |node_id: u32, value: String, age_ms: f64| {
+        let Some(node_id) = NodeId::from_raw(node_id) else {
+            return;
+        };
         out.borrow_mut().push(CapturedPreHydrationEvent::Submit {
-            node_id: NodeId(node_id),
+            node_id,
             value,
             age_ms: if age_ms.is_finite() && age_ms >= 0.0 {
                 age_ms as u64

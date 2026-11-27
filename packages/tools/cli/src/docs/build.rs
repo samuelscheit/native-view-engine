@@ -223,7 +223,7 @@ fn emit_ssr_page(
     body_scripts: Option<&str>,
 ) -> Result<(usize, usize), String> {
     let mut surface = nve_docs_site::create_nve_docs_surface_full(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Arc::clone(site),
         public_route,
         base_path,
@@ -384,7 +384,7 @@ fn render_404_page(
     body_scripts: Option<&str>,
 ) -> Result<String, String> {
     let mut surface = nve_docs_site::create_nve_docs_surface_full(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Arc::clone(site),
         "/",
         base_path,

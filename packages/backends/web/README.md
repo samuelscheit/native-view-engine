@@ -14,7 +14,7 @@ use nve_backend_web::WebBackend;
 use nve_engine::{StoreBackend, Viewport};
 
 let mut backend = WebBackend::new();
-backend.set_viewport(SurfaceId(1), Viewport { width: 1024.0, height: 768.0, scale_factor: 1.0 });
+backend.set_viewport(SurfaceId::ROOT, Viewport { width: 1024.0, height: 768.0, scale_factor: 1.0 });
 assert_eq!(backend.viewport().width, 1024.0);
 ```
 

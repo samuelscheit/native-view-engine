@@ -69,7 +69,7 @@ impl<'a> R<'a> {
     }
 
     fn node(&mut self) -> Result<NodeId, WireError> {
-        self.u32().map(NodeId)
+        self.u32().map(NodeId::from_raw_or_null)
     }
 }
 
@@ -209,7 +209,7 @@ impl WireDecoder {
                 for _ in 0..count {
                     let id = r.node()?;
                     if id.index() >= max_node_index || !tx.create_at(id) {
-                        return Err(WireError::NodeExists(id.0));
+                        return Err(WireError::NodeExists(id.raw()));
                     }
                 }
             }
@@ -367,7 +367,7 @@ impl WireDecoder {
     }
 
     fn live(&self, tx: &Transaction<'_>, id: NodeId) -> Result<NodeId, WireError> {
-        if tx.store().is_live(id) { Ok(id) } else { Err(WireError::DeadNode(id.0)) }
+        if tx.store().is_live(id) { Ok(id) } else { Err(WireError::DeadNode(id.raw())) }
     }
 
     fn declare(&mut self, tx: &mut Transaction<'_>, r: &mut R<'_>) -> Result<(), WireError> {

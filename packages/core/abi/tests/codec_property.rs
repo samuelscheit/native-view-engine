@@ -74,8 +74,8 @@ fn event_ring_and_direct_event_seeded_roundtrip_including_table_events() {
     let mut events = Vec::with_capacity(64);
 
     for i in 0..64u64 {
-        let surface_id = SurfaceId((rng.next_u32() % 4) + 1);
-        let node_id = NodeId((rng.next_u32() % 1000) + 1);
+        let surface_id = SurfaceId::new((rng.next_u32() % 4) + 1, 0);
+        let node_id = NodeId::new((rng.next_u32() % 1000) + 1, 0);
         let timestamp_us = i * 16_667;
         let ev = match i % 6 {
             0 => NativeEvent {

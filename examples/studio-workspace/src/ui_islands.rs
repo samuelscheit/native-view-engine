@@ -397,7 +397,7 @@ impl IslandSandboxRuntime {
                 y: 220.0,
                 delta_x: 0.0,
                 delta_y: 0.0,
-                timestamp_us: 1_000,
+                timestamp_us: nve_abi::TimestampUs(1_000),
             },
         );
 
@@ -410,7 +410,7 @@ impl IslandSandboxRuntime {
                 y: 220.0 + dy,
                 delta_x: dx,
                 delta_y: dy,
-                timestamp_us: 2_000,
+                timestamp_us: nve_abi::TimestampUs(2_000),
             },
         );
 
@@ -423,7 +423,7 @@ impl IslandSandboxRuntime {
                 y: 220.0 + dy,
                 delta_x: 0.0,
                 delta_y: 0.0,
-                timestamp_us: 3_000,
+                timestamp_us: nve_abi::TimestampUs(3_000),
             },
         );
 

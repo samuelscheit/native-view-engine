@@ -42,7 +42,7 @@ fn tid_from_nve(id: NodeId) -> taffy::NodeId {
 impl<'s> LayoutView<'s> {
     #[inline(always)]
     fn id_of(&self, n: taffy::NodeId) -> NodeId {
-        self.store.id_at(ix(n)).unwrap_or(NodeId(0))
+        self.store.id_at(ix(n)).unwrap_or(NodeId::NULL)
     }
 
     #[inline(always)]

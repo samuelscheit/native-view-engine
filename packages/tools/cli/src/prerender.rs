@@ -60,10 +60,10 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
         || app_arg.eq_ignore_ascii_case("studio-workspace")
         || app_arg.eq_ignore_ascii_case("nve-studio-workspace")
     {
-        let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+        let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
         let buf = prerender_native_frame0_with_text_measurer(
             &mut app,
-            SurfaceId(1),
+            SurfaceId::ROOT,
             viewport,
             STUDIO_SNAPSHOT_SCHEMA_VERSION,
             "studio",
@@ -75,10 +75,10 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
     } else if app_arg.eq_ignore_ascii_case("kitchen-sink")
         || app_arg.eq_ignore_ascii_case("nve-example-kitchen-sink")
     {
-        let mut app = KitchenSinkModule::create(SurfaceId(1));
+        let mut app = KitchenSinkModule::create(SurfaceId::ROOT);
         let buf = prerender_native_frame0_with_text_measurer(
             &mut app,
-            SurfaceId(1),
+            SurfaceId::ROOT,
             viewport,
             KITCHEN_SINK_STATE_VERSION,
             "kitchen-sink",

@@ -250,7 +250,7 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
     // Verify SSR emits exact zero-flicker `@media` hide rules & mobile article padding.
     let ssr_services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
     let mut ssr_surface = create_docs_surface_at_route(
-        nve_abi::SurfaceId(99),
+        nve_abi::SurfaceId::new(99, 0),
         "/",
         build_config(),
         build_fixture_site(),
@@ -468,7 +468,7 @@ fn create_docs_surface_at_route_renders_target_page_for_ssr() {
 
     // Also verify default root entrypoint compiles & mounts cleanly
     let mut root_surface = create_docs_surface(
-        nve_abi::SurfaceId(2),
+        nve_abi::SurfaceId::new(2, 0),
         build_config(),
         build_fixture_site(),
         build_playgrounds(),
@@ -528,7 +528,7 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
 
     // Render custom landing at "/"
     let mut landing_surface = create_docs_surface_with_pages(
-        nve_abi::SurfaceId(10),
+        nve_abi::SurfaceId::new(10, 0),
         "/",
         DocsViewport::desktop_default(),
         cfg.clone(),
@@ -548,7 +548,7 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
 
     // Render prefixed docs page at "/docs/guides/quickstart"
     let mut docs_surface = create_docs_surface_with_pages(
-        nve_abi::SurfaceId(11),
+        nve_abi::SurfaceId::new(11, 0),
         "/docs/guides/quickstart",
         DocsViewport::desktop_default(),
         cfg,

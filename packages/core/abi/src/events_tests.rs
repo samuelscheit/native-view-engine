@@ -4,22 +4,22 @@ use super::*;
 fn roundtrip_event_ring() {
     let events = vec![
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(10),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(10, 0),
             timestamp_us: 123_456,
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 42.5, y: 18.0 },
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(11),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(11, 0),
             timestamp_us: 123_500,
             kind: NativeEventKind::TextChange,
             payload: EventPayload::Text("hello".into()),
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(12),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(12, 0),
             timestamp_us: 123_900,
             kind: NativeEventKind::Custom,
             payload: EventPayload::Custom {
@@ -28,22 +28,22 @@ fn roundtrip_event_ring() {
             },
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(13),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(13, 0),
             timestamp_us: 124_000,
             kind: NativeEventKind::CompositionStart,
             payload: EventPayload::Text("ni".into()),
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(13),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(13, 0),
             timestamp_us: 124_100,
             kind: NativeEventKind::CompositionUpdate,
             payload: EventPayload::Text("nihao".into()),
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(13),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(13, 0),
             timestamp_us: 124_200,
             kind: NativeEventKind::CompositionEnd,
             payload: EventPayload::Text("你好".into()),
@@ -59,8 +59,8 @@ fn roundtrip_event_ring() {
 fn direct_typed_key_pointer_wheel_roundtrip_zero_size_growth() {
     let events = vec![
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(20),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(20, 0),
             timestamp_us: 200_000,
             kind: NativeEventKind::KeyDown,
             payload: EventPayload::Key {
@@ -72,8 +72,8 @@ fn direct_typed_key_pointer_wheel_roundtrip_zero_size_growth() {
             },
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(21),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(21, 0),
             timestamp_us: 200_100,
             kind: NativeEventKind::PointerMove,
             payload: EventPayload::Pointer {
@@ -84,8 +84,8 @@ fn direct_typed_key_pointer_wheel_roundtrip_zero_size_growth() {
             },
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(22),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(22, 0),
             timestamp_us: 200_200,
             kind: NativeEventKind::Wheel,
             payload: EventPayload::Wheel {

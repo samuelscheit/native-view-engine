@@ -11,11 +11,11 @@ use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, Sur
 use nve_backend_web::WebBackend;
 use nve_components::tables::{DebugId, Interaction};
 use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeStore};
 use nve_web_shell::{HotReloadAction, WebAppSession};
 
 fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
-    fn walk(store: &NodeStore, id: StoreNodeId, target: &str) -> Option<NodeId> {
+    fn walk(store: &NodeStore, id: NodeId, target: &str) -> Option<NodeId> {
         if !store.is_live(id) {
             return None;
         }
@@ -32,7 +32,7 @@ fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
         }
         None
     }
-    walk(store, StoreNodeId::ROOT, target)
+    walk(store, NodeId::ROOT, target)
 }
 
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
@@ -52,7 +52,7 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
         "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
     );
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id,
         timestamp_us,
         kind: NativeEventKind::Press,
@@ -88,7 +88,7 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
         scale_factor: 2.0,
     };
     let mut session =
-        WebAppSession::new_studio_workspace(SurfaceId(1), WebBackend::new(), viewport);
+        WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::new(), viewport);
     session.render_initial().expect("initial mount");
 
     let html0 = session.render_html();
@@ -181,7 +181,7 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
 #[test]
 fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
     let mut session =
-        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
+        WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     session.render_initial().expect("initial kitchen-sink mount");
 
     let inc_id = find_node_by_test_id(session.store(), "ks-counter-inc")
@@ -191,8 +191,8 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
 
     // Unhandled press on a nonexistent node must be ignored cleanly (no frame, no panic).
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
-        node_id: NodeId(99_999),
+        surface_id: SurfaceId::ROOT,
+        node_id: NodeId::new(99_999, 0),
         timestamp_us: 10,
         kind: NativeEventKind::Press,
         payload: EventPayload::Point { x: 0.0, y: 0.0 },
@@ -201,7 +201,7 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
 
     for step in 1..=10u64 {
         session.backend_mut().push_event(NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id: inc_id,
             timestamp_us: step * 100,
             kind: NativeEventKind::Press,
@@ -218,7 +218,7 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
     }
 
     session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: reset_id,
         timestamp_us: 2000,
         kind: NativeEventKind::Press,
@@ -231,7 +231,7 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
 #[test]
 fn hot_patch_empty_and_out_of_bounds_edge_cases() {
     let mut session =
-        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
+        WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     session.render_initial().expect("initial mount");
 
     // Empty TemplatePatch succeeds with 0 mutations.

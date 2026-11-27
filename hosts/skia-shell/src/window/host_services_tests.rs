@@ -12,7 +12,7 @@ use nve_abi::{
 };
 use nve_components::tables::register_core_tables;
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeId, NodeStore};
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_engine::Viewport;
 use nve_filesystem::{FilesystemClient, MemoryFilesystem, StandardPathKind};
@@ -319,9 +319,9 @@ impl DesktopApp for HostAwareMockApp {
         let mut changes = ChangeSet::default();
         {
             let mut tx = store.tx();
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(2));
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(2, 0));
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             tx.commit_into(&mut changes);
         }
         self.frame_buf.clear();
@@ -439,7 +439,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     // 2. App submits typed WindowCommands directly to open Modal, Sheet, Popover, and update title/bounds.
     let count = host.window(1).unwrap().session.app().send_window_commands(&[
         WindowCommand::OpenWindow {
-            surface_id: SurfaceId(2),
+            surface_id: SurfaceId::new(2, 0),
             presentation: SurfacePresentation::SecondaryWindow {
                 parent: Some(SurfaceId::ROOT),
                 modal: true,
@@ -447,16 +447,16 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
             },
         },
         WindowCommand::OpenWindow {
-            surface_id: SurfaceId(3),
+            surface_id: SurfaceId::new(3, 0),
             presentation: SurfacePresentation::Sheet {
                 parent: SurfaceId::ROOT,
                 descriptor: WindowDescriptor::new("Inspector Sheet", 300.0, 240.0),
             },
         },
         WindowCommand::OpenWindow {
-            surface_id: SurfaceId(4),
+            surface_id: SurfaceId::new(4, 0),
             presentation: SurfacePresentation::Popover {
-                anchor_surface: SurfaceId(3),
+                anchor_surface: SurfaceId::new(3, 0),
                 anchor_rect: WindowRect::new(10.0, 10.0, 80.0, 24.0),
                 descriptor: WindowDescriptor::new("Tooltip Popover", 180.0, 120.0),
             },
@@ -519,7 +519,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     assert_eq!(host.drain_window_commands(|s| u64::from(s.raw())), vec![Ok(None)]);
     assert_eq!(host.window_count(), 3);
     assert!(primary_events.lock().unwrap().iter().any(
-        |e| matches!(e, WindowLifecycleEvent::Closed { handle, surface_id } if *handle == modal_h && *surface_id == SurfaceId(2))
+        |e| matches!(e, WindowLifecycleEvent::Closed { handle, surface_id } if *handle == modal_h && *surface_id == SurfaceId::new(2, 0))
     ));
 
     // 5. Live theme change (Dark @ 2x) and locale change (ar-EG RTL) flow directly via TypedEventBus.

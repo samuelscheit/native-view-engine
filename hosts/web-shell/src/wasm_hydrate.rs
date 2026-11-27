@@ -219,9 +219,11 @@ pub fn hydrate_studio_workspace_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
+    let surface_id = SurfaceId::from_raw(surface_id)
+        .ok_or_else(|| JsValue::from_str("surface_id must have a non-zero 24-bit index"))?;
     start_surface_app_inner(
         "StudioWorkspaceApp",
-        SurfaceId(surface_id),
+        surface_id,
         mount_id,
         ws_url,
         true,
@@ -242,9 +244,11 @@ pub fn hydrate_kitchen_sink_app_on_surface(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
+    let surface_id = SurfaceId::from_raw(surface_id)
+        .ok_or_else(|| JsValue::from_str("surface_id must have a non-zero 24-bit index"))?;
     start_surface_app_inner(
         "KitchenSinkApp",
-        SurfaceId(surface_id),
+        surface_id,
         mount_id,
         ws_url,
         true,
@@ -329,7 +333,7 @@ fn attach_interaction_trap(
             let target_nid = target_el
                 .as_ref()
                 .and_then(|t| t.get_attribute("data-nve-id"))
-                .and_then(|s| s.parse::<u32>().ok().map(NodeId));
+                .and_then(|s| s.parse::<u32>().ok().and_then(NodeId::from_raw));
             let captured = CapturedInteraction {
                 island_id: island_id.clone(),
                 event_type: ev_type.to_owned(),
@@ -467,7 +471,7 @@ impl ProgressiveIslandHost {
             }
             let node_id = el
                 .get_attribute("data-nve-id")
-                .and_then(|s| s.parse::<u32>().ok().map(NodeId))
+                .and_then(|s| s.parse::<u32>().ok().and_then(NodeId::from_raw))
                 .unwrap_or(NodeId::NULL);
             let trigger = el
                 .get_attribute("data-nve-hydrate")

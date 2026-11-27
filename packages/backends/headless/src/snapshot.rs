@@ -5,15 +5,15 @@ use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
     is_node_display_none, Layout as NveLayout, Overflow, Typography, Visual,
 };
-use nve_store::{Length, NodeId as StoreNodeId, NodeStore};
+use nve_store::{Length, NodeId, NodeStore};
 
 #[inline]
-pub(crate) fn is_display_none(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(crate) fn is_display_none(store: &NodeStore, id: NodeId) -> bool {
     is_node_display_none(store, id)
 }
 
 #[inline]
-pub(crate) fn node_clips_overflow(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(crate) fn node_clips_overflow(store: &NodeStore, id: NodeId) -> bool {
     store.try_row::<Visual>(id).is_some_and(|v| {
         matches!(
             v.overflow_x(),
@@ -37,7 +37,7 @@ pub(crate) fn length_to_dim(l: Length) -> nve_abi::Dimension {
 }
 
 /// Extracts a value-type [`LayoutSnapshot`] from `store` for `id`.
-pub fn layout_snapshot_of(store: &NodeStore, id: StoreNodeId) -> LayoutSnapshot {
+pub fn layout_snapshot_of(store: &NodeStore, id: NodeId) -> LayoutSnapshot {
     let Some(l) = store.try_row::<NveLayout>(id) else {
         return LayoutSnapshot::default();
     };
@@ -97,7 +97,7 @@ pub fn layout_snapshot_of(store: &NodeStore, id: StoreNodeId) -> LayoutSnapshot 
 }
 
 /// Extracts a value-type [`VisualSnapshot`] from `store` for `id`.
-pub fn visual_snapshot_of(store: &NodeStore, id: StoreNodeId) -> VisualSnapshot {
+pub fn visual_snapshot_of(store: &NodeStore, id: NodeId) -> VisualSnapshot {
     let mut snap = VisualSnapshot::default();
     if let Some(v) = store.try_row::<Visual>(id) {
         snap.background = ColorRgba::from_u32(v.background().0);

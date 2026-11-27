@@ -364,7 +364,7 @@ fn publish_table_views_and_table_event_bus_roundtrip() {
 
     // Zero-serialization in-process TableEventBus + FFI NveDirectEvent + EventRing round-trip.
     let mut bus = crate::TableEventBus::new();
-    bus.emit::<Visual, (f32, f32)>(nve_abi::SurfaceId(7), n, 1234, 42, (10.0, 20.0));
+    bus.emit::<Visual, (f32, f32)>(nve_abi::SurfaceId::new(7, 0), n, 1234, 42, (10.0, 20.0));
     let events: Vec<_> = bus.drain().collect();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].payload::<(f32, f32)>(), Some(&(10.0, 20.0)));

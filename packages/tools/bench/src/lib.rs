@@ -17,8 +17,9 @@ pub use wasm_bundle_size::{
 };
 
 use nve_abi::{
-    EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveEventBatchRef,
-    NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId, ROOT_NODE_ID,
+    EventMask, EventPayload, FrameId, InterfaceId, NativeEvent, NativeEventKind, NodeId,
+    NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId,
+    ROOT_NODE_ID,
 };
 use nve_components::tables::{
     register_core_tables, AlignItems, FlexDirection, Interaction, JustifyContent, Layout,
@@ -67,8 +68,8 @@ impl RowFeedFixture {
         {
             let mut tx = self.store.tx();
             for i in 0..self.row_count {
-                let row_id = NodeId(next_id);
-                let text_id = NodeId(next_id + 1);
+                let row_id = NodeId::new(next_id, 0);
+                let text_id = NodeId::new(next_id + 1, 0);
                 next_id += 2;
 
                 tx.create_at(row_id);
@@ -121,7 +122,7 @@ impl RowFeedFixture {
             let mut tx = self.store.tx();
             for i in 0..count {
                 let idx = ((frame_id.raw() as usize * 7 + i) % self.row_count) as u32;
-                let text_id = NodeId(ROOT_NODE_ID.raw() + 1 + idx * 2 + 1);
+                let text_id = NodeId::new(ROOT_NODE_ID.raw() + 1 + idx * 2 + 1, 0);
                 tx.set_str(
                     text_id,
                     TextContent::TEXT,
@@ -154,7 +155,7 @@ pub fn build_node_tree_cmd(node_count: usize, _frame_id: FrameId) -> Vec<u8> {
     {
         let mut tx = store.tx();
         for i in 0..node_count {
-            let nid = NodeId(ROOT_NODE_ID.raw() + 1 + i as u32);
+            let nid = NodeId::new(ROOT_NODE_ID.raw() + 1 + i as u32, 0);
             tx.create_at(nid);
             if i % 2 == 0 {
                 tx.set(nid, Layout::WIDTH, Length::percent(100.0));
@@ -199,12 +200,12 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
 
     {
         let mut tx = store.tx();
-        let outer = NodeId(2);
-        let card = NodeId(3);
-        let eyebrow = NodeId(4);
-        let headline = NodeId(5);
-        let button = NodeId(6);
-        let btn_label = NodeId(7);
+        let outer = NodeId::new(2, 0);
+        let card = NodeId::new(3, 0);
+        let eyebrow = NodeId::new(4, 0);
+        let headline = NodeId::new(5, 0);
+        let button = NodeId::new(6, 0);
+        let btn_label = NodeId::new(7, 0);
 
         tx.create_at(outer);
         tx.set(outer, Layout::WIDTH, Length::percent(100.0));
@@ -287,7 +288,7 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
 pub fn build_event_batch(count: usize) -> Vec<NativeEvent> {
     (0..count)
         .map(|i| {
-            let node_id = NodeId((i as u32 % 100) + 2);
+            let node_id = NodeId::new((i as u32 % 100) + 2, 0);
             let ts = (i as u64 + 1) * 16_000;
             match i % 4 {
                 0 => NativeEvent {
@@ -419,5 +420,5 @@ impl NveApp for BenchFfiApp {
 nve_engine::export_nve_app!(BenchFfiApp, symbol = nve_bench_get_interface);
 
 unsafe extern "C" {
-    pub fn nve_bench_get_interface(interface_id: u32) -> *const std::ffi::c_void;
+    pub fn nve_bench_get_interface(interface_id: InterfaceId) -> *const std::ffi::c_void;
 }

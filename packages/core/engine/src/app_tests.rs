@@ -4,8 +4,8 @@ use std::ffi::c_void;
 use nve_abi::{
     NodeId, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
     NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi,
-    NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, NVE_IFACE_COMPONENT,
-    NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    InterfaceId, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue,
+    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
 use super::*;
@@ -51,7 +51,7 @@ struct PanickingTestApp {
 impl Drop for PanickingTestApp {
     fn drop(&mut self) {
         if current_panic_target() == PanicTarget::Destroy {
-            panic!("boom in destroy for surface {}", self.surface_id);
+            panic!("boom in destroy for {}", self.surface_id);
         }
     }
 }
@@ -153,7 +153,7 @@ impl NveApp for PanickingTestApp {
 crate::export_nve_app!(PanickingTestApp, symbol = test_panicking_app_get_interface);
 
 unsafe extern "C" {
-    fn test_panicking_app_get_interface(interface_id: u32) -> *const c_void;
+    fn test_panicking_app_get_interface(interface_id: InterfaceId) -> *const c_void;
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
 
         // 1. Panicking `create` returns null and records message; non-string payloads also work.
         set_panic_target(PanicTarget::Create);
-        let h_fail = (surface.create)(SurfaceId(7));
+        let h_fail = (surface.create)(SurfaceId::new(7, 0));
         assert!(h_fail.is_null());
         let peeked = last_ffi_panic().expect("create panic recorded");
         assert!(peeked.contains("NveSurfaceApi::create"));
@@ -209,14 +209,14 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
         assert_eq!(last_ffi_panic(), None);
 
         set_panic_target(PanicTarget::NonStringPayload);
-        let h_non_str = (surface.create)(SurfaceId(8));
+        let h_non_str = (surface.create)(SurfaceId::new(8, 0));
         assert!(h_non_str.is_null());
         let non_str_msg = take_last_ffi_panic().expect("non-string panic recorded");
         assert!(non_str_msg.contains("non-string panic payload"));
 
         // 2. Normal create + verify happy path does not record any panic.
         set_panic_target(PanicTarget::None);
-        let handle = (surface.create)(SurfaceId(42));
+        let handle = (surface.create)(SurfaceId::new(42, 0));
         assert!(!handle.is_null());
         assert_eq!((surface.render)(handle, FrameId(1)).as_slice(), &[0xAA, 0xBB]);
         assert_eq!(
@@ -240,7 +240,7 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
         assert!(msg.contains("NveSurfaceApi::render") && msg.contains("boom in render frame 99"));
 
         set_panic_target(PanicTarget::DispatchEvents);
-        let direct_ev = [NveDirectEvent::press(SurfaceId(42), NodeId(2), 100, 1.0, 2.0)];
+        let direct_ev = [NveDirectEvent::press(SurfaceId::new(42, 0), NodeId::new(2, 0), 100, 1.0, 2.0)];
         assert_eq!(
             (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_ev)),
             0
@@ -339,7 +339,8 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
         (surface.destroy)(handle);
         let msg = take_last_ffi_panic().unwrap();
         assert!(
-            msg.contains("NveSurfaceApi::destroy") && msg.contains("boom in destroy for surface 42")
+            msg.contains("NveSurfaceApi::destroy")
+                && msg.contains("boom in destroy for surface(42,0)")
         );
         set_panic_target(PanicTarget::None);
         assert_eq!(last_ffi_panic(), None);

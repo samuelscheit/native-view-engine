@@ -302,7 +302,7 @@ impl NveMapEntry {
 #[derive(Clone, Copy, NveAbi)]
 #[nve_abi(size_64 = 32)]
 pub struct NvePropEntry {
-    #[nve_abi(offset = 0, c_type = "u16")]
+    #[nve_abi(offset = 0)]
     pub field_id: PropFieldId,
     #[nve_abi(offset = 2)]
     pub _pad: [u8; 6],
@@ -312,9 +312,9 @@ pub struct NvePropEntry {
 
 impl NvePropEntry {
     #[inline]
-    pub const fn new(field_id: u16, value: NveValue) -> Self {
+    pub const fn new(field_id: PropFieldId, value: NveValue) -> Self {
         Self {
-            field_id: PropFieldId(field_id),
+            field_id,
             _pad: [0; 6],
             value,
         }

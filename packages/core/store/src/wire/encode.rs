@@ -209,7 +209,7 @@ impl WireEncoder {
             self.declared |= new;
         }
 
-        w.list(Op::CreateNodes, 0, changes.created.iter().map(|n| n.0));
+        w.list(Op::CreateNodes, 0, changes.created.iter().map(|n| n.raw()));
 
         if !changes.resources_defined.is_empty() {
             w.begin(Op::DefineResources, 0, changes.resources_defined.len() as u32);
@@ -254,7 +254,7 @@ impl WireEncoder {
                         }
                         let words = store.words(id, t.slot).unwrap_or(&[]);
                         let m = mask & !str_pairs;
-                        w.u32(id.0);
+                        w.u32(id.raw());
                         w.u32(m);
                         let mut bits = m;
                         while bits != 0 {
@@ -287,7 +287,7 @@ impl WireEncoder {
                                     len <= 0x00FF_FFFF,
                                     "NVE2 string length {len} exceeds 16 MiB wire limit"
                                 );
-                                w.u32(id.0);
+                                w.u32(id.raw());
                                 w.u32((i as u32) | ((len as u32) << 8));
                                 w.bytes(text.as_bytes());
                             }
@@ -296,23 +296,23 @@ impl WireEncoder {
                     }
                 }
             }
-            w.list(Op::Detach, slot, t.detached.iter().map(|n| n.0));
+            w.list(Op::Detach, slot, t.detached.iter().map(|n| n.raw()));
         }
 
         if !changes.children.is_empty() {
             w.begin(Op::SetChildren, 0, changes.children.len() as u32);
             for &p in &changes.children {
                 let kids = store.children(p);
-                w.u32(p.0);
+                w.u32(p.raw());
                 w.u32(kids.len() as u32);
                 for k in kids {
-                    w.u32(k.0);
+                    w.u32(k.raw());
                 }
             }
             w.end();
         }
 
-        w.list(Op::RemoveNodes, 0, changes.removed.iter().map(|n| n.0));
+        w.list(Op::RemoveNodes, 0, changes.removed.iter().map(|n| n.raw()));
         w.list(
             Op::ReleaseResources,
             0,
@@ -323,7 +323,7 @@ impl WireEncoder {
             w.begin(Op::Commands, 0, changes.commands.len() as u32);
             for c in &changes.commands {
                 let payload = changes.command_payload(c);
-                w.u32(c.node.0);
+                w.u32(c.node.raw());
                 w.u32(c.table.0 as u32);
                 w.u32(c.op);
                 w.u32(payload.len() as u32);

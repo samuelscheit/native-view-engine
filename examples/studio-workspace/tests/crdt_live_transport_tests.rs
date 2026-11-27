@@ -11,7 +11,7 @@ use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::DebugId;
 use nve_engine::{StoreBackend, Viewport};
-use nve_store::NodeId as StoreNodeId;
+use nve_store::NodeId;
 use nve_interop::crdt::{
     CrdtRecord, CrdtValue, HlcTimestamp, NveCrdtDelta, OpId, PeerId, VersionVector,
 };
@@ -515,10 +515,10 @@ fn in_memory_mesh_handles_packet_drops_reordering_and_partition_heal() {
 
 #[test]
 fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip() {
-    let mut surface = create_surface_for_viewport(SurfaceId(1), 960.0, 640.0);
+    let mut surface = create_surface_for_viewport(SurfaceId::ROOT, 960.0, 640.0);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        SurfaceId(1),
+        SurfaceId::ROOT,
         Viewport {
             width: 960.0,
             height: 640.0,
@@ -540,10 +540,10 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
                  fid: &mut u64,
                  tid: &str| {
         let store = surface.store();
-        let mut stack = vec![StoreNodeId::ROOT];
+        let mut stack = vec![NodeId::ROOT];
         let mut found = None;
         while let Some(id) = stack.pop() {
-            if id != StoreNodeId::ROOT
+            if id != NodeId::ROOT
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
@@ -563,7 +563,7 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
             .unwrap_or_else(|| panic!("hit_test missed '{tid}' at ({cx}, {cy}) rect={rect:?}"));
         assert_eq!(hit, nid, "hit_test hit wrong node for '{tid}'");
         assert!(surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id: hit,
             timestamp_us: *fid * 16_000,
             kind: NativeEventKind::Press,

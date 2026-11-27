@@ -322,6 +322,21 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     assert!(core_files[4].content.contains("HOST: 5,"));
     assert!(core_files[4].content.contains("export const NVE_HOST_STATUS ="));
 
+    assert!(core_files[0].content.contains("typedef uint64_t NveDurationUs;"));
+    assert!(core_files[0].content.contains("typedef uint32_t NveInterfaceId;"));
+    assert!(core_files[0].content.contains("NveDurationUs decode_us;"));
+    assert!(core_files[0].content.contains("NveSurfaceId surface_id;"));
+    assert!(!core_files[0].content.contains("uint64_t decode_us;"));
+    assert!(scene_files[0].content.contains("NveNodeId node_id;"));
+    assert!(scene_files[0].content.contains("NveFrameId frame_id;"));
+    assert!(scene_files[0].content.contains("NveByteLen text_slab_len;"));
+    assert!(scene_files[0].content.contains("uint32_t children_slab_len;"));
+    assert!(scene_files[0].content.contains("const NveNodeId* children_slab;"));
+    assert!(scene_files[0].content.contains("const NveNodeId* removed_ids;"));
+    assert!(scene_files[0].content.contains("const NveNodeId* owners;"));
+    assert!(!scene_files[0].content.contains("uint32_t node_id;"));
+    assert!(!scene_files[0].content.contains("uint64_t frame_id;"));
+
     assert!(core_files[0].content.contains("typedef struct NvePropEntry"));
     assert!(core_files[0].content.contains("typedef struct NvePropSlice"));
     assert!(core_files[0].content.contains("typedef struct NveCommandSlice"));

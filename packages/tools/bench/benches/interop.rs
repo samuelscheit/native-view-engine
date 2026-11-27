@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use nve_abi::TimestampUs;
 use nve_interop::crdt::{
     NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
     RgaList, VersionVector,
@@ -45,7 +46,7 @@ fn bench_channel_bus(c: &mut Criterion) {
         let counter = Arc::new(AtomicUsize::new(0));
         for i in 0..subs {
             let c_ref = Arc::clone(&counter);
-            bus.subscribe_by_id(ch_id, Some(SurfaceId(i as u32 + 1)), false, move |msg| {
+            bus.subscribe_by_id(ch_id, Some(SurfaceId::new(i as u32 + 1, 0)), false, move |msg| {
                 c_ref.fetch_add(msg.as_bytes().len(), Ordering::Relaxed);
             })
             .expect("subscribe bench channel");
@@ -120,7 +121,7 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
                     y: 200.0,
                     delta_x: 0.0,
                     delta_y: 0.0,
-                    timestamp_us: 1_000,
+                    timestamp_us: TimestampUs(1_000),
                 },
             );
             let d2 = runtime.gestures.arbitrate(
@@ -132,7 +133,7 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
                     y: 165.0,
                     delta_x: 0.0,
                     delta_y: -35.0,
-                    timestamp_us: 2_000,
+                    timestamp_us: TimestampUs(2_000),
                 },
             );
             runtime.gestures.update_scroll_edges(
@@ -151,7 +152,7 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
                     y: 130.0,
                     delta_x: 0.0,
                     delta_y: -35.0,
-                    timestamp_us: 3_000,
+                    timestamp_us: TimestampUs(3_000),
                 },
             );
             let d4 = runtime.gestures.arbitrate(
@@ -163,7 +164,7 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
                     y: 130.0,
                     delta_x: 0.0,
                     delta_y: 0.0,
-                    timestamp_us: 4_000,
+                    timestamp_us: TimestampUs(4_000),
                 },
             );
             black_box((d1.winner, d2.winner, d3.winner, d4.reason))

@@ -409,7 +409,7 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
         dispatch_host_events: app_dispatch_host_events,
     };
 
-    unsafe extern "C" fn mini_get_interface(id: u32) -> *const c_void {
+    unsafe extern "C" fn mini_get_interface(id: nve_abi::InterfaceId) -> *const c_void {
         if id == NVE_IFACE_HOST {
             (&MINI_HOST_API as *const NveHostApi).cast()
         } else {

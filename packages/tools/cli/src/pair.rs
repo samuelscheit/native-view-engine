@@ -45,7 +45,7 @@ pub(crate) enum PairControlMsg {
 
 /// Runtime abstraction over a live NVE app hosted by [`PairSession`].
 pub(crate) trait PairedApp {
-    fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]>;
+    fn render(&mut self, frame_id: FrameId) -> Cow<'_, [u8]>;
     fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool;
     fn set_props(&mut self, _entries: &[NveMapEntry]) -> bool {
         false
@@ -59,8 +59,8 @@ pub(crate) trait PairedApp {
 }
 
 impl PairedApp for HotAppInstance {
-    fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
-        Cow::Borrowed(HotAppInstance::render(self, FrameId(frame_id)))
+    fn render(&mut self, frame_id: FrameId) -> Cow<'_, [u8]> {
+        Cow::Borrowed(HotAppInstance::render(self, frame_id))
     }
     fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         HotAppInstance::dispatch_events(self, events)
@@ -79,8 +79,8 @@ impl PairedApp for HotAppInstance {
 }
 
 impl PairedApp for DioxusSurface {
-    fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.render_nve2_slice(FrameId(frame_id)))
+    fn render(&mut self, frame_id: FrameId) -> Cow<'_, [u8]> {
+        Cow::Borrowed(self.render_nve2_slice(frame_id))
     }
     fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         // SAFETY: `events` is a valid borrowed slice whose nested pointers outlive this call.
@@ -301,7 +301,7 @@ const TELEMETRY_PUSH_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) struct PairSession<A: PairedApp> {
     app: A,
     server: NveWireServer,
-    frame_id: u64,
+    frame_id: FrameId,
     last_frame: Vec<u8>,
     token: String,
     started_at: Instant,
@@ -337,7 +337,7 @@ impl<A: PairedApp> PairSession<A> {
 
         if width > 0.0 && height > 0.0 {
             let layout_ev = [NveDirectEvent::layout(
-                SurfaceId(1),
+                SurfaceId::ROOT,
                 ROOT_NODE_ID,
                 0,
                 0.0,
@@ -352,7 +352,7 @@ impl<A: PairedApp> PairSession<A> {
         let mut session = Self {
             app,
             server,
-            frame_id: 0,
+            frame_id: FrameId::ZERO,
             last_frame: Vec::new(),
             token,
             started_at: now,
@@ -407,13 +407,13 @@ impl<A: PairedApp> PairSession<A> {
     }
 
     pub(crate) fn render_and_broadcast(&mut self, force: bool) -> Result<bool, String> {
-        self.frame_id += 1;
+        self.frame_id = self.frame_id.next();
         let frame = self.app.render(self.frame_id);
         if frame.is_empty() || (!force && frame.as_ref() == self.last_frame.as_slice()) {
             return Ok(false);
         }
         self.server
-            .broadcast_command_delta(self.frame_id as u32, &frame)
+            .broadcast_command_delta(self.frame_id.raw() as u32, &frame)
             .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
         match frame {
             Cow::Borrowed(slice) => {
@@ -517,7 +517,7 @@ pub(crate) fn spawn_dylib_pair_thread(
     std::thread::Builder::new()
         .name("nve-cli-pair-session".into())
         .spawn(move || {
-            let app = match HotAppInstance::load(&dylib_path, SurfaceId(1), 1, None) {
+            let app = match HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None) {
                 Ok(a) => a,
                 Err(e) => {
                     let _ = ready_tx.send(Err(format!("load {}: {e}", dylib_path.display())));
@@ -567,7 +567,7 @@ pub(crate) fn cmd_pair(opts: PairOptions) {
         std::process::exit(1);
     });
     let token = resolve_or_generate_token(opts.token);
-    let app = HotAppInstance::load(&dylib_path, SurfaceId(1), 1, None).unwrap_or_else(|e| {
+    let app = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).unwrap_or_else(|e| {
         eprintln!("failed to load {}: {e}", dylib_path.display());
         std::process::exit(1);
     });

@@ -287,7 +287,7 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
         );
         writeln!(
             out,
-            "    pub fn emit_direct<F: FnOnce(&NveDirectEvent)>(&self, surface_id: u32, node_id: u32, timestamp_us: u64, sink: F) {{"
+            "    pub fn emit_direct<F: FnOnce(&NveDirectEvent)>(&self, surface_id: nve_abi::SurfaceId, node_id: nve_abi::NodeId, timestamp_us: nve_abi::TimestampUs, sink: F) {{"
         );
         // Pre-encode any complex event fields into local `Vec<u8>` so stack `NveValue` references stay alive.
         for (idx, param) in ev.params.iter().enumerate() {
@@ -314,7 +314,7 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
         let ev_name_lit = escape_c_like_string(&ev.name);
         writeln!(
             out,
-            "        let direct = NveDirectEvent::custom(nve_abi::SurfaceId(surface_id), nve_abi::NodeId(node_id), timestamp_us, \"{ev_name_lit}\", NveValue::map(&entries));"
+            "        let direct = NveDirectEvent::custom(surface_id, node_id, timestamp_us.raw(), \"{ev_name_lit}\", NveValue::map(&entries));"
         );
         writeln!(out, "        sink(&direct);");
         writeln!(out, "    }}");
@@ -329,7 +329,7 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
         );
         write!(
             out,
-            "pub fn emit_{snake}_{ev_snake}<F: FnOnce(&NveDirectEvent)>(surface_id: u32, node_id: u32, timestamp_us: u64"
+            "pub fn emit_{snake}_{ev_snake}<F: FnOnce(&NveDirectEvent)>(surface_id: nve_abi::SurfaceId, node_id: nve_abi::NodeId, timestamp_us: nve_abi::TimestampUs"
         );
         for param in &ev.params {
             let pname = rust_ident(&param.name);

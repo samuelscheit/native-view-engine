@@ -38,7 +38,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     ))
     .expect("bind NveWireServer");
 
-    let mut kitchen_sink = nve_example_kitchen_sink::create_surface(SurfaceId(1));
+    let mut kitchen_sink = nve_example_kitchen_sink::create_surface(SurfaceId::ROOT);
     let frame1 = kitchen_sink.render_nve2_slice(FrameId(1)).to_vec();
     server
         .broadcast_command_delta(1, &frame1)
@@ -49,7 +49,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
         height: 600.0,
         scale_factor: 1.0,
     };
-    let mut web_session = PairedWebSession::new(SurfaceId(1), WebBackend::new(), viewport, token);
+    let mut web_session = PairedWebSession::new(SurfaceId::ROOT, WebBackend::new(), viewport, token);
 
     let ws_url = format!("ws://127.0.0.1:{}/nve-wire", server.wss_addr().port());
     let (mut ws, _) = tungstenite::connect(&ws_url).expect("connect WS");
@@ -91,7 +91,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     // Local DOM click -> EventBatch -> server mutates KitchenSinkApp -> CommandDelta -> Count: 1.
     let btn_id = find_counter_increment_button(web_session.store());
     web_session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId(1),
+        surface_id: SurfaceId::ROOT,
         node_id: btn_id,
         timestamp_us: 12_345,
         kind: NativeEventKind::Press,
@@ -158,8 +158,8 @@ fn pair_client_machine_rejects_bad_frames_and_unauthorized_reject() {
     assert!(!client.is_connected());
     assert!(client
         .encode_input_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(1),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::ROOT,
             timestamp_us: 0,
             kind: NativeEventKind::Focus,
             payload: EventPayload::Empty,

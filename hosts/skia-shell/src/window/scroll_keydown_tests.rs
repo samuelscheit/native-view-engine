@@ -6,7 +6,7 @@ use nve_components::tables::{
 };
 use nve_engine::Viewport;
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 
 use super::input::format_keydown_shorthand;
 use super::{DesktopApp, DesktopHostError, DesktopSession};
@@ -46,30 +46,30 @@ impl DesktopApp for MockScrollAndKeyApp {
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         let mut tx = self.store.tx();
         if !self.initialized {
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(2));
-            tx.attach::<Scroll>(StoreNodeId(2));
-            tx.set(StoreNodeId(2), Layout::WIDTH, Length::points(200.0));
-            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::points(100.0));
-            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
-            tx.set(StoreNodeId(2), Visual::OVERFLOW_Y, Overflow::Scroll);
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(2, 0));
+            tx.attach::<Scroll>(NodeId::new(2, 0));
+            tx.set(NodeId::new(2, 0), Layout::WIDTH, Length::points(200.0));
+            tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::points(100.0));
+            tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(NodeId::new(2, 0), Visual::OVERFLOW_Y, Overflow::Scroll);
             tx.set(
-                StoreNodeId(2),
+                NodeId::new(2, 0),
                 Interaction::EVENT_MASK,
                 (EventMask::SCROLL | EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
             );
             for id in [10u32, 11, 12] {
-                let nid = StoreNodeId(id);
+                let nid = NodeId::new(id, 0);
                 let _ = tx.create_at(nid);
                 tx.set(nid, Layout::WIDTH, Length::points(200.0));
                 tx.set(nid, Layout::HEIGHT, Length::points(80.0));
                 tx.set(nid, Layout::FLEX_SHRINK, 0.0);
             }
             tx.set_children(
-                StoreNodeId(2),
-                &[StoreNodeId(10), StoreNodeId(11), StoreNodeId(12)],
+                NodeId::new(2, 0),
+                &[NodeId::new(10, 0), NodeId::new(11, 0), NodeId::new(12, 0)],
             );
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             self.initialized = true;
         }
         for (id, color) in [
@@ -82,7 +82,7 @@ impl DesktopApp for MockScrollAndKeyApp {
             } else {
                 color
             };
-            tx.set(StoreNodeId(id), Visual::BACKGROUND, bg);
+            tx.set(NodeId::new(id, 0), Visual::BACKGROUND, bg);
         }
         tx.commit_into(&mut self.changes);
         self.frame_buf.clear();
@@ -156,7 +156,7 @@ fn desktop_session_forwards_wheel_scroll_and_typed_keydown_events() {
     assert!(!session.handle_scroll_logical(220.0, 140.0, 0.0, 60.0).unwrap());
 
     assert!(session.handle_scroll_logical(50.0, 50.0, 0.0, 100.0).unwrap());
-    assert_eq!(session.app().scroll_events[0], (NodeId(2), 0.0, 100.0, 200.0, 240.0));
+    assert_eq!(session.app().scroll_events[0], (NodeId::new(2, 0), 0.0, 100.0, 200.0, 240.0));
     assert_eq!(session.pixel_buffer().get_rgb(50, 20), Some((16, 185, 129)));
     assert_eq!(session.pixel_buffer().get_rgb(50, 80), Some((37, 99, 235)));
     assert_eq!(session.pixel_buffer().get_rgb(50, 120), Some((0, 0, 0)));

@@ -8,11 +8,11 @@ use nve_abi::{
     NVE_NODE_LEAF_TEXT,
 };
 use nve_components::tables::{Interaction, Layout, Overflow, TextContent, Typography, Visual};
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable};
+use nve_store::{ChangeSet, NodeStore, NveTable};
 
 fn store_node_to_scene_input<'a>(
     store: &'a NodeStore,
-    node_id: StoreNodeId,
+    node_id: NodeId,
     children_scratch: &'a mut Vec<NodeId>,
 ) -> (SceneNodeInput<'a>, u32, u16) {
     let children = store.children(node_id);
@@ -118,7 +118,7 @@ fn store_node_to_scene_input<'a>(
 pub struct SceneMirror {
     table: NveSceneTable,
     view: Box<NveSceneView>,
-    sort_scratch: Vec<StoreNodeId>,
+    sort_scratch: Vec<NodeId>,
     children_scratch: Vec<NodeId>,
     text_dirty_marks: Vec<u64>,
     text_dirty_epoch: u64,

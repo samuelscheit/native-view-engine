@@ -16,7 +16,7 @@ use nve_abi::{
 use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig};
 use tungstenite::Message;
 
@@ -44,21 +44,21 @@ impl RemoteServerApp {
         let mut changes = ChangeSet::default();
         {
             let mut tx = store.tx();
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(2));
-            let _ = tx.create_at(StoreNodeId(4));
-            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(2, 0));
+            let _ = tx.create_at(NodeId::new(4, 0));
+            tx.set(NodeId::new(2, 0), Layout::WIDTH, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::percent(100.0));
             let p = Length::points(20.0);
-            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
-            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_TOP, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_RIGHT, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_BOTTOM, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_LEFT, p);
+            tx.set(NodeId::new(2, 0), Layout::ROW_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::COLUMN_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
             tx.set(
-                StoreNodeId(2),
+                NodeId::new(2, 0),
                 Visual::BACKGROUND,
                 if self.palette_open {
                     Rgba::rgb(250, 204, 21)
@@ -67,15 +67,15 @@ impl RemoteServerApp {
                 },
             );
             tx.set(
-                StoreNodeId(2),
+                NodeId::new(2, 0),
                 Interaction::EVENT_MASK,
                 (EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
             );
 
-            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(160.0));
-            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(56.0));
+            tx.set(NodeId::new(4, 0), Layout::WIDTH, Length::points(160.0));
+            tx.set(NodeId::new(4, 0), Layout::HEIGHT, Length::points(56.0));
             tx.set(
-                StoreNodeId(4),
+                NodeId::new(4, 0),
                 Visual::BACKGROUND,
                 if self.clicks == 0 {
                     Rgba::rgb(37, 99, 235)
@@ -83,10 +83,10 @@ impl RemoteServerApp {
                     Rgba::rgb(16, 185, 129)
                 },
             );
-            tx.set(StoreNodeId(4), Visual::BORDER_RADIUS, 8.0);
-            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
-            tx.set_children(StoreNodeId(2), &[StoreNodeId(4)]);
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.set(NodeId::new(4, 0), Visual::BORDER_RADIUS, 8.0);
+            tx.set(NodeId::new(4, 0), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            tx.set_children(NodeId::new(2, 0), &[NodeId::new(4, 0)]);
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             tx.commit_into(&mut changes);
         }
         let mut out = Vec::new();
@@ -101,7 +101,7 @@ impl RemoteServerApp {
         let mut changed = false;
         for ev in events {
             match (ev.kind, ev.payload) {
-                (NativeEventKind::Press, _) if ev.node_id == NodeId(4) => {
+                (NativeEventKind::Press, _) if ev.node_id == NodeId::new(4, 0) => {
                     self.clicks += 1;
                     changed = true;
                 }

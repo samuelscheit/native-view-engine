@@ -1,7 +1,7 @@
 //! Data types and inline small-buffer collections for cross-framework gesture arbitration.
 
 use nve_abi::hash::HashMap;
-use nve_abi::SurfaceId;
+use nve_abi::{SurfaceId, TimestampUs};
 use serde::{Deserialize, Serialize};
 
 use crate::surface::FrameworkKind;
@@ -393,7 +393,7 @@ pub struct PointerSample {
     pub y: f32,
     pub delta_x: f32,
     pub delta_y: f32,
-    pub timestamp_us: u64,
+    pub timestamp_us: TimestampUs,
 }
 
 /// Why the arbitrator selected a disposition.

@@ -16,7 +16,7 @@ let mut table = NveSceneTable::new();
 table.begin_frame(FrameId(1));
 table
     .upsert_node(SceneNodeInput {
-        node_id: NodeId(1),
+        node_id: NodeId::ROOT,
         primary_slot: PrimarySlot::NONE,
         ..SceneNodeInput::default()
     })

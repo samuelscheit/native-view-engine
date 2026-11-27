@@ -212,8 +212,8 @@ pub(super) fn encode_islands(w: &mut BinWriter, isl: &IslandsSnapshot) {
 }
 
 pub(super) fn decode_islands(r: &mut BinReader<'_>) -> Option<IslandsSnapshot> {
-    let root_surface_id = SurfaceId(r.read_u32()?);
-    let rail_surface_id = SurfaceId(r.read_u32()?);
+    let root_surface_id = SurfaceId::from_raw_or_null(r.read_u32()?);
+    let rail_surface_id = SurfaceId::from_raw_or_null(r.read_u32()?);
     let active_surface_count = r.read_u32()? as usize;
     let card_len = r.read_count()?;
     let mut cards = Vec::with_capacity(card_len.min(64));
@@ -229,7 +229,7 @@ pub(super) fn decode_islands(r: &mut BinReader<'_>) -> Option<IslandsSnapshot> {
         cards.push(IslandCardState {
             slug,
             host,
-            surface_id: SurfaceId(r.read_u32()?),
+            surface_id: SurfaceId::from_raw_or_null(r.read_u32()?),
             component_name: r.read_str()?,
             mount_policy: r.read_str()?,
             lifecycle: r.read_str()?,
@@ -242,7 +242,7 @@ pub(super) fn decode_islands(r: &mut BinReader<'_>) -> Option<IslandsSnapshot> {
     let last_gesture_disposition = r.read_str()?;
     let last_gesture_winner = match r.read_u8()? {
         0 => None,
-        1 => Some(SurfaceId(r.read_u32()?)),
+        1 => Some(SurfaceId::from_raw_or_null(r.read_u32()?)),
         _ => return None,
     };
     let last_gesture_reason = r.read_str()?;

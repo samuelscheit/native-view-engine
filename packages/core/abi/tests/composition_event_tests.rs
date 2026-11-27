@@ -14,22 +14,22 @@ fn composition_events_roundtrip_event_ring_and_direct_ffi_batch() {
 
     let events = vec![
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(10),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(10, 0),
             timestamp_us: 100,
             kind: NativeEventKind::CompositionStart,
             payload: EventPayload::Text("ni".into()),
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(10),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(10, 0),
             timestamp_us: 200,
             kind: NativeEventKind::CompositionUpdate,
             payload: EventPayload::Text("nihao".into()),
         },
         NativeEvent {
-            surface_id: SurfaceId(1),
-            node_id: NodeId(10),
+            surface_id: SurfaceId::ROOT,
+            node_id: NodeId::new(10, 0),
             timestamp_us: 300,
             kind: NativeEventKind::CompositionEnd,
             payload: EventPayload::Text("你好".into()),
@@ -41,22 +41,22 @@ fn composition_events_roundtrip_event_ring_and_direct_ffi_batch() {
 
     let direct = [
         NveDirectEvent::composition(
-            SurfaceId(1),
-            NodeId(10),
+            SurfaceId::ROOT,
+            NodeId::new(10, 0),
             100,
             NativeEventKind::CompositionStart,
             "ni",
         ),
         NveDirectEvent::composition(
-            SurfaceId(1),
-            NodeId(10),
+            SurfaceId::ROOT,
+            NodeId::new(10, 0),
             200,
             NativeEventKind::CompositionUpdate,
             "nihao",
         ),
         NveDirectEvent::composition(
-            SurfaceId(1),
-            NodeId(10),
+            SurfaceId::ROOT,
+            NodeId::new(10, 0),
             300,
             NativeEventKind::CompositionEnd,
             "你好",

@@ -96,6 +96,13 @@ pub fn generate_c_scene_abi_h() -> String {
         }
     }
     writeln!(out);
+    writeln!(out, "#ifndef NVE_ABI_SHARED_HANDLES_DEFINED");
+    writeln!(out, "#define NVE_ABI_SHARED_HANDLES_DEFINED");
+    for a in &spec.aliases {
+        writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
+    }
+    writeln!(out, "#endif");
+    writeln!(out);
     writeln!(
         out,
         "/* Naturally 4-byte aligned in C so Swift's ClangImporter imports it directly as a value type;"

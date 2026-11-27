@@ -65,7 +65,7 @@ impl<'a> NveSceneRef<'a> {
             (
                 guarded_slice(view.nodes, view.node_count, "nodes")?,
                 guarded_slice(view.text_slab, view.text_slab_len.raw(), "text_slab")?,
-                guarded_slice(view.children_slab, view.children_slab_len.raw(), "children_slab")?,
+                guarded_slice(view.children_slab, view.children_slab_len, "children_slab")?,
                 guarded_slice(view.dirty_indices, view.dirty_count, "dirty_indices")?,
                 guarded_slice(view.removed_ids, view.removed_count, "removed_ids")?,
                 guarded_slice(view.tables, view.table_count, "tables")?,

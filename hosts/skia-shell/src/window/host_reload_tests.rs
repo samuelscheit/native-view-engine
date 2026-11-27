@@ -235,7 +235,7 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
 
     // Gen 1 received initial #[repr(C)] ThemeSnapshot and invokes SERVICE_SYSTEM_ENV::GET_THEME live.
     assert_eq!(slot.render(FrameId(1)), b"f=1;bound=1;themes=1;state=1;scheme=1");
-    let tick = [nve_abi::NveDirectEvent::press(SurfaceId::ROOT, NodeId(2), 1, 0.0, 0.0)];
+    let tick = [nve_abi::NveDirectEvent::press(SurfaceId::ROOT, NodeId::new(2, 0), 1, 0.0, 0.0)];
     // SAFETY: `NveDirectEvent::press` holds only scalar coordinates and no borrowed pointers.
     let tick_batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&tick) };
     assert!(slot.dispatch_events(tick_batch));

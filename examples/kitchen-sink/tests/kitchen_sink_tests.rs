@@ -253,11 +253,11 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
     assert_eq!(m1.count(), 1);
 
     let snap = m1.snapshot_state().to_vec();
-    let mut m2 = KitchenSinkModule::create(SurfaceId(2));
+    let mut m2 = KitchenSinkModule::create(SurfaceId::new(2, 0));
     assert!(m2.try_restore_state(&snap));
     assert_eq!(m2.count(), 1);
     let mut h2 = HeadlessBackend::new();
-    h2.set_viewport(SurfaceId(2), Viewport::default());
+    h2.set_viewport(SurfaceId::new(2, 0), Viewport::default());
     let mut rep2 = StoreWireReplica::new(h2, nve_components::tables::core_realization_order());
     rep2.submit_nve2_frame(m2.render(FrameId(1))).unwrap();
     assert!(rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 1"));

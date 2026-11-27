@@ -169,7 +169,7 @@ fn reduced_motion_snaps_immediately_and_fires_completion_callbacks() {
     let mut clock: MotionGroup = MotionClock::with_preference(pref);
     clock.animate_spring("opacity", SpringSpec::bouncy(), 0.0, 1.0);
     clock.animate_transition(
-        (NodeId(42), TransitionProperty::Opacity),
+        (NodeId::new(42, 0), TransitionProperty::Opacity),
         TransitionSpec::new(TransitionProperty::Opacity, 300),
         0.2,
         0.9,
@@ -185,13 +185,13 @@ fn reduced_motion_snaps_immediately_and_fires_completion_callbacks() {
     assert_eq!(clock.value_named("opacity"), Some(1.0));
     assert_eq!(clock.velocity(&MotionKey::from("opacity")), Some(0.0));
     assert_eq!(
-        clock.value(&MotionKey::from((NodeId(42), TransitionProperty::Opacity))),
+        clock.value(&MotionKey::from((NodeId::new(42, 0), TransitionProperty::Opacity))),
         Some(0.9)
     );
     assert_eq!(fired.len(), 2);
     assert_eq!(fired[0].key, MotionKey::from("opacity"));
     assert_eq!(fired[0].final_value, 1.0);
-    assert_eq!(fired[1].key, MotionKey::from((NodeId(42), TransitionProperty::Opacity)));
+    assert_eq!(fired[1].key, MotionKey::from((NodeId::new(42, 0), TransitionProperty::Opacity)));
     assert_eq!(fired[1].final_value, 0.9);
 
     // Subsequent ticks emit zero duplicate completions and keep idle state false.

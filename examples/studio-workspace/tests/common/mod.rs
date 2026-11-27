@@ -11,7 +11,7 @@ use nve_canvas_web::CanvasWebSystem;
 use nve_components::tables::{DebugId, TextContent};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, Viewport};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeStore};
 use nve_studio_workspace::create_surface_for_viewport;
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_web_html_web::register_web_html_systems;
@@ -23,9 +23,9 @@ pub fn register_studio_tables() {
 }
 
 pub fn find_in_store(store: &NodeStore, test_id: &str) -> Option<NodeId> {
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
-        if id != StoreNodeId::ROOT
+        if id != NodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == test_id
         {
@@ -46,9 +46,9 @@ pub fn data_attr_in_store(store: &NodeStore, id: NodeId, key: &str) -> Option<St
         .map(|(_, v)| v.clone())
 }
 
-pub fn live_node_ids(store: &NodeStore) -> Vec<StoreNodeId> {
+pub fn live_node_ids(store: &NodeStore) -> Vec<NodeId> {
     let mut out = Vec::new();
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
         out.push(id);
         stack.extend_from_slice(store.children(id));
@@ -79,12 +79,12 @@ impl MultiBackendHarness {
         let mut web = WebBackend::new();
         register_web_html_systems(web.table_registry_mut());
         web.register_table_system(CanvasWebSystem);
-        headless.set_viewport(SurfaceId(1), viewport);
-        skia.set_viewport(SurfaceId(1), viewport);
-        web.set_viewport(SurfaceId(1), viewport);
+        headless.set_viewport(SurfaceId::ROOT, viewport);
+        skia.set_viewport(SurfaceId::ROOT, viewport);
+        web.set_viewport(SurfaceId::ROOT, viewport);
 
         let mut h = Self {
-            surface: create_surface_for_viewport(SurfaceId(1), width, height),
+            surface: create_surface_for_viewport(SurfaceId::ROOT, width, height),
             headless,
             skia,
             web,
@@ -143,7 +143,7 @@ impl MultiBackendHarness {
         );
 
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id: hit,
             timestamp_us: self.next_frame * 16_000,
             kind: NativeEventKind::Press,
@@ -162,7 +162,7 @@ impl MultiBackendHarness {
         );
         let node_id = node_id.expect("checked above");
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId(1),
+            surface_id: SurfaceId::ROOT,
             node_id,
             timestamp_us: self.next_frame * 16_000,
             kind: NativeEventKind::TextChange,
@@ -191,7 +191,7 @@ impl MultiBackendHarness {
         let vp_w = self.viewport.width;
         let store = self.surface.store();
         for id in live_node_ids(store) {
-            if id == StoreNodeId::ROOT {
+            if id == NodeId::ROOT {
                 continue;
             }
             let Some(r) = self.headless.layout_of(id) else {

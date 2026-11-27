@@ -140,11 +140,25 @@ pub fn generate_c_core_abi_h() -> String {
         writeln!(out);
     }
 
-    // Handle & scalar aliases (emitted before structs so ABI structs/vtables can reference them)
+    // Handle & scalar aliases (emitted before structs so ABI structs/vtables can reference them).
+    // Shared core+scene typedefs are guarded so `nve_abi.generated.h` and `nve_scene_abi.generated.h`
+    // can be included in either order under strict C/C++ compilers.
+    writeln!(out, "#ifndef NVE_ABI_SHARED_HANDLES_DEFINED");
+    writeln!(out, "#define NVE_ABI_SHARED_HANDLES_DEFINED");
+    for a in &spec.aliases {
+        if matches!(a.name.as_str(), "NveNodeId" | "NveFrameId" | "NveByteLen") {
+            writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
+        }
+    }
+    writeln!(out, "#endif");
     for a in &spec.aliases {
         if matches!(
             a.name.as_str(),
-            "NveHostInvokeFn" | "NveHostChannelPublishFn"
+            "NveNodeId"
+                | "NveFrameId"
+                | "NveByteLen"
+                | "NveHostInvokeFn"
+                | "NveHostChannelPublishFn"
         ) {
             continue;
         }
@@ -392,9 +406,12 @@ pub fn generate_c_core_abi_h() -> String {
     );
     writeln!(
         out,
-        "typedef const void* (*NveGetInterfaceFn)(uint32_t interface_id);"
+        "typedef const void* (*NveGetInterfaceFn)(NveInterfaceId interface_id);"
     );
-    writeln!(out, "NVE_API const void* nve_get_interface(uint32_t interface_id);");
+    writeln!(
+        out,
+        "NVE_API const void* nve_get_interface(NveInterfaceId interface_id);"
+    );
     writeln!(out);
     writeln!(
         out,

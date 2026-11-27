@@ -13,18 +13,18 @@ use std::ffi::c_void;
 
 use nve_abi_macros::NveAbi;
 
-use crate::id::{DurationUs, FrameId, SurfaceId};
+use crate::id::{DurationUs, FrameId, InterfaceId, SurfaceId};
 use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Compile-time XXH64 schema fingerprint for NVE's Core C ABI, derived directly from
 /// `crate::schema::core_abi_descriptor()` (zero hardcoded hex literals).
 pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = crate::schema::compute_core_abi_schema_hash();
 
-pub const NVE_IFACE_SURFACE: u32 = 1;
-pub const NVE_IFACE_LAYOUT: u32 = 2;
-pub const NVE_IFACE_COMPONENT: u32 = 3;
-pub const NVE_IFACE_DEV: u32 = 4;
-pub const NVE_IFACE_HOST: u32 = 5;
+pub const NVE_IFACE_SURFACE: InterfaceId = InterfaceId(1);
+pub const NVE_IFACE_LAYOUT: InterfaceId = InterfaceId(2);
+pub const NVE_IFACE_COMPONENT: InterfaceId = InterfaceId(3);
+pub const NVE_IFACE_DEV: InterfaceId = InterfaceId(4);
+pub const NVE_IFACE_HOST: InterfaceId = InterfaceId(5);
 
 /// Borrowed immutable byte slice across the C ABI.
 #[repr(C)]
@@ -65,7 +65,7 @@ impl NveBufferSlice {
 #[derive(Debug, Clone, Copy, NveAbi)]
 #[nve_abi(size = 16)]
 pub struct NveSurfaceConfig {
-    #[nve_abi(offset = 0, c_type = "NveSurfaceId")]
+    #[nve_abi(offset = 0)]
     pub surface_id: SurfaceId,
     #[nve_abi(offset = 4)]
     pub width: f32,
@@ -84,13 +84,13 @@ pub struct NveFrameStats {
     pub op_count: u32,
     #[nve_abi(offset = 4)]
     pub mutation_count: u32,
-    #[nve_abi(offset = 8, c_type = "u64")]
+    #[nve_abi(offset = 8)]
     pub decode_us: DurationUs,
-    #[nve_abi(offset = 16, c_type = "u64")]
+    #[nve_abi(offset = 16)]
     pub layout_us: DurationUs,
-    #[nve_abi(offset = 24, c_type = "u64")]
+    #[nve_abi(offset = 24)]
     pub diff_us: DurationUs,
-    #[nve_abi(offset = 32, c_type = "u64")]
+    #[nve_abi(offset = 32)]
     pub mount_us: DurationUs,
 }
 
@@ -261,7 +261,7 @@ impl std::error::Error for DecodeError {}
 pub type NveAppHandle = *mut c_void;
 
 /// Single exported entry point per NVE module (`nve_get_interface`).
-pub type NveGetInterfaceFn = unsafe extern "C" fn(interface_id: u32) -> *const c_void;
+pub type NveGetInterfaceFn = unsafe extern "C" fn(interface_id: InterfaceId) -> *const c_void;
 
 /// Required core surface interface (`NVE_IFACE_SURFACE = 1`).
 #[repr(C)]

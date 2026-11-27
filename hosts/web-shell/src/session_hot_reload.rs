@@ -1,6 +1,5 @@
 //! Dev-only `NVP1` binary hot-reload action types and `WebAppSession::handle_hot_patch*` methods.
 
-use nve_abi::FrameId;
 use nve_engine::HotPatchMsg;
 use nve_store::ChangeSet;
 
@@ -47,7 +46,7 @@ impl WebAppSession {
                     msg,
                     &mut patch_changes,
                 );
-                let next_frame = FrameId(self.frame_id.next().raw().max(1));
+                let next_frame = self.frame_id.next();
                 self.frame_id = next_frame;
                 #[cfg(feature = "scene-view")]
                 self.scene

@@ -102,8 +102,9 @@ fn parse_ssr_node_tags(html: &str) -> nve_abi::hash::HashMap<NodeId, String> {
                     let id_start = pos + "data-nve-id=\"".len();
                     if let Some(end_q) = attrs[id_start..].find('"')
                         && let Ok(raw_id) = attrs[id_start..id_start + end_q].parse::<u32>()
+                        && let Some(id) = NodeId::from_raw(raw_id)
                     {
-                        map.insert(NodeId(raw_id), tag.to_owned());
+                        map.insert(id, tag.to_owned());
                     }
                 }
                 i = tag_end + gt_rel + 1;
