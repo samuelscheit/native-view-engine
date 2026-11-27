@@ -4,29 +4,42 @@
  *
  * Zero npm dependencies: Node built-ins + local Chrome/Chromium `--headless=new`. The issues
  * server runs with `NVE_ISSUES_TEST_HOOKS=1` (deterministic `/_test/stream-control` barrier).
- * Every suite requires 0 console errors and 0 CSP violations.
+ * Every suite requires 0 console errors and 0 CSP violations on all three CSP channels (Audits
+ * issues, in-page `securitypolicyviolation` listener, `Log.entryAdded`), each proven live by a
+ * deliberate canary violation first.
  *
  *  1. Post-stream streaming SSR hydration (strict nonce CSP, 0 mismatches/replacements, 0 RPCs).
  *  2. True mid-stream async WASM boot behind a server barrier (+ interaction while the stream is
  *     open, reactive comments slot after release, still 0 Comments/Stats RPCs).
- *  3. Pre-headers `404` (`?issue=999`) + post-headers `<ErrorBoundary>` hydration
+ *  3. Mid-slot TCP splits: a same-origin proxy pauses the `stats` slot chunk inside its NVEQ
+ *     payload, its chunk `<style>`, its `<div slot>`, and between `</div>` and its ack while WASM
+ *     boots, then releases it (0 mismatches, exactly one styled `stats-total`, 0 RPCs each).
+ *  4. Truncated streams (no stream-end, comments barrier held): after `seq=0` + `boot.js`, inside
+ *     the stats chunk `<style>`, and inside the stats `<div slot>`; `DOMContentLoaded` releases
+ *     stream-pending queries to exactly one client RPC each, with whole (never truncated) CSS.
+ *  (Suites 3 + 4 live in `stream_split_suites.mjs`.)
+ *  5. Pre-headers `404` (`?issue=999`) + post-headers `<ErrorBoundary>` hydration
  *     (`?comments_issue=999`) with 0 RPCs.
- *  4. Full interactive app flows (FormDecode, 422 FieldErrors, CreateIssue + Nve-Invalidate incl.
+ *  6. Full interactive app flows (FormDecode, 422 FieldErrors, CreateIssue + Nve-Invalidate incl.
  *     live stats, CDP-paused optimistic CloseIssue, filters, RenameIssue, AddComment) + screenshots.
- *  5. Live `FetchTransport` 6-probe browser matrix + live-DOM probes: native `<dialog>` /
+ *  7. Live `FetchTransport` 6-probe browser matrix + live-DOM probes: native `<dialog>` /
  *     `[popover]` top layer (modality flips, moves, retags), a real nve-ui `Dialog` closed by a
  *     TRUSTED backdrop click (native `closedBy` and the fallback path), container-root hydration,
  *     `<select>` SSR base-value parity, and a live `nve-tv-web` `WebTvController` driven by
  *     TRUSTED key presses (explicit neighbors, arrow-owning widgets, modal trap, Select, re-entrancy).
- *  6. Real cross-origin CORS preflight.
- *  7. True 0-JS mode: DSD slots, ErrorBoundary slot, native `<form>` POST -> 303 -> GET /issues.
+ *  8. Real cross-origin CORS preflight.
+ *  9. True 0-JS mode: DSD slots, ErrorBoundary slot, native `<form>` POST -> 303 -> GET /issues.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
 import {
+  COMMENTS_RPC,
   ISSUES_PKG_DIR,
+  STATS_RPC,
+  assert,
+  visibleJs,
   REPO_ROOT,
   WEB_SHELL_DIR,
   capturePng,
@@ -44,16 +57,13 @@ import {
   startProbeServer,
   waitFor,
   waitForEvent,
+  waitUntil,
+  watchCspViolations,
 } from "./harness.mjs";
+import { runStreamSplitSuites } from "./stream_split_suites.mjs";
+import { startStreamProxy } from "./stream_proxy.mjs";
 
 const SESSION_COOKIE = "nve_issues_session=web-demo-session";
-const COMMENTS_RPC = "/rpc/issues.v1.Comments/List";
-const STATS_RPC = "/rpc/issues.v1.Stats/Get";
-
-function assert(cond, msg) {
-  if (!cond) throw new Error(msg);
-}
-
 const TV_KEY_CODES = { ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Enter: 13, Escape: 27, Select: 41 };
 
 /**
@@ -133,10 +143,6 @@ async function runTvControllerProbe(cdp, probeCall) {
   console.log("  PASS: live WebTvController (next-* after click focus, skips, tablist/select arrows, native Enter, modal trap, Select click, Escape, re-entrancy, uninstall).");
 }
 
-/** JS predicate source: element exists and has a laid-out box. */
-const visibleJs = (sel) =>
-  `(() => { const el = document.querySelector(${JSON.stringify(sel)}); return Boolean(el && el.getBoundingClientRect().height > 0); })`;
-
 function assertStrictCsp(headers, where) {
   const csp = headers["content-security-policy"] || "";
   const scriptSrc = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("script-src ")) || "";
@@ -167,10 +173,10 @@ async function main() {
   const probeOrigin = `http://127.0.0.1:${probe.port}`;
   const issuesSrv = await startIssuesServer(serverBin, ISSUES_PKG_DIR, probeOrigin);
   const origin = `http://127.0.0.1:${issuesSrv.port}`;
+  const proxy = await startStreamProxy(issuesSrv.port);
   const chrome = await launchHeadlessChrome(findChromeBinary());
 
   const consoleErrors = [];
-  const cspErrors = [];
   const rpcRequests = [];
   const rpcSince = (mark, needle = "/rpc/") => rpcRequests.slice(mark).filter((u) => u.includes(needle)).length;
 
@@ -185,6 +191,7 @@ async function main() {
 
   try {
     const cdp = await openTab(chrome.debugPort);
+    const csp = await watchCspViolations(cdp);
     cdp.on("Runtime.exceptionThrown", (p) => {
       const msg = p.exceptionDetails?.exception?.description || p.exceptionDetails?.text || JSON.stringify(p);
       console.error("  [browser exception]", msg);
@@ -194,12 +201,6 @@ async function main() {
       const line = p.args.map((a) => a.value ?? a.description ?? "").join(" ");
       if (p.type === "error" || p.type === "warning") console.error(`  [browser ${p.type}]`, line);
       if (p.type === "error") consoleErrors.push(line);
-    });
-    cdp.on("Log.entryAdded", ({ entry }) => {
-      if (entry.source === "security" || /Content Security Policy/i.test(entry.text)) {
-        console.error("  [CSP]", entry.text);
-        cspErrors.push(entry.text);
-      }
     });
     cdp.on("Network.responseReceived", (p) => {
       if (p.response.status >= 400) console.error(`  [http ${p.response.status}] ${p.response.url}`);
@@ -234,7 +235,7 @@ async function main() {
     // -------------------------------------------------------------------------
     // 1. Post-stream streaming SSR hydration
     // -------------------------------------------------------------------------
-    console.log("==> [1/7] Post-stream streaming SSR hydration (strict nonce CSP, 0 RPCs)");
+    console.log("==> [1/9] Post-stream streaming SSR hydration (strict nonce CSP, 0 RPCs)");
     await control("stats_delay_ms=10&comments_delay_ms=25&hold_comments=0");
     let mark = rpcRequests.length;
     const doc1 = await navigateDocument(cdp, `${origin}/issues`);
@@ -252,10 +253,23 @@ async function main() {
     assert(rpcSince(mark) === 0, `suite 1: expected 0 /rpc/* requests, saw ${rpcSince(mark)}`);
     console.log(`  PASS: hydrated (adopted=${h1.adopted}, 0 mismatches/replaced), DSD host removed, 0 RPCs.`);
 
+    // CSP canary: one deliberate inline-script violation must reach all three channels, so the
+    // final "0 CSP violations" assertion cannot pass because a channel went deaf.
+    assert(Object.values(csp.counts()).every((n) => n === 0), `CSP before canary: ${JSON.stringify(csp.counts())}`);
+    await evalJs(cdp, `(() => { const s = document.createElement("script"); s.textContent = "window.__nveCanary = 1"; document.body.append(s); })()`);
+    await waitUntil(
+      `CSP canary on all channels (${JSON.stringify(csp.counts())})`,
+      () => Object.values(csp.counts()).every((n) => n >= 1),
+      5000
+    );
+    assert((await evalJs(cdp, "window.__nveCanary")) === undefined, "CSP canary inline script executed");
+    console.log(`  PASS: CSP canary blocked and seen on every channel ${JSON.stringify(csp.counts())}.`);
+    csp.clear();
+
     // -------------------------------------------------------------------------
     // 2. True mid-stream WASM async boot behind the server barrier
     // -------------------------------------------------------------------------
-    console.log("==> [2/7] Mid-stream async WASM boot behind held comments barrier");
+    console.log("==> [2/9] Mid-stream async WASM boot behind held comments barrier");
     await control("stats_delay_ms=0&comments_delay_ms=0&hold_comments=1");
     mark = rpcRequests.length;
     const doc2 = await navigateDocument(cdp, `${origin}/issues`, { waitLoad: false });
@@ -292,9 +306,26 @@ async function main() {
     console.log("  PASS: mounted mid-stream, interacted while open, comments slot streamed in, 0 Comments/Stats RPCs.");
 
     // -------------------------------------------------------------------------
-    // 3. Pre-headers 404 + post-headers ErrorBoundary hydration
+    // 3 + 4. Byte-exact mid-slot splits and truncations through the stream proxy
     // -------------------------------------------------------------------------
-    console.log("==> [3/7] Pre-headers 404 + post-headers ErrorBoundary hydration");
+    await runStreamSplitSuites({
+      cdp,
+      proxy,
+      control,
+      commentsWaiting,
+      rpcSince,
+      rpcRequests,
+      controller,
+      waitMounted,
+      assertCleanHydration,
+      assertStrictCsp,
+      shot,
+    });
+
+    // -------------------------------------------------------------------------
+    // 5. Pre-headers 404 + post-headers ErrorBoundary hydration
+    // -------------------------------------------------------------------------
+    console.log("==> [5/9] Pre-headers 404 + post-headers ErrorBoundary hydration");
     await control("stats_delay_ms=10&comments_delay_ms=25&hold_comments=0");
     const missing = await fetch(`${origin}/issues?issue=999`, { headers: { cookie: SESSION_COOKIE } });
     assert(missing.status === 404, `?issue=999 -> ${missing.status}`);
@@ -302,18 +333,18 @@ async function main() {
     mark = rpcRequests.length;
     const doc3 = await navigateDocument(cdp, `${origin}/issues?comments_issue=999`);
     assert(doc3.status === 200, `?comments_issue=999 -> ${doc3.status}`);
-    assertStrictCsp(doc3.headers, "suite 3");
+    assertStrictCsp(doc3.headers, "suite 5");
     await waitMounted("WASM mounted on ErrorBoundary page");
-    assertCleanHydration(await controller(), "suite 3");
+    assertCleanHydration(await controller(), "suite 5");
     await waitFor(cdp, "comments ErrorBoundary visible", visibleJs('[data-testid="comments-error-boundary"]'));
     await sleep(300);
-    assert(rpcSince(mark) === 0, `suite 3: expected 0 RPCs, saw ${rpcSince(mark)}`);
+    assert(rpcSince(mark) === 0, `suite 5: expected 0 RPCs, saw ${rpcSince(mark)}`);
     console.log("  PASS: ?issue=999 -> 404 pre-headers; ?comments_issue=999 hydrates ErrorBoundary with 0 RPCs.");
 
     // -------------------------------------------------------------------------
-    // 4. Full interactive app flows + screenshots
+    // 6. Full interactive app flows + screenshots
     // -------------------------------------------------------------------------
-    console.log("==> [4/7] Interactive app flows + desktop/mobile screenshots");
+    console.log("==> [6/9] Interactive app flows + desktop/mobile screenshots");
     await control("stats_delay_ms=0&comments_delay_ms=0&hold_comments=0");
     await navigateDocument(cdp, `${origin}/issues`);
     await waitMounted("WASM mounted for interactive flows");
@@ -428,10 +459,10 @@ async function main() {
     console.log("  PASS: FormDecode, 422 + draft, CreateIssue + live stats 3->4, optimistic Close, filters, Rename, AddComment.");
 
     // -------------------------------------------------------------------------
-    // 5. Live FetchTransport browser matrix (from the probe origin's own page: the issues page's
+    // 7. Live FetchTransport browser matrix (from the probe origin's own page: the issues page's
     //    strict `connect-src 'self'` CSP rightly blocks fetches to the probe server)
     // -------------------------------------------------------------------------
-    console.log("==> [5/7] Live FetchTransport edge-case matrix in Chrome");
+    console.log("==> [7/9] Live FetchTransport edge-case matrix in Chrome");
     await navigateAndWait(cdp, `${probeOrigin}/cors-runner`);
     await evalJs(
       cdp,
@@ -489,18 +520,18 @@ async function main() {
     await runTvControllerProbe(cdp, probeCall);
 
     // -------------------------------------------------------------------------
-    // 6. Real cross-origin CORS preflight
+    // 8. Real cross-origin CORS preflight
     // -------------------------------------------------------------------------
-    console.log("==> [6/7] Real cross-origin CORS preflight");
+    console.log("==> [8/9] Real cross-origin CORS preflight");
     const corsResult = await evalJs(cdp, `window.__nveProbeMod.nve_probe_cross_origin_cors(${JSON.stringify(origin)})`);
     console.log("  Cross-origin CORS probe result:", corsResult);
     assert(String(corsResult).startsWith("OK:"), `CORS probe failed: ${corsResult}`);
     console.log("  PASS: CORS preflight + CBOR RPC + exposed Nve-Invalidate.");
 
     // -------------------------------------------------------------------------
-    // 7. True 0-JS browser mode
+    // 9. True 0-JS browser mode
     // -------------------------------------------------------------------------
-    console.log("==> [7/7] True 0-JS mode (DSD slots, ErrorBoundary slot, native form PRG)");
+    console.log("==> [9/9] True 0-JS mode (DSD slots, ErrorBoundary slot, native form PRG)");
     await control("stats_delay_ms=10&comments_delay_ms=60&hold_comments=0");
     await cdp.send("Emulation.setScriptExecutionDisabled", { value: true });
     // Rendered height of an element, descending through `display: contents` slot wrappers.
@@ -541,7 +572,7 @@ async function main() {
     const shadowText = `(() => { const h = document.querySelector('[data-nve-dsd-host]'); return (h?.shadowRoot?.textContent ?? "") + (h?.textContent ?? ""); })`;
     assert(
       await evalJs(cdp, `${shadowText}().includes("Live Chrome WASM Issue")`),
-      "0-JS page missing the issue created in suite 4"
+      "0-JS page missing the issue created in suite 6"
     );
     const prgDone = waitForEvent(cdp, "Page.loadEventFired", () => true, 15000, "0-JS form PRG load");
     try {
@@ -569,14 +600,22 @@ async function main() {
     console.log("  PASS: DSD slots + ErrorBoundary slotted with 0 JS; native form 303 -> GET /issues shows created issue.");
 
     assert(consoleErrors.length === 0, `Unexpected browser console/page errors:\n${consoleErrors.join("\n")}`);
-    assert(cspErrors.length === 0, `Unexpected CSP violations:\n${cspErrors.join("\n")}`);
+    const cspCounts = csp.counts();
+    assert(
+      Object.values(cspCounts).every((n) => n === 0),
+      `Unexpected CSP violations ${JSON.stringify(cspCounts)}:\n${[...csp.audits, ...csp.listener, ...csp.log].join("\n")}`
+    );
     cdp.close();
-    console.log("\nALL 7 LIVE CHROME FULLSTACK E2E SUITES PASSED (0 console errors, 0 CSP violations)!");
+    console.log(
+      `\nALL 9 LIVE CHROME FULLSTACK E2E SUITES PASSED (0 console errors, 0 CSP violations on ${Object.keys(cspCounts).join(" / ")})!`
+    );
   } finally {
     try { chrome.proc.kill("SIGKILL"); } catch {}
     try { fs.rmSync(chrome.userDataDir, { recursive: true, force: true }); } catch {}
     try { issuesSrv.proc.kill("SIGTERM"); } catch {}
     probe.server.close();
+    proxy.server.closeAllConnections();
+    proxy.server.close();
   }
 }
 

@@ -5,7 +5,7 @@
 use core::fmt::Write as _;
 
 use nve_abi::Xxh64Hasher;
-use nve_components::tables::{TextContent, TextInput};
+use nve_components::tables::{StreamBoundary, TextContent, TextInput};
 use nve_store::{NodeId, NodeStore};
 
 use crate::css::{write_compositor_css, NVE_BASE_RESET_CSS};
@@ -14,7 +14,7 @@ use crate::html::{
     close_html_element, is_void_html_tag, push_attr_escaped, push_style_css_escaped,
     push_text_escaped, write_attr, write_style_nonce_attr,
 };
-use crate::ssr_stream::StreamShellState;
+use crate::ssr_stream::{AncestorTag, StreamShellState};
 use crate::streaming::StreamingError;
 use crate::stylesheet::StyleSheetCache;
 use crate::table_system::write_core_ssr_attrs;
@@ -248,7 +248,12 @@ impl WebBackend {
         out.push('>');
         if !is_void_html_tag(tag) {
             if let Some(state) = stream.as_deref_mut() {
-                state.ancestor_tags.push(tag);
+                state.ancestor_tags.push(AncestorTag {
+                    tag,
+                    is_suspense_wrapper: store
+                        .try_row::<StreamBoundary>(id)
+                        .is_some_and(|b| !b.suspense().is_empty()),
+                });
             }
             // Plugin inner HTML (e.g. `<svg>` shapes) may override child traversal
             let mut suppressed_children = false;

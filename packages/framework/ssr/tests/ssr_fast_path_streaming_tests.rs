@@ -367,8 +367,8 @@ async fn scenario_2_out_of_order_streaming_css_nveq_dedup_and_mid_and_post_hydra
         "comments must still be pending"
     );
     let q1_pos = stats_chunk
-        .find("<script type=\"application/x-nve-query\" data-nve-seq=\"1\">")
-        .expect("seq=1 NVEQ in stats chunk");
+        .find("<script type=\"application/x-nve-query\" data-nve-seq=\"1\" data-nve-slot-for=\"stats\">")
+        .expect("seq=1 NVEQ bound to the stats slot");
     let ack1_pos = stats_chunk
         .find("<template data-nve-q-ack=\"1\"></template>")
         .expect("ack=1 in stats chunk");
@@ -435,8 +435,8 @@ async fn scenario_2_out_of_order_streaming_css_nveq_dedup_and_mid_and_post_hydra
         "{comments_chunk}"
     );
     let q2_pos = comments_chunk
-        .find("<script type=\"application/x-nve-query\" data-nve-seq=\"2\">")
-        .expect("seq=2 NVEQ in comments chunk");
+        .find("<script type=\"application/x-nve-query\" data-nve-seq=\"2\" data-nve-slot-for=\"comments\">")
+        .expect("seq=2 NVEQ bound to the comments slot");
     let ack2_pos = comments_chunk
         .find("<template data-nve-q-ack=\"2\"></template>")
         .expect("ack=2 in comments chunk");

@@ -1,9 +1,9 @@
 //! Shared CSS/RN inline style parsers and bitmask-based style-layer diffing (`Layout`, `Visual`,
 //! `Typography`) backed by a single-source property table.
 
-use nve_abi::num::parse_f32;
-use nve_abi::{ColorRgba, Dimension};
-use nve_store::{Length, NodeId, Transaction};
+use nve_store::{NodeId, NodeStore, Rgba, Transaction};
+
+use crate::tables::{Typography, Visual};
 
 #[path = "css_decl.rs"]
 mod decl;
@@ -65,132 +65,9 @@ const BIT_FONT_STYLE: u64 = 1 << 38;
 const BIT_TEXT_DECORATION: u64 = 1 << 39;
 const TYPOGRAPHY_PROPS_MASK: u64 = ((1 << 40) - 1) & !(LAYOUT_PROPS_MASK | VISUAL_PROPS_MASK);
 
-/// Parses a pixel-suffixed or unitless CSS numeric scalar.
-pub fn parse_px(raw: &str) -> Option<f32> {
-    let s = raw.trim().strip_suffix("px").unwrap_or(raw.trim());
-    parse_f32(s)
-}
-
-/// Strictly parses a CSS dimension (`auto`, `50%`, `120px`, `120`), returning `None` on invalid text.
-pub fn try_parse_dim(raw: &str) -> Option<Dimension> {
-    let s = raw.trim();
-    if s.eq_ignore_ascii_case("auto") {
-        Some(Dimension::Auto)
-    } else if let Some(pct) = s.strip_suffix('%') {
-        parse_f32(pct.trim()).map(Dimension::Percent)
-    } else {
-        parse_px(s).map(Dimension::Points)
-    }
-}
-
-/// Parses a CSS dimension (`auto`, `50%`, `120px`, `120`) into [`Dimension`], defaulting to `Auto`.
-pub fn parse_dim(raw: &str) -> Dimension {
-    try_parse_dim(raw).unwrap_or(Dimension::Auto)
-}
-
-/// Converts a [`Dimension`] into a word-table [`Length`].
-#[inline]
-pub const fn dim_to_length(d: Dimension) -> Length {
-    match d {
-        Dimension::Auto => Length::AUTO,
-        Dimension::Points(v) => Length::points(v),
-        Dimension::Percent(v) => Length::percent(v),
-    }
-}
-
-/// Parses `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb(...)`, `rgba(...)`, or basic named colors.
-pub fn parse_color(raw: &str) -> Option<ColorRgba> {
-    let s = raw.trim();
-    if let Some(hex) = s.strip_prefix('#') {
-        if !hex.is_ascii() {
-            return None;
-        }
-        return match hex.len() {
-            3 => {
-                let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-                let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-                let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-                Some(ColorRgba::rgb(r, g, b))
-            }
-            4 => {
-                let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-                let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-                let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-                let a = u8::from_str_radix(&hex[3..4], 16).ok()? * 17;
-                Some(ColorRgba::rgba(r, g, b, a))
-            }
-            6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-                Some(ColorRgba::rgb(r, g, b))
-            }
-            8 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-                let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-                Some(ColorRgba::rgba(r, g, b, a))
-            }
-            _ => None,
-        };
-    }
-
-    let rgb_inner = if s.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("rgba(")) {
-        s[5..].strip_suffix(')')
-    } else if s.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("rgb(")) {
-        s[4..].strip_suffix(')')
-    } else {
-        None
-    };
-    if let Some(inner) = rgb_inner {
-        let normalized = inner.replace([',', '/'], " ");
-        let comps: Vec<&str> = normalized.split_whitespace().collect();
-        if comps.len() != 3 && comps.len() != 4 {
-            return None;
-        }
-        let parse_chan = |tok: &str, alpha: bool| -> Option<u8> {
-            let v = if let Some(pct) = tok.strip_suffix('%') {
-                parse_f32(pct)? * 2.55
-            } else {
-                let raw = parse_f32(tok)?;
-                if alpha && raw <= 1.0 { raw * 255.0 } else { raw }
-            };
-            v.is_finite().then(|| v.round().clamp(0.0, 255.0) as u8)
-        };
-        let r = parse_chan(comps[0], false)?;
-        let g = parse_chan(comps[1], false)?;
-        let b = parse_chan(comps[2], false)?;
-        let a = if comps.len() == 4 { parse_chan(comps[3], true)? } else { 255 };
-        return Some(ColorRgba::rgba(r, g, b, a));
-    }
-
-    const NAMED: &[(&str, ColorRgba)] = &[
-        ("white", ColorRgba::WHITE),
-        ("black", ColorRgba::BLACK),
-        ("transparent", ColorRgba::TRANSPARENT),
-        ("red", ColorRgba::rgb(239, 68, 68)),
-        ("green", ColorRgba::rgb(34, 197, 94)),
-        ("blue", ColorRgba::rgb(59, 130, 246)),
-    ];
-    NAMED.iter().find_map(|&(n, c)| s.eq_ignore_ascii_case(n).then_some(c))
-}
-
-/// Parses a CSS font-weight keyword or numeric value (`100..=900`), returning `None` if invalid.
-pub fn try_parse_font_weight(raw: &str) -> Option<u16> {
-    const WEIGHTS: &[(&str, u16)] = &[
-        ("thin", 100), ("light", 300), ("normal", 400), ("regular", 400),
-        ("medium", 500), ("semibold", 600), ("bold", 700), ("extrabold", 800), ("black", 900),
-    ];
-    let s = raw.trim();
-    WEIGHTS.iter().find_map(|&(n, w)| s.eq_ignore_ascii_case(n).then_some(w))
-        .or_else(|| s.parse::<u16>().ok().map(|w| w.clamp(100, 900)))
-}
-
-/// Parses a CSS font-weight keyword or numeric value (`100..=900`), defaulting to `400`.
-pub fn parse_font_weight(raw: &str) -> u16 {
-    try_parse_font_weight(raw).unwrap_or(400)
-}
+/// Value-level flag in the mask returned by [`apply_inline_style_layers_to_tx`] (outside every
+/// property bit): the inline style's final border color is the symbolic `currentColor`.
+pub const CSS_FLAG_BORDER_CURRENT_COLOR: u64 = 1 << 63;
 
 /// Maps a canonical CSS property bitmask to its [`STYLE_LAYER_*`] bitmask.
 #[inline]
@@ -234,7 +111,8 @@ pub fn css_key_bits(key: &str) -> Option<u64> {
         "flex-wrap" | "flexWrap" => BIT_FLEX_WRAP,
         "justify-content" | "justifyContent" => BIT_JUSTIFY_CONTENT,
         "align-items" | "alignItems" => BIT_ALIGN_ITEMS,
-        "flex" | "flex-grow" | "flexGrow" => BIT_FLEX_GROW,
+        "flex" => BIT_FLEX_GROW | BIT_FLEX_SHRINK | BIT_FLEX_BASIS,
+        "flex-grow" | "flexGrow" => BIT_FLEX_GROW,
         "flex-shrink" | "flexShrink" => BIT_FLEX_SHRINK,
         "flex-basis" | "flexBasis" => BIT_FLEX_BASIS,
         "gap" => BIT_ROW_GAP | BIT_COLUMN_GAP,
@@ -245,8 +123,13 @@ pub fn css_key_bits(key: &str) -> Option<u64> {
         "padding-vertical" | "paddingVertical" => BIT_PADDING_V,
         "padding-top" | "paddingTop" | "padding-bottom" | "paddingBottom" => BIT_PADDING_V,
         "padding-left" | "paddingLeft" | "padding-right" | "paddingRight" => BIT_PADDING_H,
-        "margin" => BIT_MARGIN,
+        "margin" | "margin-top" | "marginTop" | "margin-right" | "marginRight"
+        | "margin-bottom" | "marginBottom" | "margin-left" | "marginLeft"
+        | "margin-horizontal" | "marginHorizontal" | "margin-vertical" | "marginVertical" => {
+            BIT_MARGIN
+        }
         "background" | "background-color" | "backgroundColor" => BIT_BACKGROUND,
+        "border" => BIT_BORDER_WIDTH | BIT_BORDER_COLOR,
         "border-color" | "borderColor" => BIT_BORDER_COLOR,
         "border-width" | "borderWidth" => BIT_BORDER_WIDTH,
         "border-radius" | "borderRadius" => BIT_BORDER_RADIUS,
@@ -272,13 +155,64 @@ pub fn css_key_bits(key: &str) -> Option<u64> {
     })
 }
 
-/// Specificity rank keeping CSS shorthands (`0`) ahead of longhands (`1`) independent of
-/// insertion/clear history.
+/// Precedence tier of a standalone attribute, independent of insertion/clear history: shorthands
+/// (`0`) < axis shorthands (`1`, e.g. `padding-horizontal`) < longhands (`2`), so `padding` +
+/// `padding-horizontal` + `padding-left` compose the same in any attribute order.
 #[inline]
 pub fn css_key_rank(key: &str) -> u8 {
     match key {
-        "padding" | "gap" | "overflow" | "flex" | "background" => 0,
-        _ => 1,
+        "padding" | "margin" | "gap" | "overflow" | "flex" | "background" | "border" => 0,
+        "padding-horizontal" | "paddingHorizontal" | "padding-vertical" | "paddingVertical"
+        | "margin-horizontal" | "marginHorizontal" | "margin-vertical" | "marginVertical" => 1,
+        _ => 2,
+    }
+}
+
+/// Whether a declaration of `key: value` sets the border color, and to what: `Some(true)` for the
+/// symbolic `currentColor` (explicit, or the omitted color of `border`), `Some(false)` for a
+/// concrete color, `None` when it does not set a border color (other key, or an invalid value).
+#[inline]
+pub fn css_border_color_source(key: &str, value: &str) -> Option<bool> {
+    parse_css_decl(key, value).and_then(|(_, d)| d?.border_color_source())
+}
+
+/// [`css_border_color_source`] of a whole inline style from its [`apply_inline_style_layers_to_tx`]
+/// mask (`None` when it declares no valid border color).
+#[inline]
+pub const fn mask_border_color_source(mask: u64) -> Option<bool> {
+    if mask & BIT_BORDER_COLOR == 0 {
+        None
+    } else {
+        Some(mask & CSS_FLAG_BORDER_CURRENT_COLOR != 0)
+    }
+}
+
+/// Explicit text color of one `Typography` row (`None` when inherited).
+#[inline]
+fn explicit_color(t: crate::tables::TypographyRef<'_>) -> Option<Rgba> {
+    let set = t.set();
+    (set & Typography::SET_COLOR != 0 || (set == 0 && t.color() != Rgba::BLACK)).then(|| t.color())
+}
+
+/// The CSS `currentColor` of `id`: its nearest explicit `Typography` color, self included, or the
+/// default black (one O(depth) walk, zero allocations).
+pub fn effective_text_color(store: &NodeStore, id: NodeId) -> Rgba {
+    let mut cur = Some(id);
+    while let Some(nid) = cur.filter(|&n| store.is_live(n)) {
+        if let Some(c) = store.try_row::<Typography>(nid).and_then(explicit_color) {
+            return c;
+        }
+        cur = store.parent(nid);
+    }
+    Rgba::BLACK
+}
+
+/// Resolves `id`'s symbolic `currentColor` border to its current [`effective_text_color`],
+/// writing only on change.
+pub fn resolve_current_color_border(tx: &mut Transaction<'_>, id: NodeId) {
+    let color = effective_text_color(tx.store(), id);
+    if tx.store().try_row::<Visual>(id).is_none_or(|v| v.border_color() != color) {
+        tx.edit::<Visual>(id).border_color(color);
     }
 }
 
@@ -297,6 +231,7 @@ pub fn apply_inline_style_layers_to_tx(
     layers: u8,
 ) -> u64 {
     let mut accepted_mask = 0u64;
+    let mut border_current = None;
     for decl in style.split(';') {
         if let Some((rk, rv)) = decl.split_once(':') {
             let k = rk.trim();
@@ -306,10 +241,19 @@ pub fn apply_inline_style_layers_to_tx(
                 && let Some((bits, Some(parsed))) = parse_css_decl(k, v)
             {
                 accepted_mask |= bits;
+                border_current = parsed.border_color_source().or(border_current);
                 if prop_bits_to_layers(bits) & layers != 0 {
                     write_parsed_decl(tx, id, parsed);
                 }
             }
+        }
+    }
+    // `currentColor` resolves after the whole list, so `border: 1px solid; color: red` and
+    // `color: red; border: 1px solid` agree.
+    if border_current == Some(true) {
+        accepted_mask |= CSS_FLAG_BORDER_CURRENT_COLOR;
+        if layers & STYLE_LAYER_VISUAL != 0 {
+            resolve_current_color_border(tx, id);
         }
     }
     accepted_mask
@@ -355,7 +299,11 @@ pub fn apply_css_attr_layers_status_to_tx(
     match maybe_decl {
         Some(parsed) => {
             if layer & layers != 0 {
+                let current = parsed.border_color_source() == Some(true);
                 write_parsed_decl(tx, id, parsed);
+                if current {
+                    resolve_current_color_border(tx, id);
+                }
             }
             CssAttrResult::Applied(layer)
         }

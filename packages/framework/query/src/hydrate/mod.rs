@@ -16,7 +16,7 @@ use self::codec::{
 use crate::engine::{query_key_hash, run_side_effects, QueryClient, BODY_HASH_SEED};
 use crate::slab::{
     pack_invalidation_version, QueryMeta, QueryPayload, QuerySlotId, RawErrorWire, FLAG_HAS_DATA,
-    FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_STREAM_PENDING,
+    FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED,
     FLAG_SUBSCRIBED_ALL,
 };
 use crate::state::{CacheState, WakeCallback};
@@ -31,13 +31,13 @@ fn apply_hydrated_error(
     wake_cb: &mut Option<WakeCallback>,
 ) {
     let idx = slot.index();
+    s.clear_stream_pending(idx, FLAG_HAS_DATA | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING);
     let meta = &mut s.metas[idx];
     meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
     meta.optimistic_rev = meta.optimistic_rev.wrapping_add(1);
     meta.updated_at_ms = updated_at;
     meta.invalidated_epoch = s.wildcard_epoch;
     meta.flags |= FLAG_HAS_ERROR | FLAG_HYDRATED;
-    meta.flags &= !(FLAG_HAS_DATA | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING | FLAG_STREAM_PENDING);
 
     let payload = &mut s.payloads[idx];
     waiters.append(&mut payload.in_flight_waiters);
@@ -80,37 +80,31 @@ impl DehydrateCursor {
     }
 }
 
+/// Wire payload of a settled slot: committed data wins over a coexisting error (stale data +
+/// failed refetch renders data, matching `UseQuery::suspend`), errors only when no data exists.
 #[inline]
 fn settled_payload_ref<'a>(
     meta: QueryMeta,
     payload: &'a QueryPayload,
 ) -> Option<DehydratePayloadRef<'a>> {
     if meta.has_data()
-        && !meta.has_error()
         && let Some(raw) = payload.raw_response.as_deref()
     {
         return Some(DehydratePayloadRef::Ok(raw));
     }
-    if meta.has_error()
-        && let Some(raw_err) = payload.raw_error.as_ref()
-    {
-        return Some(match raw_err {
-            RawErrorWire::Domain { status, body } => DehydratePayloadRef::DomainErr {
-                status: *status,
-                body: body.as_ref(),
-            },
-            RawErrorWire::Protocol { status, message } => DehydratePayloadRef::ProtocolErr {
-                status: *status,
-                message: message.as_str(),
-            },
-        });
+    if !meta.has_error() {
+        return None;
     }
-    if meta.has_data()
-        && let Some(raw) = payload.raw_response.as_deref()
-    {
-        return Some(DehydratePayloadRef::Ok(raw));
-    }
-    None
+    Some(match payload.raw_error.as_ref()? {
+        RawErrorWire::Domain { status, body } => DehydratePayloadRef::DomainErr {
+            status: *status,
+            body: body.as_ref(),
+        },
+        RawErrorWire::Protocol { status, message } => DehydratePayloadRef::ProtocolErr {
+            status: *status,
+            message: message.as_str(),
+        },
+    })
 }
 
 #[inline]
@@ -120,43 +114,100 @@ fn compute_age_ms(now_ms: u64, updated_at_ms: i64) -> u32 {
     u32::try_from(elapsed).unwrap_or(u32::MAX)
 }
 
+/// One slot chosen for dehydration with its collected tags (`pending` emits `StreamPending`).
+struct SelectedEntry {
+    slot: QuerySlotId,
+    tags: Vec<Tag64>,
+    pending: bool,
+}
+
+/// Single selection/encoding pipeline shared by every `dehydrate_*` entry point.
+#[derive(Default)]
+struct DehydrateSelection {
+    entries: Vec<SelectedEntry>,
+}
+
+impl DehydrateSelection {
+    #[inline]
+    fn contains(&self, slot: QuerySlotId) -> bool {
+        self.entries.iter().any(|e| e.slot == slot)
+    }
+
+    fn push(&mut self, s: &CacheState, slot: QuerySlotId, pending: bool) {
+        let mut tags = Vec::new();
+        s.tags
+            .collect_tags_for_slot(s.metas[slot.index()].first_tag_edge, &mut tags);
+        self.entries.push(SelectedEntry {
+            slot,
+            tags,
+            pending,
+        });
+    }
+
+    /// Selects every live settled slot.
+    fn push_all_settled(&mut self, s: &CacheState) {
+        for (idx, &meta) in s.metas.iter().enumerate() {
+            if !meta.is_free() && settled_payload_ref(meta, &s.payloads[idx]).is_some() {
+                self.push(s, QuerySlotId(idx as u32), false);
+            }
+        }
+    }
+
+    /// Encodes the selection, then records emitted settled revisions in `cursor` (only on
+    /// successful encoding).
+    fn encode(
+        self,
+        s: &CacheState,
+        now_ms: u64,
+        cursor: Option<&mut DehydrateCursor>,
+    ) -> Result<Vec<u8>, DehydrateError> {
+        let refs: Vec<DehydrateEntryRef<'_>> = self
+            .entries
+            .iter()
+            .filter_map(|e| {
+                let idx = e.slot.index();
+                let meta = s.metas[idx];
+                let payload = &s.payloads[idx];
+                let (wire, age_ms) = if e.pending {
+                    (DehydratePayloadRef::StreamPending, 0)
+                } else {
+                    (
+                        settled_payload_ref(meta, payload)?,
+                        compute_age_ms(now_ms, meta.updated_at_ms),
+                    )
+                };
+                Some(DehydrateEntryRef {
+                    proc_id: meta.proc_id,
+                    age_ms,
+                    subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
+                    tags: e.tags.as_slice(),
+                    encoded_args: &payload.encoded_args,
+                    payload: wire,
+                })
+            })
+            .collect();
+        let encoded = encode_hydration_entries(&refs)?;
+        if let Some(cursor) = cursor {
+            for e in self.entries.iter().filter(|e| !e.pending) {
+                let idx = e.slot.index();
+                cursor
+                    .emitted
+                    .insert(e.slot, (s.metas[idx].slot_gen, s.payloads[idx].completed_seq));
+            }
+        }
+        Ok(encoded)
+    }
+}
+
 impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C> {
     /// Dehydrates all live settled entries (`Ok`, `DomainErr`, `ProtocolErr`) into a compact
     /// `NVEQ` v2 binary blob for SSR -> client hydration.
     pub fn dehydrate_bytes(&self) -> Result<Vec<u8>, DehydrateError> {
         let now_ms = self.inner.clock.now_ms();
         self.inner.state.with(|s| {
-            let mut tag_bufs: Vec<Vec<Tag64>> = Vec::new();
-            let mut slot_indices: Vec<usize> = Vec::new();
-            for (idx, &meta) in s.metas.iter().enumerate() {
-                if meta.is_free() {
-                    continue;
-                }
-                if settled_payload_ref(meta, &s.payloads[idx]).is_some() {
-                    let mut tags = Vec::new();
-                    s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
-                    tag_bufs.push(tags);
-                    slot_indices.push(idx);
-                }
-            }
-            let refs: Vec<DehydrateEntryRef<'_>> = slot_indices
-                .iter()
-                .zip(tag_bufs.iter())
-                .filter_map(|(&idx, tags)| {
-                    let meta = s.metas[idx];
-                    let payload = &s.payloads[idx];
-                    let wire = settled_payload_ref(meta, payload)?;
-                    Some(DehydrateEntryRef {
-                        proc_id: meta.proc_id,
-                        age_ms: compute_age_ms(now_ms, meta.updated_at_ms),
-                        subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
-                        tags: tags.as_slice(),
-                        encoded_args: &payload.encoded_args,
-                        payload: wire,
-                    })
-                })
-                .collect();
-            encode_hydration_entries(&refs)
+            let mut sel = DehydrateSelection::default();
+            sel.push_all_settled(s);
+            sel.encode(s, now_ms, None)
         })
     }
 
@@ -170,98 +221,22 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     ) -> Result<Vec<u8>, DehydrateError> {
         let now_ms = self.inner.clock.now_ms();
         self.inner.state.with(|s| {
-            let mut tag_bufs: Vec<Vec<Tag64>> = Vec::new();
-            let mut selected: Vec<(QuerySlotId, u32, u32)> = Vec::new();
+            let mut sel = DehydrateSelection::default();
             for &handle in handles {
-                if !s.is_live(handle) {
-                    continue;
-                }
-                if selected.iter().any(|&(slot, _, _)| slot == handle.slot) {
+                if !s.is_live(handle) || sel.contains(handle.slot) {
                     continue;
                 }
                 let idx = handle.slot.index();
                 let meta = s.metas[idx];
                 let payload = &s.payloads[idx];
-                if settled_payload_ref(meta, payload).is_none() {
-                    continue;
-                }
                 let rev = (meta.slot_gen, payload.completed_seq);
-                if cursor.emitted.get(&handle.slot).copied() == Some(rev) {
-                    continue;
+                if settled_payload_ref(meta, payload).is_some()
+                    && cursor.emitted.get(&handle.slot).copied() != Some(rev)
+                {
+                    sel.push(s, handle.slot, false);
                 }
-                let mut tags = Vec::new();
-                s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
-                tag_bufs.push(tags);
-                selected.push((handle.slot, rev.0, rev.1));
             }
-            let refs: Vec<DehydrateEntryRef<'_>> = selected
-                .iter()
-                .zip(tag_bufs.iter())
-                .filter_map(|(&(slot, _, _), tags)| {
-                    let idx = slot.index();
-                    let meta = s.metas[idx];
-                    let payload = &s.payloads[idx];
-                    let wire = settled_payload_ref(meta, payload)?;
-                    Some(DehydrateEntryRef {
-                        proc_id: meta.proc_id,
-                        age_ms: compute_age_ms(now_ms, meta.updated_at_ms),
-                        subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
-                        tags: tags.as_slice(),
-                        encoded_args: &payload.encoded_args,
-                        payload: wire,
-                    })
-                })
-                .collect();
-            let encoded = encode_hydration_entries(&refs)?;
-            for (slot, slot_gen, completed_seq) in selected {
-                cursor.emitted.insert(slot, (slot_gen, completed_seq));
-            }
-            Ok(encoded)
-        })
-    }
-
-    /// Dehydrates `StreamPending` markers for live `handles` that have not yet settled (for `seq=0`
-    /// mid-stream client boot so client hooks suspend on the stream rather than firing duplicate
-    /// RPCs).
-    pub fn dehydrate_pending_handles(
-        &self,
-        handles: &[QueryHandle],
-    ) -> Result<Vec<u8>, DehydrateError> {
-        self.inner.state.with(|s| {
-            let mut tag_bufs: Vec<Vec<Tag64>> = Vec::new();
-            let mut selected: Vec<QuerySlotId> = Vec::new();
-            for &handle in handles {
-                if !s.is_live(handle) || selected.contains(&handle.slot) {
-                    continue;
-                }
-                let idx = handle.slot.index();
-                let meta = s.metas[idx];
-                if meta.has_data() || meta.has_error() {
-                    continue;
-                }
-                let mut tags = Vec::new();
-                s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
-                tag_bufs.push(tags);
-                selected.push(handle.slot);
-            }
-            let refs: Vec<DehydrateEntryRef<'_>> = selected
-                .iter()
-                .zip(tag_bufs.iter())
-                .map(|(&slot, tags)| {
-                    let idx = slot.index();
-                    let meta = s.metas[idx];
-                    let payload = &s.payloads[idx];
-                    DehydrateEntryRef {
-                        proc_id: meta.proc_id,
-                        age_ms: 0,
-                        subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
-                        tags: tags.as_slice(),
-                        encoded_args: &payload.encoded_args,
-                        payload: DehydratePayloadRef::StreamPending,
-                    }
-                })
-                .collect();
-            encode_hydration_entries(&refs)
+            sel.encode(s, now_ms, Some(cursor))
         })
     }
 
@@ -276,82 +251,18 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     ) -> Result<Vec<u8>, DehydrateError> {
         let now_ms = self.inner.clock.now_ms();
         self.inner.state.with(|s| {
-            let mut tag_bufs: Vec<Vec<Tag64>> = Vec::new();
-            let mut settled_slots: Vec<(QuerySlotId, u32, u32)> = Vec::new();
-            let mut pending_slots: Vec<QuerySlotId> = Vec::new();
-
-            for (idx, &meta) in s.metas.iter().enumerate() {
-                if meta.is_free() {
-                    continue;
-                }
-                let payload = &s.payloads[idx];
-                if settled_payload_ref(meta, payload).is_none() {
-                    continue;
-                }
-                let slot = QuerySlotId(idx as u32);
-                let mut tags = Vec::new();
-                s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
-                tag_bufs.push(tags);
-                settled_slots.push((slot, meta.slot_gen, payload.completed_seq));
-            }
-
+            let mut sel = DehydrateSelection::default();
+            sel.push_all_settled(s);
             for &handle in pending_handles {
-                if !s.is_live(handle) {
+                if !s.is_live(handle) || sel.contains(handle.slot) {
                     continue;
                 }
-                if settled_slots.iter().any(|&(slot, _, _)| slot == handle.slot)
-                    || pending_slots.contains(&handle.slot)
-                {
-                    continue;
-                }
-                let idx = handle.slot.index();
-                let meta = s.metas[idx];
-                if meta.has_data() || meta.has_error() {
-                    continue;
-                }
-                let mut tags = Vec::new();
-                s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
-                tag_bufs.push(tags);
-                pending_slots.push(handle.slot);
-            }
-
-            let mut refs: Vec<DehydrateEntryRef<'_>> =
-                Vec::with_capacity(settled_slots.len() + pending_slots.len());
-            for (i, &(slot, _, _)) in settled_slots.iter().enumerate() {
-                let idx = slot.index();
-                let meta = s.metas[idx];
-                let payload = &s.payloads[idx];
-                if let Some(wire) = settled_payload_ref(meta, payload) {
-                    refs.push(DehydrateEntryRef {
-                        proc_id: meta.proc_id,
-                        age_ms: compute_age_ms(now_ms, meta.updated_at_ms),
-                        subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
-                        tags: tag_bufs[i].as_slice(),
-                        encoded_args: &payload.encoded_args,
-                        payload: wire,
-                    });
+                let meta = s.metas[handle.slot.index()];
+                if !meta.has_data() && !meta.has_error() {
+                    sel.push(s, handle.slot, true);
                 }
             }
-            let offset = settled_slots.len();
-            for (j, &slot) in pending_slots.iter().enumerate() {
-                let idx = slot.index();
-                let meta = s.metas[idx];
-                let payload = &s.payloads[idx];
-                refs.push(DehydrateEntryRef {
-                    proc_id: meta.proc_id,
-                    age_ms: 0,
-                    subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
-                    tags: tag_bufs[offset + j].as_slice(),
-                    encoded_args: &payload.encoded_args,
-                    payload: DehydratePayloadRef::StreamPending,
-                });
-            }
-
-            let encoded = encode_hydration_entries(&refs)?;
-            for (slot, slot_gen, completed_seq) in settled_slots {
-                cursor.emitted.insert(slot, (slot_gen, completed_seq));
-            }
-            Ok(encoded)
+            sel.encode(s, now_ms, Some(cursor))
         })
     }
 
@@ -363,8 +274,9 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     }
 
     /// Fill-only monotonic hydration for an out-of-order streaming `NVEQ` v2 chunk (`seq > 0`).
-    /// In addition to the fill-only slot rule, refuses to create absent slots if `wildcard_epoch > 0`
-    /// (client called `invalidate_all()` after boot). Returns the number of entries applied.
+    /// In addition to the fill-only slot rule, applies nothing once `wildcard_epoch > 0` (the
+    /// client called `invalidate_all()` after boot, so every streamed server snapshot is stale —
+    /// for absent and existing slots alike). Returns the number of entries applied.
     pub fn hydrate_stream_chunk_bytes(&self, bytes: &[u8]) -> Result<usize, DehydrateError> {
         self.hydrate_inner(bytes, true)
     }
@@ -376,6 +288,9 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let mut applied = 0usize;
             let mut waiters = Vec::new();
             let mut wake_cb: Option<WakeCallback> = None;
+            if is_stream_chunk && s.wildcard_epoch > 0 {
+                return (applied, wake_cb, waiters);
+            }
 
             let now_i64 = i64::try_from(now_ms).unwrap_or(i64::MAX);
             for entry in entries {
@@ -410,9 +325,6 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     }
                     existing
                 } else {
-                    if is_stream_chunk && s.wildcard_epoch > 0 {
-                        continue;
-                    }
                     let target_cap = self.inner.config.max_entries.saturating_sub(1);
                     s.gc_sweep(now_ms, 16, target_cap, &mut waiters);
                     // Pass `now_ms` as `last_inactive_ms` so SSR entries with `age_ms >= gc_time_ms`
@@ -433,22 +345,21 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 let idx = slot.index();
                 match entry.payload {
                     HydratedPayload::StreamPending => {
-                        let meta = &mut s.metas[idx];
-                        meta.flags |= FLAG_IS_FETCHING | FLAG_STREAM_PENDING;
+                        s.set_stream_pending(idx);
                         wake_cb = s.mark_dirty(slot);
                     }
                     HydratedPayload::Ok(raw_body) => {
                         let body_hash = xxh64(&raw_body, BODY_HASH_SEED);
+                        s.clear_stream_pending(
+                            idx,
+                            FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING,
+                        );
                         let meta = &mut s.metas[idx];
                         meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
                         meta.optimistic_rev = meta.optimistic_rev.wrapping_add(1);
                         meta.updated_at_ms = updated_at;
                         meta.invalidated_epoch = s.wildcard_epoch;
                         meta.flags |= FLAG_HAS_DATA | FLAG_HYDRATED;
-                        meta.flags &= !(FLAG_HAS_ERROR
-                            | FLAG_IS_INVALIDATED
-                            | FLAG_IS_FETCHING
-                            | FLAG_STREAM_PENDING);
 
                         let payload = &mut s.payloads[idx];
                         waiters.append(&mut payload.in_flight_waiters);
@@ -499,18 +410,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     /// their `Transport` if the stream truncated or timed out. Returns how many slots were cleared.
     pub fn finish_ssr_stream(&self) -> usize {
         let (cleared, wake, waiters) = self.inner.state.with(|s| {
-            let mut cleared = 0usize;
             let mut waiters = Vec::new();
-            let mut wake_cb: Option<WakeCallback> = None;
-            for idx in 0..s.metas.len() {
-                let meta = &mut s.metas[idx];
-                if !meta.is_free() && meta.is_stream_pending() {
-                    meta.flags &= !(FLAG_STREAM_PENDING | FLAG_IS_FETCHING);
-                    waiters.append(&mut s.payloads[idx].in_flight_waiters);
-                    wake_cb = s.mark_dirty(QuerySlotId(idx as u32));
-                    cleared += 1;
-                }
-            }
+            let (cleared, wake_cb) = s.release_stream_pending(&mut waiters);
             (cleared, wake_cb, waiters)
         });
         run_side_effects(wake, waiters);

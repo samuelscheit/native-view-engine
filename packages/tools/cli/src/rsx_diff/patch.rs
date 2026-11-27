@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use nve_abi::num::is_valid_style_scalar;
 use nve_engine::HotPatchMsg;
 
 use super::attrs::{AttrKind, AttrSpec, NumberRule};
@@ -159,6 +160,7 @@ pub fn css_value(value: &TypedAttrValue, spec: &AttrSpec) -> Result<String, Stri
             "`{name}` has no string TemplatePatch form yet (typed RowPatch lowering)"
         ));
     }
+    let out_of_range = || format!("`{name}` cannot carry {value}: the CSS parser rejects it");
     let unsupported = || {
         Err(format!(
             "`{name}` cannot carry {value} on the string patch path"
@@ -174,14 +176,22 @@ pub fn css_value(value: &TypedAttrValue, spec: &AttrSpec) -> Result<String, Stri
             | AttrKind::Pixels { float: Some(rule) }
             | AttrKind::Number(rule),
             TypedAttrValue::Float(v),
-        ) => Ok(css_float(rule, *v)),
+        ) => {
+            let css = css_float(rule, *v);
+            let scalar = css.trim_end_matches("px").parse::<f32>().unwrap_or(f32::NAN);
+            in_domain(spec, scalar).then_some(css).ok_or_else(out_of_range)
+        }
         (AttrKind::Number(NumberRule::ZIndex), TypedAttrValue::Int(v)) => {
             Ok((*v).clamp(i32::MIN.into(), i32::MAX.into()).to_string())
         }
         (AttrKind::Dimension { .. } | AttrKind::Pixels { .. }, TypedAttrValue::LengthPx(v)) => {
-            Ok(format!("{v}px"))
+            in_domain(spec, *v)
+                .then(|| format!("{v}px"))
+                .ok_or_else(out_of_range)
         }
-        (AttrKind::Dimension { .. }, TypedAttrValue::LengthPct(v)) => Ok(format!("{v}%")),
+        (AttrKind::Dimension { .. }, TypedAttrValue::LengthPct(v)) => in_domain(spec, *v)
+            .then(|| format!("{v}%"))
+            .ok_or_else(out_of_range),
         (AttrKind::Dimension { .. }, TypedAttrValue::Auto) => Ok("auto".to_owned()),
         (AttrKind::Color, TypedAttrValue::Rgba { r, g, b, a }) => Ok(if *a == u8::MAX {
             format!("#{r:02x}{g:02x}{b:02x}")
@@ -198,6 +208,20 @@ pub fn css_value(value: &TypedAttrValue, spec: &AttrSpec) -> Result<String, Stri
         }
         _ => unsupported(),
     }
+}
+
+/// Whether the CSS parser accepts scalar `v` for `spec`: within `MAX_STYLE_SCALAR`, and above the
+/// attribute's floor (`>= min`, or `> 0` when the floor is positive, e.g. `font-size`; pixel
+/// attributes without a float rule are non-negative).
+fn in_domain(spec: &AttrSpec, v: f32) -> bool {
+    let min = match spec.kind {
+        AttrKind::Dimension { float } | AttrKind::Pixels { float } => match float {
+            Some(NumberRule::Px { min }) => min,
+            _ => 0.0,
+        },
+        _ => f32::NEG_INFINITY,
+    };
+    is_valid_style_scalar(v) && if min > 0.0 { v > 0.0 } else { v >= min }
 }
 
 /// A float literal as the typed path stores it (`v as f32`, non-finite as `0`, then clamped).

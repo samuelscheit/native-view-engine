@@ -3,6 +3,10 @@
 
 #![allow(dead_code)]
 
+use core::convert::Infallible;
+use core::future::Future;
+use core::pin::Pin;
+use core::time::Duration;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::Waker;
 use std::collections::HashMap;
@@ -15,7 +19,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use minicbor::{Decode, Encode};
-use nve_backend_web::WebBackend;
+use nve_backend_web::{WebBackend, WebTableSystem};
+use nve_store::{NodeId, NodeStore, NveTable, Str, TableSlot};
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
 use nve_http_hyper::HttpBody;
@@ -25,7 +30,13 @@ use nve_rpc::{
     BoxFuture, CborCodec, DomainStatus, Procedure, RawCall, RawReply, ReplyKind, RpcCodec,
     RpcStatus, Transport, TransportError, procedures,
 };
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, oneshot};
+use http::{Request, Response};
+use hyper::body::Incoming;
+use nve_http_hyper::serve_service_with_shutdown;
+use nve_ssr::{SsrLocalPool, SsrLocalPoolConfig, SsrPageOptions, StreamPlan};
 
 // ---------------------------------------------------------------------------
 // Shared typed procedures & test helpers
@@ -89,11 +100,16 @@ pub fn extract_nveq_chunks(html: &str) -> Vec<(u64, Vec<u8>)> {
     let marker = "<script type=\"application/x-nve-query\" data-nve-seq=\"";
     while let Some(pos) = rest.find(marker) {
         let after = &rest[pos + marker.len()..];
-        let q_end = after
-            .find("\">")
-            .expect("closing attr quote on nve-query script");
+        let q_end = after.find('"').expect("closing attr quote on data-nve-seq");
         let seq: u64 = after[..q_end].parse().expect("numeric data-nve-seq");
-        let payload_start = &after[q_end + 2..];
+        // Slot chunk payloads carry `data-nve-slot-for="{id}"` binding them to their markup.
+        let tag_end = after.find('>').expect("end of nve-query start tag");
+        let attrs = &after[q_end + 1..tag_end];
+        assert!(
+            attrs.is_empty() || (attrs.starts_with(" data-nve-slot-for=\"") && attrs.ends_with('"')),
+            "unexpected nve-query attrs {attrs:?}"
+        );
+        let payload_start = &after[tag_end + 1..];
         let close = "</script>";
         let close_pos = payload_start
             .find(close)
@@ -379,10 +395,148 @@ pub fn SlowPanelInner() -> Element {
     rsx! { text { "{data.body}" } }
 }
 
+/// 3P semantic-tag override for tags no `nve-web-html` element covers (`<select>`): the
+/// streaming placement hygiene must honor tags supplied by any `WebTableSystem`.
+#[derive(NveTable)]
+#[nve_table(name = "test.ssr_tag_override", storage = "sparse", flags = "publish")]
+pub struct TagOverride {
+    #[effect(realize)]
+    tag: Str,
+}
+
+struct TagOverrideSystem;
+
+impl WebTableSystem for TagOverrideSystem {
+    fn slot(&self) -> TableSlot {
+        TagOverride::slot()
+    }
+
+    fn tag_name<'a>(&self, store: &'a NodeStore, node: NodeId) -> Option<&'a str> {
+        store.try_row::<TagOverride>(node).map(|r| r.tag())
+    }
+}
+
+/// [`web_backend`] plus the [`TagOverride`] system.
+pub fn web_backend_with_tag_override() -> WebBackend {
+    let mut backend = web_backend();
+    backend.register_table_system(TagOverrideSystem);
+    backend
+}
+
 /// The app's per-request SSR backend: core tables plus `nve-web-html` plugins (`<form>` from
 /// `HtmlForm`, semantic tags), matching what the client registers.
 pub fn web_backend() -> WebBackend {
     let mut backend = WebBackend::new();
     nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
     backend
+}
+
+#[derive(Clone)]
+struct LoopbackSsrService {
+    pool: SsrLocalPool,
+    transport: ControlledTransport,
+    keepalive: Duration,
+}
+
+impl hyper::service::Service<Request<Incoming>> for LoopbackSsrService {
+    type Response = Response<HttpBody>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn call(&self, _req: Request<Incoming>) -> Self::Future {
+        let pool = self.pool.clone();
+        let transport = self.transport.clone();
+        let keepalive = self.keepalive;
+        Box::pin(async move {
+            let client = erased_ssr_query_client(transport);
+            let plan = StreamPlan::default()
+                .with_total_deadline(Duration::from_secs(10))
+                .with_keepalive_interval(keepalive);
+            let resp = pool
+                .render_streaming(SsrPageOptions::new("Disconnect Test", web_backend), plan, client, |c| {
+                    DioxusSurface::new(1, SlowPanelApp).with_context(c)
+                })
+                .await
+                .expect("streaming SSR response");
+            Ok(resp)
+        })
+    }
+}
+
+/// Serves `SlowPanelApp` over real loopback HTTP/1.1 (`keepalive` heartbeats, or none at all
+/// when `Duration::ZERO`), disconnects the client mid-stream and asserts the in-flight RPC future
+/// is dropped within 250ms.
+pub async fn assert_tcp_disconnect_cancels_in_flight_rpc(keepalive: Duration) {
+    let pool = SsrLocalPool::with_config(SsrLocalPoolConfig::default().with_worker_count(1))
+        .expect("pool init");
+    let transport = ControlledTransport::default();
+    let (started_tx, started_rx) = oneshot::channel();
+    let (dropped_tx, dropped_rx) = oneshot::channel();
+    transport.hang_with_drop_guard("slow", started_tx, dropped_tx);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+    let addr = listener.local_addr().expect("loopback addr");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let svc = LoopbackSsrService {
+        pool: pool.clone(),
+        transport: transport.clone(),
+        keepalive,
+    };
+    let server_task = tokio::spawn(async move {
+        serve_service_with_shutdown(listener, svc, async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .expect("loopback server");
+    });
+
+    let mut tcp = TcpStream::connect(addr).await.expect("connect loopback");
+    tcp.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("write request");
+
+    // Read until initial shell + seq=0 ack arrives over real HTTP/1.1 chunked TCP stream.
+    let mut acc = Vec::new();
+    let needle = b"data-nve-q-ack=\"0\"";
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut buf = [0u8; 1024];
+        while !acc.windows(needle.len()).any(|w| w == needle) {
+            let n = tcp.read(&mut buf).await.expect("tcp read");
+            assert!(n > 0, "unexpected EOF before shell arrived");
+            acc.extend_from_slice(&buf[..n]);
+        }
+    })
+    .await
+    .expect("timed out reading shell over loopback TCP");
+
+    let shell_wire = String::from_utf8_lossy(&acc);
+    let chunked = b"transfer-encoding: chunked";
+    assert!(
+        acc.windows(chunked.len()).any(|w| w.eq_ignore_ascii_case(chunked)),
+        "Hyper must chunk-frame streaming SSR over HTTP/1.1: {shell_wire}"
+    );
+
+    // Wait until the slow RPC future is definitely in flight before disconnecting.
+    tokio::time::timeout(Duration::from_secs(2), started_rx)
+        .await
+        .expect("slow RPC must start")
+        .expect("started sender");
+
+    // Abruptly close the client TCP socket and assert in-flight RPC drop guard fires in < 250ms!
+    let drop_start = Instant::now();
+    drop(tcp);
+
+    let dropped_at = tokio::time::timeout(Duration::from_millis(250), dropped_rx)
+        .await
+        .expect("in-flight RPC future MUST be cancelled within 250ms of TCP disconnect")
+        .expect("drop guard must send timestamp");
+    let elapsed = dropped_at.saturating_duration_since(drop_start);
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "cancellation took {elapsed:?} (>= 250ms)"
+    );
+
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("server task");
 }

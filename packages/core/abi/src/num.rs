@@ -41,6 +41,15 @@
 
 /// Fractional digits kept by [`write_f64`] (1/1000 px is below any device pixel).
 pub const FRACTION_DIGITS: u32 = 3;
+/// Maximum finite scalar magnitude accepted across CSS parsers, typed style builders, and
+/// native backends (`HeadlessBackend` / `SkiaBackend`), sealing range invariants at ingress.
+pub const MAX_STYLE_SCALAR: f32 = 1e7;
+
+/// Returns `true` iff `v` is finite and within `[-MAX_STYLE_SCALAR, MAX_STYLE_SCALAR]`.
+#[inline]
+pub const fn is_valid_style_scalar(v: f32) -> bool {
+    v.is_finite() && v >= -MAX_STYLE_SCALAR && v <= MAX_STYLE_SCALAR
+}
 const SCALE: f64 = 1000.0;
 /// Largest scaled magnitude: integers up to 2^53 are exact in binary64 (and in JS numbers).
 const MAX_SCALED: f64 = 9_007_199_254_740_992.0;
@@ -53,42 +62,49 @@ const POW10_F64: [f64; 23] = [
 /// Exact powers of ten representable in binary32 (`5^10 < 2^24`).
 const POW10_F32: [f32; 11] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
 
-/// Appends `v` in the fixed-point format of the module spec (`12`, `0.5`, `-3.125`).
-pub fn write_f64(out: &mut String, v: f64) {
+/// Formats `v` in the fixed-point format of the module spec (`12`, `0.5`, `-3.125`) into a
+/// caller-owned 24-byte stack buffer with zero heap allocation (max output length is 18 bytes).
+pub fn format_f64(buf: &mut [u8; 24], v: f64) -> &str {
     if !v.is_finite() {
-        out.push('0');
-        return;
+        return "0";
     }
     let scaled = (v.abs() * SCALE + 0.5).floor().min(MAX_SCALED) as u64;
     if scaled == 0 {
-        out.push('0');
-        return;
+        return "0";
     }
+    let mut len = 0usize;
     if v < 0.0 {
-        out.push('-');
+        buf[len] = b'-';
+        len += 1;
     }
-    write_u64(out, scaled / SCALE as u64);
+    let mut int_part = scaled / SCALE as u64;
+    let int_start = len;
+    loop {
+        buf[len] = b'0' + (int_part % 10) as u8;
+        len += 1;
+        int_part /= 10;
+        if int_part == 0 {
+            break;
+        }
+    }
+    buf[int_start..len].reverse();
     let mut frac = (scaled % SCALE as u64) as u32;
     if frac != 0 {
-        out.push('.');
+        buf[len] = b'.';
+        len += 1;
         let mut div = SCALE as u32 / 10;
         while frac != 0 {
-            out.push((b'0' + (frac / div) as u8) as char);
+            buf[len] = b'0' + (frac / div) as u8;
+            len += 1;
             frac %= div;
             div /= 10;
         }
     }
+    core::str::from_utf8(&buf[..len]).unwrap_or("0")
 }
 
-/// [`write_f64`] for an `f32` (widened exactly).
-#[inline]
-pub fn write_f32(out: &mut String, v: f32) {
-    write_f64(out, f64::from(v));
-}
-
-/// Appends the decimal digits of `n` without going through `core::fmt`.
-pub fn write_u64(out: &mut String, mut n: u64) {
-    let mut buf = [0u8; 20];
+/// Formats `n` in decimal into a caller-owned 24-byte stack buffer with zero heap allocation.
+pub fn format_u64(buf: &mut [u8; 24], mut n: u64) -> &str {
     let mut i = buf.len();
     loop {
         i -= 1;
@@ -98,17 +114,50 @@ pub fn write_u64(out: &mut String, mut n: u64) {
             break;
         }
     }
-    for &b in &buf[i..] {
-        out.push(b as char);
+    core::str::from_utf8(&buf[i..]).unwrap_or("0")
+}
+
+/// Formats `n` in decimal with a leading `-` when negative into a caller-owned 24-byte stack buffer.
+pub fn format_i64(buf: &mut [u8; 24], n: i64) -> &str {
+    let mut v = n.unsigned_abs();
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
     }
+    if n < 0 {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    core::str::from_utf8(&buf[i..]).unwrap_or("0")
+}
+
+/// Appends `v` in the fixed-point format of the module spec (`12`, `0.5`, `-3.125`).
+pub fn write_f64(out: &mut String, v: f64) {
+    let mut buf = [0u8; 24];
+    out.push_str(format_f64(&mut buf, v));
+}
+
+/// [`write_f64`] for an `f32` (widened exactly).
+#[inline]
+pub fn write_f32(out: &mut String, v: f32) {
+    write_f64(out, f64::from(v));
+}
+
+/// Appends the decimal digits of `n` without going through `core::fmt`.
+pub fn write_u64(out: &mut String, n: u64) {
+    let mut buf = [0u8; 24];
+    out.push_str(format_u64(&mut buf, n));
 }
 
 /// Appends `n` in decimal with a leading `-` when negative.
 pub fn write_i64(out: &mut String, n: i64) {
-    if n < 0 {
-        out.push('-');
-    }
-    write_u64(out, n.unsigned_abs());
+    let mut buf = [0u8; 24];
+    out.push_str(format_i64(&mut buf, n));
 }
 
 /// Returns `v` formatted per the module spec (allocates; prefer [`write_f64`] into a scratch buffer).

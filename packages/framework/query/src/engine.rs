@@ -15,7 +15,7 @@ use crate::slab::{
     pack_invalidation_version, rpc_status_from_u8, QueryMeta, QueryPayload, QuerySlotId,
     RawErrorWire, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IN_DIRTY_QUEUE,
     FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT,
-    FLAG_STREAM_PENDING, FLAG_SUBSCRIBED_ALL, NONE_IDX,
+    FLAG_SUBSCRIBED_ALL, NONE_IDX,
 };
 use crate::state::CacheState;
 #[cfg(not(target_arch = "wasm32"))]
@@ -226,12 +226,6 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let handle = if let Some(slot) = s.lookup_slot(P::ID, key_hash, &encoded_args) {
                 let idx = slot.index();
                 let meta = &mut s.metas[idx];
-                // If an inactive `StreamPending` slot was superseded by `invalidate_all()`, clear
-                // its stale streaming flags on mount so the new subscriber fetches cleanly.
-                if meta.is_stream_pending() && meta.is_invalidated(s.wildcard_epoch) {
-                    meta.flags &= !(FLAG_STREAM_PENDING | FLAG_IS_FETCHING);
-                    waiters.append(&mut s.payloads[idx].in_flight_waiters);
-                }
                 if meta.subscriber_count == 0 {
                     meta.stale_time_ms = options.stale_time_ms;
                     meta.gc_time_ms = options.gc_time_ms;
@@ -555,17 +549,16 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 )
             };
             let idx = handle.slot.index();
+            s.clear_stream_pending(
+                idx,
+                FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING | FLAG_HYDRATED,
+            );
             let meta = &mut s.metas[idx];
             meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
             let new_fetch_gen = meta.fetch_gen;
             meta.updated_at_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
             meta.invalidated_epoch = s.wildcard_epoch;
             meta.flags |= FLAG_HAS_DATA;
-            meta.flags &= !(FLAG_HAS_ERROR
-                | FLAG_IS_INVALIDATED
-                | FLAG_IS_FETCHING
-                | FLAG_HYDRATED
-                | FLAG_STREAM_PENDING);
 
             let payload = &mut s.payloads[idx];
             waiters.append(&mut payload.in_flight_waiters);

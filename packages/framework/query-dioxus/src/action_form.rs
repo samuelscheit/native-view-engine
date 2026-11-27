@@ -16,7 +16,7 @@ use nve_rpc::{
 };
 use nve_ui::{Form, FormController, FormMethod, FormSubmitPayload};
 
-use crate::hooks::use_action;
+use crate::action_hooks::use_action;
 
 fn field_errors_to_pairs(errs: &FieldErrors) -> Vec<(String, String)> {
     errs.errors

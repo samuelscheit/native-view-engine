@@ -202,7 +202,6 @@ fn two_sibling_query_suspense_boundaries_sharing_one_key_both_resolve_with_one_r
             "DOM contract markers missing ({mode:?}): {html_pending}"
         );
         if mode == QueryMode::Ssr {
-            assert!(registry.has_pending());
             assert_eq!(registry.pending_handles().len(), 1);
             assert!(registry.entry("left").unwrap().is_pending());
             assert!(registry.entry("right").unwrap().is_pending());
@@ -222,7 +221,11 @@ fn two_sibling_query_suspense_boundaries_sharing_one_key_both_resolve_with_one_r
             "sibling boundaries sharing one key must issue exactly 1 RPC ({mode:?})"
         );
         if mode == QueryMode::Ssr {
-            let ready = registry.ready_to_flush();
+            let ready: Vec<_> = registry
+                .boundaries()
+                .into_iter()
+                .filter(|e| e.is_ready_to_flush())
+                .collect();
             assert_eq!(ready.len(), 2);
             let mut cursor = DehydrateCursor::new();
             let left_delta = client
@@ -330,7 +333,14 @@ fn domain_and_protocol_errors_render_error_boundary_and_hydrate_with_zero_refetc
     // Dehydrate all settled errors into NVEQ v2 and hydrate into a fresh Client!
     let mut cursor = DehydrateCursor::new();
     let blob = ssr_client
-        .dehydrate_handles_delta(&registry.all_handles(), &mut cursor)
+        .dehydrate_handles_delta(
+            &registry
+                .boundaries()
+                .iter()
+                .flat_map(|e| e.query_handles())
+                .collect::<Vec<_>>(),
+            &mut cursor,
+        )
         .unwrap();
 
     let cli_transport = SuspenseTransport::new(false);
@@ -515,7 +525,6 @@ fn ssr_plain_use_query_never_fetches_while_suspend_attributes_handles_and_flatte
     // Outer owns BOTH item 1 and nested item 2; sibling owns ONLY item 3 (zero leakage!).
     assert_eq!(registry.entry("outer").unwrap().query_handles().len(), 2);
     assert_eq!(registry.entry("sibling").unwrap().query_handles().len(), 1);
-    assert!(registry.has_active_ssr_handles());
 
     transport.release();
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
@@ -546,7 +555,7 @@ fn stream_pending_suspends_without_rpc_then_resolves_via_chunk_or_finish_ssr_str
         .subscribe::<GetItem>(&51, QueryOptions::default())
         .unwrap();
     let pending_blob = ssr_client
-        .dehydrate_pending_handles(&[h_streamed, h_truncated])
+        .dehydrate_initial_stream_chunk(&[h_streamed, h_truncated], &mut DehydrateCursor::new())
         .unwrap();
 
     // Server settles item 50 into a stream chunk, while item 51 never arrives (truncated stream!).

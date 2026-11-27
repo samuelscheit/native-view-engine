@@ -107,6 +107,9 @@ fn lowering_refuses_values_the_string_path_would_misread() {
     let refused = [
         ("padding", V::LengthPct(50.0)),
         ("padding", V::Auto),
+        ("padding", V::LengthPx(-2.0)),
+        ("width", V::LengthPx(1e30)),
+        ("font-size", V::LengthPx(0.0)),
         ("gap", V::Int(4)),
         ("font-size", V::LengthPct(10.0)),
         ("border-radius", V::Auto),
