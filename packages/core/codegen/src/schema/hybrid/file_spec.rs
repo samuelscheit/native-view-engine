@@ -30,7 +30,16 @@ impl HybridFileSpec {
     /// declared alias into `Handle(name)`. Frontends call it once every declaration is known, since
     /// a type can be used before it is declared.
     pub(crate) fn resolve_named_types(&mut self) {
-        let Self { consts, aliases, enums, structs, modules, views, c_functions, .. } = self;
+        let Self {
+            consts,
+            aliases,
+            enums,
+            structs,
+            modules,
+            views,
+            c_functions,
+            ..
+        } = self;
         if enums.is_empty() && aliases.is_empty() {
             return;
         }
@@ -168,26 +177,23 @@ impl HybridFileSpec {
     }
 
     /// Collects all distinct `(suffix, inner)` POD types wrapped in `HybridType::Optional(T)`
-    /// across all module and view method signatures (used to emit exact `NveHybridOpt<T>` C-ABI structs).
+    /// across every module, view, and static C function signature (used to emit exact
+    /// `NveHybridOpt<T>` C-ABI structs).
     pub fn collect_pod_option_types(&self) -> Vec<(std::borrow::Cow<'static, str>, HybridType)> {
         let mut by_suffix: BTreeMap<std::borrow::Cow<'static, str>, HybridType> = BTreeMap::new();
-        let mut record_ty = |ty: &HybridType| {
-            collect_pod_opts_in_type(ty, self, &mut by_suffix);
-        };
-        for m in &self.modules {
-            for method in &m.methods {
-                for p in &method.params {
-                    record_ty(&p.ty);
-                }
-                record_ty(&method.return_type);
-            }
-        }
-        for v in &self.views {
-            for method in &v.methods {
-                for p in &method.params {
-                    record_ty(&p.ty);
-                }
-                record_ty(&method.return_type);
+        let interfaces = self
+            .modules
+            .iter()
+            .map(|m| &m.methods)
+            .chain(self.views.iter().map(|v| &v.methods));
+        for method in interfaces.flatten().chain(&self.c_functions) {
+            for ty in method
+                .params
+                .iter()
+                .map(|p| &p.ty)
+                .chain([&method.return_type])
+            {
+                collect_pod_opts_in_type(ty, self, &mut by_suffix);
             }
         }
         by_suffix.into_iter().collect()
@@ -209,7 +215,6 @@ fn collect_pod_opts_in_type(
         _ => {}
     }
 }
-
 
 pub(crate) fn hash_str(h: &mut Xxh64Hasher, s: &str) {
     h.update_u32(s.len() as u32);
@@ -309,8 +314,12 @@ pub(super) fn hash_transitive_types(
 
 fn rewrite_named_type(ty: &mut HybridType, enums: &BTreeSet<&str>, aliases: &BTreeSet<String>) {
     match ty {
-        HybridType::Struct(name) if enums.contains(name.as_str()) => *ty = HybridType::Enum(std::mem::take(name)),
-        HybridType::Struct(name) if aliases.contains(name) => *ty = HybridType::Handle(std::mem::take(name)),
+        HybridType::Struct(name) if enums.contains(name.as_str()) => {
+            *ty = HybridType::Enum(std::mem::take(name))
+        }
+        HybridType::Struct(name) if aliases.contains(name) => {
+            *ty = HybridType::Handle(std::mem::take(name))
+        }
         HybridType::Optional(inner)
         | HybridType::Vec(inner)
         | HybridType::ConstPtr(inner)

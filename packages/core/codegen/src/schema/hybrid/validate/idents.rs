@@ -1,10 +1,7 @@
 //! Identifier rules shared by every hybrid target.
 
-use std::collections::BTreeSet;
-
 use crate::error::CodegenError;
-use crate::naming::{to_pascal_case, to_snake_case};
-use crate::schema::hybrid::HybridFileSpec;
+use crate::naming::to_snake_case;
 
 /// Prefix of the names generated code binds itself (locals, parameters, type parameters) in every
 /// target language, so a spec identifier can never shadow or collide with one.
@@ -72,26 +69,6 @@ pub(super) fn validate_top_level_ident(kind: &str, name: &str) -> Result<(), Cod
         return Err(CodegenError::validation(format!(
             "{kind} name '{name}' is reserved by the hybrid runtime"
         )));
-    }
-    Ok(())
-}
-
-/// Every enum / struct `Name` is the C type `NveHybrid<Name>` (C, C++, Swift, Dart, Rust), so it
-/// must not spell a runtime C type (`NveHybridStatus`, `NveHybridOwnedBytes`) or another generated
-/// one (`NveHybrid<Module>VTable`, `NveHybridOpt<T>`, the Rust carrier `NveHybridRaw<Struct>`).
-pub(super) fn validate_c_type_names(spec: &HybridFileSpec) -> Result<(), CodegenError> {
-    let mut taken: BTreeSet<String> = ["Status", "OwnedBytes"].map(String::from).into();
-    let interfaces = spec.modules.iter().map(|m| &m.name).chain(spec.views.iter().map(|v| &v.name));
-    taken.extend(interfaces.map(|name| format!("{}VTable", to_pascal_case(name))));
-    taken.extend(spec.structs.iter().map(|s| format!("Raw{}", s.name)));
-    taken.extend(spec.collect_pod_option_types().into_iter().map(|(suffix, _)| format!("Opt{suffix}")));
-    let types = spec.enums.iter().map(|e| ("enum", &e.name));
-    for (kind, name) in types.chain(spec.structs.iter().map(|s| ("struct", &s.name))) {
-        if taken.contains(name.as_str()) {
-            return Err(CodegenError::validation(format!(
-                "{kind} name '{name}' collides with the generated C type 'NveHybrid{name}'"
-            )));
-        }
     }
     Ok(())
 }

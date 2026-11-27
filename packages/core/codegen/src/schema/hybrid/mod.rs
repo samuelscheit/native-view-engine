@@ -192,9 +192,7 @@ impl HybridType {
             | Self::F32
             | Self::F64
             | Self::Enum(_) => true,
-            Self::Struct(name) => file
-                .find_struct(name)
-                .is_some_and(|s| s.is_pod(file)),
+            Self::Struct(name) => file.find_struct(name).is_some_and(|s| s.is_pod(file)),
             Self::FixedArray { elem, .. } => elem.is_pod(file),
             Self::Void
             | Self::String
@@ -207,6 +205,18 @@ impl HybridType {
             | Self::MutPtr(_)
             | Self::Handle(_) => false,
         }
+    }
+
+    /// The dimensions of a (nested) `[T; N]`, outermost first, and its innermost element:
+    /// `[[u32; 2]; 3]` is `([3, 2], u32)`; any other type is `([], self)`.
+    pub fn fixed_array_dims(&self) -> (Vec<usize>, &HybridType) {
+        let mut dims = Vec::new();
+        let mut elem = self;
+        while let Self::FixedArray { elem: inner, len } = elem {
+            dims.push(*len);
+            elem = inner;
+        }
+        (dims, elem)
     }
 
     /// True if this type is a `Result<_, _>`.
@@ -297,30 +307,32 @@ impl HybridDefaultValue {
         }
     }
 
-    /// The default as a plain literal shared by the Dart, Rust, and Swift targets (`true`, bare
-    /// integers, `.0` for an integer default of a float, `format_float_literal`), or the kind each
-    /// target spells itself.
-    pub(crate) fn scalar_literal(&self, ty: &HybridType) -> Result<String, NonScalarDefault<'_>> {
+    /// The default as a [`DefaultLiteral`] of the prop type `ty`.
+    pub(crate) fn literal(&self, ty: &HybridType) -> DefaultLiteral<'_> {
         match (self, ty) {
-            (Self::Bool(b), _) => Ok(b.to_string()),
-            (Self::Int(i), HybridType::F32 | HybridType::F64) => Ok(format!("{i}.0")),
-            (Self::Int(i), _) => Ok(i.to_string()),
-            (Self::UInt(u), HybridType::F32 | HybridType::F64) => Ok(format!("{u}.0")),
-            (Self::UInt(u), _) => Ok(u.to_string()),
-            (Self::Float(f), _) => Ok(format_float_literal(*f)),
-            (Self::String(s), _) => Err(NonScalarDefault::String(s)),
-            (Self::EnumVariant { enum_name, variant }, _) => {
-                Err(NonScalarDefault::EnumVariant { enum_name, variant })
-            }
-            (Self::None, _) => Err(NonScalarDefault::None),
+            (Self::Bool(b), _) => DefaultLiteral::Scalar(b.to_string()),
+            (Self::Int(i), HybridType::F32 | HybridType::F64) => DefaultLiteral::Scalar(format!("{i}.0")),
+            (Self::Int(i), _) => DefaultLiteral::Scalar(i.to_string()),
+            (Self::UInt(u), HybridType::F32 | HybridType::F64) => DefaultLiteral::Scalar(format!("{u}.0")),
+            (Self::UInt(u), _) => DefaultLiteral::Scalar(u.to_string()),
+            (Self::Float(f), _) => DefaultLiteral::Scalar(format_float_literal(*f)),
+            (Self::String(s), _) => DefaultLiteral::String(s),
+            (Self::EnumVariant { enum_name, variant }, _) => DefaultLiteral::EnumVariant { enum_name, variant },
+            (Self::None, _) => DefaultLiteral::None,
         }
     }
 }
 
-/// A prop default with no shared literal form (see [`HybridDefaultValue::scalar_literal`]).
-pub(crate) enum NonScalarDefault<'a> {
+/// A prop default: a `Scalar` literal shared by the Dart, Rust, and Swift targets (`true`, bare
+/// integers, `.0` for an integer default of a float, `format_float_literal`), or a kind each
+/// target spells itself.
+pub(crate) enum DefaultLiteral<'a> {
+    Scalar(String),
     String(&'a str),
-    EnumVariant { enum_name: &'a str, variant: &'a str },
+    EnumVariant {
+        enum_name: &'a str,
+        variant: &'a str,
+    },
     None,
 }
 
@@ -418,34 +430,34 @@ impl HybridStructSpec {
         if self.is_union {
             return false;
         }
-        let mut visited = BTreeSet::new();
-        self.is_pod_inner(file, &mut visited)
+        self.is_pod_inner(file, &mut BTreeSet::new())
     }
 
-    fn is_pod_inner(&self, file: &HybridFileSpec, visited: &mut BTreeSet<String>) -> bool {
-        if self.is_union || !visited.insert(self.name.clone()) {
+    /// `visited` holds the structs on the current path, so a cycle (only possible in an
+    /// unvalidated spec, e.g. `struct A { x: [A; 1] }`) is not POD instead of recursing forever.
+    fn is_pod_inner<'a>(
+        &'a self,
+        file: &'a HybridFileSpec,
+        visited: &mut BTreeSet<&'a str>,
+    ) -> bool {
+        if self.is_union || !visited.insert(&self.name) {
             return false;
         }
         let ok = !self.fields.is_empty()
-            && self.fields.iter().all(|f| match &f.ty {
-                HybridType::Bool
-                | HybridType::U8
-                | HybridType::U16
-                | HybridType::Usize
-                | HybridType::I32
-                | HybridType::U32
-                | HybridType::I64
-                | HybridType::U64
-                | HybridType::F32
-                | HybridType::F64
-                | HybridType::Enum(_) => true,
-                HybridType::Struct(other) => file
-                    .find_struct(other)
-                    .is_some_and(|s| s.is_pod_inner(file, visited)),
-                HybridType::FixedArray { elem, .. } => elem.is_pod(file),
-                _ => false,
+            && self.fields.iter().all(|f| {
+                let mut ty = &f.ty;
+                while let HybridType::FixedArray { elem, .. } = ty {
+                    ty = elem;
+                }
+                match ty {
+                    HybridType::Struct(other) => file
+                        .find_struct(other)
+                        .is_some_and(|s| s.is_pod_inner(file, visited)),
+                    // Neither an array nor a struct: `is_pod` never recurses.
+                    leaf => leaf.is_pod(file),
+                }
             });
-        visited.remove(&self.name);
+        visited.remove(self.name.as_str());
         ok
     }
 }

@@ -9,8 +9,7 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use nve_codegen::{HybridTarget, generate_hybrid_target, parse_hybrid_rust_spec};
 
@@ -66,28 +65,6 @@ pub trait ShadowViewSpec {
 }
 "#;
 
-const STRICT_ANALYSIS_OPTIONS: &str = r#"
-analyzer:
-  language:
-    strict-casts: true
-    strict-inference: true
-    strict-raw-types: true
-
-linter:
-  rules:
-    - always_declare_return_types
-    - annotate_overrides
-    - avoid_dynamic_calls
-    - avoid_init_to_null
-    - curly_braces_in_flow_control_structures
-    - no_leading_underscores_for_local_identifiers
-    - non_constant_identifier_names
-    - prefer_const_constructors
-    - prefer_final_fields
-    - prefer_final_locals
-    - type_annotate_public_apis
-    - unnecessary_this
-"#;
 
 fn temp_test_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -100,52 +77,7 @@ fn temp_test_dir(tag: &str) -> PathBuf {
     dir
 }
 
-fn to_file_uri(p: &Path) -> String {
-    let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let s = canonical.to_string_lossy().replace('\\', "/");
-    if s.starts_with('/') {
-        format!("file://{s}")
-    } else {
-        format!("file:///{s}")
-    }
-}
 
-fn setup_offline_dart_pkg(dir: &Path, pkg_name: &str) {
-    let host_root = common::prepare_offline_nve_host_pkg(dir);
-    let dart_tool = dir.join(".dart_tool");
-    std::fs::create_dir_all(&dart_tool).expect("create .dart_tool");
-    std::fs::write(
-        dir.join("pubspec.yaml"),
-        format!(
-            "name: {pkg_name}\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\ndependencies:\n  nve_host:\n    path: nve_host_pkg\n"
-        ),
-    )
-    .expect("write pubspec.yaml");
-    let config = format!(
-        r#"{{
-  "configVersion": 2,
-  "packages": [
-    {{
-      "name": "{pkg_name}",
-      "rootUri": "{}",
-      "packageUri": "lib/",
-      "languageVersion": "3.4"
-    }},
-    {{
-      "name": "nve_host",
-      "rootUri": "{}",
-      "packageUri": "lib/",
-      "languageVersion": "3.4"
-    }}
-  ]
-}}
-"#,
-        to_file_uri(dir),
-        to_file_uri(&host_root),
-    );
-    std::fs::write(dart_tool.join("package_config.json"), config)
-        .expect("write package_config.json");
-}
 
 #[test]
 fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
@@ -242,7 +174,7 @@ fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
         .files[0]
         .content;
     assert!(fixed_src.contains("void _writeAbi(NveHybridFixedPodBundle _nveDst)"));
-    assert!(fixed_src.contains("points[_nveI]._writeAbi(_nveDst.points[_nveI]);"));
+    assert!(fixed_src.contains("points[_nveI0]._writeAbi(_nveDst.points[_nveI0]);"));
     assert!(fixed_src.contains("@ffi.Array(2)"));
     assert!(fixed_src.contains("external ffi.Array<NveHybridFixedPoint> points;"));
     assert!(fixed_src.contains("external ffi.Array<ffi.Uint32> kinds;"));
@@ -252,17 +184,17 @@ fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
     assert!(fixed_src.contains("List<FixedPoint>.generate(2,"));
     assert!(!fixed_src.contains("NveHybridOpt"));
 
-    // 2D `[[u8; 2]; 2]` in a POD struct must return Err(CodegenError) cleanly (never panic).
+    // 2D `[[u8; 2]; 2]` in a POD struct is a nested `ffi.Array` (`@ffi.Array.multi`).
     let nested_fixed = parse_hybrid_rust_spec(
         "#[nve_hybrid_struct]\npub struct Matrix2x2 { pub cells: [[u8; 2]; 2] }",
     )
     .expect("parse 2D FixedArray spec");
-    let nested_err = generate_hybrid_target(&nested_fixed, HybridTarget::Dart)
-        .expect_err("2D fixed array in Dart POD struct must return CodegenError");
-    assert!(
-        nested_err.to_string().contains("fixed-array"),
-        "expected fixed-array CodegenError, got: {nested_err}"
-    );
+    let nested_src = &generate_hybrid_target(&nested_fixed, HybridTarget::Dart)
+        .expect("generate 2D FixedArray dart")
+        .files[0]
+        .content;
+    assert!(nested_src.contains("@ffi.Array.multi([2, 2])\n  external ffi.Array<ffi.Array<ffi.Uint8>> cells;"));
+    assert!(nested_src.contains("if (cells[_nveI0].length != 2) {"), "every row checks its length");
 }
 
 const FIXED_ARRAY_POD_SPEC: &str = r#"
@@ -311,8 +243,7 @@ fn strict_dart_analyzer_accepts_realistic_enum_only_and_multi_option_shadowing_s
     let dir = temp_test_dir("strict_analyze");
     let lib_dir = dir.join("lib");
     std::fs::create_dir_all(&lib_dir).unwrap();
-    setup_offline_dart_pkg(&dir, "nve_strict_dart_check");
-    std::fs::write(dir.join("analysis_options.yaml"), STRICT_ANALYSIS_OPTIONS).unwrap();
+    common::dart::setup_offline_dart_pkg(&dir, "nve_strict_dart_check");
 
     for spec_src in [
         REALISTIC_HYBRID_SPEC,
@@ -330,17 +261,7 @@ fn strict_dart_analyzer_accepts_realistic_enum_only_and_multi_option_shadowing_s
             .expect("write dart");
     }
 
-    let check = Command::new("dart")
-        .args(["analyze", "--fatal-infos"])
-        .arg(&dir)
-        .output()
-        .expect("run strict dart analyze");
-    assert!(
-        check.status.success(),
-        "Generated Dart failed strict `dart analyze --fatal-infos`:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr)
-    );
+    common::dart::analyze(&dir);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -363,8 +284,7 @@ fn fixed_array_pod_and_binary_codec_runtime_roundtrip() {
         .write_to_dir(&lib_dir)
         .expect("write FixedArray dart");
 
-    setup_offline_dart_pkg(&dir, "nve_fixed_arr_rt");
-    std::fs::write(dir.join("analysis_options.yaml"), STRICT_ANALYSIS_OPTIONS).unwrap();
+    common::dart::setup_offline_dart_pkg(&dir, "nve_fixed_arr_rt");
 
     let driver = bin_dir.join("fixed_rt.dart");
     std::fs::write(
@@ -522,32 +442,9 @@ void main() {
     )
     .unwrap();
 
-    let analyze = Command::new("dart")
-        .args(["analyze", "--fatal-infos"])
-        .arg(&dir)
-        .output()
-        .expect("dart analyze fixed_array_rt");
-    assert!(
-        analyze.status.success(),
-        "FixedArray Dart runtime test failed strict `dart analyze --fatal-infos`:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&analyze.stdout),
-        String::from_utf8_lossy(&analyze.stderr)
-    );
+    common::dart::analyze(&dir);
 
-    let pkg_config = dir.join(".dart_tool/package_config.json");
-    let run = Command::new("dart")
-        .arg("--enable-asserts")
-        .arg(format!("--packages={}", pkg_config.display()))
-        .arg(&driver)
-        .current_dir(&dir)
-        .output()
-        .expect("run live FixedArray Dart VM test");
-    assert!(
-        run.status.success(),
-        "Live FixedArray Dart VM test failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr)
-    );
+    common::dart::run(&dir, &driver, &[]);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -793,8 +690,7 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
         &cdylib_path,
     );
 
-    setup_offline_dart_pkg(&dir, "nve_dart_e2e");
-    std::fs::write(dir.join("analysis_options.yaml"), STRICT_ANALYSIS_OPTIONS).unwrap();
+    common::dart::setup_offline_dart_pkg(&dir, "nve_dart_e2e");
     // Barrel re-exporting both generated hybrid files must have zero `ambiguous_export` collisions!
     std::fs::write(
         lib_dir.join("all_generated.dart"),
@@ -807,34 +703,10 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
     std::fs::write(&main_dart, include_str!("fixtures/dart_hybrid_e2e.dart")).unwrap();
 
     // First verify the test driver + generated files pass strict `dart analyze --fatal-infos`.
-    let analyze = Command::new("dart")
-        .args(["analyze", "--fatal-infos"])
-        .arg(&dir)
-        .output()
-        .expect("dart analyze e2e package");
-    assert!(
-        analyze.status.success(),
-        "Dart e2e package failed strict `dart analyze --fatal-infos`:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&analyze.stdout),
-        String::from_utf8_lossy(&analyze.stderr)
-    );
+    common::dart::analyze(&dir);
 
     // Now EXECUTE live Dart VM <-> Rust cdylib end-to-end!
-    let pkg_config = dir.join(".dart_tool/package_config.json");
-    let run = Command::new("dart")
-        .arg("--enable-asserts")
-        .arg(format!("--packages={}", pkg_config.display()))
-        .arg(&main_dart)
-        .arg(&cdylib_path)
-        .current_dir(&dir)
-        .output()
-        .expect("run live Dart VM <-> Rust cdylib e2e");
-    assert!(
-        run.status.success(),
-        "Live Dart VM <-> Rust cdylib e2e failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr)
-    );
+    common::dart::run(&dir, &main_dart, &[&cdylib_path]);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -41,6 +41,24 @@ static std::vector<uint8_t> bundle_with(const char* key, uint32_t count, bool po
   return {bytes.begin(), bytes.end()};
 }
 
+// `{"matrix": [[0, 0], [row_len x 0], [0, 0]]}`: a matrix whose middle row has `row_len` entries.
+static std::vector<uint8_t> matrix_with_row(uint32_t row_len) {
+  BinWriter w;
+  const auto map = w.begin_map(1u);
+  w.write_map_key("matrix");
+  const auto rows = w.begin_array(3u);
+  for (uint32_t row = 0; row < 3u; ++row) {
+    const uint32_t len = row == 1u ? row_len : 2u;
+    const auto cols = w.begin_array(len);
+    for (uint32_t i = 0; i < len; ++i) w.write_i64(0);
+    w.end(cols);
+  }
+  w.end(rows);
+  w.end(map);
+  const auto bytes = w.bytes();
+  return {bytes.begin(), bytes.end()};
+}
+
 static BinError decode_error(const std::vector<uint8_t>& bytes) {
   BinReader r(bytes);
   (void)FixedBundle::decode_bin(r);
@@ -66,6 +84,8 @@ static FixedPod sample_pod() {
   p.flags[0][0] = true;
   p.flags[0][32] = true;
   p.flags[1][5] = true;
+  p.one = {21u};
+  p.cells = {{{FixedPoint{5, 6}}, {FixedPoint{7, 8}}}};
   return p;
 }
 
@@ -94,6 +114,9 @@ static int codec_checks() {
   REQUIRE(decode_error(bundle_with("matrix", 2u, false)) == BinError::Truncated);
   REQUIRE(decode_error(bundle_with("tag", 2u, false)) == BinError::Truncated);
   REQUIRE(decode_error(bundle_with("tag", 4u, false)) == BinError::TooLarge);
+  REQUIRE(decode_error(matrix_with_row(2u)) == BinError::None);
+  REQUIRE(decode_error(matrix_with_row(1u)) == BinError::Truncated);
+  REQUIRE(decode_error(matrix_with_row(3u)) == BinError::TooLarge);
 
   // POD C arrays convert element by element, nested dimensions included.
   const FixedPod pod = sample_pod();
@@ -101,8 +124,10 @@ static int codec_checks() {
   REQUIRE(raw.v[3] == 3.25f && raw.points[1].y == 4 && raw.grid[2][1] == 15u);
   REQUIRE(raw.kinds[0] == static_cast<uint32_t>(FixedKind::Gamma));
   REQUIRE(raw.flags[0][32] && raw.flags[1][5] && !raw.flags[1][4]);
+  REQUIRE(raw.one[0] == 21u && raw.cells[0][0].y == 6 && raw.cells[1][0].x == 7);
   const FixedPod back = FixedPod::from_abi(raw);
   REQUIRE(back.v == pod.v && back.grid == pod.grid && back.flags == pod.flags);
+  REQUIRE(back.one == pod.one && back.cells[0][0].x == 5 && back.cells[1][0].y == 8);
   REQUIRE(back.kinds == pod.kinds && back.points[0].x == 1 && back.points[1].y == 4);
   return 0;
 }
@@ -119,10 +144,13 @@ static int live_checks() {
 
   REQUIRE((codec.tag(true) == std::array<uint8_t, 3>{7u, 8u, 255u}));
   REQUIRE(!codec.tag(false).has_value());
-  REQUIRE((codec.tryTag(true) == std::array<uint8_t, 3>{1u, 2u, 3u}));
+  REQUIRE((codec.tryTag(2u) == std::array<uint8_t, 3>{1u, 2u, 3u}));
+  REQUIRE(!codec.tryTag(1u).has_value());
+  REQUIRE((codec.retag(std::array<uint8_t, 3>{1u, 2u, 255u}) == std::array<uint8_t, 3>{0u, 2u, 1u}));
+  REQUIRE(!codec.retag(std::nullopt).has_value());
   bool threw = false;
   try {
-    (void)codec.tryTag(false);
+    (void)codec.tryTag(0u);
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("no tag") != std::string::npos;
   }
@@ -134,6 +162,10 @@ static int live_checks() {
   REQUIRE((mirrored.kinds == std::array<FixedKind, 2>{FixedKind::Beta, FixedKind::Gamma}));
   REQUIRE((mirrored.grid[0] == std::array<uint32_t, 2>{11u, 12u}));
   REQUIRE(!mirrored.flags[0][0] && !mirrored.flags[0][32] && mirrored.flags[0][1] && !mirrored.flags[1][5]);
+  REQUIRE(mirrored.one[0] == 42u && mirrored.cells[0][0].x == 7 && mirrored.cells[1][0].y == 6);
+  const auto maybe = codec.maybeMirror(sample_pod());
+  REQUIRE(maybe.has_value() && maybe->one[0] == 42u && maybe->grid == mirrored.grid);
+  REQUIRE(!codec.maybeMirror(std::nullopt).has_value());
 
   auto view = FixedViewClient::resolve(&nve_get_interface);
   FixedViewProps props{};

@@ -119,7 +119,7 @@ pub(super) fn dart_ffi_field_annotation(ty: &HybridType) -> Option<String> {
         HybridType::U64 => Some("@ffi.Uint64()".to_string()),
         HybridType::F32 => Some("@ffi.Float()".to_string()),
         HybridType::F64 => Some("@ffi.Double()".to_string()),
-        HybridType::FixedArray { len, .. } => Some(format!("@ffi.Array({len})")),
+        HybridType::FixedArray { .. } => Some(dart_ffi_array_annotation(ty)),
         _ => None,
     }
 }
@@ -137,6 +137,7 @@ fn dart_ffi_array_element_type(elem: &HybridType) -> Result<String, CodegenError
         HybridType::F32 => Ok("ffi.Float".to_string()),
         HybridType::F64 => Ok("ffi.Double".to_string()),
         HybridType::Struct(name) => Ok(format!("NveHybrid{name}")),
+        HybridType::FixedArray { elem, .. } => Ok(format!("ffi.Array<{}>", dart_ffi_array_element_type(elem)?)),
         other => Err(CodegenError::validation(format!(
             "unsupported Dart FFI fixed-array element type '{}'",
             other.canonical_signature()
@@ -315,13 +316,13 @@ fn dart_default_value_ctx(
                 other => dart_default_value_ctx(inner, Some(other), spec, in_const),
             };
         }
-        return match d.scalar_literal(ty) {
-            Ok(lit) => lit,
-            Err(NonScalarDefault::String(s)) => format!("'{}'", escape_dart_single_quoted_string(s)),
-            Err(NonScalarDefault::EnumVariant { enum_name, variant }) => {
+        return match d.literal(ty) {
+            DefaultLiteral::Scalar(lit) => lit,
+            DefaultLiteral::String(s) => format!("'{}'", escape_dart_single_quoted_string(s)),
+            DefaultLiteral::EnumVariant { enum_name, variant } => {
                 format!("{enum_name}.{}", dart_ident(variant))
             }
-            Err(NonScalarDefault::None) => "null".to_string(),
+            DefaultLiteral::None => "null".to_string(),
         };
     }
 

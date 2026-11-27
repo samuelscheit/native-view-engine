@@ -516,10 +516,25 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
         ("const int I = {h:#x};", true),
         ("const int J = 0x{h:016X}; // not BigInt", true),
         ("const int L = 0x1234567890ABCDEF; // BigInt.parse elsewhere", true),
+        ("const int L2 = 0x1234567890ABCDEF; /* BigInt */", true),
+        ("const int L3 = /* BigInt */ 0x{h:016X};", true),
+        ("const int T = 0x10000000{lo:08X};", true),
+        ("const int V = 0x{hi:08X}_{lo:08X};", true),
+        ("const int X = {h:>#018X};", true),
+        ("const int Y = {h:0<#018x};", true),
+        (r#"w(out, "const int A = 0x{a:08X}; // 0x{wide:016X} inside the emitted text");"#, true),
+        (r#"w(out, "// head\nconst int ID = 0x{id:016X};");"#, true),
+        (r#"w(out, "const url = 'https://x.dev'; const int ID = 0x{id:016X};");"#, true),
+        (r##"w(out, r#"const int R = 0x{r:016X}; "quoted""#); // BigInt"##, true),
+        (r#"w(out, "const int Z = 0x{z:016X};", '"'); // BigInt"#, true),
         ("  static const int interfaceId = 0x{interface_id:08X};", false),
         ("const int K = 0x{k:04x};", false),
         ("const int S = 0x{s:02X};", false),
         ("const int M = {m:#010X};", false),
+        ("const int M2 = {m:>#010X};", false),
+        ("const int M3 = 0x{m:08X}; /* 0x{wide:016X} */", false),
+        (r#"w(out, "const String u = 'https://x.dev/{path}';"); // 0x{wide:016X}"#, false),
+        (r#"fn f<'a>(x: &'a str) { w(out, "const int Q = 0x{q:08X};"); } // 0x{h:016X}"#, false),
         ("const int Q = 0x{id:08X}; // 0x{wide:016X} in a comment", false),
         ("const int N = 0x1234567890123;", false),
         ("const String name = '{label}';", false),
@@ -531,6 +546,15 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
         codegen_53bit::scan_dart_53bit_safety("dart/a.rs", line, &mut vd);
         assert_eq!(vd.len(), usize::from(unsafe_), "{line}: {vd:?}");
     }
+    // Block comments and strings span lines: line 2 ends a comment (its `BigInt` is no exemption),
+    // line 4 is inside a string opened on line 3 (its `//` is emitted text, not a comment).
+    let mut vd = Vec::new();
+    codegen_53bit::scan_dart_53bit_safety(
+        "dart/a.rs",
+        "/* a\n BigInt */ const int A = 0x{a:016X};\nw(out, \"head\n// x const int B = 0x{b:016X};\");\nconst int C = 0x{c:08X}; /* 0x{w:016X}\n0x{w:016X} */",
+        &mut vd,
+    );
+    assert_eq!(vd.iter().map(|v| v.line).collect::<Vec<_>>(), [2, 4], "{vd:?}");
 
     let mut vts_bad = Vec::new();
     codegen_53bit::scan_ts_53bit_safety(

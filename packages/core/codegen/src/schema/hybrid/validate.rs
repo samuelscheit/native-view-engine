@@ -1,19 +1,16 @@
+mod generated_names;
 mod idents;
 #[cfg(test)]
 mod tests;
+mod types;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use idents::{
-    ident_key, validate_c_type_names, validate_ident, validate_top_level_ident,
-    validate_vtable_method_ident,
-};
+use generated_names::validate_generated_type_names;
+use idents::{ident_key, validate_ident, validate_top_level_ident, validate_vtable_method_ident};
+use types::validate_type;
 
 use super::*;
-
-/// Largest `[T; N]`: keeps C arrays, Swift tuples, and eager defaults small, and every length a
-/// 32-bit `Int` (e.g. watchOS `arm64_32`) on every host.
-pub const MAX_FIXED_ARRAY_LEN: usize = 65_536;
 
 impl HybridFileSpec {
     pub fn validate(&self) -> Result<(), CodegenError> {
@@ -316,9 +313,24 @@ impl HybridFileSpec {
                 &alias_names,
                 "c_functions",
             )?;
+            for f in &self.c_functions {
+                let types = f.params.iter().map(|p| &p.ty).chain([&f.return_type]);
+                for ty in types {
+                    if let HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) = ty
+                        && !matches!(inner.as_ref(), HybridType::Void | HybridType::Struct(_))
+                        && inner.pod_opt_suffix_for(self).is_none()
+                    {
+                        return Err(CodegenError::validation(format!(
+                            "c_function '{}': `{}` must point to void, a scalar, an enum, or a struct",
+                            f.name,
+                            ty.canonical_signature()
+                        )));
+                    }
+                }
+            }
         }
 
-        validate_c_type_names(self)
+        validate_generated_type_names(self)
     }
 }
 
@@ -372,123 +384,6 @@ fn validate_methods(
         )?;
     }
     Ok(())
-}
-
-fn validate_type(
-    ty: &HybridType,
-    allow_void: bool,
-    enum_map: &BTreeMap<&str, &HybridEnumSpec>,
-    struct_map: &BTreeMap<&str, &HybridStructSpec>,
-    alias_names: &BTreeSet<&str>,
-    ctx: &str,
-) -> Result<(), CodegenError> {
-    match ty {
-        HybridType::Void => {
-            if !allow_void {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: void/'()' is only permitted as a method return or Result<(), String> ok type"
-                )));
-            }
-            Ok(())
-        }
-        HybridType::Bool
-        | HybridType::U8
-        | HybridType::U16
-        | HybridType::Usize
-        | HybridType::I32
-        | HybridType::U32
-        | HybridType::I64
-        | HybridType::U64
-        | HybridType::F32
-        | HybridType::F64
-        | HybridType::String
-        | HybridType::Bytes
-        | HybridType::Value => Ok(()),
-        HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
-            validate_type(inner, true, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::FixedArray { elem, len } => {
-            if !(1..=MAX_FIXED_ARRAY_LEN).contains(len) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: fixed-size array length {len} must be in 1..={MAX_FIXED_ARRAY_LEN}"
-                )));
-            }
-            validate_type(elem, false, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Handle(name) => {
-            if !alias_names.contains(name.as_str()) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: unknown handle alias '{name}'"
-                )));
-            }
-            Ok(())
-        }
-        HybridType::Optional(inner) => {
-            if matches!(inner.as_ref(), HybridType::Result { .. }) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Option<Result<...>> is not supported across FFI"
-                )));
-            }
-            // `None` is encoded as `Null`, which an inner `Option` / dynamic value can hold too:
-            // `Some(None)` / `Some(null)` would decode as `None`.
-            if matches!(inner.as_ref(), HybridType::Optional(_) | HybridType::Value) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Option<{}> is ambiguous on the wire (its `None` and `Some(null)` both encode as null)",
-                    inner.canonical_signature()
-                )));
-            }
-            validate_type(inner, false, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Vec(inner) => {
-            if matches!(inner.as_ref(), HybridType::Result { .. }) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Vec<Result<...>> is not supported across FFI"
-                )));
-            }
-            // One spelling per wire form: a byte vector crosses as one `Bytes` run, not an `Array`.
-            if matches!(inner.as_ref(), HybridType::U8) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Vec<u8> must be declared as Bytes (one `Bytes` run on the wire)"
-                )));
-            }
-            validate_type(inner, false, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Result { ok, err } => {
-            if !allow_void {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Result<T, String> is only supported as a top-level method return type"
-                )));
-            }
-            if matches!(ok.as_ref(), HybridType::Result { .. }) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: nested Result<Result<...>> is not supported"
-                )));
-            }
-            if !matches!(err.as_ref(), HybridType::String) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Result error type must be String (found '{}')",
-                    err.canonical_signature()
-                )));
-            }
-            validate_type(ok, true, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Struct(name) => {
-            if !struct_map.contains_key(name.as_str()) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: unknown struct or type '{name}'"
-                )));
-            }
-            Ok(())
-        }
-        HybridType::Enum(name) => {
-            if !enum_map.contains_key(name.as_str()) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: unknown enum '{name}'"
-                )));
-            }
-            Ok(())
-        }
-    }
 }
 
 fn validate_default_value(

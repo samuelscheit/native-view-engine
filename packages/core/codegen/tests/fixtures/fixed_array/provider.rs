@@ -23,8 +23,15 @@ impl FixedCodecHybrid for LiveCodec {
     fn tag(&mut self, present: bool) -> Option<[u8; 3]> {
         present.then_some([7, 8, 255])
     }
-    fn try_tag(&mut self, present: bool) -> Result<Option<[u8; 3]>, String> {
-        if present { Ok(Some([1, 2, 3])) } else { Err("no tag".to_string()) }
+    fn try_tag(&mut self, mode: u32) -> Result<Option<[u8; 3]>, String> {
+        match mode {
+            0 => Err("no tag".to_string()),
+            1 => Ok(None),
+            _ => Ok(Some([1, 2, 3])),
+        }
+    }
+    fn retag(&mut self, tag: Option<[u8; 3]>) -> Option<[u8; 3]> {
+        tag.map(|[a, b, c]| [c.wrapping_add(1), b, a])
     }
     fn mirror(&mut self, pod: FixedPod) -> FixedPod {
         FixedPod {
@@ -33,7 +40,12 @@ impl FixedCodecHybrid for LiveCodec {
             kinds: [pod.kinds[1], pod.kinds[0]],
             grid: pod.grid.map(|[a, b]| [a + 1, b + 1]),
             flags: pod.flags.map(|row| row.map(|f| !f)),
+            one: [pod.one[0] * 2],
+            cells: [pod.cells[1], pod.cells[0]],
         }
+    }
+    fn maybe_mirror(&mut self, pod: Option<FixedPod>) -> Option<FixedPod> {
+        pod.map(|pod| self.mirror(pod))
     }
 }
 

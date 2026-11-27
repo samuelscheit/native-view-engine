@@ -37,6 +37,23 @@ func bundleWith(_ key: String, _ count: UInt32, points: Bool = false) throws -> 
     return w.bytes
 }
 
+/// `{"matrix": [[0, 0], [rowLen x 0], [0, 0]]}`: a matrix whose middle row has `rowLen` entries.
+func matrixWithRow(_ rowLen: UInt32) throws -> [UInt8] {
+    var w = BinWriter()
+    let map = w.beginMap(1)
+    try w.writeMapKey("matrix")
+    let rows = w.beginArray(3)
+    for row in 0..<3 {
+        let len: UInt32 = row == 1 ? rowLen : 2
+        let cols = w.beginArray(len)
+        for _ in 0..<len { w.writeI64(0) }
+        try w.end(cols)
+    }
+    try w.end(rows)
+    try w.end(map)
+    return w.bytes
+}
+
 func sampleBundle() -> FixedBundle {
     FixedBundle(
         label: "fixed", coords: [1, 0xFFFF_FFFF, 0, 42],
@@ -51,7 +68,8 @@ func samplePod() -> FixedPod {
     flags[1][5] = true
     return FixedPod(
         v: [1.5, -2, 0, 3.25], points: [FixedPoint(x: 1, y: 2), FixedPoint(x: 3, y: 4)],
-        kinds: [.gamma, .beta], grid: [[10, 11], [12, 13], [14, 15]], flags: flags)
+        kinds: [.gamma, .beta], grid: [[10, 11], [12, 13], [14, 15]], flags: flags, one: [21],
+        cells: [[FixedPoint(x: 5, y: 6)], [FixedPoint(x: 7, y: 8)]])
 }
 
 // Defaults hold exactly N elements.
@@ -100,6 +118,14 @@ for (key, count, points, error): (String, UInt32, Bool, BinError?) in [
         _ = try FixedBundle.decodeBin(from: &br)
     }
 }
+for (rowLen, error): (UInt32, BinError?) in [(2, nil), (1, .truncated), (3, .tooLarge)] {
+    var br = BinReader(try matrixWithRow(rowLen))
+    if let error {
+        expect(error, "decoding a \(rowLen)-element matrix row") { _ = try FixedBundle.decodeBin(from: &br) }
+    } else {
+        _ = try FixedBundle.decodeBin(from: &br)
+    }
+}
 var truncated = BinReader([7])
 expect(BinError.truncated, "1-byte map") { _ = try FixedBundle.decodeBin(from: &truncated) }
 
@@ -108,6 +134,8 @@ let pod = samplePod()
 let raw = try pod.toAbi()
 require(raw.v.3 == 3.25 && raw.points.1.y == 4 && raw.grid.2.1 == 15, "toAbi copies elements")
 require(raw.kinds.0 == FixedKind.gamma.rawValue && raw.flags.0.32 && raw.flags.1.5 && !raw.flags.1.4, "toAbi nested")
+// C imports `one[1]` as a plain `UInt32` and `cells[2][1]` as a tuple of structs.
+require(raw.one == 21 && raw.cells.0.y == 6 && raw.cells.1.x == 7, "toAbi of N = 1 dimensions")
 require(try FixedPod.fromAbi(raw) == pod, "fromAbi restores every element")
 var badPod = samplePod()
 badPod.grid[2] = [1, 2, 3]
@@ -115,6 +143,9 @@ expect(BinError.tooLarge, "toAbi of a 3-element grid row") { _ = try badPod.toAb
 badPod = samplePod()
 badPod.v = [1]
 expect(BinError.truncated, "toAbi of a 1-element v") { _ = try badPod.toAbi() }
+badPod = samplePod()
+badPod.cells[1] = []
+expect(BinError.truncated, "toAbi of an empty cells row") { _ = try badPod.toAbi() }
 var badKind = raw
 badKind.kinds.1 = 99
 expect(HybridError.invalidEnum("FixedKind", 99), "fromAbi of an undeclared kind") { _ = try FixedPod.fromAbi(badKind) }
@@ -129,13 +160,20 @@ require(try codec.swap(coords: [1, 2, 3, 4]) == [4, 3, 2, 1], "swap")
 expect(BinError.truncated, "swap with 3 coords") { _ = try codec.swap(coords: [1, 2, 3]) }
 require(try codec.tag(present: true) == [7, 8, 255], "tag present")
 require(try codec.tag(present: false) == nil, "tag absent")
-require(try codec.tryTag(present: true) == [1, 2, 3], "tryTag ok")
-expect(HybridError.remote("no tag"), "tryTag error") { _ = try codec.tryTag(present: false) }
+require(try codec.tryTag(mode: 2) == [1, 2, 3], "tryTag ok")
+require(try codec.tryTag(mode: 1) == nil, "tryTag ok none")
+expect(HybridError.remote("no tag"), "tryTag error") { _ = try codec.tryTag(mode: 0) }
+require(try codec.retag(tag: [1, 2, 255]) == [0, 2, 1], "retag present")
+require(try codec.retag(tag: nil) == nil, "retag absent")
+expect(BinError.tooLarge, "retag with 4 bytes") { _ = try codec.retag(tag: [1, 2, 3, 4]) }
 let mirrored = try codec.mirror(pod: samplePod())
 require(mirrored.v == [-1.5, 2, -0.0, -3.25] && mirrored.kinds == [.beta, .gamma], "mirror v and kinds")
 require(mirrored.points == [FixedPoint(x: 3, y: 4), FixedPoint(x: 1, y: 2)], "mirror points")
 require(mirrored.grid == [[11, 12], [13, 14], [15, 16]], "mirror grid")
 require(!mirrored.flags[0][0] && !mirrored.flags[0][32] && mirrored.flags[0][1] && !mirrored.flags[1][5], "mirror flags")
+require(mirrored.one == [42] && mirrored.cells == [[FixedPoint(x: 7, y: 8)], [FixedPoint(x: 5, y: 6)]], "mirror N = 1")
+require(try codec.maybeMirror(pod: samplePod()) == mirrored, "maybeMirror present")
+require(try codec.maybeMirror(pod: nil) == nil, "maybeMirror absent")
 
 let view = try FixedViewHybridClient.resolve(getInterface: nve_get_interface)
 var props = FixedViewProps(coords: [5, 6, 7, 8], tag: [4, 5, 6], pod: samplePod())

@@ -58,13 +58,13 @@ pub(super) fn swift_default_value(
                 other => swift_default_value(inner, Some(other), spec),
             };
         }
-        return match d.scalar_literal(ty) {
-            Ok(lit) => lit,
-            Err(NonScalarDefault::String(s)) => format!("\"{}\"", escape_c_like_string(s)),
-            Err(NonScalarDefault::EnumVariant { enum_name, variant }) => {
+        return match d.literal(ty) {
+            DefaultLiteral::Scalar(lit) => lit,
+            DefaultLiteral::String(s) => format!("\"{}\"", escape_c_like_string(s)),
+            DefaultLiteral::EnumVariant { enum_name, variant } => {
                 format!("{enum_name}.{}", swift_ident(variant))
             }
-            Err(NonScalarDefault::None) => "nil".to_string(),
+            DefaultLiteral::None => "nil".to_string(),
         };
     }
 

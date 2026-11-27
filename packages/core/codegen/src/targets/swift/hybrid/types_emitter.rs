@@ -142,12 +142,7 @@ pub(super) fn emit_swift_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec
 /// A POD `[T; N]` (nested too) in C is a homogeneous tuple of its innermost element: that
 /// element's imported Swift type and the dimensions, outermost first.
 fn swift_c_fixed_layout(ty: &HybridType) -> (&HybridType, String, Vec<usize>) {
-    let mut dims = Vec::new();
-    let mut elem = ty;
-    while let HybridType::FixedArray { elem: inner, len } = elem {
-        dims.push(*len);
-        elem = inner;
-    }
+    let (dims, elem) = ty.fixed_array_dims();
     let c_ty = match elem {
         HybridType::Enum(name) | HybridType::Struct(name) => format!("NveHybrid{name}"),
         other => swift_type(other),

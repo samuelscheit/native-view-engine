@@ -12,10 +12,12 @@
 //!   scoped `HybridArena.using` for leak-free FFI calls.
 
 mod client_emitter;
+mod pod_abi;
 mod type_helpers;
 
 use crate::writer::CodeWriter;
 use client_emitter::{emit_dart_client, emit_dart_direct_prop_write};
+use pod_abi::{dart_ffi_array_annotation, emit_dart_pod_abi_conversions};
 use type_helpers::*;
 
 use crate::error::CodegenError;
@@ -25,7 +27,7 @@ use crate::naming::{
 use crate::schema::export::GeneratedFile;
 use crate::schema::hybrid::{
     HybridDefaultValue, HybridEnumSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec,
-    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, NonScalarDefault,
+    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, DefaultLiteral,
 };
 
 /// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and `package:nve_host`.
@@ -156,6 +158,12 @@ fn emit_dart_enum(out: &mut CodeWriter, e: &HybridEnumSpec) {
     writeln!(out);
 }
 
+/// The brackets of a constructor's named parameters: none when it has no parameter (`X()`; Dart
+/// rejects an empty `X({})`).
+fn named_params(empty: bool) -> (&'static str, &'static str) {
+    if empty { ("", "") } else { ("{", "}") }
+}
+
 fn emit_dart_struct(
     out: &mut CodeWriter,
     s: &HybridStructSpec,
@@ -181,85 +189,16 @@ fn emit_dart_struct(
         writeln!(out, "  final {} {fname};", dart_type(&f.ty));
     }
     writeln!(out);
-    write!(out, "  const {}({{", s.name);
+    let (open, close) = named_params(s.fields.is_empty());
+    write!(out, "  const {}({open}", s.name);
     for f in &s.fields {
         let fname = dart_ident(&f.name);
         write!(out, "required this.{fname}, ");
     }
-    writeln!(out, "}});");
+    writeln!(out, "{close});");
 
     if s.is_pod(spec) {
-        writeln!(out);
-        writeln!(out, "  void _writeAbi(NveHybrid{} _nveDst) {{", s.name);
-        for f in &s.fields {
-            let fname = dart_ident(&f.name);
-            match &f.ty {
-                HybridType::Enum(_) => writeln!(out, "    _nveDst.{fname} = {fname}.rawValue;"),
-                HybridType::Struct(_) => writeln!(out, "    {fname}._writeAbi(_nveDst.{fname});"),
-                HybridType::FixedArray { elem, len } => {
-                    writeln!(out, "    if ({fname}.length != {len}) {{");
-                    writeln!(
-                        out,
-                        "      throw RangeError.value({fname}.length, '{fname}', 'expected fixed length {len}');"
-                    );
-                    writeln!(out, "    }}");
-                    writeln!(out, "    for (var _nveI = 0; _nveI < {len}; _nveI++) {{");
-                    match elem.as_ref() {
-                        HybridType::Enum(_) => {
-                            writeln!(out, "      _nveDst.{fname}[_nveI] = {fname}[_nveI].rawValue;")
-                        }
-                        HybridType::Struct(_) => {
-                            writeln!(out, "      {fname}[_nveI]._writeAbi(_nveDst.{fname}[_nveI]);")
-                        }
-                        _ => writeln!(out, "      _nveDst.{fname}[_nveI] = {fname}[_nveI];"),
-                    }
-                    writeln!(out, "    }}");
-                }
-                _ => writeln!(out, "    _nveDst.{fname} = {fname};"),
-            }
-        }
-        writeln!(out, "  }}");
-        writeln!(out);
-        writeln!(out, "  NveHybrid{} toAbi() {{", s.name);
-        writeln!(
-            out,
-            "    final _nveRaw = ffi.Struct.create<NveHybrid{}>();",
-            s.name
-        );
-        writeln!(out, "    _writeAbi(_nveRaw);");
-        writeln!(out, "    return _nveRaw;");
-        writeln!(out, "  }}");
-        writeln!(out);
-        writeln!(
-            out,
-            "  factory {}.fromAbi(NveHybrid{} _nveRaw) => {}(",
-            s.name, s.name, s.name
-        );
-        for f in &s.fields {
-            let fname = dart_ident(&f.name);
-            match &f.ty {
-                HybridType::Enum(e) => {
-                    writeln!(out, "    {fname}: {e}.fromRaw(_nveRaw.{fname}),")
-                }
-                HybridType::Struct(st) => {
-                    writeln!(out, "    {fname}: {st}.fromAbi(_nveRaw.{fname}),")
-                }
-                HybridType::FixedArray { elem, len } => {
-                    let elem_ty = dart_type(elem);
-                    let elem_expr = match elem.as_ref() {
-                        HybridType::Enum(e) => format!("{e}.fromRaw(_nveRaw.{fname}[_nveI])"),
-                        HybridType::Struct(st) => format!("{st}.fromAbi(_nveRaw.{fname}[_nveI])"),
-                        _ => format!("_nveRaw.{fname}[_nveI]"),
-                    };
-                    writeln!(
-                        out,
-                        "    {fname}: List<{elem_ty}>.generate({len}, (_nveI) => {elem_expr}),"
-                    );
-                }
-                _ => writeln!(out, "    {fname}: _nveRaw.{fname},"),
-            }
-        }
-        writeln!(out, "  );");
+        emit_dart_pod_abi_conversions(out, s);
     }
 
     writeln!(out);
@@ -276,13 +215,12 @@ fn emit_dart_struct(
     writeln!(out);
 
     writeln!(out, "  factory {}.decodeBin(BinReader _nveR) {{", s.name);
-    for (idx, f) in s.fields.iter().enumerate() {
-        let def = dart_default_value(&f.ty, None, spec);
-        if def == "null" {
-            writeln!(out, "    {} _nveF{idx};", dart_type(&f.ty));
-        } else {
-            writeln!(out, "    {} _nveF{idx} = {def};", dart_type(&f.ty));
-        }
+    // Fields start unset; a missing one takes its default after the map is read, so malformed
+    // input fails before any default (`List.generate` of a `[T; N]`) is built.
+    let defaults: Vec<String> = s.fields.iter().map(|f| dart_default_value(&f.ty, None, spec)).collect();
+    for (idx, (f, def)) in s.fields.iter().zip(&defaults).enumerate() {
+        let nullable = if def == "null" { "" } else { "?" };
+        writeln!(out, "    {}{nullable} _nveF{idx};", dart_type(&f.ty));
     }
     writeln!(out, "    _nveR.readMapScope<void>((_nveCount) {{");
     writeln!(out, "      for (var _nveI = 0; _nveI < _nveCount; _nveI++) {{");
@@ -298,9 +236,10 @@ fn emit_dart_struct(
     writeln!(out, "      }}");
     writeln!(out, "    }});");
     writeln!(out, "    return {}(", s.name);
-    for (idx, f) in s.fields.iter().enumerate() {
+    for (idx, (f, def)) in s.fields.iter().zip(&defaults).enumerate() {
         let fname = dart_ident(&f.name);
-        writeln!(out, "      {fname}: _nveF{idx},");
+        let fallback = if def == "null" { String::new() } else { format!(" ?? {def}") };
+        writeln!(out, "      {fname}: _nveF{idx}{fallback},");
     }
     writeln!(out, "    );");
     writeln!(out, "  }}");
@@ -340,7 +279,8 @@ fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpe
         writeln!(out, "  final {} {pname};", dart_type(&p.ty));
     }
     writeln!(out);
-    write!(out, "  {pascal}Props({{");
+    let (open, close) = named_params(v.props.is_empty());
+    write!(out, "  {pascal}Props({open}");
     for p in &v.props {
         let pname = dart_ident(&p.name);
         let def = dart_default_value(&p.ty, p.default_value.as_ref(), spec);
@@ -354,7 +294,7 @@ fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpe
             write!(out, "{}? {pname}, ", dart_type_non_nullable(&p.ty));
         }
     }
-    writeln!(out, "}})");
+    writeln!(out, "{close})");
     let non_const_inits: Vec<String> = v
         .props
         .iter()
@@ -393,12 +333,13 @@ fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpe
             writeln!(out, "  final {} {pname};", dart_type(&param.ty));
         }
         writeln!(out);
-        write!(out, "  const {pascal}{ev_pascal}Event({{");
+        let (open, close) = named_params(ev.params.is_empty());
+        write!(out, "  const {pascal}{ev_pascal}Event({open}");
         for param in &ev.params {
             let pname = dart_ident(&param.name);
             write!(out, "required this.{pname}, ");
         }
-        writeln!(out, "}});");
+        writeln!(out, "{close});");
         writeln!(out, "}}");
         writeln!(out);
     }

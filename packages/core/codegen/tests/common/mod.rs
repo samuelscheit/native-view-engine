@@ -9,6 +9,8 @@
 pub mod rustc;
 pub mod specs;
 pub mod swift;
+pub mod dart;
+pub mod ts;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

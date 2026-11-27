@@ -4,26 +4,17 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use common::specs::counter_card_export_spec;
 use nve_codegen::{
     DefaultValue, EventBubbling, EventSpec, ExportBackend, HybridTarget, NveExportSpec,
-    ObjectField, PropSpec, PropType, export_web_component, generate_all_abi_files,
+    ObjectField, PropSpec, PropType, export_web_component,
     generate_hybrid_target, parse_hybrid_rust_spec,
 };
 
 const REALISTIC_HYBRID_SPEC: &str = include_str!("fixtures/realistic_hybrid.nve.rs");
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .expect("workspace root 3 levels above CARGO_MANIFEST_DIR")
-        .to_path_buf()
-}
 
 fn temp_test_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -36,73 +27,7 @@ fn temp_test_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// Materializes a self-contained offline `@nve/host` package under `dir/host_ts_pkg` (for Node's
-/// native TypeScript type-stripping, which refuses `.ts` paths under `node_modules/`) AND under
-/// `dir/node_modules/@nve/host` (for `tsc` `NodeNext` module resolution), plus a tiny ESM resolve
-/// hook (`dir/resolve_host.mjs`) mapping `'@nve/host'` to `dir/host_ts_pkg/src/index.ts`.
-fn prepare_offline_host_ts_pkg(dir: &Path) -> PathBuf {
-    let src = workspace_root().join("packages/core/host-ts");
-    let abi_files = generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
-        .expect("generate host ABI files");
 
-    for dst in [dir.join("node_modules/@nve/host"), dir.join("host_ts_pkg")] {
-        common::copy_tree(&src.join("src"), &dst.join("src"));
-        std::fs::copy(src.join("package.json"), dst.join("package.json"))
-            .expect("copy host-ts package.json");
-        for file in &abi_files {
-            if let Some(rel) = file.relative_path.strip_prefix("packages/core/host-ts/") {
-                let out = dst.join(rel);
-                if let Some(parent) = out.parent() {
-                    std::fs::create_dir_all(parent).expect("create host-ts generated dir");
-                }
-                std::fs::write(out, &file.content).expect("write host-ts generated file");
-            }
-        }
-    }
-
-    let hook = dir.join("resolve_host.mjs");
-    std::fs::write(
-        &hook,
-        r#"import { registerHooks } from 'node:module';
-const target = new URL('./host_ts_pkg/src/index.ts', import.meta.url).href;
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (specifier === '@nve/host') return { url: target, shortCircuit: true };
-    return nextResolve(specifier, context);
-  },
-});
-"#,
-    )
-    .expect("write resolve_host.mjs");
-    hook
-}
-
-fn run_tsc_no_emit(tsconfig: &Path) {
-    let mut cmd = if common::tool_available("tsc") {
-        let mut c = Command::new("tsc");
-        c.args(["--noEmit", "-p"]).arg(tsconfig);
-        c
-    } else if common::tool_available("npx") {
-        let mut c = Command::new("npx");
-        c.args(["-y", "-p", "typescript@5.9", "tsc", "--noEmit", "-p"])
-            .arg(tsconfig);
-        c
-    } else {
-        assert!(
-            std::env::var_os("NVE_REQUIRE_TSC").is_none() && std::env::var_os("CI").is_none(),
-            "`tsc` (or `npx`) is required (NVE_REQUIRE_TSC / CI) but neither was found"
-        );
-        eprintln!("SKIP: neither `tsc` nor `npx` found");
-        return;
-    };
-    let out = cmd.output().expect("run tsc --noEmit");
-    assert!(
-        out.status.success(),
-        "tsc --noEmit failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 #[test]
 fn generated_ts_hybrid_reuses_host_ts_with_erasable_syntax_and_zero_duplication() {
@@ -258,7 +183,7 @@ fn real_tsc_and_node_verify_generated_ts_hybrid_runtime_end_to_end() {
     }
 
     let dir = temp_test_dir("hybrid_e2e");
-    let hook = prepare_offline_host_ts_pkg(&dir);
+    let hook = common::ts::prepare_offline_host_ts_pkg(&dir);
     std::fs::write(dir.join("package.json"), r#"{"type": "module"}"#).expect("write package.json");
 
     // 1. Generate realistic spec + edge-case specs (enum-only, struct-only, empty-props view with
@@ -940,49 +865,12 @@ declare module 'node:assert/strict' {
     .expect("write node_ambient.d.ts");
 
     let tsconfig = dir.join("tsconfig.json");
-    std::fs::write(
-        &tsconfig,
-        r#"{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "lib": ["ES2024", "DOM"],
-    "types": [],
-    "strict": true,
-    "noEmit": true,
-    "erasableSyntaxOnly": true,
-    "verbatimModuleSyntax": true,
-    "allowImportingTsExtensions": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "isolatedModules": true,
-    "skipLibCheck": false
-  },
-  "include": ["./*.ts"]
-}"#,
-    )
-    .expect("write tsconfig.json");
+    std::fs::write(&tsconfig, common::ts::STRICT_TSCONFIG).expect("write tsconfig.json");
 
-    run_tsc_no_emit(&tsconfig);
+    common::ts::run_tsc_no_emit(&tsconfig);
 
     // 4. Execute the generated TypeScript directly with `node`!
-    let node_run = Command::new("node")
-        .arg("--import")
-        .arg(&hook)
-        .arg(&driver)
-        .output()
-        .expect("run node on generated TS hybrid e2e driver");
-    assert!(
-        node_run.status.success(),
-        "Node execution of generated TS hybrid failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&node_run.stdout),
-        String::from_utf8_lossy(&node_run.stderr)
-    );
+    common::ts::run_node(&hook, &driver);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -994,7 +882,7 @@ fn real_node_and_tsc_verify_web_component_53_bit_safe_codec() {
     }
 
     let dir = temp_test_dir("web_component_53bit");
-    let hook = prepare_offline_host_ts_pkg(&dir);
+    let hook = common::ts::prepare_offline_host_ts_pkg(&dir);
     std::fs::write(dir.join("package.json"), r#"{"type": "module"}"#).expect("write package.json");
 
     let mut spec = NveExportSpec::new("LedgerWidget", ExportBackend::Skia);
@@ -1142,7 +1030,7 @@ export function checkProps(el: LedgerWidgetElement): LedgerWidgetProps {
 }"#,
     )
     .expect("write web component tsconfig");
-    run_tsc_no_emit(&tsconfig);
+    common::ts::run_tsc_no_emit(&tsconfig);
 
     // Execute generated `.generated.js` under Node with a minimal DOM shim and assert 64-bit exactness!
     let runner = dir.join("run_web_component.mjs");
@@ -1267,18 +1155,7 @@ assert.throws(
     )
     .expect("write run_web_component.mjs");
 
-    let node_run = Command::new("node")
-        .arg("--import")
-        .arg(&hook)
-        .arg(&runner)
-        .output()
-        .expect("run node web component 53-bit test");
-    assert!(
-        node_run.status.success(),
-        "Node execution of generated web component failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&node_run.stdout),
-        String::from_utf8_lossy(&node_run.stderr)
-    );
+    common::ts::run_node(&hook, &runner);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -227,7 +227,7 @@ pub(super) fn emit_ts_bin_read(
             writeln!(out, "{indent}{dst} = {r}.readArray((_n{d}) => {{");
             writeln!(
                 out,
-                "{indent}  if (_n{d} !== {len}) throw new _nve.BinCodecError('truncated', `expected fixed array of length {len}, got ${{_n{d}}}`);"
+                "{indent}  if (_n{d} !== {len}) throw new _nve.BinCodecError(_n{d} < {len} ? 'truncated' : 'tooLarge', `expected fixed array of length {len}, got ${{_n{d}}}`);"
             );
             writeln!(out, "{indent}  const _arr{d}: Array<{elem_ty}> = [];");
             writeln!(out, "{indent}  for (let _i{d} = 0; _i{d} < _n{d}; _i{d} += 1) {{");

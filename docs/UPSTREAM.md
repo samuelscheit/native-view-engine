@@ -54,6 +54,9 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **Synthesized `Equatable` warns on a `Double` field named `nan`**
   - **Observed**: For `struct S: Equatable { var nan: Double }`, the compiler-synthesized `==` compares `lhs.nan == rhs.nan`, and the comparison lint misreads it as the static `.nan` (`<unknown>:0: warning: '.nan' == '.nan' is always false`), so `-warnings-as-errors` fails the build. Generated hybrid structs synthesize `Equatable`, so a spec field `nan: f64` hits it.
   - **Mitigation**: Avoid a `Double` / `Float` field named `nan` (the Swift e2e fixture `packages/core/codegen/tests/fixtures/swift_edge_hybrid.nve.rs` uses `not_a_number`).
+- **Clang importer drops C arrays of more than 4,096 elements**
+  - **Observed**: `lib/ClangImporter/ImportType.cpp` imports a C array `T a[N]` as an `N`-tuple and returns no type when `N > 4096` (SR-4548, swiftlang/swift#47125), so such a struct field silently vanishes from Swift; `T a[1]` imports as a plain `T` (a 1-tuple), and nested arrays as nested tuples that compile slowly well below the cap.
+  - **Mitigation**: hybrid validation caps every `[T; N]` at 4,096 elements with all dimensions multiplied (`MAX_FIXED_ARRAY_ELEMENTS`, `packages/core/codegen/src/schema/hybrid/validate/types.rs`); the generated Swift copies C arrays through `withUnsafe(Mutable)Bytes(of:)`, so the `N = 1` scalar import needs no special case.
 
 ### GTK 4 (`gtk4 4.24.2`)
 

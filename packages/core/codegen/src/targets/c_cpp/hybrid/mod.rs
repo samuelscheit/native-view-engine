@@ -21,7 +21,7 @@ pub(crate) use type_helpers::cpp_owned_type;
 use crate::writer::CodeWriter;
 use codec_emitter::emit_cpp20_spec;
 use type_helpers::{
-    c_abi_field_decl, c_fn_type, c_param_type, c_pod_type, c_return_type, is_c_abi_struct,
+    c_abi_struct_fields, c_fn_type, c_param_type, c_return_type, require_c_value_type,
 };
 
 use crate::error::CodegenError;
@@ -42,7 +42,7 @@ pub fn generate_hybrid_cpp(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, 
     let header_name = format!("{stem}HybridAbi.generated.h");
     let hpp_name = format!("{stem}HybridSpec.generated.hpp");
 
-    let c_header = emit_c11_header(spec);
+    let c_header = emit_c11_header(spec)?;
     let cpp_header = emit_cpp20_spec(spec, &header_name);
 
     Ok(vec![
@@ -57,7 +57,7 @@ pub fn generate_hybrid_cpp(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, 
     ])
 }
 
-fn emit_c11_header(spec: &HybridFileSpec) -> String {
+fn emit_c11_header(spec: &HybridFileSpec) -> Result<String, CodegenError> {
     let mut out = CodeWriter::with_capacity(8 * 1024);
     writeln!(
         out,
@@ -121,13 +121,12 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
 
     // POD & direct C-ABI view structs (topological order so embedded POD fields are always complete)
     for s in spec.structs_topological() {
-        if !is_c_abi_struct(s, spec) {
+        let Some(decls) = c_abi_struct_fields(s, spec) else {
             continue;
-        }
+        };
         writeln!(out, "typedef struct NveHybrid{} {{", s.name);
-        for f in &s.fields {
-            let fname = c_field_ident(&f.name);
-            writeln!(out, "  {};", c_abi_field_decl(&f.ty, &fname));
+        for decl in decls {
+            writeln!(out, "  {decl};");
         }
         writeln!(out, "}} NveHybrid{};", s.name);
         if let Some(sz) = s.expected_size {
@@ -168,7 +167,7 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
     for (suffix, inner) in spec.collect_pod_option_types() {
         writeln!(out, "typedef struct NveHybridOpt{suffix} {{");
         writeln!(out, "  bool is_some;");
-        writeln!(out, "  {} value;", c_pod_type(&inner));
+        writeln!(out, "  {} value;", require_c_value_type(&inner, spec)?);
         writeln!(out, "}} NveHybridOpt{suffix};");
         writeln!(out);
     }
@@ -176,15 +175,18 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
     // Direct static `extern "C"` functions (default for statically linked builds; zero vtable, LTO-inlinable)
     if !spec.c_functions.is_empty() {
         for f in &spec.c_functions {
-            let ret = match &f.return_type {
-                HybridType::Void => "void".to_string(),
-                other => c_fn_type(other, spec),
-            };
-            let params: Vec<String> = f
+            let ret = c_fn_type(&f.return_type, spec)?;
+            let params = f
                 .params
                 .iter()
-                .map(|p| format!("{} {}", c_fn_type(&p.ty, spec), c_field_ident(&p.name)))
-                .collect();
+                .map(|p| {
+                    Ok(format!(
+                        "{} {}",
+                        c_fn_type(&p.ty, spec)?,
+                        c_field_ident(&p.name)
+                    ))
+                })
+                .collect::<Result<Vec<String>, CodegenError>>()?;
             let param_list = if params.is_empty() {
                 "void".to_string()
             } else {
@@ -228,7 +230,7 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
     writeln!(out, "#ifdef __cplusplus");
     writeln!(out, "}}");
     writeln!(out, "#endif");
-    out.into_string()
+    Ok(out.into_string())
 }
 
 fn emit_c11_vtable(
