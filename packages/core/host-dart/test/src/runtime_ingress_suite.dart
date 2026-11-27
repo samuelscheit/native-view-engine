@@ -1,0 +1,119 @@
+/// `dart:ffi` layout locks of the runtime scene ABI (sizes and field offsets mirror the Rust
+/// `offset_of!` asserts) and untrusted `NveRuntimeSceneView` ingress: every malformed view a
+/// runtime could publish is rejected with a [SceneException] before any slab is viewed.
+library;
+
+import 'dart:ffi' as ffi;
+
+import 'package:nve_host/nve_native.dart';
+
+import 'check.dart';
+
+final int _ptr = ffi.sizeOf<ffi.Pointer<ffi.Void>>();
+
+/// Byte offset of the field [write] stores [probe] into (found by scanning the zeroed struct).
+int _offsetOf<T extends ffi.Struct>(int size, void Function(ffi.Pointer<T> p) write, int probeWidth) {
+  final p = NativeHeap.zeroed<T>(size);
+  try {
+    write(p);
+    final bytes = p.cast<ffi.Uint8>().asTypedList(size);
+    final at = bytes.indexWhere((b) => b != 0);
+    return at < 0 ? -1 : at - (at % probeWidth);
+  } finally {
+    NativeHeap.free(p);
+  }
+}
+
+void runRuntimeIngress(Check c) {
+  // ---- layout locks ---------------------------------------------------------------------------
+  c.eq(ffi.sizeOf<NveNodeRow>(), nveNodeRowSize, 'NveNodeRow size');
+  c.eq(nveNodeRowSize, nodeRowWords * 4, 'node row words');
+  c.eq(ffi.sizeOf<NveLayoutRect>(), nveLayoutRectSize, 'NveLayoutRect size');
+  c.eq(nveLayoutRectSize, layoutRectFloats * 4, 'layout rect floats');
+  c.eq(ffi.sizeOf<NveScrollOffset>(), nveScrollOffsetSize, 'NveScrollOffset size');
+  c.eq(nveScrollOffsetSize, scrollOffsetWords * 4, 'scroll offset words');
+  c.eq(ffi.sizeOf<NveTableView>(), 24 + 3 * _ptr, 'NveTableView size');
+  final viewSize = ffi.sizeOf<NveRuntimeSceneView>();
+  c.eq(viewSize, 48 + 8 * _ptr, 'NveRuntimeSceneView size (112 on 64-bit)');
+  int viewOffset(void Function(NveRuntimeSceneView v) write, [int width = 4]) =>
+      _offsetOf<NveRuntimeSceneView>(viewSize, (p) => write(p.ref), width);
+  c.eq(viewOffset((v) => v.schemaHash = 1, 8), 0, 'schema_hash @0');
+  c.eq(viewOffset((v) => v.frameId = 1, 8), 8, 'frame_id @8');
+  c.eq(viewOffset((v) => v.nodeCapacity = 1), 16, 'node_capacity @16');
+  c.eq(viewOffset((v) => v.tableCount = 1), 36, 'table_count @36');
+  c.eq(viewOffset((v) => v.scrollCount = 1), 40, 'scroll_count @40');
+  final p = ffi.Pointer<ffi.Uint32>.fromAddress(0x10);
+  c.eq(viewOffset((v) => v.rows = p.cast(), _ptr), 48, 'rows @48');
+  c.eq(viewOffset((v) => v.tables = p.cast(), _ptr), 48 + 6 * _ptr, 'tables');
+  c.eq(viewOffset((v) => v.scrollOffsets = p.cast(), _ptr), 48 + 7 * _ptr, 'scroll_offsets is last');
+  c.eq(_offsetOf<NveScrollOffset>(12, (s) => s.ref.y = 1, 4), 8, 'NveScrollOffset.y @8');
+  c.eq(_offsetOf<NveTableView>(ffi.sizeOf<NveTableView>(), (t) => t.ref.rows = p, _ptr), 24, 'NveTableView.rows @24');
+
+  // ---- untrusted ingress ----------------------------------------------------------------------
+  final view = NativeHeap.zeroed<NveRuntimeSceneView>(viewSize);
+  final table = NativeHeap.zeroed<NveTableView>(ffi.sizeOf<NveTableView>());
+  final words = NativeHeap.zeroed<ffi.Uint32>(64 * 4);
+  try {
+    void reset() {
+      view.cast<ffi.Uint8>().asTypedList(viewSize).fillRange(0, viewSize, 0);
+      table.cast<ffi.Uint8>().asTypedList(ffi.sizeOf<NveTableView>()).fillRange(0, ffi.sizeOf<NveTableView>(), 0);
+      view.ref.schemaHash = nveRuntimeSchemaHash.toBits();
+    }
+
+    void rejects(SceneErrorKind kind, String what, void Function(NveRuntimeSceneView v) corrupt) {
+      reset();
+      corrupt(view.ref);
+      final e = c.throwsA<SceneException>(() => readRuntimeScene(view.ref), what);
+      if (e != null) {
+        c.eq(e.kind, kind, '$what kind');
+      }
+    }
+
+    reset();
+    c.eq(readRuntimeScene(view.ref).nodeCapacity, 0, 'all-zero view (before the first frame) reads empty');
+    rejects(SceneErrorKind.schemaMismatch, 'foreign schema', (v) => v.schemaHash = 7);
+    rejects(SceneErrorKind.missingSlab, 'NULL rows with capacity', (v) => v.nodeCapacity = 2);
+    rejects(SceneErrorKind.missingSlab, 'NULL text slab with length', (v) => v.textSlabLen = 3);
+    rejects(SceneErrorKind.missingSlab, 'NULL children with length', (v) => v.childrenSlabLen = 1);
+    rejects(SceneErrorKind.missingSlab, 'NULL dirty indices with count', (v) => v.dirtyCount = 1);
+    rejects(SceneErrorKind.missingSlab, 'NULL tables with count', (v) => v.tableCount = 1);
+    rejects(SceneErrorKind.missingSlab, 'NULL scroll offsets with count', (v) => v.scrollCount = 1);
+    rejects(SceneErrorKind.missingSlab, 'scroll slab with id 0', (v) {
+      v
+        ..scrollCount = 1
+        ..scrollOffsets = words.cast();
+    });
+    void withTable(NveRuntimeSceneView v, void Function(NveTableView t) set) {
+      v
+        ..tableCount = 1
+        ..tables = table;
+      table.ref
+        ..keyLo = 1
+        ..words = 1
+        ..rows = words;
+      set(table.ref);
+    }
+
+    rejects(SceneErrorKind.invalidTable, 'table words 0', (v) => withTable(v, (t) => t.words = 0));
+    rejects(SceneErrorKind.invalidTable, 'table words > 32', (v) => withTable(v, (t) => t.words = maxTableWords + 1));
+    rejects(SceneErrorKind.missingSlab, 'NULL table rows with rows', (v) => withTable(v, (t) {
+          t
+            ..rowCount = 2
+            ..rows = ffi.nullptr;
+        }));
+    rejects(SceneErrorKind.missingSlab, 'NULL dirty rows with count', (v) => withTable(v, (t) => t.dirtyCount = 1));
+    rejects(SceneErrorKind.invalidTable, 'table slot out of range', (v) => withTable(v, (t) => t.slot = 1000));
+    words.asTypedList(4).setAll(0, [1, 0, 0, 0]);
+    reset();
+    withTable(view.ref, (t) => t.rowCount = 1);
+    c.eq(readRuntimeScene(view.ref).tables.length, 1, 'well-formed table view reads');
+  } finally {
+    NativeHeap.free(view);
+    NativeHeap.free(table);
+    NativeHeap.free(words);
+  }
+}
+
+extension on Key64 {
+  int toBits() => (hi << 32) | lo;
+}

@@ -155,7 +155,7 @@ final class RuntimeSceneReader {
 
   /// `true` when table [slot] is attached to node [index].
   bool hasTable(int index, int slot) {
-    if (slot < 0 || slot >= maxTableSlots) {
+    if (slot < 0 || slot >= maxTableSlots || index <= 0 || index >= nodeCapacity) {
       return false;
     }
     return (_rows[index * nodeRowWords + (slot >>> 5)] >>> (slot & 31)) & 1 != 0;

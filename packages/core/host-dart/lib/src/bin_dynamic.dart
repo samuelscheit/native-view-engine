@@ -31,14 +31,14 @@ void _writeDynamic(BinWriter w, Object? value, int depth) {
     case final DynamicValue v:
       w.raw(v.bytes);
     case final List<Object?> v:
-      _checkDepth(depth);
+      checkBinValueDepth(depth);
       final mark = w.beginArray(v.length);
       for (final e in v) {
         _writeDynamic(w, e, depth + 1);
       }
       w.end(mark);
     case final Map<Object?, Object?> v:
-      _checkDepth(depth);
+      checkBinValueDepth(depth);
       final mark = w.beginMap(v.length);
       for (final MapEntry(:key, value: e) in v.entries) {
         if (key is! String) {
@@ -50,12 +50,6 @@ void _writeDynamic(BinWriter w, Object? value, int depth) {
       w.end(mark);
     default:
       throw ArgumentError.value(value, 'value', 'not encodable as NveBinValue');
-  }
-}
-
-void _checkDepth(int depth) {
-  if (depth >= binValueMaxDepth) {
-    throw const BinCodecException(BinErrorKind.maxDepth, 'container nesting exceeds $binValueMaxDepth');
   }
 }
 
@@ -81,11 +75,11 @@ Object? _readDynamic(BinReader r, int depth) {
     case BinTag.bytes:
       return r.readBytes();
     case BinTag.array:
-      _checkDepth(depth);
+      checkBinValueDepth(depth);
       final n = r.beginArray();
       return List<Object?>.generate(n, (_) => _readDynamic(r, depth + 1), growable: false);
     case BinTag.map:
-      _checkDepth(depth);
+      checkBinValueDepth(depth);
       final n = r.beginMap();
       final out = <String, Object?>{};
       for (var i = 0; i < n; i++) {

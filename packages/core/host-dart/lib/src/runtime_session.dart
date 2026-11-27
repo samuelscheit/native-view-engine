@@ -206,6 +206,12 @@ final class RuntimeSession {
   final _NativeBlock _events = _NativeBlock();
   bool _inScene = false;
 
+  /// Validated reader of the last acquired view and the view bytes it was built from: an
+  /// unchanged publication (same frame id, slab pointers, and counts) reuses it, so repeated
+  /// paints / hit tests of one frame validate and allocate nothing.
+  RuntimeSceneReader? _reader;
+  final Uint8List _readerView = Uint8List(ffi.sizeOf<NveRuntimeSceneView>());
+
   bool get isDisposed => _handle.address == 0;
 
   NveRuntimeHandle get _live {
@@ -392,18 +398,44 @@ final class RuntimeSession {
     api.check(api.sceneAcquire(handle, _view), 'scene_acquire');
     _inScene = true;
     try {
-      return read(readRuntimeScene(_view.ref));
+      return read(_currentReader());
     } finally {
       _inScene = false;
       api.check(api.sceneRelease(handle), 'scene_release');
     }
   }
 
-  /// Destroys the surface and frees every native block (idempotent).
+  RuntimeSceneReader _currentReader() {
+    final bytes = _view.cast<ffi.Uint8>().asTypedList(_readerView.length);
+    final cached = _reader;
+    if (cached != null && _sameBytes(bytes, _readerView)) {
+      return cached;
+    }
+    _reader = null;
+    final reader = readRuntimeScene(_view.ref);
+    _readerView.setAll(0, bytes);
+    return _reader = reader;
+  }
+
+  static bool _sameBytes(Uint8List a, Uint8List b) {
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Destroys the surface and frees every native block (idempotent). Throws [StateError] inside
+  /// [withScene]: the borrowed scene and the view block must outlive the read.
   void dispose() {
+    if (_inScene) {
+      throw StateError('RuntimeSession.dispose inside withScene');
+    }
     if (_handle.address == 0) {
       return;
     }
+    _reader = null;
     api.setWakeCallback(_handle, ffi.nullptr, ffi.nullptr);
     _wake?.close();
     _wake = null;

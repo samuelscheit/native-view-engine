@@ -21,6 +21,14 @@ enum BinTag { nullValue, boolValue, i64, f64, str, bytes, array, map }
 /// Maximum container nesting depth (Rust `NVE_BIN_VALUE_MAX_DEPTH`).
 const int binValueMaxDepth = 64;
 
+/// Throws [BinErrorKind.maxDepth] when opening a container at [depth] would exceed
+/// [binValueMaxDepth] (shared by every encoder / decoder walk).
+void checkBinValueDepth(int depth) {
+  if (depth >= binValueMaxDepth) {
+    throw BinCodecException(BinErrorKind.maxDepth, 'container nesting exceeds $binValueMaxDepth (depth $depth)');
+  }
+}
+
 enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark }
 
 final class BinCodecException implements Exception {
@@ -248,9 +256,7 @@ final class BinReader {
         _checkUtf8(_length()); // validated in place, never viewed or decoded
       case BinTag.array:
       case BinTag.map:
-        if (depth >= binValueMaxDepth) {
-          throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
-        }
+        checkBinValueDepth(depth);
         final isMap = tag == BinTag.map;
         final (count, end) = _openContainer(tag, isMap ? 5 : 1);
         // Like Rust's `&bytes[..container_end]`: no child read may escape its container.

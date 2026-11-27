@@ -103,7 +103,7 @@ final class NativeArena {
       case final DynamicValue v:
         writeBinValue(target, v.reader, depth);
       case final List<Object?> v:
-        _checkDepth(depth);
+        checkBinValueDepth(depth);
         target.tag = NveValueTag.array.code;
         final items = allocArray<NveValue>(ffi.sizeOf<NveValue>(), v.length);
         for (var i = 0; i < v.length; i++) {
@@ -113,7 +113,7 @@ final class NativeArena {
           ..ptr = items
           ..len = v.length;
       case final Map<Object?, Object?> v:
-        _checkDepth(depth);
+        checkBinValueDepth(depth);
         target.tag = NveValueTag.map.code;
         target.data.mapVal
           ..ptr = writeEntries(v, depth + 1)
@@ -163,7 +163,7 @@ final class NativeArena {
           ..ptr = copyBytes(b)
           ..len = b.length;
       case BinTag.array:
-        _checkDepth(depth);
+        checkBinValueDepth(depth);
         final n = r.beginArray();
         final items = allocArray<NveValue>(ffi.sizeOf<NveValue>(), n);
         for (var i = 0; i < n; i++) {
@@ -174,7 +174,7 @@ final class NativeArena {
           ..ptr = items
           ..len = n;
       case BinTag.map:
-        _checkDepth(depth);
+        checkBinValueDepth(depth);
         final n = r.beginMap();
         final entries = allocArray<NveMapEntry>(ffi.sizeOf<NveMapEntry>(), n);
         for (var i = 0; i < n; i++) {
@@ -197,12 +197,6 @@ final class NativeArena {
     _base = 0;
     _capacity = 0;
     _offset = 0;
-  }
-}
-
-void _checkDepth(int depth) {
-  if (depth >= binValueMaxDepth) {
-    throw const BinCodecException(BinErrorKind.maxDepth, 'container nesting exceeds $binValueMaxDepth');
   }
 }
 
