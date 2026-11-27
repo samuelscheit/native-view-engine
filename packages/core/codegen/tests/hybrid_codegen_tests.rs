@@ -717,20 +717,6 @@ std::string _check_shadow(const NveHybridShadowVTable* vt) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn swift_direct_runtime_files() -> Vec<PathBuf> {
-    let swift_src = workspace_root().join("hosts/swiftui-kit/Sources/NveSwiftUI");
-    [
-        "NveBinValue.swift",
-        "NveEventTypes.swift",
-        "NveDirectArena.swift",
-        "NveDirectValueEncoding.swift",
-        "NveDirectWriters.swift",
-    ]
-    .into_iter()
-    .map(|f| swift_src.join(f))
-    .collect()
-}
-
 fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
     let flutter_plugin_root = common::prepare_offline_nve_flutter_pkg(dir, &workspace_root());
     let canonical_plugin =
@@ -779,62 +765,6 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
     );
     std::fs::write(dart_tool.join("package_config.json"), config)
         .expect("write temp package_config.json");
-}
-
-#[test]
-fn real_compiler_verifies_swift_direct_c_interop() {
-    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
-    let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
-    let swift_out = generate_hybrid_target(&spec, HybridTarget::Swift).unwrap();
-
-    // Verify generated Swift uses the shared zero-alloc stack-slab arena (never legacy pinnedBuffers).
-    let swift_src = &swift_out.files[0].content;
-    assert!(
-        !swift_src.contains("pinnedBuffers"),
-        "generated Swift must not contain legacy pinnedBuffers heap encoder"
-    );
-    assert!(
-        !swift_src.contains("flatBytes"),
-        "generated Swift must not flatten heap byte arrays in setProps"
-    );
-    assert!(swift_src.contains("NveDirectEncodable"));
-    assert!(swift_src.contains("NveDirectPropsBuilder"));
-    assert!(swift_src.contains("NveDirectPropsWriter.withEncodedProps"));
-
-    if !tool_available("swiftc") {
-        return;
-    }
-
-    let dir = temp_test_dir("swift");
-    common::write_generated_c_abi_headers(&dir);
-    cpp_out.write_to_dir(&dir).unwrap();
-    swift_out.write_to_dir(&dir).unwrap();
-
-    let abi_h = dir.join("CryptoHybridAbi.generated.h");
-    let swift_file = dir.join("CryptoHybridSpec.generated.swift");
-
-    let mut swift_cmd = Command::new("swiftc");
-    swift_cmd
-        .arg("-typecheck")
-        .arg("-import-objc-header")
-        .arg(&abi_h)
-        .arg("-I")
-        .arg(&dir);
-    for runtime_file in swift_direct_runtime_files() {
-        swift_cmd.arg(runtime_file);
-    }
-    let swift_check = swift_cmd
-        .arg(&swift_file)
-        .output()
-        .expect("run swiftc -typecheck on generated Swift spec against shared NveSwiftUI arena");
-    assert!(
-        swift_check.status.success(),
-        "Swift direct C-interop spec failed swiftc -typecheck:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&swift_check.stdout),
-        String::from_utf8_lossy(&swift_check.stderr)
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1849,29 +1779,17 @@ void check() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // Generated Swift against the static host runtime (`common::swift`); the full Swift <-> Rust
+    // run lives in `hybrid_swift_runtime_tests`.
     if tool_available("swiftc") {
         let dir = temp_test_dir("adversarial_swift");
-        common::write_generated_c_abi_headers(&dir);
+        let host = common::swift::build_host_swift(&dir, &[]);
         cpp_out.write_to_dir(&dir).unwrap();
         swift_out.write_to_dir(&dir).unwrap();
-        let mut swift_cmd = Command::new("swiftc");
-        swift_cmd
-            .arg("-typecheck")
-            .arg("-import-objc-header")
-            .arg(dir.join("SafeBannerHybridAbi.generated.h"))
-            .arg("-I")
-            .arg(&dir);
-        for runtime_file in swift_direct_runtime_files() {
-            swift_cmd.arg(runtime_file);
-        }
-        let out = swift_cmd
-            .arg(dir.join("SafeBannerHybridSpec.generated.swift"))
-            .output()
-            .expect("swiftc adversarial hybrid swift");
-        assert!(
-            out.status.success(),
-            "adversarial hybrid Swift failed swiftc -typecheck:\n{}",
-            String::from_utf8_lossy(&out.stderr)
+        common::swift::typecheck_generated(
+            &host,
+            &dir.join("SafeBannerHybridAbi.generated.h"),
+            &dir.join("SafeBannerHybridSpec.generated.swift"),
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

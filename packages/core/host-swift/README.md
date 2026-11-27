@@ -10,7 +10,15 @@ language mode, so strict concurrency is on.
 | `BinCodec.swift` | `BinReader` / `BinWriter` (typed `throws(BinError)`), the `NveBinValue` format, `Utf8.isValid` |
 | `TableReader.swift` | `FieldKind`, `FieldSpec`, `LengthValue`, `Rgba`, `StrSpan`, `TableReader`, `TableViewABI` |
 | `SceneReader.swift` | `SceneReader<View: SceneViewABI>`: validates once, then O(1) bounds-checked reads |
-| `HybridRuntime.swift` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |
+| `HybridRuntime.swift` | `HybridStatus`, `HostStatus`, `HybridError`, `HybridEnum`, `HybridInterfaceResolver`, `DynamicValue` |
+| `NveHostAbi/NveValueTree.swift` | `NveValueTree`: the C `NveValue` graph one ABI call borrows (separate target: it imports `CNveAbi`) |
+
+Generated hybrid Swift (`nve codegen hybrid --target swift`) copies no runtime: it imports `NveHost`
+(codec, errors, enums, dynamic values) and `NveHostAbi`. `setProps` and `NveValue` parameters build an
+`NveValueTree` that outlives the call: a `DynamicValue` becomes a lossless tree with its own tags
+(`Null` ... `Map`, never wrapped as `Bytes`), while `Struct` / `Vec` props cross as one `NveBinValue` in
+`Bytes`. The tree is a chunked bump arena (one allocation per chunk, never per node), and nothing it
+hands out moves before it is released.
 
 The generated C structs conform with empty extensions, because Swift imports their fields with exactly
 the protocol's names and types (implicitly unwrapped pointers):
@@ -41,6 +49,8 @@ let scene = try SceneReader.open(nve_scene_view(), expectedSchema: Key64(NVE_SCE
 ## Verify
 
 `scripts/host-runtimes.sh swift` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.
+`cargo test -p nve-codegen --test hybrid_swift_runtime_tests` links generated Swift clients against both
+modules and a live Rust provider, under AddressSanitizer.
 
 ```bash
 swift test --package-path packages/core/host-swift --scratch-path "$TMPDIR/nve-host-swift" -Xswiftc -warnings-as-errors

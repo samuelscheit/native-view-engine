@@ -6,7 +6,9 @@
 
 #![allow(dead_code)]
 
+pub mod rustc;
 pub mod specs;
+pub mod swift;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

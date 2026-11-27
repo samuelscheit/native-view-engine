@@ -307,6 +307,13 @@ public struct BinWriter: Sendable {
     /// Opens an array of `count` values; close it with `end(_:)`.
     public mutating func beginArray(_ count: UInt32) -> Mark { begin(.array, count) }
 
+    /// Opens an array of a Swift collection's `count` values; throws `.tooLarge` (writing nothing)
+    /// past `u32`.
+    public mutating func beginArray(count: Int) throws(BinError) -> Mark {
+        guard let n = UInt32(exactly: count) else { throw .tooLarge }
+        return beginArray(n)
+    }
+
     /// Opens a map of `count` entries (`writeMapKey` + value each); close it with `end(_:)`.
     public mutating func beginMap(_ count: UInt32) -> Mark { begin(.map, count) }
 

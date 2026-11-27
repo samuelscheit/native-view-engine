@@ -1,0 +1,129 @@
+//! Locates the `nve_abi` rlib this test binary links, so generated Rust can be compiled with a real
+//! `rustc` against it (hybrid end-to-end harnesses).
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Locates `libnve_abi-*.rlib` and all Cargo dependency search directories across both classic
+/// `target/<profile>/deps/` and Cargo 1.100+ per-unit `target/<profile>/build/<pkg>/<hash>/out/`
+/// layouts.
+pub fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
+    let current_exe = std::env::current_exe().expect("current_exe");
+    let exe_dir = current_exe.parent().expect("test executable parent dir");
+
+    let find_nve_abi_in = |dir: &Path| -> Option<PathBuf> {
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
+            })
+    };
+
+    let rlib_has_wire_feature = |path: &Path| -> bool {
+        const NEEDLE: &[u8] = b"encode_bin_value_to_vec";
+        std::fs::read(path)
+            .map(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
+            .unwrap_or(false)
+    };
+    let find_best_nve_abi_in = |dir: &Path| -> Option<PathBuf> {
+        let mut matches: Vec<(bool, std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
+            })
+            .map(|p| {
+                let mtime = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                (rlib_has_wire_feature(&p), mtime, p)
+            })
+            .collect();
+        matches.sort_by_key(|(has_wire, mtime, _)| (*has_wire, *mtime));
+        matches.pop().map(|(_, _, path)| path)
+    };
+
+    // 1. Classic Cargo layout (`target/<profile>/deps/`).
+    if let Some(rlib) = find_best_nve_abi_in(exe_dir) {
+        return (rlib, vec![exe_dir.to_path_buf()]);
+    }
+
+    // 2. Cargo 1.100+ per-unit build layout (`target/<profile>/build/<pkg>/<hash>/out/`).
+    let build_root = current_exe
+        .ancestors()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("build"))
+        .expect("expected Cargo deps/ or build/ ancestor directory for test executable");
+
+    let mut nve_abi_candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut dep_dirs: Vec<PathBuf> = Vec::new();
+
+    if let Ok(pkgs) = std::fs::read_dir(build_root) {
+        for pkg_entry in pkgs.filter_map(|e| e.ok()) {
+            let pkg_path = pkg_entry.path();
+            if !pkg_path.is_dir() {
+                continue;
+            }
+            let is_nve_abi = pkg_entry.file_name() == "nve-abi";
+            let Ok(hashes) = std::fs::read_dir(&pkg_path) else {
+                continue;
+            };
+            for hash_entry in hashes.filter_map(|e| e.ok()) {
+                let out_dir = hash_entry.path().join("out");
+                if !out_dir.is_dir() {
+                    continue;
+                }
+                if is_nve_abi && let Some(rlib) = find_nve_abi_in(&out_dir) {
+                    let mtime = std::fs::metadata(&rlib)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    nve_abi_candidates.push((mtime, rlib));
+                }
+                let has_rlib = std::fs::read_dir(&out_dir).ok().is_some_and(|it| {
+                    it.filter_map(|e| e.ok()).any(|e| {
+                        e.path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .is_some_and(|ext| matches!(ext, "rlib" | "dll" | "so" | "dylib"))
+                    })
+                });
+                if has_rlib {
+                    dep_dirs.push(out_dir);
+                }
+            }
+        }
+    }
+
+    nve_abi_candidates.sort_by_key(|(mtime, path)| (rlib_has_wire_feature(path), *mtime));
+    let nve_abi_rlib = nve_abi_candidates
+        .pop()
+        .map(|(_, path)| path)
+        .expect("libnve_abi-*.rlib must exist in target deps or build dir");
+    (nve_abi_rlib, dep_dirs)
+}
+
+pub fn add_dep_search_dirs(cmd: &mut Command, temp_dir: &Path, dep_dirs: &[PathBuf]) {
+    if dep_dirs.len() <= 8 {
+        for dir in dep_dirs {
+            cmd.arg("-L").arg(format!("dependency={}", dir.display()));
+        }
+        return;
+    }
+    // Use a `rustc` `@file` response file so Cargo 1.100+'s per-unit `build/<pkg>/<hash>/out`
+    // directories never exceed Windows' 32 KiB `CreateProcessW` command-line limit (OS error 206).
+    let rsp_path = temp_dir.join("rustc_dep_dirs.rsp");
+    let mut contents = String::new();
+    for dir in dep_dirs {
+        contents.push_str("-L\ndependency=");
+        contents.push_str(&dir.to_string_lossy());
+        contents.push('\n');
+    }
+    std::fs::write(&rsp_path, contents).expect("write rustc dep dirs response file");
+    cmd.arg(format!("@{}", rsp_path.display()));
+}
