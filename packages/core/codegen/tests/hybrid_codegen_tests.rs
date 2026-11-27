@@ -779,6 +779,8 @@ fn swift_direct_runtime_files() -> Vec<PathBuf> {
 fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
     let flutter_plugin_root = common::prepare_offline_nve_flutter_pkg(dir, &workspace_root());
     let canonical_plugin = std::fs::canonicalize(&flutter_plugin_root).unwrap_or(flutter_plugin_root);
+    let host_root = common::prepare_offline_nve_host_pkg(dir);
+    let canonical_host = std::fs::canonicalize(&host_root).unwrap_or(host_root);
     let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let to_file_uri = |p: &Path| {
         let s = p.to_string_lossy().replace('\\', "/");
@@ -805,12 +807,19 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
       "rootUri": "{}",
       "packageUri": "lib/",
       "languageVersion": "3.4"
+    }},
+    {{
+      "name": "nve_host",
+      "rootUri": "{}",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
     }}
   ]
 }}
 "#,
         to_file_uri(&canonical_dir),
         to_file_uri(&canonical_plugin),
+        to_file_uri(&canonical_host),
     );
     std::fs::write(dart_tool.join("package_config.json"), config)
         .expect("write temp package_config.json");
@@ -1188,7 +1197,7 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
     }
 
     let mut c_src = String::from(
-        "#include <stddef.h>\n#include <stdalign.h>\n#include \"nve_abi.generated.h\"\n\n",
+        "#include <stddef.h>\n#include <stdalign.h>\n#include <nve/generated/nve_abi.generated.h>\n\n",
     );
 
     let mut check_layout = |c_ty: &str, sz: usize, al: usize, fields: &[(&str, usize)]| {
@@ -1658,15 +1667,15 @@ pub trait ModBSpec {
 }
 
 #[test]
-fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
+fn dogfood_core_and_scene_abi_descriptors_convert_to_hybrid_specs() {
     let root = workspace_root();
     assert!(
         !root.join("packages/core/codegen/specs").exists(),
         "packages/core/codegen/specs/ must stay deleted (colocated #[derive(NveAbi)] is the single source of truth)"
     );
 
-    let core = nve_codegen::core_abi_spec();
-    let scene = nve_codegen::scene_abi_spec();
+    let core = nve_codegen::from_abi_descriptor(&nve_abi::schema::core_abi_descriptor());
+    let scene = nve_codegen::from_abi_descriptor(&nve_abi::schema::scene_abi_descriptor());
 
     // Verify core modular interfaces keep exact fixed IDs 1..=5
     assert_eq!(core.modules.len(), 5);
@@ -1682,21 +1691,12 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
     assert_eq!(render_node.expected_size, Some(nve_abi::NVE_RENDER_NODE_SIZE));
     assert_eq!(render_node.fields.len(), 20);
 
-    // Cross-check both deterministic schema hashes against `packages/core/abi`
-    assert_eq!(nve_codegen::core_abi_schema_hash(), nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
+    // The hybrid file hash is deterministic across conversions.
     assert_ne!(core.file_schema_hash(), 0);
-    assert_eq!(core.file_schema_hash(), nve_codegen::core_abi_spec().file_schema_hash());
     assert_eq!(
-        nve_codegen::compute_scene_schema_hash(&scene),
-        nve_abi::NVE_SCENE_SCHEMA_HASH
+        core.file_schema_hash(),
+        nve_codegen::from_abi_descriptor(&nve_abi::schema::core_abi_descriptor()).file_schema_hash()
     );
-
-    // Verify all 16 Core ABI + Scene ABI + XXH64 mirror files are deterministic, obey naming
-    // invariants, and match any materialized files on disk byte-for-byte.
-    let all = nve_codegen::generate_all_abi_files();
-    assert_eq!(all.len(), 16);
-    assert_eq!(all, nve_codegen::generate_all_abi_files());
-    common::assert_generated_file_naming_and_optional_disk_parity(&all, &root, false);
 }
 
 #[test]

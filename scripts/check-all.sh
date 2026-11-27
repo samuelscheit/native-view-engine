@@ -504,6 +504,7 @@ suite_ios_simulator_sdk() {
   cd "$REPO_ROOT"
   xcrun --sdk iphonesimulator clang++ \
     -std=c++20 -fobjc-arc -Wall -Wextra -Werror -fsyntax-only \
+    -Ipackages/core/host-cxx/include \
     -Icxx/nve-fabric-bridge/include \
     -Ihosts/apple-common \
     -Ihosts/ios-shell \
@@ -661,6 +662,14 @@ else
   skip_suite "ast-grep lints" "ast-grep not found"
 fi
 
+# 0b1. ABI codegen generate + parity check: the host runtimes and every native host build against
+# the generated (gitignored) host ABI / table / XXH64 vector files.
+if command -v cargo >/dev/null 2>&1; then
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (15 host files)"
+else
+  skip_suite "ABI codegen parity" "cargo not found"
+fi
+
 # 0b2. Static host runtimes (packages/core/host-*): --quick runs C/C++ and TS; full runs all five.
 # shellcheck source=scripts/host-runtimes.sh
 source "$REPO_ROOT/scripts/host-runtimes.sh"
@@ -726,13 +735,6 @@ elif [ -z "$SKIA_GPU_FEATURE" ]; then
   skip_suite "Skia GPU feature check" "no platform GPU feature mapped for $OS_NAME"
 else
   skip_suite "Skia GPU feature check" "cargo not found"
-fi
-
-# 1b. ABI codegen generate + parity check (required before host builds/tests)
-if command -v cargo >/dev/null 2>&1; then
-  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (16/16)"
-else
-  skip_suite "ABI codegen parity" "cargo not found"
 fi
 
 # 1b2. Rust RPC/Hyper feature matrix & rustdoc check (native, independent of WASM target)

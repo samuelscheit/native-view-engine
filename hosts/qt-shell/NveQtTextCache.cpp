@@ -301,7 +301,7 @@ QSGTexture* NveQtTextCache::acquireCanvasTexture(
 
   const int qw = std::max(1, static_cast<int>(std::lround(layout_w * 2.0f)));
   const int qh = std::max(1, static_cast<int>(std::lround(layout_h * 2.0f)));
-  const uint64_t byte_hash = nve::xxh64(bytes);
+  const uint64_t byte_hash = nve::host::xxh64(bytes);
 
   auto it = canvas_cache_.find(node_id);
   if (it != canvas_cache_.end()) {

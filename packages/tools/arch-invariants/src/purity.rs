@@ -48,6 +48,8 @@ const LEGACY_CODEGEN_PATHS: &[&str] = &[
     "packages/core/codegen/src/schema/reloc",
     "packages/core/codegen/src/frontend/hybrid_rust",
     "packages/core/codegen/src/schema/scene_abi.rs",
+    "packages/core/codegen/src/schema/hybrid/core_abi.rs",
+    "packages/core/codegen/src/targets/hash",
 ];
 
 /// Scans production Rust files under `packages/` for `#[derive(NveTable)]` field hygiene,
@@ -396,8 +398,9 @@ pub fn scan_banned_acronyms_str(rel: &str, content: &str, out: &mut Vec<Violatio
 }
 
 /// Scans `packages/core/codegen/src/targets` for Dart-web 53-bit `const int 0x...` safety and
-/// bans legacy codegen paths (`targets/**/wire.rs`, `targets/**/reloc*`, `schema/wire.rs`,
-/// `schema/reloc`, `frontend/hybrid_rust`, `schema/scene_abi.rs`).
+/// bans legacy codegen paths (`targets/**/*wire.rs`, `targets/**/reloc*`, `targets/**/*core_abi.rs`,
+/// `targets/**/scene_abi.rs`, `targets/hash`, `schema/wire.rs`, `schema/reloc`,
+/// `schema/hybrid/core_abi.rs`, `frontend/hybrid_rust`, `schema/scene_abi.rs`).
 pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
     let mut violations = Vec::new();
     let mut scanned = 0usize;
@@ -417,12 +420,16 @@ pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
             scan_ts_53bit_safety(&rel, &src, &mut violations);
         }
         let file = rel.rsplit('/').next().unwrap_or("");
-        if file == "wire.rs" || file.starts_with("reloc") {
+        if file.ends_with("wire.rs")
+            || file.starts_with("reloc")
+            || file.ends_with("core_abi.rs")
+            || file == "scene_abi.rs"
+        {
             violations.push(Violation::new(
                 &rel,
                 1,
                 &rel,
-                "Legacy codegen target (`wire.rs` / `reloc*`) must be deleted once replaced by Track 1B-1e templates",
+                "Legacy codegen target (`*wire.rs` / `reloc*` / `*core_abi.rs` / `scene_abi.rs`) must stay deleted: host ABI data is rendered from `templates/` by `src/abi`",
             ));
         }
     }

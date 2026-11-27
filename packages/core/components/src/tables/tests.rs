@@ -15,26 +15,8 @@ use super::*;
 #[test]
 fn all_core_tables_fit_32_words_and_register_cleanly() {
     register_core_tables();
-    let descs = [
-        Layout::DESC,
-        GridLayout::DESC,
-        GridItem::DESC,
-        Visual::DESC,
-        Typography::DESC,
-        TextContent::DESC,
-        Transform::DESC,
-        Motion::DESC,
-        Responsive::DESC,
-        Interaction::DESC,
-        Accessibility::DESC,
-        DebugId::DESC,
-        StreamBoundary::DESC,
-        Link::DESC,
-        Scroll::DESC,
-        Image::DESC,
-        TextInput::DESC,
-    ];
-    for d in descs {
+    let mut keys = std::collections::BTreeSet::new();
+    for d in CORE_TABLE_DESCS {
         assert!(
             d.words() <= nve_abi::table::MAX_TABLE_WORDS,
             "table `{}` has {} words (> 32)",
@@ -42,6 +24,16 @@ fn all_core_tables_fit_32_words_and_register_cleanly() {
             d.words()
         );
         assert_eq!(d.word_effects.len(), d.defaults.len());
+        assert!(
+            nve_store::slot_of(d.key).is_some(),
+            "`{}` is not registered by register_core_tables",
+            d.name
+        );
+        assert!(
+            keys.insert(d.key),
+            "`{}` is listed twice in CORE_TABLE_DESCS",
+            d.name
+        );
     }
     // Visual visibility must be paint-only (never triggers layout).
     let vis_field = Visual::DESC

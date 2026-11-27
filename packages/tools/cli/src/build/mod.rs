@@ -13,7 +13,7 @@ use std::process::Command;
 
 use apple_tier3::{
     parse_targets, plan_tier3_build, AppleTier3BuildPlan, Tier3BuildRequest,
-    DEFAULT_HEADERS_REL_PATH, NVE_ABI_HEADER_FILE,
+    DEFAULT_HEADERS_REL_PATH,
 };
 use probe::{check_prerequisites, EnvironmentProbe, PrerequisiteIssue, SystemProbe};
 
@@ -80,15 +80,7 @@ fn resolve_headers_dir(repo_root: &Path, override_dir: Option<PathBuf>) -> PathB
             repo_root.join(dir)
         };
     }
-    let primary = repo_root.join(DEFAULT_HEADERS_REL_PATH);
-    if primary.join(NVE_ABI_HEADER_FILE).is_file() {
-        return primary;
-    }
-    let fallback = repo_root.join("cxx/nve-fabric-bridge/include");
-    if fallback.join(NVE_ABI_HEADER_FILE).is_file() {
-        return fallback;
-    }
-    primary
+    repo_root.join(DEFAULT_HEADERS_REL_PATH)
 }
 
 pub(crate) fn format_build_plan(

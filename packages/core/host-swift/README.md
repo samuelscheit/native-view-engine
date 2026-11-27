@@ -34,6 +34,10 @@ let scene = try SceneReader.open(nve_scene_view(), expectedSchema: Key64(NVE_SCE
 
 `Tests/CNveHostTestABI` is a test-only C mirror of those structs. It proves this conformance in CI.
 
+## Generated data
+
+`nve codegen abi` writes `Sources/NveHost/NveTables.generated.swift` and `Tests/NveHostTests/HashVectors.generated.swift` (gitignored). The `CNveAbi` target's module map imports host-cxx's generated `nve_abi.generated.h` in place, so the C ABI exists once.
+
 ## Verify
 
 `scripts/host-runtimes.sh swift` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.

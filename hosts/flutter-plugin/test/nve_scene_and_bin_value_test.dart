@@ -5,7 +5,8 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_hybrid_runtime.dart';
-import 'package:nve_flutter/src/nve_scene_abi.generated.dart';
+import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 class _NativeAlloc {
   static final ffi.DynamicLibrary _libc = Platform.isWindows
@@ -48,9 +49,9 @@ extension on ffi.Pointer<ffi.Void> Function(int, int) {
 void main() {
   group('NveSceneView dart:ffi ABI', () {
     test('NveRenderNode is exactly 64 bytes matching schema stride', () {
-      expect(ffi.sizeOf<NveRenderNode>(), nveRenderNodeStride);
+      expect(ffi.sizeOf<NveRenderNode>(), NveRenderNodeLayout.size);
       expect(ffi.sizeOf<NveRenderNode>(), 64);
-      expect(nveNodeOffsetZIndex, 60);
+      expect(NveRenderNodeLayout.zIndex, 60);
     });
 
     test('NveSceneReader reads nodes, dirty indices, text slab, and children zero-copy', () {
@@ -104,7 +105,7 @@ void main() {
       final ffi.Pointer<NveSceneView> viewPtr =
           alloc.allocate<NveSceneView>(ffi.sizeOf<NveSceneView>());
       viewPtr.ref
-        ..schemaHash = nveSceneSchemaHash
+        ..schemaHash = nveSceneSchemaHash.toSignedInt()
         ..frameId = 42
         ..nodeCount = 2
         ..dirtyCount = 1
@@ -145,14 +146,14 @@ void main() {
 
       final ffi.Pointer<NveSceneView> viewPtr =
           alloc.allocate<NveSceneView>(ffi.sizeOf<NveSceneView>());
-      viewPtr.ref.schemaHash = nveSceneSchemaHash ^ 1;
+      viewPtr.ref.schemaHash = nveSceneSchemaHash.toSignedInt() ^ 1;
       expect(
         () => NveSceneReader.fromPointer(viewPtr),
         throwsA(isA<NveSceneAbiException>()),
       );
 
       viewPtr.ref
-        ..schemaHash = nveSceneSchemaHash
+        ..schemaHash = nveSceneSchemaHash.toSignedInt()
         ..nodeCount = 1
         ..nodes = ffi.nullptr;
       expect(

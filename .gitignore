@@ -30,10 +30,9 @@ packages/modules/*/android/build/
 *.perfetto.json
 *.trace.json
 
-# Generated ABI & Wire codec bindings (regenerated via `cargo run --locked -p nve-cli -- codegen abi`)
+# Generated host ABI / table / XXH64-vector files (regenerated via `cargo run --locked -p nve-cli -- codegen abi`)
 *.generated.*
 **/generated/*.java
-hosts/android-shell/android-app/src/dev/nve/android/generated/
 
 # Mobile & desktop shells
 hosts/ios-shell/Pods/

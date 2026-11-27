@@ -22,6 +22,10 @@ every Java / Kotlin host binding.
 
 `attach` sets the passed buffers to little-endian and reads relative to their current position.
 
+## Generated data
+
+`nve codegen abi` writes `dev.nve.host.generated.{NveAbi,NveTables}` and the test-only `HashVectors` (gitignored). `GeneratedTest` checks them against this runtime.
+
 ## Verify
 
 `scripts/host-runtimes.sh java` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.

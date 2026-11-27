@@ -41,6 +41,19 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
   - **Drift guard**: `nve-arch-invariants` checks every mirrored constant and golden XXH64 digest against `nve_abi`, `nve_store`, and `nve_hash`. A second check keeps the binary-value validators allocation-free (no view, copy, or decode).
   - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` now emits 16 artifacts.
   - **Zero runtime `serde_json` in core**: `NveExportSpec` JSON loading moved into `nve-cli`. `PENDING_CLEANUP_SERDE_JSON` and `PENDING_CLEANUP_PERSONAL_PATHS` are empty.
+  - **Batch 2A: host ABI data on Askama 0.16 (commit 3)**
+    - **One template per generated file.** `nve-codegen`'s `abi/` module (`derive` + `std` features only) renders 15 templates over the borrowed `nve-abi` descriptors and any `&[&TableDesc]`; `nve-cli` passes `nve_components::CORE_TABLE_DESCS`.
+      - Output is the merged Core + Scene ABI, the 17 core word tables (keys, defaults, field specs, iterable lists), and the 19 golden XXH64 vectors.
+      - Each file lands next to its static runtime in `packages/core/host-*`; generated Java moved to `dev.nve.host.generated`.
+    - **Deleted:** the hand-written `core_abi` / `scene_abi` / `java_core_abi` / `hash` emitters, `compute_scene_schema_hash`, `scene_abi_spec`, `ResolvedSceneAbi`, `HOST_STATUS_VARIANTS`, the duplicate swiftui-kit C header, and every generated reader class.
+    - **Data-driven C layout asserts.** The hand-written size/offset `match` arms are replaced by layouts computed for LP64, ILP32, and i386 System V and checked against `rustc`. The old "`NveDirectEvent` is 72 bytes on 32-bit" assert was wrong on i386 (68).
+    - **53-bit safe.** Dart/TS spell every 64-bit value as `Key64(lo, hi)`, and Dart splits into web-safe constants plus a separate `dart:ffi` barrel.
+    - **Host package guards.** Each of the five host suites checks the generated keys against its own XXH64 and opens a frame built from the generated structs; in host-cxx the checks run at compile time.
+    - **Hosts rewired** to the host packages: CMake `nve::host_cxx` + `<nve/generated/…>`, SwiftPM `host-swift`, the pubspec `nve_host` dependency, Gradle / `javac` source paths, `nve build` xcframework headers, and CI generating before `cargo test`.
+    - **Bench (before → after):**
+      - All ABI files: 469.9 µs for 16 files / 165,650 B → 1.53 ms for 15 files / 273,898 B, now including 17 tables and 19 vectors.
+      - C header: core 74.4 µs + scene 25.6 µs → merged 80.8 µs (32,074 B).
+      - Tables alone: 665 µs (137,262 B).
 - **Slice 1c Streaming SSR on `NodeStore` — Rebase of `NodeStore` + Track 1B-1c onto Slice 1c**
   - **Typed stream boundaries**: `data-nve-stream-slot` / `data-nve-suspense` now land in a sparse `nve.stream_boundary` `StreamBoundary` table (`nve-components`) via `nve-dioxus` `writer/identity_attrs.rs` (shared with `DebugId`), emitted by SSR (`table_system_ssr.rs`) and live DOM (`wasm_dom.rs`) instead of raw string props.
   - **Streaming DSD on `NodeStore`**: `ssr_stream.rs` (`render_ssr_streaming_shell`, `is_stream_slot_resolved`, `render_ssr_subtree_delta`, `SsrStyleTracker` seeded via `seed_ssr_hashes`) and `ssr.rs` share one `emit_ssr_node` walker; placement hygiene (`<form>` ancestors, foster-parent traps, nested/duplicate slots) resolves tags through `WebTableRegistry` so 3P `WebTableSystem` tags are validated too. CSP `style_nonce` stamping and `</style` breakout escaping carried over; `<style data-nve-ssr>` is always emitted as the stable hydration anchor.

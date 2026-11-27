@@ -2,7 +2,7 @@
 #include "nve_draw_list.hpp"
 #include "nve_host_runtime.hpp"
 #include "nve_pair_client.hpp"
-#include "nve_scene_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 #include "nve_snapshot.hpp"
 
 #include <array>

@@ -60,12 +60,12 @@ pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
                 "Generated `*.generated.*` files must be gitignored and never tracked",
             ));
         }
-        if rel.contains("dev/nve/android/generated/") {
+        if rel.contains("dev/nve/host/generated/") {
             violations.push(Violation::new(
                 rel,
                 0,
                 rel,
-                "Generated Java files under `dev/nve/android/generated/` must never be tracked",
+                "Generated Java files under `dev/nve/host/generated/` must never be tracked",
             ));
         }
         if rel.ends_with(".trace.json") || rel.ends_with(".perfetto.json") {
@@ -101,7 +101,7 @@ pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
                     || t.starts_with('#')
                     || t.starts_with("<!--");
                 if is_comment && t.contains("@generated") {
-                    let in_java_gen = rel.contains("dev/nve/android/generated/");
+                    let in_java_gen = rel.contains("dev/nve/host/generated/");
                     let has_dot_gen = Path::new(rel)
                         .file_name()
                         .and_then(|n| n.to_str())

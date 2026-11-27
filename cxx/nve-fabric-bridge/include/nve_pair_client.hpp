@@ -1,7 +1,7 @@
 #pragma once
 
-#include "nve_abi.generated.h"
-#include "nve_hash.generated.hpp"
+#include <nve/generated/nve_abi.generated.h>
+#include <nve/host/xxh64.hpp>
 
 #include <array>
 #include <cstddef>

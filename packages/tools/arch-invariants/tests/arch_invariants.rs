@@ -373,7 +373,7 @@ fn spec_invariant_ids_have_mechanical_guards() {
 fn host_runtime_mirrors_match_rust_sources() {
     let idx = repo_index();
     assert_no_violations(
-        "Host runtime mirrors match nve_abi / nve_store / nve_hash",
+        "Host runtime mirrors match nve_abi / nve_store",
         &host_runtimes::check_host_runtime_mirrors(idx),
     );
 }

@@ -1,5 +1,6 @@
 import 'bin_codec_suite.dart';
 import 'check.dart';
+import 'generated_suite.dart';
 import 'table_scene_suite.dart';
 import 'xxh64_suite.dart';
 
@@ -9,5 +10,6 @@ Check runAll() {
   runXxh64(c);
   runBinCodec(c);
   runTableScene(c);
+  runGenerated(c);
   return c;
 }

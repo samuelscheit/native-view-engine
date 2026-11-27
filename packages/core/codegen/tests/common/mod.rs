@@ -11,25 +11,74 @@ pub mod specs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Writes freshly generated C11/C++20 Core ABI, Scene ABI, and Wire Codec headers
-/// (`nve_abi.generated.h`, `nve_scene_abi.generated.h`, `nve_wire_codecs.generated.hpp`)
-/// directly into `dir` so compiler tests never depend on generated files existing in the repo.
-pub fn write_generated_c_abi_headers(dir: &Path) {
-    std::fs::create_dir_all(dir).expect("create temp header dir");
-    for file in nve_codegen::generate_all_abi_files() {
-        if let Some(fname) = file
-            .relative_path
-            .strip_prefix("cxx/nve-fabric-bridge/include/")
-        {
-            std::fs::write(dir.join(fname), &file.content)
-                .expect("write generated header");
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create copy target dir");
+    for entry in std::fs::read_dir(from)
+        .expect("read copy source dir")
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_dir() {
+            copy_tree(&path, &to.join(entry.file_name()));
+        } else if !path.to_string_lossy().contains(".generated.") {
+            std::fs::copy(&path, to.join(entry.file_name())).expect("copy file");
         }
     }
 }
 
+/// Recreates the `packages/core/host-cxx/include` tree under `dir`: the static `nve/host/*.h`
+/// headers plus a freshly generated `nve/generated/nve_abi.generated.h`, so compiler tests (which
+/// pass `-I dir` and `#include <nve/generated/nve_abi.generated.h>`) never depend on generated
+/// files existing in the repo.
+pub fn write_generated_c_abi_headers(dir: &Path) {
+    copy_tree(
+        &workspace_root().join("packages/core/host-cxx/include/nve/host"),
+        &dir.join("nve/host"),
+    );
+    for file in nve_codegen::generate_abi_files().expect("generate host ABI files") {
+        if let Some(rel) = file
+            .relative_path
+            .strip_prefix("packages/core/host-cxx/include/")
+        {
+            let out = dir.join(rel);
+            std::fs::create_dir_all(out.parent().expect("header has a parent dir"))
+                .expect("create header dir");
+            std::fs::write(out, &file.content).expect("write generated header");
+        }
+    }
+}
+
+/// Materializes the `nve_host` Dart package (static `lib/` plus freshly generated Dart) under
+/// `temp_dir/nve_host_pkg`, returning its root.
+pub fn prepare_offline_nve_host_pkg(temp_dir: &Path) -> PathBuf {
+    let pkg_root = temp_dir.join("nve_host_pkg");
+    let src = workspace_root().join("packages/core/host-dart");
+    copy_tree(&src.join("lib"), &pkg_root.join("lib"));
+    std::fs::copy(src.join("pubspec.yaml"), pkg_root.join("pubspec.yaml"))
+        .expect("copy nve_host pubspec");
+    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+        .expect("generate host ABI files");
+    for file in files {
+        if let Some(rel) = file
+            .relative_path
+            .strip_prefix("packages/core/host-dart/lib/")
+        {
+            let out = pkg_root.join("lib").join(rel);
+            std::fs::create_dir_all(out.parent().expect("dart file has a parent dir"))
+                .expect("create dart dir");
+            std::fs::write(out, &file.content).expect("write generated dart file");
+        }
+    }
+    pkg_root
+}
+
 /// Materializes a self-contained offline `nve_flutter` Dart package under `temp_dir/nve_flutter_pkg`
-/// combining the hand-written pure-Dart runtime sources with freshly generated `*.generated.dart`
-/// bindings so `dart analyze` succeeds on a fresh checkout with zero generated files on disk.
+/// from the hand-written pure-Dart runtime sources (its generated bindings come from the
+/// [`prepare_offline_nve_host_pkg`] package), so `dart analyze` succeeds on a fresh checkout.
 pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -> PathBuf {
     let pkg_root = temp_dir.join("nve_flutter_pkg");
     let dst_lib = pkg_root.join("lib");
@@ -54,17 +103,6 @@ pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -
             .expect("copy hosts/flutter-plugin/lib file");
     }
 
-    for file in nve_codegen::generate_all_abi_files() {
-        if let Some(rel) = file.relative_path.strip_prefix("hosts/flutter-plugin/lib/") {
-            let out_path = dst_lib.join(rel);
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent).expect("create dart parent dir");
-            }
-            std::fs::write(&out_path, &file.content)
-                .expect("write generated dart file");
-        }
-    }
-
     pkg_root
 }
 
@@ -87,8 +125,8 @@ pub fn assert_generated_file_naming_and_optional_disk_parity(
                 file.relative_path
             );
             assert!(
-                file.content.contains("package dev.nve.android.generated;"),
-                "generated Java file must declare `package dev.nve.android.generated;`: {}",
+                file.content.contains("package dev.nve.host.generated;"),
+                "generated Java file must declare `package dev.nve.host.generated;`: {}",
                 file.relative_path
             );
         } else {

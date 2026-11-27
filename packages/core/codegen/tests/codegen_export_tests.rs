@@ -1,15 +1,12 @@
 mod common;
 
-use std::path::Path;
 
 use common::specs::{assert_balanced_delimiters, counter_card_export_spec, EMBEDDED_SWITCH_SPEC};
 use nve_codegen::{
-    compute_scene_schema_hash, core_abi_schema_hash, export_all_targets, export_compose,
-    export_flutter, export_rn_spec, export_swiftui, export_target, export_web_component,
-    generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
-    import_rn_source, parse_rn_spec, scene_abi_spec, DefaultValue, EventBubbling, EventSpec,
-    ExportBackend, ExportTarget, NveExportSpec, ObjectField, PropSpec, PropType,
-    NVE_CORE_ABI_SCHEMA_HASH, NVE_SCENE_SCHEMA_HASH,
+    export_all_targets, export_compose, export_flutter, export_rn_spec, export_swiftui,
+    export_target, export_web_component, import_rn_source, parse_rn_spec, DefaultValue,
+    EventBubbling, EventSpec, ExportBackend, ExportTarget, NveExportSpec, ObjectField, PropSpec,
+    PropType,
 };
 
 #[test]
@@ -250,7 +247,7 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     let c11_harness = tmp.join("check_abi.c");
     std::fs::write(
         &c11_harness,
-        "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nint check_abi_sizes(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveTableView)); }\n",
+        "#include <nve/generated/nve_abi.generated.h>\nint check_abi_sizes(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveTableView)); }\n",
     )
     .unwrap();
     let status_c11 = std::process::Command::new("clang")
@@ -269,7 +266,7 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     let cpp_harness = tmp.join("check_abi.cpp");
     std::fs::write(
         &cpp_harness,
-        "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nstatic_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE);\nint check_abi_cpp() { return static_cast<int>(NVE_PRIMARY_SLOT_NONE); }\n",
+        "#include <nve/generated/nve_abi.generated.h>\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nstatic_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE);\nint check_abi_cpp() { return static_cast<int>(NVE_PRIMARY_SLOT_NONE); }\n",
     )
     .unwrap();
     let status_cpp = std::process::Command::new("clang++")
@@ -286,77 +283,4 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
-}
-
-#[test]
-fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_for_byte() {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let core_files = generate_all_core_abi_files();
-    let scene_files = generate_all_scene_abi_files();
-    let all_files = generate_all_abi_files();
-
-    assert_eq!(core_files.len(), 5);
-    assert_eq!(scene_files.len(), 5);
-    assert_eq!(all_files.len(), 16);
-
-    assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
-    assert_eq!(core_abi_schema_hash(), NVE_CORE_ABI_SCHEMA_HASH);
-    assert_eq!(NVE_CORE_ABI_SCHEMA_HASH, nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
-
-    assert_ne!(NVE_SCENE_SCHEMA_HASH, 0);
-    assert_eq!(compute_scene_schema_hash(&scene_abi_spec()), NVE_SCENE_SCHEMA_HASH);
-    assert_eq!(NVE_SCENE_SCHEMA_HASH, nve_abi::NVE_SCENE_SCHEMA_HASH);
-
-    assert_eq!(core_files[0].content, core_files[1].content);
-    assert_eq!(scene_files[0].content, scene_files[1].content);
-
-    assert!(core_files[0].content.contains("#define NVE_IFACE_HOST 5u"));
-    assert!(core_files[0].content.contains("typedef enum NveHostStatus"));
-    assert!(core_files[0].content.contains("typedef struct NveHostCallbacks"));
-    assert!(core_files[0].content.contains("typedef struct NveHostApi"));
-    assert!(core_files[2].content.contains("const int nveIfaceHost = 5;"));
-    assert!(core_files[2].content.contains("enum NveHostStatus"));
-    assert!(core_files[2].content.contains("final class NveHostApi extends ffi.Struct"));
-    assert!(core_files[3].content.contains("public static final int IFACE_HOST = 5;"));
-    assert!(core_files[3].content.contains("public static final int HOST_BUFFER_TOO_SMALL = -1;"));
-    assert!(core_files[4].content.contains("HOST: 5,"));
-    assert!(core_files[4].content.contains("export const NVE_HOST_STATUS ="));
-
-    assert!(core_files[0].content.contains("typedef struct NvePropEntry"));
-    assert!(core_files[0].content.contains("typedef struct NvePropSlice"));
-    assert!(core_files[0].content.contains("typedef struct NveCommandSlice"));
-    assert!(core_files[0].content.contains("sizeof(NvePropEntry) == 32u"));
-    assert!(core_files[0].content.contains("sizeof(NvePropSlice) == 16u"));
-    assert!(core_files[0].content.contains("sizeof(NveCommandSlice) == 16u"));
-    assert!(core_files[2].content.contains("final class NvePropEntry extends ffi.Struct"));
-    assert!(core_files[2].content.contains("final class NvePropSlice extends ffi.Struct"));
-    assert!(core_files[2].content.contains("final class NveCommandSlice extends ffi.Struct"));
-    assert!(core_files[3].content.contains("public static final int SIZEOF_PROP_ENTRY_64 = 32;"));
-    assert!(core_files[3].content.contains("public static final int SIZEOF_PROP_SLICE_64 = 16;"));
-    assert!(core_files[3].content.contains("public static final int SIZEOF_COMMAND_SLICE_64 = 16;"));
-
-    assert_eq!(all_files, generate_all_abi_files(), "ABI codegen must be deterministic");
-
-    let tmp_abi = std::env::temp_dir().join(format!(
-        "nve_codegen_abi_materialize_{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&tmp_abi);
-    for file in &all_files {
-        let out_path = tmp_abi.join(&file.relative_path);
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent).expect("create temp ABI parent dirs");
-        }
-        std::fs::write(&out_path, &file.content).expect("write temp ABI file");
-        assert_eq!(std::fs::read_to_string(&out_path).unwrap(), file.content);
-    }
-    let _ = std::fs::remove_dir_all(&tmp_abi);
-
-    let update_mode =
-        std::env::var("NVE_UPDATE_ABI").is_ok() || std::env::var("NVE_UPDATE_SCENE_ABI").is_ok();
-    common::assert_generated_file_naming_and_optional_disk_parity(
-        &all_files,
-        &repo_root,
-        update_mode,
-    );
 }

@@ -58,7 +58,7 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
     writeln!(out, "#include <stdbool.h>");
     writeln!(out, "#include <stddef.h>");
     writeln!(out, "#include <stdint.h>");
-    writeln!(out, "#include \"nve_abi.generated.h\"");
+    writeln!(out, "#include <nve/generated/nve_abi.generated.h>");
     writeln!(out);
     writeln!(out, "#ifdef __cplusplus");
     writeln!(out, "extern \"C\" {{");

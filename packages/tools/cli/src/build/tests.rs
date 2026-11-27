@@ -67,7 +67,7 @@ impl EnvironmentProbe for FakeProbe {
 
 #[test]
 fn all_six_tier3_targets_match_swiftui_kit_specs_and_cargo_invocations() {
-    let headers = PathBuf::from("/repo/hosts/swiftui-kit/Sources/CNveAbi/include");
+    let headers = PathBuf::from("/repo/packages/core/host-cxx/include");
     let target_dir = PathBuf::from("/repo/target");
     let probe = FakeProbe::all_ready(&headers);
 
@@ -195,7 +195,7 @@ fn all_six_tier3_targets_match_swiftui_kit_specs_and_cargo_invocations() {
 
 #[test]
 fn debug_profile_uses_dev_panic_abort_and_omits_release_flag() {
-    let headers = PathBuf::from("/repo/hosts/swiftui-kit/Sources/CNveAbi/include");
+    let headers = PathBuf::from("/repo/packages/core/host-cxx/include");
     let probe = FakeProbe::all_ready(&headers);
     let req = Tier3BuildRequest {
         targets: vec![AppleTier3Target::WatchOsSim],
@@ -220,7 +220,7 @@ fn debug_profile_uses_dev_panic_abort_and_omits_release_flag() {
 
 #[test]
 fn xcframework_pairs_device_and_simulator_slices_with_generated_headers() {
-    let headers = PathBuf::from("/repo/hosts/swiftui-kit/Sources/CNveAbi/include");
+    let headers = PathBuf::from("/repo/packages/core/host-cxx/include");
     let probe = FakeProbe::all_ready(&headers);
 
     for family in [
@@ -267,11 +267,11 @@ fn xcframework_pairs_device_and_simulator_slices_with_generated_headers() {
                 "-library",
                 expected_device_lib.as_str(),
                 "-headers",
-                "/repo/hosts/swiftui-kit/Sources/CNveAbi/include",
+                "/repo/packages/core/host-cxx/include",
                 "-library",
                 expected_sim_lib.as_str(),
                 "-headers",
-                "/repo/hosts/swiftui-kit/Sources/CNveAbi/include",
+                "/repo/packages/core/host-cxx/include",
                 "-output",
                 "/repo/dist/NveStudio.xcframework",
             ]
@@ -332,7 +332,7 @@ fn rejects_empty_invalid_duplicate_targets_and_bad_xcframework_extension() {
 
 #[test]
 fn reports_actionable_diagnostics_for_missing_nightly_rust_src_sdks_and_headers() {
-    let headers = PathBuf::from("/repo/hosts/swiftui-kit/Sources/CNveAbi/include");
+    let headers = PathBuf::from("/repo/packages/core/host-cxx/include");
 
     // 1. Missing nightly toolchain + missing SDKs + missing xcodebuild + missing header.
     let empty_probe = FakeProbe::default();
@@ -435,7 +435,7 @@ fn reports_actionable_diagnostics_for_missing_nightly_rust_src_sdks_and_headers(
 
 #[test]
 fn doctor_tier3_report_lists_all_six_sdks_and_std_readiness() {
-    let headers = PathBuf::from("/repo/hosts/swiftui-kit/Sources/CNveAbi/include");
+    let headers = PathBuf::from("/repo/packages/core/host-cxx/include");
     let full = FakeProbe::all_ready(&headers);
     assert_eq!(probe_all_tier3_sdks(&full).len(), 6);
     let ok_text = format_tier3_doctor_section("nightly", &full);
@@ -572,12 +572,12 @@ fn cli_parses_nve_build_flags_and_rejects_missing_target() {
             release: false,
             toolchain: "nightly".into(),
             xcframework: Some(PathBuf::from("auto")),
-            headers: Some(PathBuf::from("/repo/hosts/swiftui-kit/Sources/CNveAbi/include")),
+            headers: Some(PathBuf::from("/repo/packages/core/host-cxx/include")),
             target_dir: Some(PathBuf::from("/repo/target")),
             dry_run: true,
         },
         Path::new("/repo"),
-        &FakeProbe::all_ready(Path::new("/repo/hosts/swiftui-kit/Sources/CNveAbi/include")),
+        &FakeProbe::all_ready(Path::new("/repo/packages/core/host-cxx/include")),
     )
     .expect("single-slice dry-run plan");
     assert!(single_dry.contains("--target tvos,tvos-sim"));

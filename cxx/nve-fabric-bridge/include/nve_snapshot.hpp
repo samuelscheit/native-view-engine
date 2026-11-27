@@ -1,7 +1,7 @@
 #pragma once
 
-#include "nve_abi.generated.h"
-#include "nve_hash.generated.hpp"
+#include <nve/generated/nve_abi.generated.h>
+#include <nve/host/xxh64.hpp>
 
 #include <atomic>
 #include <cctype>
@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -235,9 +236,9 @@ inline void write_le64(uint8_t* p, uint64_t v) noexcept {
 }
 
 inline uint64_t compute_reloc_checksum(const uint8_t* data, size_t len) noexcept {
-  Xxh64Hasher h(0u);
-  h.update(data, kSnapshotChecksumOffset);
-  h.update(data + kSnapshotChecksumEnd, len - kSnapshotChecksumEnd);
+  nve::host::Xxh64Hasher h(0u);
+  h.update(std::span<const uint8_t>(data, kSnapshotChecksumOffset));
+  h.update(std::span<const uint8_t>(data + kSnapshotChecksumEnd, len - kSnapshotChecksumEnd));
   return h.digest();
 }
 
@@ -1161,7 +1162,7 @@ inline std::string resolve_default_snapshot_path(std::string_view app_identity) 
     const std::string canonical = detail::canonicalize_app_identity(app_identity);
     const std::string slug = detail::sanitize_app_slug(app_identity);
     const uint64_t digest =
-        xxh64(reinterpret_cast<const uint8_t*>(canonical.data()), canonical.size(), 0u);
+        nve::host::xxh64(std::string_view(canonical), 0u);
     char hash8[16]{};
     std::snprintf(hash8, sizeof(hash8), "%08x", static_cast<uint32_t>(digest & 0xFFFFFFFFULL));
     const std::filesystem::path full_path =

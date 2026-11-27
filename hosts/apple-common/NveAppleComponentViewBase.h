@@ -22,7 +22,7 @@ typedef UIImageView NveAppleBaseImageView;
 #define NVE_APPLE_COMPONENT_BASE_CLASS UIView
 #endif
 
-#include "nve_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 
 #ifdef __cplusplus
 #import "NveAppleSupport.h"

@@ -15,16 +15,16 @@ NVE_STATIC_ASSERT(NVE_ALIGNOF(NveKey64) == NVE_ALIGNOF(uint64_t), "NveKey64 is o
 NVE_STATIC_ASSERT(sizeof(NveFieldSpec) == 4, "NveFieldSpec packs into 4 bytes");
 
 static void test_xxh64_vectors(void) {
-  static uint8_t buf[MAX_VECTOR_LEN];
+  static uint8_t buf[NVE_HASH_VECTOR_MAX_LEN];
   static const size_t steps[] = {1, 3, 7, 13, 24, 31, 32, 33, 64, 100};
-  for (size_t v = 0; v < VECTOR_COUNT; ++v) {
-    const HashVector* hv = &kVectors[v];
-    vector_bytes(hv, buf);
-    CHECK(nve_xxh64(buf, hv->len, hv->seed) == hv->expected);
+  for (size_t v = 0; v < NVE_HASH_VECTOR_COUNT; ++v) {
+    const NveHashVector* hv = &NVE_HASH_VECTORS[v];
+    const size_t len = vector_bytes(hv, buf);
+    CHECK(nve_xxh64(buf, len, hv->seed) == hv->expected);
     for (size_t s = 0; s < sizeof steps / sizeof steps[0]; ++s) {
       NveXxh64State st = nve_xxh64_init(hv->seed);
-      for (size_t at = 0; at < hv->len; at += steps[s]) {
-        const size_t n = hv->len - at < steps[s] ? hv->len - at : steps[s];
+      for (size_t at = 0; at < len; at += steps[s]) {
+        const size_t n = len - at < steps[s] ? len - at : steps[s];
         nve_xxh64_update(&st, buf + at, n);
       }
       CHECK(nve_xxh64_digest(&st) == hv->expected);
@@ -167,6 +167,6 @@ int main(void) {
     fprintf(stderr, "nve_host_c11_test: %d failure(s)\n", g_failures);
     return 1;
   }
-  printf("nve_host_c11_test: ok (%u vectors)\n", (unsigned)VECTOR_COUNT);
+  printf("nve_host_c11_test: ok (%u vectors)\n", (unsigned)NVE_HASH_VECTOR_COUNT);
   return 0;
 }

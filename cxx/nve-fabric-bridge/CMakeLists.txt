@@ -55,7 +55,7 @@ else()
 endif()
 
 find_package(Threads REQUIRED)
-target_link_libraries(nve_fabric_bridge PUBLIC Threads::Threads)
+target_link_libraries(nve_fabric_bridge PUBLIC Threads::Threads nve::host_cxx)
 if(WIN32)
   target_link_libraries(nve_fabric_bridge PUBLIC ws2_32)
 endif()
@@ -107,16 +107,19 @@ endif()
 enable_testing()
 
 add_library(nve_bridge_fixture_valid SHARED tests/session_fixture.c)
-target_compile_definitions(nve_bridge_fixture_valid PRIVATE NVE_BUILD_SHARED_LIB=1)
+target_compile_definitions(nve_bridge_fixture_valid PRIVATE NVE_BUILDING_LIBRARY=1)
 target_include_directories(nve_bridge_fixture_valid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(nve_bridge_fixture_valid PRIVATE nve::host_cxx)
 
 add_library(nve_bridge_fixture_no_entry SHARED tests/session_fixture.c)
-target_compile_definitions(nve_bridge_fixture_no_entry PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_NO_ENTRY=1)
+target_compile_definitions(nve_bridge_fixture_no_entry PRIVATE NVE_BUILDING_LIBRARY=1 NVE_FIXTURE_NO_ENTRY=1)
 target_include_directories(nve_bridge_fixture_no_entry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(nve_bridge_fixture_no_entry PRIVATE nve::host_cxx)
 
 add_library(nve_bridge_fixture_no_surface SHARED tests/session_fixture.c)
-target_compile_definitions(nve_bridge_fixture_no_surface PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_NO_SURFACE=1)
+target_compile_definitions(nve_bridge_fixture_no_surface PRIVATE NVE_BUILDING_LIBRARY=1 NVE_FIXTURE_NO_SURFACE=1)
 target_include_directories(nve_bridge_fixture_no_surface PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(nve_bridge_fixture_no_surface PRIVATE nve::host_cxx)
 
 add_executable(nve_fabric_bridge_test
   tests/test_main.cpp

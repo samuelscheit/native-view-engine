@@ -44,7 +44,29 @@ pub use visual::{
     Visibility, Visual, VisualMut, VisualRef, WhiteSpace, WordBreak,
 };
 
-use nve_store::{NveTable, RealizationOrder};
+use nve_store::{NveTable, RealizationOrder, TableDesc};
+
+/// `TableDesc` of every core table, in registration order: the input of `nve codegen abi`, which
+/// emits their keys and field specs for the static host runtimes.
+pub const CORE_TABLE_DESCS: &[&TableDesc] = &[
+    &Layout::DESC,
+    &GridLayout::DESC,
+    &GridItem::DESC,
+    &Visual::DESC,
+    &Typography::DESC,
+    &TextContent::DESC,
+    &Transform::DESC,
+    &Motion::DESC,
+    &Responsive::DESC,
+    &Interaction::DESC,
+    &Accessibility::DESC,
+    &DebugId::DESC,
+    &StreamBoundary::DESC,
+    &Link::DESC,
+    &Scroll::DESC,
+    &Image::DESC,
+    &TextInput::DESC,
+];
 
 /// Registers every cross-platform core table and its resource codecs in the process-global table registry.
 /// Idempotent and fast after the first call.

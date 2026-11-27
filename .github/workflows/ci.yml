@@ -68,6 +68,9 @@ jobs:
 
       - name: Build and test Rust workspace + Skia shell + WASM check
         run: |
+          # Generated host ABI files first: tests check them against `nve-abi` (gitignored, never stale).
+          cargo run --locked -p nve-cli -- codegen abi
+          cargo run --locked -p nve-cli -- codegen abi --check
           cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
           cargo test --workspace --exclude nve-arch-invariants
           cargo test --locked -p nve-ui --features spatial-focus --test spatial_focus_tests
@@ -81,8 +84,6 @@ jobs:
           cargo check -p nve-web-shell --target wasm32-unknown-unknown
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
-          cargo run --locked -p nve-cli -- codegen abi
-          cargo run --locked -p nve-cli -- codegen abi --check
 
       - name: Run Python benchmark-regression unit tests
         run: python3 -B -m unittest discover -s scripts/tests -v
@@ -263,6 +264,9 @@ jobs:
 
       - name: Build and test Rust workspace + Skia shell
         run: |
+          # Generated host ABI files first: tests check them against `nve-abi` (gitignored, never stale).
+          cargo run --locked -p nve-cli -- codegen abi
+          cargo run --locked -p nve-cli -- codegen abi --check
           cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
           cargo test --locked -p nve-arch-invariants
           cargo test --workspace --exclude nve-arch-invariants
@@ -274,8 +278,6 @@ jobs:
           cargo clippy --locked -p nve-skia-shell --features skia-metal -- -D warnings
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
-          cargo run --locked -p nve-cli -- codegen abi
-          cargo run --locked -p nve-cli -- codegen abi --check
 
       # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Build and test C++20 Fabric bridge
@@ -321,6 +323,7 @@ jobs:
         run: |
           xcrun --sdk iphonesimulator clang++ \
             -std=c++20 -fobjc-arc -Wall -Wextra -Werror -fsyntax-only \
+            -Ipackages/core/host-cxx/include \
             -Icxx/nve-fabric-bridge/include \
             -Ihosts/apple-common \
             -Ihosts/ios-shell \
@@ -381,8 +384,6 @@ jobs:
           cargo clippy --locked -p nve-skia-shell --features skia-d3d -- -D warnings
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
-          cargo run --locked -p nve-cli -- codegen abi
-          cargo run --locked -p nve-cli -- codegen abi --check
 
       # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Build and test C++20 Fabric bridge

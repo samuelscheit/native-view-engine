@@ -1,0 +1,6 @@
+// The generated C ABI lives once, in host-cxx (`nve codegen abi`); this module imports it in place.
+module CNveAbi [system] {
+    header "../../../../host-cxx/include/nve/generated/nve_abi.generated.h"
+    header "../../../../host-cxx/include/nve/generated/nve_tables.generated.h"
+    export *
+}

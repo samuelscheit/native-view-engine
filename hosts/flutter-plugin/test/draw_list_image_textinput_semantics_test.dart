@@ -667,7 +667,7 @@ void main() {
 
         final viewPtr = alloc.allocate<NveSceneView>(ffi.sizeOf<NveSceneView>());
         viewPtr.ref
-          ..schemaHash = nveSceneSchemaHash
+          ..schemaHash = nveSceneSchemaHash.toSignedInt()
           ..frameId = 1
           ..nodeCount = 7
           ..dirtyCount = 7

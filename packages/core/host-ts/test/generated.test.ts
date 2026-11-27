@@ -1,0 +1,40 @@
+// `nve codegen abi` output against this package's static runtime: every generated table key is
+// `xxh64(name)`, every field spec fits its row, the wasm32 `SceneLayout` matches the generated
+// struct layouts, and a `TableReader` reads a generated default row with a generated field spec.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import {
+  Key64,
+  LayoutTable,
+  NVE_NODE_META_LAYOUT,
+  NVE_RENDER_NODE_LAYOUT,
+  NVE_SCENE_LAYOUT_WASM32,
+  NVE_SCENE_VIEW_LAYOUT,
+  NVE_TABLE_VIEW_LAYOUT,
+  NVE_TABLES,
+  TableReader,
+} from '../src/index.ts';
+
+test('generated tables agree with the runtime', () => {
+  assert.ok(NVE_TABLES.length > 0);
+  for (const t of NVE_TABLES) {
+    assert.ok(t.key.equals(Key64.of(t.name)), `${t.name} key is xxh64(name)`);
+    assert.ok(t.words >= 1 && t.words <= 32, `${t.name} word count`);
+    for (const f of Object.values(t.fields)) assert.ok(f.fits(t.words), `${t.name} field fits its row`);
+  }
+});
+
+test('wasm32 scene layout matches the generated struct layouts', () => {
+  assert.equal(NVE_SCENE_LAYOUT_WASM32.nodeStride, NVE_RENDER_NODE_LAYOUT.size);
+  assert.equal(NVE_SCENE_LAYOUT_WASM32.tables, NVE_SCENE_VIEW_LAYOUT.tables);
+  assert.equal(NVE_SCENE_LAYOUT_WASM32.tableView.stride, NVE_TABLE_VIEW_LAYOUT.size);
+  assert.equal(NVE_NODE_META_LAYOUT.size, 64);
+});
+
+test('a generated field spec reads a generated default row', () => {
+  const rows = new DataView(new ArrayBuffer(LayoutTable.words * 4));
+  LayoutTable.defaults.forEach((w, i) => rows.setUint32(i * 4, w, true));
+  const layout = new TableReader({ key: LayoutTable.key, slot: 0, words: LayoutTable.words, rowCount: 1, rows });
+  assert.equal(layout.f32(0, LayoutTable.fields.flexShrink), 1);
+});

@@ -2,16 +2,10 @@
 //! assignment, and strict semantic validation for NVE's Nitro-inspired Rust-first Hybrid FFI
 //! code generator.
 
-pub mod core_abi;
 mod file_spec;
 pub mod schema_bridge;
 mod validate;
 
-pub use core_abi::{
-    compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec, scene_abi_spec,
-    ResolvedSceneAbi, NVE_CORE_ABI_SCHEMA_HASH, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
-    NVE_SCENE_SCHEMA_HASH,
-};
 pub use file_spec::HybridFileSpec;
 pub use schema_bridge::from_abi_descriptor;
 

@@ -1,18 +1,26 @@
-# Shared CMake helper to ensure NVE Core/Scene ABI generated headers exist
-# and stay fresh relative to `packages/core/{abi,abi-macros,codegen}/src/`.
+# Shared CMake helper: keeps the generated host ABI headers (`nve codegen abi` ->
+# `packages/core/host-cxx/include/nve/generated/`) fresh relative to their inputs (`nve-abi`,
+# `nve-components` tables, the codegen crate and its Askama templates), and adds the
+# static `nve::host_cxx` runtime target that carries them.
 #
 # Usage:
 #   include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NveCodegen.cmake")
 #   nve_ensure_abi_codegen()
+#   target_link_libraries(my_target PRIVATE nve::host_cxx)
 #
 # Opt out (e.g. cross-compile environments without Cargo where headers were pre-generated):
 #   -DNVE_SKIP_CODEGEN=ON
 
 include_guard(GLOBAL)
 
-option(NVE_SKIP_CODEGEN "Skip automatic nve-cli ABI/wire codegen during CMake configure" OFF)
+option(NVE_SKIP_CODEGEN "Skip automatic nve-cli ABI codegen during CMake configure" OFF)
 
 function(nve_ensure_abi_codegen)
+  get_filename_component(_nve_repo_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../.." ABSOLUTE)
+  if(NOT TARGET nve::host_cxx)
+    add_subdirectory("${_nve_repo_root}/packages/core/host-cxx" "${CMAKE_BINARY_DIR}/nve_host_cxx")
+  endif()
+
   if(NVE_SKIP_CODEGEN)
     return()
   endif()
@@ -22,11 +30,10 @@ function(nve_ensure_abi_codegen)
     return()
   endif()
 
-  get_filename_component(_nve_repo_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../.." ABSOLUTE)
-  set(_nve_include_dir "${_nve_repo_root}/cxx/nve-fabric-bridge/include")
+  set(_nve_generated_dir "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated")
   set(_nve_generated_headers
-    "${_nve_include_dir}/nve_abi.generated.h"
-    "${_nve_include_dir}/nve_scene_abi.generated.h"
+    "${_nve_generated_dir}/nve_abi.generated.h"
+    "${_nve_generated_dir}/nve_tables.generated.h"
   )
 
   set(_nve_needs_codegen FALSE)
@@ -44,7 +51,9 @@ function(nve_ensure_abi_codegen)
     file(GLOB_RECURSE _nve_abi_sources
       "${_nve_repo_root}/packages/core/abi/src/*.rs"
       "${_nve_repo_root}/packages/core/abi-macros/src/*.rs"
+      "${_nve_repo_root}/packages/core/components/src/tables/*.rs"
       "${_nve_repo_root}/packages/core/codegen/src/*.rs"
+      "${_nve_repo_root}/packages/core/codegen/templates/*"
     )
     foreach(_src IN LISTS _nve_abi_sources)
       foreach(_hdr IN LISTS _nve_generated_headers)
@@ -70,7 +79,7 @@ function(nve_ensure_abi_codegen)
   if(_nve_needs_codegen)
     if(NOT _nve_cargo_bin)
       message(FATAL_ERROR
-        "NVE generated ABI/wire headers need regeneration (${_nve_reason}), "
+        "NVE generated host ABI headers need regeneration (${_nve_reason}), "
         "but 'cargo' was not found. Run 'cargo run --locked -p nve-cli -- codegen abi' "
         "from ${_nve_repo_root} or pass -DNVE_SKIP_CODEGEN=ON."
       )
@@ -94,7 +103,7 @@ function(nve_ensure_abi_codegen)
     add_custom_target(nve_codegen_abi
       COMMAND "${_nve_cargo_bin}" run --locked -p nve-cli -- codegen abi
       WORKING_DIRECTORY "${_nve_repo_root}"
-      COMMENT "Regenerating NVE Core/Scene ABI bindings"
+      COMMENT "Regenerating NVE host ABI / table / XXH64 vector files"
       VERBATIM
     )
   endif()

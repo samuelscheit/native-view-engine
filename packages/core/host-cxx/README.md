@@ -42,6 +42,10 @@ constexpr auto kVisual = nve::host::Key64::of("nve.visual");  // baked at compil
 auto scene = nve::host::SceneReader<NveSceneView>::open(view, nve::host::Key64{NVE_SCENE_SCHEMA_HASH});
 ```
 
+## Generated data
+
+`nve codegen abi` writes `include/nve/generated/nve_abi.generated.h` (Core + Scene C ABI with layout `static_assert`s for LP64, ILP32 and i386 System V), `include/nve/generated/nve_tables.generated.h` (table keys, defaults, `NveFieldSpec`s, X-macro lists) and `tests/hash_vectors.generated.h`. All three are gitignored; the CMake helper `cxx/cmake/NveCodegen.cmake` regenerates them when stale. `tests/test_generated.cpp` checks every generated key and field spec at compile time.
+
 ## Verify
 
 `scripts/host-runtimes.sh cxx` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.

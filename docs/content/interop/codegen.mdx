@@ -17,23 +17,20 @@ order: 1
 
 Every language binding for `nve_get_interface(1..=5)` and the 64-byte `NveRenderNode` / `NveSceneView` / `NveNodeMeta` slabs is generated from colocated Rust `#[derive(NveAbi)]` descriptors and locked by deterministic 64-bit XXH64 schema hashes (`NVE_CORE_ABI_SCHEMA_HASH`, `NVE_SCENE_SCHEMA_HASH`).
 
-Generated artifacts follow the `.generated.<ext>` convention (and Java `dev.nve.android.generated` package):
+Generated files follow the `.generated.<ext>` convention (and the Java `dev.nve.host.generated` package). Rendered from Askama templates, they land next to the static host runtime they plug into (`packages/core/host-*`): codegen emits only data (ABI structs and constants, word-table keys and field specs, golden XXH64 vectors), never runtime code.
 
-| Layer | Target Language | Generated Artifact |
+| Language | Generated files | Static runtime |
 | :--- | :--- | :--- |
-| **Core ABI** | C / C++20 (Fabric Bridge) | `cxx/nve-fabric-bridge/include/nve_abi.generated.h` |
-| **Core ABI** | C / Swift (`CNveAbi`) | `hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.generated.h` |
-| **Core ABI** | Dart (`dart:ffi`) | `hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart` |
-| **Core ABI** | Java (Android JNI) | `dev.nve.android.generated.NveCoreAbi` |
-| **Core ABI** | TypeScript (Web WASM) | `hosts/web-shell/nve_core_abi.generated.ts` |
-| **Scene ABI** | C / C++20 (Fabric Bridge) | `cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h` |
-| **Scene ABI** | C / Swift (`CNveAbi`) | `hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.generated.h` |
-| **Scene ABI** | Dart (`dart:ffi`) | `hosts/flutter-plugin/lib/src/nve_scene_abi.generated.dart` |
-| **Scene ABI** | Java (Android JNI) | `dev.nve.android.generated.NveSceneBuffer` |
-| **Scene ABI** | TypeScript (Web WASM) | `hosts/web-shell/nve_scene_view.generated.ts` |
+| C / C++20 / Objective-C | `host-cxx/include/nve/generated/nve_abi.generated.h` (Core + Scene, `static_assert`s for LP64 / ILP32 / i386 System V), `nve_tables.generated.h` | `nve::host_cxx` (CMake) |
+| Swift | `CNveAbi` (imports the host-cxx header in place), `NveTables.generated.swift` | `NveHost` (SwiftPM) |
+| Java / Kotlin | `dev.nve.host.generated.{NveAbi,NveTables}` | `dev.nve.host` |
+| Dart | `nve_abi_const.generated.dart` + `nve_tables.generated.dart` (web-safe), `nve_abi_ffi.generated.dart` (`dart:ffi`) | `package:nve_host` |
+| TypeScript | `nve_abi.generated.ts`, `nve_tables.generated.ts` | `@nve/host` |
+
+Every 64-bit value in Dart and TypeScript is a `Key64` of two `u32` halves, so no literal above 2^53 reaches a JavaScript number.
 
 ```bash title="Regenerate or verify zero ABI drift in CI"
-# Regenerate all 10 Core + Scene ABI artifacts
+# Regenerate the 15 host files (ABI, tables, XXH64 vectors)
 cargo nve codegen abi
 
 # Fail non-zero if any generated file drifted (normalizes CRLF/LF on Windows)

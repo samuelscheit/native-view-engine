@@ -2,7 +2,7 @@ import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'nve_bin_value.dart';
-import 'nve_core_abi.generated.dart';
+import 'package:nve_host/nve_host.dart';
 
 /// Strongly typed binary event payload mirroring `EventPayload` in `packages/core/abi/src/events.rs`.
 sealed class NveEventPayload {

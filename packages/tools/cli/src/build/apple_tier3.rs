@@ -8,9 +8,10 @@ use std::path::PathBuf;
 
 use super::probe::{EnvironmentProbe, PrerequisiteIssue};
 
-pub const NVE_ABI_HEADER_FILE: &str = "nve_abi.generated.h";
+/// The generated C ABI header, relative to [`DEFAULT_HEADERS_REL_PATH`] (it includes `../host/api.h`).
+pub const NVE_ABI_HEADER_FILE: &str = "nve/generated/nve_abi.generated.h";
 pub const NVE_INTERFACE_SYMBOL: &str = "nve_get_interface";
-pub const DEFAULT_HEADERS_REL_PATH: &str = "hosts/swiftui-kit/Sources/CNveAbi/include";
+pub const DEFAULT_HEADERS_REL_PATH: &str = "packages/core/host-cxx/include";
 
 /// Apple Tier-3 platform family (tvOS, visionOS, watchOS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

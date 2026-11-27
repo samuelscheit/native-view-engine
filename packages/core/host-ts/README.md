@@ -29,6 +29,10 @@ leading BOM.
 | `src/scene_reader.ts` | `SceneReader` over slabs or `SceneReader.fromLinearMemory(memory, ptr, layout, schema)` |
 | `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |
 
+## Generated data
+
+`nve codegen abi` writes `src/generated/nve_abi.generated.ts` and `nve_tables.generated.ts` (exported from `index.ts`) and `test/hash_vectors.generated.ts` (all gitignored).
+
 ## Verify
 
 `scripts/host-runtimes.sh ts` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.
