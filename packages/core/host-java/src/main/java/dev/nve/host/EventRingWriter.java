@@ -1,12 +1,14 @@
 package dev.nve.host;
 
+import java.nio.Buffer;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Allocation-free writer of the binary {@code EventRing} ({@code nve_abi::encode_events}) into a
- * reusable buffer, dispatched with {@link NativeRuntime#dispatchEvents}.
+ * Allocation-free writer of the binary {@code EventRing} ({@code nve_abi::encode_events}, byte-checked
+ * against the Rust-generated {@code EventRingVectors}) into a reusable buffer, dispatched with
+ * {@link NativeRuntime#dispatchEvents}.
  *
  * <p>Layout: {@code u32 count}, then per event {@code u32 surface, u32 node, u64 timestamp_us,
  * u8 kind, u8 payload_tag} and the payload. {@code kind} is an {@code NativeEventKind} code
@@ -19,10 +21,12 @@ public final class EventRingWriter {
     static final int PAYLOAD_POINT = 1;
     static final int PAYLOAD_SCROLL = 2;
     static final int PAYLOAD_TEXT = 3;
+    static final int PAYLOAD_LAYOUT = 4;
     static final int PAYLOAD_CUSTOM = 5;
     static final int PAYLOAD_KEY = 6;
     static final int PAYLOAD_POINTER = 7;
     static final int PAYLOAD_WHEEL = 8;
+    static final int PAYLOAD_TABLE_EVENT = 9;
 
     private static final int HEADER = 18;
 
@@ -38,11 +42,35 @@ public final class EventRingWriter {
         reset();
     }
 
+    /**
+     * A writer continuing a ring already in {@code buf} ({@code count} events ending at
+     * {@code buf.position()}), e.g. after copying it into a larger buffer.
+     */
+    public static EventRingWriter resume(ByteBuffer buf, int surfaceId, int count) {
+        final int end = buf.position();
+        final EventRingWriter w = new EventRingWriter(buf, surfaceId);
+        ((Buffer) w.buf).position(end);
+        w.count = count;
+        w.buf.putInt(0, count);
+        return w;
+    }
+
+    /** Rolls back to an earlier {@code (count(), length())} snapshot (drops later events). */
+    public EventRingWriter truncate(int count, int length) {
+        if (count < 0 || count > this.count || length < 4 || length > buf.position()) {
+            throw new IllegalArgumentException("truncate past the ring: " + count + " / " + length);
+        }
+        this.count = count;
+        buf.putInt(0, count);
+        ((Buffer) buf).position(length);
+        return this;
+    }
+
     /** Empties the ring. */
     public EventRingWriter reset() {
-        buf.clear();
+        ((Buffer) buf).clear();  // `Buffer` receivers: Java 9 covariant overrides break Java 8 / old Android
         buf.putInt(0, 0);
-        buf.position(4);
+        ((Buffer) buf).position(4);
         count = 0;
         return this;
     }
@@ -98,23 +126,39 @@ public final class EventRingWriter {
         return end();
     }
 
-    /** Keyboard event: W3C {@code key}, physical {@code code}, modifier bits, platform key code. */
+    /** Keyboard event: modifier bits, IME composing, platform key code, W3C {@code key}, physical {@code code}. */
     public EventRingWriter key(int kind, int nodeId, long timestampUs, String key, String code, int modifiers, int keyCode, boolean composing) {
         final int keyLen = shortLength(key);
         final int codeLen = shortLength(code);
         begin(kind, nodeId, timestampUs, PAYLOAD_KEY, 10L + keyLen + codeLen);
+        buf.put((byte) modifiers).put((byte) (composing ? 1 : 0)).putInt(keyCode);
         buf.putShort((short) keyLen);
         putUtf8(key, keyLen);
         buf.putShort((short) codeLen);
         putUtf8(code, codeLen);
-        buf.put((byte) modifiers).putInt(keyCode).put((byte) (composing ? 1 : 0));
         return end();
     }
 
-    /** Pointer event: position, button / capture flags, modifier bits. */
-    public EventRingWriter pointer(int kind, int nodeId, long timestampUs, float x, float y, int eventFlags, int modifiers) {
+    /** Layout change: the node's new frame. */
+    public EventRingWriter layout(int kind, int nodeId, long timestampUs, float x, float y, float width, float height) {
+        begin(kind, nodeId, timestampUs, PAYLOAD_LAYOUT, 16);
+        buf.putFloat(x).putFloat(y).putFloat(width).putFloat(height);
+        return end();
+    }
+
+    /** Module table event: {@code tableKey}, {@code eventId}, opaque {@code payload} ({@code null} = none). */
+    public EventRingWriter tableEvent(int kind, int nodeId, long timestampUs, long tableKey, int eventId, byte[] payload) {
+        final int len = payload == null ? 0 : payload.length;
+        begin(kind, nodeId, timestampUs, PAYLOAD_TABLE_EVENT, 16L + len);
+        buf.putLong(tableKey).putInt(eventId).putInt(len);
+        if (len > 0) buf.put(payload);
+        return end();
+    }
+
+    /** Pointer event: position, modifier bits, button / capture flags. */
+    public EventRingWriter pointer(int kind, int nodeId, long timestampUs, float x, float y, int modifiers, int eventFlags) {
         begin(kind, nodeId, timestampUs, PAYLOAD_POINTER, 10);
-        buf.putFloat(x).putFloat(y).put((byte) eventFlags).put((byte) modifiers);
+        buf.putFloat(x).putFloat(y).put((byte) modifiers).put((byte) eventFlags);
         return end();
     }
 

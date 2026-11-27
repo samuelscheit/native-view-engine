@@ -4,12 +4,14 @@ import java.nio.ByteBuffer;
 
 /**
  * JNI binding of {@code libnve_runtime}'s {@code NveRuntimeApi} for Java / Kotlin hosts (Android
- * View hosts, Jetpack Compose, desktop JVM test suites). Implemented by the host's JNI library
+ * View hosts, Jetpack Compose, desktop JVM suites). Implemented by the host's JNI library
  * ({@code hosts/android-shell}: {@code libnve_android_shell}); load it before the first call.
  *
  * <p>A {@code long} handle is one runtime surface. All calls except {@link #pairIsConnected} must
- * run on the thread that called {@link #create} (the runtime's owner thread). Status-returning
- * calls return a {@code STATUS_*} code; {@link #lastError} explains failures.
+ * run on the thread that called {@link #create} (the runtime's owner thread). Every {@code int}
+ * result is an {@code NveRuntimeAbi.STATUS_*} code (never negative); values come back through
+ * caller-owned out arrays so they never collide with statuses (node ids are raw unsigned
+ * {@code u32} bits). {@link #lastError} explains failures.
  *
  * <p>Scene lifetime: {@link #acquireScene} fills a packed frame for
  * {@link RuntimeSceneReader#attach(long[], ByteBuffer[])}; its direct buffers (and those of
@@ -19,28 +21,15 @@ import java.nio.ByteBuffer;
 public final class NativeRuntime {
     private NativeRuntime() {}
 
-    // `NveRuntimeStatus` (locked against the generated C header by the JNI library).
-    public static final int STATUS_OK = 0;
-    public static final int STATUS_INVALID_ARG = 1;
-    public static final int STATUS_UNSUPPORTED = 2;
-    public static final int STATUS_BUSY = 3;
-    public static final int STATUS_IO = 4;
-    public static final int STATUS_PANIC = 5;
-    public static final int STATUS_NOT_FOUND = 6;
-    public static final int STATUS_ERROR = 7;
-
-    /** {@code outKindFlags[1]} bit of an ephemeral resource ({@code NVE_RESOURCE_FLAG_EPHEMERAL}). */
-    public static final long RESOURCE_FLAG_EPHEMERAL = 1L;
-
     /** Host text measurer installed with {@link #setTextMeasurer}; called during layout. */
     public interface TextMeasurer {
         /**
-         * Measures {@code text} at {@code fontSize} logical points and CSS {@code fontWeight} under
-         * {@code maxWidth} ({@code +Infinity} unconstrained, {@code 0} min-content, otherwise the
-         * wrap width). Writes {@code [width, height]} to {@code out}; returns {@code false} to fall
-         * back to the runtime's heuristic.
+         * Writes the size of {@code text} at {@code fontSize} logical points and CSS
+         * {@code fontWeight} to {@code out[0..2)}: unconstrained when {@code maxWidth} is
+         * {@code +Infinity}, the min-content size when it is not a positive number, otherwise
+         * wrapped at {@code maxWidth}. Non-finite or negative sizes count as 0.
          */
-        boolean measure(String text, float fontSize, int fontWeight, float maxWidth, float[] out);
+        void measure(String text, float fontSize, int fontWeight, float maxWidth, float[] out);
     }
 
     /** New surface, or {@code 0} on failure. */
@@ -49,7 +38,7 @@ public final class NativeRuntime {
     /** Releases the scene, clears callbacks, detaches the app, and frees the surface. */
     public static native void destroy(long handle);
 
-    /** Last failure message of the calling thread / handle ({@code ""} when none). */
+    /** Last failure message of this handle ({@code ""} when none). */
     public static native String lastError(long handle);
 
     /** Loads {@code soPath} and attaches its {@code nve_get_interface} app (hot reload when one is attached). */
@@ -62,17 +51,17 @@ public final class NativeRuntime {
 
     public static native int setViewport(long handle, float width, float height, float scaleFactor);
 
-    /** Renders / drains pending work: {@code 1} changed, {@code 0} unchanged, {@code -status} on failure. */
-    public static native int tick(long handle, float dtSeconds);
+    /** Renders / drains pending work; {@code outChanged[0]} is 1 when the scene changed. */
+    public static native int tick(long handle, float dtSeconds, int[] outChanged);
 
     /**
-     * Dispatches the first {@code length} bytes of an {@link EventRingWriter} ring (direct buffer):
-     * {@code 1} changed, {@code 0} unchanged, {@code -status} on failure.
+     * Dispatches the first {@code length} bytes of an {@link EventRingWriter} ring (direct
+     * buffer); {@code outChanged[0]} is 1 when the app changed.
      */
-    public static native int dispatchEvents(long handle, ByteBuffer ring, int length);
+    public static native int dispatchEvents(long handle, ByteBuffer ring, int length, int[] outChanged);
 
-    /** Topmost interactive node id at {@code (x, y)} logical points, {@code 0} when none, {@code -status} on failure. */
-    public static native int hitTest(long handle, float x, float y);
+    /** Topmost interactive raw {@code NodeId} at {@code (x, y)} logical points into {@code outNodeId[0]} ({@code 0} = none). */
+    public static native int hitTest(long handle, float x, float y, int[] outNodeId);
 
     /** Scrolls {@code nodeId} by {@code (dx, dy)}; writes the clamped offset to {@code outXY} when non-null. */
     public static native int scrollBy(long handle, int nodeId, float dx, float dy, float[] outXY);
@@ -86,12 +75,13 @@ public final class NativeRuntime {
     public static native void releaseScene(long handle);
 
     /**
-     * Wire bytes of live resource {@code resourceId} in the acquired scene (empty buffer for a
-     * typed value without bytes), or {@code null}; {@code outKindFlags = [kind, flags]}.
+     * Canonical bytes of resource {@code resourceId} in the acquired scene (an empty buffer for an
+     * empty payload), or {@code null} when it is not live or no scene is held; {@code outKind[0]}
+     * receives the resource kind key.
      */
-    public static native ByteBuffer resource(long handle, int resourceId, long[] outKindFlags);
+    public static native ByteBuffer resource(long handle, int resourceId, long[] outKind);
 
-    /** Installs ({@code null} removes) the host text measurer and relayouts every node. */
+    /** Installs ({@code null} removes) the host text measurer; the next tick relayouts. */
     public static native int setTextMeasurer(long handle, TextMeasurer measurer);
 
     /**

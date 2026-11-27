@@ -126,16 +126,13 @@ fn write_or_check_generated(
     Ok(touched)
 }
 
-/// Every published table foreign hosts read: core tables plus capability-module tables.
-fn published_tables() -> Vec<&'static nve_store::TableDesc> {
-    let mut tables = nve_components::tables::CORE_TABLE_DESCS.to_vec();
-    tables.push(&<nve_canvas::Canvas as nve_store::NveTable>::DESC);
-    tables
-}
+/// Published capability-module tables foreign hosts read (core tables come from `nve-components`).
+const MODULE_TABLES: &[&nve_store::TableDesc] = &[&<nve_canvas::Canvas as nve_store::NveTable>::DESC];
 
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let files = nve_codegen::generate_all_abi_files(&published_tables())
+    let mut files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
         .map_err(|e| format!("ABI codegen failed: {e}"))?;
+    files.extend(nve_codegen::generate_java_host_files(MODULE_TABLES, nve_components::tables::CORE_TABLE_BITS));
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
 }
 

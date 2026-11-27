@@ -4,6 +4,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
+import dev.nve.host.generated.NveRuntimeAbi;
+
 /**
  * Reusable validated zero-copy reader over one acquired {@code NveRuntimeSceneView} frame whose
  * slabs arrive as direct buffers (JNI {@code NewDirectByteBuffer} over the runtime's own memory).
@@ -22,15 +24,12 @@ import java.nio.charset.StandardCharsets;
  * decoding is memory-safe regardless.
  */
 public final class RuntimeSceneReader {
-    /**
-     * {@code NVE_RUNTIME_SCHEMA_HASH}: fingerprint of the runtime scene + vtable layout read here.
-     * {@code hosts/android-shell} locks it against the generated C header with a {@code static_assert}.
-     */
-    public static final Key64 SCHEMA = Key64.of(0xDB2CE618E24C0761L);
-    public static final int NODE_ROW_SIZE = 32;
-    public static final int LAYOUT_RECT_SIZE = 16;
+    /** {@code NVE_RUNTIME_SCHEMA_HASH}: fingerprint of the runtime scene + vtable layout read here. */
+    public static final Key64 SCHEMA = Key64.of(NveRuntimeAbi.RUNTIME_SCHEMA_HASH);
+    public static final int NODE_ROW_SIZE = NveRuntimeAbi.NODE_ROW_SIZE;
+    public static final int LAYOUT_RECT_SIZE = NveRuntimeAbi.LAYOUT_RECT_SIZE;
     /** {@code NveNodeRow::flags} bit of an allocated live slot. */
-    public static final int FLAG_LIVE = 1;
+    public static final int FLAG_LIVE = NveRuntimeAbi.NODE_ROW_FLAG_LIVE;
     /** {@code NveNodeRow::primary_slot} of a plain container. */
     public static final int PRIMARY_SLOT_NONE = 0xFF;
     /** Table slots per process (Rust {@code MAX_TABLE_SLOTS}). */
@@ -58,7 +57,9 @@ public final class RuntimeSceneReader {
     public static final int H_TEXT_LEN = 5;
     public static final int H_CHILDREN_LEN = 6;
     public static final int H_TABLE_COUNT = 7;
-    public static final int H_TABLES = 8;
+    public static final int H_SCENE_EPOCH = 8;
+    public static final int H_DIRTY_RESOURCE_COUNT = 9;
+    public static final int H_TABLES = 10;
     /** Per table {@code t} at {@code H_TABLES + t * H_TABLE_STRIDE}: key, slot, words, rowCount, dirtyCount. */
     public static final int H_TABLE_STRIDE = 5;
     public static final int HEADER_LEN = H_TABLES + MAX_TABLES * H_TABLE_STRIDE;
@@ -69,12 +70,14 @@ public final class RuntimeSceneReader {
     public static final int S_CHILDREN = 3;
     public static final int S_DIRTY = 4;
     public static final int S_REMOVED = 5;
-    public static final int S_TABLES = 6;
+    public static final int S_DIRTY_RESOURCES = 6;
+    public static final int S_TABLES = 7;
     /** Per table {@code t} at {@code S_TABLES + t * S_TABLE_STRIDE}: rows, owners (null = dense), dirtyRows. */
     public static final int S_TABLE_STRIDE = 3;
     public static final int SLABS_LEN = S_TABLES + MAX_TABLES * S_TABLE_STRIDE;
 
     private long frameId;
+    private int sceneEpoch;
     private int capacity;
     private ByteBuffer rows;
     private int rowsBase;
@@ -92,8 +95,12 @@ public final class RuntimeSceneReader {
     private ByteBuffer removed;
     private int removedBase;
     private int removedCount;
+    private ByteBuffer dirtyResources;
+    private int dirtyResourcesBase;
+    private int dirtyResourceCount;
     private final TableReader[] pool = new TableReader[MAX_TABLES];
-    private TableReader[] tables = new TableReader[0];
+    private static final TableReader[] NO_TABLES = new TableReader[0];
+    private TableReader[] tables = NO_TABLES;
     private int tableCount;
     /** Table index by slot, {@code -1} when the slot is not published this frame. */
     private final int[] bySlot = new int[MAX_TABLES];
@@ -109,6 +116,15 @@ public final class RuntimeSceneReader {
      * @throws SceneException when the header, a slab, a dirty index, or a table is invalid
      */
     public RuntimeSceneReader attach(long[] header, ByteBuffer[] slabs) {
+        try {
+            return attachPacked(header, slabs);
+        } catch (SceneException e) {
+            detach();
+            throw e;
+        }
+    }
+
+    private RuntimeSceneReader attachPacked(long[] header, ByteBuffer[] slabs) {
         if (header == null || slabs == null || header.length < H_TABLES || slabs.length < S_TABLES) {
             throw new SceneException(SceneException.Kind.MISSING_SLAB, "packed frame arrays too short");
         }
@@ -130,12 +146,14 @@ public final class RuntimeSceneReader {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + t + ": " + e.getMessage());
             }
         }
-        return attach(header[H_SCHEMA], header[H_FRAME_ID], count(header[H_NODE_CAPACITY], "nodeCapacity"),
+        return attachValidated(header[H_SCHEMA], header[H_FRAME_ID], (int) header[H_SCENE_EPOCH],
+                count(header[H_NODE_CAPACITY], "nodeCapacity"),
                 slabs[S_ROWS], slabs[S_RECTS],
                 slabs[S_TEXT], count(header[H_TEXT_LEN], "textLen"),
                 slabs[S_CHILDREN], count(header[H_CHILDREN_LEN], "childrenLen"),
                 slabs[S_DIRTY], count(header[H_DIRTY_COUNT], "dirtyCount"),
                 slabs[S_REMOVED], count(header[H_REMOVED_COUNT], "removedCount"),
+                slabs[S_DIRTY_RESOURCES], count(header[H_DIRTY_RESOURCE_COUNT], "dirtyResourceCount"),
                 pool, count);
     }
 
@@ -145,17 +163,39 @@ public final class RuntimeSceneReader {
     }
 
     /**
-     * Rebinds this reader. {@code tables[0 .. tableCount)} must already be attached.
+     * Rebinds this reader. {@code tables[0 .. tableCount)} must already be attached. A rejected
+     * frame leaves the reader {@link #detach detached}, never half old / half new.
      *
      * @throws SceneException when the schema, a slab, a dirty index, or a table is invalid
      */
     public RuntimeSceneReader attach(
-            long schemaHash, long frameId, int nodeCapacity,
+            long schemaHash, long frameId, int sceneEpoch, int nodeCapacity,
             ByteBuffer rows, ByteBuffer rects,
             ByteBuffer textSlab, int textSlabLen,
             ByteBuffer childrenSlab, int childrenSlabLen,
             ByteBuffer dirtyIndices, int dirtyCount,
             ByteBuffer removedIds, int removedCount,
+            ByteBuffer dirtyResourceIds, int dirtyResourceCount,
+            TableReader[] tables, int tableCount) {
+        try {
+            return attachValidated(schemaHash, frameId, sceneEpoch, nodeCapacity, rows, rects, textSlab, textSlabLen,
+                    childrenSlab, childrenSlabLen, dirtyIndices, dirtyCount, removedIds, removedCount,
+                    dirtyResourceIds, dirtyResourceCount, tables, tableCount);
+        } catch (SceneException e) {
+            detach();
+            throw e;
+        }
+    }
+
+    /** Validates everything first, then mutates (only `detach` runs on a rejection). */
+    private RuntimeSceneReader attachValidated(
+            long schemaHash, long frameId, int sceneEpoch, int nodeCapacity,
+            ByteBuffer rows, ByteBuffer rects,
+            ByteBuffer textSlab, int textSlabLen,
+            ByteBuffer childrenSlab, int childrenSlabLen,
+            ByteBuffer dirtyIndices, int dirtyCount,
+            ByteBuffer removedIds, int removedCount,
+            ByteBuffer dirtyResourceIds, int dirtyResourceCount,
             TableReader[] tables, int tableCount) {
         if (schemaHash != SCHEMA.value()) {
             throw new SceneException(SceneException.Kind.SCHEMA_MISMATCH,
@@ -170,34 +210,44 @@ public final class RuntimeSceneReader {
         requireBytes(childrenSlab, (long) childrenSlabLen * 4, "childrenSlab");
         requireBytes(dirtyIndices, (long) dirtyCount * 4, "dirtyIndices");
         requireBytes(removedIds, (long) removedCount * 4, "removedIds");
+        requireBytes(dirtyResourceIds, (long) dirtyResourceCount * 4, "dirtyResources");
         if (tableCount < 0 || tableCount > MAX_TABLES || (tableCount > 0 && (tables == null || tables.length < tableCount))) {
             throw new SceneException(SceneException.Kind.INVALID_TABLE, "tableCount " + tableCount);
         }
-        java.util.Arrays.fill(bySlot, -1);
+        long seenLo = 0L;
+        long seenHi = 0L;
         for (int i = 0; i < tableCount; i++) {
             final TableReader t = tables[i];
             if (t == null || t.words() < 1) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + i + " is null or not attached");
             }
-            if (t.slot() < 0 || t.slot() >= MAX_TABLES || bySlot[t.slot()] >= 0) {
-                throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + i + " slot " + t.slot());
+            final int slot = t.slot();
+            final long bit = 1L << (slot & 63);
+            if (slot < 0 || slot >= MAX_TABLES || ((slot < 64 ? seenLo : seenHi) & bit) != 0) {
+                throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + i + " slot " + slot);
+            }
+            if (slot < 64) {
+                seenLo |= bit;
+            } else {
+                seenHi |= bit;
             }
             if (!t.isSparse() && t.rowCount() > nodeCapacity) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE,
                         "dense table " + i + " holds " + t.rowCount() + " rows for capacity " + nodeCapacity);
             }
-            bySlot[t.slot()] = i;
         }
         final ByteBuffer d = le(dirtyIndices);
         final int dBase = base(dirtyIndices);
         for (int i = 0; i < dirtyCount; i++) {
             final int idx = d.getInt(dBase + i * 4);
             if (idx <= 0 || idx >= nodeCapacity) {
-                for (int k = 0; k < tableCount; k++) bySlot[tables[k].slot()] = -1;
                 throw new SceneException(SceneException.Kind.INVALID_NODE, "dirty index " + Integer.toUnsignedString(idx));
             }
         }
+        java.util.Arrays.fill(bySlot, -1);
+        for (int i = 0; i < tableCount; i++) bySlot[tables[i].slot()] = i;
         this.frameId = frameId;
+        this.sceneEpoch = sceneEpoch;
         this.capacity = nodeCapacity;
         this.rows = le(rows);
         this.rowsBase = base(rows);
@@ -215,10 +265,30 @@ public final class RuntimeSceneReader {
         this.removed = le(removedIds);
         this.removedBase = base(removedIds);
         this.removedCount = removedCount;
-        this.tables = tables == null ? new TableReader[0] : tables;
+        this.dirtyResources = le(dirtyResourceIds);
+        this.dirtyResourcesBase = base(dirtyResourceIds);
+        this.dirtyResourceCount = dirtyResourceCount;
+        this.tables = tables == null ? NO_TABLES : tables;
         this.tableCount = tableCount;
         this.attachEpoch++;
         return this;
+    }
+
+    /**
+     * Drops every reference to the frame's native buffers (call before {@code releaseScene}): any
+     * later read throws instead of touching freed memory.
+     */
+    public void detach() {
+        frameId = 0L;
+        sceneEpoch = 0;
+        capacity = 0;
+        rows = rects = text = children = dirty = removed = dirtyResources = null;
+        rowsBase = rectsBase = textBase = childrenBase = dirtyBase = removedBase = dirtyResourcesBase = 0;
+        textLen = childrenLen = dirtyCount = removedCount = dirtyResourceCount = 0;
+        tables = NO_TABLES;
+        tableCount = 0;
+        java.util.Arrays.fill(bySlot, -1);
+        attachEpoch++;
     }
 
     private static void requireBytes(ByteBuffer buf, long count, String what) {
@@ -240,6 +310,11 @@ public final class RuntimeSceneReader {
 
     public long frameId() {
         return frameId;
+    }
+
+    /** {@code NveRuntimeSceneView::scene_epoch}: changes on every runtime scene reset. */
+    public int sceneEpoch() {
+        return sceneEpoch;
     }
 
     /** Slot capacity of {@code rows} / {@code rects}; index 0 is the reserved null slot. */
@@ -380,6 +455,22 @@ public final class RuntimeSceneReader {
     public int dirtyIndex(int i) {
         if (i < 0 || i >= dirtyCount) throw new IndexOutOfBoundsException("dirty " + i + " of " + dirtyCount);
         return dirty.getInt(dirtyBase + i * 4);
+    }
+
+    /** Number of resource ids (re)defined on this frame (see {@link #dirtyResource}). */
+    public int dirtyResourceCount() {
+        return dirtyResourceCount;
+    }
+
+    /**
+     * {@code i}-th live resource id whose bytes changed on this frame (created, recycled, or
+     * rewritten): caches keyed by resource id must drop it. Ids not listed kept their bytes.
+     */
+    public int dirtyResource(int i) {
+        if (i < 0 || i >= dirtyResourceCount) {
+            throw new IndexOutOfBoundsException("dirty resource " + i + " of " + dirtyResourceCount);
+        }
+        return dirtyResources.getInt(dirtyResourcesBase + i * 4);
     }
 
     /** Raw {@code NodeId} removed this frame. */

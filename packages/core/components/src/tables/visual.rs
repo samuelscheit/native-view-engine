@@ -164,6 +164,24 @@ impl Typography {
     pub const SET_TEXT_ALIGN: u32 = 1 << 11;
     pub const SET_TEXT_DECORATION: u32 = 1 << 12;
     pub const SET_VERTICAL_ALIGN: u32 = 1 << 13;
+
+    /// `(NAME, bit)` of every `SET_*` bit (foreign-host codegen).
+    pub const SET_BITS: &'static [(&'static str, u32)] = &[
+        ("SET_COLOR", Self::SET_COLOR),
+        ("SET_FONT_SIZE", Self::SET_FONT_SIZE),
+        ("SET_LINE_HEIGHT", Self::SET_LINE_HEIGHT),
+        ("SET_LETTER_SPACING", Self::SET_LETTER_SPACING),
+        ("SET_FONT_FAMILY", Self::SET_FONT_FAMILY),
+        ("SET_MAX_LINES", Self::SET_MAX_LINES),
+        ("SET_FONT_WEIGHT", Self::SET_FONT_WEIGHT),
+        ("SET_FONT_STYLE", Self::SET_FONT_STYLE),
+        ("SET_WHITE_SPACE", Self::SET_WHITE_SPACE),
+        ("SET_WORD_BREAK", Self::SET_WORD_BREAK),
+        ("SET_OVERFLOW_WRAP", Self::SET_OVERFLOW_WRAP),
+        ("SET_TEXT_ALIGN", Self::SET_TEXT_ALIGN),
+        ("SET_TEXT_DECORATION", Self::SET_TEXT_DECORATION),
+        ("SET_VERTICAL_ALIGN", Self::SET_VERTICAL_ALIGN),
+    ];
 }
 
 /// Text run content. Presence makes a node a text leaf (DOM inline text, `UILabel`, measured

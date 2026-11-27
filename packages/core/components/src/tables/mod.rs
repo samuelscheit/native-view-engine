@@ -79,6 +79,9 @@ define_core_tables!(
     TextInput,
 );
 
+/// Named bit sets of core table fields their `TableDesc`s cannot express (host codegen input).
+pub const CORE_TABLE_BITS: &[(&str, &[(&str, u32)])] = &[("nve.typography", Typography::SET_BITS)];
+
 /// Deterministic 64-bit XXH64 schema digest over [`CORE_TABLE_DESCS`].
 ///
 /// Independent of process-global lazy table registration order or optional module tables (such as

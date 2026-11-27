@@ -31,6 +31,29 @@ impl EventMask {
     pub const POINTER_LEAVE: u64 = 1 << 16;
     pub const WHEEL: u64 = 1 << 17;
     pub const TABLE_EVENT: u64 = 1 << 18;
+
+    /// `(NAME, bit)` of every subscription bit (foreign-host codegen).
+    pub const ALL: &'static [(&'static str, u64)] = &[
+        ("PRESS", Self::PRESS),
+        ("LONG_PRESS", Self::LONG_PRESS),
+        ("SCROLL", Self::SCROLL),
+        ("TEXT_CHANGE", Self::TEXT_CHANGE),
+        ("FOCUS", Self::FOCUS),
+        ("BLUR", Self::BLUR),
+        ("LAYOUT", Self::LAYOUT),
+        ("CUSTOM", Self::CUSTOM),
+        ("COMPOSITION", Self::COMPOSITION),
+        ("KEY_DOWN", Self::KEY_DOWN),
+        ("KEY_UP", Self::KEY_UP),
+        ("SUBMIT", Self::SUBMIT),
+        ("POINTER_DOWN", Self::POINTER_DOWN),
+        ("POINTER_MOVE", Self::POINTER_MOVE),
+        ("POINTER_UP", Self::POINTER_UP),
+        ("POINTER_ENTER", Self::POINTER_ENTER),
+        ("POINTER_LEAVE", Self::POINTER_LEAVE),
+        ("WHEEL", Self::WHEEL),
+        ("TABLE_EVENT", Self::TABLE_EVENT),
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

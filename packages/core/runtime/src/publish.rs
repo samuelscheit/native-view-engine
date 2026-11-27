@@ -16,6 +16,7 @@ impl SurfaceState {
         self.published_view = NveRuntimeSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
             frame_id: self.frame_id,
+            scene_epoch: self.scene_epoch,
             ..NveRuntimeSceneView::default()
         };
         self.published_resources = core::ptr::null();
@@ -24,6 +25,7 @@ impl SurfaceState {
         self.dirty_indices.clear();
         self.removed_ids.clear();
         self.published_scroll.clear();
+        self.dirty_resources.clear();
         self.metrics.dirty_nodes = 0;
     }
 
@@ -158,6 +160,20 @@ impl SurfaceState {
         }
         self.published_scroll.sort_unstable_by_key(|s| s.node_id);
 
+        // Resource ids whose bytes changed this frame (created, recycled from the free list, or an
+        // ephemeral rewrite in place): host caches keyed by id drop exactly these.
+        self.dirty_resources.clear();
+        let resources = store.resources();
+        self.dirty_resources.extend(
+            changes
+                .resources_defined
+                .iter()
+                .filter(|&&id| resources.is_live(id))
+                .map(|id| id.0),
+        );
+        self.dirty_resources.sort_unstable();
+        self.dirty_resources.dedup();
+
         let rows_slice = store.node_rows();
         let text_slab = store.text_slab();
         let children_slab = store.children_slab();
@@ -172,6 +188,8 @@ impl SurfaceState {
             children_slab_len: children_slab.len() as u32,
             table_count: self.published_tables.len() as u32,
             scroll_count: self.published_scroll.len() as u32,
+            scene_epoch: self.scene_epoch,
+            dirty_resource_count: self.dirty_resources.len() as u32,
             _reserved: 0,
             rows: if rows_slice.is_empty() {
                 core::ptr::null()
@@ -214,6 +232,11 @@ impl SurfaceState {
                 core::ptr::null()
             } else {
                 self.published_scroll.as_ptr()
+            },
+            dirty_resources: if self.dirty_resources.is_empty() {
+                core::ptr::null()
+            } else {
+                self.dirty_resources.as_ptr()
             },
         };
 

@@ -45,6 +45,9 @@ public final class NveTables {
         public static final int RESOURCE_WORDS = 0x{{ "{:08X}"|format(t.desc.resource_words) }};
 {%- for f in t.desc.fields %}
         public static final FieldSpec {{ spell::screaming(f.name) }} = new FieldSpec({{ f.word }}, {{ f.shift }}, {{ model::host_bits(f) }}, FieldKind.{{ model::kind::java(f.kind) }});
+{%- for v in f.variants %}
+        public static final int {{ spell::screaming(f.name) }}_{{ spell::screaming(v.name) }} = {{ v.value }};
+{%- endfor %}
 {%- endfor %}
 
         /** A fresh copy of the default row. */

@@ -4,68 +4,71 @@ import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
+import dev.nve.host.generated.EventRingVectors;
+
 /** {@link EventRingWriter} byte layout ({@code nve_abi::encode_events}) and {@link ImageSource} decoding. */
 final class EventRingTest {
     private EventRingTest() {}
 
     static void run(Check c) {
         layout(c);
+        resumeAndTruncate(c);
         overflowLeavesNoTrace(c);
         steadyState(c);
         imageSources(c);
     }
 
+    /** Writes {@code nve_abi::golden_events()} (codegen abi/java_host.rs) and compares byte-for-byte. */
+    static EventRingWriter golden(EventRingWriter w) {
+        return w.empty(5, 1, 10L)
+                .point(1, 2, 11L, 1.5f, -2f)
+                .scroll(3, 3, 12L, 0f, 30f, 300f, 900f)
+                .text(4, 4, 13L, "h\u00e9\ud83d\ude80")
+                .layout(7, 5, 14L, 1f, 2f, 3f, 4f)
+                .custom(8, 6, 15L, "submit", new byte[] {9, 8, 7})
+                .key(12, 7, 16L, "\u00e9", "KeyE", 0x05, 69, true)
+                .pointer(15, 8, 17L, 3f, 4f, 0x02, 0x09)
+                .wheel(20, 9, 18L, 0f, -12.5f, 0x01)
+                .tableEvent(21, 0x8100_0002, 19L, 0x1122_3344_5566_7788L, 42, new byte[] {1, 2});
+    }
+
     static void layout(Check c) {
-        final EventRingWriter w = new EventRingWriter(ByteBuffer.allocateDirect(512), 7);
-        w.point(1, 42, 99L, 1.5f, -2f)
-                .text(4, 43, 100L, "h\u00e9\ud83d\ude80")
-                .custom(8, 44, 101L, "submit", new byte[] {9, 8})
-                .key(12, 45, 102L, "a", "KeyA", 3, 65, true)
-                .pointer(15, 46, 103L, 3f, 4f, 1, 2)
-                .wheel(20, 47, 104L, 0f, -10f, 4)
-                .scroll(3, 48, 105L, 0f, 30f, 300f, 900f)
-                .empty(5, 49, 106L);
-        c.eq(w.count(), 8, "count");
-        final ByteBuffer b = w.buffer().duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        b.flip();
-        c.eq(b.limit(), w.length(), "length");
-        c.eq(b.getInt(), 8, "count prefix");
-        header(c, b, 42, 99L, 1, 1);
-        c.that(b.getFloat() == 1.5f && b.getFloat() == -2f, "point");
-        header(c, b, 43, 100L, 4, 3);
-        c.eq(b.getInt(), 7, "text len");
-        final byte[] utf8 = new byte[7];
-        b.get(utf8);
-        c.that(new String(utf8, java.nio.charset.StandardCharsets.UTF_8).equals("h\u00e9\ud83d\ude80"), "text utf8");
-        header(c, b, 44, 101L, 8, 5);
-        c.eq(b.getShort(), 6, "custom name len");
-        b.position(b.position() + 6);
-        c.eq(b.getInt(), 2, "custom data len");
-        c.that(b.get() == 9 && b.get() == 8, "custom data");
-        header(c, b, 45, 102L, 12, 6);
-        c.eq(b.getShort(), 1, "key len");
-        c.eq(b.get(), 'a', "key");
-        c.eq(b.getShort(), 4, "code len");
-        b.position(b.position() + 4);
-        c.that(b.get() == 3 && b.getInt() == 65 && b.get() == 1, "key modifiers, code, composing");
-        header(c, b, 46, 103L, 15, 7);
-        c.that(b.getFloat() == 3f && b.getFloat() == 4f && b.get() == 1 && b.get() == 2, "pointer");
-        header(c, b, 47, 104L, 20, 8);
-        c.that(b.getFloat() == 0f && b.getFloat() == -10f && b.get() == 4, "wheel");
-        header(c, b, 48, 105L, 3, 2);
-        c.that(b.getFloat() == 0f && b.getFloat() == 30f && b.getFloat() == 300f && b.getFloat() == 900f, "scroll");
-        header(c, b, 49, 106L, 5, 0);
-        c.eq(b.remaining(), 0, "no trailing bytes");
+        final EventRingWriter w = golden(new EventRingWriter(ByteBuffer.allocateDirect(512), EventRingVectors.SURFACE));
+        final byte[] expected = EventRingVectors.ring();
+        c.eq(w.count(), 10, "count");
+        c.eq(w.length(), expected.length, "golden length");
+        final byte[] actual = new byte[w.length()];
+        final ByteBuffer b = w.buffer().duplicate();
+        ((java.nio.Buffer) b).flip();
+        b.get(actual);
+        int mismatch = -1;
+        for (int i = 0; i < expected.length && mismatch < 0; i++) {
+            if (expected[i] != actual[i]) mismatch = i;
+        }
+        c.eq(mismatch, -1, "first byte differing from the Rust golden ring");
+        c.that(java.util.Arrays.equals(expected, actual), "ring bytes equal nve_abi::encode_events");
+        w.tableEvent(21, 1, 0L, 1L, 2, null);
+        c.eq(w.length(), expected.length + 18 + 16, "null table payload = empty");
         w.reset();
         c.that(w.count() == 0 && w.length() == 4 && w.buffer().getInt(0) == 0, "reset");
     }
 
-    static void header(Check c, ByteBuffer b, int node, long ts, int kind, int tag) {
-        c.eq(b.getInt(), 7, "surface");
-        c.eq(b.getInt(), node, "node");
-        c.eq(b.getLong(), ts, "timestamp");
-        c.eq(b.get(), kind, "kind");
-        c.eq(b.get(), tag, "payload tag");
+    static void resumeAndTruncate(Check c) {
+        final EventRingWriter w = new EventRingWriter(ByteBuffer.allocate(256), 7);
+        w.point(1, 1, 0L, 1f, 2f);
+        final int count = w.count();
+        final int len = w.length();
+        w.text(4, 2, 0L, "abc").empty(5, 3, 0L);
+        w.truncate(count, len);
+        c.that(w.count() == 1 && w.length() == len && w.buffer().getInt(0) == 1, "truncate rolls back");
+        c.throwsA(IllegalArgumentException.class, () -> w.truncate(2, len), "truncate past count");
+        c.throwsA(IllegalArgumentException.class, () -> w.truncate(0, 3), "truncate below header");
+        final ByteBuffer bigger = ByteBuffer.allocate(512);
+        final ByteBuffer pending = w.buffer().duplicate();
+        ((java.nio.Buffer) pending).flip();
+        bigger.put(pending);
+        final EventRingWriter r = EventRingWriter.resume(bigger, 7, w.count()).empty(5, 4, 0L);
+        c.that(r.count() == 2 && r.buffer().getInt(0) == 2 && r.length() == len + 18, "resume continues the ring");
     }
 
     static void overflowLeavesNoTrace(Check c) {
