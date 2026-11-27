@@ -211,6 +211,112 @@ fn zero_fnv_crate_dependency_workspace_wide() {
     assert_no_violations("Zero `fnv` crate dependency across workspace", &violations);
 }
 
+#[test]
+fn framework_rpc_and_server_layer_purity() {
+    let idx = repo_index();
+    let violations = check_framework_rpc_server_purity(&idx.graph);
+    assert_no_violations(
+        "Framework RPC/server layer purity (zero serde_json; zero tokio/hyper/axum in sans-I/O crates; zero core -> framework deps)",
+        &violations,
+    );
+}
+
+pub fn check_framework_rpc_server_purity(graph: &WorkspaceGraph) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let mut scanned_fw = 0usize;
+
+    for pkg in graph.workspace_packages() {
+        // 1. Core crates must never depend on packages/framework/*.
+        if pkg.rel_dir.starts_with("packages/core/") {
+            for (dep_pkg, chain) in graph.transitive_workspace_deps(&pkg.id, false) {
+                if dep_pkg.rel_dir.starts_with("packages/framework/") {
+                    violations.push(Violation::new(
+                        &pkg.rel_manifest,
+                        1,
+                        chain.join(" -> "),
+                        "Core crate under packages/core/* must not depend on packages/framework/*",
+                    ));
+                }
+            }
+        }
+
+        // 2. Fullstack RPC/server/query/http-* and shared example API crates ban runtime serde_json.
+        let is_http_adapter = pkg.rel_dir.starts_with("packages/framework/http-");
+        let is_sans_io = matches!(
+            pkg.rel_dir.as_str(),
+            "packages/framework/rpc"
+                | "packages/framework/server"
+                | "packages/framework/query"
+                | "examples/fullstack-issues/api"
+        );
+        if !is_http_adapter && !is_sans_io {
+            continue;
+        }
+        if pkg.rel_dir.starts_with("packages/framework/") {
+            scanned_fw += 1;
+        }
+        let closure = graph.transitive_non_dev_crates(&pkg.id);
+        if let Some(chain) = closure.get("serde_json") {
+            violations.push(Violation::new(
+                &pkg.rel_manifest,
+                1,
+                chain.join(" -> "),
+                "Runtime/build `serde_json` dependency is banned in fullstack RPC/server/API crates",
+            ));
+        }
+
+        // 3. HTTP adapters (`packages/framework/http-*`) must stay free of runtime `axum` coupling
+        //    (axum is allowed only as a dev-dependency to verify tower_service mountability).
+        if is_http_adapter && let Some(chain) = closure.get("axum") {
+            violations.push(Violation::new(
+                &pkg.rel_manifest,
+                1,
+                chain.join(" -> "),
+                format!(
+                    "HTTP adapter `{}` must not take a runtime dependency on `axum`; expose `tower_service::Service` instead",
+                    pkg.name
+                ),
+            ));
+        }
+
+        // 4. Sans-I/O crates (`rpc`, `server`, `query`, shared API) must stay runtime- and
+        //    UI-agnostic for native, wasm32-unknown-unknown, and wasm32-wasip2.
+        if is_sans_io {
+            for banned in [
+                "tokio",
+                "hyper",
+                "hyper-util",
+                "axum",
+                "tower",
+                "tower-service",
+                "mio",
+                "dioxus-core",
+                "dioxus",
+                "web-sys",
+                "wasm-bindgen",
+            ] {
+                if let Some(chain) = closure.get(banned) {
+                    violations.push(Violation::new(
+                        &pkg.rel_manifest,
+                        1,
+                        chain.join(" -> "),
+                        format!(
+                            "Sans-I/O crate `{}` must not depend on `{banned}`; place platform/runtime adapters in leaf crates",
+                            pkg.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        scanned_fw >= 3,
+        "expected >= 3 fullstack framework crates under packages/framework/ (rpc, server, http-*), found {scanned_fw}"
+    );
+    violations
+}
+
 pub fn check_zero_fnv_crate_dep(graph: &WorkspaceGraph) -> Vec<Violation> {
     let mut violations = Vec::new();
     for pkg in graph.workspace_packages() {

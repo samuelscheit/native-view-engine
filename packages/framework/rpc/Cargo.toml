@@ -1,0 +1,20 @@
+[package]
+name = "nve-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Composable, transport-agnostic RPC contracts, schema-evolvable CBOR (minicbor) codec, typed cache tags, and form decoding."
+
+[dependencies]
+nve-hash = { workspace = true }
+minicbor = { workspace = true }
+bytes = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[bench]]
+name = "rpc_bench"
+harness = false

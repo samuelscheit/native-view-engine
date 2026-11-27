@@ -1,0 +1,10 @@
+[package]
+name = "nve-example-issues-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared pure-Rust RPC procedure contracts, integer-keyed CBOR models, and cache tags for examples/fullstack-issues."
+
+[dependencies]
+nve-rpc = { workspace = true }
+minicbor = { workspace = true }

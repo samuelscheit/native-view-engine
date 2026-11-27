@@ -399,9 +399,28 @@ suite_abi_codegen_parity() {
   cargo run --locked -p nve-cli -- codegen abi --check
 }
 
+suite_rust_rpc_hyper_matrix() {
+  cd "$REPO_ROOT"
+  cargo check --locked -p nve-http-hyper --no-default-features --all-targets
+  cargo check --locked -p nve-http-hyper --no-default-features --features server --all-targets
+  cargo check --locked -p nve-http-hyper --no-default-features --features client --all-targets
+  cargo test --locked -p nve-http-hyper --no-default-features --doc
+  cargo test --locked -p nve-http-hyper --no-default-features --features server --doc
+  cargo test --locked -p nve-http-hyper --no-default-features --features client --doc
+  RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --document-private-items \
+    -p nve-hash -p nve-rpc -p nve-server -p nve-http-hyper \
+    -p nve-example-issues-api -p nve-example-issues-server
+}
+
 suite_rust_wasm() {
   cd "$REPO_ROOT"
   cargo check -p nve-web-shell --target wasm32-unknown-unknown
+  cargo check -p nve-hash -p nve-rpc -p nve-server -p nve-example-issues-api --target wasm32-unknown-unknown
+}
+
+suite_rust_wasip2() {
+  cd "$REPO_ROOT"
+  cargo check -p nve-hash -p nve-rpc -p nve-server -p nve-example-issues-api --target wasm32-wasip2
 }
 
 suite_web_wasm_e2e() {
@@ -651,11 +670,25 @@ else
   skip_suite "ABI codegen parity" "cargo not found"
 fi
 
+# 1b2. Rust RPC/Hyper feature matrix & rustdoc check (native, independent of WASM target)
+if command -v cargo >/dev/null 2>&1; then
+  run_suite "Rust RPC/Hyper feature matrix & docs" suite_rust_rpc_hyper_matrix "nve-http-hyper features (--all-targets + --doc) + rustdoc -D warnings"
+else
+  skip_suite "Rust RPC/Hyper feature matrix & docs" "cargo not found"
+fi
+
 # 1c. Rust WASM check
 if command -v cargo >/dev/null 2>&1 && has_wasm_target; then
-  run_suite "Rust WASM check" suite_rust_wasm "wasm32-unknown-unknown"
+  run_suite "Rust WASM check" suite_rust_wasm "wasm32-unknown-unknown (web-shell + hash/rpc/server/issues-api)"
 else
   skip_suite "Rust WASM check" "wasm32-unknown-unknown target not installed"
+fi
+
+# 1c2. Rust WASI P2 check
+if command -v cargo >/dev/null 2>&1 && rustup target list --installed 2>/dev/null | grep -q '^wasm32-wasip2$'; then
+  run_suite "Rust WASI P2 check" suite_rust_wasip2 "wasm32-wasip2 (nve-hash/rpc/server/issues-api)"
+else
+  skip_suite "Rust WASI P2 check" "wasm32-wasip2 target not installed"
 fi
 
 # 1d. Web WASM E2E (headless Chrome CDP)

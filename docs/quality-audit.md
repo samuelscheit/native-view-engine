@@ -1,7 +1,7 @@
 # Code-Truth Quality & Maturity Audit (`native-view-engine`)
 
 > **Date:** 2026-11-25 (audited against `main` at `3c7e749`–`752ea2e`, updated after **Step 1 Part B: Cleanup & Truthfulness Pass** on `t3/cleanup-truthfulness-pass`).
-> **Method:** Direct read-only source inspection across all workspace targets (11 core crates incl. Wave S2 `wire`/`wire-core`, 3 backends, 5 framework crates, 11 remaining modules after deleting 7 pure-L0 crates and Wave S2 `pair`, 2 tool crates, `cxx/nve-fabric-bridge`, 12 hosts, 3 examples). Zero self-grading from READMEs or mock-only unit tests.
+> **Method:** Direct read-only source inspection across all workspace targets (12 core crates incl. Wave S2 `wire`/`wire-core` + `hash`, 3 backends, 8 framework crates, 11 remaining modules after deleting 7 pure-L0 crates and Wave S2 `pair`, 2 tool crates, `cxx/nve-fabric-bridge`, 12 hosts, 4 examples). Zero self-grading from READMEs or mock-only unit tests.
 
 ---
 
@@ -25,15 +25,15 @@ Default posture is skepticism: nothing is graded above L1 without verified real 
 
 | Area | Total | L0 (Stub) | L1 (Prototype) | L2 (Working Core) | L3 (Prod) | L4 (Gold) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `packages/core/*` | 11 | 0 | 3 (`host-services`, `interop`, `layout-yoga`) | 8 (`abi`, `abi-macros`, `codegen`, `components`, `dioxus`, `engine`, `wire`, `wire-core`) | 0 | 0 |
+| `packages/core/*` | 12 | 0 | 3 (`host-services`, `interop`, `layout-yoga`) | 9 (`abi`, `abi-macros`, `codegen`, `components`, `dioxus`, `engine`, `hash`, `wire`, `wire-core`) | 0 | 0 |
 | `packages/backends/*` | 3 | 0 | 1 (`skia`) | 2 (`headless`, `web`) | 0 | 0 |
-| `packages/framework/*` | 5 | 0 | 3 (`docs`, `i18n`, `ui`) | 2 (`mdx`, `router`) | 0 | 0 |
+| `packages/framework/*` | 8 | 0 | 3 (`docs`, `i18n`, `ui`) | 5 (`http-hyper`, `mdx`, `router`, `rpc`, `server`) | 0 | 0 |
 | `packages/modules/*` | 11 | **0** *(7 L0 crates deleted)* | **11** *(trimmed `camera` & `native-views`; `pair` deleted in Wave S2)* | 0 | 0 | 0 |
 | `packages/tools/*` | 2 | 0 | 1 (`cli`) | 1 (`bench`) | 0 | 0 |
 | `cxx/nve-fabric-bridge` | 1 | 0 | 1 | 0 | 0 | 0 |
 | `hosts/*` | 12 | 0 | 6 (`compose-kit`, `flutter-plugin`, `gtk-shell`, `ios-shell`, `swiftui-kit`, `windows-shell`) | 6 (`android-shell`, `apple-common`, `macos-shell`, `qt-shell`, `skia-shell`, `web-shell`) | 0 | 0 |
-| `examples/*` | 3 | 0 | 1 (`kitchen-sink`) | 2 (`nve-docs-site`, `studio-workspace`) | 0 | 0 |
-| **Total** | **48** | **0** | **27** | **21** | **0** | **0** |
+| `examples/*` | 4 | 0 | 1 (`kitchen-sink`) | 3 (`fullstack-issues`, `nve-docs-site`, `studio-workspace`) | 0 | 0 |
+| **Total** | **53** | **0** | **27** | **26** | **0** | **0** |
 
 ### Five Systemic Root Causes Across the Repo
 
@@ -76,6 +76,7 @@ Default posture is skepticism: nothing is graded above L1 without verified real 
 | `packages/core/layout-yoga` | 1,886 | **L1** | Compiles real RN C++20 `yogacore` + `YGNodeSetMeasureFunc` + Taffy parity tests when `RN_REACT_COMMON_DIR` is set. | Silently compiles to uninhabited stub when env var unset (`lib.rs:450-529`). Drops `set_raw_layout_prop` (`flex-wrap`, `font-weight`, `align-self`), CSS Grid, gaps, borders; hardcodes `YGDirectionLTR` (`yoga_shim.cpp:457`); ignores `font_weight` in text measurement; clones `Vec<NodeId>` per node on every layout pass (`lib.rs:267`). | **Keep & Harden API** |
 | `packages/core/wire-core` | ~2,600 | **L2** | Sans-I/O `NveWireFrame` v2 framing, `NveTimelineArchive`, `NveSceneArchive` keyframes, `XXH64` integrity (`752ea2e`). | Landed in Wave S2; replaces hand-rolled `NVT1`/`NVD1`. | **Keep & Harden API** |
 | `packages/core/wire` | ~2,100 | **L2** | Unified `quinn` QUIC + `web-transport-quinn` + WSS Happy-Eyeballs transport (`752ea2e`). | Landed in Wave S2; needs broader real-network soak tests. | **Keep & Harden API** |
+| `packages/core/hash` | 445 | **L2** | `#![no_std]` zero-dep compile-time + streaming `XXH64` (`xxh64`, `const_id`, `Key64`, `Xxh64Hasher`) locked against official reference vectors. | Coexists with legacy `packages/core/engine/src/hash.rs` until `t3/word-table-nodestore-nve2` merges. | **Keep** |
 
 ---
 
@@ -98,6 +99,9 @@ Default posture is skepticism: nothing is graded above L1 without verified real 
 | `packages/framework/mdx` | 6,976 | **L2** | Pure-Rust Markdown/MDX parser, YAML frontmatter, `_meta.toml` nav, Rust static codegen, search index with edge-case tests. | Docs-subset Markdown/MDX (not full CommonMark/GFM); keyword-level syntax highlighter; cryptic `NVS1` format name (`search_codec.rs:7`). | **Keep & Harden API** |
 | `packages/framework/router` | 5,795 | **L2** | Typed `Routable`, stack/tab navigation, guards, query params, deep-link matching, `wasm32` `web_sys::History` + `popstate`. | Zero `wasm32` browser tests (`web_history_tests.rs` only tests `MemoryHistoryBackend`); no native OS universal-link host bridge; cryptic `src/nvn1.rs` naming. | **Keep & Harden API** |
 | `packages/framework/ui` | 17,825 | **L1** | Solid headless math/algorithms (`FenwickHeightTree`, `positioning.rs`, `FormState`, `FocusTrap`, `DatePicker` calendar math). | **Fake-compliant UI wiring**: `0` hover/active/cursor/pointer/drag handlers anywhere in `src/`; `SplitPane` & `BottomSheet` cannot be dragged; `Tooltip` doesn't open on hover; `Tooltip`/`Popover`/`DropdownMenu` render inline with inert `data-x`/`data-y` attributes instead of floating; `Dialog` backdrop lacks `position: fixed; inset: 0`; 772 LOC of dead duplicate style builders (`TypedStyleBuilder` 471 + legacy `StyleBuf` 301). | **Refactor / Simplify** (rebuild component interaction & positioning primitives properly, delete duplicate `style_buf`) |
+| `packages/framework/rpc` | 2,789 | **L2** | Transport-agnostic `Procedure`/`procedures!`, direct RFC 8949 byte-slice `validate_cbor` + `CborCodec`, domain-separated `Tag64` + O(1) `*` overflow sink/header, Connect-compatible JSON error codec (surrogate pairs, zero `serde_json`), bounded `FormDecode`, `wasm32` & `wasm32-wasip2` clean, `CountingAlloc` + Criterion benchmarks. | Browser `FetchTransport` & reactive `use_query`/`use_action` cache live in upcoming Slice 1b (`packages/framework/query`). | **Keep & Build Slice 1b** |
+| `packages/framework/server` | 3,342 | **L2** | Sans-I/O `Server` with preflight-before-body-read, fail-closed `CsrfPolicy` (duplicate-header rejection + `Cookie` stripping on Bearer bypass), `AuthResolver` (`try_resolve_sync` 0-alloc fast path), sorted-slice `RpcRegistry`, built-in `FormRoute` + `FormOutcome` (`Accept` `q=0` + `303`/`204` negotiation), trusted SSR vs strict HTTP `DirectTransport`, `wasm32-wasip2` clean. | Browser query/action client cache (`nve-query`) & streaming SSR hydration payloads arrive in Slices 1b–1c. | **Keep & Build Slice 1b/1c** |
+| `packages/framework/http-hyper` | 1,157 | **L2** | Hyper HTTP/1.1 `NveHyperService` (`hyper::Service` + `tower_service::Service`, live Axum `nest_service` & `route_service` verified), zero-alloc single-frame `collect_body_limited` + `408` body timeout, `ServeConfig` (`GracefulShutdown`, connection semaphore, `TCP_NODELAY`, accept-error backoff), and `HyperTransport` with pool timer/timeouts. | Plain HTTP/1.1 only (`h2` avoided due to `fnv`); TLS/H2 terminated by proxy until Slice 2 `nve-wire` QUIC/H3 transport. | **Keep & Build Slice 2** |
 
 ---
 
@@ -147,7 +151,7 @@ In **Step 1 Part B**, all half-baked standalone platform stubs (`src/host_servic
 
 ---
 
-## 6. `hosts/*` (All 12) & `examples/*` (All 3)
+## 6. `hosts/*` (All 12) & `examples/*` (All 4)
 
 | Target | LOC | Level | What Is Real | Key Broken / Missing / Stubbed Items | Disposition |
 | :--- | ---: | :---: | :--- | :--- | :--- |
@@ -166,6 +170,7 @@ In **Step 1 Part B**, all half-baked standalone platform stubs (`src/host_servic
 | `examples/kitchen-sink` | 3,400 | **L1** | Real multi-section Dioxus app replacing `examples/counter`, 0 `serde_json`, SSG + WASM hydration passing. | Exposes the `nve-ui` defects above: ~80% of showcased controls lack hover/cursor/drag/floating positioning/real scroll sync. *(Removed deleted `nve-audio` combobox option in Step 1 Part B.)* | **Keep & Harden** (turns into real interaction testbed) |
 | `examples/nve-docs-site` | 5,648 | **L2** | Full dogfooded docs site + landing page, SSG + WASM + native `cdylib`, 0 `serde_json`, live Chrome CDP E2E. | Hardcodes `MemoryClipboard` + `MemorySystemEnv` (`src/lib.rs:80-83`) — "Copy" buttons don't copy to OS/browser clipboard. | **Keep & Harden** |
 | `examples/studio-workspace` | 17,604 | **L2** | Flagship multi-view app, binary `NWS1` state + native disk persistence, real TCP CRDT tests, dual-mode `NVE_IFACE_HOST`, **0 `serde_json`** *(removed in Step 1 Part B)*. | Live UI CRDT button uses in-memory mesh; WASM persistence is no-op. | **Keep & Harden** |
+| `examples/fullstack-issues` | 1,095 | **L2** | Clean `api` (`wasm32`/`wasip2`-clean open enums + `procedures!` tags/invalidations) + `server` (Hyper/Axum, Cookie+Bearer, 0-JS `FormRoute` `303 -> GET /issues` + `422` negotiation, mobile version-skew E2E). | In-memory store only; Web WASM + Skia UI client lands in Slice 1b. | **Keep & Expand in Slice 1b** |
 
 ---
 

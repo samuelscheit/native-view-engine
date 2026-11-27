@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "packages/core/hash",
     "packages/core/abi",
     "packages/core/abi-macros",
     "packages/core/components",
@@ -17,6 +18,9 @@ members = [
     "packages/backends/web",
     "packages/framework/ui",
     "packages/framework/router",
+    "packages/framework/rpc",
+    "packages/framework/server",
+    "packages/framework/http-hyper",
     "packages/framework/i18n",
     "packages/framework/mdx",
     "packages/framework/docs",
@@ -34,6 +38,8 @@ members = [
     "examples/kitchen-sink",
     "examples/studio-workspace",
     "examples/nve-docs-site",
+    "examples/fullstack-issues/api",
+    "examples/fullstack-issues/server",
     "hosts/skia-shell",
     "hosts/web-shell",
 ]
@@ -44,6 +50,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+nve-hash = { path = "packages/core/hash" }
 nve-abi = { path = "packages/core/abi" }
 nve-abi-macros = { path = "packages/core/abi-macros" }
 nve-components = { path = "packages/core/components" }
@@ -57,6 +64,9 @@ nve-wire-core = { path = "packages/core/wire-core" }
 nve-wire = { path = "packages/core/wire" }
 nve-ui = { path = "packages/framework/ui" }
 nve-router = { path = "packages/framework/router" }
+nve-rpc = { path = "packages/framework/rpc" }
+nve-server = { path = "packages/framework/server" }
+nve-http-hyper = { path = "packages/framework/http-hyper" }
 nve-i18n = { path = "packages/framework/i18n" }
 nve-mdx = { path = "packages/framework/mdx" }
 nve-docs = { path = "packages/framework/docs" }
@@ -72,6 +82,15 @@ nve-haptics = { path = "packages/modules/haptics" }
 nve-skia-shell = { path = "hosts/skia-shell" }
 nve-example-kitchen-sink = { path = "examples/kitchen-sink", default-features = false }
 nve-studio-workspace = { path = "examples/studio-workspace", default-features = false }
+nve-example-issues-api = { path = "examples/fullstack-issues/api" }
+
+minicbor = { version = "2.3.1", default-features = false, features = ["alloc", "derive"] }
+http = "1.5.0"
+hyper = { version = "1.13.0", default-features = false }
+hyper-util = { version = "0.1.21", default-features = false }
+http-body-util = "0.1.5"
+tower-service = "0.3.3"
+axum = { version = "0.8.9", default-features = false }
 
 dioxus-core = "0.7.10"
 dioxus-signals = "0.7.10"

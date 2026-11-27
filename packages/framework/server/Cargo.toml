@@ -1,0 +1,21 @@
+[package]
+name = "nve-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sans-I/O RPC server core, sorted-slice procedure registry, composable CSRF policy, and Cookie/Bearer auth resolver (native and wasm32-wasip2 clean)."
+
+[dependencies]
+nve-rpc = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+minicbor = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "server_bench"
+harness = false

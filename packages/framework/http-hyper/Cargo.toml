@@ -1,0 +1,49 @@
+[package]
+name = "nve-http-hyper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Thin Hyper HTTP/1.1 server adapter (tower_service::Service mountable in Axum) and native HTTP/1.1 client Transport for nve-server / nve-rpc."
+
+[features]
+default = ["server", "client"]
+server = [
+    "hyper/server",
+    "hyper/http1",
+    "hyper-util/http1",
+    "hyper-util/tokio",
+    "hyper-util/server-graceful",
+    "dep:tower-service",
+]
+client = [
+    "hyper/client",
+    "hyper/http1",
+    "hyper-util/client-legacy",
+    "hyper-util/http1",
+    "hyper-util/tokio",
+]
+
+[dependencies]
+nve-rpc = { workspace = true }
+nve-server = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+tokio = { workspace = true }
+tower-service = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
+criterion = { workspace = true }
+minicbor = { workspace = true }
+
+[[test]]
+name = "hyper_axum_tests"
+required-features = ["server", "client"]
+
+[[bench]]
+name = "http_hyper_bench"
+harness = false
+required-features = ["server", "client"]
