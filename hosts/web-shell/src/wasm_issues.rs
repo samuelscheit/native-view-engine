@@ -21,8 +21,9 @@ use nve_dioxus::DioxusSurface;
 use nve_engine::Viewport;
 #[cfg(feature = "issues-probes")]
 use nve_example_issues_api::{
-    AddComment, AddCommentInput, ApiError, GetIssue, IssueFilter, IssueId, ListIssues,
+    AddComment, AddCommentInput, ApiError, GetIssue, IssueFilter, ListIssues,
 };
+use nve_example_issues_api::{parse_comments_issue_query, IssueId};
 use nve_example_issues_client::IssuesApp;
 #[cfg(feature = "issues-probes")]
 use nve_http_web::CredentialsMode;
@@ -41,6 +42,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
 use crate::wasm_api::{start_surface_app_inner, WebAppController};
+use crate::wasm_query_stream::{attach_nve_query_stream, QueryStreamGuard};
 
 #[cfg(feature = "issues-probes")]
 #[wasm_bindgen(inline_js = "export function nve_issues_deferred() {
@@ -63,6 +65,8 @@ extern "C" {
 #[derive(Clone)]
 struct IssuesBootConfig {
     client: ErasedQueryClient,
+    featured_issue_id: IssueId,
+    stream_guard: Rc<RefCell<Option<QueryStreamGuard>>>,
 }
 
 #[component]
@@ -85,13 +89,17 @@ fn BrowserIssuesRoot() -> Element {
         );
         Rc::new(RefCell::new(Some(guard)))
     });
+    let stream_guard_slot: Rc<RefCell<Option<QueryStreamGuard>>> =
+        use_hook(|| Rc::new(RefCell::new(boot.stream_guard.borrow_mut().take())));
     use_drop(move || {
         let _ = guard_slot.borrow_mut().take();
+        let _ = stream_guard_slot.borrow_mut().take();
     });
     rsx! {
         IssuesApp {
             client: boot.client,
             sleep: Some(SleepHandle::new(browser_sleep_ms)),
+            featured_issue_id: boot.featured_issue_id,
         }
     }
 }
@@ -101,6 +109,8 @@ fn build_issues_session(
     backend: WebBackend,
     viewport: Viewport,
     api_base: &str,
+    container: Option<&web_sys::Element>,
+    featured_issue_id: IssueId,
 ) -> (WebAppSession, bool) {
     let cfg = if api_base.trim().is_empty() {
         FetchConfig::same_origin()
@@ -113,8 +123,15 @@ fn build_issues_session(
         Shared::new(BrowserClock::new()),
         QueryClientConfig::default(),
     );
-    let surface = DioxusSurface::new(surface_id, BrowserIssuesRoot)
-        .with_context(IssuesBootConfig { client });
+    // Runs synchronously AFTER `WebBackend::hydrate_into` promoted DSD into `#app` and BEFORE
+    // Frame 0 renders so `QueryClient` is already hydrated with `seq=0` + any arrived chunks.
+    let stream_guard =
+        container.and_then(|el| attach_nve_query_stream(el, surface_id, client.clone()));
+    let surface = DioxusSurface::new(surface_id, BrowserIssuesRoot).with_context(IssuesBootConfig {
+        client,
+        featured_issue_id,
+        stream_guard: Rc::new(RefCell::new(stream_guard)),
+    });
     (WebAppSession::new(surface_id, surface, backend, viewport), false)
 }
 
@@ -125,6 +142,21 @@ pub fn start_issues_app(
     mount_id: &str,
     api_base: Option<String>,
 ) -> Result<WebAppController, JsValue> {
+    let window = web_sys::window();
+    let container = window
+        .as_ref()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(mount_id));
+    let has_ssr = container.as_ref().is_some_and(|el| {
+        el.has_attribute("data-nve-id")
+            || el
+                .query_selector("[data-nve-id], [data-nve-dsd-host]")
+                .ok()
+                .flatten()
+                .is_some()
+    });
+    let search = window.as_ref().and_then(|w| w.location().search().ok());
+    let featured_issue_id = parse_comments_issue_query(search.as_deref());
     let base = api_base.unwrap_or_default();
     start_surface_app_inner(
         "IssuesApp",
@@ -133,10 +165,17 @@ pub fn start_issues_app(
         DEFAULT_SURFACE_ID,
         mount_id,
         None,
-        false,
+        has_ssr,
         |_| false,
         move |surface_id, backend, viewport, _| {
-            build_issues_session(surface_id, backend, viewport, &base)
+            build_issues_session(
+                surface_id,
+                backend,
+                viewport,
+                &base,
+                container.as_ref(),
+                featured_issue_id,
+            )
         },
     )
 }

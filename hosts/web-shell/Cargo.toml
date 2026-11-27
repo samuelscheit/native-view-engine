@@ -17,6 +17,7 @@ default = ["app-studio", "app-kitchen-sink", "dev", "multi-window", "scene-view"
 app-studio = ["dep:nve-studio-workspace"]
 app-kitchen-sink = ["dep:nve-example-kitchen-sink"]
 app-issues = [
+    "dep:base64",
     "dep:bytes",
     "dep:nve-rpc",
     "dep:nve-query",
@@ -45,6 +46,7 @@ nve-interop = { workspace = true }
 nve-wire-core = { workspace = true }
 nve-example-kitchen-sink = { workspace = true, optional = true }
 nve-studio-workspace = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 dioxus-core = { workspace = true, optional = true }
 nve-rpc = { workspace = true, optional = true }
@@ -60,7 +62,7 @@ tungstenite = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
-web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "NodeList", "Performance", "ResizeObserver", "Storage", "VisibilityState"] }
+web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "MutationObserver", "MutationObserverInit", "NodeList", "Performance", "ResizeObserver", "Storage", "VisibilityState"] }
 # Global allocator on wasm32: smaller (-2.5 KB brotli) and faster than std's dlmalloc
 # (docs/research/wasm-size/runtime.md).
 talc = "5.1.1"

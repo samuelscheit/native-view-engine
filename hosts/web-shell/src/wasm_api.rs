@@ -100,6 +100,24 @@ pub(crate) fn pump_surface_async_work(
     }
 }
 
+/// Seeds additional SSR structural class hashes (comma-separated, e.g. from a late mid-stream
+/// `<style data-nve-ssr-chunk data-nve-hashes="...">` moved into `document.head`) into an active
+/// surface's `StyleSheetCache` without creating any `Rc` cycle.
+#[cfg(feature = "app-issues")]
+pub(crate) fn seed_surface_ssr_hashes(surface_id: SurfaceId, hashes_csv: &str) {
+    let session = ACTIVE_SHELLS.with(|shells| {
+        shells
+            .borrow()
+            .get(&surface_id)
+            .map(|active| Rc::clone(&active.session))
+    });
+    if let Some(session) = session
+        && let Ok(mut guard) = session.try_borrow_mut()
+    {
+        guard.backend_mut().seed_ssr_hashes(hashes_csv);
+    }
+}
+
 pub(crate) fn run_initial_frame_and_events(guard: &mut WebAppSession) -> Result<bool, JsValue> {
     guard
         .render_initial()
