@@ -408,7 +408,7 @@ fn dioxus_e2e_router_provider_link_outlet_press_navigation_and_modal() {
 
     let link_id = scene.find_by_test_id("link-issue-42").expect("link node");
     assert_eq!(
-        scene.store.try_row::<Accessibility>(link_id).map(|a| a.role()),
+        scene.store.try_row::<Accessibility>(link_id).and_then(|a| a.role()),
         Some(AriaRole::Link)
     );
     assert_ne!(

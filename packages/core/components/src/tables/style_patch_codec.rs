@@ -434,7 +434,7 @@ fn decode_style_patch(bytes: &[u8]) -> Result<StylePatch, CodecError> {
             48 => {
                 let raw = r.read_u8()?;
                 p.cursor = Some(
-                    CursorKind::from_u8(raw)
+                    CursorKind::try_from_word(u32::from(raw))
                         .ok_or(CodecError::BadEnum { ty: "CursorKind", raw: i64::from(raw) })?,
                 );
             }

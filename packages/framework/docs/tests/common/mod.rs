@@ -336,10 +336,10 @@ impl DocsHarness {
                 .try_row::<Accessibility>(nid)?
                 .level()
                 .map(|lvl| lvl.to_string()),
-            "accessibilityRole" => {
-                let r = store.try_row::<Accessibility>(nid)?.role().as_aria_str();
-                (!r.is_empty()).then(|| r.to_owned())
-            }
+            "accessibilityRole" => store
+                .try_row::<Accessibility>(nid)?
+                .role()
+                .map(|r| r.as_aria_str().to_owned()),
             "accessibilityLabel" => store
                 .try_row::<Accessibility>(nid)
                 .map(|a| a.label().to_owned())

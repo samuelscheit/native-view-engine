@@ -98,7 +98,7 @@ fn dioxus_surface_nodestore_typed_style_table_attr_events_and_nve2_roundtrip() {
     );
     assert_eq!(
         surface.store().try_row::<Accessibility>(btn).unwrap().role(),
-        AriaRole::Button
+        Some(AriaRole::Button)
     );
     assert_ne!(
         surface.store().try_row::<Interaction>(btn).unwrap().event_mask(),

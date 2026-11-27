@@ -85,13 +85,13 @@ fn cursor_kind_roundtrips_u8_and_css_keywords() {
     ];
     for (raw, kind, kw) in expected {
         assert_eq!(kind as u8, raw);
-        assert_eq!(CursorKind::from_u8(raw), Some(kind));
+        assert_eq!(CursorKind::try_from_word(u32::from(raw)), Some(kind));
         assert_eq!(kind.to_css_keyword(), kw);
         assert_eq!(CursorKind::parse_css(kw), Some(kind));
         assert_eq!(CursorKind::parse_css(&format!("  {}  ", kw.to_ascii_uppercase())), Some(kind));
     }
-    assert_eq!(CursorKind::from_u8(13), None);
-    assert_eq!(CursorKind::from_u8(255), None);
+    assert_eq!(CursorKind::try_from_word(13), None);
+    assert_eq!(CursorKind::try_from_word(255), None);
     assert_eq!(CursorKind::parse_css("invalid-cursor"), None);
 }
 

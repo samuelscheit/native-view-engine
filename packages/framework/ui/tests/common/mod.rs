@@ -199,10 +199,10 @@ impl UiHarness {
                 .try_row::<DebugId>(nid)
                 .map(|d| d.id())
                 .filter(|s| !s.is_empty()),
-            "accessibilityRole" => {
-                let role = store.try_row::<Accessibility>(nid)?.role().as_aria_str();
-                (!role.is_empty()).then_some(role)
-            }
+            "accessibilityRole" => store
+                .try_row::<Accessibility>(nid)?
+                .role()
+                .map(|r| r.as_aria_str()),
             "accessibilityLabel" => store
                 .try_row::<Accessibility>(nid)
                 .map(|a| a.label())

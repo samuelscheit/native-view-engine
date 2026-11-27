@@ -109,7 +109,7 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if ti.read_only() {
             out.push_str(" readonly");
         }
-        if let Some(ml) = ti.max_length().filter(|&n| n > 0) {
+        if let Some(ml) = ti.max_length() {
             let _ = write!(out, " maxlength=\"{ml}\"");
         }
     }
@@ -122,9 +122,8 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         }
     }
     if let Some(a11y) = store.try_row::<Accessibility>(id) {
-        let role = a11y.role().as_aria_str();
-        if !role.is_empty() {
-            write_attr("role", role, out);
+        if let Some(role) = a11y.role() {
+            write_attr("role", role.as_aria_str(), out);
         }
         let label = a11y.label();
         if !label.is_empty() {

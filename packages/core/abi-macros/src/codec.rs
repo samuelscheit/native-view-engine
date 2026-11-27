@@ -7,6 +7,7 @@ use crate::emit::quote_str;
 use crate::parse::parse_i128_literal;
 use crate::parse::parse_string_literal;
 pub(crate) use crate::tok::{from_stream, Delim, Tok};
+use crate::tok::{expect_ident, is_ident, is_punct, paren_inner, skip_vis};
 
 #[cfg(test)]
 #[path = "codec_tests.rs"]
@@ -48,24 +49,6 @@ pub(crate) fn derive(input: TokenStream) -> Result<String, String> {
 pub(crate) fn derive_tokens(tokens: &[Tok]) -> Result<String, String> {
     let parsed = parse(tokens)?;
     Ok(emit(&parsed))
-}
-
-fn is_punct(tokens: &[Tok], pos: usize, ch: char) -> bool { crate::tok::is_punct(tokens, pos, ch) }
-fn is_ident(tokens: &[Tok], pos: usize, name: &str) -> bool { matches!(tokens.get(pos), Some(Tok::Ident(s)) if s == name) }
-fn expect_ident(tokens: &[Tok], pos: &mut usize, desc: &str) -> Result<String, String> {
-    match tokens.get(*pos) {
-        Some(Tok::Ident(s)) => { *pos += 1; Ok(s.clone()) }
-        other => Err(format!("expected {desc}, found {other:?}")),
-    }
-}
-fn skip_vis(tokens: &[Tok], pos: &mut usize) {
-    if is_ident(tokens, *pos, "pub") {
-        *pos += 1;
-        if matches!(tokens.get(*pos), Some(Tok::Group(Delim::Paren, _))) { *pos += 1; }
-    }
-}
-fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {
-    match rest.first() { Some(Tok::Group(Delim::Paren, inner)) => Some(inner.as_slice()), _ => None }
 }
 
 fn format_toks(tokens: &[Tok]) -> String {

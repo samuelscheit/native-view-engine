@@ -115,7 +115,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
             patch: StylePatch::default().opacity(0.9),
         }])));
     tx.edit::<Accessibility>(n)
-        .role(AriaRole::Button)
+        .role(Some(AriaRole::Button))
         .label("Submit")
         .value_now(Some(42.0))
         .relations(Some(AriaRelations {
@@ -177,7 +177,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
     assert_eq!(ia.tab_index(), Some(-1));
 
     let a11y = dst.try_row::<Accessibility>(n).unwrap();
-    assert_eq!(a11y.role(), AriaRole::Button);
+    assert_eq!(a11y.role(), Some(AriaRole::Button));
     assert_eq!(a11y.label(), "Submit");
     assert_eq!(a11y.value_now(), Some(42.0));
 

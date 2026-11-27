@@ -535,7 +535,7 @@ fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free(
 #[test]
 fn opt_word_wide_option_64bit_flags_and_grid_line_roundtrip_and_wire() {
     use crate::wire::{WireDecoder, WireEncoder};
-    use crate::{word_flags, GridLine, ResourceId};
+    use crate::{word_flags, GridLine};
 
     word_flags! {
         pub struct SampleFlags(u8) {
@@ -569,8 +569,6 @@ fn opt_word_wide_option_64bit_flags_and_grid_line_roundtrip_and_wire() {
         pub opt_grid: Option<GridLine>,
         #[effect(semantics)]
         pub opt_node: Option<NodeId>,
-        #[effect(semantics)]
-        pub opt_res: Option<ResourceId>,
         #[effect(semantics)]
         pub opt_surf: Option<nve_abi::SurfaceId>,
         #[effect(paint)]
@@ -606,7 +604,6 @@ fn opt_word_wide_option_64bit_flags_and_grid_line_roundtrip_and_wire() {
         .opt_len(Some(Length::points(0.0)))
         .opt_grid(Some(GridLine::Span(3)))
         .opt_node(Some(NodeId::ROOT))
-        .opt_res(Some(ResourceId(7)))
         .opt_surf(Some(nve_abi::SurfaceId::ROOT))
         .wide_f32(Some(0.0))
         .wide_u32(Some(u32::MAX))
@@ -660,7 +657,6 @@ fn opt_word_wide_option_64bit_flags_and_grid_line_roundtrip_and_wire() {
     assert_eq!(f.opt_len(), Some(Length::points(0.0)));
     assert_eq!(f.opt_grid(), Some(GridLine::Span(3)));
     assert_eq!(f.opt_node(), Some(NodeId::ROOT));
-    assert_eq!(f.opt_res(), Some(ResourceId(7)));
     assert_eq!(f.opt_surf(), Some(nve_abi::SurfaceId::ROOT));
     assert_eq!(f.wide_f32(), Some(0.0));
     assert_eq!(f.wide_u32(), Some(u32::MAX));

@@ -83,27 +83,6 @@ pub enum CursorKind {
 }
 
 impl CursorKind {
-    /// Decodes a compact `u8` discriminant into [`CursorKind`].
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Auto),
-            1 => Some(Self::Default),
-            2 => Some(Self::Pointer),
-            3 => Some(Self::Text),
-            4 => Some(Self::Grab),
-            5 => Some(Self::Grabbing),
-            6 => Some(Self::NotAllowed),
-            7 => Some(Self::ColResize),
-            8 => Some(Self::RowResize),
-            9 => Some(Self::Move),
-            10 => Some(Self::Crosshair),
-            11 => Some(Self::Progress),
-            12 => Some(Self::Wait),
-            _ => None,
-        }
-    }
-
     /// Returns the exact standard CSS `cursor` keyword for this cursor kind.
     #[inline]
     pub const fn to_css_keyword(&self) -> &'static str {

@@ -12,6 +12,10 @@ fn derive_word_enum_computes_exact_bit_widths_and_respects_default_fallback() {
     assert!(code.contains("pub const COUNT: usize = 4;"));
     assert!(code.contains("pub const BITS: u8 = 2;"));
     assert!(code.contains("const OPT_BITS: u8 = 3;"));
+    assert!(code.contains("pub const fn try_from_word("));
+    assert!(code.contains("pub const fn opt_to_word("));
+    assert!(code.contains("OptEncoding::PlusOne"));
+    assert!(code.contains("Self::try_from_word(__nve_bits - 1)"));
     assert!(code.contains("_ => Self::Back,"));
 
     // 3 variants -> BITS = 2, OPT_BITS = 2 (3 + 1 = 4 states fit in 2 bits!)
@@ -21,6 +25,40 @@ fn derive_word_enum_computes_exact_bit_widths_and_respects_default_fallback() {
     assert!(tri.contains("pub const BITS: u8 = 2;"));
     assert!(tri.contains("const OPT_BITS: u8 = 2;"));
     assert!(tri.contains("_ => Self::Off,"));
+}
+
+#[test]
+fn derive_word_enum_handles_1_variant_256_variants_and_rejects_257_and_qualified_default() {
+    // 1-variant enum: BITS = 1, OPT_BITS = 1 (0 = None, 1 = Some(Only)).
+    let one = derive_tokens(&lex("#[repr(u8)] pub enum Solo { Only = 0 }"))
+        .expect("1-variant WordEnum");
+    assert!(one.contains("pub const COUNT: usize = 1;"));
+    assert!(one.contains("pub const BITS: u8 = 1;"));
+    assert!(one.contains("const OPT_BITS: u8 = 1;"));
+
+    // Qualified `#[other::default]` must NOT be treated as `#[default]`.
+    let qual = derive_tokens(&lex(
+        "#[repr(u8)] pub enum Qual { First = 0, #[other::default] Second = 1 }",
+    ))
+    .expect("qualified default ignored");
+    assert!(qual.contains("_ => Self::First,"));
+
+    // 256 variants: BITS = 8, OPT_BITS = 9 (256 + 1 = 257 states).
+    let variants_256: String = (0..256).map(|i| format!("V{i} = {i},")).collect();
+    let max_ok = derive_tokens(&lex(&format!("#[repr(u8)] pub enum E256 {{ {variants_256} }}")))
+        .expect("256-variant WordEnum");
+    assert!(max_ok.contains("pub const COUNT: usize = 256;"));
+    assert!(max_ok.contains("pub const BITS: u8 = 8;"));
+    assert!(max_ok.contains("const OPT_BITS: u8 = 9;"));
+
+    // 257 variants: rejected cleanly.
+    let variants_257: String = (0..257).map(|i| format!("V{i},")).collect();
+    let err = derive_tokens(&lex(&format!("#[repr(u8)] pub enum E257 {{ {variants_257} }}")))
+        .expect_err("257 variants must fail");
+    assert!(
+        err.contains("max 256 for #[repr(u8)]"),
+        "unexpected 257-variant error: {err}"
+    );
 }
 
 #[test]

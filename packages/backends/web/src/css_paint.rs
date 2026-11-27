@@ -207,7 +207,7 @@ pub(super) fn write_visual_and_typography_css(
             }
             out.push(';');
         }
-        if let Some(max_lines) = t.max_lines().filter(|&n| n > 0) {
+        if let Some(max_lines) = t.max_lines() {
             out.push_str("display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;-webkit-line-clamp:");
             write_u64(out, u64::from(max_lines));
             out.push(';');

@@ -70,6 +70,13 @@ pub(crate) fn is_colon2(tokens: &[Tok], i: usize) -> bool {
     matches!(tokens.get(i), Some(Tok::Punct(':', true))) && is_punct(tokens, i + 1, ':')
 }
 
+pub(crate) fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {
+    match rest.first() {
+        Some(Tok::Group(Delim::Paren, inner)) => Some(inner.as_slice()),
+        _ => None,
+    }
+}
+
 pub(crate) fn render_tokens(tokens: &[Tok]) -> String {
     let mut out = String::new();
     for (idx, t) in tokens.iter().enumerate() {

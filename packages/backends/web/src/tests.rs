@@ -54,7 +54,7 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
         .into(),
     )));
     tx.edit::<Accessibility>(heading)
-        .role(AriaRole::Heading)
+        .role(Some(AriaRole::Heading))
         .level(Some(1));
     tx.edit::<TextContent>(heading).text("Hello NVE2 Web");
     tx.edit::<Typography>(heading).color(Rgba::WHITE).font_size(24.0);
@@ -274,14 +274,17 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     let txt = tx.create();
     let link = tx.create();
     let inp = tx.create();
-    tx.set_children(NodeId::ROOT, &[txt, link, inp]);
+    let inp_zero = tx.create();
+    tx.set_children(NodeId::ROOT, &[txt, link, inp, inp_zero]);
     tx.edit::<TextContent>(txt).text("safe");
     tx.edit::<Typography>(txt)
-        .font_family("Inter;}</style><script>alert(1)</script>");
+        .font_family("Inter;}</style><script>alert(1)</script>")
+        .max_lines(Some(0));
     tx.edit::<Link>(link)
         .href("https://example.com")
         .target(LinkTarget::Blank);
     tx.edit::<TextInput>(inp).max_length(None);
+    tx.edit::<TextInput>(inp_zero).max_length(Some(0));
     tx.commit_into(&mut changes);
     web.commit(&store, &changes).unwrap();
 
@@ -290,6 +293,8 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     assert!(doc.contains("target=\"_blank\""));
     assert!(doc.contains("rel=\"noopener noreferrer\""));
     assert!(!doc.contains("maxlength=\"65535\""));
+    assert!(doc.contains("maxlength=\"0\""), "Some(0) max_length must be emitted: {doc}");
+    assert!(doc.contains("-webkit-line-clamp:0;"), "Some(0) max_lines must be emitted: {doc}");
 
     // Plain relative paths, query paths, data: srcset, multi-URL ping, data-nve-* prefix,
     // whitespace-padded tags/attrs, raw-text tags, font-family comments/quotes, and non-finite flex.
@@ -1123,7 +1128,7 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
         tx.edit::<Accessibility>(o).live(Some(AriaLive::Off));
         tx.edit::<Accessibility>(p).live(Some(AriaLive::Polite));
         tx.edit::<Accessibility>(a)
-            .role(AriaRole::Alert)
+            .role(Some(AriaRole::Alert))
             .live(Some(AriaLive::Assertive));
         tx.commit_into(&mut changes);
         (u, o, p, a)

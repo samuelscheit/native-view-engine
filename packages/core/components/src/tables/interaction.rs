@@ -27,68 +27,65 @@ pub struct Interaction {
 }
 
 /// Closed cross-platform accessibility role enum covering WAI-ARIA, Apple NSAccessibility,
-/// Android AccessibilityNodeInfo, GTK4, and Flutter Semantics.
+/// Android AccessibilityNodeInfo, GTK4, and Flutter Semantics; wrap in `Option<AriaRole>` for unset.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
 pub enum AriaRole {
-    #[default]
-    None = 0,
-    Button = 1,
-    Link = 2,
-    Heading = 3,
-    Text = 4,
-    Image = 5,
-    TextBox = 6,
-    SearchBox = 7,
-    ScrollArea = 8,
-    Checkbox = 9,
-    Switch = 10,
-    Radio = 11,
-    Slider = 12,
-    Tab = 13,
-    TabList = 14,
-    TabPanel = 15,
-    Dialog = 16,
-    AlertDialog = 17,
-    Alert = 18,
-    Status = 19,
-    Tooltip = 20,
-    Navigation = 21,
-    Main = 22,
-    Article = 23,
-    Complementary = 24,
-    Banner = 25,
-    ContentInfo = 26,
-    Form = 27,
-    Region = 28,
-    Group = 29,
-    List = 30,
-    ListItem = 31,
-    ListBox = 32,
-    Option = 33,
-    Menu = 34,
-    MenuItem = 35,
-    Separator = 36,
-    Presentation = 37,
-    Table = 38,
-    Row = 39,
-    Cell = 40,
-    ColumnHeader = 41,
-    RowHeader = 42,
-    Code = 43,
-    CodeBlock = 44,
-    ProgressBar = 45,
-    ComboBox = 46,
-    Grid = 47,
-    GridCell = 48,
+    Button = 0,
+    Link = 1,
+    Heading = 2,
+    Text = 3,
+    Image = 4,
+    TextBox = 5,
+    SearchBox = 6,
+    ScrollArea = 7,
+    Checkbox = 8,
+    Switch = 9,
+    Radio = 10,
+    Slider = 11,
+    Tab = 12,
+    TabList = 13,
+    TabPanel = 14,
+    Dialog = 15,
+    AlertDialog = 16,
+    Alert = 17,
+    Status = 18,
+    Tooltip = 19,
+    Navigation = 20,
+    Main = 21,
+    Article = 22,
+    Complementary = 23,
+    Banner = 24,
+    ContentInfo = 25,
+    Form = 26,
+    Region = 27,
+    Group = 28,
+    List = 29,
+    ListItem = 30,
+    ListBox = 31,
+    Option = 32,
+    Menu = 33,
+    MenuItem = 34,
+    Separator = 35,
+    Presentation = 36,
+    Table = 37,
+    Row = 38,
+    Cell = 39,
+    ColumnHeader = 40,
+    RowHeader = 41,
+    Code = 42,
+    CodeBlock = 43,
+    ProgressBar = 44,
+    ComboBox = 45,
+    Grid = 46,
+    GridCell = 47,
 }
 
 impl AriaRole {
-    /// Canonical WAI-ARIA role token (empty for `None`).
+    /// Canonical WAI-ARIA role token.
     #[inline]
     pub const fn as_aria_str(self) -> &'static str {
         match self {
-            Self::None => "",
             Self::Button => "button",
             Self::Link => "link",
             Self::Heading => "heading",
@@ -141,7 +138,7 @@ impl AriaRole {
     }
 
     /// Parses a WAI-ARIA / RN accessibility role string without allocating.
-    pub fn parse(raw: &str) -> Self {
+    pub fn parse(raw: &str) -> Option<Self> {
         let s = raw.trim();
         const TABLE: &[(&str, AriaRole)] = &[
             ("button", AriaRole::Button),
@@ -204,7 +201,6 @@ impl AriaRole {
         TABLE
             .iter()
             .find_map(|&(name, role)| s.eq_ignore_ascii_case(name).then_some(role))
-            .unwrap_or(Self::None)
     }
 }
 
@@ -259,9 +255,9 @@ pub enum AriaAutoComplete {
 #[derive(NveTable)]
 #[nve_table(name = "nve.accessibility", storage = "sparse", flags = "publish")]
 pub struct Accessibility {
-    /// Drives semantic tag / native role realization.
+    /// Drives semantic tag / native role realization (`None` = default container role).
     #[effect(semantics, realize)]
-    pub role: AriaRole,
+    pub role: Option<AriaRole>,
     /// Optional `aria-level` (`1..=6`; `None` = unset).
     #[effect(semantics, realize)]
     pub level: Option<u8>,

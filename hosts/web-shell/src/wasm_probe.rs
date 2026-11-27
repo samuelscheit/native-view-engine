@@ -57,7 +57,7 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
         let _ = tx.create_at(link);
 
         tx.set_str(card, DebugId::TEST_ID, "probe-card");
-        tx.set(card, Accessibility::ROLE, AriaRole::Article);
+        tx.set(card, Accessibility::ROLE, Some(AriaRole::Article));
         let p = Length::points(12.0);
         tx.set(card, Layout::PADDING_TOP, p);
         tx.set(card, Layout::PADDING_RIGHT, p);
@@ -79,7 +79,7 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
         );
 
         tx.set_str(heading, DebugId::TEST_ID, "probe-heading");
-        tx.set(heading, Accessibility::ROLE, AriaRole::Heading);
+        tx.set(heading, Accessibility::ROLE, Some(AriaRole::Heading));
         tx.set(heading, Accessibility::LEVEL, Some(1u8));
         tx.set(heading, Typography::COLOR, Rgba::WHITE);
         tx.set(heading, Typography::FONT_SIZE, 20.0);
@@ -88,7 +88,7 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
         tx.set_str(heading, TextContent::TEXT, "Semantic SSR Heading");
 
         tx.set_str(link, DebugId::TEST_ID, "probe-link");
-        tx.set(link, Accessibility::ROLE, AriaRole::Link);
+        tx.set(link, Accessibility::ROLE, Some(AriaRole::Link));
         tx.set_str(link, Link::HREF, "/docs/ssr");
         tx.set(link, Interaction::EVENT_MASK, EventMask::PRESS as u32);
         tx.set_str(link, TextContent::TEXT, "Docs Link");
@@ -193,7 +193,7 @@ pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
 
     {
         let mut tx = store.tx();
-        tx.set(NodeId::ROOT, Accessibility::ROLE, AriaRole::Navigation);
+        tx.set(NodeId::ROOT, Accessibility::ROLE, Some(AriaRole::Navigation));
         tx.set_resource(
             NodeId::ROOT,
             HtmlDataAttrs::ENTRIES,

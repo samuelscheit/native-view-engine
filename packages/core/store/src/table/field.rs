@@ -2,7 +2,7 @@
 
 use core::marker::PhantomData;
 
-use nve_abi::table::{FieldKind, PackKind, Word, NO_VAL_WORD};
+use nve_abi::table::{FieldKind, OptEncoding, PackKind, Word, NO_VAL_WORD};
 
 use crate::resource::Resource;
 use crate::row::{RowRef, RowWriter};
@@ -19,6 +19,8 @@ pub struct Res<R: Resource>(PhantomData<fn() -> R>);
 /// Field type metadata consumed by `#[derive(NveTable)]` and compile-time `pack_table`.
 pub trait TableField {
     const KIND: FieldKind;
+    /// Optionality & bit-encoding discriminator hashed into `TableDesc::schema_hash`.
+    const OPT_ENCODING: OptEncoding;
     /// Bits occupied in its primary word (`1..=32` for scalar, `1` for wide `Option<T>`, `64` for 64-bit/`Str`).
     const BITS: u8;
     /// Word packing layout shape (`Scalar`, `WideOpt`, `Wide64`, `Str`, `Resource`).
@@ -49,6 +51,7 @@ pub trait ScalarField: TableField + Copy {
 
 impl<T: WordValue> TableField for T {
     const KIND: FieldKind = T::KIND;
+    const OPT_ENCODING: OptEncoding = T::OPT_ENCODING;
     const BITS: u8 = T::BITS;
     const PACK_KIND: PackKind = PackKind::Scalar;
 }
@@ -56,7 +59,7 @@ impl<T: WordValue> TableField for T {
 impl<T: WordValue> ScalarField for T {
     #[inline(always)]
     fn read_row(row: &[Word], word: usize, shift: u32, mask: u32, _val_word: usize) -> Self {
-        T::from_bits((row[word] & mask) >> shift)
+        T::from_masked_bits((row[word] & mask) >> shift, mask.count_ones())
     }
 
     #[inline(always)]
@@ -68,7 +71,7 @@ impl<T: WordValue> ScalarField for T {
         mask: u32,
         _val_word: usize,
     ) {
-        writer.put(word, shift, mask, self.to_bits());
+        writer.put(word, shift, mask, self.to_masked_bits(mask.count_ones()));
     }
 }
 
@@ -77,6 +80,7 @@ macro_rules! impl_wide_opt_field {
         $(
             impl TableField for Option<$ty> {
                 const KIND: FieldKind = <$ty as WordValue>::KIND;
+                const OPT_ENCODING: OptEncoding = OptEncoding::WideBit;
                 const BITS: u8 = 1;
                 const PACK_KIND: PackKind = PackKind::WideOpt;
             }
@@ -106,16 +110,12 @@ macro_rules! impl_wide_opt_field {
                     mask: u32,
                     val_word: usize,
                 ) {
-                    match self {
-                        Some(v) => {
-                            writer.put(word, shift, mask, 1);
-                            writer.put(val_word, 0, u32::MAX, <$ty as WordValue>::to_bits(v));
-                        }
-                        None => {
-                            writer.put(word, shift, mask, 0);
-                            writer.put(val_word, 0, u32::MAX, 0);
-                        }
-                    }
+                    let (present, bits) = match self {
+                        Some(v) => (1u32, <$ty as WordValue>::to_bits(v)),
+                        None => (0u32, 0u32),
+                    };
+                    writer.put(word, shift, mask, present);
+                    writer.put(val_word, 0, u32::MAX, bits);
                 }
             }
         )+
@@ -126,6 +126,7 @@ impl_wide_opt_field!(f32, u32, i32, Rgba);
 
 impl TableField for u64 {
     const KIND: FieldKind = FieldKind::U64;
+    const OPT_ENCODING: OptEncoding = OptEncoding::Required;
     const BITS: u8 = 64;
     const PACK_KIND: PackKind = PackKind::Wide64;
 }
@@ -151,6 +152,7 @@ impl ScalarField for u64 {
 
 impl TableField for i64 {
     const KIND: FieldKind = FieldKind::I64;
+    const OPT_ENCODING: OptEncoding = OptEncoding::Required;
     const BITS: u8 = 64;
     const PACK_KIND: PackKind = PackKind::Wide64;
 }
@@ -175,6 +177,7 @@ impl ScalarField for i64 {
 
 impl TableField for f64 {
     const KIND: FieldKind = FieldKind::F64;
+    const OPT_ENCODING: OptEncoding = OptEncoding::Required;
     const BITS: u8 = 64;
     const PACK_KIND: PackKind = PackKind::Wide64;
 }
@@ -199,12 +202,14 @@ impl ScalarField for f64 {
 
 impl TableField for Str {
     const KIND: FieldKind = FieldKind::Str;
+    const OPT_ENCODING: OptEncoding = OptEncoding::Required;
     const BITS: u8 = 64;
     const PACK_KIND: PackKind = PackKind::Str;
 }
 
 impl<R: Resource> TableField for Res<R> {
     const KIND: FieldKind = FieldKind::Resource;
+    const OPT_ENCODING: OptEncoding = OptEncoding::Required;
     const BITS: u8 = 32;
     const PACK_KIND: PackKind = PackKind::Resource;
     fn register() {

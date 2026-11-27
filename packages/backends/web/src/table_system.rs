@@ -144,17 +144,19 @@ impl WebTableRegistry {
         if store.has::<Link>(node) {
             return ("a", None);
         }
-        if let Some(a11y) = store.try_row::<Accessibility>(node) {
-            match a11y.role() {
+        if let Some(a11y) = store.try_row::<Accessibility>(node)
+            && let Some(role) = a11y.role()
+        {
+            match role {
                 AriaRole::Button => return ("button", None),
                 AriaRole::Heading => {
                     return (
-                        match a11y.level().unwrap_or(2) {
-                            1 => "h1",
-                            3 => "h3",
-                            4 => "h4",
-                            5 => "h5",
-                            6 => "h6",
+                        match a11y.level() {
+                            Some(1) => "h1",
+                            Some(3) => "h3",
+                            Some(4) => "h4",
+                            Some(5) => "h5",
+                            Some(6) => "h6",
                             _ => "h2",
                         },
                         None,

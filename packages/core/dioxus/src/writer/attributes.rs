@@ -232,14 +232,12 @@ impl StoreMutationTx<'_, '_> {
                 self.finish_standalone_style(node, name, StandaloneStyleVal::Int(v));
             }
             "minlength" => {
-                self.tx
-                    .edit::<TextInput>(node)
-                    .min_length(Some(v.clamp(0, u16::MAX as i64) as u16));
+                let len = (v >= 0).then(|| v.min(i64::from(u16::MAX)) as u16);
+                self.tx.edit::<TextInput>(node).min_length(len);
             }
             "maxlength" => {
-                self.tx
-                    .edit::<TextInput>(node)
-                    .max_length(Some(v.clamp(0, u16::MAX as i64) as u16));
+                let len = (v >= 0).then(|| v.min(i64::from(u16::MAX)) as u16);
+                self.tx.edit::<TextInput>(node).max_length(len);
             }
             _ => self.apply_numeric_attr(node, name, v as f64),
         }
@@ -602,7 +600,7 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Accessibility>(node).label("");
             }
             "accessibilityRole" | "role" if self.tx.store().has::<Accessibility>(node) => {
-                self.tx.edit::<Accessibility>(node).role(AriaRole::None);
+                self.tx.edit::<Accessibility>(node).role(None);
             }
             "ariaChecked" | "aria-checked" | "aria_checked"
                 if self.tx.store().has::<Accessibility>(node) =>

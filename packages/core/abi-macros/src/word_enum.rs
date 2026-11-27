@@ -170,8 +170,7 @@ fn parse_variants(body: &[Tok], enum_name: &str) -> Result<(Vec<String>, usize),
                 return Err(format!("malformed variant attribute on `{enum_name}`"));
             };
             pos += 2;
-            let (name, _) = attr_name(inner);
-            if name == "default" {
+            if matches!(inner.as_slice(), [Tok::Ident(id)] if id == "default") {
                 is_default = true;
             }
         }
@@ -277,6 +276,13 @@ fn emit(e: &ParsedWordEnum) -> String {
         .map(|(i, v)| format!("{i}u32 => Self::{v}, "))
         .collect::<String>();
 
+    let try_match_arms = e
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| format!("{i}u32 => ::core::option::Option::Some(Self::{v}), "))
+        .collect::<String>();
+
     format!(
         r#"
 #[allow(dead_code)]
@@ -291,9 +297,24 @@ impl {id} {{
     }}
 
     #[inline(always)]
+    pub const fn try_from_word(__nve_bits: u32) -> ::core::option::Option<Self> {{
+        match __nve_bits {{
+            {try_match_arms}_ => ::core::option::Option::None,
+        }}
+    }}
+
+    #[inline(always)]
     pub const fn from_word(__nve_bits: u32) -> Self {{
         match __nve_bits {{
             {match_arms}_ => Self::{fallback},
+        }}
+    }}
+
+    #[inline(always)]
+    pub const fn opt_to_word(__nve_v: ::core::option::Option<Self>) -> u32 {{
+        match __nve_v {{
+            ::core::option::Option::None => 0,
+            ::core::option::Option::Some(__nve_x) => (__nve_x as u32) + 1,
         }}
     }}
 }}
@@ -316,21 +337,19 @@ impl {s}::WordValue for {id} {{
 impl {s}::OptWord for {id} {{
     const OPT_BITS: u8 = {opt_bits};
     const OPT_KIND: {s}::__private::FieldKind = {s}::__private::FieldKind::Enum;
+    const OPT_ENCODING: {s}::__private::OptEncoding = {s}::__private::OptEncoding::PlusOne;
 
     #[inline(always)]
     fn opt_to_bits(__nve_v: ::core::option::Option<Self>) -> u32 {{
-        match __nve_v {{
-            ::core::option::Option::None => 0,
-            ::core::option::Option::Some(__nve_x) => (__nve_x as u32) + 1,
-        }}
+        Self::opt_to_word(__nve_v)
     }}
 
     #[inline(always)]
     fn opt_from_bits(__nve_bits: u32) -> ::core::option::Option<Self> {{
-        if __nve_bits == 0 || (__nve_bits as usize) > Self::COUNT {{
+        if __nve_bits == 0 || __nve_bits > (Self::COUNT as u32) {{
             ::core::option::Option::None
         }} else {{
-            ::core::option::Option::Some(Self::ALL[(__nve_bits - 1) as usize])
+            Self::try_from_word(__nve_bits - 1)
         }}
     }}
 }}

@@ -15,7 +15,16 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, BatchSize, Criterion};
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba, Str};
+use nve_store::{ChangeSet, GridLine, Length, NodeId, NodeStore, NveTable, Rgba, Str, WordEnum};
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, WordEnum)]
+enum BenchAlign {
+    #[default]
+    Start = 0,
+    Center = 1,
+    End = 2,
+}
 
 #[allow(dead_code)]
 #[derive(NveTable)]
@@ -30,6 +39,16 @@ struct BenchBox {
     #[effect(composite)]
     #[default(1.0)]
     opacity: f32,
+    #[effect(layout)]
+    grid_col: GridLine,
+    #[effect(layout)]
+    opt_align: Option<BenchAlign>,
+    #[effect(paint)]
+    opt_tint: Option<Rgba>,
+    #[effect(layout)]
+    opt_ratio: Option<f32>,
+    #[effect(paint)]
+    stamp: u64,
 }
 
 #[allow(dead_code)]
@@ -112,6 +131,40 @@ fn bench_row_write_and_commit(c: &mut Criterion) {
                 sum += nr.children().len() as f32;
             }
             black_box(sum)
+        });
+    });
+
+    c.bench_function("opt_wide_64_grid_write_1000_nodes", |b| {
+        b.iter(|| {
+            tick = tick.wrapping_add(1);
+            let mut tx = store.tx();
+            let toggle = tick & 1 == 0;
+            for &n in &nodes {
+                tx.edit::<BenchBox>(n)
+                    .grid_col(if toggle { GridLine::Span(2) } else { GridLine::Line(3) })
+                    .opt_align(if toggle { Some(BenchAlign::Center) } else { None })
+                    .opt_tint(if toggle { Some(Rgba::rgb(12, 34, 56)) } else { None })
+                    .opt_ratio(if toggle { Some(1.777) } else { None })
+                    .stamp(u64::from(tick) << 32 | u64::from(tick));
+            }
+            tx.commit_into(&mut changes);
+            black_box(changes.touched.len())
+        });
+    });
+
+    c.bench_function("opt_wide_64_grid_read_1000_nodes", |b| {
+        b.iter(|| {
+            let mut acc = 0u64;
+            for &n in &nodes {
+                let r = store.row::<BenchBox>(n);
+                acc = acc
+                    .wrapping_add(u64::from(r.grid_col().to_word()))
+                    .wrapping_add(u64::from(r.opt_align().map_or(0, |a| a as u32)))
+                    .wrapping_add(u64::from(r.opt_tint().map_or(0, |c| c.0)))
+                    .wrapping_add(u64::from(r.opt_ratio().map_or(0, f32::to_bits)))
+                    .wrapping_add(r.stamp());
+            }
+            black_box(acc)
         });
     });
 

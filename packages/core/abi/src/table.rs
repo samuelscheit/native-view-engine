@@ -88,6 +88,29 @@ pub enum FieldKind {
     I64 = 11,
     /// Two-word 64-bit float (`lo`, `hi`).
     F64 = 12,
+    /// Packed 16-bit CSS Grid line placement (`Auto`, `Line(i16)`, `Span(u16)`).
+    GridLine = 13,
+}
+
+/// Optionality and wire-bit encoding strategy for a [`FieldDesc`].
+///
+/// Included in [`compute_table_schema_hash`] so `T` and `Option<T>` never collide even when
+/// niche encoding keeps their bit widths equal (e.g. `Length`, `GridLine`, 3-variant `WordEnum`).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OptEncoding {
+    /// Non-optional field (required value, `Str`, or `Res<R>`).
+    Required = 0,
+    /// Optional handle using zero as the `None` niche (`Option<NodeId>`, `Option<SurfaceId>`).
+    ZeroNiche = 1,
+    /// Optional sub-word integer/bitflags with presence bit at bit 0 and payload in bits `1..`.
+    Bit0Present = 2,
+    /// Optional `bool` or `WordEnum` where `0 = None` and `discriminant + 1 = Some(v)`.
+    PlusOne = 3,
+    /// Optional tagged value (`Length`, `GridLine`) XORed with its unused tag niche so `0 = None`.
+    TagXor = 4,
+    /// Wide optional (`Option<f32|u32|i32|Rgba>`): 1-bit presence flag in `word` + full `val_word`.
+    WideBit = 5,
 }
 
 /// One field of a table row.
@@ -95,6 +118,8 @@ pub enum FieldKind {
 pub struct FieldDesc {
     pub name: &'static str,
     pub kind: FieldKind,
+    /// Optionality & bit-encoding strategy (`Required` for non-optional fields).
+    pub opt_encoding: OptEncoding,
     /// First word (for wide `Option<T>`, the word holding the 1-bit presence flag).
     pub word: u8,
     /// Bit offset inside `word` (`0` for whole-word fields).
@@ -112,6 +137,7 @@ impl FieldDesc {
     pub const EMPTY: Self = Self {
         name: "",
         kind: FieldKind::U32,
+        opt_encoding: OptEncoding::Required,
         word: 0,
         shift: 0,
         bits: 0,
@@ -141,6 +167,7 @@ pub enum PackKind {
 pub struct PackInput {
     pub name: &'static str,
     pub field_kind: FieldKind,
+    pub opt_encoding: OptEncoding,
     pub pack_kind: PackKind,
     pub bits: u8,
     pub effects: u8,
@@ -207,6 +234,10 @@ pub const fn pack_table<const N: usize>(
         match f.pack_kind {
             PackKind::Scalar => {
                 assert!(f.bits >= 1 && f.bits <= 32, "scalar field bits must be 1..=32");
+                assert!(
+                    !f.default_present,
+                    "PackInput::default_present is only valid for PackKind::WideOpt"
+                );
                 if f.bits == 32 {
                     assert!(next_word < MAX_TABLE_WORDS, "table exceeds 32 words; split it");
                     let w = next_word;
@@ -216,6 +247,7 @@ pub const fn pack_table<const N: usize>(
                     fields[i] = FieldDesc {
                         name: f.name,
                         kind: f.field_kind,
+                        opt_encoding: f.opt_encoding,
                         word: w as u8,
                         shift: 0,
                         bits: 32,
@@ -253,6 +285,7 @@ pub const fn pack_table<const N: usize>(
                     fields[i] = FieldDesc {
                         name: f.name,
                         kind: f.field_kind,
+                        opt_encoding: f.opt_encoding,
                         word: w as u8,
                         shift,
                         bits: f.bits,
@@ -300,6 +333,7 @@ pub const fn pack_table<const N: usize>(
                 fields[i] = FieldDesc {
                     name: f.name,
                     kind: f.field_kind,
+                    opt_encoding: f.opt_encoding,
                     word: p_word as u8,
                     shift: p_shift,
                     bits: 1,
@@ -308,6 +342,10 @@ pub const fn pack_table<const N: usize>(
                 };
             }
             PackKind::Wide64 => {
+                assert!(
+                    !f.default_present,
+                    "PackInput::default_present is only valid for PackKind::WideOpt"
+                );
                 assert!(next_word + 2 <= MAX_TABLE_WORDS, "table exceeds 32 words; split it");
                 let w = next_word;
                 next_word += 2;
@@ -318,6 +356,7 @@ pub const fn pack_table<const N: usize>(
                 fields[i] = FieldDesc {
                     name: f.name,
                     kind: f.field_kind,
+                    opt_encoding: f.opt_encoding,
                     word: w as u8,
                     shift: 0,
                     bits: 64,
@@ -326,6 +365,10 @@ pub const fn pack_table<const N: usize>(
                 };
             }
             PackKind::Str => {
+                assert!(
+                    !f.default_present,
+                    "PackInput::default_present is only valid for PackKind::WideOpt"
+                );
                 assert!(next_word + 2 <= MAX_TABLE_WORDS, "table exceeds 32 words; split it");
                 let w = next_word;
                 next_word += 2;
@@ -335,6 +378,7 @@ pub const fn pack_table<const N: usize>(
                 fields[i] = FieldDesc {
                     name: f.name,
                     kind: FieldKind::Str,
+                    opt_encoding: OptEncoding::Required,
                     word: w as u8,
                     shift: 0,
                     bits: 64,
@@ -343,6 +387,10 @@ pub const fn pack_table<const N: usize>(
                 };
             }
             PackKind::Resource => {
+                assert!(
+                    !f.default_present,
+                    "PackInput::default_present is only valid for PackKind::WideOpt"
+                );
                 assert!(next_word < MAX_TABLE_WORDS, "table exceeds 32 words; split it");
                 let w = next_word;
                 next_word += 1;
@@ -351,6 +399,7 @@ pub const fn pack_table<const N: usize>(
                 fields[i] = FieldDesc {
                     name: f.name,
                     kind: FieldKind::Resource,
+                    opt_encoding: OptEncoding::Required,
                     word: w as u8,
                     shift: 0,
                     bits: 32,
@@ -469,9 +518,9 @@ pub const fn compute_table_schema_hash(
     fields: &[FieldDesc],
 ) -> u64 {
     let mut h = Xxh64Hasher::new(0);
-    h.update(b"NVE_TABLE_V3;");
+    h.update(b"NVE_TABLE_V4;");
     h.update(name.as_bytes());
-    h.update(&[storage as u8, flags, events_word, inherited as u8]);
+    h.update(&[0xFF, storage as u8, flags, events_word, inherited as u8]);
     h.update_u64(defaults.len() as u64);
     let mut i = 0;
     while i < defaults.len() {
@@ -486,7 +535,16 @@ pub const fn compute_table_schema_hash(
     while j < fields.len() {
         let f = &fields[j];
         h.update(f.name.as_bytes());
-        h.update(&[0xFF, f.kind as u8, f.word, f.shift, f.bits, f.effects, f.val_word]);
+        h.update(&[
+            0xFF,
+            f.kind as u8,
+            f.opt_encoding as u8,
+            f.word,
+            f.shift,
+            f.bits,
+            f.effects,
+            f.val_word,
+        ]);
         j += 1;
     }
     h.digest()

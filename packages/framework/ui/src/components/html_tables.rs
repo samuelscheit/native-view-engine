@@ -63,7 +63,7 @@ pub(crate) fn html_invoker_table(
 pub(crate) fn html_details_table(open: bool, group_name: Option<String>) -> TableAttr {
     table_attr_fn(move |tx, node| {
         tx.edit::<HtmlSemantics>(node)
-            .element(SemanticElement::Details)
+            .element(Some(SemanticElement::Details))
             .open(open);
         if let Some(ref name) = group_name {
             tx.edit::<HtmlFormControl>(node).name(name);
@@ -74,7 +74,7 @@ pub(crate) fn html_details_table(open: bool, group_name: Option<String>) -> Tabl
 pub(crate) fn html_summary_table() -> TableAttr {
     table_attr_fn(move |tx, node| {
         tx.edit::<HtmlSemantics>(node)
-            .element(SemanticElement::Summary);
+            .element(Some(SemanticElement::Summary));
     })
 }
 
@@ -87,7 +87,7 @@ pub(crate) fn html_dialog_table(open: bool, closed_by: String) -> TableAttr {
             _ => None,
         };
         tx.edit::<HtmlSemantics>(node)
-            .element(SemanticElement::Dialog)
+            .element(Some(SemanticElement::Dialog))
             .open(open)
             .closed_by(cb);
     })
@@ -102,7 +102,8 @@ pub(crate) fn html_form_table(
     restored: bool,
 ) -> TableAttr {
     table_attr_fn(move |tx, node| {
-        tx.edit::<HtmlSemantics>(node).element(SemanticElement::Form);
+        tx.edit::<HtmlSemantics>(node)
+            .element(Some(SemanticElement::Form));
         let m = match method.trim() {
             "get" | "GET" => Some(FormMethod::Get),
             "post" | "POST" => Some(FormMethod::Post),

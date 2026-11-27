@@ -93,10 +93,10 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
 
     fn tag_name<'a>(&self, store: &'a NodeStore, node: NodeId) -> Option<&'a str> {
         let row = store.try_row::<HtmlSemantics>(node)?;
-        if row.popover().is_some() && row.element().as_html_tag().is_none() {
-            return Some("div");
+        if let Some(el) = row.element() {
+            return Some(el.as_html_tag());
         }
-        row.element().as_html_tag()
+        row.popover().map(|_| "div")
     }
 
     fn write_ssr_attrs(&self, store: &NodeStore, node: NodeId, out: &mut String) {
@@ -476,7 +476,7 @@ mod tests {
                 .tag("article")
                 .html("<h1>Hello</h1><p>World</p>");
             tx.edit::<HtmlSemantics>(dialog_n)
-                .element(SemanticElement::Dialog)
+                .element(Some(SemanticElement::Dialog))
                 .open(true);
             tx.edit::<HtmlDataAttrs>(dialog_n)
                 .entries(Some(DataAttrList::from_pairs(vec![(

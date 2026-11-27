@@ -423,7 +423,7 @@ impl WebBackend {
             } else {
                 let _ = el.remove_attribute("readonly");
             }
-            if let Some(ml) = ti.max_length().filter(|&n| n > 0) {
+            if let Some(ml) = ti.max_length() {
                 let _ = el.set_attribute("maxlength", &ml.to_string());
             } else {
                 let _ = el.remove_attribute("maxlength");
@@ -449,7 +449,7 @@ impl WebBackend {
         }
         if id != NodeId::ROOT {
             if let Some(a11y) = store.try_row::<Accessibility>(id) {
-                set_or_remove_attr(el, "role", a11y.role().as_aria_str());
+                set_or_remove_attr(el, "role", a11y.role().map_or("", |r| r.as_aria_str()));
                 set_or_remove_attr(el, "aria-label", a11y.label());
                 set_or_remove_attr(el, "aria-live", a11y.live().map_or("", |l| l.as_aria_str()));
                 if a11y.hidden() {

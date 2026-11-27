@@ -432,7 +432,7 @@ impl StoreMutationTx<'_, '_> {
                     .focusable(true);
                 self.tx
                     .edit::<tables::Accessibility>(node)
-                    .role(AriaRole::Button);
+                    .role(Some(AriaRole::Button));
             }
             "a" => {
                 let _ = self.tx.edit::<Link>(node);

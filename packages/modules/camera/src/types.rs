@@ -17,25 +17,12 @@ pub enum CameraFacing {
 }
 
 impl CameraFacing {
-    #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Unknown),
-            1 => Some(Self::Back),
-            2 => Some(Self::Front),
-            3 => Some(Self::External),
-            _ => None,
-        }
-    }
-
     /// Parses a preview facing discriminant (`1..=3`), rejecting `0 = Unknown`.
     #[inline]
     pub const fn from_preview_u8(v: u8) -> Option<Self> {
-        match v {
-            1 => Some(Self::Back),
-            2 => Some(Self::Front),
-            3 => Some(Self::External),
-            _ => None,
+        match Self::try_from_word(v as u32) {
+            Some(Self::Unknown) | None => None,
+            some => some,
         }
     }
 }

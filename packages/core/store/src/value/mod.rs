@@ -5,12 +5,15 @@ mod grid_line;
 mod length;
 mod opt;
 
-use nve_abi::table::FieldKind;
+use nve_abi::table::{FieldKind, OptEncoding};
 use nve_abi::SurfaceId;
 
 pub use grid_line::GridLine;
 pub use length::Length;
-pub use opt::OptWord;
+pub use opt::{
+    opt_bool_to_word, opt_i16_to_word, opt_i8_to_word, opt_node_to_word, opt_surf_to_word,
+    opt_u16_to_word, opt_u8_to_word, OptWord,
+};
 
 /// A value stored in `BITS` bits of one row word.
 ///
@@ -19,8 +22,22 @@ pub use opt::OptWord;
 pub trait WordValue: Copy {
     const BITS: u8;
     const KIND: FieldKind;
+    /// Optionality & bit-encoding discriminator hashed into `TableDesc::schema_hash`.
+    const OPT_ENCODING: OptEncoding = OptEncoding::Required;
     fn to_bits(self) -> u32;
     fn from_bits(bits: u32) -> Self;
+
+    /// Encodes `self` into a field of `bit_width` bits (debug-asserting range on narrowed integers).
+    #[inline(always)]
+    fn to_masked_bits(self, _bit_width: u32) -> u32 {
+        self.to_bits()
+    }
+
+    /// Decodes `bits` from a field of `bit_width` bits (sign-extending narrowed signed integers).
+    #[inline(always)]
+    fn from_masked_bits(bits: u32, _bit_width: u32) -> Self {
+        Self::from_bits(bits)
+    }
 }
 
 impl WordValue for f32 {
@@ -47,6 +64,14 @@ impl WordValue for u32 {
     fn from_bits(bits: u32) -> Self {
         bits
     }
+    #[inline(always)]
+    fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!(
+            bit_width >= 32 || self < (1u32 << bit_width),
+            "u32 value {self} overflows #[bits({bit_width})]"
+        );
+        self
+    }
 }
 
 impl WordValue for i32 {
@@ -59,6 +84,21 @@ impl WordValue for i32 {
     #[inline(always)]
     fn from_bits(bits: u32) -> Self {
         bits as i32
+    }
+    #[inline(always)]
+    fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!(
+            bit_width >= 32
+                || (i64::from(self) >= -(1i64 << (bit_width - 1))
+                    && i64::from(self) < (1i64 << (bit_width - 1))),
+            "i32 value {self} overflows signed #[bits({bit_width})]"
+        );
+        self as u32
+    }
+    #[inline(always)]
+    fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
+        let shift = 32 - bit_width;
+        ((bits << shift) as i32) >> shift
     }
 }
 
@@ -86,6 +126,14 @@ impl WordValue for u8 {
     fn from_bits(bits: u32) -> Self {
         bits as u8
     }
+    #[inline(always)]
+    fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!(
+            bit_width >= 8 || u32::from(self) < (1u32 << bit_width),
+            "u8 value {self} overflows #[bits({bit_width})]"
+        );
+        u32::from(self)
+    }
 }
 
 impl WordValue for i8 {
@@ -98,6 +146,21 @@ impl WordValue for i8 {
     #[inline(always)]
     fn from_bits(bits: u32) -> Self {
         (bits as u8) as i8
+    }
+    #[inline(always)]
+    fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!(
+            bit_width >= 8
+                || (i32::from(self) >= -(1i32 << (bit_width - 1))
+                    && i32::from(self) < (1i32 << (bit_width - 1))),
+            "i8 value {self} overflows signed #[bits({bit_width})]"
+        );
+        (self as u8) as u32
+    }
+    #[inline(always)]
+    fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
+        let shift = 32 - bit_width;
+        (((bits << shift) as i32) >> shift) as i8
     }
 }
 
@@ -112,6 +175,14 @@ impl WordValue for u16 {
     fn from_bits(bits: u32) -> Self {
         bits as u16
     }
+    #[inline(always)]
+    fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!(
+            bit_width >= 16 || u32::from(self) < (1u32 << bit_width),
+            "u16 value {self} overflows #[bits({bit_width})]"
+        );
+        u32::from(self)
+    }
 }
 
 impl WordValue for i16 {
@@ -125,6 +196,21 @@ impl WordValue for i16 {
     fn from_bits(bits: u32) -> Self {
         (bits as u16) as i16
     }
+    #[inline(always)]
+    fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!(
+            bit_width >= 16
+                || (i32::from(self) >= -(1i32 << (bit_width - 1))
+                    && i32::from(self) < (1i32 << (bit_width - 1))),
+            "i16 value {self} overflows signed #[bits({bit_width})]"
+        );
+        (self as u16) as u32
+    }
+    #[inline(always)]
+    fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
+        let shift = 32 - bit_width;
+        (((bits << shift) as i32) >> shift) as i16
+    }
 }
 
 impl WordValue for crate::NodeId {
@@ -137,19 +223,6 @@ impl WordValue for crate::NodeId {
     #[inline(always)]
     fn from_bits(bits: u32) -> Self {
         Self::from_raw_or_null(bits)
-    }
-}
-
-impl WordValue for crate::ResourceId {
-    const BITS: u8 = 32;
-    const KIND: FieldKind = FieldKind::Resource;
-    #[inline(always)]
-    fn to_bits(self) -> u32 {
-        self.0
-    }
-    #[inline(always)]
-    fn from_bits(bits: u32) -> Self {
-        Self(bits)
     }
 }
 
@@ -309,16 +382,28 @@ macro_rules! __word_flags_impl {
     ($name:ident, $repr:ty, opt) => {
         $crate::__word_flags_impl!($name, $repr, wide);
 
+        #[allow(dead_code)]
+        impl $name {
+            #[inline(always)]
+            pub const fn opt_to_word(v: ::core::option::Option<Self>) -> u32 {
+                match v {
+                    ::core::option::Option::None => 0,
+                    ::core::option::Option::Some(f) => {
+                        (((f.bits() & Self::ALL.bits()) as u32) << 1) | 1
+                    }
+                }
+            }
+        }
+
         impl $crate::OptWord for $name {
             const OPT_BITS: u8 = <Self as $crate::WordValue>::BITS + 1;
             const OPT_KIND: $crate::__private::FieldKind = $crate::__private::FieldKind::U32;
+            const OPT_ENCODING: $crate::__private::OptEncoding =
+                $crate::__private::OptEncoding::Bit0Present;
 
             #[inline(always)]
             fn opt_to_bits(v: ::core::option::Option<Self>) -> u32 {
-                match v {
-                    ::core::option::Option::None => 0,
-                    ::core::option::Option::Some(f) => ((f.bits() as u32) << 1) | 1,
-                }
+                Self::opt_to_word(v)
             }
 
             #[inline(always)]
@@ -338,7 +423,7 @@ macro_rules! __word_flags_impl {
 
             #[inline(always)]
             pub const fn to_word(self) -> u32 {
-                self.bits() as u32
+                (self.bits() as u32) & (Self::ALL.bits() as u32)
             }
 
             #[inline(always)]
@@ -353,7 +438,7 @@ macro_rules! __word_flags_impl {
 
             #[inline(always)]
             fn to_bits(self) -> u32 {
-                (self.bits() as u32) & (Self::ALL.bits() as u32)
+                self.to_word()
             }
 
             #[inline(always)]
@@ -387,6 +472,13 @@ mod tests {
         }
     }
 
+    word_flags! {
+        struct SparseFlags(u8) {
+            const A = 1 << 0;
+            const C = 1 << 2;
+        }
+    }
+
     #[test]
     fn word_enum_and_word_flags_are_total_and_const() {
         const W: u32 = Dir::RowReverse.to_word();
@@ -394,6 +486,8 @@ mod tests {
         assert_eq!(Dir::COUNT, 4);
         assert_eq!(Dir::BITS, 2);
         assert_eq!(<Option<Dir> as WordValue>::BITS, 3);
+        assert_eq!(Dir::try_from_word(1), Some(Dir::Row));
+        assert_eq!(Dir::try_from_word(4), None);
         assert_eq!(Dir::from_bits(1), Dir::Row);
         assert_eq!(Dir::from_bits(9), Dir::Column);
         assert_eq!(Dir::default(), Dir::Column);
@@ -401,6 +495,7 @@ mod tests {
         assert_eq!(<Option<Dir> as WordValue>::from_bits(0), None);
         for &d in Dir::ALL {
             let bits = Some(d).to_bits();
+            assert_eq!(bits, Dir::opt_to_word(Some(d)));
             assert_ne!(bits, 0);
             assert_eq!(<Option<Dir> as WordValue>::from_bits(bits), Some(d));
         }
@@ -419,6 +514,17 @@ mod tests {
         assert_eq!(
             <Option<Deco> as WordValue>::from_bits(Some(d).to_bits()),
             Some(d)
+        );
+
+        // Sparse flags must mask undeclared/reserved bits in both `to_word` and `opt_to_word`.
+        let dirty = SparseFlags::from_bits_retain(0xFF);
+        assert_eq!(dirty.to_word(), 0b101);
+        assert_eq!(dirty.to_bits(), 0b101);
+        assert_eq!(SparseFlags::opt_to_word(Some(dirty)), (0b101 << 1) | 1);
+        assert_eq!(Some(dirty).to_bits(), (0b101 << 1) | 1);
+        assert_eq!(
+            <Option<SparseFlags> as WordValue>::from_bits(Some(dirty).to_bits()),
+            Some(SparseFlags::A | SparseFlags::C)
         );
     }
 

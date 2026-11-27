@@ -38,48 +38,46 @@ pub struct WebHtml {
     pub html: Str,
 }
 
-/// Structural HTML5 element tag override (`Auto` = derive from cross-platform core tables).
+/// Structural HTML5 element tag override; wrap in `Option<SemanticElement>` (`None` = derive
+/// from cross-platform core tables).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
 pub enum SemanticElement {
-    #[default]
-    Auto = 0,
-    Dialog = 1,
-    Details = 2,
-    Summary = 3,
-    Form = 4,
-    Paragraph = 5,
-    Span = 6,
-    Strong = 7,
-    Em = 8,
-    Strike = 9,
-    Code = 10,
-    Kbd = 11,
-    Br = 12,
-    Pre = 13,
-    Table = 14,
-    Thead = 15,
-    Tbody = 16,
-    Tr = 17,
-    Th = 18,
-    Td = 19,
-    Nav = 20,
-    Main = 21,
-    Article = 22,
-    Aside = 23,
-    Header = 24,
-    Footer = 25,
-    Section = 26,
-    Button = 27,
-    Label = 28,
+    Dialog = 0,
+    Details = 1,
+    Summary = 2,
+    Form = 3,
+    Paragraph = 4,
+    Span = 5,
+    Strong = 6,
+    Em = 7,
+    Strike = 8,
+    Code = 9,
+    Kbd = 10,
+    Br = 11,
+    Pre = 12,
+    Table = 13,
+    Thead = 14,
+    Tbody = 15,
+    Tr = 16,
+    Th = 17,
+    Td = 18,
+    Nav = 19,
+    Main = 20,
+    Article = 21,
+    Aside = 22,
+    Header = 23,
+    Footer = 24,
+    Section = 25,
+    Button = 26,
+    Label = 27,
 }
 
 impl SemanticElement {
-    /// Canonical HTML tag name (`None` for `Auto`).
+    /// Canonical HTML tag name.
     #[inline]
-    pub const fn as_html_tag(self) -> Option<&'static str> {
-        Some(match self {
-            Self::Auto => return None,
+    pub const fn as_html_tag(self) -> &'static str {
+        match self {
             Self::Dialog => "dialog",
             Self::Details => "details",
             Self::Summary => "summary",
@@ -108,10 +106,10 @@ impl SemanticElement {
             Self::Section => "section",
             Self::Button => "button",
             Self::Label => "label",
-        })
+        }
     }
 
-    pub fn parse(raw: &str) -> Self {
+    pub fn parse(raw: &str) -> Option<Self> {
         let s = raw.trim();
         const TABLE: &[(&str, SemanticElement)] = &[
             ("dialog", SemanticElement::Dialog),
@@ -146,7 +144,6 @@ impl SemanticElement {
         TABLE
             .iter()
             .find_map(|&(name, tag)| s.eq_ignore_ascii_case(name).then_some(tag))
-            .unwrap_or(Self::Auto)
     }
 }
 
@@ -215,7 +212,7 @@ impl PopoverAction {
 #[nve_table(name = "nve.html.semantics", storage = "sparse", flags = "publish")]
 pub struct HtmlSemantics {
     #[effect(realize, semantics)]
-    pub element: SemanticElement,
+    pub element: Option<SemanticElement>,
     #[effect(semantics)]
     pub open: bool,
     #[effect(semantics)]
@@ -416,7 +413,7 @@ mod tests {
             .tag("article")
             .html("<p>Hello <strong>HTML</strong></p>");
         tx.edit::<HtmlSemantics>(n)
-            .element(SemanticElement::Dialog)
+            .element(Some(SemanticElement::Dialog))
             .open(true)
             .closed_by(Some(ClosedBy::CloseRequest))
             .popover(Some(PopoverMode::Auto));

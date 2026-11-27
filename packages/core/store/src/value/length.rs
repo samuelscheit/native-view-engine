@@ -1,6 +1,6 @@
 //! Packed CSS / Flexbox `Length` value with a free `0b11` niche for zero-overhead `Option<Length>`.
 
-use nve_abi::table::FieldKind;
+use nve_abi::table::{FieldKind, OptEncoding};
 
 use super::{OptWord, WordValue};
 
@@ -70,6 +70,27 @@ impl Length {
         self.0
     }
 
+    #[inline(always)]
+    pub const fn from_word(bits: u32) -> Self {
+        // Tag `11` is unused: normalize to auto so every pattern is valid.
+        if bits & Self::TAG_MASK == Self::TAG_MASK {
+            Self::AUTO
+        } else {
+            Self(bits)
+        }
+    }
+
+    /// Encodes `Option<Length>` into 32 bits with `0 = None` via tag-niche XOR.
+    #[inline(always)]
+    pub const fn opt_to_word(v: Option<Self>) -> u32 {
+        match v {
+            None => 0,
+            // Valid tags are {00, 01, 10}; XORing with 0b11 maps them to {11, 10, 01},
+            // guaranteeing non-zero low tag bits so `0` is strictly `None`.
+            Some(l) => Self::from_word(l.0).0 ^ Self::TAG_MASK,
+        }
+    }
+
     /// Resolves against `basis` (percent base); `None` for `auto`.
     #[inline]
     pub fn resolve(self, basis: f32) -> Option<f32> {
@@ -96,27 +117,18 @@ impl WordValue for Length {
     }
     #[inline(always)]
     fn from_bits(bits: u32) -> Self {
-        // Tag `11` is unused: normalize to auto so every pattern is valid.
-        if bits & Self::TAG_MASK == Self::TAG_MASK {
-            Self::AUTO
-        } else {
-            Self(bits)
-        }
+        Self::from_word(bits)
     }
 }
 
 impl OptWord for Length {
     const OPT_BITS: u8 = 32;
     const OPT_KIND: FieldKind = FieldKind::Length;
+    const OPT_ENCODING: OptEncoding = OptEncoding::TagXor;
 
     #[inline(always)]
     fn opt_to_bits(v: Option<Self>) -> u32 {
-        match v {
-            None => 0,
-            // Valid tags are {00, 01, 10}; XORing with 0b11 maps them to {11, 10, 01},
-            // guaranteeing non-zero low tag bits so `0` is strictly `None`.
-            Some(l) => Self::from_bits(l.0).0 ^ Self::TAG_MASK,
-        }
+        Self::opt_to_word(v)
     }
 
     #[inline(always)]

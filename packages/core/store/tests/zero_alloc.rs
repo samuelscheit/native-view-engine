@@ -1,22 +1,35 @@
-//! Global-allocator verification proving `0` steady-state heap allocations across
-//! `NodeStore` hot paths: `tx.set` / `tx.edit` / `NodeMut`, `tx.set_children`, `tx.insert_child`,
-//! `tx.remove`, `tx.commit_into`, `NodeRef` multi-reads, `StrArena::str`, `publish_table_views`,
-//! and `NVE2` `WireEncoder::encode` + `WireDecoder::apply` into reused buffers.
+//! Thread-local global-allocator verification proving `0` steady-state heap allocations across
+//! `NodeStore` hot paths: `tx.set` / `tx.edit` / `NodeMut` (scalars, `OptWord`, `WideOpt`,
+//! `Wide64`, `GridLine`, strings), `tx.set_children`, `tx.remove`, `tx.commit_into`, `NodeRef`
+//! multi-reads, `StrArena::str`, `publish_table_views`, and `NVE2` `WireEncoder::encode` +
+//! `WireDecoder::apply` into reused buffers.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba, Str};
+use nve_store::{ChangeSet, GridLine, Length, NodeId, NodeStore, NveTable, Rgba, Str, WordEnum};
+
+thread_local! {
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
+}
 
 struct CountingAlloc;
 
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[inline]
+fn record_alloc() {
+    let _ = COUNTING.try_with(|active| {
+        if active.get() {
+            let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get() + 1));
+        }
+    });
+}
 
-// SAFETY: Delegates directly to `std::alloc::System` while incrementing an atomic allocation counter.
+// SAFETY: Delegates directly to `std::alloc::System` while incrementing a thread-local counter.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        record_alloc();
         // SAFETY: Caller upholds `GlobalAlloc::alloc` preconditions; delegated to `System`.
         unsafe { System.alloc(layout) }
     }
@@ -27,7 +40,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        record_alloc();
         // SAFETY: Caller upholds `GlobalAlloc::realloc` preconditions; delegated to `System`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -37,10 +50,21 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static GLOBAL: CountingAlloc = CountingAlloc;
 
 fn measure_allocs<R>(f: impl FnOnce() -> R) -> (usize, R) {
-    let before = ALLOC_COUNT.load(Ordering::SeqCst);
+    THREAD_ALLOCS.with(|c| c.set(0));
+    COUNTING.with(|a| a.set(true));
     let r = f();
-    let after = ALLOC_COUNT.load(Ordering::SeqCst);
-    (after - before, r)
+    COUNTING.with(|a| a.set(false));
+    let count = THREAD_ALLOCS.with(Cell::get);
+    (count, r)
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, WordEnum)]
+enum BenchAlign {
+    #[default]
+    Start = 0,
+    Center = 1,
+    End = 2,
 }
 
 #[allow(dead_code)]
@@ -56,6 +80,16 @@ struct BenchBox {
     #[effect(composite)]
     #[default(1.0)]
     opacity: f32,
+    #[effect(layout)]
+    grid_col: GridLine,
+    #[effect(layout)]
+    opt_align: Option<BenchAlign>,
+    #[effect(paint)]
+    opt_tint: Option<Rgba>,
+    #[effect(layout)]
+    opt_ratio: Option<f32>,
+    #[effect(paint)]
+    stamp: u64,
 }
 
 #[allow(dead_code)]
@@ -88,7 +122,12 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
                 .width(Length::points(100.0 + i as f32))
                 .height(Length::points(40.0))
                 .bg(Rgba::rgb(10, 20, 30))
-                .opacity(1.0);
+                .opacity(1.0)
+                .grid_col(GridLine::Span(2))
+                .opt_align(Some(BenchAlign::Center))
+                .opt_tint(Some(Rgba::rgb(255, 0, 128)))
+                .opt_ratio(Some(1.5))
+                .stamp(u64::from(i));
             nm.edit::<BenchLabel>().text("initial-label-text");
             nodes.push(nm.id());
         }
@@ -153,34 +192,52 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     }
     store.publish_table_views(&changes, &mut table_views, &mut dirty_scratch);
 
-    // 1. Steady-state scalar & string mutations via NodeMut + tx.edit + tx.set + commit_into.
+    // 1. Steady-state scalar, OptWord, WideOpt, Wide64, GridLine & string mutations.
     let (allocs_mutate, ()) = measure_allocs(|| {
         let mut tx = store.tx();
         for (idx, &n) in nodes.iter().enumerate() {
             let mut nm = tx.node_mut(n).unwrap();
             nm.edit::<BenchBox>()
                 .opacity(0.5 + (idx as f32) * 0.001)
-                .bg(Rgba::rgb(idx as u8, 40, 80));
+                .bg(Rgba::rgb(idx as u8, 40, 80))
+                .grid_col(GridLine::Line((idx as i16) - 16))
+                .opt_align(if idx & 1 == 0 { Some(BenchAlign::End) } else { None })
+                .opt_tint(if idx & 1 == 0 { Some(Rgba::rgb(1, 2, 3)) } else { None })
+                .opt_ratio(Some(1.0 + idx as f32 * 0.1))
+                .stamp(0x1000_0000_0000_0000u64 | idx as u64);
             nm.edit::<BenchLabel>().text("updated-label-txt");
         }
         tx.set(nodes[0], BenchBox::WIDTH, Length::points(222.0));
+        tx.set(nodes[0], BenchBox::OPT_RATIO, None);
+        tx.set(nodes[0], BenchBox::STAMP, 0xDEAD_BEEF_CAFE_BABEu64);
         tx.commit_into(&mut changes);
     });
     assert_eq!(allocs_mutate, 0, "steady-state tx mutate + commit_into must allocate 0 bytes");
 
-    // 2. Steady-state NodeRef multi-reads + sealed RowRef O(1) `&str` reads.
+    // 2. Steady-state NodeRef multi-reads covering OptWord, WideOpt, Wide64, GridLine, &str.
     let (allocs_read, sum) = measure_allocs(|| {
-        let mut acc = 0usize;
+        let mut acc = 0u64;
         for &n in &nodes {
             let nr = store.get(n).unwrap();
             let b = nr.row::<BenchBox>();
             let l = nr.try_row::<BenchLabel>().unwrap();
-            acc += b.bg().0 as usize + l.text().len() + nr.children().len();
+            acc = acc
+                .wrapping_add(u64::from(b.bg().0))
+                .wrapping_add(u64::from(b.grid_col().to_word()))
+                .wrapping_add(u64::from(b.opt_align().map_or(0, |a| a as u32)))
+                .wrapping_add(u64::from(b.opt_tint().map_or(0, |c| c.0)))
+                .wrapping_add(u64::from(b.opt_ratio().map_or(0, f32::to_bits)))
+                .wrapping_add(b.stamp())
+                .wrapping_add(l.text().len() as u64)
+                .wrapping_add(nr.children().len() as u64);
         }
         acc
     });
     assert!(sum > 0);
-    assert_eq!(allocs_read, 0, "NodeRef multi-read + RowRef &str must allocate 0 bytes");
+    assert_eq!(
+        allocs_read, 0,
+        "NodeRef multi-read (OptWord/WideOpt/Wide64/GridLine/&str) must allocate 0 bytes"
+    );
 
     // 3. Steady-state publish_table_views into reused buffers.
     let (allocs_pub, ()) = measure_allocs(|| {
@@ -190,11 +247,11 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     assert!(table_views.len() >= 2);
 
     // 4. Steady-state NVE2 wire encode + decode covering SetWords + SetStrings + SetChildren + Detach.
-    // Warm one detach + re-attach + reorder wire frame (touching both tables) so decoder scratch &
-    // `ChangeSet::tables[0..2]` detached buffers have steady-state capacity.
     {
         let mut tx = store.tx();
         tx.set(nodes[0], BenchBox::OPACITY, 0.66);
+        tx.set(nodes[0], BenchBox::OPT_TINT, Some(Rgba::rgb(9, 8, 7)));
+        tx.set(nodes[0], BenchBox::STAMP, 42u64);
         tx.edit::<BenchLabel>(nodes[1]).text("warm-str-same-cls");
         tx.detach::<BenchLabel>(nodes[63]);
         tx.set_children(sub_root, &[sub_c2, sub_c1]);
@@ -219,6 +276,10 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     let (allocs_wire, ()) = measure_allocs(|| {
         let mut tx = store.tx();
         tx.set(nodes[0], BenchBox::OPACITY, 0.77);
+        tx.set(nodes[0], BenchBox::OPT_TINT, None);
+        tx.set(nodes[0], BenchBox::OPT_ALIGN, Some(BenchAlign::Start));
+        tx.set(nodes[0], BenchBox::GRID_COL, GridLine::Span(4));
+        tx.set(nodes[0], BenchBox::STAMP, 99u64);
         tx.edit::<BenchLabel>(nodes[1]).text("wire-str-same-cls");
         tx.detach::<BenchLabel>(nodes[63]);
         tx.set_children(sub_root, &[sub_c2, sub_c1]);
@@ -232,7 +293,7 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     });
     assert_eq!(
         allocs_wire, 0,
-        "steady-state NVE2 encode + decode (words + strings + children + detach) must allocate 0 bytes"
+        "steady-state NVE2 encode + decode (OptWord/WideOpt/Wide64/GridLine + strings + children + detach) must allocate 0 bytes"
     );
 
     // 5. Steady-state set_children reorder + subtree remove + commit_into.
