@@ -71,7 +71,7 @@ async fn scenario_1_adaptive_zero_suspense_fast_path() {
     }
 
     let nonce = generate_csp_nonce().unwrap();
-    let page = SsrPageOptions::new("Fast Path Page")
+    let page = SsrPageOptions::new("Fast Path Page", web_backend)
         .with_lang("en")
         .with_description("Zero suspense Light DOM")
         .with_stylesheet_link("/assets/base.css")
@@ -195,7 +195,7 @@ async fn scenario_1_adaptive_zero_suspense_fast_path() {
     let static_client = erased_ssr_query_client(ControlledTransport::default());
     let static_resp = pool
         .render_streaming(
-            SsrPageOptions::new("Static").with_status(StatusCode::NOT_FOUND),
+            SsrPageOptions::new("Static", web_backend).with_status(StatusCode::NOT_FOUND),
             StreamPlan::default(),
             static_client,
             |_| DioxusSurface::new(2, StaticApp),
@@ -285,7 +285,7 @@ async fn scenario_2_out_of_order_streaming_css_nveq_dedup_and_mid_and_post_hydra
     }
 
     let nonce = generate_csp_nonce().unwrap();
-    let page = SsrPageOptions::new("Streaming Dashboard")
+    let page = SsrPageOptions::new("Streaming Dashboard", web_backend)
         .with_style_nonce(nonce.clone())
         .with_modulepreload_src("/app.js")
         .with_async_boot_src("/app.js");

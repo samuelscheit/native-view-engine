@@ -5,6 +5,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::alloc::System;
 
+use nve_backend_web::WebBackend;
 use nve_ssr::{generate_csp_nonce, SsrPageOptions, StreamPlan};
 
 struct CountingAlloc;
@@ -51,11 +52,11 @@ fn csp_nonce_and_options_have_strictly_bounded_allocations() {
 
     let before_plan = ALLOC_COUNT.load(Ordering::SeqCst);
     let _plan = StreamPlan::default();
-    let _page = SsrPageOptions::default();
+    let _page = SsrPageOptions::new("", WebBackend::new);
     let after_plan = ALLOC_COUNT.load(Ordering::SeqCst);
     assert_eq!(
         after_plan - before_plan,
         0,
-        "StreamPlan::default() and SsrPageOptions::default() must perform 0 heap allocations"
+        "StreamPlan::default() and SsrPageOptions::new(\"\", WebBackend::new) must perform 0 heap allocations"
     );
 }

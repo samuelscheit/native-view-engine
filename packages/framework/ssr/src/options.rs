@@ -121,7 +121,7 @@ impl StreamPlan {
 pub struct SsrPageOptions {
     /// Builds the per-request [`WebBackend`] on the `LocalSet` worker (where `!Send` backends
     /// live). Register the app's `WebTableSystem` plugins here (e.g. semantic HTML, canvas) so
-    /// streaming SSR emits the same tags as the client. Defaults to [`WebBackend::new`].
+    /// streaming SSR emits the same tags as the client.
     pub web_backend: fn() -> WebBackend,
     pub title: String,
     pub lang: Option<String>,
@@ -142,11 +142,21 @@ pub struct SsrPageOptions {
     pub status: StatusCode,
 }
 
-impl Default for SsrPageOptions {
-    fn default() -> Self {
+#[inline]
+fn non_empty(value: impl Into<String>) -> Option<String> {
+    let s = value.into();
+    (!s.is_empty()).then_some(s)
+}
+
+impl SsrPageOptions {
+    /// `web_backend` is mandatory: a bare `WebBackend::new` silently drops every plugin tag
+    /// (`<form>` from `HtmlForm`, semantic HTML, canvas), so streaming SSR would diverge from
+    /// the client and skip `<form>` placement hygiene.
+    #[inline]
+    pub fn new(title: impl Into<String>, web_backend: fn() -> WebBackend) -> Self {
         Self {
-            web_backend: WebBackend::new,
-            title: String::new(),
+            web_backend,
+            title: title.into(),
             lang: None,
             description: None,
             head_extra: None,
@@ -158,28 +168,6 @@ impl Default for SsrPageOptions {
             enable_event_replay: false,
             status: StatusCode::OK,
         }
-    }
-}
-
-#[inline]
-fn non_empty(value: impl Into<String>) -> Option<String> {
-    let s = value.into();
-    (!s.is_empty()).then_some(s)
-}
-
-impl SsrPageOptions {
-    #[inline]
-    pub fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            ..Self::default()
-        }
-    }
-
-    #[inline]
-    pub fn with_web_backend(mut self, web_backend: fn() -> WebBackend) -> Self {
-        self.web_backend = web_backend;
-        self
     }
 
     #[inline]

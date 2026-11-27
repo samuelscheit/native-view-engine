@@ -3,6 +3,7 @@
 
 use http::header::{HeaderValue, CONTENT_SECURITY_POLICY};
 use http::Response;
+use nve_backend_web::WebBackend;
 use nve_dioxus::DioxusSurface;
 use nve_example_issues_api::{
     parse_comments_issue_query, parse_focus_issue_query, GetIssue, IssueFilter, ListIssues,
@@ -20,6 +21,15 @@ use crate::auth::Actor;
 use crate::IssuesServer;
 
 pub const PAGE_TITLE: &str = "NVE Fullstack Issues";
+
+/// Per-request SSR backend with the same `nve-web-html` plugins the browser shell registers, so
+/// `<ActionForm>` streams real `<form action method>` markup (the 0-JS fallback) and `<form>`
+/// placement hygiene sees the true tag.
+fn issues_web_backend() -> WebBackend {
+    let mut backend = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    backend
+}
 
 /// Document-level CSS outside the Dioxus tree: zero body margin, full-height `#app` flex column
 /// (so the root `scrollview` fills the viewport in both DSD and hydrated modes), and the app's
@@ -90,7 +100,7 @@ pub async fn render_issues_page(
         Ok(nonce) => nonce,
         Err(err) => return ssr_error_response(&err),
     };
-    let mut page = SsrPageOptions::new(PAGE_TITLE)
+    let mut page = SsrPageOptions::new(PAGE_TITLE, issues_web_backend)
         .with_style_nonce(nonce.clone())
         .with_head_extra(document_head_extra(&nonce));
     if boot_wasm {

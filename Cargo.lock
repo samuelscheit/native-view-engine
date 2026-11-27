@@ -2808,13 +2808,14 @@ name = "nve-example-issues-server"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64",
  "bytes",
  "http",
  "http-body-util",
  "hyper",
  "hyper-util",
  "minicbor",
+ "nve-backend-web",
  "nve-dioxus",
  "nve-example-issues-api",
  "nve-example-issues-client",
@@ -2825,6 +2826,7 @@ dependencies = [
  "nve-server",
  "nve-ssr",
  "nve-ui",
+ "nve-web-html-web",
  "tokio",
  "tower-service",
 ]
@@ -3269,7 +3271,7 @@ dependencies = [
 name = "nve-web-shell"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "bytes",
  "dioxus-core",
  "nve-abi",

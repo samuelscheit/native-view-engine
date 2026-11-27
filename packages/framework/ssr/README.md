@@ -8,15 +8,22 @@ Dedicated `tokio::task::LocalSet` streaming SSR orchestrator for `native-view-en
 - **`SsrLocalPool::render_streaming`**: Runs Frame 1 pre-headers shell rendering and Declarative Shadow DOM placement hygiene validation before emitting HTTP headers:
   - **Adaptive fast path**: When zero `<QuerySuspense>` slots suspend, returns buffered `Response<HttpBody::Full>` Light-DOM HTML (no shadow root), optional `seq=0` `NVEQ` v2 hydration script, `<template data-nve-stream-end></template>`, and optional async module boot script.
   - **Streaming path**: Returns `Response<HttpBody::Stream>` (`ChannelBody`) immediately with the DSD shell, `seq=0` (`StreamPending` + settled entries) strictly before `<script type="module" async>`, and streams out-of-order atomic `[NVEQ delta + ack + slot delta CSS/HTML]` chunks with keepalive heartbeats, `total_deadline` recovery, and immediate `VirtualDom`/RPC cancellation when the client disconnects.
-- **`SsrPageOptions::with_web_backend`**: `fn() -> WebBackend` factory run on the `LocalSet` worker so apps register the same `WebTableSystem` plugins (semantic HTML, canvas, …) for streaming SSR as for the client; defaults to `WebBackend::new`.
+- **`SsrPageOptions::new(title, web_backend)`**: mandatory `fn() -> WebBackend` builder run on the `LocalSet` worker so apps register the same `WebTableSystem` plugins (`<form>` via `HtmlForm`, semantic HTML, canvas, …) for streaming SSR as for the client; a bare `WebBackend::new` would silently drop those tags and their `<form>` placement checks.
 - **`SsrPageOptions`**, **`StreamPlan`**, **`SsrLocalPoolConfig`**, and **`generate_csp_nonce()`**: Per-request CSP nonce generation (16 CSPRNG bytes via `getrandom::fill`, Standard Base64), strict zero-inline-JS default (`enable_event_replay: false`), and safe HTML attribute/script escaping.
 
 ```rust,no_run
+use nve_backend_web::WebBackend;
 use nve_ssr::{generate_csp_nonce, SsrLocalPool, SsrPageOptions, StreamPlan};
+
+fn web_backend() -> WebBackend {
+    let mut backend = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    backend
+}
 
 let _pool = SsrLocalPool::new().expect("spawn SSR pool");
 let nonce = generate_csp_nonce().expect("CSPRNG nonce");
-let _page = SsrPageOptions::new("Issues")
+let _page = SsrPageOptions::new("Issues", web_backend)
     .with_style_nonce(nonce)
     .with_modulepreload_src("/assets/app.js")
     .with_async_boot_src("/assets/app.js");

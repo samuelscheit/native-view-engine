@@ -32,7 +32,7 @@ const MAX_SSR_SYNC_FOLLOWUP_PASSES: usize = 16;
 /// Drains immediately ready synchronous follow-ups (e.g., a cached/in-memory waterfall step
 /// resolving on first poll before re-suspending on an async step, or a `SuspenseBoundary`
 /// mounting its fallback) strictly within `nve-ssr` without leaking `wait_for_work()` polling into
-/// `DioxusSurface::flush_into` on interactive hosts.
+/// `DioxusSurface::reconcile` on interactive hosts.
 fn flush_ssr_until_quiescent(
     surface: &mut DioxusSurface,
     backend: &mut WebBackend,

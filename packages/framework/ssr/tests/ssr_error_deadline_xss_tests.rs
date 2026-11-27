@@ -71,7 +71,7 @@ async fn scenario_5_post_headers_domain_err_streams_error_boundary_and_hydrates_
     let ssr_client = erased_ssr_query_client(transport.clone());
     let resp = pool
         .render_streaming(
-            SsrPageOptions::new("DomainErr Stream"),
+            SsrPageOptions::new("DomainErr Stream", web_backend),
             StreamPlan::default(),
             ssr_client,
             |c| DioxusSurface::new(1, DomainErrApp).with_context(c),
@@ -189,7 +189,7 @@ async fn scenario_6_total_deadline_expiry_emits_stream_end_and_client_recovers()
     let t0 = Instant::now();
     let resp = pool
         .render_streaming(
-            SsrPageOptions::new("Deadline Recovery"),
+            SsrPageOptions::new("Deadline Recovery", web_backend),
             plan,
             erased_ssr_query_client(ssr_transport),
             |c| DioxusSurface::new(1, DeadlineApp).with_context(c),
@@ -308,7 +308,7 @@ async fn scenario_7_adversarial_xss_payloads_safely_escaped_and_round_tripped() 
     }
 
     let adversarial_page = || {
-        SsrPageOptions::new("</title><script>alert(2)</script>")
+        SsrPageOptions::new("</title><script>alert(2)</script>", web_backend)
             .with_style_nonce("n\" onload=\"alert(1)<>&'")
             .with_modulepreload_src("/m.js?a=\"'<>")
             .with_async_boot_src("/b.js?x=\"'<>")

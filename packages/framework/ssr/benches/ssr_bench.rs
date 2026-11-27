@@ -10,6 +10,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use http_body_util::BodyExt as _;
 use minicbor::{Decode, Encode};
 use nve_abi::ColorRgba;
+use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_http_hyper::HttpBody;
@@ -110,7 +111,7 @@ fn bench_nve_ssr(c: &mut Criterion) {
 
     let pool = SsrLocalPool::with_config(SsrLocalPoolConfig::default().with_worker_count(2))
         .expect("pool init");
-    let page = SsrPageOptions::new("Bench SSR")
+    let page = SsrPageOptions::new("Bench SSR", WebBackend::new)
         .with_style_nonce("benchNonce1234567890==")
         .with_modulepreload_src("/app.js")
         .with_async_boot_src("/app.js");

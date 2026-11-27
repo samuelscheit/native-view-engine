@@ -61,7 +61,7 @@ impl hyper::service::Service<Request<Incoming>> for LoopbackSsrService {
                 .with_total_deadline(Duration::from_secs(10))
                 .with_keepalive_interval(Duration::from_millis(20));
             let resp = pool
-                .render_streaming(SsrPageOptions::new("Disconnect Test"), plan, client, |c| {
+                .render_streaming(SsrPageOptions::new("Disconnect Test", web_backend), plan, client, |c| {
                     DioxusSurface::new(1, SlowPanelApp).with_context(c)
                 })
                 .await
@@ -235,7 +235,7 @@ async fn scenario_4_concurrent_user_a_vs_user_b_isolation_shared_pool() {
             let client = erased_ssr_query_client(transport);
             let resp = pool
                 .render_streaming(
-                    SsrPageOptions::new(format!("Profile-{}", principal.name)),
+                    SsrPageOptions::new(format!("Profile-{}", principal.name), web_backend),
                     StreamPlan::default(),
                     client,
                     |c| DioxusSurface::new(1, ProfileApp).with_context(c),

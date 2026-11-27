@@ -8,7 +8,9 @@ description = "Reference fullstack issue-tracker server built on nve-rpc, nve-se
 [dependencies]
 nve-example-issues-api = { workspace = true }
 nve-example-issues-client = { workspace = true }
+nve-backend-web = { workspace = true, features = ["ssr"] }
 nve-dioxus = { workspace = true }
+nve-web-html-web = { workspace = true }
 nve-query = { workspace = true }
 nve-query-dioxus = { workspace = true }
 nve-ssr = { workspace = true }

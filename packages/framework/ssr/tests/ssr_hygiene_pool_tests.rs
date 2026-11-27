@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use nve_backend_web::{StreamingError, WebBackend};
+use nve_backend_web::StreamingError;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
 use nve_query_dioxus::prelude::*;
@@ -21,7 +21,6 @@ use nve_ssr::{
     SsrError, SsrLocalPool, SsrLocalPoolConfig, SsrPageOptions, StreamPlan, generate_csp_nonce,
 };
 use nve_web_html::{HtmlSemantics, SemanticElement};
-use nve_web_html_web::register_web_html_systems;
 
 use support::*;
 
@@ -56,7 +55,7 @@ async fn scenario_8_dsd_placement_hygiene_fails_before_headers() {
     transport1.gate("slow");
     let err_form = pool
         .render_streaming(
-            SsrPageOptions::new("Bad Form"),
+            SsrPageOptions::new("Bad Form", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(transport1),
             |c| DioxusSurface::new(1, InsideFormApp).with_context(c),
@@ -93,11 +92,7 @@ async fn scenario_8_dsd_placement_hygiene_fails_before_headers() {
 
     let err_table = pool
         .render_streaming(
-            SsrPageOptions::new("Bad Table").with_web_backend(|| {
-                let mut backend = WebBackend::new();
-                register_web_html_systems(backend.table_registry_mut());
-                backend
-            }),
+            SsrPageOptions::new("Bad Table", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(ControlledTransport::default()),
             |c| DioxusSurface::new(1, InsideTableApp).with_context(c),
@@ -149,7 +144,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
     let holder = tokio::spawn(async move {
         let c = erased_ssr_query_client(ControlledTransport::default());
         p1.render_streaming(
-            SsrPageOptions::new("block"),
+            SsrPageOptions::new("block", web_backend),
             StreamPlan::default(),
             c,
             move |_| {
@@ -169,7 +164,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
     // Fill the single remaining queue slot deterministically by polling `queued_fut` once
     // (`render_streaming` calls `dispatch()` synchronously before awaiting `headers_rx`).
     let mut queued_fut = Box::pin(small_pool.render_streaming(
-        SsrPageOptions::new("q"),
+        SsrPageOptions::new("q", web_backend),
         StreamPlan::default(),
         erased_ssr_query_client(ControlledTransport::default()),
         |_| DioxusSurface::new(2, TinyApp),
@@ -184,7 +179,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
     // Next dispatch MUST fail immediately with `SsrError::PoolOverloaded` (non-panicking!).
     let overload_err = small_pool
         .render_streaming(
-            SsrPageOptions::new("over"),
+            SsrPageOptions::new("over", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(ControlledTransport::default()),
             |_| DioxusSurface::new(3, TinyApp),
@@ -207,7 +202,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
 
     let resp = ephem_pool
         .render_streaming(
-            SsrPageOptions::new("Drop Drain"),
+            SsrPageOptions::new("Drop Drain", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(transport.clone()),
             |c| DioxusSurface::new(1, SlowPanelApp).with_context(c),

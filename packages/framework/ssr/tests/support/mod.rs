@@ -378,3 +378,11 @@ pub fn SlowPanelInner() -> Element {
     let data = q.suspend()?;
     rsx! { text { "{data.body}" } }
 }
+
+/// The app's per-request SSR backend: core tables plus `nve-web-html` plugins (`<form>` from
+/// `HtmlForm`, semantic tags), matching what the client registers.
+pub fn web_backend() -> WebBackend {
+    let mut backend = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    backend
+}
