@@ -39,8 +39,13 @@ struct TestServer {
 
 impl TestServer {
     async fn start(configure: impl FnOnce(IssuesHttpService) -> IssuesHttpService) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener on an ephemeral port");
+        let origin = format!(
+            "http://{}",
+            listener.local_addr().expect("listener has a local address")
+        );
         let store = IssueStore::seeded();
         let svc = configure(IssuesHttpService::new(build_issues_server(
             store.clone(),
@@ -52,7 +57,7 @@ impl TestServer {
                 let _ = rx.await;
             })
             .await
-            .unwrap();
+            .expect("issues test server runs until shutdown");
         });
         Self {
             origin,
@@ -73,39 +78,60 @@ impl TestServer {
                 format!("{SESSION_COOKIE_NAME}={DEMO_WEB_COOKIE_TOKEN}"),
             );
         }
-        self.client.request(req.body(Empty::new()).unwrap()).await.unwrap()
+        self.client
+            .request(req.body(Empty::new()).expect("test request is well-formed"))
+            .await
+            .expect("test request completes")
     }
 
     async fn page(&self, path: &str) -> (Response<()>, String) {
         let resp = self.request(Method::GET, path, true).await;
         let (parts, body) = resp.into_parts();
-        let bytes = body.collect().await.unwrap().to_bytes();
+        let bytes = body.collect().await.expect("page body streams to completion").to_bytes();
         (
             Response::from_parts(parts, ()),
-            String::from_utf8(bytes.to_vec()).unwrap(),
+            String::from_utf8(bytes.to_vec()).expect("page body is valid UTF-8"),
         )
     }
 
     async fn stream_status(&self) -> String {
         let resp = self.request(Method::GET, "/_test/stream-status", false).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("stream-status body completes")
+            .to_bytes();
+        String::from_utf8(bytes.to_vec()).expect("stream-status body is valid UTF-8")
     }
 
     async fn stop(mut self) {
-        let _ = self.shutdown.take().unwrap().send(());
-        self.task.take().unwrap().await.unwrap();
+        let _ = self
+            .shutdown
+            .take()
+            .expect("shutdown sender present until stop")
+            .send(());
+        self.task
+            .take()
+            .expect("server task present until stop")
+            .await
+            .expect("server task joins without panic");
     }
 }
 
 fn header<T>(resp: &Response<T>, name: impl http::header::AsHeaderName) -> &str {
-    resp.headers().get(name).unwrap().to_str().unwrap()
+    resp.headers()
+        .get(name)
+        .expect("expected response header is present")
+        .to_str()
+        .expect("response header is visible ASCII")
 }
 
 fn index_of(html: &str, needle: &str) -> usize {
-    html.find(needle)
-        .unwrap_or_else(|| panic!("missing {needle:?} in streamed HTML:\n{html}"))
+    let pos = html.find(needle);
+    assert!(pos.is_some(), "missing {needle:?} in streamed HTML:\n{html}");
+    pos.expect("presence asserted above")
 }
 
 /// Asserts the strict zero-inline-JS CSP and returns its per-request nonce.
@@ -115,13 +141,13 @@ fn assert_strict_csp(resp: &Response<()>, html: &str) -> String {
         .split(';')
         .map(str::trim)
         .find(|d| d.starts_with("script-src "))
-        .unwrap();
+        .expect("CSP has a script-src directive");
     assert_eq!(script_src, "script-src 'self' 'wasm-unsafe-eval'");
     let nonce = csp
         .split("'nonce-")
         .nth(1)
         .and_then(|rest| rest.split('\'').next())
-        .unwrap()
+        .expect("CSP carries a nonce")
         .to_owned();
     assert_eq!(nonce.len(), 24, "128-bit base64 nonce: {csp}");
     // Every `<style>` carries the nonce; every `<script>` is either external or inert data.
@@ -133,7 +159,7 @@ fn assert_strict_csp(resp: &Response<()>, html: &str) -> String {
         "every <style> must carry the CSP nonce"
     );
     for (pos, _) in html.match_indices("<script") {
-        let tag = &html[pos..pos + html[pos..].find('>').unwrap()];
+        let tag = &html[pos..pos + html[pos..].find('>').expect("script tag is closed")];
         assert!(
             tag.contains("type=\"application/x-nve-query\"")
                 || (tag.contains(" src=\"") && tag.contains("type=\"module\"")),
@@ -149,9 +175,12 @@ fn nveq_chunks(html: &str) -> Vec<(u64, Vec<u8>)> {
     html.match_indices(MARKER)
         .map(|(pos, _)| {
             let rest = &html[pos + MARKER.len()..];
-            let (seq, rest) = rest.split_once("\">").unwrap();
-            let b64 = &rest[..rest.find("</script>").unwrap()];
-            (seq.parse().unwrap(), BASE64_STANDARD.decode(b64).unwrap())
+            let (seq, rest) = rest.split_once("\">").expect("nveq seq attribute is closed");
+            let b64 = &rest[..rest.find("</script>").expect("nveq script is closed")];
+            (
+                seq.parse().expect("nveq seq is a u64"),
+                BASE64_STANDARD.decode(b64).expect("nveq payload is valid base64"),
+            )
         })
         .collect()
 }
