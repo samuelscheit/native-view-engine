@@ -259,7 +259,9 @@ final class BinCodecTests: XCTestCase {
         try XCTSkipIf(MemoryLayout<Int>.size != 8, "a 2^32-element collection needs a 64-bit Int")
         var b = BinWriter()
         b.writeNull()
-        XCTAssertThrowsError(try b.writeBytes(HugeBytes())) { XCTAssertEqual($0 as? BinError, .tooLarge) }
+        XCTAssertThrowsError(try b.writeBytes(HugeBytes(endIndex: Int(UInt32.max) + 1))) {
+            XCTAssertEqual($0 as? BinError, .tooLarge)
+        }
         XCTAssertEqual(b.bytes, [0])
     }
 
@@ -341,9 +343,12 @@ final class BinCodecTests: XCTestCase {
 }
 
 /// A collection that claims `u32::MAX + 1` zero bytes without storing any (random access, so
-/// `count` is O(1); never iterated).
+/// `count` is O(1); never iterated). `endIndex` is a stored `let` property rather than a computed
+/// constant getter: Apple Swift 6.4 (`swiftlang-6.4.0.34.1`) `-O` blows up to ~32 GB RAM compiling
+/// default `Collection` witness thunks when `endIndex` is a compile-time `2^32` constant (see
+/// `docs/UPSTREAM.md`).
 private struct HugeBytes: RandomAccessCollection {
-    var startIndex: Int { 0 }
-    var endIndex: Int { Int(UInt32.max) + 1 }
+    let startIndex: Int = 0
+    let endIndex: Int
     subscript(_: Int) -> UInt8 { 0 }
 }
