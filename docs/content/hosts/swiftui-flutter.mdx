@@ -1,6 +1,6 @@
 ---
 title: "SwiftUI & Flutter"
-description: "NveSwiftUI with zero-alloc NveDirectArena & NveDirectEncodable, and Flutter nve_flutter Impeller NveCanvasView via dart:ffi and NveBinWriter."
+description: "NveSwiftUI with zero-alloc NveDirectArena & NveDirectEncodable, and Flutter nve_flutter NveCanvasView rendering a libnve_runtime surface via dart:ffi."
 order: 8
 ---
 
@@ -50,31 +50,25 @@ swift test --package-path hosts/swiftui-kit
 
 ## Flutter Plugin (`hosts/flutter-plugin`)
 
-`nve_flutter` binds directly to NVE Rust dynamic libraries over `dart:ffi` using generated `nve_core_abi.generated.dart` and `nve_scene_abi.generated.dart`:
+`nve_flutter` is a thin Flutter host on top of `package:nve_host` (`packages/core/host-dart`): one `libnve_runtime` surface per `NveCanvasController`, driven over `dart:ffi` (`RuntimeSession`). The runtime owns the app (`nve_get_interface`), layout, hit-testing, scrolling, and live pairing; the plugin only renders the published scene and forwards input.
 
-- **Direct Impeller/Skia `Canvas` (`NveCanvasView`) — Zero `PlatformView`s** — A custom `LeafRenderObjectWidget` (`RenderNveCanvas`) decodes NVE's binary `CommandBuffer` via `dart:ffi`, lays out text with Flutter's native `TextPainter`, and paints directly onto Flutter's own Impeller/Skia `Canvas` (including `NVE_DRAW1` vector draw lists).
+- **`NveCanvasView` — zero `PlatformView`s**: a `RenderBox` that lays the surface out at its own size, paints the published scene tables (`Visual`, `Transform`, inherited `Typography`, `TextContent`, `TextInput`, `Image`, scroll shifts, z-order, clipping) with Flutter's `TextPainter` onto Impeller/Skia, maps pointers to runtime `Pointer*`/`Press` events and wheel/drag to `scroll_by`, and exposes `SemanticsNode`s from the `Accessibility` table.
+- **Module tables** paint through `NveTablePainter`s; the canvas module's `NVE_DRAW1` draw lists ship built in.
+- **`NvePairedSurface`** pairs with `nve dev` (`nve://pair?…`) through the runtime's built-in pair client.
+- **Generated widgets** (`nve codegen export --target flutter`) attach the component library to a runtime surface; commands travel as root `Custom` events.
 
-Shared binary codecs **`NveBinWriter`** / **`NveBinReader`** and **`NveDirectEncodable`** keep Dart prop and command encoding aligned bit-for-bit with Rust's `BinValueView`.
-
-```dart title="Mounting an NVE Rust cdylib directly on Flutter's Impeller Canvas" highlight="6-9,18"
-class DirectCounterScreen extends StatefulWidget {
-  const DirectCounterScreen({super.key, required this.libraryPath});
-  final String libraryPath;
+```dart title="Running an NVE app on Flutter's Canvas" highlight="6-9,20"
+class CounterScreen extends StatefulWidget {
+  const CounterScreen({super.key, required this.appLibrary});
+  final String appLibrary;
   @override
-  State<DirectCounterScreen> createState() => _DirectCounterScreenState();
+  State<CounterScreen> createState() => _CounterScreenState();
 }
 
-class _DirectCounterScreenState extends State<DirectCounterScreen> {
-  late final NveCanvasController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = NveCanvasController.open(
-      surfaceId: 1,
-      libraryPath: widget.libraryPath,
-    );
-  }
+class _CounterScreenState extends State<CounterScreen> {
+  late final NveCanvasController _controller = NveCanvasController.open(
+    app: ffi.DynamicLibrary.open(widget.appLibrary),
+  );
 
   @override
   void dispose() {
@@ -83,16 +77,11 @@ class _DirectCounterScreenState extends State<DirectCounterScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    body: NveCanvasView(controller: _controller),
-    floatingActionButton: FloatingActionButton(
-      onPressed: () => _controller.reloadLibrary(widget.libraryPath),
-      child: const Icon(Icons.refresh),
-    ),
-  );
+  Widget build(BuildContext context) => Scaffold(body: NveCanvasView(controller: _controller));
 }
 ```
 
-```bash title="Run Flutter plugin tests"
-(cd hosts/flutter-plugin && flutter test)
+```bash title="Run Flutter plugin tests (live runtime + kitchen sink)"
+cargo build -p nve-runtime -p nve-example-kitchen-sink
+(cd hosts/flutter-plugin && flutter analyze && flutter test)
 ```

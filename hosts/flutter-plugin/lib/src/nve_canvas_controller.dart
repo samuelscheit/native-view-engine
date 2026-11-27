@@ -1,467 +1,228 @@
+/// Flutter-side owner of one `libnve_runtime` surface: drives ticks from the frame scheduler,
+/// forwards input, and exposes the published scene to painting, hit-testing, and semantics.
+library;
+
 import 'dart:ffi' as ffi;
-import 'dart:math' as math;
-import 'dart:typed_data';
+import 'dart:ui' show Offset, Size;
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:nve_host/nve_native.dart';
 
-import '../nve_flutter.dart';
-import 'command_decoder.dart';
-import 'flex_layout.dart';
-import 'scene_canvas_store.dart';
+import 'scene_resources.dart';
+import 'scene_tree.dart';
 
-/// Controller driving a direct `dart:ffi` NVE app instance rendered straight onto
-/// Flutter's Impeller/Skia [Canvas] via [NveCanvasView].
+/// Event an attached app emitted towards its host (`name` + structured `value`).
+final class NveAppEvent {
+  const NveAppEvent(this.name, this.value);
+
+  final String name;
+  final Object? value;
+}
+
+/// Owns a [RuntimeSession] on the UI isolate. Runtime work happens only on scheduled frames:
+/// the runtime's wake callback, viewport changes, input, and scrolling schedule one coalesced
+/// `tick`, and a tick that publishes a new frame notifies listeners (repaint + semantics).
 class NveCanvasController extends ChangeNotifier {
-  NveCanvasController.fromInstance(
-    NveAppInstance instance, {
-    String? libraryPath,
-    NveTextMeasurer? textMeasurer,
-    this.defaultFontFamily,
-    this.onEvent,
-  })  : _instance = instance,
-        _libraryPath = libraryPath,
-        tree = NveRetainedTree(),
-        layoutSolver = NveFlexLayoutSolver(
-          textMeasurer: textMeasurer,
-          defaultFontFamily: defaultFontFamily,
-        );
+  /// Wraps [session] (owned: disposed with this controller).
+  NveCanvasController(this.session, {this.defaultFontFamily, this.onEvent}) {
+    session.setWakeListener(scheduleTick);
+  }
 
-  /// Loads an NVE dynamic library (`lib*.dylib`, `*.so`, `*.dll`) via `nve_get_interface`.
+  /// Creates a surface on `libnve_runtime` ([runtimeLibrary] path, else the platform default; iOS
+  /// and statically linked hosts use the process image) and attaches [app] when given.
   factory NveCanvasController.open({
-    int surfaceId = 1,
-    String? libraryPath,
-    String vtableSymbol = 'nve_get_interface',
-    NveTextMeasurer? textMeasurer,
+    String? runtimeLibrary,
+    ffi.DynamicLibrary? app,
+    String appSymbol = 'nve_get_interface',
     String? defaultFontFamily,
-    NveEventCallback? onEvent,
+    ValueChanged<RuntimeEvent>? onEvent,
   }) {
-    final instance = NveAppInstance.open(
-      surfaceId: surfaceId,
-      libraryPath: libraryPath,
-      vtableSymbol: vtableSymbol,
-    );
-    return NveCanvasController.fromInstance(
-      instance,
-      libraryPath: libraryPath,
-      textMeasurer: textMeasurer,
-      defaultFontFamily: defaultFontFamily,
-      onEvent: onEvent,
-    );
+    final api = runtimeLibrary != null
+        ? RuntimeApi.open(runtimeLibrary)
+        : (defaultTargetPlatform == TargetPlatform.iOS ? RuntimeApi.process() : RuntimeApi.open());
+    final controller = NveCanvasController(RuntimeSession(api, width: 1, height: 1, scaleFactor: 1),
+        defaultFontFamily: defaultFontFamily, onEvent: onEvent);
+    if (app != null) {
+      controller.attachApp(app, symbol: appSymbol);
+    }
+    return controller;
   }
 
-  /// Creates a controller backed by an explicit `nve_get_interface` resolver (ideal for tests).
-  factory NveCanvasController.fromInterfaceResolver({
-    required ffi.Pointer<ffi.Void> Function(int) getInterface,
-    int surfaceId = 1,
-    NveTextMeasurer? textMeasurer,
-    String? defaultFontFamily,
-    NveEventCallback? onEvent,
-  }) {
-    final instance = NveAppInstance.fromInterfaceResolver(
-      surfaceId: surfaceId,
-      getInterface: getInterface,
-    );
-    return NveCanvasController.fromInstance(
-      instance,
-      textMeasurer: textMeasurer,
-      defaultFontFamily: defaultFontFamily,
-      onEvent: onEvent,
-    );
-  }
+  final RuntimeSession session;
 
-  NveAppInstance _instance;
-  String? _libraryPath;
-
-  /// Optional default font family shared by [layoutSolver] and [RenderNveCanvas].
+  /// Font family for text without an explicit `Typography.font_family`.
   final String? defaultFontFamily;
 
-  /// Retained node tree decoded from the latest binary `CommandBuffer` frames.
-  final NveRetainedTree tree;
+  /// Observes every input event this controller dispatches (after dispatch).
+  ValueChanged<RuntimeEvent>? onEvent;
 
-  /// Flexbox layout solver computing node rects with Flutter's [TextPainter].
-  final NveFlexLayoutSolver layoutSolver;
+  /// Receives app-emitted events. Hookup point for `NveRuntimeApi.drain_emitted_events`
+  /// (Slice 2B-0): drain after each [tick] and forward here.
+  ValueChanged<NveAppEvent>? onAppEvent;
 
-  /// Optional callback invoked for every outbound event drained from the Rust app.
-  NveEventCallback? onEvent;
+  /// Resource payloads for painters. Hookup point for `NveRuntimeApi.resource_payload`
+  /// (Slice 2B-0); `null` while the runtime exposes no resource view.
+  NveSceneResources? get resources => null;
 
-  final Map<int, Offset> _scrollOffsets = <int, Offset>{};
-  int _frameCount = 0;
-  NveFrameApplyResult? _lastFrameResult;
-  NveDecodeError? _lastError;
-  Size _viewportSize = Size.zero;
-  double _devicePixelRatio = 1.0;
-  bool _disposed = false;
+  /// Last tick / dispatch failure (also reported through [FlutterError.reportError]).
+  RuntimeException? lastError;
 
-  int get surfaceId => _instance.surfaceId;
-  String? get libraryPath => _libraryPath;
-  int get frameCount => _frameCount;
-  int get nodeCount => tree.nodeCount;
-  NveFrameApplyResult? get lastFrameResult => _lastFrameResult;
-  NveDecodeError? get lastError => _lastError;
-  Size get viewportSize => _viewportSize;
-  double get devicePixelRatio => _devicePixelRatio;
-  bool get isDisposed => _disposed;
+  bool _tickScheduled = false;
+  Duration? _lastFrame;
+  int _frames = 0;
+  Size _viewport = Size.zero;
+  double _scale = 0;
 
-  /// Snapshot of all retained nodes for diagnostics and geometry tests.
-  Map<int, NveNode> get debugNodes => tree.nodes;
+  bool get isDisposed => session.isDisposed;
 
-  /// Returns the current scroll offset for a `ScrollView` node.
-  Offset scrollOffsetOf(int nodeId) => _scrollOffsets[nodeId] ?? Offset.zero;
+  /// Published frames observed so far.
+  int get frameCount => _frames;
 
-  /// Returns the computed surface-local bounding rect of `nodeId`, or `null`.
-  Rect? layoutOf(int nodeId) => tree.layoutOf(nodeId);
+  bool get isPairConnected => session.isPairConnected;
 
-  /// Updates viewport dimensions and recomputes Flexbox layout if needed.
-  void updateViewport(Size size, {double devicePixelRatio = 1.0}) {
-    _ensureLive();
-    _viewportSize = size;
-    _devicePixelRatio = devicePixelRatio > 0.0 ? devicePixelRatio : 1.0;
-    layoutSolver.layout(tree, _viewportSize);
+  void attachApp(ffi.DynamicLibrary app, {String symbol = 'nve_get_interface'}) {
+    session.attachAppLibrary(app, symbol: symbol);
+    scheduleTick();
   }
 
-  /// Queries optional `NveLayoutApi.measure` if exported by the module.
-  Size? measure(BoxConstraints constraints) {
-    _ensureLive();
-    return _instance.measure(constraints);
+  void detachApp() {
+    session.detachApp();
+    scheduleTick();
   }
 
-  /// Pulls the next binary `CommandBuffer` frame from Rust, decodes it into [tree],
-  /// recomputes Flexbox layout, drains outbound events, and notifies listeners.
-  NveFrameApplyResult renderNextFrame({bool notify = true}) {
-    _ensureLive();
-    final bytes = _instance.renderNextFrame();
-    if (bytes.isEmpty) {
-      const emptyResult = NveFrameApplyResult.ok(
-        header: NveCommandBufferHeader(
-          magic: nveAbiMagic,
-          version: nveAbiVersion,
-          flags: 0,
-          surfaceId: 0,
-          frameId: 0,
-          opCount: 0,
-        ),
-        mutationCount: 0,
-        committed: false,
-        syncMount: false,
-        dispatchedCommands: <NveDispatchedCommand>[],
-      );
-      _lastFrameResult = emptyResult;
-      return emptyResult;
+  /// Mirrors a dev server's surface (`nve://` pair URI); frames arrive through the wake callback.
+  void pair(String uri, {String token = ''}) {
+    session.pairConnect(uri, token: token);
+    scheduleTick();
+  }
+
+  void unpair() {
+    session.pairDisconnect();
+    scheduleTick();
+  }
+
+  /// Replays one `NVE2` frame (no app or pairing attached).
+  void submitFrame(Uint8List nve2) {
+    session.submitNve2(nve2);
+    scheduleTick();
+  }
+
+  /// Forwards embedding-host props to the attached app. Hookup point for
+  /// `NveRuntimeApi.set_props` (Slice 2B-0, `DirectProps.withMap` → `NveMapEntry[]`); returns
+  /// `false` while the runtime has no props entry point.
+  bool setProps(Map<String, Object?> props) => false;
+
+  /// Sends imperative command [name] to the attached app as a `Custom` event on the root node,
+  /// with [args] as its structured value (codegen `NveExportSpec.commands`).
+  void sendCommand(String name, [Map<String, Object?> args = const <String, Object?>{}]) =>
+      dispatch([RuntimeEvent.custom(rootNodeId, name, value: args, timestampUs: _nowUs())]);
+
+  /// Lays the surface out at [size] logical points (no-op when unchanged or empty).
+  void setViewport(Size size, double devicePixelRatio) {
+    if (size.isEmpty || !size.isFinite || (size == _viewport && devicePixelRatio == _scale)) {
+      return;
     }
-
-    final result = tree.applyCommandBuffer(bytes);
-    _lastFrameResult = result;
-    if (result.isOk) {
-      _lastError = null;
-      _frameCount += 1;
-      _scrollOffsets.removeWhere((int id, Offset _) => tree.node(id) == null);
-      if (!_viewportSize.isEmpty) {
-        layoutSolver.layout(tree, _viewportSize);
-      }
-      drainEmittedEvents();
-      if (notify) {
-        notifyListeners();
-      }
-    } else {
-      _lastError = result.error;
-    }
-    return result;
+    _viewport = size;
+    _scale = devicePixelRatio;
+    session.setViewport(size.width, size.height, devicePixelRatio);
+    scheduleTick();
   }
 
-  /// Dispatches a pointer `Press` event directly via `NveSurfaceApi.dispatch_events`
-  /// and immediately renders the updated frame.
-  bool dispatchPress(int nodeId, Offset position, {int? timestampUs, bool rerender = true}) {
-    _ensureLive();
-    final ts = timestampUs ?? DateTime.now().microsecondsSinceEpoch;
-    final ok = _instance.dispatchEventsDirect(<NveEvent>[
-      NveEvent(
-        surfaceId: surfaceId,
-        nodeId: nodeId,
-        timestampUs: ts,
-        kind: NveEventKind.press,
-        payload: NvePointPayload(x: position.dx, y: position.dy),
-      ),
-    ]);
-    if (rerender) {
-      renderNextFrame();
+  /// Dispatches [events] in order and schedules the follow-up tick.
+  void dispatch(List<RuntimeEvent> events) {
+    if (events.isEmpty || isDisposed) {
+      return;
     }
-    return ok;
+    try {
+      session.dispatchEvents(events);
+    } on RuntimeException catch (e, st) {
+      _report(e, st);
+      return;
+    }
+    final listener = onEvent;
+    if (listener != null) {
+      events.forEach(listener);
+    }
+    scheduleTick();
   }
 
-  /// Dispatches a `Scroll` event directly via `NveSurfaceApi.dispatch_events`.
-  bool dispatchScroll(
-    int nodeId, {
-    required double x,
-    required double y,
-    required double contentWidth,
-    required double contentHeight,
-    int? timestampUs,
-    bool rerender = false,
-  }) {
-    _ensureLive();
-    final ts = timestampUs ?? DateTime.now().microsecondsSinceEpoch;
-    final ok = _instance.dispatchEventsDirect(<NveEvent>[
-      NveEvent(
-        surfaceId: surfaceId,
-        nodeId: nodeId,
-        timestampUs: ts,
-        kind: NveEventKind.scroll,
-        payload: NveScrollPayload(
-          x: x,
-          y: y,
-          contentWidth: contentWidth,
-          contentHeight: contentHeight,
-        ),
-      ),
-    ]);
-    if (rerender) {
-      renderNextFrame();
-    }
-    return ok;
-  }
-
-  /// Applies a scroll delta to a `ScrollView` node in [tree], clamping to its content bounds,
-  /// and dispatches the resulting scroll event.
-  NveScrollUpdate? scrollNodeBy(int nodeId, Offset delta, {int? timestampUs}) {
-    _ensureLive();
-    final node = tree.node(nodeId);
-    if (node == null || node.kind != NveComponentKind.scrollView || !node.hasComputedLayout) {
+  /// Scrolls container [nodeId] by [delta]; returns the clamped offset, reports it to the app as
+  /// a `Scroll` event, and schedules the tick that publishes it.
+  Offset? scrollBy(int nodeId, Offset delta) {
+    final (double, double) at;
+    try {
+      at = session.scrollBy(nodeId, delta.dx, delta.dy);
+    } on RuntimeException catch (e, st) {
+      _report(e, st);
       return null;
     }
-    final contentSize = _scrollContentSize(node);
-    final maxX = math.max(0.0, contentSize.width - node.computedRect.width);
-    final maxY = math.max(0.0, contentSize.height - node.computedRect.height);
-    final current = _scrollOffsets[nodeId] ?? Offset.zero;
-    final next = Offset(
-      (current.dx + delta.dx).clamp(0.0, maxX).toDouble(),
-      (current.dy + delta.dy).clamp(0.0, maxY).toDouble(),
-    );
-    _scrollOffsets[nodeId] = next;
-    dispatchScroll(
-      nodeId,
-      x: next.dx,
-      y: next.dy,
-      contentWidth: contentSize.width,
-      contentHeight: contentSize.height,
-      timestampUs: timestampUs,
-    );
-    notifyListeners();
-    return NveScrollUpdate(nodeId: nodeId, offset: next, contentSize: contentSize);
+    final content = withTree((t) {
+      final i = t.s.indexOf(nodeId);
+      return i < 0 ? Size.zero : t.contentSize(i);
+    });
+    dispatch([RuntimeEvent.scroll(nodeId, at.$1, at.$2, content.width, content.height, timestampUs: _nowUs())]);
+    return Offset(at.$1, at.$2);
   }
 
-  Size _scrollContentSize(NveNode scrollNode) {
-    var maxW = scrollNode.computedRect.width;
-    var maxH = scrollNode.computedRect.height;
-    for (final childId in scrollNode.children) {
-      final child = tree.node(childId);
-      if (child == null || !child.hasComputedLayout) continue;
-      final right = (child.computedRect.left - scrollNode.computedRect.left) +
-          child.computedRect.width +
-          scrollNode.layout.padding.right;
-      final bottom = (child.computedRect.top - scrollNode.computedRect.top) +
-          child.computedRect.height +
-          scrollNode.layout.padding.bottom;
-      if (right > maxW) maxW = right;
-      if (bottom > maxH) maxH = bottom;
+  /// Raw `NodeId` of the runtime's deepest event target under [point], or `null`.
+  int? hitTest(Offset point) => isDisposed ? null : session.hitTest(point.dx, point.dy);
+
+  /// Raw `NodeId` of the deepest scroll container under [point], or `null`.
+  int? scrollableAt(Offset point) => withTree((t) {
+        final i = t.deepestAt(point, t.isScrollContainer);
+        return i == null ? null : t.s.nodeId(i);
+      });
+
+  /// Runs [read] over the current published frame (not re-entrant; never across a tick).
+  T withTree<T>(T Function(NveSceneTree tree) read) => session.withScene((s) => read(NveSceneTree(s)));
+
+  /// Requests one coalesced tick on the next frame (safe from the wake callback).
+  void scheduleTick() {
+    if (_tickScheduled || isDisposed) {
+      return;
     }
-    return Size(maxW, maxH);
+    _tickScheduled = true;
+    SchedulerBinding.instance
+      ..scheduleFrameCallback(_onFrame)
+      ..scheduleFrame();
   }
 
-  /// Dispatches typed events directly via `NveSurfaceApi.dispatch_events`.
-  bool dispatchEventsDirect(List<NveEvent> events, {bool rerender = true}) {
-    _ensureLive();
-    final ok = _instance.dispatchEventsDirect(events);
-    if (rerender) {
-      renderNextFrame();
+  /// Ticks the runtime now; `true` when a new frame was published.
+  bool tick([double dtSeconds = 0]) {
+    if (isDisposed) {
+      return false;
     }
-    return ok;
-  }
-
-  /// Drains outbound events emitted by the Rust component and forwards them to [onEvent].
-  List<NveEvent> drainEmittedEvents() {
-    _ensureLive();
-    final events = _instance.drainEmittedEvents();
-    final cb = onEvent;
-    if (cb != null) {
-      for (final ev in events) {
-        cb(ev);
+    try {
+      if (!session.tick(dtSeconds)) {
+        return false;
       }
+    } on RuntimeException catch (e, st) {
+      _report(e, st);
+      return false;
     }
-    return events;
+    _frames++;
+    notifyListeners();
+    return true;
   }
 
-  /// Pushes structured props via `set_props_direct` (binary `NveBinValue` fallback), binary FFI.
-  bool setPropsDirect(Map<String, Object?> props, {bool rerender = true}) {
-    _ensureLive();
-    final ok = _instance.setPropsDirect(props);
-    if (rerender) {
-      renderNextFrame();
-    }
-    return ok;
+  void _onFrame(Duration timestamp) {
+    _tickScheduled = false;
+    final last = _lastFrame;
+    _lastFrame = timestamp;
+    tick(last == null ? 0 : (timestamp - last).inMicroseconds / 1e6);
   }
 
-  /// Applies one binary `NVP1` Tier-1 hot-patch frame via `NveDevApi.apply_hot_patch`.
-  bool applyHotPatch(Uint8List patchNvp1, {bool rerender = true}) {
-    _ensureLive();
-    final ok = _instance.applyHotPatch(patchNvp1);
-    if (rerender) {
-      renderNextFrame();
-    }
-    return ok;
+  void _report(RuntimeException e, StackTrace st) {
+    lastError = e;
+    FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st, library: 'nve_flutter'));
   }
 
-  /// Captures serialized app state via `NveDevApi.snapshot_state`.
-  Uint8List snapshotState() {
-    _ensureLive();
-    return _instance.snapshotState();
-  }
-
-  /// Restores serialized app state via `NveDevApi.restore_state`.
-  void restoreState(Uint8List stateBytes) {
-    _ensureLive();
-    _instance.restoreState(stateBytes);
-  }
-
-  /// Atomically hot-swaps the loaded NVE dynamic library while preserving app state.
-  NveFrameApplyResult reloadLibrary(
-    String newLibraryPath, {
-    String vtableSymbol = 'nve_get_interface',
-  }) {
-    _ensureLive();
-    final savedState = _instance.snapshotState();
-    final nextInstance = NveAppInstance.open(
-      surfaceId: surfaceId,
-      libraryPath: newLibraryPath,
-      vtableSymbol: vtableSymbol,
-    );
-    return _swapInstance(nextInstance, savedState, libraryPath: newLibraryPath);
-  }
-
-  /// Atomically hot-swaps the backing module using an explicit `nve_get_interface` resolver.
-  NveFrameApplyResult reloadWithInterfaceResolver(
-    ffi.Pointer<ffi.Void> Function(int) getInterface,
-  ) {
-    _ensureLive();
-    final savedState = _instance.snapshotState();
-    final nextInstance = NveAppInstance.fromInterfaceResolver(
-      surfaceId: surfaceId,
-      getInterface: getInterface,
-    );
-    return _swapInstance(nextInstance, savedState, libraryPath: _libraryPath);
-  }
-
-  NveFrameApplyResult _swapInstance(
-    NveAppInstance nextInstance,
-    Uint8List savedState, {
-    required String? libraryPath,
-  }) {
-    if (savedState.isNotEmpty) {
-      nextInstance.restoreState(savedState);
-    }
-    final previous = _instance;
-    _instance = nextInstance;
-    _libraryPath = libraryPath;
-    previous.dispose();
-    _scrollOffsets.clear();
-    tree.reset();
-    return renderNextFrame();
-  }
-
-  /// Reverse z-order hit-test returning the topmost interactive node at [localPosition],
-  /// honoring `ScrollView` viewport clipping and scroll offsets.
-  int? hitTestNode(Offset localPosition, {bool interactiveOnly = true}) {
-    return _hitTestRecursive(nveRootNodeId, localPosition, interactiveOnly);
-  }
-
-  /// Finds the innermost `ScrollView` node containing [localPosition].
-  int? hitTestScrollable(Offset localPosition) {
-    return _hitTestScrollableRecursive(nveRootNodeId, localPosition);
-  }
-
-  int? _hitTestRecursive(int nodeId, Offset pos, bool interactiveOnly) {
-    final node = tree.node(nodeId);
-    if (node == null || !node.hasComputedLayout) return null;
-    if (node.style.opacity <= 0.001) return null;
-
-    final inside = node.computedRect.contains(pos);
-    if (!inside && nodeId != nveRootNodeId) return null;
-
-    final childPos =
-        node.kind == NveComponentKind.scrollView ? pos + scrollOffsetOf(nodeId) : pos;
-
-    final ordered = childrenInPaintOrder(tree, node.children);
-    for (var i = ordered.length - 1; i >= 0; i--) {
-      final hit = _hitTestRecursive(ordered[i], childPos, interactiveOnly);
-      if (hit != null) return hit;
-    }
-
-    if (inside && (!interactiveOnly || node.isInteractive)) {
-      return nodeId;
-    }
-    return null;
-  }
-
-  int? _hitTestScrollableRecursive(int nodeId, Offset pos) {
-    final node = tree.node(nodeId);
-    if (node == null || !node.hasComputedLayout) return null;
-    if (node.style.opacity <= 0.001) return null;
-
-    final inside = node.computedRect.contains(pos);
-    if (!inside && nodeId != nveRootNodeId) return null;
-
-    final childPos =
-        node.kind == NveComponentKind.scrollView ? pos + scrollOffsetOf(nodeId) : pos;
-
-    final ordered = childrenInPaintOrder(tree, node.children);
-    for (var i = ordered.length - 1; i >= 0; i--) {
-      final hit = _hitTestScrollableRecursive(ordered[i], childPos);
-      if (hit != null) return hit;
-    }
-
-    if (inside && node.kind == NveComponentKind.scrollView) {
-      return nodeId;
-    }
-    return null;
-  }
-
-  void _ensureLive() {
-    if (_disposed) {
-      throw StateError('NveCanvasController has been disposed');
-    }
-  }
+  static int _nowUs() => DateTime.now().microsecondsSinceEpoch;
 
   @override
   void dispose() {
-    if (_disposed) return;
-    _disposed = true;
-    _instance.dispose();
+    session.dispose();
     super.dispose();
   }
-}
-
-/// Stable z-index sort preserving tree order on equal `zIndex`.
-List<int> childrenInPaintOrder(NveRetainedTree tree, List<int> children) {
-  if (children.length <= 1) return children;
-  var hasNonZeroZ = false;
-  for (final cid in children) {
-    final c = tree.node(cid);
-    if (c != null && c.style.zIndex != 0) {
-      hasNonZeroZ = true;
-      break;
-    }
-  }
-  if (!hasNonZeroZ) return children;
-
-  final sorted = List<int>.of(children);
-  for (var i = 1; i < sorted.length; i++) {
-    final key = sorted[i];
-    final keyZ = tree.node(key)?.style.zIndex ?? 0;
-    var j = i - 1;
-    while (j >= 0 && (tree.node(sorted[j])?.style.zIndex ?? 0) > keyZ) {
-      sorted[j + 1] = sorted[j];
-      j -= 1;
-    }
-    sorted[j + 1] = key;
-  }
-  return sorted;
 }

@@ -1,5 +1,6 @@
-//! `export_flutter`: `NveExportSpec` -> typed Dart `StatefulWidget` using `dart:ffi`
-//! and `package:nve_flutter/nve_canvas.dart` (`NveCanvasView` / `NveCanvasController`).
+//! `export_flutter`: `NveExportSpec` -> typed Dart `StatefulWidget` that attaches the component's
+//! `nve_get_interface` library to a `libnve_runtime` surface through
+//! `package:nve_flutter/nve_flutter.dart` (`NveCanvasController` / `NveCanvasView`).
 
 use crate::writer::CodeWriter;
 
@@ -40,20 +41,20 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     );
     writeln!(
         out,
-        "// Typed Flutter StatefulWidget + dart:ffi binding wrapping `package:nve_flutter/nve_canvas.dart`."
+        "// Typed Flutter StatefulWidget running the component on `libnve_runtime` via `package:nve_flutter`."
     );
     writeln!(out);
     writeln!(out, "import 'dart:ffi' as ffi;");
     writeln!(out, "import 'dart:io' show Platform;");
+    writeln!(out);
     writeln!(out, "import 'package:flutter/widgets.dart';");
-    writeln!(out, "import 'package:nve_flutter/nve_canvas.dart';");
     writeln!(out, "import 'package:nve_flutter/nve_flutter.dart';");
     writeln!(out);
 
-    // 1. Direct `dart:ffi` modular interface resolver (`nve_get_interface`)
+    // 1. The component library exporting its `nve_get_interface` resolver.
     writeln!(
         out,
-        "/// Direct `dart:ffi` symbol binding for `{}`'s modular interface resolver (`{}`).",
+        "/// `{}`'s native library; the runtime resolves its interfaces through `{}`.",
         sanitize_single_line_comment(name),
         sanitize_single_line_comment(vtable_sym)
     );
@@ -70,14 +71,8 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     );
     writeln!(out);
     writeln!(out, "  final ffi.DynamicLibrary library;");
-    writeln!(out, "  late final ffi.Pointer<ffi.Void> Function(int) getInterface;");
     writeln!(out);
-    writeln!(out, "  {name}NativeBindings(this.library) {{");
-    writeln!(
-        out,
-        "    getInterface = library.lookupFunction<\n        NveGetInterfaceNative,\n        ffi.Pointer<ffi.Void> Function(int)>(vtableSymbol);"
-    );
-    writeln!(out, "  }}");
+    writeln!(out, "  const {name}NativeBindings(this.library);");
     writeln!(out);
     writeln!(
         out,
@@ -118,19 +113,17 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
         emit_dart_event_class(&mut out, name, ev);
     }
 
-    // 4. Typed imperative command controller wrapping `NveSurfaceController`
+    // 4. Typed imperative commands, sent to the mounted surface as root `Custom` events.
     writeln!(
         out,
-        "/// Imperative controller for `{}` delegating to `NveSurfaceController`.",
+        "/// Imperative commands for a mounted `{}` (dropped while unmounted).",
         sanitize_single_line_comment(name)
     );
     writeln!(out, "class {name}Controller {{");
-    writeln!(out, "  final NveSurfaceController inner;");
+    writeln!(out, "  NveCanvasController? _canvas;");
     writeln!(out);
-    writeln!(
-        out,
-        "  {name}Controller([NveSurfaceController? controller])\n      : inner = controller ?? NveSurfaceController();"
-    );
+    writeln!(out, "  /// The mounted surface, or `null`.");
+    writeln!(out, "  NveCanvasController? get canvas => _canvas;");
     for cmd in &spec.commands {
         let mname = dart_ident(&cmd.name);
         let mut sig = CodeWriter::new();
@@ -151,13 +144,13 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
         if cmd.params.is_empty() {
             writeln!(
                 out,
-                "    inner.dispatchCommand('{}');",
+                "    _canvas?.sendCommand('{}');",
                 escape_dart_single_quoted_string(&cmd.name)
             );
         } else {
             writeln!(
                 out,
-                "    inner.dispatchCommand('{}', <String, dynamic>{{",
+                "    _canvas?.sendCommand('{}', <String, Object?>{{",
                 escape_dart_single_quoted_string(&cmd.name)
             );
             for p in &cmd.params {
@@ -198,9 +191,10 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
         writeln!(out, "  final {cb_ty}? {cb};");
     }
     writeln!(out, "  final {name}Controller? controller;");
+    writeln!(out, "  /// Component library path (default: the platform library name, process image on iOS).");
     writeln!(out, "  final String? libraryPath;");
-    writeln!(out, "  final int? surfaceId;");
-    writeln!(out, "  final NveChannelClient? channelClient;");
+    writeln!(out, "  /// `libnve_runtime` path (default: the platform library name, process image on iOS).");
+    writeln!(out, "  final String? runtimeLibraryPath;");
     writeln!(out, "  final double? width;");
     writeln!(out, "  final double? height;");
     writeln!(out);
@@ -224,8 +218,7 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     }
     writeln!(out, "    this.controller,");
     writeln!(out, "    this.libraryPath,");
-    writeln!(out, "    this.surfaceId,");
-    writeln!(out, "    this.channelClient,");
+    writeln!(out, "    this.runtimeLibraryPath,");
     writeln!(out, "    this.width,");
     writeln!(out, "    this.height,");
     writeln!(out, "  }});");
@@ -237,41 +230,42 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
 
     // State class
     writeln!(out, "class _{name}State extends State<{name}> {{");
-    writeln!(out, "  NveCanvasController? _canvas;");
+    writeln!(out, "  late final NveCanvasController _canvas;");
     writeln!(out);
     writeln!(out, "  @override");
     writeln!(out, "  void initState() {{");
     writeln!(out, "    super.initState();");
     writeln!(out, "    final bindings = {name}NativeBindings.open(libraryPath: widget.libraryPath);");
-    writeln!(out, "    _canvas = NveCanvasController.fromInterfaceResolver(");
-    writeln!(out, "      surfaceId: widget.surfaceId ?? 1,");
-    writeln!(out, "      getInterface: bindings.getInterface,");
-    writeln!(out, "      onEvent: _handleEvent,");
-    writeln!(out, "    );");
+    writeln!(out, "    _canvas = NveCanvasController.open(");
+    writeln!(out, "      runtimeLibrary: widget.runtimeLibraryPath,");
+    writeln!(out, "      app: bindings.library,");
+    writeln!(out, "      appSymbol: {name}NativeBindings.vtableSymbol,");
+    writeln!(out, "    )..onAppEvent = _handleEvent;");
+    writeln!(out, "    widget.controller?._canvas = _canvas;");
     writeln!(out, "    _syncProps();");
     writeln!(out, "  }}");
     writeln!(out);
     writeln!(out, "  @override");
     writeln!(out, "  void didUpdateWidget(covariant {name} oldWidget) {{");
     writeln!(out, "    super.didUpdateWidget(oldWidget);");
+    writeln!(out, "    if (!identical(oldWidget.controller, widget.controller)) {{");
+    writeln!(out, "      oldWidget.controller?._canvas = null;");
+    writeln!(out, "      widget.controller?._canvas = _canvas;");
+    writeln!(out, "    }}");
     writeln!(out, "    _syncProps();");
     writeln!(out, "  }}");
     writeln!(out);
     writeln!(out, "  @override");
     writeln!(out, "  void dispose() {{");
-    writeln!(out, "    _canvas?.dispose();");
+    writeln!(out, "    widget.controller?._canvas = null;");
+    writeln!(out, "    _canvas.dispose();");
     writeln!(out, "    super.dispose();");
     writeln!(out, "  }}");
     writeln!(out);
-    writeln!(out, "  void _syncProps() {{");
-    writeln!(out, "    final ctrl = _canvas;");
-    writeln!(out, "    if (ctrl == null || ctrl.isDisposed) return;");
-    writeln!(out, "    ctrl.instance.setPropsDirect(_encodeProps());");
-    writeln!(out, "    ctrl.renderNextFrame();");
-    writeln!(out, "  }}");
+    writeln!(out, "  void _syncProps() => _canvas.setProps(_encodeProps());");
     writeln!(out);
-    writeln!(out, "  Map<String, dynamic> _encodeProps() {{");
-    writeln!(out, "    final map = <String, dynamic>{{}};");
+    writeln!(out, "  Map<String, Object?> _encodeProps() {{");
+    writeln!(out, "    final map = <String, Object?>{{}};");
     for prop in &spec.props {
         let key = escape_dart_single_quoted_string(&prop.name);
         let field = dart_ident(&prop.name);
@@ -289,12 +283,7 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     writeln!(out, "  }}");
     writeln!(out);
 
-    writeln!(out, "  void _handleEvent(NveEvent event) {{");
-    writeln!(
-        out,
-        "    if (event.kind != NveEventKind.custom || event.name == null) return;"
-    );
-    writeln!(out, "    final binView = event.payload.parseBinValue();");
+    writeln!(out, "  void _handleEvent(NveAppEvent event) {{");
     writeln!(out, "    switch (event.name) {{");
     for ev in &spec.events {
         let cb = dart_ident(&ev.name);
@@ -309,10 +298,7 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
             writeln!(out, "        widget.{cb}?.call();");
         } else {
             let ev_cls = dart_event_class_name(name, ev);
-            writeln!(
-                out,
-                "        if (binView != null) {{ widget.{cb}?.call({ev_cls}.fromBinView(binView)); }}"
-            );
+            writeln!(out, "        widget.{cb}?.call({ev_cls}.fromValue(event.value));");
         }
         writeln!(out, "        break;");
     }
@@ -323,18 +309,11 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     writeln!(out);
 
     writeln!(out, "  @override");
-    writeln!(out, "  Widget build(BuildContext context) {{");
-    writeln!(out, "    final ctrl = _canvas;");
-    writeln!(out, "    if (ctrl == null) return const SizedBox.shrink();");
-    writeln!(out, "    return SizedBox(");
-    writeln!(out, "      width: widget.width,");
-    writeln!(out, "      height: widget.height,");
-    writeln!(out, "      child: NveCanvasView(");
-    writeln!(out, "        controller: ctrl,");
-    writeln!(out, "        onEvent: _handleEvent,");
-    writeln!(out, "      ),");
-    writeln!(out, "    );");
-    writeln!(out, "  }}");
+    writeln!(out, "  Widget build(BuildContext context) => SizedBox(");
+    writeln!(out, "        width: widget.width,");
+    writeln!(out, "        height: widget.height,");
+    writeln!(out, "        child: NveCanvasView(controller: _canvas),");
+    writeln!(out, "      );");
     writeln!(out, "}}");
 
     out.into_string()
@@ -406,12 +385,17 @@ fn emit_dart_event_class(out: &mut CodeWriter, comp_name: &str, ev: &EventSpec) 
     }
     writeln!(out, "  }});");
     writeln!(out);
-    writeln!(out, "  factory {cls}.fromBinView(NveBinValueView view) {{");
+    writeln!(out, "  /// Decodes the event's structured value (a map; missing or mistyped fields default).");
+    writeln!(out, "  factory {cls}.fromValue(Object? value) {{");
+    writeln!(
+        out,
+        "    final m = value is Map<Object?, Object?> ? value : const <Object?, Object?>{{}};"
+    );
     writeln!(out, "    return {cls}(");
     for f in &ev.payload {
         let fname = dart_ident(&f.name);
         let key = escape_dart_single_quoted_string(&f.name);
-        let expr = dart_from_bin_view_expr(&key, f);
+        let expr = dart_from_value_expr(&key, f);
         writeln!(out, "      {fname}: {expr},");
     }
     writeln!(out, "    );");
@@ -420,38 +404,37 @@ fn emit_dart_event_class(out: &mut CodeWriter, comp_name: &str, ev: &EventSpec) 
     writeln!(out);
 }
 
-fn dart_from_bin_view_expr(key: &str, f: &ObjectField) -> String {
-    let opt = f.optional || f.nullable;
-    match &f.field_type {
-        PropType::Bool => {
-            if opt {
-                format!("view.get('{key}')?.asBool()")
-            } else {
-                format!("view.get('{key}')?.asBool() ?? false")
-            }
-        }
+/// Type-checked read of map entry `key` (Dart switch-expression pattern; mistyped -> default).
+fn dart_from_value_expr(key: &str, f: &ObjectField) -> String {
+    let (pattern, fallback) = match &f.field_type {
+        PropType::Bool => ("final bool v => v".to_owned(), "false".to_owned()),
         PropType::Int32 | PropType::IntEnum { .. } => {
-            if opt {
-                format!("view.get('{key}')?.asInt64()")
-            } else {
-                format!("view.get('{key}')?.asInt64() ?? 0")
-            }
+            ("final num v => v.toInt()".to_owned(), "0".to_owned())
         }
         PropType::Float | PropType::Double => {
-            if opt {
-                format!("view.get('{key}')?.asNumber()")
-            } else {
-                format!("view.get('{key}')?.asNumber() ?? 0.0")
-            }
+            ("final num v => v.toDouble()".to_owned(), "0.0".to_owned())
         }
-        _ => {
-            if opt {
-                format!("view.get('{key}')?.asString()")
-            } else {
-                format!("view.get('{key}')?.asString() ?? ''")
-            }
+        // Packed ARGB or the `#AARRGGBB` string color props are encoded as.
+        PropType::Color => (
+            "final int v => Color(v), final String v when v.startsWith('#') => Color(int.tryParse(v.substring(1), radix: 16) ?? 0)"
+                .to_owned(),
+            "const Color(0)".to_owned(),
+        ),
+        PropType::Array { item } => {
+            let item = dart_simple_type(item);
+            (
+                format!("final List<Object?> v => v.whereType<{item}>().toList()"),
+                format!("const <{item}>[]"),
+            )
         }
-    }
+        PropType::Object { .. } => (
+            "final Map<Object?, Object?> v => v.cast<String, dynamic>()".to_owned(),
+            "const <String, dynamic>{}".to_owned(),
+        ),
+        _ => ("final String v => v".to_owned(), "''".to_owned()),
+    };
+    let fallback = if f.optional || f.nullable { "null" } else { &fallback };
+    format!("switch (m['{key}']) {{ {pattern}, _ => {fallback} }}")
 }
 
 fn dart_event_callback_type(comp_name: &str, ev: &EventSpec) -> String {

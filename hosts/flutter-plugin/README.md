@@ -1,85 +1,50 @@
-# `nve_flutter` — Native View Engine Host Plugin for Flutter
+# `nve_flutter` — Native View Engine host for Flutter
 
-Embed any compiled Rust **Native View Engine (NVE)** app or island inside Flutter on macOS, Windows, Linux, iOS, and Android:
-
-- **Direct `RenderBox` + Impeller/Skia `Canvas` (`NveCanvasView`)**: renders NVE's binary `CommandBuffer` / `NveSceneView` straight onto Flutter's own `Canvas` via `dart:ffi` with zero PlatformViews and zero native plugin boilerplate.
-- **Direct FFI, Live Pairing & Channels**: `NveAppInstance` (modular `nve_get_interface`), `NvePairClient` / `NvePairedSurface`, and `NveChannelClient` (`NveChannelBus` Dart `Stream`s).
-
-## Architecture
+Runs an NVE app on `libnve_runtime` and renders it on Flutter's own `Canvas` (zero PlatformViews)
+through `package:nve_host` (`packages/core/host-dart`).
 
 ```
-Flutter Widget Tree
-  ├── NveCanvasView         ──► Custom RenderBox + Impeller/Skia Canvas (zero PlatformViews)
-  │                             └── dart:ffi -> NveRetainedTree / NveSceneView -> Canvas
-  ├── NvePairedSurface      ──► NvePairClient live WebSocket/binary preview host
-  ├── NveAppInstance        ──► Direct dart:ffi bindings to modular nve_get_interface
-  └── NveChannelClient      ──► Dart Stream<NveChannelMessage> ◄──► NveChannelBus
+Flutter widget tree
+  ├── NveCanvasView        RenderBox: layout at its size, paint, input, semantics
+  │     └── NveCanvasController ──► RuntimeSession (dart:ffi) ──► libnve_runtime
+  │                                    ├── attached app (nve_get_interface)
+  │                                    ├── live pairing (nve://pair)
+  │                                    └── NVE2 replay
+  └── NvePairedSurface     pairing controls + NveCanvasView
 ```
 
-### Modular C ABI (`nve_get_interface`)
+- **Painting** reads the published scene tables directly (`NveScenePainter`): fills, borders,
+  radius, opacity, visibility, overflow clip, `z_index`, transforms, inherited typography, text,
+  text inputs, images, and scroll shifts. Module tables paint through `NveTablePainter`s
+  (`NveCanvasTablePainter` for `NVE_DRAW1` draw lists).
+- **Input**: pointer down/move/up and press go to the runtime's hit-test target; wheel and drag
+  (past touch slop) scroll the deepest scroll container via `scroll_by`.
+- **Semantics**: `Accessibility` roles/states/labels, text, inputs (masked when secure), images,
+  and press targets, with taps routed back as presses.
+- **Commands** (`NveCanvasController.sendCommand`) are root `Custom` events.
 
-- **`NveSurfaceApi` (`1`)**: `create`, `destroy`, `render`, `dispatch_events`.
-- **`NveLayoutApi` (`2`)**: zero-serialization `measure(handle, NveSizeConstraints) -> NveIntrinsicSize` and `hit_test(handle, x, y, pointer_phase) -> NveGestureDisposition`.
-- **`NveComponentApi` (`3`)**: `set_props`, `drain_emitted_events`.
-- **`NveDevApi` (`4`)**: `apply_hot_patch`, `snapshot_state`, `restore_state` (optional; may be NULL in release builds).
+Pending runtime entry points (`NveRuntimeApi` additions): `setProps`, app-emitted events
+(`onAppEvent`), and resource payloads (`resources`: image sources, draw lists) are wired as seams
+on `NveCanvasController`.
 
-## Quickstart: Direct `NveCanvasView` (Zero PlatformViews)
-
-Build any NVE Rust cdylib (e.g. `cargo build -p nve-example-kitchen-sink`), then mount it directly on Flutter's Canvas:
+## Quickstart
 
 ```dart
-import 'package:flutter/material.dart';
-import 'package:nve_flutter/nve_canvas.dart';
-
-class DirectCounterScreen extends StatefulWidget {
-  const DirectCounterScreen({super.key, required this.libraryPath});
-  final String libraryPath;
-
-  @override
-  State<DirectCounterScreen> createState() => _DirectCounterScreenState();
-}
-
-class _DirectCounterScreenState extends State<DirectCounterScreen> {
-  late final NveCanvasController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = NveCanvasController.open(
-      surfaceId: 1,
-      libraryPath: widget.libraryPath,
-    );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: NveCanvasView(controller: _controller),
-      floatingActionButton: FloatingActionButton(
-        tooltip: 'State-preserving Hot Reload',
-        onPressed: () => _controller.reloadLibrary(widget.libraryPath),
-        child: const Icon(Icons.refresh),
-      ),
-    );
-  }
-}
+final controller = NveCanvasController.open(
+  app: ffi.DynamicLibrary.open('libnve_example_kitchen_sink.dylib'),
+);
+// ...
+NveCanvasView(controller: controller);
 ```
 
-See [example/main.dart](example/main.dart) for a complete app with runtime library switching, hot-reload, and frame/node counters.
+See [example/main.dart](example/main.dart).
 
 ## Verification
 
 ```bash
-cargo build -p nve-example-kitchen-sink
+cargo build -p nve-runtime -p nve-example-kitchen-sink
 (cd hosts/flutter-plugin && flutter analyze && flutter test)
 ```
 
-## Codegen Integration
-
-Run `nve-codegen` (`export_flutter`) on any `NveExportSpec` to generate a strongly typed Dart `StatefulWidget` wrapping `NveCanvasView` + `NveCanvasController` with typed prop serialization, typed event callbacks, and typed controller commands.
+`scripts/check-all.sh` also analyzes a widget generated from
+[test/fixtures/export_spec.json](test/fixtures/export_spec.json) against the plugin API.

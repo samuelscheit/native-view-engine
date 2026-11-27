@@ -1,284 +1,152 @@
+/// Flutter [SemanticsNode]s for a published runtime scene: one node per element that carries an
+/// `Accessibility` row, visible text, a text input, an image, or a press target, with stable ids
+/// across frames, ARIA roles mapped onto Flutter flags, and taps routed back as presses.
+library;
+
 import 'package:flutter/rendering.dart';
+import 'package:nve_host/nve_host.dart';
 
-import 'command_decoder.dart';
-import 'nve_canvas_controller.dart';
-import 'nve_scene_abi.generated.dart';
-import 'scene_canvas_store.dart';
+import 'scene_tree.dart';
 
-/// Shared live Flutter [SemanticsNode] assembler for [RenderNveCanvas], supporting both
-/// direct `NveSceneView` slabs ([NveSceneCanvasStore]) and retained [NveRetainedTree] mode.
-class NveCanvasSemanticsAssembler {
-  static const double _inferredHeadingFontSize = 20.0;
+/// `EventMask::PRESS` (bit 0 of `Interaction.event_mask`).
+const int nveEventMaskPress = 1;
 
+final class NveCanvasSemanticsAssembler {
   final Map<int, SemanticsNode> _nodes = <int, SemanticsNode>{};
 
   void clear() => _nodes.clear();
 
-  /// Rebuilds/updates child [SemanticsNode]s in place (preserving stable node IDs across
-  /// frames) and returns them in ascending paint order.
-  List<SemanticsNode> buildSceneSemantics({
-    required NveSceneCanvasStore store,
-    required Rect surfaceRect,
-    required void Function(int nodeId, Offset center) onTapNode,
-  }) {
-    final built = <SemanticsNode>[];
-    final activeIds = <int>{};
-    final rootId = store.rootNodeId;
-    if (rootId != null) {
-      _collectScene(store, rootId, Offset.zero, surfaceRect, activeIds, built, onTapNode);
+  /// Children of the canvas semantics node in paint order; [onTap] receives the raw `NodeId`
+  /// and its on-screen center.
+  List<SemanticsNode> build(NveSceneTree tree, Rect surface, void Function(int nodeId, Offset center) onTap) {
+    final out = <SemanticsNode>[];
+    final live = <int>{};
+    final root = tree.root;
+    if (root >= 0) {
+      _Collector(tree, _nodes, live, out, onTap).visit(root, Offset.zero, surface, false);
     }
-    _nodes.removeWhere((int id, SemanticsNode _) => !activeIds.contains(id));
-    return built;
+    _nodes.removeWhere((id, _) => !live.contains(id));
+    return out;
+  }
+}
+
+final class _Collector {
+  _Collector(this.t, this.cache, this.live, this.out, this.onTap)
+      : a11y = t.s.findTable(NveAccessibilityTable.key),
+        text = t.s.findTable(NveTextTable.key),
+        input = t.s.findTable(NveTextInputTable.key),
+        image = t.s.findTable(NveImageTable.key);
+
+  final NveSceneTree t;
+  final Map<int, SemanticsNode> cache;
+  final Set<int> live;
+  final List<SemanticsNode> out;
+  final void Function(int nodeId, Offset center) onTap;
+  final TableReader? a11y, text, input, image;
+
+  RuntimeSceneReader get s => t.s;
+
+  void visit(int index, Offset shift, Rect clip, bool hiddenSubtree) {
+    if (t.isDisplayNone(index)) {
+      return;
+    }
+    final rect = t.rectOf(index).shift(-shift);
+    final ar = s.rowOf(a11y, index);
+    final hidden = hiddenSubtree || (ar >= 0 && a11y!.boolean(ar, NveAccessibilityTable.hidden));
+    final visible = rect.intersect(clip);
+    if (!hidden && !visible.isEmpty) {
+      _emit(index, rect, ar);
+    }
+    final childClip = t.clipsChildren(index) ? clip.intersect(rect) : clip;
+    final childShift = shift + t.scrollShift(index);
+    for (final kid in t.paintOrder(index)) {
+      visit(kid, childShift, childClip, hidden);
+    }
   }
 
-  /// Rebuilds/updates child [SemanticsNode]s for retained-tree mode.
-  List<SemanticsNode> buildRetainedSemantics({
-    required NveCanvasController controller,
-    required Rect surfaceRect,
-    required void Function(int nodeId, Offset center) onTapNode,
-  }) {
-    final built = <SemanticsNode>[];
-    final activeIds = <int>{};
-    _collectRetained(controller, nveRootNodeId, Offset.zero, surfaceRect, activeIds, built, onTapNode);
-    _nodes.removeWhere((int id, SemanticsNode _) => !activeIds.contains(id));
-    return built;
-  }
-
-  void _collectScene(
-    NveSceneCanvasStore store,
-    int nodeId,
-    Offset scrollTranslate,
-    Rect clipRect,
-    Set<int> activeIds,
-    List<SemanticsNode> out,
-    void Function(int nodeId, Offset center) onTapNode,
-  ) {
-    final n = store.node(nodeId);
-    if (n == null || n.opacityU8 == 0) return;
-
-    final rect = n.rect.shift(scrollTranslate);
-    final visibleRect = rect.intersect(clipRect);
-    final isVisible = !visibleRect.isEmpty && rect.width > 0.0 && rect.height > 0.0;
-    final meta = store.metadataOf(nodeId);
-
-    final role = meta?.accessibilityRole ?? _inferSceneRole(n);
-    final isButton = role == NveAccessibilityRole.button ||
-        n.kind == nveNodeKindPressable ||
-        (n.isInteractive && !n.isTextInput && !n.isScrollView);
-    final isTextField = role == NveAccessibilityRole.textField || n.isTextInput;
-    final isHeader = role == NveAccessibilityRole.header;
-    final isImage = role == NveAccessibilityRole.image || n.isImage;
-    final isDisabled = meta?.disabled ?? false;
-
-    String label = meta?.accessibilityLabel ?? '';
-    String value = '';
-    String hint = meta?.accessibilityHint ?? '';
-
-    if (isTextField) {
-      final placeholder = meta?.placeholder ?? '';
-      if (label.isEmpty && placeholder.isNotEmpty) {
-        label = placeholder;
-      }
-      if (n.text.isNotEmpty) {
-        value = (meta?.secureTextEntry ?? false)
-            ? List<String>.filled(n.text.runes.length, '\u2022').join()
-            : n.text;
-      }
-      if (hint.isEmpty && placeholder.isNotEmpty && label != placeholder) {
-        hint = placeholder;
-      }
-    } else if (isButton) {
+  void _emit(int index, Rect rect, int ar) {
+    final role = ar >= 0 ? a11y!.enumValue(ar, NveAccessibilityTable.role) : NveAriaRole.none;
+    if (role == NveAriaRole.presentation) {
+      return;
+    }
+    final ir = s.rowOf(input, index);
+    final tr = s.rowOf(text, index);
+    final pressable = t.eventMask(index) & nveEventMaskPress != 0;
+    final isImage = role == NveAriaRole.image || s.rowOf(image, index) >= 0;
+    String a11yStr(FieldSpec f) => ar >= 0 ? s.str(a11y!, ar, f) : '';
+    var label = a11yStr(NveAccessibilityTable.label);
+    var value = a11yStr(NveAccessibilityTable.valueText);
+    final hint = a11yStr(NveAccessibilityTable.hint);
+    if (ir >= 0) {
+      final secure = input!.boolean(ir, NveTextInputTable.secure);
+      final v = s.str(input!, ir, NveTextInputTable.value);
+      value = secure ? '•' * v.runes.length : v;
       if (label.isEmpty) {
-        label = store.collectTextLabel(nodeId);
+        label = s.str(input!, ir, NveTextInputTable.placeholder);
       }
-    } else if (n.isLeafText) {
-      if (label.isEmpty) {
-        label = n.text;
-      }
+    } else if (label.isEmpty && tr >= 0) {
+      label = s.str(text!, tr, NveTextTable.text);
     }
-
-    final shouldExpose = isVisible &&
-        (isButton ||
-            isTextField ||
-            isHeader ||
-            (isImage && label.isNotEmpty) ||
-            (n.isLeafText && label.isNotEmpty) ||
-            (meta?.accessibilityLabel?.isNotEmpty ?? false));
-
-    if (shouldExpose) {
-      final childConfig = SemanticsConfiguration()
-        ..textDirection = TextDirection.ltr
-        ..label = label
-        ..value = value
-        ..hint = hint
-        ..isButton = isButton
-        ..isTextField = isTextField
-        ..isHeader = isHeader
-        ..isImage = isImage
-        ..isObscured = isTextField && (meta?.secureTextEntry ?? false);
-
-      if (isButton || isTextField) {
-        childConfig.isEnabled = !isDisabled;
-        if (!isDisabled) {
-          final tapPoint = rect.center;
-          childConfig.onTap = () => onTapNode(nodeId, tapPoint);
-        }
-      }
-
-      final semNode = _nodes.putIfAbsent(nodeId, SemanticsNode.new)
-        ..rect = visibleRect
-        ..updateWith(config: childConfig);
-      activeIds.add(nodeId);
-      out.add(semNode);
-
-      if (isButton && n.children.isNotEmpty && meta?.accessibilityLabel == null) {
-        return;
-      }
+    if (label.isEmpty && value.isEmpty && hint.isEmpty && !pressable && ar < 0 && !isImage) {
+      return;
     }
-
-    if (n.children.isNotEmpty) {
-      final nextClip = n.clipsBounds && !visibleRect.isEmpty ? visibleRect : clipRect;
-      final nextTranslate = n.isScrollView
-          ? scrollTranslate - store.scrollOffsetOf(nodeId)
-          : scrollTranslate;
-      final ordered = store.childrenInPaintOrder(n.children);
-      for (final childId in ordered) {
-        _collectScene(store, childId, nextTranslate, nextClip, activeIds, out, onTapNode);
-      }
+    final id = s.nodeId(index);
+    live.add(id);
+    final node = cache[id] ??= SemanticsNode();
+    final config = SemanticsConfiguration()
+      ..isSemanticBoundary = true
+      ..label = label
+      ..value = value
+      ..hint = hint
+      ..textDirection = TextDirection.ltr
+      ..isButton = role == NveAriaRole.button || (pressable && ir < 0 && role == NveAriaRole.none)
+      ..isLink = role == NveAriaRole.link
+      ..isHeader = role == NveAriaRole.heading
+      ..isImage = isImage
+      ..isTextField = ir >= 0 || role == NveAriaRole.textBox || role == NveAriaRole.searchBox
+      ..isSlider = role == NveAriaRole.slider;
+    if (ar >= 0) {
+      _states(config, ar, role);
     }
+    if (pressable) {
+      config.onTap = () => onTap(id, rect.center);
+    }
+    node
+      ..rect = rect
+      ..updateWith(config: config);
+    out.add(node);
   }
 
-  NveAccessibilityRole _inferSceneRole(NveSceneNodeSnapshot n) {
-    if (n.kind == nveNodeKindTextInput) return NveAccessibilityRole.textField;
-    if (n.kind == nveNodeKindPressable) return NveAccessibilityRole.button;
-    if (n.kind == nveNodeKindImage) return NveAccessibilityRole.image;
-    if (n.kind == nveNodeKindScrollView) return NveAccessibilityRole.scrollView;
-    if (n.kind == nveNodeKindText && n.isLeafText && n.fontSize >= _inferredHeadingFontSize) {
-      return NveAccessibilityRole.header;
-    }
-    if (n.isLeafText) return NveAccessibilityRole.text;
-    return NveAccessibilityRole.none;
-  }
-
-  void _collectRetained(
-    NveCanvasController ctrl,
-    int nodeId,
-    Offset scrollTranslate,
-    Rect clipRect,
-    Set<int> activeIds,
-    List<SemanticsNode> out,
-    void Function(int nodeId, Offset center) onTapNode,
-  ) {
-    final tree = ctrl.tree;
-    final node = tree.node(nodeId);
-    if (node == null || !node.hasComputedLayout || node.style.opacity <= 0.001) return;
-
-    final rect = node.computedRect.shift(scrollTranslate);
-    final visibleRect = rect.intersect(clipRect);
-    final isVisible = !visibleRect.isEmpty && rect.width > 0.0 && rect.height > 0.0;
-
-    final roleRaw = (node.rawProps['accessibilityRole']?.asString ??
-            node.rawProps['role']?.asString ??
-            '')
-        .trim()
-        .toLowerCase();
-    final isHeader = roleRaw == 'heading' ||
-        roleRaw == 'header' ||
-        (roleRaw.isEmpty && node.isTextLeaf && node.style.fontSize >= _inferredHeadingFontSize);
-    final isTextField = roleRaw == 'textfield' ||
-        roleRaw == 'textbox' ||
-        node.kind == NveComponentKind.textInput;
-    final isButton = roleRaw == 'button' ||
-        node.kind == NveComponentKind.pressable ||
-        (node.isInteractive && !isTextField && node.kind != NveComponentKind.scrollView);
-    final isImage = roleRaw == 'image' || node.kind == NveComponentKind.image;
-    final isSecure = node.rawProps['secureTextEntry']?.asBool ?? false;
-    final isDisabled = (node.rawProps['accessibilityDisabled']?.asBool ??
-        node.rawProps['disabled']?.asBool ??
-        false);
-
-    var label = node.rawProps['accessibilityLabel']?.asString ??
-        node.rawProps['aria-label']?.asString ??
-        '';
-    var value = '';
-    var hint = node.rawProps['accessibilityHint']?.asString ?? '';
-
-    if (isTextField) {
-      final placeholder = node.rawProps['placeholder']?.asString ?? '';
-      final rawVal = node.rawProps['value']?.asString ?? node.text ?? '';
-      if (label.isEmpty && placeholder.isNotEmpty) label = placeholder;
-      if (rawVal.isNotEmpty) {
-        value = isSecure ? List<String>.filled(rawVal.runes.length, '\u2022').join() : rawVal;
-      }
-      if (hint.isEmpty && placeholder.isNotEmpty && label != placeholder) hint = placeholder;
-    } else if (isButton && label.isEmpty) {
-      label = _collectRetainedLabel(tree, nodeId);
-    } else if (node.isTextLeaf && label.isEmpty) {
-      label = node.text ?? '';
-    }
-
-    final shouldExpose = isVisible &&
-        (isButton ||
-            isTextField ||
-            isHeader ||
-            (isImage && label.isNotEmpty) ||
-            (node.isTextLeaf && label.isNotEmpty) ||
-            label.isNotEmpty);
-
-    if (shouldExpose) {
-      final childConfig = SemanticsConfiguration()
-        ..textDirection = TextDirection.ltr
-        ..label = label
-        ..value = value
-        ..hint = hint
-        ..isButton = isButton
-        ..isTextField = isTextField
-        ..isHeader = isHeader
-        ..isImage = isImage
-        ..isObscured = isTextField && isSecure;
-
-      if (isButton || isTextField) {
-        childConfig.isEnabled = !isDisabled;
-        if (!isDisabled) {
-          final tapPoint = rect.center;
-          childConfig.onTap = () => onTapNode(nodeId, tapPoint);
-        }
-      }
-
-      final semNode = _nodes.putIfAbsent(nodeId, SemanticsNode.new)
-        ..rect = visibleRect
-        ..updateWith(config: childConfig);
-      activeIds.add(nodeId);
-      out.add(semNode);
-
-      if (isButton &&
-          node.children.isNotEmpty &&
-          node.rawProps['accessibilityLabel'] == null &&
-          node.rawProps['aria-label'] == null) {
-        return;
+  void _states(SemanticsConfiguration c, int row, int role) {
+    final a = a11y!;
+    int tri(FieldSpec f) => a.enumValue(row, f);
+    final checked = tri(NveAccessibilityTable.checked);
+    if (checked != NveAriaTriState.unset) {
+      if (role == NveAriaRole.switchValue) {
+        c.isToggled = checked == NveAriaTriState.trueValue;
+      } else {
+        c
+          ..isChecked = checked == NveAriaTriState.trueValue
+          ..isCheckStateMixed = checked == NveAriaTriState.mixed;
       }
     }
-
-    final isScrollView = node.kind == NveComponentKind.scrollView;
-    final nextClip = isScrollView && !visibleRect.isEmpty ? visibleRect : clipRect;
-    final nextTranslate = isScrollView
-        ? scrollTranslate - ctrl.scrollOffsetOf(nodeId)
-        : scrollTranslate;
-    final ordered = childrenInPaintOrder(tree, node.children);
-    for (final childId in ordered) {
-      _collectRetained(ctrl, childId, nextTranslate, nextClip, activeIds, out, onTapNode);
+    final selected = tri(NveAccessibilityTable.selected);
+    if (selected != NveAriaTriState.unset) {
+      c.isSelected = selected == NveAriaTriState.trueValue;
     }
-  }
-
-  String _collectRetainedLabel(NveRetainedTree tree, int nodeId) {
-    final node = tree.node(nodeId);
-    if (node == null) return '';
-    if (node.isTextLeaf && (node.text?.isNotEmpty ?? false)) return node.text!;
-    final parts = <String>[];
-    for (final cid in node.children) {
-      final sub = _collectRetainedLabel(tree, cid);
-      if (sub.isNotEmpty) parts.add(sub);
+    final expanded = tri(NveAccessibilityTable.expanded);
+    if (expanded != NveAriaTriState.unset) {
+      c.isExpanded = expanded == NveAriaTriState.trueValue;
     }
-    return parts.join(' ');
+    final pressed = tri(NveAccessibilityTable.pressed);
+    if (pressed != NveAriaTriState.unset) {
+      c.isToggled = pressed == NveAriaTriState.trueValue;
+    }
+    if (a.boolean(row, NveAccessibilityTable.modal)) {
+      c.scopesRoute = true;
+    }
+    if (tri(NveAccessibilityTable.live) >= NveAriaLive.polite) {
+      c.liveRegion = true;
+    }
   }
 }

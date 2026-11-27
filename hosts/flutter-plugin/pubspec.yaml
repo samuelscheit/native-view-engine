@@ -1,8 +1,8 @@
 name: nve_flutter
 description: >-
-  Native View Engine (NVE) Flutter host package. Embeds NVE Rust components directly
-  onto Flutter's Canvas via dart:ffi (NveCanvasView / NveCanvasController), modular
-  nve_get_interface bindings, NvePairClient live pairing, and NveChannelBus stream bridging.
+  Native View Engine (NVE) Flutter host: renders a libnve_runtime surface (attached
+  nve_get_interface app, live pairing, or NVE2 replay) on Flutter's own Canvas via
+  dart:ffi and package:nve_host (NveCanvasView / NveCanvasController).
 version: 0.1.0
 publish_to: none
 
@@ -13,6 +13,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  nve_host:
+    path: ../../packages/core/host-dart
 
 dev_dependencies:
   flutter_test:
