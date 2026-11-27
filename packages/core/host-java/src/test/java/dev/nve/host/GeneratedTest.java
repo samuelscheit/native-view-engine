@@ -19,8 +19,14 @@ final class GeneratedTest {
             for (FieldSpec f : t.fields()) c.that(f.fits(t.words), t.name + " field fits its row");
         }
         c.eq(NveAbi.SIZEOF_RENDER_NODE, 64, "NveRenderNode stride");
-        c.eq(NveAbi.SIZEOF_TABLE_VIEW_64, 48, "NveTableView 64-bit size");
-        c.eq(NveAbi.SIZEOF_TABLE_VIEW_32, 36, "NveTableView 32-bit size");
+        // ABI v4: 8 u32 header words (incl. the row-index lengths), then 5 pointers.
+        c.eq(NveAbi.SIZEOF_TABLE_VIEW_64, 32 + 5 * 8, "NveTableView 64-bit size");
+        c.eq(NveAbi.SIZEOF_TABLE_VIEW_32, 32 + 5 * 4, "NveTableView 32-bit size");
+        c.eq(NveAbi.TABLE_VIEW_OFFSET_ROW_INDEX_DIR_LEN, 24, "NveTableView.row_index_dir_len @24");
+        c.eq(NveAbi.TABLE_VIEW_OFFSET_ROW_INDEX_PAGE_COUNT, 28, "NveTableView.row_index_page_count @28");
+        c.eq(NveAbi.TABLE_VIEW_OFFSET_ROWS, 32, "NveTableView.rows @32");
+        c.eq(NveAbi.TABLE_VIEW_OFFSET_ROW_INDEX_PAGES_64, 32 + 4 * 8, "NveTableView.row_index_pages is last (64-bit)");
+        c.eq(NveAbi.TABLE_VIEW_OFFSET_ROW_INDEX_PAGES_32, 32 + 4 * 4, "NveTableView.row_index_pages is last (32-bit)");
 
         final int[] defaults = NveTables.Layout.defaults();
         final ByteBuffer rows = TableSceneTest.words(defaults);
