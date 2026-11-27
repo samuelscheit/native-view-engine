@@ -24,14 +24,6 @@ use crate::hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationSchedul
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
 #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use crate::wasm_api::{start_surface_app_inner, WebAppController};
-#[cfg(feature = "app-kitchen-sink")]
-use crate::wasm_api::is_valid_kitchen_sink_state;
-#[cfg(feature = "app-studio")]
-use crate::wasm_api::is_valid_studio_state;
-#[cfg(feature = "app-kitchen-sink")]
-use nve_example_kitchen_sink::KITCHEN_SINK_STATE_VERSION;
-#[cfg(feature = "app-studio")]
-use nve_studio_workspace::STUDIO_SNAPSHOT_SCHEMA_VERSION;
 
 #[wasm_bindgen(inline_js = "
 export function nve_intersecting_targets(entries) {
@@ -229,14 +221,11 @@ pub fn hydrate_studio_workspace_app_on_surface(
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "StudioWorkspaceApp",
-        "studio",
-        STUDIO_SNAPSHOT_SCHEMA_VERSION,
         surface_id,
         mount_id,
         ws_url,
         true,
-        is_valid_studio_state,
-        WebAppSession::new_studio_workspace_with_state,
+        WebAppSession::new_studio_workspace,
     )
 }
 
@@ -255,14 +244,11 @@ pub fn hydrate_kitchen_sink_app_on_surface(
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "KitchenSinkApp",
-        "kitchen-sink",
-        KITCHEN_SINK_STATE_VERSION,
         surface_id,
         mount_id,
         ws_url,
         true,
-        is_valid_kitchen_sink_state,
-        WebAppSession::new_kitchen_sink_with_state,
+        WebAppSession::new_kitchen_sink,
     )
 }
 

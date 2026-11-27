@@ -304,6 +304,37 @@ impl WebAppSession {
         self.app.schema_version()
     }
 
+    /// Re-applies the initial viewport layout event after restoring persisted state (Studio).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn apply_initial_viewport(&mut self) {
+        #[cfg(feature = "app-studio")]
+        if let SessionApp::Studio(module) = &mut self.app {
+            let viewport = self.backend.viewport();
+            if viewport.width > 0.0 && viewport.height > 0.0 {
+                let layout_ev = [NveDirectEvent::layout(
+                    self.surface_id,
+                    ROOT_NODE_ID,
+                    0,
+                    0.0,
+                    0.0,
+                    viewport.width,
+                    viewport.height,
+                )];
+                // SAFETY: `NveDirectEvent::layout` contains only scalar geometry and no pointers.
+                let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
+            }
+        }
+    }
+
+    /// Replaces the pre-frame backend once hydration vs. clean mount has been decided.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn replace_backend(&mut self, mut backend: WebBackend) {
+        let viewport = self.backend.viewport();
+        crate::register_shell_web_systems(&mut backend);
+        backend.set_viewport(self.surface_id, viewport);
+        self.backend = backend;
+    }
+
     pub fn backend(&self) -> &WebBackend {
         &self.backend
     }

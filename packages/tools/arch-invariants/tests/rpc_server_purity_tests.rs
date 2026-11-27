@@ -377,3 +377,135 @@ fn unit_framework_rpc_server_purity_positive_and_negative() {
         "clean graph must have 0 fnv violations"
     );
 }
+
+#[test]
+fn unit_rpc_purity_catches_wasi_target_gated_and_transitive_build_deps() {
+    let meta = format!(
+        r#"{{
+        "version": 1, "workspace_root": "/repo", "target_directory": "/repo/target",
+        "workspace_members": [
+            "path+file:///repo/packages/core/engine#0.1.0",
+            "path+file:///repo/packages/framework/rpc#0.1.0",
+            "path+file:///repo/packages/framework/server#0.1.0",
+            "path+file:///repo/packages/framework/http-hyper#0.1.0"
+        ],
+        "packages": [
+            {{
+                "id": "path+file:///repo/packages/core/engine#0.1.0",
+                "name": "nve-engine", "version": "0.1.0",
+                "manifest_path": "/repo/packages/core/engine/Cargo.toml",
+                "targets": {t_engine}, "features": {{}},
+                "dependencies": [
+                    {{ "name": "build-helper", "req": "^1", "kind": "build", "optional": false, "uses_default_features": true, "features": [], "target": null }}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/framework/rpc#0.1.0",
+                "name": "nve-rpc", "version": "0.1.0",
+                "manifest_path": "/repo/packages/framework/rpc/Cargo.toml",
+                "targets": {t_rpc}, "features": {{}},
+                "dependencies": [
+                    {{ "name": "tokio", "req": "^1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": "cfg(target_os = \"wasi\")" }}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/framework/server#0.1.0",
+                "name": "nve-server", "version": "0.1.0",
+                "manifest_path": "/repo/packages/framework/server/Cargo.toml",
+                "targets": {t_server}, "features": {{}},
+                "dependencies": [
+                    {{ "name": "serde_json", "req": "^1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": "cfg(target_os = \"freebsd\")" }}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/framework/http-hyper#0.1.0",
+                "name": "nve-http-hyper", "version": "0.1.0",
+                "manifest_path": "/repo/packages/framework/http-hyper/Cargo.toml",
+                "targets": {t_hyper}, "features": {{}},
+                "dependencies": [
+                    {{ "name": "serde_json", "req": "^1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": "cfg(target_os = \"android\")" }}
+                ]
+            }},
+            {{
+                "id": "registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0",
+                "name": "build-helper", "version": "1.0.0",
+                "manifest_path": "/cargo/build-helper/Cargo.toml",
+                "targets": {t_helper}, "features": {{}},
+                "dependencies": [
+                    {{ "name": "fnv", "req": "^1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null }}
+                ]
+            }},
+            {p_sj}, {p_tokio}, {p_fnv}
+        ],
+        "resolve": {{
+            "nodes": [
+                {{
+                    "id": "path+file:///repo/packages/core/engine#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0"],
+                    "deps": [{{ "name": "build_helper", "pkg": "registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0", "dep_kinds": [{{ "kind": "build", "target": null }}] }}]
+                }},
+                {{
+                    "id": "path+file:///repo/packages/framework/rpc#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#tokio@1.0.0"],
+                    "deps": [{{ "name": "tokio", "pkg": "registry+https://github.com/rust-lang/crates.io-index#tokio@1.0.0", "dep_kinds": [{{ "kind": null, "target": "cfg(target_os = \"wasi\")" }}] }}]
+                }},
+                {{
+                    "id": "path+file:///repo/packages/framework/server#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0"],
+                    "deps": [{{ "name": "serde_json", "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "dep_kinds": [{{ "kind": null, "target": "cfg(target_os = \"freebsd\")" }}] }}]
+                }},
+                {{
+                    "id": "path+file:///repo/packages/framework/http-hyper#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0"],
+                    "deps": [{{ "name": "serde_json", "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "dep_kinds": [{{ "kind": null, "target": "cfg(target_os = \"android\")" }}] }}]
+                }},
+                {{
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#fnv@1.0.7"],
+                    "deps": [{{ "name": "fnv", "pkg": "registry+https://github.com/rust-lang/crates.io-index#fnv@1.0.7", "dep_kinds": [{{ "kind": null, "target": null }}] }}]
+                }},
+                {n_sj}, {n_tokio}, {n_fnv}
+            ]
+        }}
+    }}"#,
+        t_engine = lib_target("nve_engine", "/repo/packages/core/engine"),
+        t_rpc = lib_target("nve_rpc", "/repo/packages/framework/rpc"),
+        t_server = lib_target("nve_server", "/repo/packages/framework/server"),
+        t_hyper = lib_target("nve_http_hyper", "/repo/packages/framework/http-hyper"),
+        t_helper = lib_target("build_helper", "/cargo/build-helper"),
+        p_sj = ext_pkg("serde_json", "1.0.0"),
+        p_tokio = ext_pkg("tokio", "1.0.0"),
+        p_fnv = ext_pkg("fnv", "1.0.7"),
+        n_sj = ext_node("serde_json", "1.0.0"),
+        n_tokio = ext_node("tokio", "1.0.0"),
+        n_fnv = ext_node("fnv", "1.0.7"),
+    );
+
+    let graph = PackageGraph::from_json(&meta).expect("valid target-cfg synthetic graph");
+    let violations = check_framework_rpc_server_purity(&graph);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.path.contains("framework/rpc") && v.snippet.contains("tokio")),
+        "must catch wasi-gated tokio in nve-rpc: {violations:?}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.path.contains("framework/server") && v.snippet.contains("serde_json")),
+        "must catch freebsd-gated serde_json in nve-server: {violations:?}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.path.contains("framework/http-hyper") && v.snippet.contains("serde_json")),
+        "must catch android-gated serde_json in nve-http-hyper: {violations:?}"
+    );
+    let fnv_violations = check_zero_fnv_crate_dep(&graph);
+    assert!(
+        fnv_violations
+            .iter()
+            .any(|v| v.path.contains("core/engine") && v.snippet.contains("fnv")),
+        "must catch transitive build-script fnv dependency: {fnv_violations:?}"
+    );
+}

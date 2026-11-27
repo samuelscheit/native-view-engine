@@ -111,7 +111,7 @@ fn build_issues_session(
     api_base: &str,
     container: Option<&web_sys::Element>,
     featured_issue_id: IssueId,
-) -> (WebAppSession, bool) {
+) -> WebAppSession {
     let cfg = if api_base.trim().is_empty() {
         FetchConfig::same_origin()
     } else {
@@ -132,7 +132,7 @@ fn build_issues_session(
         featured_issue_id,
         stream_guard: Rc::new(RefCell::new(stream_guard)),
     });
-    (WebAppSession::new(surface_id, surface, backend, viewport), false)
+    WebAppSession::new(surface_id, surface, backend, viewport)
 }
 
 /// Mounts the cross-platform `examples/fullstack-issues` Dioxus app onto `#<mount_id>` backed by
@@ -160,14 +160,11 @@ pub fn start_issues_app(
     let base = api_base.unwrap_or_default();
     start_surface_app_inner(
         "IssuesApp",
-        "issues",
-        1,
         DEFAULT_SURFACE_ID,
         mount_id,
         None,
         has_ssr,
-        |_| false,
-        move |surface_id, backend, viewport, _| {
+        move |surface_id, backend, viewport| {
             build_issues_session(
                 surface_id,
                 backend,

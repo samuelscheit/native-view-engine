@@ -78,7 +78,6 @@ pub enum DesktopHostError {
     EventLoop(String),
     Window(String),
     Surface(String),
-    #[cfg(test)]
     Reload(String),
 }
 
@@ -94,7 +93,6 @@ impl fmt::Display for DesktopHostError {
             Self::EventLoop(msg) => write!(f, "event loop error: {msg}"),
             Self::Window(msg) => write!(f, "window error: {msg}"),
             Self::Surface(msg) => write!(f, "softbuffer surface error: {msg}"),
-            #[cfg(test)]
             Self::Reload(msg) => write!(f, "hot reload error: {msg}"),
         }
     }
