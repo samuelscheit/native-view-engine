@@ -7,6 +7,7 @@ mod codec_io;
 pub mod crdt_sync;
 mod docs;
 mod history;
+pub use history::filter_tasks;
 mod models;
 mod navigation;
 mod workbench;

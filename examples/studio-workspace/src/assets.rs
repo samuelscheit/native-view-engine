@@ -47,14 +47,15 @@ pub fn avatar_for_author(author: &str) -> &'static str {
 }
 
 /// Builds a live zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) plotting recorded
-/// frame/mutation timings and snapshot history depth for the `Metrics` view `SkiaCanvas`.
+/// frame/mutation timings and snapshot history depth for the `Metrics` view `SkiaCanvas`. The
+/// plot is transparent so the hosting view's themed well shows through in every polarity.
 pub fn build_metrics_sparkline(
     samples_us: &[u32],
     history_len: usize,
     accent_hex: &str,
 ) -> DrawList {
     let stroke = parse_color(accent_hex).unwrap_or(ColorRgba::rgb(56, 189, 248));
-    let bg = ColorRgba::rgb(17, 24, 39);
+    let bg = ColorRgba::TRANSPARENT;
 
     let mut plot_points: Vec<f32> = samples_us.iter().map(|&v| v as f32).collect();
     // Append a live point encoding current snapshot depth so time-travel / edits visibly move the curve.

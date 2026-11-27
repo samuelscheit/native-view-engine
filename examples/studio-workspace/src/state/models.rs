@@ -2,6 +2,7 @@
 //! for **Aether Workspace** + **NVE Studio**.
 
 use nve_engine::BuiltinLayout;
+use nve_ui::Accent;
 
 use crate::ui_islands::IslandsSnapshot;
 
@@ -70,30 +71,6 @@ impl Priority {
             Self::P2 => "P2",
         }
     }
-
-    pub const fn badge_bg(self) -> &'static str {
-        match self {
-            Self::P0 => "#450a0a",
-            Self::P1 => "#451a03",
-            Self::P2 => "#0c4a6e",
-        }
-    }
-
-    pub const fn badge_fg(self) -> &'static str {
-        match self {
-            Self::P0 => "#fca5a5",
-            Self::P1 => "#fcd34d",
-            Self::P2 => "#7dd3fc",
-        }
-    }
-
-    pub const fn badge_border(self) -> &'static str {
-        match self {
-            Self::P0 => "#ef4444",
-            Self::P1 => "#f59e0b",
-            Self::P2 => "#38bdf8",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,30 +94,6 @@ impl TaskStatus {
             Self::Todo => Self::InProgress,
             Self::InProgress => Self::Done,
             Self::Done => Self::Todo,
-        }
-    }
-
-    pub const fn pill_bg(self) -> &'static str {
-        match self {
-            Self::Todo => "#1e293b",
-            Self::InProgress => "#1e1b4b",
-            Self::Done => "#052e16",
-        }
-    }
-
-    pub const fn pill_fg(self) -> &'static str {
-        match self {
-            Self::Todo => "#cbd5e1",
-            Self::InProgress => "#c4b5fd",
-            Self::Done => "#86efac",
-        }
-    }
-
-    pub const fn pill_border(self) -> &'static str {
-        match self {
-            Self::Todo => "#475569",
-            Self::InProgress => "#8b5cf6",
-            Self::Done => "#22c55e",
         }
     }
 }
@@ -200,28 +153,14 @@ impl AccentTheme {
         }
     }
 
-    pub const fn hex(self) -> &'static str {
+    /// The unified-theme accent for this workspace choice (contrast-safe in every polarity).
+    pub const fn accent(self) -> Accent {
         match self {
-            Self::Cyan => "#38bdf8",
-            Self::Violet => "#a78bfa",
-            Self::Green => "#22c55e",
-            Self::Amber => "#f59e0b",
+            Self::Cyan => Accent::CYAN,
+            Self::Violet => Accent::VIOLET,
+            Self::Green => Accent::GREEN,
+            Self::Amber => Accent::AMBER,
         }
-    }
-
-    /// Subtle dark tinted fill for active sidebar tabs and badges.
-    pub const fn tint_bg(self) -> &'static str {
-        match self {
-            Self::Cyan => "#0c2d42",
-            Self::Violet => "#241942",
-            Self::Green => "#0c2e1f",
-            Self::Amber => "#36220a",
-        }
-    }
-
-    /// High-contrast dark ink rendered atop solid accent buttons.
-    pub const fn on_accent_fg(self) -> &'static str {
-        "#0b1120"
     }
 }
 

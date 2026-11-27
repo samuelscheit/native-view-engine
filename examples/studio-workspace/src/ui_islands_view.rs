@@ -1,31 +1,20 @@
-//! RSX renderer for `ActiveView::Islands` built on shared `nve-ui` components
-//! (`Card`, `Button`, `Badge`, `Separator`), separated from `ui_islands.rs` runtime logic.
-
-use std::sync::{Arc, Mutex};
+//! `ActiveView::Islands` view built on shared `nve-ui` components (`Card`, `Button`, `Badge`,
+//! `Separator`), separated from `ui_islands.rs` runtime logic. Subscribes to the `islands` domain.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Separator};
+use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator};
 
-use crate::state::WorkspaceState;
-use crate::theme::{
-    badge_min_w, card_border, control_border, row_border, LayoutMetrics, CARD_ALT_BG, CARD_BG,
-    CONTROL_BG, PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
-};
-use crate::ui::mutate_state;
-use crate::ui_islands::{GestureSimMode, IslandsSnapshot};
+use crate::theme::badge_min_w;
+use crate::ui::store::use_studio;
+use crate::ui::style::use_studio_style;
+use crate::ui_islands::GestureSimMode;
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn render_islands_view(
-    store: &Arc<Mutex<WorkspaceState>>,
-    version: Signal<u64>,
-    islands: &IslandsSnapshot,
-    accent_hex: &'static str,
-    accent_tint: &'static str,
-    xray: bool,
-    m: LayoutMetrics,
-) -> Element {
-    let (card_bw, card_bc) = card_border(xray);
-    let (row_bw, row_bc) = row_border(xray);
+#[component]
+pub(crate) fn IslandsView() -> Element {
+    let store = use_studio();
+    let s = use_studio_style();
+    let t = s.t;
+    let islands = store.islands.read().snapshot.clone();
 
     let summary_line = format!(
         "Surfaces: {} | Bus: {} tx ({} deliv) | Gesture: {}",
@@ -34,170 +23,141 @@ pub(crate) fn render_islands_view(
         islands.bus_total_deliveries,
         islands.last_gesture_disposition
     );
-    let winner_str = islands
-        .last_gesture_winner
-        .map(|id| format!("Surface #{id}"))
-        .unwrap_or_else(|| "None".into());
+    let winner = islands.last_gesture_winner.map_or_else(|| "None".to_owned(), |id| format!("Surface #{id}"));
     let gesture_detail = format!(
-        "{} | winner: {} | cancelled: {} | {}",
-        islands.last_gesture_disposition,
-        winner_str,
-        islands.last_gesture_cancelled_count,
-        islands.last_gesture_reason
+        "{} | winner: {winner} | cancelled: {} | {}",
+        islands.last_gesture_disposition, islands.last_gesture_cancelled_count, islands.last_gesture_reason
     );
-
-    let s_bus_theme = Arc::clone(store);
-    let s_bus_sync = Arc::clone(store);
-    let s_g_claim = Arc::clone(store);
-    let s_g_pass = Arc::clone(store);
-    let s_g_defer = Arc::clone(store);
-
-    let summary_card_style = format!(
-        "width: 100%; flex-shrink: 0; padding: 8px; gap: 3px; background-color: {PANEL_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
-        m.button_radius
-    );
-    let bus_btn_style = format!(
-        "flex: 1; height: 26px; min-height: 26px; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {accent_tint}; border-radius: {}px; border-width: 1px; border-color: {accent_hex};",
-        m.button_radius
-    );
+    let bus_btn = s.compact_control("flex: 1; height: 26px; min-height: 26px;", 4, s.m.button_radius, Some(true));
+    let row = s.row();
+    let card = s.card();
 
     rsx! {
-        // Orchestrator + Bus + Gesture Summary Telemetry (`nve-ui` Card)
         Card {
             variant: CardVariant::Outlined,
             test_id: Some("islands-summary".into()),
             padding: Some(8.0),
             gap: Some(3.0),
-            style: Some(summary_card_style),
-            text { style: "color: {accent_hex}; font-size: 10px;", "{summary_line}" }
-            text { style: "color: {TEXT_SECONDARY}; font-size: 10px;", "{islands.last_bus_summary}" }
+            style: Some(format!(
+                "width: 100%; flex-shrink: 0; padding: 8px; gap: 3px; background-color: {}; border-radius: {}px; {card}",
+                t.surface.base.hex(),
+                s.m.button_radius
+            )),
+            text { style: "color: {t.text.link.hex()}; font-size: 10px;", "{summary_line}" }
+            text { style: "color: {t.text.secondary.hex()}; font-size: 10px;", "{islands.last_bus_summary}" }
             Separator {}
             text {
                 test_id: "islands-gesture-readout",
-                style: "color: {TEXT_MUTED}; font-size: 10px;",
+                style: "color: {t.text.tertiary.hex()}; font-size: 10px;",
                 "{gesture_detail}"
             }
         }
 
-        // Row 1: NveChannelBus live broadcasts (`nve-ui` Button)
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; border-width: {row_bw}px; border-color: {row_bc};",
+            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; {row}",
             Button {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("island-bus-theme".into()),
-                style: Some(bus_btn_style.clone()),
-                on_press: move |_| mutate_state(&s_bus_theme, version, |st| st.broadcast_island_theme()),
+                style: Some(bus_btn.clone()),
+                on_press: move |_| store.update(|st| st.broadcast_island_theme()),
                 "Bus: Theme"
             }
             Button {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("island-bus-sync".into()),
-                style: Some(bus_btn_style),
-                on_press: move |_| mutate_state(&s_bus_sync, version, |st| st.broadcast_island_sync()),
+                style: Some(bus_btn),
+                on_press: move |_| store.update(|st| st.broadcast_island_sync()),
                 "Bus: Sync Bin"
             }
         }
 
-        // Row 2: GestureArbitrator simulation triggers (`nve-ui` Button)
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; border-width: {row_bw}px; border-color: {row_bc};",
-            for &(mode, tid, lbl) in [
+            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; {row}",
+            for (mode, tid, lbl) in [
                 (GestureSimMode::Claim, "island-gesture-claim", "Claim"),
                 (GestureSimMode::PassThrough, "island-gesture-passthrough", "PassThrough"),
                 (GestureSimMode::DeferToParent, "island-gesture-defer", "Defer"),
-            ].iter() {
-                {
-                    let is_active = islands.last_gesture_disposition == mode.label();
-                    let (bw, bc) = control_border(xray, is_active, accent_hex);
-                    let bg = if is_active { accent_tint } else { CONTROL_BG };
-                    let bstyle = format!(
-                        "flex: 1; height: 24px; min-height: 24px; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {bg}; border-radius: {}px; border-width: {bw}px; border-color: {bc};",
-                        m.pill_radius
-                    );
-                    let s_g = match mode {
-                        GestureSimMode::Claim => Arc::clone(&s_g_claim),
-                        GestureSimMode::PassThrough => Arc::clone(&s_g_pass),
-                        GestureSimMode::DeferToParent => Arc::clone(&s_g_defer),
-                    };
-                    rsx! {
-                        Button {
-                            key: "{tid}",
-                            variant: ButtonVariant::Secondary,
-                            size: ButtonSize::Sm,
-                            test_id: Some(tid.into()),
-                            style: Some(bstyle),
-                            on_press: move |_| mutate_state(&s_g, version, |st| st.simulate_island_gesture(mode)),
-                            "{lbl}"
-                        }
-                    }
+            ] {
+                Button {
+                    key: "{tid}",
+                    variant: ButtonVariant::Secondary,
+                    size: ButtonSize::Sm,
+                    test_id: Some(tid.into()),
+                    style: Some(s.compact_control(
+                        "flex: 1; height: 24px; min-height: 24px;",
+                        2,
+                        s.m.pill_radius,
+                        Some(islands.last_gesture_disposition == mode.label()),
+                    )),
+                    on_press: move |_| store.update(|st| st.simulate_island_gesture(mode)),
+                    "{lbl}"
                 }
             }
         }
 
-        // Interactive Multi-Host Island Cards (`nve-ui` Card + Badge + Button)
         scrollview {
             test_id: "islands-list",
-            style: "width: 100%; flex: 1; flex-direction: column; gap: {m.list_gap}px; border-width: {row_bw}px; border-color: {row_bc};",
-            for card in islands.cards.iter() {
+            style: "width: 100%; flex: 1; flex-direction: column; gap: {s.m.list_gap}px; {row}",
+            for island in islands.cards {
                 {
-                    let slug = card.slug.clone();
-                    let toggle_tid = format!("island-toggle-{}", card.slug);
-                    let card_tid = format!("island-card-{}", card.slug);
-                    let is_resumed = card.lifecycle == "Resumed";
-                    let toggle_lbl = if is_resumed { "Pause" } else { "Resume" };
-                    let life_bg = if is_resumed { "#052e16" } else { CARD_ALT_BG };
-                    let (tbw, tbc) = control_border(xray, is_resumed, accent_hex);
+                    let is_resumed = island.lifecycle == "Resumed";
                     let meta_lbl = format!(
                         "Surface #{} | {} | {} | Bus rx: {}",
-                        card.surface_id, card.mount_policy, card.lifecycle, card.received_messages
+                        island.surface_id, island.mount_policy, island.lifecycle, island.received_messages
                     );
-                    let icard_style = format!(
-                        "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {CARD_BG}; border-radius: {}px; border-width: {card_bw}px; border-color: {card_bc};",
-                        m.card_pad, m.card_gap, m.card_radius
-                    );
-                    let host_badge_style = format!(
-                        "min-width: {}px; height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {}; border-radius: {}px; border-width: 0px; border-color: transparent;",
-                        badge_min_w(card.host.label()), card.host.badge_bg(), m.pill_radius
-                    );
-                    let tog_btn_style = format!(
-                        "width: 64px; height: 22px; min-height: 22px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {life_bg}; border-radius: {}px; border-width: {tbw}px; border-color: {tbc};",
-                        m.pill_radius
-                    );
-                    let s_tog = Arc::clone(store);
+                    let toggle_style = if is_resumed {
+                        format!(
+                            "{} background-color: {}; border-width: 1px; border-color: {};",
+                            s.compact_control("width: 64px; height: 22px; min-height: 22px;", 2, s.m.pill_radius, None),
+                            t.status.success.subtle.hex(),
+                            t.status.success.border.hex()
+                        )
+                    } else {
+                        s.compact_control("width: 64px; height: 22px; min-height: 22px;", 2, s.m.pill_radius, Some(false))
+                    };
+                    let slug = island.slug.clone();
                     rsx! {
                         Card {
-                            key: "island-{card.slug}",
+                            key: "island-{island.slug}",
                             variant: CardVariant::Elevated,
-                            test_id: Some(card_tid),
-                            padding: Some(m.card_pad as f32),
-                            gap: Some(m.card_gap as f32),
-                            style: Some(icard_style),
+                            test_id: Some(format!("island-card-{}", island.slug)),
+                            padding: Some(s.m.card_pad as f32),
+                            gap: Some(s.m.card_gap as f32),
+                            style: Some(format!(
+                                "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {}; border-radius: {}px; {card}",
+                                s.m.card_pad,
+                                s.m.card_gap,
+                                t.surface.raised.hex(),
+                                s.m.card_radius
+                            )),
                             view {
                                 style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center;",
                                 view {
                                     style: "flex-direction: row; align-items: center; gap: 6px;",
                                     Badge {
-                                        label: card.host.label().to_string(),
+                                        label: island.host.label().to_string(),
                                         variant: BadgeVariant::Neutral,
-                                        style: Some(host_badge_style),
+                                        style: Some(s.compact_control(
+                                            &format!("min-width: {}px; height: 20px;", badge_min_w(island.host.label())),
+                                            4,
+                                            s.m.pill_radius,
+                                            None,
+                                        )),
                                     }
-                                    text { style: "color: {TEXT_PRIMARY}; font-size: 11px;", "{card.component_name}" }
+                                    text { style: "color: {t.text.primary.hex()}; font-size: 11px;", "{island.component_name}" }
                                 }
                                 Button {
                                     variant: ButtonVariant::Secondary,
                                     size: ButtonSize::Sm,
-                                    test_id: Some(toggle_tid),
-                                    style: Some(tog_btn_style),
-                                    on_press: move |_| {
-                                        let sl = slug.clone();
-                                        mutate_state(&s_tog, version, |st| st.toggle_island_lifecycle(&sl));
-                                    },
-                                    "{toggle_lbl}"
+                                    test_id: Some(format!("island-toggle-{}", island.slug)),
+                                    style: Some(toggle_style),
+                                    on_press: move |_| store.update(|st| st.toggle_island_lifecycle(&slug)),
+                                    if is_resumed { "Pause" } else { "Resume" }
                                 }
                             }
-                            text { style: "color: {TEXT_MUTED}; font-size: 10px;", "{meta_lbl}" }
+                            text { style: "color: {t.text.tertiary.hex()}; font-size: 10px;", "{meta_lbl}" }
                         }
                     }
                 }

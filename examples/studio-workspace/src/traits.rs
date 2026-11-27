@@ -14,7 +14,10 @@ use nve_system_env::{ContrastLevel, LocaleSnapshot, ThemeSnapshot};
 
 use crate::sdk::StudioSystemEnv;
 use crate::state::{AccentTheme, DensityMode, WorkspaceSnapshot};
-use crate::theme::{LayoutMetrics, BORDER_DEFAULT, CONTROL_BG, TEXT_MUTED};
+use nve_ui::{use_theme, ColorHex};
+
+use crate::theme::LayoutMetrics;
+use crate::ui::style::data_attrs;
 
 /// Custom user [`TraitKey`] carrying the active Studio [`AccentTheme`].
 ///
@@ -223,7 +226,8 @@ pub fn StudioTraitPreviewChip(#[props(default)] test_id: Option<String>) -> Elem
         .when_size(SizeClass::Medium, "Medium")
         .default("Expanded");
 
-    let accent_hex = accent.hex();
+    // The chip may sit in a `<TraitScope>` overriding the accent: re-derive it locally.
+    let theme = use_theme().with_accent(accent.accent());
     let accent_lbl = accent.label();
     let scheme_lbl = color_scheme_label(color_scheme);
     let sc_lbl = size_class_label(size_class);
@@ -235,26 +239,19 @@ pub fn StudioTraitPreviewChip(#[props(default)] test_id: Option<String>) -> Elem
     rsx! {
         view {
             test_id: "{tid}",
-            nve_table: {
-                let pairs = vec![
-                    ("trait-size-class".to_owned(), sc_lbl.to_owned()),
-                    ("trait-mode".to_owned(), mode_tag.to_owned()),
-                    ("trait-accent".to_owned(), accent_lbl.to_owned()),
-                    ("trait-compact-scope".to_owned(), compact_attr.to_owned()),
-                ];
-                nve_dioxus::table_attr_fn(move |tx, node| {
-                    tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
-                        nve_web_html::DataAttrList::from_pairs(pairs.clone()),
-                    ));
-                })
-            },
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 5px; padding-vertical: 3px; background-color: {CONTROL_BG}; border-radius: 6px; border-width: 1px; border-color: {BORDER_DEFAULT};",
+            nve_table: data_attrs([
+                ("trait-size-class", sc_lbl.to_owned()),
+                ("trait-mode", mode_tag.to_owned()),
+                ("trait-accent", accent_lbl.to_owned()),
+                ("trait-compact-scope", compact_attr.to_owned()),
+            ]),
+            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 5px; padding-vertical: 3px; background-color: {theme.surface.subtle.hex()}; border-radius: {theme.radius.sm}px; border-width: 1px; border-color: {theme.border.default.hex()};",
             text {
-                style: "color: {accent_hex}; font-size: 9px;",
+                style: "color: {theme.text.link.hex()}; font-size: 9px;",
                 "{summary}"
             }
             text {
-                style: "color: {TEXT_MUTED}; font-size: 8px;",
+                style: "color: {theme.text.tertiary.hex()}; font-size: 8px;",
                 "{mode_tag}"
             }
         }

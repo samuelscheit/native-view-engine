@@ -1,33 +1,52 @@
-//! Dark slate design tokens, density metrics, and X-Ray HUD border helpers.
-//!
-//! Every dynamic style string explicitly writes every property that may change
-//! (such as `border-width`, `border-color`, `background-color`, `border-radius`)
-//! so incremental `CommandBuffer` style updates cleanly reset prior values.
+//! Studio bindings onto the unified [`nve_ui::Theme`]: [`AppBrand::Studio`] preset following the
+//! OS appearance, the per-workspace accent override, density/radius self-edits, layout metrics
+//! derived from theme spacing, and semantic tones for issue priority/status.
 
-use std::borrow::Cow;
+use nve_abi::ColorRgba;
+use nve_ui::{parse_color_rgba, Accent, AppBrand, Appearance, Radius, Spacing, Theme, ThemeConfig, Tone};
 
-use nve_interop::{ColorScheme, ContrastLevel};
-use nve_ui::{RadiiScale, SpacingScale, TypographyScale, UiDensity, UiPalette, UiTheme};
+use crate::state::{AccentTheme, DensityMode, StudioConfig, TaskStatus};
+use crate::traits::studio_density_to_trait;
 
-use crate::state::{DensityMode, StudioConfig};
+/// X-Ray inspector hues per structural tier: fixed hues (independent of the workspace accent)
+/// so nesting stays legible, derived per polarity so they stay ≥3:1 on every surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XRayPalette {
+    pub panel: ColorRgba,
+    pub card: ColorRgba,
+    pub row: ColorRgba,
+}
 
-pub const CANVAS_BG: &str = "#0b1120";
-pub const PANEL_BG: &str = "#111827";
-pub const CARD_BG: &str = "#1e293b";
-pub const CARD_ALT_BG: &str = "#172033";
-pub const CONTROL_BG: &str = "#1f2937";
-pub const BORDER_SUBTLE: &str = "#1e293b";
-pub const BORDER_DEFAULT: &str = "#334155";
-pub const TEXT_PRIMARY: &str = "#f8fafc";
-pub const TEXT_SECONDARY: &str = "#cbd5e1";
-pub const TEXT_MUTED: &str = "#94a3b8";
+impl XRayPalette {
+    pub const fn new(theme: &Theme) -> Self {
+        Self {
+            panel: Tone::derive(theme.polarity, Accent::CYAN).text,
+            card: Tone::derive(theme.polarity, Accent::VIOLET).text,
+            row: Tone::derive(theme.polarity, Accent::GREEN).text,
+        }
+    }
+}
 
-/// X-Ray HUD high-contrast diagnostic border colors by structural tier.
-pub const XRAY_PANEL: &str = "#38bdf8";
-pub const XRAY_CARD: &str = "#a78bfa";
-pub const XRAY_ROW: &str = "#22c55e";
+/// Corner radii for Studio's self-edited [`crate::state::CornerRadiusMode`].
+pub const fn studio_radius(studio: &StudioConfig) -> Radius {
+    let r = studio.radius.px() as f32;
+    let pill = (r / 2.0).clamp(4.0, 12.0);
+    Radius { sm: r.min(4.0), md: r.min(12.0), lg: r, xl: r + 4.0, full: pill }
+}
 
-#[derive(Debug, Clone, Copy)]
+/// Resolves Studio's theme: OS appearance + workspace accent + density + radius.
+pub fn studio_theme(studio: &StudioConfig, accent: AccentTheme, os: Appearance) -> Theme {
+    ThemeConfig {
+        accent: Some(accent.accent()),
+        density: studio_density_to_trait(studio.density),
+        ..ThemeConfig::new(AppBrand::Studio)
+    }
+    .resolve(os)
+    .with_radius(studio_radius(studio))
+}
+
+/// Pixel layout rhythm for Studio panes, derived from theme [`Spacing`] and [`studio_radius`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutMetrics {
     pub main_pad: u32,
     pub main_gap: u32,
@@ -41,142 +60,59 @@ pub struct LayoutMetrics {
 
 impl LayoutMetrics {
     pub fn from_studio(studio: &StudioConfig) -> Self {
-        let r = studio.radius.px();
-        let pill_radius = (r / 2).clamp(4, 12);
-        let button_radius = r.min(12);
-        match studio.density {
-            DensityMode::Normal => Self {
-                main_pad: 14,
-                main_gap: 10,
-                card_pad: 11,
-                card_gap: 6,
-                list_gap: 8,
-                card_radius: r,
-                pill_radius,
-                button_radius,
-            },
-            DensityMode::Compact => Self {
-                main_pad: 10,
-                main_gap: 7,
-                card_pad: 8,
-                card_gap: 4,
-                list_gap: 6,
-                card_radius: r,
-                pill_radius,
-                button_radius,
-            },
+        let s = Spacing::for_density(studio_density_to_trait(studio.density));
+        let r = studio_radius(studio);
+        let px = |v: f32| v.round() as u32;
+        Self {
+            main_pad: px(s.md),
+            main_gap: px(s.md),
+            card_pad: px(s.md),
+            card_gap: px(s.sm),
+            list_gap: px(s.sm),
+            card_radius: px(r.lg),
+            pill_radius: px(r.full),
+            button_radius: px(r.md),
         }
     }
-}
 
-/// Returns `(border_width, border_color)` for a top-level panel (sidebar, workspace, studio).
-pub fn panel_border(xray: bool) -> (u32, &'static str) {
-    if xray {
-        (2, XRAY_PANEL)
-    } else {
-        (1, BORDER_SUBTLE)
-    }
-}
-
-/// Returns `(border_width, border_color)` for a card surface.
-pub fn card_border(xray: bool) -> (u32, &'static str) {
-    if xray {
-        (2, XRAY_CARD)
-    } else {
-        (1, BORDER_DEFAULT)
-    }
-}
-
-/// Returns `(border_width, border_color)` for an inner row/header strip.
-pub fn row_border(xray: bool) -> (u32, &'static str) {
-    if xray {
-        (1, XRAY_ROW)
-    } else {
-        (0, "transparent")
-    }
-}
-
-/// Returns `(border_width, border_color)` for an interactive button/pill.
-pub fn control_border(xray: bool, active: bool, accent_hex: &'static str) -> (u32, &'static str) {
-    if xray {
-        (1, XRAY_ROW)
-    } else if active {
-        (1, accent_hex)
-    } else {
-        (1, BORDER_DEFAULT)
+    pub const fn is_compact(studio: &StudioConfig) -> bool {
+        matches!(studio.density, DensityMode::Compact)
     }
 }
 
 /// Flex override applied to `nve-ui` `Button`, `TabTrigger`, and `Badge` containers so their
-/// centered SemiBold (`font-weight: 600`) text spans the full control width without wrapping.
+/// centered label spans the control without wrapping (until Track 2 ships intrinsic text sizing).
 pub const STRETCH_COL: &str = "flex-direction: column; justify-content: center; align-items: stretch;";
 
-/// Computes a SemiBold-safe `min-width` in logical pixels for a compact `nve-ui::Badge` label.
+/// Conservative SemiBold-safe `min-width` for a compact badge label (Phase-0 estimate until
+/// Track 2 adds intrinsic text measurement).
 pub fn badge_min_w(label: &str) -> u32 {
     let chars = label.chars().count() as u32;
-    (chars.saturating_mul(6).saturating_add(16)).max(24)
+    chars.saturating_mul(6).saturating_add(16).max(24)
 }
 
-/// Builds a live [`nve_ui::UiTheme`] synchronized with Studio's active Accent, Corner Radius,
-/// and Density tokens so every shared `nve-ui` component updates reactively on self-edits.
-pub fn studio_ui_theme(studio: &StudioConfig) -> UiTheme {
-    let m = LayoutMetrics::from_studio(studio);
-    let accent_hex = studio.accent.hex();
-    let (density, spacing) = match studio.density {
-        DensityMode::Normal => (
-            UiDensity::Normal,
-            SpacingScale {
-                xs: 3.0,
-                sm: 6.0,
-                md: 8.0,
-                lg: 11.0,
-                xl: 12.0,
-            },
-        ),
-        DensityMode::Compact => (
-            UiDensity::Compact,
-            SpacingScale {
-                xs: 2.0,
-                sm: 4.0,
-                md: 6.0,
-                lg: 8.0,
-                xl: 8.0,
-            },
-        ),
-    };
-    UiTheme {
-        color_scheme: ColorScheme::Dark,
-        contrast: ContrastLevel::Standard,
-        palette: UiPalette {
-            surface: Cow::Borrowed(PANEL_BG),
-            surface_elevated: Cow::Borrowed(CARD_BG),
-            surface_subtle: Cow::Borrowed(CARD_ALT_BG),
-            text_primary: Cow::Borrowed(TEXT_PRIMARY),
-            text_secondary: Cow::Borrowed(TEXT_SECONDARY),
-            text_muted: Cow::Borrowed(TEXT_MUTED),
-            border: Cow::Borrowed(BORDER_DEFAULT),
-            border_focus: Cow::Borrowed(accent_hex),
-            accent: Cow::Borrowed(accent_hex),
-            accent_fg: Cow::Borrowed(studio.accent.on_accent_fg()),
-            danger: Cow::Borrowed("#ef4444"),
-            danger_fg: Cow::Borrowed("#fca5a5"),
-            success: Cow::Borrowed("#22c55e"),
-            warning: Cow::Borrowed("#f59e0b"),
-        },
-        spacing,
-        radii: RadiiScale {
-            sm: 4.0,
-            md: m.button_radius as f32,
-            lg: m.card_radius as f32,
-            full: m.pill_radius as f32,
-        },
-        typography: TypographyScale {
-            xs: 9.0,
-            sm: 10.0,
-            md: 11.0,
-            lg: 12.0,
-            xl: 14.0,
-        },
-        density,
+/// Neutral tone for idle/unclassified items.
+const fn neutral_tone(theme: &Theme) -> Tone {
+    Tone {
+        solid: theme.border.strong,
+        on_solid: theme.text.primary,
+        subtle: theme.surface.subtle,
+        border: theme.border.strong,
+        text: theme.text.secondary,
+    }
+}
+
+/// Tone of a chat author's badge. The CRDT-synced `#rrggbb` author color is only a hue seed:
+/// the readable pair is re-derived for the active polarity (synced literal pairs fail HC).
+pub fn author_tone(theme: &Theme, synced_color: &str) -> Tone {
+    parse_color_rgba(synced_color)
+        .map_or_else(|| neutral_tone(theme), |c| Tone::derive(theme.polarity, Accent::from_srgb(c)))
+}
+
+pub const fn task_status_tone(theme: &Theme, status: TaskStatus) -> Tone {
+    match status {
+        TaskStatus::Todo => neutral_tone(theme),
+        TaskStatus::InProgress => theme.status.accent,
+        TaskStatus::Done => theme.status.success,
     }
 }

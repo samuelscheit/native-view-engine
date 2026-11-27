@@ -2,18 +2,16 @@
 //! (`ArrowUp`/`ArrowDown`/`Enter`/`Escape`), and click execution across views, tasks,
 //! accent themes, layout engines, and time-travel snapshots.
 
-use std::sync::{Arc, Mutex};
-
 use nve_dioxus::prelude::*;
-use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Dialog, Input, Separator};
+use nve_ui::{
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, ColorHex, Dialog, Input, Separator,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{AccentTheme, ActiveView, LayoutEngineMode, WorkspaceState};
-use crate::theme::{
-    badge_min_w, control_border, LayoutMetrics, BORDER_DEFAULT, CARD_ALT_BG, CARD_BG, CONTROL_BG,
-    PANEL_BG, STRETCH_COL, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
-};
-use crate::ui::mutate_state;
+use crate::theme::badge_min_w;
+use crate::ui::store::use_studio;
+use crate::ui::style::use_studio_style;
 
 /// Maximum number of filtered palette results rendered concurrently so the overlay remains compact.
 pub const MAX_VISIBLE_PALETTE_ITEMS: usize = 7;
@@ -219,7 +217,7 @@ pub fn build_palette_items(state: &WorkspaceState) -> Vec<CommandPaletteItem> {
         items.push(CommandPaletteItem {
             category: "ACCENT",
             label: format!("Accent: {}", accent.label()),
-            subtitle: format!("Switch studio accent to {}", accent.hex()),
+            subtitle: format!("Switch the Studio accent to {}", accent.label()),
             action: CommandPaletteAction::SetAccent(accent),
         });
     }
@@ -325,118 +323,91 @@ pub fn dispatch_keydown(state: &mut WorkspaceState, key: &str, meta_or_ctrl: boo
         _ => false,
     }
 }
+/// The `Cmd+K` overlay; subscribes to the `palette` domain only.
+#[component]
+pub(crate) fn CommandPalette() -> Element {
+    let store = use_studio();
+    let s = use_studio_style();
+    let t = s.t;
+    let palette = store.palette.read();
+    let open = palette.state.open;
+    let query = palette.state.query.clone();
+    let total = palette.matches.len();
+    let visible: Vec<CommandPaletteItem> = palette.matches.iter().take(MAX_VISIBLE_PALETTE_ITEMS).cloned().collect();
+    let selected = palette.state.selected.min(visible.len().saturating_sub(1));
+    drop(palette);
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn render_command_palette(
-    store: &Arc<Mutex<WorkspaceState>>,
-    version: Signal<u64>,
-    palette: &CommandPaletteState,
-    matches: &[CommandPaletteItem],
-    accent_hex: &'static str,
-    accent_tint: &'static str,
-    xray: bool,
-    m: LayoutMetrics,
-) -> Element {
-    let visible = &matches[..matches.len().min(MAX_VISIBLE_PALETTE_ITEMS)];
-    let selected = if visible.is_empty() {
-        0
-    } else {
-        palette.selected.min(visible.len() - 1)
-    };
-    let count_lbl = format!("{} matches", matches.len());
-
-    let s_close_dialog = Arc::clone(store);
-    let s_close_btn = Arc::clone(store);
-    let s_input = Arc::clone(store);
-    let s_submit = Arc::clone(store);
-
-    let mut focusable_ids = vec!["palette-input".to_string(), "palette-close".to_string()];
-    for idx in 0..visible.len() {
-        focusable_ids.push(format!("palette-item-{idx}"));
-    }
-
+    let focusable_ids: Vec<String> = ["palette-input".to_owned(), "palette-close".to_owned()]
+        .into_iter()
+        .chain((0..visible.len()).map(|idx| format!("palette-item-{idx}")))
+        .collect();
     let dialog_style = format!(
-        "width: 100%; min-width: 0px; max-width: 100%; padding: 8px; gap: 6px; background-color: {PANEL_BG}; border-radius: {}px; border-width: 2px; border-color: {accent_hex};",
-        m.card_radius
-    );
-    let close_btn_style = format!(
-        "width: 42px; height: 20px; min-height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: {}px; border-width: 1px; border-color: {BORDER_DEFAULT};",
-        m.pill_radius
+        "width: 100%; min-width: 0px; max-width: 100%; padding: 8px; gap: 6px; border-radius: {}px;",
+        s.m.card_radius
     );
 
     rsx! {
         Dialog {
-            open: palette.open,
+            open,
             test_id: Some("command-palette".into()),
             accessibility_label: Some("Command Palette".into()),
-            focusable_ids: focusable_ids,
+            focusable_ids,
             close_on_escape: true,
             close_on_backdrop: true,
             style: Some(dialog_style),
-            on_close: move |_| mutate_state(&s_close_dialog, version, |st| st.close_palette()),
+            on_close: move |_| store.update(|st| st.close_palette()),
 
-            // Header row
             view {
                 style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center;",
                 view {
                     style: "flex-direction: row; align-items: center; gap: 6px;",
-                    text { style: "color: {accent_hex}; font-size: 11px;", "CMD+K PALETTE" }
-                    text { style: "color: {TEXT_MUTED}; font-size: 10px;", "{count_lbl}" }
+                    text { style: "color: {t.text.link.hex()}; font-size: 11px;", "CMD+K PALETTE" }
+                    text { style: "color: {t.text.tertiary.hex()}; font-size: 10px;", "{total} matches" }
                 }
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("palette-close".into()),
                     accessibility_label: Some("Close command palette".into()),
-                    style: Some(close_btn_style),
-                    on_press: move |_| mutate_state(&s_close_btn, version, |st| st.close_palette()),
+                    style: Some(s.compact_control("width: 42px; height: 20px; min-height: 20px;", 2, s.m.pill_radius, Some(false))),
+                    on_press: move |_| store.update(|st| st.close_palette()),
                     "Esc"
                 }
             }
 
-            // Live Fuzzy Search Input (`nve-ui` Input)
             Input {
                 test_id: Some("palette-input".into()),
                 placeholder: Some("Jump to view, task, accent, layout, snapshot...".into()),
-                value: palette.query.clone(),
+                value: query,
                 accessibility_label: Some("Command palette filter".into()),
                 accessibility_role: Some("searchbox".into()),
-                on_change: move |q: String| {
-                    mutate_state(&s_input, version, |st| st.set_palette_query(q));
-                },
-                on_submit: move |_| {
-                    mutate_state(&s_submit, version, |st| {
-                        let _ = st.execute_palette_selected();
-                    });
-                },
+                on_change: move |q: String| store.update(|st| st.set_palette_query(q)),
+                on_submit: move |_| store.update(|st| {
+                    let _ = st.execute_palette_selected();
+                }),
             }
 
             Separator {}
 
-            // Filtered Results
             if visible.is_empty() {
                 view {
                     test_id: "palette-empty",
-                    style: "width: 100%; height: 26px; justify-content: center; align-items: center; background-color: {CARD_ALT_BG}; border-radius: {m.pill_radius}px;",
-                    text { style: "color: {TEXT_MUTED}; font-size: 10px;", "No matching commands" }
+                    style: "width: 100%; height: 26px; justify-content: center; align-items: center; background-color: {t.surface.sunken.hex()}; border-radius: {s.m.pill_radius}px;",
+                    text { style: "color: {t.text.tertiary.hex()}; font-size: 10px;", "No matching commands" }
                 }
             } else {
                 view {
                     style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 4px;",
-                    for (idx, item) in visible.iter().enumerate() {
+                    for (idx, item) in visible.into_iter().enumerate() {
                         {
                             let is_sel = idx == selected;
-                            let bg = if is_sel { accent_tint } else { CARD_BG };
-                            let fg = if is_sel { TEXT_PRIMARY } else { TEXT_SECONDARY };
-                            let (bw, bc) = control_border(xray, is_sel, accent_hex);
-                            let item_tid = format!("palette-item-{idx}");
-                            let s_exec = Arc::clone(store);
+                            let bg = if is_sel { t.status.accent.subtle } else { t.surface.raised };
                             rsx! {
                                 pressable {
                                     key: "pal-{idx}",
-                                    test_id: "{item_tid}",
-                                    style: "width: 100%; height: 26px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 8px; background-color: {bg}; border-radius: {m.pill_radius}px; border-width: {bw}px; border-color: {bc};",
-                                    onpress: move |_| mutate_state(&s_exec, version, |st| {
+                                    test_id: "palette-item-{idx}",
+                                    style: "width: 100%; height: 26px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 8px; background-color: {bg.hex()}; border-radius: {s.m.pill_radius}px; {s.control(is_sel)}",
+                                    onpress: move |_| store.update(|st| {
                                         let _ = st.execute_palette_at(idx);
                                     }),
                                     view {
@@ -444,15 +415,17 @@ pub(crate) fn render_command_palette(
                                         Badge {
                                             label: item.category.to_string(),
                                             variant: BadgeVariant::Neutral,
-                                            style: Some(format!(
-                                                "min-width: {}px; height: 16px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 3px; padding-vertical: 0px; background-color: {CONTROL_BG}; border-radius: 4px; border-width: 0px; border-color: transparent;",
-                                                badge_min_w(item.category)
+                                            style: Some(s.compact_control(
+                                                &format!("min-width: {}px; height: 16px;", badge_min_w(item.category)),
+                                                3,
+                                                t.radius.sm as u32,
+                                                None,
                                             )),
                                         }
-                                        text { style: "color: {fg}; font-size: 10px;", "{item.label}" }
+                                        text { style: "color: {s.control_fg(is_sel)}; font-size: 10px;", "{item.label}" }
                                     }
                                     if is_sel {
-                                        text { style: "color: {accent_hex}; font-size: 9px;", "Enter" }
+                                        text { style: "color: {t.text.link.hex()}; font-size: 9px;", "Enter" }
                                     }
                                 }
                             }

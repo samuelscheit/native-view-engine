@@ -47,24 +47,6 @@ impl IslandHostKind {
             Self::JetpackCompose => "Compose",
         }
     }
-
-    pub const fn badge_bg(self) -> &'static str {
-        match self {
-            Self::ReactNative => "#0c4a6e",
-            Self::Flutter => "#172554",
-            Self::SwiftUI => "#2e1065",
-            Self::JetpackCompose => "#052e16",
-        }
-    }
-
-    pub const fn badge_fg(self) -> &'static str {
-        match self {
-            Self::ReactNative => "#7dd3fc",
-            Self::Flutter => "#93c5fd",
-            Self::SwiftUI => "#c4b5fd",
-            Self::JetpackCompose => "#86efac",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +120,12 @@ impl Default for IslandSandboxRuntime {
     }
 }
 
+/// `ThemeContext::accent_rgba` (big-endian RGBA) of a workspace accent choice.
+const fn accent_rgba(accent: AccentTheme) -> u32 {
+    let c = accent.accent().srgb();
+    u32::from_be_bytes([c.r, c.g, c.b, c.a])
+}
+
 impl IslandSandboxRuntime {
     pub fn new() -> Self {
         let mut orchestrator = SurfaceOrchestrator::new();
@@ -149,7 +137,7 @@ impl IslandSandboxRuntime {
             theme: ThemeContext {
                 color_scheme: Some(ColorScheme::Dark),
                 contrast: ContrastLevel::Standard,
-                accent_rgba: 0x38BD_F8FF,
+                accent_rgba: accent_rgba(AccentTheme::Cyan),
                 tokens: Default::default(),
             },
             scale_factor: 2.0,
@@ -324,17 +312,15 @@ impl IslandSandboxRuntime {
     }
 
     /// Broadcasts the active theme across all subscribed surfaces over `NveChannelBus` (`TOPIC_THEME`)
-    /// using a compact binary payload (`scheme=dark`, accent label, hex color).
+    /// using a compact binary payload (version 2: `scheme=dark`, accent label, big-endian RGBA).
     pub fn broadcast_theme(&mut self, accent: AccentTheme) -> usize {
         let label = accent.label().as_bytes();
-        let hex = accent.hex().as_bytes();
-        let mut bytes = Vec::with_capacity(4 + label.len() + hex.len());
-        bytes.push(1u8); // version 1
+        let mut bytes = Vec::with_capacity(7 + label.len());
+        bytes.push(2u8); // version 2
         bytes.push(2u8); // dark scheme
         bytes.push(label.len() as u8);
         bytes.extend_from_slice(label);
-        bytes.push(hex.len() as u8);
-        bytes.extend_from_slice(hex);
+        bytes.extend_from_slice(&accent_rgba(accent).to_be_bytes());
         self.bus
             .publish_bytes(
                 TOPIC_THEME,

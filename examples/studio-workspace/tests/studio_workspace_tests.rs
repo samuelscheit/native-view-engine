@@ -11,10 +11,30 @@ use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::Visual;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
+use nve_studio_workspace::state::StudioConfig;
+use nve_studio_workspace::theme::{studio_radius, studio_theme, XRayPalette};
+use nve_studio_workspace::ui::store::{DomainMask, DomainValues};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, StudioWorkspaceModule,
-    SyncTransportMode, WorkspaceState, MAX_HISTORY, WORKSPACE_STATE_BIN_MAGIC,
+    SyncTransportMode, TaskStatus, WorkspaceState, MAX_HISTORY, WORKSPACE_STATE_BIN_MAGIC,
 };
+use nve_ui::{Appearance, ColorHex, Theme};
+
+/// The Studio theme the harness renders (its `StudioSystemEnv` reports a dark, standard-contrast
+/// OS) for the default config after `edit`.
+fn harness_theme(edit: impl FnOnce(&mut StudioConfig)) -> Theme {
+    let mut config = WorkspaceState::default().current.studio;
+    edit(&mut config);
+    studio_theme(&config, config.accent, Appearance::DARK)
+}
+
+fn has_border(h: &MultiBackendHarness, min_width: f32, color: ColorRgba) -> bool {
+    live_node_ids(h.surface.store()).into_iter().any(|id| {
+        h.surface.store().try_row::<Visual>(id).is_some_and(|v| {
+            v.border_width() >= min_width && ColorRgba::from_u32(v.border_color().0) == color
+        })
+    })
+}
 
 #[test]
 fn single_command_buffer_drives_all_backends_views_and_interactions() {
@@ -94,21 +114,36 @@ fn single_command_buffer_drives_all_backends_views_and_interactions() {
 fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     let mut h = MultiBackendHarness::new(960.0, 640.0);
 
+    let cyan = harness_theme(|_| {});
+    let violet = harness_theme(|c| c.accent = AccentTheme::Violet);
+    let ssr_boot = h.web.render_ssr(h.surface.store());
+    for (role, color) in [("canvas", cyan.surface.canvas), ("cyan accent", cyan.status.accent.solid)] {
+        let hex = color.hex().to_string();
+        assert!(ssr_boot.style_css.contains(&hex), "expected {role} {hex} in boot SSR stylesheet");
+    }
+
     h.press("accent-violet");
     assert!(h.ascii().contains("Accent -> Violet"));
     let ssr_violet = h.web.render_ssr(h.surface.store());
+    let violet_solid = violet.status.accent.solid.hex().to_string();
+    let cyan_ink = cyan.status.accent.text.hex().to_string();
     assert!(
-        ssr_violet.style_css.contains("#a78bfa"),
-        "expected violet #a78bfa in SSR stylesheet, got:\n{}",
+        ssr_violet.style_css.contains(&violet_solid),
+        "expected violet accent {violet_solid} in SSR stylesheet, got:\n{}",
         ssr_violet.style_css
     );
+    assert!(!ssr_violet.style_css.contains(&cyan_ink), "cyan accent {cyan_ink} must be fully replaced");
 
+    let pill_radius = format!(
+        "border-radius:{}px",
+        studio_radius(&StudioConfig { radius: CornerRadiusMode::Pill, ..WorkspaceState::default().current.studio }).lg
+    );
     h.press("radius-pill");
     assert!(h.ascii().contains("Radius -> Pill (18)"));
     let ssr_pill = h.web.render_ssr(h.surface.store());
     assert!(
-        ssr_pill.style_css.contains("border-radius:18px"),
-        "expected border-radius:18px in SSR stylesheet, got:\n{}",
+        ssr_pill.style_css.contains(&pill_radius),
+        "expected {pill_radius} in SSR stylesheet, got:\n{}",
         ssr_pill.style_css
     );
 
@@ -120,33 +155,24 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     );
     let ssr_sharp = h.web.render_ssr(h.surface.store());
     assert!(
-        !ssr_sharp.style_css.contains("border-radius:18px"),
-        "expected sharp radius to clear border-radius:18px from SSR stylesheet, got:\n{}",
+        !ssr_sharp.style_css.contains(&pill_radius),
+        "expected sharp radius to clear {pill_radius} from SSR stylesheet, got:\n{}",
         ssr_sharp.style_css
     );
 
     h.press("density-compact");
     assert!(h.ascii().contains("Density -> Compact"));
 
+    let xray = XRayPalette::new(&violet);
+    assert!(!has_border(&h, 2.0, xray.card), "no X-Ray card border before toggling");
     h.press("toggle-xray");
     assert!(h.ascii().contains("X-Ray HUD: ON"));
-    let has_xray_card_border = live_node_ids(h.surface.store()).into_iter().any(|id| {
-        h.surface.store().try_row::<Visual>(id).is_some_and(|v| {
-            v.border_width() >= 2.0
-                && ColorRgba::from_u32(v.border_color().0) == ColorRgba::rgb(167, 139, 250)
-        })
-    });
-    assert!(has_xray_card_border, "X-Ray violet card border expected");
+    assert!(has_border(&h, 2.0, xray.card), "X-Ray violet card border expected");
+    assert!(has_border(&h, 2.0, xray.panel), "X-Ray cyan panel border expected");
 
     h.press("toggle-xray");
     assert!(h.ascii().contains("X-Ray HUD: OFF"));
-    let still_has_xray = live_node_ids(h.surface.store()).into_iter().any(|id| {
-        h.surface.store().try_row::<Visual>(id).is_some_and(|v| {
-            v.border_width() >= 2.0
-                && ColorRgba::from_u32(v.border_color().0) == ColorRgba::rgb(167, 139, 250)
-        })
-    });
-    assert!(!still_has_xray, "X-Ray borders must cleanly reset when OFF");
+    assert!(!has_border(&h, 2.0, xray.card), "X-Ray borders must cleanly reset when OFF");
 
     h.press("btn-new-task");
     assert!(h.ascii().contains("AET-105"));
@@ -160,9 +186,10 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     assert!(h.ascii().contains("Snapshot 1 / 8"));
     assert!(h.ascii().contains("Workspace Boot"));
     let ssr_first = h.web.render_ssr(h.surface.store());
+    let cyan_solid = cyan.status.accent.solid.hex().to_string();
     assert!(
-        ssr_first.style_css.contains("#38bdf8"),
-        "expected cyan #38bdf8 in SSR stylesheet, got:\n{}",
+        ssr_first.style_css.contains(&cyan_solid),
+        "expected time travel to restore cyan accent {cyan_solid}, got:\n{}",
         ssr_first.style_css
     );
 
@@ -188,6 +215,30 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     h.press("btn-toggle-studio");
     assert!(h.find_by_test_id("studio-panel").is_some());
     assert!(h.ascii().contains("ON"));
+}
+
+#[test]
+fn store_updates_publish_only_the_domains_they_change() {
+    let mut st = WorkspaceState::default();
+    // Every interaction bumps the live frame counter (inspector); committed actions also append a
+    // frame-timing telemetry sample (metrics). A `Todo` task moves to `InProgress` (still active).
+    let task = st.current.tasks.iter().find(|t| t.status == TaskStatus::Todo).map(|t| t.id).expect("seeded Todo task");
+    let frame = DomainMask::INSPECTOR;
+    let committed = frame.union(DomainMask::METRICS);
+    let cases: [(&str, fn(&mut WorkspaceState, u32), DomainMask); 5] = [
+        ("cycle task status", |s, t| s.cycle_task_status(t), committed.union(DomainMask::BOARD)),
+        ("scroll stream", |s, _| s.set_stream_scroll_offset(4_000), frame.union(DomainMask::STREAM)),
+        ("same scroll", |s, _| s.set_stream_scroll_offset(4_000), DomainMask::NONE),
+        ("cycle sync transport", |s, _| s.cycle_sync_transport(), frame.union(DomainMask::SYNC)),
+        ("open palette", |s, _| s.open_palette(), frame.union(DomainMask::NAV).union(DomainMask::PALETTE)),
+    ];
+    for (label, action, expected) in cases {
+        let before = DomainValues::project(&st);
+        action(&mut st, task);
+        let changed = before.changed(&st);
+        assert_eq!(changed, expected, "{label}: published {changed:?}, expected {expected:?}");
+        assert_eq!(DomainValues::project(&st).changed(&st), DomainMask::NONE, "{label}: projection is stable");
+    }
 }
 
 #[test]

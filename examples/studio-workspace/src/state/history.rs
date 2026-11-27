@@ -131,27 +131,25 @@ impl WorkspaceState {
         self.current.eng_messages.len() + self.current.design_messages.len()
     }
 
-    pub fn filtered_tasks(&self) -> Vec<TaskItem> {
-        let search = self.current.board_search_query.trim();
-        self.current
-            .tasks
-            .iter()
-            .filter(|t| {
-                let status_ok = match self.current.board_filter {
-                    BoardFilter::All => true,
-                    BoardFilter::Active => t.status != TaskStatus::Done,
-                    BoardFilter::Done => t.status == TaskStatus::Done,
-                };
-                if !status_ok {
-                    return false;
-                }
-                if search.is_empty() {
-                    return true;
-                }
+}
+
+/// Board tasks visible under `filter` and the fuzzy `query` (key, title, assignee, tag).
+pub fn filter_tasks<'a>(
+    tasks: &'a [TaskItem],
+    filter: BoardFilter,
+    query: &'a str,
+) -> impl Iterator<Item = &'a TaskItem> + 'a {
+    let search = query.trim();
+    tasks.iter().filter(move |t| {
+        let status_ok = match filter {
+            BoardFilter::All => true,
+            BoardFilter::Active => t.status != TaskStatus::Done,
+            BoardFilter::Done => t.status == TaskStatus::Done,
+        };
+        status_ok
+            && (search.is_empty() || {
                 let hay = format!("{} {} {} {}", t.key, t.title, t.assignee, t.tag);
                 fuzzy_score(search, &hay).is_some()
             })
-            .cloned()
-            .collect()
-    }
+    })
 }

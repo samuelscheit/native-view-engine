@@ -114,6 +114,11 @@ impl Accent {
         let lch = Oklch::from_srgb(color);
         Self::new(lch.h, lch.c, lch.l)
     }
+
+    /// The accent's (contrast-snapped) solid seed in sRGB, e.g. for `ThemeContext::accent_rgba`.
+    pub const fn srgb(self) -> ColorRgba {
+        Oklch::new(self.solid_l, self.chroma, self.hue).to_srgb()
+    }
 }
 
 /// Per-mode lightness profile shared by every hue.
