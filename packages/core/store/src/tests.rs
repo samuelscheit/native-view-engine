@@ -528,3 +528,22 @@ fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free(
     );
     assert_eq!(store.resource::<Shadows>(id), None);
 }
+
+#[test]
+fn wire_resources_without_a_registered_codec_replicate_as_opaque_bytes() {
+    use crate::resource::ResourceStore;
+    use crate::ResourceId;
+    let kind = nve_abi::Key64::of("test.res.module_only");
+    let mut res = ResourceStore::default();
+    assert!(res.define_at(ResourceId(3), kind, false, b"opaque-module-blob"));
+    assert!(res.define_at(ResourceId(4), kind, true, b"ephemeral-blob"));
+    let mut out = Vec::new();
+    assert!(res.encode(ResourceId(3), &mut out));
+    assert_eq!(out, b"opaque-module-blob", "re-encodes byte for byte (keyframes, resource_bytes)");
+    out.clear();
+    assert!(res.encode(ResourceId(4), &mut out), "ephemeral opaque values keep their bytes too");
+    assert_eq!(out, b"ephemeral-blob");
+    assert_eq!(res.kind(ResourceId(3)), Some(kind));
+    assert!(res.get::<Shadows>(ResourceId(3)).is_none(), "no typed view");
+    assert!(!res.define_at(ResourceId(0), kind, false, b"x"), "slot 0 stays reserved");
+}

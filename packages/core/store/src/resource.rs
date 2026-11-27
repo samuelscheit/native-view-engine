@@ -32,6 +32,12 @@ pub trait Resource: Send + Sync + 'static {
 }
 
 type AnyArc = Arc<dyn Any + Send + Sync>;
+
+/// Value of a wire-defined resource whose kind has no codec registered in this process (e.g. a
+/// module resource replicated by a host runtime that does not link the module). Its wire bytes are
+/// kept in `Entry::encoded` so it still re-encodes (keyframes, `resource_bytes`) byte for byte;
+/// typed `get` reads see no value.
+struct OpaqueResource;
 type EncodeFn = fn(&(dyn Any + Send + Sync), &mut Vec<u8>);
 type DecodeFn = fn(&[u8]) -> Option<AnyArc>;
 
@@ -304,12 +310,13 @@ impl ResourceStore {
         self.entries.get(id.0 as usize).is_some_and(|e| e.refs > 0)
     }
 
-    /// Wire encoding of `id` (`false` if its kind has no registered codec).
+    /// Wire encoding of `id` (`false` when undefined, or typed without a registered codec).
     pub fn encode(&self, id: ResourceId, out: &mut Vec<u8>) -> bool {
         let Some(e) = self.entries.get(id.0 as usize) else {
             return false;
         };
-        if !e.ephemeral && e.value.is_some() && codec(e.kind).is_some() {
+        let opaque = e.value.as_deref().is_some_and(|v| v.is::<OpaqueResource>());
+        if opaque || (!e.ephemeral && e.value.is_some() && codec(e.kind).is_some()) {
             out.extend_from_slice(&e.encoded);
             return true;
         }
@@ -344,12 +351,14 @@ impl ResourceStore {
         ephemeral: bool,
         bytes: &[u8],
     ) -> bool {
-        let Some(c) = codec(kind) else {
-            return false;
+        let value: AnyArc = match codec(kind) {
+            Some(c) => match (c.decode)(bytes) {
+                Some(v) => v,
+                None => return false,
+            },
+            None => Arc::new(OpaqueResource),
         };
-        let Some(value) = (c.decode)(bytes) else {
-            return false;
-        };
+        let opaque = value.is::<OpaqueResource>();
         let i = id.0 as usize;
         if i == 0 {
             return false;
@@ -378,7 +387,8 @@ impl ResourceStore {
         let was_pending = e.flags & RES_PENDING_FREE != 0;
         let preserved = e.flags & (RES_IN_FREE | RES_PENDING_FREE | RES_RELEASED_THIS_FRAME);
         let hash = if ephemeral { 0 } else { xxh64(bytes, kind.0) };
-        let encoded: Box<[u8]> = if ephemeral { Box::new([]) } else { bytes.into() };
+        // Opaque values have no codec to re-encode from, so they always keep their bytes.
+        let encoded: Box<[u8]> = if ephemeral && !opaque { Box::new([]) } else { bytes.into() };
         let mut flags = RES_DEFINED_THIS_FRAME | preserved;
         if refs == 0 {
             flags |= RES_PENDING_FREE;
