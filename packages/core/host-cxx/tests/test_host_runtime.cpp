@@ -232,6 +232,15 @@ void test_host_session_counter_and_state(const char* counter_module, const char*
   CHECK(host != nullptr);
   if (!host) return;
   CHECK(!host->has_app());
+  std::vector<int64_t> emitted;
+  host->set_event_sink([&emitted](std::span<const NveDirectEvent> evs) {
+    for (const NveDirectEvent& ev : evs) {
+      const std::string_view name(reinterpret_cast<const char*>(ev.name.ptr), ev.name.len);
+      if (ev.kind == NVE_EVENT_CUSTOM && name == CounterApp::kCountEventName && ev.value.tag == NVE_VAL_I64) {
+        emitted.push_back(ev.value.data.i64_val);
+      }
+    }
+  });
   CHECK(host->attach(&CounterApp::get_interface));
   CHECK(host->has_app() && !host->has_module());
   (void)host->pump();
@@ -239,7 +248,15 @@ void test_host_session_counter_and_state(const char* counter_module, const char*
   CHECK(host->dispatch(host->events().press(CounterApp::kIncrement, 1.0f, 1.0f)));
   CHECK(host->dispatch(host->events().press(CounterApp::kIncrement, 1.0f, 1.0f)));
   CHECK(scene_text(*host, CounterApp::kCount) == "Count: 2");
+  CHECK((emitted == std::vector<int64_t>{1, 2}));  // outbound component events reach the sink
   CHECK(!host->dispatch(host->events().press(CounterApp::kTitle, 0.0f, 0.0f)));  // not a button
+  const std::string title = "Retitled";
+  NveMapEntry prop{};
+  prop.key = NveStrSlice{reinterpret_cast<const uint8_t*>("title"), 5u};
+  prop.value.tag = NVE_VAL_STR;
+  prop.value.data.str_val = NveStrSlice{reinterpret_cast<const uint8_t*>(title.data()), title.size()};
+  CHECK(host->set_props(std::span<const NveMapEntry>(&prop, 1u)));
+  CHECK(scene_text(*host, CounterApp::kTitle) == "Retitled");
   CHECK(host->events().press(9u, 0, 0).surface_id == 3u);
 
   const std::string path = (std::filesystem::temp_directory_path() / "nve_host_state_test.bin").string();
@@ -284,6 +301,48 @@ void test_host_session_counter_and_state(const char* counter_module, const char*
   CHECK(wakes >= 0);
 }
 
+void set_env(const char* name, const char* value) {
+#if defined(_WIN32)
+  _putenv_s(name, value != nullptr ? value : "");
+#else
+  if (value != nullptr) {
+    setenv(name, value, 1);
+  } else {
+    unsetenv(name);
+  }
+#endif
+}
+
+void test_app_state_paths() {
+  namespace fs = std::filesystem;
+  set_env("NVE_STATE_DISABLE", nullptr);
+  set_env("NVE_STATE_PATH", nullptr);
+  set_env("NVE_RESET_STATE", nullptr);
+  const std::string a = app_state::resolve_path("/apps/My Cool App!.dylib");
+  CHECK(a.find("my-cool-app-") != std::string::npos && a.ends_with(".nvestate"));
+  CHECK(a == app_state::resolve_path("/apps/My Cool App!.dylib"));  // stable
+  CHECK(a != app_state::resolve_path("/other/My Cool App!.dylib"));  // identity-scoped
+  CHECK(app_state::slug("") == "nve-app" && app_state::slug("???") == "nve-app");
+
+  const std::string explicit_path = (fs::temp_directory_path() / "nve_app_state_test" / "s.nvestate").string();
+  set_env("NVE_STATE_PATH", explicit_path.c_str());
+  CHECK(app_state::resolve_path("x") == explicit_path);
+  const uint8_t payload[] = {1, 2, 3};
+  CHECK(app_state::write_file(explicit_path, 9u, payload));  // creates the directory
+  CHECK(!fs::exists(explicit_path + ".tmp"));
+  CHECK(app_state::read_file(explicit_path, 9u) == std::vector<uint8_t>({1, 2, 3}));
+  CHECK(!app_state::read_file(explicit_path, 10u));
+  set_env("NVE_RESET_STATE", "yes");
+  CHECK(app_state::resolve_path("x") == explicit_path && !fs::exists(explicit_path));
+  set_env("NVE_RESET_STATE", nullptr);
+  set_env("NVE_STATE_DISABLE", "TRUE");
+  CHECK(app_state::resolve_path("x").empty());
+  CHECK(!app_state::write_file("", 1u, payload));
+  set_env("NVE_STATE_DISABLE", nullptr);
+  set_env("NVE_STATE_PATH", nullptr);
+  fs::remove_all(fs::temp_directory_path() / "nve_app_state_test");
+}
+
 void test_resource_codecs() {
   const std::vector<uint8_t> url = encode_image_url("https://x/y.png");
   CHECK(decode_image_src(url)->url == "https://x/y.png");
@@ -321,6 +380,7 @@ void test_resource_codecs() {
 
 int main() {
   test_resource_codecs();
+  test_app_state_paths();
   test_writer_round_trip_and_retained_tree();
   test_host_session_counter_and_state(NVE_TEST_COUNTER_MODULE, NVE_TEST_NO_SURFACE_MODULE, NVE_TEST_NO_ENTRY_MODULE);
   if (g_failures != 0) {

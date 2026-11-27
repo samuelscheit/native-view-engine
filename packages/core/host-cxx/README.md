@@ -20,6 +20,7 @@ keys, and field specs.
 | `nve/host/scene_nodes.hpp` | C++20 | `SceneTables` (every core table a view host renders) and `read_node` → `NodeData` (kind, absolute / local rects, visual, inherited typography, text, image, text input, scroll, interaction, accessibility, link) |
 | `nve/host/retained_tree.hpp` | C++20 | `RetainedTree<Adapter>`: O(changed) native-view reconciler (removals, `dirty_indices`, typography cascades, generation-checked slot reuse) |
 | `nve/host/host_session.hpp` | C++20 | `HostSession`: runtime surface + in-process / `cdylib` (hot reload) / paired app, UI-thread wake poster, `EventFactory`, app-state files |
+| `nve/host/app_state.hpp` | C++20 | Persisted app state files (atomic write, schema-tagged read, per-app cache path, `NVE_STATE_DISABLE` / `NVE_STATE_PATH` / `NVE_RESET_STATE`) |
 | `nve/host/module_loader.hpp` | C++20 | `AppModule`: `dlopen` / `LoadLibraryW` + validated `nve_get_interface` |
 | `nve/host/nve2_writer.hpp` | C++20 | `Nve2Writer`: `NVE2` frames from generated `NveTableDesc`s (C++ apps, demos, fixtures) |
 | `nve/host/core_resources.hpp` | C++20 | `ImageSrc` / `BoxShadows` resource codecs |

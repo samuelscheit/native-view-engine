@@ -10,7 +10,6 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -20,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "app_state.hpp"
 #include "module_loader.hpp"
 #include "nve_abi.generated.h"
 #include "runtime_session.hpp"
@@ -71,6 +71,8 @@ class HostSession {
  public:
   /// Posts "call `pump()` soon" to the host UI thread. Invoked on ANY thread; must not block.
   using WakePoster = std::function<void()>;
+  /// Receives the app's outbound (`NveComponentApi::drain_emitted_events`) events after each pump.
+  using EventSink = std::function<void(std::span<const NveDirectEvent>)>;
 
   /// Creates a runtime surface (`libnve_runtime` linked into the host).
   [[nodiscard]] static std::unique_ptr<HostSession> create(const NveRuntimeConfig& cfg, std::string* out_error = nullptr) {
@@ -105,6 +107,8 @@ class HostSession {
     wake_ = std::move(poster);
     if (wake_) (void)runtime_.set_wake_callback(&HostSession::on_wake, this);
   }
+
+  void set_event_sink(EventSink sink) { sink_ = std::move(sink); }
 
   /// Runs an in-process app (`nve_get_interface` linked into the host).
   bool attach(NveGetInterfaceFn get_interface) {
@@ -150,10 +154,34 @@ class HostSession {
     return true;
   }
 
-  /// Advances the runtime (renders the app / applies paired frames); `true` when the scene changed.
+  /// Advances the runtime (renders the app / applies paired frames) and forwards the app's
+  /// outbound events; `true` when the scene changed.
   bool pump(float dt_s = 0.0f) {
     bool changed = false;
-    return runtime_.tick(dt_s, &changed) == NVE_RUNTIME_OK && changed;
+    const bool ok = runtime_.tick(dt_s, &changed) == NVE_RUNTIME_OK;
+    NveEventBatch out{};
+    if (sink_ && runtime_.drain_emitted_events(&out) == NVE_RUNTIME_OK && out.ptr != nullptr && out.len != 0u) {
+      sink_(std::span<const NveDirectEvent>(out.ptr, out.len));
+    }
+    return ok && changed;
+  }
+
+  /// Embedded-component props (`NveComponentApi::set_props`), then pump.
+  bool set_props(std::span<const NveMapEntry> props) {
+    bool changed = false;
+    if (runtime_.set_props(props.data(), static_cast<uint32_t>(props.size()), &changed) != NVE_RUNTIME_OK) {
+      return false;
+    }
+    (void)pump();
+    return true;
+  }
+
+  /// One `NVP1` Tier-1 hot patch (`NveDevApi::apply_hot_patch`), then pump.
+  bool apply_hot_patch(std::span<const uint8_t> patch_nvp1) {
+    bool changed = false;
+    if (runtime_.apply_hot_patch(patch_nvp1, &changed) != NVE_RUNTIME_OK) return false;
+    (void)pump();
+    return changed;
   }
 
   /// Dispatches one event and pumps; `true` when the scene changed.
@@ -170,63 +198,31 @@ class HostSession {
     return std::vector<uint8_t>(state.begin(), state.end());
   }
 
-  /// Persists the app state to `path` tagged with the host's `schema_version`.
+  /// Atomically persists the app state to `path` tagged with the host's `schema_version`
+  /// (`app_state::write_file`); `false` when the app has no state or the write failed.
   bool save_state(const std::string& path, uint32_t schema_version) {
     const std::vector<uint8_t> state = snapshot_state();
-    if (state.empty()) return false;
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    const uint32_t header[4] = {kStateMagic, kStateVersion, schema_version, static_cast<uint32_t>(state.size())};
-    for (const uint32_t w : header) put_u32(out, w);
-    out.write(reinterpret_cast<const char*>(state.data()), static_cast<std::streamsize>(state.size()));
-    return static_cast<bool>(out.flush());
+    return !state.empty() && app_state::write_file(path, schema_version, state);
   }
 
-  /// Restores state saved by `save_state` into the running app; rejects a mismatched schema,
-  /// a foreign file, or a truncated / oversized payload.
+  /// Restores state saved by `save_state` into the running app (`app_state::read_file` rules).
   bool restore_state_file(const std::string& path, uint32_t schema_version) {
-    std::ifstream in(path, std::ios::binary);
-    uint32_t header[4] = {};
-    for (uint32_t& w : header) {
-      if (!get_u32(in, w)) return false;
-    }
-    if (header[0] != kStateMagic || header[1] != kStateVersion || header[2] != schema_version ||
-        header[3] > kMaxStateBytes) {
-      return false;
-    }
-    std::vector<uint8_t> state(header[3]);
-    if (!in.read(reinterpret_cast<char*>(state.data()), static_cast<std::streamsize>(state.size())) ||
-        in.peek() != std::char_traits<char>::eof()) {
-      return false;
-    }
-    return runtime_.restore_state(state) == NVE_RUNTIME_OK;
+    const std::optional<std::vector<uint8_t>> state = app_state::read_file(path, schema_version);
+    return state && runtime_.restore_state(*state) == NVE_RUNTIME_OK;
   }
 
  private:
-  static constexpr uint32_t kStateMagic = 0x5345564Eu;  // "NVES"
-  static constexpr uint32_t kStateVersion = 1u;
-  static constexpr uint32_t kMaxStateBytes = 64u * 1024u * 1024u;
-
   HostSession(RuntimeSession rt, uint32_t surface_id) : runtime_(std::move(rt)) { events_.surface_id = surface_id; }
 
   static void on_wake(void* ctx) {
     auto* self = static_cast<HostSession*>(ctx);
     if (self->wake_) self->wake_();
   }
-  static void put_u32(std::ofstream& out, uint32_t v) {
-    const char b[4] = {static_cast<char>(v), static_cast<char>(v >> 8u), static_cast<char>(v >> 16u),
-                       static_cast<char>(v >> 24u)};
-    out.write(b, 4);
-  }
-  static bool get_u32(std::ifstream& in, uint32_t& v) {
-    unsigned char b[4];
-    if (!in.read(reinterpret_cast<char*>(b), 4)) return false;
-    v = uint32_t{b[0]} | (uint32_t{b[1]} << 8u) | (uint32_t{b[2]} << 16u) | (uint32_t{b[3]} << 24u);
-    return true;
-  }
 
   RuntimeSession runtime_;  // reset in the destructor body, so `module_` outlives its app
   AppModule module_;
   WakePoster wake_;
+  EventSink sink_;
   EventFactory events_;
   bool attached_ = false;
 };

@@ -5,10 +5,14 @@
 // Tree (packed `NodeId` == index, generation 0):
 //   1 ROOT -> 2 column [3 title, 4 "Increment" button, 5 count label, 6 "Reset" button]
 // Press on 4 increments, press on 6 resets; `NveDevApi` snapshots the count as 4 LE bytes.
+// `NveComponentApi`: the `title` string prop retitles node 3, and every count change emits one
+// `Custom` event named `count` whose `value` is the new count (I64).
 #pragma once
 
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "nve2_writer.hpp"
 #include "nve_abi.generated.h"
@@ -31,10 +35,14 @@ class CounterApp {
     static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
     // Every slot of a returned interface must be filled (the runtime rejects partial vtables).
     static const NveDevApi kDev{&apply_hot_patch, &snapshot_state, &restore_state};
+    static const NveComponentApi kComponent{&set_props, &drain_emitted_events};
     if (interface_id == NVE_IFACE_SURFACE) return &kSurface;
     if (interface_id == NVE_IFACE_DEV) return &kDev;
+    if (interface_id == NVE_IFACE_COMPONENT) return &kComponent;
     return nullptr;
   }
+
+  static constexpr std::string_view kCountEventName = "count";
 
  private:
   static NveAppHandle create(uint32_t) { return new CounterApp(); }
@@ -61,8 +69,42 @@ class CounterApp {
       if (ev.node_id == kIncrement) ++self->count_;
       if (ev.node_id == kReset) self->count_ = 0;
     }
-    self->count_dirty_ = self->count_dirty_ || before != self->count_;
+    if (before != self->count_) self->count_changed();
     return before != self->count_ ? 1u : 0u;
+  }
+
+  static uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
+    auto* self = static_cast<CounterApp*>(h);
+    uint32_t changed = 0u;
+    for (uint32_t i = 0; entries != nullptr && i < count; ++i) {
+      const NveMapEntry& e = entries[i];
+      const std::string_view key(reinterpret_cast<const char*>(e.key.ptr), e.key.len);
+      if (key != "title" || e.value.tag != NVE_VAL_STR) continue;
+      const NveStrSlice s = e.value.data.str_val;
+      const std::string_view title(reinterpret_cast<const char*>(s.ptr), s.len);
+      if (!self->mounted_) self->mount();
+      changed |= self->w_.set_str(kTitle, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, title) ? 1u : 0u;
+    }
+    return changed;
+  }
+
+  static NveEventBatch drain_emitted_events(NveAppHandle h) {
+    auto* self = static_cast<CounterApp*>(h);
+    self->drained_.swap(self->emitted_);
+    self->emitted_.clear();
+    return NveEventBatch{self->drained_.data(), static_cast<uint32_t>(self->drained_.size()), 0u};
+  }
+
+  void count_changed() {
+    count_dirty_ = true;
+    NveDirectEvent ev{};
+    ev.node_id = kCount;
+    ev.kind = NVE_EVENT_CUSTOM;
+    ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
+    ev.name = NveStrSlice{reinterpret_cast<const uint8_t*>(kCountEventName.data()), kCountEventName.size()};
+    ev.value.tag = NVE_VAL_I64;
+    ev.value.data.i64_val = count_;
+    emitted_.push_back(ev);
   }
 
   /// The demo has no `rsx!` templates to patch.
@@ -81,7 +123,7 @@ class CounterApp {
     uint32_t c = 0u;
     for (uint32_t i = 0; i < 4u; ++i) c |= uint32_t{state.ptr[i]} << (i * 8u);
     self->count_ = static_cast<int32_t>(c);
-    self->count_dirty_ = true;
+    self->count_changed();
   }
 
   void text_node(uint32_t id, const char* text, float font_size) {
@@ -134,6 +176,8 @@ class CounterApp {
   bool mounted_ = false;
   bool count_dirty_ = false;
   uint8_t state_[4] = {};
+  std::vector<NveDirectEvent> emitted_;
+  std::vector<NveDirectEvent> drained_;  // borrowed by the runtime until the next drain
 };
 
 }  // namespace nve::host::demo
