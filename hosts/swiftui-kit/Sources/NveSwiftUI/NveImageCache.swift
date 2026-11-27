@@ -166,10 +166,7 @@ public final class NveImageCache: @unchecked Sendable {
     /// stored under `key` (e.g. the resource id).
     public func image(encoded bytes: [UInt8], key: String) -> CGImage? {
         guard !bytes.isEmpty else { return nil }
-        return cached(key: key) {
-            guard let source = CGImageSourceCreateWithData(Data(bytes) as CFData, nil) else { return nil }
-            return CGImageSourceCreateImageAtIndex(source, 0, nil)
-        }
+        return cached(key: key) { Self.decodeEncodedData(Data(bytes)) }
     }
 
     private func cached(key: String, decode: () -> CGImage?) -> CGImage? {

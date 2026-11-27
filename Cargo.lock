@@ -2887,6 +2887,7 @@ dependencies = [
  "nve-abi",
  "nve-canvas",
  "nve-components",
+ "nve-engine",
  "nve-store",
 ]
 

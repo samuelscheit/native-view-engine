@@ -161,6 +161,54 @@ void main() {
       painter.dispose();
     });
 
+    testWidgets('a resource id rewritten with equal-length bytes re-decodes; failures do not stick', (tester) async {
+      final b = SceneBuilder();
+      final root = b.node(const Rect.fromLTWH(0, 0, 100, 100));
+      final img = b.node(const Rect.fromLTWH(0, 0, 40, 40), parent: root);
+      final imageShape = TableShape(ImageTable.key, ImageTable.words, !ImageTable.dense, ImageTable.defaults);
+      b
+        ..bits(imageShape, img, ImageTable.src, 9)
+        ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
+      Uint8List payload(Uint8List encoded) => Uint8List.fromList([
+            1,
+            ...(ByteData(4)..setUint32(0, encoded.length, Endian.little)).buffer.asUint8List(),
+            ...encoded,
+          ]);
+      final blue = makeSolidPngBytes(0, 0, 255, width: 4, height: 4);
+      final green = makeSolidPngBytes(0, 255, 0, width: 4, height: 4);
+      expect(green.length, blue.length, reason: 'same byte length: an (id, length) key would collide');
+      final resources = _Resources({9: payload(Uint8List.fromList(List<int>.filled(blue.length, 7)))});
+      final painter = NveScenePainter();
+      var decoded = 0;
+      await tester.runAsync(() async {
+        Future<(int, int, int, int)> paintFrame(int frame, List<int> dirty, {int epoch = 0}) async {
+          final tree = b.tree(frameId: Key64(frame, 0), dirtyResources: dirty, sceneEpoch: epoch);
+          final before = decoded;
+          await rasterize(100, 100,
+              (canvas) => painter.paint(canvas, tree, Offset.zero, resources: resources, onImageLoaded: () => decoded++));
+          // Settle the decode the first paint may have started (a failing one never calls back).
+          for (var j = 0; j < 30 && decoded == before; j++) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+          final px = await rasterize(100, 100,
+              (canvas) => painter.paint(canvas, tree, Offset.zero, resources: resources, onImageLoaded: () => decoded++));
+          return pixelAt(px, 100, 20, 20);
+        }
+
+        expect((await paintFrame(1, [])).$4, 0, reason: 'garbage bytes fail to decode');
+        resources.map[9] = payload(blue);
+        expect(await paintFrame(2, [9]), _blue, reason: 'rewritten id decodes despite the earlier failure');
+        resources.map[9] = payload(green);
+        expect(await paintFrame(3, [9]), _green, reason: 'equal-length rewrite re-decodes');
+        expect(await paintFrame(4, []), _green, reason: 'clean frame keeps the decode');
+        resources.map[9] = payload(blue);
+        expect(await paintFrame(6, []), _blue, reason: 'frame gap (missed dirty list) re-decodes');
+        resources.map[9] = payload(green);
+        expect(await paintFrame(7, [], epoch: 1), _green, reason: 'new scene epoch re-decodes');
+      });
+      painter.dispose();
+    });
+
     test('a throwing table painter leaves the canvas balanced', () {
       final b = SceneBuilder();
       final root = b.node(const Rect.fromLTWH(0, 0, 10, 10));

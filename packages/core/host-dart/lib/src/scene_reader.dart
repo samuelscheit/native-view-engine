@@ -8,6 +8,7 @@ library;
 
 import 'dart:typed_data';
 
+import 'generated/nve_abi_const.generated.dart' show nveRowIndexPageLen;
 import 'key64.dart';
 import 'table_reader.dart';
 import 'utf8.dart';
@@ -22,18 +23,16 @@ final class TableViewLayout {
     required this.words,
     required this.rowCount,
     required this.dirtyCount,
-    required this.rowIndexDirLen,
-    required this.rowIndexPageCount,
     required this.rows,
     required this.owners,
     required this.dirtyRows,
+    required this.rowIndexDirLen,
+    required this.rowIndexPageCount,
     required this.rowIndexDir,
     required this.rowIndexPages,
   });
 
   final int stride, keyLo, keyHi, slot, words, rowCount, dirtyCount, rows, owners, dirtyRows;
-
-  /// ABI v4 sparse row index (`NveTableView::row_index_*`): offsets of its two counts and slabs.
   final int rowIndexDirLen, rowIndexPageCount, rowIndexDir, rowIndexPages;
 }
 
@@ -173,6 +172,9 @@ final class SceneReader {
           owners: ownersPtr == 0 ? null : slab(ownersPtr, rowCount * 4, 'table $i owners'),
           dirtyRows: slab(u32(t + tl.dirtyRows), tableDirty * 4, 'table $i dirtyRows'),
           dirtyCount: tableDirty,
+          rowIndexDir: slab(u32(t + tl.rowIndexDir), u32(t + tl.rowIndexDirLen) * 4, 'table $i rowIndexDir'),
+          rowIndexPages: slab(
+              u32(t + tl.rowIndexPages), u32(t + tl.rowIndexPageCount) * nveRowIndexPageLen * 4, 'table $i rowIndexPages'),
         );
       } on ArgumentError catch (e) {
         throw SceneException(SceneErrorKind.invalidTable, 'table $i: ${e.message}');

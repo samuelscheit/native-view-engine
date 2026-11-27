@@ -2,10 +2,12 @@
 //! (`dirty_indices`), geometry-only (`moved_indices`), and `removed_ids` — plus the published rects.
 //!
 //! The two index sets are exact and disjoint: a node is in `dirty` when it was created or its row,
-//! a table row, or its child list changed; otherwise it is in `moved` when its absolute rect or its
-//! origin relative to its parent's rect changed. Both are deduplicated through one epoch-stamped
-//! slot array, so recording is O(changed + node capacity on relayout) with zero heap allocations
-//! once capacities warm.
+//! a table row, or its child list changed; otherwise it is in `moved` when its parent-relative box
+//! (origin relative to its parent's rect, width, height) changed. Hosts position views relative to
+//! their parent, so the descendants of a moved container — whose absolute rects change with it —
+//! are not listed (`rects` still carries their new absolute boxes). Both sets are deduplicated
+//! through one epoch-stamped slot array, so recording is O(changed + node capacity on relayout,
+//! one pass) with zero heap allocations once capacities warm.
 //!
 //! Inherited styling is content too: a `Typography` row change / attach / detach dirties every
 //! text / text-input descendant inheriting it (paint-only edits move no rect), so retained hosts
@@ -19,8 +21,8 @@ use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 pub(crate) struct SceneDelta {
     /// Published absolute layout rect per node slot.
     pub(crate) rects: Vec<NveLayoutRect>,
-    /// Published origin of each node slot relative to its parent's rect (its own origin for roots).
-    local_origins: Vec<[f32; 2]>,
+    /// Published box of each node slot relative to its parent's rect (absolute for roots).
+    locals: Vec<NveLayoutRect>,
     pub(crate) dirty: Vec<u32>,
     pub(crate) moved: Vec<u32>,
     pub(crate) removed: Vec<u32>,
@@ -45,7 +47,7 @@ impl SceneDelta {
     pub(crate) fn reset(&mut self) {
         self.clear_sets();
         self.rects.clear();
-        self.local_origins.clear();
+        self.locals.clear();
     }
 
     /// Records one committed frame. `layout_of` reads the new layout; it is consulted only when
@@ -59,7 +61,7 @@ impl SceneDelta {
     ) {
         let cap = store.capacity();
         self.rects.resize(cap, NveLayoutRect::default());
-        self.local_origins.resize(cap, [0.0; 2]);
+        self.locals.resize(cap, NveLayoutRect::default());
         if self.stamp.len() < cap {
             self.stamp.resize(cap, 0);
         }
@@ -87,33 +89,24 @@ impl SceneDelta {
         if !laid_out {
             return;
         }
-        // Absolute rects first: a parent's new rect is needed for its children's origins below,
-        // and a parent may sit at a higher slot than its child.
+        // One pass: the parent's new rect comes from `layout_of` (a parent may sit at a higher
+        // slot than its child, so `rects` may not hold it yet).
         for idx in 1..cap {
             let id = store.id_at(idx);
             let r = id.and_then(&layout_of).unwrap_or_default();
-            if self.rects[idx] != r {
-                self.rects[idx] = r;
+            self.rects[idx] = r;
+            let local = match id {
+                None => NveLayoutRect::default(),
+                Some(id) => match store.parent(id).and_then(&layout_of) {
+                    Some(p) => NveLayoutRect { x: r.x - p.x, y: r.y - p.y, ..r },
+                    None => r,
+                },
+            };
+            if self.locals[idx] != local {
+                self.locals[idx] = local;
                 if id.is_some() {
                     self.mark(idx, false);
                 }
-            }
-        }
-        for idx in 1..cap {
-            let Some(id) = store.id_at(idx) else {
-                continue;
-            };
-            let r = self.rects[idx];
-            let origin = match store.parent(id) {
-                Some(p) => {
-                    let pr = self.rects[p.index()];
-                    [r.x - pr.x, r.y - pr.y]
-                }
-                None => [r.x, r.y],
-            };
-            if self.local_origins[idx] != origin {
-                self.local_origins[idx] = origin;
-                self.mark(idx, false);
             }
         }
     }

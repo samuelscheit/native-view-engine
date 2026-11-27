@@ -19,8 +19,11 @@ final class GeneratedAbiTests: XCTestCase {
         }
         XCTAssertEqual(NveTables.Layout.key, Key64(NVE_TABLE_LAYOUT_KEY))
         XCTAssertEqual(NveTables.Layout.defaults.count, NveTables.Layout.words)
-        XCTAssertEqual(rowIndexPageLen, Int(NVE_ROW_INDEX_PAGE_LEN))
-        XCTAssertEqual(rowIndexPageLen, 1 << Int(NVE_ROW_INDEX_PAGE_BITS))
+        // The pure-Swift generated constants match the C ABI header `CNveAbi` imports.
+        XCTAssertEqual(nveRowIndexPageLen, UInt32(NVE_ROW_INDEX_PAGE_LEN))
+        XCTAssertEqual(nveRowIndexPageBits, UInt32(NVE_ROW_INDEX_PAGE_BITS))
+        XCTAssertEqual(nveRowIndexNoPage, UInt32(NVE_ROW_INDEX_NO_PAGE))
+        XCTAssertEqual(nveRowIndexPageLen, 1 << nveRowIndexPageBits)
     }
 
     func testGeneratedStrFieldReadsItsSpan() throws {

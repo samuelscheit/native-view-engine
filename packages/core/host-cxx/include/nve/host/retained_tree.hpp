@@ -21,8 +21,11 @@
 // O(changed): `removed_ids`, `dirty_indices` (created, or row, tables or children changed), views
 // reading a resource listed in `dirty_resources` (image source, box shadows, background fill,
 // `module_resource`: same id, new bytes) and descendants whose inherited typography changed get
-// `update`, so an adapter may skip re-decoding a resource whose id it already applied; `moved_indices`
-// (only the absolute rect or parent-relative origin changed) get `move`, which receives
+// `update`. Inside `update`, an adapter may keep what it decoded from a resource only when
+// `resource_unchanged(scene, id, applied_id)`: the same id (`id == applied_id`), an incremental
+// sync (no frame gap or new epoch, whose dirty ids were never seen), and `!scene.resource_dirty(id)`.
+// `moved_indices` (only the box relative to the parent changed; a moved node's descendants are
+// not listed, so adapters position views relative to their parent) get `move`, which receives
 // `read_geometry` data (identity and geometry only). Adapters without `move` get a full `update`
 // instead. Views are keyed by node index and checked against the packed `NodeId` generation, so a
 // recycled slot recreates its view.
@@ -76,6 +79,7 @@ class RetainedTree {
       return 0u;  // this frame is already mirrored
     }
     const bool full = !same_epoch || scene.frame_id() != last_frame_ + 1u;
+    incremental_ = !full;
     scene_epoch_ = scene.scene_epoch();
     tables.bind(scene);
     if (++epoch_ == 0u) {
@@ -151,6 +155,7 @@ class RetainedTree {
       if (entries_[i].live) destroy(i, adapter);
     }
     initialized_ = false;
+    incremental_ = false;
     last_frame_ = 0u;
   }
 
@@ -160,6 +165,13 @@ class RetainedTree {
     return i < entries_.size() && entries_[i].live && entries_[i].id == id && i != kRootIndex
                ? &entries_[i].handle
                : nullptr;
+  }
+
+  /// During (or after) `sync` of `scene`: whether a view may keep what it decoded from resource
+  /// `applied_id` now that its node reads `id` (same id, incremental sync, bytes not redefined).
+  [[nodiscard]] bool resource_unchanged(const RuntimeSceneReader& scene, uint32_t id,
+                                        uint32_t applied_id) const noexcept {
+    return incremental_ && id == applied_id && !scene.resource_dirty(id);
   }
 
   /// Geometry-only `move`s of the last sync.
@@ -296,6 +308,7 @@ class RetainedTree {
   size_t updated_ = 0u;
   size_t moved_ = 0u;
   bool initialized_ = false;
+  bool incremental_ = false;
 };
 
 }  // namespace nve::host

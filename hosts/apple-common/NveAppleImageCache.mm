@@ -35,6 +35,9 @@ bool starts_with_icase(std::string_view text, std::string_view prefix) noexcept 
   return true;
 }
 
+}  // namespace
+
+/// Decodes encoded image bytes; `nil` for empty, undecodable, or 0x0 images.
 NvePlatformImage * _Nullable decode_image_data(NSData * _Nullable data) {
   if (data == nil || data.length == 0u) {
     return nil;
@@ -53,6 +56,8 @@ NvePlatformImage * _Nullable decode_image_data(NSData * _Nullable data) {
   return img;
 #endif
 }
+
+namespace {
 
 NvePlatformImage * _Nullable decode_image_source(std::string_view src) {
   if (src.empty()) {

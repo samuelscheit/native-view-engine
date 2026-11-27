@@ -1,7 +1,9 @@
 // Native `libnve_runtime` FFI suite: `dart run --enable-asserts test/runtime_session_test.dart`.
 //
-// Loads `libnve_runtime` and the kitchen-sink app module (`NVE_RUNTIME_LIB` / `NVE_KITCHEN_SINK_LIB`,
-// else `<repo>/target/debug`; build with `cargo build -p nve-runtime -p nve-example-kitchen-sink`).
+// Loads `libnve_runtime`, the kitchen-sink app module, and the echo fixture app
+// (`NVE_RUNTIME_LIB` / `NVE_KITCHEN_SINK_LIB` / `NVE_HOST_FIXTURE_APP_LIB`, else `<repo>/target/debug`;
+// build with `cargo build -p nve-runtime -p nve-example-kitchen-sink -p nve-host-fixtures`).
+import 'dart:convert' show jsonEncode;
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:typed_data';
@@ -27,7 +29,8 @@ String _lib(String env, String stem) {
       break;
     }
   }
-  throw StateError('$name not found: set $env or run `cargo build -p nve-runtime -p nve-example-kitchen-sink`');
+  throw StateError(
+      '$name not found: set $env or run `cargo build -p nve-runtime -p nve-example-kitchen-sink -p nve-host-fixtures`');
 }
 
 void _expectStatus(Check c, NveRuntimeStatus status, void Function() body, String what) {
@@ -188,6 +191,57 @@ void _runtimeHooks(Check c, RuntimeSession session) {
   session.tick(0);
   c.that(_sameBytes(session.snapshotState(), snapshot), 'restore -> snapshot round-trips');
   _expectStatus(c, NveRuntimeStatus.invalidArg, () => session.applyHotPatch(Uint8List(4)), 'malformed NVP1 patch');
+
+  // ---- state files (crash-atomic StateFile round trip) --------------------------------------
+  final dir = Directory.systemTemp.createTempSync('nve_state_');
+  try {
+    final path = '${dir.path}/app.nve';
+    c.eq(session.restoreStateFile(path, 1), false, 'missing state file restores nothing');
+    c.eq(session.saveStateFile(path, 1), true, 'kitchen sink state saved');
+    c.that(File(path).existsSync(), 'state file written');
+    c.eq(session.restoreStateFile(path, 1), true, 'state file restores');
+    session.tick(0);
+    c.that(_sameBytes(session.snapshotState(), snapshot), 'file restore -> snapshot round-trips');
+    session.clearStateFile(path);
+    session.clearStateFile(path);
+    c.that(!File(path).existsSync(), 'clear deletes the file (idempotent)');
+  } finally {
+    dir.deleteSync(recursive: true);
+  }
+}
+
+/// Real app-emitted events across the runtime C ABI: `libnve_host_fixture_app` echoes props as a
+/// structured `Custom` event and, on `malformed`, first emits one whose name is invalid UTF-8.
+void _fixtureAppEvents(Check c, RuntimeApi api) {
+  final session = RuntimeSession(api, surfaceId: 7);
+  try {
+    session.attachAppLibrary(ffi.DynamicLibrary.open(_lib('NVE_HOST_FIXTURE_APP_LIB', 'nve_host_fixture_app')));
+    session.tick(0);
+    c.eq(session.drainEmittedEvents(), const <RuntimeEvent>[], 'nothing emitted before props');
+    c.eq(session.setProps({'count': 3, 'label': 'hi'}), true, 'new props re-render the fixture app');
+    final events = session.drainEmittedEvents();
+    c.eq(events.length, 1, 'one emitted event');
+    if (events case [final e]) {
+      c.eq(e.kind, NveEventKind.custom, 'custom kind');
+      c.eq(e.payload, NveEventPayloadTag.custom, 'custom payload');
+      c.eq((e.name, e.nodeId), ('props', 1), 'name + node');
+      c.eq(jsonEncode(e.value), '{"count":2,"keys":["count","label"],"ok":true,"ratio":0.5}', 'structured value');
+    }
+    c.eq(session.drainEmittedEvents(), const <RuntimeEvent>[], 'draining is destructive');
+    c.eq(session.setProps({'count': 3, 'label': 'hi'}), false, 'identical props change nothing');
+    c.eq(session.setProps({'malformed': true}), true, 'malformed request re-renders');
+    final mixed = session.drainEmittedEvents();
+    c.eq(mixed.map((e) => e.name).join('|'), 'bad\uFFFDname|props', 'malformed name decodes lossy, batch intact');
+    if (mixed.length == 2) {
+      c.eq(jsonEncode(mixed[1].value), '{"count":1,"keys":["malformed"],"ok":true,"ratio":0.5}', 'second event intact');
+    }
+    // Wake listener swaps: re-registering and clearing never leaves a dangling callable.
+    session.setWakeListener(() {});
+    session.setWakeListener(() {});
+    session.setWakeListener(null);
+  } finally {
+    session.dispose();
+  }
 }
 
 void main() {
@@ -312,6 +366,7 @@ void main() {
   }
 
   _runtimeHooks(c, session);
+  _fixtureAppEvents(c, api);
 
   session.setViewport(800, 600, 1);
   session.tick(1 / 60);

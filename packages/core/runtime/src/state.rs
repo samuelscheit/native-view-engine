@@ -327,7 +327,7 @@ impl RuntimeInner {
             false
         };
 
-        let needs_follow_up_wake =
+        let mut needs_follow_up_wake =
             (self.state.needs_render && self.app.is_some()) || pair_follow_up;
 
         if !self.state.tick_hooks.is_empty() {
@@ -340,6 +340,9 @@ impl RuntimeInner {
                 }
                 tx.commit_into(&mut state.hook_changes);
             }
+            // A hook that asked for a refresh or wrote this tick (a running animation) needs the
+            // next tick too; wake-driven hosts would otherwise stall after one frame.
+            needs_follow_up_wake |= hook_requested || !state.hook_changes.is_empty();
             if !state.hook_changes.is_empty() {
                 Self::record_changes(
                     &mut state.merged_changes,

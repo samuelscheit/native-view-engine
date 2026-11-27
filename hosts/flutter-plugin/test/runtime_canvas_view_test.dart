@@ -1,9 +1,10 @@
 // Live `libnve_runtime` + kitchen-sink app through NveCanvasController / NveCanvasView: layout at
 // the widget size, painting, semantics, taps, wheel and drag scrolling, and teardown.
-// Libraries: `NVE_RUNTIME_LIB` / `NVE_KITCHEN_SINK_LIB`, else `<repo>/target/debug`
-// (`cargo build -p nve-runtime -p nve-example-kitchen-sink`; `scripts/host-runtimes.sh flutter`).
+// Libraries: `NVE_RUNTIME_LIB` / `NVE_KITCHEN_SINK_LIB` / `NVE_HOST_FIXTURE_APP_LIB`, else `<repo>/target/debug`
+// (`cargo build -p nve-runtime -p nve-example-kitchen-sink -p nve-host-fixtures`).
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
@@ -217,6 +218,59 @@ void main() {
     c.tick();
     expect(emitted, isEmpty, reason: 'the kitchen sink emits no host events');
     expect(c.lastError, isNull);
+  });
+
+  testWidgets('viewport refuses degenerate pixel ratios; state and hot-patch helpers', (tester) async {
+    await tester.pumpWidget(_host(c));
+    await _settle(tester, c);
+    final frames = c.frameCount;
+    for (final dpr in [double.nan, double.infinity, 0.0, -2.0]) {
+      c.setViewport(const Size(200, 200), dpr);
+    }
+    await _settle(tester, c);
+    expect(c.frameCount, frames, reason: 'degenerate DPRs never reach the runtime');
+    final snapshot = c.session.snapshotState();
+    c.restoreState(snapshot);
+    await _settle(tester, c);
+    expect(c.frameCount, greaterThan(frames), reason: 'restore schedules the re-render tick');
+    expect(() => c.applyHotPatch(Uint8List(4)), throwsA(isA<RuntimeException>()), reason: 'malformed NVP1');
+  });
+
+  testWidgets('a painter swap disposes only an owned painter', (tester) async {
+    final custom = NveScenePainter();
+    Widget host(NveScenePainter? p) => Directionality(
+        textDirection: TextDirection.ltr, child: NveCanvasView(controller: c, painter: p));
+    await tester.pumpWidget(host(null));
+    final render = tester.renderObject<RenderNveCanvas>(find.byType(NveCanvasView));
+    final owned = render.painter;
+    await tester.pumpWidget(host(custom));
+    expect(render.painter, same(custom));
+    await tester.pumpWidget(host(null));
+    expect(render.painter, isNot(anyOf(same(custom), same(owned))), reason: 'fresh owned painter');
+    await _settle(tester, c);
+    custom.dispose();
+  });
+
+  testWidgets('app-emitted events reach onAppEvent; a disposing listener stops delivery', (tester) async {
+    final f = NveCanvasController.open(
+      runtimeLibrary: _lib('NVE_RUNTIME_LIB', 'nve_runtime'),
+      app: ffi.DynamicLibrary.open(_lib('NVE_HOST_FIXTURE_APP_LIB', 'nve_host_fixture_app')),
+    );
+    final seen = <RuntimeEvent>[];
+    f.onAppEvent = seen.add;
+    expect(f.setProps(const {'count': 2}), isTrue);
+    f.tick();
+    expect(seen.map((e) => e.name).toList(), ['props']);
+    expect(seen.single.value, {'count': 1, 'keys': ['count'], 'ok': true, 'ratio': 0.5});
+    seen.clear();
+    f.onAppEvent = (e) {
+      seen.add(e);
+      f.dispose();
+    };
+    expect(f.setProps(const {'malformed': true}), isTrue);
+    expect(f.tick(), isFalse, reason: 'disposed by the listener mid-delivery');
+    expect(seen.map((e) => e.name).toList(), ['bad\uFFFDname'], reason: 'delivery stops at disposal');
+    expect(f.isDisposed, isTrue);
   });
 
   testWidgets('controller swap and disposal tear down cleanly', (tester) async {

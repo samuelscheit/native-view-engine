@@ -119,8 +119,8 @@ public protocol TableViewABI {
 
 /// Maximum words per table row (Rust `MAX_TABLE_WORDS`).
 public let maxTableWords = 32
-/// Node indices per published row-index page (`NVE_ROW_INDEX_PAGE_BITS` = 8).
-public let rowIndexPageLen = 256
+/// Node indices per published row-index page (generated `nveRowIndexPageLen`), as an `Int` count.
+private let pageLen = Int(nveRowIndexPageLen)
 
 public struct TableReader {
     public let key: Key64
@@ -130,13 +130,15 @@ public struct TableReader {
     public let rows: UnsafeBufferPointer<UInt32>
     public let owners: UnsafeBufferPointer<UInt32>
     public let dirtyRows: UnsafeBufferPointer<UInt32>
-    /// Sparse tables: page of every `rowIndexPageLen` node indices (`UInt32.max` = none).
+    /// Sparse tables: page of every `nveRowIndexPageLen` node indices (`nveRowIndexNoPage` = none).
     public let rowIndexDir: UnsafeBufferPointer<UInt32>
     /// Sparse tables: `row + 1` per node index of each page (0 = no row).
     public let rowIndexPages: UnsafeBufferPointer<UInt32>
 
-    /// `nil` when `rows` cannot hold `rowCount * words` words, `owners` is short, or
-    /// `rowIndexPages` is not whole pages.
+    /// `nil` when `rows` cannot hold `rowCount * words` words, `owners` is short, or a sparse table
+    /// (owners) with rows has no row index with at least one whole page (its rows could never
+    /// resolve). A partial tail page of `rowIndexPages` is dropped (unreachable), as C++
+    /// `TableReader::make` does.
     public init?(
         key: Key64, slot: UInt32, words: Int, rowCount: Int,
         rows: UnsafeBufferPointer<UInt32>, owners: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0),
@@ -145,7 +147,8 @@ public struct TableReader {
         rowIndexPages: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0)
     ) {
         guard (1...maxTableWords).contains(words), rowCount >= 0, rows.count / words >= rowCount,
-              owners.isEmpty || owners.count >= rowCount, rowIndexPages.count % rowIndexPageLen == 0
+              owners.isEmpty || owners.count >= rowCount,
+              owners.isEmpty || rowCount == 0 || (!rowIndexDir.isEmpty && rowIndexPages.count >= pageLen)
         else { return nil }
         self.key = key
         self.slot = slot
@@ -155,7 +158,7 @@ public struct TableReader {
         self.owners = owners.isEmpty ? owners : UnsafeBufferPointer(rebasing: owners[0..<rowCount])
         self.dirtyRows = dirtyRows
         self.rowIndexDir = rowIndexDir
-        self.rowIndexPages = rowIndexPages
+        self.rowIndexPages = UnsafeBufferPointer(rebasing: rowIndexPages[0..<rowIndexPages.count - rowIndexPages.count % pageLen])
     }
 
     /// Wraps a generated `NveTableView`, rejecting a bad word count, counts the address space cannot
@@ -168,7 +171,7 @@ public struct TableReader {
               let dirtyCount = Self.fitsAddressSpace(UInt64(v.dirty_count), stride: stride),
               let dirLen = Self.fitsAddressSpace(UInt64(v.row_index_dir_len), stride: stride),
               let pageWords = Self.fitsAddressSpace(
-                  UInt64(v.row_index_page_count) * UInt64(rowIndexPageLen), stride: stride),
+                  UInt64(v.row_index_page_count) * UInt64(pageLen), stride: stride),
               rowWords == 0 || v.rows != nil, dirtyCount == 0 || v.dirty_rows != nil,
               dirLen == 0 || v.row_index_dir != nil, pageWords == 0 || v.row_index_pages != nil
         else { return nil }
@@ -238,11 +241,11 @@ public struct TableReader {
     public func row(ofNode index: Int) -> Int? {
         guard index >= 0 else { return nil }
         if owners.isEmpty { return index < rowCount ? index : nil }
-        let dirSlot = index / rowIndexPageLen
+        let dirSlot = index / pageLen
         guard dirSlot < rowIndexDir.count else { return nil }
         let page = UInt64(rowIndexDir[dirSlot])  // `UInt32.max` (no page) fails the bound below
-        guard page < UInt64(rowIndexPages.count / rowIndexPageLen) else { return nil }
-        let rowPlusOne = rowIndexPages[Int(page) * rowIndexPageLen + index % rowIndexPageLen]
+        guard page < UInt64(rowIndexPages.count / pageLen) else { return nil }
+        let rowPlusOne = rowIndexPages[Int(page) * pageLen + index % pageLen]
         guard rowPlusOne != 0, UInt64(rowPlusOne) <= UInt64(rowCount) else { return nil }
         return Int(rowPlusOne - 1)
     }

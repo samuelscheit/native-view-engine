@@ -109,7 +109,7 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
     if (error) *error = [self _runtimeError:@"Failed to initialize NVE surface instance"];
     return NO;
   }
-  _appAttached = YES;
+  _appAttached = getInterface != nullptr;  // NULL detaches
   if (!_pendingSnapshotState.empty()) {
     (void)_session.restore_state(_pendingSnapshotState);
     _pendingSnapshotState.clear();
@@ -141,6 +141,8 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 #pragma mark - Props, input, frames
 
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {
+  NSDictionary<NSString *, id> *copy = [props copy];
+  if ([self _deferIfReconciling:^{ [self applyPropsDictionary:copy]; }]) return YES;
   _arena.reset();
   const std::vector<NveMapEntry> entries = nve::apple::map_entries_from_dictionary(props, _arena);
   bool changed = false;
@@ -153,6 +155,8 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 }
 
 - (BOOL)applyHotPatch:(NSData *)patchNvp1 {
+  NSData *copy = [patchNvp1 copy];
+  if ([self _deferIfReconciling:^{ [self applyHotPatch:copy]; }]) return YES;
   bool changed = false;
   const auto st = _session.apply_hot_patch(
       std::span<const uint8_t>(static_cast<const uint8_t *>(patchNvp1.bytes), patchNvp1.length), &changed);
@@ -237,6 +241,8 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor {
   if (!(width > 0.0f) || !(height > 0.0f)) return;
+  // A resize from a layout pass inside reconcile would fail with BUSY and be lost: apply it next turn.
+  if ([self _deferIfReconciling:^{ [self updateSurfaceWidth:width height:height scaleFactor:scaleFactor]; }]) return;
   if (_session.set_viewport(width, height, scaleFactor > 0.0f ? scaleFactor : 1.0f) == NVE_RUNTIME_OK) [self renderFrame];
 }
 

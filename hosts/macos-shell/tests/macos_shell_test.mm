@@ -6,12 +6,15 @@
 #import "RCTNveMacComponentView.h"
 
 #include "NveAppleDemoApp.hpp"
+#include "NveAppleValueBridge.h"
 
 #include <nve/host/nve2_builder.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -89,6 +92,50 @@ NSData *core_table_scene() {
   b.set_children(4u, {5u});
   const std::vector<uint8_t> frame = b.finish();
   return [NSData dataWithBytes:frame.data() length:frame.size()];
+}
+
+/// Typography cascade scene. Keyframe: ROOT(1) -> parent(2, Typography 30pt) -> [mid(3) -> leaf(4),
+/// recycled leaf `5 | 1 << 24`]; `revision` 2 changes the parent to 20pt and dirties `mid`'s
+/// Visual (a dirty non-typography child between the change and `leaf`); revision 3 detaches the
+/// parent's Typography.
+constexpr uint32_t kRecycledLeaf = 5u | (1u << 24u);
+
+NSData *typography_scene(uint64_t revision) {
+  auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
+  auto typography = [&](Nve2FrameBuilder &b, float size) {
+    std::array<uint32_t, NVE_TABLE_TYPOGRAPHY_WORDS> row{};
+    std::copy(std::begin(NVE_TABLE_TYPOGRAPHY_DEFAULTS), std::end(NVE_TABLE_TYPOGRAPHY_DEFAULTS), row.begin());
+    uint32_t bits = 0u;
+    std::memcpy(&bits, &size, sizeof bits);
+    b.patch(slot(NVE_TABLE_TYPOGRAPHY_KEY), 2u,
+            set_field(row, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE) |
+                set_field(row, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, bits),
+            row);
+  };
+  Nve2FrameBuilder b(revision);
+  if (revision == 1u) {
+    b.declare_core_tables().create_nodes({1u, 2u, 3u, 4u, kRecycledLeaf});
+    b.set_string(slot(NVE_TABLE_TEXT_KEY), 4u, NVE_TABLE_TEXT_TEXT.word, "nested");
+    b.set_string(slot(NVE_TABLE_TEXT_KEY), kRecycledLeaf, NVE_TABLE_TEXT_TEXT.word, "recycled");
+    b.set_children(1u, {2u});
+    b.set_children(2u, {3u, kRecycledLeaf});
+    b.set_children(3u, {4u});
+    typography(b, 30.0f);
+  } else if (revision == 2u) {
+    typography(b, 20.0f);
+    std::array<uint32_t, NVE_TABLE_VISUAL_WORDS> visual{};
+    std::copy(std::begin(NVE_TABLE_VISUAL_DEFAULTS), std::end(NVE_TABLE_VISUAL_DEFAULTS), visual.begin());
+    b.patch(slot(NVE_TABLE_VISUAL_KEY), 3u, set_field(visual, NVE_TABLE_VISUAL_BACKGROUND, 0xFF0000FFu), visual);
+  } else {
+    b.detach(slot(NVE_TABLE_TYPOGRAPHY_KEY), {2u});
+  }
+  const std::vector<uint8_t> frame = b.finish();
+  return [NSData dataWithBytes:frame.data() length:frame.size()];
+}
+
+CGFloat font_size(RCTNveMacComponentView *view, uint32_t node) {
+  NSView *v = [view nativeViewForNodeId:node];
+  return [v isKindOfClass:[NSTextField class]] ? ((NSTextField *)v).font.pointSize : -1.0;
 }
 
 }  // namespace
@@ -173,6 +220,42 @@ int main() {
     CHECK([scroller isKindOfClass:[NSScrollView class]]);
     CHECK([scene nativeViewForNodeId:5u].superview == ((NSScrollView *)scroller).documentView);
     CHECK(near(((NSScrollView *)scroller).documentView.frame.size.height, 400.0));
+
+    // 7b. Inherited typography cascades through dirty non-typography children to a recycled
+    //     (generation 1) child, and clearing an ancestor's Typography restyles the subtree.
+    RCTNveMacComponentView *typo = make_view();
+    CHECK([typo.nveHost replayFrame0:typography_scene(1u)]);
+    CHECK(near(font_size(typo, 4u), 30.0) && near(font_size(typo, kRecycledLeaf), 30.0));
+    CHECK([typo.nveHost replayFrame0:typography_scene(2u)]);
+    CHECK(near(font_size(typo, 4u), 20.0));             // through the dirty `mid`
+    CHECK(near(font_size(typo, kRecycledLeaf), 20.0));  // raw NodeId resolved to its slot
+    CHECK([typo.nveHost replayFrame0:typography_scene(3u)]);
+    CHECK(font_size(typo, 4u) > 0.0 && !near(font_size(typo, 4u), 20.0));
+    CHECK(font_size(typo, kRecycledLeaf) > 0.0 && !near(font_size(typo, kRecycledLeaf), 20.0));
+
+    // 7c. Foundation values: mixed-type dictionary keys are skipped (never compared), nesting is
+    //     depth-limited per level.
+    CHECK([view applyPropsDictionary:(NSDictionary *)@{@"title" : @"Mixed keys", @1 : @"numeric key", NSNull.null : @2}]);
+    CHECK([label_text(view, DemoApp::kTitle) isEqualToString:@"Mixed keys"]);
+    {
+      nve::apple::ValueArena arena;
+      id deep = @"leaf";
+      for (int i = 0; i < 40; ++i) deep = @{@"k" : deep};
+      const NveValue v = nve::apple::nve_value_from_objc_object(deep, arena);
+      uint32_t levels = 0u;
+      for (const NveValue *p = &v; p->tag == NVE_VAL_MAP && p->data.map_val.len == 1u; p = &p->data.map_val.ptr[0].value) {
+        ++levels;
+      }
+      CHECK(levels == 33u);  // depth 0..32 are maps; the 34th level is cut to null
+      id list = @"leaf";
+      for (int i = 0; i < 40; ++i) list = @[ list ];
+      const NveValue a = nve::apple::nve_value_from_objc_object(list, arena);
+      levels = 0u;
+      for (const NveValue *p = &a; p->tag == NVE_VAL_ARRAY && p->data.array_val.len == 1u; p = &p->data.array_val.ptr[0]) {
+        ++levels;
+      }
+      CHECK(levels == 33u);  // arrays and dictionaries count one level each
+    }
 
     // 8. Pairing errors surface the runtime's diagnostics.
     CHECK(![scene connectPairedEndpoint:@"" token:@"" surfaceId:1u error:&err] && err.localizedDescription.length > 0);

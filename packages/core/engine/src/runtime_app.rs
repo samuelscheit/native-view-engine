@@ -107,6 +107,8 @@ pub trait RuntimeApp {
 /// `dirty_indices`, `NveTableView::dirty_rows`, and `frame_id`.
 pub trait FrameTickHook: Send {
     /// Advances time by `dt_s` seconds, reading `tx.store()` and writing any mutations into `tx`.
-    /// Returns `true` if a scene refresh is requested even when no store words changed.
+    /// Returns `true` if a scene refresh is requested even when no store words changed. A tick
+    /// that returns `true` or writes anything wakes the host for another tick; an idle hook
+    /// returns `false` and writes nothing, so the host can sleep.
     fn tick(&mut self, tx: &mut Transaction<'_>, dt_s: f32) -> bool;
 }

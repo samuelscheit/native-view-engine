@@ -83,11 +83,15 @@ class Nve2FrameBuilder {
     return *this;
   }
 
-  Nve2FrameBuilder& create_nodes(std::initializer_list<uint32_t> ids) {
-    const size_t op = begin(3u, 0u, static_cast<uint16_t>(ids.size()));
-    for (const uint32_t id : ids) push(id);
-    end(op);
-    return *this;
+  /// Creates nodes at raw generational ids (`index | generation << 24`).
+  Nve2FrameBuilder& create_nodes(std::initializer_list<uint32_t> ids) { return node_list(3u, 0u, ids); }
+
+  /// Removes nodes (and their subtrees).
+  Nve2FrameBuilder& remove_nodes(std::initializer_list<uint32_t> ids) { return node_list(2u, 0u, ids); }
+
+  /// Detaches the table at `wire_slot` from `nodes`.
+  Nve2FrameBuilder& detach(uint8_t wire_slot, std::initializer_list<uint32_t> nodes) {
+    return node_list(7u, wire_slot, nodes);
   }
 
   /// Writes the words of `row` selected by `mask` (bit `w` = word `w`) into `node`'s row of the
@@ -145,6 +149,13 @@ class Nve2FrameBuilder {
   }
 
  private:
+  Nve2FrameBuilder& node_list(uint8_t op_code, uint8_t table, std::initializer_list<uint32_t> ids) {
+    const size_t op = begin(op_code, table, static_cast<uint16_t>(ids.size()));
+    for (const uint32_t id : ids) push(id);
+    end(op);
+    return *this;
+  }
+
   size_t begin(uint8_t op, uint8_t table, uint16_t count) {
     const size_t start = out_.size();
     push(uint32_t{op} | (uint32_t{table} << 8u) | (uint32_t{count} << 16u));

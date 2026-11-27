@@ -6,6 +6,7 @@
  * hard-codes a layout. Construction validates the schema hash, every slab against its count, and
  * the text slab's UTF-8 once; later reads are O(1) bounds checks (out of range throws `RangeError`).
  */
+import { NVE_ROW_INDEX_PAGE_LEN } from './generated/nve_abi.generated.ts';
 import { Key64 } from './key64.ts';
 import { MAX_TABLE_WORDS, TableReader, isIntIn } from './table_reader.ts';
 import { UTF8_DECODER, isValidUtf8 } from './utf8.ts';
@@ -22,7 +23,6 @@ export interface TableViewLayout {
   readonly rows: number;
   readonly owners: number;
   readonly dirtyRows: number;
-  /** ABI v4 sparse row index (`NveTableView::row_index_*`): offsets of its two counts and slabs. */
   readonly rowIndexDirLen: number;
   readonly rowIndexPageCount: number;
   readonly rowIndexDir: number;
@@ -171,6 +171,12 @@ export class SceneReader {
             owners: ownersPtr === 0 ? null : slab(ownersPtr, rowCount * 4, `table ${i} owners`),
             dirtyRows: slab(u32(t + tl.dirtyRows), tableDirty * 4, `table ${i} dirtyRows`),
             dirtyCount: tableDirty,
+            rowIndexDir: slab(u32(t + tl.rowIndexDir), u32(t + tl.rowIndexDirLen) * 4, `table ${i} rowIndexDir`),
+            rowIndexPages: slab(
+              u32(t + tl.rowIndexPages),
+              u32(t + tl.rowIndexPageCount) * NVE_ROW_INDEX_PAGE_LEN * 4,
+              `table ${i} rowIndexPages`,
+            ),
           }),
         );
       } catch (e) {

@@ -79,7 +79,7 @@ Loads a compiled NVE `cdylib` (building it automatically if `--package` is given
 
 Unified code generator with four subcommands (see [Bi-Directional Codegen](/interop/codegen)):
 
-- `cargo nve codegen abi [--check] [--out <DIR>]` — Generate or verify the 15 host files in `packages/core/host-*` (`nve_abi.generated.h`, `nve_tables.generated.h`, `NveTables.generated.swift`, `dev.nve.host.generated.{NveAbi,NveTables}`, `nve_abi_{const,ffi}.generated.dart`, `nve_abi.generated.ts`, and the golden XXH64 vectors).
+- `cargo nve codegen abi [--check] [--out <DIR>]` — Generate or verify every host file in `packages/core/host-*` (`nve_abi.generated.h`, `nve_tables.generated.h`, `NveAbiConsts.generated.swift`, `NveTables.generated.swift`, `dev.nve.host.generated.{NveAbi,NveTables}`, `nve_abi_{const,ffi}.generated.dart`, `nve_abi.generated.ts`, and the golden XXH64 vectors).
 - `cargo nve codegen hybrid <SPEC> [--target rust,cpp,swift,kotlin,dart,ts|all] [--out generated/hybrid]` — Emit binary hybrid FFI bindings from a declarative `.nve.rs` spec.
 - `cargo nve codegen import-rn <SPEC> [--out generated/import-rn]` — Parse a React Native `*NativeComponent.{ts,js}` or `Native*.{ts,js}` spec into zero-JS Rust + C++20 adapters.
 - `cargo nve codegen export <SPEC_JSON> [--target rn,flutter,swiftui,compose,web|all] [--out generated/export]` — Export one `NveExportSpec` to 5 native host targets.

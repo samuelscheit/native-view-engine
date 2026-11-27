@@ -27,15 +27,8 @@
 
 - (BOOL)connectPairedEndpoint:(NSString *)uri token:(NSString *)token surfaceId:(uint32_t)surfaceId error:(NSError **)error {
   _surfaceId = surfaceId;
-  if (_appAttached) {
-    // Only unload the app's code once the runtime has really dropped the app.
-    if (_session.detach_app() != NVE_RUNTIME_OK) {
-      if (error) *error = [self _errorWithCode:1 description:@"Failed to detach the running app before pairing"];
-      return NO;
-    }
-    _appAttached = NO;
-    nve::apple::close_dylib(_dylibHandle);
-  }
+  // `pair_connect` swaps atomically: on success the runtime has dropped any attached app (so its
+  // code may unload); on failure the running app is untouched.
   if (_session.pair_connect(uri.UTF8String ?: "", token.UTF8String ?: "") != NVE_RUNTIME_OK) {
     if (error) {
       const std::string detail = _session.last_error();
@@ -44,6 +37,9 @@
     }
     return NO;
   }
+  _appAttached = NO;
+  _pendingSnapshotState.clear();
+  nve::apple::close_dylib(_dylibHandle);
   _pairRequested = YES;
   [self renderFrame];
   return YES;

@@ -141,6 +141,15 @@ void test_table_reader_sparse_and_invalid() {
   CHECK(!TableReader::from_view(null_dir).has_value());
   const TestTableView null_pages{1u, 2u, 0u, 6u, 2u, 0u, 4u, 2u, rows.data(), owners.data(), nullptr, dir.data(), nullptr};
   CHECK(!TableReader::from_view(null_pages).has_value());
+  // A sparse table with rows but no row index (or less than one page) is rejected, never read as
+  // "no rows"; one without rows needs none.
+  const TestTableView no_index{1u, 2u, 0u, 6u, 2u, 0u, 0u, 0u, rows.data(), owners.data(), nullptr, nullptr, nullptr};
+  CHECK(!TableReader::from_view(no_index).has_value());
+  CHECK(!TableReader::make(kVisual, 0u, 6u, 2u, rows, owners, {}, dir, std::span(pages).first(10u)).has_value());
+  const TestTableView no_dir{1u, 2u, 0u, 6u, 2u, 0u, 0u, 2u, rows.data(), owners.data(), nullptr, nullptr, pages.data()};
+  CHECK(!TableReader::from_view(no_dir).has_value());
+  const TestTableView empty_sparse{1u, 2u, 0u, 6u, 0u, 0u, 0u, 0u, rows.data(), owners.data(), nullptr, nullptr, nullptr};
+  CHECK(TableReader::from_view(empty_sparse).has_value());
 
   const TestTableView null_rows{1u, 2u, 0u, 6u, 2u, 0u, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr};
   CHECK(!TableReader::from_view(null_rows).has_value());

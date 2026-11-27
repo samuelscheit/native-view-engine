@@ -40,20 +40,20 @@ public enum NveTables {
     }
 {%- endfor %}
 }
-{%- for e in consts %}
+{%- for s in value_sets %}
 
-{% if e.flags -%}
-/// `{{ e.name }}` bits.
-public enum Nve{{ e.name }} {
-{%- for x in e.entries %}
-    public static let {{ x.swift }}: UInt32 = 0x{{ "{:X}"|format(x.value) }}
+{% if s.flags -%}
+/// `{{ s.name }}` bits.
+public enum Nve{{ s.name }} {
+{%- for (n, v) in s.values %}
+    public static let {{ swift::variant(n) }}: UInt32 = 0x{{ "{:X}"|format(v) }}
 {%- endfor %}
 }
 {%- else -%}
-/// `{{ e.name }}` word enum.
-public enum Nve{{ e.name }}: UInt32, Sendable, CaseIterable {
-{%- for x in e.entries %}
-    case {{ x.swift }} = {{ x.value }}
+/// `{{ s.name }}` field values.
+public enum Nve{{ s.name }}: UInt32, Sendable, CaseIterable {
+{%- for (n, v) in s.values %}
+    case {{ swift::variant(n) }} = {{ v }}
 {%- endfor %}
 }
 {%- endif %}
