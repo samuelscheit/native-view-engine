@@ -314,8 +314,10 @@ fn unit_framework_rpc_server_purity_positive_and_negative() {
     );
 }
 
+/// Verifies the cfg-agnostic non-dev walk catches target-gated normal dependencies across
+/// arbitrary `cfg(...)` predicates (wasi, freebsd, android) as well as transitive build-script deps.
 #[test]
-fn unit_rpc_purity_catches_wasi_target_gated_and_transitive_build_deps() {
+fn unit_rpc_purity_cfg_agnostic_walk_catches_target_gated_and_transitive_build_deps() {
     let meta = format!(
         r#"{{
         "version": 1, "workspace_root": "/repo", "target_directory": "/repo/target",

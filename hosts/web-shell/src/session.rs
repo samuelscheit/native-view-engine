@@ -30,6 +30,27 @@ use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION
 /// Surface ID of the first (primary) app mounted into the page.
 pub const DEFAULT_SURFACE_ID: SurfaceId = 1;
 
+#[cfg(feature = "app-studio")]
+fn dispatch_studio_viewport_layout(
+    surface_id: SurfaceId,
+    module: &mut StudioWorkspaceModule,
+    viewport: Viewport,
+) {
+    if viewport.width > 0.0 && viewport.height > 0.0 {
+        let layout_ev = [NveDirectEvent::layout(
+            surface_id,
+            ROOT_NODE_ID,
+            0,
+            0.0,
+            0.0,
+            viewport.width,
+            viewport.height,
+        )];
+        // SAFETY: `layout_ev` is a stack-local slice containing scalar geometry and no pointers.
+        let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
+    }
+}
+
 #[cfg(feature = "dev")]
 #[path = "session_hot_reload.rs"]
 mod hot_reload;
@@ -250,19 +271,7 @@ impl WebAppSession {
     ) -> (Self, bool) {
         let mut module = StudioWorkspaceModule::create(surface_id);
         let restored = state_bytes.is_some_and(|bytes| module.try_restore_state(bytes));
-        if viewport.width > 0.0 && viewport.height > 0.0 {
-            let layout_ev = [NveDirectEvent::layout(
-                surface_id,
-                ROOT_NODE_ID,
-                0,
-                0.0,
-                0.0,
-                viewport.width,
-                viewport.height,
-            )];
-            // SAFETY: `layout_ev` is a stack-local slice containing no nested pointers.
-            let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
-        }
+        dispatch_studio_viewport_layout(surface_id, &mut module, viewport);
         (
             Self::with_app(surface_id, SessionApp::Studio(Box::new(module)), backend, viewport),
             restored,
@@ -304,32 +313,25 @@ impl WebAppSession {
         self.app.schema_version()
     }
 
-    /// Re-applies the initial viewport layout event after restoring persisted state (Studio).
+    /// Applies the active backend viewport layout event before Frame 0 for apps that consume it.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn apply_initial_viewport(&mut self) {
-        #[cfg(feature = "app-studio")]
-        if let SessionApp::Studio(module) = &mut self.app {
-            let viewport = self.backend.viewport();
-            if viewport.width > 0.0 && viewport.height > 0.0 {
-                let layout_ev = [NveDirectEvent::layout(
-                    self.surface_id,
-                    ROOT_NODE_ID,
-                    0,
-                    0.0,
-                    0.0,
-                    viewport.width,
-                    viewport.height,
-                )];
-                // SAFETY: `NveDirectEvent::layout` contains only scalar geometry and no pointers.
-                let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
+        match &mut self.app {
+            #[cfg(feature = "app-studio")]
+            SessionApp::Studio(module) => {
+                dispatch_studio_viewport_layout(self.surface_id, module, self.backend.viewport());
             }
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+            SessionApp::Dioxus(_) => {}
+            #[cfg(feature = "app-kitchen-sink")]
+            SessionApp::KitchenSink(_) => {}
         }
     }
 
-    /// Replaces the pre-frame backend once hydration vs. clean mount has been decided.
+    /// Replaces the pre-frame backend and installs the live browser viewport once hydration vs.
+    /// clean mount has been decided.
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn replace_backend(&mut self, mut backend: WebBackend) {
-        let viewport = self.backend.viewport();
+    pub(crate) fn replace_backend_with_viewport(&mut self, mut backend: WebBackend, viewport: Viewport) {
         crate::register_shell_web_systems(&mut backend);
         backend.set_viewport(self.surface_id, viewport);
         self.backend = backend;

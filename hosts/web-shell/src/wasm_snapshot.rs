@@ -108,6 +108,8 @@ fn persist_session_snapshot_inner(
 pub(crate) struct SnapshotTrigger {
     session: Weak<RefCell<WebAppSession>>,
     container: web_sys::Element,
+    app_slug: &'static str,
+    schema_version: u32,
     dirty: Rc<Cell<bool>>,
     last_hash: Rc<Cell<u64>>,
     timer_id: Rc<Cell<Option<i32>>>,
@@ -179,12 +181,7 @@ impl SnapshotTrigger {
         *self.timer_cb.borrow_mut() = None;
         self.dirty.set(false);
         self.last_hash.set(0);
-        if let Some(session) = self.session.upgrade()
-            && let Ok(guard) = session.try_borrow()
-            && let Some(slug) = guard.app_slug()
-        {
-            clear_persisted_snapshot(slug, guard.schema_version());
-        }
+        clear_persisted_snapshot(self.app_slug, self.schema_version);
     }
 }
 
@@ -198,13 +195,19 @@ pub(crate) struct SnapshotPersistenceGuard {
 impl SnapshotPersistenceGuard {
     pub(crate) fn install(
         window: &web_sys::Window,
-        session: Weak<RefCell<WebAppSession>>,
+        session: &Rc<RefCell<WebAppSession>>,
         container: web_sys::Element,
         initial_dirty: bool,
-    ) -> (Self, SnapshotTrigger) {
+    ) -> Option<(Self, SnapshotTrigger)> {
+        let (app_slug, schema_version) = {
+            let guard = session.borrow();
+            (guard.app_slug()?, guard.schema_version())
+        };
         let trigger = SnapshotTrigger {
-            session,
+            session: Rc::downgrade(session),
             container,
+            app_slug,
+            schema_version,
             dirty: Rc::new(Cell::new(initial_dirty)),
             last_hash: Rc::new(Cell::new(0)),
             timer_id: Rc::new(Cell::new(None)),
@@ -245,7 +248,7 @@ impl SnapshotPersistenceGuard {
             on_visibility: registered_vis,
             on_pagehide: registered_hide,
         };
-        (guard, trigger)
+        Some((guard, trigger))
     }
 }
 
