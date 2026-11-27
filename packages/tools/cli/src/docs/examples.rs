@@ -381,10 +381,18 @@ fn inject_embed_topbar_hider(index_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {e}", index_path.display()))
 }
 
+/// The shell's web backend: `nve-web-html` semantic tags plus canvas, registered BEFORE the first
+/// commit so Frame-0 tags and placement checks match the browser.
+fn example_web_backend() -> nve_backend_web::WebBackend {
+    let mut web = nve_backend_web::WebBackend::new();
+    nve_web_html_web::register_web_html_systems(web.table_registry_mut());
+    web.register_table_system(nve_canvas_web::CanvasWebSystem);
+    web
+}
+
 /// Pre-renders default Frame-0 SSG HTML + Option 5 CSS for any example `NveApp` via the generic
 /// engine-level [`prerender_nve_app_frame0`] helper so brand-new cold visitors paint at 0ms.
 fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
-    use nve_backend_web::WebBackend;
     use nve_engine::{NveApp, StoreBackend};
 
     let vp = Viewport {
@@ -394,17 +402,16 @@ fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
     };
     let ssr = match slug {
         "studio" => {
-            let (store, mut backend) = prerender_nve_app_frame0::<StudioWorkspaceModule>(vp)
-                .map_err(|e| format!("failed to prerender Frame-0 SSG for example '{slug}': {e}"))?;
-            nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
-            backend.register_table_system(nve_canvas_web::CanvasWebSystem);
+            let (store, backend) =
+                prerender_nve_app_frame0::<StudioWorkspaceModule>(example_web_backend(), vp)
+                    .map_err(|e| {
+                        format!("failed to prerender Frame-0 SSG for example '{slug}': {e}")
+                    })?;
             backend.render_ssr(&store)
         }
         "kitchen-sink" => {
             let mut app = KitchenSinkModule::create(1);
-            let mut web = WebBackend::new();
-            nve_web_html_web::register_web_html_systems(web.table_registry_mut());
-            web.register_table_system(nve_canvas_web::CanvasWebSystem);
+            let mut web = example_web_backend();
             web.set_viewport(1, vp);
             app.commit_to(1, &mut web)
                 .map_err(|e| format!("failed to commit kitchen-sink Frame-0 SSG: {e}"))?;

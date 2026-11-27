@@ -64,6 +64,27 @@ pub(crate) fn push_hashes_csv(hashes: &[String], out: &mut String) {
     }
 }
 
+/// Appends `<style data-nve-base[ nonce]>` with breakout-escaped reset CSS.
+pub(crate) fn push_base_style_tag(ssr: &SsrOutput, nonce: Option<&str>, out: &mut String) {
+    out.push_str("<style data-nve-base");
+    write_style_nonce_attr(nonce, out);
+    out.push('>');
+    push_style_css_escaped(ssr.base_css, out);
+    out.push_str("</style>");
+}
+
+/// Appends `<style data-nve-ssr[ nonce] data-nve-hashes="...">` with breakout-escaped structural
+/// CSS. Always emitted (even empty) so every SSR/SSG document exposes one stable hydration anchor.
+pub(crate) fn push_ssr_style_tag(ssr: &SsrOutput, nonce: Option<&str>, out: &mut String) {
+    out.push_str("<style data-nve-ssr");
+    write_style_nonce_attr(nonce, out);
+    out.push_str(" data-nve-hashes=\"");
+    push_hashes_csv(&ssr.rule_hashes, out);
+    out.push_str("\">");
+    push_style_css_escaped(&ssr.style_css, out);
+    out.push_str("</style>");
+}
+
 impl WebBackend {
     /// Computes a deterministic XXH64 structural hash of `store` for `data-nve-ssr-hash`.
     pub fn compute_ssr_tree_hash(&self, store: &NodeStore) -> u64 {
@@ -147,18 +168,8 @@ impl WebBackend {
             push_attr_escaped(og, &mut doc);
             doc.push_str("\">");
         }
-        doc.push_str("<style data-nve-base");
-        write_style_nonce_attr(nonce, &mut doc);
-        doc.push('>');
-        push_style_css_escaped(ssr.base_css, &mut doc);
-        // Always emitted (even empty) so every SSR document exposes one stable hydration anchor.
-        doc.push_str("</style><style data-nve-ssr");
-        write_style_nonce_attr(nonce, &mut doc);
-        doc.push_str(" data-nve-hashes=\"");
-        push_hashes_csv(&ssr.rule_hashes, &mut doc);
-        doc.push_str("\">");
-        push_style_css_escaped(&ssr.style_css, &mut doc);
-        doc.push_str("</style>");
+        push_base_style_tag(&ssr, nonce, &mut doc);
+        push_ssr_style_tag(&ssr, nonce, &mut doc);
         if let Some(ref extra) = opts.head_extra {
             doc.push_str(extra);
         }

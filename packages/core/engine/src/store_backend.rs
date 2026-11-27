@@ -102,6 +102,12 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         (&self.store, &mut self.backend)
     }
 
+    /// Consumes the replica, returning its decoded `NodeStore` and committed backend.
+    #[inline]
+    pub fn into_parts(self) -> (NodeStore, B) {
+        (self.store, self.backend)
+    }
+
     /// Decodes one `NVE2` wire frame into the replica `NodeStore` and commits it to `backend`.
     ///
     /// Validates the `NVE2` header before resetting on `frame == 1` (preventing corrupt packets
