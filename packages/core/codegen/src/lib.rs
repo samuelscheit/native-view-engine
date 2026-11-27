@@ -9,8 +9,9 @@
 //! - [`targets`]: Output-language code emitters (`c_cpp`, `rust`, `swift`, `kotlin_java`, `dart`,
 //!   `typescript`) plus unified multi-target dispatchers.
 //!
-//! Reading specs from JSON files is the CLI's job (`nve-cli`), so no runtime crate links
-//! `serde_json`.
+//! Dependencies: `nve-abi` / `nve-hash` (ABI descriptors, XXH64), `serde` derives on the IR,
+//! `askama` (templates), and `syn` / `proc-macro2` (the hybrid spec frontend). Reading specs
+//! from JSON files is the CLI's job (`nve-cli`), so this crate never links `serde_json`.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 

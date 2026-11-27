@@ -41,6 +41,11 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
   - **Drift guard**: `nve-arch-invariants` checks every mirrored constant and golden XXH64 digest against `nve_abi`, `nve_store`, and `nve_hash`. A second check keeps the binary-value validators allocation-free (no view, copy, or decode).
   - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` now emits 16 artifacts.
   - **Zero runtime `serde_json` in core**: `NveExportSpec` JSON loading moved into `nve-cli`. `PENDING_CLEANUP_SERDE_JSON` and `PENDING_CLEANUP_PERSONAL_PATHS` are empty.
+  - **Pass-1 hardening of the `syn` hybrid spec frontend (commit 4)**
+    - **Iterative nesting bound.** A token walk runs before `syn` recurses; 100k levels are rejected on a 2 MiB stack.
+    - **Located errors instead of silent drops.** Rejected forms: variadics, generics / `where`, `async` / `const`, non-`extern "C"` functions, trait bodies / supertraits, non-unit enum variants, `packed`, raw identifiers, bare `Option` / `Vec` / `Result`, non-finite defaults, malformed or unknown attribute keys, misspelled `nve_hybrid_*` markers.
+    - **Fixes:** the namespace on `extern fn` and `#![...]` is honored, every `#[repr]` is read, and `u32::MAX` is accepted as a last discriminant.
+    - **Tests:** a golden snapshot.
   - **Batch 2A: host ABI data on Askama 0.16 (commit 3)**
     - **One template per generated file.** `nve-codegen`'s `abi/` module (`derive` + `std` features only) renders 15 templates over the borrowed `nve-abi` descriptors and any `&[&TableDesc]`; `nve-cli` passes `nve_components::CORE_TABLE_DESCS`.
       - Output is the merged Core + Scene ABI, the 17 core word tables (keys, defaults, field specs, iterable lists), and the 19 golden XXH64 vectors.

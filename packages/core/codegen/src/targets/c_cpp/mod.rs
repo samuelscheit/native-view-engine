@@ -1,4 +1,5 @@
-//! C11 / C++20 / Objective-C++ target emitters (Hybrid FFI, React Native import adapters, and React Native C++/iOS/Windows exports).
+//! C11 / C++20 / Objective-C++ target emitters: Hybrid FFI, React Native import adapters, and
+//! React Native C++ / iOS / Windows exports.
 
 pub mod export_rn_cpp;
 pub mod export_rn_ios;

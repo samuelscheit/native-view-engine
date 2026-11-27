@@ -49,6 +49,9 @@ pub fn check_backlog_open_only(idx: &RepoIndex) -> Vec<Violation> {
     violations
 }
 
+/// Askama templates of `nve-codegen`: they contain the `@generated` banner of their output.
+const CODEGEN_TEMPLATES_DIR: &str = "packages/core/codegen/templates/";
+
 pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
     let mut violations = Vec::new();
     for rel in &idx.tracked {
@@ -101,6 +104,10 @@ pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
                     || t.starts_with('#')
                     || t.starts_with("<!--");
                 if is_comment && t.contains("@generated") {
+                    // Codegen templates carry the banner they emit; they are sources, not output.
+                    if rel.starts_with(CODEGEN_TEMPLATES_DIR) {
+                        break;
+                    }
                     let in_java_gen = rel.contains("dev/nve/host/generated/");
                     let has_dot_gen = Path::new(rel)
                         .file_name()

@@ -26,6 +26,36 @@ pub struct HybridFileSpec {
 }
 
 impl HybridFileSpec {
+    /// Rewrites `Struct(name)` references that name a declared enum into `Enum(name)` and a
+    /// declared alias into `Handle(name)`. Frontends call it once every declaration is known, since
+    /// a type can be used before it is declared.
+    pub(crate) fn resolve_named_types(&mut self) {
+        let Self { consts, aliases, enums, structs, modules, views, c_functions, .. } = self;
+        let enum_names: BTreeSet<&str> = enums.iter().map(|e| e.name.as_str()).collect();
+        let alias_names: BTreeSet<String> = aliases.iter().map(|a| a.name.clone()).collect();
+        let rewrite = |ty: &mut HybridType| rewrite_named_type(ty, &enum_names, &alias_names);
+        consts.iter_mut().for_each(|c| rewrite(&mut c.ty));
+        aliases.iter_mut().for_each(|a| rewrite(&mut a.target));
+        for f in structs.iter_mut().flat_map(|s| s.fields.iter_mut()) {
+            rewrite(&mut f.ty);
+        }
+        let module_methods = modules.iter_mut().flat_map(|m| m.methods.iter_mut());
+        for v in views.iter_mut() {
+            v.props.iter_mut().for_each(|p| rewrite(&mut p.ty));
+            for p in v.events.iter_mut().flat_map(|e| e.params.iter_mut()) {
+                rewrite(&mut p.ty);
+            }
+            for m in &mut v.methods {
+                m.params.iter_mut().for_each(|p| rewrite(&mut p.ty));
+                rewrite(&mut m.return_type);
+            }
+        }
+        for m in module_methods.chain(c_functions.iter_mut()) {
+            m.params.iter_mut().for_each(|p| rewrite(&mut p.ty));
+            rewrite(&mut m.return_type);
+        }
+    }
+
     pub fn find_struct(&self, name: &str) -> Option<&HybridStructSpec> {
         self.structs.iter().find(|s| s.name == name)
     }
@@ -263,5 +293,22 @@ pub(super) fn hash_transitive_types(
         if let Some(s) = file.find_struct(&s_name) {
             hash_struct(h, s);
         }
+    }
+}
+
+fn rewrite_named_type(ty: &mut HybridType, enums: &BTreeSet<&str>, aliases: &BTreeSet<String>) {
+    match ty {
+        HybridType::Struct(name) if enums.contains(name.as_str()) => *ty = HybridType::Enum(std::mem::take(name)),
+        HybridType::Struct(name) if aliases.contains(name) => *ty = HybridType::Handle(std::mem::take(name)),
+        HybridType::Optional(inner)
+        | HybridType::Vec(inner)
+        | HybridType::ConstPtr(inner)
+        | HybridType::MutPtr(inner)
+        | HybridType::FixedArray { elem: inner, .. } => rewrite_named_type(inner, enums, aliases),
+        HybridType::Result { ok, err } => {
+            rewrite_named_type(ok, enums, aliases);
+            rewrite_named_type(err, enums, aliases);
+        }
+        _ => {}
     }
 }

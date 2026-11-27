@@ -2,8 +2,6 @@
 //! (populated by `#[derive(NveAbi)]` on real compiled Rust types) into a validated
 //! [`HybridFileSpec`] with zero intermediate spec parsing.
 
-use std::collections::BTreeSet;
-
 use nve_abi::schema::{
     AbiEnumDescriptor, AbiFieldDescriptor, AbiFileDescriptor, AbiMethodDescriptor,
     AbiModuleDescriptor, AbiParamDescriptor, AbiRecordDescriptor,
@@ -65,7 +63,7 @@ pub fn from_abi_descriptor(desc: &AbiFileDescriptor) -> HybridFileSpec {
         views: Vec::new(),
         c_functions,
     };
-    resolve_named_types(&mut spec);
+    spec.resolve_named_types();
     spec.validate()
         .expect("colocated AbiFileDescriptor must produce a valid HybridFileSpec");
     spec
@@ -201,65 +199,5 @@ fn parse_abi_type(raw: &str) -> HybridType {
         "String" | "str" => HybridType::String,
         "NveValue" => HybridType::Value,
         ident => HybridType::Struct(ident.to_owned()),
-    }
-}
-
-fn resolve_named_types(file: &mut HybridFileSpec) {
-    let enum_names: BTreeSet<String> = file.enums.iter().map(|e| e.name.clone()).collect();
-    let alias_names: BTreeSet<String> = file.aliases.iter().map(|a| a.name.clone()).collect();
-    let rewrite = |ty: &mut HybridType| rewrite_named_type(ty, &enum_names, &alias_names);
-
-    for c in &mut file.consts {
-        rewrite(&mut c.ty);
-    }
-    for a in &mut file.aliases {
-        rewrite(&mut a.target);
-    }
-    for s in &mut file.structs {
-        for f in &mut s.fields {
-            rewrite(&mut f.ty);
-        }
-    }
-    for m in &mut file.modules {
-        for method in &mut m.methods {
-            for p in &mut method.params {
-                rewrite(&mut p.ty);
-            }
-            rewrite(&mut method.return_type);
-        }
-    }
-    for f in &mut file.c_functions {
-        for p in &mut f.params {
-            rewrite(&mut p.ty);
-        }
-        rewrite(&mut f.return_type);
-    }
-}
-
-fn rewrite_named_type(
-    ty: &mut HybridType,
-    enum_names: &BTreeSet<String>,
-    alias_names: &BTreeSet<String>,
-) {
-    match ty {
-        HybridType::Struct(name) => {
-            if enum_names.contains(name) {
-                *ty = HybridType::Enum(name.clone());
-            } else if alias_names.contains(name) {
-                *ty = HybridType::Handle(name.clone());
-            }
-        }
-        HybridType::Optional(inner)
-        | HybridType::Vec(inner)
-        | HybridType::ConstPtr(inner)
-        | HybridType::MutPtr(inner)
-        | HybridType::FixedArray { elem: inner, .. } => {
-            rewrite_named_type(inner, enum_names, alias_names);
-        }
-        HybridType::Result { ok, err } => {
-            rewrite_named_type(ok, enum_names, alias_names);
-            rewrite_named_type(err, enum_names, alias_names);
-        }
-        _ => {}
     }
 }
