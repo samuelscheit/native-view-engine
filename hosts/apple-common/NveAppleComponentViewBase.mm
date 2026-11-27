@@ -1,33 +1,5 @@
 #import "NveAppleComponentViewBase.h"
-
-#import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
-#import "NveAppleComponentHostInternal.h"
-#import "NveAppleImageCache.h"
-#import "NveAppleValueBridge.h"
-
-#if defined(NVE_ENABLE_NATIVE_VIEWS) && NVE_ENABLE_NATIVE_VIEWS
-#import "NveAppleNativeViews.h"
-#endif
-
-#include <memory>
-#include <mutex>
-#include <span>
-
-namespace {
-
-struct DefaultNativeViewHooks {
-  std::mutex mu;
-  nve::apple::NativeViewRegistrar registrar;
-  nve::apple::NativeViewBinder binder;
-};
-
-DefaultNativeViewHooks &default_native_view_hooks() {
-  static DefaultNativeViewHooks hooks;
-  return hooks;
-}
-
-} // namespace
 
 @implementation NveAppleImageView
 #if TARGET_OS_OSX
@@ -37,120 +9,41 @@ DefaultNativeViewHooks &default_native_view_hooks() {
 #endif
 @end
 
-@interface NveAppleComponentViewBase () <NveAppleComponentViewAdapter>
-@end
+namespace nve::apple {
+
+void update_image_view(NveAppleImageView *view, NvePlatformImage *image, ImageResizeMode fit, float border_radius) {
+  if (view.image != image) view.image = image;
+  apply_image_resize_mode(view, fit, border_radius);
+}
+
+}  // namespace nve::apple
 
 @implementation NveAppleComponentViewBase {
   NveAppleComponentHost *_nveHost;
-  nve::NativeViewRegistry *_externalNativeViewRegistry;
-  std::unique_ptr<nve::NativeViewRegistry> _ownedNativeViewRegistry;
-  nve::apple::NativeViewBinder _nativeViewBinder;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
-  self = [super initWithFrame:frame];
-  if (self) {
+  if ((self = [super initWithFrame:frame])) {
 #if TARGET_OS_OSX
     self.wantsLayer = YES;
 #endif
-    _nveHost = [[NveAppleComponentHost alloc] initWithAdapter:self
-                                                  errorDomain:[self nveErrorDomain]];
-    [self _installDefaultNativeViewHooksIfConfigured];
-    NveGetInterfaceFn defaultIface = [self defaultNveGetInterface];
-    if (defaultIface != nullptr) {
-      if ([_nveHost attachInterface:defaultIface surfaceId:_nveHost.surfaceId]) {
-        [self bindNativeViewsToActiveFabricHost];
-      }
+    _nveHost = [[NveAppleComponentHost alloc] initWithAdapter:self errorDomain:[self nveErrorDomain]];
+    if (NveGetInterfaceFn iface = [self defaultNveGetInterface]) {
+      (void)[_nveHost attachInterface:iface surfaceId:_nveHost.surfaceId];
     }
   }
   return self;
 }
 
-- (void)_installDefaultNativeViewHooksIfConfigured {
-  nve::apple::NativeViewRegistrar registrar;
-  nve::apple::NativeViewBinder binder;
-  {
-    auto &hooks = default_native_view_hooks();
-    std::lock_guard<std::mutex> lock(hooks.mu);
-    registrar = hooks.registrar;
-    binder = hooks.binder;
-  }
-  if (registrar || binder) {
-    [self installNativeViewHooksWithRegistrar:std::move(registrar) binder:std::move(binder)];
-    return;
-  }
-#if defined(NVE_ENABLE_NATIVE_VIEWS) && NVE_ENABLE_NATIVE_VIEWS
-  [self installNativeViewHooksWithRegistrar:&nve::apple::register_apple_native_views
-                                     binder:&nve::apple::bind_apple_native_views_to_fabric_host];
-#endif
-}
-
-- (nve::NativeViewRegistry * _Nullable)nativeViewRegistry {
-  if (_externalNativeViewRegistry != nullptr) {
-    return _externalNativeViewRegistry;
-  }
-  return _ownedNativeViewRegistry.get();
-}
-
-- (void)attachNativeViewRegistry:(nve::NativeViewRegistry * _Nullable)registry
-                          binder:(nve::apple::NativeViewBinder)binder {
-  _ownedNativeViewRegistry.reset();
-  _externalNativeViewRegistry = registry;
-  _nativeViewBinder = std::move(binder);
-  [self bindNativeViewsToActiveFabricHost];
-}
-
-- (void)installNativeViewHooksWithRegistrar:(nve::apple::NativeViewRegistrar)registrar
-                                     binder:(nve::apple::NativeViewBinder)binder {
-  _externalNativeViewRegistry = nullptr;
-  _ownedNativeViewRegistry = std::make_unique<nve::NativeViewRegistry>();
-  if (registrar) {
-    registrar(*_ownedNativeViewRegistry);
-  }
-  _nativeViewBinder = std::move(binder);
-  [self bindNativeViewsToActiveFabricHost];
-}
-
-- (void)bindNativeViewsToActiveFabricHost {
-  nve::NativeViewRegistry *registry = [self nativeViewRegistry];
-  if (registry == nullptr || !_nativeViewBinder) {
-    return;
-  }
-  NveFabricHostHandle host = [_nveHost _activeFabricHost];
-  if (host == nullptr) {
-    return;
-  }
-  _nativeViewBinder(host, *registry);
-}
-
-- (NveAppleComponentHost *)nveHost {
-  return _nveHost;
-}
-
-- (NSString *)nveErrorDomain {
-#if TARGET_OS_OSX
-  return @"nve.macos.rncomponent";
-#else
-  return @"nve.ios.rncomponent";
-#endif
-}
-
-- (CGSize)nveDefaultSurfaceSize {
-#if TARGET_OS_OSX
-  return CGSizeMake(480.0, 320.0);
-#else
-  return CGSizeMake(320.0, 200.0);
-#endif
-}
+- (NveAppleComponentHost *)nveHost { return _nveHost; }
+- (NSString *)nveErrorDomain { return @"dev.nve.apple"; }
+- (CGSize)nveDefaultSurfaceSize { return CGSizeMake(320.0, 240.0); }
+- (nullable NveGetInterfaceFn)defaultNveGetInterface { return nullptr; }
 
 - (CGFloat)nveCurrentDisplayScale {
 #if TARGET_OS_OSX
-  if (self.window != nil && self.window.backingScaleFactor > 0.0) {
-    return self.window.backingScaleFactor;
-  }
-  if ([NSScreen mainScreen] != nil && [NSScreen mainScreen].backingScaleFactor > 0.0) {
-    return [NSScreen mainScreen].backingScaleFactor;
-  }
+  if (self.window != nil && self.window.backingScaleFactor > 0.0) return self.window.backingScaleFactor;
+  if (NSScreen.mainScreen.backingScaleFactor > 0.0) return NSScreen.mainScreen.backingScaleFactor;
   return 2.0;
 #else
   const CGFloat scale = self.traitCollection.displayScale;
@@ -159,134 +52,81 @@ DefaultNativeViewHooks &default_native_view_hooks() {
 }
 
 - (void)propagateBoundsToNveHost {
-  const CGRect b = self.bounds;
-  [_nveHost updateSurfaceWidth:static_cast<float>(b.size.width)
-                        height:static_cast<float>(b.size.height)
+  CGSize size = self.bounds.size;
+  if (size.width <= 0.0 || size.height <= 0.0) size = [self nveDefaultSurfaceSize];
+  [_nveHost updateSurfaceWidth:static_cast<float>(size.width)
+                        height:static_cast<float>(size.height)
                    scaleFactor:static_cast<float>([self nveCurrentDisplayScale])];
 }
 
-- (uint32_t)nveSurfaceId {
-  return _nveHost.surfaceId;
+#if TARGET_OS_OSX
+- (void)setFrameSize:(NSSize)newSize {
+  [super setFrameSize:newSize];
+  [self propagateBoundsToNveHost];
 }
+#else
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  [self propagateBoundsToNveHost];
+}
+#endif
 
-- (uint32_t)nveNodeCount {
-  return _nveHost.nodeCount;
-}
-
-- (uint32_t)nveLastReconciledDirtyCount {
-  return _nveHost.lastReconciledDirtyCount;
-}
-
-- (uint32_t)nveLastReconciledRemovedCount {
-  return _nveHost.lastReconciledRemovedCount;
-}
-
-- (BOOL)isPaired {
-  return _nveHost.isPaired;
-}
-
-- (BOOL)isPairedConnected {
-  return _nveHost.isPairedConnected;
-}
-
-- (BOOL)hasReplayedFrame0 {
-  return _nveHost.hasReplayedFrame0;
-}
-
-- (nullable NveGetInterfaceFn)defaultNveGetInterface {
-  return nullptr;
-}
+- (uint32_t)nveSurfaceId { return _nveHost.surfaceId; }
+- (uint32_t)nveNodeCount { return _nveHost.nodeCount; }
+- (uint32_t)nveLastReconciledDirtyCount { return _nveHost.lastReconciledDirtyCount; }
+- (uint32_t)nveLastReconciledRemovedCount { return _nveHost.lastReconciledRemovedCount; }
+- (BOOL)isPaired { return _nveHost.isPaired; }
+- (BOOL)isPairedConnected { return _nveHost.isPairedConnected; }
+- (BOOL)hasReplayedFrame0 { return _nveHost.hasReplayedFrame0; }
 
 - (BOOL)attachNveInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId {
-  const BOOL ok = [_nveHost attachInterface:getInterface surfaceId:surfaceId];
-  if (ok) {
-    [self bindNativeViewsToActiveFabricHost];
-  }
-  return ok;
+  [self propagateBoundsToNveHost];
+  return [_nveHost attachInterface:getInterface surfaceId:surfaceId];
 }
 
-- (BOOL)loadNveDylibAtPath:(NSString *)dylibPath
-                 surfaceId:(uint32_t)surfaceId
-                     error:(NSError * _Nullable * _Nullable)error {
-  const BOOL ok = [_nveHost loadDylibAtPath:dylibPath surfaceId:surfaceId error:error];
-  if (ok) {
-    [self bindNativeViewsToActiveFabricHost];
+- (BOOL)loadNveDylibAtPath:(NSString *)dylibPath surfaceId:(uint32_t)surfaceId error:(NSError **)error {
+  if (_nveHost == nil) {
+    if (error) *error = [NSError errorWithDomain:[self nveErrorDomain] code:3 userInfo:@{NSLocalizedDescriptionKey : @"libnve_runtime is not linked"}];
+    return NO;
   }
-  return ok;
+  [self propagateBoundsToNveHost];
+  return [_nveHost loadDylibAtPath:dylibPath surfaceId:surfaceId error:error];
 }
 
-- (BOOL)reloadNveDylibAtPath:(NSString *)dylibPath
-                       error:(NSError * _Nullable * _Nullable)error {
-  const BOOL ok = [_nveHost reloadDylibAtPath:dylibPath error:error];
-  if (ok) {
-    [self bindNativeViewsToActiveFabricHost];
-  }
-  return ok;
+- (BOOL)reloadNveDylibAtPath:(NSString *)dylibPath error:(NSError **)error {
+  return [_nveHost reloadDylibAtPath:dylibPath error:error];
 }
 
-- (BOOL)connectPairedEndpoint:(NSString *)endpoint
-                        token:(NSString *)token
-                    transport:(nullable NSString *)transport
-                    surfaceId:(uint32_t)surfaceId
-                        error:(NSError * _Nullable * _Nullable)error {
-  const BOOL ok = [_nveHost connectPairedEndpoint:endpoint
-                                            token:token
-                                        transport:transport
-                                        surfaceId:surfaceId
-                                            error:error];
-  if (ok) {
-    [self bindNativeViewsToActiveFabricHost];
-  }
-  return ok;
+- (BOOL)connectPairedEndpoint:(NSString *)uri token:(NSString *)token surfaceId:(uint32_t)surfaceId error:(NSError **)error {
+  [self propagateBoundsToNveHost];
+  return [_nveHost connectPairedEndpoint:uri token:token surfaceId:surfaceId error:error];
 }
 
-- (void)disconnectPaired {
-  [_nveHost disconnectPaired];
-}
+- (void)disconnectPaired { [_nveHost disconnectPaired]; }
 
 - (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
              expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs {
-  const BOOL ok = [_nveHost replayFrame0SnapshotAtPath:snapshotPath
-                                 expectedSchemaVersion:expectedSchemaVersion
-                                         restoreTimeUs:outRestoreUs];
-  if (ok) {
-    [self bindNativeViewsToActiveFabricHost];
-  }
-  return ok;
+                     restoreTimeUs:(uint64_t *)outRestoreUs {
+  [self propagateBoundsToNveHost];
+  return [_nveHost replayFrame0SnapshotAtPath:snapshotPath expectedSchemaVersion:expectedSchemaVersion restoreTimeUs:outRestoreUs];
 }
 
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
-             schemaVersion:(uint32_t)schemaVersion {
+- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath schemaVersion:(uint32_t)schemaVersion {
   return [_nveHost saveSnapshotAtPath:snapshotPath schemaVersion:schemaVersion];
 }
 
-- (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {
-  return [_nveHost applyPropsDictionary:props];
-}
-
-- (void)renderNveFrame {
-  [_nveHost renderFrame];
-}
-
-- (void)drainNveEmittedEvents {
-  [_nveHost drainEmittedEvents];
-}
+- (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props { return [_nveHost applyPropsDictionary:props]; }
+- (void)renderNveFrame { [_nveHost renderFrame]; }
+- (void)drainNveEmittedEvents { [_nveHost drainEmittedEvents]; }
 
 - (void)simulatePressOnNodeId:(uint32_t)nodeId atPoint:(CGPoint)point {
-  [_nveHost dispatchPressOnNodeId:nodeId
-                                x:static_cast<float>(point.x)
-                                y:static_cast<float>(point.y)];
+  [_nveHost dispatchPressOnNodeId:nodeId x:static_cast<float>(point.x) y:static_cast<float>(point.y)];
 }
 
-- (nullable NveAppleBasePlatformView *)nativeViewForNodeId:(uint32_t)nodeId {
-  return [_nveHost nativeViewForNodeId:nodeId];
-}
+- (nullable NveAppleBasePlatformView *)nativeViewForNodeId:(uint32_t)nodeId { return [_nveHost nativeViewForNodeId:nodeId]; }
 
 - (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload {
-  if (self.onNveEvent) {
-    self.onNveEvent(eventName, payload);
-  }
+  if (self.onNveEvent) self.onNveEvent(eventName, payload);
 }
 
 #if defined(NVE_WITH_RN_FABRIC) && NVE_WITH_RN_FABRIC
@@ -305,101 +145,26 @@ DefaultNativeViewHooks &default_native_view_hooks() {
 }
 #endif
 
-#pragma mark - NveAppleComponentViewAdapter (Shared Defaults)
+#pragma mark - NveAppleComponentViewAdapter (shared)
 
-- (NvePlatformView *)nveHostRootView {
-  return self;
-}
-
-- (NveSurfaceConfig)nveSurfaceConfigForSurfaceId:(uint32_t)surfaceId {
-  const CGRect bounds = self.bounds;
-  const CGSize fallback = [self nveDefaultSurfaceSize];
-  NveSurfaceConfig cfg{};
-  cfg.surface_id = surfaceId;
-  cfg.width = static_cast<float>(bounds.size.width > 0.0 ? bounds.size.width : fallback.width);
-  cfg.height = static_cast<float>(bounds.size.height > 0.0 ? bounds.size.height : fallback.height);
-  cfg.scale_factor = static_cast<float>([self nveCurrentDisplayScale]);
-  return cfg;
-}
+- (NvePlatformView *)nveHostRootView { return self; }
 
 - (void)nveEmitEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload {
   [self handleNveEvent:eventName payload:payload];
 }
 
-- (void)nveApplyRootBackgroundRgba:(uint32_t)rgba {
-#if TARGET_OS_OSX
-  self.wantsLayer = YES;
-  if (rgba != 0) {
-    self.layer.backgroundColor = nve::apple::color_from_rgba(rgba).CGColor;
-  }
-#else
-  if (rgba != 0) {
-    self.backgroundColor = nve::apple::color_from_rgba(rgba);
-  }
-#endif
-}
-
-- (NvePlatformView *)nveCreateNativeViewForNode:(const NveRenderNode &)node
-                                      semantics:(const nve::apple::NodeSemantics &)semantics {
+- (NvePlatformView *)nveCreateNativeViewForNode:(const nve::apple::NodeView &)node {
   (void)node;
-  (void)semantics;
   return [[NvePlatformView alloc] initWithFrame:CGRectZero];
 }
 
-- (void)nveUpdateNativeView:(NvePlatformView *)view
-                    forNode:(const NveRenderNode &)node
-                       text:(std::string_view)text
-                  semantics:(const nve::apple::NodeSemantics &)semantics
-                interactive:(BOOL)interactive {
-  (void)view;
-  (void)node;
-  (void)text;
-  (void)semantics;
-  (void)interactive;
+- (void)nveUpdateNativeView:(NvePlatformView *)view forNode:(const nve::apple::NodeView &)node image:(id)image {
+  (void)image;
+#if TARGET_OS_OSX
+  view.wantsLayer = YES;
+#endif
+  nve::apple::apply_common_layer_style(view.layer, node.style);
+  nve::apple::apply_node_accessibility(view, node.kind, node.semantics);
 }
 
 @end
-
-namespace nve::apple {
-
-void set_default_native_view_hooks(NativeViewRegistrar registrar, NativeViewBinder binder) {
-  auto &hooks = default_native_view_hooks();
-  std::lock_guard<std::mutex> lock(hooks.mu);
-  hooks.registrar = std::move(registrar);
-  hooks.binder = std::move(binder);
-}
-
-void clear_default_native_view_hooks() {
-  auto &hooks = default_native_view_hooks();
-  std::lock_guard<std::mutex> lock(hooks.mu);
-  hooks.registrar = nullptr;
-  hooks.binder = nullptr;
-}
-
-void update_image_view(
-    NveAppleImageView * _Nonnull imgView,
-    std::string_view src,
-    ImageResizeMode resizeMode,
-    float borderRadius) {
-  NSString *nextSrc = nsstring_or_nil_from_sv(src);
-  const BOOL sameSrc =
-      (nextSrc == nil && imgView.nveImageSrc == nil) ||
-      (nextSrc != nil && [nextSrc isEqualToString:imgView.nveImageSrc]);
-  if (!sameSrc) {
-    imgView.nveImageSrc = nextSrc;
-    imgView.image = src.empty() ? nil : shared_image_cache().image_for_source(src);
-  }
-  apply_image_resize_mode(imgView, resizeMode, borderRadius);
-}
-
-void update_canvas_view(NvePlatformView * _Nonnull view, std::string_view drawBytes) {
-  if (![view isKindOfClass:[NveAppleCanvasView class]]) {
-    return;
-  }
-  NveAppleCanvasView *canvasView = (NveAppleCanvasView *)view;
-  const std::span<const uint8_t> bytes(
-      reinterpret_cast<const uint8_t *>(drawBytes.data()), drawBytes.size());
-  [canvasView updateDrawListBytes:bytes];
-}
-
-} // namespace nve::apple

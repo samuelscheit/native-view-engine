@@ -1,9 +1,12 @@
 #import "RCTNveMacComponentView.h"
-#import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
-#import "NveAppleValueBridge.h"
 
-/// Flipped NSView container so Yoga's top-left origin maps 1:1 to AppKit `NSView.frame`.
+#include <nve/host/nve_tables.generated.h>
+
+using nve::apple::NodeKind;
+using nve::apple::NodeView;
+
+/// Flipped container so runtime top-left layout maps 1:1 onto `NSView.frame`.
 @interface NveFlippedContainerView : NSView
 @property (nonatomic, assign) uint32_t nveNodeId;
 @end
@@ -14,8 +17,8 @@
 }
 @end
 
-/// Non-editable label that passes mouse hit-testing through to ancestor Pressable containers
-/// unless the label itself has interactive gesture recognizers attached.
+/// Non-editable label passing mouse hit-testing through to interactive ancestors unless it has
+/// its own gesture recognizers.
 @interface NveLabelTextField : NSTextField
 @end
 
@@ -32,20 +35,23 @@
   BOOL _updatingScrollFrame;
 }
 
-- (instancetype)initWithFrame:(NSRect)frameRect {
-  self = [super initWithFrame:frameRect];
-  if (self) {
-    _updatingScrollFrame = NO;
-  }
-  return self;
-}
-
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (BOOL)isFlipped {
   return YES;
+}
+
+- (NSSize)intrinsicContentSize {
+  CGSize size = CGSizeZero;
+  if ([self.nveHost getRootLayoutSize:&size]) return NSMakeSize(size.width, size.height);
+  return [super intrinsicContentSize];
+}
+
+- (void)layout {
+  [super layout];
+  [self propagateBoundsToNveHost];
 }
 
 - (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload {
@@ -56,37 +62,11 @@
   }
 }
 
-- (void)setFrameSize:(NSSize)newSize {
-  [super setFrameSize:newSize];
-  [self propagateBoundsToNveHost];
-}
-
-- (void)layout {
-  [super layout];
-  [self propagateBoundsToNveHost];
-}
-
-- (NSSize)intrinsicContentSize {
-  CGSize rootSize = CGSizeZero;
-  if ([self.nveHost getRootLayoutSize:&rootSize]) {
-    return NSMakeSize(rootSize.width, rootSize.height);
-  }
-  return [super intrinsicContentSize];
-}
-
 #pragma mark - NveAppleComponentViewAdapter (AppKit)
 
-- (NSView *)nveCreateNativeViewForNode:(const NveRenderNode &)node
-                             semantics:(const nve::apple::NodeSemantics &)semantics {
-  if (node.kind == NVE_NODE_KIND_TEXT && (node.flags & NVE_NODE_LEAF_TEXT) == 0u) {
-    NveFlippedContainerView *container =
-        [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
-    container.nveNodeId = node.node_id;
-    container.wantsLayer = YES;
-    return container;
-  }
+- (NSView *)nveCreateNativeViewForNode:(const NodeView &)node {
   switch (node.kind) {
-    case NVE_NODE_KIND_TEXT: {
+    case NodeKind::Text: {
       NveLabelTextField *label = [[NveLabelTextField alloc] initWithFrame:NSZeroRect];
       label.editable = NO;
       label.selectable = NO;
@@ -99,24 +79,23 @@
       label.wantsLayer = YES;
       return label;
     }
-    case NVE_NODE_KIND_IMAGE: {
-      NveAppleImageView *imgView = [[NveAppleImageView alloc] initWithFrame:NSZeroRect];
-      imgView.imageFrameStyle = NSImageFrameNone;
-      imgView.imageAlignment = NSImageAlignCenter;
-      imgView.wantsLayer = YES;
-      return imgView;
+    case NodeKind::Image: {
+      NveAppleImageView *image = [[NveAppleImageView alloc] initWithFrame:NSZeroRect];
+      image.imageFrameStyle = NSImageFrameNone;
+      image.imageAlignment = NSImageAlignCenter;
+      image.wantsLayer = YES;
+      return image;
     }
-    case NVE_NODE_KIND_TEXT_INPUT: {
-      NSTextField *input = semantics.secure_text_entry
-                               ? [[NSSecureTextField alloc] initWithFrame:NSZeroRect]
-                               : [[NSTextField alloc] initWithFrame:NSZeroRect];
+    case NodeKind::TextInput: {
+      NSTextField *input = node.semantics.secure_text_entry ? [[NSSecureTextField alloc] initWithFrame:NSZeroRect]
+                                                            : [[NSTextField alloc] initWithFrame:NSZeroRect];
       input.editable = YES;
       input.bezeled = YES;
       input.delegate = self;
       input.wantsLayer = YES;
       return input;
     }
-    case NVE_NODE_KIND_SCROLL_VIEW: {
+    case NodeKind::Scroll: {
       NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
       scroll.hasVerticalScroller = YES;
       scroll.drawsBackground = NO;
@@ -132,181 +111,136 @@
                                                  object:scroll.contentView];
       return scroll;
     }
-    case NVE_NODE_KIND_SKIA_CANVAS: {
-      NveAppleCanvasView *canvas = [[NveAppleCanvasView alloc] initWithFrame:NSZeroRect];
-      canvas.wantsLayer = YES;
-      return canvas;
-    }
-    default: {
-      NveFlippedContainerView *container =
-          [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
+    case NodeKind::Container: {
+      NveFlippedContainerView *container = [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
       container.nveNodeId = node.node_id;
       container.wantsLayer = YES;
       return container;
     }
+  }
+  return [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
+}
+
+- (void)nveUpdateNativeView:(NSView *)view forNode:(const NodeView &)node image:(id)image {
+  [super nveUpdateNativeView:view forNode:node image:image];
+  if ([view isKindOfClass:[NveFlippedContainerView class]]) ((NveFlippedContainerView *)view).nveNodeId = node.node_id;
+  if ([view isKindOfClass:[NveAppleImageView class]]) {
+    nve::apple::update_image_view((NveAppleImageView *)view, image, node.image_fit, node.style.border_radius);
+    if (node.image_tint_rgba >> 24u) ((NveAppleImageView *)view).contentTintColor = nve::apple::color_from_rgba(node.image_tint_rgba);
+  } else if ([view isKindOfClass:[NSTextField class]]) {
+    NSTextField *field = (NSTextField *)view;
+    if (node.kind == NodeKind::TextInput) {
+      nve::apple::apply_text_input_props(field, node.text, node.semantics);
+    } else {
+      NSString *next = nve::apple::nsstring_from_sv(node.text);
+      if (![field.stringValue isEqualToString:next]) field.stringValue = next;
+      field.maximumNumberOfLines = static_cast<NSInteger>(node.style.max_lines);
+      field.alignment = node.style.text_align == NVE_TEXT_ALIGN_CENTER ? NSTextAlignmentCenter
+                        : (node.style.text_align == NVE_TEXT_ALIGN_RIGHT || node.style.text_align == NVE_TEXT_ALIGN_END)
+                            ? NSTextAlignmentRight
+                            : NSTextAlignmentLeft;
+    }
+    field.textColor = nve::apple::color_from_rgba(node.style.text_rgba);
+    field.font = nve::apple::platform_font(node.style.font_size, node.style.font_weight, node.style.italic);
+  }
+
+  NSArray<NSGestureRecognizer *> *clicks = [view.gestureRecognizers
+      filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id gr, NSDictionary *) {
+        return [gr isKindOfClass:[NSClickGestureRecognizer class]] && ((NSGestureRecognizer *)gr).target == self;
+      }]];
+  if (node.interactive && clicks.count == 0) {
+    [view addGestureRecognizer:[[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(_handleNodeClick:)]];
+  } else if (!node.interactive) {
+    for (NSGestureRecognizer *gr in clicks) [view removeGestureRecognizer:gr];
   }
 }
 
 - (void)nveWillDestroyNativeView:(NSView *)view forNodeId:(uint32_t)nodeId {
   (void)nodeId;
   if ([view isKindOfClass:[NSScrollView class]]) {
-    NSScrollView *scroll = (NSScrollView *)view;
     [[NSNotificationCenter defaultCenter] removeObserver:self
                                                     name:NSViewBoundsDidChangeNotification
-                                                  object:scroll.contentView];
-  }
-}
-
-- (void)nveUpdateNativeView:(NSView *)view
-                    forNode:(const NveRenderNode &)node
-                       text:(std::string_view)text
-                  semantics:(const nve::apple::NodeSemantics &)semantics
-                interactive:(BOOL)interactive {
-  view.wantsLayer = YES;
-  view.alphaValue = static_cast<CGFloat>(node.opacity_u8) / 255.0;
-  view.layer.backgroundColor = nve::apple::color_from_rgba(node.bg_rgba).CGColor;
-
-  if ([view isKindOfClass:[NveAppleImageView class]]) {
-    nve::apple::update_image_view(
-        (NveAppleImageView *)view, text, semantics.resize_mode, node.border_radius);
-  } else if ([view isKindOfClass:[NSTextField class]]) {
-    NSTextField *field = (NSTextField *)view;
-    if (node.kind != NVE_NODE_KIND_TEXT_INPUT) {
-      NSString *nextText = nve::apple::nsstring_from_sv(text);
-      if (![field.stringValue isEqualToString:nextText]) {
-        field.stringValue = nextText;
-      }
-    }
-    field.textColor = nve::apple::color_from_rgba(node.text_rgba);
-    if (node.font_size > 0.0f) {
-      field.font = [NSFont systemFontOfSize:static_cast<CGFloat>(node.font_size)];
-    }
-  } else if ([view isKindOfClass:[NveAppleCanvasView class]]) {
-    nve::apple::update_canvas_view(view, text);
-  }
-
-  if (interactive) {
-    if (view.gestureRecognizers.count == 0) {
-      NSClickGestureRecognizer *click =
-          [[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(_handleNodeClick:)];
-      [view addGestureRecognizer:click];
-    }
-  } else if (view.gestureRecognizers.count > 0) {
-    NSArray<NSGestureRecognizer *> *recognizers = [view.gestureRecognizers copy];
-    for (NSGestureRecognizer *gr in recognizers) {
-      if ([gr isKindOfClass:[NSClickGestureRecognizer class]] && gr.target == self) {
-        [view removeGestureRecognizer:gr];
-      }
-    }
+                                                  object:((NSScrollView *)view).contentView];
   }
 }
 
 - (NSView *)nveChildContainerForParentView:(NSView *)parentView {
-  if ([parentView isKindOfClass:[NSScrollView class]]) {
-    NSScrollView *scroll = (NSScrollView *)parentView;
-    if (scroll.documentView != nil) {
-      return scroll.documentView;
-    }
+  if ([parentView isKindOfClass:[NSScrollView class]] && ((NSScrollView *)parentView).documentView != nil) {
+    return ((NSScrollView *)parentView).documentView;
   }
   return parentView;
 }
 
 - (void)nveUpdateScrollView:(NSView *)scrollView contentSize:(CGSize)contentSize {
-  if ([scrollView isKindOfClass:[NSScrollView class]]) {
-    NSScrollView *scroll = (NSScrollView *)scrollView;
-    if (scroll.documentView != nil) {
-      const NSRect nextFrame = NSMakeRect(0.0, 0.0, contentSize.width, contentSize.height);
-      if (!NSEqualRects(scroll.documentView.frame, nextFrame)) {
-        _updatingScrollFrame = YES;
-        scroll.documentView.frame = nextFrame;
-        _updatingScrollFrame = NO;
-      }
-    }
+  if (![scrollView isKindOfClass:[NSScrollView class]]) return;
+  NSScrollView *scroll = (NSScrollView *)scrollView;
+  const NSRect next = NSMakeRect(0.0, 0.0, contentSize.width, contentSize.height);
+  if (scroll.documentView != nil && !NSEqualRects(scroll.documentView.frame, next)) {
+    _updatingScrollFrame = YES;
+    scroll.documentView.frame = next;
+    _updatingScrollFrame = NO;
   }
 }
 
+#pragma mark - Input
+
 - (void)_handleScrollViewBoundsChanged:(NSNotification *)note {
-  if (_updatingScrollFrame) return;
-  if (![note.object isKindOfClass:[NSClipView class]]) return;
-  NSClipView *clipView = (NSClipView *)note.object;
-  if (![clipView.superview isKindOfClass:[NSScrollView class]]) return;
-  NSScrollView *scroll = (NSScrollView *)clipView.superview;
+  if (_updatingScrollFrame || ![note.object isKindOfClass:[NSClipView class]]) return;
+  NSClipView *clip = (NSClipView *)note.object;
+  if (![clip.superview isKindOfClass:[NSScrollView class]]) return;
+  NSScrollView *scroll = (NSScrollView *)clip.superview;
   const uint32_t nodeId = [self.nveHost nodeIdForNativeView:scroll];
   if (nodeId == 0u) return;
-  const NSPoint origin = clipView.bounds.origin;
-  const NSSize docSize = scroll.documentView != nil ? scroll.documentView.frame.size : NSZeroSize;
+  const NSSize doc = scroll.documentView != nil ? scroll.documentView.frame.size : NSZeroSize;
   [self.nveHost dispatchScrollOnNodeId:nodeId
-                                     x:static_cast<float>(origin.x)
-                                     y:static_cast<float>(origin.y)
-                          contentWidth:static_cast<float>(docSize.width)
-                         contentHeight:static_cast<float>(docSize.height)];
+                                     x:static_cast<float>(clip.bounds.origin.x)
+                                     y:static_cast<float>(clip.bounds.origin.y)
+                          contentWidth:static_cast<float>(doc.width)
+                         contentHeight:static_cast<float>(doc.height)];
+}
+
+- (uint32_t)_nodeIdForControl:(id)object {
+  return [object isKindOfClass:[NSTextField class]] ? [self.nveHost nodeIdForNativeView:(NSTextField *)object] : 0u;
 }
 
 - (void)controlTextDidBeginEditing:(NSNotification *)obj {
-  if (![obj.object isKindOfClass:[NSTextField class]]) return;
-  const uint32_t nodeId = [self.nveHost nodeIdForNativeView:(NSTextField *)obj.object];
-  if (nodeId == 0) return;
-  [self.nveHost dispatchFocusOnNodeId:nodeId focused:YES];
+  if (const uint32_t nodeId = [self _nodeIdForControl:obj.object]) [self.nveHost dispatchFocusOnNodeId:nodeId focused:YES];
 }
 
 - (void)controlTextDidEndEditing:(NSNotification *)obj {
-  if (![obj.object isKindOfClass:[NSTextField class]]) return;
-  const uint32_t nodeId = [self.nveHost nodeIdForNativeView:(NSTextField *)obj.object];
-  if (nodeId == 0) return;
-  [self.nveHost dispatchFocusOnNodeId:nodeId focused:NO];
+  if (const uint32_t nodeId = [self _nodeIdForControl:obj.object]) [self.nveHost dispatchFocusOnNodeId:nodeId focused:NO];
 }
 
 - (void)controlTextDidChange:(NSNotification *)obj {
   if (![obj.object isKindOfClass:[NSTextField class]]) return;
   NSTextField *field = (NSTextField *)obj.object;
-  if (nve::apple::is_text_input_composing_ime(field)) {
+  if (nve::apple::is_text_input_composing_ime(field)) return;  // never send half-composed IME text
+  id editor = obj.userInfo[@"NSFieldEditor"];
+  if ([editor isKindOfClass:[NSTextView class]] && (((NSTextView *)editor).hasMarkedText || ((NSTextView *)editor).markedRange.length > 0)) {
     return;
   }
-  id fieldEditor = obj.userInfo[@"NSFieldEditor"];
-  if ([fieldEditor isKindOfClass:[NSTextView class]]) {
-    NSTextView *tv = (NSTextView *)fieldEditor;
-    if (tv.hasMarkedText || tv.markedRange.length > 0) {
-      return;
-    }
+  if (const uint32_t nodeId = [self _nodeIdForControl:field]) {
+    [self.nveHost dispatchTextChangeOnNodeId:nodeId text:field.stringValue ?: @""];
   }
-  const uint32_t nodeId = [self.nveHost nodeIdForNativeView:field];
-  if (nodeId == 0) return;
-  [self.nveHost dispatchTextChangeOnNodeId:nodeId text:field.stringValue ?: @""];
 }
 
-- (BOOL)control:(NSControl *)control
-       textView:(NSTextView *)textView
-doCommandBySelector:(SEL)commandSelector {
-  if (commandSelector == @selector(insertNewline:)) {
-    if (textView != nil && (textView.hasMarkedText || textView.markedRange.length > 0)) {
-      return NO;
-    }
-    if ([control isKindOfClass:[NSTextField class]]) {
-      NSTextField *field = (NSTextField *)control;
-      if (!field.usesSingleLineMode) {
-        return NO;
-      }
-      const uint32_t nodeId = [self.nveHost nodeIdForNativeView:field];
-      if (nodeId != 0) {
-        [self.nveHost dispatchSubmitOnNodeId:nodeId text:field.stringValue ?: @""];
-        return YES;
-      }
-    }
-  }
-  return NO;
+- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
+  if (commandSelector != @selector(insertNewline:)) return NO;
+  if (textView != nil && (textView.hasMarkedText || textView.markedRange.length > 0)) return NO;
+  if (![control isKindOfClass:[NSTextField class]] || !((NSTextField *)control).usesSingleLineMode) return NO;
+  const uint32_t nodeId = [self _nodeIdForControl:control];
+  if (nodeId == 0u) return NO;
+  [self.nveHost dispatchSubmitOnNodeId:nodeId text:((NSTextField *)control).stringValue ?: @""];
+  return YES;
 }
 
 - (void)_handleNodeClick:(NSClickGestureRecognizer *)recognizer {
-  if (!recognizer.view) return;
-  uint32_t nodeId = 0;
-  if ([recognizer.view isKindOfClass:[NveFlippedContainerView class]]) {
-    nodeId = ((NveFlippedContainerView *)recognizer.view).nveNodeId;
-  } else {
-    nodeId = [self.nveHost nodeIdForNativeView:recognizer.view];
-  }
-  if (nodeId == 0) return;
-  const NSPoint loc = [recognizer locationInView:recognizer.view];
-  [self simulatePressOnNodeId:nodeId atPoint:loc];
+  if (recognizer.view == nil) return;
+  const uint32_t nodeId = [recognizer.view isKindOfClass:[NveFlippedContainerView class]]
+                              ? ((NveFlippedContainerView *)recognizer.view).nveNodeId
+                              : [self.nveHost nodeIdForNativeView:recognizer.view];
+  if (nodeId == 0u) return;
+  [self simulatePressOnNodeId:nodeId atPoint:[recognizer locationInView:recognizer.view]];
 }
 
 @end

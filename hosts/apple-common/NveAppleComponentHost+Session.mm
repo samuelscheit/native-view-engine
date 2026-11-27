@@ -1,254 +1,100 @@
 #import "NveAppleComponentHostInternal.h"
 
-#include "nve_snapshot.hpp"
+#include <nve/host/snapshot_file.hpp>
 
 #include <chrono>
-#include <span>
 #include <string>
-#include <utility>
-#include <vector>
 
-namespace nve::apple {
+using nve::host::SnapshotFile;
 
-BOOL host_connect_paired_endpoint(
-    NveAppleComponentHost *host,
-    NSString *endpoint,
-    NSString *token,
-    NSString * _Nullable transport,
-    uint32_t surfaceId,
-    NSError * _Nullable * _Nullable error) {
-  nve::PairClientConfig cfg{};
-  const char *epUtf8 = endpoint.UTF8String;
-  const char *tokUtf8 = token.UTF8String;
-  const char *trUtf8 = transport ? transport.UTF8String : "";
-  std::string parseErr;
-  if (!nve::parse_pair_endpoint(
-          epUtf8 ? std::string_view(epUtf8) : std::string_view{},
-          trUtf8 ? std::string_view(trUtf8) : std::string_view{},
-          cfg,
-          &parseErr)) {
-    if (error) {
-      *error = make_host_init_error(
-          host->_errorDomain,
-          [NSString stringWithUTF8String:parseErr.c_str()] ?: @"Invalid pairing endpoint");
-    }
+@implementation NveAppleComponentHost (Session)
+
+#pragma mark - Tier-2 reload
+
+- (BOOL)reloadDylibAtPath:(NSString *)dylibPath error:(NSError **)error {
+  nve::apple::LoadedDylib next;
+  if (!nve::apple::open_nve_dylib(dylibPath, _errorDomain, &next, error)) return NO;  // live app untouched
+  std::span<const uint8_t> state;
+  if (_appAttached && _session.snapshot_state(&state) == NVE_RUNTIME_OK) {
+    _pendingSnapshotState.assign(state.begin(), state.end());  // copy: the slice dies with the old app
+  }
+  if (![self _attachGetInterface:next.get_interface error:error]) {
+    _pendingSnapshotState.clear();
+    nve::apple::close_dylib(next.handle);
     return NO;
   }
-  if (tokUtf8 != nullptr) {
-    cfg.pairing_token = tokUtf8;
-  }
-  return host_connect_paired_config(host, cfg, surfaceId, error);
-}
-
-BOOL host_connect_paired_config(
-    NveAppleComponentHost *host,
-    const nve::PairClientConfig &config,
-    uint32_t surfaceId,
-    NSError * _Nullable * _Nullable error) {
-  id<NveAppleComponentViewAdapter> adapter = host->_adapter;
-  if (!adapter) {
-    if (error) {
-      *error = make_host_init_error(
-          host->_errorDomain, @"Component view adapter is no longer alive");
-    }
-    return NO;
-  }
-
-  const NveSurfaceConfig surfaceCfg = [adapter nveSurfaceConfigForSurfaceId:surfaceId];
-  NveFabricHostHandle nextHost = nve_fabric_host_create(surfaceCfg);
-  if (nextHost == nullptr) {
-    if (error) {
-      *error = make_host_init_error(
-          host->_errorDomain, @"Failed to create FabricHost for paired session");
-    }
-    return NO;
-  }
-  install_native_text_measurer(nextHost);
-
-  __weak NveAppleComponentHost *weakHost = host;
-  auto wakeCb = [weakHost]() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      __strong NveAppleComponentHost *strongHost = weakHost;
-      if (strongHost) {
-        [strongHost pollPairedFrames];
-      }
-    });
-  };
-
-  auto nextClient = std::make_unique<nve::PairClient>();
-  std::string connectErr;
-  if (!nextClient->connect(config, std::move(wakeCb), &connectErr)) {
-    nve_fabric_host_destroy(nextHost);
-    if (error) {
-      *error = make_host_init_error(
-          host->_errorDomain,
-          [NSString stringWithUTF8String:connectErr.c_str()] ?: @"Failed to connect paired client");
-    }
-    return NO;
-  }
-
-  host_disconnect_paired(host);
-  host->_bridge.reset();
-  if (host->_frame0Host != nullptr) {
-    nve_fabric_host_destroy(host->_frame0Host);
-    host->_frame0Host = nullptr;
-  }
-  host->_pendingSnapshotState.clear();
-  close_dylib(host->_dylibHandle);
-  [host->_reconciler clearNativeNodeViews];
-
-  host->_pairedHost = nextHost;
-  host->_pairClient = std::move(nextClient);
-  host->_pairedFrameCount = 0u;
-  host->_surfaceId = surfaceId;
-  (void)host_poll_paired_frames(host);
+  nve::apple::close_dylib(_dylibHandle);  // the old app was destroyed by the attach above
+  _dylibHandle = next.handle;
   return YES;
 }
 
-void host_disconnect_paired(NveAppleComponentHost *host) {
-  if (host->_pairClient != nullptr) {
-    host->_pairClient->disconnect();
-    host->_pairClient.reset();
+#pragma mark - Pairing
+
+- (BOOL)connectPairedEndpoint:(NSString *)uri token:(NSString *)token surfaceId:(uint32_t)surfaceId error:(NSError **)error {
+  _surfaceId = surfaceId;
+  if (_appAttached) {
+    (void)_session.detach_app();
+    _appAttached = NO;
+    nve::apple::close_dylib(_dylibHandle);
   }
-  if (host->_pairedHost != nullptr) {
-    nve_fabric_host_destroy(host->_pairedHost);
-    host->_pairedHost = nullptr;
+  if (_session.pair_connect(uri.UTF8String ?: "", token.UTF8String ?: "") != NVE_RUNTIME_OK) {
+    if (error) {
+      const std::string detail = _session.last_error();
+      *error = [self _errorWithCode:static_cast<NSInteger>(nve::apple::DylibErrorCode::OpenFailed)
+                        description:[NSString stringWithFormat:@"Pairing with %@ failed: %s", uri, detail.c_str()]];
+    }
+    return NO;
   }
-  host->_pairedFrameCount = 0u;
+  _pairRequested = YES;
+  [self renderFrame];
+  return YES;
 }
 
-NSUInteger host_poll_paired_frames(NveAppleComponentHost *host) {
-  if (!host->_pairClient || host->_pairedHost == nullptr) {
-    return 0u;
-  }
-  std::vector<std::pair<uint32_t, std::vector<uint8_t>>> frames;
-  if (host->_pairClient->drain_pending_frames(frames) == 0u) {
-    return 0u;
-  }
-  NSUInteger applied = 0u;
-  BOOL anyMutations = NO;
-  for (const auto &item : frames) {
-    const auto &cmdBuf = item.second;
-    if (cmdBuf.empty()) continue;
-    NveFrameStats stats{};
-    if (nve_fabric_host_submit_frame(
-            host->_pairedHost, NveBufferSlice{cmdBuf.data(), cmdBuf.size()}, &stats) == 0) {
-      ++applied;
-      ++host->_pairedFrameCount;
-      if (stats.mutation_count > 0u) {
-        anyMutations = YES;
-      }
-      const NveBufferSlice ev = nve_fabric_host_drain_events(host->_pairedHost);
-      if (ev.ptr != nullptr && ev.len > 4u) {
-        (void)host->_pairClient->send_events(std::span<const uint8_t>(ev.ptr, ev.len));
-      }
-    }
-  }
-  if (applied > 0u) {
-    [host->_reconciler syncFromFabricHost:host->_pairedHost hasMutations:anyMutations];
-  }
-  return applied;
+- (void)disconnectPaired {
+  if (!_pairRequested) return;
+  (void)_session.pair_disconnect();
+  _pairRequested = NO;
 }
 
-BOOL host_replay_frame0_snapshot(
-    NveAppleComponentHost *host,
-    NSString *snapshotPath,
-    uint32_t expectedSchemaVersion,
-    uint64_t * _Nullable outRestoreUs) {
-  id<NveAppleComponentViewAdapter> adapter = host->_adapter;
-  if (!adapter || snapshotPath.length == 0) {
-    return NO;
-  }
-  const char *utf8 = snapshotPath.UTF8String;
-  if (utf8 == nullptr) {
-    return NO;
-  }
+#pragma mark - Instant boot
 
-  using Clock = std::chrono::steady_clock;
-  const auto t0 = Clock::now();
+- (BOOL)replayFrame0:(NSData *)frame0 {
+  if (_appAttached || frame0.length == 0) return NO;
+  const std::span<const uint8_t> bytes(static_cast<const uint8_t *>(frame0.bytes), frame0.length);
+  if (_session.submit_nve2(bytes) != NVE_RUNTIME_OK) return NO;
+  [self renderFrame];
+  [self syncNativeViewsFromHost];  // `submit_nve2` publishes immediately; mount it now
+  _hasReplayedFrame0 = YES;
+  return YES;
+}
 
-  nve::MmapSnapshot snap;
-  if (!nve::MmapSnapshot::open_with_schema(
-          std::string_view(utf8), expectedSchemaVersion, snap, /*verify_checksum=*/true)) {
-    return NO;
-  }
-
-  const NveBufferSlice frame0 = snap.frame0_slice();
-  if (frame0.ptr == nullptr || frame0.len == 0u) {
-    return NO;
-  }
-  const NveBufferSlice state = snap.state_slice();
-
-  if (host->_bridge) {
-    if (nve_fabric_host_submit_frame(host->_bridge->fabric_host(), frame0, nullptr) != 0) {
-      return NO;
-    }
-    if (state.ptr != nullptr && state.len > 0u) {
-      host->_bridge->restore_state(state, /*auto_render=*/false);
-    }
-  } else {
-    const NveSurfaceConfig cfg = [adapter nveSurfaceConfigForSurfaceId:host->_surfaceId];
-    NveFabricHostHandle nextHost = nve_fabric_host_create(cfg);
-    if (nextHost == nullptr) {
-      return NO;
-    }
-    install_native_text_measurer(nextHost);
-    if (nve_fabric_host_submit_frame(nextHost, frame0, nullptr) != 0) {
-      nve_fabric_host_destroy(nextHost);
-      return NO;
-    }
-    if (host->_frame0Host != nullptr) {
-      nve_fabric_host_destroy(host->_frame0Host);
-    }
-    host->_frame0Host = nextHost;
-    if (state.ptr != nullptr && state.len > 0u) {
-      host->_pendingSnapshotState.assign(state.ptr, state.ptr + state.len);
-    } else {
-      host->_pendingSnapshotState.clear();
-    }
-  }
-
-  [host->_reconciler clearNativeNodeViews];
-  [host->_reconciler syncFromFabricHost:[host _activeFabricHost] hasMutations:YES];
-
-  const auto t1 = Clock::now();
+- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
+             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
+                     restoreTimeUs:(uint64_t *)outRestoreUs {
+  const auto start = std::chrono::steady_clock::now();
+  const auto file = SnapshotFile::read(snapshotPath.fileSystemRepresentation, expectedSchemaVersion);
+  if (!file) return NO;
+  NSData *frame0 = [NSData dataWithBytes:file->frame0.data() length:file->frame0.size()];
+  if (![self replayFrame0:frame0]) return NO;
+  _pendingSnapshotState = file->state;  // restored once the live app attaches
   if (outRestoreUs != nullptr) {
     *outRestoreUs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
   }
   return YES;
 }
 
-BOOL host_save_snapshot(
-    NveAppleComponentHost *host,
-    NSString *snapshotPath,
-    uint32_t schemaVersion) {
-  if (snapshotPath.length == 0) {
-    return NO;
+- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath schemaVersion:(uint32_t)schemaVersion {
+  SnapshotFile file;
+  file.schema = schemaVersion;
+  if (_session.encode_scene(file.frame0) != NVE_RUNTIME_OK || file.frame0.empty()) return NO;
+  if (_appAttached) {
+    std::span<const uint8_t> state;
+    if (_session.snapshot_state(&state) == NVE_RUNTIME_OK) file.state.assign(state.begin(), state.end());
+  } else {
+    file.state = _pendingSnapshotState;  // replayed but never attached: keep the original state
   }
-  const char *utf8 = snapshotPath.UTF8String;
-  if (utf8 == nullptr) {
-    return NO;
-  }
-  NveFabricHostHandle activeHost = [host _activeFabricHost];
-  if (activeHost == nullptr) {
-    return NO;
-  }
-  const uint64_t frameId =
-      (host->_bridge && host->_bridge->frame_count() > 0u) ? host->_bridge->frame_count() : 1u;
-  const std::vector<uint8_t> frame0 = nve::fabric_host_serialize_frame0(activeHost, frameId);
-  if (frame0.empty()) {
-    return NO;
-  }
-  const std::vector<uint8_t> state =
-      host->_bridge ? host->_bridge->snapshot_state() : host->_pendingSnapshotState;
-  return nve::write_snapshot_atomic(
-             std::string_view(utf8),
-             schemaVersion,
-             NveBufferSlice{frame0.data(), frame0.size()},
-             NveBufferSlice{state.empty() ? nullptr : state.data(), state.size()})
-             ? YES
-             : NO;
+  return file.write(snapshotPath.fileSystemRepresentation);
 }
 
-} // namespace nve::apple
+@end

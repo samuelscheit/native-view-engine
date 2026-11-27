@@ -7,65 +7,29 @@ set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(NVE_ENABLE_CAMERA "Enable packages/modules/camera" OFF)
-option(NVE_ENABLE_NATIVE_VIEWS "Enable packages/modules/native-views/apple" OFF)
-
-include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveCodegen.cmake")
-nve_ensure_abi_codegen()
-
-if(NOT TARGET nve_fabric_bridge)
-  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge" "${CMAKE_CURRENT_BINARY_DIR}/nve_fabric_bridge")
-endif()
+# `nve::runtime` (libnve_runtime staticlib + generated ABI / table headers under
+# packages/core/host-cxx/include): the only engine dependency of the Apple hosts.
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveRuntime.cmake")
 
 set(NVE_APPLE_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../apple-common")
 
 add_library(nve_macos_shell_lib STATIC
-  "${NVE_APPLE_COMMON_DIR}/NveAppleCanvasView.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleImageCache.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleValueBridge.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleSupport.mm"
-  "${NVE_APPLE_COMMON_DIR}/NveAppleFabricHost.mm"
+  "${NVE_APPLE_COMMON_DIR}/NveAppleSceneNodes.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleSceneReconciler.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost+Session.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentViewBase.mm"
-  NveMacFabricHost.mm
   NveMacWindowManager.mm
   RCTNveMacComponentView.mm
 )
-
-target_include_directories(nve_macos_shell_lib
-  PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${NVE_APPLE_COMMON_DIR}
-)
-
+target_include_directories(nve_macos_shell_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${NVE_APPLE_COMMON_DIR})
 target_compile_options(nve_macos_shell_lib PRIVATE -fobjc-arc -Wall -Wextra -Werror)
-target_link_libraries(nve_macos_shell_lib
-  PUBLIC
-    nve_fabric_bridge
-    "-framework Cocoa"
-    "-framework QuartzCore"
-)
-
-if(NVE_ENABLE_NATIVE_VIEWS)
-  if(NOT TARGET nve_apple_native_views)
-    add_subdirectory(
-      "${CMAKE_CURRENT_SOURCE_DIR}/../../packages/modules/native-views/apple"
-      "${CMAKE_CURRENT_BINARY_DIR}/nve_apple_native_views"
-    )
-  endif()
-  target_link_libraries(nve_macos_shell_lib PUBLIC nve_apple_native_views)
-  target_compile_definitions(nve_macos_shell_lib PUBLIC NVE_ENABLE_NATIVE_VIEWS=1)
-endif()
-
-if(NVE_ENABLE_CAMERA)
-  if(NOT TARGET nve_camera_apple)
-    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../packages/modules/camera/apple" "${CMAKE_CURRENT_BINARY_DIR}/nve_camera_apple")
-  endif()
-  target_link_libraries(nve_macos_shell_lib PUBLIC nve_camera_apple)
-  target_compile_definitions(nve_macos_shell_lib PUBLIC NVE_ENABLE_CAMERA=1)
-endif()
+target_link_libraries(nve_macos_shell_lib PUBLIC nve::runtime "-framework Cocoa" "-framework QuartzCore")
+# Keep Objective-C categories (e.g. `NveAppleComponentHost (Session)`) of this static library.
+target_link_options(nve_macos_shell_lib INTERFACE -ObjC)
 
 add_executable(nve_macos_shell main.mm)
 target_compile_options(nve_macos_shell PRIVATE -fobjc-arc -Wall -Wextra -Werror)
@@ -73,25 +37,18 @@ target_link_libraries(nve_macos_shell PRIVATE nve_macos_shell_lib)
 
 enable_testing()
 
-add_library(nve_test_dylib_no_entry SHARED tests/test_dylib_fixtures.c)
-target_compile_definitions(nve_test_dylib_no_entry PRIVATE NVE_FIXTURE_NO_ENTRY=1)
-target_include_directories(nve_test_dylib_no_entry PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
-
-add_library(nve_test_dylib_no_surface SHARED tests/test_dylib_fixtures.c)
-target_compile_definitions(nve_test_dylib_no_surface PRIVATE NVE_FIXTURE_NO_SURFACE=1)
-target_include_directories(nve_test_dylib_no_surface PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
-
-add_library(nve_test_dylib_stateful SHARED tests/test_dylib_fixtures.c)
-target_compile_definitions(nve_test_dylib_stateful PRIVATE NVE_FIXTURE_STATEFUL=1)
-target_include_directories(nve_test_dylib_stateful PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
-
-add_library(nve_test_dylib_create_fail SHARED tests/test_dylib_fixtures.c)
-target_compile_definitions(nve_test_dylib_create_fail PRIVATE NVE_FIXTURE_CREATE_FAIL=1)
-target_include_directories(nve_test_dylib_create_fail PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+foreach(_fixture NO_ENTRY NO_SURFACE STATEFUL CREATE_FAIL)
+  string(TOLOWER "${_fixture}" _name)
+  add_library(nve_test_dylib_${_name} SHARED tests/test_dylib_fixtures.cpp)
+  target_compile_definitions(nve_test_dylib_${_name} PRIVATE NVE_FIXTURE_${_fixture}=1)
+  target_include_directories(nve_test_dylib_${_name} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../packages/core/host-cxx/include" ${NVE_APPLE_COMMON_DIR})
+  target_compile_options(nve_test_dylib_${_name} PRIVATE -Wall -Wextra -Werror)
+  add_dependencies(nve_test_dylib_${_name} nve_runtime)  # generated headers
+endforeach()
 
 add_executable(nve_macos_shell_test tests/macos_shell_test.mm)
 target_compile_options(nve_macos_shell_test PRIVATE -fobjc-arc -Wall -Wextra -Werror)
-target_include_directories(nve_macos_shell_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/src")
 target_compile_definitions(nve_macos_shell_test PRIVATE
   NVE_TEST_NO_ENTRY_DYLIB="$<TARGET_FILE:nve_test_dylib_no_entry>"
   NVE_TEST_NO_SURFACE_DYLIB="$<TARGET_FILE:nve_test_dylib_no_surface>"
@@ -100,15 +57,10 @@ target_compile_definitions(nve_macos_shell_test PRIVATE
 )
 target_link_libraries(nve_macos_shell_test PRIVATE nve_macos_shell_lib)
 add_dependencies(nve_macos_shell_test
-  nve_test_dylib_no_entry
-  nve_test_dylib_no_surface
-  nve_test_dylib_stateful
-  nve_test_dylib_create_fail
-)
+  nve_test_dylib_no_entry nve_test_dylib_no_surface nve_test_dylib_stateful nve_test_dylib_create_fail)
 add_test(NAME macos_shell_test COMMAND nve_macos_shell_test)
 
 add_executable(nve_macos_window_manager_test tests/window_manager_test.mm)
 target_compile_options(nve_macos_window_manager_test PRIVATE -fobjc-arc -Wall -Wextra -Werror)
-target_include_directories(nve_macos_window_manager_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/src")
 target_link_libraries(nve_macos_window_manager_test PRIVATE nve_macos_shell_lib)
 add_test(NAME macos_window_manager_test COMMAND nve_macos_window_manager_test)

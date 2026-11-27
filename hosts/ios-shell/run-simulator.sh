@@ -120,12 +120,18 @@ if [[ ! -f "$RUST_DYLIB" ]]; then
   exit 1
 fi
 
-echo "==> [2/4] Compiling standalone iOS Simulator host binary..."
-if [[ ! -f "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.generated.h" \
-   || ! -f "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h" ]]; then
-  echo "==> Generating NVE ABI headers (nve-cli codegen abi)..."
-  (cd "$REPO_ROOT" && cargo run --locked -p nve-cli -- codegen abi)
+echo "==> [2/4] Building libnve_runtime + compiling the iOS Simulator host binary..."
+(
+  cd "$REPO_ROOT"
+  cargo run --locked -q -p nve-cli -- codegen abi >/dev/null
+  cargo rustc --locked -p nve-runtime --lib --crate-type staticlib --target "$RUST_TARGET" "${CARGO_PROFILE_ARGS[@]}"
+)
+RUNTIME_LIB="$CARGO_TARGET_DIR/$RUST_TARGET/$PROFILE_DIR/libnve_runtime.a"
+if [[ ! -f "$RUNTIME_LIB" ]]; then
+  echo "error: expected libnve_runtime staticlib not found at $RUNTIME_LIB" >&2
+  exit 1
 fi
+
 CLANGXX=(xcrun --sdk iphonesimulator clang++)
 COMMON_FLAGS=(
   -std=c++20
@@ -134,64 +140,13 @@ COMMON_FLAGS=(
   -g
   -Wall
   -Wextra
-  -I"$REPO_ROOT/cxx/nve-fabric-bridge/include"
-  -I"$REPO_ROOT/cxx/nve-fabric-bridge/src"
+  -I"$REPO_ROOT/packages/core/host-cxx/include"
   -I"$REPO_ROOT/hosts/apple-common"
   -I"$REPO_ROOT/hosts/ios-shell"
 )
 
-YOGA_SOURCES=()
-YOGA_TAG="standalone"
-RN_DIR="${RN_REACT_COMMON_DIR:-${RN_COMMON_DIR:-}}"
-if [[ -n "$RN_DIR" && -d "$RN_DIR/yoga/yoga" ]]; then
-  echo "    Linking React Native Yoga from $RN_DIR/yoga"
-  COMMON_FLAGS+=(-DNVE_WITH_RN_YOGA=1 -I"$RN_DIR/yoga")
-  YOGA_TAG="rn-yoga"
-  while IFS= read -r yoga_cpp; do
-    YOGA_SOURCES+=("$yoga_cpp")
-  done < <(find "$RN_DIR/yoga/yoga" -name '*.cpp' | sort)
-fi
-
-CAMERA_ENABLED="${NVE_ENABLE_CAMERA:-0}"
-CAMERA_TAG="no-camera"
-CAMERA_LINK_FLAGS=()
-CAMERA_MM_SOURCES=()
-if [[ "$CAMERA_ENABLED" == "1" ]]; then
-  echo "    Enabling opt-in packages/modules/camera/apple"
-  COMMON_FLAGS+=(-DNVE_ENABLE_CAMERA=1 -I"$REPO_ROOT/packages/modules/camera/apple")
-  CAMERA_TAG="camera"
-  CAMERA_MM_SOURCES+=("$REPO_ROOT/packages/modules/camera/apple/NveAppleCamera.mm")
-  CAMERA_LINK_FLAGS+=(-framework AVFoundation -framework CoreMedia -framework CoreVideo)
-fi
-
-NATIVE_VIEWS_ENABLED="${NVE_ENABLE_NATIVE_VIEWS:-0}"
-NV_BLUR_DEF="${NVE_NV_ENABLE_BLUR:-1}"
-NV_WEBVIEW_DEF="${NVE_NV_ENABLE_WEBVIEW:-1}"
-NV_VIDEO_DEF="${NVE_NV_ENABLE_VIDEO:-1}"
-NATIVE_VIEWS_TAG="no-native-views"
-NATIVE_VIEWS_LINK_FLAGS=()
-NATIVE_VIEWS_MM_SOURCES=()
-if [[ "$NATIVE_VIEWS_ENABLED" == "1" ]]; then
-  echo "    Enabling opt-in packages/modules/native-views/apple (blur=${NV_BLUR_DEF}, webview=${NV_WEBVIEW_DEF}, video=${NV_VIDEO_DEF})"
-  COMMON_FLAGS+=(
-    -DNVE_ENABLE_NATIVE_VIEWS=1
-    -DNVE_NV_ENABLE_BLUR="${NV_BLUR_DEF}"
-    -DNVE_NV_ENABLE_WEBVIEW="${NV_WEBVIEW_DEF}"
-    -DNVE_NV_ENABLE_VIDEO="${NV_VIDEO_DEF}"
-    -I"$REPO_ROOT/packages/modules/native-views/apple"
-  )
-  NATIVE_VIEWS_TAG="native-views-${NV_BLUR_DEF}-${NV_WEBVIEW_DEF}-${NV_VIDEO_DEF}"
-  NATIVE_VIEWS_MM_SOURCES+=("$REPO_ROOT/packages/modules/native-views/apple/NveAppleNativeViews.mm")
-  if [[ "$NV_WEBVIEW_DEF" == "1" ]]; then
-    NATIVE_VIEWS_LINK_FLAGS+=(-framework WebKit)
-  fi
-  if [[ "$NV_VIDEO_DEF" == "1" ]]; then
-    NATIVE_VIEWS_LINK_FLAGS+=(-framework AVFoundation -framework CoreMedia)
-  fi
-fi
-
 CONFIG_STAMP="$BUILD_DIR/.build-config"
-CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|${YOGA_TAG}|${RN_DIR}|${CAMERA_TAG}|${NATIVE_VIEWS_TAG}"
+CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|runtime"
 if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG" ]]; then
   rm -rf "$OBJ_DIR"
   mkdir -p "$OBJ_DIR"
@@ -199,42 +154,12 @@ if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG
 fi
 
 HEADER_DEPS=(
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.generated.h"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_draw_list.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_host_runtime.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/detail/host_runtime_dylib.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/detail/host_runtime_reconciler.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/detail/host_runtime_session.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_native_view.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_pair_client.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_rn_component.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_value.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_decoder.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_encoder.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/event_ring_writer.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_arena.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_runtime.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_runtime_helpers.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_recorder.hpp"
-  "$REPO_ROOT/hosts/apple-common/NveAppleCanvasView.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleImageCache.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleValueBridge.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleSupport.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleFabricHost.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleComponentHostInternal.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.h"
-  "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.h"
-  "$REPO_ROOT/hosts/ios-shell/NveFabricHost.h"
+  "$REPO_ROOT"/packages/core/host-cxx/include/nve/host/*.h
+  "$REPO_ROOT"/packages/core/host-cxx/include/nve/host/*.hpp
+  "$REPO_ROOT"/hosts/apple-common/*.h
+  "$REPO_ROOT"/hosts/apple-common/*.hpp
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.h"
 )
-if [[ "$CAMERA_ENABLED" == "1" ]]; then
-  HEADER_DEPS+=("$REPO_ROOT/packages/modules/camera/apple/NveAppleCamera.h")
-fi
-if [[ "$NATIVE_VIEWS_ENABLED" == "1" ]]; then
-  HEADER_DEPS+=("$REPO_ROOT/packages/modules/native-views/apple/NveAppleNativeViews.h")
-fi
 
 needs_rebuild() {
   local obj="$1"
@@ -251,75 +176,31 @@ needs_rebuild() {
 }
 
 OBJ_FILES=()
-
-compile_unit() {
-  local src="$1"
-  local kind="$2" # cpp or mm
-  local rel_key
-  rel_key="$(printf '%s' "$src" | tr '/: ' '___')"
-  local obj="$OBJ_DIR/${rel_key}.o"
-  OBJ_FILES+=("$obj")
-  if needs_rebuild "$obj" "$src"; then
-    local extra_flags=()
-    if [[ "$kind" == "mm" ]]; then
-      extra_flags+=(-fobjc-arc)
-    fi
-    "${CLANGXX[@]}" "${COMMON_FLAGS[@]}" "${extra_flags[@]}" -c "$src" -o "$obj"
-  fi
-}
-
-for src in \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/shadow_tree.cpp" \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/yoga_layout.cpp" \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/flexbox_solver.cpp" \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/scene_publisher.cpp" \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/fabric_c_api.cpp" \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/nve_rn_component.cpp" \
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/pair_client.cpp"
-do
-  compile_unit "$src" cpp
-done
-
-for src in "${YOGA_SOURCES[@]+"${YOGA_SOURCES[@]}"}"; do
-  compile_unit "$src" cpp
-done
-
-for src in \
-  "$REPO_ROOT/hosts/apple-common/NveAppleCanvasView.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleImageCache.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleValueBridge.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleSupport.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleFabricHost.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleComponentHost+Session.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleComponentViewBase.mm" \
-  "$REPO_ROOT/hosts/apple-common/NveAppleSceneReconciler.mm" \
-  "$REPO_ROOT/hosts/ios-shell/NveFabricHost.mm" \
+for src in "$REPO_ROOT"/hosts/apple-common/*.mm \
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.mm" \
   "$REPO_ROOT/hosts/ios-shell/main.mm"
 do
-  compile_unit "$src" mm
-done
-
-for src in "${CAMERA_MM_SOURCES[@]+"${CAMERA_MM_SOURCES[@]}"}"; do
-  compile_unit "$src" mm
-done
-
-for src in "${NATIVE_VIEWS_MM_SOURCES[@]+"${NATIVE_VIEWS_MM_SOURCES[@]}"}"; do
-  compile_unit "$src" mm
+  obj="$OBJ_DIR/$(printf '%s' "$src" | tr '/: ' '___').o"
+  OBJ_FILES+=("$obj")
+  if needs_rebuild "$obj" "$src"; then
+    "${CLANGXX[@]}" "${COMMON_FLAGS[@]}" -fobjc-arc -c "$src" -o "$obj"
+  fi
 done
 
 "${CLANGXX[@]}" \
   -std=c++20 \
   -fobjc-arc \
+  -ObjC \
   -target "arm64-apple-ios${IOS_MIN_VERSION}-simulator" \
   "${OBJ_FILES[@]}" \
-  "${CAMERA_LINK_FLAGS[@]+"${CAMERA_LINK_FLAGS[@]}"}" \
-  "${NATIVE_VIEWS_LINK_FLAGS[@]+"${NATIVE_VIEWS_LINK_FLAGS[@]}"}" \
+  "$RUNTIME_LIB" \
   -framework UIKit \
   -framework Foundation \
   -framework QuartzCore \
   -framework CoreGraphics \
+  -framework Security \
+  -framework CoreFoundation \
+  -liconv \
   -o "$APP_BIN"
 
 echo "==> [3/4] Assembling and ad-hoc signing $APP_BUNDLE..."

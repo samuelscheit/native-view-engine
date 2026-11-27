@@ -504,7 +504,7 @@ suite_ios_simulator_sdk() {
   cd "$REPO_ROOT"
   xcrun --sdk iphonesimulator clang++ \
     -std=c++20 -fobjc-arc -Wall -Wextra -Werror -fsyntax-only \
-    -Icxx/nve-fabric-bridge/include \
+    -Ipackages/core/host-cxx/include \
     -Ihosts/apple-common \
     -Ihosts/ios-shell \
     hosts/apple-common/*.mm \

@@ -2,7 +2,6 @@
 #import "NveAppleComponentHost.h"
 #import "NveMacWindowManager.h"
 
-#include "nve_rn_component.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -18,89 +17,9 @@
     }                                                                                           \
   } while (0)
 
-namespace {
+#include "NveAppleDemoApp.hpp"
 
-struct MultiWinMockApp {
-  uint32_t surface_id{1};
-  int clicks{0};
-  std::vector<uint8_t> cmd_buf;
-
-  static NveAppHandle create(uint32_t sid) {
-    auto *self = new MultiWinMockApp();
-    self->surface_id = sid;
-    return self;
-  }
-  static void destroy(NveAppHandle h) { delete static_cast<MultiWinMockApp *>(h); }
-
-  template <typename T>
-  void push(T v) {
-    const auto *p = reinterpret_cast<const uint8_t *>(&v);
-    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
-  }
-
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto *self = static_cast<MultiWinMockApp *>(h);
-    self->cmd_buf.clear();
-    uint32_t ops = 0u;
-    self->push<uint32_t>(NVE_ABI_MAGIC);
-    self->push<uint16_t>(NVE_ABI_VERSION);
-    self->push<uint16_t>(0u);
-    self->push<uint32_t>(self->surface_id);
-    self->push<uint64_t>(frame_id);
-    self->push<uint32_t>(0u);
-
-    auto create_node = [&](uint32_t id, uint16_t kind) {
-      self->push<uint8_t>(NVE_OP_CREATE_NODE);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(kind);
-      self->push<uint16_t>(0u);
-      ++ops;
-    };
-    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
-      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
-      self->push<uint32_t>(parent);
-      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
-      for (uint32_t k : kids) self->push<uint32_t>(k);
-      ++ops;
-    };
-    auto set_text = [&](uint32_t id, const std::string &txt) {
-      self->push<uint8_t>(NVE_OP_SET_TEXT);
-      self->push<uint32_t>(id);
-      self->push<uint32_t>(static_cast<uint32_t>(txt.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), txt.begin(), txt.end());
-      ++ops;
-    };
-
-    create_node(2u, NVE_COMP_TEXT);
-    create_node(3u, NVE_COMP_PRESSABLE);
-    set_children(NVE_ROOT_NODE_ID, {2u, 3u});
-    set_text(2u, "S" + std::to_string(self->surface_id) + ":" + std::to_string(self->clicks));
-    self->push<uint8_t>(NVE_OP_COMMIT);
-    self->push<uint8_t>(1u);
-    ++ops;
-    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
-    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
-  }
-
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto *self = static_cast<MultiWinMockApp *>(h);
-    if (!batch.ptr) return 0u;
-    for (uint32_t i = 0; i < batch.len; ++i) {
-      if (batch.ptr[i].kind == NVE_EVENT_PRESS && batch.ptr[i].node_id == 3u) {
-        ++self->clicks;
-        return 1u;
-      }
-    }
-    return 0u;
-  }
-
-  static const void *get_interface(uint32_t iface_id) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
-    return iface_id == NVE_IFACE_SURFACE ? &kSurface : nullptr;
-  }
-};
-
-} // namespace
+using nve::apple::DemoApp;
 
 int main() {
   @autoreleasepool {
@@ -144,13 +63,13 @@ int main() {
     NveAppleComponentHost *h1 = [NveAppleComponentHost hostForRootView:v1];
     NveAppleComponentHost *h2 = [NveAppleComponentHost hostForRootView:v2];
     NVE_CHECK(h1 != nil && h2 != nil && h1 != h2);
-    NVE_CHECK([v1 attachNveInterface:&MultiWinMockApp::get_interface surfaceId:1u]);
-    NVE_CHECK([v2 attachNveInterface:&MultiWinMockApp::get_interface surfaceId:2u]);
-    [v2 simulatePressOnNodeId:3u atPoint:NSMakePoint(4, 4)];
-    NSTextField *lbl1 = (NSTextField *)[v1 nativeViewForNodeId:2u];
-    NSTextField *lbl2 = (NSTextField *)[v2 nativeViewForNodeId:2u];
-    NVE_CHECK([lbl1.stringValue isEqualToString:@"S1:0"]);
-    NVE_CHECK([lbl2.stringValue isEqualToString:@"S2:1"]);
+    NVE_CHECK([v1 attachNveInterface:&DemoApp::get_interface surfaceId:1u]);
+    NVE_CHECK([v2 attachNveInterface:&DemoApp::get_interface surfaceId:2u]);
+    [v2 simulatePressOnNodeId:DemoApp::kButton atPoint:NSMakePoint(4, 4)];
+    NSTextField *lbl1 = (NSTextField *)[v1 nativeViewForNodeId:DemoApp::kLabel];
+    NSTextField *lbl2 = (NSTextField *)[v2 nativeViewForNodeId:DemoApp::kLabel];
+    NVE_CHECK([lbl1.stringValue isEqualToString:@"Clicks: 0"]);  // independent runtime surfaces
+    NVE_CHECK([lbl2.stringValue isEqualToString:@"Clicks: 1"]);
 
     // Title, bounds, and always-on-top mutations.
     NVE_CHECK([mgr setTitle:@"Primary Updated" forSurfaceId:1u]);

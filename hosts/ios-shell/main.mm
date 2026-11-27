@@ -87,7 +87,6 @@ uint32_t NveResolveSnapshotSchemaVersion(void) {
 struct NveIosPairConfig {
   NSString * _Nullable endpoint;
   NSString * _Nullable token;
-  NSString * _Nullable transport;
 };
 
 NveIosPairConfig NveParsePairURL(NSURL * _Nullable url) {
@@ -112,8 +111,6 @@ NveIosPairConfig NveParsePairURL(NSURL * _Nullable url) {
       cfg.endpoint = item.value;
     } else if ([key isEqualToString:@"token"]) {
       cfg.token = item.value;
-    } else if ([key isEqualToString:@"transport"]) {
-      cfg.transport = item.value;
     } else if ([key isEqualToString:@"host"]) {
       hostParam = item.value;
     } else if ([key isEqualToString:@"port"]) {
@@ -135,10 +132,6 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   if (env[@"NVE_PAIR_TOKEN"].length > 0) {
     cfg.token = env[@"NVE_PAIR_TOKEN"];
   }
-  if (env[@"NVE_PAIR_TRANSPORT"].length > 0) {
-    cfg.transport = env[@"NVE_PAIR_TRANSPORT"];
-  }
-
   NSArray<NSString *> *args = NSProcessInfo.processInfo.arguments;
   for (NSUInteger i = 1; i + 1 < args.count; ++i) {
     NSString *flag = args[i];
@@ -146,8 +139,6 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
       cfg.endpoint = args[++i];
     } else if ([flag isEqualToString:@"--pair-token"]) {
       cfg.token = args[++i];
-    } else if ([flag isEqualToString:@"--pair-transport"]) {
-      cfg.transport = args[++i];
     }
   }
   return cfg;
@@ -162,7 +153,6 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 @property (nonatomic, copy, nullable) NSString *snapshotPath;
 @property (nonatomic, copy, nullable) NSString *pairEndpoint;
 @property (nonatomic, copy, nullable) NSString *pairToken;
-@property (nonatomic, copy, nullable) NSString *pairTransport;
 @property (nonatomic, assign) uint32_t snapshotSchemaVersion;
 @property (nonatomic, assign) BOOL didAttemptLoad;
 - (instancetype)initWithSurfaceId:(uint32_t)surfaceId;
@@ -201,7 +191,6 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
     const NveIosPairConfig launchPair = NveResolveLaunchPairConfig();
     self.pairEndpoint = launchPair.endpoint;
     self.pairToken = launchPair.token;
-    self.pairTransport = launchPair.transport;
   }
 
   RCTNveComponentView *componentView = [[RCTNveComponentView alloc] initWithFrame:CGRectZero];
@@ -240,7 +229,6 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   }
   self.pairEndpoint = parsed.endpoint;
   self.pairToken = parsed.token;
-  self.pairTransport = parsed.transport;
   if (self.didAttemptLoad && self.componentView != nil) {
     [self _connectPairedHost];
   }
@@ -254,7 +242,6 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   NSError *err = nil;
   if (![self.componentView connectPairedEndpoint:self.pairEndpoint
                                            token:(self.pairToken ?: @"")
-                                       transport:self.pairTransport
                                        surfaceId:self.surfaceId
                                            error:&err]) {
     NSString *detail = err.localizedDescription ?: @"unknown error";
