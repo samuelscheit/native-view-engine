@@ -1,21 +1,30 @@
 # GTK4 Native Host Shell (`hosts/gtk-shell`)
 
-Native **GTK4** (Linux Wayland/X11 and cross-platform GTK4) host shell built on top of the shared C++20 runtime (`cxx/nve-fabric-bridge/include/nve_host_runtime.hpp`).
+Native **GTK4** (Linux Wayland/X11, and macOS via Homebrew GTK) host for NVE apps. It runs apps on
+`libnve_runtime` and mirrors the runtime's published scene into retained GTK widgets through the
+shared C++ host stack (`packages/core/host-cxx`, linked via `cxx/cmake/NveHostStack.cmake`).
 
 ## Architecture
 
-- **`NveGtkHost` (`NveGtkHost.hpp` / `NveGtkHost.cpp`)**:
-  - Reuses `nve::NativeHostSession` and `nve::RetainedViewReconciler<GtkWidget*, GtkViewAdapter>` directly.
-  - Registers a native **Pango** (`PangoLayout`) text measurer via `session.set_text_measurer(...)` for exact pixel font sizing and `PANGO_WRAP_WORD_CHAR` wrapping.
-  - Maps NVE shadow nodes to native GTK4 widgets:
-    - `NVE_COMP_VIEW` / `NVE_COMP_PRESSABLE` / wrapper `NVE_COMP_TEXT` → `GtkFixed` (`GTK_OVERFLOW_HIDDEN` when `border_radius > 0`)
-    - Leaf `NVE_COMP_TEXT` → `GtkLabel` (`wrap = TRUE`, top-left aligned, `can_target = FALSE`)
-    - `NVE_COMP_SCROLL_VIEW` → `GtkScrolledWindow` wrapping an inner `GtkFixed` content container
-    - `NVE_COMP_TEXT_INPUT` → `GtkEntry`
-  - Applies host-scoped CSS classes (`.nve-host-<id>-node-<node_id>`) through a single `GtkCssProvider` attached via `gtk_style_context_add_provider_for_display`, with a `GTK_CHECK_VERSION(4, 12, 0)` guard between `gtk_css_provider_load_from_string` and `gtk_css_provider_load_from_data` for GTK 4.6–4.16+ compatibility.
-  - Dispatches native clicks via `GtkGestureClick` (`released`) and tracks container/window resizes automatically.
-- **Standalone Preview App (`main.cpp`)**:
-  - `nve_gtk_shell [--dylib <path/to/libapp.so>] [--width W] [--height H]` launches a `GtkApplication` / `GtkApplicationWindow` hosting `NveGtkHost`.
+- **`NveGtkHost` (`NveGtkHost.*`)** owns a `nve::host::HostSession` (runtime, app attach, `cdylib`
+  load / hot reload, pairing, app-state files) and a `nve::host::RetainedTree<Adapter>`:
+  - Each sync holds one `RuntimeSceneGuard` and visits only the runtime's dirty nodes
+    (`dirty_indices`); a source change (attach / load / reload / pair) runs one full pass.
+  - Runtime wakes are always queued onto the GTK main loop (`g_idle_source_new`), never run inline.
+  - A **Pango** measurer is installed as the runtime's text measurer.
+- **Widget mapping (`NveGtkReconciler.cpp`)**: the view tag is `WidgetKind | accessible role << 8`,
+  so a kind or role change recreates the widget.
+  - views → `GtkFixed`; text → `GtkLabel`; images → `GtkPicture` (content-keyed texture LRU);
+  - single-line inputs → `GtkEntry`, multiline → `GtkTextView` (controlled text via
+    `nve::host::ControlledText`: app values win, user echoes are absorbed);
+  - scroll nodes and `overflow: scroll` → `GtkScrolledWindow` + inner `GtkFixed`;
+  - `nve.canvas` nodes → `GtkDrawingArea` painting the `NVE_DRAW1` draw list with Cairo (`NveGtkMedia.cpp`).
+- **Style & accessibility (`NveGtkStyleA11y.cpp`)**: per-node CSS rules under host-scoped classes
+  (`.nve-host-<id>-node-<node_id>`) in one `GtkCssProvider`; ARIA roles / states / properties map
+  to `GtkAccessible`.
+- **Input**: `GtkGestureClick` presses and link activation, text change / submit / focus / blur,
+  and scroll offsets (kept in step with the runtime's `scroll_by`).
+- **`NveGtkWindowManager`**: multi-window surfaces, one host per window.
 
 ## Prerequisites
 
@@ -38,25 +47,35 @@ sudo dnf install -y gcc-c++ cmake ninja-build pkgconf-pkg-config gtk4-devel xorg
 brew install gtk4 pkg-config cmake ninja
 ```
 
+A Rust toolchain is required: the build compiles `libnve_runtime` through `NveRuntime.cmake`.
+
 ## Build & Test
 
+Debug / untyped builds enable ASan + UBSan (`NVE_HOST_SANITIZE`, see `NveHostStack.cmake`).
+
 ```bash
-# Configure and build (add -DRN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon for Yoga+JSI):
 cmake -S hosts/gtk-shell -B hosts/gtk-shell/build -G Ninja
 cmake --build hosts/gtk-shell/build
 
-# Run CTest on a desktop session:
+# Desktop session:
 ctest --test-dir hosts/gtk-shell/build --output-on-failure
-
-# Run CTest in headless Linux CI with xvfb-run:
+# Headless Linux CI:
 xvfb-run -a ctest --test-dir hosts/gtk-shell/build --output-on-failure
 
-# Run CTest with the live Rust Kitchen Sink cdylib:
+# Also run the live Rust kitchen-sink cdylib (render, measure, press, hot reload):
 cargo build -p nve-example-kitchen-sink
 NVE_TEST_KITCHEN_SINK_DYLIB="$(pwd)/target/debug/libnve_example_kitchen_sink.so" \
   xvfb-run -a ctest --test-dir hosts/gtk-shell/build --output-on-failure
-
-# Launch the interactive GTK4 preview window:
-./hosts/gtk-shell/build/nve_gtk_shell
-./hosts/gtk-shell/build/nve_gtk_shell --dylib target/debug/libnve_example_kitchen_sink.so
 ```
+
+## Preview app (`main.cpp`)
+
+```bash
+./hosts/gtk-shell/build/nve_gtk_shell                     # built-in counter demo
+./hosts/gtk-shell/build/nve_gtk_shell --dylib target/debug/libnve_example_kitchen_sink.so
+./hosts/gtk-shell/build/nve_gtk_shell --pair nve://host:port --pair-token <token>
+```
+
+Options: `--state <file>`, `--no-state`, `--reset-state`, `--schema <ver>`, `--width W`, `--height H`
+(env: `NVE_STATE_DISABLE=1`, `NVE_STATE_PATH=<file>`, `NVE_RESET_STATE=1`). App state persists
+across launches unless the shell fell back to the built-in demo after a failed load or pair.

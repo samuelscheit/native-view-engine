@@ -25,7 +25,9 @@
 
 namespace nve::host {
 
-/// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`.
+/// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`. A text
+/// node with children is a `View`: a Dioxus `text { "Count: " {n} }` publishes an empty wrapper
+/// whose runs are child text leaves, so only leaves are realized as text (labels hold no children).
 enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 
 /// Subscription bit of `kind` in `nve.interaction.event_mask` (Rust `EventMask::of`; the three
@@ -295,6 +297,7 @@ struct SceneTables {
     n.local.y -= parent.y;
   }
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
+  if (n.kind == NodeKind::Text && !n.children.empty()) n.kind = NodeKind::View;
   n.text_style = text_style;
 
   const RowRef v = t.visual.at(index);

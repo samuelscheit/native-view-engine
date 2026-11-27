@@ -376,6 +376,37 @@ void test_read_node_seals_floats() {
   CHECK(read_node(guard->reader(), t, 3u, TextStyle{}).visual.opacity == 1.0f);  // clamped
 }
 
+/// A text node with children (Dioxus `text { "a" {b} }`: empty wrapper + run leaves) is a
+/// container; its leaves are the text views. It becomes text again once childless.
+void test_text_wrappers_are_containers() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  for (uint32_t id = 1u; id <= 4u; ++id) w.create(id);
+  CHECK(w.set_str(2u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, ""));
+  CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "Count: "));
+  CHECK(w.set_str(4u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "3"));
+  w.set_children(1u, std::vector<uint32_t>{2u});
+  w.set_children(2u, std::vector<uint32_t>{3u, 4u});
+  CHECK(h.submit());
+  {
+    auto guard = h.host->runtime().acquire_scene();
+    CHECK(guard.has_value());
+    SceneTables t;
+    t.bind(guard->reader());
+    CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::View);
+    const NodeData run = read_node(guard->reader(), t, 3u, TextStyle{});
+    CHECK(run.kind == NodeKind::Text && run.text == "Count: " && accessible_label(run) == "Count: ");
+  }
+  w.set_children(2u, std::vector<uint32_t>{});
+  CHECK(h.submit());
+  auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  SceneTables t;
+  t.bind(guard->reader());
+  CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::Text);
+}
+
 /// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
 /// writes are not edits.
 void test_controlled_text() {
@@ -575,6 +606,7 @@ void test_event_bits() {
 int main() {
   test_event_bits();
   test_read_node_seals_floats();
+  test_text_wrappers_are_containers();
   test_resource_codecs();
   test_app_state_paths();
   test_writer_round_trip_and_retained_tree();

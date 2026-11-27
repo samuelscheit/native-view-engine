@@ -11,8 +11,6 @@ using gtk_internal::px;
 
 namespace {
 
-constexpr const char* kViewKey = "nve-gtk-view";
-
 std::string editable_text(const GtkNodeView& v) {
   if (v.kind == WidgetKind::TextView) {
     GtkTextBuffer* buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(v.widget));
