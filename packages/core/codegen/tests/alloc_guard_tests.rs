@@ -84,8 +84,9 @@ fn table_files_allocation_ceiling() {
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
     );
     assert!(
-        allocs <= 4_000,
-        "tables took {allocs} allocations (ceiling 4000)"
+        // Java `NveTables` names every field value (`{FIELD}_{VALUE}`, ~650 constants).
+        allocs <= 5_400,
+        "tables took {allocs} allocations (ceiling 5400)"
     );
     assert!(
         bytes <= 5 * out,

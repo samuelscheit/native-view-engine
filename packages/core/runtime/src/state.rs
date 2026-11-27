@@ -33,6 +33,8 @@ const MAX_PAIR_FRAMES_PER_TICK: usize = 64;
 /// simultaneously with zero `unsafe` pointer gymnastics or `Box` moves.
 pub(crate) struct SurfaceState {
     pub(crate) frame_id: FrameId,
+    /// `NveRuntimeSceneView::scene_epoch`: bumped by every scene reset.
+    pub(crate) scene_epoch: u32,
     /// Cached engine name so `layout_engine_name()` never touches `&StoreLayoutEngine` cross-thread.
     pub(crate) layout_engine_name: &'static str,
     pub(crate) realization_order: RealizationOrder,
@@ -53,6 +55,8 @@ pub(crate) struct SurfaceState {
     pub(crate) removed_ids: Vec<u32>,
     /// Visual scroll shifts published through `NveRuntimeSceneView::scroll_offsets`.
     pub(crate) published_scroll: Vec<NveScrollOffset>,
+    /// Sorted, deduplicated live resource ids (re)defined on the published frame.
+    pub(crate) dirty_resources: Vec<u32>,
     pub(crate) published_view: NveRuntimeSceneView,
     /// `ResourceStore` of the store `published_view` borrows; lets `resource_payload` serve any
     /// `scene_acquire` thread without touching `!Sync` apps.
@@ -198,6 +202,7 @@ impl RuntimeInner {
     }
 
     fn reset_replica_and_state(replica_store: &mut NodeStore, state: &mut SurfaceState) {
+        state.scene_epoch = state.scene_epoch.wrapping_add(1);
         state.invalidate_published_view();
         state.metrics.live_nodes = 0;
         state.rects.clear();

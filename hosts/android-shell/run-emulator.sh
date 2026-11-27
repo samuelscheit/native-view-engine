@@ -211,8 +211,12 @@ if command -v ninja >/dev/null 2>&1; then
   CMAKE_GEN_ARGS=(-G Ninja)
 fi
 
-echo "==> [2/5] Building libnve_android_shell.so (arm64-v8a, android-24)..."
+echo "==> [2/5] Building libnve_android_shell.so + libnve_runtime (arm64-v8a, android-24)..."
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_CLANG_AA64"
+export CC_aarch64_linux_android="$NDK_CLANG_AA64"
+export AR_aarch64_linux_android="$NDK_AR"
 cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" "${CMAKE_GEN_ARGS[@]}" \
+  -DNVE_RUNTIME_CARGO_TARGET=aarch64-linux-android \
   -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-24 \
@@ -243,12 +247,14 @@ DEX_DIR="$BUILD_DIR/dex"
 rm -rf "$CLASSES_DIR" "$DEX_DIR"
 mkdir -p "$CLASSES_DIR" "$DEX_DIR"
 
-echo "==> [3/5] Compiling dev.nve.host (static runtime + generated ABI) + NvePairController + NveCanvasView + NveMainActivity (javac --release 11) and dexing (d8)..."
+echo "==> [3/5] Compiling dev.nve.host (static runtime + generated ABI) + the Activity (javac --release 11) and dexing (d8)..."
+APP_JAVA_SOURCES=()
+while IFS= read -r -d '' f; do
+  APP_JAVA_SOURCES+=("$f")
+done < <(find "$SCRIPT_DIR/android-app/src" -name '*.java' -print0)
 javac --release 11 -Xlint:deprecation -cp "$ANDROID_JAR" -d "$CLASSES_DIR" \
-  "${HOST_JAVA_SOURCES[@]}" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NvePairController.java" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NveCanvasView.java" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NveMainActivity.java"
+  "${HOST_JAVA_SOURCES[@]}" "${APP_JAVA_SOURCES[@]}"
+
 
 CLASS_FILES=()
 while IFS= read -r -d '' f; do

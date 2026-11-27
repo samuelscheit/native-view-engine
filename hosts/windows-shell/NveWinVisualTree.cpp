@@ -1,345 +1,341 @@
-#include "NveRnwComponentView.hpp"
+#include "NveWinVisualTree.hpp"
 
-#include <algorithm>
-#include <cctype>
+#include <nve/host/xxh64.hpp>
+
 #include <cmath>
-#include <cstring>
+#include <cstdio>
 
 namespace nve::win {
 
 namespace {
 
-std::string ascii_lower(std::string_view sv) {
-  std::string out;
-  out.reserve(sv.size());
-  for (unsigned char ch : sv) {
-    out.push_back(static_cast<char>(std::tolower(ch)));
+float unit_opacity(float v) noexcept { return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 1.0f; }
+
+Rect rect_of(const NveLayoutRect& r) noexcept { return Rect{r.x, r.y, r.width, r.height}; }
+
+WinSemantics semantics_of(const host::NodeData& node) {
+  const host::AccessibilityData& a = node.a11y;
+  WinSemantics s;
+  s.role = host::aria_role(node);
+  s.label.assign(host::accessible_label(node));
+  s.hint.assign(a.hint);
+  s.value_text.assign(a.value_text);
+  s.level = a.level;
+  s.checked = a.checked;
+  s.selected = a.selected;
+  s.expanded = a.expanded;
+  s.pressed = a.pressed;
+  s.value_now = a.value_now;
+  s.value_min = a.value_min;
+  s.value_max = a.value_max;
+  s.disabled = node.interaction.disabled;
+  s.hidden = a.hidden;
+  return s;
+}
+
+}  // namespace
+
+TextPaint TextPaint::from(const host::TextStyle& s) {
+  TextPaint p;
+  p.color = s.color;
+  p.font_size = std::isfinite(s.font_size) && s.font_size > 0.0f ? s.font_size : 16.0f;
+  p.line_height = s.line_height;
+  p.letter_spacing = std::isfinite(s.letter_spacing) ? s.letter_spacing : 0.0f;
+  p.font_family.assign(s.font_family);
+  p.max_lines = s.max_lines;
+  p.font_weight = static_cast<uint16_t>(std::clamp<unsigned>(s.font_weight, 1u, 1000u));
+  p.font_style = s.font_style;
+  p.white_space = s.white_space;
+  p.text_align = s.text_align;
+  p.text_decoration = s.text_decoration;
+  return p;
+}
+
+WinImageSource WinImageSource::from(const host::ImageSource& src) {
+  WinImageSource out;
+  if (src.is_url()) {
+    out.url.assign(src.url);
+    out.key = out.url;
+    return out;
+  }
+  out.encoded.assign(src.encoded.begin(), src.encoded.end());
+  char key[48];
+  std::snprintf(key, sizeof(key), "bytes:%016llx:%zu", static_cast<unsigned long long>(host::xxh64(src.encoded)),
+                src.encoded.size());
+  out.key = key;
+  return out;
+}
+
+PaintFrame PaintFrame::child(const WinNodeVisual& parent, const WinNodeVisual& node) const noexcept {
+  PaintFrame f;
+  f.rect = Rect{rect.x + node.local.x - parent.scroll_x, rect.y + node.local.y - parent.scroll_y, node.local.width,
+                node.local.height};
+  f.clip = clip;
+  f.clipped = clipped;
+  if (parent.clips()) {
+    f.clip = clipped ? clip.intersect(rect) : rect;
+    f.clipped = true;
+  }
+  const uint8_t vis = node.visual.visibility;
+  f.visible = vis == NVE_VISIBILITY_HIDDEN ? false : vis == NVE_VISIBILITY_VISIBLE ? true : visible;
+  f.opacity = opacity * unit_opacity(node.visual.opacity);
+  return f;
+}
+
+std::optional<ImagePlacement> place_image(uint8_t fit, const Rect& dst, float iw, float ih) noexcept {
+  if (dst.empty() || !(iw > 0.0f) || !(ih > 0.0f) || !std::isfinite(iw) || !std::isfinite(ih)) return std::nullopt;
+  const Rect full{0.0f, 0.0f, iw, ih};
+  const auto centered = [&](float w, float h) {
+    return Rect{dst.x + (dst.width - w) * 0.5f, dst.y + (dst.height - h) * 0.5f, w, h};
+  };
+  const auto natural = [&] {  // unscaled, centered, cropped to `dst`
+    const float w = std::min(dst.width, iw), h = std::min(dst.height, ih);
+    return ImagePlacement{centered(w, h), Rect{(iw - w) * 0.5f, (ih - h) * 0.5f, w, h}};
+  };
+  const auto contain = [&] {
+    const float s = std::min(dst.width / iw, dst.height / ih);
+    return ImagePlacement{centered(iw * s, ih * s), full};
+  };
+  switch (fit) {
+    case NVE_IMAGE_FIT_FILL: return ImagePlacement{dst, full};
+    case NVE_IMAGE_FIT_CONTAIN: return contain();
+    case NVE_IMAGE_FIT_NONE: return natural();
+    case NVE_IMAGE_FIT_SCALE_DOWN: return iw <= dst.width && ih <= dst.height ? natural() : contain();
+    default: {  // cover: fill `dst`, crop the centred source
+      const float s = std::max(dst.width / iw, dst.height / ih);
+      const float w = std::min(iw, dst.width / s), h = std::min(ih, dst.height / s);
+      return ImagePlacement{dst, Rect{(iw - w) * 0.5f, (ih - h) * 0.5f, w, h}};
+    }
+  }
+}
+
+std::vector<ShadowPass> outer_shadow_passes(const host::BoxShadow& s, const Rect& box, float radius) {
+  std::vector<ShadowPass> out;
+  if (s.inset || (s.color >> 24u) == 0u || box.empty()) return out;
+  const float spread = std::isfinite(s.spread_radius) ? s.spread_radius : 0.0f;
+  const float blur = std::isfinite(s.blur_radius) ? std::max(0.0f, s.blur_radius) : 0.0f;
+  Rect base = box.inflate(spread);
+  base.x += std::isfinite(s.offset_x) ? s.offset_x : 0.0f;
+  base.y += std::isfinite(s.offset_y) ? s.offset_y : 0.0f;
+  const float r = std::max(0.0f, radius + spread);
+  if (blur < 0.5f) {
+    if (!base.empty()) out.push_back(ShadowPass{base, r, 1.0f});
+    return out;
+  }
+  // Pass k (largest first) spans the edge +-blur; alpha 1/(n-k+1) makes the composited coverage
+  // a linear ramp from 0 (outer edge + blur) to 1 (edge - blur), ~ the CSS Gaussian (sigma = blur/2).
+  const int n = std::clamp(static_cast<int>(std::ceil(blur / 2.0f)), 2, 8);
+  for (int k = 1; k <= n; ++k) {
+    const float e = blur * (1.0f - 2.0f * (static_cast<float>(k) - 0.5f) / static_cast<float>(n));
+    const Rect pass = base.inflate(e);
+    if (pass.empty()) continue;
+    out.push_back(ShadowPass{pass, std::max(0.0f, r + e), 1.0f / static_cast<float>(n - k + 1)});
   }
   return out;
 }
 
-ImageResizeMode extract_resize_mode(const nve::RawPropMap* props) {
-  if (props == nullptr) {
-    return ImageResizeMode::Cover;
-  }
-  for (const char* key : {"resizeMode", "resize_mode"}) {
-    const auto it = props->find(key);
-    if (it != props->end()) {
-      if (const auto* s = std::get_if<std::string>(&it->second)) {
-        return parse_image_resize_mode(*s);
-      }
-    }
-  }
-  return ImageResizeMode::Cover;
-}
+// --- NveWinVisualTree ------------------------------------------------------------------------
 
-nve::LayoutRect intersect_rects(const nve::LayoutRect& a, const nve::LayoutRect& b) noexcept {
-  const float x0 = std::max(a.x, b.x);
-  const float y0 = std::max(a.y, b.y);
-  const float x1 = std::min(a.x + a.width, b.x + b.width);
-  const float y1 = std::min(a.y + a.height, b.y + b.height);
-  return nve::LayoutRect{x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
-}
-
-bool rect_contains(const nve::LayoutRect& r, float px, float py) noexcept {
-  return r.width > 0.0f && r.height > 0.0f &&
-         px >= r.x && px <= (r.x + r.width) &&
-         py >= r.y && py <= (r.y + r.height);
-}
-
-} // namespace
-
-ImageResizeMode parse_image_resize_mode(std::string_view raw) noexcept {
-  if (raw.empty()) {
-    return ImageResizeMode::Cover;
-  }
-  const std::string lower = ascii_lower(raw);
-  if (lower == "contain") {
-    return ImageResizeMode::Contain;
-  }
-  if (lower == "stretch" || lower == "fill") {
-    return ImageResizeMode::Stretch;
-  }
-  if (lower == "center") {
-    return ImageResizeMode::Center;
-  }
-  return ImageResizeMode::Cover;
-}
-
-void NveWinVisualTree::Adapter::update_root(
-    const NveSceneView& /*view*/,
-    const NveRenderNode& node) {
-  root_background_rgba = node.bg_rgba;
-  root_layout = nve::LayoutRect{node.x, node.y, node.width, node.height};
-}
-
-NveWinNodeVisual NveWinVisualTree::Adapter::create_view(
-    const NveSceneView& /*view*/,
-    const NveRenderNode& node) {
-  ++created_count;
-  NveWinNodeVisual visual{};
-  visual.node_id = node.node_id;
-  visual.kind = node.kind;
-  visual.view_tag = nve::view_tag_for_render_node(node);
-  return visual;
-}
-
-void NveWinVisualTree::Adapter::update_view(
-    const NveSceneView& view,
-    NveWinNodeVisual& visual,
-    const NveRenderNode& node) {
-  ++updated_count;
-  visual.node_id = node.node_id;
-  visual.kind = node.kind;
-  visual.view_tag = nve::view_tag_for_render_node(node);
-  visual.is_text_leaf = (node.flags & NVE_NODE_LEAF_TEXT) != 0u;
-  visual.interactive =
-      (node.kind == NVE_NODE_KIND_PRESSABLE) || ((node.flags & NVE_NODE_INTERACTIVE) != 0u);
-  visual.clip_bounds =
-      (node.kind == NVE_NODE_KIND_SCROLL_VIEW) || ((node.flags & NVE_NODE_CLIP_BOUNDS) != 0u);
-
-  const std::string_view payload = nve::scene_node_text(view, node);
-  if (node.kind == NVE_NODE_KIND_IMAGE) {
-    visual.image_src.assign(payload.data(), payload.size());
-    visual.text.clear();
-    visual.draw_list.clear();
-    if (raw_props != nullptr) {
-      const auto it = raw_props->find(node.node_id);
-      visual.resize_mode =
-          (it != raw_props->end()) ? extract_resize_mode(&it->second) : ImageResizeMode::Cover;
-    }
-  } else if (node.kind == NVE_NODE_KIND_SKIA_CANVAS) {
-    const auto* raw_ptr = reinterpret_cast<const uint8_t*>(payload.data());
-    const bool same =
-        visual.draw_list.size() == payload.size() &&
-        (payload.empty() ||
-         std::memcmp(visual.draw_list.data(), raw_ptr, payload.size()) == 0);
-    if (!same) {
-      visual.draw_list.assign(raw_ptr, raw_ptr + payload.size());
-    }
-    visual.text.clear();
-    visual.image_src.clear();
-  } else {
-    visual.text.assign(payload.data(), payload.size());
-    visual.image_src.clear();
-    visual.draw_list.clear();
-  }
-
-  visual.layout = nve::LayoutRect{node.x, node.y, node.width, node.height};
-  visual.background_rgba = node.bg_rgba;
-  visual.text_color_rgba = node.text_rgba;
-  visual.border_color_rgba = node.border_rgba;
-  visual.border_width = node.border_width;
-  visual.border_radius = node.border_radius;
-  visual.opacity = static_cast<float>(node.opacity_u8) / 255.0f;
-  visual.font_size = node.font_size;
-  visual.z_index = node.z_index;
-}
-
-void NveWinVisualTree::Adapter::destroy_view(uint32_t /*node_id*/, NveWinNodeVisual& /*visual*/) {
-  ++destroyed_count;
-}
-
-bool NveWinVisualTree::sync(const NveSceneView& view, const RawPropByNode* raw_props) {
-  adapter_.raw_props = raw_props;
-  const bool ok = reconciler_.sync(view, adapter_);
-  if (ok && raw_props != nullptr) {
-    for (const auto& [nid, rp] : *raw_props) {
-      if (NveWinNodeVisual* visual = reconciler_.find(nid);
-          visual != nullptr && visual->kind == NVE_NODE_KIND_IMAGE) {
-        visual->resize_mode = extract_resize_mode(&rp);
-      }
-    }
-  }
-  adapter_.raw_props = nullptr;
-  return ok;
+size_t NveWinVisualTree::sync(const host::RuntimeSceneGuard& scene, uint64_t source_generation) {
+  scene_ = &scene;
+  canvas_.bind(scene.reader());
+  const size_t n = tree_.sync(scene.reader(), tables_, adapter_, source_generation);
+  apply_scroll_offsets(scene.reader());
+  scene_ = nullptr;
+  return n;
 }
 
 void NveWinVisualTree::clear() {
-  reconciler_.clear(adapter_);
-  adapter_.root_children.clear();
-  adapter_.root_background_rgba = 0u;
-  adapter_.root_layout = nve::LayoutRect{};
+  tree_.clear(adapter_);
+  root_children_.clear();
+  text_inputs_.clear();
+  scrolled_.clear();
+  root_id_ = 0u;
+  root_background_ = 0u;
+  root_rect_ = Rect{};
+  root_semantics_ = WinSemantics{};
+  ++revision_;
 }
 
-bool NveWinVisualTree::set_scroll_offset(uint32_t node_id, float offset_x, float offset_y) {
-  NveWinNodeVisual* node = reconciler_.find(node_id);
-  if (node == nullptr || node->kind != NVE_NODE_KIND_SCROLL_VIEW) {
-    return false;
-  }
-  const float max_x = std::max(0.0f, node->content_width - node->layout.width);
-  const float max_y = std::max(0.0f, node->content_height - node->layout.height);
-  const float nx = std::clamp(std::isfinite(offset_x) ? offset_x : 0.0f, 0.0f, max_x);
-  const float ny = std::clamp(std::isfinite(offset_y) ? offset_y : 0.0f, 0.0f, max_y);
-  node->scroll_offset_x = nx;
-  node->scroll_offset_y = ny;
-  return true;
+const WinNodeVisual* NveWinVisualTree::find(uint32_t id) const noexcept {
+  return const_cast<NveWinVisualTree*>(this)->find_mut(id);
 }
 
-std::optional<std::pair<float, float>> NveWinVisualTree::scroll_offset(
-    uint32_t node_id) const noexcept {
-  const NveWinNodeVisual* node = reconciler_.find(node_id);
-  if (node == nullptr || node->kind != NVE_NODE_KIND_SCROLL_VIEW) {
-    return std::nullopt;
-  }
-  return std::make_pair(node->scroll_offset_x, node->scroll_offset_y);
+WinNodeVisual* NveWinVisualTree::find_mut(uint32_t id) noexcept {
+  Adapter::Handle* h = tree_.find(id);
+  return h != nullptr ? h->get() : nullptr;
 }
 
-std::optional<nve::LayoutRect> NveWinVisualTree::absolute_rect(uint32_t node_id) const {
-  if (node_id == NVE_ROOT_NODE_ID) {
-    return adapter_.root_layout;
-  }
-  const NveWinNodeVisual* node = reconciler_.find(node_id);
-  if (node == nullptr) {
-    return std::nullopt;
-  }
-
-  float abs_x = node->layout.x;
-  float abs_y = node->layout.y;
-  uint32_t cur_parent = node->parent_id;
-  uint32_t hops = 0;
-  while (cur_parent != 0u && cur_parent != NVE_ROOT_NODE_ID && hops < 512u) {
-    const NveWinNodeVisual* parent = reconciler_.find(cur_parent);
-    if (parent == nullptr) {
-      break;
-    }
-    if (parent->kind == NVE_NODE_KIND_SCROLL_VIEW) {
-      abs_x -= parent->scroll_offset_x;
-      abs_y -= parent->scroll_offset_y;
-    }
-    abs_x += parent->layout.x;
-    abs_y += parent->layout.y;
-    cur_parent = parent->parent_id;
-    ++hops;
-  }
-  return nve::LayoutRect{abs_x, abs_y, node->layout.width, node->layout.height};
+std::span<const uint8_t> NveWinVisualTree::resource(uint32_t id, host::Key64 kind) const noexcept {
+  if (scene_ == nullptr || id == 0u) return {};
+  const auto res = scene_->resource(id);
+  return res && res->kind == kind ? res->bytes : std::span<const uint8_t>{};
 }
 
-void NveWinVisualTree::append_draw_order(
-    uint32_t node_id,
-    float origin_x,
-    float origin_y,
-    float inherited_opacity,
-    bool has_clip,
-    nve::LayoutRect clip_rect,
-    std::vector<FlattenedVisualNode>& out,
-    uint32_t depth) const {
-  if (depth > 512u) {
-    return;
-  }
-  const NveWinNodeVisual* node = reconciler_.find(node_id);
-  if (node == nullptr) {
-    return;
-  }
-
-  const float clamped_opacity = std::clamp(node->opacity, 0.0f, 1.0f);
-  const float effective_opacity = inherited_opacity * clamped_opacity;
-  const float abs_x = origin_x + node->layout.x;
-  const float abs_y = origin_y + node->layout.y;
-
-  out.push_back(FlattenedVisualNode{
-      .node_id = node_id,
-      .abs_x = abs_x,
-      .abs_y = abs_y,
-      .effective_opacity = effective_opacity,
-      .has_clip = has_clip,
-      .clip_rect = clip_rect,
-  });
-
-  if (node->children.empty()) {
-    return;
-  }
-
-  const nve::LayoutRect self_rect{abs_x, abs_y, node->layout.width, node->layout.height};
-  const bool next_has_clip = has_clip || node->clip_bounds;
-  const nve::LayoutRect next_clip =
-      node->clip_bounds ? (has_clip ? intersect_rects(clip_rect, self_rect) : self_rect) : clip_rect;
-
-  const float child_origin_x =
-      abs_x - (node->kind == NVE_NODE_KIND_SCROLL_VIEW ? node->scroll_offset_x : 0.0f);
-  const float child_origin_y =
-      abs_y - (node->kind == NVE_NODE_KIND_SCROLL_VIEW ? node->scroll_offset_y : 0.0f);
-
-  std::vector<uint32_t> ordered = node->children;
-  std::stable_sort(ordered.begin(), ordered.end(), [this](uint32_t a, uint32_t b) {
-    const NveWinNodeVisual* va = reconciler_.find(a);
-    const NveWinNodeVisual* vb = reconciler_.find(b);
-    return (va ? va->z_index : 0) < (vb ? vb->z_index : 0);
-  });
-
-  for (uint32_t child_id : ordered) {
-    append_draw_order(
-        child_id,
-        child_origin_x,
-        child_origin_y,
-        effective_opacity,
-        next_has_clip,
-        next_clip,
-        out,
-        depth + 1u);
-  }
+WinNodeVisual NveWinVisualTree::root_view() const {
+  WinNodeVisual r;
+  r.id = root_id_;
+  r.local = root_rect_;
+  return r;
 }
 
-std::vector<FlattenedVisualNode> NveWinVisualTree::build_draw_order() const {
-  std::vector<FlattenedVisualNode> out;
-  out.reserve(reconciler_.size());
-
-  std::vector<uint32_t> ordered_roots = adapter_.root_children;
-  std::stable_sort(ordered_roots.begin(), ordered_roots.end(), [this](uint32_t a, uint32_t b) {
-    const NveWinNodeVisual* va = reconciler_.find(a);
-    const NveWinNodeVisual* vb = reconciler_.find(b);
-    return (va ? va->z_index : 0) < (vb ? vb->z_index : 0);
-  });
-
-  for (uint32_t child_id : ordered_roots) {
-    append_draw_order(child_id, 0.0f, 0.0f, 1.0f, false, nve::LayoutRect{}, out, 0u);
+void NveWinVisualTree::apply_scroll_offsets(const host::RuntimeSceneReader& scene) {
+  bool changed = false;
+  const auto apply = [&changed](WinNodeVisual& v, const NveScrollOffset& s) {
+    const float x = std::isfinite(s.x) ? s.x : 0.0f, y = std::isfinite(s.y) ? s.y : 0.0f;
+    if (v.scroll_x == x && v.scroll_y == y) return;
+    v.scroll_x = x;
+    v.scroll_y = y;
+    changed = true;
+  };
+  for (const uint32_t id : scrolled_) {  // dropped offsets read {0, 0}
+    if (WinNodeVisual* v = find_mut(id)) apply(*v, scene.scroll_offset(id));
   }
-  return out;
-}
-
-std::optional<HitTestResult> NveWinVisualTree::hit_test_interactive(
-    float surface_x,
-    float surface_y) const {
-  const std::vector<FlattenedVisualNode> order = build_draw_order();
-  for (auto it = order.rbegin(); it != order.rend(); ++it) {
-    const NveWinNodeVisual* node = reconciler_.find(it->node_id);
-    if (node == nullptr || !node->interactive || it->effective_opacity <= 0.0f) {
-      continue;
-    }
-    if (it->has_clip && !rect_contains(it->clip_rect, surface_x, surface_y)) {
-      continue;
-    }
-    const nve::LayoutRect bounds{it->abs_x, it->abs_y, node->layout.width, node->layout.height};
-    if (rect_contains(bounds, surface_x, surface_y)) {
-      return HitTestResult{
-          .node_id = node->node_id,
-          .local_x = surface_x - it->abs_x,
-          .local_y = surface_y - it->abs_y,
-      };
+  scrolled_.clear();
+  for (const NveScrollOffset& s : scene.scroll_offsets()) {
+    if (WinNodeVisual* v = find_mut(s.node_id)) {
+      apply(*v, s);
+      scrolled_.push_back(s.node_id);
     }
   }
-  return std::nullopt;
+  if (changed) ++revision_;
 }
 
-std::optional<uint32_t> NveWinVisualTree::hit_test_scrollable(
-    float surface_x,
-    float surface_y) const {
-  const std::vector<FlattenedVisualNode> order = build_draw_order();
-  for (auto it = order.rbegin(); it != order.rend(); ++it) {
-    const NveWinNodeVisual* node = reconciler_.find(it->node_id);
-    if (node == nullptr || node->kind != NVE_NODE_KIND_SCROLL_VIEW ||
-        it->effective_opacity <= 0.0f) {
-      continue;
+void NveWinVisualTree::set_scroll_offset(uint32_t id, float x, float y) {
+  WinNodeVisual* v = find_mut(id);
+  if (v == nullptr || (v->scroll_x == x && v->scroll_y == y)) return;
+  v->scroll_x = x;
+  v->scroll_y = y;
+  if (std::find(scrolled_.begin(), scrolled_.end(), id) == scrolled_.end()) scrolled_.push_back(id);
+  ++revision_;
+}
+
+std::optional<PaintFrame> NveWinVisualTree::frame_of(uint32_t id) const {
+  std::vector<const WinNodeVisual*> chain;
+  for (const WinNodeVisual* n = find(id); n != nullptr && chain.size() < kMaxDepth; n = find(n->parent)) {
+    chain.push_back(n);
+  }
+  if (chain.empty()) return std::nullopt;
+  const WinNodeVisual root = root_view();
+  const WinNodeVisual* parent = &root;
+  PaintFrame f{root_rect_, {}, false, true, 1.0f};
+  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+    f = f.child(*parent, **it);
+    parent = *it;
+  }
+  return f;
+}
+
+const WinNodeVisual* NveWinVisualTree::hit_test(float x, float y) const {
+  struct Hit {
+    float x, y;
+    const WinNodeVisual* top = nullptr;
+    bool enter(const WinNodeVisual& n, const PaintFrame& f) {
+      if (f.hit(x, y)) top = &n;
+      return !n.clips() || f.rect.contains(x, y);  // nothing under a clip outside its box is hit
     }
-    if (it->has_clip && !rect_contains(it->clip_rect, surface_x, surface_y)) {
-      continue;
-    }
-    const nve::LayoutRect bounds{it->abs_x, it->abs_y, node->layout.width, node->layout.height};
-    if (rect_contains(bounds, surface_x, surface_y)) {
-      return node->node_id;
+    void leave(const WinNodeVisual&, const PaintFrame&) {}
+  } hit{x, y};
+  walk(hit);
+  return hit.top;
+}
+
+std::pair<float, float> NveWinVisualTree::content_size(const WinNodeVisual& node) const {
+  float w = node.local.width, h = node.local.height;
+  for (const uint32_t id : node.children) {
+    if (const WinNodeVisual* c = find(id)) {
+      w = std::max(w, c->local.right());
+      h = std::max(h, c->local.bottom());
     }
   }
-  return std::nullopt;
+  return {w, h};
 }
 
-} // namespace nve::win
+// --- RetainedTree adapter --------------------------------------------------------------------
+
+uint32_t NveWinVisualTree::Adapter::tag(const host::NodeData& node) const {
+  return static_cast<uint32_t>(node.kind) | (tree->canvas_.has(node.index) ? 0x100u : 0u);
+}
+
+NveWinVisualTree::Adapter::Handle NveWinVisualTree::Adapter::create(const host::NodeData& node) {
+  auto v = std::make_unique<WinNodeVisual>();
+  v->id = node.id;
+  v->kind = node.kind;
+  v->canvas = tree->canvas_.has(node.index);
+  if (v->kind == host::NodeKind::TextInput) tree->text_inputs_.push_back(node.id);
+  ++tree->created_;
+  return v;
+}
+
+void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& node) {
+  WinNodeVisual& v = *handle;
+  ++tree->updated_;
+  ++tree->revision_;
+  v.parent = node.parent;
+  v.local = rect_of(node.local);
+  if (!v.synced || v.visual.box_shadows != node.visual.box_shadows) {
+    auto decoded = host::decode_box_shadows(tree->resource(node.visual.box_shadows, host::kBoxShadowsKind));
+    v.shadows = decoded ? std::move(*decoded) : std::vector<host::BoxShadow>{};
+  }
+  v.visual = node.visual;
+  v.text_style = TextPaint::from(node.text_style);
+  v.text.assign(node.text);
+  if (v.kind == host::NodeKind::Image) {
+    v.image_fit = node.image.fit;
+    if (!v.synced || v.image_res != node.image.src) {
+      v.image_res = node.image.src;
+      const auto src = host::decode_image_src(tree->resource(node.image.src, host::kImageSrcKind));
+      v.image = src ? WinImageSource::from(*src) : WinImageSource{};
+    }
+  }
+  if (v.canvas) {
+    const canvas::CanvasData c = tree->canvas_.at(node.index);
+    if (!v.synced || c.draw_list != v.canvas_res || c.generation != v.canvas_generation) {
+      v.canvas_res = c.draw_list;
+      v.canvas_generation = c.generation;
+      const std::span<const uint8_t> bytes = tree->resource(c.draw_list, canvas::kDrawListKind);
+      if (!v.synced || !std::ranges::equal(bytes, v.draw_list)) {
+        v.draw_list.assign(bytes.begin(), bytes.end());
+        ++v.redraw_count;
+      }
+    }
+  }
+  if (v.kind == host::NodeKind::TextInput) {
+    v.input = WinTextInput{std::string(node.input.value),
+                           std::string(node.input.placeholder),
+                           node.input.multiline,
+                           node.input.secure || node.input.input_kind == NVE_INPUT_KIND_PASSWORD,
+                           node.input.read_only,
+                           node.input.input_kind,
+                           node.input.max_length};
+  }
+  v.scroll = node.scroll;
+  v.interaction = node.interaction;
+  v.semantics = semantics_of(node);
+  v.href.assign(node.href);
+  v.synced = true;
+}
+
+void NveWinVisualTree::Adapter::update_root(const host::NodeData& node) {
+  tree->root_id_ = node.id;
+  tree->root_background_ = node.visual.background;
+  tree->root_rect_ = rect_of(node.rect);
+  tree->root_semantics_ = semantics_of(node);
+  ++tree->revision_;
+}
+
+void NveWinVisualTree::Adapter::destroy(uint32_t id, Handle& handle) {
+  if (handle != nullptr && handle->kind == host::NodeKind::TextInput) std::erase(tree->text_inputs_, id);
+  handle.reset();
+  ++tree->destroyed_;
+  ++tree->revision_;
+}
+
+void NveWinVisualTree::Adapter::set_children(const host::NodeData&, Handle* parent_view, std::span<Handle* const> kids) {
+  std::vector<uint32_t>& out = parent_view != nullptr ? (*parent_view)->children : tree->root_children_;
+  out.clear();
+  for (Handle* kid : kids) out.push_back((*kid)->id);
+  ++tree->revision_;
+}
+
+}  // namespace nve::win

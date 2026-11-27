@@ -56,7 +56,10 @@ final class RuntimeSceneReader {
     required Uint32List removedIds,
     List<TableReader> tables = const <TableReader>[],
     Uint32List? scrollOffsets,
+    this.sceneEpoch = 0,
+    Uint32List? dirtyResources,
   })  : _rows = rows,
+        dirtyResources = dirtyResources ?? Uint32List(0),
         _rects = rects,
         _scroll = scrollOffsets ?? Uint32List(0),
         _text = textSlab,
@@ -125,6 +128,13 @@ final class RuntimeSceneReader {
 
   /// Raw `NodeId`s removed on [frameId].
   final Uint32List removedIds;
+
+  /// Bumped on every runtime scene reset: node / resource ids and caches of an earlier epoch are stale.
+  final int sceneEpoch;
+
+  /// Live resource ids (re)defined on [frameId] (created, recycled, rewritten in place): caches
+  /// keyed by resource id drop exactly these.
+  final Uint32List dirtyResources;
 
   final List<TableReader> tables;
 

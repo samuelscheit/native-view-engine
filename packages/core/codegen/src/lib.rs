@@ -28,6 +28,7 @@ pub use abi::{
     generate_abi_files, generate_all_abi_files, generate_c_abi_header, generate_hash_vector_files,
     generate_module_table_header, generate_table_files,
 };
+pub use abi::java_host::generate_java_host_files;
 pub use error::CodegenError;
 pub use frontend::{
     parse_hybrid_rust_spec, parse_hybrid_rust_spec_file, parse_rn_spec, parse_rn_spec_file,
