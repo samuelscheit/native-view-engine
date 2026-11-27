@@ -44,29 +44,7 @@ pub use visual::{
     VisualMut, VisualRef, WhiteSpace, WordBreak, text_decoration,
 };
 
-use nve_store::{NveTable, RealizationOrder, TableDesc};
-
-/// `TableDesc` of every core table, in registration order: the input of `nve codegen abi`, which
-/// emits their keys and field specs for the static host runtimes.
-pub const CORE_TABLE_DESCS: &[&TableDesc] = &[
-    &Layout::DESC,
-    &GridLayout::DESC,
-    &GridItem::DESC,
-    &Visual::DESC,
-    &Typography::DESC,
-    &TextContent::DESC,
-    &Transform::DESC,
-    &Motion::DESC,
-    &Responsive::DESC,
-    &Interaction::DESC,
-    &Accessibility::DESC,
-    &DebugId::DESC,
-    &StreamBoundary::DESC,
-    &Link::DESC,
-    &Scroll::DESC,
-    &Image::DESC,
-    &TextInput::DESC,
-];
+use nve_store::{NveTable, RealizationOrder};
 
 macro_rules! define_core_tables {
     ($($table:ident),+ $(,)?) => {
