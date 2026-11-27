@@ -73,20 +73,9 @@ GtkAccessibleRole aria_to_gtk(uint8_t role) noexcept {
 
 }  // namespace
 
-/// Explicit `nve.accessibility.role`, else the node kind's native role.
+/// Explicit `nve.accessibility.role`, else the node kind's native role (`host::aria_role`).
 GtkAccessibleRole gtk_internal::accessible_role(const host::NodeData& node) noexcept {
-  if (node.a11y.present && node.a11y.role != NVE_ARIA_ROLE_NONE) return aria_to_gtk(node.a11y.role);
-  switch (node.kind) {
-    case host::NodeKind::Text: return GTK_ACCESSIBLE_ROLE_LABEL;
-    case host::NodeKind::Image: return GTK_ACCESSIBLE_ROLE_IMG;
-    case host::NodeKind::TextInput:
-      return node.input.input_kind == NVE_INPUT_KIND_SEARCH ? GTK_ACCESSIBLE_ROLE_SEARCH_BOX
-                                                             : GTK_ACCESSIBLE_ROLE_TEXT_BOX;
-    case host::NodeKind::Link: return GTK_ACCESSIBLE_ROLE_LINK;
-    case host::NodeKind::Scroll: return GTK_ACCESSIBLE_ROLE_GENERIC;
-    case host::NodeKind::View: break;
-  }
-  return node.wants(NVE_EVENT_PRESS) ? GTK_ACCESSIBLE_ROLE_BUTTON : GTK_ACCESSIBLE_ROLE_GENERIC;
+  return aria_to_gtk(host::aria_role(node));
 }
 
 namespace {
@@ -134,13 +123,7 @@ GtkNodeSemantics node_semantics(const host::NodeData& node) {
   GtkNodeSemantics s;
   s.role = accessible_role(node);
   const host::AccessibilityData& a = node.a11y;
-  if (!a.label.empty()) {
-    s.label.assign(a.label);
-  } else if (node.kind == host::NodeKind::Text) {
-    s.label.assign(node.text);
-  } else if (node.kind == host::NodeKind::Image) {
-    s.label.assign(node.image.alt);
-  }
+  s.label.assign(host::accessible_label(node));
   s.hint.assign(a.hint);
   s.value_text.assign(a.value_text);
   s.placeholder.assign(node.input.placeholder);

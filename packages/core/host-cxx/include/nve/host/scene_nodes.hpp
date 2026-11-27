@@ -22,9 +22,33 @@ namespace nve::host {
 /// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`.
 enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 
-/// Subscription bit of `kind` in `nve.interaction.event_mask` (`EventMask` = `1 << (kind - 1)`).
+/// Subscription bit of `kind` in `nve.interaction.event_mask` (Rust `EventMask::of`; the three
+/// composition kinds share one bit, so it is not `1 << (kind - 1)`); `0` for unknown kinds.
 [[nodiscard]] constexpr uint32_t event_bit(NveEventKind kind) noexcept {
-  return uint32_t{1} << (static_cast<uint32_t>(kind) - 1u);
+  switch (kind) {
+    case NVE_EVENT_PRESS: return NVE_EVENT_MASK_PRESS;
+    case NVE_EVENT_LONG_PRESS: return NVE_EVENT_MASK_LONG_PRESS;
+    case NVE_EVENT_SCROLL: return NVE_EVENT_MASK_SCROLL;
+    case NVE_EVENT_TEXT_CHANGE: return NVE_EVENT_MASK_TEXT_CHANGE;
+    case NVE_EVENT_FOCUS: return NVE_EVENT_MASK_FOCUS;
+    case NVE_EVENT_BLUR: return NVE_EVENT_MASK_BLUR;
+    case NVE_EVENT_LAYOUT: return NVE_EVENT_MASK_LAYOUT;
+    case NVE_EVENT_CUSTOM: return NVE_EVENT_MASK_CUSTOM;
+    case NVE_EVENT_COMPOSITION_START:
+    case NVE_EVENT_COMPOSITION_UPDATE:
+    case NVE_EVENT_COMPOSITION_END: return NVE_EVENT_MASK_COMPOSITION;
+    case NVE_EVENT_KEY_DOWN: return NVE_EVENT_MASK_KEY_DOWN;
+    case NVE_EVENT_KEY_UP: return NVE_EVENT_MASK_KEY_UP;
+    case NVE_EVENT_SUBMIT: return NVE_EVENT_MASK_SUBMIT;
+    case NVE_EVENT_POINTER_DOWN: return NVE_EVENT_MASK_POINTER_DOWN;
+    case NVE_EVENT_POINTER_MOVE: return NVE_EVENT_MASK_POINTER_MOVE;
+    case NVE_EVENT_POINTER_UP: return NVE_EVENT_MASK_POINTER_UP;
+    case NVE_EVENT_POINTER_ENTER: return NVE_EVENT_MASK_POINTER_ENTER;
+    case NVE_EVENT_POINTER_LEAVE: return NVE_EVENT_MASK_POINTER_LEAVE;
+    case NVE_EVENT_WHEEL: return NVE_EVENT_MASK_WHEEL;
+    case NVE_EVENT_TABLE_EVENT: return NVE_EVENT_MASK_TABLE_EVENT;
+  }
+  return 0u;
 }
 
 /// Fully resolved (inherited) text style.
@@ -144,6 +168,30 @@ struct NodeData {
            visual.overflow_y >= NVE_OVERFLOW_SCROLL;
   }
 };
+
+/// `NVE_ARIA_ROLE_*` of `node`: its explicit `nve.accessibility.role`, else its kind's native role
+/// (a view that takes presses is a button).
+[[nodiscard]] inline uint8_t aria_role(const NodeData& node) noexcept {
+  if (node.a11y.present && node.a11y.role != NVE_ARIA_ROLE_NONE) return node.a11y.role;
+  switch (node.kind) {
+    case NodeKind::Text: return NVE_ARIA_ROLE_TEXT;
+    case NodeKind::Image: return NVE_ARIA_ROLE_IMAGE;
+    case NodeKind::TextInput:
+      return node.input.input_kind == NVE_INPUT_KIND_SEARCH ? NVE_ARIA_ROLE_SEARCH_BOX : NVE_ARIA_ROLE_TEXT_BOX;
+    case NodeKind::Link: return NVE_ARIA_ROLE_LINK;
+    case NodeKind::Scroll: return NVE_ARIA_ROLE_SCROLL_AREA;
+    case NodeKind::View: break;
+  }
+  return node.wants(NVE_EVENT_PRESS) ? NVE_ARIA_ROLE_BUTTON : NVE_ARIA_ROLE_NONE;
+}
+
+/// Accessible name of `node`: its explicit label, else its text (Text) or alt text (Image).
+[[nodiscard]] inline std::string_view accessible_label(const NodeData& node) noexcept {
+  if (!node.a11y.label.empty()) return node.a11y.label;
+  if (node.kind == NodeKind::Text) return node.text;
+  if (node.kind == NodeKind::Image) return node.image.alt;
+  return {};
+}
 
 /// Every core table a retained-view host renders, bound to one scene.
 struct SceneTables {

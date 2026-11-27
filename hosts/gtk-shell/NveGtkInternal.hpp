@@ -2,6 +2,8 @@
 
 #include "NveGtkHost.hpp"
 
+#include <nve/host/controlled_text.hpp>
+
 #include <cmath>
 #include <string>
 #include <string_view>
@@ -38,11 +40,8 @@ struct GtkNodeView {
   gulong changed_handler = 0u;
   gulong activate_handler = 0u;
   GtkEventController* focus = nullptr;
-  bool updating_programmatically = false;
-  bool user_editing = false;
+  host::ControlledText text;
   bool synced = false;
-  std::string app_value;       // last value the app published
-  std::string dispatched_text; // last text sent as TextChange
 
   // Image / canvas.
   uint32_t image_src = 0u;

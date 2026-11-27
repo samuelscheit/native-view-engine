@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "check.h"
+#include "nve/host/controlled_text.hpp"
 #include "nve/host/core_resources.hpp"
 #include "nve/host/demo_counter_app.hpp"
 #include "nve/host/host_session.hpp"
@@ -312,6 +313,50 @@ void test_source_change_runs_a_full_pass() {
   CHECK(h.host->source_generation() == before + 1u && h.host->has_app());
 }
 
+/// A dense table (`nve.visual`) stores a zeroed row at every index: nodes without the table must
+/// read the table defaults (opacity 1), not that row (opacity 0 hid every text node).
+void test_dense_table_rows_follow_table_set() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
+  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(1, 2, 3));
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 0.25f);
+  CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "no visual row"));
+  w.set_children(1u, std::vector<uint32_t>{2u, 3u});
+  CHECK(h.submit());
+  auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  SceneTables t;
+  t.bind(guard->reader());
+  CHECK(t.visual.has(2u) && t.visual.at(2u).present());
+  CHECK(!t.visual.has(3u) && !t.visual.at(3u).present());
+  CHECK(t.visual.at(3u).f32(NVE_TABLE_VISUAL_OPACITY) == 1.0f);
+  const NodeData with = read_node(guard->reader(), t, 2u, TextStyle{});
+  const NodeData without = read_node(guard->reader(), t, 3u, TextStyle{});
+  CHECK(with.visual.opacity == 0.25f && with.visual.background == rgba(1, 2, 3));
+  CHECK(without.visual.opacity == 1.0f && without.visual.background == 0u && !without.hidden());
+}
+
+/// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
+/// writes are not edits.
+void test_controlled_text() {
+  ControlledText t;
+  CHECK(t.app_published("a", ""));
+  CHECK(t.user_edited("ab") && !t.user_edited("ab"));
+  CHECK(!t.app_published("ab", "ab"));   // echo of the edit
+  CHECK(t.user_edited("abc"));
+  CHECK(!t.app_published("ab", "abc"));  // stale value while typing: keep the user's text
+  CHECK(t.app_published("ABC", "abc"));  // the app transformed the value
+  {
+    const auto write = t.host_write();
+    CHECK(t.writing() && !t.user_edited("ABC"));
+  }
+  CHECK(!t.writing() && !t.app_published("ABC", "ABC"));
+  CHECK(t.app_published("", "ABC"));     // the app clears the field
+  CHECK(t.user_edited("x") && !t.app_published("x", "x"));
+}
+
 void test_host_session_counter_and_state(const char* counter_module, const char* no_surface,
                                          const char* no_entry) {
   using demo::CounterApp;
@@ -472,12 +517,32 @@ void test_resource_codecs() {
 
 }  // namespace
 
+/// `event_bit` matches Rust `EventMask::of` for every kind (composition kinds share a bit).
+void test_event_bits() {
+  static_assert(event_bit(NVE_EVENT_PRESS) == 1u);
+  CHECK(event_bit(NVE_EVENT_COMPOSITION_START) == (1u << 8u));
+  CHECK(event_bit(NVE_EVENT_COMPOSITION_UPDATE) == event_bit(NVE_EVENT_COMPOSITION_END));
+  CHECK(event_bit(NVE_EVENT_KEY_DOWN) == (1u << 9u) && event_bit(NVE_EVENT_SUBMIT) == (1u << 11u));
+  CHECK(event_bit(NVE_EVENT_WHEEL) == (1u << 17u) && event_bit(NVE_EVENT_TABLE_EVENT) == (1u << 18u));
+  CHECK(event_bit(static_cast<NveEventKind>(0)) == 0u && event_bit(static_cast<NveEventKind>(22)) == 0u);
+  uint32_t all = 0u;
+  for (uint32_t k = 1u; k <= 21u; ++k) {
+    const uint32_t bit = event_bit(static_cast<NveEventKind>(k));
+    CHECK(bit != 0u && (bit & (bit - 1u)) == 0u);
+    all |= bit;
+  }
+  CHECK(all == (1u << 19u) - 1u);  // 21 kinds cover exactly the 19 mask bits
+}
+
 int main() {
+  test_event_bits();
   test_resource_codecs();
   test_app_state_paths();
   test_writer_round_trip_and_retained_tree();
   test_font_family_survives_text_slab_growth();
   test_source_change_runs_a_full_pass();
+  test_dense_table_rows_follow_table_set();
+  test_controlled_text();
   test_host_session_counter_and_state(NVE_TEST_COUNTER_MODULE, NVE_TEST_NO_SURFACE_MODULE, NVE_TEST_NO_ENTRY_MODULE);
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_runtime_test: %d failure(s)\n", g_failures);

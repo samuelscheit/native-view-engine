@@ -42,11 +42,15 @@ struct EventFactory {
     ev.value.tag = NVE_VAL_NULL;
     return ev;
   }
-  [[nodiscard]] NveDirectEvent press(uint32_t node, float x, float y) const noexcept {
-    NveDirectEvent ev = base(node, NVE_EVENT_PRESS, NVE_EVENT_PAYLOAD_POINT);
+  /// Point event (`Press`, `Pointer*`) at node-local `(x, y)`.
+  [[nodiscard]] NveDirectEvent pointer(uint32_t node, NveEventKind kind, float x, float y) const noexcept {
+    NveDirectEvent ev = base(node, kind, NVE_EVENT_PAYLOAD_POINT);
     ev.x = x;
     ev.y = y;
     return ev;
+  }
+  [[nodiscard]] NveDirectEvent press(uint32_t node, float x, float y) const noexcept {
+    return pointer(node, NVE_EVENT_PRESS, x, y);
   }
   /// `text` must outlive the dispatch.
   [[nodiscard]] NveDirectEvent text(uint32_t node, NveEventKind kind, std::string_view text) const noexcept {
