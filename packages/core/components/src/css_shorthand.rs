@@ -126,6 +126,16 @@ fn parse_border_width(token: &str, lower: &str) -> Option<f32> {
     }
 }
 
+/// Parses a standalone `border-width` declaration using the exact same grammar as `border`
+/// shorthand (`thin`, `medium`, `thick`, `0`, or non-negative `px`).
+pub(crate) fn parse_border_width_value(value: &str) -> Option<f32> {
+    let t = value.trim();
+    if t.is_empty() {
+        return None;
+    }
+    parse_border_width(t, &t.to_ascii_lowercase())
+}
+
 /// Parses `border: <width> || <style> || <color>` into `(width, color)` where `color == None`
 /// denotes `currentColor` (either omitted or explicit) so callers can resolve it after the full
 /// declaration list has updated `text_color`. Omitted width is `medium` (3px), and an omitted,

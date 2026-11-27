@@ -328,3 +328,109 @@ fn errored_unmount_retry_recovery_and_inline_suspend_result_do_not_leak_boundary
         "unmounting an inline suspend_result() error must not leak its boundary handle"
     );
 }
+
+#[derive(Clone, Default)]
+struct MultiQueryErrorCtl {
+    show: Rc<RefCell<Option<Signal<bool>>>>,
+    reset_fn: Rc<RefCell<Option<ErrorBoundaryReset>>>,
+    fail_second: Rc<RefCell<Option<Signal<bool>>>>,
+}
+
+#[component]
+fn MultiQueryErrorChild() -> Element {
+    let ctl = dioxus_core::consume_context::<MultiQueryErrorCtl>();
+    let q1 = use_query_with::<GetItem>(10, QueryOptions::default().max_retries(0));
+    let item1 = q1.suspend()?;
+    let q2 = use_query_with::<GetItem>(11, QueryOptions::default().max_retries(0));
+    let item2 = q2.suspend()?;
+    if ctl.fail_second.borrow().is_some_and(|sig| sig()) {
+        return Err(dioxus_core::RenderError::Error(
+            dioxus_core::CapturedError::from_display("synthetic non-query failure"),
+        ));
+    }
+    rsx! { text { "{item1.id}:{item1.name}+{item2.id}:{item2.name}" } }
+}
+
+#[component]
+fn MultiQueryErrorApp() -> Element {
+    let client = dioxus_core::consume_context::<ErasedQueryClient>();
+    let ctl = dioxus_core::consume_context::<MultiQueryErrorCtl>();
+    let show = use_signal(|| true);
+    let fail_second = use_signal(|| true);
+    let show_slot = ctl.show.clone();
+    let fail_slot = ctl.fail_second.clone();
+    let reset_slot = ctl.reset_fn.clone();
+    use_hook(move || {
+        *show_slot.borrow_mut() = Some(show);
+        *fail_slot.borrow_mut() = Some(fail_second);
+    });
+    rsx! {
+        QueryClientProvider {
+            client: client,
+            QuerySuspense {
+                id: Some("multi_err".into()),
+                fallback: rsx! { text { "LOADING" } },
+                error_fallback: move |_report: UiErrorReport, reset: ErrorBoundaryReset| {
+                    *reset_slot.borrow_mut() = Some(reset);
+                    rsx! { text { "CAUGHT_MULTI" } }
+                },
+                if show() {
+                    MultiQueryErrorChild {}
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn multi_query_error_boundary_retains_all_live_handles_and_clears_on_reset_unmount() {
+    let transport = RegTransport::new("ok");
+    let ctl = MultiQueryErrorCtl::default();
+    let registry = SsrBoundaryRegistry::new();
+    let client = erased_query_client(transport);
+    let mut surface = DioxusSurface::new(1, MultiQueryErrorApp)
+        .with_context(client.clone())
+        .with_context(registry.clone())
+        .with_context(ctl.clone());
+    let mut web = WebBackend::new();
+    let mut frame = 0;
+    let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
+    let mut settle = |surface: &mut DioxusSurface| -> String {
+        let _ = render_once(surface, &mut web, &mut frame);
+        let _ = pump_settled(surface, &mut web, &waker, &mut frame);
+        web.render_html()
+    };
+
+    let h10 = client.subscribe::<GetItem>(&10, QueryOptions::default().max_retries(0)).unwrap();
+    let h11 = client.subscribe::<GetItem>(&11, QueryOptions::default().max_retries(0)).unwrap();
+    client.unsubscribe(h10);
+    client.unsubscribe(h11);
+
+    // 1. Both queries succeed, then a non-query RenderError trips ErrorBoundary: BOTH live
+    // handles must be retained after children unmount.
+    let _ = settle(&mut surface);
+    let mut caught = registry.entry("multi_err").unwrap().query_handles();
+    caught.sort_by_key(|h| (h.slot.index(), h.generation));
+    let mut expected = vec![h10, h11];
+    expected.sort_by_key(|h| (h.slot.index(), h.generation));
+    assert_eq!(caught, expected, "ErrorBoundary catch must retain all live boundary handles");
+
+    // 2. Disable synthetic failure and reset -> recovers cleanly and clears errored set.
+    let mut fail_sig = ctl.fail_second.borrow().unwrap();
+    let reset = ctl.reset_fn.borrow().clone().expect("error fallback mounted");
+    surface.in_root_scope(|| {
+        fail_sig.set(false);
+        reset.reset();
+    });
+    let recovered_html = settle(&mut surface);
+    assert!(recovered_html.contains("10:ok+11:ok"), "{recovered_html}");
+
+    // 3. Unmounting children after recovery leaves zero leaked handles.
+    let mut show = ctl.show.borrow().unwrap();
+    surface.in_root_scope(|| show.set(false));
+    let _ = settle(&mut surface);
+    assert!(
+        registry.entry("multi_err").unwrap().query_handles().is_empty(),
+        "reset + recovery + unmount must leave zero leaked handles"
+    );
+}

@@ -1,7 +1,7 @@
 use super::*;
 use nve_abi::EdgeInsets;
 
-/// Collects every [`ExtStyleDecl`] emitted while applying `key: value`.
+/// Collects every [`ExtStyleDecl::FlexBasis`] and [`ExtStyleDecl::Raw`] emitted while applying `key: value`.
 fn ext_decls(
     l: &mut LayoutProps,
     s: &mut StyleProps,
@@ -9,10 +9,11 @@ fn ext_decls(
     value: &str,
 ) -> Vec<(Option<Dimension>, String)> {
     let mut out = Vec::new();
-    assert!(apply_typed_attr_with_ext(l, s, key, value, |d| out.push(match d {
-        ExtStyleDecl::FlexBasis(b) => (Some(b), String::new()),
-        ExtStyleDecl::Raw(k, v) => (None, format!("{k}:{v}")),
-    })));
+    assert!(apply_typed_attr_with_ext(l, s, key, value, |d| match d {
+        ExtStyleDecl::FlexBasis(b) => out.push((Some(b), String::new())),
+        ExtStyleDecl::Raw(k, v) => out.push((None, format!("{k}:{v}"))),
+        ExtStyleDecl::BorderCurrentColor(_) | ExtStyleDecl::ExplicitTextColor => {}
+    }));
     out
 }
 
@@ -196,4 +197,67 @@ fn rgb_functions_parse_legacy_and_modern_syntax() {
     ] {
         assert_eq!(parse_color(bad), None, "{bad:?}");
     }
+}
+
+#[test]
+fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
+    // 3- and 4-digit hex shorthands.
+    assert_eq!(parse_color("#fff"), Some(ColorRgba::WHITE));
+    assert_eq!(parse_color("#0F8"), Some(ColorRgba::rgb(0x00, 0xff, 0x88)));
+    assert_eq!(parse_color("#0f8c"), Some(ColorRgba::rgba(0x00, 0xff, 0x88, 0xcc)));
+    // Non-ASCII hex inputs with 3/4/6/8 byte lengths must return None without panicking.
+    for non_ascii in ["#aéabc", "#éé", "#ééé", "#aéabcdef"] {
+        assert_eq!(parse_color(non_ascii), None, "{non_ascii:?}");
+    }
+    // `border: 1px solid #fff` works with 3-digit hex.
+    let mut l = LayoutProps::default();
+    let mut s = StyleProps::default();
+    assert!(apply_typed_attr(&mut l, &mut s, "border", "1px solid #fff"));
+    assert_eq!((s.border_width, s.border_color), (1.0, ColorRgba::WHITE));
+
+    // `border-width` longhand follows the exact same grammar as `border` shorthand.
+    assert!(apply_typed_attr(&mut l, &mut s, "border-width", "thin"));
+    assert_eq!(s.border_width, 1.0);
+    assert!(apply_typed_attr(&mut l, &mut s, "borderWidth", "medium"));
+    assert_eq!(s.border_width, 3.0);
+    assert!(apply_typed_attr(&mut l, &mut s, "border-width", "thick"));
+    assert_eq!(s.border_width, 5.0);
+    assert!(apply_typed_attr(&mut l, &mut s, "border-width", "0"));
+    assert_eq!(s.border_width, 0.0);
+    assert!(apply_typed_attr(&mut l, &mut s, "border-width", "2PX"));
+    assert_eq!(s.border_width, 2.0);
+    // Negative and unitless non-zero widths are ignored (leave previous value intact).
+    for bad in ["-1px", "2", "auto", ""] {
+        assert!(apply_typed_attr(&mut l, &mut s, "border-width", bad));
+        assert_eq!(s.border_width, 2.0, "{bad:?}");
+    }
+
+    // `canonical_typed_attr_key` agrees with `apply_typed_attr` and emits symbolic color signals.
+    for (raw, canon) in [
+        ("flex", "flex"),
+        ("flexBasis", "flex-basis"),
+        ("paddingTop", "padding-top"),
+        ("marginHorizontal", "margin-horizontal"),
+        ("background", "background-color"),
+        ("borderColor", "border-color"),
+        ("borderWidth", "border-width"),
+    ] {
+        assert_eq!(canonical_typed_attr_key(raw), Some(canon));
+        assert!(apply_typed_attr(&mut l, &mut s, raw, ""));
+    }
+    assert_eq!(canonical_typed_attr_key("style"), None);
+    assert_eq!(canonical_typed_attr_key("font-weight"), None);
+
+    let mut explicit_color = false;
+    let mut border_current = None;
+    let mut s3 = StyleProps::default();
+    apply_typed_attr_with_ext(&mut l, &mut s3, "style", "border: 1px solid; color: #fff", |d| {
+        match d {
+            ExtStyleDecl::ExplicitTextColor => explicit_color = true,
+            ExtStyleDecl::BorderCurrentColor(v) => border_current = Some(v),
+            _ => {}
+        }
+    });
+    assert!(explicit_color);
+    assert_eq!(border_current, Some(true));
 }

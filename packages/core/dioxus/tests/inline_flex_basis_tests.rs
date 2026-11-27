@@ -13,11 +13,12 @@ use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{BackendApplyStats, BackendError, RenderSink};
 
-/// Mirrors the last flushed `LayoutExt` (`None` when cleared), layout, and raw props per node.
+/// Mirrors the last flushed `LayoutExt` (`None` when cleared), layout, style, and raw props per node.
 #[derive(Default)]
 struct ExtSink {
     layout_ext: HashMap<NodeId, Option<LayoutExt>>,
     layout: HashMap<NodeId, LayoutProps>,
+    style: HashMap<NodeId, StyleProps>,
     test_ids: HashMap<String, NodeId>,
     raw_keys: Vec<String>,
 }
@@ -31,7 +32,9 @@ impl RenderSink for ExtSink {
     fn set_layout(&mut self, node_id: NodeId, layout: &LayoutProps) {
         self.layout.insert(node_id, *layout);
     }
-    fn set_style(&mut self, _: NodeId, _: &StyleProps) {}
+    fn set_style(&mut self, node_id: NodeId, style: &StyleProps) {
+        self.style.insert(node_id, *style);
+    }
     fn set_raw_prop(&mut self, node_id: NodeId, key: &str, value: RawPropValueRef<'_>) {
         if key == "testID"
             && let RawPropValueRef::String(tid) = value
@@ -61,6 +64,16 @@ impl ExtSink {
             .get(&self.node(tid))
             .and_then(Option::as_ref)
             .map_or(Dimension::Auto, |e| e.flex_basis)
+    }
+
+    fn flex_factors(&self, tid: &str) -> (f32, f32) {
+        self.layout
+            .get(&self.node(tid))
+            .map_or((0.0, 1.0), |l| (l.flex_grow, l.flex_shrink))
+    }
+
+    fn style_of(&self, tid: &str) -> StyleProps {
+        self.style.get(&self.node(tid)).copied().unwrap_or_default()
     }
 }
 
@@ -148,7 +161,11 @@ fn inline_flex_basis_is_typed_layout_ext_and_resets_on_change_and_removal() {
 fn MixedFlexPrecedenceApp() -> Element {
     let mut step = use_signal(|| 0usize);
     let s = step();
-    let typed = TypedStyle::new().flex_basis_pct(50.0).aspect_ratio(2.0);
+    let typed = TypedStyle::new()
+        .flex_grow(3.0)
+        .flex_shrink(2.0)
+        .flex_basis_pct(50.0)
+        .aspect_ratio(2.0);
     let attr_val: Option<String> = match s {
         0..=2 => Some("1 0 200px".to_owned()),
         _ => None,
@@ -161,11 +178,12 @@ fn MixedFlexPrecedenceApp() -> Element {
     };
     rsx! {
         view {
-            // Opposite attribute declaration orders must produce identical basis at every step.
+            // Opposite attribute declaration orders must produce identical basis + grow/shrink.
             view { test_id: "attr_first", flex: attr_val.clone(), style: inline_val.clone() }
             view { test_id: "style_first", style: inline_val.clone(), flex: attr_val.clone() }
-            // Typed + standalone attr + inline style composition.
-            view { test_id: "all_three", nve_style: typed, flex: attr_val, style: inline_val }
+            // Typed + standalone attr + inline style composition in both attribute orders.
+            view { test_id: "all_three", nve_style: typed.clone(), flex: attr_val.clone(), style: inline_val.clone() }
+            view { test_id: "flex_before_typed", flex: attr_val, nve_style: typed, style: inline_val }
             pressable { test_id: "cycle", onpress: move |_| step += 1 }
         }
     }
@@ -178,34 +196,110 @@ fn mixed_flex_attr_and_style_precedence_is_order_independent_and_removal_emits_n
     let mut sink = ExtSink::default();
     surface.flush_into(1, &mut sink).unwrap();
 
-    // Precedence: inline style > standalone flex attr > nve_style > auto.
-    // step 0: attr=200px, style="padding:4px" -> plain 200px, all_three 200px
-    // step 1: attr=200px, style="flex-basis:33%" -> plain 33%, all_three 33%
-    // step 2: attr=200px, style=None -> plain 200px, all_three 200px
-    // step 3: attr=None, style="flex-basis:33%" -> plain 33%, all_three 33%
-    // step 4: attr=None, style="padding:8px" -> plain Auto, all_three 50% (typed fallback)
+    // Precedence: inline style > standalone flex attr > nve_style > defaults (0, 1, Auto).
+    // step 0: attr="1 0 200px", style="padding:4px" -> plain (1,0,200px), all_three (1,0,200px)
+    // step 1: attr="1 0 200px", style="flex-basis:33%" -> plain (1,0,33%), all_three (1,0,33%)
+    // step 2: attr="1 0 200px", style=None -> plain (1,0,200px), all_three (1,0,200px) (grow/shrink preserved!)
+    // step 3: attr=None, style="flex-basis:33%" -> plain (0,1,33%), all_three (3,2,33%) (attr removal resets grow/shrink!)
+    // step 4: attr=None, style="padding:8px" -> plain (0,1,Auto), all_three (3,2,50%)
     let expected = [
-        (Px(200.0), Px(200.0)),
-        (Pct(33.0), Pct(33.0)),
-        (Px(200.0), Px(200.0)),
-        (Pct(33.0), Pct(33.0)),
-        (Auto, Pct(50.0)),
+        ((1.0, 0.0, Px(200.0)), (1.0, 0.0, Px(200.0))),
+        ((1.0, 0.0, Pct(33.0)), (1.0, 0.0, Pct(33.0))),
+        ((1.0, 0.0, Px(200.0)), (1.0, 0.0, Px(200.0))),
+        ((0.0, 1.0, Pct(33.0)), (3.0, 2.0, Pct(33.0))),
+        ((0.0, 1.0, Auto), (3.0, 2.0, Pct(50.0))),
     ];
-    for (frame, (plain_exp, typed_exp)) in (1u64..).zip(expected) {
+    for (frame, ((pg, ps, pb), (tg, ts, tb))) in (1u64..).zip(expected) {
         if frame > 1 {
             press(&mut surface, &mut sink, frame);
         }
-        assert_eq!(sink.basis("attr_first"), plain_exp, "attr_first @ frame {frame}");
+        assert_eq!(sink.basis("attr_first"), pb, "attr_first basis @ frame {frame}");
+        assert_eq!(sink.flex_factors("attr_first"), (pg, ps), "attr_first factors @ frame {frame}");
+        assert_eq!(sink.basis("style_first"), pb, "style_first basis @ frame {frame}");
+        assert_eq!(sink.flex_factors("style_first"), (pg, ps), "style_first factors @ frame {frame}");
+        assert_eq!(sink.basis("all_three"), tb, "all_three basis @ frame {frame}");
+        assert_eq!(sink.flex_factors("all_three"), (tg, ts), "all_three factors @ frame {frame}");
+        assert_eq!(sink.basis("flex_before_typed"), tb, "flex_before_typed basis @ frame {frame}");
         assert_eq!(
-            sink.basis("style_first"),
-            plain_exp,
-            "style_first must match attr_first @ frame {frame}"
+            sink.flex_factors("flex_before_typed"),
+            (tg, ts),
+            "flex_before_typed factors must match all_three @ frame {frame}"
         );
-        assert_eq!(sink.basis("all_three"), typed_exp, "all_three @ frame {frame}");
     }
     assert!(
         !sink.raw_keys.iter().any(|k| k.contains("flex")),
         "removing or updating standalone flex must never emit a raw prop: {:?}",
         sink.raw_keys
     );
+}
+
+#[component]
+fn CurrentColorBorderApp() -> Element {
+    let mut step = use_signal(|| 0usize);
+    let s = step();
+    let parent_color: Option<String> = match s {
+        0 => Some("color: #ffffff".to_owned()),
+        1 => Some("color: #22c55e".to_owned()),
+        2 => None,
+        _ => Some("color: #3b82f6".to_owned()),
+    };
+    let dynamic_color = if s % 2 == 0 { "color: #ef4444" } else { "color: #60a5fa" };
+    rsx! {
+        view {
+            test_id: "parent",
+            style: parent_color,
+            // 1. Cross-attribute: `style="border: 1px solid"` + standalone `color` (both orders).
+            view { test_id: "cross_a", style: "border: 1px solid", color: "red" }
+            view { test_id: "cross_b", color: "red", style: "border: 1px solid" }
+            // 2. Dynamic `style` update changing only `color` alongside standalone `border`.
+            view { test_id: "dyn_color", "border": "2px solid", style: "{dynamic_color}" }
+            // 3. Inherited parent `color` through an unstyled intermediate wrapper.
+            view {
+                view { test_id: "inherited", style: "border: 1px solid" }
+            }
+            // 4. Child with its own explicit black color shields itself from white parent.
+            view { test_id: "shielded", style: "color: #000000; border: 1px solid" }
+            // 5. Explicit `border-color` ignores ancestor color changes.
+            view { test_id: "explicit_border", style: "border: 1px solid #f59e0b" }
+            pressable { test_id: "cycle", onpress: move |_| step += 1 }
+        }
+    }
+}
+
+#[test]
+fn current_color_resolves_across_attributes_dynamic_updates_and_ancestor_inheritance() {
+    use nve_abi::ColorRgba;
+    let red = ColorRgba::rgb(239, 68, 68);
+    let blue = ColorRgba::rgb(96, 165, 250);
+    let green = ColorRgba::rgb(34, 197, 94);
+    let accent = ColorRgba::rgb(59, 130, 246);
+    let amber = ColorRgba::rgb(245, 158, 11);
+
+    let mut surface = DioxusSurface::new(1, CurrentColorBorderApp);
+    let mut sink = ExtSink::default();
+    surface.flush_into(1, &mut sink).unwrap();
+
+    // Frame 1: parent white, dynamic red.
+    assert_eq!(sink.style_of("cross_a").border_color, red);
+    assert_eq!(sink.style_of("cross_b").border_color, red);
+    assert_eq!(sink.style_of("dyn_color").border_color, red);
+    assert_eq!(sink.style_of("inherited").border_color, ColorRgba::WHITE);
+    assert_eq!(sink.style_of("shielded").border_color, ColorRgba::BLACK);
+    assert_eq!(sink.style_of("explicit_border").border_color, amber);
+
+    // Frame 2: parent -> green, dynamic -> blue.
+    press(&mut surface, &mut sink, 2);
+    assert_eq!(sink.style_of("dyn_color").border_color, blue);
+    assert_eq!(sink.style_of("inherited").border_color, green);
+    assert_eq!(sink.style_of("shielded").border_color, ColorRgba::BLACK);
+    assert_eq!(sink.style_of("explicit_border").border_color, amber);
+
+    // Frame 3: parent removes color -> inherited falls back to default black.
+    press(&mut surface, &mut sink, 3);
+    assert_eq!(sink.style_of("dyn_color").border_color, red);
+    assert_eq!(sink.style_of("inherited").border_color, ColorRgba::BLACK);
+
+    // Frame 4: parent sets accent blue -> inherited updates again.
+    press(&mut surface, &mut sink, 4);
+    assert_eq!(sink.style_of("inherited").border_color, accent);
 }

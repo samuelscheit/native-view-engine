@@ -32,6 +32,7 @@ export function startStreamProxy(upstreamPort) {
     }
     // Byte offsets must index the identity-encoded HTML.
     delete headers["accept-encoding"];
+    let handedOff = false;
     const upstream = http.request(
       { host: "127.0.0.1", port: upstreamPort, method: req.method, path: req.url, headers },
       (up) => {
@@ -46,14 +47,18 @@ export function startStreamProxy(upstreamPort) {
         delete outHeaders.connection;
         res.writeHead(up.statusCode || 502, outHeaders);
         res.flushHeaders();
+        handedOff = true;
         active = cutStream(plan, up, upstream, res);
       }
     );
     upstream.on("error", (err) => {
+      if (plan && !handedOff) {
+        plan.onMiss(`upstream request error: ${err?.message || err}`);
+      }
       if (!res.headersSent) {
         res.writeHead(502);
         res.end(String(err));
-      } else {
+      } else if (!res.writableEnded) {
         res.destroy();
       }
     });
@@ -70,27 +75,41 @@ export function startStreamProxy(upstreamPort) {
         /**
          * Arms the next `GET <path>` document: the cut lands right after `cutAfter` or right
          * before `cutBefore` (both searched from `marker`), or right after `marker` itself.
-         * Resolves once the cut is reached; rejects after `timeoutMs` so a marker that drifted
-         * out of the markup fails fast instead of hanging the suite.
+         * Resolves once the cut is reached; rejects on missing marker, upstream error/abort, or
+         * `timeoutMs` without triggering an unhandled rejection if settled before `await`.
          */
         arm({ path = "/issues", marker, cutAfter = "", cutBefore = "", timeoutMs = 15_000 }) {
+          if (armed) {
+            armed.onMiss("superseded by a newer arm() call");
+            armed = null;
+          }
           let onCut;
           let onMiss;
           let timer;
+          let settled = false;
+          const desc = JSON.stringify({ marker, cutAfter, cutBefore });
           const held = new Promise((resolve, reject) => {
             onCut = () => {
+              if (settled) return;
+              settled = true;
               clearTimeout(timer);
               resolve();
             };
-            onMiss = () => {
+            onMiss = (reason = "marker never appeared before EOF") => {
+              if (settled) return;
+              settled = true;
               clearTimeout(timer);
-              reject(new Error(`stream proxy cut marker never appeared before EOF: ${JSON.stringify({ marker, cutAfter, cutBefore })}`));
+              if (armed?.onCut === onCut) armed = null;
+              reject(new Error(`stream proxy cut failed (${reason}): ${desc}`));
             };
             timer = setTimeout(() => {
-              if (armed?.onCut === onCut) armed = null;
-              reject(new Error(`stream proxy cut not reached in ${timeoutMs} ms: ${JSON.stringify({ marker, cutAfter, cutBefore })}`));
+              onMiss(`not reached in ${timeoutMs} ms`);
             }, timeoutMs);
+            timer.unref?.();
           });
+          // Callers await navigation / status checks before `await cut`; swallow premature
+          // rejection events so Node never aborts past `finally` cleanup (still rejects on `await`).
+          held.catch(() => {});
           armed = { path, marker, cutAfter, cutBefore, onCut, onMiss };
           return held;
         },
@@ -152,8 +171,28 @@ function cutStream(plan, up, upstreamReq, res) {
     upstreamEnded = true;
     if (!state.held && !truncated) {
       forwardTo(buf.length);
-      res.end();
-      if (cut < 0) plan.onMiss();
+      if (!res.writableEnded) res.end();
+      if (cut < 0) plan.onMiss("marker never appeared before EOF");
+    }
+  });
+  up.on("error", (err) => {
+    if (truncated) return;
+    if (state.held) {
+      upstreamEnded = true;
+      return;
+    }
+    if (!res.writableEnded) res.end();
+    if (cut < 0) plan.onMiss(`upstream response error: ${err?.message || err}`);
+  });
+  up.on("close", () => {
+    if (truncated) return;
+    if (state.held) {
+      upstreamEnded = true;
+      return;
+    }
+    if (!upstreamEnded) {
+      if (!res.writableEnded) res.end();
+      if (cut < 0) plan.onMiss("upstream response closed before EOF");
     }
   });
 

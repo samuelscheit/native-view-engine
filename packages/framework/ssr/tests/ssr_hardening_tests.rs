@@ -392,3 +392,113 @@ async fn duplicate_explicit_id_with_first_settled_pre_headers_still_streams_seco
     );
     assert_eq!(client_transport.call_count(), 0);
 }
+
+#[tokio::test]
+async fn streaming_error_boundary_dehydrates_preceding_ok_waterfall_and_non_query_error_handles() {
+    #[component]
+    fn WaterfallFailChild() -> Element {
+        let q1 = use_query_with::<GetPanel>(
+            "wf_ok".to_owned(),
+            nve_query::QueryOptions::default().max_retries(0),
+        );
+        let d1 = q1.suspend()?;
+        let q2 = use_query_with::<GetPanel>(
+            "wf_err".to_owned(),
+            nve_query::QueryOptions::default().max_retries(0),
+        );
+        let d2 = q2.suspend()?;
+        rsx! { text { "{d1.body}:{d2.body}" } }
+    }
+
+    #[component]
+    fn NonQueryFailChild() -> Element {
+        let q = use_query_with::<GetPanel>(
+            "nq_ok".to_owned(),
+            nve_query::QueryOptions::default().max_retries(0),
+        );
+        let _d = q.suspend()?;
+        Err(dioxus_core::RenderError::Error(
+            dioxus_core::CapturedError::from_display("boom after query resolved"),
+        ))
+    }
+
+    #[component]
+    fn MultiErrorSsrApp() -> Element {
+        let client = dioxus_core::consume_context::<ErasedQueryClient>();
+        rsx! {
+            QueryClientProvider {
+                client: client,
+                view {
+                    QuerySuspense {
+                        id: Some("wf".into()),
+                        fallback: rsx! { text { "Loading wf..." } },
+                        error_fallback: move |_r: UiErrorReport, _reset: ErrorBoundaryReset| {
+                            rsx! { text { "WF_ERR_FALLBACK" } }
+                        },
+                        WaterfallFailChild {}
+                    }
+                    QuerySuspense {
+                        id: Some("nq".into()),
+                        fallback: rsx! { text { "Loading nq..." } },
+                        error_fallback: move |_r: UiErrorReport, _reset: ErrorBoundaryReset| {
+                            rsx! { text { "NQ_ERR_FALLBACK" } }
+                        },
+                        NonQueryFailChild {}
+                    }
+                }
+            }
+        }
+    }
+
+    let pool = single_worker_pool(4);
+    let transport = ControlledTransport::default();
+    transport.set_ok("wf_ok", "first-ok");
+    transport.set_domain_err("wf_err", "denied");
+    transport.set_ok("nq_ok", "non-query-ok");
+    transport.gate("wf_ok");
+    transport.gate("wf_err");
+    transport.gate("nq_ok");
+
+    let mut resp = pool
+        .render_streaming(
+            SsrPageOptions::new("MultiErrorSsr"),
+            StreamPlan::default().with_total_deadline(Duration::from_secs(5)),
+            erased_ssr_query_client(transport.clone()),
+            |c| DioxusSurface::new(1, MultiErrorSsrApp).with_context(c),
+        )
+        .await
+        .expect("streaming response");
+    let shell = read_next_chunk(resp.body_mut()).await.expect("shell");
+    assert!(shell.contains("<slot name=\"nve-slot-wf\">"), "{shell}");
+    assert!(shell.contains("<slot name=\"nve-slot-nq\">"), "{shell}");
+
+    transport.release("wf_ok");
+    transport.release("wf_err");
+    transport.release("nq_ok");
+    let rest = collect_all_html(resp.into_body()).await;
+    let full = format!("{shell}{rest}");
+    assert!(rest.contains("WF_ERR_FALLBACK"), "{rest}");
+    assert!(rest.contains("NQ_ERR_FALLBACK"), "{rest}");
+
+    // Hydrate into a fresh client and render the exact same app: ALL THREE handles (`wf_ok`,
+    // `wf_err`, `nq_ok`) must already be settled so the client renders both error fallbacks with
+    // ZERO RPCs!
+    let client_transport = ControlledTransport::default();
+    let client = erased_query_client(client_transport.clone());
+    let stats = hydrate_client_from_html(&client, &full);
+    assert!(stats.len() >= 3, "expected seq=0 + two slot deltas, got {stats:?}");
+
+    let mut client_surface = DioxusSurface::new(1, MultiErrorSsrApp).with_context(client.clone());
+    let mut web = nve_backend_web::WebBackend::new();
+    let mut frame = 1;
+    client_surface.flush_into(frame, &mut web).unwrap();
+    pump_client_settled(&mut client_surface, &mut web, &mut frame);
+    let client_html = web.render_html();
+    assert!(client_html.contains("WF_ERR_FALLBACK"), "{client_html}");
+    assert!(client_html.contains("NQ_ERR_FALLBACK"), "{client_html}");
+    assert_eq!(
+        client_transport.call_count(),
+        0,
+        "client hydration must execute ZERO RPCs when waterfall/non-query ErrorBoundary handles were dehydrated"
+    );
+}

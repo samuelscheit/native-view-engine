@@ -16,7 +16,7 @@ use nve_backend_web::{
 };
 use nve_dioxus::DioxusSurface;
 use nve_http_hyper::HttpBody;
-use nve_query::{nveq_entry_count, DehydrateCursor};
+use nve_query::{nveq_entry_count, DehydrateCursor, QueryHandle};
 use nve_query_dioxus::{ErasedQueryClient, SsrBoundaryRegistry};
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
 
@@ -118,7 +118,7 @@ fn render_fast_path_response(
 fn prepare_streaming_session(
     page: &SsrPageOptions,
     shell_out: &StreamingShellOutput,
-    registry: &SsrBoundaryRegistry,
+    pending_handles: &[QueryHandle],
     client: &ErasedQueryClient,
 ) -> Result<(StreamingSsrSession, DehydrateCursor, Bytes), SsrError> {
     let mut doc_opts = StreamingDocumentOptions::from_streaming_shell(&page.title, shell_out);
@@ -150,7 +150,7 @@ fn prepare_streaming_session(
     // Always emit `seq=0` + `data-nve-q-ack="0"` on the streaming path so `async_boot_src` is
     // strictly ordered after `ack=0` for deterministic mid-stream WASM hydration.
     let mut cursor = DehydrateCursor::new();
-    let seq0 = client.dehydrate_initial_stream_chunk(&registry.pending_handles(), &mut cursor)?;
+    let seq0 = client.dehydrate_initial_stream_chunk(pending_handles, &mut cursor)?;
     let seq0_b64 = BASE64_STANDARD.encode(&seq0);
     initial.push_str(&session.emit_query_payload(0, &seq0_b64)?);
 
@@ -212,13 +212,21 @@ pub(crate) async fn execute_render_streaming<F>(
         return;
     }
 
-    // Mark boundaries that suspended and already resolved pre-headers as flushed so a duplicate
-    // explicit ID never masks its still-streaming sibling during `pending_handles` or delta lookup.
-    registry.mark_settled_pre_headers();
+    // Atomically mark pre-headers settled boundaries flushed and collect the remaining pending
+    // handles so duplicate explicit IDs never mask still-streaming siblings.
+    let pending_handles = registry.begin_streaming();
+    #[cfg(debug_assertions)]
+    for slot in &shell_out.pending_slots {
+        debug_assert!(
+            registry.entry(&slot.slot_id).is_none_or(|e| e.is_pending()),
+            "streaming shell slot `{}` must remain pending after begin_streaming()",
+            slot.slot_id
+        );
+    }
 
     // Streaming Path: build initial DSD shell + `seq=0` + optional async boot script pre-headers.
     let (mut session, mut cursor, initial_bytes) =
-        match prepare_streaming_session(&page, &shell_out, &registry, &client) {
+        match prepare_streaming_session(&page, &shell_out, &pending_handles, &client) {
             Ok(parts) => parts,
             Err(err) => {
                 let _ = headers_tx.send(Err(err));

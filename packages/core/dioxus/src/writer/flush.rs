@@ -42,6 +42,9 @@ impl<S: RenderSink> MutationTx<'_, S> {
                 let pid = w.style_sources[i];
                 w.propagate_text_style_down(sink, pid);
             }
+            if w.current_color_border_nodes > 0 {
+                w.resolve_current_color_borders();
+            }
             w.style_sources.clear();
             w.dirty_text_props.clear();
         }
@@ -224,5 +227,48 @@ impl NveMutationWriter {
                 }
             }
         }
+    }
+
+    /// Resolves symbolic `currentColor` borders against own or inherited ancestor `color` for
+    /// every dirty source subtree before `dirty_style` flushes.
+    fn resolve_current_color_borders(&mut self) {
+        self.color_walk_stack.clear();
+        for i in 0..self.style_sources.len() {
+            let src_id = self.style_sources[i];
+            let Some(src) = self.nodes.get(&src_id) else {
+                continue;
+            };
+            let src_color = if src.has_explicit_text_color() {
+                src.style.text_color
+            } else {
+                self.inherited_text_color_from_ancestors(src_id)
+            };
+            if let Some(rec) = self.nodes.get_mut(&src_id) {
+                if rec.border_uses_current_color() && rec.style.border_color != src_color {
+                    rec.style.border_color = src_color;
+                    self.dirty_style.push(src_id);
+                }
+                for &cid in &rec.children {
+                    self.color_walk_stack.push((cid, src_color));
+                }
+            }
+            while let Some((cid, inherited_color)) = self.color_walk_stack.pop() {
+                let Some(child) = self.nodes.get_mut(&cid) else {
+                    continue;
+                };
+                if child.has_explicit_text_color() {
+                    continue;
+                }
+                if child.border_uses_current_color() && child.style.border_color != inherited_color
+                {
+                    child.style.border_color = inherited_color;
+                    self.dirty_style.push(cid);
+                }
+                for &grandchild in &child.children {
+                    self.color_walk_stack.push((grandchild, inherited_color));
+                }
+            }
+        }
+        self.color_walk_stack.clear();
     }
 }

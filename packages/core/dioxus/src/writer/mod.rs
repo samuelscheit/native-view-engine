@@ -4,9 +4,9 @@
 
 mod attr_keys;
 mod attributes;
-mod flex_basis;
 mod flush;
 mod mutations;
+mod style_compose;
 #[cfg(test)]
 mod tests;
 
@@ -49,9 +49,8 @@ pub(crate) const EXT_NATIVE_VIEW_PROPS: u16 = 1 << 10;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NodeExtras {
     pub(crate) typed_style: Option<TypedStyle>,
+    pub(crate) standalone_typed_attrs: Vec<(&'static str, String)>,
     pub(crate) inline_style_override: Option<String>,
-    pub(crate) inline_flex_basis: Option<nve_abi::Dimension>,
-    pub(crate) attr_flex_basis: Option<nve_abi::Dimension>,
     pub(crate) font_weight: Option<Cow<'static, str>>,
     pub(crate) text_align: Option<Cow<'static, str>>,
     pub(crate) box_shadow: Option<Cow<'static, str>>,
@@ -81,6 +80,8 @@ const FLAG_EXPLICIT_STYLE: u8 = 1 << 0;
 const FLAG_EXPLICIT_FONT_WEIGHT: u8 = 1 << 1;
 const FLAG_EXPLICIT_TEXT_ALIGN: u8 = 1 << 2;
 const FLAG_DEFERRED_NATIVE_CREATE: u8 = 1 << 3;
+const FLAG_EXPLICIT_TEXT_COLOR: u8 = 1 << 4;
+const FLAG_BORDER_CURRENT_COLOR: u8 = 1 << 5;
 
 #[derive(Debug, Clone)]
 pub(crate) struct NodeRecord {
@@ -189,6 +190,34 @@ impl NodeRecord {
             self.flags &= !FLAG_DEFERRED_NATIVE_CREATE;
         }
     }
+
+    #[inline]
+    pub(crate) fn has_explicit_text_color(&self) -> bool {
+        (self.flags & FLAG_EXPLICIT_TEXT_COLOR) != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_has_explicit_text_color(&mut self, v: bool) {
+        if v {
+            self.flags |= FLAG_EXPLICIT_TEXT_COLOR;
+        } else {
+            self.flags &= !FLAG_EXPLICIT_TEXT_COLOR;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn border_uses_current_color(&self) -> bool {
+        (self.flags & FLAG_BORDER_CURRENT_COLOR) != 0
+    }
+
+    #[inline]
+    pub(super) fn set_border_uses_current_color(&mut self, v: bool) {
+        if v {
+            self.flags |= FLAG_BORDER_CURRENT_COLOR;
+        } else {
+            self.flags &= !FLAG_BORDER_CURRENT_COLOR;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +244,8 @@ pub struct NveMutationWriter {
     /// Persistent scratch buffers reused across frames (cleared + sorted/deduped in place).
     pub(super) style_sources: Vec<NodeId>,
     pub(super) style_walk_stack: Vec<TextStyleWalkEntry>,
+    pub(super) color_walk_stack: Vec<(NodeId, ColorRgba)>,
+    pub(super) current_color_border_nodes: u32,
     pub(super) dirty_children: Vec<NodeId>,
     pub(super) dirty_layout: Vec<NodeId>,
     pub(super) dirty_style: Vec<NodeId>,
@@ -258,6 +289,8 @@ impl NveMutationWriter {
             stack: Vec::with_capacity(64),
             style_sources: Vec::with_capacity(16),
             style_walk_stack: Vec::new(),
+            color_walk_stack: Vec::new(),
+            current_color_border_nodes: 0,
             dirty_children: Vec::with_capacity(16),
             dirty_layout: Vec::with_capacity(16),
             dirty_style: Vec::with_capacity(16),
@@ -281,6 +314,7 @@ impl NveMutationWriter {
         self.stack.clear();
         self.style_sources.clear();
         self.style_walk_stack.clear();
+        self.color_walk_stack.clear();
         self.dirty_children.clear();
         self.dirty_layout.clear();
         self.dirty_style.clear();
@@ -509,6 +543,9 @@ impl NveMutationWriter {
 
     pub(super) fn remove_subtree<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
         if let Some(rec) = self.nodes.remove(&node_id) {
+            if rec.border_uses_current_color() {
+                self.current_color_border_nodes = self.current_color_border_nodes.saturating_sub(1);
+            }
             if let Some(binder) = rec.extras.and_then(|e| e.native_handle_binder) {
                 binder.unbind();
             }

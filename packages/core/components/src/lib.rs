@@ -124,12 +124,63 @@ pub fn canonical_raw_style_key(key: &str) -> Option<&'static str> {
     }
 }
 
+/// Returns the canonical kebab-case attribute key when `key` is a standalone typed layout/style
+/// attribute handled by [`apply_typed_attr_with_ext`] (everything except `"style"` itself).
+#[inline]
+pub fn canonical_typed_attr_key(key: &str) -> Option<&'static str> {
+    match key {
+        "padding-top" | "paddingTop" => Some("padding-top"),
+        "padding-right" | "paddingRight" => Some("padding-right"),
+        "padding-bottom" | "paddingBottom" => Some("padding-bottom"),
+        "padding-left" | "paddingLeft" => Some("padding-left"),
+        "padding-horizontal" | "paddingHorizontal" => Some("padding-horizontal"),
+        "padding-vertical" | "paddingVertical" => Some("padding-vertical"),
+        "margin-top" | "marginTop" => Some("margin-top"),
+        "margin-right" | "marginRight" => Some("margin-right"),
+        "margin-bottom" | "marginBottom" => Some("margin-bottom"),
+        "margin-left" | "marginLeft" => Some("margin-left"),
+        "margin-horizontal" | "marginHorizontal" => Some("margin-horizontal"),
+        "margin-vertical" | "marginVertical" => Some("margin-vertical"),
+        "width" => Some("width"),
+        "height" => Some("height"),
+        "min-width" | "minWidth" => Some("min-width"),
+        "min-height" | "minHeight" => Some("min-height"),
+        "max-width" | "maxWidth" => Some("max-width"),
+        "max-height" | "maxHeight" => Some("max-height"),
+        "flex-direction" | "flexDirection" => Some("flex-direction"),
+        "justify-content" | "justifyContent" => Some("justify-content"),
+        "align-items" | "alignItems" => Some("align-items"),
+        "flex" => Some("flex"),
+        "flex-basis" | "flexBasis" => Some("flex-basis"),
+        "flex-grow" | "flexGrow" => Some("flex-grow"),
+        "flex-shrink" | "flexShrink" => Some("flex-shrink"),
+        "gap" => Some("gap"),
+        "padding" => Some("padding"),
+        "margin" => Some("margin"),
+        "border" => Some("border"),
+        "background" | "background-color" | "backgroundColor" => Some("background-color"),
+        "color" => Some("color"),
+        "border-color" | "borderColor" => Some("border-color"),
+        "border-width" | "borderWidth" => Some("border-width"),
+        "border-radius" | "borderRadius" => Some("border-radius"),
+        "opacity" => Some("opacity"),
+        "font-size" | "fontSize" => Some("font-size"),
+        "z-index" | "zIndex" => Some("z-index"),
+        _ => None,
+    }
+}
+
 /// A parsed inline declaration that lives outside the binary `LayoutProps` / `StyleProps`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExtStyleDecl<'a> {
     /// Typed [`LayoutExt::flex_basis`] from `flex-basis` or the basis of a `flex` shorthand
     /// (`flex: none` / `auto` / `initial` yield `Dimension::Auto`).
     FlexBasis(Dimension),
+    /// Whether `border-color` symbolically tracks `currentColor` (`true` for omitted or explicit
+    /// `currentColor` in `border`/`border-color`; `false` for a concrete color).
+    BorderCurrentColor(bool),
+    /// Emitted when a valid `color` declaration explicitly sets `StyleProps::text_color`.
+    ExplicitTextColor,
     /// A recognized non-ABI `style` declaration (`font-weight`, `text-align`, `box-shadow`,
     /// `overflow`, ...) under its canonical kebab-case key, forwarded via `raw_props`.
     Raw(&'static str, &'a str),
@@ -149,7 +200,8 @@ pub fn apply_typed_attr(
 
 /// Parses inline/shorthand CSS-like or RN-like attributes into typed `LayoutProps` and
 /// `StyleProps`, invoking `on_ext` for every recognized declaration outside the binary ABI
-/// (typed [`ExtStyleDecl::FlexBasis`] or a raw [`ExtStyleDecl::Raw`] declaration).
+/// (typed [`ExtStyleDecl::FlexBasis`], symbolic `currentColor` / explicit `color` signals, or a
+/// raw [`ExtStyleDecl::Raw`] declaration).
 pub fn apply_typed_attr_with_ext<F>(
     layout: &mut LayoutProps,
     style: &mut StyleProps,
@@ -160,7 +212,8 @@ pub fn apply_typed_attr_with_ext<F>(
 where
     F: FnMut(ExtStyleDecl<'_>),
 {
-    let mut border_uses_current_color = false;
+    let mut border_uses_current_color: Option<bool> = None;
+    let mut explicit_text_color = false;
     if key == "style" {
         for decl in value.split(';') {
             if let Some((raw_k, raw_v)) = decl.split_once(':') {
@@ -175,6 +228,7 @@ where
                     k,
                     v,
                     &mut border_uses_current_color,
+                    &mut explicit_text_color,
                     &mut on_ext,
                 ) && let Some(canonical) = canonical_raw_style_key(k)
                 {
@@ -182,9 +236,7 @@ where
                 }
             }
         }
-        if border_uses_current_color {
-            style.border_color = style.text_color;
-        }
+        emit_color_ext(style, border_uses_current_color, explicit_text_color, &mut on_ext);
         return true;
     }
     let handled = apply_typed_attr_single(
@@ -193,12 +245,31 @@ where
         key,
         value,
         &mut border_uses_current_color,
+        &mut explicit_text_color,
         &mut on_ext,
     );
-    if border_uses_current_color {
-        style.border_color = style.text_color;
-    }
+    emit_color_ext(style, border_uses_current_color, explicit_text_color, &mut on_ext);
     handled
+}
+
+#[inline]
+fn emit_color_ext<F>(
+    style: &mut StyleProps,
+    border_uses_current_color: Option<bool>,
+    explicit_text_color: bool,
+    on_ext: &mut F,
+) where
+    F: FnMut(ExtStyleDecl<'_>),
+{
+    if explicit_text_color {
+        on_ext(ExtStyleDecl::ExplicitTextColor);
+    }
+    if let Some(uses_current) = border_uses_current_color {
+        if uses_current {
+            style.border_color = style.text_color;
+        }
+        on_ext(ExtStyleDecl::BorderCurrentColor(uses_current));
+    }
 }
 
 fn apply_typed_attr_single<F>(
@@ -206,7 +277,8 @@ fn apply_typed_attr_single<F>(
     style: &mut StyleProps,
     key: &str,
     value: &str,
-    border_uses_current_color: &mut bool,
+    border_uses_current_color: &mut Option<bool>,
+    explicit_text_color: &mut bool,
     on_ext: &mut F,
 ) -> bool
 where
@@ -300,9 +372,9 @@ where
                 match color {
                     Some(c) => {
                         style.border_color = c;
-                        *border_uses_current_color = false;
+                        *border_uses_current_color = Some(false);
                     }
-                    None => *border_uses_current_color = true,
+                    None => *border_uses_current_color = Some(true),
                 }
             }
         }
@@ -314,18 +386,19 @@ where
         "color" => {
             if let Some(c) = parse_color(value) {
                 style.text_color = c;
+                *explicit_text_color = true;
             }
         }
         "border-color" | "borderColor" => {
             if value.trim().eq_ignore_ascii_case("currentcolor") {
-                *border_uses_current_color = true;
+                *border_uses_current_color = Some(true);
             } else if let Some(c) = parse_color(value) {
                 style.border_color = c;
-                *border_uses_current_color = false;
+                *border_uses_current_color = Some(false);
             }
         }
         "border-width" | "borderWidth" => {
-            if let Some(v) = parse_px(value) {
+            if let Some(v) = css_shorthand::parse_border_width_value(value) {
                 style.border_width = v;
             }
         }
@@ -380,7 +453,23 @@ pub fn parse_dim(raw: &str) -> Dimension {
 pub fn parse_color(raw: &str) -> Option<ColorRgba> {
     let s = raw.trim();
     if let Some(hex) = s.strip_prefix('#') {
+        if !hex.is_ascii() {
+            return None;
+        }
         match hex.len() {
+            3 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+                Some(ColorRgba::rgb(r, g, b))
+            }
+            4 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+                let a = u8::from_str_radix(&hex[3..4], 16).ok()? * 17;
+                Some(ColorRgba::rgba(r, g, b, a))
+            }
             6 => {
                 let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
                 let g = u8::from_str_radix(&hex[2..4], 16).ok()?;

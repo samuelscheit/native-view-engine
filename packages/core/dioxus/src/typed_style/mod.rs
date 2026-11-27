@@ -61,6 +61,7 @@ pub struct TypedStyle {
     pub style: StyleProps,
     pub has_layout: bool,
     pub has_style: bool,
+    pub has_text_color: bool,
     pub font_weight: Option<Cow<'static, str>>,
     pub text_align: Option<Cow<'static, str>>,
     pub box_shadow: Option<Cow<'static, str>>,
@@ -93,6 +94,7 @@ impl TypedStyle {
             style: StyleProps::default(),
             has_layout: false,
             has_style: false,
+            has_text_color: false,
             font_weight: None,
             text_align: None,
             box_shadow: None,
@@ -369,6 +371,7 @@ impl TypedStyle {
     pub fn color(mut self, color: ColorRgba) -> Self {
         self.style.text_color = color;
         self.has_style = true;
+        self.has_text_color = true;
         self
     }
 
