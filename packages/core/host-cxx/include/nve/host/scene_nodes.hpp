@@ -145,6 +145,30 @@ struct NodeData {
   }
 };
 
+/// `NVE_ARIA_ROLE_*` of `node`: its explicit `nve.accessibility.role`, else its kind's native role
+/// (a view that takes presses is a button).
+[[nodiscard]] inline uint8_t aria_role(const NodeData& node) noexcept {
+  if (node.a11y.present && node.a11y.role != NVE_ARIA_ROLE_NONE) return node.a11y.role;
+  switch (node.kind) {
+    case NodeKind::Text: return NVE_ARIA_ROLE_TEXT;
+    case NodeKind::Image: return NVE_ARIA_ROLE_IMAGE;
+    case NodeKind::TextInput:
+      return node.input.input_kind == NVE_INPUT_KIND_SEARCH ? NVE_ARIA_ROLE_SEARCH_BOX : NVE_ARIA_ROLE_TEXT_BOX;
+    case NodeKind::Link: return NVE_ARIA_ROLE_LINK;
+    case NodeKind::Scroll: return NVE_ARIA_ROLE_SCROLL_AREA;
+    case NodeKind::View: break;
+  }
+  return node.wants(NVE_EVENT_PRESS) ? NVE_ARIA_ROLE_BUTTON : NVE_ARIA_ROLE_NONE;
+}
+
+/// Accessible name of `node`: its explicit label, else its text (Text) or alt text (Image).
+[[nodiscard]] inline std::string_view accessible_label(const NodeData& node) noexcept {
+  if (!node.a11y.label.empty()) return node.a11y.label;
+  if (node.kind == NodeKind::Text) return node.text;
+  if (node.kind == NodeKind::Image) return node.image.alt;
+  return {};
+}
+
 /// Every core table a retained-view host renders, bound to one scene.
 struct SceneTables {
   BoundTable visual, typography, text, image, text_input, scroll, accessibility, interaction, link;
