@@ -6,6 +6,8 @@
 //! - 40-byte `#[repr(C)]` [`CameraFrameDescriptor`] / [`CameraFrameWireLayout`] (`NVCF`),
 //! - Optional Nitro C-ABI bridge bindings (`feature = "nitro"`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod frame;
 #[cfg(feature = "nitro")]
 pub mod nitro;

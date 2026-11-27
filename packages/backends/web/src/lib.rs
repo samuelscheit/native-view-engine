@@ -6,6 +6,8 @@
 //! [`WebTableSystem`] onto [`WebBackend::register_table_system`], covering live `wasm32` DOM,
 //! SSR, streaming SSR, and hydration uniformly.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod css;
 pub mod event_replay;
 pub mod events;

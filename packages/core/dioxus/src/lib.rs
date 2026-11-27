@@ -5,6 +5,8 @@
 //! `NVE2` native hosts identically with zero mirror trees, zero `ComponentKind`, and zero
 //! optional module dependencies.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod dioxus_elements;
 pub use dioxus_elements as elements;
 pub mod error_boundary;

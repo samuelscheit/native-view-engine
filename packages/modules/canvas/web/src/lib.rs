@@ -1,5 +1,7 @@
 //! Web DOM & SSR adapter for `nve-canvas` (`WebTableSystem`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use core::fmt::Write as _;
 
 use nve_backend_web::{WebSystemCommitCtx, WebTableSystem};

@@ -3,6 +3,8 @@
 //! Executes [`DrawList`] vector ops (`Clear`, `FillRect`, `FillRoundedRect`, `FillCircle`,
 //! `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`) onto `PixelBuffer`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use nve_abi::ColorRgba;
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableSystem};
 use nve_canvas::{Canvas, CanvasOp, DrawList};

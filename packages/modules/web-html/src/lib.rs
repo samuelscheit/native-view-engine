@@ -13,6 +13,8 @@
 //! Its leaf web adapter (`nve-web-html-web`) implements BOTH live DOM and SSR hooks uniformly via
 //! `WebTableSystem`, with zero special-casing inside `nve-backend-web`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use std::sync::Arc;
 
 use nve_abi::Key64;

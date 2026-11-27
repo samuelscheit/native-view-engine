@@ -1,19 +1,19 @@
 # `nve-backend-headless`
 
-Pure-Rust headless `RenderBackend` (`packages/backends/headless`, **Backend layer**) generic over any `LayoutEngine` (defaulting to `TaffyLayoutEngine`) for fast offscreen layout, hit-testing, and Frame-0 scene verification.
+Pure-Rust headless `StoreBackend` (`packages/backends/headless`, **Backend layer**) generic over any `StoreLayoutEngine` (defaulting to `TaffyStoreLayout`) for fast offscreen layout, hit-testing, and Frame-0 scene verification.
 
 ## Key Public API
 
-- `HeadlessBackend<L = TaffyLayoutEngine>`, `HeadlessNode`, `HeadlessMutation`
-- `TaffyLayoutEngine`, `to_taffy_style`, `to_taffy_style_with_ext`, `NodeSlotMap`
+- `HeadlessBackend<L = TaffyStoreLayout>`, `TaffyStoreLayout`
 - `InteractionTracker`, `prerender_native_frame0`, `prerender_native_frame0_with_text_measurer`
 
 ```rust
 use nve_backend_headless::HeadlessBackend;
-use nve_engine::{RenderBackend, Viewport};
+use nve_engine::{StoreBackend, Viewport};
 
 let mut backend = HeadlessBackend::new();
 backend.set_viewport(1, Viewport { width: 800.0, height: 600.0, scale_factor: 1.0 });
+assert_eq!(backend.viewport().width, 800.0);
 ```
 
 ## Dependency Invariants

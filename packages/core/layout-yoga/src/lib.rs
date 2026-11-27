@@ -9,6 +9,8 @@
 //! with [`YogaLayoutEngine::is_available()`] returning `false` and [`YogaLayoutEngine::new()`]
 //! returning [`YogaUnavailableError`].
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 #[cfg(nve_has_rn_yoga)]
 mod ffi;
 

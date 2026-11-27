@@ -1,6 +1,8 @@
 //! File Picker & Standard Paths capability (`SERVICE_FILESYSTEM = 0x0011`) with binary codecs,
 //! deterministic [`MemoryFilesystem`], and OS [`NativeFilesystem`] handlers.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod native;
 
 use std::any::{Any, TypeId};

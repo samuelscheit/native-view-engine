@@ -13,6 +13,8 @@
 //!   and [`locale`] run uniformly across Web, SSR, native desktop/mobile, and
 //!   headless tests, wired generically over `B: I18nBackend`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod backend;
 pub mod catalog;
 pub mod error;

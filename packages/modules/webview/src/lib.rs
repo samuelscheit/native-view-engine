@@ -1,5 +1,7 @@
 //! Standalone embedded WebView capability (`packages/modules/webview`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use nve_store::{NodeId, NveTable, Str, Transaction};
 
 /// Embedded WebView table (`nve.web_view`).

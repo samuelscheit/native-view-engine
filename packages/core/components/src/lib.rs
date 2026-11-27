@@ -4,6 +4,8 @@
 //! Zero dependencies on optional capability modules (`svg`, `canvas`, `blur`, `webview`, `video`,
 //! `camera`, `web-element`, `web-html`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod client_hints;
 pub mod css;
 pub mod input_hints;

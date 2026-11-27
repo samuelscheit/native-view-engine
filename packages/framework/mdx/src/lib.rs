@@ -2,6 +2,8 @@
 //! `_meta.toml` navigation builder, compile-time validator, and binary full-text search index
 //! (`NVS2`) for `native-view-engine`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod ast;
 pub mod codegen;
 mod directive;

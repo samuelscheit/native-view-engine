@@ -14,12 +14,15 @@ use nve_abi::{NveSceneTable, SceneNodeInput, NVE_PRIMARY_SLOT_NONE};
 
 let mut table = NveSceneTable::new();
 table.begin_frame(1);
-table.upsert_node(SceneNodeInput {
-    node_id: 1,
-    primary_slot: NVE_PRIMARY_SLOT_NONE,
-    ..SceneNodeInput::default()
-})?;
+table
+    .upsert_node(SceneNodeInput {
+        node_id: 1,
+        primary_slot: NVE_PRIMARY_SLOT_NONE,
+        ..SceneNodeInput::default()
+    })
+    .expect("valid scene node");
 let view = table.as_view();
+assert_eq!(view.node_count, 1);
 ```
 
 ## Dependency Invariants

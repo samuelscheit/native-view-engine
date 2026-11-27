@@ -2,6 +2,8 @@
 //! in-process dispatch ([`HapticsBackend`]), cross-language `NVE_IFACE_HOST` C ABI codecs,
 //! deterministic [`MemoryHaptics`], and OS [`NativeHaptics`] handlers.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod native;
 
 use std::any::{Any, TypeId};

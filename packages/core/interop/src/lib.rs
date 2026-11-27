@@ -4,6 +4,8 @@
 //! Flutter, SwiftUI/UIKit, Jetpack Compose, Web DOM) with unified surface lifecycle,
 //! layout negotiation, gesture arbitration, typed native views, and shared binary channels.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 #[cfg(feature = "channel")]
 pub mod channel;
 #[cfg(feature = "crdt")]

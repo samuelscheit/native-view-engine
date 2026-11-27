@@ -3,6 +3,8 @@
 //! Lives as a thin leaf crate in `packages/modules/camera/web/` so `nve-backend-web` has
 //! ZERO dependency on `nve-camera`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use core::fmt::Write as _;
 
 use nve_backend_web::html::write_attr;

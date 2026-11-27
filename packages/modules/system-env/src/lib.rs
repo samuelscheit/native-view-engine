@@ -2,6 +2,8 @@
 //! (`SERVICE_SYSTEM_ENV = 0x0014`) with direct zero-serialization in-process dispatch
 //! ([`SystemEnvBackend`]) and direct typed event delivery ([`SystemEnvEvent`] / [`SystemEnvBridge`]).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod native;
 
 use std::any::{Any, TypeId};

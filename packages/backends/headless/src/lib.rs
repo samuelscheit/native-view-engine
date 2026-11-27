@@ -7,6 +7,8 @@
 //! (`primary_slot` + `NveTableView`) publication, live layout-engine swapping, and an ASCII
 //! tree + rect inspector.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 mod commit;
 mod interaction;
 pub mod reloc_scene;
