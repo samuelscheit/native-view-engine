@@ -6,6 +6,7 @@
 //! and `nve-server::DirectTransport` (SSR / headless tests).
 
 mod detail;
+mod panels;
 
 use dioxus_core::EventHandler;
 use nve_dioxus::prelude::*;
@@ -17,6 +18,7 @@ use nve_query_dioxus::prelude::*;
 use nve_ui::prelude::*;
 
 use crate::detail::IssueDetailPanel;
+use crate::panels::{FeaturedCommentsSection, WorkspaceStatsSection};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FilterTab {
@@ -72,6 +74,7 @@ pub(crate) fn state_badge(state: IssueState) -> (&'static str, BadgeVariant) {
 pub fn IssuesApp(
     client: ErasedQueryClient,
     #[props(default)] sleep: Option<SleepHandle>,
+    #[props(default = IssueId(1))] featured_issue_id: IssueId,
 ) -> Element {
     rsx! {
         ThemeProvider {
@@ -79,7 +82,9 @@ pub fn IssuesApp(
             QueryClientProvider {
                 client: client,
                 sleep: sleep,
-                IssuesWorkspace {}
+                IssuesWorkspace {
+                    featured_issue_id: featured_issue_id,
+                }
             }
         }
     }
@@ -88,7 +93,7 @@ pub fn IssuesApp(
 /// Interactive issue-tracker workspace (must be mounted inside [`QueryClientProvider()`] and
 /// [`ThemeProvider()`]).
 #[component]
-pub fn IssuesWorkspace() -> Element {
+pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId) -> Element {
     let theme = use_theme();
     let p = &theme.palette;
     let mut active_tab = use_signal(|| FilterTab::All);
@@ -178,6 +183,9 @@ pub fn IssuesWorkspace() -> Element {
                         "Refresh"
                     }
                 }
+
+                // Streaming workspace summary counters (`<QuerySuspense id="stats">`)
+                WorkspaceStatsSection {}
 
                 // Filter tabs
                 Row {
@@ -342,6 +350,11 @@ pub fn IssuesWorkspace() -> Element {
                             }
                         }
                     }
+                }
+
+                // Streaming featured discussion (`<QuerySuspense id="comments">`)
+                FeaturedCommentsSection {
+                    issue_id: featured_issue_id,
                 }
 
                 // Selected issue inline editor + comments
