@@ -303,13 +303,16 @@ pub struct NveRuntimeSceneView {
     /// Borrowed slice of `scroll_count` [`NveScrollOffset`]s sorted by `node_id`; scroll
     /// containers that are absent have a zero shift.
     pub scroll_offsets: *const NveScrollOffset,
-    /// Borrowed slice of `dirty_resource_count` live resource ids (re)defined on `frame_id`:
-    /// created, recycled, or rewritten in place. Host caches keyed by resource id (decoded
-    /// images, draw lists) MUST drop these entries; ids absent here kept their bytes.
+    /// Borrowed slice of `dirty_resource_count` live resource ids (re)defined on `frame_id`,
+    /// strictly ascending: created, recycled, or rewritten in place. Host caches keyed by
+    /// resource id (decoded images, draw lists) MUST drop these entries; ids absent here kept
+    /// their bytes since the previous frame of the same `scene_epoch`.
     pub dirty_resources: *const u32,
-    /// Borrowed slice of `moved_count` live node indices not in `dirty_indices` whose geometry
-    /// changed on `frame_id`: their absolute rect, or their origin relative to their parent's.
-    /// A host re-applies only position / size to these.
+    /// Borrowed slice of `moved_count` live node indices not in `dirty_indices` whose box
+    /// relative to their parent's rect (origin, width, height) changed on `frame_id`. A host
+    /// re-applies only position / size to these. Descendants of a moved node keep their
+    /// parent-relative boxes and are not listed, though their absolute `rects` change: hosts
+    /// position views relative to their parent (or recompute absolute rects from `rects`).
     pub moved_indices: *const u32,
 }
 

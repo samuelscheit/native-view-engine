@@ -135,8 +135,9 @@ public struct TableReader {
     /// Sparse tables: `row + 1` per node index of each page (0 = no row).
     public let rowIndexPages: UnsafeBufferPointer<UInt32>
 
-    /// `nil` when `rows` cannot hold `rowCount * words` words, `owners` is short, or
-    /// `rowIndexPages` is not whole pages.
+    /// `nil` when `rows` cannot hold `rowCount * words` words, `owners` is short, `rowIndexPages`
+    /// is not whole pages, or a sparse table (owners) with rows has no row index (its rows could
+    /// never resolve).
     public init?(
         key: Key64, slot: UInt32, words: Int, rowCount: Int,
         rows: UnsafeBufferPointer<UInt32>, owners: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0),
@@ -145,7 +146,8 @@ public struct TableReader {
         rowIndexPages: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0)
     ) {
         guard (1...maxTableWords).contains(words), rowCount >= 0, rows.count / words >= rowCount,
-              owners.isEmpty || owners.count >= rowCount, rowIndexPages.count % rowIndexPageLen == 0
+              owners.isEmpty || owners.count >= rowCount, rowIndexPages.count % rowIndexPageLen == 0,
+              owners.isEmpty || rowCount == 0 || (!rowIndexDir.isEmpty && !rowIndexPages.isEmpty)
         else { return nil }
         self.key = key
         self.slot = slot

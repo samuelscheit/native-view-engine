@@ -29,6 +29,7 @@ enum class SceneError : uint8_t {
   InvalidUtf8,     ///< `text_slab` is not well-formed UTF-8
   InvalidTable,    ///< a published `NveTableView` is malformed
   UnsortedScrollOffsets,  ///< `scroll_offsets` node ids are not strictly ascending
+  UnsortedDirtyResources,  ///< `dirty_resources` ids are not strictly ascending
 };
 
 template <class View>

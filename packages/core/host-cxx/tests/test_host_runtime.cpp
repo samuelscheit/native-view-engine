@@ -181,6 +181,7 @@ std::string scene_text(HostSession& host, uint32_t id) {
 /// (re)allocates it, and a stale `font_family` compare would read freed memory (ASan).
 void test_font_family_survives_text_slab_growth() {
   Harness h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   const std::string family = "Inter Display Variable Family";  // beyond any SSO buffer
@@ -225,6 +226,7 @@ void test_font_family_survives_text_slab_growth() {
 void test_source_change_runs_a_full_pass() {
   using nve::host::demo::CounterApp;
   Harness h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
@@ -252,6 +254,7 @@ void test_source_change_runs_a_full_pass() {
 /// read the table defaults (opacity 1), not that row (opacity 0 hid every text node).
 void test_dense_table_rows_follow_table_set() {
   Harness h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
@@ -277,6 +280,7 @@ void test_dense_table_rows_follow_table_set() {
 /// in a native setter, and `NodeData` / `TextStyle` equality stays reflexive.
 void test_read_node_seals_floats() {
   Harness h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -334,6 +338,7 @@ void test_read_node_seals_floats() {
 /// container; its leaves are the text views. It becomes text again once childless.
 void test_text_wrappers_are_containers() {
   Harness h;
+  CHECK(h.host != nullptr);
   if (!h.host) return;
   Nve2Writer& w = h.w;
   for (uint32_t id = 1u; id <= 4u; ++id) w.create(id);
