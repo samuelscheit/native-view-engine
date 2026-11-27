@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import {
   Key64,
+  AccessibilityTable,
   LayoutTable,
   NVE_NODE_META_LAYOUT,
   NVE_RENDER_NODE_LAYOUT,
@@ -37,4 +38,13 @@ test('a generated field spec reads a generated default row', () => {
   LayoutTable.defaults.forEach((w, i) => rows.setUint32(i * 4, w, true));
   const layout = new TableReader({ key: LayoutTable.key, slot: 0, words: LayoutTable.words, rowCount: 1, rows });
   assert.equal(layout.f32(0, LayoutTable.fields.flexShrink), 1);
+});
+
+test('a generated two-word Str spec reads its span', () => {
+  const label = AccessibilityTable.fields.label;
+  const rows = new DataView(new ArrayBuffer(AccessibilityTable.words * 4));
+  rows.setUint32(label.word * 4, 5, true);
+  rows.setUint32((label.word + 1) * 4, 7, true);
+  const a11y = new TableReader({ key: AccessibilityTable.key, slot: 0, words: AccessibilityTable.words, rowCount: 1, rows });
+  assert.deepEqual(a11y.str(0, label), { offset: 5, len: 7 });
 });

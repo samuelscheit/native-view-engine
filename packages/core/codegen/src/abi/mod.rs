@@ -9,6 +9,7 @@
 pub mod layout;
 pub mod model;
 pub mod spell;
+mod validate;
 
 use askama::Template;
 use nve_abi::NveHostStatus;
@@ -31,6 +32,7 @@ const SWIFT: &str = "packages/core/host-swift";
 const JAVA: &str = "packages/core/host-java/src";
 const DART: &str = "packages/core/host-dart";
 const TS: &str = "packages/core/host-ts";
+const C_ABI_HEADER: &str = "packages/core/host-cxx/include/nve/generated/nve_abi.generated.h"; // under `CXX`
 
 macro_rules! templates {
     ($($name:ident: $path:literal => $field:ident: $ty:ty;)*) => {$(
@@ -71,7 +73,7 @@ fn render(
     template: &dyn askama::DynTemplate,
     relative_path: String,
 ) -> Result<GeneratedFile, CodegenError> {
-    let mut content = String::with_capacity(16 * 1024);
+    let mut content = String::with_capacity(template.size_hint());
     template
         .dyn_render_into(&mut content)
         .map_err(|e| CodegenError::validation(format!("rendering {relative_path}: {e}")))?;
@@ -90,17 +92,14 @@ fn render(
 /// `nve_abi.generated.h`: the merged C ABI header every C / C++ / Objective-C / Swift host imports.
 pub fn generate_c_abi_header() -> Result<String, CodegenError> {
     let m = abi_model()?;
-    Ok(render(&CAbi { m: &m }, String::new())?.content)
+    Ok(render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?.content)
 }
 
 /// Every Core + Scene ABI file (C, Java, Dart const + `dart:ffi`, TypeScript).
 pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
     let m = abi_model()?;
     Ok(vec![
-        render(
-            &CAbi { m: &m },
-            format!("{CXX}/include/nve/generated/nve_abi.generated.h"),
-        )?,
+        render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?,
         render(
             &JavaAbi { m: &m },
             format!("{JAVA}/main/java/dev/nve/host/generated/NveAbi.java"),

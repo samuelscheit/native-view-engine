@@ -1,0 +1,8 @@
+// Clang module of the generated NVE C ABI, so an `.xcframework` built with this directory as its
+// headers (`nve build --xcframework`) imports from Swift as `CNveAbi`. The headers are generated
+// next to it by `nve codegen abi`; SwiftPM packages use `packages/core/host-swift`'s `CNveAbi`.
+module CNveAbi [system] {
+    header "nve/generated/nve_abi.generated.h"
+    header "nve/generated/nve_tables.generated.h"
+    export *
+}

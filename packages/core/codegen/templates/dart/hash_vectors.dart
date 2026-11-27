@@ -14,6 +14,6 @@ final class HashVector {
 
 const List<HashVector> hashVectors = [
 {%- for v in vectors %}
-  HashVector('{{ v.label }}', '{{ v.hex() }}', Key64({{ v.seed.lo_hex() }}, {{ v.seed.hi_hex() }}), Key64({{ v.expected.lo_hex() }}, {{ v.expected.hi_hex() }})),
+  HashVector('{{ v.label }}', '{{ v.hex }}', Key64({{ v.seed.lo_hex() }}, {{ v.seed.hi_hex() }}), Key64({{ v.expected.lo_hex() }}, {{ v.expected.hi_hex() }})),
 {%- endfor %}
 ];

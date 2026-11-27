@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::apple_tier3::{AppleTier3Target, NVE_ABI_HEADER_FILE};
+use super::apple_tier3::{AppleTier3Target, NVE_ABI_HEADER_FILE, NVE_MODULE_MAP_FILE};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MissingPrerequisite {
@@ -13,6 +13,7 @@ pub enum MissingPrerequisite {
     Sdk(AppleTier3Target),
     Xcodebuild,
     AbiHeader,
+    ModuleMap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +148,15 @@ pub fn check_prerequisites(
                 kind: MissingPrerequisite::AbiHeader,
                 summary: format!("generated C ABI header not found at '{}'", header_path.display()),
                 remediation: "Run: cargo run --locked -p nve-cli -- codegen abi".into(),
+            });
+        }
+        // Without a module map the `.xcframework` cannot be imported from Swift (`import CNveAbi`).
+        let module_map = headers_dir.join(NVE_MODULE_MAP_FILE);
+        if !probe.file_exists(&module_map) {
+            issues.push(PrerequisiteIssue {
+                kind: MissingPrerequisite::ModuleMap,
+                summary: format!("Clang module map not found at '{}'", module_map.display()),
+                remediation: "Pass --headers pointing at a directory with a `module.modulemap` declaring `CNveAbi` (packages/core/host-cxx/include has one)".into(),
             });
         }
     }

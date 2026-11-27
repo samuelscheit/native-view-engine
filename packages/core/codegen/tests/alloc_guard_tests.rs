@@ -4,8 +4,9 @@
 //! `HybridFileSpec` bridge), and every template renders into one pre-sized buffer. What remains are
 //! the small per-name `String`s of the spelling helpers: codegen is a cold build step, so those
 //! are not worth a zero-allocation rewrite. The ceilings sit ~25% above the measured counts
-//! (1,353 / 8,484 / 35,002), so reintroducing an owned intermediate spec (thousands of
-//! allocations) fails here.
+//! (C header 1,420 / tables 5,268 / all files 11,539), so reintroducing an owned intermediate spec (thousands of
+//! allocations) fails here. Byte totals count every buffer growth: each render starts from Askama's
+//! size hint and doubles, so they sit at about 4-5x the output (ceiling 6x).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -66,11 +67,11 @@ fn c_abi_header_allocation_ceiling() {
         header.len()
     );
     assert!(
-        allocs <= 1_700,
-        "C header took {allocs} allocations (ceiling 1700)"
+        allocs <= 1_800,
+        "C header took {allocs} allocations (ceiling 1800)"
     );
     assert!(
-        bytes <= 5 * header.len(),
+        bytes <= 6 * header.len(),
         "C header allocated {bytes} bytes for {} output bytes",
         header.len()
     );
@@ -84,11 +85,11 @@ fn table_files_allocation_ceiling() {
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
     );
     assert!(
-        allocs <= 10_600,
-        "tables took {allocs} allocations (ceiling 10600)"
+        allocs <= 6_600,
+        "tables took {allocs} allocations (ceiling 6600)"
     );
     assert!(
-        bytes <= 5 * out,
+        bytes <= 6 * out,
         "tables allocated {bytes} bytes for {out} output bytes"
     );
 }
@@ -103,11 +104,11 @@ fn every_host_file_allocation_ceiling() {
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
     assert!(
-        allocs <= 44_000,
-        "all files took {allocs} allocations (ceiling 44000)"
+        allocs <= 14_500,
+        "all files took {allocs} allocations (ceiling 14500)"
     );
     assert!(
-        bytes <= 5 * out,
+        bytes <= 6 * out,
         "all files allocated {bytes} bytes for {out} output bytes"
     );
 }

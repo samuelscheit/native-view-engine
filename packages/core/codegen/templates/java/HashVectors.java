@@ -22,7 +22,7 @@ public final class HashVectors {
 
     private static final Vector[] ALL = {
 {%- for v in vectors %}
-        new Vector("{{ v.label }}", "{{ v.hex() }}", {{ v.seed.hex() }}L, {{ v.expected.hex() }}L),
+        new Vector("{{ v.label }}", "{{ v.hex }}", {{ v.seed.hex() }}L, {{ v.expected.hex() }}L),
 {%- endfor %}
     };
 

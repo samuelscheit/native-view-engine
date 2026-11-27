@@ -10,6 +10,6 @@ struct HashVector: Sendable {
 
 let hashVectors: [HashVector] = [
 {%- for v in vectors %}
-    HashVector(label: "{{ v.label }}", hex: "{{ v.hex() }}", seed: {{ v.seed.hex() }}, expected: {{ v.expected.hex() }}),
+    HashVector(label: "{{ v.label }}", hex: "{{ v.hex }}", seed: {{ v.seed.hex() }}, expected: {{ v.expected.hex() }}),
 {%- endfor %}
 ]

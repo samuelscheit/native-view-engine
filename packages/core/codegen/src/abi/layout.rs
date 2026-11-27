@@ -12,7 +12,7 @@
 //! It then checks the model of the running build against `rustc` and every declared `offset` /
 //! `size` contract. A record whose layout drifts is a codegen error, never a wrong `static_assert`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use nve_abi::schema::{AbiFieldDescriptor, AbiFileDescriptor, AbiRecordDescriptor};
 
@@ -239,6 +239,14 @@ pub struct RecordLayout<'a> {
     pub size: Width,
     pub align: Width,
     pub fields: Vec<FieldLayout<'a>>,
+    /// Rust `#[repr(C, align(N))]` that C must reproduce with `_Alignas(N)` / `alignas(N)`: it
+    /// changes the size on some data model, or the record is embedded by value in another one.
+    pub alignas: Option<usize>,
+    /// Rust `align(N)` that only aligns Rust-owned slabs (it changes no size and no containing
+    /// layout), so C keeps the natural alignment Swift's ClangImporter imports as a plain value.
+    pub slab_align: Option<usize>,
+    /// Alignment from the fields alone (before any `alignas`).
+    pub natural_align: Width,
 }
 
 impl RecordLayout<'_> {
@@ -254,6 +262,8 @@ pub fn layout_records<'a>(
     files: &[&'a AbiFileDescriptor],
 ) -> Result<Vec<RecordLayout<'a>>, CodegenError> {
     let mut shapes: BTreeMap<&'a str, Shape> = BTreeMap::new();
+    let mut enums: BTreeSet<&'a str> = BTreeSet::new();
+    let embedded = embedded_by_value(files);
     for file in files {
         for alias in file.aliases {
             let shape = shape_of(Ty::parse(alias.target)?, &shapes, alias.name)?;
@@ -262,12 +272,13 @@ pub fn layout_records<'a>(
         for e in file.enums {
             let repr = Scalar::parse(e.repr).ok_or_else(|| bad_type(e.repr, "enum repr"))?;
             shapes.insert(e.name, repr.shape());
+            enums.insert(e.name);
         }
     }
     let mut out = Vec::new();
     for file in files {
         for record in file.records {
-            let layout = layout_record(record, &shapes)?;
+            let layout = layout_record(record, &shapes, &enums, &embedded)?;
             check_against_rustc(record, &layout)?;
             shapes.insert(
                 layout.name,
@@ -286,10 +297,19 @@ fn shape_of(ty: Ty<'_>, shapes: &BTreeMap<&str, Shape>, ctx: &str) -> Result<Sha
     Ok(match ty {
         Ty::Ptr { .. } => Shape::POINTER,
         Ty::Scalar(s) => s.shape(),
+        Ty::Array { len: 0, .. } => {
+            return Err(bad_type(ctx, "zero-length arrays are not valid C"));
+        }
         Ty::Array { elem, len } => {
             let e = shape_of(Ty::parse(elem)?, shapes, ctx)?;
+            let mut size = [0; 3];
+            for (out, n) in size.iter_mut().zip(e.size.0) {
+                *out = n
+                    .checked_mul(len)
+                    .ok_or_else(|| bad_type(ctx, "array size overflows usize"))?;
+            }
             Shape {
-                size: e.size.zip(e.size, |n, _| n * len),
+                size: Width(size),
                 align: e.align,
             }
         }
@@ -302,18 +322,50 @@ fn shape_of(ty: Ty<'_>, shapes: &BTreeMap<&str, Shape>, ctx: &str) -> Result<Sha
     })
 }
 
+/// Names of records some other record stores by value (`T`, `[T; N]`), so their alignment is
+/// part of a containing layout.
+fn embedded_by_value<'a>(files: &[&'a AbiFileDescriptor]) -> BTreeSet<&'a str> {
+    let mut out = BTreeSet::new();
+    for record in files.iter().flat_map(|f| f.records) {
+        let fields = match record {
+            AbiRecordDescriptor::Struct(s) => s.fields,
+            AbiRecordDescriptor::Union(u) => u.fields,
+        };
+        for f in fields {
+            let mut ty = Ty::parse(f.abi_type());
+            while let Ok(Ty::Array { elem, .. }) = ty {
+                ty = Ty::parse(elem);
+            }
+            if let Ok(Ty::Named(name)) = ty {
+                out.insert(name);
+            }
+        }
+    }
+    out
+}
+
 fn layout_record<'a>(
     record: &'a AbiRecordDescriptor,
     shapes: &BTreeMap<&str, Shape>,
+    enums: &BTreeSet<&str>,
+    embedded: &BTreeSet<&str>,
 ) -> Result<RecordLayout<'a>, CodegenError> {
-    let (name, doc, is_union, descs) = match record {
-        AbiRecordDescriptor::Struct(s) => (s.name, s.doc, false, s.fields),
-        AbiRecordDescriptor::Union(u) => (u.name, u.doc, true, u.fields),
+    let (name, doc, is_union, descs, explicit_align) = match record {
+        AbiRecordDescriptor::Struct(s) => (s.name, s.doc, false, s.fields, s.explicit_align),
+        AbiRecordDescriptor::Union(u) => (u.name, u.doc, true, u.fields, u.explicit_align),
     };
     let mut fields = Vec::with_capacity(descs.len());
     let (mut end, mut align) = (Width::same(0), Width::same(1));
     for desc in descs {
         let ty = Ty::parse(desc.abi_type())?;
+        if let Ty::Named(n) = ty
+            && enums.contains(n)
+        {
+            return Err(CodegenError::validation(format!(
+                "`{name}.{}` stores enum `{n}` by value: C enums are `int`-sized whatever the Rust repr; store its integer repr",
+                desc.name
+            )));
+        }
         let shape = shape_of(ty, shapes, name)?;
         let offset = if is_union {
             Width::same(0)
@@ -324,6 +376,18 @@ fn layout_record<'a>(
         align = align.zip(shape.align, usize::max);
         fields.push(FieldLayout { desc, ty, offset });
     }
+    let natural_align = align;
+    let natural_size = end.zip(align, round_up);
+    let (mut alignas, mut slab_align) = (None, None);
+    if let Some(explicit) = explicit_align.filter(|&a| align.0.iter().any(|&n| a > n)) {
+        let over = align.zip(Width::same(explicit), usize::max);
+        if natural_size.zip(over, round_up) != natural_size || embedded.contains(name) {
+            alignas = Some(explicit);
+            align = over;
+        } else {
+            slab_align = Some(explicit);
+        }
+    }
     let size = end.zip(align, round_up);
     Ok(RecordLayout {
         name,
@@ -332,6 +396,9 @@ fn layout_record<'a>(
         size,
         align,
         fields,
+        alignas,
+        slab_align,
+        natural_align,
     })
 }
 
@@ -344,9 +411,9 @@ fn check_against_rustc(
     record: &AbiRecordDescriptor,
     layout: &RecordLayout<'_>,
 ) -> Result<(), CodegenError> {
-    let (size, expected_size, expected_size_64) = match record {
-        AbiRecordDescriptor::Struct(s) => (s.size, s.expected_size, s.expected_size_64),
-        AbiRecordDescriptor::Union(u) => (u.size, u.expected_size, u.expected_size_64),
+    let (size, align, expected_size, expected_size_64) = match record {
+        AbiRecordDescriptor::Struct(s) => (s.size, s.align, s.expected_size, s.expected_size_64),
+        AbiRecordDescriptor::Union(u) => (u.size, u.align, u.expected_size, u.expected_size_64),
     };
     let host = Model::host();
     let fail = |what: String| {
@@ -357,6 +424,11 @@ fn check_against_rustc(
     };
     if layout.size.at(host) != size {
         return fail(format!("size {} != rustc {size}", layout.size.at(host)));
+    }
+    // C reproduces Rust's alignment, except a slab-only `align(N)` (`slab_align`).
+    let c_align = layout.align.at(host);
+    if c_align != align && layout.slab_align != Some(align) {
+        return fail(format!("alignment {c_align} != rustc {align}"));
     }
     if expected_size.is_some_and(|n| layout.size.fixed() != Some(n)) {
         return fail(format!(
@@ -516,7 +588,7 @@ mod tests {
         );
 
         static WRONG_SIZE: [AbiRecordDescriptor; 1] =
-            [record(&[field("a", "u32", 0, None)], 4, Some(8))];
+            [record(&[field("a", "u64", 0, None)], 8, Some(16))];
         assert!(
             layout_records(&[&file(&WRONG_SIZE)])
                 .unwrap_err()

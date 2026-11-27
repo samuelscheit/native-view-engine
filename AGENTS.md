@@ -46,6 +46,6 @@ High-signal invariants, engineering principles, and workflow rules. Keep this fi
 
 ```bash
 ./scripts/check-all.sh --quick
-cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 cargo run --locked -p nve-cli -- codegen abi && cargo run --locked -p nve-cli -- codegen abi --check
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 ```

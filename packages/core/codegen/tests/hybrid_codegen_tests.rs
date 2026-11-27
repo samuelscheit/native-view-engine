@@ -1574,39 +1574,6 @@ pub trait ModBSpec {
 }
 
 #[test]
-fn dogfood_core_and_scene_abi_descriptors_convert_to_hybrid_specs() {
-    let root = workspace_root();
-    assert!(
-        !root.join("packages/core/codegen/specs").exists(),
-        "packages/core/codegen/specs/ must stay deleted (colocated #[derive(NveAbi)] is the single source of truth)"
-    );
-
-    let core = nve_codegen::from_abi_descriptor(&nve_abi::schema::core_abi_descriptor());
-    let scene = nve_codegen::from_abi_descriptor(&nve_abi::schema::scene_abi_descriptor());
-
-    // Verify core modular interfaces keep exact fixed IDs 1..=5
-    assert_eq!(core.modules.len(), 5);
-    assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE);
-    assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT);
-    assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT);
-    assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV);
-    assert_eq!(core.modules[4].interface_id(), nve_abi::NVE_IFACE_HOST);
-
-    // Verify scene node layout descriptors
-    let render_node = scene.find_struct("NveRenderNode").expect("NveRenderNode");
-    assert_eq!(render_node.align, Some(nve_abi::NVE_RENDER_NODE_ALIGN));
-    assert_eq!(render_node.expected_size, Some(nve_abi::NVE_RENDER_NODE_SIZE));
-    assert_eq!(render_node.fields.len(), 20);
-
-    // The hybrid file hash is deterministic across conversions.
-    assert_ne!(core.file_schema_hash(), 0);
-    assert_eq!(
-        core.file_schema_hash(),
-        nve_codegen::from_abi_descriptor(&nve_abi::schema::core_abi_descriptor()).file_schema_hash()
-    );
-}
-
-#[test]
 fn hybrid_emitters_escape_interpolation_quotes_and_newlines_across_all_6_targets() {
     let adversarial_spec = r#"
 /// Doc line 1

@@ -7,6 +7,7 @@
 #ifndef NVE_HOST_API_H
 #define NVE_HOST_API_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -17,27 +18,37 @@
 #define NVE_INLINE constexpr inline
 #define NVE_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
 #define NVE_ALIGNOF(type) alignof(type)
+/* Over-aligns a struct member (and so its struct), like Rust `#[repr(C, align(N))]`. */
+#define NVE_ALIGNAS(n) alignas(n)
 #else
 #define NVE_EXTERN_C_BEGIN
 #define NVE_EXTERN_C_END
 #define NVE_INLINE static inline
 #define NVE_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #define NVE_ALIGNOF(type) _Alignof(type)
+#define NVE_ALIGNAS(n) _Alignas(n)
 #endif
 
 #define NVE_OFFSETOF(type, member) offsetof(type, member)
 
-/* Symbol visibility for functions exported across the C ABI (`nve_get_interface`, host shims). */
+/* Symbol visibility for functions exported across the C ABI (`nve_get_interface`, host shims).
+ * Windows: `dllexport` while building the DLL (`NVE_BUILDING_LIBRARY`), `dllimport` only when a
+ * consumer opts in (`NVE_IMPORTING_LIBRARY`); otherwise nothing, so static libraries link. A
+ * build may predefine `NVE_API` itself. */
+#ifndef NVE_API
 #if defined(_WIN32)
 #if defined(NVE_BUILDING_LIBRARY)
 #define NVE_API __declspec(dllexport)
-#else
+#elif defined(NVE_IMPORTING_LIBRARY)
 #define NVE_API __declspec(dllimport)
+#else
+#define NVE_API
 #endif
 #elif defined(__GNUC__) || defined(__clang__)
 #define NVE_API __attribute__((visibility("default")))
 #else
 #define NVE_API
+#endif
 #endif
 
 /* The binary ABI is little-endian only; refuse to compile anywhere else. */

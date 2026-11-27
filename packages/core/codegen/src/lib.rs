@@ -3,8 +3,7 @@
 //! Organized as a compiler pipeline:
 //! - [`abi`]: Askama-rendered host ABI data (Core + Scene ABI, word-table field specs, golden
 //!   XXH64 vectors) for the static `packages/core/host-*` runtimes.
-//! - [`schema`]: Intermediate representations, layout computation, validation, and colocated
-//!   `#[derive(NveAbi)]` descriptor bridges (`export`, `hybrid`).
+//! - [`schema`]: Intermediate representations and validation (`export`, `hybrid`).
 //! - [`frontend`]: Input specification parsers (`rn_spec`, and `hybrid_spec` on `syn` 2).
 //! - [`targets`]: Output-language code emitters (`c_cpp`, `rust`, `swift`, `kotlin_java`, `dart`,
 //!   `typescript`) plus unified multi-target dispatchers.
@@ -41,7 +40,7 @@ pub use schema::export::{
     TurboModuleMethod, TurboModuleSpec,
 };
 pub use schema::hybrid::{
-    compute_hybrid_interface_id, from_abi_descriptor, HybridAliasSpec, HybridConstSpec, HybridDefaultValue,
+    compute_hybrid_interface_id, HybridAliasSpec, HybridConstSpec, HybridDefaultValue,
     HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec, HybridFileSpec,
     HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec, HybridStructSpec,
     HybridTarget, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, NVE_HYBRID_INTERFACE_ID_BASE,

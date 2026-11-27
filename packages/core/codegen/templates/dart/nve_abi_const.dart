@@ -51,9 +51,10 @@ enum {{ e.name }} {
 {%- endfor %}
 {%- for r in m.records %}
 
-/// `{{ r.name }}` byte layout on wasm32 (4-byte pointers).
+/// `{{ r.name }}` byte layout on wasm32 (4-byte pointers); `size64` is its 64-bit `dart:ffi` size.
 abstract final class {{ r.name }}Layout {
   static const int size = {{ r.size.p32() }};
+  static const int size64 = {{ r.size.p64() }};
 {%- for f in r.fields %}
   static const int {{ spell::camel(f.name()) }} = {{ f.offset.p32() }};
 {%- endfor %}

@@ -12,6 +12,6 @@ export interface HashVector {
 
 export const HASH_VECTORS: readonly HashVector[] = [
 {%- for v in vectors %}
-  { label: '{{ v.label }}', hex: '{{ v.hex() }}', seed: new Key64({{ v.seed.lo_hex() }}, {{ v.seed.hi_hex() }}), expected: new Key64({{ v.expected.lo_hex() }}, {{ v.expected.hi_hex() }}) },
+  { label: '{{ v.label }}', hex: '{{ v.hex }}', seed: new Key64({{ v.seed.lo_hex() }}, {{ v.seed.hi_hex() }}), expected: new Key64({{ v.expected.lo_hex() }}, {{ v.expected.hi_hex() }}) },
 {%- endfor %}
 ];

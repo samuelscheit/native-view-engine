@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
 #include "check.h"
 #include "nve/generated/nve_abi.generated.h"
@@ -72,10 +73,24 @@ void test_scene_over_generated_structs() {
   CHECK(!scene->find_table(Key64{NVE_TABLE_VISUAL_KEY}).has_value());
 }
 
+// A generated two-word `Str` spec reads the `(offset, len)` span through the static reader.
+void test_generated_str_field() {
+  std::array<uint32_t, NVE_TABLE_ACCESSIBILITY_WORDS> row{};
+  row[NVE_TABLE_ACCESSIBILITY_LABEL.word] = 5u;
+  row[NVE_TABLE_ACCESSIBILITY_LABEL.word + 1u] = 7u;
+  const NveTableView view{static_cast<uint32_t>(NVE_TABLE_ACCESSIBILITY_KEY & 0xFFFFFFFFu),
+                          static_cast<uint32_t>(NVE_TABLE_ACCESSIBILITY_KEY >> 32), 0u,
+                          NVE_TABLE_ACCESSIBILITY_WORDS, 1u, 0u, row.data(), nullptr, nullptr};
+  const std::optional<TableReader> table = TableReader::from_view(view);
+  CHECK(table.has_value());
+  CHECK(table->str(0, NVE_TABLE_ACCESSIBILITY_LABEL) == std::optional<nve::host::StrSpan>(nve::host::StrSpan{5u, 7u}));
+}
+
 }  // namespace
 
 int main() {
   test_scene_over_generated_structs();
+  test_generated_str_field();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_generated_test: %d failure(s)\n", g_failures);
     return 1;

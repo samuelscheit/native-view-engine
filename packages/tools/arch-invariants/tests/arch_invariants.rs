@@ -368,7 +368,8 @@ fn spec_invariant_ids_have_mechanical_guards() {
 }
 
 /// The static host runtimes (`packages/core/host-*`) mirror status codes, `FieldKind`, value tags,
-/// limits, `Length` tags, and golden XXH64 digests by hand: every copy must match the Rust source.
+/// limits, and `Length` tags by hand: every copy must match the Rust source. (Golden XXH64 vectors
+/// are generated from `nve_hash` by `nve codegen abi`.)
 #[test]
 fn host_runtime_mirrors_match_rust_sources() {
     let idx = repo_index();

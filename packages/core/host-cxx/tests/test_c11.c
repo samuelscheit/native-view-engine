@@ -1,4 +1,8 @@
-/* C11 suite: <nve/host/api.h>, <nve/host/xxh64.h>, <nve/host/utf8.h>, <nve/host/table_word.h>. */
+/* C11 suite: <nve/host/api.h>, <nve/host/xxh64.h>, <nve/host/utf8.h>, <nve/host/table_word.h>, and
+ * the generated <nve/generated/nve_abi.generated.h> / <nve/generated/nve_tables.generated.h>
+ * (compiled strictly: -Wall -Wextra -Werror -pedantic). */
+#include "nve/generated/nve_abi.generated.h"
+#include "nve/generated/nve_tables.generated.h"
 #include "nve/host/api.h"
 #include "nve/host/table_word.h"
 #include "nve/host/utf8.h"

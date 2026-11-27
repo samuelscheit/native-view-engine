@@ -16,7 +16,7 @@ pub fn screaming(name: &str) -> String {
 /// is dropped: Dart would make the name library-private.
 pub fn camel(name: &str) -> String {
     let name = name.trim_start_matches('_');
-    if name.bytes().any(|b| b.is_ascii_uppercase()) {
+    if !name.bytes().any(|b| b.is_ascii_lowercase()) {
         screaming_snake_to_camel_case(name)
     } else {
         to_camel_case(name)
@@ -64,6 +64,23 @@ pub fn record_prefix(name: &str) -> String {
 /// Constant name without the `NVE_` namespace (`NVE_ABI_MAGIC` -> `ABI_MAGIC`).
 pub fn bare(name: &str) -> &str {
     name.strip_prefix("NVE_").unwrap_or(name)
+}
+
+/// Java `int` constants for a layout value: one constant when every data model agrees, else
+/// `_64` / `_32` (or one constant when those agree) plus `_I386` where i386 differs from ILP32.
+pub fn java_width(name: String, w: &Width) -> String {
+    let line =
+        |suffix: &str, v: usize| format!("    public static final int {name}{suffix} = {v};");
+    let mut out = match w.fixed() {
+        Some(n) => return line("", n),
+        None if w.p64() == w.p32() => line("", w.p64()),
+        None => format!("{}\n{}", line("_64", w.p64()), line("_32", w.p32())),
+    };
+    if w.i386() != w.p32() {
+        out.push('\n');
+        out.push_str(&line("_I386", w.i386()));
+    }
+    out
 }
 
 /// Single-line comment text: newlines folded so a doc can never end the comment early.
@@ -139,7 +156,10 @@ pub mod c {
     }
 
     pub fn field_decl(f: &FieldLayout<'_>) -> String {
-        decl(f.desc.abi_type(), f.desc.name)
+        match f.ty {
+            Ty::Array { elem, len } => format!("{} {}[{len}]", ty(elem), f.desc.name),
+            _ => format!("{} {}", ty(f.desc.abi_type()), f.desc.name),
+        }
     }
 }
 

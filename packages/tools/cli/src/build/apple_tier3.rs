@@ -10,6 +10,8 @@ use super::probe::{EnvironmentProbe, PrerequisiteIssue};
 
 /// The generated C ABI header, relative to [`DEFAULT_HEADERS_REL_PATH`] (it includes `../host/api.h`).
 pub const NVE_ABI_HEADER_FILE: &str = "nve/generated/nve_abi.generated.h";
+/// The Clang module map Swift imports an `.xcframework`'s headers through (`CNveAbi`).
+pub const NVE_MODULE_MAP_FILE: &str = "module.modulemap";
 pub const NVE_INTERFACE_SYMBOL: &str = "nve_get_interface";
 pub const DEFAULT_HEADERS_REL_PATH: &str = "packages/core/host-cxx/include";
 

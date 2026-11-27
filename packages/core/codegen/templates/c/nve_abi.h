@@ -49,27 +49,33 @@ typedef int32_t (*NveHostChannelPublishFn)(void* host_ctx, uint32_t channel_id, 
 {%- if let Some(doc) = r.doc %}
 /* {{ spell::one_line(doc) }} */
 {%- endif %}
+{%- if let Some(n) = r.slab_align %}
+/* Rust aligns `{{ r.name }}` slabs to {{ n }} bytes (`align({{ n }})`); that changes no size or layout here, so C
+ * keeps the natural alignment Swift's ClangImporter imports as a plain value type. */
+{%- endif %}
 {% if r.is_union %}union{% else %}struct{% endif %} {{ r.name }} {
 {%- for f in r.fields %}
-  {{ c::field_decl(f) }};
+  {% if loop.first %}{% if let Some(n) = r.alignas %}NVE_ALIGNAS({{ n }}) {% endif %}{% endif %}{{ c::field_decl(f) }};
 {%- endfor %}
 };
 {% endfor %}
 /* Layouts on every data model NVE runs on, computed from the field types and checked against
  * `rustc`: 64-bit pointers; 32-bit pointers with 8-byte-aligned 64-bit fields (armv7, wasm32,
  * arm64_32, Windows x86); and i386 System V, where 64-bit fields are 4-byte aligned in structs. */
-typedef struct NveAbiU64AlignProbe {
+typedef struct NveDetailU64AlignProbe {
   uint8_t pad;
   uint64_t value;
-} NveAbiU64AlignProbe;
-#define NVE_ABI_U64_FIELD_ALIGN offsetof(NveAbiU64AlignProbe, value)
+} NveDetailU64AlignProbe;
+#define NVE_ABI_U64_FIELD_ALIGN offsetof(NveDetailU64AlignProbe, value)
 NVE_STATIC_ASSERT(sizeof(void*) == 4u || sizeof(void*) == 8u, "NVE supports 32-bit and 64-bit targets only");
 {%- for r in m.records %}
 NVE_STATIC_ASSERT(sizeof({{ r.name }}) == {{ c::width(r.size) }}, "{{ r.name }} size");
+NVE_STATIC_ASSERT(NVE_ALIGNOF({{ r.name }}) == {{ c::width(r.align) }}, "{{ r.name }} alignment");
 {%- for f in r.fields %}
 NVE_STATIC_ASSERT(offsetof({{ r.name }}, {{ f.name() }}) == {{ c::width(f.offset) }}, "{{ r.name }}.{{ f.name() }} offset");
 {%- endfor %}
 {%- endfor %}
+#undef NVE_ABI_U64_FIELD_ALIGN
 {% for iface in m.core.modules %}
 {%- if let Some(doc) = iface.doc %}
 /* {{ spell::one_line(doc) }} */

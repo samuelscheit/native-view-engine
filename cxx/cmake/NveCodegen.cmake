@@ -17,28 +17,23 @@ option(NVE_SKIP_CODEGEN "Skip automatic nve-cli ABI codegen during CMake configu
 
 function(nve_ensure_abi_codegen)
   get_filename_component(_nve_repo_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../.." ABSOLUTE)
-  if(NOT TARGET nve::host_cxx)
-    add_subdirectory("${_nve_repo_root}/packages/core/host-cxx" "${CMAKE_BINARY_DIR}/nve_host_cxx")
-  endif()
-
-  if(NVE_SKIP_CODEGEN)
-    return()
-  endif()
-
   get_property(_nve_codegen_done GLOBAL PROPERTY NVE_ABI_CODEGEN_DONE)
-  if(_nve_codegen_done)
+  if(NVE_SKIP_CODEGEN OR _nve_codegen_done)
+    _nve_add_host_cxx("${_nve_repo_root}")
     return()
   endif()
 
-  set(_nve_generated_dir "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated")
   set(_nve_generated_headers
-    "${_nve_generated_dir}/nve_abi.generated.h"
-    "${_nve_generated_dir}/nve_tables.generated.h"
+    "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated/nve_abi.generated.h"
+    "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated/nve_tables.generated.h"
+    "${_nve_repo_root}/packages/core/host-cxx/tests/hash_vectors.generated.h"
   )
+  # `codegen abi` leaves unchanged files untouched, so freshness is judged against this stamp,
+  # written after every successful run, never against the outputs' timestamps.
+  set(_nve_stamp "${CMAKE_BINARY_DIR}/nve_abi_codegen.stamp")
 
   set(_nve_needs_codegen FALSE)
   set(_nve_reason "")
-
   foreach(_hdr IN LISTS _nve_generated_headers)
     if(NOT EXISTS "${_hdr}")
       set(_nve_needs_codegen TRUE)
@@ -46,24 +41,24 @@ function(nve_ensure_abi_codegen)
       break()
     endif()
   endforeach()
+  if(NOT _nve_needs_codegen AND NOT EXISTS "${_nve_stamp}")
+    set(_nve_needs_codegen TRUE)
+    set(_nve_reason "first configure of this build tree")
+  endif()
 
   if(NOT _nve_needs_codegen)
     file(GLOB_RECURSE _nve_abi_sources
       "${_nve_repo_root}/packages/core/abi/src/*.rs"
       "${_nve_repo_root}/packages/core/abi-macros/src/*.rs"
+      "${_nve_repo_root}/packages/core/hash/src/*.rs"
       "${_nve_repo_root}/packages/core/components/src/tables/*.rs"
       "${_nve_repo_root}/packages/core/codegen/src/*.rs"
       "${_nve_repo_root}/packages/core/codegen/templates/*"
     )
     foreach(_src IN LISTS _nve_abi_sources)
-      foreach(_hdr IN LISTS _nve_generated_headers)
-        if("${_src}" IS_NEWER_THAN "${_hdr}" AND NOT "${_hdr}" IS_NEWER_THAN "${_src}")
-          set(_nve_needs_codegen TRUE)
-          set(_nve_reason "${_src} is newer than ${_hdr}")
-          break()
-        endif()
-      endforeach()
-      if(_nve_needs_codegen)
+      if("${_src}" IS_NEWER_THAN "${_nve_stamp}")
+        set(_nve_needs_codegen TRUE)
+        set(_nve_reason "${_src} changed since the last codegen")
         break()
       endif()
     endforeach()
@@ -97,6 +92,7 @@ function(nve_ensure_abi_codegen)
         "Run 'cargo run --locked -p nve-cli -- codegen abi' manually to inspect."
       )
     endif()
+    file(TOUCH "${_nve_stamp}")
   endif()
 
   if(_nve_cargo_bin AND NOT TARGET nve_codegen_abi)
@@ -109,4 +105,12 @@ function(nve_ensure_abi_codegen)
   endif()
 
   set_property(GLOBAL PROPERTY NVE_ABI_CODEGEN_DONE TRUE)
+  _nve_add_host_cxx("${_nve_repo_root}")
+endfunction()
+
+# Adds the static `nve::host_cxx` runtime (after codegen, so its generated headers exist).
+function(_nve_add_host_cxx repo_root)
+  if(NOT TARGET nve::host_cxx)
+    add_subdirectory("${repo_root}/packages/core/host-cxx" "${CMAKE_BINARY_DIR}/nve_host_cxx")
+  endif()
 endfunction()

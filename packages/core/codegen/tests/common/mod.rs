@@ -31,18 +31,21 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 /// Recreates the `packages/core/host-cxx/include` tree under `dir`: the static `nve/host/*.h`
-/// headers plus a freshly generated `nve/generated/nve_abi.generated.h`, so compiler tests (which
-/// pass `-I dir` and `#include <nve/generated/nve_abi.generated.h>`) never depend on generated
-/// files existing in the repo.
+/// headers plus freshly generated `nve/generated/nve_{abi,tables}.generated.h` (17 core tables)
+/// and `hash_vectors.generated.h`, so compiler tests (`-I dir`) never depend on generated files
+/// existing in the repo.
 pub fn write_generated_c_abi_headers(dir: &Path) {
     copy_tree(
         &workspace_root().join("packages/core/host-cxx/include/nve/host"),
         &dir.join("nve/host"),
     );
-    for file in nve_codegen::generate_abi_files().expect("generate host ABI files") {
-        if let Some(rel) = file
-            .relative_path
+    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+        .expect("generate host ABI files");
+    for file in files {
+        let rel = file.relative_path.as_str();
+        if let Some(rel) = rel
             .strip_prefix("packages/core/host-cxx/include/")
+            .or_else(|| rel.strip_prefix("packages/core/host-cxx/tests/"))
         {
             let out = dir.join(rel);
             std::fs::create_dir_all(out.parent().expect("header has a parent dir"))

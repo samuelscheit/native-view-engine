@@ -41,6 +41,14 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
   - **Drift guard**: `nve-arch-invariants` checks every mirrored constant and golden XXH64 digest against `nve_abi`, `nve_store`, and `nve_hash`. A second check keeps the binary-value validators allocation-free (no view, copy, or decode).
   - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` now emits 16 artifacts.
   - **Zero runtime `serde_json` in core**: `NveExportSpec` JSON loading moved into `nve-cli`. `PENDING_CLEANUP_SERDE_JSON` and `PENDING_CLEANUP_PERSONAL_PATHS` are empty.
+  - **Batch 2A Pass-1 hardening (commit 4b)**
+    - **Explicit alignment.** C now honors Rust `#[repr(C, align(N))]` with `NVE_ALIGNAS`. This fixes a 68- vs 72-byte `NveDirectEvent` ABI mismatch on i386 that the first data-model asserts had locked in.
+    - **Layouts checked against `rustc`.** `const` asserts for every record, field, and data model compile on i686 / armv7 Android, wasm32, and the 64-bit host.
+    - **`NVE_API`** no longer forces `dllimport` on Windows static libraries.
+    - **Validation.** Every const, signature, alias, array, and table name / field is checked before rendering.
+    - **Generated-header coverage.** Strict C11 / C++20 compiles of all generated headers on 9 data-model targets (including LLP64 and `arm64_32`).
+    - **Other fixes:** a stamp-based CMake freshness check, a module map for `nve build --xcframework`, `_I386` Java layout constants, and roughly 3x fewer codegen allocations.
+    - **Tests:** `Str` / `ffi.sizeOf` checks in every host suite.
   - **Pass-1 hardening of the `syn` hybrid spec frontend (commit 4)**
     - **Iterative nesting bound.** A token walk runs before `syn` recurses; 100k levels are rejected on a 2 MiB stack.
     - **Located errors instead of silent drops.** Rejected forms: variadics, generics / `where`, `async` / `const`, non-`extern "C"` functions, trait bodies / supertraits, non-unit enum variants, `packed`, raw identifiers, bare `Option` / `Vec` / `Result`, non-finite defaults, malformed or unknown attribute keys, misspelled `nve_hybrid_*` markers.

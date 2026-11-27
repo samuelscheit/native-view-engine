@@ -18,32 +18,34 @@ NVE_EXTERN_C_BEGIN
 #define NVE_TABLE_COUNT {{ tables.len() }}u
 
 /* X-macro over every table: `X(IDENT, "reverse.dns.name")`. */
-#define NVE_TABLE_LIST(X) \
-{%- for t in tables %}
-  X({{ spell::screaming(t.ident) }}, "{{ t.desc.name }}"){% if !loop.last %} \{% endif %}
+#define NVE_TABLE_LIST(X)
+{%- for t in tables %} \
+  X({{ t.screaming }}, "{{ t.desc.name }}")
 {%- endfor %}
 {% for t in tables %}
 /* `{{ t.desc.name }}`: {% if t.dense() %}dense{% else %}sparse{% endif %}, {{ t.desc.words() }} word(s). */
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_NAME "{{ t.desc.name }}"
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_KEY {{ t.key.hex() }}ULL
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_SCHEMA_HASH {{ t.schema.hex() }}ULL
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_WORDS {{ t.desc.words() }}u
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_DENSE {% if t.dense() %}1{% else %}0{% endif %}
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_FLAGS {{ t.desc.flags }}u
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_STR_WORDS 0x{{ "{:08X}"|format(t.desc.str_words) }}u
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_RESOURCE_WORDS 0x{{ "{:08X}"|format(t.desc.resource_words) }}u
-NVE_TABLE_CONST uint32_t NVE_TABLE_{{ spell::screaming(t.ident) }}_DEFAULTS[{{ t.desc.words() }}] = {
+#define NVE_TABLE_{{ t.screaming }}_NAME "{{ t.desc.name }}"
+#define NVE_TABLE_{{ t.screaming }}_KEY {{ t.key.hex() }}ULL
+#define NVE_TABLE_{{ t.screaming }}_SCHEMA_HASH {{ t.schema.hex() }}ULL
+#define NVE_TABLE_{{ t.screaming }}_WORDS {{ t.desc.words() }}u
+#define NVE_TABLE_{{ t.screaming }}_DENSE {% if t.dense() %}1{% else %}0{% endif %}
+#define NVE_TABLE_{{ t.screaming }}_FLAGS {{ t.desc.flags }}u
+#define NVE_TABLE_{{ t.screaming }}_STR_WORDS 0x{{ "{:08X}"|format(t.desc.str_words) }}u
+#define NVE_TABLE_{{ t.screaming }}_RESOURCE_WORDS 0x{{ "{:08X}"|format(t.desc.resource_words) }}u
+NVE_TABLE_CONST uint32_t NVE_TABLE_{{ t.screaming }}_DEFAULTS[{{ t.desc.words() }}] = {
 {%- for w in t.desc.defaults %}0x{{ "{:08X}"|format(w) }}u{% if !loop.last %}, {% endif %}{% endfor -%}
 };
 /* X-macro over the table's fields: `X(TABLE_IDENT, FIELD_IDENT)`. */
-#define NVE_TABLE_{{ spell::screaming(t.ident) }}_FIELD_LIST(X) \
-{%- for f in t.desc.fields %}
-  X({{ spell::screaming(t.ident) }}, {{ spell::screaming(f.name) }}){% if !loop.last %} \{% endif %}
+#define NVE_TABLE_{{ t.screaming }}_FIELD_LIST(X)
+{%- for f in t.desc.fields %} \
+  X({{ t.screaming }}, {{ spell::screaming(f.name) }})
 {%- endfor %}
 {%- for f in t.desc.fields %}
-NVE_TABLE_CONST NveFieldSpec NVE_TABLE_{{ spell::screaming(t.ident) }}_{{ spell::screaming(f.name) }} = { {{ f.word }}u, {{ f.shift }}u, {{ model::host_bits(f) }}u, {{ model::kind::c(f.kind) }} };
+NVE_TABLE_CONST NveFieldSpec NVE_TABLE_{{ t.screaming }}_{{ spell::screaming(f.name) }} = { {{ f.word }}u, {{ f.shift }}u, {{ model::host_bits(f) }}u, {{ model::kind::c(f.kind) }} };
 {%- endfor %}
 {% endfor %}
+#undef NVE_TABLE_CONST
+
 NVE_EXTERN_C_END
 
 #endif /* NVE_TABLES_GENERATED_H */

@@ -6,9 +6,9 @@ order: 1
 
 # Bi-Directional Codegen (`nve-codegen`)
 
-`packages/core/codegen` has zero external dependencies beyond `std`, `serde`, and `serde_json`, and powers four code generation pipelines from a single unified IR:
+`packages/core/codegen` depends on `nve-abi` / `nve-hash`, `serde` derives, `askama` (templates), and `syn` / `proc-macro2` (the hybrid spec frontend), and powers four code generation pipelines:
 
-1. **Single-source Core & Scene ABI generation (`cargo nve codegen abi`)** — Emits all 10 checked-in ABI artifacts across C, Swift, Dart, Java, and TypeScript from `specs/nve_core_abi.nve.rs` and `specs/nve_scene_abi.nve.rs`.
+1. **Host ABI data (`cargo nve codegen abi`)** — Renders the colocated `#[derive(NveAbi)]` descriptors and the core `TableDesc`s through Askama templates into 15 gitignored files across C, Swift, Java, Dart, and TypeScript, next to the static `packages/core/host-*` runtimes.
 2. **Nitro-style 6-target Hybrid FFI (`cargo nve codegen hybrid`)** — Parses declarative Rust `#[nve_hybrid_*]` specs and emits direct binary FFI bindings for `rust`, `cpp`, `swift`, `kotlin`, `dart`, and `ts`.
 3. **React Native Import (`cargo nve codegen import-rn`)** — Parses RN Fabric `*NativeComponent.{ts,js}` and TurboModule `Native*.{ts,js}` specs (TypeScript or Flow) into zero-JS Rust `nve-dioxus` + C++20 Fabric adapters.
 4. **5-Target Component Export (`cargo nve codegen export`)** — Exports one `NveExportSpec` into drop-in wrappers for React Native Fabric, Flutter, SwiftUI, Jetpack Compose, and Web Components.

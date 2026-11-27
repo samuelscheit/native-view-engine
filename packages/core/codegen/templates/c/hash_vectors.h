@@ -14,7 +14,7 @@ typedef struct NveHashVector {
 
 static const NveHashVector NVE_HASH_VECTORS[] = {
 {%- for v in vectors %}
-    {"{{ v.label }}", "{{ v.hex() }}", UINT64_C({{ v.seed.hex() }}), UINT64_C({{ v.expected.hex() }})},
+    {"{{ v.label }}", "{{ v.hex }}", UINT64_C({{ v.seed.hex() }}), UINT64_C({{ v.expected.hex() }})},
 {%- endfor %}
 };
 

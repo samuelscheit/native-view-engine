@@ -29,5 +29,15 @@ final class GeneratedTest {
         c.that(layout.f32(0, NveTables.Layout.FLEX_SHRINK) == 1.0f, "Layout.flex_shrink default is 1.0");
         defaults[0] = 7;
         c.eq(NveTables.Layout.defaults()[0], 2, "defaults() returns a fresh copy");
+
+        // A generated two-word STR spec reads its (offset, len) span.
+        final FieldSpec label = NveTables.Accessibility.LABEL;
+        final int[] row = new int[NveTables.Accessibility.WORDS];
+        row[label.word] = 5;
+        row[label.word + 1] = 7;
+        final TableReader a11y = new TableReader()
+                .attach(NveTables.Accessibility.KEY, 0, NveTables.Accessibility.WORDS, 1, TableSceneTest.words(row), null, null, 0);
+        c.eq(a11y.strOffset(0, label), 5, "Accessibility.label offset");
+        c.eq(a11y.strLen(0, label), 7, "Accessibility.label len");
     }
 }

@@ -23,6 +23,18 @@ final class GeneratedAbiTests: XCTestCase {
         XCTAssertEqual(NveTables.Layout.defaults.count, NveTables.Layout.words)
     }
 
+    func testGeneratedStrFieldReadsItsSpan() throws {
+        var row = [UInt32](repeating: 0, count: NveTables.Accessibility.words)
+        let label = NveTables.Accessibility.label
+        row[Int(label.word)] = 5
+        row[Int(label.word) + 1] = 7
+        try row.withUnsafeBufferPointer { rows in
+            let table = try XCTUnwrap(TableReader(
+                key: NveTables.Accessibility.key, slot: 0, words: rows.count, rowCount: 1, rows: rows))
+            XCTAssertEqual(table.str(0, label), StrSpan(offset: 5, len: 7))
+        }
+    }
+
     func testSceneReaderOpensAGeneratedFrame() throws {
         let row = NveTables.Layout.defaults
         let text = Array("hi".utf8)

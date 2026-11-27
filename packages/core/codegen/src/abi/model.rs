@@ -33,18 +33,40 @@ impl U64Split {
     }
 
     /// `0x0123456789ABCDEF`
-    pub fn hex(&self) -> String {
-        format!("0x{:016X}", self.value)
+    pub fn hex(&self) -> HexLiteral {
+        HexLiteral {
+            value: self.value,
+            digits: 16,
+        }
     }
 
     /// `0x89ABCDEF`
-    pub fn lo_hex(&self) -> String {
-        format!("0x{:08X}", self.lo)
+    pub fn lo_hex(&self) -> HexLiteral {
+        HexLiteral {
+            value: u64::from(self.lo),
+            digits: 8,
+        }
     }
 
     /// `0x01234567`
-    pub fn hi_hex(&self) -> String {
-        format!("0x{:08X}", self.hi)
+    pub fn hi_hex(&self) -> HexLiteral {
+        HexLiteral {
+            value: u64::from(self.hi),
+            digits: 8,
+        }
+    }
+}
+
+/// An upper-case `0x...` literal of fixed width, written straight into the template output.
+#[derive(Debug, Clone, Copy)]
+pub struct HexLiteral {
+    value: u64,
+    digits: usize,
+}
+
+impl std::fmt::Display for HexLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "0x{:0width$X}", self.value, width = self.digits)
     }
 }
 
@@ -76,6 +98,7 @@ impl<'a> AbiModel<'a> {
         host_status: &'a AbiEnumDescriptor,
     ) -> Result<Self, CodegenError> {
         let records = layout_records(&[core, scene])?;
+        super::validate::abi(&[core, scene], &records)?;
         let find = |name: &str| {
             records.iter().position(|r| r.name == name).ok_or_else(|| {
                 CodegenError::validation(format!("the ABI declares no record `{name}`"))
@@ -156,6 +179,8 @@ pub struct TableModel<'a> {
     pub desc: &'a TableDesc,
     /// `nve.text_input` -> `TextInput` (hosts nest it under `NveTables`).
     pub ident: String,
+    /// `nve.text_input` -> `TEXT_INPUT` (C macro / Java constant prefix).
+    pub screaming: String,
     pub key: U64Split,
     pub schema: U64Split,
 }
@@ -172,7 +197,9 @@ pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>,
     let mut names = BTreeSet::new();
     let mut out = Vec::with_capacity(tables.len());
     for desc in tables {
-        let ident = super::spell::pascal(desc.name.strip_prefix("nve.").unwrap_or(desc.name));
+        super::validate::table(desc)?;
+        let short = desc.name.strip_prefix("nve.").unwrap_or(desc.name);
+        let ident = super::spell::pascal(short);
         if !names.insert(ident.clone()) {
             return Err(table_error(desc, "duplicate table name"));
         }
@@ -188,6 +215,7 @@ pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>,
         }
         out.push(TableModel {
             desc,
+            screaming: short.replace('.', "_").to_ascii_uppercase(),
             ident,
             key: U64Split::new(desc.key.0),
             schema: U64Split::new(desc.schema_hash),
@@ -219,7 +247,7 @@ fn check_field(desc: &TableDesc, f: &FieldDesc, words: usize) -> Result<(), Code
     Ok(())
 }
 
-fn table_error(desc: &TableDesc, why: &str) -> CodegenError {
+pub(super) fn table_error(desc: &TableDesc, why: &str) -> CodegenError {
     CodegenError::validation(format!("table `{}`: {why}", desc.name))
 }
 
@@ -227,25 +255,53 @@ fn table_error(desc: &TableDesc, why: &str) -> CodegenError {
 pub mod kind {
     use nve_abi::table::FieldKind;
 
-    const NAMES: [(FieldKind, &str, &str, &str); 10] = [
-        (FieldKind::U32, "NVE_FIELD_U32", "u32", "U32"),
-        (FieldKind::I32, "NVE_FIELD_I32", "i32", "I32"),
-        (FieldKind::F32, "NVE_FIELD_F32", "f32", "F32"),
-        (FieldKind::Bool, "NVE_FIELD_BOOL", "bool", "Bool"),
-        (FieldKind::Enum, "NVE_FIELD_ENUM", "enumeration", "Enum"),
-        (FieldKind::Color, "NVE_FIELD_COLOR", "color", "Color"),
-        (FieldKind::Length, "NVE_FIELD_LENGTH", "length", "Length"),
-        (FieldKind::Str, "NVE_FIELD_STR", "str", "Str"),
+    /// `(kind, C, Swift, TypeScript, Java)`.
+    type Row = (
+        FieldKind,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    );
+
+    const NAMES: [Row; 10] = [
+        (FieldKind::U32, "NVE_FIELD_U32", "u32", "U32", "U32"),
+        (FieldKind::I32, "NVE_FIELD_I32", "i32", "I32", "I32"),
+        (FieldKind::F32, "NVE_FIELD_F32", "f32", "F32", "F32"),
+        (FieldKind::Bool, "NVE_FIELD_BOOL", "bool", "Bool", "BOOL"),
+        (
+            FieldKind::Enum,
+            "NVE_FIELD_ENUM",
+            "enumeration",
+            "Enum",
+            "ENUM",
+        ),
+        (
+            FieldKind::Color,
+            "NVE_FIELD_COLOR",
+            "color",
+            "Color",
+            "COLOR",
+        ),
+        (
+            FieldKind::Length,
+            "NVE_FIELD_LENGTH",
+            "length",
+            "Length",
+            "LENGTH",
+        ),
+        (FieldKind::Str, "NVE_FIELD_STR", "str", "Str", "STR"),
         (
             FieldKind::Resource,
             "NVE_FIELD_RESOURCE",
             "resource",
             "Resource",
+            "RESOURCE",
         ),
-        (FieldKind::Node, "NVE_FIELD_NODE", "node", "Node"),
+        (FieldKind::Node, "NVE_FIELD_NODE", "node", "Node", "NODE"),
     ];
 
-    fn row(k: FieldKind) -> (FieldKind, &'static str, &'static str, &'static str) {
+    fn row(k: FieldKind) -> Row {
         NAMES[k as usize]
     }
 
@@ -260,8 +316,8 @@ pub mod kind {
     }
 
     /// Java `FieldKind` constant.
-    pub fn java(k: &FieldKind) -> String {
-        row(*k).3.to_ascii_uppercase()
+    pub fn java(k: &FieldKind) -> &'static str {
+        row(*k).4
     }
 
     /// Dart `FieldKind` value (`bool` is a keyword there).
@@ -293,15 +349,21 @@ pub mod kind {
 pub struct HashVector {
     pub label: &'static str,
     pub bytes: Vec<u8>,
+    /// Lowercase hex of `bytes`, computed once (hosts decode it; no language needs a large array
+    /// literal).
+    pub hex: String,
     pub seed: U64Split,
     pub expected: U64Split,
 }
 
-impl HashVector {
-    /// Lowercase hex of `bytes` (hosts decode it; no language needs a large array literal).
-    pub fn hex(&self) -> String {
-        self.bytes.iter().map(|b| format!("{b:02x}")).collect()
+fn lower_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(2 * bytes.len());
+    for &b in bytes {
+        out.push(char::from(DIGITS[usize::from(b >> 4)]));
+        out.push(char::from(DIGITS[usize::from(b & 0xF)]));
     }
+    out
 }
 
 /// Longest vector input in bytes (C suites size their scratch buffers with it).
@@ -354,6 +416,7 @@ pub fn hash_vectors() -> Vec<HashVector> {
         .into_iter()
         .map(|(label, bytes, seed)| HashVector {
             label,
+            hex: lower_hex(&bytes),
             expected: U64Split::new(xxh64(&bytes, seed)),
             seed: U64Split::new(seed),
             bytes,

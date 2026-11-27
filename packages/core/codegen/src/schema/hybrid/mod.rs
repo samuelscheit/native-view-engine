@@ -3,11 +3,9 @@
 //! code generator.
 
 mod file_spec;
-pub mod schema_bridge;
 mod validate;
 
 pub use file_spec::HybridFileSpec;
-pub use schema_bridge::from_abi_descriptor;
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;

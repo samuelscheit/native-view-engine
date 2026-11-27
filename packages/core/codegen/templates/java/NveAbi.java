@@ -4,8 +4,9 @@ package dev.nve.host.generated;
 import dev.nve.host.Key64;
 
 /**
- * NVE Core + Scene ABI constants, interface IDs, enum codes, and record layouts. A record whose
- * layout depends on the pointer width has {@code _32} / {@code _64} variants.
+ * NVE Core + Scene ABI constants, interface IDs, enum codes, and record layouts. A layout constant
+ * that differs between data models has {@code _64} / {@code _32} (ILP32: armv7, arm64_32) variants,
+ * plus {@code _I386} where i386 System V (Android x86) differs from ILP32.
  */
 public final class NveAbi {
     private NveAbi() {}
@@ -33,19 +34,9 @@ public final class NveAbi {
 {%- for r in m.records %}
 
     // {{ r.name }}
-{%- if let Some(size) = r.size.fixed() %}
-    public static final int SIZEOF_{{ spell::record_prefix(r.name) }} = {{ size }};
-{%- else %}
-    public static final int SIZEOF_{{ spell::record_prefix(r.name) }}_32 = {{ r.size.p32() }};
-    public static final int SIZEOF_{{ spell::record_prefix(r.name) }}_64 = {{ r.size.p64() }};
-{%- endif %}
+{{ spell::java_width(format!("SIZEOF_{}", spell::record_prefix(r.name)), r.size) }}
 {%- for f in r.fields %}
-{%- if let Some(off) = f.offset.fixed() %}
-    public static final int {{ spell::record_prefix(r.name) }}_OFFSET_{{ spell::screaming(f.name()) }} = {{ off }};
-{%- else %}
-    public static final int {{ spell::record_prefix(r.name) }}_OFFSET_{{ spell::screaming(f.name()) }}_32 = {{ f.offset.p32() }};
-    public static final int {{ spell::record_prefix(r.name) }}_OFFSET_{{ spell::screaming(f.name()) }}_64 = {{ f.offset.p64() }};
-{%- endif %}
+{{ spell::java_width(format!("{}_OFFSET_{}", spell::record_prefix(r.name), spell::screaming(f.name())), f.offset) }}
 {%- endfor %}
 {%- endfor %}
 }

@@ -373,6 +373,9 @@ jobs:
       - name: Build and test Rust workspace + Skia shell
         shell: pwsh
         run: |
+          # Generated host ABI files first: tests check them against `nve-abi` (gitignored, never stale).
+          cargo run --locked -p nve-cli -- codegen abi
+          cargo run --locked -p nve-cli -- codegen abi --check
           cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
           cargo test --locked -p nve-arch-invariants
           cargo test --workspace --exclude nve-arch-invariants

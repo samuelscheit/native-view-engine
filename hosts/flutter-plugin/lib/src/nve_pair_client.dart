@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 
 import 'event_codec.dart';
 import 'package:nve_host/nve_host.dart';
-import 'package:nve_host/nve_host.dart' as nve_host show xxh64;
 
 typedef NvePairedFrameCallback = void Function(int seq, Uint8List frameBytes);
 
@@ -92,7 +91,7 @@ abstract final class NveWireCodec {
   static const Key64 xxh64Seed = Key64(0x49524532, 0x4E564557);
 
   static Key64 xxh64(Uint8List bytes, {Key64 seed = xxh64Seed}) =>
-      nve_host.xxh64(bytes, seed);
+      (Xxh64Hasher(seed)..update(bytes)).digest();
 
   static Uint8List encodeFrame({
     required NveWireChannel channel,
