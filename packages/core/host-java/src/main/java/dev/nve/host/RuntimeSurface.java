@@ -27,15 +27,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * by the same {@link #render} loop (bounded; the rest is posted), never by recursion. Structural
  * calls ({@link #attachApp}, {@link #setViewport}, ...) inside {@code onFrame} throw.
  */
-public final class RuntimeSurface implements AutoCloseable {
+public final class RuntimeSurface implements AutoCloseable, FrameHost {
     /** Receives each new frame while the scene is acquired. */
     public interface FrameConsumer {
         void onFrame(RuntimeSceneReader scene, RuntimeSurface surface);
-    }
-
-    /** Writes one or more events into the surface's ring. */
-    public interface EventWriter {
-        void write(EventRingWriter ring);
     }
 
     static final int INITIAL_RING_BYTES = 64 * 1024;
@@ -159,6 +154,7 @@ public final class RuntimeSurface implements AutoCloseable {
      * inside {@code onFrame}, right after the frame is released. A batch that does not fit flushes
      * the pending events and grows the ring (up to 16 MiB). Returns a {@code STATUS_*} code.
      */
+    @Override
     public int send(EventWriter writer) {
         if (handle == 0L) return NveRuntimeAbi.STATUS_INVALID_ARG;
         final int count = ring.count();
@@ -218,6 +214,7 @@ public final class RuntimeSurface implements AutoCloseable {
     }
 
     /** Syncs the runtime's scroll offset of {@code nodeId} (hit testing, app scroll state); deferred inside {@code onFrame}. */
+    @Override
     public int scrollBy(int nodeId, float dx, float dy) {
         if (handle == 0L) return NveRuntimeAbi.STATUS_INVALID_ARG;
         if (!inFrame) return NativeRuntime.scrollBy(handle, nodeId, dx, dy, scrollOut);
@@ -307,6 +304,7 @@ public final class RuntimeSurface implements AutoCloseable {
      * move its position freely), or {@code null} outside {@code onFrame} / for dead ids; the kind
      * lands in {@link #resourceKind}.
      */
+    @Override
     public ByteBuffer resource(int id) {
         kind[0] = 0L;
         if (!inFrame || handle == 0L) return null;
@@ -314,6 +312,7 @@ public final class RuntimeSurface implements AutoCloseable {
         return b == null ? null : b.duplicate();
     }
 
+    @Override
     public Key64 resourceKind() {
         return Key64.of(kind[0]);
     }

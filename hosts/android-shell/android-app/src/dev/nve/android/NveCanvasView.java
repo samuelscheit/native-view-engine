@@ -7,15 +7,19 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.view.View;
 
+import dev.nve.host.Rgba;
+
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
- * Zero-allocation `NVE_DRAW1` binary vector draw-list renderer for `KIND_SKIA_CANVAS` nodes.
+ * `NVE_DRAW1` vector draw-list renderer of {@code nve.canvas} nodes.
  *
- * Decodes little-endian `NVE_DRAW1` streams directly from a `ByteBuffer` (either a zero-copy
- * `text_slab` slice or a retained reusable buffer copied from the batched dirty-node metadata slab)
- * and paints all 8 opcodes onto `android.graphics.Canvas` using reusable `Paint`, `Path`, and
- * `RectF` objects.
+ * <p>{@link #setDrawList} copies the frame's draw-list resource (its native buffer dies when the
+ * frame is released) into a reusable little-endian buffer (no steady-state allocation once warm),
+ * validates it once, and {@link #onDraw} paints all 8 opcodes with reusable {@code Paint},
+ * {@code Path}, and {@code RectF} objects.
  */
 public final class NveCanvasView extends View {
     public static final int HEADER_SIZE = 15;
@@ -65,51 +69,28 @@ public final class NveCanvasView extends View {
         }
     }
 
-    /**
-     * Zero-copy bind directly to a stable `ByteBuffer` slice (e.g. `text_slab`).
-     */
-    public void setDrawListSlice(ByteBuffer buffer, int offset, int length) {
-        if (buffer == null || length < HEADER_SIZE || !validate(buffer, offset, length)) {
-            clearDrawList();
-            return;
-        }
-        drawBuffer = buffer;
-        drawOffset = offset;
-        drawLength = length;
-        drawValid = true;
-        invalidate();
-    }
-
-    /**
-     * Copies `length` bytes from a transient frame buffer (such as the batched dirty-node
-     * metadata slab) into a reusable per-view `ByteBuffer` (zero steady-state allocation once
-     * warmed up) so subsequent repaints remain memory-safe across frames.
-     */
-    public void setDrawListCopy(ByteBuffer src, int offset, int length) {
-        if (src == null || length < HEADER_SIZE || !validate(src, offset, length)) {
+    /** Copies and validates draw list {@code src} (its remaining bytes); an invalid one clears the view. */
+    public void setDrawList(ByteBuffer src) {
+        final int length = src == null ? 0 : src.remaining();
+        if (length < HEADER_SIZE) {
             clearDrawList();
             return;
         }
         if (retainedBuffer == null || retainedBuffer.capacity() < length) {
-            int alloc = Math.max(length, retainedBuffer != null ? retainedBuffer.capacity() << 1 : 256);
-            retainedBuffer = ByteBuffer.allocateDirect(alloc);
+            final int alloc = Math.max(length, retainedBuffer != null ? retainedBuffer.capacity() << 1 : 256);
+            retainedBuffer = ByteBuffer.allocateDirect(alloc).order(ByteOrder.LITTLE_ENDIAN);
         }
-        for (int i = 0; i < length; i++) {
-            retainedBuffer.put(i, src.get(offset + i));
+        ((Buffer) retainedBuffer).clear();
+        retainedBuffer.put(src.duplicate());  // one bulk copy
+        if (!validate(retainedBuffer, 0, length)) {
+            clearDrawList();
+            return;
         }
         drawBuffer = retainedBuffer;
         drawOffset = 0;
         drawLength = length;
         drawValid = true;
         invalidate();
-    }
-
-    public void setDrawListBytes(byte[] bytes) {
-        if (bytes == null || bytes.length < HEADER_SIZE) {
-            clearDrawList();
-            return;
-        }
-        setDrawListSlice(ByteBuffer.wrap(bytes), 0, bytes.length);
     }
 
     public void clearDrawList() {
@@ -121,10 +102,6 @@ public final class NveCanvasView extends View {
         if (hadData) {
             invalidate();
         }
-    }
-
-    public boolean hasValidDrawList() {
-        return drawValid && drawBuffer != null && drawLength >= HEADER_SIZE;
     }
 
     @Override
@@ -243,10 +220,11 @@ public final class NveCanvasView extends View {
     }
 
     /**
-     * Decodes a validated `NVE_DRAW1` slice directly from `buf` onto `canvas` with zero per-op
-     * allocations. Returns `false` safely on corrupt/truncated input without throwing.
+     * Paints a {@link #validate validated} `NVE_DRAW1` slice of `buf` onto `canvas` with zero per-op
+     * allocations (validated once by {@link #setDrawList}, not per draw). Returns `false` instead
+     * of throwing should the bytes still be inconsistent.
      */
-    public static boolean decodeAndDraw(
+    private static boolean decodeAndDraw(
             Canvas canvas,
             ByteBuffer buf,
             int offset,
@@ -258,7 +236,7 @@ public final class NveCanvasView extends View {
             Paint strokePaint,
             Path polyPath,
             RectF scratchRect) {
-        if (canvas == null || !validate(buf, offset, length)) {
+        if (canvas == null) {
             return false;
         }
         final float s = (Float.isFinite(scale) && scale > 0.0f) ? scale : 1.0f;
@@ -274,7 +252,7 @@ public final class NveCanvasView extends View {
                         int rgba = readI32Le(buf, pos);
                         pos += 4;
                         if ((rgba >>> 24) != 0) {
-                            fillPaint.setColor(rgbaToArgb(rgba));
+                            fillPaint.setColor(Rgba.toArgb(rgba));
                             canvas.drawRect(0.0f, 0.0f, viewWidthPx, viewHeightPx, fillPaint);
                         }
                         break;
@@ -287,7 +265,7 @@ public final class NveCanvasView extends View {
                         int rgba = readI32Le(buf, pos + 16);
                         pos += 20;
                         if (w > 0.0f && h > 0.0f && (rgba >>> 24) != 0) {
-                            fillPaint.setColor(rgbaToArgb(rgba));
+                            fillPaint.setColor(Rgba.toArgb(rgba));
                             scratchRect.set(x * s, y * s, (x + w) * s, (y + h) * s);
                             canvas.drawRect(scratchRect, fillPaint);
                         }
@@ -302,7 +280,7 @@ public final class NveCanvasView extends View {
                         int rgba = readI32Le(buf, pos + 20);
                         pos += 24;
                         if (w > 0.0f && h > 0.0f && (rgba >>> 24) != 0) {
-                            fillPaint.setColor(rgbaToArgb(rgba));
+                            fillPaint.setColor(Rgba.toArgb(rgba));
                             float r = Math.max(0.0f, radius) * s;
                             scratchRect.set(x * s, y * s, (x + w) * s, (y + h) * s);
                             canvas.drawRoundRect(scratchRect, r, r, fillPaint);
@@ -316,7 +294,7 @@ public final class NveCanvasView extends View {
                         int rgba = readI32Le(buf, pos + 12);
                         pos += 16;
                         if (radius > 0.0f && (rgba >>> 24) != 0) {
-                            fillPaint.setColor(rgbaToArgb(rgba));
+                            fillPaint.setColor(Rgba.toArgb(rgba));
                             canvas.drawCircle(cx * s, cy * s, radius * s, fillPaint);
                         }
                         break;
@@ -330,7 +308,7 @@ public final class NveCanvasView extends View {
                         int rgba = readI32Le(buf, pos + 20);
                         pos += 24;
                         if (width > 0.0f && (rgba >>> 24) != 0) {
-                            strokePaint.setColor(rgbaToArgb(rgba));
+                            strokePaint.setColor(Rgba.toArgb(rgba));
                             strokePaint.setStrokeWidth(width * s);
                             canvas.drawLine(x0 * s, y0 * s, x1 * s, y1 * s, strokePaint);
                         }
@@ -352,7 +330,7 @@ public final class NveCanvasView extends View {
                                         readF32Le(buf, ptOff) * s,
                                         readF32Le(buf, ptOff + 4) * s);
                             }
-                            strokePaint.setColor(rgbaToArgb(rgba));
+                            strokePaint.setColor(Rgba.toArgb(rgba));
                             strokePaint.setStrokeWidth(width * s);
                             canvas.drawPath(polyPath, strokePaint);
                         }
@@ -400,15 +378,13 @@ public final class NveCanvasView extends View {
         return true;
     }
 
+    // `buf` is always the view's own little-endian copy.
     private static int readU16Le(ByteBuffer buf, int pos) {
-        return (buf.get(pos) & 0xFF) | ((buf.get(pos + 1) & 0xFF) << 8);
+        return buf.getShort(pos) & 0xFFFF;
     }
 
     private static int readI32Le(ByteBuffer buf, int pos) {
-        return (buf.get(pos) & 0xFF)
-                | ((buf.get(pos + 1) & 0xFF) << 8)
-                | ((buf.get(pos + 2) & 0xFF) << 16)
-                | ((buf.get(pos + 3) & 0xFF) << 24);
+        return buf.getInt(pos);
     }
 
     private static long readU32Le(ByteBuffer buf, int pos) {
@@ -419,11 +395,4 @@ public final class NveCanvasView extends View {
         return Float.intBitsToFloat(readI32Le(buf, pos));
     }
 
-    private static int rgbaToArgb(int rgba) {
-        int r = rgba & 0xFF;
-        int g = (rgba >>> 8) & 0xFF;
-        int b = (rgba >>> 16) & 0xFF;
-        int a = (rgba >>> 24) & 0xFF;
-        return (a << 24) | (r << 16) | (g << 8) | b;
-    }
 }

@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.nve.host.NativeRuntime
 import dev.nve.host.RuntimeSceneReader
+import dev.nve.host.FrameHost
 import dev.nve.host.RuntimeSurface
 import dev.nve.host.generated.NveAbi
 import dev.nve.host.generated.NveRuntimeAbi
@@ -12,7 +13,8 @@ import java.util.concurrent.Executor
 
 /** What a surface shows: a local app `.so` (hot-reloadable) or a paired `nve pair` server. */
 sealed interface NveSource {
-    data class App(val soPath: String) : NveSource
+    /** [carryState]: a hot reload restoring the running app's state into the new module. */
+    data class App(val soPath: String, val carryState: Boolean = false) : NveSource
 
     data class Paired(val uri: String, val token: String = "") : NveSource
 }
@@ -35,7 +37,7 @@ interface NveRuntimeHost : AutoCloseable {
      * Writes events with [write] and dispatches them (rendering a changed frame); inside a frame
      * callback the batch is deferred until the frame is released.
      */
-    fun send(write: RuntimeSurface.EventWriter): Int
+    fun send(write: FrameHost.EventWriter): Int
 
     fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int
 
@@ -56,7 +58,7 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
     }
 
     override fun start(source: NveSource): Int = when (source) {
-        is NveSource.App -> surface.attachApp(source.soPath)
+        is NveSource.App -> surface.attachApp(source.soPath, source.carryState)
         is NveSource.Paired -> surface.pair(source.uri, source.token)
     }
 
@@ -67,7 +69,7 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
 
     override fun render(): Boolean = surface.render()
 
-    override fun send(write: RuntimeSurface.EventWriter): Int = surface.send(write)
+    override fun send(write: FrameHost.EventWriter): Int = surface.send(write)
 
     override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int = surface.scrollBy(nodeId, dxDp, dyDp)
 

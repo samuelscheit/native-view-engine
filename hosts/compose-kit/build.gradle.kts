@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "dev.nve.compose"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 24
@@ -73,9 +73,13 @@ val nveGeneratedJavaFiles = listOf(
     nveHostJavaDir.resolve("dev/nve/host/generated/NveTables.java"),
     nveHostJavaDir.resolve("dev/nve/host/generated/NveRuntimeAbi.java"),
     nveHostJavaDir.resolve("dev/nve/host/generated/NveModuleTables.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveJniFrame.java"),
 )
 
 android.sourceSets.getByName("main").java.srcDir(nveHostJavaDir)
+// The zero-Gradle Android View host (`hosts/android-shell/android-app`) is unit-tested here under
+// Robolectric (`dev.nve.android` renderer suites): it has no Gradle build of its own.
+android.sourceSets.getByName("test").java.srcDir(nveRepoRoot.resolve("hosts/android-shell/android-app/src"))
 
 val generateNveAbi by tasks.registering(Exec::class) {
     group = "codegen"

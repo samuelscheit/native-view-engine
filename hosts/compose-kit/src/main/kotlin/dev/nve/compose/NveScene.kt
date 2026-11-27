@@ -30,7 +30,7 @@ data class NveTextStyle(
     val fontSize: Float = SceneSemantics.DEFAULT_FONT_SIZE,
     val fontWeight: Int = SceneSemantics.DEFAULT_FONT_WEIGHT,
     val italic: Boolean = false,
-    val align: Int = NveTables.Typography.TEXT_ALIGN_START,
+    val align: Int = NveTables.Values.TextAlign.START,
 )
 
 /** `nve.text_input` state. */
@@ -45,7 +45,7 @@ data class NveInput(
 
 /** `nve.accessibility` + `nve.interaction` + `nve.debug_id` semantics. */
 data class NveSemantics(
-    val role: Int = NveTables.Accessibility.ROLE_NONE,
+    val role: Int = NveTables.Values.AriaRole.NONE,
     val label: String = "",
     val hint: String = "",
     val testId: String = "",
@@ -76,12 +76,18 @@ data class NveNode(
     val textStyle: NveTextStyle = NveTextStyle(),
     val input: NveInput? = null,
     val image: NveImage? = null,
-    val imageFit: Int = NveTables.Image.FIT_COVER,
+    val imageFit: Int = NveTables.Values.ImageFit.COVER,
     val imageResource: Int = 0,
     val drawList: ByteArray? = null,
     val drawListResource: Int = 0,
-    val scrollHorizontal: Boolean = false,
-)
+    /** `nve.scroll.axes` (`NveTables.Values.ScrollAxes`) of a scroll container. */
+    val scrollAxes: Int = NveTables.Values.ScrollAxes.NONE,
+) {
+    val scrollsHorizontally: Boolean
+        get() = scrollAxes == NveTables.Values.ScrollAxes.HORIZONTAL || scrollAxes == NveTables.Values.ScrollAxes.BOTH
+    val scrollsVertically: Boolean
+        get() = scrollAxes == NveTables.Values.ScrollAxes.VERTICAL || scrollAxes == NveTables.Values.ScrollAxes.BOTH
+}
 
 /** Immutable copy of one runtime frame for composition. */
 class NveSceneSnapshot(
@@ -90,9 +96,22 @@ class NveSceneSnapshot(
     val rootBox: NveBox,
     val rootChildren: List<Int>,
     val nodes: Map<Int, NveNode>,
+    /** Runtime scroll offsets (dp, `scroll_offsets`) of scrolled containers by node id. */
+    val scrollOffsets: Map<Int, NveScrollOffset> = emptyMap(),
 ) {
+    /** Runtime scroll offset of container [id] (`(0, 0)` when not scrolled). */
+    fun scrollOffset(id: Int): NveScrollOffset = scrollOffsets[id] ?: NveScrollOffset.ZERO
+
     companion object {
-        val EMPTY = NveSceneSnapshot(-1L, 0, NveBox(), emptyList(), emptyMap())
+        /** No frame yet (`frameId` 0: the next frame always reconciles everything). */
+        val EMPTY = NveSceneSnapshot(0L, 0, NveBox(), emptyList(), emptyMap())
+    }
+}
+
+/** A runtime scroll position in dp. */
+data class NveScrollOffset(val x: Float, val y: Float) {
+    companion object {
+        val ZERO = NveScrollOffset(0f, 0f)
     }
 }
 
@@ -103,27 +122,85 @@ fun interface NveResourceLookup {
 
 class NveResource(val kind: Key64, val bytes: ByteBuffer)
 
-/** Builds [NveSceneSnapshot]s from runtime frames; unchanged resources are reused, not re-copied. */
+/**
+ * Builds [NveSceneSnapshot]s from runtime frames in O(changed): on the frame right after
+ * [previous] (same epoch) only removed, content-dirty (incl. inherited typography), and moved
+ * nodes are rebuilt — every other [NveNode] (and its copied resource bytes) is reused as is; a
+ * redelivered frame returns [previous]. Any gap or new epoch rebuilds everything.
+ */
 object NveSceneCapture {
     fun capture(s: RuntimeSceneReader, resources: NveResourceLookup, previous: NveSceneSnapshot): NveSceneSnapshot {
+        val relation = s.relationTo(previous.frameId, previous.sceneEpoch)
+        if (relation == RuntimeSceneReader.FRAME_SAME) return previous
         val t = SceneSemantics.Tables().bind(s)
-        // Copied resources stay valid only along an unbroken frame chain of one epoch, minus the
-        // ids this frame (re)defined: a skipped frame's dirty list is lost, a new epoch reuses ids.
-        val chained = previous.sceneEpoch == s.sceneEpoch() && s.frameId() == previous.frameId + 1
-        val dirty = HashSet<Int>(s.dirtyResourceCount())
-        for (k in 0 until s.dirtyResourceCount()) dirty.add(s.dirtyResource(k))
-        val reusable = { id: Int -> chained && id != 0 && id !in dirty }
         val style = SceneSemantics.TextStyle()
-        val nodes = HashMap<Int, NveNode>(s.nodeCapacity())
-        for (i in SceneSemantics.ROOT_INDEX + 1 until s.nodeCapacity()) {
-            if (s.isLive(i)) nodes[s.nodeId(i)] = node(s, t, i, resources, previous.nodes[s.nodeId(i)], reusable, style)
-        }
         val root = SceneSemantics.ROOT_INDEX
-        val rootChildren = if (s.isLive(root)) children(s, root) else emptyList()
-        return NveSceneSnapshot(s.frameId(), s.sceneEpoch(), if (s.isLive(root)) box(s, t, root) else NveBox(), rootChildren, nodes)
+        val chained = relation == RuntimeSceneReader.FRAME_NEXT
+        // Copied resources stay valid along an unbroken chain of one epoch, minus the ids this
+        // frame (re)defined: a skipped frame's dirty list is lost, a new epoch reuses ids.
+        val reusable = { id: Int -> chained && id != 0 && !s.isResourceDirty(id) }
+        val nodes: HashMap<Int, NveNode>
+        var rootDirty = !chained
+        if (chained) {
+            nodes = HashMap(previous.nodes)
+            for (k in 0 until s.removedCount()) nodes.remove(s.removedId(k))
+            for (d in 0 until s.dirtyCount()) {
+                val i = s.dirtyIndex(d)
+                if (i == root) rootDirty = true else nodes[s.nodeId(i)] = node(s, t, i, resources, previous.nodes[s.nodeId(i)], reusable, style)
+            }
+            for (m in 0 until s.movedCount()) {
+                val i = s.movedIndex(m)
+                if (i == root) continue
+                val id = s.nodeId(i)
+                val prev = nodes[id]
+                nodes[id] = prev?.let { geometry(s, i, it) } ?: node(s, t, i, resources, null, reusable, style)
+            }
+        } else {
+            nodes = HashMap(s.nodeCapacity())
+            for (i in root + 1 until s.nodeCapacity()) {
+                if (s.isLive(i)) nodes[s.nodeId(i)] = node(s, t, i, resources, previous.nodes[s.nodeId(i)], reusable, style)
+            }
+        }
+        val live = s.isLive(root)
+        return NveSceneSnapshot(
+            s.frameId(), s.sceneEpoch(),
+            rootBox = if (!live) NveBox() else if (rootDirty) box(s, t, root) else previous.rootBox,
+            rootChildren = if (!live) emptyList() else if (rootDirty) children(s, root) else previous.rootChildren,
+            nodes = nodes,
+            scrollOffsets = scrollOffsets(s, previous),
+        )
+    }
+
+    /** O(scrolled containers); the previous map is reused when nothing moved. */
+    private fun scrollOffsets(s: RuntimeSceneReader, previous: NveSceneSnapshot): Map<Int, NveScrollOffset> {
+        if (s.scrollCount() == 0) return emptyMap()
+        val out = HashMap<Int, NveScrollOffset>(s.scrollCount())
+        for (k in 0 until s.scrollCount()) {
+            val id = s.scrollNodeId(k)
+            out[id] = NveScrollOffset(s.scrollX(id), s.scrollY(id))
+        }
+        return if (out == previous.scrollOffsets) previous.scrollOffsets else out
     }
 
     private fun children(s: RuntimeSceneReader, i: Int): List<Int> = List(s.childCount(i)) { s.childId(i, it) }
+
+    private fun parentRelative(s: RuntimeSceneReader, i: Int): FloatArray {
+        val parentId = s.parent(i)
+        val p = if (parentId == 0) -1 else s.resolve(parentId)
+        val nested = p > SceneSemantics.ROOT_INDEX
+        return floatArrayOf(
+            SceneSemantics.finite(s.x(i) - (if (nested) s.x(p) else 0f), 0f),
+            SceneSemantics.finite(s.y(i) - (if (nested) s.y(p) else 0f), 0f),
+            maxOf(0f, SceneSemantics.finite(s.width(i), 0f)),
+            maxOf(0f, SceneSemantics.finite(s.height(i), 0f)),
+        )
+    }
+
+    /** [prev] with node [i]'s new geometry (a moved node's content is unchanged). */
+    private fun geometry(s: RuntimeSceneReader, i: Int, prev: NveNode): NveNode {
+        val g = parentRelative(s, i)
+        return prev.copy(x = g[0], y = g[1], width = g[2], height = g[3])
+    }
 
     private fun node(
         s: RuntimeSceneReader,
@@ -135,61 +212,65 @@ object NveSceneCapture {
         style: SceneSemantics.TextStyle,
     ): NveNode {
         val kind = SceneSemantics.kindOf(s, t, i)
-        val parentId = s.parent(i)
-        val p = if (parentId == 0) -1 else s.resolve(parentId)
-        val nested = p > SceneSemantics.ROOT_INDEX
-        var out = NveNode(
-            id = s.nodeId(i), kind = kind,
-            x = SceneSemantics.finite(s.x(i) - (if (nested) s.x(p) else 0f), 0f),
-            y = SceneSemantics.finite(s.y(i) - (if (nested) s.y(p) else 0f), 0f),
-            width = maxOf(0f, SceneSemantics.finite(s.width(i), 0f)),
-            height = maxOf(0f, SceneSemantics.finite(s.height(i), 0f)),
-            box = box(s, t, i), semantics = semantics(s, t, i, SceneSemantics.disabled(s, t, i)),
-            pressable = SceneSemantics.pressable(s, t, i),
-            children = children(s, i),
-        )
+        val g = parentRelative(s, i)
+        var text = ""
+        var textStyle = NveTextStyle()
+        var input: NveInput? = null
+        var image: NveImage? = null
+        var imageFit = NveTables.Values.ImageFit.COVER
+        var imageResource = 0
+        var drawList: ByteArray? = null
+        var drawListResource = 0
+        var scrollAxes = NveTables.Values.ScrollAxes.NONE
         when (kind) {
-            NveNodeKind.TEXT -> out = out.copy(
-                text = s.text(t.text, s.rowOf(t.text, i), NveTables.Text.TEXT), textStyle = textStyle(s, t, i, style),
-            )
+            NveNodeKind.TEXT -> {
+                text = s.text(t.text, s.rowOf(t.text, i), NveTables.Text.TEXT)
+                textStyle = textStyle(s, t, i, style)
+            }
             NveNodeKind.INPUT -> {
                 val r = s.rowOf(t.input, i)
-                val input = t.input!!
-                out = out.copy(
-                    textStyle = textStyle(s, t, i, style),
-                    input = NveInput(
-                        value = s.text(input, r, NveTables.TextInput.VALUE),
-                        placeholder = s.text(input, r, NveTables.TextInput.PLACEHOLDER),
-                        secure = input.bool(r, NveTables.TextInput.SECURE),
-                        multiline = input.bool(r, NveTables.TextInput.MULTILINE),
-                        readOnly = input.bool(r, NveTables.TextInput.READ_ONLY),
-                        inputKind = input.u32(r, NveTables.TextInput.INPUT_KIND),
-                    ),
+                val table = t.input!!
+                textStyle = textStyle(s, t, i, style)
+                input = NveInput(
+                    value = s.text(table, r, NveTables.TextInput.VALUE),
+                    placeholder = s.text(table, r, NveTables.TextInput.PLACEHOLDER),
+                    secure = table.bool(r, NveTables.TextInput.SECURE),
+                    multiline = table.bool(r, NveTables.TextInput.MULTILINE),
+                    readOnly = table.bool(r, NveTables.TextInput.READ_ONLY),
+                    inputKind = table.u32(r, NveTables.TextInput.INPUT_KIND),
                 )
             }
             NveNodeKind.IMAGE -> {
                 val r = s.rowOf(t.image, i)
-                val id = t.image!!.u32(r, NveTables.Image.SRC)
-                val image = if (prev != null && prev.imageResource == id && reusable(id)) prev.image else imageOf(resources.resource(id))
-                out = out.copy(image = image, imageResource = id, imageFit = t.image.u32(r, NveTables.Image.FIT))
+                imageResource = t.image!!.u32(r, NveTables.Image.SRC)
+                image = if (prev != null && prev.imageResource == imageResource && reusable(imageResource)) {
+                    prev.image
+                } else {
+                    imageOf(resources.resource(imageResource))
+                }
+                imageFit = t.image.u32(r, NveTables.Image.FIT)
             }
             NveNodeKind.CANVAS -> {
-                val id = t.canvas!!.u32(s.rowOf(t.canvas, i), NveModuleTables.Canvas.DRAW_LIST)
-                val bytes = if (prev?.drawList != null && prev.drawListResource == id && reusable(id)) {
+                drawListResource = t.canvas!!.u32(s.rowOf(t.canvas, i), NveModuleTables.Canvas.DRAW_LIST)
+                drawList = if (prev?.drawList != null && prev.drawListResource == drawListResource && reusable(drawListResource)) {
                     prev.drawList
                 } else {
-                    (if (id == 0) null else resources.resource(id))?.let { copy(it.bytes) }
+                    (if (drawListResource == 0) null else resources.resource(drawListResource))?.let { copy(it.bytes) }
                 }
-                out = out.copy(drawList = bytes, drawListResource = id)
             }
-            NveNodeKind.SCROLL -> out = out.copy(
-                scrollHorizontal = t.scroll!!.u32(s.rowOf(t.scroll, i), NveTables.Scroll.AXES) == NveTables.Scroll.AXES_HORIZONTAL,
-            )
+            NveNodeKind.SCROLL -> scrollAxes = t.scroll!!.u32(s.rowOf(t.scroll, i), NveTables.Scroll.AXES)
             NveNodeKind.CONTAINER -> Unit
         }
-        return out
+        return NveNode(
+            id = s.nodeId(i), kind = kind, x = g[0], y = g[1], width = g[2], height = g[3],
+            box = box(s, t, i), semantics = semantics(s, t, i, SceneSemantics.disabled(s, t, i)),
+            pressable = SceneSemantics.pressable(s, t, i), children = children(s, i),
+            text = text, textStyle = textStyle, input = input, image = image, imageFit = imageFit,
+            imageResource = imageResource, drawList = drawList, drawListResource = drawListResource, scrollAxes = scrollAxes,
+        )
     }
 
+    /** Image bytes copied out of the frame: inline / `data:` bytes, or a URL the host loads. */
     private fun imageOf(res: NveResource?): NveImage? {
         if (res == null || res.kind != ImageSource.KIND) return null
         val src = try {
@@ -197,11 +278,11 @@ object NveSceneCapture {
         } catch (_: RuntimeException) {
             return null
         }
-        return src.url?.let { NveImage.Url(it) } ?: NveImage.Encoded(copy(src.encoded))
+        src.bytes()?.let { return NveImage.Encoded(it) }
+        return src.url?.let { NveImage.Url(it) }
     }
 
     private fun copy(b: ByteBuffer): ByteArray = ByteArray(b.remaining()).also { b.duplicate().get(it) }
-
     private fun box(s: RuntimeSceneReader, t: Tables, i: Int): NveBox {
         val r = s.rowOf(t.visual, i)
         if (r < 0) return NveBox()
@@ -213,7 +294,7 @@ object NveSceneCapture {
             radius = maxOf(0f, SceneSemantics.finite(v.f32(r, NveTables.Visual.BORDER_RADIUS), 0f)),
             opacity = SceneSemantics.finite(v.f32(r, NveTables.Visual.OPACITY), 1f).coerceIn(0f, 1f),
             zIndex = v.i32(r, NveTables.Visual.Z_INDEX),
-            visible = v.u32(r, NveTables.Visual.VISIBILITY) != NveTables.Visual.VISIBILITY_HIDDEN,
+            visible = v.u32(r, NveTables.Visual.VISIBILITY) != NveTables.Values.Visibility.HIDDEN,
         )
     }
 

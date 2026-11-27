@@ -1,6 +1,5 @@
 package dev.nve.compose
 
-import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -12,7 +11,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
-import java.util.Base64
 
 internal object TestDrawListBuilder {
     fun rgba(r: Int, g: Int, b: Int, a: Int = 255): Int =
@@ -169,13 +167,6 @@ class NveDrawListRendererTest {
         assertEquals("polyEnd", log[7])
         assertEquals("restore", log[8])
         assertEquals(listOf(6f to 40f, 30f to 15f, 60f to 35f), polyPts)
-
-        // Base64 prefixed attribute round-trip
-        val b64 = NveDrawListRenderer.ATTR_PREFIX + Base64.getEncoder().encodeToString(drawBytes)
-        val decodedAttr = NveDrawListRenderer.decodeBase64Attr(b64)
-        assertNotNull(decodedAttr)
-        assertArrayEquals(drawBytes, decodedAttr)
-        assertNull(NveDrawListRenderer.decodeBase64Attr("nve-draw1;b64,!!!not-base64!!!"))
     }
 
     @Test

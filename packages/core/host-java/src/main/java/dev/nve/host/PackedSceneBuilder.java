@@ -84,8 +84,8 @@ public final class PackedSceneBuilder {
     }
 
     private final int capacity;
-    private final long frameId;
-    private final int epoch;
+    private long frameId;
+    private int epoch;
     private final int[] generation;
     private final int[] parent;
     private final int[] primary;
@@ -115,6 +115,13 @@ public final class PackedSceneBuilder {
         java.util.Arrays.fill(primary, NveAbi.PRIMARY_SLOT_NONE);
         for (int i = 0; i < capacity; i++) children.add(new ArrayList<>());
         if (capacity > 1) live[1] = true;
+    }
+
+    /** Re-stamps the frame id and scene epoch of the frames built next. */
+    public PackedSceneBuilder frame(long frameId, int sceneEpoch) {
+        this.frameId = frameId;
+        this.epoch = sceneEpoch;
+        return this;
     }
 
     public int nodeId(int index) {

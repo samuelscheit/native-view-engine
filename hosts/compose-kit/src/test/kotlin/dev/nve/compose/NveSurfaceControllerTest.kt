@@ -3,6 +3,7 @@ package dev.nve.compose
 import dev.nve.host.EventRingWriter
 import dev.nve.host.NativeRuntime
 import dev.nve.host.RuntimeSceneReader
+import dev.nve.host.FrameHost
 import dev.nve.host.RuntimeSurface
 import dev.nve.host.generated.NveAbi
 import dev.nve.host.generated.NveRuntimeAbi
@@ -21,7 +22,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     val started = ArrayList<NveSource>()
     val viewports = ArrayList<List<Float>>()
     val rings = ArrayList<ByteBuffer>()
-    val scrolls = ArrayList<List<Float>>()
+    val scrolls = ArrayList<Triple<Int, Float, Float>>()
     var measurer: NativeRuntime.TextMeasurer? = null
     var closed = false
     private var listener: ((RuntimeSceneReader, NveResourceLookup) -> Unit)? = null
@@ -45,12 +46,18 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
         return NveRuntimeAbi.STATUS_OK
     }
 
+    /** Resources served to the frame listener by id. */
+    val resources = HashMap<Int, NveResource>()
+    private var frames = 0L
+
+    /** Delivers [scene] as the next frame (consecutive frame ids, so captures chain). */
     override fun render(): Boolean {
-        listener?.invoke(scene.reader()) { null }
+        scene.frameId = ++frames
+        listener?.invoke(scene.reader()) { resources[it] }
         return true
     }
 
-    override fun send(write: RuntimeSurface.EventWriter): Int {
+    override fun send(write: FrameHost.EventWriter): Int {
         val ring = EventRingWriter(ByteBuffer.allocate(1024), 1)
         write.write(ring)
         rings.add(ByteBuffer.wrap(ring.buffer().array().copyOf(ring.length())).order(ByteOrder.LITTLE_ENDIAN))
@@ -58,7 +65,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     }
 
     override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int {
-        scrolls.add(listOf(nodeId.toFloat(), dxDp, dyDp))
+        scrolls.add(Triple(nodeId, dxDp, dyDp))
         return NveRuntimeAbi.STATUS_OK
     }
 
@@ -107,6 +114,7 @@ class NveSurfaceControllerTest {
         c.focusChanged(0x1000003, true)
         c.focusChanged(0x1000003, false)
         c.scrolled(0x1000004, 0f, 12f, 0f, 30f, 100f, 300f)
+        c.scrolled(0xFF000005.toInt(), 0f, 1f, 0f, 1f, 100f, 300f)
         assertEquals(listOf(1, 0x1000002, NveAbi.EVENT_PRESS, 1), head(host.rings[0]))
         assertEquals(50f, host.rings[0].getFloat(22))
         assertEquals(listOf(1, 0x1000003, NveAbi.EVENT_TEXT_CHANGE, 3), head(host.rings[1]))
@@ -115,7 +123,10 @@ class NveSurfaceControllerTest {
         assertEquals(NveAbi.EVENT_FOCUS, head(host.rings[3])[2])
         assertEquals(NveAbi.EVENT_BLUR, head(host.rings[4])[2])
         assertEquals(listOf(1, 0x1000004, NveAbi.EVENT_SCROLL, 2), head(host.rings[5]))
-        assertEquals(listOf(0x1000004.toFloat(), 0f, 12f), host.scrolls.single(), "native scroll syncs runtime offsets")
+        assertEquals(
+            listOf(Triple(0x1000004, 0f, 12f), Triple(0xFF000005.toInt(), 0f, 1f)), host.scrolls,
+            "native scroll syncs runtime offsets with exact raw u32 ids (no float truncation)",
+        )
     }
 
     @Test

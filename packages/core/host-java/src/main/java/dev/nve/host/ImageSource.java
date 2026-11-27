@@ -51,4 +51,59 @@ public final class ImageSource {
         payload.get(utf8);
         return new ImageSource(new String(utf8, StandardCharsets.UTF_8), null);
     }
+
+    /**
+     * The encoded image bytes this source carries itself: a copy of the inline bytes, or the
+     * payload of a {@code data:image/*;base64,} URL (strict RFC 4648; whitespace ignored).
+     * {@code null} for URLs the host must load ({@code asset://}, {@code file://}, network) and
+     * for a malformed data URL. Shared by every Java / Kotlin host (no platform Base64: Android
+     * API 24 has no {@code java.util.Base64}).
+     */
+    public byte[] bytes() {
+        if (encoded != null) {
+            final byte[] out = new byte[encoded.remaining()];
+            encoded.duplicate().get(out);
+            return out;
+        }
+        final int comma = url.indexOf(',');
+        if (!url.startsWith("data:image/") || comma < 0 || !url.substring(0, comma).endsWith(";base64")) return null;
+        return base64(url, comma + 1);
+    }
+
+    /** Strict RFC 4648 base64 of {@code s[from ..)}, or {@code null}. */
+    static byte[] base64(String s, int from) {
+        final byte[] out = new byte[(s.length() - from) / 4 * 3];
+        int n = 0;
+        int quad = 0;
+        int bits = 0;
+        int pad = 0;
+        for (int i = from; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+            final int v;
+            if (c >= 'A' && c <= 'Z') v = c - 'A';
+            else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+            else if (c >= '0' && c <= '9') v = c - '0' + 52;
+            else if (c == '+') v = 62;
+            else if (c == '/') v = 63;
+            else if (c == '=' && quad >= 2) v = -1;
+            else return null;
+            if (v < 0) {
+                pad++;
+            } else if (pad > 0) {
+                return null;  // data after padding
+            }
+            bits = bits << 6 | Math.max(v, 0);
+            if (++quad == 4) {
+                if (n + 3 - pad > out.length) return null;
+                out[n++] = (byte) (bits >> 16);
+                if (pad < 2) out[n++] = (byte) (bits >> 8);
+                if (pad < 1) out[n++] = (byte) bits;
+                if (pad > 0 && i + 1 < s.length() && s.substring(i + 1).trim().length() > 0) return null;
+                quad = 0;
+                bits = 0;
+            }
+        }
+        return quad == 0 ? java.util.Arrays.copyOf(out, n) : null;
+    }
 }

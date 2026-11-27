@@ -74,7 +74,7 @@ public final class NveMainActivity extends Activity {
             status = surface.pair(pair[0], pair[1]);
         } else {
             what = getApplicationInfo().nativeLibraryDir + "/libnve_app.so";
-            status = surface.attachApp(what);
+            status = surface.attachApp(what, false);
         }
         if (status != NveRuntimeAbi.STATUS_OK) {
             final String err = surface.lastError();

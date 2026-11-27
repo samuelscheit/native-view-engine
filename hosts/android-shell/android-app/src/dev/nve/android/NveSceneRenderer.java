@@ -5,8 +5,8 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.text.Editable;
 import android.text.TextWatcher;
-import android.util.Base64;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -18,11 +18,13 @@ import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import dev.nve.host.FrameHost;
 import dev.nve.host.ImageSource;
 import dev.nve.host.RuntimeSceneReader;
 import dev.nve.host.RuntimeSurface;
 import dev.nve.host.SceneSemantics;
 import dev.nve.host.SceneSemantics.Kind;
+import dev.nve.host.Utf8;
 import dev.nve.host.generated.NveAbi;
 import dev.nve.host.generated.NveModuleTables;
 import dev.nve.host.generated.NveTables;
@@ -31,23 +33,24 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.IdentityHashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Reconciles each runtime frame ({@link RuntimeSceneReader}) into native Android Views: one View
  * per live node, kinds realized by {@link SceneSemantics}, styles from `nve.visual` /
- * `nve.typography` / `nve.accessibility`, absolute rects converted to parent-relative positions,
- * and user input sent back as `EventRing` events.
+ * `nve.typography` / `nve.accessibility`, parent-relative positions, and user input sent back as
+ * `EventRing` events.
  *
- * <p>Frames apply incrementally (dirty nodes + resources) only when they directly follow the last
- * one in the same scene epoch; any gap or reset re-reconciles the whole scene. Listener callbacks
- * that fire while a frame is being applied (focus, scroll, text changes caused by the renderer
- * itself) are not user input and never reach the app.
+ * <p>O(changed): a frame that directly follows the last applied one ({@link
+ * RuntimeSceneReader#FRAME_NEXT}) touches only its removed ids, content-dirty nodes (the runtime
+ * includes text inheriting a changed typography), parents whose children changed or whose child
+ * view was re-created, moved nodes (geometry only), and the views bound to its dirty resource ids
+ * (indexed by resource id). A redelivered frame is a no-op. A new scene epoch drops every view
+ * first (ids and resources of another epoch are unrelated), and any other gap reconciles all live
+ * nodes. Listener callbacks that fire while a frame is applied (focus, scroll, text changes caused
+ * by the renderer itself) are not user input and never reach the app.
  */
 final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
     private static final class Node {
@@ -56,32 +59,47 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
         final View view;
         /** Children host (the scroll content for scroll containers, else the view itself). */
         final ViewGroup content;
+        /** `nve.scroll.axes` the scroll view was built for. */
+        final int axes;
+        /** Runtime scroll offset (dp) last applied to a scroll view. */
+        float scrollX;
+        float scrollY;
+        final NveViewStyle.ViewState style = new NveViewStyle.ViewState();
         int resourceId;
         float x;
         float y;
         float w = -1f;
         float h = -1f;
 
-        Node(int id, Kind kind, View view, ViewGroup content) {
+        Node(int id, Kind kind, View view, ViewGroup content, int axes) {
             this.id = id;
             this.kind = kind;
             this.view = view;
             this.content = content;
+            this.axes = axes;
         }
     }
 
     private final Context context;
     private final FrameLayout root;
     private final float density;
+    private final NveViewStyle.ViewState rootStyle = new NveViewStyle.ViewState();
     private final Map<Integer, Node> nodes = new HashMap<>();
     private final Map<View, Node> byView = new IdentityHashMap<>();
+    /** Image / canvas nodes by the resource id they show: dirty resources rebind in O(dirty). */
+    private final Map<Integer, List<Node>> byResource = new HashMap<>();
     private final SceneSemantics.Tables tables = new SceneSemantics.Tables();
     private final SceneSemantics.TextStyle textStyle = new SceneSemantics.TextStyle();
-    private final Set<Integer> dirtyResources = new HashSet<>();
     private final List<View> desired = new ArrayList<>();
+    /** Scroll nodes whose applied runtime offset is non-zero (reset when they leave `scroll_offsets`). */
+    private final List<Node> scrolled = new ArrayList<>();
+    /** Node indexes whose child list must be reconciled this frame. */
+    private int[] relink = new int[16];
+    private int relinkCount;
     /** True while a frame is applied: listener callbacks are renderer-caused, not user input. */
     private boolean reconciling;
-    private long lastFrameId = -1L;
+    private RuntimeSceneReader frame;
+    private long lastFrameId;
     private int lastEpoch;
 
     NveSceneRenderer(Context context, FrameLayout root, float density) {
@@ -92,56 +110,110 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
 
     @Override
     public void onFrame(RuntimeSceneReader s, RuntimeSurface surface) {
+        apply(s, surface);
+    }
+
+    /** Applies frame {@code s}; {@code surface} serves its resources and receives the input. */
+    void apply(RuntimeSceneReader s, FrameHost surface) {
+        final int relation = s.relationTo(lastFrameId, lastEpoch);
+        if (relation == RuntimeSceneReader.FRAME_SAME) return;
         reconciling = true;
+        frame = s;
         try {
-            apply(s, surface);
+            tables.bind(s);
+            if (relation == RuntimeSceneReader.FRAME_NEXT) {
+                applyDelta(s, surface);
+            } else {
+                if (s.sceneEpoch() != lastEpoch) clear();
+                applyAll(s, surface);
+            }
+            applyScrollOffsets(s);
+            lastFrameId = s.frameId();
+            lastEpoch = s.sceneEpoch();
         } finally {
+            frame = null;
             reconciling = false;
         }
     }
 
-    private void apply(RuntimeSceneReader s, RuntimeSurface surface) {
-        tables.bind(s);
-        // Incremental only for the direct successor in the same epoch: a skipped frame's dirty
-        // lists are lost, and a new epoch reuses ids for unrelated nodes and resources.
-        final boolean full = lastFrameId < 0 || s.sceneEpoch() != lastEpoch || s.frameId() != lastFrameId + 1;
-        lastFrameId = s.frameId();
-        lastEpoch = s.sceneEpoch();
-        dirtyResources.clear();
-        for (int i = 0; i < s.dirtyResourceCount(); i++) dirtyResources.add(s.dirtyResource(i));
-        for (int i = 0; i < s.removedCount(); i++) drop(s.removedId(i));
-        if (full) {
-            for (Iterator<Map.Entry<Integer, Node>> it = nodes.entrySet().iterator(); it.hasNext(); ) {
-                final Node n = it.next().getValue();
-                if (s.resolve(n.id) < 0) {
-                    byView.remove(n.view);
-                    detach(n.view);
-                    it.remove();
-                } else {
-                    n.resourceId = 0;  // resource ids are only meaningful within one frame chain
-                }
-            }
-            for (int i = 1; i < s.nodeCapacity(); i++) upsert(s, surface, i);
-        } else {
-            for (int d = 0; d < s.dirtyCount(); d++) upsert(s, surface, s.dirtyIndex(d));
-            if (!dirtyResources.isEmpty()) rebindDirtyResources(s, surface);
-            // Inherited typography: any style or structure change can restyle untouched descendants.
-            if (s.dirtyCount() > 0 || s.removedCount() > 0) restyleText(s);
+    /** Every live node: removes views of dead ids, upserts, links, and places all. */
+    private void applyAll(RuntimeSceneReader s, FrameHost surface) {
+        final List<Integer> dead = new ArrayList<>();
+        for (Node n : nodes.values()) {
+            if (s.resolve(n.id) < 0) dead.add(n.id);
         }
-        // Layout may move any node without dirtying it: place every live view (cheap when unchanged).
+        for (int id : dead) drop(id);
+        for (int i = 1; i < s.nodeCapacity(); i++) upsert(s, surface, i, true);
         for (int i = 1; i < s.nodeCapacity(); i++) {
-            if (s.isLive(i)) {
-                reconcileChildren(s, i);
-                place(s, i);
-            }
+            if (s.isLive(i)) reconcileChildren(s, i);
+        }
+        for (int i = 1; i < s.nodeCapacity(); i++) {
+            if (s.isLive(i)) place(s, i);
         }
     }
 
+    /** Only what changed since the previous frame. */
+    private void applyDelta(RuntimeSceneReader s, FrameHost surface) {
+        for (int k = 0; k < s.removedCount(); k++) drop(s.removedId(k));
+        relinkCount = 0;
+        for (int d = 0; d < s.dirtyCount(); d++) {
+            final int i = s.dirtyIndex(d);
+            if (upsert(s, surface, i, false)) relink(parentIndex(s, i));  // a re-created view moves into its parent
+            relink(i);
+        }
+        for (int k = 0; k < relinkCount; k++) reconcileChildren(s, relink[k]);
+        for (int d = 0; d < s.dirtyCount(); d++) place(s, s.dirtyIndex(d));
+        for (int m = 0; m < s.movedCount(); m++) place(s, s.movedIndex(m));
+        for (int r = 0; r < s.dirtyResourceCount(); r++) rebindResource(s, surface, s.dirtyResource(r));
+    }
+
+    /**
+     * Runtime / app scroll positions (`scroll_offsets`, O(scrolled containers)): scroll-to and
+     * restore reach the views; a user scroll already synced through `scrollBy` is a no-op here.
+     */
+    private void applyScrollOffsets(RuntimeSceneReader s) {
+        for (int k = scrolled.size() - 1; k >= 0; k--) {
+            final Node n = scrolled.get(k);
+            if (s.scrollIndexOf(n.id) < 0) scrollTo(n, 0f, 0f);
+        }
+        scrolled.clear();
+        for (int k = 0; k < s.scrollCount(); k++) {
+            final Node n = nodes.get(s.scrollNodeId(k));
+            if (n == null || n.kind != Kind.SCROLL) continue;
+            scrollTo(n, s.scrollX(n.id), s.scrollY(n.id));
+            if (n.scrollX != 0f || n.scrollY != 0f) scrolled.add(n);
+        }
+    }
+
+    private void scrollTo(Node n, float x, float y) {
+        n.scrollX = x;
+        n.scrollY = y;
+        final View outer = n.view;
+        if (n.axes == NveTables.Values.ScrollAxes.BOTH) {
+            outer.scrollTo(0, px(y));
+            ((ViewGroup) outer).getChildAt(0).scrollTo(px(x), 0);
+        } else if (n.axes != NveTables.Values.ScrollAxes.NONE) {
+            outer.scrollTo(px(x), px(y));
+        }
+    }
+
+    private void relink(int index) {
+        if (index <= 0) return;
+        for (int k = 0; k < relinkCount; k++) {
+            if (relink[k] == index) return;
+        }
+        if (relinkCount == relink.length) relink = java.util.Arrays.copyOf(relink, relinkCount * 2);
+        relink[relinkCount++] = index;
+    }
+
+    /** Drops every view and binding (a new scene epoch, or the activity going away). */
     void clear() {
         for (Node n : nodes.values()) detach(n.view);
         nodes.clear();
         byView.clear();
-        lastFrameId = -1L;
+        byResource.clear();
+        scrolled.clear();
+        lastFrameId = 0L;
     }
 
     /** Raw {@code NodeId} realized by {@code view} or its nearest realized ancestor ({@code 0} = none). */
@@ -155,35 +227,47 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
         return 0;
     }
 
-    private void drop(int nodeId) {
-        final Node n = nodes.remove(nodeId);
-        if (n != null) {
-            byView.remove(n.view);
-            detach(n.view);
-        }
+    /** The view realizing {@code nodeId}, or {@code null} (tests, accessibility tooling). */
+    View viewOf(int nodeId) {
+        final Node n = nodes.get(nodeId);
+        return n == null ? null : n.view;
     }
 
-    private void upsert(RuntimeSceneReader s, RuntimeSurface surface, int i) {
-        if (!s.isLive(i)) return;
-        final int id = s.nodeId(i);
+    private void drop(int nodeId) {
+        final Node n = nodes.remove(nodeId);
+        if (n == null) return;
+        byView.remove(n.view);
+        scrolled.remove(n);
+        bindResource(n, 0);
+        detach(n.view);
+    }
+
+    private static int parentIndex(RuntimeSceneReader s, int i) {
+        final int parent = s.parent(i);
+        return parent == 0 ? 0 : s.resolve(parent);
+    }
+
+    /** Creates or restyles node {@code i}; {@code true} when its view was (re-)created. */
+    private boolean upsert(RuntimeSceneReader s, FrameHost surface, int i, boolean full) {
+        if (!s.isLive(i)) return false;
         if (i == SceneSemantics.ROOT_INDEX) {
-            NveViewStyle.applyBox(root, tables, s, i, density);
-            return;
+            NveViewStyle.applyBox(root, rootStyle, tables, s, i, density);
+            return false;
         }
+        final int id = s.nodeId(i);
         final Kind kind = SceneSemantics.kindOf(s, tables, i);
+        final int axes = kind == Kind.SCROLL ? tables.scroll.u32(s.rowOf(tables.scroll, i), NveTables.Scroll.AXES) : 0;
         Node n = nodes.get(id);
-        if (n == null || n.kind != kind) {
-            if (n != null) {
-                byView.remove(n.view);
-                detach(n.view);
-            }
-            n = create(kind, id, s, i, surface);
+        final boolean created = n == null || n.kind != kind || n.axes != axes;
+        if (created) {
+            if (n != null) drop(id);
+            n = create(kind, axes, id, surface);
             nodes.put(id, n);
             byView.put(n.view, n);
         }
-        NveViewStyle.applyBox(n.view, tables, s, i, density);
+        NveViewStyle.applyBox(n.view, n.style, tables, s, i, density);
         final boolean pressable = SceneSemantics.pressable(s, tables, i);
-        NveViewStyle.applyAccessibility(n.view, tables, s, i, pressable);
+        NveViewStyle.applyAccessibility(n.view, n.style, tables, s, i, pressable);
         bindPress(n, pressable, surface);
         switch (kind) {
             case TEXT: {
@@ -195,73 +279,80 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
             }
             case INPUT: {
                 final EditText edit = (EditText) n.view;
-                NveViewStyle.applyInput(edit, tables, s, i);
+                NveViewStyle.applyInput(edit, n.style, tables, s, i);
                 NveViewStyle.applyText(edit, textStyle.resolve(s, tables, i));
                 final String value = s.text(tables.input, s.rowOf(tables.input, i), NveTables.TextInput.VALUE);
                 if (!value.contentEquals(edit.getText())) {
+                    // The app rewrote the value: keep the caret / selection where it was (clamped).
+                    final int start = Math.min(Math.max(edit.getSelectionStart(), 0), value.length());
+                    final int end = Math.min(Math.max(edit.getSelectionEnd(), 0), value.length());
                     edit.setText(value);
-                    edit.setSelection(value.length());
+                    edit.setSelection(start, end);
                 }
                 break;
             }
             case IMAGE:
-                bindImage((ImageView) n.view, n, s, i, surface);
+                bindImage((ImageView) n.view, n, s, i, surface, full || created);
                 break;
             case CANVAS:
-                bindCanvas((NveCanvasView) n.view, n, s, i, surface);
+                bindCanvas((NveCanvasView) n.view, n, s, i, surface, full || created);
                 break;
             default:
                 break;
         }
+        return created;
     }
 
-    private void restyleText(RuntimeSceneReader s) {
-        for (Node n : nodes.values()) {
-            if (n.kind != Kind.TEXT && n.kind != Kind.INPUT) continue;
-            final int i = s.resolve(n.id);
-            if (i > 0) NveViewStyle.applyText((TextView) n.view, textStyle.resolve(s, tables, i));
-        }
-    }
-
-    /** Images / canvases whose resource bytes changed in place (recycled or ephemeral ids). */
-    private void rebindDirtyResources(RuntimeSceneReader s, RuntimeSurface surface) {
-        for (Node n : nodes.values()) {
-            if (n.resourceId == 0 || !dirtyResources.contains(n.resourceId)) continue;
+    /** Re-reads the bytes of every image / canvas showing resource {@code id}. */
+    private void rebindResource(RuntimeSceneReader s, FrameHost surface, int id) {
+        final List<Node> users = byResource.get(id);
+        if (users == null) return;
+        for (Node n : new ArrayList<>(users)) {
             final int i = s.resolve(n.id);
             if (i <= 0) continue;
-            if (n.kind == Kind.IMAGE) bindImage((ImageView) n.view, n, s, i, surface);
-            if (n.kind == Kind.CANVAS) bindCanvas((NveCanvasView) n.view, n, s, i, surface);
+            if (n.kind == Kind.IMAGE) bindImage((ImageView) n.view, n, s, i, surface, true);
+            if (n.kind == Kind.CANVAS) bindCanvas((NveCanvasView) n.view, n, s, i, surface, true);
         }
     }
 
-    private Node create(Kind kind, int id, RuntimeSceneReader s, int i, RuntimeSurface surface) {
+    private void bindResource(Node n, int id) {
+        if (n.resourceId == id) return;
+        if (n.resourceId != 0) {
+            final List<Node> users = byResource.get(n.resourceId);
+            if (users != null && users.remove(n) && users.isEmpty()) byResource.remove(n.resourceId);
+        }
+        n.resourceId = id;
+        if (id != 0) byResource.computeIfAbsent(id, k -> new ArrayList<>(1)).add(n);
+    }
+
+    private Node create(Kind kind, int axes, int id, FrameHost surface) {
         switch (kind) {
             case TEXT: {
                 final TextView tv = new TextView(context);
                 tv.setIncludeFontPadding(false);
                 tv.setPadding(0, 0, 0, 0);
-                return new Node(id, kind, tv, null);
+                return new Node(id, kind, tv, null, 0);
             }
             case INPUT:
-                return new Node(id, kind, input(id, surface), null);
+                return new Node(id, kind, input(id, surface), null, 0);
             case IMAGE:
-                return new Node(id, kind, new ImageView(context), null);
+                return new Node(id, kind, new ImageView(context), null, 0);
             case CANVAS: {
                 final NveCanvasView canvas = new NveCanvasView(context);
                 canvas.setDensity(density);
-                return new Node(id, kind, canvas, null);
+                return new Node(id, kind, canvas, null, 0);
             }
             case SCROLL:
-                return scroll(id, s, i, surface);
+                return scroll(id, axes, surface);
             default: {
                 final FrameLayout frame = new FrameLayout(context);
                 frame.setClipChildren(false);
-                return new Node(id, kind, frame, frame);
+                return new Node(id, kind, frame, frame, 0);
             }
         }
     }
 
-    private EditText input(int id, RuntimeSurface surface) {
+    private EditText input(int id, FrameHost surface) {
         final EditText edit = new EditText(context);
         edit.setIncludeFontPadding(false);
         edit.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
@@ -276,12 +367,13 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
             @Override
             public void afterTextChanged(Editable e) {
                 if (reconciling) return;
-                final String text = e.toString();
+                final String text = Utf8.wellFormed(e);  // IMEs can leave lone surrogates
                 surface.send(r -> r.text(NveAbi.EVENT_TEXT_CHANGE, id, now(), text));
             }
         });
         edit.setOnEditorActionListener((v, actionId, event) -> {
-            final String text = v.getText().toString();
+            if (reconciling || !isSubmit(actionId, event)) return false;
+            final String text = Utf8.wellFormed(v.getText());
             surface.send(r -> r.text(NveAbi.EVENT_SUBMIT, id, now(), text));
             return true;
         });
@@ -292,23 +384,62 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
         return edit;
     }
 
-    private Node scroll(int id, RuntimeSceneReader s, int i, RuntimeSurface surface) {
-        final int axes = tables.scroll.u32(s.rowOf(tables.scroll, i), NveTables.Scroll.AXES);
+    /**
+     * An IME action ({@code event == null}) or the ACTION_DOWN half of a hardware Enter
+     * ({@code IME_NULL} arrives for both down and up): exactly one submit per press.
+     */
+    static boolean isSubmit(int actionId, KeyEvent event) {
+        if (event == null) return actionId != EditorInfo.IME_ACTION_NONE && actionId != EditorInfo.IME_NULL;
+        return event.getAction() == KeyEvent.ACTION_DOWN
+                && (event.getKeyCode() == KeyEvent.KEYCODE_ENTER || event.getKeyCode() == KeyEvent.KEYCODE_NUMPAD_ENTER);
+    }
+
+    /**
+     * Scroll container for `nve.scroll.axes`: vertical ({@link ScrollView}), horizontal
+     * ({@link HorizontalScrollView}), both (a horizontal scroller inside a vertical one), or none
+     * (a clipping frame the runtime may still scroll programmatically).
+     */
+    private Node scroll(int id, int axes, FrameHost surface) {
         final FrameLayout content = new FrameLayout(context);
         content.setClipChildren(false);
-        final ViewGroup scroller = axes == NveTables.Scroll.AXES_HORIZONTAL ? new HorizontalScrollView(context) : new ScrollView(context);
-        scroller.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        final ViewGroup.LayoutParams wrap = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        final ViewGroup outer;
+        if (axes == NveTables.Values.ScrollAxes.HORIZONTAL) {
+            outer = new HorizontalScrollView(context);
+            outer.addView(content, wrap);
+            listen(outer, id, content, surface);
+        } else if (axes == NveTables.Values.ScrollAxes.BOTH) {
+            outer = new ScrollView(context);
+            final HorizontalScrollView inner = new HorizontalScrollView(context);
+            inner.addView(content, wrap);
+            outer.addView(inner, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            listen(outer, id, content, surface);
+            listen(inner, id, content, surface);
+        } else if (axes == NveTables.Values.ScrollAxes.VERTICAL) {
+            outer = new ScrollView(context);
+            outer.addView(content, wrap);
+            listen(outer, id, content, surface);
+        } else {
+            outer = new FrameLayout(context);
+            outer.setClipChildren(true);
+            outer.addView(content, wrap);
+        }
+        return new Node(id, Kind.SCROLL, outer, content, axes);
+    }
+
+    private void listen(View scroller, int id, FrameLayout content, FrameHost surface) {
         scroller.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
             if (reconciling || (x == oldX && y == oldY)) return;  // content resizes clamp scroll too
             surface.scrollBy(id, (x - oldX) / density, (y - oldY) / density);
             final float cw = content.getWidth() / density;
             final float ch = content.getHeight() / density;
-            surface.send(r -> r.scroll(NveAbi.EVENT_SCROLL, id, now(), x / density, y / density, cw, ch));
+            final float sx = x / density;
+            final float sy = y / density;
+            surface.send(r -> r.scroll(NveAbi.EVENT_SCROLL, id, now(), sx, sy, cw, ch));
         });
-        return new Node(id, Kind.SCROLL, scroller, content);
     }
 
-    private void bindPress(Node n, boolean pressable, RuntimeSurface surface) {
+    private void bindPress(Node n, boolean pressable, FrameHost surface) {
         if (n.kind == Kind.INPUT || n.kind == Kind.SCROLL) return;
         if (!pressable) {
             n.view.setOnClickListener(null);
@@ -318,14 +449,15 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
         n.view.setOnClickListener(v -> surface.send(r -> r.point(NveAbi.EVENT_PRESS, n.id, now(), n.w * 0.5f, n.h * 0.5f)));
     }
 
-    private void bindImage(ImageView view, Node n, RuntimeSceneReader s, int i, RuntimeSurface surface) {
+    /** Re-reads the image when its resource id changed or {@code force} (dirty bytes, new view). */
+    private void bindImage(ImageView view, Node n, RuntimeSceneReader s, int i, FrameHost surface, boolean force) {
         final int row = s.rowOf(tables.image, i);
         view.setScaleType(NveViewStyle.scaleType(tables.image.u32(row, NveTables.Image.FIT)));
         final String alt = s.text(tables.image, row, NveTables.Image.ALT);
         if (view.getContentDescription() == null && !alt.isEmpty()) view.setContentDescription(alt);
         final int res = tables.image.u32(row, NveTables.Image.SRC);
-        if (res == n.resourceId && !dirtyResources.contains(res)) return;
-        n.resourceId = res;
+        if (res == n.resourceId && !force && !s.isResourceDirty(res)) return;
+        bindResource(n, res);
         final ByteBuffer bytes = res == 0 ? null : surface.resource(res);
         Bitmap bitmap = null;
         if (bytes != null && surface.resourceKind().equals(ImageSource.KIND)) {
@@ -338,25 +470,22 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
         view.setImageBitmap(bitmap);
     }
 
-    private void bindCanvas(NveCanvasView view, Node n, RuntimeSceneReader s, int i, RuntimeSurface surface) {
+    private void bindCanvas(NveCanvasView view, Node n, RuntimeSceneReader s, int i, FrameHost surface, boolean force) {
         final int res = tables.canvas.u32(s.rowOf(tables.canvas, i), NveModuleTables.Canvas.DRAW_LIST);
-        if (res == n.resourceId && !dirtyResources.contains(res)) return;
-        n.resourceId = res;
+        if (res == n.resourceId && !force && !s.isResourceDirty(res)) return;
+        bindResource(n, res);
         final ByteBuffer bytes = res == 0 ? null : surface.resource(res);
-        if (bytes == null || bytes.remaining() == 0) {
+        if (bytes == null) {
             view.clearDrawList();
         } else {
-            view.setDrawListCopy(bytes, bytes.position(), bytes.remaining());  // the frame's buffer dies at release
+            view.setDrawList(bytes);  // copied: the frame's buffer dies at release
         }
     }
 
     private Bitmap decode(ImageSource src) {
         try {
-            if (src.encoded != null) {
-                final byte[] b = new byte[src.encoded.remaining()];
-                src.encoded.duplicate().get(b);
-                return BitmapFactory.decodeByteArray(b, 0, b.length);
-            }
+            final byte[] inline = src.bytes();
+            if (inline != null) return BitmapFactory.decodeByteArray(inline, 0, inline.length);
             final String url = src.url;
             if (url.startsWith("asset://")) {
                 try (InputStream in = context.getAssets().open(url.substring("asset://".length()))) {
@@ -364,11 +493,6 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
                 }
             }
             if (url.startsWith("file://")) return BitmapFactory.decodeFile(url.substring("file://".length()));
-            final int comma = url.indexOf(',');
-            if (url.startsWith("data:image/") && comma > 0 && url.substring(0, comma).endsWith(";base64")) {
-                final byte[] b = Base64.decode(url.substring(comma + 1), Base64.DEFAULT);
-                return BitmapFactory.decodeByteArray(b, 0, b.length);
-            }
         } catch (Exception e) {
             return null;  // an unreadable image renders empty, like a broken <img>
         }
@@ -400,25 +524,37 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
         return n == null ? null : n.content;
     }
 
-    /** Absolute rects → position relative to the parent's content (scroll content is unscrolled). */
+    /**
+     * Absolute rects → position relative to the parent's content (scroll content is unscrolled);
+     * a scroll parent's content box follows its children.
+     */
     private void place(RuntimeSceneReader s, int i) {
-        if (i == SceneSemantics.ROOT_INDEX) return;
+        if (i == SceneSemantics.ROOT_INDEX || !s.isLive(i)) return;
         final Node n = nodes.get(s.nodeId(i));
         if (n == null) return;
-        final int parentIndex = s.parent(i) == 0 ? 0 : s.resolve(s.parent(i));
+        final int parentIndex = parentIndex(s, i);
         final boolean nested = parentIndex > 0 && parentIndex != SceneSemantics.ROOT_INDEX;
         final float x = SceneSemantics.finite(s.x(i) - (nested ? s.x(parentIndex) : 0f), 0f);
         final float y = SceneSemantics.finite(s.y(i) - (nested ? s.y(parentIndex) : 0f), 0f);
         final float w = Math.max(0f, SceneSemantics.finite(s.width(i), 0f));
         final float h = Math.max(0f, SceneSemantics.finite(s.height(i), 0f));
-        // Scroll content follows its children, which can move without moving the scroller.
         if (n.kind == Kind.SCROLL) sizeScrollContent(s, i, n, w, h);
+        if (nested) {
+            final Node parent = nodes.get(s.nodeId(parentIndex));
+            if (parent != null && parent.kind == Kind.SCROLL) {
+                sizeScrollContent(s, parentIndex, parent, Math.max(0f, s.width(parentIndex)), Math.max(0f, s.height(parentIndex)));
+            }
+        }
         if (x == n.x && y == n.y && w == n.w && h == n.h) return;
         n.x = x;
         n.y = y;
         n.w = w;
         n.h = h;
-        final FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(px(w), px(h));
+        final ViewGroup.LayoutParams current = n.view.getLayoutParams();
+        final FrameLayout.LayoutParams lp = current instanceof FrameLayout.LayoutParams
+                ? (FrameLayout.LayoutParams) current : new FrameLayout.LayoutParams(0, 0);
+        lp.width = px(w);
+        lp.height = px(h);
         lp.leftMargin = px(x);
         lp.topMargin = px(y);
         lp.gravity = Gravity.TOP | Gravity.START;
@@ -435,8 +571,10 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
             bottom = Math.max(bottom, SceneSemantics.finite(s.y(c) - s.y(i) + s.height(c), 0f));
         }
         final ViewGroup.LayoutParams lp = n.content.getLayoutParams();
-        if (lp != null && lp.width == px(right) && lp.height == px(bottom)) return;
-        n.content.setLayoutParams(new FrameLayout.LayoutParams(px(right), px(bottom)));
+        if (lp == null || (lp.width == px(right) && lp.height == px(bottom))) return;
+        lp.width = px(right);
+        lp.height = px(bottom);
+        n.content.setLayoutParams(lp);
     }
 
     private int px(float dp) {

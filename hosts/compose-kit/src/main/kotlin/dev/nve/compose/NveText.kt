@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import dev.nve.host.NativeRuntime
 import dev.nve.host.SceneSemantics
+import dev.nve.host.Utf8
 import dev.nve.host.generated.NveTables
 import kotlin.math.ceil
 
@@ -38,11 +39,11 @@ internal fun NveTextStyle.toCompose(density: Density): TextStyle = with(density)
         fontWeight = FontWeight(fontWeight.coerceIn(1, 1000)),
         fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
         textAlign = when (align) {
-            NveTables.Typography.TEXT_ALIGN_CENTER -> TextAlign.Center
-            NveTables.Typography.TEXT_ALIGN_RIGHT -> TextAlign.Right
-            NveTables.Typography.TEXT_ALIGN_LEFT -> TextAlign.Left
-            NveTables.Typography.TEXT_ALIGN_END -> TextAlign.End
-            NveTables.Typography.TEXT_ALIGN_JUSTIFY -> TextAlign.Justify
+            NveTables.Values.TextAlign.CENTER -> TextAlign.Center
+            NveTables.Values.TextAlign.RIGHT -> TextAlign.Right
+            NveTables.Values.TextAlign.LEFT -> TextAlign.Left
+            NveTables.Values.TextAlign.END -> TextAlign.End
+            NveTables.Values.TextAlign.JUSTIFY -> TextAlign.Justify
             else -> TextAlign.Start
         },
     )
@@ -88,10 +89,15 @@ class NveComposeTextMeasurer(private val measurer: TextMeasurer, private val den
     }
 }
 
+/**
+ * Controlled text field: the runtime value is the source of truth. A keystroke is sent (lone
+ * surrogates repaired first) and the field then shows whatever the runtime echoed — dispatch
+ * renders synchronously, so a rejected or rewritten keystroke snaps back at once instead of
+ * leaving the field diverged from the app.
+ */
 @Composable
-internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceController) {
+internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceController, enabled: Boolean) {
     val input = node.input ?: return
-    // The runtime value is the source of truth; local state only bridges keystrokes until it echoes.
     var text by remember(node.id) { mutableStateOf(input.value) }
     LaunchedEffect(node.id, input.value) { text = input.value }
     // `onFocusChanged` reports the initial (unfocused) state on attach: only transitions are events.
@@ -100,9 +106,11 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
     BasicTextField(
         value = text,
         onValueChange = {
-            text = it
-            controller.textChanged(node.id, it)
+            val typed = Utf8.wellFormed(it)
+            controller.textChanged(node.id, typed)
+            text = controller.scene.nodes[node.id]?.input?.value ?: typed
         },
+        enabled = enabled,
         modifier = base.onFocusChanged {
             if (it.isFocused != focused) {
                 focused = it.isFocused
@@ -117,7 +125,7 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
             keyboardType = keyboardType(input),
             imeAction = if (input.multiline) ImeAction.Default else ImeAction.Done,
         ),
-        keyboardActions = KeyboardActions(onDone = { controller.submit(node.id, text) }),
+        keyboardActions = KeyboardActions(onDone = { controller.submit(node.id, Utf8.wellFormed(text)) }),
         decorationBox = { field ->
             if (text.isEmpty() && input.placeholder.isNotEmpty()) {
                 BasicText(input.placeholder, style = style.copy(color = style.color.copy(alpha = 0.5f)))
@@ -128,10 +136,10 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
 }
 
 internal fun keyboardType(input: NveInput): KeyboardType = when {
-    input.secure || input.inputKind == NveTables.TextInput.INPUT_KIND_PASSWORD -> KeyboardType.Password
-    input.inputKind == NveTables.TextInput.INPUT_KIND_EMAIL -> KeyboardType.Email
-    input.inputKind == NveTables.TextInput.INPUT_KIND_URL -> KeyboardType.Uri
-    input.inputKind == NveTables.TextInput.INPUT_KIND_NUMBER -> KeyboardType.Decimal
-    input.inputKind == NveTables.TextInput.INPUT_KIND_TEL -> KeyboardType.Phone
+    input.secure || input.inputKind == NveTables.Values.InputKind.PASSWORD -> KeyboardType.Password
+    input.inputKind == NveTables.Values.InputKind.EMAIL -> KeyboardType.Email
+    input.inputKind == NveTables.Values.InputKind.URL -> KeyboardType.Uri
+    input.inputKind == NveTables.Values.InputKind.NUMBER -> KeyboardType.Decimal
+    input.inputKind == NveTables.Values.InputKind.TEL -> KeyboardType.Phone
     else -> KeyboardType.Text
 }

@@ -15,13 +15,16 @@ public final class {{ class }} {
         public final Key64 key;
         public final Key64 schemaHash;
         public final int words;
+        /** Dense: row = node index, no owners; sparse: owners + the published row index. */
+        public final boolean dense;
         private final FieldSpec[] fields;
 
-        Info(String name, Key64 key, Key64 schemaHash, int words, FieldSpec... fields) {
+        Info(String name, Key64 key, Key64 schemaHash, int words, boolean dense, FieldSpec... fields) {
             this.name = name;
             this.key = key;
             this.schemaHash = schemaHash;
             this.words = words;
+            this.dense = dense;
             this.fields = fields;
         }
 
@@ -74,7 +77,7 @@ public final class {{ class }} {
 
     private static final Info[] ALL = {
 {%- for t in tables %}
-        new Info("{{ t.desc.name }}", {{ t.ident }}.KEY, {{ t.ident }}.SCHEMA_HASH, {{ t.ident }}.WORDS
+        new Info("{{ t.desc.name }}", {{ t.ident }}.KEY, {{ t.ident }}.SCHEMA_HASH, {{ t.ident }}.WORDS, {{ t.ident }}.DENSE
 {%- for f in t.desc.fields %}, {{ t.ident }}.{{ spell::screaming(f.name) }}{% endfor %}),
 {%- endfor %}
     };

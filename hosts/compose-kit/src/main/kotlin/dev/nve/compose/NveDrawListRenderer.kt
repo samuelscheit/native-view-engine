@@ -74,7 +74,6 @@ object NveDrawListRenderer {
     const val FORMAT_VERSION: Int = 1
     const val MAX_DRAW_OPS: Int = 65_536
     const val MAX_POLYLINE_POINTS: Int = 16_384
-    const val ATTR_PREFIX: String = "nve-draw1;b64,"
 
     const val OP_CLEAR: Int = 1
     const val OP_FILL_RECT: Int = 2
@@ -96,14 +95,6 @@ object NveDrawListRenderer {
         'W'.code.toByte(),
         '1'.code.toByte(),
     )
-
-    private val B64_DECODE_TABLE = IntArray(128) { -1 }.apply {
-        for (c in 'A'..'Z') this[c.code] = c.code - 'A'.code
-        for (c in 'a'..'z') this[c.code] = c.code - 'a'.code + 26
-        for (c in '0'..'9') this[c.code] = c.code - '0'.code + 52
-        this['+'.code] = 62
-        this['/'.code] = 63
-    }
 
     /**
      * Converts a little-endian `ColorRgba::to_u32()` (`[r, g, b, a]`) into a Compose [Color].
@@ -342,17 +333,6 @@ object NveDrawListRenderer {
     }
 
     /**
-     * Decodes a `nve-draw1;b64,...` (or bare base64) attribute string into raw `NVE_DRAW1` bytes.
-     * Pure Kotlin RFC4648 decoder so JVM unit tests and Android API 24+ run without JSON libraries
-     * or `java.util.Base64`.
-     */
-    fun decodeBase64Attr(raw: String): ByteArray? {
-        val body = if (raw.startsWith(ATTR_PREFIX)) raw.substring(ATTR_PREFIX.length) else raw
-        val decoded = decodeBase64Strict(body) ?: return null
-        return if (validate(decoded) == null) decoded else null
-    }
-
-    /**
      * Renders a binary `NVE_DRAW1` [ByteArray] directly onto a Compose [DrawScope].
      * Returns `false` safely on corrupt or truncated input without throwing.
      */
@@ -521,57 +501,6 @@ object NveDrawListRenderer {
                 clipDepth--
             }
         }
-    }
-
-    internal fun decodeBase64Strict(input: String): ByteArray? {
-        var cleanCount = 0
-        for (i in 0 until input.length) {
-            val c = input[i]
-            if (!c.isWhitespace()) cleanCount++
-        }
-        if (cleanCount == 0 || (cleanCount and 3) != 0) return null
-
-        val outMax = (cleanCount / 4) * 3
-        val out = ByteArray(outMax)
-        var outPos = 0
-        var quadIdx = 0
-        val quad = IntArray(4)
-        var sawPadding = false
-
-        for (i in 0 until input.length) {
-            val c = input[i]
-            if (c.isWhitespace()) continue
-            val code = c.code
-            val v = if (c == '=') {
-                -2
-            } else if (code < 128) {
-                B64_DECODE_TABLE[code]
-            } else {
-                -1
-            }
-            if (v == -1) return null
-            if (sawPadding && v != -2) return null
-            if (v == -2) sawPadding = true
-            quad[quadIdx++] = v
-
-            if (quadIdx == 4) {
-                if (quad[0] < 0 || quad[1] < 0) return null
-                val b0 = (quad[0] shl 2) or (quad[1] ushr 4)
-                out[outPos++] = b0.toByte()
-                if (quad[2] >= 0) {
-                    val b1 = ((quad[1] and 0xF) shl 4) or (quad[2] ushr 2)
-                    out[outPos++] = b1.toByte()
-                    if (quad[3] >= 0) {
-                        val b2 = ((quad[2] and 0x3) shl 6) or quad[3]
-                        out[outPos++] = b2.toByte()
-                    }
-                } else if (quad[3] != -2) {
-                    return null
-                }
-                quadIdx = 0
-            }
-        }
-        return if (outPos == out.size) out else out.copyOf(outPos)
     }
 
     private fun isFiniteRange(buffer: ByteBuffer, pos: Int, floatCount: Int): Boolean {

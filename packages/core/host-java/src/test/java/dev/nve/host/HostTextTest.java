@@ -22,5 +22,28 @@ final class HostTextTest {
         c.eq(AndroidKeys.key(0, 0x80000041), "Unidentified", "COMBINING_ACCENT flag");
         c.eq(AndroidKeys.key(0, 0x7F), "Unidentified", "DEL control");
         c.eq(AndroidKeys.key(131, 0), "F1", "function key");
+
+        c.eq(new String(ImageSource.base64("TWFu", 0), java.nio.charset.StandardCharsets.ISO_8859_1), "Man", "base64 full quad");
+        c.eq(new String(ImageSource.base64("TWE=", 0), java.nio.charset.StandardCharsets.ISO_8859_1), "Ma", "base64 one pad");
+        c.eq(new String(ImageSource.base64("TQ==", 0), java.nio.charset.StandardCharsets.ISO_8859_1), "M", "base64 two pads");
+        c.eq(new String(ImageSource.base64("TW Fu\n", 0), java.nio.charset.StandardCharsets.ISO_8859_1), "Man", "base64 whitespace");
+        c.that(ImageSource.base64("", 0).length == 0, "empty base64");
+        c.that(ImageSource.base64("TWF", 0) == null, "truncated quad");
+        c.that(ImageSource.base64("T===", 0) == null, "three pads");
+        c.that(ImageSource.base64("TQ==TWFu", 0) == null, "data after padding");
+        c.that(ImageSource.base64("TW!u", 0) == null, "bad character");
+        c.that(ImageSource.base64("=AAA", 0) == null, "leading pad");
+        c.eq(new String(source(0, "data:image/png;base64,TWFu").bytes(), java.nio.charset.StandardCharsets.ISO_8859_1), "Man", "data URL bytes");
+        c.that(source(0, "data:image/png,TWFu").bytes() == null, "non-base64 data URL");
+        c.that(source(0, "asset://logo.png").bytes() == null, "asset URL is loaded by the host");
+        c.eq(new String(source(1, "PNG!").bytes(), java.nio.charset.StandardCharsets.ISO_8859_1), "PNG!", "inline bytes");
+    }
+
+    static ImageSource source(int tag, String payload) {
+        final byte[] p = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        final java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(5 + p.length).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put((byte) tag).putInt(p.length).put(p);
+        b.flip();
+        return ImageSource.decode(b);
     }
 }

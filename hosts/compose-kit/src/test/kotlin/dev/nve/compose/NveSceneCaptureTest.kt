@@ -16,7 +16,7 @@ import java.nio.ByteBuffer
 
 class NveSceneCaptureTest {
     private val drawKind = Key64.of("nve.res.draw_list")
-    private val press = NveTables.Interaction.EVENT_MASK_PRESS
+    private val press = NveTables.Values.EventMask.PRESS
 
     /** Root(1) → column(2) → [title(3), input(4), image(5), scroll(6) → [row(7)], canvas(8), button(9)]. */
     private fun showcase(scene: TestScene = TestScene()): TestScene {
@@ -37,7 +37,7 @@ class NveSceneCaptureTest {
             .set(visual, 2, NveTables.Visual.OPACITY, 0.5f)
             .set(visual, 2, NveTables.Visual.Z_INDEX, -3)
         scene.set(visual, 8, NveTables.Visual.OPACITY, 1f)
-            .set(visual, 8, NveTables.Visual.VISIBILITY, NveTables.Visual.VISIBILITY_HIDDEN)
+            .set(visual, 8, NveTables.Visual.VISIBILITY, NveTables.Values.Visibility.HIDDEN)
         val typo = scene.table(NveTables.Typography.KEY, NveTables.Typography.WORDS)
         scene.set(typo, 2, NveTables.Typography.SET, 0b11)  // color + size on the column
             .set(typo, 2, NveTables.Typography.COLOR, 0xFF00FF00.toInt())
@@ -49,18 +49,18 @@ class NveSceneCaptureTest {
         scene.set(text, 3, NveTables.Text.TEXT, "Hello \uD83D\uDE80").set(text, 7, NveTables.Text.TEXT, "Row").set(text, 9, NveTables.Text.TEXT, "Submit")
         val input = scene.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS)
         scene.set(input, 4, NveTables.TextInput.VALUE, "draft").set(input, 4, NveTables.TextInput.PLACEHOLDER, "Type")
-            .set(input, 4, NveTables.TextInput.SECURE, 1).set(input, 4, NveTables.TextInput.INPUT_KIND, NveTables.TextInput.INPUT_KIND_EMAIL)
+            .set(input, 4, NveTables.TextInput.SECURE, 1).set(input, 4, NveTables.TextInput.INPUT_KIND, NveTables.Values.InputKind.EMAIL)
         val image = scene.table(NveTables.Image.KEY, NveTables.Image.WORDS)
-        scene.set(image, 5, NveTables.Image.SRC, 1).set(image, 5, NveTables.Image.FIT, NveTables.Image.FIT_CONTAIN)
+        scene.set(image, 5, NveTables.Image.SRC, 1).set(image, 5, NveTables.Image.FIT, NveTables.Values.ImageFit.CONTAIN)
         val scroll = scene.table(NveTables.Scroll.KEY, NveTables.Scroll.WORDS)
-        scene.set(scroll, 6, NveTables.Scroll.AXES, NveTables.Scroll.AXES_HORIZONTAL)
+        scene.set(scroll, 6, NveTables.Scroll.AXES, NveTables.Values.ScrollAxes.HORIZONTAL)
         val canvas = scene.table(NveModuleTables.Canvas.KEY, NveModuleTables.Canvas.WORDS)
         scene.set(canvas, 8, NveModuleTables.Canvas.DRAW_LIST, 2)
         val interaction = scene.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS)
         scene.set(interaction, 9, NveTables.Interaction.EVENT_MASK, press).set(interaction, 3, NveTables.Interaction.EVENT_MASK, press)
             .set(interaction, 3, NveTables.Interaction.DISABLED, 1)
         val a11y = scene.table(NveTables.Accessibility.KEY, NveTables.Accessibility.WORDS)
-        scene.set(a11y, 9, NveTables.Accessibility.ROLE, NveTables.Accessibility.ROLE_BUTTON).set(a11y, 9, NveTables.Accessibility.LABEL, "Submit form")
+        scene.set(a11y, 9, NveTables.Accessibility.ROLE, NveTables.Values.AriaRole.BUTTON).set(a11y, 9, NveTables.Accessibility.LABEL, "Submit form")
             .set(a11y, 7, NveTables.Accessibility.HIDDEN, 1)
         val debug = scene.table(NveTables.DebugId.KEY, NveTables.DebugId.WORDS)
         scene.set(debug, 9, NveTables.DebugId.TEST_ID, "submit-btn")
@@ -99,14 +99,15 @@ class NveSceneCaptureTest {
         assertFalse(title.pressable, "disabled interaction is not pressable")
         assertTrue(title.semantics.disabled)
         val input = snap.nodes.getValue(0x1000004)
-        assertEquals(NveInput("draft", "Type", secure = true, multiline = false, readOnly = false, inputKind = NveTables.TextInput.INPUT_KIND_EMAIL), input.input)
+        assertEquals(NveInput("draft", "Type", secure = true, multiline = false, readOnly = false, inputKind = NveTables.Values.InputKind.EMAIL), input.input)
         assertEquals(20f, input.textStyle.fontSize, "inherits the column's size")
         val image = snap.nodes.getValue(0x1000005)
         assertEquals(NveImage.Url("asset://logo.png"), image.image)
-        assertEquals(NveTables.Image.FIT_CONTAIN, image.imageFit)
+        assertEquals(NveTables.Values.ImageFit.CONTAIN, image.imageFit)
         val scroll = snap.nodes.getValue(0x1000006)
         assertEquals(NveNodeKind.SCROLL, scroll.kind)
-        assertTrue(scroll.scrollHorizontal)
+        assertEquals(NveTables.Values.ScrollAxes.HORIZONTAL, scroll.scrollAxes)
+        assertTrue(scroll.scrollsHorizontally && !scroll.scrollsVertically)
         val row = snap.nodes.getValue(0x1000007)
         assertEquals(0f to 0f, row.x to row.y, "scroll content is relative to the scroll container")
         assertTrue(row.semantics.hidden)
@@ -115,7 +116,7 @@ class NveSceneCaptureTest {
         assertFalse(canvas.box.visible)
         val button = snap.nodes.getValue(0x1000009)
         assertTrue(button.pressable)
-        assertEquals(NveSemantics(NveTables.Accessibility.ROLE_BUTTON, "Submit form", "", "submit-btn"), button.semantics)
+        assertEquals(NveSemantics(NveTables.Values.AriaRole.BUTTON, "Submit form", "", "submit-btn"), button.semantics)
         assertEquals(NveNodeKind.TEXT, button.kind)
     }
 
@@ -158,7 +159,7 @@ class NveSceneCaptureTest {
         scene.set(visual, 2, NveTables.Visual.OPACITY, Float.NaN).set(visual, 2, NveTables.Visual.BORDER_RADIUS, Float.NaN)
             .set(visual, 2, NveTables.Visual.BORDER_WIDTH, Float.NEGATIVE_INFINITY)
         val typo = scene.table(NveTables.Typography.KEY, NveTables.Typography.WORDS)
-        scene.set(typo, 2, NveTables.Typography.SET, NveTables.Typography.SET_FONT_SIZE).set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
+        scene.set(typo, 2, NveTables.Typography.SET, NveTables.Values.TypographySet.FONT_SIZE).set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
         val text = scene.table(NveTables.Text.KEY, NveTables.Text.WORDS)
         scene.set(text, 2, NveTables.Text.TEXT, "x")
         val n = NveSceneCapture.capture(scene.reader(), { null }, NveSceneSnapshot.EMPTY).nodes.getValue(0x1000002)
@@ -181,10 +182,47 @@ class NveSceneCaptureTest {
     fun removedNodesLeaveTheSnapshot() {
         val res = Resources(imageSourceBytes(0, "x".toByteArray()), ByteBuffer.allocate(0))
         val first = NveSceneCapture.capture(showcase().reader(), res, NveSceneSnapshot.EMPTY)
-        val smaller = TestScene().node(2, 1, 0f, 0f, 10f, 10f)
+        // A frame gap reconciles everything: nodes no longer live are gone.
+        val smaller = TestScene(frameId = 3).node(2, 1, 0f, 0f, 10f, 10f)
         val second = NveSceneCapture.capture(smaller.reader(), res, first)
         assertEquals(setOf(0x1000002), second.nodes.keys)
-        assertEquals(1L, second.frameId)
+        assertEquals(3L, second.frameId)
+    }
+
+    @Test
+    fun chainedFramesRebuildOnlyWhatChanged() {
+        val res = Resources(imageSourceBytes(0, "asset://logo.png".toByteArray()), ByteBuffer.allocate(0))
+        val first = NveSceneCapture.capture(showcase(TestScene(frameId = 1)).reader(), res, NveSceneSnapshot.EMPTY)
+        assertSame(first, NveSceneCapture.capture(showcase(TestScene(frameId = 1)).reader(), res, first), "a redelivered frame is a no-op")
+
+        // Frame 2: only the title is content-dirty, the button moved, row 7 was removed.
+        val next = showcase(TestScene(frameId = 2))
+        next.node(9, 2, 40f, 330f, 120f, 44f)  // its new rect (parent-relative 35, 325)
+        next.set(next.table(NveTables.Text.KEY, NveTables.Text.WORDS), 3, NveTables.Text.TEXT, "Edited")
+        next.dirty = intArrayOf(3)
+        next.moved = intArrayOf(9)
+        next.removed.add(0x1000007)
+        val second = NveSceneCapture.capture(next.reader(), res, first)
+        assertEquals("Edited", second.nodes.getValue(0x1000003).text, "dirty node rebuilt")
+        assertSame(first.nodes.getValue(0x1000004), second.nodes.getValue(0x1000004), "untouched node reused as is")
+        assertSame(first.nodes.getValue(0x1000005), second.nodes.getValue(0x1000005))
+        val button = second.nodes.getValue(0x1000009)
+        assertEquals(35f to 325f, button.x to button.y, "moved node gets its new geometry")
+        assertSame(first.nodes.getValue(0x1000009).semantics, button.semantics, "a moved node keeps its content")
+        assertFalse(0x1000007 in second.nodes, "removed node dropped")
+        assertSame(first.rootChildren, second.rootChildren, "a clean root is reused")
+    }
+
+    @Test
+    fun runtimeScrollOffsetsReachTheSnapshot() {
+        val res = Resources(imageSourceBytes(0, "x".toByteArray()), ByteBuffer.allocate(0))
+        val first = NveSceneCapture.capture(showcase().scroll(6, 30f, 0f).reader(), res, NveSceneSnapshot.EMPTY)
+        assertEquals(NveScrollOffset(30f, 0f), first.scrollOffset(0x1000006))
+        assertEquals(NveScrollOffset.ZERO, first.scrollOffset(0x1000002), "unscrolled containers are at 0")
+        val second = NveSceneCapture.capture(showcase(TestScene(frameId = 2)).scroll(6, 30f, 0f).reader(), res, first)
+        assertSame(first.scrollOffsets, second.scrollOffsets, "unchanged offsets reuse the previous map")
+        val third = NveSceneCapture.capture(showcase(TestScene(frameId = 3)).reader(), res, second)
+        assertEquals(NveScrollOffset.ZERO, third.scrollOffset(0x1000006), "scrolled back to the origin")
     }
 
     @Test

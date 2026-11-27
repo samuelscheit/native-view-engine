@@ -5,14 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 
-APP_PKG="nve-studio-workspace"
+APP_PKG="nve-example-kitchen-sink"
 BUILD_ONLY=0
 AVD_NAME=""
 SCREENSHOT_PATH=""
 
 usage() {
   cat <<'EOF'
-Usage: ./hosts/android-shell/run-emulator.sh [nve-studio-workspace|nve-example-kitchen-sink] [--build-only] [--avd <name>] [--screenshot <out.png>]
+Usage: ./hosts/android-shell/run-emulator.sh [<app crate>, default nve-example-kitchen-sink] [--build-only] [--avd <name>] [--screenshot <out.png>]
 
 Cross-compiles an NVE Rust app (`aarch64-linux-android`) + `libnve_android_shell.so` (`arm64-v8a`),
 packages and debug-signs a zero-Gradle APK (`hosts/android-shell/build/nve-android-shell.apk`),
@@ -233,10 +233,10 @@ fi
 
 # 3. Compile pure-Java NveMainActivity against android.jar and dex via d8.
 HOST_JAVA_DIR="$REPO_ROOT/packages/core/host-java/src/main/java"
-if [[ ! -f "$HOST_JAVA_DIR/dev/nve/host/generated/NveAbi.java" ]]; then
-  echo "==> Generating NVE host ABI Java bindings (nve-cli codegen abi)..."
-  (cd "$REPO_ROOT" && cargo run --locked -p nve-cli -- codegen abi)
-fi
+# Always regenerate: codegen rewrites only changed files, and a stale (but present) generated
+# Java ABI would otherwise compile against an older runtime than the JNI library just built.
+echo "==> Generating NVE host ABI Java bindings (nve-cli codegen abi)..."
+(cd "$REPO_ROOT" && cargo run --locked -q -p nve-cli -- codegen abi)
 HOST_JAVA_SOURCES=()
 while IFS= read -r -d '' f; do
   HOST_JAVA_SOURCES+=("$f")
@@ -252,7 +252,7 @@ APP_JAVA_SOURCES=()
 while IFS= read -r -d '' f; do
   APP_JAVA_SOURCES+=("$f")
 done < <(find "$SCRIPT_DIR/android-app/src" -name '*.java' -print0)
-javac --release 11 -Xlint:deprecation -cp "$ANDROID_JAR" -d "$CLASSES_DIR" \
+javac --release 11 -Xlint:all -Werror -cp "$ANDROID_JAR" -d "$CLASSES_DIR" \
   "${HOST_JAVA_SOURCES[@]}" "${APP_JAVA_SOURCES[@]}"
 
 
