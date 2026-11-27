@@ -96,15 +96,17 @@ bool NveWinHost::submit_frame(std::span<const uint8_t> nve2) {
 
 // --- App state & dev loop ----------------------------------------------------------------------
 
-bool NveWinHost::save_state(const std::string& path, uint32_t schema_version) {
+bool NveWinHost::save_state(std::string_view path, uint32_t schema_version) {
   return session_->save_state(path, schema_version);
 }
 
-bool NveWinHost::restore_state(const std::string& path, uint32_t schema_version) {
+bool NveWinHost::restore_state(std::string_view path, uint32_t schema_version) {
   if (!session_->restore_state_file(path, schema_version)) return false;
   (void)pump();
   return true;
 }
+
+bool NveWinHost::clear_state(std::string_view path) { return session_->clear_state_file(path); }
 
 bool NveWinHost::apply_props(std::span<const NveMapEntry> props) {
   const bool ok = session_->set_props(props);

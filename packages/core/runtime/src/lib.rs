@@ -7,6 +7,8 @@
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 pub mod app;
+#[cfg(not(target_arch = "wasm32"))]
+mod app_files;
 pub mod builder;
 pub mod c_api;
 mod delta;

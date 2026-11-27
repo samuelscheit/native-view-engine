@@ -52,12 +52,7 @@ add_executable(nve_gtk_shell_test
   tests/gtk_window_manager_test.cpp
 )
 target_compile_options(nve_gtk_shell_test PRIVATE ${_nve_gtk_warnings})
-target_compile_definitions(nve_gtk_shell_test PRIVATE
-  NVE_TEST_COUNTER_MODULE="$<TARGET_FILE:nve_gtk_fixture_counter>"
-  NVE_TEST_NO_SURFACE_MODULE="$<TARGET_FILE:nve_gtk_fixture_no_surface>"
-  NVE_TEST_NO_ENTRY_MODULE="$<TARGET_FILE:nve_gtk_fixture_no_entry>"
-)
+nve_use_app_module_fixtures(nve_gtk_shell_test nve_gtk_fixture)
 target_link_libraries(nve_gtk_shell_test PRIVATE nve_gtk_shell_lib nve::host_test_support)
-add_dependencies(nve_gtk_shell_test nve_gtk_fixture_counter nve_gtk_fixture_no_surface nve_gtk_fixture_no_entry)
 add_test(NAME gtk_shell_test COMMAND nve_gtk_shell_test)
 nve_host_sanitize(nve_gtk_shell_lib nve_gtk_shell nve_gtk_shell_test)

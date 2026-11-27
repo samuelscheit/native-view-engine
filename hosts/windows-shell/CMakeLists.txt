@@ -88,13 +88,8 @@ if(WIN32)
   target_sources(nve_windows_shell_test PRIVATE tests/windows_shell_d2d_test.cpp)
 endif()
 target_compile_options(nve_windows_shell_test PRIVATE ${_nve_win_warnings})
-target_compile_definitions(nve_windows_shell_test PRIVATE
-  NVE_TEST_COUNTER_MODULE="$<TARGET_FILE:nve_win_fixture_counter>"
-  NVE_TEST_NO_SURFACE_MODULE="$<TARGET_FILE:nve_win_fixture_no_surface>"
-  NVE_TEST_NO_ENTRY_MODULE="$<TARGET_FILE:nve_win_fixture_no_entry>"
-)
+nve_use_app_module_fixtures(nve_windows_shell_test nve_win_fixture)
 target_link_libraries(nve_windows_shell_test PRIVATE nve_windows_shell_lib nve::host_test_support)
-add_dependencies(nve_windows_shell_test nve_win_fixture_counter nve_win_fixture_no_surface nve_win_fixture_no_entry)
 add_test(NAME windows_shell_test COMMAND nve_windows_shell_test)
 nve_host_sanitize(nve_windows_shell_lib nve_windows_shell_test)
 if(TARGET nve_windows_shell)

@@ -6,7 +6,11 @@ use nve_abi::{
     NveEventBatch, NveEventBatchRef, NveGetInterfaceFn, NvePropsRef, NveSurfaceApi, SurfaceId,
     NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_SURFACE,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use nve_engine::loader::StagedDylib;
 use nve_engine::{HotPatchMsg, NveApp};
+
+use crate::builder::RuntimeError;
 
 pub use nve_engine::{AppFrame, CapabilityUnsupported, FrameTickHook, RuntimeApp};
 
@@ -78,6 +82,10 @@ pub struct CAbiAppAdapter {
     component_api: Option<NveComponentApi>,
     dev_api: Option<NveDevApi>,
     patch_scratch: Vec<u8>,
+    /// The staged `cdylib` backing every pointer above; declared last so it unloads only after
+    /// `Drop` destroyed the app handle.
+    #[cfg(not(target_arch = "wasm32"))]
+    module: Option<StagedDylib>,
 }
 
 /// Copies the interface table `T` that `get_iface(id)` returns, or `None` when the module returns
@@ -112,16 +120,23 @@ impl CAbiAppAdapter {
     /// Instantiates an app handle by querying `NVE_IFACE_SURFACE` (required) plus the optional
     /// `NVE_IFACE_COMPONENT` and `NVE_IFACE_DEV` tables from `get_iface`.
     ///
+    /// Fails with [`RuntimeError::Unsupported`] when the surface table is missing or partial, and
+    /// [`RuntimeError::InvalidArg`] when `create` returns a NULL app handle.
+    ///
     /// # Safety
     /// `get_iface` must conform to the NVE modular C ABI (`nve_get_interface`) and the backing
     /// binary/module must remain loaded for the entire lifetime of the returned adapter.
     pub unsafe fn from_get_interface(
         get_iface: NveGetInterfaceFn,
         surface_id: SurfaceId,
-    ) -> Option<Self> {
+    ) -> Result<Self, RuntimeError> {
         // SAFETY: Caller guarantees `get_iface` follows the NVE modular C ABI.
         let surface_api =
-            unsafe { query_interface::<NveSurfaceApi>(get_iface, NVE_IFACE_SURFACE) }?;
+            unsafe { query_interface::<NveSurfaceApi>(get_iface, NVE_IFACE_SURFACE) }.ok_or(
+                RuntimeError::Unsupported(
+                    "app exports no complete NVE_IFACE_SURFACE (missing table or NULL slot)",
+                ),
+            )?;
         // SAFETY: As above.
         let component_api =
             unsafe { query_interface::<NveComponentApi>(get_iface, NVE_IFACE_COMPONENT) };
@@ -131,15 +146,28 @@ impl CAbiAppAdapter {
         // SAFETY: `surface_api.create` returns a freshly allocated opaque app handle or null.
         let handle = unsafe { (surface_api.create)(surface_id) };
         if handle.is_null() {
-            return None;
+            return Err(RuntimeError::InvalidArg("app surface create returned a NULL app handle"));
         }
-        Some(Self {
+        Ok(Self {
             handle,
             surface_api,
             component_api,
             dev_api,
             patch_scratch: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            module: None,
         })
+    }
+
+    /// Instantiates the app of a staged `cdylib` (see [`Self::from_get_interface`]); the adapter
+    /// owns the library and unloads it (removing the staged copy) after destroying the app.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_staged_dylib(module: StagedDylib, surface_id: SurfaceId) -> Result<Self, RuntimeError> {
+        // SAFETY: `StagedDylib` resolved `nve_get_interface` per the NVE modular C ABI, and the
+        // adapter keeps `module` loaded for its whole lifetime.
+        let mut adapter = unsafe { Self::from_get_interface(module.get_interface(), surface_id) }?;
+        adapter.module = Some(module);
+        Ok(adapter)
     }
 }
 

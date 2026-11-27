@@ -259,13 +259,19 @@ impl StateFile {
     pub fn reset(&mut self) -> Result<(), PersistenceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = self.path.as_deref() {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(PersistenceError::Io(e)),
-            }
+            Self::remove(path)?;
         }
         self.cached = None;
         Ok(())
+    }
+
+    /// Deletes the state file at `path` (a cold start); succeeds when it is already absent.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn remove(path: &Path) -> Result<(), PersistenceError> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(PersistenceError::Io(e)),
+        }
     }
 }

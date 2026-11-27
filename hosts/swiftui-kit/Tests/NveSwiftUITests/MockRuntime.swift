@@ -310,6 +310,10 @@ final class MockRuntime: @unchecked Sendable {
             out?.pointee = NveBufferSlice(ptr: m.pin(bytes), len: bytes.count)
             return 0
         }
+        a.load_app_module = { _, _, _ in Int32(NVE_RUNTIME_IO.rawValue) }
+        a.save_state_file = { _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
+        a.restore_state_file = { _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
+        a.clear_state_file = { _, _ in 0 }
         a.last_error = { out, cap in
             let msg = Array(MockRuntime.shared.lastError.utf8)
             if let out, cap > 0 {

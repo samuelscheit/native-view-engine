@@ -393,6 +393,12 @@ void test_runtime_scene_reader_and_session_mock() {
   mock_api.resource_payload = [](NveRuntimeHandle, uint32_t, uint64_t*, NveBufferSlice*) -> int32_t {
     return NVE_RUNTIME_NOT_FOUND;
   };
+  mock_api.load_app_module = [](NveRuntimeHandle, NveStrSlice, uint32_t) -> int32_t { return NVE_RUNTIME_IO; };
+  mock_api.save_state_file = [](NveRuntimeHandle, NveStrSlice, uint32_t) -> int32_t { return NVE_RUNTIME_NOT_FOUND; };
+  mock_api.restore_state_file = [](NveRuntimeHandle, NveStrSlice, uint32_t) -> int32_t {
+    return NVE_RUNTIME_NOT_FOUND;
+  };
+  mock_api.clear_state_file = [](NveRuntimeHandle, NveStrSlice) -> int32_t { return NVE_RUNTIME_OK; };
 
   {
     auto sess = nve::host::RuntimeSession::create(&mock_api);
