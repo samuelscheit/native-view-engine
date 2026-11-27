@@ -9,10 +9,9 @@ use std::sync::{Arc, Mutex};
 use nve_abi::SurfaceId;
 use nve_interop::{
     ArbitrationDecision, ChannelPayload, ColorScheme, ContrastLevel, FrameworkKind,
-    GestureArbitrator,
-    GestureCapabilities, GestureDisposition, LifecycleState, NveChannelBus, PointerPhase,
-    PointerSample, ScrollEdgeState, SurfaceDescriptor, SurfaceEnvironment, SurfaceOrchestrator,
-    ThemeContext, TOPIC_THEME,
+    GestureArbitrator, GestureCapabilities, GestureDisposition, InteropError, LifecycleState,
+    NveChannelBus, PointerPhase, PointerSample, ScrollEdgeState, SurfaceDescriptor,
+    SurfaceEnvironment, SurfaceOrchestrator, TOPIC_THEME, ThemeContext,
 };
 use serde::{Deserialize, Serialize};
 
@@ -95,8 +94,7 @@ pub struct IslandsSnapshot {
 
 impl Default for IslandsSnapshot {
     fn default() -> Self {
-        let rt = IslandSandboxRuntime::new();
-        rt.initial_snapshot()
+        IslandSandboxRuntime::boot(0, 0).initial_snapshot()
     }
 }
 
@@ -114,12 +112,6 @@ pub struct IslandSandboxRuntime {
     delivery_log: Arc<Mutex<Vec<DeliveryLogEntry>>>,
 }
 
-impl Default for IslandSandboxRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// `ThemeContext::accent_rgba` (big-endian RGBA) of a workspace accent choice.
 const fn accent_rgba(accent: AccentTheme) -> u32 {
     let c = accent.accent().srgb();
@@ -127,7 +119,11 @@ const fn accent_rgba(accent: AccentTheme) -> u32 {
 }
 
 impl IslandSandboxRuntime {
-    pub fn new() -> Self {
+    /// Boots the orchestrator, bus and arbitrator, registering the root, rail and island surfaces.
+    ///
+    /// # Errors
+    /// Propagates any orchestrator / bus registration failure.
+    pub fn new() -> Result<Self, InteropError> {
         let mut orchestrator = SurfaceOrchestrator::new();
         let mut bus = NveChannelBus::new();
         let mut arbitrator = GestureArbitrator::new();
@@ -144,61 +140,69 @@ impl IslandSandboxRuntime {
             ..SurfaceEnvironment::default()
         };
 
-        let root_id = orchestrator
-            .register_root(FrameworkKind::Nve, "AetherWorkspaceRoot", root_env)
-            .expect("register root NVE surface");
-        let rail_id = orchestrator
-            .register_child(root_id, FrameworkKind::Nve, "AetherIslandHorizontalRail")
-            .expect("register middle NVE horizontal rail");
+        let root_id =
+            orchestrator.register_root(FrameworkKind::Nve, "AetherWorkspaceRoot", root_env)?;
+        let rail_id = orchestrator.register_child(
+            root_id,
+            FrameworkKind::Nve,
+            "AetherIslandHorizontalRail",
+        )?;
 
-        arbitrator.set_capabilities(root_id, GestureCapabilities::vertical_scroll(FrameworkKind::Nve));
+        arbitrator.set_capabilities(
+            root_id,
+            GestureCapabilities::vertical_scroll(FrameworkKind::Nve),
+        );
         arbitrator.set_capabilities(
             rail_id,
             GestureCapabilities::horizontal_scroll(FrameworkKind::Nve),
         );
 
-        let specs: Vec<(IslandHostKind, FrameworkKind, &str, &'static str, GestureCapabilities)> =
-            vec![
-                (
-                    IslandHostKind::ReactNative,
-                    FrameworkKind::ReactNativeFabric,
-                    "RNLiveMapView",
-                    "LazyOnVisible",
-                    GestureCapabilities::vertical_scroll(FrameworkKind::ReactNativeFabric),
-                ),
-                (
-                    IslandHostKind::Flutter,
-                    FrameworkKind::Flutter,
-                    "RevenueSparkChart",
-                    "LazyOnVisible",
-                    GestureCapabilities::horizontal_scroll(FrameworkKind::Flutter),
-                ),
-                (
-                    IslandHostKind::SwiftUI,
-                    FrameworkKind::SwiftUI,
-                    "ApplePayCheckoutCard",
-                    "OnFirstInteraction",
-                    GestureCapabilities {
-                        framework: FrameworkKind::SwiftUI,
-                        ..GestureCapabilities::default()
-                    },
-                ),
-                (
-                    IslandHostKind::JetpackCompose,
-                    FrameworkKind::JetpackCompose,
-                    "MediaPlayerSheet",
-                    "EagerOnCreate",
-                    GestureCapabilities::vertical_scroll(FrameworkKind::JetpackCompose),
-                ),
-            ];
+        let specs: Vec<(
+            IslandHostKind,
+            FrameworkKind,
+            &str,
+            &'static str,
+            GestureCapabilities,
+        )> = vec![
+            (
+                IslandHostKind::ReactNative,
+                FrameworkKind::ReactNativeFabric,
+                "RNLiveMapView",
+                "LazyOnVisible",
+                GestureCapabilities::vertical_scroll(FrameworkKind::ReactNativeFabric),
+            ),
+            (
+                IslandHostKind::Flutter,
+                FrameworkKind::Flutter,
+                "RevenueSparkChart",
+                "LazyOnVisible",
+                GestureCapabilities::horizontal_scroll(FrameworkKind::Flutter),
+            ),
+            (
+                IslandHostKind::SwiftUI,
+                FrameworkKind::SwiftUI,
+                "ApplePayCheckoutCard",
+                "OnFirstInteraction",
+                GestureCapabilities {
+                    framework: FrameworkKind::SwiftUI,
+                    ..GestureCapabilities::default()
+                },
+            ),
+            (
+                IslandHostKind::JetpackCompose,
+                FrameworkKind::JetpackCompose,
+                "MediaPlayerSheet",
+                "EagerOnCreate",
+                GestureCapabilities::vertical_scroll(FrameworkKind::JetpackCompose),
+            ),
+        ];
 
         let _ = bus.ensure_channel(TOPIC_WORKSPACE_SYNC);
 
         let mut islands = Vec::with_capacity(specs.len());
         for (host, framework, name, policy, caps) in specs {
             let sid = orchestrator
-                .register_surface(SurfaceDescriptor::new(framework, name).with_parent(rail_id))
-                .expect("register island surface");
+                .register_surface(SurfaceDescriptor::new(framework, name).with_parent(rail_id))?;
             arbitrator.set_capabilities(sid, caps);
 
             for topic in [TOPIC_THEME, TOPIC_WORKSPACE_SYNC] {
@@ -207,8 +211,7 @@ impl IslandSandboxRuntime {
                     if let Ok(mut guard) = log_ref.lock() {
                         guard.push((sid, msg.topic.clone(), msg.seq, msg.payload.len()));
                     }
-                })
-                .expect("subscribe island to NveChannelBus");
+                })?;
             }
 
             islands.push((host, sid, policy));
@@ -224,7 +227,7 @@ impl IslandSandboxRuntime {
             let _ = orchestrator.transition_state(*sid, LifecycleState::Resumed);
         }
 
-        Self {
+        Ok(Self {
             orchestrator,
             bus,
             arbitrator,
@@ -232,12 +235,29 @@ impl IslandSandboxRuntime {
             rail_id,
             islands,
             delivery_log,
-        }
+        })
+    }
+
+    /// [`Self::new`], or where it cannot boot a runtime with no registered surfaces anchored at
+    /// `root_id` / `rail_id`: every lookup misses, so toggles are no-ops, broadcasts reach nobody,
+    /// gestures find no surface, and the snapshot lists no cards.
+    fn boot(root_id: SurfaceId, rail_id: SurfaceId) -> Self {
+        Self::new().unwrap_or_else(|_| Self {
+            orchestrator: SurfaceOrchestrator::new(),
+            bus: NveChannelBus::new(),
+            arbitrator: GestureArbitrator::new(),
+            root_id,
+            rail_id,
+            islands: Vec::new(),
+            delivery_log: Arc::new(Mutex::new(Vec::new())),
+        })
     }
 
     /// Reconstructs a live `IslandSandboxRuntime` hydrated to match a persisted [`IslandsSnapshot`].
+    ///
+    /// If the runtime cannot boot, every operation is a no-op (see [`Self::boot`]).
     pub fn from_snapshot(snap: &IslandsSnapshot) -> Self {
-        let mut rt = Self::new();
+        let mut rt = Self::boot(snap.root_surface_id, snap.rail_surface_id);
         for card in &snap.cards {
             if let Some(sid) = rt.surface_id_for_slug(&card.slug) {
                 let target = parse_lifecycle(&card.lifecycle);
@@ -260,18 +280,17 @@ impl IslandSandboxRuntime {
             .map(|(_, sid, _)| *sid)
     }
 
-    pub fn rn_surface_id(&self) -> SurfaceId {
+    pub fn rn_surface_id(&self) -> Option<SurfaceId> {
         self.surface_id_for_slug(IslandHostKind::ReactNative.slug())
-            .expect("RN island registered")
     }
 
     pub fn initial_snapshot(&self) -> IslandsSnapshot {
         let cards = self
             .islands
             .iter()
-            .map(|(host, sid, policy)| {
-                let rec = self.orchestrator.get(*sid).expect("island record exists");
-                IslandCardState {
+            .filter_map(|(host, sid, policy)| {
+                let rec = self.orchestrator.get(*sid)?;
+                Some(IslandCardState {
                     slug: host.slug().into(),
                     host: *host,
                     surface_id: *sid,
@@ -279,7 +298,7 @@ impl IslandSandboxRuntime {
                     mount_policy: (*policy).into(),
                     lifecycle: format_lifecycle(rec.state).into(),
                     received_messages: 0,
-                }
+                })
             })
             .collect();
 
@@ -349,11 +368,11 @@ impl IslandSandboxRuntime {
     /// Runs a real pointer arbitration sequence (`Down -> Move -> Up`) on the React Native
     /// island ancestor chain `[rn_island, horizontal_rail, root_nve]` via `GestureArbitrator`.
     pub fn simulate_gesture(&mut self, mode: GestureSimMode) -> ArbitrationDecision {
+        // No React Native island (detached runtime) => empty chain => `NoEligibleSurface`.
         let rn_id = self.rn_surface_id();
-        let chain = self
-            .orchestrator
-            .ancestor_chain(rn_id)
-            .expect("valid island ancestor chain");
+        let chain = rn_id
+            .and_then(|id| self.orchestrator.ancestor_chain(id).ok())
+            .unwrap_or_default();
 
         let edges = match mode {
             GestureSimMode::DeferToParent => ScrollEdgeState {
@@ -362,7 +381,9 @@ impl IslandSandboxRuntime {
             },
             GestureSimMode::Claim | GestureSimMode::PassThrough => ScrollEdgeState::default(),
         };
-        self.arbitrator.update_scroll_edges(rn_id, edges);
+        if let Some(rn_id) = rn_id {
+            self.arbitrator.update_scroll_edges(rn_id, edges);
+        }
 
         let pointer_id = match mode {
             GestureSimMode::Claim => 101,

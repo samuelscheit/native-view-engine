@@ -96,11 +96,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     let q_chars: Vec<char> = q.chars().collect();
     let c_chars: Vec<char> = c.chars().collect();
     let is_boundary = |idx: usize| -> bool {
-        idx == 0
-            || matches!(
-                c_chars[idx - 1],
-                ' ' | '-' | '_' | ':' | '#' | '/' | '('
-            )
+        idx == 0 || matches!(c_chars[idx - 1], ' ' | '-' | '_' | ':' | '#' | '/' | '(')
     };
 
     let mut best_score: Option<i32> = None;
@@ -239,7 +235,11 @@ pub fn build_palette_items(state: &WorkspaceState) -> Vec<CommandPaletteItem> {
         items.push(CommandPaletteItem {
             category: "HISTORY",
             label: format!("Snapshot #{}: {}", idx + 1, snap.action_label),
-            subtitle: format!("Jump to {} ({})", snap.active_view.title(), snap.studio.accent.label()),
+            subtitle: format!(
+                "Jump to {} ({})",
+                snap.active_view.title(),
+                snap.studio.accent.label()
+            ),
             action: CommandPaletteAction::ScrubSnapshot(idx),
         });
     }
@@ -326,16 +326,21 @@ pub fn dispatch_keydown(state: &mut WorkspaceState, key: &str, meta_or_ctrl: boo
 /// The `Cmd+K` overlay; subscribes to the `palette` domain only.
 #[component]
 pub(crate) fn CommandPalette() -> Element {
+    nve_dioxus::render_probe::record_render("CommandPalette");
     let store = use_studio();
     let s = use_studio_style();
     let t = s.t;
     let palette = store.palette.read();
-    let open = palette.state.open;
-    let query = palette.state.query.clone();
-    let total = palette.matches.len();
-    let visible: Vec<CommandPaletteItem> = palette.matches.iter().take(MAX_VISIBLE_PALETTE_ITEMS).cloned().collect();
-    let selected = palette.state.selected.min(visible.len().saturating_sub(1));
+    let (open, query, selected) = (
+        palette.state.open,
+        palette.state.query.clone(),
+        palette.state.selected,
+    );
     drop(palette);
+    let mut visible = store.with(filter_palette_items);
+    let total = visible.len();
+    visible.truncate(MAX_VISIBLE_PALETTE_ITEMS);
+    let selected = selected.min(visible.len().saturating_sub(1));
 
     let focusable_ids: Vec<String> = ["palette-input".to_owned(), "palette-close".to_owned()]
         .into_iter()

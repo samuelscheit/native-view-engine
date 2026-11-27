@@ -17,8 +17,8 @@ use nve_host_services::{
     ServiceError, TypedEventBus,
 };
 use nve_system_env::{
-    ColorScheme, LocaleSnapshot, MemorySystemEnv, SystemEnvBridge, SystemEnvClient, SystemEnvEvent,
-    ThemeSnapshot,
+    ColorScheme, LocaleSnapshot, MemorySystemEnv, NativeSystemEnv, SystemEnvBackend,
+    SystemEnvBridge, SystemEnvClient, SystemEnvEvent, ThemeSnapshot,
 };
 
 /// Synchronized host system environment snapshot (theme + locale) sourced via [`SystemEnvClient`].
@@ -72,16 +72,29 @@ impl Default for StudioHostServices {
 }
 
 impl StudioHostServices {
-    /// Creates a [`StudioHostServices`] backed by a Studio-seeded [`MemoryHostServices`] fallback
-    /// (dark theme + `en-US` locale) until a native host binds `NVE_IFACE_HOST = 5`.
+    /// Creates a [`StudioHostServices`] whose [`MemoryHostServices`] fallback reports the Studio
+    /// defaults (dark theme + `en-US` locale): deterministic for headless runs, tests, and SSR.
     pub fn new() -> Self {
+        Self::seeded(StudioSystemEnv::default())
+    }
+
+    /// Creates a [`StudioHostServices`] whose fallback reports the OS appearance and locale
+    /// ([`NativeSystemEnv`]), so a natively hosted workspace paints the OS polarity from its first
+    /// frame, before a host binds `NVE_IFACE_HOST = 5`. Each value the OS cannot report falls
+    /// back to the Studio default.
+    pub fn native() -> Self {
+        let os = NativeSystemEnv::new();
+        let defaults = StudioSystemEnv::default();
+        Self::seeded(StudioSystemEnv {
+            theme: os.get_theme().unwrap_or(defaults.theme),
+            locale: os.get_locale().unwrap_or(defaults.locale),
+        })
+    }
+
+    fn seeded(env: StudioSystemEnv) -> Self {
         let mem = Arc::new(MemoryHostServices::new());
-        let default_env = StudioSystemEnv::default();
         mem.register(MemoryClipboard::new());
-        mem.register(MemorySystemEnv::with_initial(
-            default_env.theme,
-            default_env.locale,
-        ));
+        mem.register(MemorySystemEnv::with_initial(env.theme, env.locale));
         Self::with_memory(mem)
     }
 

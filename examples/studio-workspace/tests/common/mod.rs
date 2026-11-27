@@ -12,9 +12,15 @@ use nve_components::tables::{DebugId, TextContent};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
-use nve_studio_workspace::create_surface_for_viewport;
+use nve_studio_workspace::{create_surface_for_viewport, StudioHostServices, StudioWorkspaceModule};
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_web_html_web::register_web_html_systems;
+
+/// A module over the Studio-default host services (dark, `en-US`), independent of the OS the
+/// tests run on (`NveApp::create` seeds from the OS appearance).
+pub fn headless_module(surface_id: u32) -> StudioWorkspaceModule {
+    StudioWorkspaceModule::with_services(surface_id, std::sync::Arc::new(StudioHostServices::new()))
+}
 
 pub fn register_studio_tables() {
     nve_components::tables::register_core_tables();
@@ -101,7 +107,9 @@ impl MultiBackendHarness {
         self.surface.reconcile(fid);
         let store = self.surface.store();
         let changes = self.surface.last_changes();
-        self.headless.commit(store, changes).expect("headless commit");
+        self.headless
+            .commit(store, changes)
+            .expect("headless commit");
         self.skia.commit(store, changes).expect("skia commit");
         self.web.commit(store, changes).expect("web commit");
     }
@@ -182,8 +190,7 @@ impl MultiBackendHarness {
 
     pub fn rasterize(&self) -> PixelBuffer {
         let mut buf = PixelBuffer::new(self.viewport.width as u32, self.viewport.height as u32);
-        self.skia
-            .rasterize(&mut buf, ColorRgba::rgb(11, 17, 32));
+        self.skia.rasterize(&mut buf, ColorRgba::rgb(11, 17, 32));
         buf
     }
 
@@ -200,9 +207,7 @@ impl MultiBackendHarness {
             if r.width <= 0.0 || r.height <= 0.0 {
                 continue;
             }
-            let text = store
-                .try_row::<TextContent>(id)
-                .map(|tc| tc.text());
+            let text = store.try_row::<TextContent>(id).map(|tc| tc.text());
             assert!(
                 r.x >= -0.5,
                 "[{label}] node #{} (text={text:?}) has negative x: {r:?}",

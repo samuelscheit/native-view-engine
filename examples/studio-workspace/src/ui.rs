@@ -13,15 +13,19 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use nve_dioxus::prelude::*;
-use nve_dioxus::traits::{use_environment, use_trait, ReactiveTraitStore, TraitProvider};
-use nve_interop::traits::{ColorScheme, HighContrast, SizeClass};
+use nve_dioxus::traits::{TraitProvider, use_environment, use_trait};
 use nve_interop::ContrastLevel;
-use nve_ui::{Appearance, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, ThemeProvider};
+use nve_interop::traits::{ColorScheme, HighContrast, SizeClass};
+use nve_router::Routable;
+use nve_ui::{
+    Appearance, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant,
+    ColorHex, ThemeProvider,
+};
 
 use crate::sdk::StudioHostServices;
 use crate::state::{ActiveView, ChannelKind, WorkspaceState};
-use crate::theme::{badge_min_w, studio_theme, LayoutMetrics, STRETCH_COL};
-use crate::traits::{resolve_studio_layout, size_class_label, StudioAccentTrait};
+use crate::theme::{LayoutMetrics, STRETCH_COL, badge_min_w, studio_theme};
+use crate::traits::{StudioAccentTrait, resolve_studio_layout, size_class_label};
 use crate::ui::style::data_attrs;
 use crate::ui_board::BoardView;
 use crate::ui_channels::ChannelView;
@@ -33,7 +37,7 @@ use crate::ui_palette::CommandPalette;
 use crate::ui_stream::Stream100kPanel;
 use crate::ui_studio::StudioPanel;
 use crate::ui_workbench::WorkbenchView;
-use store::{use_studio, StudioStore};
+use store::{StudioStore, use_studio};
 use style::use_studio_style;
 
 thread_local! {
@@ -62,64 +66,76 @@ pub(crate) fn clear_pending_host_services() {
 
 #[component]
 pub fn StudioWorkspaceApp() -> Element {
-    let reactive_traits = dioxus_core::use_hook(|| {
+    nve_dioxus::render_probe::record_render("StudioWorkspaceApp");
+    let store = dioxus_core::use_hook(|| {
         let backing = PENDING_STORE
             .with(|slot| slot.borrow_mut().take())
             .unwrap_or_else(|| Arc::new(Mutex::new(WorkspaceState::default())));
         let services = PENDING_HOST_SERVICES
             .with(|slot| slot.borrow_mut().take())
             .unwrap_or_else(|| Arc::new(StudioHostServices::new()));
-        // The host's live OS appearance/locale is authoritative from the first frame.
-        let initial_traits = {
-            let mut guard = backing.lock().unwrap_or_else(|e| e.into_inner());
-            guard.sync_system_env(&services);
-            guard.trait_store().clone()
-        };
-        let reactive = ReactiveTraitStore::new(initial_traits);
-        StudioStore::provide(backing, services, Some(reactive.clone()));
-        reactive
+        StudioStore::mount(backing, services)
     });
 
     rsx! {
         TraitProvider {
-            store: reactive_traits,
+            store: store.traits(),
             StudioShell {}
         }
     }
 }
 
 /// Resolves the Studio theme (OS polarity + workspace accent/density/radius) and lays out the
-/// panes. Subscribes to `nav` (view, drawers, route) and `studio` (config) only.
+/// panes. Subscribes to `nav`, `route`, `style`, and `chrome` only.
 #[component]
 fn StudioShell() -> Element {
+    nve_dioxus::render_probe::record_render("StudioShell");
     let store = use_studio();
     let size_class = use_trait::<SizeClass>();
     let accent = use_trait::<StudioAccentTrait>();
     let os = Appearance {
         scheme: use_trait::<ColorScheme>(),
-        contrast: if use_trait::<HighContrast>() { ContrastLevel::High } else { ContrastLevel::Standard },
+        contrast: if use_trait::<HighContrast>() {
+            ContrastLevel::High
+        } else {
+            ContrastLevel::Standard
+        },
     };
     let trait_env = use_environment();
 
-    let config = store.studio.read().config.clone();
+    let config = store.style.read().config;
+    let panel_open = store.chrome.read().panel_open;
     let theme = studio_theme(&config, accent, os);
     let m = LayoutMetrics::from_studio(&config);
     let resolved = resolve_studio_layout(&trait_env, m);
     let (is_mobile, compact_header) = (resolved.is_mobile, resolved.compact_header);
 
     let nav = store.nav.read();
-    let (active_view, palette_open, mobile_studio_open) = (nav.active_view, nav.palette_open, nav.mobile_studio_open);
-    let route_path = nav.route_path.clone();
+    let (active_view, palette_open, mobile_studio_open) =
+        (nav.active_view, nav.palette_open, nav.mobile_studio_open);
     drop(nav);
+    let route_path = store.route.read().route.to_path();
 
     let root_attrs = data_attrs([
         ("layout-engine", config.layout_engine.as_str().to_owned()),
-        ("viewport-mode", if is_mobile { "mobile-portrait" } else { "desktop" }.to_owned()),
+        (
+            "viewport-mode",
+            if is_mobile {
+                "mobile-portrait"
+            } else {
+                "desktop"
+            }
+            .to_owned(),
+        ),
         ("size-class", size_class_label(size_class).to_owned()),
         ("active-route", route_path),
     ]);
     let root_flex_dir = if is_mobile { "column" } else { "row" };
-    let center_size = if is_mobile { "width: 100%; flex: 1;" } else { "flex: 1; height: 100%;" };
+    let center_size = if is_mobile {
+        "width: 100%; flex: 1;"
+    } else {
+        "flex: 1; height: 100%;"
+    };
 
     rsx! {
         ThemeProvider {
@@ -148,7 +164,7 @@ fn StudioShell() -> Element {
                     palette_open,
                 }
 
-                if !is_mobile && config.panel_open {
+                if !is_mobile && panel_open {
                     StudioPanel { mobile: false }
                 }
             }
@@ -165,6 +181,7 @@ fn CenterWorkspace(
     active_view: ActiveView,
     palette_open: bool,
 ) -> Element {
+    nve_dioxus::render_probe::record_render("CenterWorkspace");
     let s = use_studio_style();
     rsx! {
         view {
@@ -199,14 +216,21 @@ fn CenterWorkspace(
 /// the `inspector` domain (which changes on every action).
 #[component]
 fn WorkspaceHeader(title: &'static str, compact_header: bool) -> Element {
+    nve_dioxus::render_probe::record_render("WorkspaceHeader");
     let store = use_studio();
     let s = use_studio_style();
     let palette_open = store.nav.read().palette_open;
     let insp = store.inspector.read();
     let status_pill_label = if compact_header {
-        format!("F#{} {}/{}", insp.frame_count, insp.snapshot_index, insp.history_len)
+        format!(
+            "F#{} {}/{}",
+            insp.frame_count, insp.snapshot_index, insp.history_len
+        )
     } else {
-        format!("Frame #{} | {}/{}", insp.frame_count, insp.snapshot_index, insp.history_len)
+        format!(
+            "Frame #{} | {}/{}",
+            insp.frame_count, insp.snapshot_index, insp.history_len
+        )
     };
     drop(insp);
 

@@ -1,21 +1,22 @@
 mod common;
 
-use common::{live_node_ids, register_studio_tables, unique_test_dir, MultiBackendHarness};
+use common::{MultiBackendHarness, live_node_ids, register_studio_tables, unique_test_dir};
 use nve_abi::xxh64;
 use nve_abi::{
-    pack_key_modifiers, EventMask, NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef,
-    NveValue, ROOT_NODE_ID,
+    EventMask, NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef, NveValue, ROOT_NODE_ID,
+    pack_key_modifiers,
 };
 use nve_canvas::{Canvas, CanvasOp, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
 use nve_components::tables::{Image, ImageFit, ImageSrc, Interaction, TextInput};
-use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_engine::NveApp;
+use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_store::wire::WireDecoder;
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, DocBlockKind,
-    PersistConfig, StudioWorkspaceModule, WorkbenchPreset, WorkspaceState, WorkspaceStore,
-    HOST_SURFACES, STATE_ARENA_FILE_NAME, WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION,
+    HOST_SURFACES, PersistConfig, STATE_ARENA_FILE_NAME, StudioWorkspaceModule,
+    WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION, WorkbenchPreset, WorkspaceState,
+    WorkspaceStore,
 };
 
 #[test]
@@ -93,12 +94,17 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     );
     let raw_bytes = dl.to_nve_draw1_bytes();
     assert!(raw_bytes.starts_with(&NVE_DRAW_MAGIC));
-    assert!(DrawListDecoder::decode(&raw_bytes).expect("decode NVE_DRAW1").len() >= 7);
+    assert!(
+        DrawListDecoder::decode(&raw_bytes)
+            .expect("decode NVE_DRAW1")
+            .len()
+            >= 7
+    );
     assert!(h.html().contains("<canvas "));
 
     // Verify NVE2 wire roundtrip of the Canvas + DrawList resource through StudioWorkspaceModule.
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = common::headless_module(1);
     let metrics_entries = [NveMapEntry::new("view", NveValue::from_str("metrics"))];
     // SAFETY: `metrics_entries` outlives the synchronous `set_props` call.
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&metrics_entries) }));
@@ -108,7 +114,9 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     let mut decoder = WireDecoder::default();
     let mut changes = ChangeSet::default();
     let mut tx = replica.tx();
-    decoder.apply(&mut tx, &wire_bytes).expect("decode metrics NVE2");
+    decoder
+        .apply(&mut tx, &wire_bytes)
+        .expect("decode metrics NVE2");
     tx.commit_into(&mut changes);
 
     let saw_canvas = live_node_ids(&replica).into_iter().any(|id| {
@@ -117,14 +125,17 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
             .and_then(|c| replica.resource::<DrawList>(c.draw_list()))
             .is_some_and(|list| list.len() >= 7)
     });
-    assert!(saw_canvas, "expected Canvas with >=7 DrawList ops in decoded NVE2 replica");
+    assert!(
+        saw_canvas,
+        "expected Canvas with >=7 DrawList ops in decoded NVE2 replica"
+    );
 }
 
 #[test]
-fn nws1_v2_xxh64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
+fn nws1_v3_xxh64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
     let mut state = WorkspaceState::default();
     assert!(state.create_custom_task("Verify XXH64 persistence"));
-    state.send_quick_reply(ChannelKind::Engineering, "NWS1 v2 integrity gate");
+    state.send_quick_reply(ChannelKind::Engineering, "NWS1 v3 integrity gate");
     state.select_view(ActiveView::Docs);
     assert!(state.toggle_doc_checklist(7));
     let added = state
@@ -147,9 +158,9 @@ fn nws1_v2_xxh64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
         u16::from_le_bytes([encoded[4], encoded[5]]),
         WORKSPACE_STATE_BIN_VERSION
     );
-    assert_eq!(WORKSPACE_STATE_BIN_VERSION, 2);
+    assert_eq!(WORKSPACE_STATE_BIN_VERSION, 3);
 
-    let decoded = WorkspaceState::from_bytes(&encoded).expect("valid NWS1 v2 decode");
+    let decoded = WorkspaceState::from_bytes(&encoded).expect("valid NWS1 v3 decode");
     assert_eq!(decoded, state);
 
     let len = encoded.len();
@@ -169,7 +180,7 @@ fn nws1_v2_xxh64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
     for cut in [0, 1, 4, 6, 13, 14, len / 2, len - 9, len - 8, len - 1] {
         assert!(
             WorkspaceState::from_bytes(&encoded[..cut]).is_none(),
-            "truncated NWS1 v2 slice of len {cut} must be rejected"
+            "truncated NWS1 v3 slice of len {cut} must be rejected"
         );
     }
 
@@ -269,7 +280,9 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
     assert!(saw_compact, "4th commit must trigger auto-compaction");
     assert!(store_reopened.compaction_count() >= 1);
     assert_eq!(
-        store_reopened.load_state().expect("load_state after compact"),
+        store_reopened
+            .load_state()
+            .expect("load_state after compact"),
         state_after_compact
     );
     drop(store_reopened);
@@ -280,21 +293,27 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
     assert!(cold_stats.loaded_from_disk);
     let restored = store_cold.initial_state();
     assert_eq!(restored, &state_after_compact);
-    assert!(restored
-        .current
-        .tasks
-        .iter()
-        .any(|t| t.title == "Ship local-first MmapOffsetArena persistence"));
-    assert!(restored
-        .current
-        .eng_messages
-        .iter()
-        .any(|m| m.body == "Arena commit #1 verified"));
-    assert!(restored
-        .current
-        .design_messages
-        .iter()
-        .any(|m| m.body == "Post-compaction message"));
+    assert!(
+        restored
+            .current
+            .tasks
+            .iter()
+            .any(|t| t.title == "Ship local-first MmapOffsetArena persistence")
+    );
+    assert!(
+        restored
+            .current
+            .eng_messages
+            .iter()
+            .any(|m| m.body == "Arena commit #1 verified")
+    );
+    assert!(
+        restored
+            .current
+            .design_messages
+            .iter()
+            .any(|m| m.body == "Post-compaction message")
+    );
     assert_eq!(restored.current.studio.accent, AccentTheme::Violet);
     assert_eq!(restored.current.studio.radius, CornerRadiusMode::Pill);
     assert_eq!(restored.current.studio.density, DensityMode::Compact);
@@ -304,18 +323,21 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
         .iter()
         .find(|d| d.id == 1)
         .expect("doc 1 preserved");
-    assert!(doc1
-        .blocks
-        .iter()
-        .any(|b| b.id == 7 && matches!(b.kind, DocBlockKind::Checklist { checked: true })));
-    assert!(doc1
-        .blocks
-        .iter()
-        .any(|b| b.id == 6 && matches!(b.kind, DocBlockKind::Checklist { checked: false })));
-    assert!(doc1
-        .blocks
-        .iter()
-        .any(|b| b.id == added_blk && b.text == "WorkspaceStore::open(dir)"));
+    assert!(
+        doc1.blocks
+            .iter()
+            .any(|b| b.id == 7 && matches!(b.kind, DocBlockKind::Checklist { checked: true }))
+    );
+    assert!(
+        doc1.blocks
+            .iter()
+            .any(|b| b.id == 6 && matches!(b.kind, DocBlockKind::Checklist { checked: false }))
+    );
+    assert!(
+        doc1.blocks
+            .iter()
+            .any(|b| b.id == added_blk && b.text == "WorkspaceStore::open(dir)")
+    );
     drop(store_cold);
 
     std::fs::write(dir.join(STATE_ARENA_FILE_NAME), b"CORRUPTED_ARENA_BYTES")
@@ -375,13 +397,22 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
 
     h.press("doc-block-edit-4");
     assert!(h.find_by_test_id("doc-block-input-4").is_some());
-    h.type_text("doc-block-input-4", "Flat zero-copy binary frames everywhere.");
+    h.type_text(
+        "doc-block-input-4",
+        "Flat zero-copy binary frames everywhere.",
+    );
     h.press("doc-block-save-4");
-    assert!(h.ascii().contains("Flat zero-copy binary frames everywhere."));
+    assert!(
+        h.ascii()
+            .contains("Flat zero-copy binary frames everywhere.")
+    );
     assert!(h.find_by_test_id("doc-block-input-4").is_none());
 
     h.press("doc-new-block-kind");
-    h.type_text("doc-new-block-input", "Verify crash-safe .nvewal compaction");
+    h.type_text(
+        "doc-new-block-input",
+        "Verify crash-safe .nvewal compaction",
+    );
     h.press("doc-new-block-submit");
     assert!(h.ascii().contains("Verify crash-safe .nvewal compaction"));
     assert!(h.ascii().contains("2/3 checks"));
@@ -407,7 +438,9 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(h.find_by_test_id("doc-markdown-preview").is_some());
     let tree_md = h.ascii();
     assert!(tree_md.contains("# RFC-042: Zero-Copy NveSceneView"));
-    assert!(tree_md.contains("- [x] Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio"));
+    assert!(tree_md.contains(
+        "- [x] Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio"
+    ));
     assert!(tree_md.contains("- [ ] Verify crash-safe .nvewal compaction"));
     h.assert_no_horizontal_overflow("docs-1280x800-with-markdown");
 
@@ -420,7 +453,7 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(md.contains("- [x] Eliminate JSON scene descriptors"));
     assert!(md.contains("- [ ] Enable crash-safe NVERELOC"));
 
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = common::headless_module(1);
     let _ = app.render(1);
     let cmd_k = [NveDirectEvent::key_down(
         1,
@@ -451,7 +484,9 @@ fn workbench_view_multi_viewport_presets_live_telemetry_and_no_overflow() {
     assert!(h.ascii().contains("Meta Workbench"));
     assert!(h.ascii().contains("CONNECTED HOST SURFACES (9)"));
 
-    let desk_id = h.find_by_test_id("wb-frame-desktop").expect("desktop frame");
+    let desk_id = h
+        .find_by_test_id("wb-frame-desktop")
+        .expect("desktop frame");
     let tab_id = h.find_by_test_id("wb-frame-tablet").expect("tablet frame");
     let mob_id = h.find_by_test_id("wb-frame-mobile").expect("mobile frame");
     let r_desk = h.headless.layout_of(desk_id).expect("desktop rect");

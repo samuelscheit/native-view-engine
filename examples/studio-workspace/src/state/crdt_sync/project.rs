@@ -30,13 +30,14 @@ impl StudioCrdtDoc {
                 });
             }
         }
-        out.tasks = tasks;
+        out.tasks = tasks.into();
         out.next_task_id = max_task_id.saturating_add(1);
 
         let (eng_messages, max_eng) = self.project_channel(ChannelKind::Engineering, &self.eng_set);
-        let (design_messages, max_des) = self.project_channel(ChannelKind::Design, &self.design_set);
-        out.eng_messages = eng_messages;
-        out.design_messages = design_messages;
+        let (design_messages, max_des) =
+            self.project_channel(ChannelKind::Design, &self.design_set);
+        out.eng_messages = eng_messages.into();
+        out.design_messages = design_messages.into();
         out.next_msg_id = max_eng.max(max_des).saturating_add(1);
 
         let mut docs = Vec::with_capacity(self.doc_set.len());
@@ -92,7 +93,7 @@ impl StudioCrdtDoc {
         if !docs.iter().any(|d| d.id == out.active_doc_id) {
             out.active_doc_id = docs.first().map_or(0, |d| d.id);
         }
-        out.docs = docs;
+        out.docs = docs.into();
         out.next_doc_id = max_doc_id.saturating_add(1);
         out.next_block_id = max_block_id.saturating_add(1);
 
@@ -110,8 +111,6 @@ impl StudioCrdtDoc {
                 list.push(ChatMessage {
                     id,
                     author: m.author.reg.value().clone(),
-                    badge_bg: m.badge_bg.reg.value().clone(),
-                    badge_fg: m.badge_fg.reg.value().clone(),
                     timestamp: m.timestamp.reg.value().clone(),
                     body: m.body.reg.value().clone(),
                     reactions: m.reactions.clamped_u32(),

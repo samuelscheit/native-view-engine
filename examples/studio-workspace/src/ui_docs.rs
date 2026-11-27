@@ -27,10 +27,20 @@ const fn block_colors(t: &Theme, kind: DocBlockKind) -> (ColorRgba, ColorRgba, C
         DocBlockKind::Heading1 => (t.surface.raised, t.text.primary, t.border.default),
         DocBlockKind::Heading2 => (t.surface.raised, t.text.link, t.border.default),
         DocBlockKind::Paragraph => (t.surface.raised, t.text.secondary, t.border.default),
-        DocBlockKind::Checklist { checked: true } => (t.status.success.subtle, t.status.success.text, t.status.success.border),
-        DocBlockKind::Checklist { checked: false } => (t.surface.raised, t.text.primary, t.border.default),
+        DocBlockKind::Checklist { checked: true } => (
+            t.status.success.subtle,
+            t.status.success.text,
+            t.status.success.border,
+        ),
+        DocBlockKind::Checklist { checked: false } => {
+            (t.surface.raised, t.text.primary, t.border.default)
+        }
         DocBlockKind::Code => (t.surface.sunken, t.syntax.plain, t.border.default),
-        DocBlockKind::Callout => (t.status.accent.subtle, t.text.primary, t.status.accent.border),
+        DocBlockKind::Callout => (
+            t.status.accent.subtle,
+            t.text.primary,
+            t.status.accent.border,
+        ),
     }
 }
 
@@ -54,13 +64,22 @@ fn short_title(title: &str, compact: bool) -> String {
 
 #[component]
 pub(crate) fn DocsView(compact: bool) -> Element {
+    nve_dioxus::render_probe::record_render("DocsView");
     let store = use_studio();
     let s = use_studio_style();
-    let notice = store.nav.read().clipboard_notice.clone();
+    let notice = store.route.read().clipboard_notice.clone();
     let docs = store.docs.read();
-    let active = docs.docs.iter().find(|d| d.id == docs.active_doc_id).or_else(|| docs.docs.first());
+    let active = docs
+        .docs
+        .iter()
+        .find(|d| d.id == docs.active_doc_id)
+        .or_else(|| docs.docs.first());
     let active_id = active.map(|d| d.id);
-    let tabs: Vec<(u32, String)> = docs.docs.iter().map(|d| (d.id, short_title(&d.title, compact))).collect();
+    let tabs: Vec<(u32, String)> = docs
+        .docs
+        .iter()
+        .map(|d| (d.id, short_title(&d.title, compact)))
+        .collect();
     let blocks: Vec<DocBlock> = active.map(|d| d.blocks.clone()).unwrap_or_default();
     let (done_checks, total_checks) = active.map(|d| d.checklist_progress()).unwrap_or((0, 0));
     let base_meta = format!(
@@ -69,11 +88,12 @@ pub(crate) fn DocsView(compact: bool) -> Element {
         active.map_or("-", |d| d.updated_at.as_str())
     );
     let md_open = docs.doc_markdown_preview_open;
-    let md_preview = if md_open { active.map(|d| d.to_markdown()).unwrap_or_default() } else { String::new() };
+    let md_preview = if md_open {
+        active.map(|d| d.to_markdown()).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let editing = docs.doc_editing_block_id;
-    let edit_draft = docs.doc_edit_draft.clone();
-    let new_kind_lbl = docs.doc_new_block_kind.label();
-    let new_draft = docs.doc_new_block_draft.clone();
     drop(docs);
 
     let meta_summary = match notice {
@@ -83,7 +103,10 @@ pub(crate) fn DocsView(compact: bool) -> Element {
     let md_btn_lbl = if md_open { "Hide MD" } else { "Export MD" };
     let pill = |label: &str, active: bool| {
         s.compact_control(
-            &format!("min-width: {}px; height: 24px; min-height: 24px;", badge_min_w(label)),
+            &format!(
+                "min-width: {}px; height: 24px; min-height: 24px;",
+                badge_min_w(label)
+            ),
             4,
             s.m.pill_radius,
             Some(active),
@@ -200,18 +223,35 @@ pub(crate) fn DocsView(compact: bool) -> Element {
                     key: "doc-blk-{block.id}",
                     can_up: idx > 0,
                     can_down: idx + 1 < block_count,
-                    edit_draft: (editing == Some(block.id)).then(|| edit_draft.clone()),
+                    editing: editing == Some(block.id),
                     block,
                 }
             }
         }
 
+        DocComposer { card_style: panel_card("flex-direction: row; align-items: center; gap: 5px;") }
+    }
+}
+
+/// New-block composer: the only docs part subscribed to `doc_drafts` (besides the open editor).
+#[component]
+fn DocComposer(card_style: String) -> Element {
+    nve_dioxus::render_probe::record_render("DocComposer");
+    let store = use_studio();
+    let s = use_studio_style();
+    let drafts = store.doc_drafts.read();
+    let (new_kind_lbl, new_draft) = (
+        drafts.doc_new_block_kind.label(),
+        drafts.doc_new_block_draft.clone(),
+    );
+    drop(drafts);
+    rsx! {
         Card {
             variant: CardVariant::Outlined,
             test_id: Some("docs-composer".into()),
             padding: Some(8.0),
             gap: Some(5.0),
-            style: Some(panel_card("flex-direction: row; align-items: center; gap: 5px;")),
+            style: Some(card_style),
             Button {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
@@ -247,14 +287,75 @@ pub(crate) fn DocsView(compact: bool) -> Element {
     }
 }
 
-/// One document block with its micro-toolbar; `edit_draft` is `Some` while it is being edited.
+/// In-place editor of block `bid`: the only docs part subscribed to `doc_edit_draft`.
 #[component]
-fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, edit_draft: Option<String>) -> Element {
+fn DocBlockEditor(bid: u32) -> Element {
+    nve_dioxus::render_probe::record_render("DocBlockEditor");
+    let store = use_studio();
+    let s = use_studio_style();
+    let draft = store.doc_edit_draft.read().text.clone();
+    let field_btn = |w: u32, paint: Option<bool>| {
+        s.compact_control(
+            &format!("width: {w}px; height: 34px; min-height: 34px;"),
+            2,
+            s.m.button_radius,
+            paint,
+        )
+    };
+    rsx! {
+        view {
+            style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 5px;",
+            view {
+                style: "flex: 1;",
+                Input {
+                    test_id: Some(format!("doc-block-input-{bid}")),
+                    placeholder: Some("Edit block text...".into()),
+                    value: draft,
+                    accessibility_label: Some("Edit document block text".into()),
+                    on_change: move |txt: String| store.update(|st| st.set_doc_edit_draft(txt)),
+                    on_submit: move |_| store.update(|st| {
+                        let _ = st.commit_doc_block_edit();
+                    }),
+                }
+            }
+            Button {
+                variant: ButtonVariant::Primary,
+                size: ButtonSize::Sm,
+                test_id: Some(format!("doc-block-save-{bid}")),
+                style: Some(field_btn(46, None)),
+                on_press: move |_| store.update(|st| {
+                    let _ = st.commit_doc_block_edit();
+                }),
+                "Save"
+            }
+            Button {
+                variant: ButtonVariant::Secondary,
+                size: ButtonSize::Sm,
+                test_id: Some(format!("doc-block-cancel-{bid}")),
+                style: Some(field_btn(50, Some(false))),
+                on_press: move |_| store.update(|st| st.cancel_edit_doc_block()),
+                "Cancel"
+            }
+        }
+    }
+}
+
+/// One document block with its micro-toolbar; `editing` while its in-place editor is open.
+#[component]
+fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) -> Element {
+    nve_dioxus::render_probe::record_render("DocBlockCard");
     let store = use_studio();
     let s = use_studio_style();
     let bid = block.id;
     let (bg, fg, border) = block_colors(&s.t, block.kind);
-    let border = if s.xray() { s.card() } else { crate::ui::style::Outline { width: 1, color: border } };
+    let border = if s.xray() {
+        s.card()
+    } else {
+        crate::ui::style::Outline {
+            width: 1,
+            color: border,
+        }
+    };
     let font_sz = block_font_size(block.kind);
     let kind_lbl = block.kind.label();
     let card_style = format!(
@@ -267,10 +368,11 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, edit_draft: Optio
     let radius_sm = s.t.radius.sm as u32;
     let tool = |dims: &str, enabled: bool| {
         let style = s.compact_control(dims, 0, radius_sm, Some(false));
-        if enabled { style } else { format!("{style} opacity: 0.35;") }
-    };
-    let field_btn = |w: u32, paint: Option<bool>| {
-        s.compact_control(&format!("width: {w}px; height: 34px; min-height: 34px;"), 2, s.m.button_radius, paint)
+        if enabled {
+            style
+        } else {
+            format!("{style} opacity: 0.35;")
+        }
     };
     let fg = fg.hex();
 
@@ -343,41 +445,8 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, edit_draft: Optio
                 }
             }
 
-            if let Some(draft) = edit_draft {
-                view {
-                    style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 5px;",
-                    view {
-                        style: "flex: 1;",
-                        Input {
-                            test_id: Some(format!("doc-block-input-{bid}")),
-                            placeholder: Some("Edit block text...".into()),
-                            value: draft,
-                            accessibility_label: Some("Edit document block text".into()),
-                            on_change: move |txt: String| store.update(|st| st.set_doc_edit_draft(txt)),
-                            on_submit: move |_| store.update(|st| {
-                                let _ = st.commit_doc_block_edit();
-                            }),
-                        }
-                    }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        size: ButtonSize::Sm,
-                        test_id: Some(format!("doc-block-save-{bid}")),
-                        style: Some(field_btn(46, None)),
-                        on_press: move |_| store.update(|st| {
-                            let _ = st.commit_doc_block_edit();
-                        }),
-                        "Save"
-                    }
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        size: ButtonSize::Sm,
-                        test_id: Some(format!("doc-block-cancel-{bid}")),
-                        style: Some(field_btn(50, Some(false))),
-                        on_press: move |_| store.update(|st| st.cancel_edit_doc_block()),
-                        "Cancel"
-                    }
-                }
+            if editing {
+                DocBlockEditor { bid }
             } else if let DocBlockKind::Checklist { checked } = block.kind {
                 view {
                     style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 8px;",

@@ -6,7 +6,8 @@ use nve_ui::Accent;
 
 use crate::ui_islands::IslandsSnapshot;
 
-use super::docs::{default_seed_docs, DocBlockKind, WorkspaceDoc};
+use super::docs::{DocBlockKind, WorkspaceDoc, default_seed_docs};
+use super::shared::Shared;
 use super::workbench::WorkbenchState;
 
 /// Maximum number of retained deterministic snapshots in the time-travel ring.
@@ -128,8 +129,6 @@ impl ChannelKind {
 pub struct ChatMessage {
     pub id: u32,
     pub author: String,
-    pub badge_bg: String,
-    pub badge_fg: String,
     pub timestamp: String,
     pub body: String,
     pub reactions: u32,
@@ -144,6 +143,13 @@ pub enum AccentTheme {
 }
 
 impl AccentTheme {
+    /// Every accent, in [`Self::index`] order.
+    pub const ALL: [Self; 4] = [Self::Cyan, Self::Violet, Self::Green, Self::Amber];
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Cyan => "Cyan",
@@ -280,13 +286,24 @@ impl SyncTransportMode {
     pub fn parse(raw: &str) -> Option<Self> {
         use SyncTransportMode as M;
         const TABLE: &[(&str, M)] = &[
-            ("lan", M::LanQuic), ("quic", M::LanQuic), ("lan-quic", M::LanQuic), ("lan_quic", M::LanQuic),
-            ("usb", M::UsbMux), ("usb-mux", M::UsbMux), ("usb_mux", M::UsbMux),
-            ("relay", M::RelayWss), ("wss", M::RelayWss), ("relay-wss", M::RelayWss), ("relay_wss", M::RelayWss),
-            ("offline", M::Offline), ("none", M::Offline),
+            ("lan", M::LanQuic),
+            ("quic", M::LanQuic),
+            ("lan-quic", M::LanQuic),
+            ("lan_quic", M::LanQuic),
+            ("usb", M::UsbMux),
+            ("usb-mux", M::UsbMux),
+            ("usb_mux", M::UsbMux),
+            ("relay", M::RelayWss),
+            ("wss", M::RelayWss),
+            ("relay-wss", M::RelayWss),
+            ("relay_wss", M::RelayWss),
+            ("offline", M::Offline),
+            ("none", M::Offline),
         ];
         let s = raw.trim();
-        TABLE.iter().find_map(|&(k, v)| s.eq_ignore_ascii_case(k).then_some(v))
+        TABLE
+            .iter()
+            .find_map(|&(k, v)| s.eq_ignore_ascii_case(k).then_some(v))
     }
 
     pub const fn next(self) -> Self {
@@ -356,11 +373,7 @@ impl SyncTelemetryState {
     }
 
     pub fn format_rtt(&self) -> String {
-        format!(
-            "{}.{}ms",
-            self.rtt_ms_tenths / 10,
-            self.rtt_ms_tenths % 10
-        )
+        format!("{}.{}ms", self.rtt_ms_tenths / 10, self.rtt_ms_tenths % 10)
     }
 }
 
@@ -397,7 +410,7 @@ pub(crate) fn default_telemetry_samples() -> Vec<u32> {
     vec![195, 224, 188, 262, 210, 176, 238, 192]
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StudioConfig {
     pub panel_open: bool,
     pub accent: AccentTheme,
@@ -405,6 +418,17 @@ pub struct StudioConfig {
     pub density: DensityMode,
     pub xray: bool,
     pub layout_engine: LayoutEngineMode,
+}
+
+impl StudioConfig {
+    /// The self-edits that restyle the whole workspace (everything but the panel toggle), so
+    /// style subscribers ignore opening and closing the Studio panel.
+    pub const fn styling(self) -> Self {
+        Self {
+            panel_open: false,
+            ..self
+        }
+    }
 }
 
 impl Default for StudioConfig {
@@ -427,10 +451,10 @@ pub struct WorkspaceSnapshot {
     pub board_filter: BoardFilter,
     pub board_search_query: String,
     pub new_task_draft: String,
-    pub tasks: Vec<TaskItem>,
+    pub tasks: Shared<TaskItem>,
     pub next_task_id: u32,
-    pub eng_messages: Vec<ChatMessage>,
-    pub design_messages: Vec<ChatMessage>,
+    pub eng_messages: Shared<ChatMessage>,
+    pub design_messages: Shared<ChatMessage>,
     pub eng_draft: String,
     pub design_draft: String,
     pub next_msg_id: u32,
@@ -438,7 +462,7 @@ pub struct WorkspaceSnapshot {
     pub telemetry_samples_us: Vec<u32>,
     pub stream: Stream100kState,
     pub islands: IslandsSnapshot,
-    pub docs: Vec<WorkspaceDoc>,
+    pub docs: Shared<WorkspaceDoc>,
     pub active_doc_id: u32,
     pub next_doc_id: u32,
     pub next_block_id: u32,
@@ -501,14 +525,13 @@ impl Default for WorkspaceSnapshot {
                     priority: Priority::P1,
                     status: TaskStatus::Todo,
                 },
-            ],
+            ]
+            .into(),
             next_task_id: 5,
             eng_messages: vec![
                 ChatMessage {
                     id: 1,
                     author: "maya".into(),
-                    badge_bg: "#0c4a6e".into(),
-                    badge_fg: "#7dd3fc".into(),
                     timestamp: "09:41".into(),
                     body: "Single ABI drives all 4 hosts!".into(),
                     reactions: 4,
@@ -516,8 +539,6 @@ impl Default for WorkspaceSnapshot {
                 ChatMessage {
                     id: 2,
                     author: "liam".into(),
-                    badge_bg: "#2e1065".into(),
-                    badge_fg: "#c4b5fd".into(),
                     timestamp: "09:44".into(),
                     body: "p99 diff holds 0.38ms @ 1k.".into(),
                     reactions: 3,
@@ -525,19 +546,16 @@ impl Default for WorkspaceSnapshot {
                 ChatMessage {
                     id: 3,
                     author: "sara".into(),
-                    badge_bg: "#052e16".into(),
-                    badge_fg: "#86efac".into(),
                     timestamp: "09:49".into(),
                     body: "Tier-2 reload kept snapshots.".into(),
                     reactions: 2,
                 },
-            ],
+            ]
+            .into(),
             design_messages: vec![
                 ChatMessage {
                     id: 101,
                     author: "aria".into(),
-                    badge_bg: "#451a03".into(),
-                    badge_fg: "#fcd34d".into(),
                     timestamp: "10:05".into(),
                     body: "Dark slate contrast verified.".into(),
                     reactions: 5,
@@ -545,13 +563,12 @@ impl Default for WorkspaceSnapshot {
                 ChatMessage {
                     id: 102,
                     author: "noah".into(),
-                    badge_bg: "#0c4a6e".into(),
-                    badge_fg: "#7dd3fc".into(),
                     timestamp: "10:12".into(),
                     body: "Try X-Ray HUD + Pill radius!".into(),
                     reactions: 3,
                 },
-            ],
+            ]
+            .into(),
             eng_draft: String::new(),
             design_draft: String::new(),
             next_msg_id: 200,
@@ -559,7 +576,7 @@ impl Default for WorkspaceSnapshot {
             telemetry_samples_us: default_telemetry_samples(),
             stream: Stream100kState::default(),
             islands: IslandsSnapshot::default(),
-            docs,
+            docs: docs.into(),
             active_doc_id,
             next_doc_id,
             next_block_id,

@@ -156,8 +156,6 @@ pub(super) fn decode_task(r: &mut BinReader<'_>) -> Option<TaskItem> {
 pub(super) fn encode_chat_msg(w: &mut BinWriter, m: &ChatMessage) {
     w.push_u32(m.id);
     w.push_str(&m.author);
-    w.push_str(&m.badge_bg);
-    w.push_str(&m.badge_fg);
     w.push_str(&m.timestamp);
     w.push_str(&m.body);
     w.push_u32(m.reactions);
@@ -167,8 +165,6 @@ pub(super) fn decode_chat_msg(r: &mut BinReader<'_>) -> Option<ChatMessage> {
     Some(ChatMessage {
         id: r.read_u32()?,
         author: r.read_str()?,
-        badge_bg: r.read_str()?,
-        badge_fg: r.read_str()?,
         timestamp: r.read_str()?,
         body: r.read_str()?,
         reactions: r.read_u32()?,

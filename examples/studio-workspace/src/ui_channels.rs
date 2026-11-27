@@ -2,28 +2,54 @@
 //! components (`Card`, `Button`, `Input`, `Separator`) with reaction buttons, real `TextInput`
 //! composer, and quick-reply chips.
 //!
-//! [`ChannelView`] subscribes to the `channels` domain; each [`MessageCard`] is memoized on its
-//! message so a reaction re-renders one card.
+//! [`ChannelView`] subscribes to the `channels` domain and [`ChannelComposer`] to
+//! `channel_drafts`, so typing re-renders the composer only; each [`MessageCard`] is memoized on
+//! its message so a reaction re-renders one card.
 
 use nve_dioxus::prelude::*;
 use nve_ui::{Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Input, Separator};
 
 use crate::assets::avatar_for_author;
 use crate::state::{ChannelKind, ChatMessage};
-use crate::theme::{author_tone, badge_min_w, STRETCH_COL};
+use crate::theme::{STRETCH_COL, author_tone, badge_min_w};
 use crate::ui::store::use_studio;
 use crate::ui::style::use_studio_style;
 
 #[component]
 pub(crate) fn ChannelView(ch: ChannelKind) -> Element {
+    nve_dioxus::render_probe::record_render("ChannelView");
     let store = use_studio();
     let s = use_studio_style();
     let channels = store.channels.read();
-    let (messages, draft) = match ch {
-        ChannelKind::Engineering => (channels.eng_messages.clone(), channels.eng_draft.clone()),
-        ChannelKind::Design => (channels.design_messages.clone(), channels.design_draft.clone()),
+    let messages = match ch {
+        ChannelKind::Engineering => channels.eng_messages.clone(),
+        ChannelKind::Design => channels.design_messages.clone(),
     };
     drop(channels);
+
+    rsx! {
+        scrollview {
+            style: "width: 100%; flex: 1; flex-direction: column; gap: {s.m.list_gap}px; {s.row()}",
+            for msg in messages.iter().cloned() {
+                MessageCard { key: "msg-{msg.id}", ch, msg }
+            }
+        }
+        ChannelComposer { ch }
+    }
+}
+
+/// Message composer and quick replies: the only channel part subscribed to `channel_drafts`.
+#[component]
+fn ChannelComposer(ch: ChannelKind) -> Element {
+    nve_dioxus::render_probe::record_render("ChannelComposer");
+    let store = use_studio();
+    let s = use_studio_style();
+    let drafts = store.channel_drafts.read();
+    let draft = match ch {
+        ChannelKind::Engineering => drafts.eng_draft.clone(),
+        ChannelKind::Design => drafts.design_draft.clone(),
+    };
+    drop(drafts);
 
     let composer_card_style = format!(
         "width: 100%; flex-shrink: 0; padding: 8px; gap: 6px; background-color: {}; border-radius: {}px; {}",
@@ -43,13 +69,6 @@ pub(crate) fn ChannelView(ch: ChannelKind) -> Element {
     );
 
     rsx! {
-        scrollview {
-            style: "width: 100%; flex: 1; flex-direction: column; gap: {s.m.list_gap}px; {s.row()}",
-            for msg in messages {
-                MessageCard { key: "msg-{msg.id}", ch, msg }
-            }
-        }
-
         Card {
             variant: CardVariant::Outlined,
             padding: Some(8.0),
@@ -105,14 +124,15 @@ pub(crate) fn ChannelView(ch: ChannelKind) -> Element {
     }
 }
 
-/// One chat message; the author chip keeps its synced per-author color pair.
+/// One chat message; the author chip wears the tone hashed from the author name (`author_tone`).
 #[component]
 fn MessageCard(ch: ChannelKind, msg: ChatMessage) -> Element {
+    nve_dioxus::render_probe::record_render("MessageCard");
     let store = use_studio();
     let s = use_studio_style();
     let mid = msg.id;
     let avatar_src = avatar_for_author(&msg.author);
-    let author = author_tone(&s.t, &msg.badge_fg);
+    let author = author_tone(&s.t, &msg.author);
     let card_style = format!(
         "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {}; border-radius: {}px; {}",
         s.m.card_pad,

@@ -6,9 +6,9 @@ use std::fmt;
 
 use dioxus_signals::ReadableExt;
 use nve_abi::ColorRgba;
-use nve_ui::{use_theme, ColorHex, Hex, Theme};
+use nve_ui::{ColorHex, Hex, Theme, use_theme};
 
-use crate::theme::{LayoutMetrics, XRayPalette, STRETCH_COL};
+use crate::theme::{LayoutMetrics, STRETCH_COL, XRayPalette};
 use crate::ui::store::use_studio;
 
 /// Border paint of one structural tier, rendered as `border-width: ..; border-color: ..;`.
@@ -20,7 +20,12 @@ pub(crate) struct Outline {
 
 impl fmt::Display for Outline {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "border-width: {}px; border-color: {};", self.width, self.color.hex())
+        write!(
+            f,
+            "border-width: {}px; border-color: {};",
+            self.width,
+            self.color.hex()
+        )
     }
 }
 
@@ -34,7 +39,11 @@ pub(crate) struct StudioStyle {
 
 impl StudioStyle {
     pub fn new(t: Theme, m: LayoutMetrics, xray: bool) -> Self {
-        Self { t, m, xray: xray.then(|| XRayPalette::new(&t)) }
+        Self {
+            t,
+            m,
+            xray: xray.then(|| XRayPalette::for_theme(&t)),
+        }
     }
 
     pub const fn xray(&self) -> bool {
@@ -44,49 +53,94 @@ impl StudioStyle {
     /// Top-level panes (sidebar, workspace, docked Studio).
     pub fn panel(&self) -> Outline {
         match self.xray {
-            Some(x) => Outline { width: 2, color: x.panel },
-            None => Outline { width: 1, color: self.t.border.subtle },
+            Some(x) => Outline {
+                width: 2,
+                color: x.panel,
+            },
+            None => Outline {
+                width: 1,
+                color: self.t.border.subtle,
+            },
         }
     }
 
     /// Card surfaces.
     pub fn card(&self) -> Outline {
         match self.xray {
-            Some(x) => Outline { width: 2, color: x.card },
-            None => Outline { width: 1, color: self.t.border.default },
+            Some(x) => Outline {
+                width: 2,
+                color: x.card,
+            },
+            None => Outline {
+                width: 1,
+                color: self.t.border.default,
+            },
         }
     }
 
     /// Inner rows and header strips (invisible unless inspecting).
     pub fn row(&self) -> Outline {
         match self.xray {
-            Some(x) => Outline { width: 1, color: x.row },
-            None => Outline { width: 0, color: ColorRgba::TRANSPARENT },
+            Some(x) => Outline {
+                width: 1,
+                color: x.row,
+            },
+            None => Outline {
+                width: 0,
+                color: ColorRgba::TRANSPARENT,
+            },
         }
     }
 
     /// Interactive controls; `active` ones carry the accent indicator (≥3:1 non-text).
     pub fn control(&self, active: bool) -> Outline {
         match self.xray {
-            Some(x) => Outline { width: 1, color: x.row },
-            None if active => Outline { width: 1, color: self.t.status.accent.text },
-            None => Outline { width: 1, color: self.t.border.default },
+            Some(x) => Outline {
+                width: 1,
+                color: x.row,
+            },
+            None if active => Outline {
+                width: 1,
+                color: self.t.status.accent.text,
+            },
+            None => Outline {
+                width: 1,
+                color: self.t.border.default,
+            },
         }
     }
 
     /// Fill of a selectable control (nav tab, toggle).
     pub fn control_bg(&self, active: bool) -> Hex {
-        if active { self.t.status.accent.subtle.hex() } else { self.t.surface.subtle.hex() }
+        if active {
+            self.t.status.accent.subtle.hex()
+        } else {
+            self.t.surface.subtle.hex()
+        }
     }
 
     /// Inline style of a compact `nve-ui` control: `dims` (size declarations), horizontal
     /// padding, corner radius, and an optional selectable paint (`Some(active)`). Fixed-size
     /// controls (`dims` not starting with `flex:`) never shrink.
-    pub fn compact_control(&self, dims: &str, pad_x: u32, radius: u32, paint: Option<bool>) -> String {
+    pub fn compact_control(
+        &self,
+        dims: &str,
+        pad_x: u32,
+        radius: u32,
+        paint: Option<bool>,
+    ) -> String {
         let paint = paint.map_or_else(String::new, |active| {
-            format!("background-color: {}; {}", self.control_bg(active), self.control(active))
+            format!(
+                "background-color: {}; {}",
+                self.control_bg(active),
+                self.control(active)
+            )
         });
-        let shrink = if dims.starts_with("flex:") { "" } else { "flex-shrink: 0; " };
+        let shrink = if dims.starts_with("flex:") {
+            ""
+        } else {
+            "flex-shrink: 0; "
+        };
         format!(
             "{dims} {shrink}{STRETCH_COL} padding-horizontal: {pad_x}px; padding-vertical: 0px; border-radius: {radius}px; {paint}"
         )
@@ -94,7 +148,11 @@ impl StudioStyle {
 
     /// Zebra fill of list row `idx`.
     pub const fn stripe(&self, idx: usize) -> ColorRgba {
-        if idx.is_multiple_of(2) { self.t.surface.raised } else { self.t.surface.sunken }
+        if idx.is_multiple_of(2) {
+            self.t.surface.raised
+        } else {
+            self.t.surface.sunken
+        }
     }
 
     /// Hairline of a list row (the X-Ray row hue while inspecting).
@@ -104,12 +162,18 @@ impl StudioStyle {
 
     /// Label of a selectable control.
     pub fn control_fg(&self, active: bool) -> Hex {
-        if active { self.t.text.primary.hex() } else { self.t.text.secondary.hex() }
+        if active {
+            self.t.text.primary.hex()
+        } else {
+            self.t.text.secondary.hex()
+        }
     }
 }
 
 /// `data-*` attributes (`(name, value)` pairs) of a node, for web hosts and test probes.
-pub(crate) fn data_attrs<const N: usize>(pairs: [(&'static str, String); N]) -> nve_dioxus::TableAttr {
+pub(crate) fn data_attrs<const N: usize>(
+    pairs: [(&'static str, String); N],
+) -> nve_dioxus::TableAttr {
     let pairs: Vec<(String, String)> = pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
     nve_dioxus::table_attr_fn(move |tx, node| {
         tx.edit::<nve_web_html::HtmlDataAttrs>(node)
@@ -117,10 +181,10 @@ pub(crate) fn data_attrs<const N: usize>(pairs: [(&'static str, String); N]) -> 
     })
 }
 
-/// The current [`StudioStyle`]; subscribes the calling view to theme and Studio-config changes.
+/// The current [`StudioStyle`]; subscribes the calling view to the theme and the `style` domain
+/// (never to the panel toggle or content).
 pub(crate) fn use_studio_style() -> StudioStyle {
     let t = use_theme();
-    let store = use_studio();
-    let studio = store.studio.read();
-    StudioStyle::new(t, LayoutMetrics::from_studio(&studio.config), studio.config.xray)
+    let config = use_studio().style.read().config;
+    StudioStyle::new(t, LayoutMetrics::from_studio(&config), config.xray)
 }

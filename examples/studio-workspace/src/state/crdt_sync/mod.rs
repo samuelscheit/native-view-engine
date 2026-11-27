@@ -12,6 +12,7 @@ mod project;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tcp_transport;
 pub mod transport;
+mod validate;
 mod wire;
 
 pub use transport::{
@@ -29,9 +30,7 @@ use nve_interop::crdt::{
     crdt_xxh64,
 };
 
-use super::{
-    ChannelKind, ChatMessage, DocBlockKind, Priority, TaskStatus, WorkspaceSnapshot,
-};
+use super::{ChannelKind, ChatMessage, DocBlockKind, Priority, TaskStatus, WorkspaceSnapshot};
 
 pub(super) const SEED_TS: HlcTimestamp = HlcTimestamp::new(0, 1, 0);
 
@@ -54,8 +53,6 @@ pub(super) const FIELD_TASK_PRIORITY: u16 = 4;
 pub(super) const FIELD_TASK_STATUS: u16 = 5;
 
 pub(super) const FIELD_CHAT_AUTHOR: u16 = 0;
-pub(super) const FIELD_CHAT_BADGE_BG: u16 = 1;
-pub(super) const FIELD_CHAT_BADGE_FG: u16 = 2;
 pub(super) const FIELD_CHAT_TIMESTAMP: u16 = 3;
 pub(super) const FIELD_CHAT_BODY: u16 = 4;
 
@@ -138,8 +135,6 @@ impl Default for TaskCrdt {
 #[derive(Debug, Clone, Default)]
 pub(super) struct ChatMessageCrdt {
     pub(super) author: TrackedLww<String>,
-    pub(super) badge_bg: TrackedLww<String>,
-    pub(super) badge_fg: TrackedLww<String>,
     pub(super) timestamp: TrackedLww<String>,
     pub(super) body: TrackedLww<String>,
     pub(super) reactions: PnCounter,
@@ -268,7 +263,9 @@ impl StudioCrdtDoc {
             let mut prev_rga_id = None;
             for block in &ws_doc.blocks {
                 let rga_id = seed_op(8, (u64::from(ws_doc.id) << 24) | u64::from(block.id));
-                crdt_doc.block_order.insert_after(prev_rga_id, rga_id, block.id);
+                crdt_doc
+                    .block_order
+                    .insert_after(prev_rga_id, rga_id, block.id);
                 doc.vv.observe(rga_id);
                 prev_rga_id = Some(rga_id);
 
@@ -285,8 +282,16 @@ impl StudioCrdtDoc {
                 crdt_doc.blocks.insert(
                     block.id,
                     DocBlockCrdt {
-                        kind_tag: TrackedLww::new(kind_tag, SEED_TS, blk_field_op(FIELD_BLOCK_KIND)),
-                        checked: TrackedLww::new(checked, SEED_TS, blk_field_op(FIELD_BLOCK_CHECKED)),
+                        kind_tag: TrackedLww::new(
+                            kind_tag,
+                            SEED_TS,
+                            blk_field_op(FIELD_BLOCK_KIND),
+                        ),
+                        checked: TrackedLww::new(
+                            checked,
+                            SEED_TS,
+                            blk_field_op(FIELD_BLOCK_CHECKED),
+                        ),
                         text: TrackedLww::new(
                             block.text.clone(),
                             SEED_TS,
@@ -317,12 +322,8 @@ impl StudioCrdtDoc {
             set.add(u64::from(msg.id), add_op);
             self.vv.observe(add_op);
 
-            let field_op = |f: u16| {
-                seed_op(
-                    4,
-                    (ch_bit << 36) | (u64::from(msg.id) << 4) | u64::from(f),
-                )
-            };
+            let field_op =
+                |f: u16| seed_op(4, (ch_bit << 36) | (u64::from(msg.id) << 4) | u64::from(f));
             for f in 0..=4 {
                 self.vv.observe(field_op(f));
             }
@@ -343,16 +344,6 @@ impl StudioCrdtDoc {
                         msg.author.clone(),
                         SEED_TS,
                         field_op(FIELD_CHAT_AUTHOR),
-                    ),
-                    badge_bg: TrackedLww::new(
-                        msg.badge_bg.clone(),
-                        SEED_TS,
-                        field_op(FIELD_CHAT_BADGE_BG),
-                    ),
-                    badge_fg: TrackedLww::new(
-                        msg.badge_fg.clone(),
-                        SEED_TS,
-                        field_op(FIELD_CHAT_BADGE_FG),
                     ),
                     timestamp: TrackedLww::new(
                         msg.timestamp.clone(),
@@ -401,7 +392,10 @@ impl StudioCrdtDoc {
 
 #[inline]
 pub(super) const fn seed_op(category: u8, payload: u64) -> OpId {
-    OpId::new(PeerId::SEED, ((category as u64) << 40) | (payload & 0x00FF_FFFF_FFFF))
+    OpId::new(
+        PeerId::SEED,
+        ((category as u64) << 40) | (payload & 0x00FF_FFFF_FFFF),
+    )
 }
 
 #[inline]

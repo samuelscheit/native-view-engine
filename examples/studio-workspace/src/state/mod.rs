@@ -10,6 +10,8 @@ mod history;
 pub use history::filter_tasks;
 mod models;
 mod navigation;
+mod shared;
+pub use shared::Shared;
 mod workbench;
 
 pub use codec::{WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION};
@@ -21,18 +23,18 @@ pub use crdt_sync::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use crdt_sync::{LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport};
-pub use docs::{default_seed_docs, DocBlock, DocBlockKind, WorkspaceDoc};
+pub use docs::{DocBlock, DocBlockKind, WorkspaceDoc, default_seed_docs};
 pub use models::{
     AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
-    LayoutEngineMode, Priority, Stream100kState, StudioConfig, SyncTelemetryState,
-    SyncTransportMode, TaskItem, TaskStatus, WorkspaceSnapshot, MAX_HISTORY, MAX_STRESS_ROWS,
-    MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
+    LayoutEngineMode, MAX_HISTORY, MAX_STRESS_ROWS, MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
+    Priority, Stream100kState, StudioConfig, SyncTelemetryState, SyncTransportMode, TaskItem,
+    TaskStatus, WorkspaceSnapshot,
 };
-pub use workbench::{HostSurfaceSpec, WorkbenchPreset, WorkbenchState, HOST_SURFACES};
+pub use workbench::{HOST_SURFACES, HostSurfaceSpec, WorkbenchPreset, WorkbenchState};
 
 use crate::routes::StudioRouter;
 use crate::sdk::StudioSystemEnv;
-use crate::traits::{build_studio_trait_store, StudioTraitBox};
+use crate::traits::{StudioTraitBox, build_studio_trait_store};
 use crate::ui_palette::CommandPaletteState;
 
 /// Top-level runtime state persisted across Tier-2 `cdylib` hot-swaps and time-travel scrubs.
@@ -41,6 +43,9 @@ pub struct WorkspaceState {
     pub current: WorkspaceSnapshot,
     pub history: Vec<WorkspaceSnapshot>,
     pub cursor: usize,
+    /// Actions ever committed onto `history`: its O(1) change stamp for reactive readers (the
+    /// history length stops changing once it is capped at `MAX_HISTORY`).
+    pub commit_seq: u64,
     pub frame_count: u64,
     pub palette: CommandPaletteState,
     pub sync_telemetry: SyncTelemetryState,
@@ -60,6 +65,7 @@ impl Default for WorkspaceState {
             history: vec![initial.clone()],
             current: initial,
             cursor: 0,
+            commit_seq: 0,
             frame_count: 1,
             palette: CommandPaletteState::default(),
             sync_telemetry: SyncTelemetryState::default(),

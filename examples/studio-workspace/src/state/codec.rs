@@ -9,22 +9,22 @@ use crate::routes::{StudioRoute, StudioRouter};
 use crate::sdk::StudioSystemEnv;
 use crate::ui_palette::CommandPaletteState;
 
+use super::WorkspaceState;
 use super::codec_io::{
-    decode_chat_msg, decode_doc, decode_doc_block_kind, decode_islands, decode_task,
-    decode_workbench, encode_chat_msg, encode_doc, encode_doc_block_kind, encode_islands,
-    encode_task, encode_workbench, BinReader, BinWriter,
+    BinReader, BinWriter, decode_chat_msg, decode_doc, decode_doc_block_kind, decode_islands,
+    decode_task, decode_workbench, encode_chat_msg, encode_doc, encode_doc_block_kind,
+    encode_islands, encode_task, encode_workbench,
 };
 use super::models::{
     AccentTheme, ActiveView, BoardFilter, CornerRadiusMode, DensityMode, LayoutEngineMode,
     Stream100kState, StudioConfig, SyncTelemetryState, SyncTransportMode, WorkspaceSnapshot,
 };
-use super::WorkspaceState;
 
 /// 4-byte ASCII magic identifying a binary `WorkspaceState` snapshot (`NWS1`).
 pub const WORKSPACE_STATE_BIN_MAGIC: [u8; 4] = *b"NWS1";
 
 /// Current binary schema version for `NWS1` (v2: Docs + Workbench + trailing XXH64 checksum).
-pub const WORKSPACE_STATE_BIN_VERSION: u16 = 2;
+pub const WORKSPACE_STATE_BIN_VERSION: u16 = 3;
 
 const HEADER_LEN: usize = 4 + 2;
 const CHECKSUM_LEN: usize = 8;
@@ -266,10 +266,10 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
         board_filter,
         board_search_query,
         new_task_draft,
-        tasks,
+        tasks: tasks.into(),
         next_task_id,
-        eng_messages,
-        design_messages,
+        eng_messages: eng_messages.into(),
+        design_messages: design_messages.into(),
         eng_draft,
         design_draft,
         next_msg_id,
@@ -277,7 +277,7 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
         telemetry_samples_us,
         stream,
         islands,
-        docs,
+        docs: docs.into(),
         active_doc_id,
         next_doc_id,
         next_block_id,
@@ -310,6 +310,7 @@ impl WorkspaceState {
             encode_snapshot(&mut w, snap);
         }
         w.push_u32(self.cursor as u32);
+        w.push_u64(self.commit_seq);
         w.push_u64(self.frame_count);
 
         w.push_bool(self.palette.open);
@@ -404,6 +405,7 @@ impl WorkspaceState {
             history.push(decode_snapshot(&mut r)?);
         }
         let mut cursor = r.read_u32()? as usize;
+        let commit_seq = r.read_u64()?;
         let frame_count = r.read_u64()?;
 
         let palette = CommandPaletteState {
@@ -487,6 +489,7 @@ impl WorkspaceState {
             current,
             history,
             cursor,
+            commit_seq,
             frame_count,
             palette,
             sync_telemetry,
@@ -505,13 +508,13 @@ mod tests {
     use crate::state::{ChannelKind, DocBlockKind, WorkbenchPreset};
 
     #[test]
-    fn binary_nws1_v2_roundtrip_and_xxh64_corruption_rejection() {
+    fn binary_nws1_v3_roundtrip_and_xxh64_corruption_rejection() {
         let mut state = WorkspaceState::default();
         state.set_accent(AccentTheme::Violet);
         state.set_radius(CornerRadiusMode::Pill);
         state.set_density(DensityMode::Compact);
         state.toggle_xray();
-        state.send_quick_reply(ChannelKind::Engineering, "Binary NWS1 v2 snapshot");
+        state.send_quick_reply(ChannelKind::Engineering, "Binary NWS1 v3 snapshot");
         state.toggle_doc_checklist(7);
         state.add_doc_block(DocBlockKind::Callout, "Persisted block callout");
         state.set_workbench_preset(WorkbenchPreset::Tablet);
@@ -526,7 +529,7 @@ mod tests {
             u16::from_le_bytes([bytes[4], bytes[5]]),
             WORKSPACE_STATE_BIN_VERSION
         );
-        let restored = WorkspaceState::from_bytes(&bytes).expect("valid NWS1 v2 roundtrip");
+        let restored = WorkspaceState::from_bytes(&bytes).expect("valid NWS1 v3 roundtrip");
         assert_eq!(restored, state);
 
         // Single-bit flips anywhere in header, payload, or trailing checksum must fail.

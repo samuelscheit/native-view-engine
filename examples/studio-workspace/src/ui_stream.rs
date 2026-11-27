@@ -13,14 +13,15 @@ use nve_ui::ColorHex;
 
 use crate::ui::store::use_studio;
 use crate::ui::style::{data_attrs, use_studio_style};
-use crate::virtual_list::{StreamVirtualEngine, DEFAULT_STREAM_ROW_COUNT};
+use crate::virtual_list::{DEFAULT_STREAM_ROW_COUNT, StreamVirtualEngine};
 
 #[component]
 pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
+    nve_dioxus::render_probe::record_render("Stream100kPanel");
     let store = use_studio();
     let s = use_studio_style();
     let t = s.t;
-    let density = store.studio.read().config.density;
+    let density = store.style.read().config.density;
     let stream = store.stream.read().state.clone();
     let engine_cell = dioxus_core::use_hook(|| {
         Rc::new(RefCell::new(StreamVirtualEngine::new(
@@ -38,13 +39,26 @@ pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
         let win = eng.slice(stream.scroll_offset_y as f64, viewport_h, stream.overscan);
         let items: Vec<_> = (win.start..win.end).map(|idx| eng.row_meta(idx)).collect();
         let step = (viewport_h * 0.85).round().max(120.0) as u32;
-        (win, items, eng.offset_for_row(50_000), eng.offset_for_row(99_999), step)
+        (
+            win,
+            items,
+            eng.offset_for_row(50_000),
+            eng.offset_for_row(99_999),
+            step,
+        )
     };
 
-    let mode_lbl = if stream.variable_heights { "Fenwick VarH" } else { "O(1) FixedH" };
+    let mode_lbl = if stream.variable_heights {
+        "Fenwick VarH"
+    } else {
+        "O(1) FixedH"
+    };
     let last = window.end.saturating_sub(1);
     let readout_text = if is_mobile {
-        format!("#{}-#{last} / 100k | {} rows | {mode_lbl}", window.start, window.visible_count)
+        format!(
+            "#{}-#{last} / 100k | {} rows | {mode_lbl}",
+            window.start, window.visible_count
+        )
     } else {
         format!(
             "Rows #{}..#{last} / 100,000 | Mounted: {} | Y={}px / {}px | {mode_lbl}",
@@ -56,7 +70,10 @@ pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
     };
 
     let current_scroll_y = window.clamped_scroll_offset as u32;
-    let max_scroll_y = window.total_height_px.saturating_sub(viewport_h as u64).min(u32::MAX as u64) as u32;
+    let max_scroll_y = window
+        .total_height_px
+        .saturating_sub(viewport_h as u64)
+        .min(u32::MAX as u64) as u32;
     let page_up_y = current_scroll_y.saturating_sub(page_step);
     let page_down_y = current_scroll_y.saturating_add(page_step).min(max_scroll_y);
     let viewport_attrs = data_attrs([
@@ -77,7 +94,11 @@ pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
     let card = s.card();
     let (accent_bg, accent_ink) = (t.status.accent.subtle.hex(), t.text.link.hex());
     let (subtle_bg, base_bg) = (t.surface.subtle.hex(), t.surface.base.hex());
-    let (primary, secondary, tertiary) = (t.text.primary.hex(), t.text.secondary.hex(), t.text.tertiary.hex());
+    let (primary, secondary, tertiary) = (
+        t.text.primary.hex(),
+        t.text.secondary.hex(),
+        t.text.tertiary.hex(),
+    );
 
     rsx! {
         view {

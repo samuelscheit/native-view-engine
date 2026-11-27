@@ -48,6 +48,11 @@ nve-canvas-skia = { workspace = true }
 nve-canvas-web = { workspace = true }
 nve-layout-yoga = { workspace = true }
 nve-web-html-web = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "studio_style_bench"
+harness = false
 
 [lints]
 workspace = true

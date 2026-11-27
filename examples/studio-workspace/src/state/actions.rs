@@ -4,15 +4,17 @@
 use nve_interop::traits::SizeClass;
 
 use crate::routes::StudioRoute;
-use crate::ui_islands::{format_disposition, format_lifecycle, GestureSimMode, IslandSandboxRuntime};
+use crate::ui_islands::{
+    GestureSimMode, IslandSandboxRuntime, format_disposition, format_lifecycle,
+};
 use crate::ui_palette::{execute_palette_action, filter_palette_items};
 
+use super::WorkspaceState;
 use super::models::{
     AccentTheme, ActiveView, BoardFilter, ChannelKind, ChatMessage, CornerRadiusMode, DensityMode,
-    LayoutEngineMode, Priority, SyncTelemetryState, TaskItem, TaskStatus, MAX_STRESS_ROWS,
-    MAX_TELEMETRY_SAMPLES,
+    LayoutEngineMode, MAX_STRESS_ROWS, MAX_TELEMETRY_SAMPLES, Priority, SyncTelemetryState,
+    TaskItem, TaskStatus,
 };
-use super::WorkspaceState;
 
 const NEW_TASK_TEMPLATES: &[(&str, &str, &str, Priority)] = &[
     ("Local-first CRDT sync", "@maya", "Sync", Priority::P0),
@@ -144,7 +146,7 @@ impl WorkspaceState {
         };
         let label = format!("Status -> {}", next_status.label());
         self.commit_action(label, |s| {
-            if let Some(task) = s.tasks.iter_mut().find(|t| t.id == task_id) {
+            if let Some(task) = s.tasks.make_mut().iter_mut().find(|t| t.id == task_id) {
                 task.status = next_status;
             }
         });
@@ -157,7 +159,7 @@ impl WorkspaceState {
         let key = format!("AET-{}", 100 + id);
         let label = format!("New {key}");
         self.commit_action(label, |s| {
-            s.tasks.insert(
+            s.tasks.make_mut().insert(
                 0,
                 TaskItem {
                     id,
@@ -186,15 +188,13 @@ impl WorkspaceState {
             let msg = ChatMessage {
                 id: msg_id,
                 author: "you".into(),
-                badge_bg: "#1e293b".into(),
-                badge_fg: "#f8fafc".into(),
                 timestamp: format!("10:{minute:02}"),
                 body: body_owned,
                 reactions: 1,
             };
             match channel {
-                ChannelKind::Engineering => s.eng_messages.push(msg),
-                ChannelKind::Design => s.design_messages.push(msg),
+                ChannelKind::Engineering => s.eng_messages.make_mut().push(msg),
+                ChannelKind::Design => s.design_messages.make_mut().push(msg),
             }
             s.next_msg_id = msg_id.saturating_add(1);
         });
@@ -211,8 +211,8 @@ impl WorkspaceState {
         let label = format!("+1 in {}", channel.tag());
         self.commit_action(label, |s| {
             let list = match channel {
-                ChannelKind::Engineering => &mut s.eng_messages,
-                ChannelKind::Design => &mut s.design_messages,
+                ChannelKind::Engineering => s.eng_messages.make_mut(),
+                ChannelKind::Design => s.design_messages.make_mut(),
             };
             if let Some(msg) = list.iter_mut().find(|m| m.id == msg_id) {
                 msg.reactions = msg.reactions.saturating_add(1);
@@ -239,7 +239,11 @@ impl WorkspaceState {
     pub fn toggle_studio_panel(&mut self) {
         if self.is_mobile_portrait() {
             let next = !self.current.mobile_studio_open;
-            let label = if next { "Studio -> ON" } else { "Studio -> OFF" };
+            let label = if next {
+                "Studio -> ON"
+            } else {
+                "Studio -> OFF"
+            };
             self.commit_action(label, |s| {
                 s.mobile_studio_open = next;
                 if next {
@@ -248,7 +252,11 @@ impl WorkspaceState {
             });
         } else {
             let next = !self.current.studio.panel_open;
-            let label = if next { "Studio -> ON" } else { "Studio -> OFF" };
+            let label = if next {
+                "Studio -> ON"
+            } else {
+                "Studio -> OFF"
+            };
             self.commit_action(label, |s| s.studio.panel_open = next);
         }
     }
@@ -369,7 +377,7 @@ impl WorkspaceState {
         let label = format!("New {key}");
         let owned_title = trimmed.to_owned();
         self.commit_action(label, |s| {
-            s.tasks.insert(
+            s.tasks.make_mut().insert(
                 0,
                 TaskItem {
                     id,
@@ -428,19 +436,17 @@ impl WorkspaceState {
             let msg = ChatMessage {
                 id: msg_id,
                 author: "you".into(),
-                badge_bg: "#1e293b".into(),
-                badge_fg: "#f8fafc".into(),
                 timestamp: format!("10:{minute:02}"),
                 body,
                 reactions: 1,
             };
             match channel {
                 ChannelKind::Engineering => {
-                    s.eng_messages.push(msg);
+                    s.eng_messages.make_mut().push(msg);
                     s.eng_draft.clear();
                 }
                 ChannelKind::Design => {
-                    s.design_messages.push(msg);
+                    s.design_messages.make_mut().push(msg);
                     s.design_draft.clear();
                 }
             }

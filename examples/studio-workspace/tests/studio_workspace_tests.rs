@@ -2,21 +2,24 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{find_in_store, live_node_ids, register_studio_tables, write_ppm, MultiBackendHarness};
+use common::{
+    MultiBackendHarness, find_in_store, live_node_ids, register_studio_tables, write_ppm,
+};
 use nve_abi::{
-    ColorRgba, NveDirectEvent, NveGestureDisposition, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveValue,
+    ColorRgba, NveDirectEvent, NveGestureDisposition, NveMapEntry, NvePropsRef, NveSizeConstraints,
+    NveValue,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::Visual;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_studio_workspace::state::StudioConfig;
-use nve_studio_workspace::theme::{studio_radius, studio_theme, XRayPalette};
+use nve_studio_workspace::theme::{XRayPalette, studio_radius, studio_theme};
 use nve_studio_workspace::ui::store::{DomainMask, DomainValues};
 use nve_studio_workspace::{
-    AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, StudioWorkspaceModule,
-    SyncTransportMode, TaskStatus, WorkspaceState, MAX_HISTORY, WORKSPACE_STATE_BIN_MAGIC,
+    AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, MAX_HISTORY,
+    SyncTransportMode, TaskStatus, WORKSPACE_STATE_BIN_MAGIC,
+    WorkspaceState,
 };
 use nve_ui::{Appearance, ColorHex, Theme};
 
@@ -117,9 +120,15 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     let cyan = harness_theme(|_| {});
     let violet = harness_theme(|c| c.accent = AccentTheme::Violet);
     let ssr_boot = h.web.render_ssr(h.surface.store());
-    for (role, color) in [("canvas", cyan.surface.canvas), ("cyan accent", cyan.status.accent.solid)] {
+    for (role, color) in [
+        ("canvas", cyan.surface.canvas),
+        ("cyan accent", cyan.status.accent.solid),
+    ] {
         let hex = color.hex().to_string();
-        assert!(ssr_boot.style_css.contains(&hex), "expected {role} {hex} in boot SSR stylesheet");
+        assert!(
+            ssr_boot.style_css.contains(&hex),
+            "expected {role} {hex} in boot SSR stylesheet"
+        );
     }
 
     h.press("accent-violet");
@@ -132,11 +141,18 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
         "expected violet accent {violet_solid} in SSR stylesheet, got:\n{}",
         ssr_violet.style_css
     );
-    assert!(!ssr_violet.style_css.contains(&cyan_ink), "cyan accent {cyan_ink} must be fully replaced");
+    assert!(
+        !ssr_violet.style_css.contains(&cyan_ink),
+        "cyan accent {cyan_ink} must be fully replaced"
+    );
 
     let pill_radius = format!(
         "border-radius:{}px",
-        studio_radius(&StudioConfig { radius: CornerRadiusMode::Pill, ..WorkspaceState::default().current.studio }).lg
+        studio_radius(&StudioConfig {
+            radius: CornerRadiusMode::Pill,
+            ..WorkspaceState::default().current.studio
+        })
+        .lg
     );
     h.press("radius-pill");
     assert!(h.ascii().contains("Radius -> Pill (18)"));
@@ -163,16 +179,28 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     h.press("density-compact");
     assert!(h.ascii().contains("Density -> Compact"));
 
-    let xray = XRayPalette::new(&violet);
-    assert!(!has_border(&h, 2.0, xray.card), "no X-Ray card border before toggling");
+    let xray = XRayPalette::for_theme(&violet);
+    assert!(
+        !has_border(&h, 2.0, xray.card),
+        "no X-Ray card border before toggling"
+    );
     h.press("toggle-xray");
     assert!(h.ascii().contains("X-Ray HUD: ON"));
-    assert!(has_border(&h, 2.0, xray.card), "X-Ray violet card border expected");
-    assert!(has_border(&h, 2.0, xray.panel), "X-Ray cyan panel border expected");
+    assert!(
+        has_border(&h, 2.0, xray.card),
+        "X-Ray violet card border expected"
+    );
+    assert!(
+        has_border(&h, 2.0, xray.panel),
+        "X-Ray cyan panel border expected"
+    );
 
     h.press("toggle-xray");
     assert!(h.ascii().contains("X-Ray HUD: OFF"));
-    assert!(!has_border(&h, 2.0, xray.card), "X-Ray borders must cleanly reset when OFF");
+    assert!(
+        !has_border(&h, 2.0, xray.card),
+        "X-Ray borders must cleanly reset when OFF"
+    );
 
     h.press("btn-new-task");
     assert!(h.ascii().contains("AET-105"));
@@ -225,22 +253,78 @@ fn store_updates_publish_only_the_domains_they_change() {
     let mut st = WorkspaceState::default();
     // Every interaction bumps the live frame counter (inspector); committed actions also append a
     // frame-timing telemetry sample (metrics). A `Todo` task moves to `InProgress` (still active).
-    let task = st.current.tasks.iter().find(|t| t.status == TaskStatus::Todo).map(|t| t.id).expect("seeded Todo task");
+    let task = st
+        .current
+        .tasks
+        .iter()
+        .find(|t| t.status == TaskStatus::Todo)
+        .map(|t| t.id)
+        .expect("seeded Todo task");
+    // Committed actions also stamp the history the palette lists. Task edits reach every reader
+    // of the task list (board, workbench preview, palette) but never the sidebar counts.
     let frame = DomainMask::INSPECTOR;
-    let committed = frame.union(DomainMask::METRICS);
-    let cases: [DomainCase; 5] = [
-        ("cycle task status", |s, t| s.cycle_task_status(t), committed.union(DomainMask::BOARD)),
-        ("scroll stream", |s, _| s.set_stream_scroll_offset(4_000), frame.union(DomainMask::STREAM)),
-        ("same scroll", |s, _| s.set_stream_scroll_offset(4_000), DomainMask::NONE),
-        ("cycle sync transport", |s, _| s.cycle_sync_transport(), frame.union(DomainMask::SYNC)),
-        ("open palette", |s, _| s.open_palette(), frame.union(DomainMask::NAV).union(DomainMask::PALETTE)),
+    let committed = frame.union(DomainMask::METRICS).union(DomainMask::PALETTE);
+    let task_readers = DomainMask::BOARD.union(DomainMask::WORKBENCH);
+    let cases: [DomainCase; 9] = [
+        (
+            "cycle task status",
+            |s, t| s.cycle_task_status(t),
+            committed.union(task_readers),
+        ),
+        (
+            "type board draft",
+            |s, _| s.set_new_task_draft("Ship"),
+            frame.union(DomainMask::BOARD_DRAFT),
+        ),
+        (
+            "type channel draft",
+            |s, _| s.set_channel_draft(ChannelKind::Design, "Hi"),
+            frame.union(DomainMask::CHANNEL_DRAFTS),
+        ),
+        (
+            "type doc draft",
+            |s, _| s.set_doc_new_block_draft("Note"),
+            frame.union(DomainMask::DOC_DRAFTS),
+        ),
+        (
+            "toggle studio panel",
+            |s, _| s.toggle_studio_panel(),
+            committed.union(DomainMask::CHROME),
+        ),
+        (
+            "scroll stream",
+            |s, _| s.set_stream_scroll_offset(4_000),
+            frame.union(DomainMask::STREAM),
+        ),
+        (
+            "same scroll",
+            |s, _| s.set_stream_scroll_offset(4_000),
+            DomainMask::NONE,
+        ),
+        (
+            "cycle sync transport",
+            |s, _| s.cycle_sync_transport(),
+            frame.union(DomainMask::SYNC),
+        ),
+        (
+            "open palette",
+            |s, _| s.open_palette(),
+            frame.union(DomainMask::NAV).union(DomainMask::PALETTE),
+        ),
     ];
     for (label, action, expected) in cases {
         let before = DomainValues::project(&st);
         action(&mut st, task);
         let changed = before.changed(&st);
-        assert_eq!(changed, expected, "{label}: published {changed:?}, expected {expected:?}");
-        assert_eq!(DomainValues::project(&st).changed(&st), DomainMask::NONE, "{label}: projection is stable");
+        assert_eq!(
+            changed, expected,
+            "{label}: published {changed:?}, expected {expected:?}"
+        );
+        assert_eq!(
+            DomainValues::project(&st).changed(&st),
+            DomainMask::NONE,
+            "{label}: projection is stable"
+        );
     }
 }
 
@@ -267,7 +351,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     state.scrub_redo();
     assert_eq!(state.cursor, MAX_HISTORY - 1);
 
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = common::headless_module(1);
     let measured = app.measure(NveSizeConstraints {
         min_w: 320.0,
         max_w: 960.0,
@@ -310,7 +394,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         "snapshot_state must emit binary NWS1 binary format"
     );
 
-    let mut restored_app = StudioWorkspaceModule::create(1);
+    let mut restored_app = common::headless_module(1);
     restored_app.restore_state(b"{not-valid-binary");
     assert_eq!(
         restored_app.state_snapshot().current.studio.accent,
@@ -399,15 +483,23 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     let f1 = inst.render(1);
     assert!(!f1.is_empty());
     host.submit_nve2_frame(f1).unwrap();
-    assert!(host.backend().render_ascii_tree(host.store()).contains("AETHER"));
-    assert!(host.backend().render_ascii_tree(host.store()).contains("AET-101"));
+    assert!(
+        host.backend()
+            .render_ascii_tree(host.store())
+            .contains("AETHER")
+    );
+    assert!(
+        host.backend()
+            .render_ascii_tree(host.store())
+            .contains("AET-101")
+    );
 
     let press_id = |host: &mut StoreWireReplica<HeadlessBackend>,
                     inst: &mut HotAppInstance,
                     tid: &str,
                     fid: u64| {
-        let nid = find_in_store(host.store(), tid)
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let nid =
+            find_in_store(host.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
             1,
@@ -424,9 +516,21 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     press_id(&mut host, &mut inst, "btn-new-task", 2);
     press_id(&mut host, &mut inst, "accent-violet", 3);
     press_id(&mut host, &mut inst, "toggle-xray", 4);
-    assert!(host.backend().render_ascii_tree(host.store()).contains("AET-105"));
-    assert!(host.backend().render_ascii_tree(host.store()).contains("X-Ray HUD: ON"));
-    assert!(host.backend().render_ascii_tree(host.store()).contains("Snapshot 4 / 4"));
+    assert!(
+        host.backend()
+            .render_ascii_tree(host.store())
+            .contains("AET-105")
+    );
+    assert!(
+        host.backend()
+            .render_ascii_tree(host.store())
+            .contains("X-Ray HUD: ON")
+    );
+    assert!(
+        host.backend()
+            .render_ascii_tree(host.store())
+            .contains("Snapshot 4 / 4")
+    );
 
     let outcome = inst.reload(&dylib_path).expect("reload gen 2");
     assert_eq!(outcome.generation, 2);
@@ -439,7 +543,10 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     let f5 = inst.render(5);
     host2.submit_nve2_frame(f5).unwrap();
     let tree2 = host2.backend().render_ascii_tree(host2.store());
-    assert!(tree2.contains("AET-105"), "lost new task after reload:\n{tree2}");
+    assert!(
+        tree2.contains("AET-105"),
+        "lost new task after reload:\n{tree2}"
+    );
     assert!(
         tree2.contains("X-Ray HUD: ON"),
         "lost X-Ray toggle after reload:\n{tree2}"

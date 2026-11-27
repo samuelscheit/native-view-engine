@@ -3134,6 +3134,7 @@ dependencies = [
 name = "nve-studio-workspace"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "dioxus-core",
  "dioxus-core-macro",
  "dioxus-signals",

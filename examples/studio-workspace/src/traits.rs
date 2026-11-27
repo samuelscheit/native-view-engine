@@ -5,7 +5,7 @@
 //! [`Locale`], and Studio custom [`TraitKey`]s ([`StudioAccentTrait`], [`StudioCompactModeTrait`]).
 
 use nve_dioxus::prelude::*;
-use nve_dioxus::traits::{use_environment, use_trait, ReactiveTraitStore};
+use nve_dioxus::traits::{ReactiveTraitStore, use_environment, use_trait};
 use nve_interop::traits::{
     ColorScheme, HighContrast, Locale, ReducedMotion, ScaleFactor, SizeClass, TextScale,
     TraitEnvironment, TraitKey, TraitOverrides, TraitStore, UiDensity, ViewportChangeMask,
@@ -14,7 +14,7 @@ use nve_system_env::{ContrastLevel, LocaleSnapshot, ThemeSnapshot};
 
 use crate::sdk::StudioSystemEnv;
 use crate::state::{AccentTheme, DensityMode, WorkspaceSnapshot};
-use nve_ui::{use_theme, ColorHex};
+use nve_ui::{ColorHex, use_theme};
 
 use crate::theme::LayoutMetrics;
 use crate::ui::style::data_attrs;
@@ -212,6 +212,7 @@ pub const fn color_scheme_label(cs: ColorScheme) -> &'static str {
 /// Works both inside the docked Studio panel and inside `<TraitScope>` override subtrees.
 #[component]
 pub fn StudioTraitPreviewChip(#[props(default)] test_id: Option<String>) -> Element {
+    nve_dioxus::render_probe::record_render("StudioTraitPreviewChip");
     let size_class = use_trait::<SizeClass>();
     let color_scheme = use_trait::<ColorScheme>();
     let locale = use_trait::<Locale>();

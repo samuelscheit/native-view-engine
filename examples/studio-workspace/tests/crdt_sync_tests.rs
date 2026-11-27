@@ -11,8 +11,8 @@ use nve_studio_workspace::state::{
 };
 
 fn sync_pair(a: &mut StudioCrdtDoc, b: &mut StudioCrdtDoc) {
-    let delta_ab = a.delta_since(b.version_vector());
-    let delta_ba = b.delta_since(a.version_vector());
+    let delta_ab = a.delta_since(b.version_vector()).expect("delta encodes");
+    let delta_ba = b.delta_since(a.version_vector()).expect("delta encodes");
     b.merge_delta(&delta_ab).expect("merge a->b");
     a.merge_delta(&delta_ba).expect("merge b->a");
 }
@@ -102,8 +102,6 @@ fn five_peer_offline_partition_and_heal_converges_deterministically() {
         10_135,
         ChannelKind::Design,
         "Maya",
-        "#1E293B",
-        "#38BDF8",
         "09:15",
         "Offline design critique from Peer 2",
     );
@@ -141,8 +139,6 @@ fn five_peer_offline_partition_and_heal_converges_deterministically() {
         10_510,
         ChannelKind::Engineering,
         "Devon",
-        "#1E1B4B",
-        "#A5B4FC",
         "09:20",
         "Shipped NVC1 wire format",
     );
@@ -179,7 +175,8 @@ fn five_peer_offline_partition_and_heal_converges_deterministically() {
         peers.iter().map(|p| p.project_snapshot(&base)).collect();
     for i in 1..projected.len() {
         assert_eq!(
-            projected[0], projected[i],
+            projected[0],
+            projected[i],
             "peer 1 and peer {} diverged after partition heal",
             i + 1
         );
@@ -235,7 +232,11 @@ fn five_peer_offline_partition_and_heal_converges_deterministically() {
     // seed_block_1 was reordered to the head (index 0) by Peer 5.
     assert_eq!(doc0.blocks[0].id, seed_block_1);
     // Both p1_blk and p3_blk exist right after seed_block_0 in deterministic order.
-    let idx_b0 = doc0.blocks.iter().position(|b| b.id == seed_block_0).unwrap();
+    let idx_b0 = doc0
+        .blocks
+        .iter()
+        .position(|b| b.id == seed_block_0)
+        .unwrap();
     let idx_p1 = doc0.blocks.iter().position(|b| b.id == p1_blk).unwrap();
     let idx_p3 = doc0.blocks.iter().position(|b| b.id == p3_blk).unwrap();
     assert!(idx_p1 > idx_b0 && idx_p3 > idx_b0);
@@ -282,12 +283,20 @@ fn out_of_order_duplicate_deltas_and_empty_peer_catchup() {
 
     // Generate a sequence of incremental deltas from p1 and p2 without syncing yet.
     let vv0 = p3.version_vector().clone();
-    let t_a = p1.add_task(5_010, "A-1", "Alpha", "Ana", "Sync", Priority::P1, TaskStatus::Todo);
-    deltas.push(p1.delta_since(&vv0));
+    let t_a = p1.add_task(
+        5_010,
+        "A-1",
+        "Alpha",
+        "Ana",
+        "Sync",
+        Priority::P1,
+        TaskStatus::Todo,
+    );
+    deltas.push(p1.delta_since(&vv0).expect("delta encodes"));
 
     let vv1 = p1.version_vector().clone();
     p1.edit_task_title(5_020, t_a, "Alpha v2");
-    deltas.push(p1.delta_since(&vv1));
+    deltas.push(p1.delta_since(&vv1).expect("delta encodes"));
 
     let vv2 = p1.version_vector().clone();
     let doc_id = base.docs[0].id;
@@ -295,25 +304,29 @@ fn out_of_order_duplicate_deltas_and_empty_peer_catchup() {
         .add_doc_block(5_030, doc_id, DocBlockKind::Code, "fn sync() {}")
         .unwrap();
     let b2 = p1
-        .insert_doc_block_after(5_040, doc_id, Some(b1), DocBlockKind::Paragraph, "After code")
+        .insert_doc_block_after(
+            5_040,
+            doc_id,
+            Some(b1),
+            DocBlockKind::Paragraph,
+            "After code",
+        )
         .unwrap();
-    deltas.push(p1.delta_since(&vv2));
+    deltas.push(p1.delta_since(&vv2).expect("delta encodes"));
 
     let vv3 = p1.version_vector().clone();
     p1.delete_doc_block(5_050, doc_id, b1);
-    deltas.push(p1.delta_since(&vv3));
+    deltas.push(p1.delta_since(&vv3).expect("delta encodes"));
 
     p2.react_chat_message(5_025, ChannelKind::Engineering, base.eng_messages[0].id, 3);
     p2.post_chat_message(
         5_035,
         ChannelKind::Design,
         "Kai",
-        "#0F172A",
-        "#F8FAFC",
         "10:00",
         "Out of order test",
     );
-    deltas.push(p2.delta_since(&vv0));
+    deltas.push(p2.delta_since(&vv0).expect("delta encodes"));
 
     // Deliver deltas to p3 in REVERSE order, AND deliver every delta 3 times!
     for round in 0..3 {
@@ -346,7 +359,9 @@ fn out_of_order_duplicate_deltas_and_empty_peer_catchup() {
 
     // Brand-new empty peer catches up completely from p3 via delta_since(&VersionVector::new()).
     let mut fresh = StudioCrdtDoc::new(PeerId(99), 6_000);
-    let catchup = p3.delta_since(fresh.version_vector());
+    let catchup = p3
+        .delta_since(fresh.version_vector())
+        .expect("delta encodes");
     let summary = fresh.merge_delta(&catchup).expect("fresh peer catchup");
     assert!(summary.records_applied > 0);
     assert_eq!(fresh.project_snapshot(&base), s3);
@@ -358,8 +373,16 @@ fn corrupt_nvc1_deltas_are_rejected_without_mutating_state() {
     let mut p1 = StudioCrdtDoc::from_snapshot(PeerId(1), 1_000, &base);
     let mut p2 = StudioCrdtDoc::from_snapshot(PeerId(2), 1_000, &base);
 
-    p1.add_task(1_100, "T-1", "Valid task", "Sam", "Core", Priority::P0, TaskStatus::Todo);
-    let valid_delta = p1.delta_since(p2.version_vector());
+    p1.add_task(
+        1_100,
+        "T-1",
+        "Valid task",
+        "Sam",
+        "Core",
+        Priority::P0,
+        TaskStatus::Todo,
+    );
+    let valid_delta = p1.delta_since(p2.version_vector()).expect("delta encodes");
     let before = p2.project_snapshot(&base);
     let vv_before = p2.version_vector().clone();
 

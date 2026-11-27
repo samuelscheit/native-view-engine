@@ -155,7 +155,13 @@ impl CrdtWireFrame {
                 actual: bytes.len(),
             });
         }
-        let magic: [u8; 8] = bytes[0..8].try_into().expect("checked min len");
+        let Some((magic, _)) = bytes.split_first_chunk::<8>() else {
+            return Err(CrdtWireError::Truncated {
+                expected: CRDT_DIGEST_MIN_LEN,
+                actual: bytes.len(),
+            });
+        };
+        let magic = *magic;
         if magic != CRDT_DIGEST_MAGIC {
             return Err(CrdtWireError::InvalidMagic(magic));
         }
@@ -163,9 +169,14 @@ impl CrdtWireFrame {
         if version != CRDT_DIGEST_VERSION {
             return Err(CrdtWireError::UnsupportedVersion(version));
         }
-        let payload_end = bytes.len() - 8;
-        let expected = u64::from_le_bytes(bytes[payload_end..].try_into().expect("8B checksum"));
-        let actual = crdt_xxh64(&bytes[..payload_end]);
+        let Some((payload, checksum)) = bytes.split_last_chunk::<8>() else {
+            return Err(CrdtWireError::Truncated {
+                expected: CRDT_DIGEST_MIN_LEN,
+                actual: bytes.len(),
+            });
+        };
+        let expected = u64::from_le_bytes(*checksum);
+        let actual = crdt_xxh64(payload);
         if actual != expected {
             return Err(CrdtWireError::ChecksumMismatch { expected, actual });
         }
@@ -220,7 +231,13 @@ impl CrdtWireFrame {
                 actual: bytes.len(),
             });
         }
-        let magic: [u8; 8] = bytes[0..8].try_into().expect("checked 8B magic");
+        let Some((magic, _)) = bytes.split_first_chunk::<8>() else {
+            return Err(CrdtWireError::Truncated {
+                expected: 8,
+                actual: bytes.len(),
+            });
+        };
+        let magic = *magic;
         if magic == CRDT_DIGEST_MAGIC {
             let (sender, version_vector) = Self::decode_digest(bytes)?;
             Ok(Self::VectorClockDigest {
@@ -334,17 +351,16 @@ impl<T: CrdtPeerTransport> CrdtPeerNode<T> {
     /// on all connected peers. Returns `(deliveries, wire_bytes)`.
     pub fn broadcast_delta(&mut self) -> Result<(usize, usize), CrdtTransportError> {
         let remotes = self.transport.known_remote_peers();
-        let since = if remotes.is_empty()
-            || remotes.iter().any(|p| !self.peer_known_vv.contains_key(p))
-        {
-            VersionVector::new()
-        } else {
-            common_min_vv(
-                remotes.iter().filter_map(|p| self.peer_known_vv.get(p)),
-                self.doc.version_vector(),
-            )
-        };
-        let delta = self.doc.delta_since(&since);
+        let since =
+            if remotes.is_empty() || remotes.iter().any(|p| !self.peer_known_vv.contains_key(p)) {
+                VersionVector::new()
+            } else {
+                common_min_vv(
+                    remotes.iter().filter_map(|p| self.peer_known_vv.get(p)),
+                    self.doc.version_vector(),
+                )
+            };
+        let delta = self.doc.delta_since(&since)?;
         let len = delta.len();
         let delivered = self.transport.send_frame(None, delta)?;
         if delivered > 0 {
@@ -392,10 +408,7 @@ impl<T: CrdtPeerTransport> CrdtPeerNode<T> {
                             self.metrics.records_applied += summary.records_applied as u64;
                             self.metrics.bytes_received += raw_len;
                             if let Some((sender, vv)) = pkt_vv {
-                                self.peer_known_vv
-                                    .entry(sender)
-                                    .or_default()
-                                    .merge(&vv);
+                                self.peer_known_vv.entry(sender).or_default().merge(&vv);
                             }
                         }
                         Err(_) => {
@@ -417,19 +430,17 @@ impl<T: CrdtPeerTransport> CrdtPeerNode<T> {
                         .or_default()
                         .merge(&version_vector);
 
-                    if version_vector_has_unseen_ops(self.doc.version_vector(), &version_vector) {
-                        let catchup = self.doc.delta_since(&version_vector);
-                        let clen = catchup.len();
-                        if let Ok(delivered) =
-                            self.transport.send_frame(Some(peer_key), catchup)
-                            && delivered > 0
-                        {
-                            report.anti_entropy_deltas_sent += 1;
-                            report.bytes_sent += clen as u64;
-                            self.metrics.deltas_sent += 1;
-                            self.metrics.anti_entropy_syncs += 1;
-                            self.metrics.bytes_sent += clen as u64;
-                        }
+                    if version_vector_has_unseen_ops(self.doc.version_vector(), &version_vector)
+                        && let Ok(catchup) = self.doc.delta_since(&version_vector)
+                        && let clen = catchup.len()
+                        && let Ok(delivered) = self.transport.send_frame(Some(peer_key), catchup)
+                        && delivered > 0
+                    {
+                        report.anti_entropy_deltas_sent += 1;
+                        report.bytes_sent += clen as u64;
+                        self.metrics.deltas_sent += 1;
+                        self.metrics.anti_entropy_syncs += 1;
+                        self.metrics.bytes_sent += clen as u64;
                     }
                 }
                 Err(_) => {

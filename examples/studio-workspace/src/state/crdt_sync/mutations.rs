@@ -131,14 +131,11 @@ impl StudioCrdtDoc {
     // Chat mutations
     // -------------------------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
     pub fn post_chat_message(
         &mut self,
         now_ms: u64,
         channel: ChannelKind,
         author: impl Into<String>,
-        badge_bg: impl Into<String>,
-        badge_fg: impl Into<String>,
         timestamp: impl Into<String>,
         body: impl Into<String>,
     ) -> u32 {
@@ -154,8 +151,6 @@ impl StudioCrdtDoc {
         }
 
         let (op_a, ts_a) = self.next_op(now_ms);
-        let (op_bg, ts_bg) = self.next_op(now_ms);
-        let (op_fg, ts_fg) = self.next_op(now_ms);
         let (op_ts, ts_ts) = self.next_op(now_ms);
         let (op_b, ts_b) = self.next_op(now_ms);
 
@@ -164,8 +159,6 @@ impl StudioCrdtDoc {
             entity,
             ChatMessageCrdt {
                 author: TrackedLww::new(author.into(), ts_a, op_a),
-                badge_bg: TrackedLww::new(badge_bg.into(), ts_bg, op_bg),
-                badge_fg: TrackedLww::new(badge_fg.into(), ts_fg, op_fg),
                 timestamp: TrackedLww::new(timestamp.into(), ts_ts, op_ts),
                 body: TrackedLww::new(body.into(), ts_b, op_b),
                 reactions: PnCounter::new(),
@@ -314,7 +307,8 @@ impl StudioCrdtDoc {
 
         let (kind_tag, checked) = encode_block_kind(kind);
         let doc = self.docs.entry(doc_id).or_default();
-        doc.block_order.insert_after(anchor_rga_id, rga_op, block_id);
+        doc.block_order
+            .insert_after(anchor_rga_id, rga_op, block_id);
         doc.blocks.insert(
             block_id,
             DocBlockCrdt {
@@ -427,7 +421,8 @@ impl StudioCrdtDoc {
         for old_id in old_ids {
             doc.block_order.delete_with_op(old_id, del_op);
         }
-        doc.block_order.insert_after(anchor_rga_id, ins_op, block_id);
+        doc.block_order
+            .insert_after(anchor_rga_id, ins_op, block_id);
         true
     }
 

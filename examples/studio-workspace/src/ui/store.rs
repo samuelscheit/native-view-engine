@@ -3,23 +3,26 @@
 //! host events, and time travel).
 //!
 //! [`StudioStore::update`] mutates the backing state, then republishes only the domains whose
-//! projection changed (compared by reference before cloning), so a board edit re-renders board
-//! subscribers only — no global version bump and no full-workspace clone.
+//! projection changed. Change detection never allocates and never walks an unchanged
+//! collection: collections are copy-on-write [`Shared`] handles compared by pointer first, typing
+//! a draft only touches its draft domain, and derived views (route path, workbench preview,
+//! palette matches) are computed by the components that render them, not on every update.
 
 use std::sync::{Arc, Mutex};
 
-use dioxus_core::{consume_context, provide_context};
+use dioxus_core::{consume_context, provide_root_context, try_consume_context};
 use dioxus_signals::{CopyValue, ReadableExt, Signal, WritableExt};
 use nve_dioxus::traits::ReactiveTraitStore;
 
+use crate::routes::StudioRoute;
 use crate::sdk::StudioHostServices;
 use crate::state::{
-    ActiveView, BoardFilter, ChatMessage, DocBlockKind, Stream100kState, StudioConfig,
+    ActiveView, BoardFilter, ChatMessage, DocBlockKind, Shared, Stream100kState, StudioConfig,
     SyncTelemetryState, TaskItem, WorkbenchState, WorkspaceDoc, WorkspaceState,
 };
 use crate::traits::sync_reactive_trait_store;
 use crate::ui_islands::IslandsSnapshot;
-use crate::ui_palette::{filter_palette_items, CommandPaletteItem, CommandPaletteState};
+use crate::ui_palette::CommandPaletteState;
 
 /// The authoritative workspace state shared with `StudioWorkspaceModule`.
 pub type SharedWorkspace = Arc<Mutex<WorkspaceState>>;
@@ -56,25 +59,6 @@ fn nav_counts(st: &WorkspaceState) -> NavCounts {
     }
 }
 
-fn workbench_preview(st: &WorkspaceState) -> WorkbenchPreview {
-    let c = &st.current;
-    WorkbenchPreview {
-        issue_count: c.tasks.len(),
-        doc_count: c.docs.len(),
-        top_task_key: c.tasks.first().map_or_else(|| "NONE".into(), |t| t.key.clone()),
-        active_doc_slug: c
-            .docs
-            .iter()
-            .find(|d| d.id == c.active_doc_id)
-            .or_else(|| c.docs.first())
-            .map_or_else(|| "docs".into(), |d| d.slug.clone()),
-    }
-}
-
-fn palette_matches(st: &WorkspaceState) -> Vec<CommandPaletteItem> {
-    if st.palette.open { filter_palette_items(st) } else { Vec::new() }
-}
-
 /// Declares every UI domain once: its projection struct, its [`DomainMask`] bit, its field in
 /// [`DomainValues`] / [`StudioStore`], and its change detection. Each field projection is an
 /// expression yielding `&T` from the state, compared before it is cloned.
@@ -108,10 +92,10 @@ macro_rules! studio_domains {
 
         /// Set of domains changed by one update.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-        pub struct DomainMask(pub u16);
+        pub struct DomainMask(pub u32);
 
         impl DomainMask {
-            $( pub const $Bit: Self = Self(1 << DomainIndex::$Bit as u16); )+
+            $( pub const $Bit: Self = Self(1 << DomainIndex::$Bit as u32); )+
             pub const NONE: Self = Self(0);
 
             pub const fn union(self, other: Self) -> Self {
@@ -145,16 +129,12 @@ macro_rules! studio_domains {
         pub struct StudioStore {
             backing: CopyValue<SharedWorkspace>,
             services: CopyValue<Arc<StudioHostServices>>,
-            traits: CopyValue<Option<ReactiveTraitStore>>,
+            traits: CopyValue<ReactiveTraitStore>,
             $(pub $field: Signal<$Domain>),+
         }
 
         impl StudioStore {
-            fn create(
-                backing: SharedWorkspace,
-                services: Arc<StudioHostServices>,
-                traits: Option<ReactiveTraitStore>,
-            ) -> Self {
+            fn create(backing: SharedWorkspace, services: Arc<StudioHostServices>, traits: ReactiveTraitStore) -> Self {
                 let values = {
                     let guard = backing.lock().unwrap_or_else(|e| e.into_inner());
                     DomainValues::project(&guard)
@@ -183,42 +163,60 @@ macro_rules! studio_domains {
 }
 
 studio_domains! {
-    /// Active view, drawers, router position, and sidebar counts.
+    /// Active view and drawer/overlay toggles.
     nav: NavDomain [NAV] {
         active_view: ActiveView = |s| &s.current.active_view,
         mobile_nav_open: bool = |s| &s.current.mobile_nav_open,
         mobile_studio_open: bool = |s| &s.current.mobile_studio_open,
         palette_open: bool = |s| &s.palette.open,
-        route_path: String = |s| &s.current_route_path(),
+    }
+    /// Router position (typed; components render its path) and the clipboard notice.
+    route: RouteDomain [ROUTE] {
+        route: StudioRoute = |s| s.current_route(),
         can_back: bool = |s| &s.can_navigate_back(),
         can_forward: bool = |s| &s.can_navigate_forward(),
         clipboard_notice: Option<String> = |s| &s.last_clipboard_notice,
+    }
+    /// Sidebar badge counts.
+    counts: CountsDomain [COUNTS] {
         counts: NavCounts = |s| &nav_counts(s),
     }
-    /// Issue board: tasks, filter, search, composer draft, deep-link focus.
+    /// Issue board: tasks, filter, search, deep-link focus.
     board: BoardDomain [BOARD] {
-        tasks: Vec<TaskItem> = |s| &s.current.tasks,
+        tasks: Shared<TaskItem> = |s| &s.current.tasks,
         board_filter: BoardFilter = |s| &s.current.board_filter,
         board_search_query: String = |s| &s.current.board_search_query,
-        new_task_draft: String = |s| &s.current.new_task_draft,
         focused_task_id: Option<u32> = |s| &s.focused_task_id,
     }
-    /// Messaging channels and composer drafts.
+    /// The board's new-task composer text.
+    board_draft: BoardDraftDomain [BOARD_DRAFT] {
+        new_task_draft: String = |s| &s.current.new_task_draft,
+    }
+    /// Messaging channels.
     channels: ChannelsDomain [CHANNELS] {
-        eng_messages: Vec<ChatMessage> = |s| &s.current.eng_messages,
-        design_messages: Vec<ChatMessage> = |s| &s.current.design_messages,
+        eng_messages: Shared<ChatMessage> = |s| &s.current.eng_messages,
+        design_messages: Shared<ChatMessage> = |s| &s.current.design_messages,
+    }
+    /// Channel composer texts.
+    channel_drafts: ChannelDraftsDomain [CHANNEL_DRAFTS] {
         eng_draft: String = |s| &s.current.eng_draft,
         design_draft: String = |s| &s.current.design_draft,
     }
     /// Block-doc editor.
     docs: DocsDomain [DOCS] {
-        docs: Vec<WorkspaceDoc> = |s| &s.current.docs,
+        docs: Shared<WorkspaceDoc> = |s| &s.current.docs,
         active_doc_id: u32 = |s| &s.current.active_doc_id,
-        doc_new_block_draft: String = |s| &s.current.doc_new_block_draft,
-        doc_new_block_kind: DocBlockKind = |s| &s.current.doc_new_block_kind,
         doc_editing_block_id: Option<u32> = |s| &s.current.doc_editing_block_id,
-        doc_edit_draft: String = |s| &s.current.doc_edit_draft,
         doc_markdown_preview_open: bool = |s| &s.current.doc_markdown_preview_open,
+    }
+    /// Doc new-block composer: the block kind and text.
+    doc_drafts: DocDraftsDomain [DOC_DRAFTS] {
+        doc_new_block_kind: DocBlockKind = |s| &s.current.doc_new_block_kind,
+        doc_new_block_draft: String = |s| &s.current.doc_new_block_draft,
+    }
+    /// Text of the block open in the in-place editor.
+    doc_edit_draft: DocEditDraftDomain [DOC_EDIT_DRAFT] {
+        text: String = |s| &s.current.doc_edit_draft,
     }
     /// 100k virtualized stream window.
     stream: StreamDomain [STREAM] {
@@ -235,14 +233,20 @@ studio_domains! {
         active_tasks: usize = |s| &s.active_task_count(),
         total_messages: usize = |s| &s.total_message_count(),
     }
-    /// Meta workbench presets, host selection, and preview summary.
+    /// Meta workbench presets and host selection, plus the content its previews summarize.
     workbench: WorkbenchDomain [WORKBENCH] {
         state: WorkbenchState = |s| &s.current.workbench,
-        preview: WorkbenchPreview = |s| &workbench_preview(s),
+        tasks: Shared<TaskItem> = |s| &s.current.tasks,
+        docs: Shared<WorkspaceDoc> = |s| &s.current.docs,
+        active_doc_id: u32 = |s| &s.current.active_doc_id,
     }
-    /// Studio self-editing config: accent, radius, density, X-Ray, layout engine, panel.
-    studio: StudioDomain [STUDIO] {
-        config: StudioConfig = |s| &s.current.studio,
+    /// Workspace-wide Studio self-edits: accent, radius, density, X-Ray, layout engine.
+    style: StyleDomain [STYLE] {
+        config: StudioConfig = |s| &s.current.studio.styling(),
+    }
+    /// Docked Studio panel visibility.
+    chrome: ChromeDomain [CHROME] {
+        panel_open: bool = |s| &s.current.studio.panel_open,
     }
     /// Inspector: frame counter, time-travel cursor, action label.
     inspector: InspectorDomain [INSPECTOR] {
@@ -257,21 +261,51 @@ studio_domains! {
     sync: SyncDomain [SYNC] {
         telemetry: SyncTelemetryState = |s| &s.sync_telemetry,
     }
-    /// Cmd+K command palette and its filtered matches.
+    /// Cmd+K command palette state plus the stamps of what its items are built from (tasks and
+    /// history); the matches are filtered while it renders.
     palette: PaletteDomain [PALETTE] {
         state: CommandPaletteState = |s| &s.palette,
-        matches: Vec<CommandPaletteItem> = |s| &palette_matches(s),
+        tasks: Shared<TaskItem> = |s| &s.current.tasks,
+        commit_seq: u64 = |s| &s.commit_seq,
+    }
+}
+
+impl WorkbenchDomain {
+    pub fn preview(&self) -> WorkbenchPreview {
+        WorkbenchPreview {
+            issue_count: self.tasks.len(),
+            doc_count: self.docs.len(),
+            top_task_key: self
+                .tasks
+                .first()
+                .map_or_else(|| "NONE".into(), |t| t.key.clone()),
+            active_doc_slug: self
+                .docs
+                .iter()
+                .find(|d| d.id == self.active_doc_id)
+                .or_else(|| self.docs.first())
+                .map_or_else(|| "docs".into(), |d| d.slug.clone()),
+        }
     }
 }
 
 impl StudioStore {
-    /// Creates the store in the current scope and provides it to all descendants.
-    pub fn provide(
-        backing: SharedWorkspace,
-        services: Arc<StudioHostServices>,
-        traits: Option<ReactiveTraitStore>,
-    ) -> Self {
-        provide_context(Self::create(backing, services, traits))
+    /// Creates the store and provides it at the surface's root scope (to every view, and to the
+    /// owning module via [`Self::from_root`]): syncs the host's live appearance/locale first
+    /// (authoritative from frame one) and seeds the reactive trait store from it.
+    pub fn mount(backing: SharedWorkspace, services: Arc<StudioHostServices>) -> Self {
+        let traits = {
+            let mut guard = backing.lock().unwrap_or_else(|e| e.into_inner());
+            guard.sync_system_env(&services);
+            ReactiveTraitStore::new(guard.trait_store().clone())
+        };
+        provide_root_context(Self::create(backing, services, traits))
+    }
+
+    /// The store of the surface whose root scope is current (`DioxusSurface::in_root_scope`),
+    /// once mounted.
+    pub fn from_root() -> Option<Self> {
+        try_consume_context::<Self>()
     }
 
     /// Mutates the authoritative state, syncs the reactive trait store, and republishes only the
@@ -285,9 +319,7 @@ impl StudioStore {
         let backing = self.backing.cloned();
         let mut guard = backing.lock().unwrap_or_else(|e| e.into_inner());
         let out = f(&mut guard);
-        if let Some(traits) = self.traits.peek().as_ref() {
-            let _ = sync_reactive_trait_store(traits, &guard.current, &guard.system_env);
-        }
+        let _ = sync_reactive_trait_store(&self.traits.read(), &guard.current, &guard.system_env);
         let mask = self.publish(&guard);
         (out, mask)
     }
@@ -303,9 +335,14 @@ impl StudioStore {
     pub fn services(&self) -> Arc<StudioHostServices> {
         self.services.cloned()
     }
+
+    /// The reactive environment trait store (`TraitProvider`).
+    pub fn traits(&self) -> ReactiveTraitStore {
+        self.traits.cloned()
+    }
 }
 
-/// The [`StudioStore`] provided by `StudioWorkspaceApp` (every Studio view renders inside it).
+/// The [`StudioStore`] provided at the surface root (every Studio view renders inside it).
 pub fn use_studio() -> StudioStore {
     consume_context::<StudioStore>()
 }

@@ -3,10 +3,10 @@
 
 use crate::ui_palette::fuzzy_score;
 
-use super::models::{
-    BoardFilter, TaskItem, TaskStatus, WorkspaceSnapshot, MAX_HISTORY, MAX_TELEMETRY_SAMPLES,
-};
 use super::WorkspaceState;
+use super::models::{
+    BoardFilter, MAX_HISTORY, MAX_TELEMETRY_SAMPLES, TaskItem, TaskStatus, WorkspaceSnapshot,
+};
 
 impl WorkspaceState {
     /// Commits a deterministic state transition onto the bounded time-travel history stack.
@@ -37,6 +37,7 @@ impl WorkspaceState {
             self.history.drain(0..overflow);
         }
         self.cursor = self.history.len().saturating_sub(1);
+        self.commit_seq = self.commit_seq.wrapping_add(1);
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
@@ -130,7 +131,6 @@ impl WorkspaceState {
     pub fn total_message_count(&self) -> usize {
         self.current.eng_messages.len() + self.current.design_messages.len()
     }
-
 }
 
 /// Board tasks visible under `filter` and the fuzzy `query` (key, title, assignee, tag).

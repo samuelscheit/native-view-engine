@@ -78,8 +78,6 @@ fn loopback_tcp_three_peer_live_sync_partition_reconnect_anti_entropy_convergenc
         50_110,
         ChannelKind::Engineering,
         "liam",
-        "#0c4a6e",
-        "#7dd3fc",
         "11:01",
         "Synced over 127.0.0.1 NVT1/NVC1!",
     );
@@ -334,7 +332,7 @@ fn loopback_tcp_rejects_corrupt_and_truncated_nvc1_frames_without_corrupting_sta
         Priority::P1,
         TaskStatus::Todo,
     );
-    let valid_delta = sender.doc().delta_since(receiver.doc().version_vector());
+    let valid_delta = sender.doc().delta_since(receiver.doc().version_vector()).expect("delta within NVC1 limits");
 
     // 1. Truncated NVC1 header
     let truncated = valid_delta[..12].to_vec();
@@ -461,8 +459,6 @@ fn in_memory_mesh_handles_packet_drops_reordering_and_partition_heal() {
         30_120,
         ChannelKind::Design,
         "aria",
-        "#451a03",
-        "#fcd34d",
         "12:00",
         "Survives packet drop & LIFO reorder",
     );

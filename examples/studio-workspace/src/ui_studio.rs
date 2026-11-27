@@ -10,14 +10,16 @@
 
 use nve_dioxus::prelude::*;
 use nve_dioxus::traits::TraitScope;
-use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator};
+use nve_ui::{
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator,
+};
 
 use crate::state::{AccentTheme, CornerRadiusMode, DensityMode, LayoutEngineMode, WorkspaceState};
 use crate::theme::badge_min_w;
-use crate::traits::{studio_compact_override, StudioTraitPreviewChip};
-use crate::ui::store::{use_studio, StudioStore};
+use crate::traits::{StudioTraitPreviewChip, studio_compact_override};
+use crate::ui::store::{StudioStore, use_studio};
+use crate::ui::style::{StudioStyle, data_attrs, use_studio_style};
 use dioxus_core::EventHandler;
-use crate::ui::style::{data_attrs, use_studio_style, StudioStyle};
 
 fn section_style(s: &StudioStyle) -> String {
     format!(
@@ -29,25 +31,36 @@ fn section_style(s: &StudioStyle) -> String {
 }
 
 fn segment_style(s: &StudioStyle, selected: bool) -> String {
-    s.compact_control("flex: 1; height: 20px; min-height: 20px;", 2, s.m.pill_radius, Some(selected))
+    s.compact_control(
+        "flex: 1; height: 20px; min-height: 20px;",
+        2,
+        s.m.pill_radius,
+        Some(selected),
+    )
 }
 
-/// One row of mutually exclusive Studio options; `apply` mutates the workspace for the pressed one.
+/// One radio group of mutually exclusive Studio options (the checked one exposes `aria-checked`
+/// and its ≥3:1 accent boundary); `apply` mutates the workspace for the pressed one.
 #[component]
-fn OptionRow(options: Vec<(&'static str, &'static str, bool)>, apply: EventHandler<usize>) -> Element {
+fn OptionRow(
+    options: Vec<(&'static str, &'static str, bool)>,
+    apply: EventHandler<usize>,
+) -> Element {
+    nve_dioxus::render_probe::record_render("OptionRow");
     let s = use_studio_style();
     rsx! {
         view {
+            accessibility_role: "radiogroup",
             style: "width: 100%; flex-direction: row; gap: 4px;",
             for (idx, (tid, label, selected)) in options.into_iter().enumerate() {
-                Button {
+                pressable {
                     key: "{tid}",
-                    variant: ButtonVariant::Secondary,
-                    size: ButtonSize::Sm,
-                    test_id: Some(tid.into()),
-                    style: Some(segment_style(&s, selected)),
-                    on_press: move |_| apply.call(idx),
-                    "{label}"
+                    test_id: "{tid}",
+                    accessibility_role: "radio",
+                    aria_checked: if selected { "true" } else { "false" },
+                    style: "{segment_style(&s, selected)}",
+                    onpress: move |_| apply.call(idx),
+                    text { style: "color: {s.control_fg(selected)}; font-size: 11px;", "{label}" }
                 }
             }
         }
@@ -59,7 +72,10 @@ fn options<T: Copy + PartialEq>(
     choices: &[(T, &'static str, &'static str)],
     current: T,
 ) -> Vec<(&'static str, &'static str, bool)> {
-    choices.iter().map(|&(v, tid, label)| (tid, label, v == current)).collect()
+    choices
+        .iter()
+        .map(|&(v, tid, label)| (tid, label, v == current))
+        .collect()
 }
 
 /// Applies `choices[idx]` through `set`.
@@ -96,12 +112,17 @@ const ENGINES: &[(LayoutEngineMode, &str, &str)] = &[
 
 #[component]
 pub(crate) fn StudioPanel(mobile: bool) -> Element {
+    nve_dioxus::render_probe::record_render("StudioPanel");
     let store = use_studio();
     let s = use_studio_style();
     let t = s.t;
-    let config = store.studio.read().config.clone();
+    let config = store.style.read().config;
     let engine = config.layout_engine;
-    let size = if mobile { "width: 100%;" } else { "width: 210px; height: 100%;" };
+    let size = if mobile {
+        "width: 100%;"
+    } else {
+        "width: 210px; height: 100%;"
+    };
     let section = section_style(&s);
     let caption = t.text.tertiary.hex();
     let xray = config.xray;
@@ -205,13 +226,30 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
 /// Live sync / pairing + binary `NVC1` CRDT mesh telemetry.
 #[component]
 fn SyncCard() -> Element {
+    nve_dioxus::render_probe::record_render("SyncCard");
     let store = use_studio();
     let s = use_studio_style();
     let t = s.t;
     let sync = store.sync.read().telemetry.clone();
-    let peers = format!("{} {}", sync.connected_peers, if sync.connected_peers == 1 { "peer" } else { "peers" });
-    let metrics = format!("{} | {} | {}", sync.format_kbps(), sync.format_compression(), sync.format_rtt());
-    let crdt_summary = format!("NVC1 {}/{}d | {}B", sync.crdt_deltas_sent, sync.crdt_deltas_received, sync.crdt_bytes_synced);
+    let peers = format!(
+        "{} {}",
+        sync.connected_peers,
+        if sync.connected_peers == 1 {
+            "peer"
+        } else {
+            "peers"
+        }
+    );
+    let metrics = format!(
+        "{} | {} | {}",
+        sync.format_kbps(),
+        sync.format_compression(),
+        sync.format_rtt()
+    );
+    let crdt_summary = format!(
+        "NVC1 {}/{}d | {}B",
+        sync.crdt_deltas_sent, sync.crdt_deltas_received, sync.crdt_bytes_synced
+    );
     let split = sync.crdt_partitioned;
     let status_lbl = if split { "SPLIT" } else { "MESH" };
     let transport = sync.transport.label();
@@ -291,13 +329,18 @@ fn SyncCard() -> Element {
 /// Deterministic time-travel scrubber.
 #[component]
 fn TimeTravelCard() -> Element {
+    nve_dioxus::render_probe::record_render("TimeTravelCard");
     let store = use_studio();
     let s = use_studio_style();
     let t = s.t;
     let i = store.inspector.read().clone();
     let step = |enabled: bool| {
         let style = segment_style(&s, false);
-        if enabled { style } else { format!("{style} opacity: 0.4;") }
+        if enabled {
+            style
+        } else {
+            format!("{style} opacity: 0.4;")
+        }
     };
     let (undo_style, redo_style) = (step(i.can_undo), step(i.can_redo));
 

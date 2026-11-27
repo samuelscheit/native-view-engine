@@ -2,11 +2,44 @@
 //! OS appearance, the per-workspace accent override, density/radius self-edits, layout metrics
 //! derived from theme spacing, and semantic tones for issue priority/status.
 
-use nve_abi::ColorRgba;
-use nve_ui::{parse_color_rgba, Accent, AppBrand, Appearance, Radius, Spacing, Theme, ThemeConfig, Tone};
+//!
+//! Every OKLCH derivation happens at compile time: [`STUDIO_THEMES`], [`XRAY`], and the author
+//! badge tones are const tables, so render paths only index.
+
+use nve_abi::{ColorRgba, xxh64};
+use nve_ui::{Accent, AppBrand, Polarity, Radius, Spacing, Theme, Tone};
+
+/// The OS appearance [`studio_theme`] resolves against (re-exported for hosts).
+pub use nve_ui::Appearance;
 
 use crate::state::{AccentTheme, DensityMode, StudioConfig, TaskStatus};
 use crate::traits::studio_density_to_trait;
+
+/// Dense index of a polarity into the per-polarity tables (order of [`Polarity::ALL`]).
+pub const fn polarity_index(polarity: Polarity) -> usize {
+    match polarity {
+        Polarity::Light => 0,
+        Polarity::Dark => 1,
+        Polarity::HighContrastLight => 2,
+        Polarity::HighContrastDark => 3,
+    }
+}
+
+/// Studio base themes per workspace accent ([`AccentTheme::ALL`] order) × polarity.
+pub const STUDIO_THEMES: [[Theme; 4]; 4] = {
+    let mut out = [[Theme::preset(Polarity::Light, AppBrand::Studio); 4]; 4];
+    let mut a = 0;
+    while a < 4 {
+        let mut p = 0;
+        while p < 4 {
+            out[a][p] = Theme::preset(Polarity::ALL[p], AppBrand::Studio)
+                .with_accent(AccentTheme::ALL[a].accent());
+            p += 1;
+        }
+        a += 1;
+    }
+    out
+};
 
 /// X-Ray inspector hues per structural tier: fixed hues (independent of the workspace accent)
 /// so nesting stays legible, derived per polarity so they stay ≥3:1 on every surface.
@@ -17,13 +50,29 @@ pub struct XRayPalette {
     pub row: ColorRgba,
 }
 
+/// [`XRayPalette`] per polarity.
+pub const XRAY: [XRayPalette; 4] = {
+    let mut out = [XRayPalette {
+        panel: ColorRgba::TRANSPARENT,
+        card: ColorRgba::TRANSPARENT,
+        row: ColorRgba::TRANSPARENT,
+    }; 4];
+    let mut p = 0;
+    while p < 4 {
+        let polarity = Polarity::ALL[p];
+        out[p] = XRayPalette {
+            panel: Tone::derive(polarity, Accent::CYAN).text,
+            card: Tone::derive(polarity, Accent::VIOLET).text,
+            row: Tone::derive(polarity, Accent::GREEN).text,
+        };
+        p += 1;
+    }
+    out
+};
+
 impl XRayPalette {
-    pub const fn new(theme: &Theme) -> Self {
-        Self {
-            panel: Tone::derive(theme.polarity, Accent::CYAN).text,
-            card: Tone::derive(theme.polarity, Accent::VIOLET).text,
-            row: Tone::derive(theme.polarity, Accent::GREEN).text,
-        }
+    pub const fn for_theme(theme: &Theme) -> Self {
+        XRAY[polarity_index(theme.polarity)]
     }
 }
 
@@ -31,18 +80,21 @@ impl XRayPalette {
 pub const fn studio_radius(studio: &StudioConfig) -> Radius {
     let r = studio.radius.px() as f32;
     let pill = (r / 2.0).clamp(4.0, 12.0);
-    Radius { sm: r.min(4.0), md: r.min(12.0), lg: r, xl: r + 4.0, full: pill }
+    Radius {
+        sm: r.min(4.0),
+        md: r.min(12.0),
+        lg: r,
+        xl: r + 4.0,
+        full: pill,
+    }
 }
 
-/// Resolves Studio's theme: OS appearance + workspace accent + density + radius.
-pub fn studio_theme(studio: &StudioConfig, accent: AccentTheme, os: Appearance) -> Theme {
-    ThemeConfig {
-        accent: Some(accent.accent()),
-        density: studio_density_to_trait(studio.density),
-        ..ThemeConfig::new(AppBrand::Studio)
-    }
-    .resolve(os)
-    .with_radius(studio_radius(studio))
+/// Resolves Studio's theme (OS appearance + workspace accent from [`STUDIO_THEMES`], then the
+/// density and radius self-edits): a table lookup, no color math.
+pub const fn studio_theme(studio: &StudioConfig, accent: AccentTheme, os: Appearance) -> Theme {
+    STUDIO_THEMES[accent.index()][polarity_index(Polarity::new(os.scheme, os.contrast))]
+        .with_density(studio_density_to_trait(studio.density))
+        .with_radius(studio_radius(studio))
 }
 
 /// Pixel layout rhythm for Studio panes, derived from theme [`Spacing`] and [`studio_radius`].
@@ -82,7 +134,8 @@ impl LayoutMetrics {
 
 /// Flex override applied to `nve-ui` `Button`, `TabTrigger`, and `Badge` containers so their
 /// centered label spans the control without wrapping (until Track 2 ships intrinsic text sizing).
-pub const STRETCH_COL: &str = "flex-direction: column; justify-content: center; align-items: stretch;";
+pub const STRETCH_COL: &str =
+    "flex-direction: column; justify-content: center; align-items: stretch;";
 
 /// Conservative SemiBold-safe `min-width` for a compact badge label (Phase-0 estimate until
 /// Track 2 adds intrinsic text measurement).
@@ -91,27 +144,44 @@ pub fn badge_min_w(label: &str) -> u32 {
     chars.saturating_mul(6).saturating_add(16).max(24)
 }
 
-/// Neutral tone for idle/unclassified items.
-const fn neutral_tone(theme: &Theme) -> Tone {
-    Tone {
-        solid: theme.border.strong,
-        on_solid: theme.text.primary,
-        subtle: theme.surface.subtle,
-        border: theme.border.strong,
-        text: theme.text.secondary,
+/// Hues of chat author badges.
+pub const AUTHOR_ACCENTS: [Accent; 6] = [
+    Accent::CYAN,
+    Accent::VIOLET,
+    Accent::GREEN,
+    Accent::AMBER,
+    Accent::BLUE,
+    Accent::RED,
+];
+
+const AUTHOR_TONES: [[Tone; 6]; 4] = {
+    let mut out = [[Tone::derive(Polarity::Light, Accent::CYAN); 6]; 4];
+    let mut p = 0;
+    while p < 4 {
+        let mut a = 0;
+        while a < 6 {
+            out[p][a] = Tone::derive(Polarity::ALL[p], AUTHOR_ACCENTS[a]);
+            a += 1;
+        }
+        p += 1;
     }
+    out
+};
+
+/// Badge hue slot of a chat author: derived from the CRDT-synced author name itself, so every
+/// peer paints an author identically without syncing any color.
+pub const fn author_slot(author: &str) -> usize {
+    (xxh64(author.as_bytes(), 0) % AUTHOR_ACCENTS.len() as u64) as usize
 }
 
-/// Tone of a chat author's badge. The CRDT-synced `#rrggbb` author color is only a hue seed:
-/// the readable pair is re-derived for the active polarity (synced literal pairs fail HC).
-pub fn author_tone(theme: &Theme, synced_color: &str) -> Tone {
-    parse_color_rgba(synced_color)
-        .map_or_else(|| neutral_tone(theme), |c| Tone::derive(theme.polarity, Accent::from_srgb(c)))
+/// Tone of a chat author's badge in the active polarity.
+pub const fn author_tone(theme: &Theme, author: &str) -> Tone {
+    AUTHOR_TONES[polarity_index(theme.polarity)][author_slot(author)]
 }
 
 pub const fn task_status_tone(theme: &Theme, status: TaskStatus) -> Tone {
     match status {
-        TaskStatus::Todo => neutral_tone(theme),
+        TaskStatus::Todo => theme.neutral_tone(),
         TaskStatus::InProgress => theme.status.accent,
         TaskStatus::Done => theme.status.success,
     }

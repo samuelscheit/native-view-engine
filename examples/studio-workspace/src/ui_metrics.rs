@@ -14,6 +14,7 @@ use crate::ui::style::use_studio_style;
 
 #[component]
 fn KpiCard(label: &'static str, value: String, color: ColorRgba) -> Element {
+    nve_dioxus::render_probe::record_render("KpiCard");
     let s = use_studio_style();
     rsx! {
         Card {
@@ -34,6 +35,7 @@ fn KpiCard(label: &'static str, value: String, color: ColorRgba) -> Element {
 
 #[component]
 pub(crate) fn MetricsView() -> Element {
+    nve_dioxus::render_probe::record_render("MetricsView");
     let store = use_studio();
     let s = use_studio_style();
     let t = s.t;
@@ -45,9 +47,14 @@ pub(crate) fn MetricsView() -> Element {
     let sparkline = build_metrics_sparkline(
         &metrics.telemetry_samples_us,
         history_len,
-        &t.status.accent.text.hex().to_string(),
+        t.status.accent.text,
     );
-    let add_btn = s.compact_control("flex: 1; height: 28px; min-height: 28px;", 2, s.m.button_radius, Some(true));
+    let add_btn = s.compact_control(
+        "flex: 1; height: 28px; min-height: 28px;",
+        2,
+        s.m.button_radius,
+        Some(true),
+    );
     let row = s.row();
     let row_border = s.list_row_border();
     let ok_ink = t.status.success.text.hex();

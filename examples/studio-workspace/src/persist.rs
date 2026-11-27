@@ -11,8 +11,8 @@
 use std::fmt;
 
 use nve_engine::{
-    StateStoreConfig, DEFAULT_STATE_ARENA_CAPACITY, DEFAULT_STATE_ARENA_FILE,
-    DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
+    DEFAULT_STATE_ARENA_CAPACITY, DEFAULT_STATE_ARENA_FILE, DEFAULT_STATE_COMPACT_HEADROOM,
+    DEFAULT_USER_FRAME0_FILE, StateStoreConfig,
 };
 
 use crate::state::WORKSPACE_STATE_BIN_VERSION;
@@ -322,7 +322,7 @@ mod imp {
                 return Ok(WorkspaceState::default());
             };
             WorkspaceState::from_bytes(bytes)
-                .ok_or(PersistError::CorruptState("NWS1 v2 decode failed"))
+                .ok_or(PersistError::CorruptState("NWS1 v3 decode failed"))
         }
 
         /// Resets persisted state and deletes any cached `user_frame0.nvereloc`.

@@ -13,9 +13,9 @@ use nve_ui::{
     TabTrigger, TabsRoot,
 };
 
-use crate::state::{StudioConfig, SyncTelemetryState, WorkbenchPreset, HOST_SURFACES};
+use crate::state::{HOST_SURFACES, StudioConfig, SyncTelemetryState, WorkbenchPreset};
 use crate::theme::badge_min_w;
-use crate::ui::store::{use_studio, WorkbenchPreview};
+use crate::ui::store::{WorkbenchPreview, use_studio};
 use crate::ui::style::{data_attrs, use_studio_style};
 
 fn format_tenths_ms(tenths: u32) -> String {
@@ -54,19 +54,32 @@ fn PreviewFrame(
     preview: WorkbenchPreview,
     config: StudioConfig,
 ) -> Element {
+    nve_dioxus::render_probe::record_render("PreviewFrame");
     let s = use_studio_style();
     let t = s.t;
     let preview_radius = s.m.card_radius.min(14);
     let inner_pad = if s.m.card_pad <= 8 { 5 } else { 7 };
-    let metrics_line = format!("{} issues | {} docs", preview.issue_count, preview.doc_count);
-    let token_line = format!("{} | {}px | {}", config.accent.label(), config.radius.px(), config.layout_engine.label());
+    let metrics_line = format!(
+        "{} issues | {} docs",
+        preview.issue_count, preview.doc_count
+    );
+    let token_line = format!(
+        "{} | {}px | {}",
+        config.accent.label(),
+        config.radius.px(),
+        config.layout_engine.label()
+    );
     let dims_badge_style = s.compact_control(
         &format!("min-width: {}px; height: 16px;", badge_min_w(dims)),
         3,
         s.m.pill_radius,
         Some(true),
     );
-    let (base, subtle, link) = (t.surface.base.hex(), t.surface.subtle.hex(), t.text.link.hex());
+    let (base, subtle, link) = (
+        t.surface.base.hex(),
+        t.surface.subtle.hex(),
+        t.text.link.hex(),
+    );
 
     rsx! {
         Card {
@@ -123,12 +136,13 @@ fn PreviewFrame(
 
 #[component]
 pub(crate) fn WorkbenchView(is_mobile: bool) -> Element {
+    nve_dioxus::render_probe::record_render("WorkbenchView");
     let store = use_studio();
     let s = use_studio_style();
     let wb = store.workbench.read();
-    let (state, preview) = (wb.state.clone(), wb.preview.clone());
+    let (state, preview) = (wb.state.clone(), wb.preview());
     drop(wb);
-    let config = store.studio.read().config.clone();
+    let config = store.style.read().config;
     let telemetry = store.sync.read().telemetry.clone();
     let preset = state.preset;
     let show_chrome = state.show_device_chrome;
@@ -154,9 +168,30 @@ pub(crate) fn WorkbenchView(is_mobile: bool) -> Element {
     let viewport_grid_dir = if is_mobile { "column" } else { "row" };
     let host_chunk_size = if is_mobile { 1 } else { 3 };
     let frames = [
-        (preset.includes_desktop(), "wb-frame-desktop", "Desktop", "1280x800", "3-col", 3u8),
-        (preset.includes_tablet(), "wb-frame-tablet", "Tablet", "820x1180", "2-col", 2),
-        (preset.includes_mobile(), "wb-frame-mobile", "Mobile", "390x844", "1-col", 1),
+        (
+            preset.includes_desktop(),
+            "wb-frame-desktop",
+            "Desktop",
+            "1280x800",
+            "3-col",
+            3u8,
+        ),
+        (
+            preset.includes_tablet(),
+            "wb-frame-tablet",
+            "Tablet",
+            "820x1180",
+            "2-col",
+            2,
+        ),
+        (
+            preset.includes_mobile(),
+            "wb-frame-mobile",
+            "Mobile",
+            "390x844",
+            "1-col",
+            1,
+        ),
     ];
 
     rsx! {
@@ -231,7 +266,7 @@ pub(crate) fn WorkbenchView(is_mobile: bool) -> Element {
                             columns,
                             show_chrome,
                             preview: preview.clone(),
-                            config: config.clone(),
+                            config,
                         }
                     }
                 }

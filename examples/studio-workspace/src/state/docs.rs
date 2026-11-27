@@ -204,8 +204,9 @@ pub fn default_seed_docs() -> (Vec<WorkspaceDoc>, u32, u32, u32) {
             DocBlock {
                 id: 9,
                 kind: DocBlockKind::Callout,
-                text: "Target: v1.0 GA | All 9 native & web hosts passing parity and latency budgets."
-                    .into(),
+                text:
+                    "Target: v1.0 GA | All 9 native & web hosts passing parity and latency budgets."
+                        .into(),
             },
             DocBlock {
                 id: 10,
@@ -237,8 +238,9 @@ pub fn default_seed_docs() -> (Vec<WorkspaceDoc>, u32, u32, u32) {
             DocBlock {
                 id: 15,
                 kind: DocBlockKind::Code,
-                text: "RUSTFLAGS=\"-D warnings\" cargo test --workspace && ./hosts/web-shell/build.sh"
-                    .into(),
+                text:
+                    "RUSTFLAGS=\"-D warnings\" cargo test --workspace && ./hosts/web-shell/build.sh"
+                        .into(),
             },
         ],
     };
@@ -283,7 +285,8 @@ impl WorkspaceState {
             s.doc_edit_draft.clear();
         });
         if self.current.active_view == super::ActiveView::Docs {
-            self.router.push(crate::routes::StudioRoute::Doc { id: doc_id });
+            self.router
+                .push(crate::routes::StudioRoute::Doc { id: doc_id });
         }
     }
 
@@ -294,7 +297,7 @@ impl WorkspaceState {
         let title = format!("Design Spec #{doc_id:02}");
         let label = format!("New {title}");
         self.commit_action(label, |s| {
-            s.docs.push(WorkspaceDoc {
+            s.docs.make_mut().push(WorkspaceDoc {
                 id: doc_id,
                 slug: format!("spec-{doc_id}"),
                 title: title.clone(),
@@ -342,7 +345,7 @@ impl WorkspaceState {
             format!("Uncheck #{block_id} [ ]")
         };
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+            if let Some(doc) = s.docs.make_mut().iter_mut().find(|d| d.id == active_id)
                 && let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id)
             {
                 block.kind = DocBlockKind::Checklist {
@@ -367,7 +370,7 @@ impl WorkspaceState {
         };
         let label = format!("Block #{block_id} -> {}", next_kind.label());
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+            if let Some(doc) = s.docs.make_mut().iter_mut().find(|d| d.id == active_id)
                 && let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id)
             {
                 block.kind = next_kind;
@@ -403,7 +406,7 @@ impl WorkspaceState {
         let dir = if delta < 0 { "Up" } else { "Down" };
         let label = format!("Move Block #{block_id} {dir}");
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+            if let Some(doc) = s.docs.make_mut().iter_mut().find(|d| d.id == active_id)
                 && idx < doc.blocks.len()
                 && target < doc.blocks.len()
             {
@@ -426,7 +429,7 @@ impl WorkspaceState {
         }
         let label = format!("Delete Block #{block_id}");
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id) {
+            if let Some(doc) = s.docs.make_mut().iter_mut().find(|d| d.id == active_id) {
                 doc.blocks.retain(|b| b.id != block_id);
             }
             if s.doc_editing_block_id == Some(block_id) {
@@ -450,7 +453,7 @@ impl WorkspaceState {
         let owned = trimmed.to_owned();
         let label = format!("Add {} Block", kind.label());
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id) {
+            if let Some(doc) = s.docs.make_mut().iter_mut().find(|d| d.id == active_id) {
                 doc.blocks.push(DocBlock {
                     id: block_id,
                     kind,
@@ -552,7 +555,7 @@ impl WorkspaceState {
         }
         let label = format!("Edit Block #{block_id}");
         self.commit_action(label, |s| {
-            if let Some(doc) = s.docs.iter_mut().find(|d| d.id == active_id)
+            if let Some(doc) = s.docs.make_mut().iter_mut().find(|d| d.id == active_id)
                 && let Some(block) = doc.blocks.iter_mut().find(|b| b.id == block_id)
             {
                 block.text = trimmed.clone();

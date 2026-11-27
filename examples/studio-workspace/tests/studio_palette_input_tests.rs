@@ -2,19 +2,19 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{find_in_store, register_studio_tables, MultiBackendHarness};
+use common::{MultiBackendHarness, find_in_store, register_studio_tables};
 use nve_abi::{
-    pack_key_modifiers, NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveValue, ROOT_NODE_ID,
+    NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef, NveSizeConstraints, NveValue,
+    ROOT_NODE_ID, pack_key_modifiers,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_interop::{NvePluginHost, PluginRequirement};
 use nve_studio_workspace::{
-    fuzzy_score, AccentTheme, ActiveView, LayoutEngineMode, StudioWorkspaceModule,
-    MOBILE_BREAKPOINT_PT,
+    AccentTheme, ActiveView, LayoutEngineMode, MOBILE_BREAKPOINT_PT, StudioWorkspaceModule,
+    fuzzy_score,
 };
-use nve_wire::{NveWireFrame, NveWireFrameRef, NveWireKind, DEFAULT_MAX_WIRE_FRAME_BYTES};
+use nve_wire::{DEFAULT_MAX_WIRE_FRAME_BYTES, NveWireFrame, NveWireFrameRef, NveWireKind};
 
 #[test]
 fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing_center() {
@@ -87,15 +87,23 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
     h.press("btn-toggle-studio");
     assert!(h.find_by_test_id("studio-panel").is_none());
 
-    let mut app = StudioWorkspaceModule::create(1);
-    let _ = app.render(1);
+    register_studio_tables();
+    let mut app = common::headless_module(1);
+    let first_frame = app.render(1).to_vec();
     assert!(!app.state_snapshot().is_mobile_portrait());
 
-    let resize_mobile = [NveDirectEvent::layout(1, ROOT_NODE_ID, 1000, 0.0, 0.0, 393.0, 852.0)];
+    let resize_mobile = [NveDirectEvent::layout(
+        1,
+        ROOT_NODE_ID,
+        1000,
+        0.0,
+        0.0,
+        393.0,
+        852.0,
+    )];
     // SAFETY: `resize_mobile` outlives the synchronous `dispatch_events` call.
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&resize_mobile) }));
     assert!(app.state_snapshot().is_mobile_portrait());
-    register_studio_tables();
     let mobile_frame = app.render(2).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
@@ -107,8 +115,13 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
         },
     );
     let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
-    rep.submit_nve2_frame(&mobile_frame).unwrap();
-    assert!(rep.backend().render_ascii_tree(rep.store()).contains("Studio OFF"));
+    rep.submit_nve2_frame(&first_frame).expect("frame 1");
+    rep.submit_nve2_frame(&mobile_frame).expect("frame 2");
+    assert!(
+        rep.backend()
+            .render_ascii_tree(rep.store())
+            .contains("Studio OFF")
+    );
 
     let measured_mobile = app.measure(NveSizeConstraints {
         min_w: 0.0,
@@ -123,7 +136,7 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
 fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     let h = MultiBackendHarness::new(960.0, 640.0);
 
-    let mut snap_app = StudioWorkspaceModule::create(1);
+    let mut snap_app = common::headless_module(1);
     let f1 = snap_app.render(1).to_vec();
     let p1 = NveWireFrame::new(NveWireKind::CommandDelta, 1, f1.clone())
         .encode()
@@ -198,7 +211,11 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
 
     let mut plugin_host = NvePluginHost::with_surface_base(50_000);
     let pid = plugin_host
-        .load_dynamic("aether-studio", &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
+        .load_dynamic(
+            "aether-studio",
+            &dylib_path,
+            PluginRequirement::EMBEDDED_COMPONENT,
+        )
         .expect("load studio cdylib as plugin");
     let slot = plugin_host.get_mut(pid).unwrap();
     assert_eq!(slot.surface_id(), 50_000);
@@ -234,8 +251,10 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
             scale_factor: 1.0,
         },
     );
-    let mut verify_rep =
-        StoreWireReplica::new(verify_host, nve_components::tables::core_realization_order());
+    let mut verify_rep = StoreWireReplica::new(
+        verify_host,
+        nve_components::tables::core_realization_order(),
+    );
     verify_rep.submit_nve2_frame(&pf2).unwrap();
     let tree = verify_rep.backend().render_ascii_tree(verify_rep.store());
     assert!(tree.contains("100k Stream"));
@@ -259,7 +278,7 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
         scale_factor: 1.0,
     };
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = common::headless_module(1);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(1, vp);
     let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
@@ -295,19 +314,26 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
                    tid: &str,
                    text: &str,
                    fid: u64| {
-        let nid = find_in_store(host.store(), tid)
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let nid =
+            find_in_store(host.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let ev = [NveDirectEvent::text_change(1, nid, fid * 16_000, text)];
         // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
         let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
-        assert!(app.dispatch_events(batch), "text change on '{tid}' not handled");
+        assert!(
+            app.dispatch_events(batch),
+            "text change on '{tid}' not handled"
+        );
         let frame = app.render(fid).to_vec();
         host.submit_nve2_frame(&frame).unwrap();
     };
 
     send_keydown(&mut app, &mut host, "k", true, false, 2);
     assert!(app.state_snapshot().palette.open);
-    assert!(host.backend().render_ascii_tree(host.store()).contains("CMD+K PALETTE"));
+    assert!(
+        host.backend()
+            .render_ascii_tree(host.store())
+            .contains("CMD+K PALETTE")
+    );
 
     send_keydown(&mut app, &mut host, "Escape", false, false, 3);
     assert!(!app.state_snapshot().palette.open);
@@ -343,7 +369,10 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
     send_keydown(&mut app, &mut host, "k", true, false, 13);
     type_in(&mut app, &mut host, "palette-input", "isld", 14);
     send_keydown(&mut app, &mut host, "Enter", false, false, 15);
-    assert_eq!(app.state_snapshot().current.active_view, ActiveView::Islands);
+    assert_eq!(
+        app.state_snapshot().current.active_view,
+        ActiveView::Islands
+    );
 
     let mut h = MultiBackendHarness::new(960.0, 640.0);
     h.press("accent-amber");
@@ -387,12 +416,18 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     assert!(h.ascii().contains("Binary NVE_DRAW1 sparkline is live!"));
 
     h.press("nav-design");
-    h.type_text("chat-composer-input", "PNG avatars + Cmd+K contrast look crisp.");
+    h.type_text(
+        "chat-composer-input",
+        "PNG avatars + Cmd+K contrast look crisp.",
+    );
     h.press("chat-composer-send");
-    assert!(h.ascii().contains("PNG avatars + Cmd+K contrast look crisp."));
+    assert!(
+        h.ascii()
+            .contains("PNG avatars + Cmd+K contrast look crisp.")
+    );
 
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = common::headless_module(1);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
         1,
@@ -444,19 +479,21 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     let _ = app.render(6);
 
     let saved = app.snapshot_state().to_vec();
-    let mut restored = StudioWorkspaceModule::create(1);
+    let mut restored = common::headless_module(1);
     restored.restore_state(&saved);
     let snap = restored.state_snapshot();
-    assert!(snap
-        .current
-        .tasks
-        .iter()
-        .any(|t| t.title == "Persist across hot-swap"));
-    assert!(snap
-        .current
-        .eng_messages
-        .iter()
-        .any(|m| m.body == "Live typed message survives reload"));
+    assert!(
+        snap.current
+            .tasks
+            .iter()
+            .any(|t| t.title == "Persist across hot-swap")
+    );
+    assert!(
+        snap.current
+            .eng_messages
+            .iter()
+            .any(|m| m.body == "Live typed message survives reload")
+    );
 }
 
 #[test]

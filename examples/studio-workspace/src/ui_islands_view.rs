@@ -2,7 +2,9 @@
 //! `Separator`), separated from `ui_islands.rs` runtime logic. Subscribes to the `islands` domain.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator};
+use nve_ui::{
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator,
+};
 
 use crate::theme::badge_min_w;
 use crate::ui::store::use_studio;
@@ -11,6 +13,7 @@ use crate::ui_islands::GestureSimMode;
 
 #[component]
 pub(crate) fn IslandsView() -> Element {
+    nve_dioxus::render_probe::record_render("IslandsView");
     let store = use_studio();
     let s = use_studio_style();
     let t = s.t;
@@ -23,12 +26,21 @@ pub(crate) fn IslandsView() -> Element {
         islands.bus_total_deliveries,
         islands.last_gesture_disposition
     );
-    let winner = islands.last_gesture_winner.map_or_else(|| "None".to_owned(), |id| format!("Surface #{id}"));
+    let winner = islands
+        .last_gesture_winner
+        .map_or_else(|| "None".to_owned(), |id| format!("Surface #{id}"));
     let gesture_detail = format!(
         "{} | winner: {winner} | cancelled: {} | {}",
-        islands.last_gesture_disposition, islands.last_gesture_cancelled_count, islands.last_gesture_reason
+        islands.last_gesture_disposition,
+        islands.last_gesture_cancelled_count,
+        islands.last_gesture_reason
     );
-    let bus_btn = s.compact_control("flex: 1; height: 26px; min-height: 26px;", 4, s.m.button_radius, Some(true));
+    let bus_btn = s.compact_control(
+        "flex: 1; height: 26px; min-height: 26px;",
+        4,
+        s.m.button_radius,
+        Some(true),
+    );
     let row = s.row();
     let card = s.card();
 

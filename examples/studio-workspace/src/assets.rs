@@ -3,7 +3,6 @@
 
 use nve_abi::ColorRgba;
 use nve_canvas::DrawList;
-use nve_components::parse_color;
 
 /// Valid 8x8 RGBA PNG data-URI avatar for `@maya` (cyan ring/core).
 pub const AVATAR_MAYA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
@@ -47,14 +46,14 @@ pub fn avatar_for_author(author: &str) -> &'static str {
 }
 
 /// Builds a live zero-serialization [`DrawList`] (`Arc<[CanvasOp]>`) plotting recorded
-/// frame/mutation timings and snapshot history depth for the `Metrics` view `SkiaCanvas`. The
-/// plot is transparent so the hosting view's themed well shows through in every polarity.
+/// frame/mutation timings and snapshot history depth for the `Metrics` view `SkiaCanvas`, drawn
+/// with the theme `stroke` (an indicator color). The plot is transparent so the hosting view's
+/// themed well shows through in every polarity.
 pub fn build_metrics_sparkline(
     samples_us: &[u32],
     history_len: usize,
-    accent_hex: &str,
+    stroke: ColorRgba,
 ) -> DrawList {
-    let stroke = parse_color(accent_hex).unwrap_or(ColorRgba::rgb(56, 189, 248));
     let bg = ColorRgba::TRANSPARENT;
 
     let mut plot_points: Vec<f32> = samples_us.iter().map(|&v| v as f32).collect();

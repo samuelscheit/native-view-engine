@@ -285,7 +285,9 @@ impl WebAppSession {
         viewport: Viewport,
         state_bytes: Option<&[u8]>,
     ) -> (Self, bool) {
-        let mut module = StudioWorkspaceModule::create(surface_id);
+        // The browser reports its appearance through host events; until then the Studio defaults.
+        let services = std::sync::Arc::new(nve_studio_workspace::StudioHostServices::new());
+        let mut module = StudioWorkspaceModule::with_services(surface_id, services);
         let restored = state_bytes.is_some_and(|bytes| module.try_restore_state(bytes));
         dispatch_studio_viewport_layout(surface_id, &mut module, viewport);
         (

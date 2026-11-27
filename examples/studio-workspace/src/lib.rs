@@ -6,6 +6,7 @@
 //! `nve_engine::export_nve_app!` with zero `unsafe`, full Tier-1 hot-patching, and Tier-2 `cdylib`
 //! hot-swap state preservation (preserving every task, message, theme, X-Ray setting, `<Island>`
 //! sandbox state, Live Sync telemetry, and deterministic time-travel snapshot).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod assets;
 pub mod persist;
@@ -41,8 +42,8 @@ use std::sync::{Arc, Mutex};
 
 use nve_abi::{
     FrameId, NativeEventKind, NveDirectEvent, NveEventBatchRef, NveGestureDisposition,
-    NveHostCallbacks, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, NveValue, SurfaceId,
-    ROOT_NODE_ID,
+    NveHostCallbacks, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, NveValue, ROOT_NODE_ID,
+    SurfaceId,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -50,33 +51,34 @@ use nve_system_env::{SystemEnvEvent, ThemeSnapshot};
 
 pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use persist::{
-    PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, WorkspaceStore,
-    DEFAULT_COMPACT_INTERVAL, STATE_ARENA_FILE_NAME, STUDIO_PERSIST_ENV_VAR,
-    STUDIO_SNAPSHOT_SCHEMA_VERSION, USER_FRAME0_FILE_NAME,
+    DEFAULT_COMPACT_INTERVAL, PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats,
+    STATE_ARENA_FILE_NAME, STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION,
+    USER_FRAME0_FILE_NAME, WorkspaceStore,
 };
 pub use routes::{
-    StudioRoute, StudioRouter, STUDIO_DEEP_LINK_HOST, STUDIO_DEEP_LINK_SCHEME,
-    STUDIO_UNIVERSAL_LINK_HOST,
+    STUDIO_DEEP_LINK_HOST, STUDIO_DEEP_LINK_SCHEME, STUDIO_UNIVERSAL_LINK_HOST, StudioRoute,
+    StudioRouter,
 };
 pub use sdk::{HostEventSyncReport, StudioHostServices, StudioSystemEnv};
 pub use state::{
-    default_seed_docs, version_vector_has_unseen_ops, AccentTheme, ActiveView, BoardFilter,
-    ChannelKind, ChatMessage, CornerRadiusMode, CrdtMergeSummary, CrdtPeerNode, CrdtPeerTransport,
-    CrdtPumpReport, CrdtSyncMetrics, CrdtTransportError, CrdtWireFrame, DensityMode, DocBlock,
-    DocBlockKind, HostSurfaceSpec, InMemoryMeshHub, InMemoryMeshTransport, LayoutEngineMode,
-    MeshFaultConfig, Priority, Stream100kState, StudioConfig, StudioCrdtDoc, SyncTelemetryState,
-    SyncTransportMode, TaskItem, TaskStatus, WorkbenchPreset, WorkbenchState, WorkspaceDoc,
-    WorkspaceSnapshot, WorkspaceState, CRDT_DIGEST_MAGIC, CRDT_DIGEST_MIN_LEN,
-    CRDT_DIGEST_VERSION, HOST_SURFACES, MAX_HISTORY, MAX_TELEMETRY_SAMPLES, MOBILE_BREAKPOINT_PT,
-    TOPIC_CRDT_NVC1, WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION,
+    AccentTheme, ActiveView, BoardFilter, CRDT_DIGEST_MAGIC, CRDT_DIGEST_MIN_LEN,
+    CRDT_DIGEST_VERSION, ChannelKind, ChatMessage, CornerRadiusMode, CrdtMergeSummary,
+    CrdtPeerNode, CrdtPeerTransport, CrdtPumpReport, CrdtSyncMetrics, CrdtTransportError,
+    CrdtWireFrame, DensityMode, DocBlock, DocBlockKind, HOST_SURFACES, HostSurfaceSpec,
+    InMemoryMeshHub, InMemoryMeshTransport, LayoutEngineMode, MAX_HISTORY, MAX_TELEMETRY_SAMPLES,
+    MOBILE_BREAKPOINT_PT, MeshFaultConfig, Priority, Stream100kState, StudioConfig, StudioCrdtDoc,
+    SyncTelemetryState, SyncTransportMode, TOPIC_CRDT_NVC1, TaskItem, TaskStatus,
+    WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION, WorkbenchPreset, WorkbenchState,
+    WorkspaceDoc, WorkspaceSnapshot, WorkspaceState, default_seed_docs,
+    version_vector_has_unseen_ops,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use state::{LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport};
 pub use traits::{
-    apply_studio_traits, build_studio_trait_store, resolve_studio_layout,
+    ResolvedStudioLayout, StudioAccentTrait, StudioCompactModeTrait, StudioTraitBox,
+    StudioTraitPreviewChip, apply_studio_traits, build_studio_trait_store, resolve_studio_layout,
     sdk_color_scheme_to_trait, sdk_locale_to_trait, studio_accent_override,
-    studio_compact_override, studio_density_to_trait, ResolvedStudioLayout, StudioAccentTrait,
-    StudioCompactModeTrait, StudioTraitBox, StudioTraitPreviewChip,
+    studio_compact_override, studio_density_to_trait,
 };
 pub use ui::StudioWorkspaceApp;
 pub use ui_islands::{
@@ -84,15 +86,15 @@ pub use ui_islands::{
     TOPIC_WORKSPACE_SYNC,
 };
 pub use ui_palette::{
-    build_palette_items, dispatch_keydown, filter_palette_items, fuzzy_score,
     CommandPaletteAction, CommandPaletteItem, CommandPaletteState, KeyDownEvent,
+    build_palette_items, dispatch_keydown, filter_palette_items, fuzzy_score,
 };
 pub use virtual_list::{
-    stream_row_heights, uniform_row_height, RowHeights, StreamVirtualEngine, VirtualRowMeta,
-    VirtualSlice, DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT,
+    DEFAULT_OVERSCAN, DEFAULT_STREAM_ROW_COUNT, RowHeights, StreamVirtualEngine, VirtualRowMeta,
+    VirtualSlice, stream_row_heights, uniform_row_height,
 };
 
-use props::{apply_prop_updates, PropUpdates};
+use props::{PropUpdates, apply_prop_updates};
 
 /// Creates a standalone `DioxusSurface` initialized with default `WorkspaceState`.
 pub fn create_surface(surface_id: SurfaceId) -> DioxusSurface {
@@ -164,21 +166,41 @@ impl StudioWorkspaceModule {
         config: PersistConfig,
     ) -> Result<Self, PersistError> {
         let persist = WorkspaceStore::open_with_config(dir, config)?;
-        let initial = persist.initial_state().clone();
-        let initial_frame_count = initial.frame_count;
-        let layout_engine = initial.current.studio.layout_engine;
-        Ok(Self {
+        Ok(Self::assemble(
             surface_id,
+            Arc::new(StudioHostServices::native()),
+            Some(persist),
+        ))
+    }
+
+    /// A module over `host_services` (e.g. [`StudioHostServices::new`] for deterministic headless
+    /// runs), persisting where [`STUDIO_PERSIST_ENV_VAR`] points when it is set.
+    pub fn with_services(surface_id: SurfaceId, host_services: Arc<StudioHostServices>) -> Self {
+        let persist_store = WorkspaceStore::open_from_env().and_then(Result::ok);
+        Self::assemble(surface_id, host_services, persist_store)
+    }
+
+    fn assemble(
+        surface_id: SurfaceId,
+        host_services: Arc<StudioHostServices>,
+        persist_store: Option<WorkspaceStore>,
+    ) -> Self {
+        let initial = persist_store
+            .as_ref()
+            .map(|p| p.initial_state().clone())
+            .unwrap_or_default();
+        Self {
+            surface_id,
+            last_reported_layout_engine: initial.current.studio.layout_engine,
+            last_persisted_frame_count: initial.frame_count,
             store: Arc::new(Mutex::new(initial)),
-            host_services: Arc::new(StudioHostServices::new()),
+            host_services,
             surface: create_surface(surface_id),
             mounted: false,
-            last_reported_layout_engine: layout_engine,
             last_state_buf: Vec::new(),
             last_emitted_events: Vec::new(),
-            persist_store: Some(persist),
-            last_persisted_frame_count: initial_frame_count,
-        })
+            persist_store,
+        }
     }
 
     /// Returns the dual-mode host service handle (`FfiHostServices` + `MemoryHostServices`).
@@ -194,7 +216,9 @@ impl StudioWorkspaceModule {
         self.persist_store.as_ref()?;
         let snapshot = self.state_snapshot();
         self.last_persisted_frame_count = snapshot.frame_count;
-        self.persist_store.as_mut().map(|store| store.save(&snapshot))
+        self.persist_store
+            .as_mut()
+            .map(|store| store.save(&snapshot))
     }
 
     fn persist_if_dirty(&mut self) {
@@ -210,9 +234,19 @@ impl StudioWorkspaceModule {
         }
     }
 
-    fn reset_surface_with_current_store(&mut self) {
-        self.surface = create_surface(self.surface_id);
-        self.mounted = false;
+    /// Mutates the authoritative state. Once the surface is mounted this goes through its
+    /// [`ui::store::StudioStore`], which republishes only the changed domains, so host events,
+    /// props, and theme changes re-render just their subscribers and never rebuild the surface.
+    fn update_state<R>(&mut self, f: impl FnOnce(&mut WorkspaceState) -> R) -> R {
+        if self.mounted
+            && let Some(store) = self
+                .surface
+                .in_root_scope(ui::store::StudioStore::from_root)
+        {
+            return self.surface.in_root_scope(|| store.update(f));
+        }
+        let mut guard = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        f(&mut guard)
     }
 
     /// Direct zero-serialization access to the underlying [`DioxusSurface`].
@@ -268,64 +302,37 @@ impl StudioWorkspaceModule {
     }
 
     fn apply_env_report(&mut self, report: HostEventSyncReport) -> bool {
-        if report.env_changed() {
-            let changed = self
-                .store
-                .lock()
-                .map(|mut guard| {
-                    let mut next = guard.system_env.clone();
-                    if let Some(theme) = report.updated_theme {
-                        next.theme = theme;
-                    }
-                    if let Some(locale) = report.updated_locale {
-                        next.locale = locale;
-                    }
-                    guard.apply_system_env(next)
-                })
-                .unwrap_or(false);
-            if changed {
-                self.reset_surface_with_current_store();
-                return true;
-            }
-        }
-        report.processed_events > 0
+        let changed = report.env_changed()
+            && self.update_state(|state| {
+                let mut next = state.system_env.clone();
+                if let Some(theme) = report.updated_theme {
+                    next.theme = theme;
+                }
+                if let Some(locale) = report.updated_locale {
+                    next.locale = locale;
+                }
+                state.apply_system_env(next)
+            });
+        changed || report.processed_events > 0
     }
 
-    /// Restores workspace state from binary `NWS1` bytes; returns `false` if corrupt or version-mismatched.
+    /// Restores workspace state from binary `NWS1` bytes; returns `false` if corrupt or
+    /// version-mismatched. The whole state is replaced, so the surface remounts from it.
     pub fn try_restore_state(&mut self, state: &[u8]) -> bool {
         let Some(restored) = WorkspaceState::from_bytes(state) else {
             return false;
         };
-        if let Ok(mut guard) = self.store.lock() {
-            *guard = restored;
-        }
-        self.reset_surface_with_current_store();
+        *self.store.lock().unwrap_or_else(|e| e.into_inner()) = restored;
+        self.surface = create_surface(self.surface_id);
+        self.mounted = false;
         true
     }
 }
 
 impl NveApp for StudioWorkspaceModule {
+    /// The native entry point: seeded from the OS appearance and locale until a host binds.
     fn create(surface_id: SurfaceId) -> Self {
-        let persist_store = WorkspaceStore::open_from_env().and_then(Result::ok);
-        let initial = persist_store
-            .as_ref()
-            .map(|p| p.initial_state().clone())
-            .unwrap_or_default();
-        let initial_frame_count = initial.frame_count;
-        let layout_engine = initial.current.studio.layout_engine;
-        let store = Arc::new(Mutex::new(initial));
-        Self {
-            surface_id,
-            store,
-            host_services: Arc::new(StudioHostServices::new()),
-            surface: create_surface(surface_id),
-            mounted: false,
-            last_reported_layout_engine: layout_engine,
-            last_state_buf: Vec::new(),
-            last_emitted_events: Vec::new(),
-            persist_store,
-            last_persisted_frame_count: initial_frame_count,
-        }
+        Self::with_services(surface_id, Arc::new(StudioHostServices::native()))
     }
 
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
@@ -345,75 +352,38 @@ impl NveApp for StudioWorkspaceModule {
     fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
         let mut handled_host_event = false;
         for ev in events.iter() {
-            match (ev.kind(), ev.payload_tag()) {
+            handled_host_event |= match (ev.kind(), ev.payload_tag()) {
                 (Some(NativeEventKind::Layout), 4)
                     if ev.node_id() == ROOT_NODE_ID && ev.width() > 0.0 =>
                 {
-                    if let Ok(mut guard) = self.store.lock() {
-                        let prev_stream_h = guard.current.stream.viewport_height;
-                        let mask = guard.update_viewport_with_mask(ev.width(), ev.height());
-                        let stream_h_changed = guard.current.active_view == ActiveView::Stream100k
-                            && guard.current.stream.viewport_height != prev_stream_h;
-                        if mask.any_breakpoint_changed() || stream_h_changed {
-                            handled_host_event = true;
-                        }
-                    }
+                    self.update_state(|state| {
+                        let prev_stream_h = state.current.stream.viewport_height;
+                        let mask = state.update_viewport_with_mask(ev.width(), ev.height());
+                        mask.any_breakpoint_changed()
+                            || (state.current.active_view == ActiveView::Stream100k
+                                && state.current.stream.viewport_height != prev_stream_h)
+                    })
                 }
-                (Some(NativeEventKind::Scroll), 2) => {
-                    if let Ok(mut guard) = self.store.lock()
-                        && guard.current.active_view == ActiveView::Stream100k
-                    {
+                (Some(NativeEventKind::Scroll), 2) => self.update_state(|state| {
+                    let streaming = state.current.active_view == ActiveView::Stream100k;
+                    if streaming {
                         let y = ev.y();
-                        let target_y = if y.is_finite() && y >= 0.0 {
+                        state.set_stream_scroll_offset(if y.is_finite() && y >= 0.0 {
                             y as u32
                         } else {
                             0
-                        };
-                        guard.set_stream_scroll_offset(target_y);
-                        handled_host_event = true;
+                        });
                     }
+                    streaming
+                }),
+                (Some(NativeEventKind::KeyDown), 6) if !ev.key().is_empty() => {
+                    self.update_state(|state| {
+                        dispatch_keydown(state, ev.key(), ev.has_primary_modifier())
+                    })
                 }
-                (Some(NativeEventKind::KeyDown), 6) => {
-                    if !ev.key().is_empty()
-                        && let Ok(mut guard) = self.store.lock()
-                        && dispatch_keydown(&mut guard, ev.key(), ev.has_primary_modifier())
-                    {
-                        handled_host_event = true;
-                    }
-                }
-                (Some(NativeEventKind::Submit), 0 | 3) => {
-                    if let Ok(mut guard) = self.store.lock() {
-                        let submitted = if guard.palette.open {
-                            guard.execute_palette_selected()
-                        } else {
-                            match guard.current.active_view {
-                                ActiveView::Board => guard.submit_new_task_draft(),
-                                ActiveView::ChannelEngineering => {
-                                    guard.submit_channel_draft(ChannelKind::Engineering)
-                                }
-                                ActiveView::ChannelDesign => {
-                                    guard.submit_channel_draft(ChannelKind::Design)
-                                }
-                                ActiveView::Docs => {
-                                    if guard.current.doc_editing_block_id.is_some() {
-                                        guard.commit_doc_block_edit()
-                                    } else {
-                                        guard.submit_new_doc_block_draft()
-                                    }
-                                }
-                                _ => false,
-                            }
-                        };
-                        if submitted {
-                            handled_host_event = true;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if handled_host_event {
-            self.reset_surface_with_current_store();
+                (Some(NativeEventKind::Submit), 0 | 3) => self.update_state(submit_active_composer),
+                _ => false,
+            };
         }
         let handled_ui = self.surface.dispatch_direct_events(events);
         if handled_host_event || handled_ui {
@@ -480,13 +450,8 @@ impl NveApp for StudioWorkspaceModule {
             sync_compression: props.get("syncCompression").and_then(|v| v.as_number()),
             sync_rtt_ms: props.get("syncRttMs").and_then(|v| v.as_number()),
         };
-        let changed = self
-            .store
-            .lock()
-            .map(|mut guard| apply_prop_updates(&mut guard, upd))
-            .unwrap_or(false);
+        let changed = self.update_state(|state| apply_prop_updates(state, upd));
         if changed {
-            self.reset_surface_with_current_store();
             self.persist_if_dirty();
         }
         changed
@@ -517,11 +482,7 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn snapshot_state(&mut self) -> &[u8] {
-        self.last_state_buf = self
-            .store
-            .lock()
-            .map(|g| g.to_bytes())
-            .unwrap_or_default();
+        self.last_state_buf = self.store.lock().map(|g| g.to_bytes()).unwrap_or_default();
         &self.last_state_buf
     }
 
@@ -531,14 +492,8 @@ impl NveApp for StudioWorkspaceModule {
 
     fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
         self.host_services.bind_host(callbacks);
-        let synced = self
-            .store
-            .lock()
-            .map(|mut guard| guard.sync_system_env(&self.host_services))
-            .unwrap_or(false);
-        if synced {
-            self.reset_surface_with_current_store();
-        }
+        let services = Arc::clone(&self.host_services);
+        self.update_state(|state| state.sync_system_env(&services));
     }
 
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
@@ -547,6 +502,24 @@ impl NveApp for StudioWorkspaceModule {
         }
         let report = self.host_services.drain_system_env_events();
         self.apply_env_report(report)
+    }
+}
+
+/// Host `Submit` (Return key): runs the open palette's selection, else submits the active view's
+/// composer. Returns `true` when something was submitted.
+fn submit_active_composer(state: &mut WorkspaceState) -> bool {
+    if state.palette.open {
+        return state.execute_palette_selected();
+    }
+    match state.current.active_view {
+        ActiveView::Board => state.submit_new_task_draft(),
+        ActiveView::ChannelEngineering => state.submit_channel_draft(ChannelKind::Engineering),
+        ActiveView::ChannelDesign => state.submit_channel_draft(ChannelKind::Design),
+        ActiveView::Docs if state.current.doc_editing_block_id.is_some() => {
+            state.commit_doc_block_edit()
+        }
+        ActiveView::Docs => state.submit_new_doc_block_draft(),
+        _ => false,
     }
 }
 

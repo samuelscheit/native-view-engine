@@ -5,7 +5,7 @@
 //!    breakpoint-only `update_viewport` with zero churn on 1px desktop drags),
 //! 3. `nve-host-services` + `nve-clipboard` + `nve-system-env` (`ClipboardClient` Markdown &
 //!    deep-link copy + `SystemEnvClient` theme & locale sync over both direct zero-serialization
-//!    `MemoryHostServices` fallback and live `NVE_IFACE_HOST = 5` FFI).
+//!    `MemoryHostServices` fallback (live `NVE_IFACE_HOST = 5` FFI: `studio_host_env_tests`).
 
 use std::sync::{Arc, Mutex};
 
@@ -19,24 +19,20 @@ use nve_abi::{
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_components::tables::DebugId;
+use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
 use nve_dioxus::traits::{ReactiveTraitStore, TraitProvider, TraitScope};
-use nve_dioxus::DioxusSurface;
 use nve_engine::{NveApp, StoreBackend, StoreWireReplica, Viewport};
-use nve_host_services::{HostCallbackBridge, MemoryHostServices};
-use nve_interop::traits::{
-    ColorScheme, HighContrast, Locale, ReducedMotion, SizeClass, TraitStore, UiDensity,
-};
+use nve_host_services::MemoryHostServices;
+use nve_interop::traits::{ColorScheme, Locale, SizeClass, TraitStore, UiDensity};
 use nve_router::Routable;
 use nve_studio_workspace::theme::LayoutMetrics;
 use nve_studio_workspace::{
-    create_surface_with_services, resolve_studio_layout, studio_accent_override, AccentTheme,
-    ActiveView, DensityMode, StudioAccentTrait, StudioCompactModeTrait, StudioHostServices,
-    StudioRoute, StudioTraitPreviewChip, StudioWorkspaceModule, WorkspaceState,
+    AccentTheme, ActiveView, DensityMode, StudioAccentTrait, StudioCompactModeTrait,
+    StudioHostServices, StudioRoute, StudioTraitPreviewChip, StudioWorkspaceModule, WorkspaceState,
+    create_surface_with_services, resolve_studio_layout, studio_accent_override,
 };
-use nve_system_env::{
-    ContrastLevel, LocaleSnapshot, MemorySystemEnv, SystemEnvEvent, TextDirection, ThemeSnapshot,
-};
+use nve_system_env::{LocaleSnapshot, MemorySystemEnv, ThemeSnapshot};
 
 struct StudioHarness {
     surface: DioxusSurface,
@@ -187,7 +183,10 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
         assert_eq!(parsed.active_view(), expected_view);
 
         let deep_link = parsed.deep_link_uri();
-        assert_eq!(StudioRoute::parse_deep_link(&deep_link), Some(parsed.clone()));
+        assert_eq!(
+            StudioRoute::parse_deep_link(&deep_link),
+            Some(parsed.clone())
+        );
 
         let universal = format!("https://studio.nve.dev{path}");
         assert_eq!(StudioRoute::parse_deep_link(&universal), Some(parsed));
@@ -210,45 +209,87 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
 
     // 2. Live UI navigation pushes history entries and Back/Forward stays synchronized with ActiveView.
     let mut h = StudioHarness::new(1280.0, 800.0);
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/board"));
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/board")
+    );
     h.assert_no_horizontal_overflow("route-board-1280");
 
     // Click task key to open typed `/task/2` route.
     h.press("task-open-2");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/task/2"));
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/task/2")
+    );
     assert_eq!(h.store.lock().unwrap().focused_task_id, Some(2));
 
     // Navigate to Docs -> switch to Doc #2 (`/doc/2`) -> jump to Metrics (`/metrics`).
     h.press("nav-docs");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/docs"));
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/docs")
+    );
     h.press("doc-tab-2");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/doc/2"));
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/doc/2")
+    );
     assert_eq!(h.store.lock().unwrap().current.active_doc_id, 2);
 
     h.press("nav-metrics");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/metrics"));
-    assert_eq!(h.store.lock().unwrap().current.active_view, ActiveView::Metrics);
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/metrics")
+    );
+    assert_eq!(
+        h.store.lock().unwrap().current.active_view,
+        ActiveView::Metrics
+    );
 
     // Walk Back through `/doc/2` -> `/docs` -> `/task/2` -> `/board`.
     h.press("nav-back");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/doc/2"));
-    assert_eq!(h.store.lock().unwrap().current.active_view, ActiveView::Docs);
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/doc/2")
+    );
+    assert_eq!(
+        h.store.lock().unwrap().current.active_view,
+        ActiveView::Docs
+    );
     assert_eq!(h.store.lock().unwrap().current.active_doc_id, 2);
 
     h.press("nav-back");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/docs"));
-    assert_eq!(h.store.lock().unwrap().current.active_view, ActiveView::Docs);
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/docs")
+    );
+    assert_eq!(
+        h.store.lock().unwrap().current.active_view,
+        ActiveView::Docs
+    );
 
     h.press("nav-back");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/task/2"));
-    assert_eq!(h.store.lock().unwrap().current.active_view, ActiveView::Board);
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/task/2")
+    );
+    assert_eq!(
+        h.store.lock().unwrap().current.active_view,
+        ActiveView::Board
+    );
     assert_eq!(h.store.lock().unwrap().focused_task_id, Some(2));
 
     // Walk Forward back to `/docs` -> `/doc/2`.
     h.press("nav-forward");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/docs"));
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/docs")
+    );
     h.press("nav-forward");
-    assert_eq!(h.prop_str("workspace-root", "active-route").as_deref(), Some("/doc/2"));
+    assert_eq!(
+        h.prop_str("workspace-root", "active-route").as_deref(),
+        Some("/doc/2")
+    );
     assert_eq!(h.store.lock().unwrap().current.active_doc_id, 2);
 
     // 3. Verify `NWS1` v2 binary codec preserves the complete router stack, cursor, and focused task.
@@ -261,9 +302,12 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     assert_eq!(restored.current_route(), &StudioRoute::Doc { id: 2 });
 
     // 4. Deep-link navigation via `StudioWorkspaceModule` direct props.
-    let mut module = StudioWorkspaceModule::create(1);
+    let mut module = common::headless_module(1);
     let _ = module.render(1);
-    let entries = [NveMapEntry::new("route", NveValue::from_str("aether://studio/doc/2"))];
+    let entries = [NveMapEntry::new(
+        "route",
+        NveValue::from_str("aether://studio/doc/2"),
+    )];
     // SAFETY: `entries` outlives the synchronous `set_props` call.
     assert!(module.set_props(unsafe { NvePropsRef::from_slice(&entries) }));
     let snap = module.state_snapshot();
@@ -324,8 +368,9 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     assert!(compact_layout.compact_header);
 
     // 2. Live `StudioWorkspaceModule::dispatch_events`: 1px desktop drags do NOT churn surface.
-    let mut app = StudioWorkspaceModule::create(1);
-    let _ = app.render(1);
+    register_studio_tables();
+    let mut app = common::headless_module(1);
+    let first_frame = app.render(1).to_vec();
     let dispatch_resize = |app: &mut StudioWorkspaceModule, w: f32, h: f32, ts: u64| {
         let ev = [NveDirectEvent::layout(1, ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
         // SAFETY: `ev` stack array outlives the synchronous `dispatch_events` call.
@@ -346,7 +391,7 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     assert_eq!(app.state_snapshot().size_class(), SizeClass::Compact);
     assert!(app.state_snapshot().is_mobile_portrait());
 
-    register_studio_tables();
+    // Host events update the mounted surface in place: frame 2 is a delta on frame 1.
     let frame = app.render(2).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
@@ -358,7 +403,8 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
         },
     );
     let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
-    rep.submit_nve2_frame(&frame).unwrap();
+    rep.submit_nve2_frame(&first_frame).expect("frame 1");
+    rep.submit_nve2_frame(&frame).expect("frame 2");
     let root_id = find_in_store(rep.store(), "workspace-root").expect("workspace-root");
     assert_eq!(
         data_attr_in_store(rep.store(), root_id, "size-class").as_deref(),
@@ -425,8 +471,8 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
     surface.commit_to(1, &mut headless).unwrap();
 
     let read_prop = |tid: &str, key: &str| -> String {
-        let id = find_in_store(surface.store(), tid)
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let id =
+            find_in_store(surface.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         data_attr_in_store(surface.store(), id, key)
             .unwrap_or_else(|| panic!("missing prop '{key}' on '{tid}'"))
     };
@@ -440,7 +486,11 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
     assert_eq!(read_prop("probe-scoped", "trait-accent"), "Amber");
     assert_eq!(read_prop("probe-scoped", "trait-mode"), "CompactScope");
     assert_eq!(read_prop("probe-scoped", "trait-compact-scope"), "true");
-    assert!(headless.render_ascii_tree(surface.store()).contains("Expanded | Light | en-US | Amber"));
+    assert!(
+        headless
+            .render_ascii_tree(surface.store())
+            .contains("Expanded | Light | en-US | Amber")
+    );
 
     // Sibling after `<TraitScope>` is completely isolated from the override.
     assert_eq!(read_prop("probe-sibling", "trait-accent"), "Cyan");
@@ -450,25 +500,41 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
     // 2. Verify live Studio Workspace renders both root `studio-trait-live` and scoped
     // `studio-trait-scoped` inside the docked Studio panel, updating accent reactively.
     let mut h = StudioHarness::new(1280.0, 800.0);
-    assert_eq!(h.prop_str("studio-trait-live", "trait-accent").as_deref(), Some("Cyan"));
-    assert_eq!(h.prop_str("studio-trait-live", "trait-mode").as_deref(), Some("Expanded"));
+    assert_eq!(
+        h.prop_str("studio-trait-live", "trait-accent").as_deref(),
+        Some("Cyan")
+    );
+    assert_eq!(
+        h.prop_str("studio-trait-live", "trait-mode").as_deref(),
+        Some("Expanded")
+    );
     assert_eq!(
         h.prop_str("studio-trait-scoped", "trait-mode").as_deref(),
         Some("CompactScope")
     );
     assert_eq!(
-        h.prop_str("studio-trait-scoped", "trait-compact-scope").as_deref(),
+        h.prop_str("studio-trait-scoped", "trait-compact-scope")
+            .as_deref(),
         Some("true")
     );
 
     // Changing Studio accent to Violet propagates through `StudioAccentTrait` into both chips!
     h.press("accent-violet");
-    assert_eq!(h.prop_str("studio-trait-live", "trait-accent").as_deref(), Some("Violet"));
-    assert_eq!(h.prop_str("studio-trait-scoped", "trait-accent").as_deref(), Some("Violet"));
+    assert_eq!(
+        h.prop_str("studio-trait-live", "trait-accent").as_deref(),
+        Some("Violet")
+    );
+    assert_eq!(
+        h.prop_str("studio-trait-scoped", "trait-accent").as_deref(),
+        Some("Violet")
+    );
 
     // Switching Density to Compact updates built-in `UiDensity` in `TraitStore`.
     h.press("density-compact");
-    assert_eq!(h.store.lock().unwrap().current.studio.density, DensityMode::Compact);
+    assert_eq!(
+        h.store.lock().unwrap().current.studio.density,
+        DensityMode::Compact
+    );
     assert_eq!(
         h.store.lock().unwrap().trait_store().get::<UiDensity>(),
         UiDensity::Compact
@@ -491,7 +557,10 @@ fn clipboard_client_markdown_export_and_deep_link_url_roundtrip() {
     let expected_md = h.store.lock().unwrap().active_doc_markdown();
     assert!(expected_md.starts_with("# Release Checklist: v1.0"));
     assert!(clip.has_text().unwrap());
-    assert_eq!(clip.read_text().unwrap().as_deref(), Some(expected_md.as_str()));
+    assert_eq!(
+        clip.read_text().unwrap().as_deref(),
+        Some(expected_md.as_str())
+    );
 
     // Click route bar "Copy URL" -> verify `ClipboardClient` receives canonical deep-link URL
     // that round-trips cleanly back into `StudioRoute::Doc { id: 2 }`.
@@ -504,119 +573,5 @@ fn clipboard_client_markdown_export_and_deep_link_url_roundtrip() {
     assert_eq!(
         StudioRoute::parse_deep_link(&copied_url),
         Some(StudioRoute::Doc { id: 2 })
-    );
-}
-
-#[test]
-fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
-    let mut module = StudioWorkspaceModule::create(1);
-    let _ = module.render(1);
-    assert!(!module.host_services().is_ffi_bound());
-
-    // Prepare a simulated native host behind `HostCallbackBridge` (`NVE_IFACE_HOST = 5`).
-    let host_mem = Arc::new(MemoryHostServices::new());
-    host_mem.register(MemoryClipboard::new());
-    host_mem.register(MemorySystemEnv::with_initial(
-        ThemeSnapshot {
-            color_scheme: Some(ColorScheme::Light),
-            contrast: ContrastLevel::High,
-            reduced_motion: true,
-            reduced_transparency: false,
-            accent_rgba: 0x38BD_F8FF,
-            font_scale_x1000: 1250,
-            scale_factor_x100: 200,
-        },
-        LocaleSnapshot {
-            tag: "de-DE".into(),
-            language: "de".into(),
-            region: "DE".into(),
-            text_direction: TextDirection::Ltr,
-            uses_24h_clock: true,
-            timezone: "Europe/Berlin".into(),
-        },
-    ));
-    let bridge = HostCallbackBridge::new(Arc::clone(&host_mem));
-
-    // Bind host callbacks across the `NVE_IFACE_HOST = 5` ABI contract.
-    module.bind_host(Some(bridge.callbacks()));
-    assert!(module.host_services().is_ffi_bound());
-
-    // Binding automatically synced host theme & locale via `SystemEnvClient` into `TraitStore`!
-    let snap = module.state_snapshot();
-    assert_eq!(snap.color_scheme(), ColorScheme::Light);
-    assert!(snap.trait_store().get::<HighContrast>());
-    assert!(snap.trait_store().get::<ReducedMotion>());
-    assert_eq!(snap.locale().as_str(), "de-DE");
-    assert!(!snap.locale().is_rtl());
-
-    // Render frame and verify live UI reflects synced Light + de-DE traits.
-    register_studio_tables();
-    let frame_bytes = module.render(2).to_vec();
-    let mut headless = HeadlessBackend::new();
-    headless.set_viewport(
-        1,
-        Viewport {
-            width: 1280.0,
-            height: 800.0,
-            scale_factor: 1.0,
-        },
-    );
-    let mut rep = StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
-    rep.submit_nve2_frame(&frame_bytes).unwrap();
-    let tree = rep.backend().render_ascii_tree(rep.store());
-    assert!(
-        tree.contains("Light | de-DE"),
-        "Studio panel should render synced host ColorScheme + Locale:\n{tree}"
-    );
-
-    // Copying Markdown while FFI-bound routes through `NVE_IFACE_HOST = 5` into `host_mem`!
-    let md = snap.active_doc_markdown();
-    module
-        .host_services()
-        .copy_text(&md)
-        .expect("FFI clipboard write");
-    assert_eq!(
-        ClipboardClient::new(&*host_mem).read_text().unwrap().as_deref(),
-        Some(md.as_str())
-    );
-
-    // Deliver live typed theme (Dark) and locale (ar-EG RTL) updates directly with zero serialization.
-    let dark_theme = ThemeSnapshot {
-        color_scheme: Some(ColorScheme::Dark),
-        contrast: ContrastLevel::Standard,
-        reduced_motion: false,
-        reduced_transparency: false,
-        accent_rgba: 0xA78B_FAFF,
-        font_scale_x1000: 1000,
-        scale_factor_x100: 200,
-    };
-    let ar_locale = LocaleSnapshot {
-        tag: "ar-EG".into(),
-        language: "ar".into(),
-        region: "EG".into(),
-        text_direction: TextDirection::Rtl,
-        uses_24h_clock: true,
-        timezone: "Africa/Cairo".into(),
-    };
-    assert!(module.dispatch_system_env_events(&[
-        SystemEnvEvent::ThemeChanged(dark_theme),
-        SystemEnvEvent::LocaleChanged(ar_locale),
-    ]));
-
-    let updated = module.state_snapshot();
-    assert_eq!(updated.color_scheme(), ColorScheme::Dark);
-    assert_eq!(updated.locale().as_str(), "ar-EG");
-    assert!(updated.locale().is_rtl());
-
-    // Unbinding restores clean fallback to `MemoryHostServices`.
-    module.bind_host(None);
-    assert!(!module.host_services().is_ffi_bound());
-    module
-        .host_services()
-        .copy_text("fallback-memory-ok")
-        .expect("fallback clipboard write");
-    assert_eq!(
-        module.host_services().read_clipboard_text().unwrap().as_deref(),
-        Some("fallback-memory-ok")
     );
 }

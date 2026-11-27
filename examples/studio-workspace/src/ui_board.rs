@@ -2,8 +2,9 @@
 //! `TabList`, `TabTrigger`, `Input`, `Button`, `Card`, `Badge`) with live search, custom issue
 //! composer, and scrollable task cards with PNG avatar `Image`s.
 //!
-//! [`BoardView`] subscribes to the `board` domain; each [`TaskCard`] is memoized on its task so a
-//! status change re-renders one card.
+//! [`BoardView`] subscribes to the `board` domain and [`BoardComposer`] to `board_draft`, so
+//! typing re-renders the composer only; each [`TaskCard`] is memoized on its task so a status
+//! change re-renders one card.
 
 use nve_dioxus::prelude::*;
 use nve_ui::{
@@ -13,10 +14,10 @@ use nve_ui::{
 
 use crate::assets::avatar_for_author;
 use crate::routes::StudioRoute;
-use crate::state::{filter_tasks, BoardFilter, Priority, TaskItem, TaskStatus};
-use crate::theme::{task_status_tone, STRETCH_COL};
+use crate::state::{BoardFilter, Priority, TaskItem, TaskStatus, filter_tasks};
+use crate::theme::{STRETCH_COL, task_status_tone};
 use crate::ui::store::use_studio;
-use crate::ui::style::use_studio_style;
+use crate::ui::style::{StudioStyle, use_studio_style};
 
 fn filter_key(filter: BoardFilter) -> &'static str {
     match filter {
@@ -42,29 +43,74 @@ fn priority_badge_variant(priority: Priority) -> BadgeVariant {
     }
 }
 
+/// Inline style of a 34px board action button.
+fn board_button_style(s: &StudioStyle, width: u32, active: bool) -> String {
+    format!(
+        "width: {width}px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: {}px; {}",
+        s.control_bg(active),
+        s.m.button_radius,
+        s.control(active)
+    )
+}
+
+/// New-issue composer: the only board part subscribed to `board_draft`.
+#[component]
+fn BoardComposer() -> Element {
+    nve_dioxus::render_probe::record_render("BoardComposer");
+    let store = use_studio();
+    let s = use_studio_style();
+    let draft = store.board_draft.read().new_task_draft.clone();
+    rsx! {
+        view {
+            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
+            view {
+                style: "flex: 1;",
+                Input {
+                    test_id: Some("board-new-task-input".into()),
+                    placeholder: Some("New custom issue title...".into()),
+                    value: draft,
+                    accessibility_label: Some("New issue title".into()),
+                    on_change: move |txt: String| store.update(|st| st.set_new_task_draft(txt)),
+                    on_submit: move |_| store.update(|st| {
+                        let _ = st.submit_new_task_draft();
+                    }),
+                }
+            }
+            Button {
+                variant: ButtonVariant::Secondary,
+                size: ButtonSize::Sm,
+                test_id: Some("board-new-task-submit".into()),
+                style: Some(board_button_style(&s, 56, true)),
+                on_press: move |_| store.update(|st| {
+                    let _ = st.submit_new_task_draft();
+                }),
+                "+ Add"
+            }
+        }
+    }
+}
+
 #[component]
 pub(crate) fn BoardView() -> Element {
+    nve_dioxus::render_probe::record_render("BoardView");
     let store = use_studio();
     let s = use_studio_style();
     let board = store.board.read();
     let filter = board.board_filter;
     let search = board.board_search_query.clone();
-    let draft = board.new_task_draft.clone();
     let focused = board.focused_task_id;
     let total = board.tasks.len();
-    let done = board.tasks.iter().filter(|t| t.status == TaskStatus::Done).count();
-    let visible: Vec<TaskItem> = filter_tasks(&board.tasks, filter, &search).cloned().collect();
+    let done = board
+        .tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Done)
+        .count();
+    let visible: Vec<TaskItem> = filter_tasks(&board.tasks, filter, &search)
+        .cloned()
+        .collect();
     drop(board);
 
     let row = s.row();
-    let btn = |w: u32, active: bool| {
-        format!(
-            "width: {w}px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: {}px; {}",
-            s.control_bg(active),
-            s.m.button_radius,
-            s.control(active)
-        )
-    };
 
     rsx! {
         TabsRoot {
@@ -118,38 +164,13 @@ pub(crate) fn BoardView() -> Element {
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some("board-search-clear".into()),
-                        style: Some(btn(48, false)),
+                        style: Some(board_button_style(&s, 48, false)),
                         on_press: move |_| store.update(|st| st.set_board_search_query("")),
                         "Clear"
                     }
                 }
             }
-            view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
-                view {
-                    style: "flex: 1;",
-                    Input {
-                        test_id: Some("board-new-task-input".into()),
-                        placeholder: Some("New custom issue title...".into()),
-                        value: draft,
-                        accessibility_label: Some("New issue title".into()),
-                        on_change: move |txt: String| store.update(|st| st.set_new_task_draft(txt)),
-                        on_submit: move |_| store.update(|st| {
-                            let _ = st.submit_new_task_draft();
-                        }),
-                    }
-                }
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    size: ButtonSize::Sm,
-                    test_id: Some("board-new-task-submit".into()),
-                    style: Some(btn(56, true)),
-                    on_press: move |_| store.update(|st| {
-                        let _ = st.submit_new_task_draft();
-                    }),
-                    "+ Add"
-                }
-            }
+            BoardComposer {}
         }
 
         scrollview {
@@ -164,11 +185,16 @@ pub(crate) fn BoardView() -> Element {
 /// One issue card; re-renders only when its task, focus, or the style changes.
 #[component]
 fn TaskCard(task: TaskItem, focused: bool) -> Element {
+    nve_dioxus::render_probe::record_render("TaskCard");
     let store = use_studio();
     let s = use_studio_style();
     let tid = task.id;
     let card = s.card();
-    let (border_w, border_c) = if focused { (2, s.t.status.accent.text) } else { (card.width, card.color) };
+    let (border_w, border_c) = if focused {
+        (2, s.t.status.accent.text)
+    } else {
+        (card.width, card.color)
+    };
     let card_style = format!(
         "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {}; border-radius: {}px; border-width: {border_w}px; border-color: {};",
         s.m.card_pad,

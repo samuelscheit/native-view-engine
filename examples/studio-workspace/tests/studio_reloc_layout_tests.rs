@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use common::{
-    data_attr_in_store, find_in_store, live_node_ids, register_studio_tables, MultiBackendHarness,
+    MultiBackendHarness, data_attr_in_store, find_in_store, live_node_ids, register_studio_tables,
 };
 use nve_abi::{
     EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveDirectEventRef,
@@ -12,25 +12,22 @@ use nve_abi::{
 };
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_engine::reloc::{
-    encode_reloc_bundle, write_reloc_atomic, MmapReloc, RelocBundleView, VerifyMode,
+    MmapReloc, RelocBundleView, VerifyMode, encode_reloc_bundle, write_reloc_atomic,
 };
 use nve_engine::{
     DynLayoutEngine, LayoutRect, NveApp, StoreBackend, StoreLayoutEngine, StoreWireReplica,
     TextMeasurer, Viewport,
 };
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_layout_yoga::YogaLayoutEngine;
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_studio_workspace::{
-    AccentTheme, ActiveView, CornerRadiusMode, DensityMode, LayoutEngineMode,
-    StudioWorkspaceModule,
+    AccentTheme, ActiveView, CornerRadiusMode, DensityMode, LayoutEngineMode, StudioWorkspaceModule,
 };
 
 #[test]
 fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() {
-    let snap_dir = std::env::temp_dir().join(format!(
-        "nve-studio-snap-test-{}",
-        std::process::id()
-    ));
+    let snap_dir =
+        std::env::temp_dir().join(format!("nve-studio-snap-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&snap_dir);
     std::fs::create_dir_all(&snap_dir).expect("create temp snapshot dir");
     let snap_path = snap_dir.join("studio_workspace.nvesnap");
@@ -42,7 +39,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     };
 
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = common::headless_module(1);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(1, vp);
     let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
@@ -54,8 +51,8 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
                          app: &mut StudioWorkspaceModule,
                          tid: &str,
                          fid: u64| {
-        let nid = find_in_store(host.store(), tid)
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let nid =
+            find_in_store(host.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).expect("node layout");
         let ev = [NveDirectEvent::press(
             1,
@@ -80,7 +77,10 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     press_test_id(&mut host, &mut app, "reply-ship", 7);
 
     let expected_state = app.state_snapshot();
-    assert_eq!(expected_state.current.active_view, ActiveView::ChannelEngineering);
+    assert_eq!(
+        expected_state.current.active_view,
+        ActiveView::ChannelEngineering
+    );
     assert_eq!(expected_state.current.studio.accent, AccentTheme::Violet);
     assert_eq!(expected_state.current.studio.radius, CornerRadiusMode::Pill);
     assert!(expected_state.current.studio.xray);
@@ -88,7 +88,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     let saved_state_bytes = app.snapshot_state().to_vec();
     assert!(!saved_state_bytes.is_empty());
 
-    let mut freeze_app = StudioWorkspaceModule::create(1);
+    let mut freeze_app = common::headless_module(1);
     freeze_app.restore_state(&saved_state_bytes);
     let frame0_bytes = freeze_app.render(1).to_vec();
     assert!(frame0_bytes.len() > 24);
@@ -105,8 +105,10 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
 
     let mut cold_backend = HeadlessBackend::new();
     cold_backend.set_viewport(1, vp);
-    let mut cold_host =
-        StoreWireReplica::new(cold_backend, nve_components::tables::core_realization_order());
+    let mut cold_host = StoreWireReplica::new(
+        cold_backend,
+        nve_components::tables::core_realization_order(),
+    );
 
     let t0 = Instant::now();
     let mapped =
@@ -132,7 +134,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     assert!(frame0_tree.contains("X-Ray HUD: ON"));
     assert!(frame0_tree.contains("Snapshot 7 / 7"));
 
-    let mut cold_app = StudioWorkspaceModule::create(1);
+    let mut cold_app = common::headless_module(1);
     let t_state_start = Instant::now();
     cold_app.restore_state(snap.state());
     let t_state = t_state_start.elapsed();
@@ -170,7 +172,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         let verify_tree = verify_host.backend().render_ascii_tree(verify_host.store());
         assert!(verify_tree.contains("# engineering"));
         assert!(verify_tree.contains("X-Ray HUD: ON"));
-        let mut verify_app = StudioWorkspaceModule::create(1);
+        let mut verify_app = common::headless_module(1);
         verify_app.restore_state(cpp_snap.state());
         assert_eq!(verify_app.state_snapshot(), expected_state);
     }
@@ -203,7 +205,9 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
     h.assert_no_horizontal_overflow("960x640-stream-top");
 
     let read_stream_prop = |h: &MultiBackendHarness, key: &str| -> u32 {
-        let vp_id = h.find_by_test_id("stream-viewport").expect("stream-viewport");
+        let vp_id = h
+            .find_by_test_id("stream-viewport")
+            .expect("stream-viewport");
         let val = h
             .data_attr(vp_id, key)
             .unwrap_or_else(|| panic!("missing prop {key}"));
@@ -256,9 +260,7 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
         let total_us = t0.elapsed().as_micros();
         eprintln!(
             "  [{tid}] fe={fe_us}us total={total_us}us | disp={t_disp}us rec={rec_us}us | lay={}us diff={}us | muts={}",
-            stats.layout_us,
-            stats.diff_us,
-            stats.mutation_count,
+            stats.layout_us, stats.diff_us, stats.mutation_count,
         );
         frontend_frame_us.push(fe_us);
         e2e_frame_us.push(total_us);
@@ -393,25 +395,33 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         scale_factor: 1.0,
     };
 
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = common::headless_module(1);
     let mut dyn_backend: HeadlessBackend<DynLayoutEngine> =
         HeadlessBackend::with_layout(Box::new(TaffyStoreLayout::new()));
     dyn_backend.set_viewport(1, vp);
-    let mut replica =
-        StoreWireReplica::new(dyn_backend, nve_components::tables::core_realization_order());
+    let mut replica = StoreWireReplica::new(
+        dyn_backend,
+        nve_components::tables::core_realization_order(),
+    );
 
     let f1 = app.render(1).to_vec();
     replica.submit_nve2_frame(&f1).unwrap();
     assert_eq!(replica.backend().layout_engine().name(), "taffy");
     assert_eq!(read_root_layout_engine_prop(replica.store()), "taffy");
-    assert!(replica.backend().render_ascii_tree(replica.store()).contains("Active: Taffy (Rust)"));
+    assert!(
+        replica
+            .backend()
+            .render_ascii_tree(replica.store())
+            .contains("Active: Taffy (Rust)")
+    );
 
     let press_dyn = |replica: &mut StoreWireReplica<HeadlessBackend<DynLayoutEngine>>,
                      app: &mut StudioWorkspaceModule,
                      tid: &str,
-                     fid: u64| -> Vec<u8> {
-        let nid = find_in_store(replica.store(), tid)
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+                     fid: u64|
+     -> Vec<u8> {
+        let nid =
+            find_in_store(replica.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = replica.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
             1,
@@ -429,11 +439,21 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
 
     press_dyn(&mut replica, &mut app, "btn-new-task", 2);
     press_dyn(&mut replica, &mut app, "accent-violet", 3);
-    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
+    assert!(
+        replica
+            .backend()
+            .render_ascii_tree(replica.store())
+            .contains("AET-105")
+    );
 
     press_dyn(&mut replica, &mut app, "layout-yoga", 4);
     assert_eq!(read_root_layout_engine_prop(replica.store()), "yoga");
-    assert!(replica.backend().render_ascii_tree(replica.store()).contains("Active: Yoga (C++20)"));
+    assert!(
+        replica
+            .backend()
+            .render_ascii_tree(replica.store())
+            .contains("Active: Yoga (C++20)")
+    );
     assert_eq!(
         app.state_snapshot().current.studio.layout_engine,
         LayoutEngineMode::Yoga
@@ -470,7 +490,10 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         c
     };
     replica.commit_changes(&full_changes).unwrap();
-    assert_eq!(replica.backend().layout_engine().name(), expected_swapped_name);
+    assert_eq!(
+        replica.backend().layout_engine().name(),
+        expected_swapped_name
+    );
 
     for (id, taffy_rect) in &taffy_rects_before {
         let swapped_rect = replica
@@ -486,10 +509,17 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         );
     }
 
-    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
+    assert!(
+        replica
+            .backend()
+            .render_ascii_tree(replica.store())
+            .contains("AET-105")
+    );
     press_dyn(&mut replica, &mut app, "layout-taffy", 5);
     assert_eq!(read_root_layout_engine_prop(replica.store()), "taffy");
-    replica = replica.map_backend(|b| b.swap_layout_engine(Box::new(TaffyStoreLayout::new()) as DynLayoutEngine));
+    replica = replica.map_backend(|b| {
+        b.swap_layout_engine(Box::new(TaffyStoreLayout::new()) as DynLayoutEngine)
+    });
     let full_changes2 = {
         let mut c = ChangeSet::default();
         c.created = live_node_ids(replica.store());
@@ -497,9 +527,19 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
     };
     replica.commit_changes(&full_changes2).unwrap();
     assert_eq!(replica.backend().layout_engine().name(), "taffy");
-    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
+    assert!(
+        replica
+            .backend()
+            .render_ascii_tree(replica.store())
+            .contains("AET-105")
+    );
 
     press_dyn(&mut replica, &mut app, "tt-undo", 6);
     assert_eq!(read_root_layout_engine_prop(replica.store()), "yoga");
-    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
+    assert!(
+        replica
+            .backend()
+            .render_ascii_tree(replica.store())
+            .contains("AET-105")
+    );
 }

@@ -403,7 +403,14 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     let ssr_violet = session.render_ssr();
     assert_valid_dom_html(&ssr_violet.html);
     assert!(ssr_violet.html.contains("Accent -&gt; Violet"));
-    assert!(ssr_violet.style_css.contains("#a78bfa"));
+    let violet = nve_studio_workspace::theme::studio_theme(
+        &nve_studio_workspace::StudioConfig::default(),
+        nve_studio_workspace::AccentTheme::Violet,
+        nve_studio_workspace::theme::Appearance::DARK,
+    );
+    let c = violet.status.accent.solid;
+    let violet_solid = format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+    assert!(ssr_violet.style_css.contains(&violet_solid), "violet accent {violet_solid} must paint");
     assert!(ssr_violet.html.contains("Snapshot 5 / 5"));
 
     press_test_id(&mut session, "tt-undo", 5000);
