@@ -98,7 +98,7 @@ fn respan(stream: TokenStream, span: Span) -> TokenStream {
 }
 
 /// Derives `nve_store::NveTable` for a word-table schema struct (see `table.rs` docs).
-#[proc_macro_derive(NveTable, attributes(nve_table, effect, default, bits))]
+#[proc_macro_derive(NveTable, attributes(nve_table, effect, default, bits, no_inherit))]
 pub fn derive_nve_table(input: TokenStream) -> TokenStream {
     match table::derive(input) {
         Ok(code) => parse_at_call_site(&code)

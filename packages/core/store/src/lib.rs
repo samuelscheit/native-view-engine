@@ -70,6 +70,8 @@ pub mod __private {
 }
 
 #[cfg(test)]
+mod inherited_edge_tests;
+#[cfg(test)]
 mod inherited_tests;
 #[cfg(test)]
 mod table_packing_tests;

@@ -181,7 +181,9 @@ pub(super) fn write_visual_and_typography_css(
         }
         if t.is_font_family_explicit() {
             let family = t.font_family();
-            if is_safe_font_family(family) {
+            if family.trim().is_empty() {
+                out.push_str("font-family:initial;");
+            } else if is_safe_font_family(family) {
                 out.push_str("font-family:");
                 out.push_str(family.trim());
                 out.push(';');

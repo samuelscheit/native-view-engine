@@ -275,9 +275,15 @@ impl<T: NveTable, V: ScalarField> Prop<T, V> {
     }
 
     /// Attaches inherited explicit-bit metadata for `#[nve_table(inherited)]` tables.
+    ///
+    /// # Safety
+    ///
+    /// `T::DESC.inherited` must be `true`, `bit < 32`, word `0` must be the hidden `__explicit`
+    /// bitmask (never a string or resource word), and `field_effects` must equal
+    /// `T::DESC.fields[bit as usize].effects`.
     #[doc(hidden)]
     #[inline(always)]
-    pub const fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
+    pub const unsafe fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
         self.explicit_bit = bit;
         self.field_effects = field_effects;
         self
@@ -348,9 +354,15 @@ impl<T: NveTable> StrProp<T> {
     }
 
     /// Attaches inherited explicit-bit metadata for `#[nve_table(inherited)]` tables.
+    ///
+    /// # Safety
+    ///
+    /// `T::DESC.inherited` must be `true`, `bit < 32`, word `0` must be the hidden `__explicit`
+    /// bitmask (never a string or resource word), and `field_effects` must equal
+    /// `T::DESC.fields[bit as usize].effects`.
     #[doc(hidden)]
     #[inline(always)]
-    pub const fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
+    pub const unsafe fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
         self.explicit_bit = bit;
         self.field_effects = field_effects;
         self
@@ -395,9 +407,15 @@ impl<T: NveTable, R: Resource> ResProp<T, R> {
     }
 
     /// Attaches inherited explicit-bit metadata for `#[nve_table(inherited)]` tables.
+    ///
+    /// # Safety
+    ///
+    /// `T::DESC.inherited` must be `true`, `bit < 32`, word `0` must be the hidden `__explicit`
+    /// bitmask (never a string or resource word), and `field_effects` must equal
+    /// `T::DESC.fields[bit as usize].effects`.
     #[doc(hidden)]
     #[inline(always)]
-    pub const fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
+    pub const unsafe fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
         self.explicit_bit = bit;
         self.field_effects = field_effects;
         self

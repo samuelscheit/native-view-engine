@@ -8,7 +8,7 @@ use nve_abi::table::Word;
 
 use crate::id::NodeId;
 use crate::row::RowRef;
-use crate::span_pool::StrArena;
+use crate::span_pool::{StrArena, StrSpan};
 use crate::store::{NodeRef, NodeStore};
 use crate::table::{NveTable, Prop};
 use crate::value::WordValue;
@@ -27,16 +27,25 @@ pub unsafe trait InheritedTable: NveTable {
     /// Stack-allocated fixed word array (`[Word; WORD_COUNT]`) for zero-allocation resolution.
     type Words: Copy + AsRef<[Word]> + AsMut<[Word]>;
 
+    /// Bitmask of fields (bits `0..fields.len()`) participating in inheritance (`0` for
+    /// `#[no_inherit]` fields).
+    const INHERITED_FIELD_MASK: u32;
+
     /// Default resolved row words (word `0` = `0`, remaining words = `Self::DESC.defaults`).
     fn default_words() -> Self::Words;
 
-    /// Branchlessly blends `own` words over `parent` words into `out` using `own[0]` as the
-    /// per-field explicit bitmask (`out[0] = own[0] | parent[0]`).
-    fn resolve_inherited_arrays(own: &Self::Words, parent: &Self::Words, out: &mut Self::Words);
+    /// Projects `parent` to an unattached child row: preserves inherited fields and resets every
+    /// `#[no_inherit]` field to its table default (identity `*parent` when no `#[no_inherit]`
+    /// fields exist).
+    fn inherit_only(parent: &Self::Words) -> Self::Words;
 
-    /// Resolves a borrowed row slice `own` over `parent` into `out` (returns `false` without
-    /// mutating `out` if `own.len() < Self::DESC.words()`).
-    fn resolve_inherited_words(own: &[Word], parent: &Self::Words, out: &mut Self::Words) -> bool;
+    /// Branchlessly blends `own` words over `parent` words using `own[0]` as the per-field
+    /// explicit bitmask (`out[0] = own[0] | (parent[0] & Self::INHERITED_FIELD_MASK)`).
+    /// `#[no_inherit]` fields always take `own` rather than `parent`.
+    fn resolve_inherited_arrays(own: &Self::Words, parent: &Self::Words) -> Self::Words;
+
+    /// Resolves a borrowed row slice `own` over `parent` (`None` if `own.len() < Self::DESC.words()`).
+    fn resolve_inherited_words(own: &[Word], parent: &Self::Words) -> Option<Self::Words>;
 }
 
 /// Zero-allocation stack-resident resolved snapshot of an [`InheritedTable`] row tied to a
@@ -107,12 +116,36 @@ impl<'a, T: InheritedTable> ResolvedRow<'a, T> {
 
     /// Wraps an already-resolved stack word array (e.g. cached in a layout pass) with `store`'s
     /// text arena so typed getters (`get()`) including string fields work zero-copy.
+    ///
+    /// # Safety
+    ///
+    /// Every two-word string slot flagged in `T::DESC.str_words` inside `words` must hold a valid
+    /// UTF-8 `(offset, len)` span inside `store.text_arena()` (for example, words produced by
+    /// `ResolvedRow::{root, resolve, resolve_ref}` on the same unmodified `store` or
+    /// `T::default_words()`).
     #[inline(always)]
-    pub fn from_words(words: T::Words, store: &'a NodeStore) -> Self {
+    pub unsafe fn from_words(words: T::Words, store: &'a NodeStore) -> Self {
         Self {
             words,
             text: store.text_arena(),
         }
+    }
+
+    /// Safe validated counterpart to [`Self::from_words`]: verifies every string span flagged in
+    /// `T::DESC.str_words` against `store.text_arena()` (compiles away when `str_words == 0`).
+    #[inline]
+    pub fn try_from_words(words: T::Words, store: &'a NodeStore) -> Option<Self> {
+        let mut sm = T::DESC.str_words;
+        let slice = words.as_ref();
+        let arena = store.text_arena();
+        while sm != 0 {
+            let w = sm.trailing_zeros() as usize;
+            sm &= sm - 1;
+            let off = *slice.get(w)?;
+            let len = *slice.get(w + 1)?;
+            arena.try_str(StrSpan::new(off, len))?;
+        }
+        Some(Self { words, text: arena })
     }
 
     /// Extracts the underlying `'static + Copy` resolved word array.
@@ -122,35 +155,44 @@ impl<'a, T: InheritedTable> ResolvedRow<'a, T> {
     }
 
     /// Resolves `T` on `id` over `parent` in `O(words)` with zero heap allocations and zero
-    /// per-field branches. If `id` does not have `T` attached, inherits `*parent` unchanged.
+    /// per-field branches. Panics if `parent` belongs to a different [`NodeStore`].
     #[inline]
     pub fn resolve(store: &'a NodeStore, id: NodeId, parent: &Self) -> Self {
+        assert!(
+            core::ptr::eq(parent.text, store.text_arena()),
+            "ResolvedRow::resolve: parent row belongs to a different NodeStore"
+        );
         match store.words(id, T::slot()) {
-            Some(own) => {
-                let mut words = parent.words;
-                T::resolve_inherited_words(own, &parent.words, &mut words);
-                Self {
-                    words,
-                    text: store.text_arena(),
-                }
-            }
-            None => *parent,
+            Some(own) => Self {
+                words: T::resolve_inherited_words(own, &parent.words)
+                    .unwrap_or_else(|| T::inherit_only(&parent.words)),
+                text: store.text_arena(),
+            },
+            None => Self {
+                words: T::inherit_only(&parent.words),
+                text: parent.text,
+            },
         }
     }
 
     /// Resolves `T` on an already-validated [`NodeRef`] without repeating liveness checks.
+    /// Panics if `parent` belongs to a different [`NodeStore`].
     #[inline]
     pub fn resolve_ref(node: NodeRef<'a>, parent: &Self) -> Self {
+        assert!(
+            core::ptr::eq(parent.text, node.text_arena()),
+            "ResolvedRow::resolve_ref: parent row belongs to a different NodeStore"
+        );
         match node.words(T::slot()) {
-            Some(own) => {
-                let mut words = parent.words;
-                T::resolve_inherited_words(own, &parent.words, &mut words);
-                Self {
-                    words,
-                    text: node.text_arena(),
-                }
-            }
-            None => *parent,
+            Some(own) => Self {
+                words: T::resolve_inherited_words(own, &parent.words)
+                    .unwrap_or_else(|| T::inherit_only(&parent.words)),
+                text: node.text_arena(),
+            },
+            None => Self {
+                words: T::inherit_only(&parent.words),
+                text: parent.text,
+            },
         }
     }
 
@@ -167,11 +209,16 @@ impl<'a, T: InheritedTable> ResolvedRow<'a, T> {
     }
 
     /// Overrides one packed scalar field in this resolved snapshot (for transient state/motion
-    /// overrides propagated to children without mutating the store).
+    /// overrides propagated to children without mutating the store) and marks its explicit bit in
+    /// word `0`.
     #[inline(always)]
     pub fn override_prop<V: WordValue>(&mut self, prop: Prop<T, V>, value: V) {
-        let w = &mut self.words.as_mut()[prop.word as usize];
+        let words = self.words.as_mut();
+        let w = &mut words[prop.word as usize];
         let bits = value.to_masked_bits(prop.mask.count_ones());
         *w = (*w & !prop.mask) | ((bits << prop.shift) & prop.mask);
+        if prop.explicit_bit < 32 {
+            words[0] |= 1u32 << prop.explicit_bit;
+        }
     }
 }

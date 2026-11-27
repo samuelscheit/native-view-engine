@@ -350,6 +350,42 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
 }
 
 #[test]
+fn web_typography_explicit_default_color_and_empty_font_family_reset_emit_css() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut web = WebBackend::new();
+
+    let mut tx = store.tx();
+    let parent = tx.create();
+    let child = tx.create();
+    tx.set_children(NodeId::ROOT, &[parent]);
+    tx.set_children(parent, &[child]);
+
+    tx.edit::<Typography>(parent)
+        .color(Rgba::WHITE)
+        .font_family("Inter");
+    tx.edit::<TextContent>(child).text("reset");
+    // Explicitly write table-default BLACK color and empty font-family to override parent!
+    tx.edit::<Typography>(child)
+        .color(Rgba::BLACK)
+        .font_family("");
+    tx.commit_into(&mut changes);
+
+    web.commit(&store, &changes).unwrap();
+    let ssr = web.render_ssr(&store);
+    assert!(
+        ssr.style_css.contains("color:#000000;"),
+        "explicit default BLACK color must emit CSS to override parent: {}",
+        ssr.style_css
+    );
+    assert!(
+        ssr.style_css.contains("font-family:initial;"),
+        "explicit empty font_family must emit font-family:initial; to reset inherited parent font: {}",
+        ssr.style_css
+    );
+}
+
+#[test]
 fn plugin_table_detach_automatically_clears_owned_attrs_inner_html_and_inline_css() {
     use nve_store::{NveTable, TableSlot};
     use crate::{WebSystemCommitCtx, WebTableSystem};

@@ -38,9 +38,9 @@ fn narrow_opt_default_expr(inner_short: &str, inner_full: &str, opt_ident: &str)
         "i8" => format!("{S}::__private::opt_i8_to_word({opt_ident})"),
         "u16" => format!("{S}::__private::opt_u16_to_word({opt_ident})"),
         "i16" => format!("{S}::__private::opt_i16_to_word({opt_ident})"),
-        "NonZeroU8" => format!("{S}::__private::opt_nz_u8_to_word({opt_ident})"),
-        "NonZeroU16" => format!("{S}::__private::opt_nz_u16_to_word({opt_ident})"),
-        "NonZeroU32" => format!("{S}::__private::opt_nz_u32_to_word({opt_ident})"),
+        "NonZeroU8" | "NonZero<u8>" => format!("{S}::__private::opt_nz_u8_to_word({opt_ident})"),
+        "NonZeroU16" | "NonZero<u16>" => format!("{S}::__private::opt_nz_u16_to_word({opt_ident})"),
+        "NonZeroU32" | "NonZero<u32>" => format!("{S}::__private::opt_nz_u32_to_word({opt_ident})"),
         "NodeId" => format!("{S}::__private::opt_node_to_word({opt_ident})"),
         "SurfaceId" => format!("{S}::__private::opt_surf_to_word({opt_ident})"),
         _ => format!("<{inner_full}>::opt_to_word({opt_ident})"),
@@ -94,6 +94,16 @@ fn emit_field_default(idx: usize, f: &Field, def_consts: &mut String) -> (String
         );
     }
 
+    if f.short_ty == "f32" {
+        def_consts.push_str(&format!(
+            "const _: () = assert!((f32::to_bits({ident}) & 0x7F80_0000) != 0x7F80_0000, \"default for `{fname}` must be finite (NaN/Inf sentinels are forbidden; use `Option<f32>`)\");\n"
+        ));
+    } else if f.short_ty == "f64" {
+        def_consts.push_str(&format!(
+            "const _: () = assert!((f64::to_bits({ident}) & 0x7FF0_0000_0000_0000) != 0x7FF0_0000_0000_0000, \"default for `{fname}` must be finite (NaN/Inf sentinels are forbidden; use `Option<f64>`)\");\n"
+        ));
+    }
+
     let (lo, hi) = encode_typed_scalar(&f.short_ty, &ident);
     (lo, hi, "false".into())
 }
@@ -122,6 +132,7 @@ pub(super) fn emit(t: &Table) -> String {
         mut setters,
         mut regs,
         mut resolve_stmts,
+        mut inherit_only_stmts,
     ) = (
         String::new(),
         String::new(),
@@ -130,7 +141,10 @@ pub(super) fn emit(t: &Table) -> String {
         String::new(),
         String::new(),
         String::new(),
+        String::new(),
     );
+    let mut inherited_field_mask = 0u32;
+    let mut has_no_inherit = false;
 
     if inherited {
         getters.push_str(
@@ -171,9 +185,11 @@ pub(super) fn emit(t: &Table) -> String {
                 default_lo: {def_lo}, \
                 default_hi: {def_hi}, \
                 default_present: {def_present}, \
+                no_inherit: {}, \
             }},",
             quote_str(fname),
             f.effects,
+            f.no_inherit,
         ));
         regs.push_str(&format!("<{ty} as {S}::TableField>::register();"));
 
@@ -188,34 +204,79 @@ pub(super) fn emit(t: &Table) -> String {
                 #[inline(always)] pub fn is_{fname}_explicit(&self) -> bool {{ {bit_check} }}"
             ));
 
-            let mask_bit = if idx == 0 {
-                "__exp & 1".to_owned()
+            if f.no_inherit {
+                has_no_inherit = true;
+                resolve_stmts.push_str(&format!(
+                    "{{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        const __W: usize = __F.word as usize; \
+                        const __W1: usize = if __F.bits == 64 {{ __F.word as usize + 1 }} else {{ 0 }}; \
+                        const __VW: usize = if __F.val_word == {S}::__private::NO_VAL_WORD {{ 0 }} else {{ __F.val_word as usize }}; \
+                        const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
+                        if __F.val_word != {S}::__private::NO_VAL_WORD {{ \
+                            out[__W] = (out[__W] & !__MASK) | (own[__W] & __MASK); \
+                            out[__VW] = own[__VW]; \
+                        }} else if __F.bits == 64 {{ \
+                            out[__W] = own[__W]; \
+                            out[__W1] = own[__W1]; \
+                        }} else if __F.bits == 32 {{ \
+                            out[__W] = own[__W]; \
+                        }} else {{ \
+                            out[__W] = (out[__W] & !__MASK) | (own[__W] & __MASK); \
+                        }} \
+                    }}"
+                ));
+                inherit_only_stmts.push_str(&format!(
+                    "{{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        const __W: usize = __F.word as usize; \
+                        const __W1: usize = if __F.bits == 64 {{ __F.word as usize + 1 }} else {{ 0 }}; \
+                        const __VW: usize = if __F.val_word == {S}::__private::NO_VAL_WORD {{ 0 }} else {{ __F.val_word as usize }}; \
+                        const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
+                        if __F.val_word != {S}::__private::NO_VAL_WORD {{ \
+                            out[__W] = (out[__W] & !__MASK) | (__NVE_DEFAULTS_ARR[__W] & __MASK); \
+                            out[__VW] = __NVE_DEFAULTS_ARR[__VW]; \
+                        }} else if __F.bits == 64 {{ \
+                            out[__W] = __NVE_DEFAULTS_ARR[__W]; \
+                            out[__W1] = __NVE_DEFAULTS_ARR[__W1]; \
+                        }} else if __F.bits == 32 {{ \
+                            out[__W] = __NVE_DEFAULTS_ARR[__W]; \
+                        }} else {{ \
+                            out[__W] = (out[__W] & !__MASK) | (__NVE_DEFAULTS_ARR[__W] & __MASK); \
+                        }} \
+                    }}"
+                ));
             } else {
-                format!("(__exp >> {idx}) & 1")
-            };
-            resolve_stmts.push_str(&format!(
-                "{{ \
-                    const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                    const __W: usize = __F.word as usize; \
-                    const __W1: usize = if __F.bits == 64 {{ __F.word as usize + 1 }} else {{ 0 }}; \
-                    const __VW: usize = if __F.val_word == {S}::__private::NO_VAL_WORD {{ 0 }} else {{ __F.val_word as usize }}; \
-                    const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
-                    let __m = 0u32.wrapping_sub({mask_bit}); \
-                    if __F.val_word != {S}::__private::NO_VAL_WORD {{ \
-                        let __fm = __MASK & __m; \
-                        out[__W] = (out[__W] & !__fm) | (own[__W] & __fm); \
-                        out[__VW] = (own[__VW] & __m) | (parent[__VW] & !__m); \
-                    }} else if __F.bits == 64 {{ \
-                        out[__W] = (own[__W] & __m) | (parent[__W] & !__m); \
-                        out[__W1] = (own[__W1] & __m) | (parent[__W1] & !__m); \
-                    }} else if __F.bits == 32 {{ \
-                        out[__W] = (own[__W] & __m) | (parent[__W] & !__m); \
-                    }} else {{ \
-                        let __fm = __MASK & __m; \
-                        out[__W] = (out[__W] & !__fm) | (own[__W] & __fm); \
-                    }} \
-                }}"
-            ));
+                inherited_field_mask |= 1u32 << idx;
+                let mask_bit = if idx == 0 {
+                    "__exp & 1".to_owned()
+                } else {
+                    format!("(__exp >> {idx}) & 1")
+                };
+                resolve_stmts.push_str(&format!(
+                    "{{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        const __W: usize = __F.word as usize; \
+                        const __W1: usize = if __F.bits == 64 {{ __F.word as usize + 1 }} else {{ 0 }}; \
+                        const __VW: usize = if __F.val_word == {S}::__private::NO_VAL_WORD {{ 0 }} else {{ __F.val_word as usize }}; \
+                        const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
+                        let __m = 0u32.wrapping_sub({mask_bit}); \
+                        if __F.val_word != {S}::__private::NO_VAL_WORD {{ \
+                            let __fm = __MASK & __m; \
+                            out[__W] = (out[__W] & !__fm) | (own[__W] & __fm); \
+                            out[__VW] = (own[__VW] & __m) | (parent[__VW] & !__m); \
+                        }} else if __F.bits == 64 {{ \
+                            out[__W] = (own[__W] & __m) | (parent[__W] & !__m); \
+                            out[__W1] = (own[__W1] & __m) | (parent[__W1] & !__m); \
+                        }} else if __F.bits == 32 {{ \
+                            out[__W] = (own[__W] & __m) | (parent[__W] & !__m); \
+                        }} else {{ \
+                            let __fm = __MASK & __m; \
+                            out[__W] = (out[__W] & !__fm) | (own[__W] & __fm); \
+                        }} \
+                    }}"
+                ));
+            }
         }
 
         match &f.class {
@@ -344,31 +405,45 @@ pub(super) fn emit(t: &Table) -> String {
     }
 
     let inherited_impl = if inherited {
+        let inherit_only_body = if has_no_inherit {
+            format!(
+                "let mut out = *parent; \
+                 out[0] = parent[0] & Self::INHERITED_FIELD_MASK; \
+                 {inherit_only_stmts} \
+                 out"
+            )
+        } else {
+            "*parent".to_owned()
+        };
         format!(
             r#"
     unsafe impl {S}::InheritedTable for {id} {{
         type Words = [{S}::Word; __NVE_WORD_COUNT];
+        const INHERITED_FIELD_MASK: u32 = {inherited_field_mask:#010x}u32;
 
         #[inline(always)]
         fn default_words() -> Self::Words {{
             __NVE_DEFAULTS_ARR
         }}
 
-        #[inline]
-        fn resolve_inherited_arrays(own: &Self::Words, parent: &Self::Words, out: &mut Self::Words) {{
-            let __exp = own[0];
-            *out = *parent;
-            out[0] = __exp | parent[0];
-            {resolve_stmts}
+        #[inline(always)]
+        fn inherit_only(parent: &Self::Words) -> Self::Words {{
+            {inherit_only_body}
         }}
 
         #[inline]
-        fn resolve_inherited_words(own: &[{S}::Word], parent: &Self::Words, out: &mut Self::Words) -> bool {{
-            let Some(__own) = own.get(..__NVE_WORD_COUNT).and_then(|s| <&[{S}::Word; __NVE_WORD_COUNT]>::try_from(s).ok()) else {{
-                return false;
-            }};
-            Self::resolve_inherited_arrays(__own, parent, out);
-            true
+        fn resolve_inherited_arrays(own: &Self::Words, parent: &Self::Words) -> Self::Words {{
+            let __exp = own[0];
+            let mut out = *parent;
+            out[0] = __exp | (parent[0] & Self::INHERITED_FIELD_MASK);
+            {resolve_stmts}
+            out
+        }}
+
+        #[inline]
+        fn resolve_inherited_words(own: &[{S}::Word], parent: &Self::Words) -> ::core::option::Option<Self::Words> {{
+            let __own = own.get(..__NVE_WORD_COUNT).and_then(|s| <&[{S}::Word; __NVE_WORD_COUNT]>::try_from(s).ok())?;
+            ::core::option::Option::Some(Self::resolve_inherited_arrays(__own, parent))
         }}
     }}
 "#

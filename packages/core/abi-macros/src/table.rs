@@ -38,6 +38,7 @@ struct Field {
     effects: u8,
     default_toks: Option<Vec<Tok>>,
     bits: Option<u32>,
+    no_inherit: bool,
     doc: Vec<String>,
 }
 
@@ -113,35 +114,50 @@ fn natural_int_bits(short_ty: &str, full_ty: &str) -> Option<u32> {
 }
 
 fn strip_outer_parens(mut toks: &[Tok]) -> &[Tok] {
-    while let [Tok::Group(Delim::Paren, inner)] = toks {
+    while let [Tok::Group(Delim::Paren | Delim::None, inner)] = toks {
         toks = inner.as_slice();
     }
     toks
 }
 
+fn flatten_none_groups<'a>(toks: &'a [Tok], out: &mut Vec<&'a Tok>) {
+    for t in toks {
+        if let Tok::Group(Delim::None, inner) = t {
+            flatten_none_groups(inner, out);
+        } else {
+            out.push(t);
+        }
+    }
+}
+
 fn trailing_two_path_idents(mut toks: &[Tok]) -> Option<(&str, &str)> {
     toks = strip_outer_parens(toks);
-    let negated = if is_punct(toks, 0, '-') {
+    let mut negated = false;
+    while is_punct(toks, 0, '-') {
+        negated = true;
         toks = strip_outer_parens(&toks[1..]);
-        true
-    } else {
-        false
-    };
+    }
+    let mut flat = Vec::with_capacity(toks.len());
+    flatten_none_groups(toks, &mut flat);
     let mut segs: Vec<&str> = Vec::new();
     let mut i = 0;
-    if is_punct(toks, 0, ':') && is_punct(toks, 1, ':') {
+    if matches!(flat.first(), Some(Tok::Punct(':', _)))
+        && matches!(flat.get(1), Some(Tok::Punct(':', _)))
+    {
         i = 2;
     }
-    while i < toks.len() {
-        let Tok::Ident(id) = &toks[i] else {
+    while i < flat.len() {
+        let Tok::Ident(id) = flat[i] else {
             return None;
         };
         segs.push(id.as_str());
         i += 1;
-        if i == toks.len() {
+        if i == flat.len() {
             break;
         }
-        if is_punct(toks, i, ':') && is_punct(toks, i + 1, ':') {
+        if matches!(flat.get(i), Some(Tok::Punct(':', _)))
+            && matches!(flat.get(i + 1), Some(Tok::Punct(':', _)))
+        {
             i += 2;
         } else {
             return None;
@@ -152,7 +168,12 @@ fn trailing_two_path_idents(mut toks: &[Tok]) -> Option<(&str, &str)> {
     }
     let ty = segs[segs.len() - 2];
     let item = segs[segs.len() - 1];
-    if negated && !matches!((ty, item), ("f32" | "f64", "INFINITY")) {
+    if negated
+        && !matches!(
+            (ty, item),
+            ("f32" | "f64", "NAN" | "INFINITY" | "NEG_INFINITY")
+        )
+    {
         return None;
     }
     Some((ty, item))
@@ -181,21 +202,53 @@ fn check_no_split_bool_pairs(fields: &[Field]) -> Result<(), String> {
         if f.short_ty != "bool" || f.inner_opt_short.is_some() {
             continue;
         }
-        let base = f
-            .name
-            .strip_suffix("_enabled")
-            .or_else(|| f.name.strip_suffix("_set"))
-            .or_else(|| f.name.strip_suffix("_present"))
-            .or_else(|| f.name.strip_suffix("_specified"))
-            .or_else(|| f.name.strip_prefix("has_"));
-        if let Some(base) = base
-            && !base.is_empty()
-            && fields.iter().any(|other| other.name == base)
-        {
-            return Err(format!(
-                "field `{}`: split-bool sentinel pair with `{base}` is forbidden; use `Option<T>` or `#[nve_table(inherited)]` instead",
-                f.name
-            ));
+        let candidates = [
+            f.name.strip_suffix("_enabled"),
+            f.name.strip_suffix("_set"),
+            f.name.strip_suffix("_present"),
+            f.name.strip_suffix("_specified"),
+            f.name.strip_prefix("has_"),
+        ];
+        for base in candidates.into_iter().flatten() {
+            if !base.is_empty() && fields.iter().any(|other| other.name == base) {
+                return Err(format!(
+                    "field `{}`: split-bool sentinel pair with `{base}` is forbidden; use `Option<T>` or `#[nve_table(inherited)]` instead",
+                    f.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_no_method_collisions(inherited: bool, fields: &[Field]) -> Result<(), String> {
+    for f in fields {
+        if f.name == "get" {
+            return Err("field `get` collides with generated `*Mut::get()` method".into());
+        }
+        if inherited && f.name == "explicit_mask" {
+            return Err(
+                "field `explicit_mask` collides with generated `*Ref::explicit_mask()` method on inherited table"
+                    .into(),
+            );
+        }
+    }
+    if inherited {
+        for f in fields {
+            let clear_name = format!("clear_{}", f.name);
+            if fields.iter().any(|other| other.name == clear_name) {
+                return Err(format!(
+                    "field `{clear_name}` collides with generated `clear_{}()` method on inherited table",
+                    f.name
+                ));
+            }
+            let explicit_name = format!("is_{}_explicit", f.name);
+            if fields.iter().any(|other| other.name == explicit_name) {
+                return Err(format!(
+                    "field `{explicit_name}` collides with generated `is_{}_explicit()` method on inherited table",
+                    f.name
+                ));
+            }
         }
     }
     Ok(())
@@ -346,13 +399,23 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
     if fields.is_empty() {
         return Err(format!("table `{ident}` must declare at least 1 field"));
     }
-    if inherited && fields.len() > 32 {
+    if inherited {
+        // Set `table_flags::INHERITED` (1 << 3) so wire `DeclareTables` carries inherited state.
+        flags |= 1 << 3;
+        if fields.len() > 32 {
+            return Err(format!(
+                "#[nve_table(inherited)] table `{ident}` supports at most 32 fields (u32 explicit mask), got {}",
+                fields.len()
+            ));
+        }
+    } else if let Some(f) = fields.iter().find(|f| f.no_inherit) {
         return Err(format!(
-            "#[nve_table(inherited)] table `{ident}` supports at most 32 fields (u32 explicit mask), got {}",
-            fields.len()
+            "field `{}`: `#[no_inherit]` is only valid on `#[nve_table(inherited)]` tables",
+            f.name
         ));
     }
     check_no_split_bool_pairs(&fields)?;
+    check_no_method_collisions(inherited, &fields)?;
     Ok(Table {
         vis,
         ident,
@@ -367,7 +430,8 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
 fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
     let (mut pos, mut out) = (0, Vec::new());
     while pos < tokens.len() {
-        let (mut effects, mut default_toks, mut bits, mut doc) = (0u8, None, None, Vec::new());
+        let (mut effects, mut default_toks, mut bits, mut no_inherit, mut doc) =
+            (0u8, None, None, false, Vec::new());
         while is_punct(tokens, pos, '#') {
             let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(pos + 1) else {
                 return Err("bad attribute".into());
@@ -400,6 +464,15 @@ fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
                         ));
                     }
                     bits = Some(raw as u32);
+                }
+                "no_inherit" => {
+                    if inner.len() > 1 {
+                        return Err("#[no_inherit] takes no arguments".into());
+                    }
+                    if no_inherit {
+                        return Err("duplicate #[no_inherit] attribute".into());
+                    }
+                    no_inherit = true;
                 }
                 "doc" => {
                     if let Some(Tok::Literal(l)) = inner.get(2) {
@@ -442,7 +515,18 @@ fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
             && compact.ends_with('>')
         {
             let inner = &compact[lt + 1..compact.len() - 1];
-            let short = inner.rsplit("::").next().unwrap_or(inner).to_owned();
+            let inner_head = inner.split('<').next().unwrap_or(inner);
+            let head_short = inner_head.rsplit("::").next().unwrap_or(inner_head);
+            let short = if head_short == "NonZero"
+                && let Some(nz_lt) = inner.find('<')
+                && inner.ends_with('>')
+            {
+                let arg = &inner[nz_lt + 1..inner.len() - 1];
+                let arg_short = arg.rsplit("::").next().unwrap_or(arg);
+                format!("NonZero<{arg_short}>")
+            } else {
+                head_short.to_owned()
+            };
             (Some(inner.to_owned()), Some(short))
         } else {
             (None, None)
@@ -497,6 +581,7 @@ fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
             effects,
             default_toks,
             bits,
+            no_inherit,
             doc,
         });
     }

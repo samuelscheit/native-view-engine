@@ -144,7 +144,13 @@ impl<'a> RowWriter<'a> {
     #[doc(hidden)]
     #[inline(always)]
     pub fn set_explicit_bit(&mut self, bit: u32, field_effects: u8) {
-        debug_assert!(bit < 32);
+        assert!(
+            self.desc.inherited()
+                && bit < 32
+                && ((self.desc.str_words() | self.desc.resource_words()) & 1) == 0,
+            "RowWriter::set_explicit_bit requires an inherited table with bit < 32 on `{}`",
+            self.desc.name()
+        );
         let bit_mask = 1u32 << bit;
         let old = self.row[0];
         let new = old | bit_mask;
@@ -157,7 +163,13 @@ impl<'a> RowWriter<'a> {
     #[doc(hidden)]
     #[inline(always)]
     pub fn clear_explicit_bit(&mut self, bit: u32, field_effects: u8) {
-        debug_assert!(bit < 32);
+        assert!(
+            self.desc.inherited()
+                && bit < 32
+                && ((self.desc.str_words() | self.desc.resource_words()) & 1) == 0,
+            "RowWriter::clear_explicit_bit requires an inherited table with bit < 32 on `{}`",
+            self.desc.name()
+        );
         let bit_mask = 1u32 << bit;
         let old = self.row[0];
         let new = old & !bit_mask;
@@ -169,15 +181,14 @@ impl<'a> RowWriter<'a> {
     /// field effects of every flipped bit into the node's effects.
     #[inline]
     pub(crate) fn put_explicit_word(&mut self, new_mask: u32) {
+        debug_assert!(self.desc.inherited());
         let old = self.row[0];
         let diff = old ^ new_mask;
         if diff == 0 {
             return;
         }
         self.row[0] = new_mask;
-        let fx = if let Some(sd) = self.desc.as_static()
-            && sd.inherited
-        {
+        let fx = if let Some(sd) = self.desc.as_static() {
             let mut acc = 0u8;
             let mut d = diff;
             while d != 0 {
@@ -188,10 +199,8 @@ impl<'a> RowWriter<'a> {
                 }
             }
             acc
-        } else if self.desc.word_effects()[0] == 0 {
-            self.desc.effects()
         } else {
-            self.desc.word_effects()[0]
+            self.desc.effects()
         };
         self.mark_with_effects(0, 1, fx);
     }

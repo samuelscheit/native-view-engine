@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: default for `x` must be finite (NaN/Inf sentinels are forbidden; use `Option<f32>`)
+ --> tests/ui/bad_const_nan.rs:5:10
+  |
+5 | #[derive(NveTable)]
+  |          ^^^^^^^^ evaluation of `_::__NVE_LAYOUT::_` failed here

@@ -164,7 +164,9 @@ pub struct Typography {
     #[effect(measure)]
     pub font_family: Str,
     /// Optional positive line clamp (`None` = unlimited; `0` is unrepresentable by type).
+    /// Non-inherited in CSS (`-webkit-line-clamp` applies only to the declaring container).
     #[effect(measure)]
+    #[no_inherit]
     pub max_lines: Option<core::num::NonZeroU16>,
     #[effect(measure)]
     #[default(400u16)]
@@ -181,7 +183,9 @@ pub struct Typography {
     pub text_align: TextAlign,
     #[effect(paint)]
     pub text_decoration: TextDecoration,
+    /// Non-inherited in CSS (`vertical-align` applies only to the declaring element).
     #[effect(paint)]
+    #[no_inherit]
     pub vertical_align: VerticalAlign,
 }
 

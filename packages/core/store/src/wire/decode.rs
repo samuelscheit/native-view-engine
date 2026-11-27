@@ -270,7 +270,7 @@ impl WireDecoder {
                         bits &= bits - 1;
                         if resource_words & (1 << i) != 0 {
                             w.put_resource_id(i, ResourceId(vals[i]));
-                        } else if i == 0 && w.desc.word_effects()[0] == 0 {
+                        } else if i == 0 && w.desc.inherited() {
                             w.put_explicit_word(vals[0]);
                         } else {
                             w.put(i, 0, u32::MAX, vals[i]);
@@ -398,7 +398,14 @@ impl WireDecoder {
             return Err(WireError::SchemaMismatch { key: key.0 });
         }
         let name = core::str::from_utf8(r.bytes(name_len)?).map_err(|_| WireError::InvalidUtf8)?;
-        if !table::validate_desc_invariants(words, str_words, resource_words, &defaults, &effects) {
+        if !table::validate_desc_invariants(
+            words,
+            flags,
+            str_words,
+            resource_words,
+            &defaults,
+            &effects,
+        ) {
             return Err(WireError::SchemaMismatch { key: key.0 });
         }
 

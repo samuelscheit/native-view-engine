@@ -77,6 +77,33 @@ pub(crate) fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {
     }
 }
 
+fn is_pure_path(tokens: &[Tok]) -> bool {
+    if tokens.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+    if is_colon2(tokens, 0) {
+        i = 2;
+    }
+    if i >= tokens.len() {
+        return false;
+    }
+    loop {
+        if !matches!(tokens.get(i), Some(Tok::Ident(_))) {
+            return false;
+        }
+        i += 1;
+        if i == tokens.len() {
+            return true;
+        }
+        if is_colon2(tokens, i) {
+            i += 2;
+        } else {
+            return false;
+        }
+    }
+}
+
 fn render_tokens_impl(tokens: &[Tok], paren_invisible: bool) -> String {
     let mut out = String::new();
     for (idx, t) in tokens.iter().enumerate() {
@@ -95,7 +122,16 @@ fn render_tokens_impl(tokens: &[Tok], paren_invisible: bool) -> String {
                     Delim::Bracket => ("[", "]"),
                     Delim::Brace => ("{", "}"),
                     Delim::None => {
-                        if paren_invisible && !inner.is_empty() {
+                        let skip_paren = inner.is_empty()
+                            || matches!(inner.as_slice(), [Tok::Ident(_) | Tok::Literal(_)])
+                            || (idx >= 2 && is_colon2(tokens, idx - 2))
+                            || is_colon2(tokens, idx + 1)
+                            || matches!(
+                                tokens.get(idx + 1),
+                                Some(Tok::Group(Delim::Paren | Delim::Brace, _))
+                            )
+                            || is_pure_path(inner);
+                        if paren_invisible && !skip_paren {
                             ("(", ")")
                         } else {
                             ("", "")

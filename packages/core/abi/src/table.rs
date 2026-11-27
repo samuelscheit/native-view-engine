@@ -57,6 +57,8 @@ pub mod table_flags {
     pub const PUBLISH_TO_SCENE: u8 = 1 << 1;
     /// Any change to the table invalidates layout.
     pub const AFFECTS_LAYOUT: u8 = 1 << 2;
+    /// Word 0 is the hidden `__explicit: u32` bitmask (`#[nve_table(inherited)]`).
+    pub const INHERITED: u8 = 1 << 3;
 }
 
 /// Sentinel `FieldDesc::val_word` / `TableDesc::events_word` meaning "not applicable".
@@ -130,6 +132,8 @@ pub struct FieldDesc {
     pub effects: u8,
     /// Value word for wide `Option<T>` fields (`NO_VAL_WORD` for all other fields).
     pub val_word: u8,
+    /// True when marked `#[no_inherit]` on an inherited table (explicitly tracked, never inherited).
+    pub no_inherit: bool,
 }
 
 impl FieldDesc {
@@ -143,6 +147,7 @@ impl FieldDesc {
         bits: 0,
         effects: 0,
         val_word: NO_VAL_WORD,
+        no_inherit: false,
     };
 }
 
@@ -174,6 +179,7 @@ pub struct PackInput {
     pub default_lo: u32,
     pub default_hi: u32,
     pub default_present: bool,
+    pub no_inherit: bool,
 }
 
 /// Compile-time output of [`pack_table`] (first-fit bin-packing over effect-matched row words).
@@ -231,6 +237,12 @@ pub const fn pack_table<const N: usize>(
     let mut i = 0usize;
     while i < N {
         let f = inputs[i];
+        if !inherited {
+            assert!(
+                !f.no_inherit,
+                "FieldDesc::no_inherit is only valid on inherited tables"
+            );
+        }
         match f.pack_kind {
             PackKind::Scalar => {
                 assert!(f.bits >= 1 && f.bits <= 32, "scalar field bits must be 1..=32");
@@ -253,6 +265,7 @@ pub const fn pack_table<const N: usize>(
                         bits: 32,
                         effects: f.effects,
                         val_word: NO_VAL_WORD,
+                        no_inherit: f.no_inherit,
                     };
                 } else {
                     let mut chosen = MAX_TABLE_WORDS;
@@ -291,6 +304,7 @@ pub const fn pack_table<const N: usize>(
                         bits: f.bits,
                         effects: f.effects,
                         val_word: NO_VAL_WORD,
+                        no_inherit: f.no_inherit,
                     };
                 }
             }
@@ -339,6 +353,7 @@ pub const fn pack_table<const N: usize>(
                     bits: 1,
                     effects: f.effects,
                     val_word: v_word as u8,
+                    no_inherit: f.no_inherit,
                 };
             }
             PackKind::Wide64 => {
@@ -362,6 +377,7 @@ pub const fn pack_table<const N: usize>(
                     bits: 64,
                     effects: f.effects,
                     val_word: NO_VAL_WORD,
+                    no_inherit: f.no_inherit,
                 };
             }
             PackKind::Str => {
@@ -384,6 +400,7 @@ pub const fn pack_table<const N: usize>(
                     bits: 64,
                     effects: f.effects,
                     val_word: NO_VAL_WORD,
+                    no_inherit: f.no_inherit,
                 };
             }
             PackKind::Resource => {
@@ -405,6 +422,7 @@ pub const fn pack_table<const N: usize>(
                     bits: 32,
                     effects: f.effects,
                     val_word: NO_VAL_WORD,
+                    no_inherit: f.no_inherit,
                 };
             }
         }
@@ -544,6 +562,7 @@ pub const fn compute_table_schema_hash(
             f.bits,
             f.effects,
             f.val_word,
+            f.no_inherit as u8,
         ]);
         j += 1;
     }

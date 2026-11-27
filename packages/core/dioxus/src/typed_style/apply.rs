@@ -163,9 +163,8 @@ impl TypedStyle {
                         typo = typo.color(Rgba(s.text_color.to_u32()));
                     }
                     if s.font_size > 0.0 {
-                        typo = typo.font_size(s.font_size);
+                        typo.font_size(s.font_size);
                     }
-                    let _ = typo;
                 }
             }
             if let Some(ref fw) = self.font_weight {
@@ -305,9 +304,8 @@ impl TypedStyle {
                     typo = typo.clear_color();
                 }
                 if clear_size {
-                    typo = typo.clear_font_size();
+                    typo.clear_font_size();
                 }
-                let _ = typo;
             }
         }
         if self.font_weight.is_some()

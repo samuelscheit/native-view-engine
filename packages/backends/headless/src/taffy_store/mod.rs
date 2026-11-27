@@ -258,11 +258,14 @@ impl TaffyStoreLayout {
                 parent_rtl
             };
 
-            let mut typo_words = parent_typo_words;
-            if let Some(own) = store.words(id, Typography::slot()) {
-                Typography::resolve_inherited_words(own, &parent_typo_words, &mut typo_words);
-            }
-            let resolved_typo = ResolvedRow::<Typography>::from_words(typo_words, store);
+            let typo_words = match store.words(id, Typography::slot()) {
+                Some(own) => Typography::resolve_inherited_words(own, &parent_typo_words)
+                    .unwrap_or_else(|| Typography::inherit_only(&parent_typo_words)),
+                None => Typography::inherit_only(&parent_typo_words),
+            };
+            // SAFETY: `typo_words` was derived from live `Typography` rows in `store` (or
+            // `Typography::default_words()`), and `store` is immutably borrowed for this scope.
+            let resolved_typo = unsafe { ResolvedRow::<Typography>::from_words(typo_words, store) };
             let t = resolved_typo.get();
             let text = ResolvedTextStyle {
                 color: t.color(),

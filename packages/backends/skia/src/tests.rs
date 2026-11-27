@@ -174,3 +174,93 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
     assert_eq!(backend.hit_test(&store, 190.0, 190.0), None);
     let _ = hidden_parent;
 }
+
+#[test]
+fn skia_inherited_typography_explicit_defaults_and_no_inherit_fields() {
+    use core::num::NonZeroU16;
+    use nve_components::tables::VerticalAlign;
+    use nve_store::ResolvedRow;
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut backend = SkiaBackend::new();
+    backend.set_viewport(
+        SurfaceId::ROOT,
+        Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        },
+    );
+
+    let (parent, child_inherit, child_reset) = {
+        let mut tx = store.tx();
+        let p = tx.create();
+        let c1 = tx.create();
+        let c2 = tx.create();
+        tx.set_children(NodeId::ROOT, &[p]);
+        tx.set_children(p, &[c1, c2]);
+        tx.edit::<Layout>(p)
+            .width(Length::points(280.0))
+            .height(Length::points(120.0));
+        tx.edit::<Typography>(p)
+            .color(Rgba::WHITE)
+            .font_weight(700)
+            .font_size(22.0)
+            .max_lines(NonZeroU16::new(2))
+            .vertical_align(VerticalAlign::Middle);
+
+        tx.edit::<TextContent>(c1).text("inherits");
+        tx.edit::<TextContent>(c2).text("resets");
+        // Explicitly write table defaults BLACK + 400 to override WHITE + 700 ancestor.
+        tx.edit::<Typography>(c2)
+            .color(Rgba::BLACK)
+            .font_weight(400);
+        tx.commit_into(&mut changes);
+        (p, c1, c2)
+    };
+
+    backend.commit(&store, &changes).unwrap();
+    let mut seen_inherits = None;
+    let mut seen_resets = None;
+    for op in &backend.display_list().ops {
+        if let PaintOp::DrawText {
+            text,
+            font_size,
+            font_weight,
+            color,
+            ..
+        } = op
+        {
+            if text == "inherits" {
+                seen_inherits = Some((*font_size, *font_weight, *color));
+            } else if text == "resets" {
+                seen_resets = Some((*font_size, *font_weight, *color));
+            }
+        }
+    }
+    assert_eq!(
+        seen_inherits,
+        Some((22.0, 700, ColorRgba::from_u32(Rgba::WHITE.0)))
+    );
+    assert_eq!(
+        seen_resets,
+        Some((22.0, 400, ColorRgba::from_u32(Rgba::BLACK.0)))
+    );
+
+    // Non-inherited CSS fields (`max_lines`, `vertical_align`) apply to parent only, never children.
+    let root_r = ResolvedRow::<Typography>::root(&store);
+    let p_r = ResolvedRow::<Typography>::resolve(&store, parent, &root_r);
+    let c1_r = ResolvedRow::<Typography>::resolve(&store, child_inherit, &p_r);
+    let c2_r = ResolvedRow::<Typography>::resolve(&store, child_reset, &p_r);
+    assert_eq!(p_r.get().max_lines(), NonZeroU16::new(2));
+    assert_eq!(p_r.get().vertical_align(), VerticalAlign::Middle);
+    assert_eq!(c1_r.get().max_lines(), None);
+    assert_eq!(c1_r.get().vertical_align(), VerticalAlign::Baseline);
+    assert!(!c1_r.get().is_max_lines_explicit());
+    assert!(!c1_r.get().is_vertical_align_explicit());
+    assert_eq!(c2_r.get().max_lines(), None);
+    assert_eq!(c2_r.get().vertical_align(), VerticalAlign::Baseline);
+    assert!(!c2_r.get().is_max_lines_explicit());
+    assert!(!c2_r.get().is_vertical_align_explicit());
+}

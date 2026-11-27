@@ -209,6 +209,14 @@ impl TableMeta {
     }
 
     #[inline(always)]
+    pub(crate) fn inherited(&self) -> bool {
+        match self {
+            Self::Static(d) => d.inherited,
+            Self::Dynamic(d) => (d.flags & table_flags::INHERITED) != 0,
+        }
+    }
+
+    #[inline(always)]
     pub(crate) fn as_static(&self) -> Option<&'static TableDesc> {
         match self {
             Self::Static(d) => Some(*d),
@@ -243,13 +251,16 @@ pub(crate) fn static_desc_matches(existing: &TableDesc, spec: &TableDescSpec<'_>
 }
 
 fn register_locked(desc: &'static TableDesc) -> Result<TableSlot, RegistryError> {
-    if !validate_desc_invariants(
-        desc.words(),
-        desc.str_words,
-        desc.resource_words,
-        desc.defaults,
-        desc.word_effects,
-    ) {
+    if desc.inherited != ((desc.flags & table_flags::INHERITED) != 0)
+        || !validate_desc_invariants(
+            desc.words(),
+            desc.flags,
+            desc.str_words,
+            desc.resource_words,
+            desc.defaults,
+            desc.word_effects,
+        )
+    {
         return Err(RegistryError::SchemaMismatch {
             name: desc.name,
             key: desc.key,
@@ -295,6 +306,7 @@ pub fn register_static(desc: &'static TableDesc, cell: &AtomicU8, register: fn()
 /// Validates a descriptor's word/string/resource/default invariants before registration.
 pub(crate) fn validate_desc_invariants(
     words: usize,
+    flags: u8,
     str_words: u32,
     resource_words: u32,
     defaults: &[Word],
@@ -304,6 +316,14 @@ pub(crate) fn validate_desc_invariants(
         return false;
     }
     if defaults.len() != words || word_effects.len() != words {
+        return false;
+    }
+    if (flags & table_flags::INHERITED) != 0
+        && (words < 2
+            || defaults[0] != 0
+            || word_effects[0] != 0
+            || ((str_words | resource_words) & 1) != 0)
+    {
         return false;
     }
     let valid_mask = if words == 32 { u32::MAX } else { (1u32 << words) - 1 };

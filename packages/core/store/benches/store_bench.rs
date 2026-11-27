@@ -398,9 +398,10 @@ fn bench_inherited_resolve(c: &mut Criterion) {
         .into_words();
     c.bench_function("inherited_resolve_arrays_branchless", |b| {
         b.iter(|| {
-            let mut out = <BenchTypo as InheritedTable>::default_words();
-            BenchTypo::resolve_inherited_arrays(black_box(&c_words), black_box(&p_words), &mut out);
-            black_box(out)
+            black_box(BenchTypo::resolve_inherited_arrays(
+                black_box(&c_words),
+                black_box(&p_words),
+            ))
         });
     });
 }

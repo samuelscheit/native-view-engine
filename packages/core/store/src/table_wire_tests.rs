@@ -2,6 +2,8 @@
 //! deltas, and `pack_table` boundary invariant tests (split from `table_packing_tests.rs` to stay
 //! under `[INV:max-650-lines]`).
 
+use core::num::{NonZeroU16, NonZeroU32, NonZeroU8};
+
 use nve_abi::table::{effect, pack_table, FieldKind, OptEncoding, PackInput, PackKind, NO_VAL_WORD};
 
 use crate::wire::{WireDecoder, WireEncoder};
@@ -207,6 +209,12 @@ fn untrusted_nve2_corrupt_raw_word_bits_decode_totally_without_panicking() {
         opt_len: Option<Length>,
         #[effect(layout)]
         opt_grid: Option<GridLine>,
+        #[effect(paint)]
+        opt_nz8: Option<NonZeroU8>,
+        #[effect(paint)]
+        opt_nz16: Option<NonZeroU16>,
+        #[effect(paint)]
+        opt_nz32: Option<NonZeroU32>,
     }
 
     // First produce a valid keyframe frame to register the table schema on `dst`.
@@ -277,6 +285,38 @@ fn untrusted_nve2_corrupt_raw_word_bits_decode_totally_without_panicking() {
     assert!(r.opt_len().is_some());
     // 16-bit Option<GridLine> with 0xFFFF: xor 0xC000 -> 0x3FFF (tag 00 = Auto!).
     assert_eq!(r.opt_grid(), Some(GridLine::Auto));
+    assert_eq!(r.opt_nz8(), NonZeroU8::new(u8::MAX));
+    assert_eq!(r.opt_nz16(), NonZeroU16::new(u16::MAX));
+    assert_eq!(r.opt_nz32(), NonZeroU32::new(u32::MAX));
+
+    // Also patch all words to `0x0000_0000`: every NonZero option decodes cleanly to None!
+    let mut zero_frame = Vec::with_capacity((total_words as usize) * 4);
+    push_u32(&mut zero_frame, crate::wire::MAGIC);
+    push_u32(&mut zero_frame, u32::from(crate::wire::VERSION));
+    push_u32(&mut zero_frame, 3u32);
+    push_u32(&mut zero_frame, 0u32);
+    push_u32(&mut zero_frame, 1u32);
+    push_u32(&mut zero_frame, total_words);
+    push_u32(
+        &mut zero_frame,
+        (crate::wire::Op::Patch as u32)
+            | (u32::from(CorruptTarget::slot().0) << 8)
+            | (1u32 << 16),
+    );
+    push_u32(&mut zero_frame, payload_words);
+    push_u32(&mut zero_frame, n.raw());
+    push_u32(&mut zero_frame, full_mask);
+    for _ in 0..word_count {
+        push_u32(&mut zero_frame, 0u32);
+    }
+    let mut rtx = dst.tx();
+    dec.apply(&mut rtx, &zero_frame)
+        .expect("all-zero patch must apply cleanly");
+    commit_tx(rtx);
+    let r0 = dst.row::<CorruptTarget>(n);
+    assert_eq!(r0.opt_nz8(), None);
+    assert_eq!(r0.opt_nz16(), None);
+    assert_eq!(r0.opt_nz32(), None);
 }
 
 const fn dummy_input(
@@ -296,6 +336,7 @@ const fn dummy_input(
         default_lo: 0,
         default_hi: 0,
         default_present,
+        no_inherit: false,
     }
 }
 

@@ -3,7 +3,7 @@
 //! narrowed signed/unsigned `#[bits(N)]`, bit-exact `f32`/`f64` special values & 64-bit dirty
 //! masks, `WideOpt` transitions, hostile/corrupt `NVE2` frames, and `pack_table` boundary invariants.
 
-use core::num::NonZeroU16;
+use core::num::{NonZero, NonZeroU16, NonZeroU32, NonZeroU8};
 
 use nve_abi::SurfaceId;
 
@@ -337,14 +337,20 @@ fn narrowed_i32_runtime_underflow_panics_in_debug() {
     let _ = (-65i32).to_masked_bits(7);
 }
 
+struct MacroConstHolder;
+impl MacroConstHolder {
+    const DEFAULT_VAL: u32 = 77;
+}
+
 #[test]
 fn macro_rules_default_expr_precedence_word_count_scope_and_nonzero_opt() {
     // Verify user const named `WORD_COUNT` does not collide with generated internals,
-    // `macro_rules!` `$a:expr` `Delim::None` keeps precedence in `$a * 2`, and
-    // `Option<NonZeroU16>` packs into 16 bits with `#[default(NonZeroU16::new(3))]`.
+    // `macro_rules!` `$a:expr` `Delim::None` keeps precedence in `$a * 2`, while `$t::CONST`,
+    // `$p::new(...)`, and `Tri::$VAR` do NOT get wrapped in invalid `(T)::CONST` parens, and
+    // `Option<NonZeroU8|NonZeroU16|NonZeroU32|NonZero<u16>>` defaults pack cleanly.
     const WORD_COUNT: u32 = 42;
     macro_rules! def_table {
-        ($a:expr) => {
+        ($a:expr, $t:ty, $p:path, $var:ident) => {
             #[allow(dead_code)]
             #[derive(crate::NveTable)]
             #[nve_table(name = "test.packing.macro_prec", storage = "sparse")]
@@ -356,17 +362,40 @@ fn macro_rules_default_expr_precedence_word_count_scope_and_nonzero_opt() {
                 #[default(WORD_COUNT)]
                 from_const: u32,
                 #[effect(paint)]
-                #[default(NonZeroU16::new(3))]
+                #[default($t::DEFAULT_VAL)]
+                from_ty_const: u32,
+                #[effect(paint)]
+                #[default($p::new(3))]
                 nz_lines: Option<NonZeroU16>,
+                #[effect(paint)]
+                #[default(Tri::$var)]
+                tri_var: Tri,
+                #[effect(paint)]
+                #[default(NonZeroU8::new(9))]
+                nz8: Option<NonZeroU8>,
+                #[effect(paint)]
+                #[default(NonZeroU32::new(123456))]
+                nz32: Option<NonZeroU32>,
+                #[effect(paint)]
+                #[default(NonZero::new(7))]
+                nz_generic: Option<core::num::NonZero<u16>>,
             }
         };
     }
-    def_table!(1 + 2);
+    def_table!(1 + 2, MacroConstHolder, core::num::NonZeroU16, C);
 
     let store = NodeStore::new();
     let r = store.row::<MacroPrecTable>(NodeId::ROOT);
     assert_eq!(r.mul(), 6, "(1 + 2) * 2 must equal 6, not 1 + (2 * 2) = 5");
     assert_eq!(r.from_const(), 42);
+    assert_eq!(r.from_ty_const(), 77);
     assert_eq!(r.nz_lines(), NonZeroU16::new(3));
-    assert_eq!(MacroPrecTable::DESC.fields[2].bits, 16);
+    assert_eq!(r.tri_var(), Tri::C);
+    assert_eq!(r.nz8(), NonZeroU8::new(9));
+    assert_eq!(r.nz32(), NonZeroU32::new(123456));
+    assert_eq!(r.nz_generic(), NonZero::new(7));
+    assert_eq!(MacroPrecTable::DESC.fields[3].bits, 16);
+    assert_eq!(MacroPrecTable::DESC.fields[5].bits, 8);
+    assert_eq!(MacroPrecTable::DESC.fields[6].bits, 32);
+    assert_eq!(MacroPrecTable::DESC.fields[7].bits, 16);
 }

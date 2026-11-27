@@ -198,3 +198,45 @@ fn taffy_clears_stale_hoisted_children_and_propagates_rtl_detach() {
     let r_abs = layout.layout_of(abs_child).unwrap();
     assert_eq!((r_abs.x, r_abs.y), (12.0, 14.0));
 }
+
+#[test]
+fn taffy_inherited_typography_explicit_defaults_override_bold_ancestor() {
+    let mut store = NodeStore::new();
+    let mut layout = TaffyStoreLayout::new();
+    let mut changes = ChangeSet::default();
+    let vp = Viewport {
+        width: 300.0,
+        height: 200.0,
+        scale_factor: 1.0,
+    };
+
+    let (parent, c_inh, c_reset) = {
+        let mut tx = store.tx();
+        let p = tx.create();
+        let c1 = tx.create();
+        let c2 = tx.create();
+        tx.set_children(NodeId::ROOT, &[p]);
+        tx.set_children(p, &[c1, c2]);
+        tx.edit::<Typography>(p)
+            .color(Rgba::WHITE)
+            .font_size(24.0)
+            .font_weight(700);
+        tx.edit::<TextContent>(c1).text("bold");
+        tx.edit::<TextContent>(c2).text("regular");
+        tx.edit::<Typography>(c2)
+            .color(Rgba::BLACK)
+            .font_weight(400);
+        tx.commit_into(&mut changes);
+        (p, c1, c2)
+    };
+
+    layout.sync_changes(&store, &changes);
+    layout.compute_layout(&store, NodeId::ROOT, vp);
+
+    let p_t = layout.resolved_text(parent);
+    let c1_t = layout.resolved_text(c_inh);
+    let c2_t = layout.resolved_text(c_reset);
+    assert_eq!((p_t.color, p_t.font_size, p_t.font_weight), (Rgba::WHITE, 24.0, 700));
+    assert_eq!((c1_t.color, c1_t.font_size, c1_t.font_weight), (Rgba::WHITE, 24.0, 700));
+    assert_eq!((c2_t.color, c2_t.font_size, c2_t.font_weight), (Rgba::BLACK, 24.0, 400));
+}
