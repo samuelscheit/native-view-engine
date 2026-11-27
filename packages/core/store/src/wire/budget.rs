@@ -34,7 +34,9 @@ impl SessionBudget {
         self.used_bytes = 0;
     }
 
-    pub(crate) fn begin_frame(&mut self, frame: u64, wire_bytes: usize, fresh_store: bool) {
+    /// Updates session budget for `frame`. Returns `true` when the budget started or reset
+    /// (first frame or fresh-store keyframe) so the caller can account for any pre-reserved slabs.
+    pub(crate) fn begin_frame(&mut self, frame: u64, wire_bytes: usize, fresh_store: bool) -> bool {
         let earned = wire_bytes.saturating_mul(WIRE_SLOT_MULTIPLIER);
         if !self.started || (frame == 1 && fresh_store) {
             self.started = true;
@@ -42,11 +44,13 @@ impl SessionBudget {
             self.limit_bytes = SESSION_BASE_SLOT_BYTES
                 .saturating_add(earned)
                 .min(SESSION_MAX_SLOT_BYTES);
+            true
         } else {
             self.limit_bytes = self
                 .limit_bytes
                 .saturating_add(earned)
                 .min(SESSION_MAX_SLOT_BYTES);
+            false
         }
     }
 
@@ -108,8 +112,9 @@ impl SessionBudget {
     }
 
     /// Computes an amortized-growth target capacity clamped strictly to what fits inside
-    /// `remaining_bytes`, using exact capacity for initial or large (`>= exact_threshold`) jumps
-    /// so amortized `2x` doubling can never push real heap memory past `SESSION_MAX_SLOT_BYTES`.
+    /// `remaining_bytes`, using exact capacity on initial allocation (`cur_len <= 1 || old_cap == 0`)
+    /// so Frame-0 bulk pre-sizing allocates exact while incremental growth doubles geometrically
+    /// (`O(log N)` reallocations) without ever pushing real heap memory past `SESSION_MAX_SLOT_BYTES`.
     #[inline]
     pub(crate) fn bounded_target_cap(
         old_cap: usize,
@@ -117,8 +122,8 @@ impl SessionBudget {
         needed: usize,
         unit_bytes: usize,
         remaining_bytes: usize,
-        exact_threshold: usize,
     ) -> Result<(usize, usize), WireError> {
+        debug_assert!(unit_bytes > 0);
         if needed <= old_cap {
             return Ok((old_cap, 0));
         }
@@ -128,15 +133,11 @@ impl SessionBudget {
         if min_delta > remaining_bytes {
             return Err(WireError::Budget);
         }
-        let target = if cur_len == 0 || needed.saturating_sub(cur_len) >= exact_threshold {
+        let target = if cur_len <= 1 || old_cap == 0 {
             needed
         } else {
             let affordable = old_cap.saturating_add(remaining_bytes / unit_bytes);
-            old_cap
-                .saturating_mul(2)
-                .max(needed)
-                .min(affordable)
-                .max(needed)
+            old_cap.saturating_mul(2).max(needed).min(affordable)
         };
         let delta_bytes = (target - old_cap)
             .checked_mul(unit_bytes)

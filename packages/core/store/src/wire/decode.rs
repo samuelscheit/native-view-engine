@@ -143,7 +143,19 @@ impl WireDecoder {
             && tx.store().capacity() <= 1
             && tx.store().resources.slots() <= 1
             && tx.store().table_slots().next().is_none();
-        self.budget.begin_frame(frame, bytes.len(), fresh_store);
+        if self.budget.begin_frame(frame, bytes.len(), fresh_store) {
+            // Account for any pre-reserved `NodeStore::nodes` capacity (e.g. caller invoked
+            // `reserve_for_frame0` before `apply`) so pre-sizing can never bypass `SessionBudget`.
+            let pre_reserved = tx
+                .store()
+                .nodes_cap()
+                .saturating_sub(2)
+                .checked_mul(size_of::<crate::store::NodeRow>())
+                .ok_or(WireError::Budget)?;
+            if pre_reserved > 0 {
+                self.budget.charge(pre_reserved)?;
+            }
+        }
         let mut r = R {
             b: bytes,
             at: HEADER_WORDS * 4,
@@ -164,7 +176,7 @@ impl WireDecoder {
             } else {
                 body_r.u32()?
             };
-            self.op(tx, op, (head >> 8) as u8, count, &mut body_r)?;
+            self.op(tx, op, (head >> 8) as u8, count, &mut body_r, bytes.len())?;
             if body_r.at != body.len() {
                 return Err(WireError::TrailingBytes);
             }
@@ -182,6 +194,7 @@ impl WireDecoder {
         table: u8,
         count: u32,
         r: &mut R<'_>,
+        frame_bytes: usize,
     ) -> Result<(), WireError> {
         match op {
             Op::DeclareTables => {
@@ -197,29 +210,26 @@ impl WireDecoder {
                 if (count as usize) > r.remaining() / 4 {
                     return Err(WireError::Truncated);
                 }
-                let node_row_bytes = size_of::<crate::store::NodeRow>();
+                let is_fresh_nodes = tx.store().capacity() <= 1;
                 let existing_creatable = tx.store().capacity().saturating_sub(1);
                 let min_new_slots = (count as usize).saturating_sub(existing_creatable);
-                let min_new_bytes = min_new_slots
-                    .checked_mul(node_row_bytes)
-                    .ok_or(WireError::Budget)?;
-                if min_new_bytes > self.budget.remaining() {
-                    return Err(WireError::Budget);
+                if min_new_slots > 0 {
+                    let min_needed = tx
+                        .store()
+                        .capacity()
+                        .checked_add(min_new_slots)
+                        .ok_or(WireError::Budget)?;
+                    tx.store_mut()
+                        .reserve_nodes_budgeted(min_needed, &mut self.budget)?;
                 }
-                let max_new_slots = self.budget.remaining() / node_row_bytes;
-                tx.store_mut()
-                    .reserve_for_frame0((count as usize).min(max_new_slots), r.remaining())?;
+                if is_fresh_nodes && count > 1 {
+                    tx.store_mut()
+                        .reserve_aux_for_frame0(count as usize, frame_bytes)?;
+                }
                 for _ in 0..count {
                     let id = r.node()?;
-                    let needed = id.index().saturating_add(1);
-                    let delta_bytes =
-                        self.budget
-                            .preview_grow(tx.store().capacity(), needed, node_row_bytes)?;
-                    if !tx.store_mut().try_create_at(id)? {
+                    if !tx.store_mut().try_create_at(id, Some(&mut self.budget))? {
                         return Err(WireError::NodeExists(id.0));
-                    }
-                    if delta_bytes > 0 {
-                        self.budget.charge(delta_bytes)?;
                     }
                 }
             }
@@ -240,22 +250,14 @@ impl WireDecoder {
                     let ephemeral = r.u32()? != 0;
                     let len = r.u32()? as usize;
                     let blob = r.bytes(len)?;
-                    let needed = (id as usize).saturating_add(1);
-                    let delta_bytes = self.budget.preview_grow(
-                        tx.store().resources.slots(),
-                        needed,
-                        crate::resource::ResourceStore::ENTRY_BYTES,
-                    )?;
                     if !tx.store_mut().resources.try_define_at(
                         ResourceId(id),
                         kind,
                         ephemeral,
                         blob,
+                        Some(&mut self.budget),
                     )? {
                         return Err(WireError::Resource { id, kind: kind.0 });
-                    }
-                    if delta_bytes > 0 {
-                        self.budget.charge(delta_bytes)?;
                     }
                 }
             }

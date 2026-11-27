@@ -342,26 +342,38 @@ impl ResourceStore {
     }
 
     /// Fallibly mirrors a resource defined by a wire frame at exactly `id` (replica stores),
-    /// reserving backing vectors with `try_reserve` before mutating state so hostile ids cannot
-    /// trigger infallible OOM aborts.
+    /// validating slot growth against `budget` (via `bounded_target_cap`) and reserving backing
+    /// vectors before mutating state so hostile ids cannot overshoot `SessionBudget` or abort.
     pub(crate) fn try_define_at(
         &mut self,
         id: ResourceId,
         kind: Key64,
         ephemeral: bool,
         bytes: &[u8],
+        budget: Option<&mut crate::wire::budget::SessionBudget>,
     ) -> Result<bool, crate::wire::WireError> {
         let i = id.0 as usize;
         if i == 0 {
             return Ok(false);
         }
+        let needed = i.checked_add(1).ok_or(crate::wire::WireError::Budget)?;
+        let budget_plan = if let Some(b) = budget.as_deref() {
+            Some(crate::wire::budget::SessionBudget::bounded_target_cap(
+                self.entries.capacity(),
+                self.entries.len(),
+                needed,
+                Self::ENTRY_BYTES,
+                b.remaining(),
+            )?)
+        } else {
+            None
+        };
         let Some(c) = codec(kind) else {
             return Ok(false);
         };
         let Some(value) = (c.decode)(bytes) else {
             return Ok(false);
         };
-        let needed = i.checked_add(1).ok_or(crate::wire::WireError::Alloc)?;
         let encoded: Box<[u8]> = if ephemeral {
             Box::new([])
         } else {
@@ -371,14 +383,18 @@ impl ResourceStore {
             copy.extend_from_slice(bytes);
             copy.into_boxed_slice()
         };
-        if self.entries.capacity() < needed {
+        if let (Some((target, delta_bytes)), Some(b)) = (budget_plan, budget) {
+            if target > self.entries.capacity() {
+                self.entries
+                    .try_reserve_exact(target - self.entries.len())
+                    .map_err(|_| crate::wire::WireError::Alloc)?;
+                b.charge(delta_bytes)?;
+            }
+        } else if self.entries.capacity() < needed {
             let add = needed - self.entries.len();
-            let res = if add >= 256 || self.entries.len() <= 1 {
-                self.entries.try_reserve_exact(add)
-            } else {
-                self.entries.try_reserve(add)
-            };
-            res.map_err(|_| crate::wire::WireError::Alloc)?;
+            self.entries
+                .try_reserve(add)
+                .map_err(|_| crate::wire::WireError::Alloc)?;
         }
         self.pending_free
             .try_reserve(1)
@@ -448,8 +464,13 @@ impl ResourceStore {
         ephemeral: bool,
         bytes: &[u8],
     ) -> bool {
-        self.try_define_at(id, kind, ephemeral, bytes)
+        self.try_define_at(id, kind, ephemeral, bytes, None)
             .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entries_cap(&self) -> usize {
+        self.entries.capacity()
     }
 
     #[cfg(test)]

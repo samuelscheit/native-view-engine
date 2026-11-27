@@ -180,17 +180,15 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         {
             self.reset();
         }
-        if node_count_hint > 0 {
+        if frame == 1 && node_count_hint > 0 {
             let bounded_hint =
                 node_count_hint.min(WireDecoder::max_frame0_node_hint(wire_bytes.len()));
+            // Pre-size only `ChangeSet` here; `WireDecoder::apply` sizes `NodeStore` inside
+            // `Op::CreateNodes` under `SessionBudget` so hostile hints can never bypass budgets.
             if self
-                .store
+                .changes
                 .reserve_for_frame0(bounded_hint, wire_bytes.len())
                 .is_err()
-                || self
-                    .changes
-                    .reserve_for_frame0(bounded_hint, wire_bytes.len())
-                    .is_err()
             {
                 self.reset();
                 self.needs_keyframe = true;

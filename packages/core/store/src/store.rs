@@ -12,6 +12,8 @@ use crate::resource::{Resource, ResourceStore};
 use crate::row::{DirtyList, RowRef};
 use crate::span_pool::{ChildSpan, SpanPool, StrArena, StrSpan};
 use crate::table::{self, NveTable, OwnedTableDesc, TableMeta, TableSlot};
+use crate::wire::WireError;
+use crate::wire::budget::SessionBudget;
 
 /// Node is allocated.
 pub(crate) const LIVE: u8 = 1 << 0;
@@ -168,17 +170,13 @@ impl NodeStore {
         s
     }
 
-    /// Fallibly pre-sizes core arenas (`nodes`, `created`, `touched`, `reparented`, `children`,
-    /// `text`) ahead of a bulk `NVE2` apply (Frame-0 boot or batch `Op::CreateNodes`) so decoding
-    /// `N` nodes uses O(1) heap allocations independent of `N`.
-    ///
-    /// Bounds `node_count` by both `payload_bytes / 4` (every created node costs >= 4 wire bytes)
-    /// and [`NodeId::MAX_INDEX`] so hostile hints can never trigger multi-GB allocations.
+    /// Fallibly pre-sizes core arenas ahead of a bulk `NVE2` apply (O(1) allocs independent of `N`),
+    /// bounding `node_count` by `payload_bytes / 4` and [`NodeId::MAX_INDEX`].
     pub fn reserve_for_frame0(
         &mut self,
         node_count: usize,
         payload_bytes: usize,
-    ) -> Result<(), crate::wire::WireError> {
+    ) -> Result<(), WireError> {
         let capped_nodes = node_count
             .min(payload_bytes / 4)
             .min(NodeId::MAX_INDEX as usize);
@@ -194,66 +192,99 @@ impl NodeStore {
         if self.nodes.capacity() < target_slots {
             self.nodes
                 .try_reserve_exact(target_slots - self.nodes.len())
-                .map_err(|_| crate::wire::WireError::Alloc)?;
+                .map_err(|_| WireError::Alloc)?;
+        }
+        self.reserve_aux_for_frame0(capped_nodes, payload_bytes)
+    }
+
+    /// Fallibly pre-sizes auxiliary non-slot arenas (`created`, `touched`, `reparented`,
+    /// `children`, `text`) for a fresh Frame-0 bulk decode so `N` nodes use O(1) allocations.
+    pub(crate) fn reserve_aux_for_frame0(
+        &mut self,
+        capped_nodes: usize,
+        payload_bytes: usize,
+    ) -> Result<(), WireError> {
+        if capped_nodes == 0 {
+            return Ok(());
         }
         let target_created = self.created.len().saturating_add(capped_nodes);
         if self.created.capacity() < target_created {
             self.created
                 .try_reserve(target_created.saturating_sub(self.created.len()))
-                .map_err(|_| crate::wire::WireError::Alloc)?;
+                .map_err(|_| WireError::Alloc)?;
         }
         self.touched.try_reserve(capped_nodes)?;
         self.reparented.try_reserve(capped_nodes)?;
+        let child_target = self
+            .children
+            .data()
+            .len()
+            .saturating_add(capped_nodes.saturating_mul(2));
         self.children
-            .try_reserve_data(
-                self.children
-                    .data()
-                    .len()
-                    .saturating_add(capped_nodes.saturating_mul(2)),
-            )
-            .map_err(|_| crate::wire::WireError::Alloc)?;
+            .try_reserve_data(child_target)
+            .map_err(|_| WireError::Alloc)?;
+        let text_add = payload_bytes.min(capped_nodes.saturating_mul(128).max(4096));
         self.text
-            .try_reserve_bytes(
-                self.text
-                    .data()
-                    .len()
-                    .saturating_add(payload_bytes.min(capped_nodes.saturating_mul(128).max(4096))),
-            )
-            .map_err(|_| crate::wire::WireError::Alloc)?;
+            .try_reserve_bytes(self.text.data().len().saturating_add(text_add))
+            .map_err(|_| WireError::Alloc)?;
         Ok(())
     }
 
-    /// Atomically and fallibly creates `id` at its exact slot (`WireDecoder` / replica apply),
-    /// reserving both `created` and `nodes` before mutating so error paths leave zero partial state.
-    pub(crate) fn try_create_at(&mut self, id: NodeId) -> Result<bool, crate::wire::WireError> {
+    /// Actual allocated capacity of `nodes` (slots), used for capacity-exact `SessionBudget` checks.
+    #[inline]
+    pub(crate) fn nodes_cap(&self) -> usize {
+        self.nodes.capacity()
+    }
+
+    /// Reserves `nodes` capacity for `needed` slots via `SessionBudget::bounded_target_cap`,
+    /// charging actual capacity deltas (`O(log K)` incremental reallocs, bounded by `budget`).
+    pub(crate) fn reserve_nodes_budgeted(
+        &mut self,
+        needed: usize,
+        budget: &mut SessionBudget,
+    ) -> Result<(), WireError> {
+        let old_cap = self.nodes.capacity();
+        let (target, delta_bytes) = SessionBudget::bounded_target_cap(
+            old_cap,
+            self.nodes.len(),
+            needed,
+            size_of::<NodeRow>(),
+            budget.remaining(),
+        )?;
+        if target > old_cap {
+            self.nodes
+                .try_reserve_exact(target - self.nodes.len())
+                .map_err(|_| WireError::Alloc)?;
+            budget.charge(delta_bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Atomically and fallibly creates `id` at its exact slot, reserving `nodes` (budgeted on wire
+    /// paths) and `created` before mutating so `WireError::Budget` performs zero allocation.
+    pub(crate) fn try_create_at(
+        &mut self,
+        id: NodeId,
+        budget: Option<&mut SessionBudget>,
+    ) -> Result<bool, WireError> {
         let index = id.node_index();
-        if index == NodeIndex::NULL {
+        if index == NodeIndex::NULL || self.nodes.get(index).is_some_and(|r| r.flags & LIVE != 0) {
             return Ok(false);
         }
-        if self.nodes.get(index).is_some_and(|r| r.flags & LIVE != 0) {
-            return Ok(false);
-        }
-        let needed = index
-            .as_usize()
-            .checked_add(1)
-            .ok_or(crate::wire::WireError::Alloc)?;
-        self.created
-            .try_reserve(1)
-            .map_err(|_| crate::wire::WireError::Alloc)?;
+        let needed = index.as_usize().checked_add(1).ok_or(WireError::Budget)?;
         if self.nodes.len() < needed {
-            if self.nodes.capacity() < needed {
+            if let Some(budget) = budget {
+                self.reserve_nodes_budgeted(needed, budget)?;
+            } else if self.nodes.capacity() < needed {
                 let add = needed - self.nodes.len();
-                let res = if add >= 1024 || self.nodes.len() <= 1 {
-                    self.nodes.try_reserve_exact(add)
-                } else {
-                    self.nodes.try_reserve(add)
-                };
-                res.map_err(|_| crate::wire::WireError::Alloc)?;
+                self.nodes.try_reserve(add).map_err(|_| WireError::Alloc)?;
             }
+        }
+        self.created.try_reserve(1).map_err(|_| WireError::Alloc)?;
+        if self.nodes.len() < needed {
             self.nodes.resize(needed, NodeRow::default());
         }
-        let row = &mut self.nodes[index];
-        *row = NodeRow {
+        self.nodes[index] = NodeRow {
             generation: id.generation(),
             primary_slot: TableSlot::NONE,
             flags: LIVE | CREATED,
@@ -269,10 +300,10 @@ impl NodeStore {
         slot: TableSlot,
         expected_rows: usize,
         max_node_index: usize,
-        budget: &mut crate::wire::budget::SessionBudget,
-    ) -> Result<(), crate::wire::WireError> {
-        let col = self.column_mut(slot);
-        col.reserve_bulk(expected_rows, max_node_index, budget)
+        budget: &mut SessionBudget,
+    ) -> Result<(), WireError> {
+        self.column_mut(slot)
+            .reserve_bulk(expected_rows, max_node_index, budget)
     }
 
     /// Installs the backend's ordered realization priority list used to derive

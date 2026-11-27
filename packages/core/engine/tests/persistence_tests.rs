@@ -718,6 +718,20 @@ fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
     let mut nve2 = minimal_nve2_header(1, 2, total_words);
     nve2.extend_from_slice(&ops_body);
 
+    // Direct bare-NodeStore WireDecoder check BEFORE any StoreWireReplica::reset():
+    // proves rejection happens before growing `nodes` capacity.
+    let mut bare_node = NodeStore::replica();
+    let mut bare_dec = WireDecoder::default();
+    assert_eq!(
+        bare_dec.apply(&mut bare_node.tx(), &nve2),
+        Err(nve_store::wire::WireError::Budget)
+    );
+    assert_eq!(
+        bare_node.capacity(),
+        1,
+        "direct WireDecoder rejection must not grow bare NodeStore::nodes"
+    );
+
     let hostile = sign_frame0_payload(&nve2, 1, meta);
     let path = temp_file("hostile_sparse_node.nve2");
     std::fs::write(&path, &hostile).expect("write hostile node frame0");
@@ -748,7 +762,7 @@ fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
     nve_store::register_codec::<ImageSrc>();
     let mut valid_blob = Vec::new();
     ImageSrc::Url("https://example.invalid/a.png".into()).encode(&mut valid_blob);
-    let build_res_frame = |rid: u32, with_pad: bool| {
+    let build_res_nve2 = |rid: u32, with_pad: bool| {
         let mut def = Vec::new();
         def.extend_from_slice(&rid.to_le_bytes());
         def.extend_from_slice(&ImageSrc::KIND.lo().to_le_bytes());
@@ -773,14 +787,34 @@ fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
         op_count += 1;
         let mut nve2 = minimal_nve2_header(1, op_count, 6 + (ops.len() / 4) as u32);
         nve2.extend_from_slice(&ops);
-        sign_frame0_payload(&nve2, 0, meta)
+        nve2
     };
     // Sanity check: identical registered ImageSrc payload at ResourceId(1) boots cleanly.
-    let valid_res_frame0 = build_res_frame(1, false);
+    let valid_res_frame0 = sign_frame0_payload(&build_res_nve2(1, false), 0, meta);
     Frame0File::boot_bytes_into_replica(&valid_res_frame0, meta, &mut replica)
         .expect("registered ImageSrc payload at ResourceId(1) must decode cleanly");
 
-    let hostile_res = build_res_frame(400_000, true);
+    // Direct bare-NodeStore WireDecoder check BEFORE any StoreWireReplica::reset():
+    // proves neither `nodes` nor `resources` slots grew on the rejected hostile payload.
+    let hostile_res_nve2 = build_res_nve2(400_000, true);
+    let mut bare_res = NodeStore::replica();
+    let mut bare_res_dec = WireDecoder::default();
+    assert_eq!(
+        bare_res_dec.apply(&mut bare_res.tx(), &hostile_res_nve2),
+        Err(nve_store::wire::WireError::Budget)
+    );
+    assert_eq!(
+        bare_res.capacity(),
+        1,
+        "direct WireDecoder resource rejection must keep bare NodeStore::nodes == 1"
+    );
+    assert_eq!(
+        bare_res.resources().slots(),
+        1,
+        "direct WireDecoder resource rejection must keep bare resources().slots() == 1"
+    );
+
+    let hostile_res = sign_frame0_payload(&hostile_res_nve2, 0, meta);
     let res_path = temp_file("hostile_sparse_res.nve2");
     std::fs::write(&res_path, &hostile_res).expect("write hostile resource frame0");
     assert!(matches!(

@@ -823,8 +823,9 @@ fn wire_decoder_rejects_hostile_sparse_node_and_resource_keyframes_before_alloca
         Err(WireError::Resource { id: 0, kind: 0 })
     );
 
-    // 3. Overflow / un-reservable sparse request surfaces WireError::Alloc, while dense budget
-    //    overrun surfaces WireError::Budget cleanly.
+    // 3. Sparse byte-count overflow surfaces WireError::Budget before touching the allocator,
+    //    while an in-`usize` un-reservable request under an unbounded budget surfaces
+    //    WireError::Alloc and dense budget overrun surfaces WireError::Budget cleanly.
     let mut store = NodeStore::new();
     let sparse_slot = Text::slot();
     let mut huge_budget = crate::wire::budget::SessionBudget::with_limit(usize::MAX);
@@ -835,6 +836,11 @@ fn wire_decoder_rejects_hostile_sparse_node_and_resource_keyframes_before_alloca
             usize::MAX / 2,
             &mut huge_budget
         ),
+        Err(WireError::Budget)
+    );
+    let unreservable = (isize::MAX as usize) / 256;
+    assert_eq!(
+        store.reserve_column_bulk(sparse_slot, unreservable, unreservable, &mut huge_budget),
         Err(WireError::Alloc)
     );
     let dense_slot = Visual::slot();
@@ -1552,10 +1558,11 @@ fn dirty_list_try_reserve_plus_one_prevents_grow_at_exact_64_and_patch_detach_re
         tx.commit_into(&mut changes);
     }
 
-    // Frame 2: Write MODIFIED values to all 64 nodes so `changed == 1` actually fills
-    // `dirty.len() == 64` (buf_len == 65), re-patch already-dirty NodeId(2) (exercising
-    // `try_reserve(0)` when `len + 1 == buf_len`), then Detach ROOT and re-Patch ROOT (pushing
-    // the 65th dirty entry so `dirty.len() == 65` and `buf_len() == 66`, never 128 via grow()).
+    // Frame 2: Write MODIFIED values to all 64 nodes so `changed == 1` fills `dirty.len() == 64`
+    // (`buf_len == 65`), re-patch already-dirty NodeId(2) (which bumps `buf_len` to 66 via
+    // `reserve_bulk` and exercises `try_writer`'s `try_reserve(0)` fast path), then Detach ROOT
+    // and re-Patch ROOT (pushing the 65th dirty entry so `dirty.len() == 65` and `buf_len() == 66`,
+    // never 128 via grow()). Direct `len == buf_len` -> `try_reserve(0)` is tested below.
     let mut patch_64_mod = Vec::with_capacity(64 * 12);
     for id in 1..=64u32 {
         patch_64_mod.extend_from_slice(&id.to_le_bytes());
@@ -1626,21 +1633,24 @@ fn dirty_list_try_reserve_plus_one_prevents_grow_at_exact_64_and_patch_detach_re
 fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() {
     use crate::wire::{Op, WireDecoder, WireError};
 
-    let build_32_dyn_sparse_decls = |key_base: u64, prefix: &str| {
+    let build_dyn_sparse_decls = |table_count: u8, words: u8, key_base: u64, prefix: &str| {
         let mut decls = Vec::new();
-        for i in 0..32u8 {
+        for i in 0..table_count {
             let key = nve_hash::Key64(key_base + u64::from(i));
             let name = format!("{prefix}.{i:02}");
             decls.extend_from_slice(&key.lo().to_le_bytes());
             decls.extend_from_slice(&key.hi().to_le_bytes());
             decls.extend_from_slice(&(0x300u32 + u32::from(i)).to_le_bytes());
             decls.extend_from_slice(&0u32.to_le_bytes());
-            let packed = u32::from(i) | (1u32 << 8) | (1u32 << 24);
+            let packed = u32::from(i) | (1u32 << 8) | (u32::from(words) << 24);
             decls.extend_from_slice(&packed.to_le_bytes());
             decls.extend_from_slice(&0u32.to_le_bytes());
             decls.extend_from_slice(&0u32.to_le_bytes());
-            decls.extend_from_slice(&0u32.to_le_bytes());
-            decls.extend_from_slice(&[1u8, 0, 0, 0]);
+            decls.resize(decls.len() + usize::from(words) * 4, 0u8);
+            decls.resize(decls.len() + usize::from(words), 1u8);
+            while !decls.len().is_multiple_of(4) {
+                decls.push(0);
+            }
             decls.extend_from_slice(&(name.len() as u32).to_le_bytes());
             decls.extend_from_slice(name.as_bytes());
             while !decls.len().is_multiple_of(4) {
@@ -1650,11 +1660,11 @@ fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() 
         decls
     };
 
-    // Vector 1: 1 high-index live node (NodeId(500_000)) + 32 dynamic sparse tables each receiving
-    // 2,000 repeated `(NodeId(500_000), mask = 0)` patches -> succeeds without 128x pool over-reserve
-    // (`paged_pool_cap() <= 8`, NOT 1,954!).
+    // Vector 1a (positive): 1 high-index live node (NodeId(500_000)) + 32 dynamic 1-word sparse
+    // tables each receiving 2,000 repeated `(NodeId(500_000), mask = 0)` patches -> succeeds with
+    // `paged_pool_cap() <= 8` AND exact bounded/charged `owners`/`masks`/`rows` capacities <= 2,000.
     let high_id = NodeId(500_000);
-    let dup_decls = build_32_dyn_sparse_decls(0xCAFE_F000_0000_0000, "dup.paged");
+    let dup_decls = build_dyn_sparse_decls(32, 1, 0xCAFE_F000_0000_0000, "dup.paged");
     let create_high = high_id.raw().to_le_bytes();
     let repeat_n: u32 = 2_000;
     let mut dup_patch = Vec::with_capacity((repeat_n as usize) * 8);
@@ -1677,7 +1687,7 @@ fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() 
         let mut tx = dup_replica.tx();
         dup_dec
             .apply(&mut tx, &dup_frame)
-            .expect("duplicate high-index sparse patches must stay within SessionBudget");
+            .expect("duplicate high-index 1-word sparse patches must stay within SessionBudget");
         tx.commit_into(&mut changes);
     }
     let dup_cols: Vec<_> = dup_replica
@@ -1694,12 +1704,52 @@ fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() 
             "PagedIndex::reserve_for_nodes must cap pool_pages by expected_rows.div_ceil(256) (<= 8), got {}",
             col.paged_pool_cap()
         );
+        assert!(col.owners_cap() <= repeat_n as usize);
+        assert!(col.masks_cap() <= repeat_n as usize);
+        assert!(col.rows_cap() <= repeat_n as usize);
     }
 
-    // Vector 2: 600 stride-256 live nodes (`NodeId(256..=153_600)`, only 4.92 MiB of NodeRows)
-    // patched across 32 dynamic sparse tables -> `PagedIndex::pool` growth (32 * 600 * 1 KiB =
-    // 19.66 MiB + 4.92 MiB nodes > ~18.6 MiB budget) MUST fail with WireError::Budget.
-    let stride_decls = build_32_dyn_sparse_decls(0xCAFE_F100_0000_0000, "stride.paged");
+    // Vector 1b (negative — 17x duplicate-patch amplification): identical shape with 32-word dynamic
+    // sparse tables (136 B/row * 2,000 * 32 = 8.70 MiB row buffers on top of 16.00 MiB nodes +
+    // 0.51 MiB PagedIndex > ~25.06 MiB budget) MUST fail with WireError::Budget AND leave the
+    // failing column completely unallocated (zero heap allocs on budget rejection).
+    let wide_decls = build_dyn_sparse_decls(32, 32, 0xCAFE_F080_0000_0000, "dup.wide");
+    let mut wide_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(34);
+    wide_ops.push((Op::DeclareTables as u8, 0, 32, &wide_decls));
+    wide_ops.push((Op::CreateNodes as u8, 0, 1, &create_high));
+    for i in 0..32u8 {
+        wide_ops.push((Op::Patch as u8, i, repeat_n, &dup_patch));
+    }
+    let wide_frame = build_wire_frame(&wide_ops);
+    let mut wide_replica = NodeStore::replica();
+    let mut wide_dec = WireDecoder::default();
+    {
+        let mut tx = wide_replica.tx();
+        assert_eq!(
+            wide_dec.apply(&mut tx, &wide_frame),
+            Err(WireError::Budget),
+            "32-word sparse duplicate-patch row buffers must be charged and hit WireError::Budget"
+        );
+    }
+    let unallocated_tail = wide_replica
+        .columns
+        .iter()
+        .skip(crate::table::MAX_STATIC_TABLE_SLOTS)
+        .flatten()
+        .any(|c| {
+            c.owners_cap() == 0
+                && c.masks_cap() == 0
+                && c.rows_cap() == 0
+                && c.paged_pool_cap() == 0
+        });
+    assert!(
+        unallocated_tail,
+        "failing sparse reserve_bulk must reject before allocating any buffer on the over-budget column"
+    );
+
+    // Vector 2a (positive control) & 2b (negative): 600 stride-256 live nodes (`NodeId(256..=153_600)`,
+    // 4.92 MiB NodeRows). 8 dynamic sparse tables fit (~11.3 MiB < ~17.4 MiB) and MUST succeed,
+    // proving 32 tables' failure is specifically caused by PagedIndex::pool budget charging.
     let stride_n: u32 = 600;
     let mut stride_create = Vec::with_capacity((stride_n as usize) * 4);
     let mut stride_patch = Vec::with_capacity((stride_n as usize) * 8);
@@ -1709,6 +1759,35 @@ fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() 
         stride_patch.extend_from_slice(&nid.to_le_bytes());
         stride_patch.extend_from_slice(&0u32.to_le_bytes());
     }
+    let ok_decls = build_dyn_sparse_decls(8, 1, 0xCAFE_F180_0000_0000, "stride.ok");
+    let mut ok_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(10);
+    ok_ops.push((Op::DeclareTables as u8, 0, 8, &ok_decls));
+    ok_ops.push((Op::CreateNodes as u8, 0, stride_n, &stride_create));
+    for i in 0..8u8 {
+        ok_ops.push((Op::Patch as u8, i, stride_n, &stride_patch));
+    }
+    let ok_frame = build_wire_frame(&ok_ops);
+    let mut ok_replica = NodeStore::replica();
+    let mut ok_dec = WireDecoder::default();
+    {
+        let mut tx = ok_replica.tx();
+        ok_dec
+            .apply(&mut tx, &ok_frame)
+            .expect("8-table stride-256 positive control must fit within SessionBudget");
+        tx.commit_into(&mut changes);
+    }
+    let ok_cols: Vec<_> = ok_replica
+        .columns
+        .iter()
+        .skip(crate::table::MAX_STATIC_TABLE_SLOTS)
+        .flatten()
+        .collect();
+    assert_eq!(ok_cols.len(), 8);
+    for col in ok_cols {
+        assert_eq!(col.row_count(), stride_n as usize);
+    }
+
+    let stride_decls = build_dyn_sparse_decls(32, 1, 0xCAFE_F100_0000_0000, "stride.paged");
     let mut stride_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(34);
     stride_ops.push((Op::DeclareTables as u8, 0, 32, &stride_decls));
     stride_ops.push((Op::CreateNodes as u8, 0, stride_n, &stride_create));
@@ -1725,4 +1804,223 @@ fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() 
         Err(WireError::Budget),
         "stride-256 32-dynamic-table PagedIndex::pool amplification must hit WireError::Budget"
     );
+}
+
+#[test]
+fn incremental_delta_create_nodes_grows_geometrically_not_quadratically() {
+    use crate::wire::{Op, WireDecoder};
+
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    let mut prev_cap = replica.nodes_cap();
+    let mut reallocs = 0usize;
+
+    for step in 1..=2_000u32 {
+        let create = step.to_le_bytes();
+        let frame =
+            build_wire_frame_num(u64::from(step), &[(Op::CreateNodes as u8, 0, 1, &create)]);
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &frame)
+            .expect("incremental 1-node delta must succeed");
+        tx.commit_into(&mut changes);
+        let cur_cap = replica.nodes_cap();
+        if cur_cap != prev_cap {
+            assert!(cur_cap > prev_cap);
+            prev_cap = cur_cap;
+            reallocs += 1;
+        }
+    }
+    assert_eq!(replica.capacity(), 2_001);
+    assert!(
+        reallocs <= 16,
+        "2,000 sequential 1-node CreateNodes deltas must grow geometrically (<= 16 reallocs), got {reallocs}"
+    );
+    assert!(
+        replica.nodes_cap() <= 4_096,
+        "nodes_cap must stay bounded by geometric doubling, got {}",
+        replica.nodes_cap()
+    );
+
+    // Deleting and recycling a slot in a subsequent delta must perform ZERO reallocations.
+    let cap_before_recycle = replica.nodes_cap();
+    let rem_body = 500u32.to_le_bytes();
+    let rem_frame = build_wire_frame_num(2_001, &[(Op::RemoveNodes as u8, 0, 1, &rem_body)]);
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &rem_frame).expect("remove node 500");
+        tx.commit_into(&mut changes);
+    }
+    let recycled = NodeId::from_index(crate::id::NodeIndex(500), 1);
+    let rec_body = recycled.raw().to_le_bytes();
+    let rec_frame = build_wire_frame_num(2_002, &[(Op::CreateNodes as u8, 0, 1, &rec_body)]);
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &rec_frame)
+            .expect("create into recycled slot");
+        tx.commit_into(&mut changes);
+    }
+    assert!(replica.is_live(recycled));
+    assert_eq!(
+        replica.nodes_cap(),
+        cap_before_recycle,
+        "recycling an existing free slot must not grow nodes_cap"
+    );
+}
+
+#[test]
+fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereserve() {
+    use crate::wire::budget::{SESSION_BASE_SLOT_BYTES, WIRE_SLOT_MULTIPLIER};
+    use crate::wire::{Op, WireDecoder, WireError};
+
+    // 1. ResourceStore::entries overshoot guard: Frame 1 ResourceId(290_000) (~16.24 MB) +
+    //    Frame 2 ResourceId(290_001) (+1) must clamp capacity to SessionBudget (never 2x to 580k).
+    crate::register_codec::<Shadows>();
+    let mut blob = Vec::new();
+    Shadows(vec![1.5]).encode(&mut blob);
+    let build_res = |fnum: u64, rid: u32| {
+        let mut def = Vec::new();
+        def.extend_from_slice(&rid.to_le_bytes());
+        def.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
+        def.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
+        def.extend_from_slice(&0u32.to_le_bytes());
+        def.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        def.extend_from_slice(&blob);
+        build_wire_frame_num(fnum, &[(Op::DefineResources as u8, 0, 1, &def)])
+    };
+    let rf1 = build_res(1, 290_000);
+    let rf2 = build_res(2, 290_001);
+    let rf3 = build_res(3, 350_000);
+    let mut r_store = NodeStore::replica();
+    let mut r_dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = r_store.tx();
+        r_dec
+            .apply(&mut tx, &rf1)
+            .expect("ResourceId(290_000) fits");
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(r_store.resources.entries_cap(), 290_001);
+    {
+        let mut tx = r_store.tx();
+        r_dec
+            .apply(&mut tx, &rf2)
+            .expect("ResourceId(290_001) fits under clamped target");
+        tx.commit_into(&mut changes);
+    }
+    let max_res_bytes = SESSION_BASE_SLOT_BYTES + (rf1.len() + rf2.len()) * WIRE_SLOT_MULTIPLIER;
+    let res_cap_bytes =
+        (r_store.resources.entries_cap() - 1) * crate::resource::ResourceStore::ENTRY_BYTES;
+    assert!(
+        res_cap_bytes <= max_res_bytes,
+        "ResourceStore::entries capacity ({res_cap_bytes} B) must NEVER double past SessionBudget ({max_res_bytes} B)"
+    );
+    let cap_before_rf3 = r_store.resources.entries_cap();
+    {
+        let mut tx = r_store.tx();
+        assert_eq!(r_dec.apply(&mut tx, &rf3), Err(WireError::Budget));
+    }
+    assert_eq!(r_store.resources.entries_cap(), cap_before_rf3);
+
+    // 2. NodeStore::nodes overshoot guard: Frame 1 NodeId(500_000) (~16.00 MB) + Frame 2
+    //    NodeId(500_001) (+1) must clamp nodes_cap to SessionBudget (never 2x to 1_000_002).
+    let nf1 = build_wire_frame_num(
+        1,
+        &[(Op::CreateNodes as u8, 0, 1, &500_000u32.to_le_bytes())],
+    );
+    let nf2 = build_wire_frame_num(
+        2,
+        &[(Op::CreateNodes as u8, 0, 1, &500_001u32.to_le_bytes())],
+    );
+    let nf3 = build_wire_frame_num(
+        3,
+        &[(Op::CreateNodes as u8, 0, 1, &600_000u32.to_le_bytes())],
+    );
+    let mut n_store = NodeStore::replica();
+    let mut n_dec = WireDecoder::default();
+    {
+        let mut tx = n_store.tx();
+        n_dec.apply(&mut tx, &nf1).expect("NodeId(500_000) fits");
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(n_store.nodes_cap(), 500_001);
+    {
+        let mut tx = n_store.tx();
+        n_dec
+            .apply(&mut tx, &nf2)
+            .expect("NodeId(500_001) fits under clamped target");
+        tx.commit_into(&mut changes);
+    }
+    let max_node_bytes = SESSION_BASE_SLOT_BYTES + (nf1.len() + nf2.len()) * WIRE_SLOT_MULTIPLIER;
+    let node_cap_bytes = (n_store.nodes_cap() - 2) * size_of::<crate::NodeRow>();
+    assert!(
+        node_cap_bytes <= max_node_bytes,
+        "NodeStore::nodes capacity ({node_cap_bytes} B) must NEVER double past SessionBudget ({max_node_bytes} B)"
+    );
+    let cap_before_nf3 = n_store.nodes_cap();
+    {
+        let mut tx = n_store.tx();
+        assert_eq!(n_dec.apply(&mut tx, &nf3), Err(WireError::Budget));
+    }
+    assert_eq!(n_store.nodes_cap(), cap_before_nf3);
+
+    // 3. Pre-calling `reserve_for_frame0` before `WireDecoder::apply` must charge pre-reserved
+    //    `nodes` capacity so callers cannot bypass `SessionBudget`.
+    let mut pre_store = NodeStore::replica();
+    pre_store
+        .reserve_for_frame0(500_000, 2_000_000)
+        .expect("pre-reserve 500k nodes (~16 MB)");
+    let res_100k = build_res(1, 100_000); // ~5.6 MB > ~0.78 MB remaining after 16 MB pre-reserve
+    let mut pre_dec = WireDecoder::default();
+    let mut tx = pre_store.tx();
+    assert_eq!(
+        pre_dec.apply(&mut tx, &res_100k),
+        Err(WireError::Budget),
+        "pre-reserved NodeStore::nodes capacity must be charged against SessionBudget"
+    );
+}
+
+#[test]
+fn paged_index_try_set_dir_doubling_never_starves_required_pool_growth() {
+    use crate::column::PagedIndex;
+    use crate::id::NodeIndex;
+    use crate::wire::WireError;
+    use crate::wire::budget::SessionBudget;
+
+    // Case A: dir.cap == 500, pool.cap == 100, remaining == 2,000 B.
+    // `min_dir = 4 B`, `min_pool = 1,024 B`, `double_dir = 2,000 B`.
+    // Speculative `dir` doubling must reserve `min_pool` (1,024 B) first, clamping `dir` to
+    // `500 + 976/4 = 744` so `pool` still gets its required 1,024 B page.
+    let mut idx = PagedIndex::with_exact_caps(500, 100);
+    let mut budget = SessionBudget::with_limit(2_000);
+    let target_node = NodeIndex(500 * 256);
+    idx.try_set(target_node, 7, &mut budget)
+        .expect("dir doubling must not starve required pool page");
+    assert_eq!(idx.get(target_node), Some(6));
+    assert_eq!(idx.dir_cap(), 744);
+    assert_eq!(idx.pool_cap(), 101);
+    assert_eq!(budget.remaining(), 0);
+
+    // Case B: Exact minimum fit (4 B dir + 1,024 B pool = 1,028 B) succeeds cleanly.
+    let mut exact = PagedIndex::with_exact_caps(500, 100);
+    let mut exact_budget = SessionBudget::with_limit(1_028);
+    exact
+        .try_set(target_node, 9, &mut exact_budget)
+        .expect("exact 1,028 B budget must succeed");
+    assert_eq!(exact.get(target_node), Some(8));
+    assert_eq!(exact.dir_cap(), 501);
+    assert_eq!(exact.pool_cap(), 101);
+    assert_eq!(exact_budget.remaining(), 0);
+
+    // Case C: 1 byte short (1,027 B) fails with WireError::Budget and performs ZERO allocations.
+    let mut short = PagedIndex::with_exact_caps(500, 100);
+    let mut short_budget = SessionBudget::with_limit(1_027);
+    assert_eq!(
+        short.try_set(target_node, 9, &mut short_budget),
+        Err(WireError::Budget)
+    );
+    assert_eq!(short.dir_cap(), 500);
+    assert_eq!(short.pool_cap(), 100);
+    assert_eq!(short_budget.remaining(), 1_027);
 }

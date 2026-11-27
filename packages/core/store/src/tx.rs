@@ -211,7 +211,7 @@ impl Transaction<'_> {
     /// Creates `id` exactly (replica stores applying a wire frame). Returns `false` if the slot
     /// is occupied by a live node. O(1) — clears `IN_FREE`/`PENDING_FREE` flags without scanning.
     pub fn create_at(&mut self, id: NodeId) -> bool {
-        self.store.try_create_at(id).unwrap_or(false)
+        self.store.try_create_at(id, None).unwrap_or(false)
     }
 
     /// Removes `id` and its whole subtree, detaching it from its parent (zero heap allocations
