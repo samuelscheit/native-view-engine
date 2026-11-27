@@ -38,6 +38,8 @@ struct Field {
     effects: u8,
     default: Option<String>,
     bits: Option<u32>,
+    /// `#[values(PATH)]`: a `ValueSetDesc` const naming a plain integer field's bits.
+    values: Option<String>,
     doc: Vec<String>,
     word: u32,
     shift: u32,
@@ -158,7 +160,7 @@ fn parse_fields(body: TokenStream) -> Result<Vec<Field>, String> {
     let tokens: Vec<TokenTree> = body.into_iter().collect();
     let (mut pos, mut out) = (0, Vec::new());
     while pos < tokens.len() {
-        let (mut effects, mut default, mut bits, mut doc) = (0u8, None, None, Vec::new());
+        let (mut effects, mut default, mut bits, mut values, mut doc) = (0u8, None, None, None, Vec::new());
         while is_punct(&tokens, pos, '#') {
             let Some(TokenTree::Group(g)) = tokens.get(pos + 1) else { return Err("bad attribute".into()) };
             let inner: Vec<_> = g.stream().into_iter().collect();
@@ -179,6 +181,10 @@ fn parse_fields(body: TokenStream) -> Result<Vec<Field>, String> {
                     let g = group_inner(&inner[1..]).ok_or("expected `#[bits(n)]`")?;
                     let [TokenTree::Literal(l)] = g.as_slice() else { return Err("expected integer in #[bits]".into()) };
                     bits = Some(parse_usize_literal(&l.to_string())? as u32);
+                }
+                "values" => {
+                    let g = group_inner(&inner[1..]).ok_or("expected `#[values(PATH)]`")?;
+                    values = Some(g.into_iter().collect::<TokenStream>().to_string());
                 }
                 "doc" => if let Some(TokenTree::Literal(l)) = inner.get(2) {
                     doc.push(parse_string_literal(&l.to_string())?);
@@ -224,10 +230,10 @@ fn parse_fields(body: TokenStream) -> Result<Vec<Field>, String> {
             Class::Scalar
         };
         if effects == 0 { return Err(format!("field `{name}` needs #[effect(...)]")); }
-        if !matches!(class, Class::Scalar) && (default.is_some() || bits.is_some()) {
-            return Err(format!("`{name}`: Str/Res fields take no #[default]/#[bits]"));
+        if !matches!(class, Class::Scalar) && (default.is_some() || bits.is_some() || values.is_some()) {
+            return Err(format!("`{name}`: Str/Res fields take no #[default]/#[bits]/#[values]"));
         }
-        out.push(Field { name, ty, short_ty: outer_last, class, effects, default, bits, doc, word: 0, shift: 0, width: 32 });
+        out.push(Field { name, ty, short_ty: outer_last, class, effects, default, bits, values, doc, word: 0, shift: 0, width: 32 });
     }
     Ok(out)
 }
@@ -299,8 +305,9 @@ fn emit(t: &Table) -> String {
         let d = docs(f);
         fx[w as usize] |= f.effects;
         fields.push_str(&format!(
-            "{S}::FieldDesc {{ name: {}, kind: <{ty} as {S}::TableField>::KIND, word: {w}, shift: {sh}, bits: {}, effects: {}, variants: <{ty} as {S}::TableField>::VARIANTS }},",
-            quote_str(name), if matches!(f.class, Class::Str) { 64 } else { f.width }, f.effects));
+            "{S}::FieldDesc {{ name: {}, kind: <{ty} as {S}::TableField>::KIND, word: {w}, shift: {sh}, bits: {}, effects: {}, values: {} }},",
+            quote_str(name), if matches!(f.class, Class::Str) { 64 } else { f.width }, f.effects,
+            f.values.as_ref().map_or_else(|| format!("<{ty} as {S}::TableField>::VALUES"), |p| format!("Some(&{p})"))));
         regs.push_str(&format!("<{ty} as {S}::TableField>::register();"));
         let cname = upper(name);
         match &f.class {

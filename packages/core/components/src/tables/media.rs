@@ -217,6 +217,8 @@ impl WordValue for OptAutofillHint {
 impl WordValue for InputMode {
     const BITS: u8 = 3;
     const KIND: FieldKind = FieldKind::Enum;
+    const VALUES: Option<&'static nve_store::ValueSetDesc> =
+        nve_store::value_set!(InputMode { Text, Email, Tel, Url, Numeric, Decimal, Search });
     #[inline(always)]
     fn to_bits(self) -> u32 {
         self as u32

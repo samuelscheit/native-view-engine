@@ -18,11 +18,14 @@ use nve_abi::schema::{
     AbiEnumDescriptor, AbiFileDescriptor, NveEnumSchema, core_abi_descriptor, runtime_abi_descriptor,
     scene_abi_descriptor,
 };
-use nve_abi::table::TableDesc;
+use nve_abi::table::{TableDesc, ValueSetDesc, WordConstsDesc};
 
 use crate::error::CodegenError;
 use crate::schema::export::GeneratedFile;
-use model::{AbiModel, HashVector, RuntimeAbiModel, TableModel, hash_vectors, tables_model};
+use model::{
+    AbiModel, ConstsModel, HashVector, RuntimeAbiModel, TableModel, consts_model, hash_vectors,
+    tables_model, value_sets,
+};
 use spell::{c, dart, ts};
 
 const CORE: AbiFileDescriptor = core_abi_descriptor();
@@ -52,9 +55,7 @@ macro_rules! templates {
 templates! {
     CAbi: "c/nve_abi.h" => m: AbiModel<'a>;
     CRuntimeAbi: "c/nve_runtime_abi.h" => m: RuntimeAbiModel<'a>;
-    CTables: "c/nve_tables.h" => tables: [TableModel<'a>];
     CVectors: "c/hash_vectors.h" => vectors: [HashVector];
-    SwiftTables: "swift/NveTables.swift" => tables: [TableModel<'a>];
     SwiftVectors: "swift/HashVectors.swift" => vectors: [HashVector];
     JavaAbi: "java/NveAbi.java" => m: AbiModel<'a>;
     JavaTables: "java/NveTables.java" => tables: [TableModel<'a>];
@@ -134,17 +135,59 @@ pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
     ])
 }
 
-/// Field specs, keys, and schema hashes of `tables` for every host runtime.
-pub fn generate_table_files(tables: &[&TableDesc]) -> Result<Vec<GeneratedFile>, CodegenError> {
+/// The C11 / C++20 table header: the core one (`module: None`, adds `NVE_TABLE_COUNT` /
+/// `NVE_TABLE_LIST`) or a capability module's (`NVE_<MODULE>_TABLES_GENERATED_H`).
+#[derive(Template)]
+#[template(path = "c/nve_tables.h", escape = "none")]
+struct CTables<'a> {
+    tables: &'a [TableModel<'a>],
+    value_sets: &'a [&'static ValueSetDesc],
+    guard: String,
+    table_word: &'a str,
+    core: bool,
+}
+
+impl<'a> CTables<'a> {
+    fn new(
+        tables: &'a [TableModel<'a>],
+        value_sets: &'a [&'static ValueSetDesc],
+        module: Option<&str>,
+    ) -> Self {
+        let guard = match module {
+            Some(m) => format!("NVE_{}_TABLES_GENERATED_H", spell::screaming(m)),
+            None => "NVE_TABLES_GENERATED_H".to_owned(),
+        };
+        let table_word = if module.is_some() { "<nve/host/table_word.h>" } else { "\"../host/table_word.h\"" };
+        Self { tables, value_sets, guard, table_word, core: module.is_none() }
+    }
+}
+
+/// Swift table header also carries the word enums and flag sets the table fields hold.
+#[derive(Template)]
+#[template(path = "swift/NveTables.swift", escape = "none")]
+struct SwiftTables<'a> {
+    tables: &'a [TableModel<'a>],
+    consts: &'a [ConstsModel],
+}
+
+/// Field specs, keys, and schema hashes of `tables` (plus the `consts` their fields hold) for every
+/// host runtime.
+pub fn generate_table_files(
+    tables: &[&TableDesc],
+    consts: &[&WordConstsDesc],
+) -> Result<Vec<GeneratedFile>, CodegenError> {
     let t = tables_model(tables)?;
+    let sets = value_sets(&t)?;
     let tables = t.as_slice();
+    let c = consts_model(consts)?;
+    let consts = c.as_slice();
     Ok(vec![
         render(
-            &CTables { tables },
+            &CTables::new(tables, &sets, None),
             format!("{CXX}/include/nve/generated/nve_tables.generated.h"),
         )?,
         render(
-            &SwiftTables { tables },
+            &SwiftTables { tables, consts },
             format!("{SWIFT}/Sources/NveHost/NveTables.generated.swift"),
         )?,
         render(
@@ -160,6 +203,19 @@ pub fn generate_table_files(tables: &[&TableDesc]) -> Result<Vec<GeneratedFile>,
             format!("{TS}/src/generated/nve_tables.generated.ts"),
         )?,
     ])
+}
+
+/// The C11 / C++20 mirror of a capability module's tables (`module` = `canvas` ->
+/// `NVE_CANVAS_TABLES_GENERATED_H`, includes `<nve/host/table_word.h>` from `nve::host_cxx`).
+/// The caller links the module and passes its descriptors, so this crate stays module-free.
+pub fn generate_module_table_header(
+    module: &str,
+    tables: &[&TableDesc],
+    relative_path: String,
+) -> Result<GeneratedFile, CodegenError> {
+    let t = tables_model(tables)?;
+    let sets = value_sets(&t)?;
+    render(&CTables::new(&t, &sets, Some(module)), relative_path)
 }
 
 /// The golden XXH64 vectors for every host runtime's test suite.
@@ -191,9 +247,12 @@ pub fn generate_hash_vector_files() -> Result<Vec<GeneratedFile>, CodegenError> 
 }
 
 /// Every generated host file: ABI, `tables`, and the golden XXH64 vectors.
-pub fn generate_all_abi_files(tables: &[&TableDesc]) -> Result<Vec<GeneratedFile>, CodegenError> {
+pub fn generate_all_abi_files(
+    tables: &[&TableDesc],
+    consts: &[&WordConstsDesc],
+) -> Result<Vec<GeneratedFile>, CodegenError> {
     let mut files = generate_abi_files()?;
-    files.extend(generate_table_files(tables)?);
+    files.extend(generate_table_files(tables, consts)?);
     files.extend(generate_hash_vector_files()?);
     Ok(files)
 }

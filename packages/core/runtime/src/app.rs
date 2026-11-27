@@ -80,15 +80,32 @@ pub struct CAbiAppAdapter {
     patch_scratch: Vec<u8>,
 }
 
-/// Copies the optional interface table `T` that `get_iface(id)` returns (`None` for NULL).
+/// Copies the interface table `T` that `get_iface(id)` returns, or `None` when the module returns
+/// NULL OR leaves any slot NULL. Every `NveXxxApi` is a struct of non-nullable Rust fn pointers,
+/// so copying a vtable with a NULL slot would be undefined behaviour (and, through the
+/// `Option<T>` niche, silently read as "interface absent"). A C module must fill every slot of an
+/// interface it returns (returning 0 / empty for unsupported operations).
 ///
 /// # Safety
-/// `get_iface` must follow the NVE modular C ABI: a non-null result for `id` points to a `T`.
+/// `get_iface` follows the NVE modular C ABI: a non-null result points to a static `T`, and `T`
+/// consists solely of function pointers.
 unsafe fn query_interface<T: Copy>(get_iface: NveGetInterfaceFn, id: u32) -> Option<T> {
-    // SAFETY: Caller guarantees `get_iface` follows the NVE modular C ABI contract.
-    let ptr = unsafe { get_iface(id) }.cast::<T>();
-    // SAFETY: A non-null pointer returned for `id` points to a valid static `T`.
-    (!ptr.is_null()).then(|| unsafe { *ptr })
+    const PTR: usize = core::mem::size_of::<*const ()>();
+    const { assert!(core::mem::size_of::<T>().is_multiple_of(PTR)) };
+    // SAFETY: Caller guarantees the `nve_get_interface` contract for `id`.
+    let ptr = unsafe { get_iface(id) };
+    if ptr.is_null() {
+        return None;
+    }
+    let slots = ptr.cast::<*const ()>();
+    for i in 0..core::mem::size_of::<T>() / PTR {
+        // SAFETY: `ptr` points to a readable `T` made of `size_of::<T>() / PTR` pointer slots.
+        if unsafe { slots.add(i).read() }.is_null() {
+            return None;
+        }
+    }
+    // SAFETY: Non-null `ptr` points to a valid static `T` whose every fn-pointer slot is non-null.
+    Some(unsafe { *ptr.cast::<T>() })
 }
 
 impl CAbiAppAdapter {
@@ -168,8 +185,13 @@ impl RuntimeApp for CAbiAppAdapter {
         let component = self.component_api.ok_or(CapabilityUnsupported)?;
         let entries = props.entries();
         let count = u32::try_from(entries.len()).map_err(|_| CapabilityUnsupported)?;
+        let ptr = if entries.is_empty() {
+            core::ptr::null()
+        } else {
+            entries.as_ptr()
+        };
         // SAFETY: `self.handle` is live and `entries` stays borrowed for the synchronous call.
-        Ok(unsafe { (component.set_props)(self.handle, entries.as_ptr(), count) != 0 })
+        Ok(unsafe { (component.set_props)(self.handle, ptr, count) != 0 })
     }
 
     fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {

@@ -1,30 +1,38 @@
 #include "NveGtkInternal.hpp"
 
+#include <nve/host/xxh64.hpp>
+
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <utility>
 
-namespace nve {
+namespace nve::gtk {
+
+using namespace nve::canvas;
 
 namespace {
 
-#if GTK_CHECK_VERSION(4, 8, 0)
-GtkContentFit parse_gtk_content_fit(std::string_view mode) noexcept {
-  if (mode == "contain") {
-    return GTK_CONTENT_FIT_CONTAIN;
+bool starts_with_ci(std::string_view s, std::string_view prefix) noexcept {
+  if (s.size() < prefix.size()) return false;
+  for (size_t i = 0; i < prefix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(s[i])) != prefix[i]) return false;
   }
-  if (mode == "stretch" || mode == "fill") {
-    return GTK_CONTENT_FIT_FILL;
-  }
-  if (mode == "center") {
-    return GTK_CONTENT_FIT_SCALE_DOWN;
-  }
-  return GTK_CONTENT_FIT_COVER;
+  return true;
 }
-#endif
 
-GdkTexture* decode_uri_to_gdk_texture(std::string_view uri) {
+GdkTexture* decode_bytes(std::span<const uint8_t> data) {
+  GError* err = nullptr;
+  GBytes* bytes = g_bytes_new(data.data(), data.size());
+  GdkTexture* tex = gdk_texture_new_from_bytes(bytes, &err);
+  g_bytes_unref(bytes);
+  g_clear_error(&err);
+  return tex;
+}
+
+GdkTexture* decode_url(std::string_view uri) {
   if (uri.empty()) {
     return nullptr;
   }
@@ -32,7 +40,7 @@ GdkTexture* decode_uri_to_gdk_texture(std::string_view uri) {
   GError* err = nullptr;
   GdkTexture* tex = nullptr;
 
-  if (uri.size() > 11u && gtk_internal::ascii_lower(uri.substr(0, 11)) == "data:image/") {
+  if (starts_with_ci(uri, "data:image/")) {
     const size_t marker = uri.find(";base64,");
     if (marker == std::string_view::npos) {
       return nullptr;
@@ -50,7 +58,10 @@ GdkTexture* decode_uri_to_gdk_texture(std::string_view uri) {
     GBytes* bytes = g_bytes_new_take(decoded, decoded_len);
     tex = gdk_texture_new_from_bytes(bytes, &err);
     g_bytes_unref(bytes);
-  } else if (uri.size() > 7u && gtk_internal::ascii_lower(uri.substr(0, 7)) == "file://") {
+  } else if (uri.front() == '/') {
+    const std::string path(uri);
+    tex = gdk_texture_new_from_filename(path.c_str(), &err);
+  } else if (starts_with_ci(uri, "file://")) {
     const std::string uri_str(uri);
     gchar* filename = g_filename_from_uri(uri_str.c_str(), nullptr, &err);
     if (err != nullptr) {
@@ -253,11 +264,19 @@ GtkTextureLruCache::~GtkTextureLruCache() {
   clear();
 }
 
-GdkTexture* GtkTextureLruCache::get(std::string_view uri) {
-  if (uri.empty()) {
+GdkTexture* GtkTextureLruCache::get(const host::ImageSource& src) {
+  std::string key;
+  if (src.is_url()) {
+    key.assign(src.url);
+  } else {
+    char digest[48];
+    std::snprintf(digest, sizeof(digest), "bytes:%016llx:%zu",
+                  static_cast<unsigned long long>(host::xxh64(src.encoded)), src.encoded.size());
+    key = digest;
+  }
+  if (src.url.empty() && src.encoded.empty()) {
     return nullptr;
   }
-  const std::string key(uri);
   auto it = entries_.find(key);
   if (it != entries_.end()) {
     lru_.splice(lru_.begin(), lru_, it->second.lru_it);
@@ -267,7 +286,7 @@ GdkTexture* GtkTextureLruCache::get(std::string_view uri) {
   }
 
   ++misses_;
-  GdkTexture* decoded = decode_uri_to_gdk_texture(uri);
+  GdkTexture* decoded = src.is_url() ? decode_url(src.url) : decode_bytes(src.encoded);
   if (decoded == nullptr) {
     return nullptr;
   }
@@ -303,89 +322,4 @@ void GtkTextureLruCache::clear() {
   lru_.clear();
 }
 
-// -----------------------------------------------------------------------------
-// NveGtkHost GtkPicture & GtkDrawingArea helpers
-// -----------------------------------------------------------------------------
-
-std::span<const uint8_t> NveGtkHost::canvas_draw_list_for_node_id(uint32_t node_id) const noexcept {
-  const auto it = canvas_bindings_.find(node_id);
-  if (it == canvas_bindings_.end() || it->second == nullptr) {
-    return {};
-  }
-  return it->second->draw_list_bytes;
-}
-
-uint64_t NveGtkHost::canvas_redraw_count_for_node_id(uint32_t node_id) const noexcept {
-  const auto it = canvas_bindings_.find(node_id);
-  if (it == canvas_bindings_.end() || it->second == nullptr) {
-    return 0u;
-  }
-  return it->second->redraw_count;
-}
-
-void NveGtkHost::apply_picture_fit(GtkWidget* picture, const std::string& resize_mode) {
-  if (picture == nullptr || !GTK_IS_PICTURE(picture)) {
-    return;
-  }
-#if GTK_CHECK_VERSION(4, 8, 0)
-  gtk_picture_set_content_fit(GTK_PICTURE(picture), parse_gtk_content_fit(resize_mode));
-#else
-  (void)resize_mode;
-#endif
-}
-
-NveGtkHost::CanvasBinding* NveGtkHost::ensure_canvas_binding(uint32_t node_id, GtkWidget* widget) {
-  if (widget == nullptr || !GTK_IS_DRAWING_AREA(widget)) {
-    return nullptr;
-  }
-  const auto it = canvas_bindings_.find(node_id);
-  if (it != canvas_bindings_.end() && it->second != nullptr && it->second->drawing_area == widget) {
-    return it->second.get();
-  }
-  remove_canvas_binding(node_id, widget);
-
-  auto binding = std::make_unique<CanvasBinding>();
-  binding->host = this;
-  binding->node_id = node_id;
-  binding->drawing_area = widget;
-  gtk_drawing_area_set_draw_func(
-      GTK_DRAWING_AREA(widget), &NveGtkHost::on_canvas_draw, binding.get(), nullptr);
-
-  CanvasBinding* raw = binding.get();
-  canvas_bindings_[node_id] = std::move(binding);
-  return raw;
-}
-
-void NveGtkHost::remove_canvas_binding(uint32_t node_id, GtkWidget* widget) {
-  const auto it = canvas_bindings_.find(node_id);
-  if (it == canvas_bindings_.end()) {
-    return;
-  }
-  if (it->second != nullptr) {
-    GtkWidget* target = (widget != nullptr) ? widget : it->second->drawing_area;
-    if (target != nullptr && GTK_IS_DRAWING_AREA(target)) {
-      gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(target), nullptr, nullptr, nullptr);
-    }
-  }
-  canvas_bindings_.erase(it);
-}
-
-void NveGtkHost::on_canvas_draw(
-    GtkDrawingArea* area,
-    cairo_t* cr,
-    int width,
-    int height,
-    gpointer user_data) {
-  (void)area;
-  auto* binding = static_cast<CanvasBinding*>(user_data);
-  if (binding == nullptr || cr == nullptr || binding->draw_list_bytes.empty()) {
-    return;
-  }
-  (void)render_draw_list_to_cairo(
-      cr,
-      static_cast<double>(width),
-      static_cast<double>(height),
-      binding->draw_list_bytes);
-}
-
-} // namespace nve
+}  // namespace nve::gtk

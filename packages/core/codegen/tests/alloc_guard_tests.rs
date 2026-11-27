@@ -11,7 +11,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use nve_codegen::{generate_all_abi_files, generate_c_abi_header, generate_table_files};
-use nve_components::tables::CORE_TABLE_DESCS;
+use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
 
 struct CountingAlloc;
 
@@ -78,14 +78,15 @@ fn c_abi_header_allocation_ceiling() {
 
 #[test]
 fn table_files_allocation_ceiling() {
-    let (allocs, bytes, files) = counted(|| generate_table_files(CORE_TABLE_DESCS));
+    let (allocs, bytes, files) = counted(|| generate_table_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS));
     let out: usize = files.expect("tables").iter().map(|f| f.content.len()).sum();
     eprintln!(
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
     );
     assert!(
-        allocs <= 2_800,
-        "tables took {allocs} allocations (ceiling 2800)"
+        // Java `NveTables` names every field value (`{FIELD}_{VALUE}`, ~650 constants).
+        allocs <= 4_400,
+        "tables took {allocs} allocations (ceiling 4400)"
     );
     assert!(
         bytes <= 5 * out,
@@ -95,7 +96,7 @@ fn table_files_allocation_ceiling() {
 
 #[test]
 fn every_host_file_allocation_ceiling() {
-    let (allocs, bytes, files) = counted(|| generate_all_abi_files(CORE_TABLE_DESCS));
+    let (allocs, bytes, files) = counted(|| generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS));
     let out: usize = files
         .expect("all files")
         .iter()
@@ -103,8 +104,8 @@ fn every_host_file_allocation_ceiling() {
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
     assert!(
-        allocs <= 7_800,
-        "all files took {allocs} allocations (ceiling 7800)"
+        allocs <= 9_000,
+        "all files took {allocs} allocations (ceiling 9000)"
     );
     assert!(
         bytes <= 5 * out,

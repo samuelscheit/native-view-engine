@@ -508,7 +508,6 @@ suite_ios_simulator_sdk() {
   xcrun --sdk iphonesimulator clang++ \
     -std=c++20 -fobjc-arc -Wall -Wextra -Werror -fsyntax-only \
     -Ipackages/core/host-cxx/include \
-    -Icxx/nve-fabric-bridge/include \
     -Ihosts/apple-common \
     -Ihosts/ios-shell \
     hosts/apple-common/*.mm \

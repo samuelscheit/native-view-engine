@@ -34,7 +34,7 @@ copy), and every result is checked with `BinReader.expectEnd()`.
 
 ## Generated data
 
-`nve codegen abi` writes `dev.nve.host.generated.{NveAbi,NveTables,NveRuntimeAbi,NveTableBits,NveModuleTables}` and the test-only `HashVectors` / `EventRingVectors` (gitignored). `GeneratedTest` and `EventRingTest` check them against this runtime.
+`nve codegen abi` writes `dev.nve.host.generated.{NveAbi,NveTables,NveRuntimeAbi,NveModuleTables}` (`NveTables` carries every field's named values, e.g. `Interaction.EVENT_MASK_PRESS`, `Typography.SET_COLOR`) and the test-only `HashVectors` / `EventRingVectors` (gitignored). `GeneratedTest` and `EventRingTest` check them against this runtime.
 
 ## Verify
 

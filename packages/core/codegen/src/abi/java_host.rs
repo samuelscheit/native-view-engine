@@ -1,5 +1,5 @@
 //! Java host constants the shared templates do not cover: the runtime ABI (`STATUS_*`, schema
-//! hash, record sizes and flags), named table bit sets (`EventMask`, `Typography::SET_*`), and the
+//! hash, record sizes and flags), capability-module tables (`NveModuleTables`), and the
 //! golden `EventRing` test vector (`nve_abi::encode_events`).
 
 use std::fmt::Write as _;
@@ -9,10 +9,6 @@ use nve_abi::{EventPayload, NativeEvent, NativeEventKind, encode_events};
 
 use super::spell;
 use crate::schema::export::GeneratedFile;
-
-/// Named bit constants of one table (`(table name, [(NAME, value)])`) its `TableDesc` cannot
-/// express, e.g. `Typography::SET_*`.
-pub type TableBits = (&'static str, &'static [(&'static str, u32)]);
 
 const MAIN: &str = "packages/core/host-java/src/main/java/dev/nve/host/generated";
 const TEST: &str = "packages/core/host-java/src/test/java/dev/nve/host/generated";
@@ -46,25 +42,6 @@ pub fn java_runtime_abi() -> GeneratedFile {
     }
     out.push_str("}\n");
     GeneratedFile { relative_path: format!("{MAIN}/NveRuntimeAbi.java"), content: out }
-}
-
-/// `NveTableBits.java`: `INTERACTION_EVENT_MASK_*` plus every `bits` set (e.g. `TYPOGRAPHY_SET_*`).
-pub fn java_table_bits(bits: &[TableBits]) -> GeneratedFile {
-    let mut out = String::with_capacity(2048);
-    header(&mut out, "Named bit sets of published table fields.", "NveTableBits");
-    out.push_str("\n    // nve.interaction event_mask (`EventMask`)\n");
-    for &(name, bit) in nve_abi::EventMask::ALL {
-        let _ = writeln!(out, "    public static final int INTERACTION_EVENT_MASK_{name} = 0x{bit:X};");
-    }
-    for &(table, set) in bits {
-        let prefix = table.strip_prefix("nve.").unwrap_or(table).replace('.', "_").to_ascii_uppercase();
-        let _ = writeln!(out, "\n    // {table}");
-        for &(name, value) in set {
-            let _ = writeln!(out, "    public static final int {prefix}_{name} = 0x{value:X};");
-        }
-    }
-    out.push_str("}\n");
-    GeneratedFile { relative_path: format!("{MAIN}/NveTableBits.java"), content: out }
 }
 
 /// Surface id of every golden event.
@@ -162,8 +139,8 @@ pub fn java_module_tables(tables: &[&TableDesc]) -> GeneratedFile {
                 f.shift,
                 java_kind(f.kind)
             );
-            for v in f.variants {
-                let _ = writeln!(out, "        public static final int {field}_{} = {};", spell::screaming(v.name), v.value);
+            for &(name, value) in f.values.map_or(&[][..], |v| v.values) {
+                let _ = writeln!(out, "        public static final int {field}_{} = {value};", spell::screaming(name));
             }
         }
         out.push_str("    }\n");
@@ -173,8 +150,8 @@ pub fn java_module_tables(tables: &[&TableDesc]) -> GeneratedFile {
 }
 
 /// Every file of this module.
-pub fn generate_java_host_files(module_tables: &[&TableDesc], bits: &[TableBits]) -> Vec<GeneratedFile> {
-    vec![java_runtime_abi(), java_table_bits(bits), java_module_tables(module_tables), java_event_ring_vectors()]
+pub fn generate_java_host_files(module_tables: &[&TableDesc]) -> Vec<GeneratedFile> {
+    vec![java_runtime_abi(), java_module_tables(module_tables), java_event_ring_vectors()]
 }
 
 #[cfg(test)]
@@ -190,16 +167,14 @@ mod tests {
 
     #[test]
     fn files_live_in_the_generated_package_with_expected_constants() {
-        let files = generate_java_host_files(&[], &[("nve.typography", &[("SET_COLOR", 1)])]);
+        let files = generate_java_host_files(&[]);
         for f in &files {
             assert!(f.relative_path.contains("/dev/nve/host/generated/"), "{}", f.relative_path);
             assert!(f.content.contains("package dev.nve.host.generated;"));
         }
         assert!(files[0].content.contains("public static final int STATUS_BUSY = 3;"));
         assert!(files[0].content.contains(&format!("RUNTIME_SCHEMA_HASH = 0x{:016X}L", nve_abi::NVE_RUNTIME_SCHEMA_HASH)));
-        assert!(files[1].content.contains("INTERACTION_EVENT_MASK_PRESS = 0x1;"));
-        assert!(files[1].content.contains("TYPOGRAPHY_SET_COLOR = 0x1;"));
-        assert!(files[2].content.contains("public final class NveModuleTables"));
-        assert!(files[3].content.contains("public static byte[] ring()"));
+        assert!(files[1].content.contains("public final class NveModuleTables"));
+        assert!(files[2].content.contains("public static byte[] ring()"));
     }
 }

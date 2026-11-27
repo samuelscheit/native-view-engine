@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace nve {
+namespace nve::gtk {
 
 NveGtkWindowManager::~NveGtkWindowManager() {
   close_all();
@@ -48,13 +48,12 @@ NveGtkHost* NveGtkWindowManager::open_window(
     }
   }
 
-  const NveSurfaceConfig cfg{
+  auto host = std::make_unique<NveGtkHost>(GtkHostConfig{
       .surface_id = spec.surface_id,
       .width = static_cast<float>(spec.width),
       .height = static_cast<float>(spec.height),
       .scale_factor = 1.0f,
-  };
-  auto host = std::make_unique<NveGtkHost>(cfg);
+  });
   host->attach_window_resize(window);
   gtk_window_set_child(window, host->host_widget());
 
@@ -267,4 +266,4 @@ std::vector<uint32_t> NveGtkWindowManager::active_surface_ids() const {
   return ids;
 }
 
-} // namespace nve
+}  // namespace nve::gtk

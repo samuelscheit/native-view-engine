@@ -368,11 +368,16 @@ fn direct_app_frame_tick_hook_propagates_changes_is_zero_alloc_and_enforces_scen
             rect3.width, 180.0,
             "FrameTickHook Layout mutation MUST relayout and update published rects"
         );
-        // `dirty_indices` must contain card index 3 deduplicated (count == 1).
-        assert_eq!(v.dirty_count, 1);
-        // SAFETY: `dirty_count == 1` and `guard` holds the reader lock.
+        // `dirty_indices`: the touched card (3) plus its stretched label (4), which only moved
+        // through relayout; each exactly once.
+        // SAFETY: `guard` holds the reader lock for `dirty_count` indices.
         let dirty = unsafe { std::slice::from_raw_parts(v.dirty_indices, v.dirty_count as usize) };
-        assert_eq!(dirty, &[3u32]);
+        let mut sorted = dirty.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, [3u32, 4]);
+        // SAFETY: `guard` holds the reader lock and `node_capacity >= 5`.
+        let rect4 = unsafe { *v.rects.add(4) };
+        assert_eq!(rect4.width, 180.0, "stretched label follows the card width");
 
         // Published `NveTableView` for `Visual` must report dirty_count >= 1!
         // SAFETY: `guard` holds the reader lock for `table_count` views.

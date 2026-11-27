@@ -8,6 +8,8 @@ use crate::types::CameraFacing;
 impl WordValue for CameraFacing {
     const BITS: u8 = 2;
     const KIND: FieldKind = FieldKind::Enum;
+    const VALUES: Option<&'static nve_store::ValueSetDesc> =
+        nve_store::value_set!(CameraFacing { Unknown, Back, Front, External });
     #[inline(always)]
     fn to_bits(self) -> u32 {
         self as u32

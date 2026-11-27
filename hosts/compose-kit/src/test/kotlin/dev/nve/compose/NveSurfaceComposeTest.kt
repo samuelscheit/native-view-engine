@@ -12,7 +12,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
 import dev.nve.host.generated.NveAbi
-import dev.nve.host.generated.NveTableBits
 import dev.nve.host.generated.NveTables
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -43,7 +42,7 @@ class NveSurfaceComposeTest {
         val input = s.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS)
         s.set(input, 4, NveTables.TextInput.VALUE, "draft")
         val interaction = s.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS)
-        s.set(interaction, 5, NveTables.Interaction.EVENT_MASK, NveTableBits.INTERACTION_EVENT_MASK_PRESS)
+        s.set(interaction, 5, NveTables.Interaction.EVENT_MASK, NveTables.Interaction.EVENT_MASK_PRESS)
         val a11y = s.table(NveTables.Accessibility.KEY, NveTables.Accessibility.WORDS)
         s.set(a11y, 5, NveTables.Accessibility.ROLE, NveTables.Accessibility.ROLE_BUTTON).set(a11y, 5, NveTables.Accessibility.LABEL, "Submit form")
             .set(a11y, 6, NveTables.Accessibility.HIDDEN, 1)

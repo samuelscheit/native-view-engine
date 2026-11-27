@@ -3,6 +3,7 @@
 //! and an O(1) stateful [`InteractionTracker`] shared by native backends (Headless / Skia).
 
 use nve_abi::define_bitflags;
+use nve_store::word_enum;
 
 use crate::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use crate::tracker::InteractionTracker;
@@ -62,24 +63,24 @@ impl InteractionState {
     }
 }
 
-/// Strictly typed cross-platform pointer cursor icon (`#[repr(u8)]`).
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum CursorKind {
-    #[default]
-    Auto = 0,
-    Default = 1,
-    Pointer = 2,
-    Text = 3,
-    Grab = 4,
-    Grabbing = 5,
-    NotAllowed = 6,
-    ColResize = 7,
-    RowResize = 8,
-    Move = 9,
-    Crosshair = 10,
-    Progress = 11,
-    Wait = 12,
+word_enum! {
+    /// Strictly typed cross-platform pointer cursor icon (`nve.interaction.cursor`, 4 bits;
+    /// mirrored to hosts as `NVE_CURSOR_KIND_*`).
+    pub enum CursorKind: 4 {
+        Auto = 0,
+        Default = 1,
+        Pointer = 2,
+        Text = 3,
+        Grab = 4,
+        Grabbing = 5,
+        NotAllowed = 6,
+        ColResize = 7,
+        RowResize = 8,
+        Move = 9,
+        Crosshair = 10,
+        Progress = 11,
+        Wait = 12,
+    }
 }
 
 impl CursorKind {

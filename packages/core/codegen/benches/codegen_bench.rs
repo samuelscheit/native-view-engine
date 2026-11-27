@@ -15,7 +15,7 @@ mod native {
         GeneratedFile, HybridTarget, generate_all_abi_files, generate_c_abi_header,
         generate_hybrid_all, generate_table_files, parse_hybrid_rust_spec,
     };
-    use nve_components::tables::CORE_TABLE_DESCS;
+    use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
 
     /// Modules, views (props, events, methods), structs, enums, and C functions.
     const REALISTIC_HYBRID_SPEC: &str = include_str!("../tests/fixtures/realistic_hybrid.nve.rs");
@@ -25,7 +25,7 @@ mod native {
     }
 
     fn bench_codegen_emit(c: &mut Criterion) {
-        let all = generate_all_abi_files(CORE_TABLE_DESCS).expect("generate_all_abi_files");
+        let all = generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS).expect("generate_all_abi_files");
         println!(
             "codegen_all_abi_files_5_langs: {} files, {} bytes",
             all.len(),
@@ -33,7 +33,7 @@ mod native {
         );
         let header = generate_c_abi_header().expect("generate_c_abi_header");
         println!("codegen_c_abi_header: {} bytes", header.len());
-        let tables = generate_table_files(CORE_TABLE_DESCS).expect("generate_table_files");
+        let tables = generate_table_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS).expect("generate_table_files");
         println!(
             "codegen_tables_17_core: {} tables, {} bytes",
             CORE_TABLE_DESCS.len(),
@@ -51,14 +51,14 @@ mod native {
 
         c.bench_function("codegen_all_abi_files_5_langs", |b| {
             b.iter(|| {
-                bytes(&generate_all_abi_files(black_box(CORE_TABLE_DESCS)).expect("abi files"))
+                bytes(&generate_all_abi_files(black_box(CORE_TABLE_DESCS), CORE_WORD_CONSTS).expect("abi files"))
             });
         });
         c.bench_function("codegen_c_abi_header", |b| {
             b.iter(|| generate_c_abi_header().expect("C header").len());
         });
         c.bench_function("codegen_tables_17_core", |b| {
-            b.iter(|| bytes(&generate_table_files(black_box(CORE_TABLE_DESCS)).expect("tables")));
+            b.iter(|| bytes(&generate_table_files(black_box(CORE_TABLE_DESCS), CORE_WORD_CONSTS).expect("tables")));
         });
         c.bench_function("parse_hybrid_rust_spec", |b| {
             b.iter(|| {

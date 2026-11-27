@@ -81,6 +81,16 @@ pub enum FieldKind {
     Node = 9,
 }
 
+/// Named values a field holds: the variants of a `word_enum!` or the bits of a flag set. Host
+/// mirrors emit one `NVE_<NAME>_<VALUE>` constant each, so foreign code never hand-copies them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueSetDesc {
+    /// Rust type / set name (`AriaRole`, `TextDecoration`).
+    pub name: &'static str,
+    /// `(variant, value)` pairs in declaration order.
+    pub values: &'static [(&'static str, u32)],
+}
+
 /// One field of a table row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldDesc {
@@ -94,16 +104,19 @@ pub struct FieldDesc {
     pub bits: u8,
     /// Effect class of the field's words.
     pub effects: u8,
-    /// `(name, value)` of every variant when the field is a word enum (`word_enum!`), else empty.
-    /// Drives foreign-host constants; not part of `schema_hash` (values are bounded by `bits`).
-    pub variants: &'static [EnumVariant],
+    /// Named values (enum variants / flag bits); not part of the schema hash.
+    pub values: Option<&'static ValueSetDesc>,
 }
 
-/// One variant of a word-enum table field.
+/// Named `u32` constants a table field holds: the variants of a `word_enum!` (`flags == false`) or
+/// the bits of a flag word (`flags == true`), mirrored to hosts by `nve codegen abi`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EnumVariant {
+pub struct WordConstsDesc {
+    /// `UpperCamel` type name (`ImageFit`, `TypographySet`).
     pub name: &'static str,
-    pub value: u32,
+    pub flags: bool,
+    /// `(UpperCamel variant / flag name, value)`.
+    pub entries: &'static [(&'static str, u32)],
 }
 
 /// Compile-time description of a table, emitted by `#[derive(NveTable)]`.

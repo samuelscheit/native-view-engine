@@ -72,7 +72,6 @@ val nveGeneratedJavaFiles = listOf(
     nveHostJavaDir.resolve("dev/nve/host/generated/NveAbi.java"),
     nveHostJavaDir.resolve("dev/nve/host/generated/NveTables.java"),
     nveHostJavaDir.resolve("dev/nve/host/generated/NveRuntimeAbi.java"),
-    nveHostJavaDir.resolve("dev/nve/host/generated/NveTableBits.java"),
     nveHostJavaDir.resolve("dev/nve/host/generated/NveModuleTables.java"),
 )
 

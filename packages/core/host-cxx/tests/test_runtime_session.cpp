@@ -29,7 +29,7 @@
 #endif
 
 #include "check.h"
-#include "nve2_writer.hpp"
+#include "nve/host/nve2_builder.hpp"
 // Include `api.h` BEFORE `runtime_session.hpp` to verify `NVE_RUNTIME_API` and
 // `NVE_STATIC_ASSERT` never clash with `NVE_API` regardless of include order.
 #include "nve/host/api.h"
@@ -45,28 +45,28 @@ using nve::host::RuntimeSession;
 using nve::host::SceneError;
 using nve::host::TableReader;
 
-using nve_test::push_u32;
+
+void push_u32(std::vector<uint8_t>& out, uint32_t v) {
+  for (unsigned shift = 0u; shift < 32u; shift += 8u) out.push_back(static_cast<uint8_t>(v >> shift));
+}
 
 /// Builds a valid binary `NVE2` frame declaring dynamic sparse table `"cxx.demo.badge"` (3 words:
 /// word 0 = u32 badge_count, words 1..2 = StrSpan label), creating ROOT(1) + child(2), patching
 /// badge_count = `badge_value`, setting UTF-8 label = `label`, and attaching child(2) under ROOT(1).
 std::vector<uint8_t> build_demo_nve2(uint32_t badge_value, std::string_view label) {
-  using nve_test::Nve2Writer;
-  using nve_test::Op;
   constexpr uint8_t kWireSlot = 40u;
   constexpr std::array<uint32_t, 3> kDefaults{0u, 0u, 0u};
   constexpr std::array<uint8_t, 3> kEffects{1u, 1u, 1u};
-  Nve2Writer w;
-  w.declare({kWireSlot, Key64::of("cxx.demo.badge"), Key64::of("cxx.demo.badge.schema.v1"),
-             1u /* sparse */, 2u /* PUBLISH_TO_SCENE */, kDefaults, kEffects,
-             uint32_t{1} << 1u /* words 1..2 = StrSpan label */, 0u, "cxx.demo.badge"});
-  w.op(Op::CreateNodes, 0u, 2u, [](Nve2Writer& o) { o.u32(1u).u32(2u); });
-  w.op(Op::Patch, kWireSlot, 1u, [&](Nve2Writer& o) { o.u32(2u).u32(1u).u32(badge_value); });
-  w.op(Op::SetStrings, kWireSlot, 1u, [&](Nve2Writer& o) {
-    o.u32(2u).u32(1u | (static_cast<uint32_t>(label.size()) << 8u)).padded(label);
-  });
-  w.op(Op::SetChildren, 0u, 1u, [](Nve2Writer& o) { o.u32(1u).u32(1u).u32(2u); });
-  return std::move(w).finish();
+  const std::array<uint32_t, 3> row{badge_value, 0u, 0u};
+  return nve::host::Nve2FrameBuilder()
+      .declare({Key64::of("cxx.demo.badge"), Key64::of("cxx.demo.badge.schema.v1"), kWireSlot, true /* sparse */,
+                2u /* PUBLISH_TO_SCENE */, kDefaults, kEffects, uint32_t{1} << 1u /* words 1..2 = StrSpan label */,
+                0u, "cxx.demo.badge"})
+      .create_nodes({1u, 2u})
+      .patch(kWireSlot, 2u, 1u, row)
+      .set_string(kWireSlot, 2u, 1u, label)
+      .set_children(1u, {2u})
+      .finish();
 }
 
 #if !defined(_WIN32) && defined(NVE_RUNTIME_TEST_HAS_WIRE)

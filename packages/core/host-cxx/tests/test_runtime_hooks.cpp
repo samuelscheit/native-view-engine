@@ -15,7 +15,7 @@
 
 #include "check.h"
 #include "nve/host/runtime_session.hpp"
-#include "nve2_writer.hpp"
+#include "nve/host/nve2_builder.hpp"
 
 namespace {
 
@@ -25,8 +25,7 @@ using nve::host::RuntimeSceneGuard;
 using nve::host::RuntimeSceneReader;
 using nve::host::RuntimeSession;
 using nve::host::SceneError;
-using nve_test::Nve2Writer;
-using nve_test::Op;
+using nve::host::Nve2FrameBuilder;
 
 constexpr uint8_t kBlobSlot = 41u;
 constexpr uint32_t kBlobId = 7u;
@@ -47,19 +46,14 @@ RuntimeSession make_session() {
 std::vector<uint8_t> blob_frame(uint32_t frame, uint32_t resource) {
   constexpr std::array<uint32_t, 1> kDefaults{0u};
   constexpr std::array<uint8_t, 1> kEffects{1u};
-  Nve2Writer w;
-  w.declare({kBlobSlot, Key64::of("cxx.hooks.blob_ref"), Key64::of("cxx.hooks.blob_ref.v1"), 1u, 2u,
-             kDefaults, kEffects, 0u, 1u /* word 0 = ResourceId */, "cxx.hooks.blob_ref"});
-  if (frame == 1u) {
-    w.op(Op::CreateNodes, 0u, 2u, [](Nve2Writer& o) { o.u32(1u).u32(2u); });
-    w.op(Op::DefineResources, 0u, 1u, [](Nve2Writer& o) {
-      o.u32(kBlobId).u32(kBlobKind.lo()).u32(kBlobKind.hi()).u32(0u /* ephemeral */);
-      o.u32(static_cast<uint32_t>(kBlobBytes.size())).padded(kBlobBytes);
-    });
-  }
-  w.op(Op::Patch, kBlobSlot, 1u, [&](Nve2Writer& o) { o.u32(2u).u32(1u).u32(resource); });
-  if (frame == 1u) w.op(Op::SetChildren, 0u, 1u, [](Nve2Writer& o) { o.u32(1u).u32(1u).u32(2u); });
-  return std::move(w).finish(frame);
+  Nve2FrameBuilder w(frame);
+  w.declare({Key64::of("cxx.hooks.blob_ref"), Key64::of("cxx.hooks.blob_ref.v1"), kBlobSlot, true /* sparse */,
+             2u /* PUBLISH_TO_SCENE */, kDefaults, kEffects, 0u, 1u /* word 0 = ResourceId */, "cxx.hooks.blob_ref"});
+  if (frame == 1u) w.create_nodes({1u, 2u}).define_resource(kBlobId, kBlobKind, kBlobBytes);
+  const std::array<uint32_t, 1> row{resource};
+  w.patch(kBlobSlot, 2u, 1u, row);
+  if (frame == 1u) w.set_children(1u, {2u});
+  return w.finish();
 }
 
 void test_vtable_complete_and_validated() {
@@ -218,8 +212,27 @@ void test_scroll_offsets() {
     CHECK(none.node_id == 4u && none.x == 0.0f && none.y == 0.0f);
     CHECK(reader->scroll_offset(9u).y == 0.0f);
   }
-  view.scroll_offsets = nullptr;
+  // Unsorted or duplicate ids would break the binary search: rejected on open.
   SceneError err = SceneError::None;
+  const std::array<NveScrollOffset, 2> unsorted{NveScrollOffset{5u, 0.0f, 1.0f},
+                                                NveScrollOffset{2u, 0.0f, 2.0f}};
+  view.scroll_offsets = unsorted.data();
+  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == SceneError::UnsortedScrollOffsets);
+  const std::array<NveScrollOffset, 2> duplicate{NveScrollOffset{3u, 0.0f, 1.0f},
+                                                 NveScrollOffset{3u, 0.0f, 2.0f}};
+  view.scroll_offsets = duplicate.data();
+  err = SceneError::None;
+  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == SceneError::UnsortedScrollOffsets);
+  const NveScrollOffset single{7u, 1.0f, 0.0f};
+  view.scroll_offsets = &single;
+  view.scroll_count = 1u;
+  CHECK(RuntimeSceneReader::open(&view).has_value());
+  view.scroll_count = 2u;
+
+  view.scroll_offsets = nullptr;
+  err = SceneError::None;
   CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::NullSlab);
 }

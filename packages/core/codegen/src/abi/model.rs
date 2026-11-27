@@ -9,7 +9,9 @@ use nve_abi::schema::{
     AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiEnumVariantDescriptor,
     AbiFileDescriptor,
 };
-use nve_abi::table::{FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc};
+use nve_abi::table::{
+    FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc, ValueSetDesc, WordConstsDesc,
+};
 use nve_hash::{Key64, PRIME1, xxh64};
 
 use super::layout::{RecordLayout, layout_records};
@@ -230,6 +232,58 @@ impl TableModel<'_> {
 
 /// Validates `tables` (unique names, keys that match their names, fields every host reader
 /// accepts) and wraps them for rendering, in the given order.
+/// One `word_enum!` / flag set mirrored next to the table specs.
+#[derive(Debug)]
+pub struct ConstsModel {
+    /// `UpperCamel` (`ImageFit`); hosts prefix it (`NveImageFit`, `NVE_IMAGE_FIT_*`).
+    pub name: String,
+    pub screaming: String,
+    pub flags: bool,
+    pub entries: Vec<ConstEntry>,
+}
+
+#[derive(Debug)]
+pub struct ConstEntry {
+    pub screaming: String,
+    /// `lowerCamel`, with a trailing `_` for Swift keywords (and `none`, which shadows `Optional.none`).
+    pub swift: String,
+    pub value: u32,
+}
+
+const SWIFT_RESERVED: &[&str] = &[
+    "Any", "Self", "as", "break", "case", "catch", "class", "continue", "default", "defer", "deinit",
+    "do", "else", "enum", "extension", "fallthrough", "false", "for", "func", "guard", "if", "import",
+    "in", "init", "inout", "internal", "is", "let", "nil", "none", "operator", "private", "protocol",
+    "public", "repeat", "rethrows", "return", "self", "static", "struct", "subscript", "super",
+    "switch", "throw", "throws", "true", "try", "typealias", "var", "where", "while",
+];
+
+pub fn consts_model(descs: &[&WordConstsDesc]) -> Result<Vec<ConstsModel>, CodegenError> {
+    let mut names = BTreeSet::new();
+    let mut out = Vec::with_capacity(descs.len());
+    for d in descs {
+        if !names.insert(d.name) || d.entries.is_empty() {
+            return Err(CodegenError::validation(format!("word constants `{}`: duplicate or empty", d.name)));
+        }
+        let entries = d
+            .entries
+            .iter()
+            .map(|&(name, value)| {
+                let base = super::spell::camel(&super::spell::snake(name.trim_end_matches('_')));
+                let swift = if SWIFT_RESERVED.contains(&base.as_str()) { format!("{base}_") } else { base };
+                ConstEntry { screaming: super::spell::screaming(name.trim_end_matches('_')), swift, value }
+            })
+            .collect();
+        out.push(ConstsModel {
+            name: d.name.to_owned(),
+            screaming: super::spell::screaming(d.name),
+            flags: d.flags,
+            entries,
+        });
+    }
+    Ok(out)
+}
+
 pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>, CodegenError> {
     let mut names = BTreeSet::new();
     let mut out = Vec::with_capacity(tables.len());
@@ -257,6 +311,39 @@ pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>,
             key: U64Split::new(desc.key.0),
             schema: U64Split::new(desc.schema_hash),
         });
+    }
+    Ok(out)
+}
+
+/// Distinct named value sets (`word_enum!` variants, `#[values]` flag bits) the fields of
+/// `tables` carry, in first-use order. Sets sharing a name must be identical; names must spell
+/// unique identifiers and every value must fit its field.
+pub fn value_sets(tables: &[TableModel<'_>]) -> Result<Vec<&'static ValueSetDesc>, CodegenError> {
+    let ident = |s: &str| {
+        s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut out: Vec<&'static ValueSetDesc> = Vec::new();
+    for t in tables {
+        for f in t.desc.fields {
+            let Some(set) = f.values else { continue };
+            let mut names = BTreeSet::new();
+            for &(name, value) in set.values {
+                if !ident(set.name) || !ident(name) || !names.insert(super::spell::screaming(name)) {
+                    return Err(table_error(t.desc, &format!("value set `{}`: bad or duplicate name `{name}`", set.name)));
+                }
+                if f.bits < 32 && value >> f.bits != 0 {
+                    return Err(table_error(t.desc, &format!("`{}` value `{name}` exceeds field `{}`", set.name, f.name)));
+                }
+            }
+            match out.iter().find(|s| s.name == set.name) {
+                Some(seen) if *seen != set => {
+                    return Err(table_error(t.desc, &format!("value set `{}` defined twice differently", set.name)));
+                }
+                Some(_) => {}
+                None => out.push(set),
+            }
+        }
     }
     Ok(out)
 }

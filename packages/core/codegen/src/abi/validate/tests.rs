@@ -349,7 +349,7 @@ const fn u32_field(name: &'static str) -> FieldDesc {
         shift: 0,
         bits: 32,
         effects: 0,
-        variants: &[],
+        values: None,
     }
 }
 

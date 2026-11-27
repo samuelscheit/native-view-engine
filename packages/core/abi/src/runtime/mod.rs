@@ -27,7 +27,7 @@ pub use vtable::{
 };
 
 /// Current C ABI version expected by `nve_runtime_get_interface(uint32_t abi_version)`.
-pub const NVE_RUNTIME_ABI_VERSION: u32 = 1;
+pub const NVE_RUNTIME_ABI_VERSION: u32 = 2;
 
 /// Exact byte size of one `NveLayoutRect` record (16 bytes).
 pub const NVE_LAYOUT_RECT_SIZE: usize = 16;

@@ -43,7 +43,7 @@ pub fn write_generated_c_abi_headers(dir: &Path) {
         &workspace_root().join("packages/core/host-cxx/include/nve/host"),
         &dir.join("nve/host"),
     );
-    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS, nve_components::tables::CORE_WORD_CONSTS)
         .expect("generate host ABI files");
     for file in files {
         let rel = file.relative_path.as_str();
@@ -67,7 +67,7 @@ pub fn prepare_offline_nve_host_pkg(temp_dir: &Path) -> PathBuf {
     copy_tree(&src.join("lib"), &pkg_root.join("lib"));
     std::fs::copy(src.join("pubspec.yaml"), pkg_root.join("pubspec.yaml"))
         .expect("copy nve_host pubspec");
-    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS, nve_components::tables::CORE_WORD_CONSTS)
         .expect("generate host ABI files");
     for file in files {
         if let Some(rel) = file

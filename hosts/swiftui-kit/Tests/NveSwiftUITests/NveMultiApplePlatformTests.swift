@@ -1,4 +1,5 @@
 import CNveAbi
+import NveHost
 import Foundation
 import NveSwiftUI
 import SwiftUI
@@ -76,57 +77,29 @@ final class NveMultiApplePlatformTests: XCTestCase {
         StaticMockCounter.shared.reset()
     }
 
-    func testStaticInterfaceResolverCFunctionAndClosureSupportAndPrecedence() {
+    func testStaticInterfaceResolverPrecedence() throws {
         let table = NveStaticInterfaceTable()
         table.register(symbol: "nve_static_app", getInterface: staticMockGetInterface)
-        table.register(symbol: "nve_closure_app") { id in
-            id == UInt32(NVE_IFACE_SURFACE) ? UnsafeRawPointer(StaticMockVtable.surfaceApi) : nil
-        }
+        table.register(symbol: "  ", getInterface: staticMockGetInterface)
+        XCTAssertEqual(table.registeredSymbols, ["nve_static_app"])
 
-        XCTAssertEqual(table.registeredSymbols, ["nve_closure_app", "nve_static_app"])
+        // Static registrations resolve without dlopen; the entry point is handed to the runtime as-is.
+        let fromTable = try XCTUnwrap(NveInterfaceResolver.resolve(symbol: "nve_static_app", staticTable: table))
+        XCTAssertEqual(fromTable.source, .staticTable)
+        XCTAssertNil(fromTable.dylibHandle)
+        XCTAssertNotNil(fromTable.getInterface(UInt32(NVE_IFACE_SURFACE)))
+        XCTAssertNil(fromTable.getInterface(UInt32(NVE_IFACE_DEV)))
 
-        // 1. Static C-function-pointer mount via NveSurfaceController (zero dlopen).
-        let c1 = NveSurfaceController(
-            surfaceId: 401,
-            vtableSymbol: "nve_static_app",
-            staticTable: table
-        )
-        XCTAssertTrue(c1.isMounted)
-        XCTAssertEqual(c1.resolutionSource, .staticTable)
-        XCTAssertEqual(StaticMockCounter.shared.createCount, 1)
-        XCTAssertEqual(StaticMockCounter.shared.lastSurfaceId, 401)
-        XCTAssertEqual(c1.measure(), CGSize(width: 320, height: 180))
-        c1.destroy()
-        XCTAssertFalse(c1.isMounted)
-        XCTAssertNil(c1.resolutionSource)
-        XCTAssertEqual(StaticMockCounter.shared.destroyCount, 1)
+        // Explicit entry points win over the table; an explicit dylib path bypasses the table.
+        let explicit = try XCTUnwrap(
+            NveInterfaceResolver.resolve(symbol: "nve_static_app", getInterface: staticMockGetInterface, staticTable: table))
+        XCTAssertEqual(explicit.source, .explicit)
+        XCTAssertNil(NveInterfaceResolver.resolve(
+            symbol: "nve_static_app", dylibPath: "/nonexistent/libnve_app.dylib", staticTable: table))
+        XCTAssertNil(NveInterfaceResolver.resolve(symbol: "nve_symbol_that_does_not_exist", staticTable: table))
 
-        // 2. Closure-backed static resolver mount.
-        let c2 = NveSurfaceController(
-            surfaceId: 402,
-            vtableSymbol: "nve_closure_app",
-            staticTable: table
-        )
-        XCTAssertTrue(c2.isMounted)
-        XCTAssertEqual(c2.resolutionSource, .staticTable)
-        XCTAssertEqual(c2.measure(), CGSize(width: 240, height: 120))
-        c2.destroy()
-        XCTAssertEqual(StaticMockCounter.shared.destroyCount, 2)
-
-        // 3. Explicit getInterface takes precedence over static table.
-        let explicit = NveInterfaceResolver.resolve(
-            symbol: "nve_static_app",
-            getInterface: staticMockGetInterface,
-            staticTable: table
-        )
-        XCTAssertEqual(explicit?.source, .explicit)
-        XCTAssertNil(explicit?.dylibHandle)
-
-        // 4. Unregistering removes symbol cleanly.
         XCTAssertTrue(table.unregister(symbol: "nve_static_app"))
         XCTAssertFalse(table.unregister(symbol: "nve_static_app"))
-        XCTAssertNil(table.resolve(symbol: "nve_static_app"))
-        table.clear()
         XCTAssertTrue(table.registeredSymbols.isEmpty)
     }
 
@@ -189,10 +162,10 @@ final class NveMultiApplePlatformTests: XCTestCase {
             XCTAssertNil(event.name)
             XCTAssertEqual(event.payload, .key(key: expectedKey))
 
-            // Full EventRing binary wire roundtrip.
-            let ring = NveEventRingCodec.encode([event])
-            let roundtripped = try NveEventRingCodec.decodeStrict(ring)
-            XCTAssertEqual(roundtripped, [event])
+            // Direct `NveDirectEvent` batch roundtrip (what `dispatch_events` receives).
+            try NveDirectEventWriter.withBatch([event]) { batch in
+                XCTAssertEqual(NveDirectEventWriter.decodeBatch(batch), [event])
+            }
         }
 
         // Typed KeyDown with modifiers + code roundtrips cleanly through EventRing and NveDirectEvent.
@@ -203,8 +176,6 @@ final class NveMultiApplePlatformTests: XCTestCase {
             kind: .keyDown,
             payload: .key(key: "ArrowRight", code: "ArrowRight", modifiers: 0x0D, keyCode: 39, isComposing: true)
         )
-        let ring = NveEventRingCodec.encode([modified])
-        XCTAssertEqual(try NveEventRingCodec.decodeStrict(ring), [modified])
         try NveDirectEventWriter.withBatch([modified]) { batch in
             XCTAssertEqual(NveDirectEventWriter.decodeBatch(batch), [modified])
         }

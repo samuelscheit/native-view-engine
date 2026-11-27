@@ -4,7 +4,6 @@ import dev.nve.host.ImageSource
 import dev.nve.host.Key64
 import dev.nve.host.SceneSemantics
 import dev.nve.host.generated.NveModuleTables
-import dev.nve.host.generated.NveTableBits
 import dev.nve.host.generated.NveTables
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -17,7 +16,7 @@ import java.nio.ByteBuffer
 
 class NveSceneCaptureTest {
     private val drawKind = Key64.of("nve.res.draw_list")
-    private val press = NveTableBits.INTERACTION_EVENT_MASK_PRESS
+    private val press = NveTables.Interaction.EVENT_MASK_PRESS
 
     /** Root(1) → column(2) → [title(3), input(4), image(5), scroll(6) → [row(7)], canvas(8), button(9)]. */
     private fun showcase(scene: TestScene = TestScene()): TestScene {
@@ -159,7 +158,7 @@ class NveSceneCaptureTest {
         scene.set(visual, 2, NveTables.Visual.OPACITY, Float.NaN).set(visual, 2, NveTables.Visual.BORDER_RADIUS, Float.NaN)
             .set(visual, 2, NveTables.Visual.BORDER_WIDTH, Float.NEGATIVE_INFINITY)
         val typo = scene.table(NveTables.Typography.KEY, NveTables.Typography.WORDS)
-        scene.set(typo, 2, NveTables.Typography.SET, NveTableBits.TYPOGRAPHY_SET_FONT_SIZE).set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
+        scene.set(typo, 2, NveTables.Typography.SET, NveTables.Typography.SET_FONT_SIZE).set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
         val text = scene.table(NveTables.Text.KEY, NveTables.Text.WORDS)
         scene.set(text, 2, NveTables.Text.TEXT, "x")
         val n = NveSceneCapture.capture(scene.reader(), { null }, NveSceneSnapshot.EMPTY).nodes.getValue(0x1000002)

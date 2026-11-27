@@ -32,29 +32,37 @@ impl EventMask {
     pub const WHEEL: u64 = 1 << 17;
     pub const TABLE_EVENT: u64 = 1 << 18;
 
-    /// `(NAME, bit)` of every subscription bit (foreign-host codegen).
-    pub const ALL: &'static [(&'static str, u64)] = &[
-        ("PRESS", Self::PRESS),
-        ("LONG_PRESS", Self::LONG_PRESS),
-        ("SCROLL", Self::SCROLL),
-        ("TEXT_CHANGE", Self::TEXT_CHANGE),
-        ("FOCUS", Self::FOCUS),
-        ("BLUR", Self::BLUR),
-        ("LAYOUT", Self::LAYOUT),
-        ("CUSTOM", Self::CUSTOM),
-        ("COMPOSITION", Self::COMPOSITION),
-        ("KEY_DOWN", Self::KEY_DOWN),
-        ("KEY_UP", Self::KEY_UP),
-        ("SUBMIT", Self::SUBMIT),
-        ("POINTER_DOWN", Self::POINTER_DOWN),
-        ("POINTER_MOVE", Self::POINTER_MOVE),
-        ("POINTER_UP", Self::POINTER_UP),
-        ("POINTER_ENTER", Self::POINTER_ENTER),
-        ("POINTER_LEAVE", Self::POINTER_LEAVE),
-        ("WHEEL", Self::WHEEL),
-        ("TABLE_EVENT", Self::TABLE_EVENT),
-    ];
+    /// Host mirror names of every subscription bit (`nve.interaction.event_mask` values). Every
+    /// bit fits the `u32` table word (checked below).
+    pub const VALUES: crate::table::ValueSetDesc = crate::table::ValueSetDesc {
+        name: "EventMask",
+        values: &[
+            ("Press", Self::PRESS as u32),
+            ("LongPress", Self::LONG_PRESS as u32),
+            ("Scroll", Self::SCROLL as u32),
+            ("TextChange", Self::TEXT_CHANGE as u32),
+            ("Focus", Self::FOCUS as u32),
+            ("Blur", Self::BLUR as u32),
+            ("Layout", Self::LAYOUT as u32),
+            ("Custom", Self::CUSTOM as u32),
+            ("Composition", Self::COMPOSITION as u32),
+            ("KeyDown", Self::KEY_DOWN as u32),
+            ("KeyUp", Self::KEY_UP as u32),
+            ("Submit", Self::SUBMIT as u32),
+            ("PointerDown", Self::POINTER_DOWN as u32),
+            ("PointerMove", Self::POINTER_MOVE as u32),
+            ("PointerUp", Self::POINTER_UP as u32),
+            ("PointerEnter", Self::POINTER_ENTER as u32),
+            ("PointerLeave", Self::POINTER_LEAVE as u32),
+            ("Wheel", Self::WHEEL as u32),
+            ("TableEvent", Self::TABLE_EVENT as u32),
+        ],
+    };
+
 }
+
+// `EventMask::VALUES` narrows to the `u32` `nve.interaction.event_mask` word: no bit may be lost.
+const _: () = assert!((EventMask::PRESS | EventMask::LONG_PRESS | EventMask::SCROLL | EventMask::TEXT_CHANGE | EventMask::FOCUS | EventMask::BLUR | EventMask::LAYOUT | EventMask::CUSTOM | EventMask::COMPOSITION | EventMask::KEY_DOWN | EventMask::KEY_UP | EventMask::SUBMIT | EventMask::POINTER_DOWN | EventMask::POINTER_MOVE | EventMask::POINTER_UP | EventMask::POINTER_ENTER | EventMask::POINTER_LEAVE | EventMask::WHEEL | EventMask::TABLE_EVENT) >> 32 == 0);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EventPayload {

@@ -126,13 +126,26 @@ fn write_or_check_generated(
     Ok(touched)
 }
 
-/// Published capability-module tables foreign hosts read (core tables come from `nve-components`).
-const MODULE_TABLES: &[&nve_store::TableDesc] = &[&<nve_canvas::Canvas as nve_store::NveTable>::DESC];
+/// Published `nve.canvas` tables (one mirror per host language; core tables come from
+/// `nve-components`).
+const CANVAS_TABLES: &[&nve_store::TableDesc] = &[&<nve_canvas::Canvas as nve_store::NveTable>::DESC];
+
+/// Capability-module table mirrors for C/C++ hosts. They are generated here (tools may link
+/// modules) because core `nve-codegen` stays module-free.
+fn module_table_headers() -> Result<Vec<nve_codegen::GeneratedFile>, nve_codegen::CodegenError> {
+    Ok(vec![nve_codegen::generate_module_table_header(
+        "canvas",
+        CANVAS_TABLES,
+        "packages/modules/canvas/cxx/include/nve/canvas/nve_canvas_tables.generated.h".to_owned(),
+    )?])
+}
 
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let mut files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
+    let mut files = nve_codegen::generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS)
         .map_err(|e| format!("ABI codegen failed: {e}"))?;
-    files.extend(nve_codegen::generate_java_host_files(MODULE_TABLES, nve_components::tables::CORE_TABLE_BITS));
+    files.extend(module_table_headers().map_err(|e| format!("module table codegen failed: {e}"))?);
+    files.extend(nve_codegen::generate_java_host_files(CANVAS_TABLES));
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
 }
 
@@ -293,7 +306,7 @@ mod tests {
 
         assert!(run_codegen_abi(&tmp, true).is_err());
         let written = run_codegen_abi(&tmp, false).expect("write every host ABI file");
-        assert_eq!(written.len(), 16);
+        assert_eq!(written.len(), 20, "core + canvas module mirrors + Java host files");
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("packages/core/host-ts/src/generated/nve_abi.generated.ts");

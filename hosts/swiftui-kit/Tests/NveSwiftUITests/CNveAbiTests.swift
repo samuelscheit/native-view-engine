@@ -1,4 +1,5 @@
 import CNveAbi
+import NveHost
 import NveSwiftUI
 import XCTest
 
@@ -81,7 +82,7 @@ private func emptyGetInterface(_ interfaceId: UInt32) -> UnsafeRawPointer? {
 
 final class CNveAbiTests: XCTestCase {
     func testAbiConstantsAndMagic() {
-        XCTAssertEqual(UInt32(NVE_ABI_MAGIC), 0x3145_564E)
+        XCTAssertEqual(UInt32(NVE_ABI_MAGIC), 0x3245_564E)  // "NVE2"
         XCTAssertEqual(UInt32(NVE_ABI_VERSION), 1)
         XCTAssertEqual(UInt32(NVE_ROOT_NODE_ID), 1)
 
