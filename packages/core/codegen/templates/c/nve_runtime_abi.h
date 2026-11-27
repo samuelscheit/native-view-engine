@@ -35,53 +35,57 @@ NVE_EXTERN_C_BEGIN
 {%- call records::typedefs(m.records) %}{% endcall %}
 
 typedef void* NveRuntimeHandle;
-/* Wake callback; may fire on any thread. */
-typedef void (*NveRuntimeWakeFn)(void* ctx);
+{%- for f in m.callbacks %}
+/* {{ spell::one_line(f.doc) }} */
+typedef {{ f.ret }} (*{{ f.name }})({{ f.params }});
+{%- endfor %}
 {%- call records::definitions(m.records) %}{% endcall %}
 {%- call records::asserts(m.records) %}{% endcall %}
+
+#define NVE_RUNTIME_API_SLOT_COUNT {{ m.slots.len() }}u
 
 typedef struct NveRuntimeApi {
   uint32_t abi_version;
   uint32_t struct_size;
   uint64_t schema_hash;
-  NveRuntimeHandle (*create)(const NveRuntimeConfig* config);
-  void (*destroy)(NveRuntimeHandle handle);
-  int32_t (*set_wake_callback)(NveRuntimeHandle handle, NveRuntimeWakeFn cb, void* ctx);
-  int32_t (*set_viewport)(NveRuntimeHandle handle, float width, float height, float scale_factor);
-  int32_t (*attach_app_interface)(NveRuntimeHandle handle, NveGetInterfaceFn get_iface);
-  int32_t (*submit_nve2)(NveRuntimeHandle handle, NveBufferSlice frame);
-  int32_t (*tick)(NveRuntimeHandle handle, float dt_s, uint32_t* out_changed);
-  int32_t (*dispatch_events)(NveRuntimeHandle handle, NveEventBatch batch, uint32_t* out_changed);
-  int32_t (*hit_test)(NveRuntimeHandle handle, float x, float y, uint32_t* out_node_id);
-  int32_t (*scroll_by)(NveRuntimeHandle handle, uint32_t node_id, float dx, float dy, float* out_x, float* out_y);
-  int32_t (*scene_acquire)(NveRuntimeHandle handle, NveRuntimeSceneView* out_view);
-  int32_t (*scene_release)(NveRuntimeHandle handle);
-  int32_t (*get_metrics)(NveRuntimeHandle handle, NveRuntimeMetrics* out_metrics);
-  int32_t (*pair_connect)(NveRuntimeHandle handle, NveStrSlice uri, NveStrSlice token);
-  int32_t (*pair_disconnect)(NveRuntimeHandle handle);
-  uint32_t (*pair_is_connected)(NveRuntimeHandle handle);
-  size_t (*last_error)(uint8_t* out_buf, size_t cap);
+{%- for f in m.slots %}
+  /* {{ spell::one_line(f.doc) }} */
+  {{ f.ret }} (*{{ f.name }})({{ f.params }});
+{%- endfor %}
 } NveRuntimeApi;
-NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, create) == 16u, "NveRuntimeApi slots start after the 16-byte header");
-NVE_STATIC_ASSERT(sizeof(NveRuntimeApi) == 16u + 17u * sizeof(void*), "NveRuntimeApi size");
+NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, abi_version) == 0u, "NveRuntimeApi.abi_version offset");
+NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, struct_size) == 4u, "NveRuntimeApi.struct_size offset");
+NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, schema_hash) == 8u, "NveRuntimeApi.schema_hash offset");
+{%- for f in m.slots %}
+NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, {{ f.name }}) == 16u + {{ loop.index0 }}u * sizeof(void*), "NveRuntimeApi.{{ f.name }} slot");
+{%- endfor %}
+NVE_STATIC_ASSERT(sizeof(NveRuntimeApi) == 16u + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*), "NveRuntimeApi size");
 
 /*
- * Threading, wake-callback, and scene-view lifetime contracts:
- * - Owner thread affinity: `create` binds the surface to its creating thread. All mutating, layout,
- *   and app-touching calls (`destroy`, `set_viewport`, `attach_app_interface`, `submit_nve2`, `tick`,
- *   `dispatch_events`, `hit_test`, `scroll_by`, `pair_connect`, `pair_disconnect`) MUST run on that
- *   owner thread (elsewhere they return `NVE_RUNTIME_INVALID_ARG`, reason in `last_error`). No thread
- *   may access the handle during or after `destroy(h)`.
- * - Cross-thread safe calls: `scene_acquire`, `scene_release`, `get_metrics`, `pair_is_connected`,
- *   `set_wake_callback`, and `last_error`.
- * - Borrowed `NveRuntimeSceneView` pointers stay valid and immutable ONLY between a successful
- *   `scene_acquire` and its matching `scene_release`; writes fail with `NVE_RUNTIME_BUSY` meanwhile
- *   (a `Busy` `tick` keeps its wake latch; retry after `scene_release`).
+ * Threading, wake-callback, and borrowed-view lifetime contracts:
+ * - Owner thread affinity: `create` binds the surface to its creating thread. Slots marked
+ *   "Owner thread" called elsewhere return `NVE_RUNTIME_INVALID_ARG` (reason in `last_error`).
+ *   No thread may access the handle during or after `destroy(h)`.
+ * - Borrowed `NveRuntimeSceneView` pointers (and `resource_payload` bytes) stay valid and
+ *   immutable ONLY between a successful `scene_acquire` and its matching `scene_release`;
+ *   writes fail with `NVE_RUNTIME_BUSY` meanwhile (a `Busy` `tick` keeps its wake latch).
+ * - `drain_emitted_events` / `snapshot_state` outputs borrow app memory until the next
+ *   owner-thread call into the runtime.
  * - `NveRuntimeWakeFn(ctx)` may run on ANY thread (including inside `tick`, `dispatch_events`,
- *   `set_wake_callback`). It MUST be lightweight, non-re-entrant, and never block on the owner thread
- *   (post a message / signal). NULL `set_wake_callback` and `destroy` drain in-flight calls so `ctx`
- *   may be freed afterward.
+ *   `set_wake_callback`, `set_text_measurer`, `restore_state`). It MUST be lightweight,
+ *   non-re-entrant, and never block on the owner thread (post a message / signal). NULL
+ *   `set_wake_callback` and `destroy` drain in-flight calls so `ctx` may be freed afterward.
+ * - `NveRuntimeMeasureTextFn(ctx, ..)` runs synchronously on the owner thread during layout and
+ *   MUST NOT call back into the runtime; `ctx` must outlive its installation.
  */
+/* 1 when `api` is non-NULL and every slot is set (version / hash checked separately). */
+static inline int nve_runtime_api_slots_complete(const NveRuntimeApi* api) {
+  return api != NULL
+{%- for f in m.slots %} &&
+         api->{{ f.name }} != NULL
+{%- endfor %};
+}
+
 NVE_RUNTIME_API const NveRuntimeApi* nve_runtime_get_interface(uint32_t abi_version);
 
 NVE_EXTERN_C_END

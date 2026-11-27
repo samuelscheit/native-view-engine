@@ -65,7 +65,9 @@ if(NOT TARGET nve_runtime)
       list(APPEND _nve_rt_cargo_args --no-default-features)
     endif()
     if(NVE_RUNTIME_FEATURES)
-      list(APPEND _nve_rt_cargo_args --features "${NVE_RUNTIME_FEATURES}")
+      # Accept a CMake list (`a;b`) or a comma list; cargo takes one comma-separated argument.
+      list(JOIN NVE_RUNTIME_FEATURES "," _nve_rt_features)
+      list(APPEND _nve_rt_cargo_args --features "${_nve_rt_features}")
     endif()
     if(NVE_RUNTIME_CARGO_TARGET)
       list(APPEND _nve_rt_cargo_args --target "${NVE_RUNTIME_CARGO_TARGET}")
@@ -84,6 +86,7 @@ if(NOT TARGET nve_runtime)
         WORKING_DIRECTORY "${_nve_rt_repo_root}"
         BYPRODUCTS "${_nve_rt_debug_path}" "${_nve_rt_release_path}"
         COMMENT "Building nve-runtime staticlib ($<CONFIG>)"
+        COMMAND_EXPAND_LISTS
         VERBATIM
       )
     else()
@@ -113,6 +116,7 @@ if(NOT TARGET nve_runtime)
         WORKING_DIRECTORY "${_nve_rt_repo_root}"
         BYPRODUCTS "${_nve_rt_lib_path}"
         COMMENT "Building nve-runtime staticlib (${_nve_rt_profile})"
+        COMMAND_EXPAND_LISTS
         VERBATIM
       )
     endif()

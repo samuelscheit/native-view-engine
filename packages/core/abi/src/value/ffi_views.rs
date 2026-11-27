@@ -142,7 +142,6 @@ impl<'a> NveArrayRef<'a> {
 /// Zero-copy borrowed slice of `NveMapEntry` key/value pairs (also used for direct props).
 #[derive(Clone, Copy)]
 pub struct NveMapRef<'a> {
-    #[cfg_attr(not(feature = "wire"), allow(dead_code))]
     pub(super) entries: &'a [NveMapEntry],
 }
 
@@ -168,6 +167,8 @@ impl<'a> NveMapRef<'a> {
     #[inline] pub const unsafe fn from_slice(entries: &'a [NveMapEntry]) -> Self { Self { entries } }
     #[inline] pub const fn len(&self) -> usize { self.entries.len() }
     #[inline] pub const fn is_empty(&self) -> bool { self.entries.is_empty() }
+    /// Raw entries, e.g. to forward across `NveComponentApi::set_props` unchanged.
+    #[inline] pub const fn entries(&self) -> &'a [NveMapEntry] { self.entries }
     #[inline] pub fn get(&self, key: &str) -> Option<NveValueRef<'a>> {
         let key_bytes = key.as_bytes();
         self.entries.iter().find_map(|entry| {

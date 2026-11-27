@@ -2,13 +2,13 @@
 //! framework-agnostic [`RuntimeApp`] contract defined in `nve-engine`.
 
 use nve_abi::{
-    FrameId, NveAppHandle, NveBufferSlice, NveDevApi, NveDirectEvent, NveEventBatch,
-    NveEventBatchRef, NveGetInterfaceFn, NveSurfaceApi, SurfaceId, NVE_IFACE_DEV,
-    NVE_IFACE_SURFACE,
+    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
+    NveEventBatch, NveEventBatchRef, NveGetInterfaceFn, NvePropsRef, NveSurfaceApi, SurfaceId,
+    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_SURFACE,
 };
 use nve_engine::{HotPatchMsg, NveApp};
 
-pub use nve_engine::{AppFrame, FrameTickHook, RuntimeApp};
+pub use nve_engine::{AppFrame, CapabilityUnsupported, FrameTickHook, RuntimeApp};
 
 /// Adapts any Rust [`NveApp`] implementation to [`RuntimeApp`].
 pub struct NveAppAdapter<A: NveApp> {
@@ -49,8 +49,25 @@ impl<A: NveApp> RuntimeApp for NveAppAdapter<A> {
         self.app.dispatch_events(events)
     }
 
-    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
-        self.app.apply_hot_patch(patch)
+    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> Result<bool, CapabilityUnsupported> {
+        Ok(self.app.apply_hot_patch(patch))
+    }
+
+    fn set_props(&mut self, props: NvePropsRef<'_>) -> Result<bool, CapabilityUnsupported> {
+        Ok(self.app.set_props(props))
+    }
+
+    fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {
+        Ok(self.app.drain_emitted_events())
+    }
+
+    fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {
+        Ok(self.app.snapshot_state())
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), CapabilityUnsupported> {
+        self.app.restore_state(state);
+        Ok(())
     }
 }
 
@@ -58,13 +75,25 @@ impl<A: NveApp> RuntimeApp for NveAppAdapter<A> {
 pub struct CAbiAppAdapter {
     handle: NveAppHandle,
     surface_api: NveSurfaceApi,
+    component_api: Option<NveComponentApi>,
     dev_api: Option<NveDevApi>,
     patch_scratch: Vec<u8>,
 }
 
+/// Copies the optional interface table `T` that `get_iface(id)` returns (`None` for NULL).
+///
+/// # Safety
+/// `get_iface` must follow the NVE modular C ABI: a non-null result for `id` points to a `T`.
+unsafe fn query_interface<T: Copy>(get_iface: NveGetInterfaceFn, id: u32) -> Option<T> {
+    // SAFETY: Caller guarantees `get_iface` follows the NVE modular C ABI contract.
+    let ptr = unsafe { get_iface(id) }.cast::<T>();
+    // SAFETY: A non-null pointer returned for `id` points to a valid static `T`.
+    (!ptr.is_null()).then(|| unsafe { *ptr })
+}
+
 impl CAbiAppAdapter {
-    /// Instantiates an app handle by querying `NVE_IFACE_SURFACE` (required) plus optional
-    /// `NVE_IFACE_DEV` from `get_iface`.
+    /// Instantiates an app handle by querying `NVE_IFACE_SURFACE` (required) plus the optional
+    /// `NVE_IFACE_COMPONENT` and `NVE_IFACE_DEV` tables from `get_iface`.
     ///
     /// # Safety
     /// `get_iface` must conform to the NVE modular C ABI (`nve_get_interface`) and the backing
@@ -73,22 +102,14 @@ impl CAbiAppAdapter {
         get_iface: NveGetInterfaceFn,
         surface_id: SurfaceId,
     ) -> Option<Self> {
-        // SAFETY: Caller guarantees `get_iface` follows the NVE modular C ABI contract.
-        let surface_ptr = unsafe { get_iface(NVE_IFACE_SURFACE) }.cast::<NveSurfaceApi>();
-        if surface_ptr.is_null() {
-            return None;
-        }
-        // SAFETY: Non-null pointer returned for `NVE_IFACE_SURFACE` points to a static `NveSurfaceApi`.
-        let surface_api = unsafe { *surface_ptr };
-
-        // SAFETY: Querying optional `NVE_IFACE_DEV`.
-        let dev_ptr = unsafe { get_iface(NVE_IFACE_DEV) }.cast::<NveDevApi>();
-        let dev_api = if dev_ptr.is_null() {
-            None
-        } else {
-            // SAFETY: Non-null pointer points to a valid static `NveDevApi`.
-            Some(unsafe { *dev_ptr })
-        };
+        // SAFETY: Caller guarantees `get_iface` follows the NVE modular C ABI.
+        let surface_api =
+            unsafe { query_interface::<NveSurfaceApi>(get_iface, NVE_IFACE_SURFACE) }?;
+        // SAFETY: As above.
+        let component_api =
+            unsafe { query_interface::<NveComponentApi>(get_iface, NVE_IFACE_COMPONENT) };
+        // SAFETY: As above.
+        let dev_api = unsafe { query_interface::<NveDevApi>(get_iface, NVE_IFACE_DEV) };
 
         // SAFETY: `surface_api.create` returns a freshly allocated opaque app handle or null.
         let handle = unsafe { (surface_api.create)(surface_id) };
@@ -98,6 +119,7 @@ impl CAbiAppAdapter {
         Some(Self {
             handle,
             surface_api,
+            component_api,
             dev_api,
             patch_scratch: Vec::new(),
         })
@@ -134,13 +156,43 @@ impl RuntimeApp for CAbiAppAdapter {
         unsafe { (self.surface_api.dispatch_events)(self.handle, batch) != 0 }
     }
 
-    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
-        let Some(dev) = self.dev_api else {
-            return false;
-        };
+    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> Result<bool, CapabilityUnsupported> {
+        let dev = self.dev_api.ok_or(CapabilityUnsupported)?;
         self.patch_scratch = patch.to_bytes();
         let slice = NveBufferSlice::from_slice(&self.patch_scratch);
         // SAFETY: `self.handle` is live and `slice` points into `self.patch_scratch`.
-        unsafe { (dev.apply_hot_patch)(self.handle, slice) != 0 }
+        Ok(unsafe { (dev.apply_hot_patch)(self.handle, slice) != 0 })
+    }
+
+    fn set_props(&mut self, props: NvePropsRef<'_>) -> Result<bool, CapabilityUnsupported> {
+        let component = self.component_api.ok_or(CapabilityUnsupported)?;
+        let entries = props.entries();
+        let count = u32::try_from(entries.len()).map_err(|_| CapabilityUnsupported)?;
+        // SAFETY: `self.handle` is live and `entries` stays borrowed for the synchronous call.
+        Ok(unsafe { (component.set_props)(self.handle, entries.as_ptr(), count) != 0 })
+    }
+
+    fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {
+        let component = self.component_api.ok_or(CapabilityUnsupported)?;
+        // SAFETY: `self.handle` is live; the batch stays valid until the next call on it, which
+        // the `&mut self` borrow of the returned slice rules out.
+        let batch = unsafe { (component.drain_emitted_events)(self.handle) };
+        // SAFETY: A structurally valid batch points to `len` initialized `NveDirectEvent`s.
+        Ok(unsafe { batch.try_as_slice() }.unwrap_or(&[]))
+    }
+
+    fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {
+        let dev = self.dev_api.ok_or(CapabilityUnsupported)?;
+        // SAFETY: `self.handle` is live; the slice stays valid until the next call on it.
+        let slice = unsafe { (dev.snapshot_state)(self.handle) };
+        // SAFETY: A structurally valid slice is readable for `len` bytes.
+        Ok(unsafe { slice.try_as_slice() }.unwrap_or(&[]))
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), CapabilityUnsupported> {
+        let dev = self.dev_api.ok_or(CapabilityUnsupported)?;
+        // SAFETY: `self.handle` is live and `state` stays borrowed for the synchronous call.
+        unsafe { (dev.restore_state)(self.handle, NveBufferSlice::from_slice(state)) };
+        Ok(())
     }
 }

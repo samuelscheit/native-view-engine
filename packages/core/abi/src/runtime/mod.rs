@@ -5,19 +5,26 @@
 //! Coexists cleanly alongside legacy `NveSceneView`/`NveRenderNode` during Track 1B-2 Slice 2A
 //! until Slice 2B rebinds all hosts and deletes the legacy view.
 
+mod vtable;
+
 use core::ffi::c_void;
 use core::mem::{align_of, offset_of, size_of};
 
 use nve_abi_macros::NveAbi;
 use nve_hash::Xxh64Hasher;
 
-use crate::ffi::{NveBufferSlice, NveGetInterfaceFn};
 use crate::schema::{
     AbiConstDescriptor, AbiEnumDescriptor, AbiFileDescriptor, AbiRecordDescriptor, NveEnumSchema,
     NveStructSchema,
 };
 use crate::table::NveTableView;
-use crate::value::{NveEventBatch, NveStrSlice};
+use crate::value::NveStrSlice;
+
+use vtable::hash_rt_signatures;
+pub use vtable::{
+    NveRuntimeApi, NveRuntimeGetInterfaceFn, RuntimeFnSignature, RUNTIME_API_SLOTS,
+    RUNTIME_CALLBACK_TYPEDEFS,
+};
 
 /// Current C ABI version expected by `nve_runtime_get_interface(uint32_t abi_version)`.
 pub const NVE_RUNTIME_ABI_VERSION: u32 = 1;
@@ -37,6 +44,21 @@ pub type NveRuntimeHandle = *mut c_void;
 /// Asynchronous wake callback registered by a host to be notified when frames or pairing work
 /// become ready.
 pub type NveRuntimeWakeFn = unsafe extern "C" fn(ctx: *mut c_void);
+
+/// Native OS text measurement callback installed via [`NveRuntimeApi::set_text_measurer`].
+///
+/// Called synchronously on the owner thread during layout. `text` is UTF-8 borrowed for the call,
+/// `font_weight` is CSS `100..=900`, and `max_width` is `INFINITY` when unconstrained. Writes the
+/// measured logical-point size to `out_width` / `out_height` (both non-null, pre-zeroed).
+pub type NveRuntimeMeasureTextFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    text: NveStrSlice,
+    font_size: f32,
+    font_weight: u32,
+    max_width: f32,
+    out_width: *mut f32,
+    out_height: *mut f32,
+);
 
 /// Status codes returned by [`NveRuntimeApi`] entry points.
 #[repr(i32)]
@@ -87,6 +109,22 @@ pub struct NveLayoutRect {
     pub width: f32,
     #[nve_abi(offset = 12)]
     pub height: f32,
+}
+
+/// Published 12-byte scroll state of one scroll container: the visual child shift (scroll offset
+/// minus any `Scroll::virtual_top_spacer`) that hosts subtract from descendants' absolute
+/// (pre-scroll) [`NveLayoutRect`]s.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, NveAbi)]
+#[nve_abi(size = 12)]
+pub struct NveScrollOffset {
+    /// Raw `NodeId` of the scroll container.
+    #[nve_abi(offset = 0)]
+    pub node_id: u32,
+    #[nve_abi(offset = 4)]
+    pub x: f32,
+    #[nve_abi(offset = 8)]
+    pub y: f32,
 }
 
 /// Zero-copy 32-byte per-node header mirroring `nve_store::NodeRow` directly across C FFI.
@@ -201,9 +239,10 @@ pub struct NveRuntimeMetrics {
 
 /// Zero-copy borrowed runtime scene view guarded by `scene_acquire` / `scene_release`.
 ///
-/// Exposes `NodeStore`'s dense `NveNodeRow` array, dense `NveLayoutRect` array, `text_slab`,
-/// `children_slab`, per-frame `dirty_indices` / `removed_ids`, and published `NveTableView`s
-/// with zero intermediate `NveRenderNode` materialization.
+/// Exposes `NodeStore`'s dense `NveNodeRow` array, dense absolute pre-scroll `NveLayoutRect`
+/// array, `text_slab`, `children_slab`, per-frame `dirty_indices` / `removed_ids`, published
+/// `NveTableView`s, and per-container `NveScrollOffset`s with zero intermediate `NveRenderNode`
+/// materialization.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, NveAbi)]
 pub struct NveRuntimeSceneView {
@@ -231,6 +270,11 @@ pub struct NveRuntimeSceneView {
     /// Number of published [`NveTableView`] descriptors in `tables`.
     #[nve_abi(offset = 36)]
     pub table_count: u32,
+    /// Number of [`NveScrollOffset`]s in `scroll_offsets`.
+    #[nve_abi(offset = 40)]
+    pub scroll_count: u32,
+    #[nve_abi(offset = 44)]
+    pub _reserved: u32,
     /// Borrowed slice of `node_capacity` [`NveNodeRow`] headers directly from `NodeStore`.
     pub rows: *const NveNodeRow,
     /// Borrowed slice of `node_capacity` [`NveLayoutRect`] boxes indexed by `NodeIndex`.
@@ -245,6 +289,9 @@ pub struct NveRuntimeSceneView {
     pub removed_ids: *const u32,
     /// Borrowed slice of `table_count` [`NveTableView`] table views.
     pub tables: *const NveTableView,
+    /// Borrowed slice of `scroll_count` [`NveScrollOffset`]s sorted by `node_id`; scroll
+    /// containers that are absent have a zero shift.
+    pub scroll_offsets: *const NveScrollOffset,
 }
 
 impl Default for NveRuntimeSceneView {
@@ -258,6 +305,8 @@ impl Default for NveRuntimeSceneView {
             text_slab_len: 0,
             children_slab_len: 0,
             table_count: 0,
+            scroll_count: 0,
+            _reserved: 0,
             rows: core::ptr::null(),
             rects: core::ptr::null(),
             text_slab: core::ptr::null(),
@@ -265,74 +314,10 @@ impl Default for NveRuntimeSceneView {
             dirty_indices: core::ptr::null(),
             removed_ids: core::ptr::null(),
             tables: core::ptr::null(),
+            scroll_offsets: core::ptr::null(),
         }
     }
 }
-
-/// Single exported C ABI vtable returned by `nve_runtime_get_interface(uint32_t abi_version)`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct NveRuntimeApi {
-    pub abi_version: u32,
-    pub struct_size: u32,
-    pub schema_hash: u64,
-    pub create: unsafe extern "C" fn(config: *const NveRuntimeConfig) -> NveRuntimeHandle,
-    pub destroy: unsafe extern "C" fn(handle: NveRuntimeHandle),
-    pub set_wake_callback: unsafe extern "C" fn(
-        handle: NveRuntimeHandle,
-        cb: Option<NveRuntimeWakeFn>,
-        ctx: *mut c_void,
-    ) -> i32,
-    pub set_viewport: unsafe extern "C" fn(
-        handle: NveRuntimeHandle,
-        width: f32,
-        height: f32,
-        scale_factor: f32,
-    ) -> i32,
-    pub attach_app_interface: unsafe extern "C" fn(
-        handle: NveRuntimeHandle,
-        get_iface: Option<NveGetInterfaceFn>,
-    ) -> i32,
-    pub submit_nve2:
-        unsafe extern "C" fn(handle: NveRuntimeHandle, frame: NveBufferSlice) -> i32,
-    pub tick:
-        unsafe extern "C" fn(handle: NveRuntimeHandle, dt_s: f32, out_changed: *mut u32) -> i32,
-    pub dispatch_events: unsafe extern "C" fn(
-        handle: NveRuntimeHandle,
-        batch: NveEventBatch,
-        out_changed: *mut u32,
-    ) -> i32,
-    pub hit_test: unsafe extern "C" fn(
-        handle: NveRuntimeHandle,
-        x: f32,
-        y: f32,
-        out_node_id: *mut u32,
-    ) -> i32,
-    pub scroll_by: unsafe extern "C" fn(
-        handle: NveRuntimeHandle,
-        node_id: u32,
-        dx: f32,
-        dy: f32,
-        out_x: *mut f32,
-        out_y: *mut f32,
-    ) -> i32,
-    pub scene_acquire:
-        unsafe extern "C" fn(handle: NveRuntimeHandle, out_view: *mut NveRuntimeSceneView) -> i32,
-    pub scene_release: unsafe extern "C" fn(handle: NveRuntimeHandle) -> i32,
-    pub get_metrics:
-        unsafe extern "C" fn(handle: NveRuntimeHandle, out_metrics: *mut NveRuntimeMetrics) -> i32,
-    pub pair_connect: unsafe extern "C" fn(
-        handle: NveRuntimeHandle,
-        uri: NveStrSlice,
-        token: NveStrSlice,
-    ) -> i32,
-    pub pair_disconnect: unsafe extern "C" fn(handle: NveRuntimeHandle) -> i32,
-    pub pair_is_connected: unsafe extern "C" fn(handle: NveRuntimeHandle) -> u32,
-    pub last_error: unsafe extern "C" fn(out_buf: *mut u8, cap: usize) -> usize,
-}
-
-/// Entry-point signature exported by `libnve_runtime` (`nve_runtime_get_interface`).
-pub type NveRuntimeGetInterfaceFn = unsafe extern "C" fn(abi_version: u32) -> *const NveRuntimeApi;
 
 const fn hash_rt_field(h: &mut Xxh64Hasher, name: &str, ty: &str, sep: &[u8], v: usize) {
     h.update(b"|");
@@ -341,15 +326,6 @@ const fn hash_rt_field(h: &mut Xxh64Hasher, name: &str, ty: &str, sep: &[u8], v:
     h.update(ty.as_bytes());
     h.update(sep);
     h.update_u64(v as u64);
-}
-
-const fn hash_rt_method(h: &mut Xxh64Hasher, idx: usize, name: &str, sig: &str) {
-    h.update(b"|fn#");
-    h.update_u64(idx as u64);
-    h.update(b":");
-    h.update(name.as_bytes());
-    h.update(b"=");
-    h.update(sig.as_bytes());
 }
 
 const fn hash_rt_variant(h: &mut Xxh64Hasher, name: &str, value: i32) {
@@ -380,6 +356,12 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "y", "f32", b"@", offset_of!(NveLayoutRect, y));
     hash_rt_field(&mut h, "width", "f32", b"@", offset_of!(NveLayoutRect, width));
     hash_rt_field(&mut h, "height", "f32", b"@", offset_of!(NveLayoutRect, height));
+
+    h.update(b";NveScrollOffset");
+    h.update_u64(size_of::<NveScrollOffset>() as u64);
+    hash_rt_field(&mut h, "node_id", "u32", b"@", offset_of!(NveScrollOffset, node_id));
+    hash_rt_field(&mut h, "x", "f32", b"@", offset_of!(NveScrollOffset, x));
+    hash_rt_field(&mut h, "y", "f32", b"@", offset_of!(NveScrollOffset, y));
 
     h.update(b";NveNodeRow");
     h.update_u64(size_of::<NveNodeRow>() as u64);
@@ -435,35 +417,23 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "text_slab_len", "u32", b"@", offset_of!(NveRuntimeSceneView, text_slab_len));
     hash_rt_field(&mut h, "children_slab_len", "u32", b"@", offset_of!(NveRuntimeSceneView, children_slab_len));
     hash_rt_field(&mut h, "table_count", "u32", b"@", offset_of!(NveRuntimeSceneView, table_count));
-    hash_rt_field(&mut h, "rows", "*const NveNodeRow", b"#", 8);
-    hash_rt_field(&mut h, "rects", "*const NveLayoutRect", b"#", 9);
-    hash_rt_field(&mut h, "text_slab", "*const u8", b"#", 10);
-    hash_rt_field(&mut h, "children_slab", "*const u32", b"#", 11);
-    hash_rt_field(&mut h, "dirty_indices", "*const u32", b"#", 12);
-    hash_rt_field(&mut h, "removed_ids", "*const u32", b"#", 13);
-    hash_rt_field(&mut h, "tables", "*const NveTableView", b"#", 14);
+    hash_rt_field(&mut h, "scroll_count", "u32", b"@", offset_of!(NveRuntimeSceneView, scroll_count));
+    hash_rt_field(&mut h, "_reserved", "u32", b"@", offset_of!(NveRuntimeSceneView, _reserved));
+    hash_rt_field(&mut h, "rows", "*const NveNodeRow", b"#", 10);
+    hash_rt_field(&mut h, "rects", "*const NveLayoutRect", b"#", 11);
+    hash_rt_field(&mut h, "text_slab", "*const u8", b"#", 12);
+    hash_rt_field(&mut h, "children_slab", "*const u32", b"#", 13);
+    hash_rt_field(&mut h, "dirty_indices", "*const u32", b"#", 14);
+    hash_rt_field(&mut h, "removed_ids", "*const u32", b"#", 15);
+    hash_rt_field(&mut h, "tables", "*const NveTableView", b"#", 16);
+    hash_rt_field(&mut h, "scroll_offsets", "*const NveScrollOffset", b"#", 17);
 
     h.update(b";NveRuntimeApi");
     hash_rt_field(&mut h, "abi_version", "u32", b"@", offset_of!(NveRuntimeApi, abi_version));
     hash_rt_field(&mut h, "struct_size", "u32", b"@", offset_of!(NveRuntimeApi, struct_size));
     hash_rt_field(&mut h, "schema_hash", "u64", b"@", offset_of!(NveRuntimeApi, schema_hash));
-    hash_rt_method(&mut h, 0, "create", "(const NveRuntimeConfig*)->NveRuntimeHandle");
-    hash_rt_method(&mut h, 1, "destroy", "(NveRuntimeHandle)->void");
-    hash_rt_method(&mut h, 2, "set_wake_callback", "(NveRuntimeHandle,NveRuntimeWakeFn,void*)->i32");
-    hash_rt_method(&mut h, 3, "set_viewport", "(NveRuntimeHandle,f32,f32,f32)->i32");
-    hash_rt_method(&mut h, 4, "attach_app_interface", "(NveRuntimeHandle,NveGetInterfaceFn)->i32");
-    hash_rt_method(&mut h, 5, "submit_nve2", "(NveRuntimeHandle,NveBufferSlice)->i32");
-    hash_rt_method(&mut h, 6, "tick", "(NveRuntimeHandle,f32,u32*)->i32");
-    hash_rt_method(&mut h, 7, "dispatch_events", "(NveRuntimeHandle,NveEventBatch,u32*)->i32");
-    hash_rt_method(&mut h, 8, "hit_test", "(NveRuntimeHandle,f32,f32,u32*)->i32");
-    hash_rt_method(&mut h, 9, "scroll_by", "(NveRuntimeHandle,u32,f32,f32,f32*,f32*)->i32");
-    hash_rt_method(&mut h, 10, "scene_acquire", "(NveRuntimeHandle,NveRuntimeSceneView*)->i32");
-    hash_rt_method(&mut h, 11, "scene_release", "(NveRuntimeHandle)->i32");
-    hash_rt_method(&mut h, 12, "get_metrics", "(NveRuntimeHandle,NveRuntimeMetrics*)->i32");
-    hash_rt_method(&mut h, 13, "pair_connect", "(NveRuntimeHandle,NveStrSlice,NveStrSlice)->i32");
-    hash_rt_method(&mut h, 14, "pair_disconnect", "(NveRuntimeHandle)->i32");
-    hash_rt_method(&mut h, 15, "pair_is_connected", "(NveRuntimeHandle)->u32");
-    hash_rt_method(&mut h, 16, "last_error", "(u8*,usize)->usize");
+    hash_rt_signatures(&mut h, b";callbacks", RUNTIME_CALLBACK_TYPEDEFS);
+    hash_rt_signatures(&mut h, b";slots", RUNTIME_API_SLOTS);
     h.digest()
 }
 
@@ -505,6 +475,7 @@ const RUNTIME_ENUMS: &[AbiEnumDescriptor] = &[<NveRuntimeStatus as NveEnumSchema
 
 const RUNTIME_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveLayoutRect as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveScrollOffset as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveNodeRow as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeConfig as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeMetrics as NveStructSchema>::SCHEMA),
@@ -528,6 +499,8 @@ pub const fn runtime_abi_descriptor() -> AbiFileDescriptor {
 const _: () = {
     assert!(size_of::<NveLayoutRect>() == NVE_LAYOUT_RECT_SIZE);
     assert!(align_of::<NveLayoutRect>() == 4);
+    assert!(size_of::<NveScrollOffset>() == 12);
+    assert!(align_of::<NveScrollOffset>() == 4);
     assert!(size_of::<NveNodeRow>() == NVE_NODE_ROW_SIZE);
     assert!(align_of::<NveNodeRow>() == 4);
     assert!(size_of::<NveRuntimeConfig>() == 24);

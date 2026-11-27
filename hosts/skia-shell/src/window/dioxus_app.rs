@@ -67,7 +67,7 @@ impl DesktopApp for DioxusDesktopApp {
         let Ok(msg) = HotPatchMsg::from_bytes(patch_nvp1) else {
             return false;
         };
-        if self.app.apply_hot_patch(&msg) {
+        if self.app.apply_hot_patch(&msg) == Ok(true) {
             self.generation = self.generation.saturating_add(1);
             true
         } else {

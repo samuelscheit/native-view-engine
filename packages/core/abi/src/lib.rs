@@ -47,9 +47,11 @@ pub use host::{
 };
 pub use runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
-    NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, NveRuntimeWakeFn,
-    NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION,
-    NVE_RUNTIME_SCHEMA_HASH,
+    NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics, NveRuntimeSceneView,
+    NveScrollOffset,
+    NveRuntimeStatus, NveRuntimeWakeFn, RuntimeFnSignature, NVE_LAYOUT_RECT_SIZE,
+    NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
+    RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,
 };
 pub use scene::{
     NveNodeMeta, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneError,
