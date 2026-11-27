@@ -14,7 +14,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-#[wasm_bindgen(inline_js = "export function nveQueueMicrotask(cb) { queueMicrotask(cb); }")]
+#[wasm_bindgen(inline_js = "export function nve_queue_microtask(cb) { queueMicrotask(cb); }")]
 extern "C" {
     fn nve_queue_microtask(cb: &JsValue);
 }

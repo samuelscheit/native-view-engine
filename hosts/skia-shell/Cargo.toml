@@ -26,6 +26,7 @@ yoga = ["nve-backend-skia/yoga"]
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-dioxus = { workspace = true }
 nve-engine = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-interop = { workspace = true }

@@ -2,7 +2,7 @@
 //! and outside-lock optimistic layer recomputation on [`QueryClient`].
 
 use nve_hash::xxh64;
-use nve_rpc::{CallReply, CodecFormat, Procedure, Query, RawCall, RpcError};
+use nve_rpc::{CallReply, CodecFormat, ProcId, Procedure, Query, RawCall, RpcError};
 
 use crate::engine::{run_side_effects, QueryClient, BODY_HASH_SEED};
 use crate::optimistic::{
@@ -22,22 +22,23 @@ impl<T, C> QueryClient<T, C> {
     where
         C: CodecFormat,
     {
-        self.begin_fetch_named(handle, None)
+        self.begin_fetch_named(handle, None, None)
     }
 
-    /// Typed sans-I/O fetch start binding `P::NAME` explicitly so even hydrated-only slots always
-    /// produce a valid RPC route path.
+    /// Typed sans-I/O fetch start verifying `meta.proc_id == P::ID` and binding `P::NAME`
+    /// explicitly so even hydrated-only slots always produce a valid RPC route path.
     pub fn begin_fetch_for<P>(&self, handle: QueryHandle) -> Option<(FetchTicket, RawCall)>
     where
         P: Procedure<Effect = Query>,
         C: CodecFormat,
     {
-        self.begin_fetch_named(handle, Some(P::NAME))
+        self.begin_fetch_named(handle, Some(P::ID), Some(P::NAME))
     }
 
     fn begin_fetch_named(
         &self,
         handle: QueryHandle,
+        expected_proc_id: Option<ProcId>,
         proc_name_override: Option<&'static str>,
     ) -> Option<(FetchTicket, RawCall)>
     where
@@ -49,6 +50,11 @@ impl<T, C> QueryClient<T, C> {
             }
             let idx = handle.slot.index();
             let meta = &mut s.metas[idx];
+            if let Some(pid) = expected_proc_id
+                && meta.proc_id != pid
+            {
+                return (None, None);
+            }
             if meta.is_fetching() {
                 return (None, None);
             }
@@ -115,13 +121,16 @@ impl<T, C> QueryClient<T, C> {
                 || meta.fetch_gen != ticket.fetch_gen
                 || s.wildcard_epoch != ticket.wildcard_epoch
             {
-                let waiters = if meta.proc_id == P::ID && meta.fetch_gen == ticket.fetch_gen {
-                    meta.flags &= !FLAG_IS_FETCHING;
-                    core::mem::take(&mut s.payloads[idx].in_flight_waiters)
-                } else {
-                    Vec::new()
-                };
-                return (false, None, waiters, None);
+                let (wake, waiters) =
+                    if meta.proc_id == P::ID && meta.fetch_gen == ticket.fetch_gen {
+                        meta.flags &= !FLAG_IS_FETCHING;
+                        let waiters = core::mem::take(&mut s.payloads[idx].in_flight_waiters);
+                        let wake = s.mark_dirty(ticket.handle.slot);
+                        (wake, waiters)
+                    } else {
+                        (None, Vec::new())
+                    };
+                return (false, wake, waiters, None);
             }
             meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED);
             let payload = &mut s.payloads[idx];
@@ -175,10 +184,8 @@ impl<T, C> QueryClient<T, C> {
                 }
             }
         });
-        if let Some(job) = job {
-            self.recompute_jobs_outside_lock(vec![job]);
-        }
-        run_side_effects(wake, waiters);
+        let recompute_wake = job.and_then(|j| self.recompute_jobs_outside_lock(vec![j]));
+        run_side_effects(recompute_wake.or(wake), waiters);
         accepted
     }
 
@@ -204,8 +211,13 @@ impl<T, C> QueryClient<T, C> {
 
     /// Executes every optimistic layer closure strictly OUTSIDE the cache lock and commits the
     /// folded values only if each slot's `slot_gen` and `optimistic_rev` still match (retrying
-    /// if a concurrent mutation raced).
-    pub(crate) fn recompute_jobs_outside_lock(&self, mut jobs: Vec<RecomputeJob>) {
+    /// if a concurrent mutation raced). Returns the registered wake callback if any slot became
+    /// dirty so callers can fire ONE coalesced wake after releasing all locks.
+    pub(crate) fn recompute_jobs_outside_lock(
+        &self,
+        mut jobs: Vec<RecomputeJob>,
+    ) -> Option<crate::state::WakeCallback> {
+        let mut wake_out = None;
         while !jobs.is_empty() {
             let computed: Vec<(QuerySlotId, u32, u16, crate::types::SharedAny)> = jobs
                 .iter()
@@ -213,7 +225,8 @@ impl<T, C> QueryClient<T, C> {
                 .collect();
             jobs.clear();
 
-            self.inner.state.with(|s| {
+            let wake = self.inner.state.with(|s| {
+                let mut wake_cb = None;
                 for (slot, generation, rev, value) in computed {
                     let handle = QueryHandle { slot, generation };
                     if !s.is_live(handle) {
@@ -222,13 +235,21 @@ impl<T, C> QueryClient<T, C> {
                     let idx = slot.index();
                     if s.metas[idx].optimistic_rev == rev {
                         s.payloads[idx].effective_optimistic = Some(value);
+                        if let Some(cb) = s.mark_dirty(slot) {
+                            wake_cb = Some(cb);
+                        }
                     } else if let Some(retry) =
                         prepare_recompute_job(slot, &mut s.metas[idx], &mut s.payloads[idx])
                     {
                         jobs.push(retry);
                     }
                 }
+                wake_cb
             });
+            if wake.is_some() {
+                wake_out = wake;
+            }
         }
+        wake_out
     }
 }

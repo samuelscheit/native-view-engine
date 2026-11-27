@@ -4,6 +4,7 @@
 //! `NVERELOC` + `MmapOffsetArena` (`NativeInstantBootStore`) replay & atomic save on exit.
 
 pub mod clipboard;
+pub mod dioxus_app;
 pub mod hot_reload_client;
 mod ime;
 pub mod input;
@@ -15,6 +16,8 @@ pub mod text_edit;
 mod window_commands;
 pub mod window_host;
 
+#[cfg(test)]
+mod dioxus_app_tests;
 #[cfg(test)]
 mod host_reload_tests;
 #[cfg(test)]
@@ -46,6 +49,7 @@ use nve_engine::{BackendError, InstantBootError, RelocError};
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 pub use clipboard::{default_clipboard, ClipboardProvider, InMemoryClipboard};
+pub use dioxus_app::DioxusDesktopApp;
 pub use hot_reload_client::HotReloadClient;
 pub use input::format_keydown_shorthand;
 pub(crate) use instant_boot::prewarm_from_options;

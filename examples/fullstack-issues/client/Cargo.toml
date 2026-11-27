@@ -1,0 +1,17 @@
+[package]
+name = "nve-example-issues-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform Dioxus issue-tracker UI shared across Web WASM, Native Skia, and Headless tests via nve-query-dioxus and nve-ui."
+
+[dependencies]
+nve-example-issues-api = { workspace = true }
+nve-rpc = { workspace = true }
+nve-query = { workspace = true }
+nve-query-dioxus = { workspace = true }
+nve-dioxus = { workspace = true }
+nve-ui = { workspace = true }
+dioxus-core = { workspace = true }
+dioxus-core-macro = { workspace = true }
+dioxus-signals = { workspace = true }

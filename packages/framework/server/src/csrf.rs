@@ -275,9 +275,11 @@ pub(crate) fn canonicalize_origin(raw: &str) -> Result<String, &'static str> {
     }
 
     let default_port_num: u16 = default_port.parse().unwrap_or(0);
-    let normalized_port = port
-        .and_then(|p| p.parse::<u16>().ok())
-        .filter(|&num| num != default_port_num);
+    let parsed_port = match port {
+        Some(p) => Some(p.parse::<u16>().map_err(|_| "invalid port in origin")?),
+        None => None,
+    };
+    let normalized_port = parsed_port.filter(|&num| num != default_port_num);
     let port_str = normalized_port.map(|n| n.to_string());
     let mut out = String::with_capacity(
         scheme.len() + host.len() + port_str.as_ref().map_or(0, |p| 1 + p.len()),

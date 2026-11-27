@@ -42,6 +42,7 @@ members = [
     "examples/studio-workspace",
     "examples/nve-docs-site",
     "examples/fullstack-issues/api",
+    "examples/fullstack-issues/client",
     "examples/fullstack-issues/server",
     "hosts/skia-shell",
     "hosts/web-shell",
@@ -89,6 +90,7 @@ nve-skia-shell = { path = "hosts/skia-shell" }
 nve-example-kitchen-sink = { path = "examples/kitchen-sink", default-features = false }
 nve-studio-workspace = { path = "examples/studio-workspace", default-features = false }
 nve-example-issues-api = { path = "examples/fullstack-issues/api" }
+nve-example-issues-client = { path = "examples/fullstack-issues/client" }
 
 minicbor = { version = "2.3.1", default-features = false, features = ["alloc", "derive"] }
 http = "1.5.0"

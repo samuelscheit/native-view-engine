@@ -47,6 +47,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> Drop for SubCance
 struct OptimisticCancelGuard<'a, T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> {
     client: &'a QueryClient<T, C>,
     handle: Option<OptimisticHandle>,
+    static_tags_on_cancel: Option<TagSink>,
 }
 
 impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> Drop
@@ -55,6 +56,13 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> Drop
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
             self.client.rollback_optimistic(&handle);
+        }
+        if let Some(tags) = self.static_tags_on_cancel.take() {
+            if tags.is_overflow_all() {
+                let _ = self.client.invalidate_all();
+            } else if !tags.is_empty() {
+                let _ = self.client.invalidate_tags(tags.as_slice());
+            }
         }
     }
 }
@@ -72,7 +80,10 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 if !s.metas[idx].is_fetching() {
                     return Poll::Ready(());
                 }
-                s.payloads[idx].in_flight_waiters.push(cx.waker().clone());
+                let waiters = &mut s.payloads[idx].in_flight_waiters;
+                if !waiters.iter().any(|w| w.will_wake(cx.waker())) {
+                    waiters.push(cx.waker().clone());
+                }
                 Poll::Pending
             })
         })
@@ -81,7 +92,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
 
     /// Executes one network fetch attempt for `handle` without holding the cache lock across
     /// `.await`. Cancellation-safe: dropping the future mid-`.await` clears `FLAG_IS_FETCHING`
-    /// and wakes deduplicated waiters automatically.
+    /// and wakes deduplicated waiters automatically so waiting callers can take over cleanly.
     pub async fn fetch_handle<P>(
         &self,
         handle: QueryHandle,
@@ -90,8 +101,35 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         P: Procedure<Effect = Query>,
         C: RpcCodec<P::Output> + RpcCodec<P::Error>,
     {
-        let Some((ticket, raw_call)) = self.begin_fetch_for::<P>(handle) else {
+        const MAX_TAKEOVERS: usize = 8;
+        let mut ticket_and_call = None;
+        for _ in 0..MAX_TAKEOVERS {
+            if let Some(pair) = self.begin_fetch_for::<P>(handle) {
+                ticket_and_call = Some(pair);
+                break;
+            }
+            let still_fetching = self.inner.state.with(|s| {
+                s.is_live(handle)
+                    && s.metas[handle.slot.index()].proc_id == P::ID
+                    && s.metas[handle.slot.index()].is_fetching()
+            });
+            if !still_fetching {
+                let snap = self.read::<P>(handle);
+                if let Some(err) = snap.error {
+                    return Err(err);
+                }
+                return Ok(snap.data);
+            }
             self.wait_for_in_flight(handle).await;
+            let snap = self.read::<P>(handle);
+            if let Some(err) = snap.error {
+                return Err(err);
+            }
+            if snap.data.is_some() && !snap.is_invalidated {
+                return Ok(snap.data);
+            }
+        }
+        let Some((ticket, raw_call)) = ticket_and_call else {
             let snap = self.read::<P>(handle);
             if let Some(err) = snap.error {
                 return Err(err);
@@ -219,7 +257,6 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                             let idx = slot.index();
                             if s.metas[idx].has_data() {
                                 apply_layer_to_slot(&mut s.payloads[idx], make_layer(mutation_id));
-                                wake_cb = s.mark_dirty(slot);
                                 let h = QueryHandle {
                                     slot,
                                     generation: s.metas[idx].slot_gen,
@@ -244,7 +281,6 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                                 && s.metas[idx].has_data()
                             {
                                 apply_layer_to_slot(&mut s.payloads[idx], make_layer(mutation_id));
-                                wake_cb = s.mark_dirty(slot);
                                 let h = QueryHandle {
                                     slot,
                                     generation: s.metas[idx].slot_gen,
@@ -266,7 +302,6 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                             {
                                 let slot = QuerySlotId(idx as u32);
                                 apply_layer_to_slot(&mut s.payloads[idx], make_layer(mutation_id));
-                                wake_cb = s.mark_dirty(slot);
                                 let h = QueryHandle {
                                     slot,
                                     generation: s.metas[idx].slot_gen,
@@ -287,6 +322,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     prepare_recompute_job(qh.slot, &mut s.metas[idx], &mut s.payloads[idx])
                 {
                     jobs.push(job);
+                } else if let Some(cb) = s.mark_dirty(qh.slot) {
+                    wake_cb = Some(cb);
                 }
             }
 
@@ -300,8 +337,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             )
         });
 
-        self.recompute_jobs_outside_lock(jobs);
-        if let Some(cb) = wake {
+        let recompute_wake = self.recompute_jobs_outside_lock(jobs);
+        if let Some(cb) = recompute_wake.or(wake) {
             cb();
         }
         handle
@@ -323,14 +360,15 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                         prepare_recompute_job(qh.slot, &mut s.metas[idx], &mut s.payloads[idx])
                     {
                         jobs.push(job);
+                    } else if let Some(cb) = s.mark_dirty(qh.slot) {
+                        wake_cb = Some(cb);
                     }
-                    wake_cb = s.mark_dirty(qh.slot);
                 }
             }
             (jobs, wake_cb)
         });
-        self.recompute_jobs_outside_lock(jobs);
-        if let Some(cb) = wake {
+        let recompute_wake = self.recompute_jobs_outside_lock(jobs);
+        if let Some(cb) = recompute_wake.or(wake) {
             cb();
         }
     }
@@ -426,8 +464,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             };
             (active, jobs, waiters, wake)
         });
-        self.recompute_jobs_outside_lock(jobs);
-        run_side_effects(wake, waiters);
+        let recompute_wake = self.recompute_jobs_outside_lock(jobs);
+        run_side_effects(recompute_wake.or(wake), waiters);
         to_refetch
     }
 
@@ -472,18 +510,22 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         P: Procedure<Effect = Action>,
         C: RpcCodec<P::Args> + RpcCodec<P::Output> + RpcCodec<P::Error>,
     {
+        let mut static_tags_init = TagSink::new();
+        P::invalidates(args, &mut static_tags_init);
         let mut cancel_guard = OptimisticCancelGuard {
             client: self,
             handle: (opt_handle.touched_count() > 0).then_some(opt_handle),
+            static_tags_on_cancel: Some(static_tags_init),
         };
         let res = call_with_codec::<P, C>(&self.inner.transport, &self.inner.codec, args).await;
         let opt_handle = cancel_guard.handle.take().unwrap_or(OptimisticHandle {
             mutation_id: MutationId(0),
             touched: Vec::new(),
         });
-
-        let mut static_tags = TagSink::new();
-        P::invalidates(args, &mut static_tags);
+        let static_tags = cancel_guard
+            .static_tags_on_cancel
+            .take()
+            .unwrap_or_default();
 
         match res {
             Ok(reply) => {

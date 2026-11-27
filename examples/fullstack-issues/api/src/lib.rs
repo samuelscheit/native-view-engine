@@ -124,6 +124,84 @@ pub struct IssueFilter {
     pub query: Option<String>,
 }
 
+/// Input for creating a new issue (supports both CBOR RPC and 0-JS HTML `<form>`).
+#[derive(Debug, Clone, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
+#[cbor(map)]
+pub struct CreateIssueInput {
+    #[n(0)]
+    pub title: String,
+    #[n(1)]
+    pub priority: Option<u8>,
+}
+
+impl CreateIssueInput {
+    /// Single source of truth for field validation shared by RPC handlers and [`FormDecode`].
+    pub fn validate_into(&self, errs: &mut FieldErrors) {
+        let trimmed = self.title.trim();
+        if trimmed.is_empty() {
+            errs.push("title", "title must not be empty");
+        } else if trimmed.len() > 200 {
+            errs.push("title", "title must be <= 200 bytes");
+        }
+        if let Some(p) = self.priority
+            && !(1..=3).contains(&p)
+        {
+            errs.push("priority", "priority must be between 1 and 3");
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), FieldErrors> {
+        let mut errs = FieldErrors::new();
+        self.validate_into(&mut errs);
+        errs.into_result(())
+    }
+}
+
+impl FormDecode for CreateIssueInput {
+    fn from_form(form: &FormPairs) -> Result<Self, FieldErrors> {
+        let mut errs = FieldErrors::new();
+        let priority = match form.get("priority").map(str::trim).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(raw) => match raw.parse::<u8>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    errs.push("priority", "priority must be an integer between 1 and 3");
+                    None
+                }
+            },
+        };
+        let input = Self {
+            title: form.get("title").unwrap_or("").trim().to_owned(),
+            priority,
+        };
+        input.validate_into(&mut errs);
+        errs.into_result(input)
+    }
+}
+
+/// Input for closing an issue (supports both CBOR RPC and 0-JS HTML `<form>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
+#[cbor(map)]
+pub struct CloseIssueInput {
+    #[n(0)]
+    pub id: IssueId,
+}
+
+impl FormDecode for CloseIssueInput {
+    fn from_form(form: &FormPairs) -> Result<Self, FieldErrors> {
+        let mut errs = FieldErrors::new();
+        let id = form
+            .get("id")
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .map(IssueId)
+            .unwrap_or_else(|| {
+                errs.push("id", "valid numeric issue id required");
+                IssueId(0)
+            });
+        errs.into_result(Self { id })
+    }
+}
+
 /// Input for renaming an existing issue (supports both CBOR RPC and 0-JS HTML `<form>`).
 #[derive(Debug, Clone, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
 #[cbor(map)]
@@ -346,6 +424,17 @@ procedures! {
     pub query ListComments = "issues.v1.Comments/List" (IssueId) -> Vec<Comment>, ApiError,
         tags |id, sink| {
             sink.push(IssueTag::Comments(*id));
+        };
+
+    pub action CreateIssue = "issues.v1.Issues/Create" (CreateIssueInput) -> Issue, ApiError,
+        invalidates |_input, sink| {
+            sink.push(IssueTag::List);
+        };
+
+    pub action CloseIssue = "issues.v1.Issues/Close" (CloseIssueInput) -> Issue, ApiError,
+        invalidates |input, sink| {
+            sink.push(IssueTag::List);
+            sink.push(IssueTag::Issue(input.id));
         };
 
     pub action RenameIssue = "issues.v1.Issues/Rename" (RenameIssueInput) -> Issue, ApiError,

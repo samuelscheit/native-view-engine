@@ -247,16 +247,18 @@ impl SkiaHostServices {
         }
     }
 
-    /// Marks an asynchronous frame wake pending and invokes the attached wake sink if present.
+    /// Marks an asynchronous frame wake pending and invokes the attached wake sink once per
+    /// coalesced burst until [`Self::take_pending_app_wake`] consumes it.
     pub fn request_frame_wake(&self) {
-        self.pending_app_wake.store(true, Ordering::Release);
-        let sink = self
-            .wake_sink
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if let Some(cb) = sink {
-            cb();
+        if !self.pending_app_wake.swap(true, Ordering::AcqRel) {
+            let sink = self
+                .wake_sink
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(cb) = sink {
+                cb();
+            }
         }
     }
 

@@ -168,10 +168,23 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         self.inner.clock.now_ms()
     }
 
-    /// Registers a host wake callback invoked whenever one or more cache slots change state.
-    pub fn set_wake_callback(&self, cb: WakeCallback) {
+    /// Registers a host wake callback invoked whenever one or more cache slots change state,
+    /// returning a monotonic token for [`Self::clear_wake_callback`].
+    pub fn set_wake_callback(&self, cb: WakeCallback) -> u64 {
         self.inner.state.with(|s| {
+            s.wake_cb_id = s.wake_cb_id.wrapping_add(1).max(1);
             s.wake_cb = Some(cb);
+            s.wake_cb_id
+        })
+    }
+
+    /// Detaches the wake callback registered under `token` (no-op if another callback has since
+    /// replaced it), preventing unmounted providers from retaining dead UI wakers.
+    pub fn clear_wake_callback(&self, token: u64) {
+        self.inner.state.with(|s| {
+            if s.wake_cb_id == token {
+                s.wake_cb = None;
+            }
         });
     }
 
@@ -329,6 +342,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     is_stale: true,
                     is_invalidated: false,
                     data_version: 0,
+                    invalidation_version: 0,
                 });
             }
             let idx = handle.slot.index();
@@ -341,6 +355,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     is_stale: true,
                     is_invalidated: false,
                     data_version: 0,
+                    invalidation_version: 0,
                 });
             }
             let payload = &s.payloads[idx];
@@ -363,6 +378,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
                 is_invalidated: meta.is_invalidated(s.wildcard_epoch),
                 data_version: meta.data_version,
+                invalidation_version: ((u64::from(s.wildcard_epoch)) << 32)
+                    | u64::from(meta.fetch_gen),
             })
         });
 
@@ -408,7 +425,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     None
                 });
                 if let Some(job) = job {
-                    self.recompute_jobs_outside_lock(vec![job]);
+                    let _ = self.recompute_jobs_outside_lock(vec![job]);
                 }
                 self.inner.state.with(|s| {
                     if !s.is_live(handle) {
@@ -419,6 +436,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                             is_stale: true,
                             is_invalidated: false,
                             data_version: 0,
+                            invalidation_version: 0,
                         };
                     }
                     let idx = handle.slot.index();
@@ -436,6 +454,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                         is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
                         is_invalidated: meta.is_invalidated(s.wildcard_epoch),
                         data_version: meta.data_version,
+                        invalidation_version: ((u64::from(s.wildcard_epoch)) << 32)
+                            | u64::from(meta.fetch_gen),
                     }
                 })
             }
@@ -523,10 +543,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let wake = s.mark_dirty(handle.slot);
             (handle, wake, waiters, job)
         });
-        if let Some(job) = job {
-            self.recompute_jobs_outside_lock(vec![job]);
-        }
-        run_side_effects(wake, waiters);
+        let recompute_wake = job.and_then(|j| self.recompute_jobs_outside_lock(vec![j]));
+        run_side_effects(recompute_wake.or(wake), waiters);
         Ok(handle)
     }
 

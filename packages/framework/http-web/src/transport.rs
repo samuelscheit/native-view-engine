@@ -110,6 +110,20 @@ pub struct LifecycleGuard {
     _inner: crate::js_fetch::JsLifecycleInner,
 }
 
+/// Cancellation-safe browser `setTimeout` sleep future (calls `clearTimeout` if dropped early),
+/// suitable for passing to `nve_query_dioxus::QueryClientProvider::sleep`.
+pub fn browser_sleep_ms(ms: u32) -> BoxFuture<'static, ()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Box::pin(crate::js_fetch::sleep_ms_future(ms))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = ms;
+        Box::pin(async {})
+    }
+}
+
 /// Attaches browser focus (`visibilitychange` + `focus`) and `online` listeners, invoking
 /// `on_focus` and `on_online` until the returned [`LifecycleGuard`] is dropped.
 pub fn attach_browser_lifecycle(

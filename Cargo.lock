@@ -2572,6 +2572,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-example-issues-client"
+version = "0.1.0"
+dependencies = [
+ "dioxus-core",
+ "dioxus-core-macro",
+ "dioxus-signals",
+ "nve-dioxus",
+ "nve-example-issues-api",
+ "nve-query",
+ "nve-query-dioxus",
+ "nve-rpc",
+ "nve-ui",
+]
+
+[[package]]
 name = "nve-example-issues-server"
 version = "0.1.0"
 dependencies = [
@@ -2789,6 +2804,7 @@ dependencies = [
  "nve-abi",
  "nve-backend-skia",
  "nve-clipboard",
+ "nve-dioxus",
  "nve-engine",
  "nve-filesystem",
  "nve-haptics",
@@ -2870,12 +2886,20 @@ dependencies = [
 name = "nve-web-shell"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "dioxus-core",
  "nve-abi",
  "nve-backend-web",
  "nve-dioxus",
  "nve-engine",
+ "nve-example-issues-api",
+ "nve-example-issues-client",
  "nve-example-kitchen-sink",
+ "nve-http-web",
  "nve-interop",
+ "nve-query",
+ "nve-query-dioxus",
+ "nve-rpc",
  "nve-studio-workspace",
  "nve-wire",
  "nve-wire-core",

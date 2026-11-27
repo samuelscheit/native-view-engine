@@ -101,8 +101,7 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ## Flagship / Vision (Remaining Work Only)
 
-- [ ] **Fullstack Server↔Client DX — Slices 1b, 1c, 2 & 3 (Queries/Streaming SSR, Edge Adapters & `nve-wire` Multiplexed RPC)**
-  - **Slice 1b — Client Query/Mutation Cache & Browser Transport (`packages/framework/query`)**: `use_query` / `use_action` reactive hooks keyed by `ProcId` + `Tag64` automatic invalidation (parsing `Nve-Invalidate`), optimistic updates with rollback, request deduplication, `FetchTransport` (`wasm32` `web-sys`/`fetch`), and `<ActionForm>` wiring for `examples/fullstack-issues` across Web WASM, 0-JS SSR, and Native Skia.
+- [ ] **Fullstack Server↔Client DX — Slices 1c, 2 & 3 (Streaming SSR, Edge Adapters & `nve-wire` Multiplexed RPC)**
   - **Slice 1c — Streaming SSR Hydration & Out-of-Order `<Suspense>`**: Bridge `DirectTransport` SSR loader execution into initial HTML + compact binary hydration payloads (`<script type="application/octet-stream">` / base64 CBOR) and stream deferred boundaries via `StreamingSsrSession` (`packages/backends/web/src/streaming_live.rs`) with `mismatches=0` hydration parity.
   - **Slice 2 — Edge/Serverless Adapters & `nve-wire` QUIC/WebTransport Multiplexing**: Add thin `nve-http-wasip2` (`wasi:http/incoming-handler` for Cloudflare/Fastly/Spin) adapter over sans-I/O `nve-server`, plus persistent QUIC/WebTransport RPC transport riding `nve-wire` alongside live `NVE2` frames and server-push tag invalidation streams.
   - **Slice 3 — Multi-Language Client Codegen & Ergonomic Macros (Demand-Driven)**: Add optional `#[nve::service]` / `#[nve::query]` sugar only where real app usage proves clear ergonomic wins over `procedures!`, and emit typed Swift/Kotlin/Dart/TypeScript CBOR RPC clients from shared procedure descriptors if polyglot hosts need direct server calls.

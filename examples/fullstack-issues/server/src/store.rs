@@ -4,13 +4,15 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use nve_example_issues_api::{
-    AddCommentInput, ApiError, Comment, CommentId, Issue, IssueFilter, IssueId, IssueState,
-    RenameIssueInput,
+    AddCommentInput, ApiError, CloseIssueInput, Comment, CommentId, CreateIssueInput, Issue,
+    IssueFilter, IssueId, IssueState, RenameIssueInput,
 };
+use nve_rpc::FieldErrors;
 
 struct StoreData {
     issues: BTreeMap<IssueId, Issue>,
     comments: BTreeMap<IssueId, Vec<Comment>>,
+    next_issue_id: u64,
     next_comment_id: u64,
 }
 
@@ -76,6 +78,7 @@ impl IssueStore {
             inner: Arc::new(RwLock::new(StoreData {
                 issues,
                 comments,
+                next_issue_id: 4,
                 next_comment_id: 2,
             })),
         }
@@ -125,14 +128,63 @@ impl IssueStore {
         Ok(guard.comments.get(&id).cloned().unwrap_or_default())
     }
 
-    pub fn rename(&self, input: &RenameIssueInput) -> Result<Issue, ApiError> {
+    pub fn create(&self, input: &CreateIssueInput) -> Result<Issue, ApiError> {
         input.validate().map_err(ApiError::Validation)?;
+        let trimmed = input.title.trim();
+        let mut guard = self.inner.write().expect("issue store lock poisoned");
+        if guard
+            .issues
+            .values()
+            .any(|existing| existing.title.eq_ignore_ascii_case(trimmed))
+        {
+            let mut errs = FieldErrors::new();
+            errs.push("title", "an issue with this title already exists");
+            return Err(ApiError::Validation(errs));
+        }
+        let id = IssueId(guard.next_issue_id);
+        guard.next_issue_id += 1;
+        let issue = Issue {
+            id,
+            title: trimmed.to_owned(),
+            state: IssueState::Open,
+            priority: input.priority,
+            comment_count: 0,
+        };
+        guard.issues.insert(id, issue.clone());
+        Ok(issue)
+    }
+
+    pub fn close(&self, input: &CloseIssueInput) -> Result<Issue, ApiError> {
         let mut guard = self.inner.write().expect("issue store lock poisoned");
         let issue = guard
             .issues
             .get_mut(&input.id)
             .ok_or(ApiError::NotFound(input.id))?;
-        issue.title = input.title.trim().to_owned();
+        issue.state = IssueState::Closed;
+        Ok(issue.clone())
+    }
+
+    pub fn rename(&self, input: &RenameIssueInput) -> Result<Issue, ApiError> {
+        input.validate().map_err(ApiError::Validation)?;
+        let trimmed = input.title.trim();
+        let mut guard = self.inner.write().expect("issue store lock poisoned");
+        if !guard.issues.contains_key(&input.id) {
+            return Err(ApiError::NotFound(input.id));
+        }
+        if guard
+            .issues
+            .values()
+            .any(|existing| existing.id != input.id && existing.title.eq_ignore_ascii_case(trimmed))
+        {
+            let mut errs = FieldErrors::new();
+            errs.push("title", "an issue with this title already exists");
+            return Err(ApiError::Validation(errs));
+        }
+        let issue = guard
+            .issues
+            .get_mut(&input.id)
+            .ok_or(ApiError::NotFound(input.id))?;
+        issue.title = trimmed.to_owned();
         Ok(issue.clone())
     }
 

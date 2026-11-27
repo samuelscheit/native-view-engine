@@ -267,9 +267,11 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let mut waiters = Vec::new();
             let mut wake_cb: Option<WakeCallback> = None;
 
+            let grace = self.inner.config.hydration_grace_ms;
             for entry in entries {
                 let key_hash = query_key_hash(entry.proc_id, &entry.encoded_args);
-                let updated_at = now_ms.saturating_sub(u64::from(entry.age_ms));
+                let age = u64::from(entry.age_ms);
+                let updated_at = now_ms.saturating_sub(age);
                 let body_hash = xxh64(&entry.raw_body, BODY_HASH_SEED);
 
                 let slot = if let Some(existing) =
@@ -305,11 +307,19 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
 
                 let idx = slot.index();
                 let meta = &mut s.metas[idx];
+                let eff_grace = u64::from(meta.stale_time_ms.max(grace));
+                let pre_boot_expired = age > now_ms && age >= eff_grace;
                 meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
+                meta.optimistic_rev = meta.optimistic_rev.wrapping_add(1);
                 meta.updated_at_ms = updated_at;
                 meta.invalidated_epoch = s.wildcard_epoch;
-                meta.flags |= FLAG_HAS_DATA | FLAG_HYDRATED;
-                meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING);
+                if pre_boot_expired {
+                    meta.flags |= FLAG_HAS_DATA | FLAG_IS_INVALIDATED;
+                    meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_FETCHING | FLAG_HYDRATED);
+                } else {
+                    meta.flags |= FLAG_HAS_DATA | FLAG_HYDRATED;
+                    meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING);
+                }
 
                 let payload = &mut s.payloads[idx];
                 waiters.append(&mut payload.in_flight_waiters);

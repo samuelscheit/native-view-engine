@@ -4,14 +4,16 @@
 use core::marker::PhantomData;
 
 use bytes::Bytes;
-use dioxus_core::{spawn, use_drop, use_hook};
+use dioxus_core::{use_drop, use_hook};
 use dioxus_signals::{CopyValue, ReadableExt, Signal, WritableExt};
-use nve_query::{OptimisticTx, QueryHandle, QueryMode, QueryOptions, QuerySnapshot, Shared};
+use nve_query::{
+    OptimisticHandle, OptimisticTx, QueryHandle, QueryMode, QueryOptions, QuerySnapshot, Shared,
+};
 use nve_rpc::{
     encode_args, Action, CallReply, CborCodec, Procedure, Query, RpcCodec, RpcError,
 };
 
-use crate::bridge::{consume_bridge, yield_once, DioxusQueryBridge, ErasedQueryClient};
+use crate::bridge::{consume_bridge, DioxusQueryBridge, ErasedQueryClient};
 
 /// Returns the ambient [`ErasedQueryClient`] from the nearest [`crate::QueryClientProvider`].
 pub fn use_query_client() -> ErasedQueryClient {
@@ -24,7 +26,7 @@ struct QueryHookState<T> {
     slot_signal: Signal<u32>,
     encoded_args: Bytes,
     options: QueryOptions,
-    last_triggered_ver: u32,
+    last_invalidation_ver: u64,
     fetched_for_key: bool,
     previous_data: Option<Shared<T>>,
 }
@@ -126,9 +128,10 @@ where
     CborCodec: RpcCodec<P::Output> + RpcCodec<P::Error>,
 {
     let client = bridge.client().clone();
-    spawn(async move {
+    let bridge_for_sleep = bridge.clone();
+    bridge.spawn_slot_fetch(handle.slot, async move {
         let _ = client
-            .fetch_handle_with_retry::<P, _, _>(handle, |_ms| yield_once())
+            .fetch_handle_with_retry::<P, _, _>(handle, |ms| bridge_for_sleep.sleep_ms(ms))
             .await;
     });
 }
@@ -166,7 +169,7 @@ where
             slot_signal,
             encoded_args: encoded_args.clone(),
             options,
-            last_triggered_ver: 0,
+            last_invalidation_ver: snap.invalidation_version,
             fetched_for_key: false,
             previous_data: None,
         })
@@ -202,8 +205,8 @@ where
             .client()
             .subscribe::<P>(&args, options)
             .expect("subscribe failed on key change");
-        let new_ver = bridge.client().read::<P>(new_handle).data_version;
-        let new_sig = bridge.acquire_slot_signal(new_handle.slot, new_ver);
+        let new_snap = bridge.client().read::<P>(new_handle);
+        let new_sig = bridge.acquire_slot_signal(new_handle.slot, new_snap.data_version);
         bridge.client().unsubscribe(old_handle);
         bridge.release_slot_signal(old_handle.slot);
 
@@ -212,15 +215,17 @@ where
         st.slot_signal = new_sig;
         st.encoded_args = encoded_args;
         st.options = options;
-        st.last_triggered_ver = 0;
+        st.last_invalidation_ver = new_snap.invalidation_version;
         st.fetched_for_key = false;
         st.previous_data = old_data;
+    } else if state.read().options != options {
+        state.write().options = options;
     }
 
     // Subscribe the calling component to this slot's reactive signal so invalidations wake it.
-    let (handle, slot_sig, fetched_for_key, last_ver) = {
+    let (handle, slot_sig, fetched_for_key, last_inv_ver) = {
         let st = state.read();
-        (st.handle, st.slot_signal, st.fetched_for_key, st.last_triggered_ver)
+        (st.handle, st.slot_signal, st.fetched_for_key, st.last_invalidation_ver)
     };
     let _ = *slot_sig.read();
 
@@ -228,15 +233,15 @@ where
         let snap = bridge.client().read::<P>(handle);
         let should_initial = !fetched_for_key && bridge.client().needs_fetch(handle);
         let should_refetch_invalidated =
-            snap.is_invalidated && !snap.is_fetching && last_ver != snap.data_version;
+            snap.is_invalidated && !snap.is_fetching && last_inv_ver != snap.invalidation_version;
         if should_initial || should_refetch_invalidated {
             {
                 let mut st = state.write();
                 st.fetched_for_key = true;
-                st.last_triggered_ver = snap.data_version;
+                st.last_invalidation_ver = snap.invalidation_version;
             }
             spawn_query_fetch::<P>(bridge, handle);
-        } else if !fetched_for_key {
+        } else if !fetched_for_key && !snap.is_fetching {
             state.write().fetched_for_key = true;
         }
     }
@@ -263,7 +268,7 @@ impl<O, E> Default for ActionUiState<O, E> {
     }
 }
 
-struct PendingGuard<O: 'static, E: 'static> {
+pub(crate) struct PendingGuard<O: 'static, E: 'static> {
     sig: Option<Signal<ActionUiState<O, E>>>,
 }
 
@@ -273,6 +278,21 @@ impl<O: 'static, E: 'static> Drop for PendingGuard<O, E> {
             && let Ok(mut w) = sig.try_write()
         {
             w.pending_count = w.pending_count.saturating_sub(1);
+        }
+    }
+}
+
+struct OptimisticDropGuard {
+    client: ErasedQueryClient,
+    handle: Option<OptimisticHandle>,
+}
+
+impl Drop for OptimisticDropGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take()
+            && handle.touched_count() > 0
+        {
+            self.client.rollback_optimistic(&handle);
         }
     }
 }
@@ -369,36 +389,87 @@ where
         }
     }
 
-    /// Fire-and-forget action trigger spawning onto Dioxus's scheduler.
-    pub fn run(&self, args: P::Args)
-    where
-        P::Output: Clone,
-    {
-        let this = *self;
-        spawn(async move {
-            let _ = this.call(args).await;
-        });
-    }
-
-    /// Fire-and-forget optimistic action trigger: applies optimistic patches synchronously on
-    /// the current click frame BEFORE spawning the async RPC call, then settles atomically via
-    /// [`nve_query::QueryClient::execute_action_with_handle`].
-    pub fn run_optimistic<Opt>(&self, args: P::Args, optimistic: Opt)
-    where
-        P::Output: Clone,
-        Opt: FnOnce(&mut OptimisticTx<'_, CborCodec>),
-    {
-        let client = self.bridge.read().client().clone();
-        let opt_handle = client.apply_optimistic(optimistic);
+    /// Synchronously increments `pending_count` and returns an RAII guard so same-frame double
+    /// submits in [`crate::ActionForm`] are blocked immediately before spawning the async task.
+    pub(crate) fn begin_pending_guard(&self) -> PendingGuard<P::Output, P::Error> {
         let mut ui = self.ui;
         {
             let mut w = ui.write();
             w.pending_count = w.pending_count.saturating_add(1);
             w.error = None;
         }
-        spawn(async move {
-            let _pending_guard = PendingGuard { sig: Some(ui) };
-            match client.execute_action_with_handle::<P>(&args, opt_handle).await {
+        PendingGuard { sig: Some(ui) }
+    }
+
+    pub(crate) async fn call_with_pending_guard(
+        &self,
+        args: P::Args,
+        _pending_guard: PendingGuard<P::Output, P::Error>,
+    ) -> Result<CallReply<P::Output>, Shared<RpcError<P::Error>>>
+    where
+        P::Output: Clone,
+    {
+        let client = self.bridge.read().client().clone();
+        let mut ui = self.ui;
+        match client.execute_action::<P>(&args).await {
+            Ok((reply, _refetch)) => {
+                if let Ok(mut w) = ui.try_write() {
+                    w.data = Some(Shared::new(reply.value.clone()));
+                    w.error = None;
+                }
+                Ok(reply)
+            }
+            Err(err) => {
+                let shared = Shared::new(err);
+                if let Ok(mut w) = ui.try_write() {
+                    w.error = Some(Shared::clone(&shared));
+                }
+                Err(shared)
+            }
+        }
+    }
+
+    pub(crate) fn spawn_in_provider(&self, fut: impl core::future::Future<Output = ()> + 'static) {
+        let _ = self.bridge.read().spawn_in_provider(fut);
+    }
+
+    /// Fire-and-forget action trigger spawning inside [`crate::QueryClientProvider`]'s scope so
+    /// unmounting the triggering row/modal never cancels the in-flight mutation.
+    pub fn run(&self, args: P::Args)
+    where
+        P::Output: Clone,
+    {
+        let this = *self;
+        let pending_guard = self.begin_pending_guard();
+        self.spawn_in_provider(async move {
+            let _ = this.call_with_pending_guard(args, pending_guard).await;
+        });
+    }
+
+    /// Fire-and-forget optimistic action trigger: applies optimistic patches synchronously on
+    /// the current click frame BEFORE spawning the async RPC call inside
+    /// [`crate::QueryClientProvider`]'s scope, with pre-spawn RAII guards guaranteeing cleanup
+    /// even if the provider unmounts before the spawned task's first poll.
+    pub fn run_optimistic<Opt>(&self, args: P::Args, optimistic: Opt)
+    where
+        P::Output: Clone,
+        Opt: FnOnce(&mut OptimisticTx<'_, CborCodec>),
+    {
+        let bridge = self.bridge.read().clone();
+        let client = bridge.client().clone();
+        let opt_handle = client.apply_optimistic(optimistic);
+        let pending_guard = self.begin_pending_guard();
+        let mut opt_guard = OptimisticDropGuard {
+            client: client.clone(),
+            handle: Some(opt_handle),
+        };
+        let mut ui = self.ui;
+        let _ = bridge.spawn_in_provider(async move {
+            let _pending_guard = pending_guard;
+            let Some(handle) = opt_guard.handle.take() else {
+                return;
+            };
+            match client.execute_action_with_handle::<P>(&args, handle).await {
                 Ok((reply, _refetch)) => {
                     if let Ok(mut w) = ui.try_write() {
                         w.data = Some(Shared::new(reply.value));

@@ -261,15 +261,17 @@ where
         if parts.method == Method::OPTIONS
             && let Some(cors) = &self.inner.config.cors
         {
+            // Validate CORS preflight origin/method BEFORE checking procedure existence so
+            // untrusted origins cannot use 403 vs 404 to enumerate private procedure names.
+            let origin_idx = cors
+                .check_preflight(&parts.headers)
+                .map_err(|reason| PreflightError::protocol(RpcStatus::PermissionDenied, reason))?;
             if self.inner.registry.lookup_index(proc_name).is_none() {
                 return Err(PreflightError::protocol(
                     RpcStatus::NotFound,
                     "unknown RPC procedure",
                 ));
             }
-            let origin_idx = cors
-                .check_preflight(&parts.headers)
-                .map_err(|reason| PreflightError::protocol(RpcStatus::PermissionDenied, reason))?;
             return Ok(PreparedRequest {
                 server_id: self.inner.server_id,
                 kind: PreparedKind::CorsPreflight { origin_idx },

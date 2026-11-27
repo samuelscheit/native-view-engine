@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PKG_ROOT="${SCRIPT_DIR}/pkg"
 
-usage() { echo "Usage: $0 [--release | --dev] [studio|kitchen-sink|dev ...]" >&2; exit 1; }
+usage() { echo "Usage: $0 [--release | --dev] [studio|kitchen-sink|issues|dev ...]" >&2; exit 1; }
 
 PROFILE="wasm-release"
 BUNDLES=()
@@ -39,7 +39,7 @@ for arg in "$@"; do
   case "$arg" in
     --dev|--debug) PROFILE="debug" ;;
     --release) PROFILE="wasm-release" ;;
-    studio|kitchen-sink|dev) BUNDLES+=("$arg") ;;
+    studio|kitchen-sink|issues|dev) BUNDLES+=("$arg") ;;
     *) usage ;;
   esac
 done
@@ -50,6 +50,7 @@ bundle_features() {
   case "$1" in
     studio) echo "--no-default-features --features app-studio" ;;
     kitchen-sink) echo "--no-default-features --features app-kitchen-sink" ;;
+    issues) echo "--no-default-features --features app-issues" ;;
     dev) echo "" ;;
   esac
 }
@@ -59,6 +60,7 @@ bundle_budget() {
   case "$1" in
     studio) echo "${WASM_BROTLI_BUDGET_STUDIO:-316416}" ;;
     kitchen-sink) echo "${WASM_BROTLI_BUDGET_KITCHEN_SINK:-315392}" ;;
+    issues) echo "${WASM_BROTLI_BUDGET_ISSUES:-255000}" ;;
     dev) echo "${WASM_BROTLI_BUDGET_DEV:-485376}" ;;
   esac
 }

@@ -16,6 +16,16 @@ crate-type = ["rlib"]
 default = ["app-studio", "app-kitchen-sink", "dev", "multi-window", "scene-view"]
 app-studio = ["dep:nve-studio-workspace"]
 app-kitchen-sink = ["dep:nve-example-kitchen-sink"]
+app-issues = [
+    "dep:bytes",
+    "dep:nve-rpc",
+    "dep:nve-query",
+    "dep:nve-http-web",
+    "dep:nve-query-dioxus",
+    "dep:nve-example-issues-api",
+    "dep:nve-example-issues-client",
+    "dep:dioxus-core",
+]
 # `nve dev` Tier-1/2 hot-reload WebSocket (binary NVP1), the `NveWebHost` NVT1/NVD1 pairing client
 # and the semantic-style hydration probe used by the E2E suite.
 dev = []
@@ -33,6 +43,14 @@ nve-interop = { workspace = true }
 nve-wire-core = { workspace = true }
 nve-example-kitchen-sink = { workspace = true, optional = true }
 nve-studio-workspace = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+dioxus-core = { workspace = true, optional = true }
+nve-rpc = { workspace = true, optional = true }
+nve-query = { workspace = true, optional = true }
+nve-http-web = { workspace = true, optional = true }
+nve-query-dioxus = { workspace = true, optional = true }
+nve-example-issues-api = { workspace = true, optional = true }
+nve-example-issues-client = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 nve-wire = { workspace = true }

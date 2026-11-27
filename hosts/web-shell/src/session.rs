@@ -147,6 +147,7 @@ impl SessionApp {
         }
     }
 
+    #[cfg_attr(not(any(feature = "app-studio", feature = "app-kitchen-sink")), allow(unused_variables))]
     fn try_restore_state(&mut self, bytes: &[u8]) -> bool {
         match self {
             Self::Dioxus(_) => false,
@@ -322,46 +323,54 @@ impl WebAppSession {
     }
 
     /// Renders a canonical Frame-0 [`WebSnapshotPayload`] from pre-captured `state_bytes`.
+    #[cfg_attr(not(any(feature = "app-studio", feature = "app-kitchen-sink")), allow(unused_variables))]
     pub fn render_canonical_snapshot_for_state(
         &self,
         state_bytes: &[u8],
         scroll_offsets: Vec<(u32, u32)>,
     ) -> Option<WebSnapshotPayload> {
-        let surface_id = self.runner.surface_id();
-        let viewport = self.runner.backend().viewport();
-        let schema_version = self.schema_version();
-        let mut canonical = match &self.app {
-            SessionApp::Dioxus(_) => return None,
-            #[cfg(feature = "app-studio")]
-            SessionApp::Studio(_) => {
-                let (s, ok) = Self::new_studio_workspace_with_state(
-                    surface_id,
-                    WebBackend::new(),
-                    viewport,
-                    Some(state_bytes),
-                );
-                if !ok {
-                    return None;
+        #[cfg(not(any(feature = "app-studio", feature = "app-kitchen-sink")))]
+        {
+            None
+        }
+        #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
+        {
+            let surface_id = self.runner.surface_id();
+            let viewport = self.runner.backend().viewport();
+            let schema_version = self.schema_version();
+            let mut canonical = match &self.app {
+                SessionApp::Dioxus(_) => return None,
+                #[cfg(feature = "app-studio")]
+                SessionApp::Studio(_) => {
+                    let (s, ok) = Self::new_studio_workspace_with_state(
+                        surface_id,
+                        WebBackend::new(),
+                        viewport,
+                        Some(state_bytes),
+                    );
+                    if !ok {
+                        return None;
+                    }
+                    s
                 }
-                s
-            }
-            #[cfg(feature = "app-kitchen-sink")]
-            SessionApp::KitchenSink(_) => {
-                let (s, ok) = Self::new_kitchen_sink_with_state(
-                    surface_id,
-                    WebBackend::new(),
-                    viewport,
-                    Some(state_bytes),
-                );
-                if !ok {
-                    return None;
+                #[cfg(feature = "app-kitchen-sink")]
+                SessionApp::KitchenSink(_) => {
+                    let (s, ok) = Self::new_kitchen_sink_with_state(
+                        surface_id,
+                        WebBackend::new(),
+                        viewport,
+                        Some(state_bytes),
+                    );
+                    if !ok {
+                        return None;
+                    }
+                    s
                 }
-                s
-            }
-        };
-        canonical.render_initial().ok()?;
-        let ssr = canonical.backend().render_ssr();
-        Some(WebSnapshotPayload::from_ssr(&ssr, schema_version, scroll_offsets))
+            };
+            canonical.render_initial().ok()?;
+            let ssr = canonical.backend().render_ssr();
+            Some(WebSnapshotPayload::from_ssr(&ssr, schema_version, scroll_offsets))
+        }
     }
 
     /// The zero-copy scene mirror of this session's `WebBackend` tree.
@@ -442,18 +451,24 @@ impl WebAppSession {
 
     /// Polls any ready Dioxus async tasks/effects (such as `nve-query` fetches or mutations) and
     /// renders incremental frames until the scheduler rests with `waker` armed, bounded to avoid
-    /// starving browser painting.
+    /// starving browser painting. When the per-tick pump cap is reached while work remains,
+    /// `waker` is re-invoked so the host schedules a continuation tick instead of stalling.
     pub fn pump_async_work(
         &mut self,
         waker: &core::task::Waker,
     ) -> Result<Option<FrameTiming>, BackendError> {
         const MAX_PUMPS: usize = 8;
         let mut last = None;
+        let mut exhausted = true;
         for _ in 0..MAX_PUMPS {
             if !self.app.poll_work(waker) {
+                exhausted = false;
                 break;
             }
             last = Some(self.render_and_submit()?);
+        }
+        if exhausted {
+            waker.wake_by_ref();
         }
         Ok(last)
     }

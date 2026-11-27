@@ -197,6 +197,10 @@ pub struct QuerySnapshot<T, E> {
     pub is_stale: bool,
     pub is_invalidated: bool,
     pub data_version: u32,
+    /// Monotonic invalidation identity (`(wildcard_epoch << 32) | fetch_gen`). Advances ONLY on
+    /// tag/wildcard invalidation, `set_query_data`, or hydration — never on fetch start, error, or
+    /// cancellation — allowing reactive hooks to trigger at most one refetch per invalidation.
+    pub invalidation_version: u64,
 }
 
 impl<T, E> Clone for QuerySnapshot<T, E> {
@@ -208,6 +212,7 @@ impl<T, E> Clone for QuerySnapshot<T, E> {
             is_stale: self.is_stale,
             is_invalidated: self.is_invalidated,
             data_version: self.data_version,
+            invalidation_version: self.invalidation_version,
         }
     }
 }

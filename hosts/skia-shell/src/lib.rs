@@ -17,7 +17,7 @@ pub use window::{
     replay_instant_boot_store_into_backend, replay_snapshot_into_backend, run_desktop_preview,
     run_desktop_preview_with_options, run_paired_desktop_preview, write_pixel_buffer_png,
     write_pixel_buffer_ppm, write_pixel_buffer_screenshot, CloseOutcome, DesktopApp,
-    DesktopHostError, DesktopPreviewOptions, DesktopSession, DesktopWindowHost,
+    DesktopHostError, DesktopPreviewOptions, DesktopSession, DesktopWindowHost, DioxusDesktopApp,
     HeadlessMultiWindowHost, HostWakeEvent, HotAppSlot, HotReloadClient, PairConnectConfig,
     PairTransport, PairedRemoteApp, PrewarmedSnapshot, SurfaceWindow, DEFAULT_PAIR_WS_PATH,
     DEFAULT_WS_URL,

@@ -95,6 +95,29 @@ impl<T, C> QueryClient<T, C> {
         active
     }
 
+    /// Marks explicit live `handles` invalidated and dirty (bumping `fetch_gen` and waking the
+    /// registered UI observer once), e.g. for handles returned by [`Self::on_window_focus`] or
+    /// [`Self::on_network_online`].
+    pub fn invalidate_handles(&self, handles: &[QueryHandle]) {
+        if handles.is_empty() {
+            return;
+        }
+        let (wake, waiters) = self.inner.state.with(|s| {
+            let mut active_scratch = Vec::new();
+            let mut waiters = Vec::new();
+            let mut touched = false;
+            for &handle in handles {
+                if s.is_live(handle) {
+                    s.invalidate_slot(handle.slot, &mut active_scratch, &mut waiters);
+                    touched = true;
+                }
+            }
+            let wake = if touched { s.wake_cb.clone() } else { None };
+            (wake, waiters)
+        });
+        run_side_effects(wake, waiters);
+    }
+
     /// Returns active mounted stale/errored handles eligible for refetch on window focus.
     pub fn on_window_focus(&self) -> Vec<QueryHandle> {
         self.collect_refetch_eligible(FLAG_REFETCH_ON_FOCUS)

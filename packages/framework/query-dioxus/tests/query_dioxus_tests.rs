@@ -263,13 +263,17 @@ fn pump_all_async(
     let mut rendered = 0;
     for _ in 0..16 {
         if !surface.poll_work(waker) {
-            break;
+            return rendered;
         }
         *frame += 1;
         let (_, _, buf) = surface.render_frame(*frame);
         web.submit_frame(&buf).unwrap();
         rendered += 1;
     }
+    assert!(
+        !surface.poll_work(waker),
+        "pump_all_async exhausted 16 iterations without settling — probable infinite render/refetch loop!"
+    );
     rendered
 }
 
@@ -414,11 +418,21 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
 
     let (mut show_sig, mut id_sig, mut ctrl_sig) = handles_box.borrow().unwrap();
 
-    // 2. Key switch `1 -> 2` loads Todo #2 and unsubscribes Todo #1 cleanly.
+    // 2. Key switch `1 -> 2` with deferred Todo #2 proves `keep_previous_data` holds Todo #1
+    //    as placeholder while #2 is in flight, then switches cleanly once #2 arrives.
+    transport.state.lock().unwrap().defer_queries = true;
     surface.in_root_scope(|| {
         id_sig.set(2);
     });
-    let _ = render_html(&mut surface, &mut web, &mut frame);
+    let html_switching = render_html(&mut surface, &mut web, &mut frame);
+    let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
+    assert!(
+        html_switching.contains("TODO:1:Ship async wake")
+            && web.render_html().contains("TODO:1:Ship async wake"),
+        "keep_previous_data must retain previous key's data while new key fetches: {}",
+        web.render_html()
+    );
+    transport.release_queries();
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     assert!(web.render_html().contains("TODO:2:Verify ActionForm"));
     assert_eq!(client.active_slot_count(), 1);

@@ -4,9 +4,9 @@
 //! `NVT1`/`NVD1` pairing), `multi-window` (popups + `NVW1` window sync) and `scene-view`
 //! (zero-copy `NveSceneView` linear-memory export).
 
-#[cfg(not(any(feature = "app-studio", feature = "app-kitchen-sink")))]
+#[cfg(not(any(feature = "app-studio", feature = "app-kitchen-sink", feature = "app-issues")))]
 compile_error!(
-    "nve-web-shell bundles at least one app: enable `app-studio` and/or `app-kitchen-sink`"
+    "nve-web-shell bundles at least one app: enable `app-studio`, `app-kitchen-sink`, and/or `app-issues`"
 );
 
 #[cfg(target_arch = "wasm32")]
@@ -23,8 +23,12 @@ pub mod scene;
 pub mod session;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_api;
+#[cfg(all(target_arch = "wasm32", feature = "dev"))]
+mod wasm_hotreload;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_hydrate;
+#[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
+pub mod wasm_issues;
 #[cfg(all(target_arch = "wasm32", feature = "dev"))]
 pub mod wasm_pair;
 #[cfg(all(target_arch = "wasm32", feature = "multi-window"))]
@@ -56,6 +60,8 @@ pub use wasm_api::{active_shell_count, active_surface_ids, WebAppController};
 pub use wasm_api::{start_kitchen_sink_app, start_kitchen_sink_app_on_surface};
 #[cfg(all(target_arch = "wasm32", feature = "app-studio"))]
 pub use wasm_api::{start_studio_workspace_app, start_studio_workspace_app_on_surface};
+#[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
+pub use wasm_issues::{nve_probe_cross_origin_cors, nve_probe_fetch_transport, start_issues_app};
 #[cfg(all(target_arch = "wasm32", feature = "scene-view"))]
 pub use wasm_api::{nve_web_scene_view_ptr, nve_web_scene_view_ptr_for_surface};
 #[cfg(target_arch = "wasm32")]

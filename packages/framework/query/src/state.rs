@@ -35,6 +35,7 @@ pub(crate) struct CacheState {
     pub live_count: usize,
     pub subscribed_all_count: usize,
     pub wake_cb: Option<WakeCallback>,
+    pub wake_cb_id: u64,
 }
 
 impl CacheState {
@@ -53,6 +54,7 @@ impl CacheState {
             live_count: 0,
             subscribed_all_count: 0,
             wake_cb: None,
+            wake_cb_id: 0,
         }
     }
 

@@ -10,13 +10,11 @@ use nve_backend_web::WebBackend;
 use nve_engine::Viewport;
 #[cfg(feature = "multi-window")]
 use nve_interop::WindowHandleId;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 
 use crate::wasm_hydrate::SsrRenderResult;
 #[cfg(feature = "dev")]
-use crate::session::HotReloadAction;
+use crate::wasm_hotreload::{connect_hot_reload, HotReloadSocket};
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
 #[cfg(all(feature = "dev", feature = "scene-view"))]
 use crate::wasm_pair::active_paired_scene_view_ptr;
@@ -44,26 +42,6 @@ use nve_studio_workspace::{WorkspaceState, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 }")]
 extern "C" {
     pub(crate) fn nve_extract_binary_message(data: &JsValue) -> Vec<u8>;
-}
-
-#[cfg(feature = "dev")]
-struct HotReloadSocket {
-    socket: web_sys::WebSocket,
-    _on_open: Closure<dyn FnMut(web_sys::Event)>,
-    _on_message: Closure<dyn FnMut(web_sys::MessageEvent)>,
-    _on_error: Closure<dyn FnMut(web_sys::ErrorEvent)>,
-    _on_close: Closure<dyn FnMut(web_sys::CloseEvent)>,
-}
-
-#[cfg(feature = "dev")]
-impl Drop for HotReloadSocket {
-    fn drop(&mut self) {
-        self.socket.set_onopen(None);
-        self.socket.set_onmessage(None);
-        self.socket.set_onerror(None);
-        self.socket.set_onclose(None);
-        let _ = self.socket.close();
-    }
 }
 
 struct ActiveShell {
@@ -319,11 +297,6 @@ impl WebAppController {
     }
 }
 
-#[cfg(feature = "dev")]
-fn browser_now_ms() -> f64 {
-    web_sys::window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
-}
-
 pub(crate) fn browser_viewport(container: &web_sys::Element) -> Viewport {
     let window = web_sys::window();
     let scale = window
@@ -366,70 +339,6 @@ pub(crate) fn set_hud_status(state: &str, text: &str) {
         el.set_text_content(Some(text));
         let _ = el.set_attribute("data-state", state);
     }
-}
-
-#[cfg(feature = "dev")]
-fn connect_hot_reload(
-    ws_url: &str,
-    session: Rc<RefCell<WebAppSession>>,
-) -> Result<HotReloadSocket, JsValue> {
-    let socket = web_sys::WebSocket::new(ws_url)?;
-    socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
-    set_hud_status("connecting", &format!("Hot reload: connecting ({ws_url})"));
-
-    let url_open = ws_url.to_string();
-    let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        web_sys::console::log_1(&JsValue::from_str(&format!("[NVE Web] Connected: {url_open}")));
-        set_hud_status("connected", "Hot reload: connected");
-    });
-
-    let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
-        move |ev: web_sys::MessageEvent| {
-            let t0 = browser_now_ms();
-            let bytes = nve_extract_binary_message(&ev.data());
-            if bytes.is_empty() {
-                return;
-            }
-            let result = session.borrow_mut().handle_hot_patch_frame(&bytes);
-            match result {
-                Ok(HotReloadAction::TemplatePatched { generation, .. }) => {
-                    let mut ms = String::new();
-                    nve_abi::num::write_f64(&mut ms, (browser_now_ms() - t0).max(0.0));
-                    set_hud_status("patched", &format!("Patched gen {generation} ({ms}ms)"));
-                }
-                Ok(HotReloadAction::ReloadPage { generation, build_ms, .. }) => {
-                    set_hud_status("reloading", &format!("Reloading gen {generation} ({build_ms}ms)..."));
-                    if let Some(w) = web_sys::window() { let _ = w.location().reload(); }
-                }
-                Ok(HotReloadAction::DevStatus { message, latency_ms }) => {
-                    set_hud_status("connected", &format!("{message} ({latency_ms}ms)"));
-                }
-                Err(err) => {
-                    web_sys::console::warn_1(&JsValue::from_str(&format!("[NVE HotReload] {err}")));
-                }
-            }
-        },
-    );
-
-    let on_error = Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |_| {
-        set_hud_status("offline", "Hot reload: offline");
-    });
-    let on_close = Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_| {
-        set_hud_status("offline", "Hot reload: disconnected");
-    });
-
-    socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-    socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-    socket.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-    socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-
-    Ok(HotReloadSocket {
-        socket,
-        _on_open: on_open,
-        _on_message: on_message,
-        _on_error: on_error,
-        _on_close: on_close,
-    })
 }
 
 /// Runs once when the module is instantiated, in every bundle (studio, counter, dev): a Rust
@@ -552,7 +461,15 @@ where
         if let Ok(mut guard) = session_for_events.try_borrow_mut() {
             match guard.pump_events() {
                 Ok(ev_frame) => {
-                    let async_frame = guard.pump_async_work(&wake_for_events).ok().flatten();
+                    let async_frame = match guard.pump_async_work(&wake_for_events) {
+                        Ok(frame) => frame,
+                        Err(err) => {
+                            web_sys::console::error_1(&JsValue::from_str(&format!(
+                                "[NVE Web] {err}"
+                            )));
+                            None
+                        }
+                    };
                     if (ev_frame.is_some() || async_frame.is_some())
                         && let Some(t) = trigger_for_events.as_ref()
                     {

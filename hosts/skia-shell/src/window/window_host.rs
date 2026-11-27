@@ -535,37 +535,45 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
     }
 
     pub(crate) fn process_pending_remote_frames(&mut self) {
+        if self.windows.is_empty() {
+            return;
+        }
+        let mut reschedule = false;
         for sw in self.windows.values_mut() {
-            if !sw.session.app().has_pending_remote_frame()
-                && !sw.session.app_mut().poll_async_work()
-            {
-                continue;
-            }
-            if let Some(banner) = sw.session.app().remote_status_banner() {
+            let has_remote = sw.session.app().has_pending_remote_frame();
+            if has_remote && let Some(banner) = sw.session.app().remote_status_banner() {
                 sw.session.set_status_banner(Some(banner));
             }
-            if let Err(err) = sw.session.render_and_rasterize() {
-                eprintln!("[nve-skia-shell] async frame error: {err}");
+            let (rendered, exhausted) = Self::pump_window_async(sw, has_remote);
+            reschedule |= exhausted;
+            if rendered {
+                sw.sync_title();
+                sw.sync_ime_state();
+                sw.window.request_redraw();
             }
-            sw.sync_title();
-            sw.sync_ime_state();
-            sw.window.request_redraw();
+        }
+        if reschedule {
+            self.host_services.request_frame_wake();
         }
     }
 
     pub(crate) fn process_app_wakes(&mut self) {
+        if self.windows.is_empty() {
+            return;
+        }
         let host_woke = self.host_services.take_pending_app_wake();
+        let mut reschedule = false;
         for sw in self.windows.values_mut() {
-            let dirty = sw.session.app_mut().poll_async_work() || host_woke;
-            if !dirty {
-                continue;
+            let (rendered, exhausted) = Self::pump_window_async(sw, host_woke);
+            reschedule |= exhausted;
+            if rendered {
+                sw.sync_title();
+                sw.sync_ime_state();
+                sw.window.request_redraw();
             }
-            if let Err(err) = sw.session.render_and_rasterize() {
-                eprintln!("[nve-skia-shell] async wake frame error: {err}");
-            }
-            sw.sync_title();
-            sw.sync_ime_state();
-            sw.window.request_redraw();
+        }
+        if reschedule {
+            self.host_services.request_frame_wake();
         }
     }
 }
@@ -602,7 +610,10 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
         ) {
             eprintln!("[nve-skia-shell] failed to create primary window: {err}");
             event_loop.exit();
+            return;
         }
+        // Pump initial async tasks spawned during mount and arm host wakers immediately.
+        self.process_app_wakes();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HostWakeEvent) {

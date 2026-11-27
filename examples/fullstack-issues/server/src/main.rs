@@ -1,8 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use nve_example_issues_server::store::IssueStore;
-use nve_example_issues_server::{build_issues_server, IssuesHttpService};
+use nve_example_issues_server::{build_issues_server_with_cors, IssuesHttpService};
 use nve_http_hyper::serve_service_with_shutdown;
+use nve_server::CorsPolicy;
 use tokio::net::TcpListener;
 
 fn default_browser_origin(addr: SocketAddr) -> String {
@@ -28,8 +29,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("nve-example-issues-server listening on http://{local_addr} (allowed origin: {origin})");
 
-    let server = build_issues_server(IssueStore::seeded(), [origin]);
-    let svc = IssuesHttpService::new(server);
+    let cors = std::env::var("NVE_ISSUES_CORS_ORIGIN")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|o| CorsPolicy::allow_origins([o]));
+    let server = build_issues_server_with_cors(IssueStore::seeded(), [origin], cors);
+    let mut svc = IssuesHttpService::new(server);
+    if let Ok(wasm_dir) = std::env::var("NVE_ISSUES_WASM_DIR")
+        && !wasm_dir.trim().is_empty()
+    {
+        svc = svc.with_wasm_dir(wasm_dir);
+    }
     serve_service_with_shutdown(listener, svc, core::future::pending::<()>()).await?;
     Ok(())
 }

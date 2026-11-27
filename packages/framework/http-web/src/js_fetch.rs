@@ -123,6 +123,10 @@ export function nveAttachLifecycle(onFocus, onOnline) {
     }
   };
 }
+export function nveStartTimer(ms, cb) {
+  const id = setTimeout(cb, ms);
+  return () => clearTimeout(id);
+}
 "#)]
 extern "C" {
     #[wasm_bindgen(js_name = nveStartFetch)]
@@ -142,6 +146,9 @@ extern "C" {
 
     #[wasm_bindgen(js_name = nveAttachLifecycle)]
     fn nve_attach_lifecycle(on_focus: &JsValue, on_online: &JsValue) -> Function;
+
+    #[wasm_bindgen(js_name = nveStartTimer)]
+    fn nve_start_timer(ms: u32, cb: &JsValue) -> Function;
 }
 
 struct PromiseState {
@@ -226,7 +233,9 @@ pub(crate) async fn execute_js_fetch(
             let status = arr.get(0).as_f64().unwrap_or(500.0) as u16;
             let err_kind_str = arr.get(1).as_string().unwrap_or_default();
             let inv_str = arr.get(2).as_string().unwrap_or_default();
-            let u8_arr: Uint8Array = arr.get(3).unchecked_into();
+            let u8_arr: Uint8Array = arr.get(3).dyn_into().map_err(|_| {
+                TransportError::network("JS fetch returned unexpected body payload type")
+            })?;
             let body_vec = u8_arr.to_vec();
 
             let err_kind = if err_kind_str.is_empty() {
@@ -304,5 +313,66 @@ pub(crate) fn attach_js_lifecycle(
         detach,
         _on_focus: focus_cb,
         _on_online: online_cb,
+    }
+}
+
+struct TimerState {
+    done: bool,
+    waker: Option<Waker>,
+}
+
+pub(crate) struct JsSleepFuture {
+    ms: u32,
+    state: Rc<RefCell<TimerState>>,
+    cancel_fn: Option<Function>,
+}
+
+impl Drop for JsSleepFuture {
+    fn drop(&mut self) {
+        self.state.borrow_mut().waker = None;
+        if let Some(cancel) = self.cancel_fn.take() {
+            let _ = cancel.call0(&JsValue::NULL);
+        }
+    }
+}
+
+impl Future for JsSleepFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut st = self.state.borrow_mut();
+        if st.done {
+            drop(st);
+            self.cancel_fn = None;
+            return Poll::Ready(());
+        }
+        st.waker = Some(cx.waker().clone());
+        drop(st);
+        if self.cancel_fn.is_none() {
+            let st_cb = Rc::clone(&self.state);
+            let cb = Closure::once_into_js(move || {
+                let waker = {
+                    let mut guard = st_cb.borrow_mut();
+                    guard.done = true;
+                    guard.waker.take()
+                };
+                if let Some(w) = waker {
+                    w.wake();
+                }
+            });
+            self.cancel_fn = Some(nve_start_timer(self.ms, &cb));
+        }
+        Poll::Pending
+    }
+}
+
+pub(crate) fn sleep_ms_future(ms: u32) -> JsSleepFuture {
+    JsSleepFuture {
+        ms,
+        state: Rc::new(RefCell::new(TimerState {
+            done: false,
+            waker: None,
+        })),
+        cancel_fn: None,
     }
 }

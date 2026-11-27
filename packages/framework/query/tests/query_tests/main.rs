@@ -2,6 +2,7 @@
 
 mod adversarial_tests;
 mod core_tests;
+mod regression_tests;
 
 use core::future::Future;
 use core::task::{Context, Poll, Waker};

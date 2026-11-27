@@ -2,15 +2,19 @@
 //! `QuerySlotId` -> `Signal<u32>` bridge, and [`QueryClientProvider`].
 
 use core::cell::RefCell;
-use core::future::poll_fn;
-use core::task::{Poll, Waker};
+use core::future::{poll_fn, Future};
 use std::rc::Rc;
 
-use dioxus_core::{current_scope_id, provide_context, spawn, try_consume_context, use_hook, Element, ScopeId};
+use dioxus_core::{
+    current_scope_id, provide_context, spawn, try_consume_context, use_drop, use_hook, Element,
+    Runtime, ScopeId, Task,
+};
 use dioxus_core_macro::{component, rsx, Props};
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use nve_query::{Clock, QueryClient, QueryClientConfig, QuerySlotId, Shared};
 use nve_rpc::{BoxFuture, CborCodec, RawCall, RawReply, Transport, TransportError};
+
+use crate::sleep::{default_sleep_callback, SleepHandle};
 
 /// Object-safe type-erased [`Transport`] wrapper so shared cross-platform Dioxus UI components
 /// never thread `<T: Transport>` generics across Web (`FetchTransport`), Native (`HyperTransport`),
@@ -132,16 +136,20 @@ mod wake_notifier {
 use wake_notifier::WakeNotifier;
 
 struct BridgeSlots {
+    alive: bool,
     signals: Vec<Option<(Signal<u32>, u32)>>,
+    slot_tasks: Vec<Option<Task>>,
     dirty_buf: Vec<(QuerySlotId, u32)>,
+    to_update_buf: Vec<(Signal<u32>, u32)>,
 }
 
 /// Reactive UI-thread bridge connecting an [`ErasedQueryClient`] to dense recycled per-slot
-/// `Signal<u32>`s owned by [`QueryClientProvider`]'s scope.
+/// `Signal<u32>`s and provider-scoped tasks owned by [`QueryClientProvider`]'s scope.
 #[derive(Clone)]
 pub struct DioxusQueryBridge {
     client: ErasedQueryClient,
     provider_scope: ScopeId,
+    sleep: SleepHandle,
     slots: Rc<RefCell<BridgeSlots>>,
 }
 
@@ -152,20 +160,62 @@ impl PartialEq for DioxusQueryBridge {
 }
 
 impl DioxusQueryBridge {
-    fn new(client: ErasedQueryClient, provider_scope: ScopeId) -> Self {
+    fn new(client: ErasedQueryClient, provider_scope: ScopeId, sleep: SleepHandle) -> Self {
         Self {
             client,
             provider_scope,
+            sleep,
             slots: Rc::new(RefCell::new(BridgeSlots {
+                alive: true,
                 signals: Vec::new(),
+                slot_tasks: Vec::new(),
                 dirty_buf: Vec::with_capacity(16),
+                to_update_buf: Vec::with_capacity(16),
             })),
         }
+    }
+
+    fn mark_unmounted(&self) {
+        self.slots.borrow_mut().alive = false;
     }
 
     #[inline]
     pub fn client(&self) -> &ErasedQueryClient {
         &self.client
+    }
+
+    #[inline]
+    pub(crate) fn sleep_ms(&self, ms: u32) -> BoxFuture<'static, ()> {
+        self.sleep.sleep_ms(ms)
+    }
+
+    /// Spawns a future inside [`QueryClientProvider`]'s scope (registered in `spawned_tasks`) so
+    /// leaf component unmounts never cancel shared fetches or mutations while provider unmount
+    /// drops every pending task cleanly before its first poll.
+    #[inline]
+    pub(crate) fn spawn_in_provider(&self, fut: impl Future<Output = ()> + 'static) -> Option<Task> {
+        if !self.slots.borrow().alive {
+            return None;
+        }
+        Some(Runtime::current().in_scope(self.provider_scope, || spawn(fut)))
+    }
+
+    /// Spawns (or replaces) the provider-owned fetch task for `slot`, which is cancelled only when
+    /// the last UI subscriber on `slot` unmounts or the provider itself unmounts.
+    pub(crate) fn spawn_slot_fetch(
+        &self,
+        slot: QuerySlotId,
+        fut: impl Future<Output = ()> + 'static,
+    ) {
+        let Some(task) = self.spawn_in_provider(fut) else {
+            return;
+        };
+        let mut slots = self.slots.borrow_mut();
+        let idx = slot.index();
+        if idx >= slots.slot_tasks.len() {
+            slots.slot_tasks.resize(idx + 1, None);
+        }
+        slots.slot_tasks[idx] = Some(task);
     }
 
     /// Acquires (or refcount-increments) the dense `Signal<u32>` for `slot`, allocating it inside
@@ -185,8 +235,8 @@ impl DioxusQueryBridge {
         sig
     }
 
-    /// Decrements the UI subscriber refcount for `slot`, calling `manually_drop()` when it reaches
-    /// zero so recycled slots never leak Dioxus signals on long-lived apps.
+    /// Decrements the UI subscriber refcount for `slot`, cancelling any slot-owned fetch task and
+    /// calling `manually_drop()` when it reaches zero so recycled slots never leak Dioxus signals.
     pub(crate) fn release_slot_signal(&self, slot: QuerySlotId) {
         let mut slots = self.slots.borrow_mut();
         let idx = slot.index();
@@ -195,30 +245,46 @@ impl DioxusQueryBridge {
             if *count == 0 {
                 let sig = *sig;
                 slots.signals[idx] = None;
+                let task = slots.slot_tasks.get_mut(idx).and_then(Option::take);
                 drop(slots);
+                if let Some(task) = task {
+                    task.cancel();
+                }
                 sig.manually_drop();
             }
         }
     }
 
     /// Drains dirty `(QuerySlotId, data_version)` pairs from [`QueryClient`] and updates ONLY the
-    /// affected slot `Signal<u32>`s on the Dioxus UI thread (zero heap allocations in steady state).
+    /// affected slot `Signal<u32>`s on the Dioxus UI thread (zero bridge heap allocations in
+    /// steady state).
     pub fn flush_dirty_slots(&self) {
-        let mut to_update: Vec<(Signal<u32>, u32)> = Vec::new();
-        {
+        let mut to_update = {
             let mut slots = self.slots.borrow_mut();
-            let BridgeSlots { signals, dirty_buf } = &mut *slots;
+            let BridgeSlots {
+                signals,
+                dirty_buf,
+                to_update_buf,
+                ..
+            } = &mut *slots;
+            to_update_buf.clear();
             self.client.drain_dirty_slots(dirty_buf);
             for &(slot, ver) in dirty_buf.iter() {
                 if let Some((sig, _)) = signals.get(slot.index()).and_then(Option::as_ref)
                     && *sig.peek() != ver
                 {
-                    to_update.push((*sig, ver));
+                    to_update_buf.push((*sig, ver));
                 }
             }
-        }
-        for (mut sig, ver) in to_update {
+            core::mem::take(to_update_buf)
+        };
+        for &(mut sig, ver) in &to_update {
             sig.set(ver);
+        }
+        to_update.clear();
+        let mut slots = self.slots.borrow_mut();
+        if slots.to_update_buf.capacity() < to_update.capacity() {
+            slots.to_update_buf = to_update;
         }
     }
 
@@ -240,16 +306,28 @@ pub(crate) fn consume_bridge() -> DioxusQueryBridge {
 }
 
 /// Provides an [`ErasedQueryClient`] and its zero-polling wake bridge to descendant components.
+///
+/// Pass an optional `sleep` handle to override the exponential retry-backoff timer (e.g.
+/// `SleepHandle::new(nve_http_web::browser_sleep_ms)` on `wasm32` or a deterministic mock in tests).
 #[component]
-pub fn QueryClientProvider(client: ErasedQueryClient, children: Element) -> Element {
-    let bridge = use_hook(|| {
+pub fn QueryClientProvider(
+    client: ErasedQueryClient,
+    #[props(default)] sleep: Option<SleepHandle>,
+    children: Element,
+) -> Element {
+    let client_for_drop = client.clone();
+    let (wake_token, bridge_for_drop) = use_hook(move || {
         let scope = current_scope_id();
-        let bridge = DioxusQueryBridge::new(client.clone(), scope);
+        let sleep_handle = sleep.unwrap_or_else(|| SleepHandle(default_sleep_callback()));
+        let bridge = DioxusQueryBridge::new(client.clone(), scope, sleep_handle);
         let notifier = WakeNotifier::default();
         let wake_notifier = notifier.clone();
-        client.set_wake_callback(Shared::new(move || {
+        let token = client.set_wake_callback(Shared::new(move || {
             wake_notifier.notify();
         }));
+        // Trigger one initial async drain after mount so pre-existing dirty slots flush without
+        // mutating signals inside `QueryClientProvider`'s own render body.
+        notifier.notify();
         let bridge_for_task = bridge.clone();
         spawn(async move {
             loop {
@@ -258,26 +336,13 @@ pub fn QueryClientProvider(client: ErasedQueryClient, children: Element) -> Elem
             }
         });
         provide_context(bridge.clone());
-        bridge
+        (token, bridge)
     });
-    // Drain any dirty updates that landed synchronously before the first render.
-    bridge.flush_dirty_slots();
+
+    use_drop(move || {
+        bridge_for_drop.mark_unmounted();
+        client_for_drop.clear_wake_callback(wake_token);
+    });
 
     rsx! { {children} }
-}
-
-/// Utility helper yielding once to the host scheduler without depending on Tokio or `web-sys`.
-pub(crate) async fn yield_once() {
-    let mut yielded = false;
-    poll_fn(|cx| {
-        if yielded {
-            Poll::Ready(())
-        } else {
-            yielded = true;
-            let w: Waker = cx.waker().clone();
-            w.wake();
-            Poll::Pending
-        }
-    })
-    .await;
 }

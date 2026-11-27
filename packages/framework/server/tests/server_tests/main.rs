@@ -2,6 +2,7 @@
 //! integration tests (split across `csrf_auth_tests` and `dispatch_tests` to stay well under
 //! the 650-line file cap).
 
+mod cors_regression_tests;
 mod csrf_auth_tests;
 mod dispatch_tests;
 

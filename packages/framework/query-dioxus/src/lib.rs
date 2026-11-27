@@ -4,6 +4,7 @@
 pub mod action_form;
 pub mod bridge;
 pub mod hooks;
+pub mod sleep;
 
 pub use action_form::{ActionForm, ActionFormProps};
 pub use bridge::{
@@ -13,6 +14,7 @@ pub use bridge::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use bridge::{erased_query_client, erased_ssr_query_client};
 pub use hooks::{use_action, use_query, use_query_client, use_query_with, UseAction, UseQuery};
+pub use sleep::{default_sleep_callback, SleepCallback, SleepHandle};
 
 pub mod prelude {
     pub use crate::action_form::ActionForm;
@@ -24,4 +26,5 @@ pub mod prelude {
     pub use crate::hooks::{
         use_action, use_query, use_query_client, use_query_with, UseAction, UseQuery,
     };
+    pub use crate::sleep::{default_sleep_callback, SleepCallback, SleepHandle};
 }

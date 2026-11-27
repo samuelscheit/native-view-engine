@@ -1,9 +1,11 @@
 //! Progressive `<ActionForm<P>>` uniting 0-JS HTML `<form method="post">` PRG fallback with
 //! hydrated Web WASM and Native local `FormDecode` validation + CBOR RPC submission.
 
+use core::cell::Cell;
 use core::marker::PhantomData;
+use std::rc::Rc;
 
-use dioxus_core::{spawn, Element, EventHandler};
+use dioxus_core::{use_drop, use_hook, Element, EventHandler};
 use dioxus_core_macro::{component, rsx, Props};
 use dioxus_signals::{Signal, WritableExt};
 use nve_dioxus::use_signal;
@@ -53,16 +55,25 @@ where
     CborCodec: RpcCodec<P::Args> + RpcCodec<P::Output> + RpcCodec<P::Error>,
 {
     let action_hook = use_action::<P>();
+    let has_external_ctrl = controller.is_some();
     let persist_init = persist_key.clone();
-    let fallback_ctrl = use_signal(move || match persist_init {
-        Some(key) => {
+    let fallback_ctrl = use_signal(move || {
+        if has_external_ctrl {
+            FormController::new()
+        } else if let Some(key) = persist_init {
             let mut c = FormController::with_default_persistence(key);
             let _ = c.restore_draft();
             c
+        } else {
+            FormController::new()
         }
-        None => FormController::new(),
     });
     let mut active_ctrl = controller.unwrap_or(fallback_ctrl);
+    let mounted = use_hook(|| Rc::new(Cell::new(true)));
+    let mounted_drop = Rc::clone(&mounted);
+    use_drop(move || {
+        mounted_drop.set(false);
+    });
 
     rsx! {
         Form {
@@ -86,8 +97,13 @@ where
                         active_ctrl.write().apply_server_errors(&list);
                     }
                     Ok(typed_args) => {
-                        spawn(async move {
-                            match action_hook.call(typed_args).await {
+                        let pending_guard = action_hook.begin_pending_guard();
+                        let mounted_cb = Rc::clone(&mounted);
+                        action_hook.spawn_in_provider(async move {
+                            match action_hook
+                                .call_with_pending_guard(typed_args, pending_guard)
+                                .await
+                            {
                                 Ok(reply) => {
                                     if let Ok(mut ctrl) = active_ctrl.try_write() {
                                         if reset_on_success {
@@ -96,7 +112,9 @@ where
                                             ctrl.mark_submit_succeeded();
                                         }
                                     }
-                                    if let Some(cb) = on_success {
+                                    if mounted_cb.get()
+                                        && let Some(cb) = on_success
+                                    {
                                         cb.call(reply.value);
                                     }
                                 }
@@ -116,7 +134,9 @@ where
                                             }
                                         }
                                     }
-                                    if let Some(cb) = on_error {
+                                    if mounted_cb.get()
+                                        && let Some(cb) = on_error
+                                    {
                                         cb.call(err);
                                     }
                                 }

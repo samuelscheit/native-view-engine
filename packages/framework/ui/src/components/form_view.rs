@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use dioxus_core::{provide_context, try_consume_context, use_hook, EventHandler};
 use dioxus_core_macro::Props;
+use dioxus_signals::CopyValue;
 use nve_dioxus::prelude::*;
 
 use crate::components::actions::{Button, ButtonSize, ButtonVariant};
@@ -47,20 +48,21 @@ pub struct FormSubmitPayload {
 
 #[derive(Clone, Copy)]
 struct FormSubmitContext {
-    controller: Signal<FormController>,
-    on_submit: Signal<Option<EventHandler<FormSubmitPayload>>>,
-    clear_draft_on_submit: Signal<bool>,
+    controller: Signal<Signal<FormController>>,
+    on_submit: CopyValue<Option<EventHandler<FormSubmitPayload>>>,
+    clear_draft_on_submit: CopyValue<bool>,
 }
 
-/// Reads the enclosing [`Form`]'s [`FormController`] signal when called inside `<Form>`.
+/// Reads the enclosing [`Form`]'s active [`FormController`] signal when called inside `<Form>`,
+/// staying synchronized if the parent swaps the `controller` prop.
 pub fn use_form_context() -> Option<Signal<FormController>> {
-    try_consume_context::<FormSubmitContext>().map(|ctx| ctx.controller)
+    try_consume_context::<FormSubmitContext>().map(|ctx| *ctx.controller.read())
 }
 
 fn dispatch_form_submit(ctx: FormSubmitContext) {
-    let mut ctrl = ctx.controller;
-    let clear_draft = *ctx.clear_draft_on_submit.peek();
-    let handler = *ctx.on_submit.peek();
+    let mut ctrl = *ctx.controller.peek();
+    let clear_draft = *ctx.clear_draft_on_submit.read();
+    let handler = *ctx.on_submit.read();
     let persist_key = ctrl.read().persist_key().map(str::to_owned);
     let values = if clear_draft {
         ctrl.write().submit_with(|_| Ok(())).ok()
@@ -93,34 +95,42 @@ pub fn Form(
 ) -> Element {
     let (theme, colors) = use_theme_rgba();
 
+    let has_external_ctrl = controller.is_some();
     let persist_key_init = persist_key.clone();
-    let fallback_ctrl = use_signal(move || match persist_key_init {
-        Some(key) => {
+    let fallback_ctrl = use_signal(move || {
+        if has_external_ctrl {
+            FormController::new()
+        } else if let Some(key) = persist_key_init {
             let mut c = FormController::with_default_persistence(key);
             let _ = c.restore_draft();
             c
+        } else {
+            FormController::new()
         }
-        None => FormController::new(),
     });
     let active_ctrl = controller.unwrap_or(fallback_ctrl);
 
-    let did_restore = use_signal(|| false);
-    if !*did_restore.peek() {
-        *did_restore.write_unchecked() = true;
-        if controller.is_some() {
+    let mut last_restored_ctrl = use_hook(|| CopyValue::new(Option::<Signal<FormController>>::None));
+    if has_external_ctrl && *last_restored_ctrl.read() != Some(active_ctrl) {
+        last_restored_ctrl.set(Some(active_ctrl));
+        if !active_ctrl.peek().has_restored_draft() && !active_ctrl.peek().is_dirty() {
             let _ = active_ctrl.write_unchecked().restore_draft();
         }
     }
 
-    let on_submit_sig = use_signal(|| on_submit);
-    *on_submit_sig.write_unchecked() = on_submit;
-    let clear_draft_sig = use_signal(|| clear_draft_on_submit);
-    *clear_draft_sig.write_unchecked() = clear_draft_on_submit;
+    let ctrl_sig = use_signal(|| active_ctrl);
+    if *ctrl_sig.peek() != active_ctrl {
+        *ctrl_sig.write_unchecked() = active_ctrl;
+    }
+    let mut on_submit_slot = use_hook(|| CopyValue::new(on_submit));
+    on_submit_slot.set(on_submit);
+    let mut clear_draft_slot = use_hook(|| CopyValue::new(clear_draft_on_submit));
+    clear_draft_slot.set(clear_draft_on_submit);
 
     let ctx = FormSubmitContext {
-        controller: active_ctrl,
-        on_submit: on_submit_sig,
-        clear_draft_on_submit: clear_draft_sig,
+        controller: ctrl_sig,
+        on_submit: on_submit_slot,
+        clear_draft_on_submit: clear_draft_slot,
     };
     use_hook(|| {
         provide_context(ctx);
@@ -203,14 +213,17 @@ pub fn FormField(
     #[props(default)] style: Option<String>,
 ) -> Element {
     let ctx = try_consume_context::<FormSubmitContext>();
-    if let Some(c) = ctx {
+    let active_ctrl = ctx.map(|c| *c.controller.read());
+    if let Some(ctrl) = active_ctrl
+        && ctrl.peek().state().value::<String>(&name).is_none()
+    {
         let init = initial_value.as_deref().unwrap_or("");
-        c.controller.write_unchecked().ensure_text_field(&name, init);
+        ctrl.write_unchecked().ensure_text_field(&name, init);
     }
-    let value = ctx
-        .map(|c| c.controller.read().text_value(&name))
+    let value = active_ctrl
+        .map(|ctrl| ctrl.read().text_value(&name))
         .unwrap_or_default();
-    let error = ctx.and_then(|c| c.controller.read().visible_error(&name).map(str::to_owned));
+    let error = active_ctrl.and_then(|ctrl| ctrl.read().visible_error(&name).map(str::to_owned));
     let field_id = test_id.clone().unwrap_or_else(|| format!("field-{name}"));
     let name_change = name.clone();
     let name_blur = name.clone();
@@ -235,13 +248,13 @@ pub fn FormField(
             input_mode: input_mode,
             style: style,
             on_change: move |next: String| {
-                if let Some(mut c) = ctx.map(|x| x.controller) {
-                    c.write().set_text(&name_change, next);
+                if let Some(mut ctrl) = ctx.map(|x| *x.controller.peek()) {
+                    ctrl.write().set_text(&name_change, next);
                 }
             },
             on_blur: move |_| {
-                if let Some(mut c) = ctx.map(|x| x.controller) {
-                    let _ = c.write().touch(&name_blur);
+                if let Some(mut ctrl) = ctx.map(|x| *x.controller.peek()) {
+                    let _ = ctrl.write().touch(&name_blur);
                 }
             },
             on_submit: move |_| {
@@ -259,11 +272,11 @@ pub fn FormField(
 #[component]
 pub fn FormHiddenField(name: String, value: String) -> Element {
     let ctx = try_consume_context::<FormSubmitContext>();
-    if let Some(c) = ctx {
-        let mut ctrl = c.controller.write_unchecked();
-        if ctrl.state().value::<String>(&name).map(String::as_str) != Some(value.as_str()) {
-            ctrl.register_text_field(name.clone(), value.clone());
-        }
+    if let Some(ctrl) = ctx.map(|c| *c.controller.read())
+        && ctrl.peek().state().value::<String>(&name).map(String::as_str) != Some(value.as_str())
+    {
+        ctrl.write_unchecked()
+            .register_text_field(name.clone(), value.clone());
     }
     rsx! {
         textinput {

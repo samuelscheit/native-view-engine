@@ -409,18 +409,20 @@ suite_rust_rpc_hyper_matrix() {
   cargo test --locked -p nve-http-hyper --no-default-features --features client --doc
   RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --document-private-items \
     -p nve-hash -p nve-rpc -p nve-server -p nve-http-hyper \
-    -p nve-example-issues-api -p nve-example-issues-server
+    -p nve-query -p nve-http-web -p nve-query-dioxus \
+    -p nve-example-issues-api -p nve-example-issues-client -p nve-example-issues-server
 }
 
 suite_rust_wasm() {
   cd "$REPO_ROOT"
-  cargo check -p nve-web-shell --target wasm32-unknown-unknown
-  cargo check -p nve-hash -p nve-rpc -p nve-server -p nve-example-issues-api --target wasm32-unknown-unknown
+  cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
+  cargo check --locked -p nve-web-shell --no-default-features --features app-issues --target wasm32-unknown-unknown
+  cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-http-web -p nve-query-dioxus -p nve-example-issues-api -p nve-example-issues-client --target wasm32-unknown-unknown
 }
 
 suite_rust_wasip2() {
   cd "$REPO_ROOT"
-  cargo check -p nve-hash -p nve-rpc -p nve-server -p nve-example-issues-api --target wasm32-wasip2
+  cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-example-issues-api --target wasm32-wasip2
 }
 
 suite_web_wasm_e2e() {

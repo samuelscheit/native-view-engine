@@ -13,8 +13,9 @@ use http_body_util::{BodyExt as _, Full};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use nve_example_issues_api::{
-    AddComment, AddCommentInput, ApiError, GetIssue, Issue, IssueFilter, IssueId, IssueState,
-    IssueTag, ListComments, ListIssues, RenameIssue, RenameIssueInput,
+    AddComment, AddCommentInput, ApiError, CloseIssue, CloseIssueInput, CreateIssue,
+    CreateIssueInput, GetIssue, Issue, IssueFilter, IssueId, IssueState, IssueTag, ListComments,
+    ListIssues, RenameIssue, RenameIssueInput,
 };
 use nve_example_issues_server::auth::{
     DEMO_NATIVE_BEARER_TOKEN, DEMO_WEB_COOKIE_TOKEN, SESSION_COOKIE_NAME,
@@ -280,6 +281,97 @@ async fn fullstack_issues_end_to_end_native_web_0js_and_mobile_skew() {
             error: ApiError::Validation(_),
         }
     ));
+
+    // 8. CreateIssue + duplicate-title 422 + CloseIssue + 0-JS `/issues/create` form route.
+    let created = call::<CreateIssue>(
+        &native_http,
+        &CreateIssueInput {
+            title: "Native Bearer Issue".into(),
+            priority: Some(1),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.value.id, IssueId(4));
+    assert_eq!(created.value.state, IssueState::Open);
+    assert_eq!(created.invalidated_tags, vec![IssueTag::List.tag64()]);
+
+    let dup_err = call::<CreateIssue>(
+        &native_http,
+        &CreateIssueInput {
+            title: "native bearer issue".into(),
+            priority: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        dup_err,
+        RpcError::Domain {
+            status: RpcStatus::Unprocessable,
+            error: ApiError::Validation(_),
+        }
+    ));
+
+    let closed = call::<CloseIssue>(
+        &native_http,
+        &CloseIssueInput { id: IssueId(4) },
+    )
+    .await
+    .unwrap();
+    assert_eq!(closed.value.state, IssueState::Closed);
+    assert_eq!(
+        closed.invalidated_tags,
+        vec![IssueTag::List.tag64(), IssueTag::Issue(IssueId(4)).tag64()]
+    );
+
+    let form_create = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{origin}/issues/create"))
+        .header(CONTENT_TYPE, CONTENT_TYPE_FORM_URLENCODED)
+        .header(COOKIE, &cookie_hdr)
+        .header(ORIGIN, &origin)
+        .header("sec-fetch-site", "same-origin")
+        .body(Full::new(Bytes::from_static(
+            b"title=Created+via+0-JS+PRG&priority=2",
+        )))
+        .unwrap();
+    let form_create_resp = raw_client.request(form_create).await.unwrap();
+    assert_eq!(form_create_resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(form_create_resp.headers().get(LOCATION).unwrap(), "/issues");
+
+    // 9. Native Skia-style UI thread (no ambient Tokio runtime) via `with_background_runtime()`.
+    let origin_bg = origin.clone();
+    let (bg_tx, bg_rx) = oneshot::channel();
+    let ui_thread = std::thread::spawn(move || {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let client = HyperTransport::new(origin_bg)
+            .with_bearer_token(DEMO_NATIVE_BEARER_TOKEN)
+            .unwrap()
+            .with_background_runtime()
+            .unwrap();
+        let mut fut = std::pin::pin!(call::<GetIssue>(&client, &IssueId(5)));
+        let thread = std::thread::current();
+        struct WakeThread(std::thread::Thread);
+        impl std::task::Wake for WakeThread {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = std::task::Waker::from(std::sync::Arc::new(WakeThread(thread)));
+        let mut cx = std::task::Context::from_waker(&waker);
+        let value = loop {
+            match fut.as_mut().poll(&mut cx) {
+                std::task::Poll::Ready(res) => break res.unwrap().value,
+                std::task::Poll::Pending => std::thread::park(),
+            }
+        };
+        let _ = bg_tx.send(value);
+    });
+    let bg_issue = bg_rx.await.unwrap();
+    ui_thread.join().unwrap();
+    assert_eq!(bg_issue.title, "Created via 0-JS PRG");
+    assert_eq!(bg_issue.priority, Some(2));
 
     let _ = tx.send(());
     task.await.unwrap();

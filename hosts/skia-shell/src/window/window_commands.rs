@@ -10,13 +10,38 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowId, WindowLevel};
 
-use super::multi_window::{apply_window_state, HostWakeEvent, WindowPresenter};
+use super::multi_window::{apply_window_state, HostWakeEvent, SurfaceWindow, WindowPresenter};
 use super::session::DesktopSession;
 use super::window_host::DesktopWindowHost;
 use super::DesktopApp;
 use crate::host_services::SkiaHostEvent;
 
 impl<A: DesktopApp> DesktopWindowHost<A> {
+    /// Polls ready async tasks on `sw` and re-renders in a bounded loop until quiescent so
+    /// newly spawned tasks start immediately and arm their host waker. Returns
+    /// `(rendered_any, hit_pump_cap)`.
+    pub(crate) fn pump_window_async(
+        sw: &mut SurfaceWindow<A>,
+        force_initial_render: bool,
+    ) -> (bool, bool) {
+        const MAX_PUMPS: usize = 8;
+        let mut rendered = false;
+        let mut force = force_initial_render;
+        let mut exhausted = true;
+        for _ in 0..MAX_PUMPS {
+            let polled = sw.session.app_mut().poll_async_work();
+            if !polled && !force {
+                exhausted = false;
+                break;
+            }
+            force = false;
+            if let Err(err) = sw.session.render_and_rasterize() {
+                eprintln!("[nve-skia-shell] async frame error: {err}");
+            }
+            rendered = true;
+        }
+        (rendered, exhausted)
+    }
     pub(crate) fn apply_window_command(&mut self, event_loop: &ActiveEventLoop, cmd: WindowCommand) {
         match cmd {
             WindowCommand::OpenWindow { surface_id, presentation } => {
@@ -319,13 +344,25 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                let Some(sw) = self.windows.get_mut(&window_id) else { return };
-                if self.window_manager.active_modal_blocker(sw.handle_id).is_some() { return; }
-                let (x, y) = sw.session.cursor_logical();
-                match sw.session.handle_click_logical(x, y) {
-                    Ok(true) => { sw.sync_ime_state(); sw.sync_cursor_state(); sw.window.request_redraw(); }
-                    Ok(false) => sw.sync_cursor_state(),
-                    Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
+                let mut reschedule = false;
+                {
+                    let Some(sw) = self.windows.get_mut(&window_id) else { return };
+                    if self.window_manager.active_modal_blocker(sw.handle_id).is_some() { return; }
+                    let (x, y) = sw.session.cursor_logical();
+                    match sw.session.handle_click_logical(x, y) {
+                        Ok(true) => {
+                            let (_, exhausted) = Self::pump_window_async(sw, false);
+                            reschedule = exhausted;
+                            sw.sync_ime_state();
+                            sw.sync_cursor_state();
+                            sw.window.request_redraw();
+                        }
+                        Ok(false) => sw.sync_cursor_state(),
+                        Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
+                    }
+                }
+                if reschedule {
+                    self.host_services.request_frame_wake();
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
@@ -343,39 +380,73 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let Some(sw) = self.windows.get_mut(&window_id) else { return };
-                let scale = sw.session.viewport().scale_factor.max(0.001);
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(lx, ly) => (-lx * 40.0, -ly * 40.0),
-                    MouseScrollDelta::PixelDelta(pos) => (-(pos.x as f32) / scale, -(pos.y as f32) / scale),
-                };
-                let (x, y) = sw.session.cursor_logical();
-                match sw.session.handle_scroll_logical(x, y, dx, dy) {
-                    Ok(true) => { sw.sync_ime_state(); sw.window.request_redraw(); }
-                    Ok(false) => {}
-                    Err(err) => eprintln!("[nve-skia-shell] scroll dispatch error: {err}"),
+                let mut reschedule = false;
+                {
+                    let Some(sw) = self.windows.get_mut(&window_id) else { return };
+                    let scale = sw.session.viewport().scale_factor.max(0.001);
+                    let (dx, dy) = match delta {
+                        MouseScrollDelta::LineDelta(lx, ly) => (-lx * 40.0, -ly * 40.0),
+                        MouseScrollDelta::PixelDelta(pos) => (-(pos.x as f32) / scale, -(pos.y as f32) / scale),
+                    };
+                    let (x, y) = sw.session.cursor_logical();
+                    match sw.session.handle_scroll_logical(x, y, dx, dy) {
+                        Ok(true) => {
+                            let (_, exhausted) = Self::pump_window_async(sw, false);
+                            reschedule = exhausted;
+                            sw.sync_ime_state();
+                            sw.window.request_redraw();
+                        }
+                        Ok(false) => {}
+                        Err(err) => eprintln!("[nve-skia-shell] scroll dispatch error: {err}"),
+                    }
+                }
+                if reschedule {
+                    self.host_services.request_frame_wake();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let Some(sw) = self.windows.get_mut(&window_id) else { return };
-                if self.window_manager.active_modal_blocker(sw.handle_id).is_some() { return; }
-                match sw.session.handle_keyboard_input(&event.logical_key, event.text.as_deref(), sw.modifiers) {
-                    Ok(true) => { sw.sync_ime_state(); sw.window.request_redraw(); }
-                    Ok(false) => {}
-                    Err(err) => eprintln!("[nve-skia-shell] keyboard dispatch error: {err}"),
+                let mut reschedule = false;
+                {
+                    let Some(sw) = self.windows.get_mut(&window_id) else { return };
+                    if self.window_manager.active_modal_blocker(sw.handle_id).is_some() { return; }
+                    match sw.session.handle_keyboard_input(&event.logical_key, event.text.as_deref(), sw.modifiers) {
+                        Ok(true) => {
+                            let (_, exhausted) = Self::pump_window_async(sw, false);
+                            reschedule = exhausted;
+                            sw.sync_ime_state();
+                            sw.window.request_redraw();
+                        }
+                        Ok(false) => {}
+                        Err(err) => eprintln!("[nve-skia-shell] keyboard dispatch error: {err}"),
+                    }
+                }
+                if reschedule {
+                    self.host_services.request_frame_wake();
                 }
             }
             WindowEvent::Ime(ime) => {
-                let Some(sw) = self.windows.get_mut(&window_id) else { return };
-                match sw.session.handle_ime(&ime) {
-                    Ok(true) => { sw.sync_ime_state(); sw.window.request_redraw(); }
-                    Ok(false) => {}
-                    Err(err) => eprintln!("[nve-skia-shell] IME dispatch error: {err}"),
+                let mut reschedule = false;
+                {
+                    let Some(sw) = self.windows.get_mut(&window_id) else { return };
+                    match sw.session.handle_ime(&ime) {
+                        Ok(true) => {
+                            let (_, exhausted) = Self::pump_window_async(sw, false);
+                            reschedule = exhausted;
+                            sw.sync_ime_state();
+                            sw.window.request_redraw();
+                        }
+                        Ok(false) => {}
+                        Err(err) => eprintln!("[nve-skia-shell] IME dispatch error: {err}"),
+                    }
+                }
+                if reschedule {
+                    self.host_services.request_frame_wake();
                 }
             }
             WindowEvent::RedrawRequested => {
                 self.process_pending_hot_patches();
                 self.process_pending_remote_frames();
+                self.process_app_wakes();
                 if let Some(sw) = self.windows.get_mut(&window_id) {
                     sw.present_pixels();
                 }
