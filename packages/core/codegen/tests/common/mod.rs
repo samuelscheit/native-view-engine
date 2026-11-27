@@ -241,6 +241,10 @@ pub fn check_c11_syntax(source: &Path, include_dirs: &[&Path], work_dir: &Path) 
         return true;
     }
 
+    assert!(
+        !require_tool("clang"),
+        "unreachable: clang probe already returned false"
+    );
     eprintln!(
         "skipping C11 header check for {}: neither clang nor MSVC cl is installed",
         source.display()
