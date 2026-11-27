@@ -50,6 +50,21 @@ fn roundtrip_event_ring() {
         },
     ];
     assert_eq!(EventMask::COMPOSITION, 1 << 8);
+    // Every kind maps to exactly one bit; only the composition kinds share one; `VALUES` names
+    // every bit once and fits the `u32` `nve.interaction.event_mask` word.
+    let mut seen = std::collections::BTreeMap::new();
+    for raw in 1u8..=255 {
+        let Some(kind) = NativeEventKind::from_u8_opt(raw) else { continue };
+        let bit = EventMask::of(kind);
+        assert!(bit.is_power_of_two() && bit <= u64::from(u32::MAX), "{kind:?}");
+        seen.entry(bit).or_insert_with(Vec::new).push(kind);
+    }
+    assert_eq!(seen.len(), EventMask::VALUES.values.len());
+    for (bit, kinds) in &seen {
+        assert_eq!(kinds.len() == 3, *bit == EventMask::COMPOSITION, "{kinds:?}");
+        assert!(EventMask::VALUES.values.iter().any(|&(_, v)| u64::from(v) == *bit));
+    }
+    assert_eq!(EventMask::of(NativeEventKind::KeyDown), 1 << 9);
     let encoded = encode_events(&events);
     let decoded = decode_events(&encoded).unwrap();
     assert_eq!(events, decoded);

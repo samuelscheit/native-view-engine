@@ -1,3 +1,4 @@
+import NveHost
 import Foundation
 import SwiftUI
 
@@ -256,7 +257,7 @@ public enum NveDrawListRenderer {
             case opClear:
                 let rgba = loadU32(pos)
                 pos += 4
-                if let color = NveSceneRenderer.color(fromRgba: rgba) {
+                if let color = NveSceneRenderer.color(NveColor(Rgba(packed: rgba))) {
                     activeCtx.fill(Path(localBounds), with: .color(color))
                 }
 
@@ -267,7 +268,7 @@ public enum NveDrawListRenderer {
                 let h = loadF32(pos + 12)
                 let rgba = loadU32(pos + 16)
                 pos += 20
-                if w > 0, h > 0, let color = NveSceneRenderer.color(fromRgba: rgba) {
+                if w > 0, h > 0, let color = NveSceneRenderer.color(NveColor(Rgba(packed: rgba))) {
                     activeCtx.fill(Path(CGRect(x: x, y: y, width: w, height: h)), with: .color(color))
                 }
 
@@ -279,7 +280,7 @@ public enum NveDrawListRenderer {
                 let r = max(0, loadF32(pos + 16))
                 let rgba = loadU32(pos + 20)
                 pos += 24
-                if w > 0, h > 0, let color = NveSceneRenderer.color(fromRgba: rgba) {
+                if w > 0, h > 0, let color = NveSceneRenderer.color(NveColor(Rgba(packed: rgba))) {
                     let rect = CGRect(x: x, y: y, width: w, height: h)
                     let path = r > 0 ? Path(roundedRect: rect, cornerRadius: r) : Path(rect)
                     activeCtx.fill(path, with: .color(color))
@@ -291,7 +292,7 @@ public enum NveDrawListRenderer {
                 let r = loadF32(pos + 8)
                 let rgba = loadU32(pos + 12)
                 pos += 16
-                if r > 0, let color = NveSceneRenderer.color(fromRgba: rgba) {
+                if r > 0, let color = NveSceneRenderer.color(NveColor(Rgba(packed: rgba))) {
                     let oval = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
                     activeCtx.fill(Path(ellipseIn: oval), with: .color(color))
                 }
@@ -304,7 +305,7 @@ public enum NveDrawListRenderer {
                 let width = loadF32(pos + 16)
                 let rgba = loadU32(pos + 20)
                 pos += 24
-                if width > 0, let color = NveSceneRenderer.color(fromRgba: rgba) {
+                if width > 0, let color = NveSceneRenderer.color(NveColor(Rgba(packed: rgba))) {
                     var path = Path()
                     path.move(to: CGPoint(x: x0, y: y0))
                     path.addLine(to: CGPoint(x: x1, y: y1))
@@ -320,7 +321,7 @@ public enum NveDrawListRenderer {
                 let rgba = loadU32(pos + 4)
                 let ptCount = Int(loadU32(pos + 8))
                 pos += 12
-                if ptCount >= 2, width > 0, let color = NveSceneRenderer.color(fromRgba: rgba) {
+                if ptCount >= 2, width > 0, let color = NveSceneRenderer.color(NveColor(Rgba(packed: rgba))) {
                     var path = Path()
                     path.move(to: CGPoint(x: loadF32(pos), y: loadF32(pos + 4)))
                     for p in 1 ..< ptCount {

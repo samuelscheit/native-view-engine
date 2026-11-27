@@ -40,3 +40,21 @@ public enum NveTables {
     }
 {%- endfor %}
 }
+{%- for e in consts %}
+
+{% if e.flags -%}
+/// `{{ e.name }}` bits.
+public enum Nve{{ e.name }} {
+{%- for x in e.entries %}
+    public static let {{ x.swift }}: UInt32 = 0x{{ "{:X}"|format(x.value) }}
+{%- endfor %}
+}
+{%- else -%}
+/// `{{ e.name }}` word enum.
+public enum Nve{{ e.name }}: UInt32, Sendable, CaseIterable {
+{%- for x in e.entries %}
+    case {{ x.swift }} = {{ x.value }}
+{%- endfor %}
+}
+{%- endif %}
+{%- endfor %}

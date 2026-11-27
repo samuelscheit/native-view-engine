@@ -5,5 +5,6 @@
 module CNveAbi [system] {
     header "nve/generated/nve_abi.generated.h"
     header "nve/generated/nve_tables.generated.h"
+    header "nve/generated/nve_runtime_abi.generated.h"
     export *
 }

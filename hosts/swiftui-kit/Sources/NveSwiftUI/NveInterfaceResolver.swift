@@ -1,10 +1,11 @@
 import CNveAbi
+import NveHost
 import Darwin
 import Foundation
 
 // MARK: - Static + Dynamic `nve_get_interface` Resolver
 
-/// Origin of a resolved `NveModule` interface table.
+/// Origin of a resolved `nve_get_interface` entry point.
 public enum NveInterfaceResolutionSource: Equatable, Sendable {
     /// Caller supplied an explicit `NveGetInterfaceFn` C function pointer.
     case explicit
@@ -14,12 +15,6 @@ public enum NveInterfaceResolutionSource: Equatable, Sendable {
     case dynamicLibrary
     /// Dynamically resolved from the current process image via `dlopen(nil, RTLD_NOW)` / `dlsym`.
     case processSymbol
-}
-
-/// Entry stored in `NveStaticInterfaceTable` for static-linked Rust libraries or Swift test doubles.
-public enum NveStaticInterfaceEntry: Sendable {
-    case cFunction(NveGetInterfaceFn)
-    case closure(@Sendable (UInt32) -> UnsafeRawPointer?)
 }
 
 /// Thread-safe static interface registry enabling App Store iOS, tvOS, watchOS, and visionOS apps
@@ -39,7 +34,7 @@ public final class NveStaticInterfaceTable: @unchecked Sendable {
     public static let shared = NveStaticInterfaceTable()
 
     private let lock = NSLock()
-    private var entries: [String: NveStaticInterfaceEntry] = [:]
+    private var entries: [String: NveGetInterfaceFn] = [:]
 
     public init() {}
 
@@ -48,19 +43,7 @@ public final class NveStaticInterfaceTable: @unchecked Sendable {
         let key = symbol.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
         lock.lock()
-        entries[key] = .cFunction(getInterface)
-        lock.unlock()
-    }
-
-    /// Registers a closure-backed interface resolver under `symbol`.
-    public func register(
-        symbol: String,
-        resolver: @escaping @Sendable (UInt32) -> UnsafeRawPointer?
-    ) {
-        let key = symbol.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return }
-        lock.lock()
-        entries[key] = .closure(resolver)
+        entries[key] = getInterface
         lock.unlock()
     }
 
@@ -73,8 +56,8 @@ public final class NveStaticInterfaceTable: @unchecked Sendable {
         return removed
     }
 
-    /// Looks up a registered static interface entry for `symbol`.
-    public func resolve(symbol: String) -> NveStaticInterfaceEntry? {
+    /// Looks up the statically registered entry point for `symbol`.
+    public func resolve(symbol: String) -> NveGetInterfaceFn? {
         lock.lock()
         let entry = entries[symbol]
         lock.unlock()
@@ -97,42 +80,23 @@ public final class NveStaticInterfaceTable: @unchecked Sendable {
     }
 }
 
-/// Resolved module table paired with optional owned `dlopen` handle and provenance.
+/// Resolved app entry point (handed to `NveRuntimeApi.attach_app_interface`) paired with its
+/// optional owned `dlopen` handle and provenance.
 public struct NveResolvedInterface {
-    public let module: NveModule
+    public let getInterface: NveGetInterfaceFn
     public let dylibHandle: UnsafeMutableRawPointer?
     public let source: NveInterfaceResolutionSource
 
-    public init(
-        module: NveModule,
-        dylibHandle: UnsafeMutableRawPointer? = nil,
-        source: NveInterfaceResolutionSource
-    ) {
-        self.module = module
+    public init(getInterface: @escaping NveGetInterfaceFn, dylibHandle: UnsafeMutableRawPointer? = nil, source: NveInterfaceResolutionSource) {
+        self.getInterface = getInterface
         self.dylibHandle = dylibHandle
         self.source = source
     }
 }
 
-/// Resolves an `NveModule` across static archives (`NveStaticInterfaceTable`) and dynamic
-/// libraries (`dlopen`/`dlsym`), preferring explicit and static registrations over `dlopen`.
+/// Resolves an app's `nve_get_interface` across static archives (`NveStaticInterfaceTable`) and
+/// dynamic libraries (`dlopen`/`dlsym`), preferring explicit and static registrations over `dlopen`.
 public enum NveInterfaceResolver {
-    /// Resolves all 5 optional NVE C-ABI vtable pointers from a static entry.
-    public static func resolveModule(using entry: NveStaticInterfaceEntry) -> NveModule {
-        switch entry {
-        case let .cFunction(fn):
-            return nve_resolve_module(fn)
-        case let .closure(resolver):
-            return NveModule(
-                surface: resolver(UInt32(NVE_IFACE_SURFACE))?.assumingMemoryBound(to: NveSurfaceApi.self),
-                layout: resolver(UInt32(NVE_IFACE_LAYOUT))?.assumingMemoryBound(to: NveLayoutApi.self),
-                component: resolver(UInt32(NVE_IFACE_COMPONENT))?.assumingMemoryBound(to: NveComponentApi.self),
-                dev: resolver(UInt32(NVE_IFACE_DEV))?.assumingMemoryBound(to: NveDevApi.self),
-                host: resolver(UInt32(NVE_IFACE_HOST))?.assumingMemoryBound(to: NveHostApi.self)
-            )
-        }
-    }
-
     /// Resolves `symbol` using precedence:
     /// 1. Explicit `getInterface` C function pointer.
     /// 2. `staticTable` registration (when `dylibPath` is nil or empty).
@@ -144,20 +108,12 @@ public enum NveInterfaceResolver {
         staticTable: NveStaticInterfaceTable = .shared
     ) -> NveResolvedInterface? {
         if let getInterface {
-            return NveResolvedInterface(
-                module: nve_resolve_module(getInterface),
-                dylibHandle: nil,
-                source: .explicit
-            )
+            return NveResolvedInterface(getInterface: getInterface, source: .explicit)
         }
 
         let hasDylibPath = dylibPath.map { !$0.isEmpty } ?? false
-        if !hasDylibPath, let staticEntry = staticTable.resolve(symbol: symbol) {
-            return NveResolvedInterface(
-                module: resolveModule(using: staticEntry),
-                dylibHandle: nil,
-                source: .staticTable
-            )
+        if !hasDylibPath, let registered = staticTable.resolve(symbol: symbol) {
+            return NveResolvedInterface(getInterface: registered, source: .staticTable)
         }
 
         if let dylibPath, !dylibPath.isEmpty {
@@ -168,12 +124,8 @@ public enum NveInterfaceResolver {
                 dlclose(lib)
                 return nil
             }
-            let getIface = unsafeBitCast(sym, to: NveGetInterfaceFn.self)
             return NveResolvedInterface(
-                module: nve_resolve_module(getIface),
-                dylibHandle: lib,
-                source: .dynamicLibrary
-            )
+                getInterface: unsafeBitCast(sym, to: NveGetInterfaceFn.self), dylibHandle: lib, source: .dynamicLibrary)
         }
 
         guard let processHandle = dlopen(nil, RTLD_NOW),
@@ -181,11 +133,6 @@ public enum NveInterfaceResolver {
         else {
             return nil
         }
-        let getIface = unsafeBitCast(sym, to: NveGetInterfaceFn.self)
-        return NveResolvedInterface(
-            module: nve_resolve_module(getIface),
-            dylibHandle: nil,
-            source: .processSymbol
-        )
+        return NveResolvedInterface(getInterface: unsafeBitCast(sym, to: NveGetInterfaceFn.self), source: .processSymbol)
     }
 }

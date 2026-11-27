@@ -10,8 +10,9 @@ use super::resources::{AriaRelations, StateRules};
 #[derive(NveTable)]
 #[nve_table(name = "nve.interaction", storage = "sparse", flags = "publish")]
 pub struct Interaction {
-    /// Bitmask of subscribed `EventMask` bits.
+    /// Bitmask of subscribed `EventMask` bits (`EventMask::of(kind)`).
     #[effect(events, realize)]
+    #[values(nve_abi::EventMask::VALUES)]
     pub event_mask: u32,
     #[effect(paint)]
     #[bits(4)]

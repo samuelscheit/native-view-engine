@@ -227,11 +227,73 @@ pub mod dart {
         }
     }
 
+    /// `(dart:ffi native, Dart-side)` types of one C type spelling from a runtime slot signature
+    /// (`const NveMapEntry*`, `uint32_t`, `NveRuntimeWakeFn`, `NveBufferSlice`).
+    pub fn c_type(spelling: &str) -> (String, String) {
+        let c = spelling.trim();
+        let c = c.strip_prefix("const ").unwrap_or(c).trim();
+        let c = c.strip_prefix("struct ").unwrap_or(c).trim();
+        if let Some(pointee) = c.strip_suffix('*') {
+            let ptr = format!("ffi.Pointer<{}>", c_type(pointee).0);
+            return (ptr.clone(), ptr);
+        }
+        let pair = |native: &str, dart: &str| (native.to_owned(), dart.to_owned());
+        match c {
+            "void" => pair("ffi.Void", "void"),
+            "int32_t" => pair("ffi.Int32", "int"),
+            "uint8_t" => pair("ffi.Uint8", "int"),
+            "uint16_t" => pair("ffi.Uint16", "int"),
+            "uint32_t" => pair("ffi.Uint32", "int"),
+            "uint64_t" => pair("ffi.Uint64", "int"),
+            "int64_t" => pair("ffi.Int64", "int"),
+            "size_t" => pair("ffi.Size", "int"),
+            "float" => pair("ffi.Float", "double"),
+            "double" => pair("ffi.Double", "double"),
+            callback if callback.ends_with("Fn") => {
+                let ty = format!(
+                    "ffi.Pointer<ffi.NativeFunction<{}Native>>",
+                    callback.trim_end_matches("Fn")
+                );
+                (ty.clone(), ty)
+            }
+            named => pair(named, named),
+        }
+    }
+
+    /// `RET Function(T name, …)` of a C signature: `dart:ffi` native types, or the Dart-side
+    /// types of its `asFunction` form when `dart_side`.
+    pub fn c_fn(ret: &str, params: &str, dart_side: bool) -> String {
+        let pick = |c: &str| {
+            let (native, dart) = c_type(c);
+            if dart_side { dart } else { native }
+        };
+        let list: Vec<String> = params
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                let split = p
+                    .rfind(|ch: char| ch.is_whitespace() || ch == '*')
+                    .unwrap_or(0);
+                let (ty, name) = p.split_at(split + 1);
+                format!("{} {}", pick(ty), to_camel_case(name.trim()))
+            })
+            .collect();
+        format!("{} Function({})", pick(ret), list.join(", "))
+    }
+
+    /// Dart typedef stem of a C callback typedef (`NveRuntimeWakeFn` -> `NveRuntimeWake`).
+    pub fn callback_stem(name: &str) -> &str {
+        name.trim_end_matches("Fn")
+    }
+
     /// Dart enum constant name; Dart keywords get a `Value` suffix.
     pub fn variant(name: &str) -> String {
         let id = to_camel_case(name);
         match id.as_str() {
-            "null" | "bool" | "default" => format!("{id}Value"),
+            "null" | "bool" | "default" | "true" | "false" | "switch" | "case" | "class" | "const"
+            | "final" | "in" | "is" | "new" | "this" | "var" | "void" | "with" | "enum" | "super"
+            | "return" | "do" | "if" | "else" | "for" | "while" => format!("{id}Value"),
             _ => id,
         }
     }

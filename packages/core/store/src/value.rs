@@ -310,6 +310,12 @@ macro_rules! word_enum {
         #[allow(dead_code)]
         impl $name {
             pub const ALL: &'static [$name] = &[$($name::$variant),+];
+            /// Variant names and values for generated host mirrors (`nve codegen abi`).
+            pub const DESC: $crate::__private::WordConstsDesc = $crate::__private::WordConstsDesc {
+                name: stringify!($name),
+                flags: false,
+                entries: &[$((stringify!($variant), $value)),+],
+            };
             #[inline(always)]
             pub const fn to_word(self) -> u32 { self as u32 }
             #[inline(always)]

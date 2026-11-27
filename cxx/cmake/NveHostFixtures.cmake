@@ -14,7 +14,7 @@ function(nve_add_app_module_fixtures prefix)
     set(_target "${prefix}_${_variant}")
     add_library(${_target} SHARED "${_NVE_HOST_FIXTURES_ROOT}/packages/core/host-cxx/tests/fixtures/app_module.cpp")
     string(TOUPPER "${_variant}" _upper)
-    target_compile_definitions(${_target} PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_${_upper}=1)
+    target_compile_definitions(${_target} PRIVATE NVE_BUILDING_LIBRARY=1 NVE_FIXTURE_${_upper}=1)
     target_include_directories(${_target} PRIVATE "${_NVE_HOST_FIXTURES_ROOT}/packages/core/host-cxx/include")
     set_target_properties(${_target} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
       CXX_VISIBILITY_PRESET hidden)
