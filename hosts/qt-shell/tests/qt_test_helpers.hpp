@@ -1,6 +1,6 @@
 #pragma once
 
-#include "nve_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 #include "nve_value.hpp"
 
 #include <cmath>

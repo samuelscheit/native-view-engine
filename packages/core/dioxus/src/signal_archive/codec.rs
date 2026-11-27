@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use nve_abi::BinValueView;
 use nve_abi::Xxh64Hasher;
-use nve_engine::{NativeStateStore, StateSaveOutcome};
+use nve_engine::{StateFile, StateSaveOutcome};
 
 use super::{
     signal_slot_id, SignalArchiveError, SignalValue, SignalValueTag, NVE_SIGNAL_ARCHIVE_MAGIC,
@@ -402,7 +402,7 @@ impl SignalTableSnapshot {
     }
 
     /// Encodes the full signal table into a checksummed, binary FFI `NVE_SIG1` binary buffer
-    /// suitable for [`nve_engine::NativeStateStore`] (`MmapOffsetArena`) persistence.
+    /// suitable for [`nve_engine::StateFile`] persistence.
     pub fn encode(&self) -> Result<Vec<u8>, SignalArchiveError> {
         let slot_count = u32::try_from(self.slots.len())
             .map_err(|_| SignalArchiveError::PayloadTooLarge(self.slots.len()))?;
@@ -497,7 +497,7 @@ impl SignalTableSnapshot {
 }
 
 /// High-level stateless entry points for encoding, decoding, and persisting signal tables into
-/// [`NativeStateStore`] (`MmapOffsetArena`).
+/// [`StateFile`].
 pub struct SignalArchive;
 
 impl SignalArchive {
@@ -522,21 +522,21 @@ impl SignalArchive {
         SignalDelta::decode(bytes)
     }
 
-    /// Crash-atomically persists `snapshot` into a double-buffered [`NativeStateStore`].
+    /// Crash-atomically persists `snapshot` into an atomic-rename [`StateFile`].
     pub fn save_to_store(
-        store: &mut NativeStateStore,
+        store: &mut StateFile,
         snapshot: &SignalTableSnapshot,
     ) -> Result<StateSaveOutcome, SignalArchiveError> {
         let bytes = snapshot.encode()?;
         Ok(store.save(&bytes)?)
     }
 
-    /// Loads the latest committed signal table directly from a [`NativeStateStore`].
+    /// Loads the latest committed signal table directly from a [`StateFile`].
     pub fn load_from_store(
-        store: &NativeStateStore,
+        store: &StateFile,
     ) -> Result<SignalTableSnapshot, SignalArchiveError> {
-        match store.load_bytes()? {
-            Some(bytes) if !bytes.is_empty() => SignalTableSnapshot::decode(bytes),
+        match store.load()? {
+            Some(bytes) if !bytes.is_empty() => SignalTableSnapshot::decode(&bytes),
             _ => Ok(SignalTableSnapshot::new(store.schema_version())),
         }
     }

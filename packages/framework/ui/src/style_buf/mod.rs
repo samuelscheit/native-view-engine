@@ -54,7 +54,7 @@ pub struct TextStyle<'a> {
 }
 
 /// Pre-allocated inline style builder producing canonical CSS/RN declarations accepted directly
-/// by `nve-components::apply_typed_attr_with_raw`, or convertible to [`TypedStyle`] via
+/// by `nve-components::apply_typed_attr_with_ext`, or convertible to [`TypedStyle`] via
 /// [`StyleBuf::into_typed`].
 #[derive(Debug, Clone, Default)]
 pub struct StyleBuf {

@@ -5,7 +5,8 @@ import 'dart:typed_data';
 
 import 'event_codec.dart';
 import 'nve_bin_value.dart';
-import 'nve_core_abi.generated.dart';
+import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 /// Self-contained C heap allocator so `nve_flutter` requires zero external pub packages.
 class NveNativeMem {

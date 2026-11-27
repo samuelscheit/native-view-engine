@@ -1,7 +1,7 @@
 //! Cross-platform desktop preview window (`winit` + `softbuffer` / hardware GPU swapchains)
 //! with live hit-testing, interactive `TextInput` focus/IME/caret editing, 2-tier WebSocket
-//! hot reload (`HotPatchMsg` from `ws://127.0.0.1:8089`), and instant-boot Frame-0
-//! `NVERELOC` + `MmapOffsetArena` (`NativeInstantBootStore`) replay & atomic save on exit.
+//! hot reload (`HotPatchMsg` from `ws://127.0.0.1:8089`), and optional Frame-0 `frame0.nve2`
+//! keyframe pre-warm & atomic refresh.
 
 pub mod clipboard;
 #[cfg(test)]
@@ -9,7 +9,6 @@ pub mod dioxus_app;
 pub mod hot_reload_client;
 mod ime;
 pub mod input;
-pub mod instant_boot;
 mod keyboard;
 pub mod multi_window;
 pub mod pair_client;
@@ -46,7 +45,7 @@ use nve_backend_skia::encode_rgb_png;
 use nve_backend_skia::gpu::GpuBackendKind;
 use nve_backend_skia::raster::PixelBuffer;
 use nve_engine::loader::{HotAppInstance, LoaderError};
-use nve_engine::{BackendError, InstantBootError, RelocError};
+use nve_engine::{BackendError, Frame0Miss, PersistenceError};
 use nve_layout::{DynLayoutEngine, TaffyStoreLayout};
 
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
@@ -55,11 +54,8 @@ use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 pub use dioxus_app::DioxusDesktopApp;
 #[cfg(test)]
 pub use hot_reload_client::HotReloadClient;
-pub(crate) use instant_boot::prewarm_from_options;
-#[cfg(test)]
-pub use instant_boot::{replay_instant_boot_store_into_backend, replay_snapshot_into_backend};
 pub use multi_window::HostWakeEvent;
-pub use pair_client::{PairConnectConfig, PairTransport};
+pub use pair_client::PairConnectConfig;
 #[cfg(test)]
 pub use pair_client::PairedRemoteApp;
 #[cfg(test)]
@@ -72,8 +68,8 @@ pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8089";
 pub enum DesktopHostError {
     Loader(LoaderError),
     Backend(BackendError),
-    Reloc(RelocError),
-    InstantBoot(InstantBootError),
+    Frame0(Frame0Miss),
+    Persistence(PersistenceError),
     Io(std::io::Error),
     Pairing(String),
     EventLoop(String),
@@ -88,8 +84,8 @@ impl fmt::Display for DesktopHostError {
         match self {
             Self::Loader(err) => write!(f, "failed to load NVE app cdylib: {err}"),
             Self::Backend(err) => write!(f, "render backend error: {err}"),
-            Self::Reloc(err) => write!(f, "NVERELOC error: {err}"),
-            Self::InstantBoot(err) => write!(f, "instant-boot error: {err}"),
+            Self::Frame0(err) => write!(f, "frame0.nve2 error: {err}"),
+            Self::Persistence(err) => write!(f, "persistence error: {err}"),
             Self::Io(err) => write!(f, "I/O error: {err}"),
             Self::Pairing(msg) => write!(f, "live pairing error: {msg}"),
             Self::EventLoop(msg) => write!(f, "event loop error: {msg}"),
@@ -115,15 +111,15 @@ impl From<BackendError> for DesktopHostError {
     }
 }
 
-impl From<RelocError> for DesktopHostError {
-    fn from(value: RelocError) -> Self {
-        Self::Reloc(value)
+impl From<Frame0Miss> for DesktopHostError {
+    fn from(value: Frame0Miss) -> Self {
+        Self::Frame0(value)
     }
 }
 
-impl From<InstantBootError> for DesktopHostError {
-    fn from(value: InstantBootError) -> Self {
-        Self::InstantBoot(value)
+impl From<PersistenceError> for DesktopHostError {
+    fn from(value: PersistenceError) -> Self {
+        Self::Persistence(value)
     }
 }
 
@@ -175,7 +171,7 @@ impl LayoutEngineChoice {
     }
 }
 
-/// Configuration for the live desktop preview window and optional instant-boot store/snapshot.
+/// Configuration for the live desktop preview window and optional Frame-0 `frame0.nve2` cache.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopPreviewOptions {
     pub title: String,
@@ -189,12 +185,7 @@ pub struct DesktopPreviewOptions {
     pub preferred_backend: GpuBackendKind,
     pub layout_engine: LayoutEngineChoice,
     pub vsync: bool,
-    pub snapshot_path: Option<PathBuf>,
-    pub instant_boot_dir: Option<PathBuf>,
-    pub default_frame0_path: Option<PathBuf>,
-    pub schema_version: u32,
-    pub disable_instant_boot: bool,
-    pub reset_state: bool,
+    pub frame0_path: Option<PathBuf>,
 }
 
 impl Default for DesktopPreviewOptions {
@@ -211,12 +202,7 @@ impl Default for DesktopPreviewOptions {
             preferred_backend: GpuBackendKind::platform_preferred(),
             layout_engine: LayoutEngineChoice::Taffy,
             vsync: true,
-            snapshot_path: None,
-            instant_boot_dir: None,
-            default_frame0_path: None,
-            schema_version: 1,
-            disable_instant_boot: false,
-            reset_state: false,
+            frame0_path: None,
         }
     }
 }
@@ -236,11 +222,6 @@ pub trait DesktopApp {
         new_dylib_path: &Path,
         surface_id: SurfaceId,
     ) -> Result<u64, DesktopHostError>;
-
-    /// Serializes the current app state for snapshot persistence or hot-swap preservation.
-    fn snapshot_state(&mut self) -> &[u8] {
-        &[]
-    }
 
     /// Returns `true` when this app exposes `NVE_IFACE_HOST = 5`.
     #[cfg(test)]
@@ -272,6 +253,12 @@ pub trait DesktopApp {
 
     /// Returns `true` when an asynchronous remote frame is queued and ready to be rendered.
     fn has_pending_remote_frame(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` when this app delivers frames exclusively via [`Self::take_queued_wire_frame`]
+    /// rather than synchronous [`Self::render`] calls (e.g. [`PairedRemoteApp`]).
+    fn uses_queued_wire_frames(&self) -> bool {
         false
     }
 
@@ -401,17 +388,6 @@ impl DesktopApp for HotAppSlot {
         }
     }
 
-    fn snapshot_state(&mut self) -> &[u8] {
-        if let Some(inst) = self.instance.as_mut() {
-            let state = inst.snapshot_state();
-            if !state.is_empty() {
-                self.last_saved_state.clear();
-                self.last_saved_state.extend_from_slice(state);
-            }
-        }
-        &self.last_saved_state
-    }
-
     #[cfg(test)]
     fn has_host_interface(&self) -> bool {
         self.instance
@@ -522,19 +498,16 @@ pub fn run_desktop_preview_with_options(
     host.run()
 }
 
-/// Headlessly renders one frame of `dylib_path` (with optional Frame-0 `MmapSnapshot` replay
-/// before load and atomic snapshot save on exit) and writes the result as PNG or `P6` PPM.
+/// Headlessly renders one frame of `dylib_path` (with optional Frame-0 `frame0.nve2` pre-warm
+/// before load and atomic refresh on exit) and writes the result as PNG or `P6` PPM.
 pub fn render_headless_screenshot(
     dylib_path: PathBuf,
-    mut options: DesktopPreviewOptions,
+    options: DesktopPreviewOptions,
     screenshot_path: PathBuf,
 ) -> Result<(), DesktopHostError> {
-    if options.instant_boot_dir.is_none() && options.snapshot_path.is_none() {
-        options.disable_instant_boot = true;
-    }
     let mut host = DesktopWindowHost::new(dylib_path, options)?;
     host.session().write_screenshot(&screenshot_path)?;
-    host.save_snapshot_if_configured();
+    host.save_frame0_if_configured();
     Ok(())
 }
 

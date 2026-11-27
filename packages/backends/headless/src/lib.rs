@@ -9,7 +9,6 @@
 mod commit;
 mod hit_test;
 mod interaction;
-pub mod reloc_scene;
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -34,7 +33,6 @@ pub use nve_components::layout_ext::{
 pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use nve_layout::{layout_snapshot_of, visual_snapshot_of};
-pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
 pub(crate) use nve_components::tables::{box_visual, node_clips_overflow};
 
 pub(crate) use nve_layout::MAX_TREE_DEPTH;

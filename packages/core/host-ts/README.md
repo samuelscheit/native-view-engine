@@ -27,7 +27,14 @@ leading BOM.
 | `src/bin_codec.ts` | `BinReader` / `BinWriter`, the `NveBinValue` format, `BinMark` (generation-checked container marks) |
 | `src/table_reader.ts` | `FieldKind`, `FieldSpec`, `decodeLength`, `rgba`, `TableReader` |
 | `src/scene_reader.ts` | `SceneReader` over slabs or `SceneReader.fromLinearMemory(memory, ptr, layout, schema)` |
-| `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |
+| `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue`, WASM linear-memory hybrid call helpers |
+| `src/js_value.ts` | 53-bit-safe plain JS <-> `NveBinValue` codec (`encodeJsValue`, `decodeJsValue`, `writeJsValue`, `readJsValue`) |
+
+## Generated data & consumption
+
+`nve codegen abi` writes `src/generated/nve_abi.generated.ts` and `nve_tables.generated.ts` (exported from `index.ts`) and `test/hash_vectors.generated.ts` (all gitignored).
+
+Generated `<stem>_hybrid.generated.ts` clients and `<nve-*>.generated.js` Web Components import `'@nve/host'`. Because this package exports `./src/index.ts` directly (erasable TypeScript, no committed `dist/` build artifacts), browsers and apps consume generated files through a TS-aware bundler (Vite, esbuild, Rollup, webpack) or workspace package resolver; Node runs them directly with native type-stripping when resolved outside `node_modules/`.
 
 ## Verify
 

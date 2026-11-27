@@ -1,7 +1,7 @@
 #![cfg(all(feature = "ssr", feature = "hydrate"))]
 //! Slice 1c top-down positional hydration over `NodeStore` (`hydrate_from_ssr` &
 //! `hydrate_from_streaming_html`):
-//! - `is_stream_slot_resolved` + `render_ssr_subtree_delta` stateful CSS deduplication.
+//! - `stream_slot_state` + `render_ssr_subtree_delta` stateful CSS deduplication.
 //! - Post-stream out-of-order `[slot2, slot1]` and mid-stream partial `[slot2 only]` with
 //!   COMPLETELY SHIFTED `NodeId`s.
 //! - Mutation test: swapping two same-tag siblings with different child counts fails loudly;
@@ -13,7 +13,7 @@ mod support;
 
 use nve_abi::{EventMask, EventPayload, NativeEventKind};
 use nve_backend_web::{
-    CapturedPreHydrationEvent, PendingStreamSlot, StreamingDocumentOptions, StreamingSsrSession,
+    CapturedPreHydrationEvent, PendingStreamSlot, StreamSlotState, StreamingDocumentOptions, StreamingSsrSession,
     WebBackend,
 };
 use nve_components::tables::{Accessibility, AriaRole, Interaction, TextContent, TextInput};
@@ -48,9 +48,9 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
             },
         ]
     );
-    assert!(!server.is_stream_slot_resolved(&store, NodeId(3), "slot1"));
-    assert!(!server.is_stream_slot_resolved(&store, NodeId(6), "slot2"));
-    assert!(!server.is_stream_slot_resolved(&store, NodeId(999), "slot1"));
+    assert_eq!(server.stream_slot_state(&store, NodeId(3), "slot1"), StreamSlotState::Pending);
+    assert_eq!(server.stream_slot_state(&store, NodeId(6), "slot2"), StreamSlotState::Pending);
+    assert_eq!(server.stream_slot_state(&store, NodeId(999), "slot1"), StreamSlotState::Unmounted);
     // Shell keeps `<div data-nve-id="4" ... data-nve-stream-slot="slot1">` INSIDE `<slot>`.
     assert!(
         shell_out
@@ -91,8 +91,8 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         tx.set_children(boxed, &[t]);
         tx.set_children(NodeId(6), &[boxed]);
     });
-    assert!(server.is_stream_slot_resolved(&store, NodeId(6), "slot2"));
-    assert!(!server.is_stream_slot_resolved(&store, NodeId(3), "slot1"));
+    assert_eq!(server.stream_slot_state(&store, NodeId(6), "slot2"), StreamSlotState::Resolved);
+    assert_eq!(server.stream_slot_state(&store, NodeId(3), "slot1"), StreamSlotState::Pending);
     let delta2 = server.render_ssr_subtree_delta(&store, NodeId(6), &mut shell_out.style_tracker);
     assert_eq!(
         delta2.rule_hashes.len(),
@@ -110,7 +110,7 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         "{}",
         delta2.html
     );
-    let chunk2 = sess.resolve_slot_delta("slot2", &delta2).unwrap();
+    let chunk2 = sess.resolve_slot_delta("slot2", &delta2, None).unwrap();
 
     // --- TEST A: MID-STREAM PARTIAL HYDRATION (slot2 arrived, slot1 STILL PENDING, no stream-end!) ---
     let mid_stream_html = format!("{shell_html}{chunk2}");
@@ -152,6 +152,15 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         );
     }
 
+    // --- TEST A2: TCP SPLIT right after `</div>` (slot-ack not yet parsed) ---
+    // A closed `<div slot>` without its trailing ack is NOT complete: the shadow fallback stays.
+    let ack2 = "<template data-nve-slot-ack=\"slot2\"></template>";
+    let split_at = chunk2.find(ack2).expect("chunk2 carries its slot ack");
+    let split_client =
+        WebBackend::hydrate_from_streaming_html(&format!("{shell_html}{}", &chunk2[..split_at]));
+    assert!(split_client.native_dom_instance_id(8).is_some(), "fallback must stay adopted");
+    assert_eq!(split_client.native_dom_instance_id(21), None, "unacked chunk adopted early");
+
     // --- TEST B: POST-STREAM OUT-OF-ORDER [slot2, slot1] HYDRATION WITH SHIFTED NodeIds ---
     commit(&mut server, &mut store, |tx| {
         tx.remove(NodeId(4));
@@ -159,14 +168,14 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         delta_style(tx, t);
         tx.set_children(NodeId(3), &[t]);
     });
-    assert!(server.is_stream_slot_resolved(&store, NodeId(3), "slot1"));
+    assert_eq!(server.stream_slot_state(&store, NodeId(3), "slot1"), StreamSlotState::Resolved);
     let delta1 = server.render_ssr_subtree_delta(&store, NodeId(3), &mut shell_out.style_tracker);
     assert!(
         delta1.rule_hashes.is_empty(),
         "style already sent in slot2 must dedup"
     );
     assert!(delta1.style_css.is_empty());
-    let chunk1 = sess.resolve_slot_delta("slot1", &delta1).unwrap();
+    let chunk1 = sess.resolve_slot_delta("slot1", &delta1, None).unwrap();
     assert!(!chunk1.contains("data-nve-ssr-chunk"));
     let trailer = sess.finish().unwrap();
 

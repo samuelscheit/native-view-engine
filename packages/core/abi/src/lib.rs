@@ -13,6 +13,8 @@ pub mod events;
 pub mod ffi;
 pub mod hash;
 pub mod host;
+#[cfg(feature = "wire")]
+pub mod hybrid;
 mod layout_asserts;
 pub mod num;
 pub mod runtime;
@@ -44,11 +46,12 @@ pub use host::{
     SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 pub use runtime::{
-    NveLayoutRect, NveNodeRow, NveResourceView, NveRuntimeApi, NveRuntimeConfig,
-    NveRuntimeGetInterfaceFn, NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView,
-    NveRuntimeStatus, NveRuntimeWakeFn, NveTextMeasureFn, NVE_LAYOUT_RECT_SIZE,
-    NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RESOURCE_FLAG_EPHEMERAL, NVE_RUNTIME_ABI_VERSION,
-    NVE_RUNTIME_SCHEMA_HASH,
+    NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
+    NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics, NveRuntimeSceneView,
+    NveScrollOffset,
+    NveRuntimeStatus, NveRuntimeWakeFn, RuntimeFnSignature, NVE_LAYOUT_RECT_SIZE,
+    NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
+    RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,
 };
 pub use scene::{
     NveNodeMeta, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneError,
@@ -61,8 +64,8 @@ pub use scene::{
 pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]
 pub use value::{
-    encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinMapIter, BinValueView,
-    NVE_BIN_VALUE_MAX_DEPTH,
+    encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinArrayWriter, BinMapIter,
+    BinMapWriter, BinValueView, BinWriter, NveValueTree, NVE_BIN_VALUE_MAX_DEPTH,
 };
 pub use value::{
     NveArrayRef, NveCommandSlice, NveCommandSliceRef, NveDirectEvent, NveDirectEventRef,

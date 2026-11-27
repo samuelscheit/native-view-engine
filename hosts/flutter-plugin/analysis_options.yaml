@@ -4,9 +4,6 @@
 
 analyzer:
   exclude:
-    # Track 1B-1e: remove once nve-codegen stops emitting 64-bit `const int` schema/hash
-    # literals in generated Dart bindings (switch to `(lo, hi)` u32 pairs or `BigInt`).
-    - "**/*.generated.dart"
     - build/**
     - android/**
     - ios/**

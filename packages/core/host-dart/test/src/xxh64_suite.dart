@@ -1,49 +1,17 @@
-import 'dart:convert' show utf8;
-
 import 'package:nve_host/nve_host.dart';
 import 'package:nve_host/src/key64.dart' show write32LE;
 
 import 'check.dart';
+import 'hash_vectors.generated.dart';
 
-const Key64 prime32 = Key64(0x9E3779B1, 0);
-const Key64 wireSeed = Key64(0x49524532, 0x4E564557);
-
-List<int> seq(int n) => List<int>.generate(n, (i) => (i * 31 + 7) & 0xFF);
-
-/// Official Cyan4973 xxHash sanity buffer (BigInt is exact on the VM and in JS).
-List<int> cyan(int n) {
-  final mask = (BigInt.one << 64) - BigInt.one;
-  final p1 = BigInt.parse('9E3779B185EBCA87', radix: 16);
-  var gen = BigInt.from(0x9E3779B1);
-  return List<int>.generate(n, (_) {
-    final b = (gen >> 56).toInt() & 0xFF;
-    gen = (gen * p1) & mask;
-    return b;
-  });
-}
-
-/// Golden vectors computed by the canonical Rust `nve-hash` crate: (label, bytes, seed, expected).
+/// Golden vectors generated from Rust `nve_hash::xxh64` (`hash_vectors.generated.dart`):
+/// (label, bytes, seed, expected).
 final List<(String, List<int>, Key64, Key64)> vectors = [
-  ('empty', <int>[], Key64.zero, const Key64(0x51D8E999, 0xEF46DB37)),
-  ('a', utf8.encode('a'), Key64.zero, const Key64(0xA98C6E5B, 0xD24EC4F1)),
-  ('abc', utf8.encode('abc'), Key64.zero, const Key64(0xAD770999, 0x44BC2CF5)),
-  ('nve.visual', utf8.encode('nve.visual'), Key64.zero, const Key64(0x985A4FD6, 0x33E73115)),
-  ('high_bits', <int>[0x00, 0x01, 0x7F, 0x80, 0xFF], Key64.zero, const Key64(0x99A141EA, 0x8BABCAB4)),
-  ('utf8', utf8.encode('héllo wörld — 日本語 🚀'), Key64.zero, const Key64(0xF213F592, 0x72AC442F)),
-  ('seq101', seq(101), Key64.zero, const Key64(0x1A53BC7F, 0xFBFDF3FA)),
-  ('seq101_wire', seq(101), wireSeed, const Key64(0x8C3DB1BC, 0x277E092A)),
-  ('seq37_prime1', seq(37), Xxh64Primes.prime1, const Key64(0x85FC58A4, 0x33DDB9A8)),
-  ('seq1024', seq(1024), Key64.zero, const Key64(0x72CDAE00, 0x149AA449)),
-  ('cyan1', cyan(1), Key64.zero, const Key64(0xDB052768, 0xE934A84A)),
-  ('cyan4', cyan(4), Key64.zero, const Key64(0xF81E29E4, 0xE244DDBC)),
-  ('cyan14', cyan(14), Key64.zero, const Key64(0xE0BD0A0A, 0xB89B3598)),
-  ('cyan222', cyan(222), Key64.zero, const Key64(0x30BCEC3A, 0x06CC5BD9)),
-  ('cyan1024', cyan(1024), Key64.zero, const Key64(0xE063991A, 0x2E307F2F)),
-  ('cyan1_p32', cyan(1), prime32, const Key64(0x43A9B4C3, 0x50146076)),
-  ('cyan222_p32', cyan(222), prime32, const Key64(0xDF89AF66, 0x0B105469)),
-  ('cyan32_p1', cyan(32), Xxh64Primes.prime1, const Key64(0xB7E278ED, 0x6D0242B0)),
-  ('cyan1024_p1', cyan(1024), Xxh64Primes.prime1, const Key64(0x9A39421C, 0xF464C3F6)),
+  for (final v in hashVectors) (v.label, fromHex(v.hex), v.seed, v.expected),
 ];
+
+List<int> fromHex(String hex) =>
+    List<int>.generate(hex.length ~/ 2, (i) => int.parse(hex.substring(2 * i, 2 * i + 2), radix: 16));
 
 void runXxh64(Check c) {
   for (final (label, bytes, seed, expected) in vectors) {

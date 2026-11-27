@@ -4,7 +4,10 @@
  * Node's type stripping and by any bundler.
  */
 export * from './bin_codec.ts';
+export * from './generated/nve_abi.generated.ts';
+export * from './generated/nve_tables.generated.ts';
 export * from './hybrid_runtime.ts';
+export * from './js_value.ts';
 export * from './key64.ts';
 export * from './scene_reader.ts';
 export * from './table_reader.ts';

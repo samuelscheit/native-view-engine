@@ -5,10 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_flutter.dart';
 
 void main() {
-  test('Generated NveHash golden XXH64 vectors match Rust', () {
-    expect(nveHashVerifyTestVectors(), isTrue);
-  });
-
   test('NveWireFrame v2 roundtrip and XXH64 corruption rejection', () {
     final payload = Uint8List.fromList(utf8.encode('flutter-command-delta'));
     final encoded = NveWireCodec.encodeFrame(

@@ -1,21 +1,18 @@
 //! Internal [`SurfaceState`] and [`RuntimeInner`] owning `LaidOutScene`, reusable `ChangeSet`
-//! scratch buffers, `WireDecoder`, `FrameTickHook`s, and zero-copy [`NveRuntimeSceneView`]
-//! publication.
+//! scratch buffers, `WireDecoder`, and `FrameTickHook`s (publication lives in `publish.rs`).
 
 use nve_abi::table::NveTableView;
 use nve_abi::{
-    FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView,
+    FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView, NveScrollOffset,
 };
+use nve_engine::LayoutRect;
 use nve_layout::{DynLayoutEngine, LaidOutScene};
 use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeStore, RealizationOrder};
+use nve_store::{ChangeSet, NodeStore, RealizationOrder, ResourceStore};
 
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
 use crate::pair::{PairInboundEvent, PairSession};
-use crate::resources::ResourcePublisher;
-
-mod publish;
 
 // Full field-by-field + little-endian proof (including `pub(crate)` `flags` and
 // `ChildSpan::{off, len}`) is enforced at compile time in `nve_store::store`.
@@ -54,8 +51,12 @@ pub(crate) struct SurfaceState {
     pub(crate) dirty_stamp: Vec<u32>,
     pub(crate) dirty_epoch: u32,
     pub(crate) removed_ids: Vec<u32>,
-    pub(crate) resources: ResourcePublisher,
+    /// Visual scroll shifts published through `NveRuntimeSceneView::scroll_offsets`.
+    pub(crate) published_scroll: Vec<NveScrollOffset>,
     pub(crate) published_view: NveRuntimeSceneView,
+    /// `ResourceStore` of the store `published_view` borrows (null while invalidated); lets
+    /// `resource_payload` serve any `scene_acquire` thread without touching `!Sync` apps.
+    pub(crate) published_resources: *const ResourceStore,
     pub(crate) metrics: NveRuntimeMetrics,
     pub(crate) needs_render: bool,
     pub(crate) needs_publish: bool,
@@ -73,18 +74,6 @@ impl RuntimeInner {
     /// attaching, replacing, or detaching an app/pair or recovering from wire corruption.
     pub(crate) fn reset_for_app_change(&mut self) {
         Self::reset_replica_and_state(&mut self.replica_store, &mut self.state);
-    }
-
-    /// Lays out and republishes every live node on a new frame (layout engine or measurer swap).
-    pub(crate) fn relayout_all(&mut self) {
-        let (store, state) = self.split_store_and_state();
-        state.invalidate_published_view();
-        state.frame_id = state.frame_id.wrapping_add(1).max(1);
-        let mut full = ChangeSet::default();
-        full.created.extend(store.live_nodes());
-        let laid_out = state.scene.commit(store, &full);
-        state.scene.reconcile_scroll_offsets(store);
-        state.publish_scene(store, &full, laid_out);
     }
 
     #[inline]
@@ -443,5 +432,15 @@ impl RuntimeInner {
         self.apply_wire_bytes(bytes, false, true, &mut has_changes)?;
         self.commit_and_publish(has_changes);
         Ok(())
+    }
+}
+
+#[inline]
+pub(crate) fn layout_rect_to_abi(r: LayoutRect) -> NveLayoutRect {
+    NveLayoutRect {
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
     }
 }

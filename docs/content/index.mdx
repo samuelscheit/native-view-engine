@@ -17,7 +17,7 @@ There is no embedded JavaScript VM, no JSON bridge serialization, and no per-pro
 - **10 Native & GPU Host Targets** — macOS AppKit, iOS/iPadOS UIKit + RN Fabric, Windows 11 Win32/Direct2D/DirectWrite + RNW 0.88 Fabric, Linux GTK4/Pango/Cairo, Qt 6 Widgets & GPU Quick Scene Graph, Android JNI/Canvas + Jetpack Compose, SwiftUI, Flutter Impeller (`dart:ffi`), Desktop Skia (Metal/Vulkan/D3D12/`softbuffer`), and Web WASM DOM + Semantic HTML5 SSR.
 - **Pluggable Layout Engines** — Zero-cost generic `LayoutEngine` + `TextMeasurer` traits let backends monomorphize pure-Rust **Taffy** or link real C++20 **React Native Yoga** (`nve-layout-yoga`) — or hot-switch between them mid-session via `DynLayoutEngine`.
 - **Sub-Second 2-Tier Hot Reload & Live Pairing** — Patch RSX text and styles in `< 50 ms` over binary `NVP1` WebSockets (Tier 1), hot-swap compiled `.dylib`/`.so`/`.dll` logic in `150–400 ms` with state preservation (Tier 2), or stream `NVT1`/`NVD1` binary deltas at `~5.18 KB/s` @ 60fps to zero-`cdylib` thin clients over UDP, TCP, and WebSocket.
-- **Instant Cold Start & Local-First Sync** — Freeze-dry Frame-0 `CommandBuffer`s alongside pointer-free `MmapSnapshot` (`NVE_SNAP`) state arenas and append-only `.nvewal` logs (`NVE_WAL1`), paired with a zero-dependency binary CRDT engine (`NVC1`).
+- **Instant Cold Start & Local-First Sync** — Boot Frame 0 from a schema- and `XXH64`-verified `NVE2` keyframe (`Frame0File` / `frame0.nve2`) + live Taffy layout (`< 2 ms` for 1,000 nodes) alongside crash-atomic `StateFile` (`state.nve`) persistence and a zero-dependency binary CRDT engine (`NVC1`).
 
 ## Verified Performance Baselines
 

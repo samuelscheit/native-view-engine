@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
-use nve_abi::table::{table_flags, FieldKind, Storage, TableDesc, TableKey, Word, MAX_TABLE_SLOTS};
+use nve_abi::table::{FieldKind, MAX_TABLE_SLOTS, Storage, TableDesc, TableKey, Word, table_flags};
 
 /// Maximum number of compiled static table slots (`0..MAX_STATIC_TABLE_SLOTS`).
 /// Wire-declared dynamic tables occupy the disjoint upper range
@@ -133,7 +133,11 @@ impl<T: NveTable, V: WordValue> Prop<T, V> {
     #[doc(hidden)]
     #[inline(always)]
     pub const unsafe fn new(word: u8, shift: u8, bits: u8) -> Self {
-        let mask = if bits >= 32 { u32::MAX } else { ((1u32 << bits) - 1) << shift };
+        let mask = if bits >= 32 {
+            u32::MAX
+        } else {
+            ((1u32 << bits) - 1) << shift
+        };
         Self {
             word,
             shift,
@@ -466,7 +470,11 @@ pub(crate) fn validate_desc_invariants(
     if defaults.len() != words || word_effects.len() != words {
         return false;
     }
-    let valid_mask = if words == 32 { u32::MAX } else { (1u32 << words) - 1 };
+    let valid_mask = if words == 32 {
+        u32::MAX
+    } else {
+        (1u32 << words) - 1
+    };
     if (str_words & !valid_mask) != 0 || (resource_words & !valid_mask) != 0 {
         return false;
     }
@@ -530,4 +538,19 @@ pub fn slot_of(key: TableKey) -> Option<TableSlot> {
 /// Descriptor of a registered slot.
 pub fn desc(slot: TableSlot) -> &'static TableDesc {
     REGISTRY.read().unwrap_or_else(|e| e.into_inner())[slot.0 as usize]
+}
+
+/// Deterministic 64-bit XXH64 digest over an explicit slice of static table descriptors
+/// (sorted and deduplicated by `TableKey` so slice order, duplicate descriptors, and process-global
+/// lazy registration state never affect the hash).
+pub fn tables_schema_hash(descs: &[&'static TableDesc]) -> u64 {
+    let mut pairs: Vec<(u64, u64)> = descs.iter().map(|d| (d.key.0, d.schema_hash)).collect();
+    pairs.sort_unstable();
+    pairs.dedup();
+    let mut hasher = nve_abi::Xxh64Hasher::new(0x4E56_4554_424C_5331); // "NVETBLS1"
+    for (key, hash) in pairs {
+        hasher.update(&key.to_le_bytes());
+        hasher.update(&hash.to_le_bytes());
+    }
+    hasher.digest()
 }

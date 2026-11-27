@@ -1,17 +1,20 @@
 //! Bi-directional & multi-target Native View Engine (NVE) code generator.
 //!
 //! Organized as a compiler pipeline:
-//! - [`schema`]: Intermediate representations, layout computation, validation, and colocated
-//!   `#[derive(NveAbi)]` descriptor bridges (`export`, `hybrid`).
+//! - [`abi`]: Askama-rendered host ABI data (Core + Scene ABI, word-table field specs, golden
+//!   XXH64 vectors) for the static `packages/core/host-*` runtimes.
+//! - [`schema`]: Intermediate representations and validation (`export`, `hybrid`).
 //! - [`frontend`]: Input specification parsers (`rn_spec`, and `hybrid_spec` on `syn` 2).
 //! - [`targets`]: Output-language code emitters (`c_cpp`, `rust`, `swift`, `kotlin_java`, `dart`,
 //!   `typescript`) plus unified multi-target dispatchers.
 //!
-//! Zero external dependencies beyond `std` and `serde` derives: reading specs from JSON files is
-//! the CLI's job (`nve-cli`), so no runtime crate links `serde_json`.
+//! Dependencies: `nve-abi` / `nve-hash` (ABI descriptors, XXH64), `serde` derives on the IR,
+//! `askama` (templates), and `syn` / `proc-macro2` (the hybrid spec frontend). Reading specs
+//! from JSON files is the CLI's job (`nve-cli`), so this crate never links `serde_json`.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+pub mod abi;
 pub mod error;
 pub mod frontend;
 pub mod naming;
@@ -21,6 +24,10 @@ pub(crate) mod writer;
 
 use std::path::Path;
 
+pub use abi::{
+    generate_abi_files, generate_all_abi_files, generate_c_abi_header, generate_hash_vector_files,
+    generate_table_files,
+};
 pub use error::CodegenError;
 pub use frontend::{
     parse_hybrid_rust_spec, parse_hybrid_rust_spec_file, parse_rn_spec, parse_rn_spec_file,
@@ -33,25 +40,17 @@ pub use schema::export::{
     TurboModuleMethod, TurboModuleSpec,
 };
 pub use schema::hybrid::{
-    compute_hybrid_interface_id, compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec,
-    from_abi_descriptor, scene_abi_spec, HybridAliasSpec, HybridConstSpec, HybridDefaultValue,
+    compute_hybrid_interface_id, HybridAliasSpec, HybridConstSpec, HybridDefaultValue,
     HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec, HybridFileSpec,
     HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec, HybridStructSpec,
-    HybridTarget, HybridType, HybridViewSpec, NVE_CORE_ABI_SCHEMA_HASH, NVE_HYBRID_ABI_VERSION,
-    NVE_HYBRID_INTERFACE_ID_BASE, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
-    NVE_SCENE_SCHEMA_HASH,
+    HybridTarget, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, NVE_HYBRID_INTERFACE_ID_BASE,
 };
 pub use targets::{
-    generate_all_abi_files, generate_all_core_abi_files, generate_all_runtime_abi_files,
-    generate_all_scene_abi_files, generate_c_core_abi_h, generate_c_runtime_abi_h,
-    generate_c_scene_abi_h, generate_dart_core_abi,
-    generate_dart_scene_abi, generate_export_compose, generate_export_flutter, generate_export_rn,
+    generate_export_compose, generate_export_flutter, generate_export_rn,
     generate_export_swiftui, generate_export_web_component, generate_hybrid_all,
     generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin, generate_hybrid_rust,
     generate_hybrid_swift, generate_hybrid_target, generate_hybrid_ts, generate_import_rn,
-    generate_java_core_abi, generate_java_scene_buffer, generate_java_tables,
-    generate_java_tables_file, generate_ts_core_abi, generate_ts_scene_view,
-    HybridGenerateOutput, JAVA_TABLES_PATH,
+    HybridGenerateOutput,
 };
 
 // ===========================================================================

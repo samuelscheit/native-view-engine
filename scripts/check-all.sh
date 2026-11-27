@@ -429,6 +429,9 @@ suite_rust_rpc_hyper_matrix() {
   cargo test --locked -p nve-http-hyper --no-default-features --doc
   cargo test --locked -p nve-http-hyper --no-default-features --features server --doc
   cargo test --locked -p nve-http-hyper --no-default-features --features client --doc
+  # Web backend feature-gate matrix: `ssr`-only (server) and `hydrate`-only (client) builds.
+  cargo check --locked -p nve-backend-web --no-default-features --features ssr --all-targets
+  cargo check --locked -p nve-backend-web --no-default-features --features hydrate --all-targets
   RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --document-private-items \
     -p nve-hash -p nve-rpc -p nve-server -p nve-http-hyper \
     -p nve-query -p nve-http-web -p nve-query-dioxus \
@@ -504,6 +507,7 @@ suite_ios_simulator_sdk() {
   cd "$REPO_ROOT"
   xcrun --sdk iphonesimulator clang++ \
     -std=c++20 -fobjc-arc -Wall -Wextra -Werror -fsyntax-only \
+    -Ipackages/core/host-cxx/include \
     -Icxx/nve-fabric-bridge/include \
     -Ihosts/apple-common \
     -Ihosts/ios-shell \
@@ -660,6 +664,14 @@ else
   skip_suite "ast-grep lints" "ast-grep not found"
 fi
 
+# 0b1. ABI codegen generate + parity check: the host runtimes and every native host build against
+# the generated (gitignored) host ABI / table / XXH64 vector files.
+if command -v cargo >/dev/null 2>&1; then
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (15 host files)"
+else
+  skip_suite "ABI codegen parity" "cargo not found"
+fi
+
 # 0b2. Static host runtimes (packages/core/host-*): --quick runs C/C++ and TS; full runs all five.
 # shellcheck source=scripts/host-runtimes.sh
 source "$REPO_ROOT/scripts/host-runtimes.sh"
@@ -727,16 +739,9 @@ else
   skip_suite "Skia GPU feature check" "cargo not found"
 fi
 
-# 1b. ABI codegen generate + parity check (required before host builds/tests)
-if command -v cargo >/dev/null 2>&1; then
-  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (16/16)"
-else
-  skip_suite "ABI codegen parity" "cargo not found"
-fi
-
 # 1b2. Rust RPC/Hyper feature matrix & rustdoc check (native, independent of WASM target)
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "Rust RPC/Hyper feature matrix & docs" suite_rust_rpc_hyper_matrix "nve-http-hyper features (--all-targets + --doc) + rustdoc -D warnings"
+  run_suite "Rust RPC/Hyper feature matrix & docs" suite_rust_rpc_hyper_matrix "nve-http-hyper + nve-backend-web feature matrices + rustdoc -D warnings"
 else
   skip_suite "Rust RPC/Hyper feature matrix & docs" "cargo not found"
 fi

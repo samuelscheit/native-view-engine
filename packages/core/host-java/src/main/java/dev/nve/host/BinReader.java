@@ -1,6 +1,7 @@
 package dev.nve.host;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * Bounds-checked little-endian cursor over {@code byte[]} plus the compact tagged {@code NveBinValue}
@@ -12,9 +13,11 @@ import java.nio.charset.StandardCharsets;
  */
 public final class BinReader {
     private final byte[] data;
-    /** Reads stop here: the window end, or the enclosing container's end while validating. */
+    /** Reads stop here: the window end, or the innermost open container's end. */
     private int limit;
     private int pos;
+    /** Containers opened by {@link #open} and not yet closed by {@link #end(ReadMark)}. */
+    private int openMarks;
     /** End offset of the container most recently opened by {@link #openContainer}. */
     private int containerEnd;
 
@@ -76,9 +79,7 @@ public final class BinReader {
     /** Copy of the next {@code n} bytes. */
     public byte[] bytes(int n) {
         final int at = take(n);
-        final byte[] out = new byte[n];
-        System.arraycopy(data, at, out, 0, n);
-        return out;
+        return Arrays.copyOfRange(data, at, at + n);
     }
 
     /** Next {@code n} bytes decoded as strictly validated UTF-8. */
@@ -131,14 +132,59 @@ public final class BinReader {
         return bytes(length());
     }
 
-    /** Element count of an array; rejects counts its payload cannot hold. */
-    public int beginArray() {
-        return openContainer(BinTag.ARRAY, 1);
+    /**
+     * A container being read: its entry count, and the bounds {@link #end(ReadMark)} checks and
+     * restores. Only the reader that opened it can close it, innermost first, once.
+     */
+    public static final class ReadMark {
+        public final int count;
+        final BinReader owner;
+        final int end;
+        final int outerLimit;
+        /** {@code openMarks} once this container is open: its nesting level, 1-based. */
+        final int level;
+
+        ReadMark(BinReader owner, int count, int end, int outerLimit, int level) {
+            this.owner = owner;
+            this.count = count;
+            this.end = end;
+            this.outerLimit = outerLimit;
+            this.level = level;
+        }
     }
 
-    /** Entry count of a map; read each entry as {@link #readMapKey()} then a value. */
-    public int beginMap() {
-        return openContainer(BinTag.MAP, 5);
+    /**
+     * Opens an array (counts its payload cannot hold are rejected). Until {@link #end(ReadMark)}, no
+     * read can pass its payload, so a crafted entry never reads its parent's bytes.
+     */
+    public ReadMark beginArray() {
+        return open(BinTag.ARRAY, 1);
+    }
+
+    /** Opens a map like {@link #beginArray()}; read each entry as {@link #readMapKey()} then a value. */
+    public ReadMark beginMap() {
+        return open(BinTag.MAP, 5);
+    }
+
+    /**
+     * Closes {@code mark}'s container: it must be this reader's innermost open container
+     * ({@code INVALID_MARK}: another reader's, an outer one, or already closed; the reader is left
+     * unchanged) and its payload must have been read exactly ({@code TRAILING_BYTES}).
+     */
+    public void end(ReadMark mark) {
+        if (mark == null || mark.owner != this || mark.level != openMarks || mark.end != limit) {
+            throw new BinCodecException(BinCodecException.Kind.INVALID_MARK, "not this reader's innermost open container");
+        }
+        if (pos != mark.end) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (mark.end - pos) + " bytes");
+        limit = mark.outerLimit;
+        openMarks--;
+    }
+
+    private ReadMark open(BinTag tag, int minEntryBytes) {
+        final int outer = limit;
+        final int count = openContainer(tag, minEntryBytes);
+        limit = containerEnd;
+        return new ReadMark(this, count, containerEnd, outer, ++openMarks);
     }
 
     public String readMapKey() {
@@ -168,9 +214,7 @@ public final class BinReader {
     public byte[] readRawValue() {
         final int start = pos;
         skipValue();
-        final byte[] out = new byte[pos - start];
-        System.arraycopy(data, start, out, 0, out.length);
-        return out;
+        return Arrays.copyOfRange(data, start, pos);
     }
 
     /** Fully validates and consumes the next value (Rust {@code BinValueView::parse} rules). */
@@ -178,11 +222,23 @@ public final class BinReader {
         checkValue(0);
     }
 
+    /** Copy of the next value, fully validated like {@link #checkValue()}. */
+    byte[] readCheckedValue() {
+        final int start = pos;
+        checkValue();
+        return Arrays.copyOfRange(data, start, pos);
+    }
+
+    /** Throws {@link BinCodecException.Kind#TRAILING_BYTES} unless every byte was consumed. */
+    public void expectEnd() {
+        if (!atEnd()) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, remaining() + " bytes");
+    }
+
     /** Throws unless {@code bytes} holds exactly one valid {@code NveBinValue}. */
     public static void validate(byte[] bytes) {
         final BinReader r = new BinReader(bytes);
         r.checkValue();
-        if (!r.atEnd()) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, r.remaining() + " bytes");
+        r.expectEnd();
     }
 
     private int take(int n) {

@@ -5,14 +5,20 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Compile-time checked templates. No `config` feature: it pulls in the unmaintained `basic-toml`
+# (RUSTSEC-2024-0442), and the defaults are what codegen needs (`templates/`, whitespace preserved);
+# every `#[template]` sets `escape = "none"`, so no extension can HTML-escape generated code.
+askama = { version = "0.16.1", default-features = false, features = ["derive", "std"] }
 nve-abi = { workspace = true }
 nve-hash = { workspace = true }
 serde = { workspace = true }
-# Hybrid `.rs` spec frontend; `span-locations` gives parse errors real line/column numbers.
-proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full"] }
+# Hybrid `.rs` spec frontend (`frontend/hybrid_spec`).
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
 
 [dev-dependencies]
+# The real core `TableDesc`s for ABI tests and benches (the library takes any `&[&TableDesc]`).
+nve-components = { workspace = true }
 # Round-trip tests of the `NveExportSpec` serde derives (JSON loading itself lives in `nve-cli`).
 serde_json = { workspace = true }
 

@@ -218,8 +218,6 @@ class NveQtWidget::Impl {
   std::unordered_map<uint32_t, bool> node_interactive_;
   QColor root_bg_color_{0, 0, 0, 0};
   uint32_t surface_id_{1};
-  QString auto_snapshot_path_;
-  uint32_t auto_snapshot_schema_{1};
   uint64_t reconcile_update_count_{0};
   bool raw_props_initialized_{false};
   bool in_sync_views_{false};

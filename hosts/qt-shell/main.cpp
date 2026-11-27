@@ -1,5 +1,4 @@
 #include "NveQtWidget.hpp"
-#include "nve_snapshot.hpp"
 
 #ifdef NVE_QT_HAS_QUICK
 #include "NveQtQuickItem.hpp"
@@ -10,7 +9,6 @@
 #endif
 
 #include <QApplication>
-#include <QFileInfo>
 #include <QObject>
 #include <QString>
 
@@ -225,10 +223,6 @@ int runQuickShell(
     const QString& pair_connect,
     const QString& pair_token,
     const QString& pair_transport,
-    const QString& snapshot_path,
-    const QString& sidecar_frame0_path,
-    bool reset_state,
-    uint32_t schema_version,
     int width,
     int height) {
   nve::qt::NveQtQuickItem::registerQmlType();
@@ -252,24 +246,6 @@ int runQuickShell(
 
   view.setContent(qml_url, &component, root_obj);
   surface->setSize(QSizeF(width, height));
-
-  QString replay_path;
-  const char* replay_source = "user-snapshot";
-  if (!snapshot_path.isEmpty() && QFileInfo::exists(snapshot_path)) {
-    replay_path = snapshot_path;
-  } else if (!reset_state && !sidecar_frame0_path.isEmpty() && QFileInfo::exists(sidecar_frame0_path)) {
-    replay_path = sidecar_frame0_path;
-    replay_source = "sidecar-frame0";
-  }
-  if (!replay_path.isEmpty()) {
-    uint64_t restore_us = 0u;
-    if (surface->replaySnapshot(replay_path, schema_version, 1u, &restore_us)) {
-      std::cerr << "[nve-qt-shell] Instant-boot Frame-0 mmap restore (Quick GPU, "
-                << replay_source << ") from '" << replay_path.toStdString() << "' in "
-                << restore_us << " us\n";
-    }
-  }
-
   view.show();
 
   if (!pair_connect.isEmpty()) {
@@ -295,28 +271,6 @@ int runQuickShell(
     }
   }
 
-  if (!snapshot_path.isEmpty()) {
-    auto persist = [surface, snapshot_path, schema_version](const char* trigger) {
-      if (surface->nodeCount() == 0u) {
-        return;
-      }
-      if (surface->saveSnapshot(snapshot_path, schema_version)) {
-        std::cerr << "[nve-qt-shell] Saved Frame-0 + state snapshot to '"
-                  << snapshot_path.toStdString() << "' (schema v" << schema_version
-                  << ", trigger=" << trigger << ")\n";
-      } else {
-        std::cerr << "[nve-qt-shell] Warning: failed to save snapshot to '"
-                  << snapshot_path.toStdString() << "' (trigger=" << trigger << ")\n";
-      }
-    };
-    QObject::connect(&view, &QQuickWindow::closing, surface, [persist]() {
-      persist("window-close");
-    });
-    QObject::connect(&app, &QApplication::aboutToQuit, surface, [persist]() {
-      persist("quit");
-    });
-  }
-
   return app.exec();
 }
 #endif
@@ -327,23 +281,15 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
 
   bool use_quick = false;
-  bool no_snapshot = false;
-  bool reset_state = false;
   QString dylib_path;
   QString pair_connect;
   QString pair_token;
   QString pair_transport;
-  QString snapshot_path;
-  uint32_t schema_version = 1u;
   int width = 640;
   int height = 420;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--quick") == 0) {
       use_quick = true;
-    } else if (std::strcmp(argv[i], "--no-snapshot") == 0) {
-      no_snapshot = true;
-    } else if (std::strcmp(argv[i], "--reset-state") == 0) {
-      reset_state = true;
     } else if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
       dylib_path = QString::fromUtf8(argv[++i]);
     } else if (std::strcmp(argv[i], "--pair-connect") == 0 && i + 1 < argc) {
@@ -352,13 +298,6 @@ int main(int argc, char* argv[]) {
       pair_token = QString::fromUtf8(argv[++i]);
     } else if (std::strcmp(argv[i], "--pair-transport") == 0 && i + 1 < argc) {
       pair_transport = QString::fromUtf8(argv[++i]);
-    } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
-      snapshot_path = QString::fromUtf8(argv[++i]);
-    } else if (std::strcmp(argv[i], "--schema") == 0 && i + 1 < argc) {
-      const long parsed = std::strtol(argv[++i], nullptr, 10);
-      if (parsed >= 0) {
-        schema_version = static_cast<uint32_t>(parsed);
-      }
     } else if (std::strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
       width = std::max(120, std::atoi(argv[++i]));
     } else if (std::strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
@@ -368,43 +307,10 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  if (nve::is_snapshot_disabled()) {
-    no_snapshot = true;
-  }
-  if (nve::is_snapshot_reset_requested()) {
-    reset_state = true;
-  }
-  QString sidecar_frame0_path;
-  if (no_snapshot) {
-    snapshot_path.clear();
-  } else {
-    if (snapshot_path.isEmpty() && pair_connect.isEmpty()) {
-      const std::string app_identity =
-          !dylib_path.isEmpty() ? dylib_path.toStdString() : std::string("nve-qt-shell-builtin");
-      const std::string resolved = nve::resolve_default_snapshot_path(app_identity);
-      if (!resolved.empty()) {
-        snapshot_path = QString::fromUtf8(resolved.c_str(), static_cast<qsizetype>(resolved.size()));
-      }
-    }
-    if (reset_state && !snapshot_path.isEmpty()) {
-      nve::remove_snapshot_file_if_exists(snapshot_path.toStdString());
-      std::cerr << "[nve-qt-shell] Cleared cached snapshot at '" << snapshot_path.toStdString()
-                << "' (--reset-state / NVE_RESET_STATE)\n";
-    }
-    if (!dylib_path.isEmpty()) {
-      const std::string sidecar = nve::resolve_sidecar_frame0_path(dylib_path.toStdString());
-      if (!sidecar.empty()) {
-        sidecar_frame0_path =
-            QString::fromUtf8(sidecar.c_str(), static_cast<qsizetype>(sidecar.size()));
-      }
-    }
-  }
-
   if (use_quick) {
 #ifdef NVE_QT_HAS_QUICK
     return runQuickShell(
-        app, dylib_path, pair_connect, pair_token, pair_transport, snapshot_path,
-        sidecar_frame0_path, reset_state, schema_version, width, height);
+        app, dylib_path, pair_connect, pair_token, pair_transport, width, height);
 #else
     std::cerr << "[nve-qt-shell] Error: --quick requested, but this binary was built without Qt6::Quick.\n";
     return 1;
@@ -414,23 +320,6 @@ int main(int argc, char* argv[]) {
   nve::qt::NveQtWidget window;
   window.setWindowTitle(QStringLiteral("NVE Qt 6 Host Shell"));
   window.resize(width, height);
-
-  QString replay_path;
-  const char* replay_source = "user-snapshot";
-  if (!snapshot_path.isEmpty() && QFileInfo::exists(snapshot_path)) {
-    replay_path = snapshot_path;
-  } else if (!reset_state && !sidecar_frame0_path.isEmpty() && QFileInfo::exists(sidecar_frame0_path)) {
-    replay_path = sidecar_frame0_path;
-    replay_source = "sidecar-frame0";
-  }
-  if (!replay_path.isEmpty()) {
-    uint64_t restore_us = 0u;
-    if (window.replayFrame0Snapshot(replay_path, schema_version, 1u, &restore_us)) {
-      std::cerr << "[nve-qt-shell] Instant-boot Frame-0 mmap restore (" << replay_source
-                << ") from '" << replay_path.toStdString() << "' in " << restore_us << " us\n";
-    }
-  }
-
   window.show();
 
   if (!pair_connect.isEmpty()) {
@@ -454,22 +343,6 @@ int main(int argc, char* argv[]) {
       std::cerr << "Failed to attach built-in NVE Qt demo app\n";
       return 1;
     }
-  }
-
-  if (!snapshot_path.isEmpty()) {
-    window.setAutoSnapshotPath(snapshot_path, schema_version);
-    QObject::connect(&app, &QApplication::aboutToQuit, &window, [&window, snapshot_path, schema_version]() {
-      if (window.nodeCount() == 0u) {
-        return;
-      }
-      if (window.saveSnapshot(snapshot_path, schema_version)) {
-        std::cerr << "[nve-qt-shell] Saved Frame-0 + state snapshot to '"
-                  << snapshot_path.toStdString() << "' (schema v" << schema_version << ", trigger=quit)\n";
-      } else {
-        std::cerr << "[nve-qt-shell] Warning: failed to save snapshot to '"
-                  << snapshot_path.toStdString() << "'\n";
-      }
-    });
   }
 
   return app.exec();

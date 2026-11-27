@@ -1,14 +1,15 @@
 // NVE host runtime: validated C++20 RAII wrappers over `NveRuntimeApi` and `NveRuntimeSceneView`.
 //
 // `RuntimeSceneReader` validates `NVE_RUNTIME_SCHEMA_HASH`, every borrowed slab pointer/count pair,
-// UTF-8 `text_slab`, every published `NveTableView`, every `NveResourceView`, and every dirty
-// resource id once on `open()`.
+// UTF-8 `text_slab`, and every published `NveTableView` once on `open()`.
 // `RuntimeSceneGuard` pairs `scene_acquire` with automatic `scene_release` (and releases immediately
 // if validation ever fails so reader locks can never leak).
-// `RuntimeSession` wraps the 18-slot `NveRuntimeApi` vtable with RAII `destroy` and move-only
-// ownership.
+// `RuntimeSession` wraps the `NveRuntimeApi` vtable with RAII `destroy` and move-only ownership.
+// Borrowed outputs keep their C lifetimes: `RuntimeSceneGuard::resource` bytes live until the
+// guard releases; `drain_emitted_events` / `snapshot_state` spans until the next session call.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -17,7 +18,7 @@
 #include <string_view>
 #include <utility>
 
-#include "nve_runtime_abi.generated.h"
+#include "../generated/nve_runtime_abi.generated.h"
 #include "scene_reader.hpp"
 #include "table_reader.hpp"
 #include "utf8.h"
@@ -25,14 +26,23 @@
 
 namespace nve::host {
 
-/// Borrowed wire bytes of one live resource (`kind` = resource kind key).
-struct ResourceBytes {
-  Key64 kind{0u};
+/// Canonical payload of one published resource (`Resource::encode` bytes; codec-less module
+/// kinds are their exact wire bytes), borrowed from a `RuntimeSceneGuard`.
+struct RuntimeResource {
+  Key64 kind;
   std::span<const uint8_t> bytes;
-  uint32_t flags = 0u;
-
-  [[nodiscard]] bool ephemeral() const noexcept { return (flags & NVE_RESOURCE_FLAG_EPHEMERAL) != 0u; }
 };
+
+/// `NveBufferSlice` as a span (empty for NULL / zero length).
+[[nodiscard]] inline std::span<const uint8_t> buffer_span(NveBufferSlice s) noexcept {
+  return s.ptr != nullptr && s.len > 0u ? std::span<const uint8_t>(s.ptr, s.len)
+                                         : std::span<const uint8_t>();
+}
+
+/// Span as an `NveBufferSlice` (NULL pointer when empty).
+[[nodiscard]] inline NveBufferSlice buffer_slice(std::span<const uint8_t> bytes) noexcept {
+  return NveBufferSlice{bytes.empty() ? nullptr : bytes.data(), bytes.size()};
+}
 
 /// Validated zero-copy reader over a borrowed `NveRuntimeSceneView`.
 class RuntimeSceneReader {
@@ -59,18 +69,14 @@ class RuntimeSceneReader {
   [[nodiscard]] std::span<const uint32_t> children_slab() const noexcept { return children_; }
   [[nodiscard]] std::string_view text_slab() const noexcept { return text_; }
   [[nodiscard]] uint32_t table_count() const noexcept { return static_cast<uint32_t>(tables_.size()); }
-  [[nodiscard]] uint32_t resource_capacity() const noexcept { return static_cast<uint32_t>(resources_.size()); }
-  /// Raw `ResourceId`s (re)defined on this frame (unique, each `< resource_capacity()`).
-  [[nodiscard]] std::span<const uint32_t> dirty_resources() const noexcept { return dirty_resources_; }
+  /// Visual scroll shifts sorted by `node_id`; subtract from descendants' (pre-scroll) rects.
+  [[nodiscard]] std::span<const NveScrollOffset> scroll_offsets() const noexcept { return scroll_; }
 
-  /// Live resource `id`; `nullopt` for `0`, free slots, and ids past the capacity.
-  [[nodiscard]] std::optional<ResourceBytes> resource(uint32_t id) const noexcept {
-    if (id == 0u || id >= resources_.size()) return std::nullopt;
-    const NveResourceView& r = resources_[id];
-    if (r.kind_lo == 0u && r.kind_hi == 0u) return std::nullopt;
-    return ResourceBytes{Key64::from_halves(r.kind_lo, r.kind_hi),
-                         r.len > 0u ? std::span<const uint8_t>(r.bytes, r.len) : std::span<const uint8_t>(),
-                         r.flags};
+  /// Visual shift of scroll container `node_id` (`{0, 0}` when not scrolled; O(log n)).
+  [[nodiscard]] NveScrollOffset scroll_offset(uint32_t node_id) const noexcept {
+    const auto it = std::lower_bound(scroll_.begin(), scroll_.end(), node_id,
+                                     [](const NveScrollOffset& s, uint32_t id) { return s.node_id < id; });
+    return it != scroll_.end() && it->node_id == node_id ? *it : NveScrollOffset{node_id, 0.0f, 0.0f};
   }
 
   [[nodiscard]] const NveNodeRow* row(uint32_t index) const noexcept {
@@ -144,8 +150,7 @@ class RuntimeSceneReader {
         dirty_(span_of(v.dirty_indices, v.dirty_count)),
         removed_(span_of(v.removed_ids, v.removed_count)),
         tables_(span_of(v.tables, v.table_count)),
-        resources_(span_of(v.resources, v.resource_capacity)),
-        dirty_resources_(span_of(v.dirty_resources, v.dirty_resource_count)) {}
+        scroll_(span_of(v.scroll_offsets, v.scroll_count)) {}
 
   template <class T>
   static std::span<const T> span_of(const T* p, uint32_t count) noexcept {
@@ -170,22 +175,12 @@ class RuntimeSceneReader {
     if (const SceneError e = check_slab(v->dirty_indices, v->dirty_count); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->removed_ids, v->removed_count); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->tables, v->table_count); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->scroll_offsets, v->scroll_count); e != SceneError::None) return e;
     if (v->text_slab_len > 0u && nve_utf8_valid(v->text_slab, v->text_slab_len) == 0) {
       return SceneError::InvalidUtf8;
     }
     for (uint32_t i = 0u; i < v->table_count; ++i) {
       if (!TableReader::from_view(v->tables[i])) return SceneError::InvalidTable;
-    }
-    if (const SceneError e = check_slab(v->resources, v->resource_capacity); e != SceneError::None) return e;
-    if (const SceneError e = check_slab(v->dirty_resources, v->dirty_resource_count); e != SceneError::None) return e;
-    for (uint32_t i = 0u; i < v->resource_capacity; ++i) {
-      const NveResourceView& r = v->resources[i];
-      if ((r.len > 0u) != (r.bytes != nullptr)) return SceneError::InvalidResource;
-      if (i == 0u && (r.len != 0u || r.kind_lo != 0u || r.kind_hi != 0u)) return SceneError::InvalidResource;
-    }
-    for (uint32_t i = 0u; i < v->dirty_resource_count; ++i) {
-      const uint32_t id = v->dirty_resources[i];
-      if (id == 0u || id >= v->resource_capacity) return SceneError::InvalidResource;
     }
     return SceneError::None;
   }
@@ -202,8 +197,7 @@ class RuntimeSceneReader {
   std::span<const uint32_t> dirty_;
   std::span<const uint32_t> removed_;
   std::span<const NveTableView> tables_;
-  std::span<const NveResourceView> resources_;
-  std::span<const uint32_t> dirty_resources_;
+  std::span<const NveScrollOffset> scroll_;
 };
 
 /// Move-only RAII read guard pairing `scene_acquire` with `scene_release`.
@@ -246,6 +240,19 @@ class RuntimeSceneGuard {
   [[nodiscard]] const RuntimeSceneReader* operator->() const noexcept { return &reader_; }
   [[nodiscard]] const NveRuntimeSceneView& raw() const noexcept { return raw_; }
 
+  /// Published resource `id`, borrowed until this guard releases. `out_status` (optional) gets
+  /// `NVE_RUNTIME_NOT_FOUND` for stale / NONE ids and `NVE_RUNTIME_INVALID_ARG` when inactive.
+  [[nodiscard]] std::optional<RuntimeResource> resource(uint32_t id,
+                                                        NveRuntimeStatus* out_status = nullptr) const noexcept {
+    NveRuntimeStatus st = NVE_RUNTIME_INVALID_ARG;
+    uint64_t kind = 0u;
+    NveBufferSlice payload{nullptr, 0u};
+    if (active()) st = static_cast<NveRuntimeStatus>(api_->resource_payload(handle_, id, &kind, &payload));
+    if (out_status != nullptr) *out_status = st;
+    if (st != NVE_RUNTIME_OK) return std::nullopt;
+    return RuntimeResource{Key64{kind}, buffer_span(payload)};
+  }
+
  private:
   friend class RuntimeSession;
 
@@ -270,18 +277,8 @@ class RuntimeSession {
 
   /// Verifies ABI version, struct size, schema hash, and every vtable slot before calling `create`.
   [[nodiscard]] static bool validate_api(const NveRuntimeApi* api) noexcept {
-    return api != nullptr && api->abi_version == NVE_RUNTIME_ABI_VERSION &&
-           api->struct_size == sizeof(NveRuntimeApi) &&
-           api->schema_hash == NVE_RUNTIME_SCHEMA_HASH && api->create != nullptr &&
-           api->destroy != nullptr && api->set_wake_callback != nullptr &&
-           api->set_viewport != nullptr && api->attach_app_interface != nullptr &&
-           api->submit_nve2 != nullptr && api->tick != nullptr &&
-           api->dispatch_events != nullptr && api->hit_test != nullptr &&
-           api->scroll_by != nullptr && api->scene_acquire != nullptr &&
-           api->scene_release != nullptr && api->get_metrics != nullptr &&
-           api->pair_connect != nullptr && api->pair_disconnect != nullptr &&
-           api->pair_is_connected != nullptr && api->last_error != nullptr &&
-           api->set_text_measurer != nullptr;
+    return nve_runtime_api_slots_complete(api) != 0 && api->abi_version == NVE_RUNTIME_ABI_VERSION &&
+           api->struct_size == sizeof(NveRuntimeApi) && api->schema_hash == NVE_RUNTIME_SCHEMA_HASH;
   }
 
   [[nodiscard]] static std::optional<RuntimeSession> create(
@@ -333,13 +330,6 @@ class RuntimeSession {
     return set_wake_callback(nullptr, nullptr);
   }
 
-  /// Installs (`measure != nullptr`) or removes the host text measurer and relayouts every node.
-  /// `ctx` must outlive the next `set_text_measurer` / `reset`.
-  [[nodiscard]] NveRuntimeStatus set_text_measurer(NveTextMeasureFn measure, void* ctx) noexcept {
-    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
-    return static_cast<NveRuntimeStatus>(api_->set_text_measurer(handle_, measure, ctx));
-  }
-
   [[nodiscard]] NveRuntimeStatus set_viewport(float width, float height, float scale_factor) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->set_viewport(handle_, width, height, scale_factor));
@@ -354,10 +344,69 @@ class RuntimeSession {
     return attach_app_interface(nullptr);
   }
 
+  /// Installs a native text measurer (`ctx` must outlive it); the next `tick` relayouts.
+  [[nodiscard]] NveRuntimeStatus set_text_measurer(NveRuntimeMeasureTextFn measure, void* ctx) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->set_text_measurer(handle_, measure, ctx));
+  }
+
+  /// Restores the built-in heuristic text measurer.
+  [[nodiscard]] NveRuntimeStatus clear_text_measurer() noexcept {
+    return set_text_measurer(nullptr, nullptr);
+  }
+
+  /// Forwards `count` embedding-host props (`NVE_RUNTIME_UNSUPPORTED` without
+  /// `NVE_IFACE_COMPONENT`). Pointer + count: `NveMapEntry` is complete only where the caller
+  /// includes `nve_abi.generated.h`.
+  [[nodiscard]] NveRuntimeStatus set_props(const NveMapEntry* entries, uint32_t count,
+                                           bool* out_changed = nullptr) noexcept {
+    if (!valid() || (entries == nullptr && count != 0u)) return NVE_RUNTIME_INVALID_ARG;
+    uint32_t changed = 0u;
+    const auto st = static_cast<NveRuntimeStatus>(
+        api_->set_props(handle_, count == 0u ? nullptr : entries, count, &changed));
+    if (out_changed != nullptr) *out_changed = (changed != 0u);
+    return st;
+  }
+
+  /// Drains app-emitted events into `out` (`ptr` NULL when empty; borrowed until the next session
+  /// call).
+  [[nodiscard]] NveRuntimeStatus drain_emitted_events(NveEventBatch* out) noexcept {
+    if (!valid() || out == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    NveEventBatch batch{nullptr, 0u, 0u};
+    const auto st = static_cast<NveRuntimeStatus>(api_->drain_emitted_events(handle_, &batch));
+    *out = st == NVE_RUNTIME_OK && batch.len > 0u ? batch : NveEventBatch{nullptr, 0u, 0u};
+    return st;
+  }
+
+  /// App state snapshot into `out` (borrowed until the next session call).
+  [[nodiscard]] NveRuntimeStatus snapshot_state(std::span<const uint8_t>* out) noexcept {
+    if (!valid() || out == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    NveBufferSlice state{nullptr, 0u};
+    const auto st = static_cast<NveRuntimeStatus>(api_->snapshot_state(handle_, &state));
+    *out = st == NVE_RUNTIME_OK ? buffer_span(state) : std::span<const uint8_t>();
+    return st;
+  }
+
+  /// Restores a snapshot; the runtime wakes the host to re-render.
+  [[nodiscard]] NveRuntimeStatus restore_state(std::span<const uint8_t> state) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->restore_state(handle_, buffer_slice(state)));
+  }
+
+  /// Validates and forwards one `NVP1` hot patch (`NVE_RUNTIME_UNSUPPORTED` without `NVE_IFACE_DEV`).
+  [[nodiscard]] NveRuntimeStatus apply_hot_patch(std::span<const uint8_t> patch_nvp1,
+                                                 bool* out_changed = nullptr) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    uint32_t changed = 0u;
+    const auto st = static_cast<NveRuntimeStatus>(
+        api_->apply_hot_patch(handle_, buffer_slice(patch_nvp1), &changed));
+    if (out_changed != nullptr) *out_changed = (changed != 0u);
+    return st;
+  }
+
   [[nodiscard]] NveRuntimeStatus submit_nve2(std::span<const uint8_t> bytes) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
-    const NveBufferSlice slice{bytes.empty() ? nullptr : bytes.data(), bytes.size()};
-    return static_cast<NveRuntimeStatus>(api_->submit_nve2(handle_, slice));
+    return static_cast<NveRuntimeStatus>(api_->submit_nve2(handle_, buffer_slice(bytes)));
   }
 
   [[nodiscard]] NveRuntimeStatus tick(float dt_s, bool* out_changed = nullptr) noexcept {

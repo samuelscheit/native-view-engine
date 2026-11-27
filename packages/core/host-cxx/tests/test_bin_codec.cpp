@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <limits>
 #include <new>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -12,6 +13,7 @@
 
 #include "nve/host/bin_codec.hpp"
 #include "nve/host/hybrid_runtime.hpp"
+#include "nve/host/utf16.hpp"
 #include "check.h"
 
 static size_t g_allocations = 0;
@@ -78,9 +80,11 @@ void test_golden_round_trip() {
 
   const size_t before = g_allocations;
   BinReader r(golden);
-  CHECK(r.begin_map() == 1u);
+  const BinReader::ReadMark map = r.begin_map();
+  CHECK(map.count == 1u);
   CHECK(r.read_map_key() == "k");
-  CHECK(r.begin_array() == 6u);
+  const BinReader::ReadMark arr = r.begin_array();
+  CHECK(arr.count == 6u);
   CHECK(r.read_i64() == 1);
   CHECK(r.read_str() == "\xC3\xA9");
   CHECK(r.read_null());
@@ -89,6 +93,8 @@ void test_golden_round_trip() {
   CHECK(r.read_f64() == 1.5);
   const std::span<const uint8_t> b = r.read_bytes();
   CHECK(b.size() == 1u && b[0] == 0xFF);
+  r.end(arr);
+  r.end(map);
   CHECK(r.ok() && r.at_end());
   CHECK(g_allocations == before);  // reads borrow, never allocate
 }
@@ -132,10 +138,13 @@ void test_f64_accepts_i64_and_extremes() {
 
 void test_errors() {
   {
-    const std::vector<uint8_t> bad_bool = {1, 2};
+    const std::vector<uint8_t> bad_bool = {1, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
     BinReader r(bad_bool);
     CHECK(!r.read_bool() && r.error() == BinError::InvalidBool);
-    CHECK(BinReader::validate(bad_bool) == BinError::InvalidBool);
+    // Sticky error: `peek_tag()` and `read_f64()` short-circuit even when valid bytes follow.
+    CHECK(r.peek_tag() == BinTag::Null && r.error() == BinError::InvalidBool);
+    CHECK(r.read_f64() == 0.0 && r.error() == BinError::InvalidBool);
+    CHECK(BinReader::validate(std::span<const uint8_t>(bad_bool.data(), 2)) == BinError::InvalidBool);
   }
   {
     const std::vector<uint8_t> bad_tag = {8};
@@ -161,7 +170,27 @@ void test_errors() {
     // Count bomb: claims 2^32-1 elements in a 4-byte payload.
     const std::vector<uint8_t> bomb = {6, 4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF};
     BinReader r(bomb);
-    CHECK(r.begin_array() == 0u && r.error() == BinError::Truncated);
+    CHECK(r.begin_array().count == 0u && r.error() == BinError::Truncated);
+  }
+  {
+    // Fixed-size arrays (`[T; N]`): exactly N entries; fewer fail `Truncated`, more `TooLarge`.
+    const std::vector<uint8_t> two_nulls = {6, 6, 0, 0, 0, 2, 0, 0, 0, 0, 0};
+    BinReader exact(two_nulls);
+    const BinReader::ReadMark m = exact.begin_array_exact(2);
+    CHECK(exact.ok() && m.count == 2u);
+    CHECK(exact.read_null() && exact.read_null());
+    exact.end(m);
+    CHECK(exact.ok() && exact.at_end());
+    BinReader shorter(two_nulls);
+    const BinReader::ReadMark s = shorter.begin_array_exact(3);
+    CHECK(s.count == 0u && shorter.error() == BinError::Truncated);
+    shorter.end(s);
+    CHECK(shorter.error() == BinError::Truncated);
+    BinReader longer(two_nulls);
+    CHECK(longer.begin_array_exact(1).count == 0u && longer.error() == BinError::TooLarge);
+    const std::vector<uint8_t> null_value = {0};
+    BinReader not_array(null_value);
+    CHECK(not_array.begin_array_exact(0).count == 0u && not_array.error() == BinError::UnexpectedTag);
   }
   {
     // Map entries need >= 5 bytes each: 1 entry in a 4-byte remainder is rejected.
@@ -269,6 +298,113 @@ void test_container_limit_is_enforced() {
   CHECK(BinReader::validate(nested) == BinError::Truncated);
 }
 
+void test_streaming_reads_stay_inside_their_container() {
+  // `[[1], 7]` where the inner array claims 2 elements in a payload holding 1: the second read
+  // must fail at the inner container's end, not consume the outer `7`.
+  BinWriter w;
+  const BinWriter::Mark outer = w.begin_array(2);
+  const BinWriter::Mark inner = w.begin_array(1);
+  w.write_i64(1);
+  w.end(inner);
+  w.write_i64(7);
+  w.end(outer);
+  std::vector<uint8_t> bytes(w.bytes().begin(), w.bytes().end());
+  bytes[14] = 2;  // inner count: 1 -> 2 (payload stays 13 bytes, room for 1 bool-sized entry)
+  {
+    BinReader r(bytes);
+    const BinReader::ReadMark o = r.begin_array();
+    const BinReader::ReadMark i = r.begin_array();
+    CHECK(o.count == 2u && i.count == 2u && r.ok());
+    CHECK(r.read_i64() == 1);
+    CHECK(r.read_i64() == 0 && r.error() == BinError::Truncated);  // never the outer `7`
+  }
+  {
+    // A container whose entries were not all read is `TrailingBytes` at `end`.
+    BinReader r(w.bytes());
+    const BinReader::ReadMark o = r.begin_array();
+    (void)r.read_raw_value();
+    r.end(o);
+    CHECK(r.error() == BinError::TrailingBytes);
+  }
+  {
+    // Exact reads close cleanly and restore the outer bounds.
+    BinReader r(w.bytes());
+    const BinReader::ReadMark o = r.begin_array();
+    const BinReader::ReadMark i = r.begin_array();
+    CHECK(r.read_i64() == 1);
+    r.end(i);
+    CHECK(r.read_i64() == 7);
+    r.end(o);
+    CHECK(r.ok() && r.at_end());
+  }
+}
+
+void test_checked_values_and_error_names() {
+  const std::vector<uint8_t> golden = from_hex(kGoldenHex);
+  BinReader r(golden);
+  const DynamicValue v = DynamicValue::read(r);
+  CHECK(r.ok() && r.at_end() && !v.is_null() && v.bytes().size() == golden.size());
+  // A map whose string is invalid UTF-8: `read_raw_value` skips it, `DynamicValue::read` fails
+  // the reader (sticky) and yields null.
+  const std::vector<uint8_t> bad = {7, 15, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 4, 1, 0, 0, 0, 0xFF};
+  BinReader skip(bad);
+  CHECK(skip.read_raw_value().size() == bad.size() && skip.ok());
+  BinReader checked(bad);
+  const DynamicValue rejected = DynamicValue::read(checked);
+  CHECK(rejected.is_null() && checked.error() == BinError::InvalidUtf8);
+  CHECK(std::string_view(nve::host::to_string(BinError::TrailingBytes)) == "TrailingBytes");
+  CHECK(std::string_view(nve::host::to_string(BinError::None)) == "None");
+}
+
+void test_utf16_round_trips_and_rejects_lone_surrogates() {
+  const std::u16string all = u"a\u00E9\u20AC\U0001F600";
+  const std::optional<std::string> utf8 = nve::host::utf16_to_utf8(all);
+  CHECK(utf8.has_value() && *utf8 == "a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80");
+  CHECK(nve::host::utf8_to_utf16(*utf8) == all);
+  // Embedded NUL survives (Modified UTF-8 would turn it into `C0 80`).
+  const std::u16string nul(u"a\0b", 3);
+  CHECK(nve::host::utf16_to_utf8(nul) == std::string("a\0b", 3));
+  CHECK(!nve::host::utf16_to_utf8(std::u16string(1, char16_t{0xD800})).has_value());
+  CHECK(!nve::host::utf16_to_utf8(std::u16string(1, char16_t{0xDC00})).has_value());
+  CHECK(!nve::host::utf16_to_utf8(std::u16string{char16_t{0xD800}, u'x'}).has_value());
+  CHECK(!nve::host::utf8_to_utf16("\xED\xA0\x80").has_value());
+  CHECK(!nve::host::utf8_to_utf16("\xFF").has_value());
+  CHECK(nve::host::utf8_to_utf16("").has_value());
+}
+
+void test_utf16_lossy_replaces_maximal_subparts() {
+  using nve::host::utf8_to_utf16_lossy;
+  CHECK(utf8_to_utf16_lossy("bad \xF0\x9F\x98\x80") == u"bad \U0001F600");
+  CHECK(utf8_to_utf16_lossy("").empty());
+  CHECK(utf8_to_utf16_lossy("\xFF") == u"\uFFFD");
+  CHECK(utf8_to_utf16_lossy("a\xC0\xAF" "b") == u"a\uFFFD\uFFFD" "b");                // overlong lead
+  CHECK(utf8_to_utf16_lossy("\xE0\x80\xAF") == u"\uFFFD\uFFFD\uFFFD");              // overlong 3-byte
+  CHECK(utf8_to_utf16_lossy("\xED\xA0\x80") == u"\uFFFD\uFFFD\uFFFD");              // surrogate
+  CHECK(utf8_to_utf16_lossy("\xF4\x90\x80\x80") == u"\uFFFD\uFFFD\uFFFD\uFFFD");   // > U+10FFFF
+  CHECK(utf8_to_utf16_lossy("\xF0\x9F\x98") == u"\uFFFD");                          // truncated: one
+  CHECK(utf8_to_utf16_lossy("\xF0\x9F\x98x") == u"\uFFFDx");
+  CHECK(utf8_to_utf16_lossy("\xE2\x28\xA1") == u"\uFFFD(\uFFFD");
+  CHECK(utf8_to_utf16_lossy("\x80\xBF\xF5\x80") == u"\uFFFD\uFFFD\uFFFD\uFFFD");
+  // Unicode 15 §3.9, Table 3-11 (U+FFFD substitution of maximal subparts).
+  CHECK(utf8_to_utf16_lossy("\x61\xF1\x80\x80\xE1\x80\xC2\x62\x80\x63\x80\xBF\x64") ==
+        u"a\uFFFD\uFFFD\uFFFD" "b\uFFFD" "c\uFFFD\uFFFD" "d");
+  // Fuzz: never a lone surrogate, and identical to the strict decode on well-formed input.
+  uint32_t seed = 0x9E3779B9u;
+  for (int round = 0; round < 20000; ++round) {
+    std::string s(static_cast<size_t>(round % 9), '\0');
+    for (char& ch : s) {
+      seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
+      // Bias toward lead / continuation bytes so multi-byte paths are hit often.
+      ch = static_cast<char>((seed & 1u) != 0 ? 0x80u | (seed >> 8 & 0x7Fu) : seed >> 8);
+    }
+    const std::u16string lossy = utf8_to_utf16_lossy(s);
+    CHECK(nve::host::utf16_to_utf8(lossy).has_value());
+    const std::optional<std::u16string> strict = nve::host::utf8_to_utf16(s);
+    if (strict) CHECK(*strict == lossy);
+    if (!strict) CHECK(lossy.find(u'\uFFFD') != std::u16string::npos);
+  }
+}
+
 void test_bom_and_invalid_utf8_writes() {
   for (const std::string_view s : {std::string_view("\xEF\xBB\xBF"), std::string_view("\xEF\xBB\xBFx"),
                                    std::string_view("\xEF\xBB\xBF\xEF\xBB\xBFx")}) {
@@ -278,7 +414,10 @@ void test_bom_and_invalid_utf8_writes() {
     w.write_str(s);
     w.end(m);
     BinReader r(w.bytes());
-    CHECK(r.begin_map() == 1u && r.read_map_key() == s && r.read_str() == s && r.ok());
+    const BinReader::ReadMark mark = r.begin_map();
+    CHECK(mark.count == 1u && r.read_map_key() == s && r.read_str() == s && r.ok());
+    r.end(mark);
+    CHECK(r.ok() && r.at_end());
   }
   // A lone surrogate (CESU/WTF-8 `ED A0 80`) or overlong is rejected by every writer path.
   for (const std::string_view bad : {std::string_view("\xED\xA0\x80"), std::string_view("\xC0\xAF")}) {
@@ -431,6 +570,10 @@ int main() {
   test_validation_is_allocation_free();
   test_marks_never_patch_foreign_bytes();
   test_rejected_writes_leave_no_bytes();
+  test_streaming_reads_stay_inside_their_container();
+  test_checked_values_and_error_names();
+  test_utf16_round_trips_and_rejects_lone_surrogates();
+  test_utf16_lossy_replaces_maximal_subparts();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_bin_codec_test: %d failure(s)\n", g_failures);
     return 1;

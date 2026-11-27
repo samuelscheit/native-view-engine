@@ -21,12 +21,6 @@ class NveQtQuickItem::Impl {
     session_.set_text_measurer(NveQtQuickItem::makeQtTextMeasurer());
   }
   ~Impl() {
-    if (!auto_snapshot_path_.isEmpty() && session_.node_count() > 0u) {
-      const QByteArray utf8 = auto_snapshot_path_.toUtf8();
-      (void)session_.save_snapshot(
-          std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())),
-          auto_snapshot_schema_);
-    }
     session_.reset();
   }
 
@@ -279,8 +273,6 @@ class NveQtQuickItem::Impl {
   uint64_t scene_generation_{0};
   uint32_t pressed_node_id_{0};
   uint32_t focused_node_id_{0};
-  QString auto_snapshot_path_;
-  uint32_t auto_snapshot_schema_{1};
   SceneGraphStats sg_stats_{};
 };
 

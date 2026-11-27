@@ -242,7 +242,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                             align: Some("flex-start".to_owned()),
                             style: Some("flex-wrap: wrap; width: 100%;".to_owned()),
                             view {
-                                style: "flex: 1; min-width: 200px;",
+                                style: "flex: 1 1 280px; min-width: 200px;",
                                 FormField {
                                     name: "title".to_owned(),
                                     test_id: "create-title-input".to_owned(),
@@ -264,7 +264,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 if let Some(ref banner) = status_banner() {
                     view {
                         test_id: "issues-status-banner",
-                        style: "padding: 12px; border-radius: 8px; border-width: 1px; border-color: {border_hex}; background: {surface_hex};",
+                        style: "padding: 12px; border-radius: 8px; border: 1px solid {border_hex}; background: {surface_hex};",
                         text {
                             style: "font-size: 13px; color: {fg_hex};",
                             "{banner}"
@@ -275,7 +275,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 if let Some(ref err_msg) = query_err_text {
                     view {
                         test_id: "issues-query-error",
-                        style: "padding: 12px; border-radius: 8px; border-width: 1px; border-color: {danger_hex}; background: {surface_hex}; display: flex; justify-content: space-between; align-items: center; gap: 12px;",
+                        style: "padding: 12px; border-radius: 8px; border: 1px solid {danger_hex}; background: {surface_hex}; display: flex; justify-content: space-between; align-items: center; gap: 12px;",
                         text {
                             style: "font-size: 13px; color: {danger_hex};",
                             "Failed to load issues: {err_msg}"
@@ -293,7 +293,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 if let Some(ref err_msg) = close_err_text {
                     view {
                         test_id: "issues-close-error",
-                        style: "padding: 12px; border-radius: 8px; border-width: 1px; border-color: {danger_hex}; background: {surface_hex};",
+                        style: "padding: 12px; border-radius: 8px; border: 1px solid {danger_hex}; background: {surface_hex};",
                         text {
                             style: "font-size: 13px; color: {danger_hex};",
                             "Close failed (rolled back): {err_msg}"
@@ -422,7 +422,7 @@ fn IssueRowItem(
             Col {
                 gap: Some(6.0),
                 align: Some("flex-start".to_owned()),
-                style: Some("flex: 1; min-width: 200px;".to_owned()),
+                style: Some("flex: 1 1 260px; min-width: 0;".to_owned()),
                 Row {
                     gap: Some(8.0),
                     style: Some("flex-wrap: wrap;".to_owned()),

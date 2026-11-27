@@ -15,6 +15,3 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "nve-compose-kit"
-
-// `dev.nve:nve-host-java` (static Java host runtime) from source.
-includeBuild("../../packages/core/host-java")

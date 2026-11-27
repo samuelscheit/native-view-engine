@@ -235,6 +235,49 @@ pub fn check_packages_to_hosts_deps(graph: &PackageGraph) -> Vec<Violation> {
     violations
 }
 
+/// Enforces zero direct `memmap2` dependencies across the entire workspace and zero transitive
+/// non-dev `memmap2` dependencies in framework-agnostic `packages/core/*` (excluding `dioxus`,
+/// which transitively reaches `subsecond -> memmap2`) and `packages/backends/{headless,web}`.
+pub fn check_no_memmap2_dep(graph: &PackageGraph) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let mut scanned = 0usize;
+    for pkg in graph.workspace().iter() {
+        let Some(dir) = workspace_rel_dir(&pkg) else {
+            continue;
+        };
+        scanned += 1;
+        for link in pkg.direct_links() {
+            if link.to().name() == "memmap2" {
+                violations.push(Violation::new(
+                    rel_manifest(&pkg),
+                    1,
+                    format!("{} -> memmap2", pkg.name()),
+                    "Direct `memmap2` dependency is permanently banned workspace-wide ([INV:no-reloc-mmap-snapshot]); use plain file I/O (`Frame0File` + `StateFile`)",
+                ));
+            }
+        }
+        let ban_transitive = (dir.starts_with("packages/core/") && dir != "packages/core/dioxus")
+            || dir == "packages/backends/headless"
+            || dir == "packages/backends/web";
+        if ban_transitive {
+            for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
+                if let Ok(dep) = graph.metadata(dep_id)
+                    && dep.name() == "memmap2"
+                {
+                    violations.push(Violation::new(
+                        rel_manifest(&pkg),
+                        1,
+                        chain.join(" -> "),
+                        "Core (non-dioxus), headless, and web crates must have zero transitive `memmap2` dependency ([INV:no-reloc-mmap-snapshot])",
+                    ));
+                }
+            }
+        }
+    }
+    assert!(scanned > 0, "expected workspace crates for memmap2 check");
+    violations
+}
+
 pub fn check_core_zero_dioxus(graph: &PackageGraph) -> Vec<Violation> {
     let mut violations = Vec::new();
     let mut scanned = 0usize;
@@ -391,28 +434,18 @@ pub fn check_core_backend_module_deps(graph: &PackageGraph) -> Vec<Violation> {
             continue;
         }
         for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
-            let Ok(dep) = graph.metadata(dep_id) else {
+            let Some(dep_dir) = graph.metadata(dep_id).ok().and_then(|d| workspace_rel_dir(&d))
+            else {
                 continue;
             };
-            let Some(dep_dir) = workspace_rel_dir(&dep) else {
+            let reason = if dep_dir.starts_with("packages/modules/") {
+                "Core crates and backends must have zero dependencies on optional packages/modules/*"
+            } else if is_core && dep_dir.starts_with("packages/backends/") {
+                "Core crates (packages/core/*) must have zero dependencies on backends (packages/backends/*)"
+            } else {
                 continue;
             };
-            if dep_dir.starts_with("packages/modules/") {
-                violations.push(Violation::new(
-                    rel_manifest(&pkg),
-                    1,
-                    chain.join(" -> "),
-                    "Core crates and backends must have zero dependencies on optional packages/modules/*",
-                ));
-            }
-            if is_core && dep_dir.starts_with("packages/backends/") {
-                violations.push(Violation::new(
-                    rel_manifest(&pkg),
-                    1,
-                    chain.join(" -> "),
-                    "Core crates (packages/core/*) must have zero dependencies on backends (packages/backends/*)",
-                ));
-            }
+            violations.push(Violation::new(rel_manifest(&pkg), 1, chain.join(" -> "), reason));
         }
     }
     violations

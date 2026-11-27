@@ -1,15 +1,16 @@
 //! Drift guard for the static host runtimes (`packages/core/host-{cxx,swift,java,dart,ts}`).
 //!
 //! Every constant those packages mirror by hand — host / hybrid status codes, `FieldKind`, the
-//! `NveBinValue` tags, max nesting depth, max table words, `Length` unit tags, and the golden XXH64
-//! digests their suites assert — is rendered here from the Rust source of truth (`nve_abi`,
-//! `nve_store`, `nve_hash`, and codegen's `NveHybridStatus`) and must appear verbatim in each
-//! language. Matching ignores case, whitespace, and `_`, so `InternalError = -8`,
+//! `NveBinValue` tags, max nesting depth, max table words, and `Length` unit tags — is rendered
+//! here from the Rust source of truth (`nve_abi`, including `nve_abi::hybrid::NveHybridStatus::ALL`,
+//! and `nve_store`) and must appear verbatim in each language. Their golden XXH64 vectors are
+//! generated from `nve_hash` by `nve codegen abi` instead, so no host carries a hand-copied
+//! digest. Matching ignores case, whitespace, and `_`, so `InternalError = -8`,
 //! `INTERNAL_ERROR(-8)`, and `internalError(-8)` are the same entry.
 
+use nve_abi::hybrid::NveHybridStatus;
 use nve_abi::table::{FieldKind, MAX_TABLE_WORDS};
 use nve_abi::{NVE_BIN_VALUE_MAX_DEPTH, NveHostStatus, NveValueTag};
-use nve_hash::{PRIME1, xxh64};
 use nve_store::Length;
 
 use crate::{RepoIndex, Violation};
@@ -23,7 +24,6 @@ const SWIFT: &str = "packages/core/host-swift/Sources/NveHost/";
 const JAVA: &str = "packages/core/host-java/src/main/java/dev/nve/host/";
 const DART: &str = "packages/core/host-dart/lib/src/";
 const TS: &str = "packages/core/host-ts/src/";
-const HYBRID_STATUS_SOURCE: &str = "packages/core/codegen/src/targets/rust/hybrid/mod.rs";
 
 /// One mirror site: a file, the declaration that opens the block, its syntax, the C prefix its
 /// names carry (if any), and per-language renames of Rust variant names.
@@ -146,62 +146,16 @@ fn host_status_entries() -> Vec<(String, i64)> {
     .collect()
 }
 
-/// `NveHybridStatus` variants as emitted by codegen (`Name = N,` lines of its enum).
-fn hybrid_status_entries(idx: &RepoIndex, out: &mut Vec<Violation>) -> Vec<(String, i64)> {
-    let text = idx.read_text(HYBRID_STATUS_SOURCE).unwrap_or_default();
-    let entries = decl::code_block(&text, "pub enum NveHybridStatus")
-        .map(|body| decl::declarations(&body, Syntax::Assign))
-        .unwrap_or_default();
-    if entries.is_empty() {
-        out.push(Violation::new(
-            HYBRID_STATUS_SOURCE,
-            0,
-            "NveHybridStatus",
-            "could not read the hybrid status enum",
-        ));
-    }
-    entries
+/// Every `nve_abi::hybrid::NveHybridStatus`, by name and code.
+fn hybrid_status_entries() -> Vec<(String, i64)> {
+    NveHybridStatus::ALL
+        .into_iter()
+        .map(|s| (s.name().to_owned(), i64::from(s as i32)))
+        .collect()
 }
 
-/// The 19 golden vectors every host suite asserts: `(input, seed)`.
-fn golden_vectors() -> Vec<(Vec<u8>, u64)> {
-    let seq = |n: usize| (0..n).map(|i| (i * 31 + 7) as u8).collect::<Vec<u8>>();
-    let cyan = |n: usize| {
-        let mut state: u64 = 0x9E37_79B1;
-        (0..n)
-            .map(|_| {
-                let b = (state >> 56) as u8;
-                state = state.wrapping_mul(PRIME1);
-                b
-            })
-            .collect::<Vec<u8>>()
-    };
-    let (p32, wire) = (0x9E37_79B1, 0x4E56_4557_4952_4532);
-    let text = |s: &str| s.as_bytes().to_vec();
-    vec![
-        (vec![], 0),
-        (text("a"), 0),
-        (text("abc"), 0),
-        (text("nve.visual"), 0),
-        (vec![0x00, 0x01, 0x7F, 0x80, 0xFF], 0),
-        (text("héllo wörld — 日本語 🚀"), 0),
-        (seq(101), 0),
-        (seq(101), wire),
-        (seq(37), PRIME1),
-        (seq(1024), 0),
-        (cyan(1), 0),
-        (cyan(4), 0),
-        (cyan(14), 0),
-        (cyan(222), 0),
-        (cyan(1024), 0),
-        (cyan(1), p32),
-        (cyan(222), p32),
-        (cyan(32), PRIME1),
-        (cyan(1024), PRIME1),
-    ]
-}
-
-/// Checks every hand-mirrored constant and golden digest in the five host runtimes.
+/// Checks every hand-mirrored constant in the five host runtimes. (Golden XXH64 vectors are
+/// generated from `nve_hash` by `nve codegen abi`, so no host carries a hand-copied digest.)
 pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
     use Syntax::{Assign, Call, Colon, Ordered};
     let mut out = Vec::new();
@@ -232,7 +186,7 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         ),
         &mut out,
     );
-    let hybrid = hybrid_status_entries(idx, &mut out);
+    let hybrid = hybrid_status_entries();
     check_set(
         idx,
         "NveHybridStatus",
@@ -387,38 +341,6 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         }
     }
 
-    let golden = [
-        ("packages/core/host-cxx/tests/vectors.h", false),
-        (
-            "packages/core/host-swift/Tests/NveHostTests/GoldenVectors.swift",
-            false,
-        ),
-        (
-            "packages/core/host-java/src/test/java/dev/nve/host/Xxh64Test.java",
-            false,
-        ),
-        ("packages/core/host-dart/test/src/xxh64_suite.dart", true),
-        ("packages/core/host-ts/test/golden.ts", true),
-    ];
-    for (file, halves) in golden {
-        let text = idx.read_text(file).unwrap_or_default();
-        for (bytes, seed) in golden_vectors() {
-            let d = xxh64(&bytes, seed);
-            let needle = if halves {
-                format!("key64(0x{:08x},0x{:08x})", d as u32, (d >> 32) as u32)
-            } else {
-                format!("0x{d:016x}")
-            };
-            if !decl::contains_hex_token(&text, &needle) {
-                out.push(Violation::new(
-                    file,
-                    0,
-                    &needle,
-                    "golden XXH64 digest missing or drifted from `nve_hash::xxh64`",
-                ));
-            }
-        }
-    }
     out
 }
 

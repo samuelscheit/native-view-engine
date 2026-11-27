@@ -6,19 +6,23 @@ use nve_codegen::{
     DefaultValue, EventBubbling, ExportBackend, NveExportSpec, ParsedRnSpec, PropType,
 };
 
-/// Optional checkout of React Native's `packages/react-native/Libraries`, from `NVE_RN_LIBRARIES_DIR`.
-/// Unset (or missing files) falls back to the embedded specs, so the suite runs anywhere.
-fn rn_libraries_dir() -> std::path::PathBuf {
-    std::env::var_os("NVE_RN_LIBRARIES_DIR").map(Into::into).unwrap_or_default()
+/// `rel` inside an optional checkout of React Native's `packages/react-native/Libraries`, named by
+/// `NVE_RN_LIBRARIES_DIR`. Unset (or empty) returns `None`, and the real-spec checks are skipped
+/// or use the embedded Switch spec. A set variable must name a real checkout: a typo fails loudly
+/// instead of silently skipping every real-spec check.
+fn rn_spec(rel: &str) -> Option<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(std::env::var_os("NVE_RN_LIBRARIES_DIR").filter(|v| !v.is_empty())?);
+    assert!(dir.is_dir(), "NVE_RN_LIBRARIES_DIR={} is not a directory", dir.display());
+    let path = dir.join(rel);
+    assert!(path.is_file(), "NVE_RN_LIBRARIES_DIR has no {rel}");
+    Some(path)
 }
 
 #[test]
 fn parses_real_rn_component_specs_and_follows_reexports() {
-    let switch_path = rn_libraries_dir().join("Components/Switch/SwitchNativeComponent.js");
-    let switch_spec = if switch_path.exists() {
-        parse_rn_spec_file(&switch_path).expect("parse real SwitchNativeComponent.js")
-    } else {
-        parse_rn_spec(EMBEDDED_SWITCH_SPEC).expect("parse embedded Switch spec")
+    let switch_spec = match rn_spec("Components/Switch/SwitchNativeComponent.js") {
+        Some(path) => parse_rn_spec_file(&path).expect("parse real SwitchNativeComponent.js"),
+        None => parse_rn_spec(EMBEDDED_SWITCH_SPEC).expect("parse embedded Switch spec"),
     };
 
     let ParsedRnSpec::Component(sw) = switch_spec else {
@@ -57,9 +61,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
     assert_eq!(sw.commands[0].params[0].param_type, PropType::Bool);
 
     // Additional real RN specs if the local RN checkout is present
-    let activity_path = rn_libraries_dir()
-        .join("Components/ActivityIndicator/ActivityIndicatorViewNativeComponent.js");
-    if activity_path.exists() {
+    if let Some(activity_path) = rn_spec("Components/ActivityIndicator/ActivityIndicatorViewNativeComponent.js") {
         let out = import_rn_file(&activity_path).expect("import ActivityIndicatorView");
         let ParsedRnSpec::Component(act) = &out.spec else {
             panic!("expected component");
@@ -80,8 +82,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
         assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
     }
 
-    let modal_path = rn_libraries_dir().join("Modal/RCTModalHostViewNativeComponent.js");
-    if modal_path.exists() {
+    if let Some(modal_path) = rn_spec("Modal/RCTModalHostViewNativeComponent.js") {
         let out = import_rn_file(&modal_path).expect("import ModalHostView");
         let ParsedRnSpec::Component(modal) = &out.spec else {
             panic!("expected component");
@@ -100,9 +101,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
         assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
     }
 
-    let refresh_path = rn_libraries_dir()
-        .join("Components/RefreshControl/PullToRefreshViewNativeComponent.js");
-    if refresh_path.exists() {
+    if let Some(refresh_path) = rn_spec("Components/RefreshControl/PullToRefreshViewNativeComponent.js") {
         let out = import_rn_file(&refresh_path).expect("import PullToRefreshView");
         let ParsedRnSpec::Component(ptr) = &out.spec else {
             panic!("expected component");
@@ -124,8 +123,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
 
 #[test]
 fn parses_real_rn_turbomodule_specs_and_ts_turbomodules() {
-    let appearance_path = rn_libraries_dir().join("Utilities/NativeAppearance.js");
-    if appearance_path.exists() {
+    if let Some(appearance_path) = rn_spec("Utilities/NativeAppearance.js") {
         let out = import_rn_file(&appearance_path).expect("import NativeAppearance");
         let ParsedRnSpec::TurboModule(tm) = &out.spec else {
             panic!("expected TurboModule");

@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'command_decoder.dart';
 import 'event_codec.dart';
 import 'flex_layout.dart';
-import 'nve_core_abi.generated.dart';
+import 'package:nve_host/nve_host.dart';
 import 'nve_pair_client.dart';
 
 typedef NvePairedSurfaceFrameBuilder = Widget Function(

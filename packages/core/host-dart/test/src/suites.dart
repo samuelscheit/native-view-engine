@@ -1,5 +1,7 @@
 import 'bin_codec_suite.dart';
 import 'check.dart';
+import 'dynamic_value_suite.dart';
+import 'generated_suite.dart';
 import 'table_scene_suite.dart';
 import 'xxh64_suite.dart';
 
@@ -8,6 +10,8 @@ Check runAll() {
   final c = Check();
   runXxh64(c);
   runBinCodec(c);
+  runDynamicValue(c);
   runTableScene(c);
+  runGenerated(c);
   return c;
 }

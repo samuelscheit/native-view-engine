@@ -5,7 +5,7 @@ Standalone mechanical architectural invariant verifier for the `native-view-engi
 ## Role
 
 - Enforces workspace dependency DAG boundaries using `guppy` and real `target-spec` `cfg(...)` evaluation (`wasm32` dev-dependency gating, framework-agnostic core, zero `packages/** -> hosts/**`, module root spec purity).
-- Enforces cross-file Rust AST invariants via `syn` + `proc-macro2` (duplicate internal enums, redundant NVE-to-NVE converters, mirrored `<->` match pairs, compact discriminant matches, core string tables, cross-file `#[repr(C)]` layout/cache-line locks, and typed domain fields).
+- Enforces cross-file Rust AST invariants via `syn` + `proc-macro2` (unconditionally enforced workspace-wide structural match-arm fingerprinting for same-file & cross-file same-direction and mirrored enum match/assignment tables with a shrink-only monotonic ratchet baseline, plus staged duplicate internal/structural enums, redundant NVE-to-NVE converters, compact discriminant matches, core string tables, cross-file `#[repr(C)]` layout/cache-line locks, and typed domain fields).
 - Enforces repository hygiene (`docs/BACKLOG.md` open-only, generated-file naming & zero tracked artifacts, personal path/endpoint ratchet, crate `README.md` + doctest hooks, 650-line production file ratchet across `packages/` and `hosts/`, and per-crate benchmark / `CountingAlloc` coverage).
 
 ## Verification

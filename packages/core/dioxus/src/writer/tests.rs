@@ -837,3 +837,22 @@ fn standalone_invalid_reset_empty_style_clear_noop_and_shorthand_order_preservat
         "re-setting cleared `background` shorthand must stay ranked before `backgroundColor`"
     );
 }
+
+#[test]
+fn typed_style_clamps_extreme_scalars_to_the_style_scalar_range() {
+    use crate::typed_style::TypedStyle;
+    use nve_abi::num::MAX_STYLE_SCALAR;
+    use nve_abi::Dimension;
+
+    let clamped = TypedStyle::new()
+        .width(Dimension::Points(1e8))
+        .height(Dimension::Percent(f32::INFINITY))
+        .gap(2e7)
+        .margin(-2e7)
+        .font_size(1e8);
+    assert_eq!(clamped.layout().width, Dimension::Points(MAX_STYLE_SCALAR));
+    assert_eq!(clamped.layout().height, Dimension::Percent(0.0));
+    assert_eq!(clamped.layout().gap, MAX_STYLE_SCALAR);
+    assert_eq!(clamped.layout().margin.top, -MAX_STYLE_SCALAR);
+    assert_eq!(clamped.style().font_size, MAX_STYLE_SCALAR);
+}

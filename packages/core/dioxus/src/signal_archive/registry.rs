@@ -1,11 +1,11 @@
-//! App/surface-scoped `SignalRegistry` for registration, snapshotting, `MmapOffsetArena`
+//! App/surface-scoped `SignalRegistry` for registration, snapshotting, atomic `StateFile`
 //! persistence, and schema-safe cold hydration.
 
 use nve_abi::hash::HashSet;
 use std::collections::BTreeMap;
 
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
-use nve_engine::{NativeStateStore, StateSaveOutcome};
+use nve_engine::{StateFile, StateSaveOutcome};
 
 use super::codec::{SignalArchive, SignalTableSnapshot};
 use super::signal_codec::SignalCodec;
@@ -153,7 +153,7 @@ impl SignalRegistry {
         snap
     }
 
-    /// Encodes a full `NVE_SIG1` snapshot of all registered signals for [`NativeStateStore`].
+    /// Encodes a full `NVE_SIG1` snapshot of all registered signals for [`StateFile`].
     pub fn encode_full(&self) -> Result<Vec<u8>, SignalArchiveError> {
         self.capture().encode()
     }
@@ -178,11 +178,11 @@ impl SignalRegistry {
         Ok(Some(encoded))
     }
 
-    /// Crash-atomically persists the current signal table into `store` (`MmapOffsetArena`) when
+    /// Crash-atomically persists the current signal table into `store` ([`StateFile`]) when
     /// any registered signal changed since the last persisted baseline.
     pub fn persist_if_dirty_to_store(
         &mut self,
-        store: &mut NativeStateStore,
+        store: &mut StateFile,
     ) -> Result<Option<StateSaveOutcome>, SignalArchiveError> {
         let current = self.capture();
         if current.diff_since(&self.last_persisted).is_empty() {
@@ -196,7 +196,7 @@ impl SignalRegistry {
     /// Unconditionally persists the full signal table into `store` and refreshes the diff baseline.
     pub fn persist_to_store(
         &mut self,
-        store: &mut NativeStateStore,
+        store: &mut StateFile,
     ) -> Result<StateSaveOutcome, SignalArchiveError> {
         let current = self.capture();
         let outcome = SignalArchive::save_to_store(store, &current)?;
@@ -296,11 +296,10 @@ impl SignalRegistry {
         Ok(self.hydrate_from_table(&table))
     }
 
-    /// Loads state from a [`NativeStateStore`] (`MmapOffsetArena`) and hydrates all matching
-    /// registered signals deterministically.
+    /// Loads state from a [`StateFile`] and hydrates all matching registered signals deterministically.
     pub fn hydrate_from_store(
         &mut self,
-        store: &NativeStateStore,
+        store: &StateFile,
     ) -> Result<HydrationReport, SignalArchiveError> {
         let table = SignalArchive::load_from_store(store)?;
         Ok(self.hydrate_from_table(&table))

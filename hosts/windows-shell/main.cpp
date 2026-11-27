@@ -243,9 +243,7 @@ struct CliOptions {
   std::string pair_connect;
   std::string pair_token;
   std::string pair_transport;
-  std::string snapshot_path;
   std::string screenshot_path;
-  uint32_t schema_version{1u};
   int width{640};
   int height{420};
   float scale{1.0f};
@@ -262,11 +260,6 @@ CliOptions parse_cli(int argc, char** argv) {
       opts.pair_token = argv[++i];
     } else if (std::strcmp(argv[i], "--pair-transport") == 0) {
       opts.pair_transport = argv[++i];
-    } else if (std::strcmp(argv[i], "--snapshot") == 0) {
-      opts.snapshot_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--schema") == 0) {
-      const long parsed = std::strtol(argv[++i], nullptr, 10);
-      if (parsed >= 0) opts.schema_version = static_cast<uint32_t>(parsed);
     } else if (std::strcmp(argv[i], "--screenshot") == 0) {
       opts.screenshot_path = argv[++i];
     } else if (std::strcmp(argv[i], "--width") == 0) {
@@ -295,33 +288,6 @@ bool wait_for_initial_paired_frame(nve::win::NveRnwComponentHost& host, int time
   return host.paired_frame_count() > 0u;
 }
 
-void maybe_replay_snapshot(
-    nve::win::NveRnwComponentHost& host,
-    const CliOptions& opts,
-    NveSurfaceConfig cfg) {
-  if (opts.snapshot_path.empty()) {
-    return;
-  }
-  uint64_t restore_us = 0u;
-  if (host.replay_frame0_snapshot(opts.snapshot_path, opts.schema_version, cfg, &restore_us)) {
-    std::cout << "[nve-windows-shell] Instant-boot Frame-0 mmap restore from '"
-              << opts.snapshot_path << "' in " << restore_us << " us\n";
-  }
-}
-
-void maybe_save_snapshot(const nve::win::NveRnwComponentHost& host, const CliOptions& opts) {
-  if (opts.snapshot_path.empty()) {
-    return;
-  }
-  if (host.save_snapshot(opts.snapshot_path, opts.schema_version)) {
-    std::cout << "[nve-windows-shell] Saved Frame-0 + state snapshot to '" << opts.snapshot_path
-              << "' (schema v" << opts.schema_version << ")\n";
-  } else {
-    std::cerr << "[nve-windows-shell] Warning: failed to save snapshot to '" << opts.snapshot_path
-              << "'\n";
-  }
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -339,8 +305,6 @@ int main(int argc, char** argv) {
         .height = static_cast<float>(opts.height),
         .scale_factor = opts.scale,
     };
-
-    maybe_replay_snapshot(host, opts, cfg);
 
     if (!opts.pair_connect.empty()) {
       std::string err_msg;
@@ -384,7 +348,6 @@ int main(int argc, char** argv) {
                 << "\n";
       return 1;
     }
-    maybe_save_snapshot(host, opts);
     host.disconnect_paired();
     std::cout << "Rendered " << px_w << "x" << px_h << " screenshot to " << opts.screenshot_path
               << "\n";
@@ -405,13 +368,6 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const NveSurfaceConfig win_cfg{
-      .surface_id = win_opts.surface_id,
-      .width = static_cast<float>(opts.width),
-      .height = static_cast<float>(opts.height),
-      .scale_factor = window.dpi_scale(),
-  };
-  maybe_replay_snapshot(window.host(), opts, win_cfg);
   window.show(SW_SHOWDEFAULT);
 
   if (!opts.pair_connect.empty()) {
@@ -437,7 +393,6 @@ int main(int argc, char** argv) {
   }
 
   const int exit_code = window.run_message_loop();
-  maybe_save_snapshot(window.host(), opts);
   window.disconnect_paired();
   return exit_code;
 #else
@@ -449,7 +404,6 @@ int main(int argc, char** argv) {
       .height = static_cast<float>(opts.height),
       .scale_factor = opts.scale,
   };
-  maybe_replay_snapshot(host, opts, cfg);
   if (!opts.pair_connect.empty()) {
     std::string err_msg;
     if (!host.connect_paired(
@@ -471,7 +425,6 @@ int main(int argc, char** argv) {
     std::cerr << "Failed to attach built-in demo interface\n";
     return 1;
   }
-  maybe_save_snapshot(host, opts);
   const uint32_t nodes = host.node_count();
   host.disconnect_paired();
   std::cout << "nve_windows_shell headless host ready (nodes=" << nodes

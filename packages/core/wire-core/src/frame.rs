@@ -72,7 +72,7 @@ pub enum NveWireKind {
     Hello = 1,
     HelloAck = 2,
     Reject = 3,
-    /// Complete zero-copy `NveSceneArchive` (`RelocBuf`, already `XXH64`-verified in its 64B header).
+    /// Complete `NVE2` full scene keyframe (protected by the trailing `XXH64` checksum).
     SceneKeyframe = 4,
     /// Direct incremental `NVE2` frame batch (zero reverse-parsing).
     CommandDelta = 5,
@@ -339,17 +339,12 @@ pub struct NveWireFrame {
 
 impl NveWireFrame {
     /// Creates a new frame on `kind.default_channel()` with `XXH64` enabled by default
-    /// (except `SceneKeyframe`, whose `NveSceneArchive` 64-byte header is already `XXH64`-verified).
+    /// (including `SceneKeyframe` `NVE2` keyframes).
     pub fn new(kind: NveWireKind, sequence: u32, payload: Vec<u8>) -> Self {
-        let flags = if kind == NveWireKind::SceneKeyframe {
-            0
-        } else {
-            NVE_WIRE_FLAG_XXH64
-        };
         Self {
             channel: kind.default_channel(),
             kind,
-            flags,
+            flags: NVE_WIRE_FLAG_XXH64,
             sequence,
             payload,
         }

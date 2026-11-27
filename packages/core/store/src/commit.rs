@@ -81,10 +81,19 @@ impl Transaction<'_> {
                 continue;
             }
             let t = changes.next_table(slot);
+            let dirty_len = col.dirty.as_slice().len();
+            if t.nodes.capacity() < dirty_len {
+                t.nodes.reserve(dirty_len);
+            }
+            if t.masks.capacity() < dirty_len {
+                t.masks.reserve(dirty_len);
+            }
             for &index in col.dirty.as_slice() {
                 let node = &s.nodes[index];
                 let attached = node.flags & LIVE != 0 && node.tables.contains(slot);
-                let Some(row) = col.find_row(index) else { continue };
+                let Some(row) = col.find_row(index) else {
+                    continue;
+                };
                 let m = col.masks[row];
                 col.masks[row] = 0;
                 if attached && m != 0 {
@@ -93,6 +102,10 @@ impl Transaction<'_> {
                 }
             }
             col.dirty.clear();
+            if col.detached.len() > 1 {
+                col.detached.sort_unstable_by_key(|id| id.0);
+                col.detached.dedup();
+            }
             for id in col.detached.drain(..) {
                 let node = &s.nodes[id.node_index()];
                 if node.flags & LIVE != 0
@@ -224,10 +237,8 @@ impl crate::store::NodeStore {
             let Some(col) = self.columns[slot.0 as usize].as_ref() else {
                 continue;
             };
-            // Dense tables publish no owners (row = node index) and only the rows of node slots
-            // that exist; the column's power-of-two growth tail belongs to no node.
             let dense = col.is_dense();
-            let row_count = if dense { col.row_count().min(self.capacity()) } else { col.row_count() };
+            let row_count = col.published_row_count(self.capacity());
             let rows_ptr = if col.rows.is_empty() {
                 core::ptr::null()
             } else {

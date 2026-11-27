@@ -29,6 +29,7 @@
 #endif
 
 #include "check.h"
+#include "nve2_writer.hpp"
 // Include `api.h` BEFORE `runtime_session.hpp` to verify `NVE_RUNTIME_API` and
 // `NVE_STATIC_ASSERT` never clash with `NVE_API` regardless of include order.
 #include "nve/host/api.h"
@@ -44,117 +45,28 @@ using nve::host::RuntimeSession;
 using nve::host::SceneError;
 using nve::host::TableReader;
 
-constexpr uint32_t kNve2Magic = 0x3245564Eu;  // "NVE2" LE
-constexpr uint32_t kNve2Version = 1u;
-constexpr uint8_t kOpDeclareTables = 1u;
-constexpr uint8_t kOpCreateNodes = 3u;
-constexpr uint8_t kOpPatch = 6u;
-constexpr uint8_t kOpSetStrings = 8u;
-constexpr uint8_t kOpSetChildren = 9u;
-
-void push_u32(std::vector<uint8_t>& out, uint32_t v) {
-  out.push_back(static_cast<uint8_t>(v & 0xFFu));
-  out.push_back(static_cast<uint8_t>((v >> 8u) & 0xFFu));
-  out.push_back(static_cast<uint8_t>((v >> 16u) & 0xFFu));
-  out.push_back(static_cast<uint8_t>((v >> 24u) & 0xFFu));
-}
-
-void write_u32_at(std::vector<uint8_t>& out, size_t off, uint32_t v) {
-  out[off + 0u] = static_cast<uint8_t>(v & 0xFFu);
-  out[off + 1u] = static_cast<uint8_t>((v >> 8u) & 0xFFu);
-  out[off + 2u] = static_cast<uint8_t>((v >> 16u) & 0xFFu);
-  out[off + 3u] = static_cast<uint8_t>((v >> 24u) & 0xFFu);
-}
-
-void push_padded_bytes(std::vector<uint8_t>& out, std::string_view sv) {
-  for (const char ch : sv) out.push_back(static_cast<uint8_t>(ch));
-  while ((out.size() & 3u) != 0u) out.push_back(0u);
-}
+using nve_test::push_u32;
 
 /// Builds a valid binary `NVE2` frame declaring dynamic sparse table `"cxx.demo.badge"` (3 words:
 /// word 0 = u32 badge_count, words 1..2 = StrSpan label), creating ROOT(1) + child(2), patching
 /// badge_count = `badge_value`, setting UTF-8 label = `label`, and attaching child(2) under ROOT(1).
 std::vector<uint8_t> build_demo_nve2(uint32_t badge_value, std::string_view label) {
-  constexpr std::string_view kTableName = "cxx.demo.badge";
-  constexpr Key64 kTableKey = Key64::of(kTableName);
-  constexpr Key64 kSchemaHash = Key64::of("cxx.demo.badge.schema.v1");
+  using nve_test::Nve2Writer;
+  using nve_test::Op;
   constexpr uint8_t kWireSlot = 40u;
-
-  std::vector<uint8_t> out;
-  for (int i = 0; i < 6; ++i) push_u32(out, 0u);  // 24-byte NVE2 header placeholder
-  uint32_t ops = 0u;
-
-  auto begin_op = [&](uint8_t op, uint8_t table, uint16_t count) -> size_t {
-    const size_t start = out.size();
-    const uint32_t head = static_cast<uint32_t>(op) | (static_cast<uint32_t>(table) << 8u) |
-                          (static_cast<uint32_t>(count) << 16u);
-    push_u32(out, head);
-    push_u32(out, 0u);  // payload_words placeholder
-    return start;
-  };
-  auto end_op = [&](size_t start) {
-    const uint32_t payload_words = static_cast<uint32_t>((out.size() - start) / 4u - 2u);
-    write_u32_at(out, start + 4u, payload_words);
-    ++ops;
-  };
-
-  {
-    const size_t op = begin_op(kOpDeclareTables, 0u, 1u);
-    push_u32(out, kTableKey.lo());
-    push_u32(out, kTableKey.hi());
-    push_u32(out, kSchemaHash.lo());
-    push_u32(out, kSchemaHash.hi());
-    const uint32_t storage_sparse = 1u;
-    const uint32_t flags = uint32_t{1} << 1u;  // table_flags::PUBLISH_TO_SCENE
-    const uint32_t words = 3u;
-    push_u32(out, static_cast<uint32_t>(kWireSlot) | (storage_sparse << 8u) | (flags << 16u) |
-                      (words << 24u));
-    push_u32(out, uint32_t{1} << 1u);  // str_words: bit 1 -> words 1 & 2 hold StrSpan
-    push_u32(out, 0u);                 // resource_words
-    push_u32(out, 0u);                 // default[0]
-    push_u32(out, 0u);                 // default[1]
-    push_u32(out, 0u);                 // default[2]
-    push_u32(out, 0x00010101u);        // word_effects[0..3] padded to 4 bytes
-    push_u32(out, static_cast<uint32_t>(kTableName.size()));
-    push_padded_bytes(out, kTableName);
-    end_op(op);
-  }
-  {
-    const size_t op = begin_op(kOpCreateNodes, 0u, 2u);
-    push_u32(out, 1u);
-    push_u32(out, 2u);
-    end_op(op);
-  }
-  {
-    const size_t op = begin_op(kOpPatch, kWireSlot, 1u);
-    push_u32(out, 2u);
-    push_u32(out, 1u);
-    push_u32(out, badge_value);
-    end_op(op);
-  }
-  {
-    const size_t op = begin_op(kOpSetStrings, kWireSlot, 1u);
-    push_u32(out, 2u);
-    push_u32(out, 1u | (static_cast<uint32_t>(label.size()) << 8u));
-    push_padded_bytes(out, label);
-    end_op(op);
-  }
-  {
-    const size_t op = begin_op(kOpSetChildren, 0u, 1u);
-    push_u32(out, 1u);
-    push_u32(out, 1u);
-    push_u32(out, 2u);
-    end_op(op);
-  }
-
-  const uint32_t total_words = static_cast<uint32_t>(out.size() / 4u);
-  write_u32_at(out, 0u, kNve2Magic);
-  write_u32_at(out, 4u, kNve2Version);
-  write_u32_at(out, 8u, 1u);
-  write_u32_at(out, 12u, 0u);
-  write_u32_at(out, 16u, ops);
-  write_u32_at(out, 20u, total_words);
-  return out;
+  constexpr std::array<uint32_t, 3> kDefaults{0u, 0u, 0u};
+  constexpr std::array<uint8_t, 3> kEffects{1u, 1u, 1u};
+  Nve2Writer w;
+  w.declare({kWireSlot, Key64::of("cxx.demo.badge"), Key64::of("cxx.demo.badge.schema.v1"),
+             1u /* sparse */, 2u /* PUBLISH_TO_SCENE */, kDefaults, kEffects,
+             uint32_t{1} << 1u /* words 1..2 = StrSpan label */, 0u, "cxx.demo.badge"});
+  w.op(Op::CreateNodes, 0u, 2u, [](Nve2Writer& o) { o.u32(1u).u32(2u); });
+  w.op(Op::Patch, kWireSlot, 1u, [&](Nve2Writer& o) { o.u32(2u).u32(1u).u32(badge_value); });
+  w.op(Op::SetStrings, kWireSlot, 1u, [&](Nve2Writer& o) {
+    o.u32(2u).u32(1u | (static_cast<uint32_t>(label.size()) << 8u)).padded(label);
+  });
+  w.op(Op::SetChildren, 0u, 1u, [](Nve2Writer& o) { o.u32(1u).u32(1u).u32(2u); });
+  return std::move(w).finish();
 }
 
 #if !defined(_WIN32) && defined(NVE_RUNTIME_TEST_HAS_WIRE)
@@ -287,7 +199,7 @@ extern "C" void test_wake_cb(void* ctx) {
 }
 
 void test_live_runtime_session() {
-  // ABI version mismatch returns NULL; matching version returns valid 17-slot vtable.
+  // ABI version mismatch returns NULL; matching version returns a complete vtable.
   CHECK(nve_runtime_get_interface(NVE_RUNTIME_ABI_VERSION + 1u) == nullptr);
   const NveRuntimeApi* api = nve_runtime_get_interface(NVE_RUNTIME_ABI_VERSION);
   CHECK(api != nullptr);
@@ -528,24 +440,8 @@ void test_live_runtime_session() {
   }
 #endif
 
-  // ABI v2 host text measurer: install (relayouts on a new frame), then restore the heuristic.
-  const NveTextMeasureFn measure = [](void*, NveStrSlice, float, uint32_t, float, float* w,
-                                      float* h) -> int32_t {
-    *w = 1.0f;
-    *h = 1.0f;
-    return 0;
-  };
-  NveRuntimeMetrics before{};
-  CHECK(session.metrics(&before) == NVE_RUNTIME_OK);
-  CHECK(session.set_text_measurer(measure, nullptr) == NVE_RUNTIME_OK);
-  NveRuntimeMetrics after{};
-  CHECK(session.metrics(&after) == NVE_RUNTIME_OK);
-  CHECK(after.frame_id == before.frame_id + 1u);
-  CHECK(session.set_text_measurer(nullptr, nullptr) == NVE_RUNTIME_OK);
-
   // Explicit reset destroys cleanly; second reset is a no-op.
   session.reset();
-  CHECK(session.set_text_measurer(measure, nullptr) == NVE_RUNTIME_INVALID_ARG);
   CHECK(!session.valid());
   session.reset();
 }

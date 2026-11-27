@@ -9,11 +9,11 @@
 pub mod app;
 pub mod builder;
 pub mod c_api;
+mod hooks;
 mod lock;
 mod pair;
-mod resources;
+mod publish;
 mod state;
-mod text_measure;
 pub mod surface;
 pub use nve_engine::wake;
 

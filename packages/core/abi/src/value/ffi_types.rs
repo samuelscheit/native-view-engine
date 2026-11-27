@@ -16,7 +16,7 @@ use super::ffi_views::NveValueRef;
 /// When `len > 0` and structural preconditions hold, caller must guarantee `ptr` points to `len`
 /// valid, initialized, immutable `T` values for lifetime `'a`.
 #[inline]
-pub(super) unsafe fn guarded_slice<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
+pub(crate) unsafe fn guarded_slice<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
     if !ptr.is_null() && align_of::<T>() > 1 && !ptr.is_aligned() {
         return None;
     }

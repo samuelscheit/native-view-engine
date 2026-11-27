@@ -1,12 +1,12 @@
 # `nve-engine`
 
-Framework-agnostic core runtime (`packages/core/engine`, **Core Runtime layer**) defining `StoreBackend`, `SurfaceRunner`, `NveApp`, crash-atomic `MmapOffsetArena`, 6-stage `FrameProfiler`, and hot-reload primitives.
+Framework-agnostic core runtime (`packages/core/engine`, **Core Runtime layer**) defining `StoreBackend`, `SurfaceRunner`, `NveApp`, crash-atomic `Frame0File` + `StateFile` persistence, 6-stage `FrameProfiler`, and hot-reload primitives.
 
 ## Key Public API
 
 - `StoreBackend`, `StoreWireReplica`, `Viewport`, `LayoutRect`, `BackendApplyStats`, `BackendError`
-- `app::NveApp`, `mmap_arena`, `instant_boot`
-- `profiler`, `hotreload::HotPatchMsg` (layout traits live in `nve-layout`)
+- `app::NveApp`, `persistence::{Frame0File, StateFile, write_file_atomic}`
+- `layout::{StoreLayoutEngine, TextMeasurer, HeuristicTextMeasurer}`, `profiler`, `hotreload::HotPatchMsg`
 
 ```rust
 use nve_engine::{LayoutRect, Viewport};

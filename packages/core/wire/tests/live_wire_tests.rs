@@ -1,5 +1,5 @@
 //! Live loopback integration tests for `nve-wire`:
-//! - Raw QUIC (`nve-wire-2` ALPN) handshake, `NveSceneArchive` keyframe (`XXH64`), `CommandDelta`,
+//! - Raw QUIC (`nve-wire-2` ALPN) handshake, `NVE2` `SceneKeyframe` (`XXH64`), `CommandDelta`,
 //!   `NodePatchDelta` (< 512 B), `EventBatch` backchannel, and RFC 9221 datagram round-trip
 //! - Real HTTP/3 WebTransport (`h3` ALPN) handshake on the SAME UDP socket with 13-day ECDSA P-256
 //!   SHA-256 cert pinning + full stream & datagram round-trip
@@ -12,77 +12,29 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nve_abi::{
-    encode_events, ColorRgba, EventPayload, NativeEvent, NativeEventKind, NVE_PRIMARY_SLOT_NONE,
-};
-use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
-use nve_engine::{
-    encode_scene_reloc, LayoutRect, SceneRelocInput, SceneRelocNodeInput, SceneRelocView,
-    VerifyMode, Viewport,
-};
+use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind};
+use nve_components::tables::{register_core_tables, TextContent};
+use nve_store::wire::{WireDecoder, WireEncoder};
+use nve_store::{ChangeSet, NodeId, NodeStore};
 use nve_wire::{
     generate_bearer_token, parse_wire_uri, NveNodePatchDeltaBuilder, NveNodePatchDeltaView,
     NveWireChannel, NveWireClient, NveWireClientConfig, NveWireFrame, NveWireKind, NveWireServer,
     NveWireServerConfig, NveWireTransportError, NveWireTransportKind, ReconnectConfig,
-    ReconnectingWireClient, WireInboundItem,
+    ReconnectingWireClient, WireInboundItem, NVE_WIRE_FLAG_XXH64,
 };
 
-fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
-    let nodes = [
-        SceneRelocNodeInput {
-            node_id: 1,
-            parent_index: -1,
-            primary_slot: NVE_PRIMARY_SLOT_NONE,
-            flags: 0,
-            text_align: 0,
-            image_resize_mode: 0,
-            font_weight: 400,
-            event_mask: 0,
-            computed_rect: LayoutRect::default(),
-            style: VisualSnapshot::default(),
-            layout: LayoutSnapshot::default(),
-            text: "",
-            tag: "",
-            image_src: "",
-            box_shadow: "",
-            draw_list: &[],
-            children: &[1],
-        },
-        SceneRelocNodeInput {
-            node_id: 2,
-            parent_index: 0,
-            primary_slot: 1,
-            flags: 0,
-            text_align: 0,
-            image_resize_mode: 0,
-            font_weight: 400,
-            event_mask: 0,
-            computed_rect: LayoutRect::default(),
-            style: VisualSnapshot::default(),
-            layout: LayoutSnapshot::default(),
-            text: "Hello QUIC/WebTransport",
-            tag: "",
-            image_src: "",
-            box_shadow: "",
-            draw_list: &[],
-            children: &[],
-        },
-    ];
-    encode_scene_reloc(&SceneRelocInput {
-        schema_version: 1,
-        surface_id: 1,
-        frame_id: 1,
-        viewport: Viewport {
-            width: 393.0,
-            height: 852.0,
-            scale_factor: 3.0,
-        },
-        clear_color: ColorRgba::rgba(11, 17, 32, 255),
-        root_node_index: 0,
-        app_tag: "nve-wire-live-test",
-        nodes: &nodes,
-    })
-    .expect("encode scene archive")
+fn build_sample_nve2_keyframe() -> Vec<u8> {
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let label = tx.create();
+    tx.set_children(NodeId::ROOT, &[label]);
+    tx.edit::<TextContent>(label).text("Hello QUIC/WebTransport");
+    tx.commit_into(&mut changes);
+    let mut out = Vec::new();
+    WireEncoder::default().encode_full(&store, &mut out);
+    out
 }
 
 #[tokio::test]
@@ -105,20 +57,26 @@ async fn live_quic_nve_wire_2_roundtrip_scene_command_patch_events_and_datagram(
     assert!(client.is_connected());
     assert!(client.session_id() >= 1);
 
-    // 1. NveSceneArchive keyframe (`XXH64`-verified inside its 64B header).
-    let scene = build_sample_scene_archive();
-    assert_eq!(server.broadcast_scene_keyframe(1, scene.as_slice()).unwrap(), 1);
+    // 1. NVE2 SceneKeyframe (`XXH64`-verified by the NveWireFrame v2 trailer).
+    let scene = build_sample_nve2_keyframe();
+    assert_eq!(server.broadcast_scene_keyframe(1, &scene).unwrap(), 1);
     let kf = client
         .recv_frame_async(Duration::from_secs(2))
         .await
         .expect("receive SceneKeyframe");
     assert_eq!(kf.kind, NveWireKind::SceneKeyframe);
-    let aligned_kf = nve_engine::RelocBuf::from_bytes(&kf.payload);
-    let scene_view = SceneRelocView::from_bytes(aligned_kf.as_slice(), VerifyMode::Full)
-        .expect("verify received NveSceneArchive XXH64");
+    assert_ne!(kf.flags & NVE_WIRE_FLAG_XXH64, 0);
+    let mut replica = NodeStore::replica();
+    let mut changes = ChangeSet::default();
+    let mut tx = replica.tx();
+    WireDecoder::default()
+        .apply(&mut tx, &kf.payload)
+        .expect("decode received NVE2 SceneKeyframe");
+    tx.commit_into(&mut changes);
+    let child_id = replica.children(NodeId::ROOT)[0];
     assert_eq!(
-        scene_view.text_of(&scene_view.nodes()[1]).unwrap(),
-        "Hello QUIC/WebTransport"
+        replica.try_row::<TextContent>(child_id).map(|t| t.text()),
+        Some("Hello QUIC/WebTransport")
     );
 
     // 2. Direct incremental CommandDelta (zero reverse-parsing).
@@ -637,9 +595,8 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
     );
 
     // Now broadcast a fresh SceneKeyframe (v5) with ZERO subsequent deltas -> server caches v5.
-    // Late-joining Peer C gets cached v5 ONCE; an immediate redundant KeyframeRequest from Peer C
-    // is deduplicated (no duplicate frame, no producer spam), while a subsequent KeyframeRequest
-    // (e.g. corruption recovery) still resends cached v5!
+    // Late-joining Peer C gets cached v5 ONCE, AND an explicit recovery `request_keyframe()`
+    // (empty payload) is NEVER swallowed — it immediately serves cached v5 without spamming producer!
     assert_eq!(
         server
             .broadcast_scene_keyframe(5, b"cached-keyframe-v5")
@@ -652,7 +609,7 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
     let direct_uri = parse_wire_uri(&format!("ws://{}/nve-wire", server.wss_addr())).unwrap();
     let peer_c = NveWireClient::connect_uri_sync(
         &direct_uri,
-        &NveWireClientConfig::new(token, "late-peer-c"),
+        &NveWireClientConfig::new(token.clone(), "late-peer-c"),
     )
     .expect("connect peer C");
     let c_init = peer_c
@@ -661,27 +618,43 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
     assert_eq!(c_init.kind, NveWireKind::SceneKeyframe);
     assert_eq!(c_init.payload, b"cached-keyframe-v5");
 
-    // First redundant KeyframeRequest right after cached join delivery is suppressed.
+    // Explicit recovery KeyframeRequest MUST be served immediately on the FIRST call!
     peer_c.request_keyframe().unwrap();
-    assert!(
-        peer_c.recv_frame_timeout(Duration::from_millis(120)).is_none(),
-        "redundant KeyframeRequest for already-delivered cached keyframe must be suppressed"
-    );
+    let c_resend = peer_c
+        .recv_frame_timeout(Duration::from_secs(2))
+        .expect("explicit recovery KeyframeRequest must NEVER be swallowed");
+    assert_eq!(c_resend.kind, NveWireKind::SceneKeyframe);
+    assert_eq!(c_resend.payload, b"cached-keyframe-v5");
     assert!(
         server
             .recv_inbound_timeout(Duration::from_millis(80))
             .is_none(),
-        "cached keyframe dedup must not forward KeyframeRequest to producer"
+        "cached keyframe reply must not forward KeyframeRequest to producer"
     );
 
-    // Second KeyframeRequest (e.g. after client corruption) DOES resend cached v5 cleanly!
-    peer_c.request_keyframe().unwrap();
-    let c_resend = peer_c
-        .recv_frame_timeout(Duration::from_secs(2))
-        .expect("subsequent KeyframeRequest must resend cached keyframe");
-    assert_eq!(c_resend.kind, NveWireKind::SceneKeyframe);
-    assert_eq!(c_resend.payload, b"cached-keyframe-v5");
+    // NodePatchDelta also invalidates `latest_keyframe` so a late-joining peer triggers a producer
+    // KeyframeRequest instead of receiving stale `cached-keyframe-v5`!
+    let patch_frame = NveWireFrame::new(NveWireKind::NodePatchDelta, 6, b"patch-6".to_vec());
+    assert_eq!(server.broadcast_frame(&patch_frame).unwrap(), 3);
+    let _ = peer_a.recv_frame_timeout(Duration::from_secs(2)).unwrap();
+    let _ = peer_b.recv_item_timeout(Duration::from_secs(2)).unwrap();
+    let _ = peer_c.recv_frame_timeout(Duration::from_secs(2)).unwrap();
 
+    let peer_d = NveWireClient::connect_uri_sync(
+        &direct_uri,
+        &NveWireClientConfig::new(token, "late-peer-d"),
+    )
+    .expect("connect peer D");
+    let d_req = server
+        .recv_inbound_timeout(Duration::from_secs(2))
+        .expect("NodePatchDelta must invalidate cached keyframe and emit KeyframeRequest for late peer");
+    assert_eq!(d_req.frame.kind, NveWireKind::KeyframeRequest);
+    assert!(
+        peer_d.recv_frame_timeout(Duration::from_millis(80)).is_none(),
+        "stale cached-keyframe-v5 must not be replayed after NodePatchDelta"
+    );
+
+    peer_d.close();
     peer_c.close();
     peer_b.shutdown();
     peer_a.close();
@@ -1126,13 +1099,16 @@ fn inbound_queue_overflow_emits_overflowed_counts_dropped_and_preserves_control_
 #[test]
 fn ipv6_loopback_ws_uri_connect_roundtrip() {
     let token = generate_bearer_token();
-    let Ok(server) = NveWireServer::bind_sync(NveWireServerConfig::new(
+    let server = match NveWireServer::bind_sync(NveWireServerConfig::new(
         "[::1]:0".parse().unwrap(),
         "[::1]:0".parse().unwrap(),
         token.clone(),
-    )) else {
-        // Gracefully skip on environments without IPv6 loopback enabled.
-        return;
+    )) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[skip] ipv6_loopback_ws_uri_connect_roundtrip: IPv6 loopback unavailable: {err}");
+            return;
+        }
     };
     let _ = server.broadcast_scene_keyframe(1, b"ipv6-loopback-ok");
     let port = server.wss_addr().port();
@@ -1174,4 +1150,137 @@ fn ipv6_loopback_ws_uri_connect_roundtrip() {
 
     reconnecting.shutdown();
     server.shutdown();
+}
+
+#[test]
+fn outbound_backpressure_drops_excess_events_without_disconnecting_healthy_session() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::sync::atomic::AtomicBool;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let resume_reading = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let resume_srv = Arc::clone(&resume_reading);
+    let stop_srv = Arc::clone(&stop);
+
+    let srv_thread = std::thread::spawn(move || {
+        rt.block_on(async move {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+                return;
+            };
+            // Read Hello and send HelloAck, then STOP reading so TCP send buffer + bounded client
+            // outbound queues saturate under bursty EventBatch traffic.
+            let _ = ws.next().await;
+            let mut ack_payload = Vec::with_capacity(12);
+            ack_payload.extend_from_slice(&7u32.to_le_bytes());
+            ack_payload.extend_from_slice(&[2u8, 0, 0, 0]);
+            ack_payload.extend_from_slice(&0u32.to_le_bytes());
+            let ack = NveWireFrame::new(NveWireKind::HelloAck, 1, ack_payload)
+                .encode()
+                .unwrap();
+            let _ = ws.send(Message::Binary(ack.into())).await;
+
+            while !resume_srv.load(Ordering::Acquire) && !stop_srv.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            if stop_srv.load(Ordering::Acquire) {
+                return;
+            }
+
+            // Resume reading and send a SceneKeyframe proving the SAME session stayed alive!
+            let kf = NveWireFrame::new(
+                NveWireKind::SceneKeyframe,
+                2,
+                b"alive-after-backpressure".to_vec(),
+            )
+            .encode()
+            .unwrap();
+            let _ = ws.send(Message::Binary(kf.into())).await;
+
+            while !stop_srv.load(Ordering::Acquire) {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                    msg = ws.next() => {
+                        if msg.is_none() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    });
+
+    let uri = parse_wire_uri(&format!("ws://{addr}/nve-wire")).unwrap();
+    let mut client = ReconnectingWireClient::connect_sync(
+        uri,
+        NveWireClientConfig::new("tok", "backpressure-test"),
+        ReconnectConfig::default(),
+        None,
+    )
+    .expect("connect backpressure client");
+    assert_eq!(client.active_session_id(), 1);
+
+    // Burst 16 KiB events until backpressure hits either the outer or inner bounded queue.
+    let big_event = vec![0xABu8; 16 * 1024];
+    let mut saw_backpressure_err = false;
+    for _ in 0..2000 {
+        match client.send_events(big_event.clone()) {
+            Ok(()) => {}
+            Err(NveWireTransportError::Backpressure(_)) => {
+                saw_backpressure_err = true;
+                break;
+            }
+            Err(other) => panic!("unexpected non-backpressure error: {other}"),
+        }
+    }
+    let bp_deadline = Instant::now() + Duration::from_secs(2);
+    while client.dropped_outbound() == 0 && Instant::now() < bp_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        saw_backpressure_err || client.dropped_outbound() > 0,
+        "expected outbound backpressure drop on stalled peer"
+    );
+    assert!(
+        client.is_connected(),
+        "outbound backpressure must NEVER disconnect a healthy session"
+    );
+    assert_eq!(
+        client.active_session_id(),
+        1,
+        "session_id must remain 1 (zero reconnect churn on backpressure)"
+    );
+    assert_eq!(client.reconnect_count(), 0);
+
+    // Unblock peer and verify inbound delivery continues on the SAME session_id == 1.
+    resume_reading.store(true, Ordering::Release);
+    let mut saw_alive_kf = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !saw_alive_kf && Instant::now() < deadline {
+        if let Some(WireInboundItem::Frame { session_id, frame }) =
+            client.recv_item_timeout(Duration::from_millis(100))
+            && session_id == 1
+            && frame.kind == NveWireKind::SceneKeyframe
+            && frame.payload == b"alive-after-backpressure"
+        {
+            saw_alive_kf = true;
+        }
+    }
+    assert!(saw_alive_kf, "healthy session must keep receiving frames after backpressure");
+    assert_eq!(client.reconnect_count(), 0);
+
+    stop.store(true, Ordering::Release);
+    client.shutdown();
+    let _ = srv_thread.join();
 }

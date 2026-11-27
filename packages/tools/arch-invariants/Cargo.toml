@@ -11,8 +11,8 @@ nve-abi = { workspace = true }
 nve-components = { workspace = true }
 nve-hash = { workspace = true }
 nve-store = { workspace = true }
-proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { workspace = true }
+syn = { workspace = true, features = ["visit"] }
 
 [lints]
 workspace = true

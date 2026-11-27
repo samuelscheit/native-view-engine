@@ -2,6 +2,63 @@ use crate::writer::CodeWriter;
 
 use super::*;
 
+pub(super) fn spec_needs_dart_ffi(spec: &HybridFileSpec) -> bool {
+    !spec.modules.is_empty()
+        || !spec.views.is_empty()
+        || !spec.collect_pod_option_types(PodOptionScope::Interfaces).is_empty()
+        || spec.structs.iter().any(|s| s.is_pod(spec))
+        || spec_any_type(spec, type_needs_dart_ffi)
+}
+
+pub(super) fn spec_needs_nve_host_ffi(spec: &HybridFileSpec) -> bool {
+    !spec.modules.is_empty() || !spec.views.is_empty()
+}
+
+pub(super) fn spec_needs_typed_data(spec: &HybridFileSpec) -> bool {
+    spec_any_type(spec, type_contains_bytes)
+}
+
+fn spec_any_type(spec: &HybridFileSpec, pred: fn(&HybridType) -> bool) -> bool {
+    let any_method = |methods: &[HybridMethodSpec]| {
+        methods
+            .iter()
+            .any(|m| pred(&m.return_type) || m.params.iter().any(|p| pred(&p.ty)))
+    };
+    spec.structs
+        .iter()
+        .any(|s| s.fields.iter().any(|f| pred(&f.ty)))
+        || spec.modules.iter().any(|m| any_method(&m.methods))
+        || spec.views.iter().any(|v| {
+            v.props.iter().any(|p| pred(&p.ty))
+                || v.events
+                    .iter()
+                    .any(|ev| ev.params.iter().any(|p| pred(&p.ty)))
+                || any_method(&v.methods)
+        })
+}
+
+fn type_contains_bytes(ty: &HybridType) -> bool {
+    match ty {
+        HybridType::Bytes => true,
+        HybridType::Optional(inner)
+        | HybridType::Vec(inner)
+        | HybridType::FixedArray { elem: inner, .. } => type_contains_bytes(inner),
+        HybridType::Result { ok, .. } => type_contains_bytes(ok),
+        _ => false,
+    }
+}
+
+fn type_needs_dart_ffi(ty: &HybridType) -> bool {
+    match ty {
+        HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => true,
+        HybridType::Optional(inner)
+        | HybridType::Vec(inner)
+        | HybridType::FixedArray { elem: inner, .. } => type_needs_dart_ffi(inner),
+        HybridType::Result { ok, err } => type_needs_dart_ffi(ok) || type_needs_dart_ffi(err),
+        _ => false,
+    }
+}
+
 pub(super) fn dart_method_sig(m: &HybridMethodSpec) -> String {
     let mname = dart_ident(&to_camel_case(&m.name));
     let ret = match &m.return_type {
@@ -36,7 +93,7 @@ pub(super) fn dart_type(ty: &HybridType) -> String {
         }
         HybridType::Result { ok, .. } => dart_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
-        HybridType::Value => "NveHybridDynamicValue".to_string(),
+        HybridType::Value => "DynamicValue".to_string(),
         HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
             "ffi.Pointer<ffi.Void>".to_string()
         }
@@ -50,25 +107,47 @@ pub(super) fn dart_type_non_nullable(ty: &HybridType) -> String {
     }
 }
 
-pub(super) fn dart_ffi_field_annotation(ty: &HybridType) -> Option<&'static str> {
+pub(super) fn dart_ffi_field_annotation(ty: &HybridType) -> Option<String> {
     match ty {
-        HybridType::Bool => Some("@ffi.Bool()"),
-        HybridType::U8 => Some("@ffi.Uint8()"),
-        HybridType::U16 => Some("@ffi.Uint16()"),
-        HybridType::Usize => Some("@ffi.Size()"),
-        HybridType::I32 => Some("@ffi.Int32()"),
-        HybridType::U32 | HybridType::Enum(_) => Some("@ffi.Uint32()"),
-        HybridType::I64 => Some("@ffi.Int64()"),
-        HybridType::U64 => Some("@ffi.Uint64()"),
-        HybridType::F32 => Some("@ffi.Float()"),
-        HybridType::F64 => Some("@ffi.Double()"),
+        HybridType::Bool => Some("@ffi.Bool()".to_string()),
+        HybridType::U8 => Some("@ffi.Uint8()".to_string()),
+        HybridType::U16 => Some("@ffi.Uint16()".to_string()),
+        HybridType::Usize => Some("@ffi.Size()".to_string()),
+        HybridType::I32 => Some("@ffi.Int32()".to_string()),
+        HybridType::U32 | HybridType::Enum(_) => Some("@ffi.Uint32()".to_string()),
+        HybridType::I64 => Some("@ffi.Int64()".to_string()),
+        HybridType::U64 => Some("@ffi.Uint64()".to_string()),
+        HybridType::F32 => Some("@ffi.Float()".to_string()),
+        HybridType::F64 => Some("@ffi.Double()".to_string()),
+        HybridType::FixedArray { .. } => Some(dart_ffi_array_annotation(ty)),
         _ => None,
     }
 }
 
-pub(super) fn dart_ffi_struct_field_type(ty: &HybridType) -> String {
+fn dart_ffi_array_element_type(elem: &HybridType) -> Result<String, CodegenError> {
+    match elem {
+        HybridType::Bool => Ok("ffi.Bool".to_string()),
+        HybridType::U8 => Ok("ffi.Uint8".to_string()),
+        HybridType::U16 => Ok("ffi.Uint16".to_string()),
+        HybridType::Usize => Ok("ffi.Size".to_string()),
+        HybridType::I32 => Ok("ffi.Int32".to_string()),
+        HybridType::U32 | HybridType::Enum(_) => Ok("ffi.Uint32".to_string()),
+        HybridType::I64 => Ok("ffi.Int64".to_string()),
+        HybridType::U64 => Ok("ffi.Uint64".to_string()),
+        HybridType::F32 => Ok("ffi.Float".to_string()),
+        HybridType::F64 => Ok("ffi.Double".to_string()),
+        HybridType::Struct(name) => Ok(format!("NveHybrid{name}")),
+        HybridType::FixedArray { elem, .. } => Ok(format!("ffi.Array<{}>", dart_ffi_array_element_type(elem)?)),
+        other => Err(CodegenError::validation(format!(
+            "unsupported Dart FFI fixed-array element type '{}'",
+            other.canonical_signature()
+        ))),
+    }
+}
+
+pub(super) fn dart_ffi_struct_field_type(ty: &HybridType) -> Result<String, CodegenError> {
     match ty {
-        HybridType::Bool => "bool".to_string(),
+        HybridType::Bool => Ok("bool".to_string()),
         HybridType::U8
         | HybridType::U16
         | HybridType::Usize
@@ -76,16 +155,22 @@ pub(super) fn dart_ffi_struct_field_type(ty: &HybridType) -> String {
         | HybridType::U32
         | HybridType::I64
         | HybridType::U64
-        | HybridType::Enum(_) => "int".to_string(),
-        HybridType::F32 | HybridType::F64 => "double".to_string(),
-        HybridType::Struct(name) => format!("NveHybrid{name}"),
-        _ => unreachable!("non-POD field in dart_ffi_struct_field_type"),
+        | HybridType::Enum(_) => Ok("int".to_string()),
+        HybridType::F32 | HybridType::F64 => Ok("double".to_string()),
+        HybridType::Struct(name) => Ok(format!("NveHybrid{name}")),
+        HybridType::FixedArray { elem, .. } => {
+            Ok(format!("ffi.Array<{}>", dart_ffi_array_element_type(elem)?))
+        }
+        other => Err(CodegenError::validation(format!(
+            "unsupported Dart FFI POD struct field type '{}'",
+            other.canonical_signature()
+        ))),
     }
 }
 
 pub(super) fn dart_native_value_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     if let Some(suffix) = ty.optional_pod_suffix(spec) {
-        return format!("NveHybridOpt{suffix}");
+        return format!("_NveHybridOpt{suffix}");
     }
     match ty {
         HybridType::Void => "ffi.Void".to_string(),
@@ -100,7 +185,7 @@ pub(super) fn dart_native_value_type(ty: &HybridType, spec: &HybridFileSpec) -> 
         HybridType::F32 => "ffi.Float".to_string(),
         HybridType::F64 => "ffi.Double".to_string(),
         HybridType::Struct(name) if ty.is_pod(spec) => format!("NveHybrid{name}"),
-        _ => "NveHybridOwnedBytes".to_string(),
+        _ => "HybridOwnedBytes".to_string(),
     }
 }
 
@@ -121,7 +206,7 @@ pub(super) fn dart_native_param_type(ty: &HybridType, spec: &HybridFileSpec) -> 
         | HybridType::F64
         | HybridType::Enum(_) => dart_native_value_type(ty, spec),
         HybridType::Struct(_) if ty.is_pod(spec) => dart_native_value_type(ty, spec),
-        HybridType::Optional(inner) if inner.is_pod(spec) => dart_native_value_type(ty, spec),
+        _ if ty.optional_pod_suffix(spec).is_some() => dart_native_value_type(ty, spec),
         _ => "NveBufferSlice".to_string(),
     }
 }
@@ -167,38 +252,47 @@ pub(super) fn dart_ffi_call_return_type(ty: &HybridType, spec: &HybridFileSpec) 
     }
 }
 
-pub(super) fn dart_u64_const(v: u64) -> String {
-    // Dart signed 64-bit int literal syntax: represent values >= 2^63 cleanly using signed two's complement.
-    let signed = v as i64;
-    if signed < 0 {
-        format!("{signed} /* 0x{v:016X} */")
-    } else {
-        format!("0x{v:016X}")
-    }
+/// Emits a 64-bit constant as a web-safe `Key64(lo, hi)` matching `nve_abi_const.generated.dart`.
+pub(super) fn dart_key64_const(v: u64) -> String {
+    let lo = v as u32;
+    let hi = (v >> 32) as u32;
+    format!("Key64(0x{lo:08X}, 0x{hi:08X})")
 }
 
-pub(super) fn dart_is_const_expr(ty: &HybridType, def: Option<&HybridDefaultValue>) -> bool {
+pub(super) fn dart_is_const_expr(
+    ty: &HybridType,
+    def: Option<&HybridDefaultValue>,
+    spec: &HybridFileSpec,
+) -> bool {
     if matches!(ty, HybridType::Optional(_)) {
         return match def {
             None | Some(HybridDefaultValue::None) => true,
             Some(_) => matches!(
                 ty,
-                HybridType::Optional(inner) if dart_is_const_expr(inner, def)
+                HybridType::Optional(inner) if dart_is_const_expr(inner, def, spec)
             ),
         };
     }
-    matches!(
-        ty,
+    match ty {
         HybridType::Bool
-            | HybridType::I32
-            | HybridType::U32
-            | HybridType::I64
-            | HybridType::U64
-            | HybridType::F32
-            | HybridType::F64
-            | HybridType::String
-            | HybridType::Enum(_)
-    )
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::F32
+        | HybridType::F64
+        | HybridType::String
+        | HybridType::Enum(_) => true,
+        HybridType::Struct(name) => spec.find_struct(name).is_some_and(|s| {
+            s.fields
+                .iter()
+                .all(|f| dart_is_const_expr(&f.ty, None, spec))
+        }),
+        _ => false,
+    }
 }
 
 pub(super) fn dart_default_value(
@@ -206,25 +300,29 @@ pub(super) fn dart_default_value(
     def: Option<&HybridDefaultValue>,
     spec: &HybridFileSpec,
 ) -> String {
+    dart_default_value_ctx(ty, def, spec, false)
+}
+
+fn dart_default_value_ctx(
+    ty: &HybridType,
+    def: Option<&HybridDefaultValue>,
+    spec: &HybridFileSpec,
+    in_const: bool,
+) -> String {
     if let Some(d) = def {
         if let HybridType::Optional(inner) = ty {
             return match d {
                 HybridDefaultValue::None => "null".to_string(),
-                other => dart_default_value(inner, Some(other), spec),
+                other => dart_default_value_ctx(inner, Some(other), spec, in_const),
             };
         }
-        return match (d, ty) {
-            (HybridDefaultValue::Bool(b), _) => b.to_string(),
-            (HybridDefaultValue::Int(i), HybridType::F32 | HybridType::F64) => format!("{i}.0"),
-            (HybridDefaultValue::Int(i), _) => i.to_string(),
-            (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
-            (HybridDefaultValue::UInt(u), _) => u.to_string(),
-            (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-            (HybridDefaultValue::String(s), _) => format!("'{}'", escape_dart_single_quoted_string(s)),
-            (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
+        return match d.literal(ty) {
+            DefaultLiteral::Scalar(lit) => lit,
+            DefaultLiteral::String(s) => format!("'{}'", escape_dart_single_quoted_string(s)),
+            DefaultLiteral::EnumVariant { enum_name, variant } => {
                 format!("{enum_name}.{}", dart_ident(variant))
             }
-            (HybridDefaultValue::None, _) => "null".to_string(),
+            DefaultLiteral::None => "null".to_string(),
         };
     }
 
@@ -241,11 +339,16 @@ pub(super) fn dart_default_value(
         HybridType::String => "''".to_string(),
         HybridType::Bytes => "Uint8List(0)".to_string(),
         HybridType::Optional(_) => "null".to_string(),
-        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
-            format!("<{}>[]", dart_type(inner))
-        }
+        HybridType::Vec(inner) => format!("<{}>[]", dart_type(inner)),
+        HybridType::FixedArray { elem, len } => format!(
+            "List<{}>.generate({len}, (_) => {})",
+            dart_type(elem),
+            dart_default_value_ctx(elem, None, spec, false),
+        ),
         HybridType::Struct(name) => {
             if let Some(s) = spec.find_struct(name) {
+                let is_const = dart_is_const_expr(ty, None, spec);
+                let child_in_const = in_const || is_const;
                 let args: Vec<String> = s
                     .fields
                     .iter()
@@ -253,23 +356,27 @@ pub(super) fn dart_default_value(
                         format!(
                             "{}: {}",
                             dart_ident(&f.name),
-                            dart_default_value(&f.ty, None, spec)
+                            dart_default_value_ctx(&f.ty, None, spec, child_in_const)
                         )
                     })
                     .collect();
-                format!("{name}({})", args.join(", "))
+                if is_const && !in_const {
+                    format!("const {name}({})", args.join(", "))
+                } else {
+                    format!("{name}({})", args.join(", "))
+                }
             } else {
                 format!("{name}()")
             }
         }
         HybridType::Enum(name) => {
-            if let Some(e) = spec.find_enum(name) {
-                format!("{name}.{}", dart_ident(&e.variants[0].name))
+            if let Some(first) = spec.find_enum(name).and_then(|e| e.variants.first()) {
+                format!("{name}.{}", dart_ident(&first.name))
             } else {
                 format!("{name}.fromRaw(0)")
             }
         }
-        HybridType::Value => "NveHybridDynamicValue()".to_string(),
+        HybridType::Value => "DynamicValue.nullValue".to_string(),
         HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
             "ffi.nullptr".to_string()
         }
@@ -277,7 +384,14 @@ pub(super) fn dart_default_value(
     }
 }
 
-pub(super) fn emit_dart_bin_write(out: &mut CodeWriter, indent: &str, w: &str, expr: &str, ty: &HybridType) {
+pub(super) fn emit_dart_bin_write(
+    out: &mut CodeWriter,
+    indent: &str,
+    w: &str,
+    expr: &str,
+    ty: &HybridType,
+) {
+    let d = indent.len();
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr});"),
         HybridType::U8
@@ -286,38 +400,83 @@ pub(super) fn emit_dart_bin_write(out: &mut CodeWriter, indent: &str, w: &str, e
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
-        | HybridType::U64 => writeln!(out, "{indent}{w}.writeInt64({expr});"),
+        | HybridType::U64 => writeln!(out, "{indent}{w}.writeI64({expr});"),
         HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{w}.writeDouble({expr});")
+            writeln!(out, "{indent}{w}.writeF64({expr});")
         }
-        HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeInt64({expr}.rawValue);"),
-        HybridType::String => writeln!(out, "{indent}{w}.writeString({expr});"),
+        HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeI64({expr}.rawValue);"),
+        HybridType::String => writeln!(out, "{indent}{w}.writeStr({expr});"),
         HybridType::Bytes => writeln!(out, "{indent}{w}.writeBytes({expr});"),
         HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encodeBin({w});"),
-        HybridType::Value => writeln!(out, "{indent}{w}.writeRaw({expr}.binBytes);"),
+        HybridType::Value => writeln!(out, "{indent}{w}.raw({expr}.bytes);"),
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}final _ov = {expr};");
-            writeln!(out, "{indent}if (_ov != null) {{");
-            emit_dart_bin_write(out, &format!("{indent}  "), w, "_ov", inner);
-            writeln!(out, "{indent}}} else {{ {w}.writeNull(); }}");
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  final _nveOv{d} = {expr};");
+            writeln!(out, "{indent}  if (_nveOv{d} != null) {{");
+            emit_dart_bin_write(
+                out,
+                &format!("{indent}    "),
+                w,
+                &format!("_nveOv{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}  }} else {{");
+            writeln!(out, "{indent}    {w}.writeNull();");
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{w}.writeArray({expr}.length, (aw) {{");
-            writeln!(out, "{indent}  for (final _el in {expr}) {{");
-            emit_dart_bin_write(out, &format!("{indent}    "), "aw", "_el", inner);
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  final _nveArr{d} = {w}.beginArray({expr}.length);");
+            writeln!(out, "{indent}  for (final _nveEl{d} in {expr}) {{");
+            emit_dart_bin_write(
+                out,
+                &format!("{indent}    "),
+                w,
+                &format!("_nveEl{d}"),
+                inner,
+            );
             writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}}});");
+            writeln!(out, "{indent}  {w}.end(_nveArr{d});");
+            writeln!(out, "{indent}}}");
+        }
+        HybridType::FixedArray { elem: inner, len } => {
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  if ({expr}.length != {len}) {{");
+            writeln!(
+                out,
+                "{indent}    throw RangeError.value({expr}.length, null, 'expected fixed length {len}');"
+            );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  final _nveArr{d} = {w}.beginArray({len});");
+            writeln!(out, "{indent}  for (final _nveEl{d} in {expr}) {{");
+            emit_dart_bin_write(
+                out,
+                &format!("{indent}    "),
+                w,
+                &format!("_nveEl{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  {w}.end(_nveArr{d});");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Void
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {}
+        | HybridType::Handle(_) => writeln!(out, "{indent}{w}.writeNull();"),
     }
 }
 
-pub(super) fn emit_dart_bin_read(out: &mut CodeWriter, indent: &str, r: &str, dst: &str, ty: &HybridType) {
+pub(super) fn emit_dart_bin_read(
+    out: &mut CodeWriter,
+    indent: &str,
+    r: &str,
+    dst: &str,
+    ty: &HybridType,
+) {
+    let d = indent.len();
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool();"),
         HybridType::U8
@@ -326,45 +485,94 @@ pub(super) fn emit_dart_bin_read(out: &mut CodeWriter, indent: &str, r: &str, ds
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
-        | HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readInt64();"),
+        | HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readI64();"),
         HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{dst} = {r}.readDouble();")
+            writeln!(out, "{indent}{dst} = {r}.readF64();")
         }
         HybridType::Enum(e) => {
-            writeln!(out, "{indent}{dst} = {e}.fromRaw({r}.readInt64());")
+            writeln!(out, "{indent}{dst} = {e}.fromRaw({r}.readI64());")
         }
-        HybridType::String => writeln!(out, "{indent}{dst} = {r}.readString();"),
-        HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.readBytes();"),
+        HybridType::String => writeln!(out, "{indent}{dst} = {r}.readStr();"),
+        HybridType::Bytes => {
+            writeln!(out, "{indent}{dst} = Uint8List.fromList({r}.readBytes());")
+        }
         HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}.decodeBin({r});"),
         HybridType::Value => {
-            writeln!(out, "{indent}{dst} = NveHybridDynamicValue({r}.readRawValue());")
+            writeln!(out, "{indent}{dst} = DynamicValue.read({r});")
         }
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({r}.readNullIfPresent()) {{");
+            writeln!(out, "{indent}if ({r}.readNull()) {{");
             writeln!(out, "{indent}  {dst} = null;");
             writeln!(out, "{indent}}} else {{");
-            writeln!(out, "{indent}  late final {} _ov;", dart_type(inner));
-            emit_dart_bin_read(out, &format!("{indent}  "), r, "_ov", inner);
-            writeln!(out, "{indent}  {dst} = _ov;");
+            writeln!(out, "{indent}  late final {} _nveOv{d};", dart_type(inner));
+            emit_dart_bin_read(
+                out,
+                &format!("{indent}  "),
+                r,
+                &format!("_nveOv{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}  {dst} = _nveOv{d};");
             writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{{");
-            writeln!(out, "{indent}  final _n = {r}.beginArray();");
-            writeln!(out, "{indent}  final _list = <{}>[];", dart_type(inner));
-            writeln!(out, "{indent}  for (var _i = 0; _i < _n; _i++) {{");
-            writeln!(out, "{indent}    late final {} _el;", dart_type(inner));
-            emit_dart_bin_read(out, &format!("{indent}    "), r, "_el", inner);
-            writeln!(out, "{indent}    _list.add(_el);");
+            let inner_ty = dart_type(inner);
+            writeln!(
+                out,
+                "{indent}{dst} = {r}.readArrayScope<List<{inner_ty}>>((_nveN{d}) {{"
+            );
+            writeln!(out, "{indent}  final _nveList{d} = <{inner_ty}>[];");
+            writeln!(
+                out,
+                "{indent}  for (var _nveI{d} = 0; _nveI{d} < _nveN{d}; _nveI{d}++) {{"
+            );
+            writeln!(out, "{indent}    late final {inner_ty} _nveEl{d};");
+            emit_dart_bin_read(
+                out,
+                &format!("{indent}    "),
+                r,
+                &format!("_nveEl{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}    _nveList{d}.add(_nveEl{d});");
             writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}  {dst} = _list;");
-            writeln!(out, "{indent}}}");
+            writeln!(out, "{indent}  return _nveList{d};");
+            writeln!(out, "{indent}}});");
         }
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {}
+        HybridType::FixedArray { elem: inner, len } => {
+            let inner_ty = dart_type(inner);
+            writeln!(
+                out,
+                "{indent}{dst} = {r}.readArrayScope<List<{inner_ty}>>((_nveN{d}) {{"
+            );
+            writeln!(out, "{indent}  if (_nveN{d} != {len}) {{");
+            writeln!(
+                out,
+                "{indent}    throw BinCodecException(_nveN{d} < {len} ? BinErrorKind.truncated : BinErrorKind.tooLarge, 'expected fixed length {len}, got $_nveN{d}');"
+            );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  final _nveList{d} = <{inner_ty}>[];");
+            writeln!(
+                out,
+                "{indent}  for (var _nveI{d} = 0; _nveI{d} < {len}; _nveI{d}++) {{"
+            );
+            writeln!(out, "{indent}    late final {inner_ty} _nveEl{d};");
+            emit_dart_bin_read(
+                out,
+                &format!("{indent}    "),
+                r,
+                &format!("_nveEl{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}    _nveList{d}.add(_nveEl{d});");
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  return _nveList{d};");
+            writeln!(out, "{indent}}});");
+        }
+        HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
+            writeln!(out, "{indent}{r}.skipValue();");
+            writeln!(out, "{indent}{dst} = ffi.nullptr;");
+        }
+        HybridType::Void | HybridType::Result { .. } => writeln!(out, "{indent}{r}.skipValue();"),
     }
 }

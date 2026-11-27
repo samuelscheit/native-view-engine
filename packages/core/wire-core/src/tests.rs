@@ -30,14 +30,19 @@ fn wire_frame_roundtrip_and_xxh64_corruption_rejection() {
         Err(NveWireError::ChecksumMismatch { .. })
     ));
 
-    // SceneKeyframe omits redundant outer XXH64 trailer by default.
+    // SceneKeyframe (`NVE2` keyframe) carries the outer XXH64 integrity trailer by default.
     let kf = NveWireFrame::new(NveWireKind::SceneKeyframe, 1, vec![0xAA; 64]);
-    let kf_bytes = kf.encode().unwrap();
-    assert_eq!(kf_bytes.len(), NVE_WIRE_HEADER_SIZE + 64);
-    assert!(!NveWireFrameRef::decode(&kf_bytes, DEFAULT_MAX_WIRE_FRAME_BYTES)
+    let mut kf_bytes = kf.encode().unwrap();
+    assert_eq!(kf_bytes.len(), NVE_WIRE_HEADER_SIZE + 64 + 8);
+    assert!(NveWireFrameRef::decode(&kf_bytes, DEFAULT_MAX_WIRE_FRAME_BYTES)
         .unwrap()
         .header
         .has_xxh64());
+    kf_bytes[NVE_WIRE_HEADER_SIZE + 4] ^= 0x01;
+    assert!(matches!(
+        NveWireFrameRef::decode(&kf_bytes, DEFAULT_MAX_WIRE_FRAME_BYTES),
+        Err(NveWireError::ChecksumMismatch { .. })
+    ));
 }
 
 #[test]
@@ -183,4 +188,19 @@ fn handshake_slot_chunk_uri_and_session_roundtrip() {
             ..
         }
     ));
+}
+
+#[test]
+fn transport_kind_u8_round_trips_and_unknown_reads_as_auto() {
+    for kind in [
+        NveWireTransportKind::Auto,
+        NveWireTransportKind::Quic,
+        NveWireTransportKind::WebTransport,
+        NveWireTransportKind::Wss,
+        NveWireTransportKind::Ws,
+    ] {
+        assert_eq!(NveWireTransportKind::from_u8(kind as u8), kind);
+    }
+    assert_eq!(NveWireTransportKind::from_u8(5), NveWireTransportKind::Auto);
+    assert_eq!(NveWireTransportKind::from_u8(u8::MAX), NveWireTransportKind::Auto);
 }

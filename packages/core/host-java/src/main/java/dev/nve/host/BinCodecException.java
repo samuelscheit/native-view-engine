@@ -6,7 +6,10 @@ public final class BinCodecException extends RuntimeException {
 
     public enum Kind {
         TRUNCATED, UNEXPECTED_TAG, INVALID_TAG, INVALID_BOOL, INVALID_UTF8, TOO_LARGE, MAX_DEPTH, TRAILING_BYTES,
-        /** {@link BinWriter#end} got a mark that is not an open container in the buffer. */
+        /**
+         * {@link BinWriter#end} got a mark that is not an open container in the buffer, or
+         * {@link BinReader#end} one that is not the reader's innermost open container.
+         */
         INVALID_MARK
     }
 

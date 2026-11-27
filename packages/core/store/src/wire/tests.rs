@@ -1,5 +1,5 @@
 use crate::tests::{Align, Shadows, Text, Visual};
-use crate::wire::{WireDecoder, WireEncoder, WireError, MAGIC};
+use crate::wire::{MAGIC, WireDecoder, WireEncoder, WireError};
 use crate::{ChangeSet, NodeId, NodeStore, NveTable, Rgba, Transaction};
 
 struct Pair {
@@ -43,9 +43,18 @@ impl Pair {
         let live: Vec<NodeId> = self.src.live_nodes().collect();
         assert_eq!(live, self.dst.live_nodes().collect::<Vec<_>>());
         for &n in &live {
-            assert_eq!(self.src.children(n), self.dst.children(n), "children of {n:?}");
-            assert_eq!(self.src.node(n).unwrap().tables, self.dst.node(n).unwrap().tables);
-            if let (Some(a), Some(b)) = (self.src.try_row::<Visual>(n), self.dst.try_row::<Visual>(n)) {
+            assert_eq!(
+                self.src.children(n),
+                self.dst.children(n),
+                "children of {n:?}"
+            );
+            assert_eq!(
+                self.src.node(n).unwrap().tables,
+                self.dst.node(n).unwrap().tables
+            );
+            if let (Some(a), Some(b)) =
+                (self.src.try_row::<Visual>(n), self.dst.try_row::<Visual>(n))
+            {
                 assert_eq!(a.bg(), b.bg());
                 assert_eq!(a.opacity().to_bits(), b.opacity().to_bits());
                 assert_eq!(a.align(), b.align());
@@ -130,7 +139,10 @@ fn nve2_declares_each_table_once_per_session() {
     p.frame(|tx| {
         tx.edit::<Text>(n).text("b");
     });
-    assert!(p.bytes.len() < first - 16, "second frame must not redeclare the table");
+    assert!(
+        p.bytes.len() < first - 16,
+        "second frame must not redeclare the table"
+    );
 }
 
 #[test]
@@ -138,7 +150,9 @@ fn nve2_rejects_corrupt_frames_without_panicking() {
     let mut p = Pair::new();
     p.frame(|tx| {
         let n = tx.create();
-        tx.edit::<Visual>(n).label("x").shadows(Some(Shadows(vec![1.0])));
+        tx.edit::<Visual>(n)
+            .label("x")
+            .shadows(Some(Shadows(vec![1.0])));
     });
     let good = p.bytes.clone();
     let apply = |bytes: &[u8]| {
@@ -184,42 +198,43 @@ fn nve2_rejects_corrupt_frames_without_panicking() {
     enc.encode(&s, &c, &mut bytes);
     let mut fresh = WireDecoder::default();
     let mut tx = dst.tx();
-    assert_eq!(fresh.apply(&mut tx, &bytes), Err(WireError::UndeclaredTable(Text::slot().0)));
-}
-
-/// Raw `NVE2` frame of `(op tag, slot, count, body)` entries.
-fn build_frame(flags: u16, ops: &[(u8, u8, u32, &[u8])]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&MAGIC.to_le_bytes());
-    out.extend_from_slice(&crate::wire::VERSION.to_le_bytes());
-    out.extend_from_slice(&flags.to_le_bytes());
-    out.extend_from_slice(&1u64.to_le_bytes());
-    out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    for &(tag, slot, count, body) in ops {
-        let inline = count.min(0xFFFF);
-        let head = (tag as u32) | ((slot as u32) << 8) | (inline << 16);
-        let extra = usize::from(count >= 0xFFFF) * 4;
-        let padded_body = (body.len() + extra).div_ceil(4) * 4;
-        out.extend_from_slice(&head.to_le_bytes());
-        out.extend_from_slice(&((padded_body / 4) as u32).to_le_bytes());
-        if count >= 0xFFFF {
-            out.extend_from_slice(&count.to_le_bytes());
-        }
-        out.extend_from_slice(body);
-        while out.len() % 4 != 0 {
-            out.push(0);
-        }
-    }
-    let words = (out.len() / 4) as u32;
-    out[20..24].copy_from_slice(&words.to_le_bytes());
-    out
+    assert_eq!(
+        fresh.apply(&mut tx, &bytes),
+        Err(WireError::UndeclaredTable(Text::slot().0))
+    );
 }
 
 #[test]
 fn wire_rejects_dos_and_structural_corruption_vectors() {
     use crate::wire::Op;
 
+    let build_frame = |flags: u16, ops: &[(u8, u8, u32, &[u8])]| -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&MAGIC.to_le_bytes());
+        out.extend_from_slice(&crate::wire::VERSION.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&1u64.to_le_bytes());
+        out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        for &(tag, slot, count, body) in ops {
+            let inline = count.min(0xFFFF);
+            let head = (tag as u32) | ((slot as u32) << 8) | (inline << 16);
+            let extra = usize::from(count >= 0xFFFF) * 4;
+            let padded_body = (body.len() + extra).div_ceil(4) * 4;
+            out.extend_from_slice(&head.to_le_bytes());
+            out.extend_from_slice(&((padded_body / 4) as u32).to_le_bytes());
+            if count >= 0xFFFF {
+                out.extend_from_slice(&count.to_le_bytes());
+            }
+            out.extend_from_slice(body);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+        let words = (out.len() / 4) as u32;
+        out[20..24].copy_from_slice(&words.to_le_bytes());
+        out
+    };
 
     let apply = |bytes: &[u8]| {
         let mut s = NodeStore::replica();
@@ -347,10 +362,10 @@ fn wire_rejects_dos_and_structural_corruption_vectors() {
         Err(WireError::SchemaMismatch { key: td.key.0 })
     );
 
-    // 5c. Multi-op `+1024` amplification rejected: two CreateNodes ops in one tiny frame cannot
-    //     push node index bound past a single per-frame cap.
-    let n1 = NodeId::new(1000, 0).raw().to_le_bytes();
-    let n2 = NodeId::new(1800, 0).raw().to_le_bytes();
+    // 5c. Multi-op CreateNodes cannot bypass the session slot-byte budget in one tiny frame
+    //     (300_000 * 32 B = 9.6 MiB fits, second jump to 600_000 = 19.2 MiB > 16 MiB -> Budget).
+    let n1 = NodeId::new(300_000, 0).raw().to_le_bytes();
+    let n2 = NodeId::new(600_000, 0).raw().to_le_bytes();
     let amp_frame = build_frame(
         0,
         &[
@@ -358,10 +373,7 @@ fn wire_rejects_dos_and_structural_corruption_vectors() {
             (Op::CreateNodes as u8, 0, 1, &n2),
         ],
     );
-    assert_eq!(
-        apply(&amp_frame),
-        Err(WireError::NodeExists(NodeId::new(1800, 0).raw()))
-    );
+    assert_eq!(apply(&amp_frame), Err(WireError::Budget));
 
     // 6. SetChildren with duplicate or self-cycle rejected with WireError::InvalidChildren.
     let mut create_body = Vec::new();
@@ -407,78 +419,4 @@ fn wire_rejects_dos_and_structural_corruption_vectors() {
         tx.command::<Visual>(target, 7, &[1, 2, 3]);
         tx.remove(target);
     });
-}
-
-/// `DefineResources` body for one blob (`id, kind_lo, kind_hi, ephemeral, len, bytes…`).
-fn define_body(id: u32, kind: nve_abi::Key64, ephemeral: bool, blob: &[u8]) -> Vec<u8> {
-    let mut b = Vec::new();
-    for w in [id, kind.lo(), kind.hi(), u32::from(ephemeral), blob.len() as u32] {
-        b.extend_from_slice(&w.to_le_bytes());
-    }
-    b.extend_from_slice(blob);
-    b.resize(b.len().div_ceil(4) * 4, 0);
-    b
-}
-
-#[test]
-fn replica_mirrors_unregistered_resource_kinds_as_raw_bytes() {
-    use crate::wire::Op;
-    use crate::ResourceId;
-
-    // No Rust type registers this kind: a replica must keep the frame and the bytes verbatim.
-    let kind = nve_abi::Key64::of("test.unregistered.blob");
-    let mut store = NodeStore::replica();
-    let mut dec = WireDecoder::default();
-    let body = define_body(1, kind, false, &[1, 2, 3, 4, 5]);
-    let frame = build_frame(0, &[(Op::DefineResources as u8, 0, 1, &body)]);
-    let mut tx = store.tx();
-    dec.apply(&mut tx, &frame).expect("unregistered kinds are mirrored, not rejected");
-    let res = tx.store().resources();
-    assert_eq!(res.bytes(ResourceId(1)), Some(&[1u8, 2, 3, 4, 5][..]));
-    assert_eq!(res.kind(ResourceId(1)), Some(kind));
-    assert!(res.get::<Shadows>(ResourceId(1)).is_none(), "raw entries have no typed value");
-    let mut reencoded = Vec::new();
-    assert!(res.encode(ResourceId(1), &mut reencoded), "raw entries re-encode verbatim");
-    assert_eq!(reencoded, [1, 2, 3, 4, 5]);
-    assert!(res.bytes(ResourceId(2)).is_none() && res.bytes(ResourceId(0)).is_none());
-
-    // Ephemeral redefinitions (120 Hz canvas) keep bytes and reuse the allocation at equal length.
-    let mut store = NodeStore::replica();
-    let mut tx = store.tx();
-    let a = define_body(1, kind, true, &[9, 9, 9]);
-    dec.apply(&mut tx, &build_frame(0, &[(Op::DefineResources as u8, 0, 1, &a)])).unwrap();
-    let first = tx.store().resources().bytes(ResourceId(1)).unwrap().as_ptr();
-    let b = define_body(1, kind, true, &[7, 8, 6]);
-    dec.apply(&mut tx, &build_frame(0, &[(Op::DefineResources as u8, 0, 1, &b)])).unwrap();
-    let again = tx.store().resources().bytes(ResourceId(1)).unwrap();
-    assert_eq!(again, [7, 8, 6]);
-    assert_eq!(again.as_ptr(), first, "same-length redefine reuses the byte slab");
-    let c = define_body(1, kind, true, &[1]);
-    dec.apply(&mut tx, &build_frame(0, &[(Op::DefineResources as u8, 0, 1, &c)])).unwrap();
-    assert_eq!(tx.store().resources().bytes(ResourceId(1)), Some(&[1u8][..]));
-}
-
-#[test]
-fn registered_kind_with_corrupt_bytes_is_still_rejected() {
-    use crate::wire::Op;
-
-    #[derive(Debug)]
-    struct Strict;
-    impl crate::Resource for Strict {
-        const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.strict");
-        fn encode(&self, out: &mut Vec<u8>) {
-            out.push(0xAA);
-        }
-        fn decode(bytes: &[u8]) -> Option<Self> {
-            (bytes == [0xAA]).then_some(Self)
-        }
-    }
-    crate::register_codec::<Strict>();
-    let body = define_body(1, <Strict as crate::Resource>::KIND, false, &[0xBB]);
-    let mut store = NodeStore::replica();
-    let mut tx = store.tx();
-    assert_eq!(
-        WireDecoder::default().apply(&mut tx, &build_frame(0, &[(Op::DefineResources as u8, 0, 1, &body)])),
-        Err(WireError::Resource { id: 1, kind: <Strict as crate::Resource>::KIND.0 })
-    );
 }

@@ -1,10 +1,10 @@
 import 'dart:typed_data';
 import 'dart:ui' show Color, Rect;
 
-import 'nve_core_abi.generated.dart';
+import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
-export 'nve_core_abi.generated.dart'
-    show NveComponentKind, NveOpcode, nveAbiMagic, nveAbiVersion, nveRootNodeId;
+export 'package:nve_host/nve_host.dart' show nveAbiMagic, nveAbiVersion, nveRootNodeId;
 
 /// Fixed 24-byte `CommandBufferHeader` size.
 const int nveHeaderSize = 24;

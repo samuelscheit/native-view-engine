@@ -1,6 +1,6 @@
 //! Binary automatic form draft persistence (`NVE_FORM_DRAFT_V1`), pluggable
-//! [`FormDraftStorage`] backends (crash-atomic [`NativeMmapFormDraftStorage`] over
-//! [`nve_engine::NativeStateStore`]/`MmapOffsetArena`, Web [`StringKvFormDraftAdapter`] /
+//! [`FormDraftStorage`] backends (crash-atomic [`NativeFileFormDraftStorage`] over
+//! [`nve_engine::StateFile`], Web [`StringKeyValueFormDraftStorage`] /
 //! `localStorage`, and deterministic [`MemoryFormDraftStorage`]), and [`FormController`].
 
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use std::path::Path;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use nve_abi::xxh64;
-use nve_engine::{NativeStateStore, StateStoreConfig};
+use nve_engine::StateFile;
 
 pub use crate::form_controller::FormController;
 
@@ -20,8 +20,8 @@ pub const FORM_DRAFT_MAGIC: &[u8; 17] = b"NVE_FORM_DRAFT_V1";
 /// Binary envelope schema version.
 pub const FORM_DRAFT_SCHEMA_VERSION: u32 = 1;
 
-/// Binary table header used by [`NativeMmapFormDraftStorage`] to store multiple keyed drafts
-/// crash-atomically inside one `MmapOffsetArena`.
+/// Binary table header used by [`NativeFileFormDraftStorage`] to store multiple keyed drafts
+/// crash-atomically inside one [`StateFile`].
 const FORM_DRAFT_TABLE_MAGIC: &[u8; 23] = b"NVE_FORM_DRAFT_TABLE_V1";
 
 /// Storage key prefix used by string key-value backends (`localStorage`, `WebSnapshotStore`).
@@ -258,32 +258,24 @@ impl StringKeyValueDraftBackend for BrowserLocalStorageFormDraftStorage {
     }
 }
 
-/// Crash-atomic native [`FormDraftStorage`] backed directly by double-buffered
-/// [`NativeStateStore`] / `MmapOffsetArena`.
-pub struct NativeMmapFormDraftStorage {
-    store: NativeStateStore,
+/// Crash-atomic native [`FormDraftStorage`] backed directly by atomic-rename [`StateFile`].
+pub struct NativeFileFormDraftStorage {
+    store: StateFile,
 }
 
-impl NativeMmapFormDraftStorage {
-    /// Opens or initializes a crash-atomic `MmapOffsetArena` draft file at `path`.
+impl NativeFileFormDraftStorage {
+    /// Opens or initializes a crash-atomic [`StateFile`] draft file at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FormDraftError> {
-        let store = NativeStateStore::open(
-            path,
-            FORM_DRAFT_SCHEMA_VERSION,
-            StateStoreConfig::default(),
-        )
-        .map_err(|e| FormDraftError::Persistence(e.to_string()))?;
+        let store = StateFile::open(path, FORM_DRAFT_SCHEMA_VERSION)
+            .map_err(|e| FormDraftError::Persistence(e.to_string()))?;
         Ok(Self { store })
     }
 
-    /// Creates an in-memory `MmapOffsetArena`-backed draft store (useful for headless tests).
+    /// Creates an in-memory [`StateFile`]-backed draft store (useful for headless tests).
     pub fn new_in_memory() -> Result<Self, FormDraftError> {
-        let store = NativeStateStore::new_in_memory(
-            FORM_DRAFT_SCHEMA_VERSION,
-            StateStoreConfig::default(),
-        )
-        .map_err(|e| FormDraftError::Persistence(e.to_string()))?;
-        Ok(Self { store })
+        Ok(Self {
+            store: StateFile::new_in_memory(FORM_DRAFT_SCHEMA_VERSION),
+        })
     }
 
     pub fn generation(&self) -> u64 {
@@ -291,10 +283,10 @@ impl NativeMmapFormDraftStorage {
     }
 
     fn load_table(&self) -> BTreeMap<String, Vec<u8>> {
-        let Ok(Some(bytes)) = self.store.load_bytes() else {
+        let Ok(Some(bytes)) = self.store.load() else {
             return BTreeMap::new();
         };
-        decode_draft_table(bytes).unwrap_or_default()
+        decode_draft_table(&bytes).unwrap_or_default()
     }
 
     fn save_table(&mut self, table: &BTreeMap<String, Vec<u8>>) -> Result<(), FormDraftError> {
@@ -312,7 +304,7 @@ impl NativeMmapFormDraftStorage {
     }
 }
 
-impl FormDraftStorage for NativeMmapFormDraftStorage {
+impl FormDraftStorage for NativeFileFormDraftStorage {
     fn load_draft(&self, key: &str) -> Option<Vec<u8>> {
         self.load_table().remove(key)
     }

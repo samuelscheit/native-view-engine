@@ -3,14 +3,17 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use nve_abi::table::{TableDesc, Word, MAX_TABLE_SLOTS};
+use nve_abi::table::{MAX_TABLE_SLOTS, TableDesc, Word};
 
 use crate::column::Column;
 use crate::id::{IndexVec, NodeId, NodeIndex, ResourceId, TableSet};
+pub(crate) use crate::node_ref::NodeRef;
 use crate::resource::{Resource, ResourceStore};
 use crate::row::{DirtyList, RowRef};
 use crate::span_pool::{ChildSpan, SpanPool, StrArena, StrSpan};
 use crate::table::{self, NveTable, OwnedTableDesc, TableMeta, TableSlot};
+use crate::wire::WireError;
+use crate::wire::budget::SessionBudget;
 
 /// Node is allocated (exported as `nve_abi::NVE_NODE_ROW_FLAG_LIVE`).
 pub const LIVE: u8 = 1 << 0;
@@ -127,121 +130,6 @@ pub struct StoreStats {
     pub table_count: usize,
 }
 
-/// Zero-cost validated read handle to a live node (`Copy`, 2 registers: `&NodeStore` + `NodeIndex`).
-///
-/// Created via [`NodeStore::get`], which validates bounds, `LIVE`, and generation once; every
-/// subsequent read on the handle skips repeated liveness/generation checks.
-#[derive(Clone, Copy)]
-pub struct NodeRef<'a> {
-    store: &'a NodeStore,
-    index: NodeIndex,
-}
-
-impl<'a> NodeRef<'a> {
-    #[inline(always)]
-    pub(crate) const fn new_unchecked(store: &'a NodeStore, index: NodeIndex) -> Self {
-        Self { store, index }
-    }
-
-    #[inline(always)]
-    pub fn raw_row(self) -> &'a NodeRow {
-        &self.store.nodes[self.index]
-    }
-
-    #[inline(always)]
-    pub fn index(self) -> NodeIndex {
-        self.index
-    }
-
-    #[inline(always)]
-    pub fn id(self) -> NodeId {
-        NodeId::from_index(self.index, self.raw_row().generation)
-    }
-
-    #[inline(always)]
-    pub fn tables(self) -> TableSet {
-        self.raw_row().tables
-    }
-
-    #[inline(always)]
-    pub fn primary_slot(self) -> TableSlot {
-        self.raw_row().primary_slot
-    }
-
-    #[inline(always)]
-    pub fn parent(self) -> Option<NodeId> {
-        let p = self.raw_row().parent;
-        (!p.is_null()).then_some(p)
-    }
-
-    #[inline(always)]
-    pub fn children(self) -> &'a [NodeId] {
-        self.store.children.get(self.raw_row().children)
-    }
-
-    #[inline(always)]
-    pub fn has<T: NveTable>(self) -> bool {
-        self.raw_row().tables.contains(T::slot())
-    }
-
-    #[inline(always)]
-    pub fn has_slot(self, slot: TableSlot) -> bool {
-        self.raw_row().tables.contains(slot)
-    }
-
-    #[inline(always)]
-    pub fn words(self, slot: TableSlot) -> Option<&'a [Word]> {
-        if !self.has_slot(slot) {
-            return None;
-        }
-        let col = self.store.columns[slot.0 as usize].as_ref()?;
-        Some(col.words(col.row_of(self.index)))
-    }
-
-    #[inline(always)]
-    fn words_for<T: NveTable>(self) -> Option<&'a [Word]> {
-        let slot = T::slot();
-        let w = self.words(slot)?;
-        debug_assert_eq!(
-            self.store.columns[slot.0 as usize].as_ref().map(|c| c.desc.key()),
-            Some(T::DESC.key),
-            "table slot {} key mismatch for `{}`",
-            slot.0,
-            T::DESC.name
-        );
-        Some(w)
-    }
-
-    #[inline(always)]
-    pub fn try_row<T: NveTable>(self) -> Option<T::Ref<'a>> {
-        self.words_for::<T>()
-            .map(|w| T::from_row_ref(RowRef::new(w, &self.store.text, T::DESC.str_words)))
-    }
-
-    #[inline(always)]
-    pub fn row<T: NveTable>(self) -> T::Ref<'a> {
-        let w = self.words_for::<T>().unwrap_or(T::DESC.defaults);
-        T::from_row_ref(RowRef::new(w, &self.store.text, T::DESC.str_words))
-    }
-
-    /// Checked UTF-8 lookup for a detached [`StrSpan`] (`None` if stale or invalid UTF-8).
-    #[inline]
-    pub fn try_str(self, span: StrSpan) -> Option<&'a str> {
-        self.store.text.try_str(span)
-    }
-
-    /// Checked UTF-8 lookup for a detached [`StrSpan`] (returns `""` if stale).
-    #[inline]
-    pub fn str(self, span: StrSpan) -> &'a str {
-        self.store.text.str(span)
-    }
-
-    #[inline(always)]
-    pub fn resource<R: Resource>(self, id: ResourceId) -> Option<&'a R> {
-        self.store.resources.get(id)
-    }
-}
-
 /// The single owner of every node, table row, child list, string, and resource.
 pub struct NodeStore {
     pub(crate) nodes: IndexVec<NodeIndex, NodeRow>,
@@ -308,6 +196,142 @@ impl NodeStore {
         s.nodes.truncate(1);
         s.created.clear();
         s
+    }
+
+    /// Fallibly pre-sizes core arenas ahead of a bulk `NVE2` apply (O(1) allocs independent of `N`),
+    /// bounding `node_count` by `payload_bytes / 4` and [`NodeId::MAX_INDEX`].
+    pub fn reserve_for_frame0(
+        &mut self,
+        node_count: usize,
+        payload_bytes: usize,
+    ) -> Result<(), WireError> {
+        let capped_nodes = node_count
+            .min(payload_bytes / 4)
+            .min(NodeId::MAX_INDEX as usize);
+        if capped_nodes == 0 {
+            return Ok(());
+        }
+        let target_slots = self
+            .nodes
+            .len()
+            .saturating_add(capped_nodes)
+            .saturating_add(1)
+            .min(NodeId::MAX_INDEX as usize + 1);
+        if self.nodes.capacity() < target_slots {
+            self.nodes
+                .try_reserve_exact(target_slots - self.nodes.len())
+                .map_err(|_| WireError::Alloc)?;
+        }
+        self.reserve_aux_for_frame0(capped_nodes, payload_bytes)
+    }
+
+    /// Fallibly pre-sizes auxiliary non-slot arenas (`created`, `touched`, `reparented`,
+    /// `children`, `text`) for a fresh Frame-0 bulk decode so `N` nodes use O(1) allocations.
+    pub(crate) fn reserve_aux_for_frame0(
+        &mut self,
+        capped_nodes: usize,
+        payload_bytes: usize,
+    ) -> Result<(), WireError> {
+        if capped_nodes == 0 {
+            return Ok(());
+        }
+        let target_created = self.created.len().saturating_add(capped_nodes);
+        if self.created.capacity() < target_created {
+            self.created
+                .try_reserve(target_created.saturating_sub(self.created.len()))
+                .map_err(|_| WireError::Alloc)?;
+        }
+        self.touched.try_reserve(capped_nodes)?;
+        self.reparented.try_reserve(capped_nodes)?;
+        let child_target = self
+            .children
+            .data()
+            .len()
+            .saturating_add(capped_nodes.saturating_mul(2));
+        self.children
+            .try_reserve_data(child_target)
+            .map_err(|_| WireError::Alloc)?;
+        let text_add = payload_bytes.min(capped_nodes.saturating_mul(128).max(4096));
+        self.text
+            .try_reserve_bytes(self.text.data().len().saturating_add(text_add))
+            .map_err(|_| WireError::Alloc)?;
+        Ok(())
+    }
+
+    /// Actual allocated capacity of `nodes` (slots), used for capacity-exact `SessionBudget` checks.
+    #[inline]
+    pub(crate) fn nodes_cap(&self) -> usize {
+        self.nodes.capacity()
+    }
+
+    /// Reserves `nodes` capacity for `needed` slots via `SessionBudget::bounded_target_cap`,
+    /// charging actual capacity deltas (`O(log K)` incremental reallocs, bounded by `budget`).
+    pub(crate) fn reserve_nodes_budgeted(
+        &mut self,
+        needed: usize,
+        budget: &mut SessionBudget,
+    ) -> Result<(), WireError> {
+        let old_cap = self.nodes.capacity();
+        let (target, delta_bytes) = SessionBudget::bounded_target_cap(
+            old_cap,
+            self.nodes.len(),
+            needed,
+            size_of::<NodeRow>(),
+            budget.remaining(),
+        )?;
+        if target > old_cap {
+            self.nodes
+                .try_reserve_exact(target - self.nodes.len())
+                .map_err(|_| WireError::Alloc)?;
+            budget.charge(delta_bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Atomically and fallibly creates `id` at its exact slot, reserving `nodes` (budgeted on wire
+    /// paths) and `created` before mutating so `WireError::Budget` performs zero allocation.
+    pub(crate) fn try_create_at(
+        &mut self,
+        id: NodeId,
+        budget: Option<&mut SessionBudget>,
+    ) -> Result<bool, WireError> {
+        let index = id.node_index();
+        if index == NodeIndex::NULL || self.nodes.get(index).is_some_and(|r| r.flags & LIVE != 0) {
+            return Ok(false);
+        }
+        let needed = index.as_usize().checked_add(1).ok_or(WireError::Budget)?;
+        if self.nodes.len() < needed {
+            if let Some(budget) = budget {
+                self.reserve_nodes_budgeted(needed, budget)?;
+            } else if self.nodes.capacity() < needed {
+                let add = needed - self.nodes.len();
+                self.nodes.try_reserve(add).map_err(|_| WireError::Alloc)?;
+            }
+        }
+        self.created.try_reserve(1).map_err(|_| WireError::Alloc)?;
+        if self.nodes.len() < needed {
+            self.nodes.resize(needed, NodeRow::default());
+        }
+        self.nodes[index] = NodeRow {
+            generation: id.generation(),
+            primary_slot: TableSlot::NONE,
+            flags: LIVE | CREATED,
+            ..NodeRow::default()
+        };
+        self.created.push(id);
+        Ok(true)
+    }
+
+    /// Fallibly pre-sizes an individual column for a bulk wire op (`Op::Patch` / `Op::SetStrings`).
+    pub(crate) fn reserve_column_bulk(
+        &mut self,
+        slot: TableSlot,
+        expected_rows: usize,
+        max_node_index: usize,
+        budget: &mut SessionBudget,
+    ) -> Result<(), WireError> {
+        self.column_mut(slot)
+            .reserve_bulk(expected_rows, max_node_index, budget)
     }
 
     /// Installs the backend's ordered realization priority list used to derive
@@ -395,8 +419,7 @@ impl NodeStore {
 
     #[inline]
     pub fn primary_slot(&self, id: NodeId) -> TableSlot {
-        self.get(id)
-            .map_or(TableSlot::NONE, NodeRef::primary_slot)
+        self.get(id).map_or(TableSlot::NONE, NodeRef::primary_slot)
     }
 
     #[inline(always)]
@@ -496,7 +519,9 @@ impl NodeStore {
                 self.columns[slot_idx] = Some(Column::new(TableMeta::Dynamic(desc)));
                 true
             }
-            Some(col) => matches!(&col.desc, TableMeta::Dynamic(existing) if existing.as_ref() == desc.as_ref()),
+            Some(col) => {
+                matches!(&col.desc, TableMeta::Dynamic(existing) if existing.as_ref() == desc.as_ref())
+            }
         }
     }
 
@@ -514,10 +539,11 @@ impl NodeStore {
     /// owners (row = node index) and at most `capacity()` rows.
     pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[u32], usize)> {
         let c = self.columns[slot.0 as usize].as_ref()?;
+        let rc = c.published_row_count(self.capacity());
         if c.is_dense() {
-            return Some((&c.rows, &[], c.row_count().min(self.capacity())));
+            return Some((&c.rows[..rc * c.w], &[], rc));
         }
-        Some((&c.rows, &c.owners, c.row_count()))
+        Some((&c.rows, &c.owners, rc))
     }
 
     pub fn stats(&self) -> StoreStats {

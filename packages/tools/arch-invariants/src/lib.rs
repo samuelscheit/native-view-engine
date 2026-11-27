@@ -8,11 +8,13 @@
 pub mod ast_enums;
 pub mod ast_layout;
 pub mod bench;
+pub mod codegen_53bit;
 pub mod dag;
 pub mod host_runtimes;
 pub mod hot_path;
 pub mod hygiene;
 pub mod inline_style_keys;
+pub mod persistence_guard;
 pub mod native_build;
 pub mod purity;
 pub mod rpc_dag;
@@ -38,14 +40,12 @@ pub const DOC_EXCLUDES: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Post1B1D,
-    Post1B1E,
 }
 
 impl Stage {
     pub fn label(self) -> &'static str {
         match self {
             Self::Post1B1D => "Post1B1D",
-            Self::Post1B1E => "Post1B1E",
         }
     }
 
@@ -59,7 +59,6 @@ impl Stage {
         }
         let needle = match self {
             Self::Post1B1D => "1b1d",
-            Self::Post1B1E => "1b1e",
         };
         trimmed
             .split(',')

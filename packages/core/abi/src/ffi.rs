@@ -13,7 +13,7 @@ use std::ffi::c_void;
 
 use nve_abi_macros::NveAbi;
 
-use crate::value::{NveEventBatch, NveMapEntry};
+use crate::value::{NveEventBatch, NveMapEntry, NveValueTag};
 
 /// Compile-time XXH64 schema fingerprint for NVE's Core C ABI, derived directly from
 /// `crate::schema::core_abi_descriptor()` (zero hardcoded hex literals).
@@ -47,29 +47,24 @@ impl NveBufferSlice {
         }
     }
 
-    /// Validated slice view returning `None` when `ptr` is null with `len > 0` or
+    /// Validated raw-slice view returning `None` on a null pointer with `len > 0` or on
     /// `len > isize::MAX`.
     ///
     /// # Safety
-    /// When `len > 0` and `ptr` is non-null, caller must ensure `ptr` is valid for `len`
-    /// readable bytes for the returned lifetime `'a`.
+    /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime when `len > 0`.
     #[inline]
     pub unsafe fn try_as_slice<'a>(self) -> Option<&'a [u8]> {
-        if self.len == 0 {
-            return Some(&[]);
-        }
-        if self.ptr.is_null() || self.len > isize::MAX as usize {
-            return None;
-        }
-        // SAFETY: Non-null and `len <= isize::MAX` checked above; caller guarantees `ptr` is valid for `len` bytes for `'a`.
-        Some(unsafe { std::slice::from_raw_parts(self.ptr, self.len) })
+        // SAFETY: Caller guarantees `self.ptr` is valid for `self.len` bytes for `'a`.
+        unsafe { crate::value::guarded_slice(self.ptr, self.len) }
     }
 
+    /// [`Self::try_as_slice`], with an invalid slice read as empty.
+    ///
     /// # Safety
     /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime.
     #[inline]
     pub unsafe fn as_slice<'a>(self) -> &'a [u8] {
-        // SAFETY: Forwards caller's validity precondition to `try_as_slice`.
+        // SAFETY: Forwarded caller contract.
         unsafe { self.try_as_slice() }.unwrap_or(&[])
     }
 }
@@ -261,6 +256,14 @@ pub enum DecodeError {
     InvalidUtf8,
     TrailingBytes(usize),
     MaxDepthExceeded,
+    /// A value's wire tag differs from the tag its declared type requires (`found` is the raw tag).
+    UnexpectedTag { expected: NveValueTag, found: u32 },
+    /// An integer does not fit the named declared type.
+    OutOfRange(&'static str),
+    /// A required struct field is absent.
+    MissingField(&'static str),
+    /// A string, byte run, container payload, or element count exceeds the wire format's `u32`.
+    TooLarge,
 }
 
 impl std::fmt::Display for DecodeError {

@@ -51,9 +51,8 @@ use nve_system_env::{SystemEnvEvent, ThemeSnapshot};
 
 pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use persist::{
-    DEFAULT_COMPACT_INTERVAL, PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats,
-    STATE_ARENA_FILE_NAME, STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION,
-    USER_FRAME0_FILE_NAME, WorkspaceStore,
+    PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, STATE_FILE_NAME,
+    STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION, USER_FRAME0_FILE_NAME, WorkspaceStore,
 };
 pub use routes::{
     STUDIO_DEEP_LINK_HOST, STUDIO_DEEP_LINK_SCHEME, STUDIO_UNIVERSAL_LINK_HOST, StudioRoute,
@@ -147,6 +146,7 @@ pub struct StudioWorkspaceModule {
     last_state_buf: Vec<u8>,
     last_emitted_events: Vec<NveDirectEvent>,
     persist_store: Option<WorkspaceStore>,
+    persist_open_error: Option<String>,
     last_persisted_frame_count: u64,
 }
 
@@ -170,20 +170,70 @@ impl StudioWorkspaceModule {
             surface_id,
             Arc::new(StudioHostServices::native()),
             Some(persist),
+            None,
         ))
     }
 
     /// A module over `host_services` (e.g. [`StudioHostServices::new`] for deterministic headless
     /// runs), persisting where [`STUDIO_PERSIST_ENV_VAR`] points when it is set.
     pub fn with_services(surface_id: SurfaceId, host_services: Arc<StudioHostServices>) -> Self {
-        let persist_store = WorkspaceStore::open_from_env().and_then(Result::ok);
-        Self::assemble(surface_id, host_services, persist_store)
+        Self::from_persist_result(
+            surface_id,
+            host_services,
+            WorkspaceStore::open_from_env(),
+            Some(STUDIO_PERSIST_ENV_VAR),
+        )
+    }
+
+    /// A module over `host_services` that attempts to open local persistence at `dir`, surfacing
+    /// any open failure via [`Self::persist_open_error`] instead of aborting construction.
+    pub fn with_services_and_persist_dir(
+        surface_id: SurfaceId,
+        host_services: Arc<StudioHostServices>,
+        dir: impl AsRef<Path>,
+    ) -> Self {
+        Self::from_persist_result(
+            surface_id,
+            host_services,
+            Some(WorkspaceStore::open(dir)),
+            None,
+        )
+    }
+
+    fn from_persist_result(
+        surface_id: SurfaceId,
+        host_services: Arc<StudioHostServices>,
+        open_res: Option<Result<WorkspaceStore, PersistError>>,
+        env_var: Option<&str>,
+    ) -> Self {
+        let (persist_store, persist_open_error) = match open_res {
+            Some(Ok(store)) => (Some(store), None),
+            Some(Err(err)) => {
+                let msg = err.to_string();
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(var) = env_var {
+                    eprintln!(
+                        "[nve-studio-workspace] Warning: failed to open persistence store ({var}): {msg}"
+                    );
+                } else {
+                    eprintln!(
+                        "[nve-studio-workspace] Warning: failed to open persistence store: {msg}"
+                    );
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = env_var;
+                (None, Some(msg))
+            }
+            None => (None, None),
+        };
+        Self::assemble(surface_id, host_services, persist_store, persist_open_error)
     }
 
     fn assemble(
         surface_id: SurfaceId,
         host_services: Arc<StudioHostServices>,
         persist_store: Option<WorkspaceStore>,
+        persist_open_error: Option<String>,
     ) -> Self {
         let initial = persist_store
             .as_ref()
@@ -200,6 +250,7 @@ impl StudioWorkspaceModule {
             last_state_buf: Vec::new(),
             last_emitted_events: Vec::new(),
             persist_store,
+            persist_open_error,
         }
     }
 
@@ -210,6 +261,12 @@ impl StudioWorkspaceModule {
 
     pub fn persist_store(&self) -> Option<&WorkspaceStore> {
         self.persist_store.as_ref()
+    }
+
+    /// Returns the diagnostic error string if opening `STUDIO_PERSIST_ENV_VAR` failed (e.g. newer
+    /// on-disk schema or I/O error), so failures are never silently swallowed.
+    pub fn persist_open_error(&self) -> Option<&str> {
+        self.persist_open_error.as_deref()
     }
 
     pub fn persist_now(&mut self) -> Option<Result<PersistOutcome, PersistError>> {

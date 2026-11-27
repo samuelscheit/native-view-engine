@@ -64,6 +64,15 @@ impl<'a> NveValueRef<'a> {
             })
             .flatten()
     }
+    /// Like [`Self::as_str`], but says why it fails: `UnexpectedTag`, `Truncated` (a null or
+    /// oversized pointer), or `InvalidUtf8`.
+    #[inline] pub fn try_as_str(&self) -> Result<&'a str, crate::DecodeError> {
+        if self.raw.tag != NveValueTag::Str as u32 {
+            return Err(crate::DecodeError::UnexpectedTag { expected: NveValueTag::Str, found: self.raw.tag });
+        }
+        // SAFETY: Tag checked equal to `Str` and `NveValueRef` guarantees valid nested pointers for `'a`.
+        unsafe { self.raw.data.str_val.as_str() }
+    }
     #[inline] pub fn as_bytes(&self) -> Option<&'a [u8]> {
         (self.raw.tag == NveValueTag::Bytes as u32).then(|| {
             // SAFETY: Tag checked equal to `Bytes` and `NveValueRef` guarantees valid nested pointers for `'a`.
@@ -133,7 +142,6 @@ impl<'a> NveArrayRef<'a> {
 /// Zero-copy borrowed slice of `NveMapEntry` key/value pairs (also used for direct props).
 #[derive(Clone, Copy)]
 pub struct NveMapRef<'a> {
-    #[cfg_attr(not(feature = "wire"), allow(dead_code))]
     pub(super) entries: &'a [NveMapEntry],
 }
 
@@ -159,6 +167,8 @@ impl<'a> NveMapRef<'a> {
     #[inline] pub const unsafe fn from_slice(entries: &'a [NveMapEntry]) -> Self { Self { entries } }
     #[inline] pub const fn len(&self) -> usize { self.entries.len() }
     #[inline] pub const fn is_empty(&self) -> bool { self.entries.is_empty() }
+    /// Raw entries, e.g. to forward across `NveComponentApi::set_props` unchanged.
+    #[inline] pub const fn entries(&self) -> &'a [NveMapEntry] { self.entries }
     #[inline] pub fn get(&self, key: &str) -> Option<NveValueRef<'a>> {
         let key_bytes = key.as_bytes();
         self.entries.iter().find_map(|entry| {
@@ -171,6 +181,14 @@ impl<'a> NveMapRef<'a> {
         self.entries.iter().filter_map(|entry| {
             // SAFETY: `NveMapRef` guarantees entry key pointers remain valid for `'a`.
             Some((unsafe { entry.key.as_str() }.ok()?, NveValueRef { raw: &entry.value }))
+        })
+    }
+    /// Like [`Self::iter`], but a key that is not valid UTF-8 (or has an invalid pointer) is an
+    /// error instead of being skipped.
+    #[inline] pub fn try_iter(&self) -> impl Iterator<Item = Result<(&'a str, NveValueRef<'a>), crate::DecodeError>> + 'a {
+        self.entries.iter().map(|entry| {
+            // SAFETY: `NveMapRef` guarantees entry key pointers remain valid for `'a`.
+            Ok((unsafe { entry.key.as_str() }?, NveValueRef { raw: &entry.value }))
         })
     }
 }

@@ -18,7 +18,7 @@ let bytes = builder.encode().unwrap();
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-engine` (zero async runtime, TLS, or socket crates — `wasm32`-ready).
+- **Depends on**: `nve-abi` (zero async runtime, TLS, or socket crates — `wasm32`-ready).
 - **Must NOT depend on**: `tokio`, `quinn`, `dioxus*`, `web-sys`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

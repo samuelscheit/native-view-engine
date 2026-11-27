@@ -56,7 +56,7 @@ pub use form::{FieldHandle, FieldState, FormState, ValidationToken};
 pub use form_draft::BrowserLocalStorageFormDraftStorage;
 pub use form_draft::{
     decode_form_draft, encode_form_draft, FormController, FormDraftError, FormDraftStorage,
-    FormDraftStore, MemoryFormDraftStorage, NativeMmapFormDraftStorage,
+    FormDraftStore, MemoryFormDraftStorage, NativeFileFormDraftStorage,
     StringKeyValueDraftBackend, StringKeyValueFormDraftStorage, DEFAULT_MAX_FORM_DRAFT_BYTES,
     FORM_DRAFT_KEY_PREFIX, FORM_DRAFT_MAGIC, FORM_DRAFT_SCHEMA_VERSION,
 };
@@ -122,7 +122,7 @@ pub mod prelude {
     pub use crate::form_draft::BrowserLocalStorageFormDraftStorage;
     pub use crate::form_draft::{
         decode_form_draft, encode_form_draft, FormController, FormDraftError, FormDraftStorage,
-        FormDraftStore, MemoryFormDraftStorage, NativeMmapFormDraftStorage,
+        FormDraftStore, MemoryFormDraftStorage, NativeFileFormDraftStorage,
         StringKeyValueDraftBackend, StringKeyValueFormDraftStorage,
     };
     pub use crate::history::UndoRedoStack;
