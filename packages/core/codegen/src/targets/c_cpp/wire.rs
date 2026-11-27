@@ -284,7 +284,9 @@ class EventBatchWriter {{
       uint64_t ts_us,
       std::string_view name,
       std::span<const uint8_t> data) {{
-    if (name.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) return false;
+    constexpr size_t kMaxU32 = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+    if (name.size() > kMaxU32 || data.size() > kMaxU32 - name.size() ||
+        name.size() + data.size() > kMaxU32 - arena_.size()) return false;
     std::vector<uint8_t> combined;
     combined.reserve(name.size() + data.size());
     for (char ch : name) combined.push_back(static_cast<uint8_t>(ch));
@@ -312,6 +314,8 @@ class EventBatchWriter {{
     if (shift) flags |= kEventFlagModShift;
     if (alt) flags |= kEventFlagModAlt;
     if (is_composing) flags |= kEventFlagComposing;
+    constexpr size_t kMaxU32 = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+    if (key.size() > kMaxU32) return false;
     std::array<uint32_t, 6> payload{{key_code, static_cast<uint32_t>(key.size()), 0u, 0u, 0u, 0u}};
     if (key.size() <= kEventInlineKeyCap) {{
       std::array<uint8_t, kEventInlineKeyCap> kb{{}};
@@ -326,6 +330,8 @@ class EventBatchWriter {{
           static_cast<uint32_t>(InteractionEvent::KeyDown), flags, payload,
           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(code.data()), code.size()));
     }}
+    if (code.size() > kMaxU32 - key.size() ||
+        key.size() + code.size() > kMaxU32 - arena_.size()) return false;
     std::vector<uint8_t> combined;
     combined.reserve(key.size() + code.size());
     for (char ch : key) combined.push_back(static_cast<uint8_t>(ch));

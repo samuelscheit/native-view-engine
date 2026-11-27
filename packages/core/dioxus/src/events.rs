@@ -1,5 +1,6 @@
 //! Ingress-validated (`ValidatedEvents`) event dispatch into Dioxus listeners with reused
-//! concrete `Rc<T>` event payload slots (`Rc::get_mut` = zero heap allocations in steady state).
+//! concrete `Rc<T>` event payload slots (`Rc::get_mut` = zero NVE-side heap allocations in steady
+//! state; dioxus-core itself still boxes 2 per bubbling event, see `docs/UPSTREAM.md`).
 
 use std::any::Any;
 use std::rc::Rc;
@@ -66,9 +67,40 @@ impl EventSlots {
     }
 }
 
+#[inline(always)]
+const fn pointer_event_meta(kind: InteractionEvent) -> Option<(&'static str, bool)> {
+    match kind {
+        InteractionEvent::PointerDown => Some(("pointerdown", true)),
+        InteractionEvent::PointerMove => Some(("pointermove", true)),
+        InteractionEvent::PointerUp => Some(("pointerup", true)),
+        InteractionEvent::PointerEnter => Some(("pointerenter", false)),
+        InteractionEvent::PointerLeave => Some(("pointerleave", false)),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+const fn key_event_name(kind: InteractionEvent) -> Option<&'static str> {
+    match kind {
+        InteractionEvent::KeyDown => Some("keydown"),
+        InteractionEvent::KeyUp => Some("keyup"),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+const fn composition_event_name(kind: TextInputEvent) -> Option<&'static str> {
+    match kind {
+        TextInputEvent::CompositionStart => Some("compositionstart"),
+        TextInputEvent::CompositionUpdate => Some("compositionupdate"),
+        TextInputEvent::CompositionEnd => Some("compositionend"),
+        _ => None,
+    }
+}
+
 impl DioxusSurface {
     /// Routes ingress-validated events (`ValidatedEvents`) straight into Dioxus handlers with zero
-    /// deserialization and reused concrete `Rc<T>` slots (0 steady-state allocations).
+    /// deserialization and reused concrete `Rc<T>` slots (0 NVE-side steady-state allocations).
     pub fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
@@ -102,29 +134,20 @@ impl DioxusSurface {
                             .handle_event("longpress", Event::new(data, true), el_id);
                         handled = true;
                     }
-                    Some(
-                        kind @ (InteractionEvent::PointerDown
-                        | InteractionEvent::PointerMove
-                        | InteractionEvent::PointerUp
-                        | InteractionEvent::PointerEnter
-                        | InteractionEvent::PointerLeave),
-                    ) if self.writer.has_listener_in_chain::<Interaction>(node, kind) => {
-                        let (name, bubbles) = match kind {
-                            InteractionEvent::PointerDown => ("pointerdown", true),
-                            InteractionEvent::PointerMove => ("pointermove", true),
-                            InteractionEvent::PointerUp => ("pointerup", true),
-                            InteractionEvent::PointerEnter => ("pointerenter", false),
-                            InteractionEvent::PointerLeave => ("pointerleave", false),
-                            _ => unreachable!(),
-                        };
-                        let data = EventSlots::reuse(&mut self.event_slots.press, |d| {
-                            d.x = ev.x();
-                            d.y = ev.y();
-                        });
-                        self.vdom
-                            .runtime()
-                            .handle_event(name, Event::new(data, bubbles), el_id);
-                        handled = true;
+                    Some(kind)
+                        if pointer_event_meta(kind).is_some()
+                            && self.writer.has_listener_in_chain::<Interaction>(node, kind) =>
+                    {
+                        if let Some((name, bubbles)) = pointer_event_meta(kind) {
+                            let data = EventSlots::reuse(&mut self.event_slots.press, |d| {
+                                d.x = ev.x();
+                                d.y = ev.y();
+                            });
+                            self.vdom
+                                .runtime()
+                                .handle_event(name, Event::new(data, bubbles), el_id);
+                            handled = true;
+                        }
                     }
                     Some(InteractionEvent::Wheel)
                         if self
@@ -160,26 +183,24 @@ impl DioxusSurface {
                             .handle_event("blur", Event::new(data, false), el_id);
                         handled = true;
                     }
-                    Some(kind @ (InteractionEvent::KeyDown | InteractionEvent::KeyUp))
-                        if self.writer.has_listener_in_chain::<Interaction>(node, kind) =>
+                    Some(kind)
+                        if key_event_name(kind).is_some()
+                            && self.writer.has_listener_in_chain::<Interaction>(node, kind) =>
                     {
-                        let name = match kind {
-                            InteractionEvent::KeyDown => "keydown",
-                            InteractionEvent::KeyUp => "keyup",
-                            _ => unreachable!(),
-                        };
-                        let data = EventSlots::reuse(&mut self.event_slots.key, |d| {
-                            d.key.clear();
-                            d.key.push_str(ev.key());
-                            d.meta = ev.meta();
-                            d.ctrl = ev.ctrl();
-                            d.shift = ev.shift();
-                            d.alt = ev.alt();
-                        });
-                        self.vdom
-                            .runtime()
-                            .handle_event(name, Event::new(data, true), el_id);
-                        handled = true;
+                        if let Some(name) = key_event_name(kind) {
+                            let data = EventSlots::reuse(&mut self.event_slots.key, |d| {
+                                d.key.clear();
+                                d.key.push_str(ev.key());
+                                d.meta = ev.meta();
+                                d.ctrl = ev.ctrl();
+                                d.shift = ev.shift();
+                                d.alt = ev.alt();
+                            });
+                            self.vdom
+                                .runtime()
+                                .handle_event(name, Event::new(data, true), el_id);
+                            handled = true;
+                        }
                     }
                     _ => {}
                 },
@@ -208,25 +229,20 @@ impl DioxusSurface {
                             .handle_event("submit", Event::new(data, true), el_id);
                         handled = true;
                     }
-                    Some(
-                        kind @ (TextInputEvent::CompositionStart
-                        | TextInputEvent::CompositionUpdate
-                        | TextInputEvent::CompositionEnd),
-                    ) if self.writer.has_listener_in_chain::<TextInput>(node, kind) => {
-                        let name = match kind {
-                            TextInputEvent::CompositionStart => "compositionstart",
-                            TextInputEvent::CompositionUpdate => "compositionupdate",
-                            TextInputEvent::CompositionEnd => "compositionend",
-                            _ => unreachable!(),
-                        };
-                        let data = EventSlots::reuse(&mut self.event_slots.composition, |d| {
-                            d.text.clear();
-                            d.text.push_str(ev.text());
-                        });
-                        self.vdom
-                            .runtime()
-                            .handle_event(name, Event::new(data, true), el_id);
-                        handled = true;
+                    Some(kind)
+                        if composition_event_name(kind).is_some()
+                            && self.writer.has_listener_in_chain::<TextInput>(node, kind) =>
+                    {
+                        if let Some(name) = composition_event_name(kind) {
+                            let data = EventSlots::reuse(&mut self.event_slots.composition, |d| {
+                                d.text.clear();
+                                d.text.push_str(ev.text());
+                            });
+                            self.vdom
+                                .runtime()
+                                .handle_event(name, Event::new(data, true), el_id);
+                            handled = true;
+                        }
                     }
                     _ => {}
                 },

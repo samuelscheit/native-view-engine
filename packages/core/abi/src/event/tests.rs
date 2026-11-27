@@ -332,6 +332,108 @@ fn validated_events_rejects_adversarial_inputs_and_accepts_foreign_alignment() {
     assert_eq!(ev.code(), "Escape");
     assert!(ev.meta());
 
+    // 7. Un-canonicalized index-0 C POD handle bits (`0x0500_0000`) are canonicalized inside `get()`.
+    let mut raw_null = NveEvent::new(
+        NVE_TABLE_INTERACTION,
+        SurfaceId::ROOT,
+        NodeId::ROOT,
+        TimestampUs(77),
+        InteractionEvent::Focus.event_id(),
+    );
+    let mut raw_bytes = *raw_null.as_bytes();
+    // Overwrite `surface` (offset 16..20) and `node` (offset 20..24) with non-canonical index-0 bits.
+    raw_bytes[16..20].copy_from_slice(&0x0500_0000u32.to_le_bytes());
+    raw_bytes[20..24].copy_from_slice(&0x0500_0000u32.to_le_bytes());
+    // SAFETY: `NveEvent` is `#[repr(C)]`, 64 bytes, valid for all bit patterns.
+    raw_null = unsafe { core::ptr::read_unaligned(raw_bytes.as_ptr().cast::<NveEvent>()) };
+    let raw_null_arr = [raw_null];
+    let v_null = ValidatedEvents::validate(&raw_null_arr, &[]).expect("validate null bits");
+    let g_null = v_null.get(0).unwrap();
+    assert_eq!(g_null.surface(), SurfaceId::NULL);
+    assert_eq!(g_null.node(), NodeId::NULL);
+    assert_eq!(g_null.raw().surface, SurfaceId::NULL);
+    assert_eq!(g_null.raw().node, NodeId::NULL);
+
+    // 8. Wire-level `decode_wire` hostile vectors preserve distinct `DecodeError` variants.
+    let build_wire = |ev: NveEvent, arena: &[u8]| -> Vec<u8> {
+        let mut out = Vec::with_capacity(14 + NVE_EVENT_SIZE + arena.len());
+        out.extend_from_slice(b"NVEV");
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&(arena.len() as u32).to_le_bytes());
+        out.extend_from_slice(ev.as_bytes());
+        out.extend_from_slice(arena);
+        out
+    };
+    assert!(matches!(
+        EventBatchBuf::decode_wire(&build_wire(oob_ev, b"abc")),
+        Err(DecodeError::InvalidEvent(EventValidationError::SpanOutOfBounds { index: 0, .. }))
+    ));
+    assert_eq!(
+        EventBatchBuf::decode_wire(&build_wire(bad_inline_len, &[])),
+        Err(DecodeError::InvalidEvent(EventValidationError::InvalidInlineKeyLen {
+            index: 0,
+            len: 17,
+        }))
+    );
+    assert_eq!(
+        EventBatchBuf::decode_wire(&build_wire(conflicting, &[])),
+        Err(DecodeError::InvalidEvent(EventValidationError::ConflictingFlags { index: 0 }))
+    );
+    // Split key cutting inside a multi-byte UTF-8 character (`🚀` = 4 bytes, split at byte 2).
+    let split_mid_char = NveEvent::new(
+        NVE_TABLE_INTERACTION,
+        SurfaceId::ROOT,
+        NodeId::ROOT,
+        TimestampUs(1),
+        InteractionEvent::KeyDown.event_id(),
+    )
+    .with_flags(EventFlags::KEY_SPLIT_BYTES.union(EventFlags::UTF8_BYTES))
+    .with_payload([0, 2, 0, 0, 0, 0])
+    .with_bytes(RawEventBytes::new(ArenaOffset(0), ByteLen(4)));
+    assert_eq!(
+        EventBatchBuf::decode_wire(&build_wire(split_mid_char, "🚀".as_bytes())),
+        Err(DecodeError::InvalidUtf8)
+    );
+    // Custom name length exceeding event bytes slice.
+    let bad_custom_name = NveEvent::new(
+        NVE_TABLE_CUSTOM,
+        SurfaceId::ROOT,
+        NodeId::ROOT,
+        TimestampUs(1),
+        EventId(0),
+    )
+    .with_flags(EventFlags::CUSTOM_NAMED)
+    .with_payload([10, 0, 0, 0, 0, 0])
+    .with_bytes(RawEventBytes::new(ArenaOffset(0), ByteLen(2)));
+    assert_eq!(
+        EventBatchBuf::decode_wire(&build_wire(bad_custom_name, b"ab")),
+        Err(DecodeError::InvalidEvent(EventValidationError::InvalidCustomNameLen {
+            index: 0,
+            name_len: 10,
+            bytes_len: 2,
+        }))
+    );
+    // Split key length exceeding event bytes slice.
+    let bad_split_len = NveEvent::new(
+        NVE_TABLE_INTERACTION,
+        SurfaceId::ROOT,
+        NodeId::ROOT,
+        TimestampUs(1),
+        InteractionEvent::KeyDown.event_id(),
+    )
+    .with_flags(EventFlags::KEY_SPLIT_BYTES)
+    .with_payload([0, 9, 0, 0, 0, 0])
+    .with_bytes(RawEventBytes::new(ArenaOffset(0), ByteLen(2)));
+    assert_eq!(
+        EventBatchBuf::decode_wire(&build_wire(bad_split_len, b"ab")),
+        Err(DecodeError::InvalidEvent(EventValidationError::InvalidSplitKeyLen {
+            index: 0,
+            key_len: 9,
+            bytes_len: 2,
+        }))
+    );
+
     // Ensure canonical table keys are non-zero and distinct.
     let keys = [
         NVE_TABLE_INTERACTION,

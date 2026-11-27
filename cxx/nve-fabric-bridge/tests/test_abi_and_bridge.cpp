@@ -521,9 +521,9 @@ void test_all_opcodes_and_custom_components() {
     nve_fabric_host_destroy(canvas_host);
   }
 
-  // 1c. EventRingWriter / EventBatchBuilder hardening checks (`NVEV` v2 + direct `NveEventBatch`).
+  // 1c. EventBatchBuilder hardening checks (`NVEV` v2 + direct `NveEventBatch`).
   {
-    nve::EventRingWriter ring;
+    nve::EventBatchBuilder ring;
     ring.clear();
 
     // nullptr with nonzero length MUST be rejected without corrupting framing or count!
@@ -568,7 +568,7 @@ void test_all_opcodes_and_custom_components() {
     assert(direct_decoded.size() == 4u && direct_decoded[2].text == "hello-hardened");
 
     // Typed KeyDown (inline & >16 B split), PointerDown, and Wheel roundtrip through NVEV v2.
-    nve::EventRingWriter typed_ring;
+    nve::EventBatchBuilder typed_ring;
     typed_ring.clear();
     assert(typed_ring.push_key_event(
         1u, 14u, 300u, NVE_INTERACTION_EVENT_KEY_DOWN, "k", "KeyK",

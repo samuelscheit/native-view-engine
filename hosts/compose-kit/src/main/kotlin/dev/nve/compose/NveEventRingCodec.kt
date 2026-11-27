@@ -168,7 +168,9 @@ object NveEventRingCodec {
     const val LAYOUT_LAYOUT: Int = 0
 
     const val FLAG_UTF8_BYTES: Int = 0x10000
+    const val FLAG_INLINE_KEY_UTF8: Int = 0x20000
     const val FLAG_CUSTOM_NAMED: Int = 0x40000
+    const val FLAG_KEY_SPLIT_BYTES: Int = 0x80000
 
     fun press(
         surfaceId: Int,
@@ -317,9 +319,6 @@ object NveEventRingCodec {
         is NveEventPayload.Text -> utf8ByteLength(payload.text).toLong()
         is NveEventPayload.Custom -> {
             val nameLen = utf8ByteLength(payload.name)
-            require(nameLen <= 0xFFFF) {
-                "Custom event name exceeds uint16 length limit: $nameLen"
-            }
             nameLen.toLong() + payload.data.size.toLong()
         }
         else -> 0L
@@ -563,7 +562,6 @@ object NveEventRingCodec {
             val surfaceId = buf.int
             val nodeId = buf.int
             val eventId = buf.int
-            @Suppress("UNUSED_VARIABLE")
             val flags = buf.int
             val p0 = buf.int
             val p1 = buf.int
@@ -574,6 +572,17 @@ object NveEventRingCodec {
             val bytesOff = buf.int.toLong() and 0xFFFF_FFFFL
             val bytesLen = buf.int.toLong() and 0xFFFF_FFFFL
             val slice = readArenaSlice(bytesOff, bytesLen)
+
+            val hasUtf8 = (flags and FLAG_UTF8_BYTES) != 0
+            val hasInlineKey = (flags and FLAG_INLINE_KEY_UTF8) != 0
+            val hasSplitKey = (flags and FLAG_KEY_SPLIT_BYTES) != 0
+            val hasCustom = (flags and FLAG_CUSTOM_NAMED) != 0
+            if ((hasInlineKey && hasSplitKey) || (hasCustom && (hasInlineKey || hasSplitKey))) {
+                throw NveEventRingException.InvalidBounds("conflicting framing flags 0x${flags.toUInt().toString(16)}")
+            }
+            if (hasUtf8) {
+                decodeUtf8Strict(slice, "utf8 payload")
+            }
 
             val kind: NveEventKind
             val payload: NveEventPayload

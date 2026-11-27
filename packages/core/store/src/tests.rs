@@ -469,6 +469,42 @@ fn publish_table_views_and_surface_event_tracker_roundtrip() {
         vec![(WidgetEvents::slot(), WidgetEvent::Press.event_id(), false)]
     );
 
+    // Slot reuse: after `n1` is removed and recycled, a new node `n3` reusing `n1.index()` with
+    // bumped generation must start with 0 listeners and track exact 0->1 / 1->0 transitions.
+    transitions.clear();
+    let n3 = {
+        let mut tx = store.tx();
+        let n3 = tx.create();
+        tx.set_children(NodeId::ROOT, &[n2, n3]);
+        tx.edit::<WidgetEvents>(n3).listen(WidgetEvent::Press);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+        n3
+    };
+    assert_eq!(n3.index(), n1.index(), "slot index recycled");
+    assert_ne!(n3, n1, "generation bumped on slot reuse");
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 1);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Press.event_id(), true)]
+    );
+    transitions.clear();
+    {
+        let mut tx = store.tx();
+        tx.remove(n3);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+    }
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 0);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Press.event_id(), false)]
+    );
+
     // Uniform 64 B NveEvent batch + wire roundtrip.
     let mut batch = crate::EventBatchBuf::new();
     batch.push_event(

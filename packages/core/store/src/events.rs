@@ -135,6 +135,11 @@ impl SurfaceEventTracker {
         while removed != 0 {
             let bit = removed.trailing_zeros() as usize;
             removed &= removed - 1;
+            debug_assert!(
+                t.counts[bit] > 0,
+                "SurfaceEventTracker: refcount underflow for slot {:?} bit {bit}",
+                t.slot
+            );
             let next = t.counts[bit].saturating_sub(1);
             t.counts[bit] = next;
             if next == 0 {
@@ -190,45 +195,6 @@ impl SurfaceEventTracker {
                     .unwrap_or(0);
                 Self::apply_mask_delta(t, id.index(), new_mask, &mut on_transition);
             }
-        }
-    }
-
-    /// Reconciles tracker state against the entire live `store` (e.g. initial mount or snapshot
-    /// restore), firing exact `0 -> 1` and `1 -> 0` transitions.
-    pub fn sync_full(
-        &mut self,
-        store: &NodeStore,
-        mut on_transition: impl FnMut(TableSlot, EventId, bool),
-    ) {
-        for slot in store.table_slots() {
-            let ew = store.events_word(slot);
-            if ew != NO_VAL_WORD {
-                let _ = self.ensure_tracked(slot, ew);
-            }
-        }
-        let cap = store.capacity();
-        for t in &mut self.tables {
-            let limit = cap.max(t.masks.len());
-            for idx in 0..limit {
-                let new_mask = store
-                    .id_at(idx)
-                    .map_or(0, |id| store.node_events_mask(t.slot, id));
-                Self::apply_mask_delta(t, idx, new_mask, &mut on_transition);
-            }
-        }
-    }
-
-    /// Clears all active counts and per-node masks, invoking `on_transition(slot, event_id, false)`
-    /// for every event that currently has at least one listener.
-    pub fn reset_with(&mut self, mut on_transition: impl FnMut(TableSlot, EventId, bool)) {
-        for t in &mut self.tables {
-            for bit in 0..32 {
-                if t.counts[bit] > 0 {
-                    t.counts[bit] = 0;
-                    on_transition(t.slot, EventId(bit as u32), false);
-                }
-            }
-            t.masks.fill(0);
         }
     }
 

@@ -556,7 +556,7 @@ class FabricHost {
   ScenePublisherState scene_;
 
   mutable std::mutex event_mutex_;
-  EventRingWriter event_ring_;
+  EventBatchBuilder event_ring_;
   std::vector<uint8_t> drained_snapshot_;
 
 #if defined(NVE_WITH_RN_YOGA) && NVE_WITH_RN_YOGA

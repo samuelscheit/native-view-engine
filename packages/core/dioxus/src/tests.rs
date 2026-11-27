@@ -215,3 +215,94 @@ fn targeted_hot_patch_updates_only_addressed_node_and_text() {
     assert!(texts.iter().any(|t| t == "# design-sync"));
     assert!(!texts.iter().any(|t| t == "# engineering"));
 }
+
+#[test]
+fn retained_event_clone_is_isolated_and_layout_and_table_events_dispatch() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use dioxus_core::Event;
+    use nve_abi::{EventFlags, EventId, Key64};
+
+    type Shared<T> = Rc<RefCell<Vec<T>>>;
+
+    #[derive(Clone)]
+    struct Log {
+        retained_presses: Shared<Event<PressEventData>>,
+        layouts: Shared<(f32, f32, f32, f32)>,
+        table_events: Shared<(u64, u32, Vec<u8>)>,
+    }
+
+    impl PartialEq for Log {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.retained_presses, &other.retained_presses)
+                && Rc::ptr_eq(&self.layouts, &other.layouts)
+                && Rc::ptr_eq(&self.table_events, &other.table_events)
+        }
+    }
+
+    let log = Log {
+        retained_presses: Rc::new(RefCell::new(Vec::new())),
+        layouts: Rc::new(RefCell::new(Vec::new())),
+        table_events: Rc::new(RefCell::new(Vec::new())),
+    };
+
+    #[component]
+    fn EventLogApp(log: Log) -> Element {
+        let rp = Rc::clone(&log.retained_presses);
+        let lay = Rc::clone(&log.layouts);
+        let tev = Rc::clone(&log.table_events);
+        rsx! {
+            view {
+                test_id: "event-target",
+                onpress: move |ev| {
+                    rp.borrow_mut().push(ev);
+                },
+                onlayout: move |ev| {
+                    lay.borrow_mut().push((ev.raw.payload_f32(0), ev.raw.payload_f32(1), ev.raw.payload_f32(2), ev.raw.payload_f32(3)));
+                },
+                ontableevent: move |ev| {
+                    tev.borrow_mut().push((ev.table_key, ev.event_id, ev.payload.clone()));
+                },
+            }
+        }
+    }
+
+    let log_for_app = log.clone();
+    let mut surface = DioxusSurface::new_with_props(SurfaceId::ROOT, EventLogApp, EventLogAppProps { log: log_for_app });
+    surface.reconcile(FrameId(1));
+
+    let target = find_by_test_id(surface.store(), "event-target");
+    let mod_key = Key64::of("acme.chart");
+
+    let mut evs = EventBatchBuf::new();
+    evs.push_press(SurfaceId::ROOT, target, TimestampUs(10), 11.0, 22.0);
+    evs.push_press(SurfaceId::ROOT, target, TimestampUs(20), 99.0, 88.0);
+    evs.push_layout(SurfaceId::ROOT, target, TimestampUs(30), 4.0, 8.0, 320.0, 180.0);
+    evs.push_table_event(
+        mod_key,
+        SurfaceId::ROOT,
+        target,
+        TimestampUs(40),
+        EventId(5),
+        EventFlags::EMPTY,
+        [0; 6],
+        &[0xDE, 0xAD, 0xBE, 0xEF],
+    );
+    assert!(surface.dispatch_events(evs.as_validated()));
+
+    // Retained Event<PressEventData> clones must NOT alias each other across EventSlots::reuse.
+    let presses = log.retained_presses.borrow();
+    assert_eq!(presses.len(), 2);
+    assert_eq!((presses[0].x, presses[0].y), (11.0, 22.0));
+    assert_eq!((presses[1].x, presses[1].y), (99.0, 88.0));
+
+    let layouts = log.layouts.borrow();
+    assert_eq!(layouts.as_slice(), &[(4.0, 8.0, 320.0, 180.0)]);
+
+    let tevs = log.table_events.borrow();
+    assert_eq!(
+        tevs.as_slice(),
+        &[(mod_key.0, 5, vec![0xDE, 0xAD, 0xBE, 0xEF])]
+    );
+}

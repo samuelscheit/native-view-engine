@@ -1,4 +1,4 @@
 #pragma once
 
-#include "event_ring_writer.hpp"
+#include "nve_event_batch.hpp"
 #include "mock_jsi_runtime.hpp"

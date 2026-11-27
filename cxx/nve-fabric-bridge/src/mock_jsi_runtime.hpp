@@ -1,6 +1,6 @@
 #pragma once
 
-#include "event_ring_writer.hpp"
+#include "nve_event_batch.hpp"
 #include "mock_jsi_arena.hpp"
 
 #include <algorithm>
@@ -26,8 +26,8 @@ namespace nve {
  * - Primary in-process hot path: `record_direct_event(...)` + `dispatch_direct(...)` passes an
  *   `NveEventBatch` pointer directly across `NveSurfaceApi::dispatch_events` with 0 bytes
  *   serialized and 0 heap allocations after warmup.
- * - Non-shared boundary path: `record_custom_event(EventRingWriter&, ...)` encodes captured
- *   `NveValue` trees directly into `EventRingWriter`'s preallocated buffer as compact binary
+ * - Non-shared boundary path: `record_custom_event(EventBatchBuilder&, ...)` encodes captured
+ *   `NveValue` trees directly into `EventBatchBuilder`'s preallocated buffer as compact binary
  *   `NveBinValue` (readable with zero-copy `nve::BinValueView` / Rust `BinValueView`).
  */
 class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
@@ -110,9 +110,9 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   }
 
   /// Non-shared boundary path: capture `value` in the arena and encode it as compact binary
-  /// `NveBinValue` directly inside `EventRingWriter`'s preallocated buffer (binary).
+  /// `NveBinValue` directly inside `EventBatchBuilder`'s preallocated buffer (binary).
   bool record_custom_event(
-      EventRingWriter& ring,
+      EventBatchBuilder& ring,
       uint32_t surface_id,
       uint32_t node_id,
       uint64_t ts_us,

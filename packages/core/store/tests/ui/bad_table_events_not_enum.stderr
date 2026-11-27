@@ -1,0 +1,108 @@
+error[E0277]: the trait bound `NotAnEvent: EventEnum` is not satisfied
+ --> tests/ui/bad_table_events_not_enum.rs:6:10
+  |
+6 | #[derive(NveTable)]
+  |          ^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `EventEnum` is not implemented for `NotAnEvent`
+ --> tests/ui/bad_table_events_not_enum.rs:4:1
+  |
+4 | struct NotAnEvent;
+  | ^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `EventEnum`
+ --> $WORKSPACE/packages/core/abi/src/event/mod.rs
+  |
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::InteractionEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::TextInputEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::ScrollEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::LayoutEvent`
+note: required by a bound in `nve_store::HasEvents::Event`
+ --> src/table/mod.rs
+  |
+  |     type Event: nve_abi::EventEnum;
+  |                 ^^^^^^^^^^^^^^^^^^ required by this bound in `HasEvents::Event`
+  = note: this error originates in the derive macro `NveTable` which comes from the expansion of the derive macro `EventEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `NotAnEvent: EventEnum` is not satisfied
+ --> tests/ui/bad_table_events_not_enum.rs:6:10
+  |
+6 | #[derive(NveTable)]
+  |          ^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `EventEnum` is not implemented for `NotAnEvent`
+ --> tests/ui/bad_table_events_not_enum.rs:4:1
+  |
+4 | struct NotAnEvent;
+  | ^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `EventEnum`
+ --> $WORKSPACE/packages/core/abi/src/event/mod.rs
+  |
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::InteractionEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::TextInputEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::ScrollEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::LayoutEvent`
+note: required by a bound in `EventSet`
+ --> $WORKSPACE/packages/core/abi/src/event/set.rs
+  |
+  | pub struct EventSet<E: EventEnum>(u32, PhantomData<fn() -> E>);
+  |                        ^^^^^^^^^ required by this bound in `EventSet`
+  = note: this error originates in the derive macro `NveTable` which comes from the expansion of the derive macro `EventEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `raw` exists for struct `EventSet<NotAnEvent>`, but its trait bounds were not satisfied
+ --> tests/ui/bad_table_events_not_enum.rs:6:10
+  |
+4 | struct NotAnEvent;
+  | ----------------- doesn't satisfy `NotAnEvent: EventEnum`
+5 |
+6 | #[derive(NveTable)]
+  |          ^^^^^^^^ method cannot be called on `EventSet<NotAnEvent>` due to unsatisfied trait bounds
+  |
+  = note: the following trait bounds were not satisfied:
+          `NotAnEvent: EventEnum`
+note: the trait `EventEnum` must be implemented
+ --> $WORKSPACE/packages/core/abi/src/event/set.rs
+  |
+  | pub trait EventEnum: Copy + Eq + 'static {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `NotAnEvent: EventEnum` is not satisfied
+ --> tests/ui/bad_table_events_not_enum.rs:6:10
+  |
+6 | #[derive(NveTable)]
+  |          ^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `EventEnum` is not implemented for `NotAnEvent`
+ --> tests/ui/bad_table_events_not_enum.rs:4:1
+  |
+4 | struct NotAnEvent;
+  | ^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `EventEnum`
+ --> $WORKSPACE/packages/core/abi/src/event/mod.rs
+  |
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::InteractionEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::TextInputEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::ScrollEvent`
+...
+  | #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
+  |                                                   ^^^^^^^^^ `nve_abi::event::LayoutEvent`
+  = note: this error originates in the derive macro `NveTable` which comes from the expansion of the derive macro `EventEnum` (in Nightly builds, run with -Z macro-backtrace for more info)

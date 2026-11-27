@@ -271,6 +271,18 @@ final class NveEventRingCodecTests: XCTestCase {
         }
         XCTAssertTrue(NveEventRingCodec.decode(badBounds).isEmpty)
 
+        // Conflicting INLINE_KEY_UTF8 | KEY_SPLIT_BYTES flags rejected cleanly
+        var badFlags = NveEventRingCodec.encode([
+            NveEvent(surfaceId: 1, nodeId: 1, timestampUs: 1, kind: .keyDown, payload: .key(key: "a", code: "KeyA")),
+        ])
+        let conflictFlags: UInt32 = 0x20000 | 0x80000
+        withUnsafeBytes(of: conflictFlags.littleEndian) { raw in
+            badFlags.replaceSubrange(14 + 28 ..< 14 + 32, with: raw)
+        }
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badFlags)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .conflictingFlags)
+        }
+
         // Oversized header arena length rejected cleanly
         let oversized = makeNvevHeader(eventCount: 1, bytesLen: 9999) + Data(count: 64)
         XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(oversized)) { err in

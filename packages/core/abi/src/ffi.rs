@@ -164,6 +164,7 @@ pub enum DecodeError {
     InvalidUtf8,
     TrailingBytes(usize),
     MaxDepthExceeded,
+    InvalidEvent(crate::event::EventValidationError),
 }
 
 impl std::fmt::Display for DecodeError {

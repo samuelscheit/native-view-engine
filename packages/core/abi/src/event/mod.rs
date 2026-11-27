@@ -6,6 +6,7 @@ mod set;
 #[cfg(test)]
 mod tests;
 mod validated;
+mod wire;
 
 use nve_abi_macros::{EventEnum, NveAbi};
 use nve_hash::Key64;
@@ -13,9 +14,8 @@ use nve_hash::Key64;
 use crate::id::{ArenaOffset, ByteLen, EventFlags, EventId, NodeId, SurfaceId, TimestampUs};
 use crate::table::{TableKey, Word};
 
-pub use buf::{
-    EventBatchBuf, NVE_EVENT_WIRE_HEADER_SIZE, NVE_EVENT_WIRE_MAGIC, NVE_EVENT_WIRE_VERSION,
-};
+pub use buf::EventBatchBuf;
+pub use wire::{NVE_EVENT_WIRE_HEADER_SIZE, NVE_EVENT_WIRE_MAGIC, NVE_EVENT_WIRE_VERSION};
 pub use set::{EventEnum, EventSet, EventSetIter};
 pub use validated::{
     EventValidationError, ValidatedEvent, ValidatedEvents, ValidatedEventsIter,

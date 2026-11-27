@@ -228,7 +228,7 @@ void test_mock_jsi_recorder_runtime() {
     });
     assert(sink_called && rc == 1u);
 
-    nve::EventRingWriter ring;
+    nve::EventBatchBuilder ring;
     ring.clear();
     assert(rt.record_custom_event(ring, 1, 77, 123456, "onSvgLoad", facebook::jsi::Value(rt, root)));
 

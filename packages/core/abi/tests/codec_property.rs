@@ -119,14 +119,20 @@ fn event_batch_wire_and_validated_ffi_seeded_roundtrip() {
         assert_eq!(a.custom_data(), b.custom_data());
     }
 
-    // Corrupt truncation fuzzing must never panic.
-    for cut in 0..encoded.len().min(96) {
-        let _ = EventBatchBuf::decode_wire(&encoded[..cut]);
+    // Every strict prefix of a valid wire frame MUST return `Err(...)` (never silently succeed).
+    for cut in 0..encoded.len() {
+        assert!(
+            EventBatchBuf::decode_wire(&encoded[..cut]).is_err(),
+            "strict prefix cut={cut}/{} must fail decode_wire",
+            encoded.len()
+        );
     }
     let mut rng2 = XorShift64::new(0xDEAD_BEEF_1234_5678);
     for _ in 0..200 {
         let junk = rng2.next_bytes(96);
-        let _ = EventBatchBuf::decode_wire(&junk);
+        if let Ok(decoded) = EventBatchBuf::decode_wire(&junk) {
+            assert_eq!(decoded.to_wire_bytes(), junk);
+        }
     }
 
     assert_eq!(InteractionEvent::Press.event_id(), EventId(0));

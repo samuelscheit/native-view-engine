@@ -35,18 +35,70 @@ const char* canonical_event_name(EventKind kind) noexcept {
   return "onUnknown";
 }
 
+bool is_valid_utf8(const uint8_t* data, size_t len) noexcept {
+  if (len == 0u) return true;
+  if (data == nullptr) return false;
+  size_t i = 0u;
+  while (i < len) {
+    const uint8_t b0 = data[i];
+    if (b0 < 0x80u) {
+      ++i;
+    } else if (b0 >= 0xC2u && b0 <= 0xDFu) {
+      if (i + 1u >= len || (data[i + 1u] & 0xC0u) != 0x80u) return false;
+      i += 2u;
+    } else if (b0 == 0xE0u) {
+      if (i + 2u >= len || data[i + 1u] < 0xA0u || data[i + 1u] > 0xBFu ||
+          (data[i + 2u] & 0xC0u) != 0x80u) return false;
+      i += 3u;
+    } else if ((b0 >= 0xE1u && b0 <= 0xECu) || (b0 >= 0xEEu && b0 <= 0xEFu)) {
+      if (i + 2u >= len || (data[i + 1u] & 0xC0u) != 0x80u ||
+          (data[i + 2u] & 0xC0u) != 0x80u) return false;
+      i += 3u;
+    } else if (b0 == 0xEDu) {
+      if (i + 2u >= len || data[i + 1u] < 0x80u || data[i + 1u] > 0x9Fu ||
+          (data[i + 2u] & 0xC0u) != 0x80u) return false;
+      i += 3u;
+    } else if (b0 == 0xF0u) {
+      if (i + 3u >= len || data[i + 1u] < 0x90u || data[i + 1u] > 0xBFu ||
+          (data[i + 2u] & 0xC0u) != 0x80u || (data[i + 3u] & 0xC0u) != 0x80u) return false;
+      i += 4u;
+    } else if (b0 >= 0xF1u && b0 <= 0xF3u) {
+      if (i + 3u >= len || (data[i + 1u] & 0xC0u) != 0x80u ||
+          (data[i + 2u] & 0xC0u) != 0x80u || (data[i + 3u] & 0xC0u) != 0x80u) return false;
+      i += 4u;
+    } else if (b0 == 0xF4u) {
+      if (i + 3u >= len || data[i + 1u] < 0x80u || data[i + 1u] > 0x8Fu ||
+          (data[i + 2u] & 0xC0u) != 0x80u || (data[i + 3u] & 0xC0u) != 0x80u) return false;
+      i += 4u;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool decode_nve_event_record(
     const NveEvent& src,
     const uint8_t* arena,
     size_t arena_len,
     DecodedEvent& out) {
-  if (src.bytes.len > 0u &&
-      (arena == nullptr || src.bytes.offset > arena_len ||
-       src.bytes.len > arena_len - src.bytes.offset)) {
+  if (src.bytes.offset > arena_len || src.bytes.len > arena_len - src.bytes.offset ||
+      (src.bytes.len > 0u && arena == nullptr)) {
     return false;
   }
   const uint8_t* ev_bytes = src.bytes.len > 0u ? (arena + src.bytes.offset) : nullptr;
   const size_t ev_len = src.bytes.len;
+
+  const bool has_utf8 = (src.flags & NVE_EVENT_FLAG_UTF8_BYTES) != 0u;
+  const bool has_inline_key = (src.flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) != 0u;
+  const bool has_split_key = (src.flags & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) != 0u;
+  const bool has_custom = (src.flags & NVE_EVENT_FLAG_CUSTOM_NAMED) != 0u;
+  if ((has_inline_key && has_split_key) || (has_custom && (has_inline_key || has_split_key))) {
+    return false;
+  }
+  if (has_utf8 && !is_valid_utf8(ev_bytes, ev_len)) {
+    return false;
+  }
 
   out = DecodedEvent{};
   out.surface_id = src.surface;
@@ -81,7 +133,7 @@ bool decode_nve_event_record(
                                                                  : EventKind::KeyUp;
         out.key_code = src.payload[0];
         const uint32_t key_len = src.payload[1];
-        if ((src.flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) != 0u) {
+        if (has_inline_key) {
           if (key_len > NVE_EVENT_INLINE_KEY_CAP) {
             return false;
           }
@@ -93,19 +145,28 @@ bool decode_nve_event_record(
             kb[w * 4u + 2u] = static_cast<uint8_t>((word >> 16u) & 0xFFu);
             kb[w * 4u + 3u] = static_cast<uint8_t>((word >> 24u) & 0xFFu);
           }
+          if (!is_valid_utf8(kb.data(), key_len) || !is_valid_utf8(ev_bytes, ev_len)) {
+            return false;
+          }
           out.text.assign(reinterpret_cast<const char*>(kb.data()), key_len);
           if (ev_len > 0u) {
             out.code.assign(reinterpret_cast<const char*>(ev_bytes), ev_len);
           }
-        } else if ((src.flags & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) != 0u) {
-          if (key_len > ev_len) {
+        } else if (has_split_key) {
+          if (key_len > ev_len || !is_valid_utf8(ev_bytes, key_len) ||
+              !is_valid_utf8(ev_bytes + key_len, ev_len - key_len)) {
             return false;
           }
-          out.text.assign(reinterpret_cast<const char*>(ev_bytes), key_len);
+          if (key_len > 0u) {
+            out.text.assign(reinterpret_cast<const char*>(ev_bytes), key_len);
+          }
           if (ev_len > key_len) {
             out.code.assign(reinterpret_cast<const char*>(ev_bytes + key_len), ev_len - key_len);
           }
         } else if (ev_len > 0u) {
+          if (!is_valid_utf8(ev_bytes, ev_len)) {
+            return false;
+          }
           out.text.assign(reinterpret_cast<const char*>(ev_bytes), ev_len);
         }
         break;
@@ -146,6 +207,9 @@ bool decode_nve_event_record(
       case NVE_TEXT_INPUT_EVENT_COMPOSITION_END: out.kind = EventKind::CompositionEnd; break;
       default: return false;
     }
+    if (!is_valid_utf8(ev_bytes, ev_len)) {
+      return false;
+    }
     out.name = canonical_event_name(out.kind);
     if (ev_len > 0u) {
       out.text.assign(reinterpret_cast<const char*>(ev_bytes), ev_len);
@@ -176,15 +240,21 @@ bool decode_nve_event_record(
     return true;
   }
 
+  if (src.table != NVE_TABLE_CUSTOM) {
+    return false;
+  }
   out.kind = EventKind::Custom;
   std::string_view cname;
   std::span<const uint8_t> cpayload;
   if (!event_custom_parts(src, arena, arena_len, cname, cpayload)) {
     return false;
   }
-  out.name = ((src.flags & NVE_EVENT_FLAG_CUSTOM_NAMED) != 0u)
-                 ? std::string(cname)
-                 : std::string(canonical_event_name(EventKind::Custom));
+  if (has_custom &&
+      !is_valid_utf8(reinterpret_cast<const uint8_t*>(cname.data()), cname.size())) {
+    return false;
+  }
+  out.name = has_custom ? std::string(cname)
+                        : std::string(canonical_event_name(EventKind::Custom));
   if (!cpayload.empty()) {
     out.payload_bytes.assign(cpayload.begin(), cpayload.end());
   }
@@ -216,10 +286,7 @@ NveEvent read_event_le(const uint8_t* p) noexcept {
 
 bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_events) {
   out_events.clear();
-  if (slice.len == 0u) {
-    return true;
-  }
-  if (slice.ptr == nullptr) {
+  if (slice.ptr == nullptr || slice.len < wire::kEventWireHeaderSize) {
     return false;
   }
 

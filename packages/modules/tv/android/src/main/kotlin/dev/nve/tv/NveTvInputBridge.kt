@@ -3,6 +3,8 @@ package dev.nve.tv
 import android.content.Context
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 
 /**
@@ -69,11 +71,11 @@ object NveTvEventRingWire {
         for (event in events) {
             val keyBytes = event.key.toByteArray(StandardCharsets.UTF_8)
             val codeBytes = event.code.toByteArray(StandardCharsets.UTF_8)
-            require(keyBytes.size <= 0xFFFF) { "Key name exceeds uint16 limit" }
-            require(codeBytes.size <= 0xFFFF) { "Key code exceeds uint16 limit" }
+            val added = if (keyBytes.size <= INLINE_KEY_CAP) codeBytes.size else (keyBytes.size + codeBytes.size)
+            require(added >= 0 && arenaLen <= Int.MAX_VALUE - added) { "TV event arena exceeds Int.MAX_VALUE" }
             keyList.add(keyBytes)
             codeList.add(codeBytes)
-            arenaLen += if (keyBytes.size <= INLINE_KEY_CAP) codeBytes.size else (keyBytes.size + codeBytes.size)
+            arenaLen += added
         }
         val out = ByteArray(WIRE_HEADER_BYTES + events.size * EVENT_RECORD_BYTES + arenaLen)
         val buf = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
@@ -183,22 +185,40 @@ object NveTvEventRingWire {
             require(bytesOff >= 0 && bytesLen >= 0 && bytesOff <= arenaLen && bytesLen <= arenaLen - bytesOff) {
                 "Out-of-bounds arena slice"
             }
+            val hasInlineKey = (flags and FLAG_INLINE_KEY_UTF8) != 0
+            val hasSplitKey = (flags and FLAG_KEY_SPLIT_BYTES) != 0
+            require(!(hasInlineKey && hasSplitKey)) { "Conflicting inline + split key flags" }
             val key: String
             val code: String
-            if ((flags and FLAG_INLINE_KEY_UTF8) != 0) {
+            if (hasInlineKey) {
                 require(keyLen in 0..INLINE_KEY_CAP) { "Invalid inline key length $keyLen" }
                 val kb = ByteBuffer.allocate(INLINE_KEY_CAP).order(ByteOrder.LITTLE_ENDIAN)
                     .putInt(p2).putInt(p3).putInt(p4).putInt(p5).array()
-                key = String(kb, 0, keyLen, StandardCharsets.UTF_8)
-                code = String(bytes, arenaStart + bytesOff, bytesLen, StandardCharsets.UTF_8)
-            } else {
+                key = decodeUtf8Strict(kb, 0, keyLen, "inline key")
+                code = decodeUtf8Strict(bytes, arenaStart + bytesOff, bytesLen, "key code")
+            } else if (hasSplitKey) {
                 require(keyLen in 0..bytesLen) { "Invalid split key length $keyLen" }
-                key = String(bytes, arenaStart + bytesOff, keyLen, StandardCharsets.UTF_8)
-                code = String(bytes, arenaStart + bytesOff + keyLen, bytesLen - keyLen, StandardCharsets.UTF_8)
+                key = decodeUtf8Strict(bytes, arenaStart + bytesOff, keyLen, "split key")
+                code = decodeUtf8Strict(bytes, arenaStart + bytesOff + keyLen, bytesLen - keyLen, "split code")
+            } else {
+                key = decodeUtf8Strict(bytes, arenaStart + bytesOff, bytesLen, "key")
+                code = ""
             }
             out.add(NveTvKeyEvent(surfaceId, nodeId, timestampUs, key, code, keyCode, flags and 0x1F))
         }
         return out
+    }
+
+    private fun decodeUtf8Strict(bytes: ByteArray, offset: Int, len: Int, field: String): String {
+        if (len == 0) return ""
+        val decoder = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        return try {
+            decoder.decode(ByteBuffer.wrap(bytes, offset, len)).toString()
+        } catch (e: CharacterCodingException) {
+            throw IllegalArgumentException("Invalid UTF-8 in TV $field", e)
+        }
     }
 }
 

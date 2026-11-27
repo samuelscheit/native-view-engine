@@ -426,166 +426,282 @@ Uint8List encodeScrollEvent({
   return w.finish();
 }
 
+/// Strict validation error thrown by [NveEventRingCodec.decode] and
+/// `NveDirectEventWriter.decodeBatch` on malformed `NVEV` v2 frames or direct batches.
+final class NveEventRingException implements FormatException {
+  const NveEventRingException(this.message, [this.offset]);
+
+  @override
+  final String message;
+
+  @override
+  final int? offset;
+
+  @override
+  Object? get source => null;
+
+  @override
+  String toString() => offset == null
+      ? 'NveEventRingException: $message'
+      : 'NveEventRingException(offset=$offset): $message';
+}
+
 /// Binary encoder/decoder for `NVEV` v2 event batch wire frames matching `EventBatchBuf`.
 class NveEventRingCodec {
   const NveEventRingCodec._();
 
+  static final ByteData _scratch4 = ByteData(4);
+
   static double _bitsF32(int bits) {
-    final bd = ByteData(4)..setUint32(0, bits, Endian.little);
-    return bd.getFloat32(0, Endian.little);
+    _scratch4.setUint32(0, bits, Endian.little);
+    return _scratch4.getFloat32(0, Endian.little);
   }
 
   static int _f32Bits(double v) {
-    final bd = ByteData(4)..setFloat32(0, v, Endian.little);
-    return bd.getUint32(0, Endian.little);
+    _scratch4.setFloat32(0, v, Endian.little);
+    return _scratch4.getUint32(0, Endian.little);
   }
 
-  static List<NveEvent> decode(Uint8List bytes) {
-    final hdr = nveWireDecodeEventBatchHeader(bytes);
-    if (hdr == null) return const <NveEvent>[];
-    final evBytes = hdr.eventCount * nveWireEventRecordSize;
-    final arenaStart = nveWireEventHeaderSize + evBytes;
-    if (arenaStart + hdr.bytesLen > bytes.length) return const <NveEvent>[];
+  static String _decodeUtf8Strict(List<int> data, String field) {
+    if (data.isEmpty) return '';
+    try {
+      return utf8.decode(data, allowMalformed: false);
+    } on FormatException {
+      throw NveEventRingException('Invalid UTF-8 in NVEV v2 $field');
+    }
+  }
 
+  /// Strictly validates and decodes a single 64-byte `NveEvent` record against `arena`,
+  /// matching Rust `ValidatedEvents::validate` (`validate_one_event`) semantics.
+  static NveEvent decodeRecord({
+    required int timestampUs,
+    required int table,
+    required int surfaceId,
+    required int nodeId,
+    required int eventId,
+    required int flags,
+    required int p0,
+    required int p1,
+    required int p2,
+    required int p3,
+    required int p4,
+    required int p5,
+    required int bytesOff,
+    required int bytesLen,
+    required Uint8List arena,
+  }) {
+    if (bytesOff < 0 || bytesLen < 0 || bytesOff > arena.length || bytesLen > arena.length - bytesOff) {
+      throw NveEventRingException(
+        'Arena slice [$bytesOff..+$bytesLen] out of bounds (arena=${arena.length})',
+        bytesOff,
+      );
+    }
+    final slice = bytesLen == 0
+        ? Uint8List(0)
+        : Uint8List.fromList(arena.sublist(bytesOff, bytesOff + bytesLen));
+
+    final hasUtf8 = (flags & nveEventFlagUtf8Bytes) != 0;
+    final hasInlineKey = (flags & nveEventFlagInlineKeyUtf8) != 0;
+    final hasSplitKey = (flags & nveEventFlagKeySplitBytes) != 0;
+    final hasCustom = (flags & nveEventFlagCustomNamed) != 0;
+    if ((hasInlineKey && hasSplitKey) || (hasCustom && (hasInlineKey || hasSplitKey))) {
+      throw NveEventRingException('Conflicting NVEV v2 framing flags: 0x${flags.toRadixString(16)}');
+    }
+    if (hasUtf8) {
+      _decodeUtf8Strict(slice, 'utf8 bytes');
+    }
+
+    String? name;
+    final NveEventKind kind;
+    final NveEventPayload payload;
+
+    if (table == nveTableCustom) {
+      kind = NveEventKind.custom;
+      if (hasCustom) {
+        if (p0 < 0 || p0 > slice.length) {
+          throw NveEventRingException('Custom event name length $p0 exceeds slice ${slice.length}');
+        }
+        name = _decodeUtf8Strict(slice.sublist(0, p0), 'custom name');
+        payload = NveBinValuePayload(Uint8List.fromList(slice.sublist(p0)));
+      } else {
+        name = '';
+        payload = NveBinValuePayload(slice);
+      }
+    } else if (table == nveTableInteraction) {
+      final ie = NveInteractionEvent.fromCode(eventId);
+      switch (ie) {
+        case NveInteractionEvent.press:
+          kind = NveEventKind.press;
+          payload = NvePointPayload(x: _bitsF32(p0), y: _bitsF32(p1));
+        case NveInteractionEvent.longPress:
+          kind = NveEventKind.longPress;
+          payload = NvePointPayload(x: _bitsF32(p0), y: _bitsF32(p1));
+        case NveInteractionEvent.focus:
+          kind = NveEventKind.focus;
+          payload = const NveEmptyPayload();
+        case NveInteractionEvent.blur:
+          kind = NveEventKind.blur;
+          payload = const NveEmptyPayload();
+        case NveInteractionEvent.keyDown || NveInteractionEvent.keyUp:
+          kind = ie == NveInteractionEvent.keyDown ? NveEventKind.keyDown : NveEventKind.keyUp;
+          final String key;
+          final String code;
+          if (hasInlineKey) {
+            if (p1 < 0 || p1 > nveEventInlineKeyCap) {
+              throw NveEventRingException('Inline key length $p1 exceeds $nveEventInlineKeyCap');
+            }
+            final kb = Uint8List(nveEventInlineKeyCap);
+            final kbd = ByteData.sublistView(kb);
+            kbd.setUint32(0, p2, Endian.little);
+            kbd.setUint32(4, p3, Endian.little);
+            kbd.setUint32(8, p4, Endian.little);
+            kbd.setUint32(12, p5, Endian.little);
+            key = _decodeUtf8Strict(kb.sublist(0, p1), 'inline key');
+            code = _decodeUtf8Strict(slice, 'key code');
+          } else if (hasSplitKey) {
+            if (p1 < 0 || p1 > slice.length) {
+              throw NveEventRingException('Split key length $p1 exceeds slice ${slice.length}');
+            }
+            key = _decodeUtf8Strict(slice.sublist(0, p1), 'split key');
+            code = _decodeUtf8Strict(slice.sublist(p1), 'split code');
+          } else {
+            key = _decodeUtf8Strict(slice, 'key');
+            code = '';
+          }
+          payload = NveKeyPayload(
+            key: key,
+            code: code,
+            modifiers: flags & 0x1F,
+            keyCode: p0,
+            isComposing: (flags & nveEventFlagComposing) != 0,
+          );
+        case NveInteractionEvent.pointerDown ||
+            NveInteractionEvent.pointerMove ||
+            NveInteractionEvent.pointerUp ||
+            NveInteractionEvent.pointerEnter ||
+            NveInteractionEvent.pointerLeave:
+          kind = switch (ie) {
+            NveInteractionEvent.pointerDown => NveEventKind.pointerDown,
+            NveInteractionEvent.pointerMove => NveEventKind.pointerMove,
+            NveInteractionEvent.pointerUp => NveEventKind.pointerUp,
+            NveInteractionEvent.pointerEnter => NveEventKind.pointerEnter,
+            _ => NveEventKind.pointerLeave,
+          };
+          final btn = (flags & nveEventFlagButtonMask) >> nveEventFlagButtonShift;
+          final cap = (flags & nveEventFlagCapture) != 0 ? 0x08 : 0;
+          payload = NvePointerPayload(
+            x: _bitsF32(p0),
+            y: _bitsF32(p1),
+            modifiers: flags & 0x1F,
+            flags: btn | cap,
+          );
+        case NveInteractionEvent.wheel:
+          kind = NveEventKind.wheel;
+          payload = NveWheelPayload(deltaX: _bitsF32(p0), deltaY: _bitsF32(p1), modifiers: flags & 0x1F);
+        case null:
+          throw NveEventRingException('Unknown Interaction event ID: $eventId');
+      }
+    } else if (table == nveTableTextInput) {
+      kind = switch (NveTextInputEvent.fromCode(eventId)) {
+        NveTextInputEvent.change => NveEventKind.textChange,
+        NveTextInputEvent.submit => NveEventKind.submit,
+        NveTextInputEvent.compositionStart => NveEventKind.compositionStart,
+        NveTextInputEvent.compositionUpdate => NveEventKind.compositionUpdate,
+        NveTextInputEvent.compositionEnd => NveEventKind.compositionEnd,
+        null => throw NveEventRingException('Unknown TextInput event ID: $eventId'),
+      };
+      payload = NveTextPayload(_decodeUtf8Strict(slice, 'text input'));
+    } else if (table == nveTableScroll) {
+      if (eventId != NveScrollEvent.scroll.code) {
+        throw NveEventRingException('Unknown Scroll event ID: $eventId');
+      }
+      kind = NveEventKind.scroll;
+      payload = NveScrollPayload(
+        x: _bitsF32(p0),
+        y: _bitsF32(p1),
+        contentWidth: _bitsF32(p2),
+        contentHeight: _bitsF32(p3),
+      );
+    } else if (table == nveTableLayout) {
+      if (eventId != NveLayoutEvent.layout.code) {
+        throw NveEventRingException('Unknown Layout event ID: $eventId');
+      }
+      kind = NveEventKind.layout;
+      payload = NveLayoutPayload(
+        x: _bitsF32(p0),
+        y: _bitsF32(p1),
+        width: _bitsF32(p2),
+        height: _bitsF32(p3),
+      );
+    } else {
+      kind = NveEventKind.tableEvent;
+      payload = NveTableEventPayload(tableKey: table, eventId: eventId, bytes: slice);
+    }
+
+    return NveEvent(
+      surfaceId: surfaceId,
+      nodeId: nodeId,
+      timestampUs: timestampUs,
+      kind: kind,
+      name: name,
+      payload: payload,
+    );
+  }
+
+  /// Strictly decodes an `NVEV` v2 wire buffer, throwing [NveEventRingException] on bad magic,
+  /// unsupported version, truncation, trailing bytes, out-of-bounds slices, conflicting framing
+  /// flags, invalid UTF-8, or unknown core event IDs.
+  static List<NveEvent> decode(Uint8List bytes) {
+    if (bytes.length < nveWireEventHeaderSize) {
+      throw NveEventRingException('Truncated NVEV v2 header (${bytes.length} bytes)');
+    }
+    final hdr = nveWireDecodeEventBatchHeader(bytes);
+    if (hdr == null) {
+      throw const NveEventRingException('Invalid NVEV v2 magic or unsupported version');
+    }
+    final bodyLen = bytes.length - nveWireEventHeaderSize;
+    if (hdr.eventCount > bodyLen ~/ nveWireEventRecordSize) {
+      throw NveEventRingException(
+        'Truncated NVEV v2 records: declared ${hdr.eventCount} events, only $bodyLen bytes available',
+      );
+    }
+    final evBytes = hdr.eventCount * nveWireEventRecordSize;
+    final arenaAvail = bodyLen - evBytes;
+    if (arenaAvail < hdr.bytesLen) {
+      throw NveEventRingException(
+        'Truncated NVEV v2 arena: declared ${hdr.bytesLen} bytes, only $arenaAvail available',
+      );
+    }
+    if (arenaAvail > hdr.bytesLen) {
+      throw NveEventRingException(
+        'Trailing NVEV v2 bytes: ${arenaAvail - hdr.bytesLen} unexpected byte(s)',
+      );
+    }
+
+    final arenaStart = nveWireEventHeaderSize + evBytes;
     final bd = ByteData.sublistView(bytes);
     final arena = Uint8List.sublistView(bytes, arenaStart, arenaStart + hdr.bytesLen);
     final events = <NveEvent>[];
 
     for (var i = 0; i < hdr.eventCount; i++) {
       final base = nveWireEventHeaderSize + i * nveWireEventRecordSize;
-      final ts = bd.getUint64(base + 0, Endian.little);
-      final table = bd.getUint64(base + 8, Endian.little);
-      final surfaceId = bd.getUint32(base + 16, Endian.little);
-      final nodeId = bd.getUint32(base + 20, Endian.little);
-      final eventId = bd.getUint32(base + 24, Endian.little);
-      final flags = bd.getUint32(base + 28, Endian.little);
-      final p0 = bd.getUint32(base + 32, Endian.little);
-      final p1 = bd.getUint32(base + 36, Endian.little);
-      final p2 = bd.getUint32(base + 40, Endian.little);
-      final p3 = bd.getUint32(base + 44, Endian.little);
-      final p4 = bd.getUint32(base + 48, Endian.little);
-      final p5 = bd.getUint32(base + 52, Endian.little);
-      final bytesOff = bd.getUint32(base + 56, Endian.little);
-      final bytesLen = bd.getUint32(base + 60, Endian.little);
-      final slice = (bytesLen == 0 || bytesOff + bytesLen > arena.length)
-          ? Uint8List(0)
-          : Uint8List.fromList(arena.sublist(bytesOff, bytesOff + bytesLen));
-
-      String? name;
-      final NveEventKind kind;
-      final NveEventPayload payload;
-
-      if (table == nveTableCustom) {
-        kind = NveEventKind.custom;
-        final nlen = p0 <= slice.length ? p0 : slice.length;
-        name = utf8.decode(slice.sublist(0, nlen), allowMalformed: true);
-        payload = NveBinValuePayload(Uint8List.fromList(slice.sublist(nlen)));
-      } else if (table == nveTableInteraction) {
-        final ie = NveInteractionEvent.fromCode(eventId);
-        switch (ie) {
-          case NveInteractionEvent.press:
-            kind = NveEventKind.press;
-            payload = NvePointPayload(x: _bitsF32(p0), y: _bitsF32(p1));
-          case NveInteractionEvent.longPress:
-            kind = NveEventKind.longPress;
-            payload = NvePointPayload(x: _bitsF32(p0), y: _bitsF32(p1));
-          case NveInteractionEvent.focus:
-            kind = NveEventKind.focus;
-            payload = const NveEmptyPayload();
-          case NveInteractionEvent.blur:
-            kind = NveEventKind.blur;
-            payload = const NveEmptyPayload();
-          case NveInteractionEvent.keyDown || NveInteractionEvent.keyUp:
-            kind = ie == NveInteractionEvent.keyDown ? NveEventKind.keyDown : NveEventKind.keyUp;
-            final String key;
-            final String code;
-            if ((flags & nveEventFlagInlineKeyUtf8) != 0) {
-              final klen = p1 <= nveEventInlineKeyCap ? p1 : nveEventInlineKeyCap;
-              final kb = Uint8List(16);
-              final kbd = ByteData.sublistView(kb);
-              kbd.setUint32(0, p2, Endian.little);
-              kbd.setUint32(4, p3, Endian.little);
-              kbd.setUint32(8, p4, Endian.little);
-              kbd.setUint32(12, p5, Endian.little);
-              key = utf8.decode(kb.sublist(0, klen), allowMalformed: true);
-              code = utf8.decode(slice, allowMalformed: true);
-            } else {
-              final klen = p1 <= slice.length ? p1 : slice.length;
-              key = utf8.decode(slice.sublist(0, klen), allowMalformed: true);
-              code = utf8.decode(slice.sublist(klen), allowMalformed: true);
-            }
-            payload = NveKeyPayload(
-              key: key,
-              code: code,
-              modifiers: flags & 0x1F,
-              keyCode: p0,
-              isComposing: (flags & nveEventFlagComposing) != 0,
-            );
-          case NveInteractionEvent.pointerDown ||
-              NveInteractionEvent.pointerMove ||
-              NveInteractionEvent.pointerUp ||
-              NveInteractionEvent.pointerEnter ||
-              NveInteractionEvent.pointerLeave:
-            kind = switch (ie) {
-              NveInteractionEvent.pointerDown => NveEventKind.pointerDown,
-              NveInteractionEvent.pointerMove => NveEventKind.pointerMove,
-              NveInteractionEvent.pointerUp => NveEventKind.pointerUp,
-              NveInteractionEvent.pointerEnter => NveEventKind.pointerEnter,
-              _ => NveEventKind.pointerLeave,
-            };
-            final btn = (flags & nveEventFlagButtonMask) >> nveEventFlagButtonShift;
-            final cap = (flags & nveEventFlagCapture) != 0 ? 0x08 : 0;
-            payload = NvePointerPayload(
-              x: _bitsF32(p0),
-              y: _bitsF32(p1),
-              modifiers: flags & 0x1F,
-              flags: btn | cap,
-            );
-          case NveInteractionEvent.wheel:
-            kind = NveEventKind.wheel;
-            payload = NveWheelPayload(deltaX: _bitsF32(p0), deltaY: _bitsF32(p1), modifiers: flags & 0x1F);
-          case null:
-            continue;
-        }
-      } else if (table == nveTableTextInput) {
-        kind = switch (NveTextInputEvent.fromCode(eventId)) {
-          NveTextInputEvent.change => NveEventKind.textChange,
-          NveTextInputEvent.submit => NveEventKind.submit,
-          NveTextInputEvent.compositionStart => NveEventKind.compositionStart,
-          NveTextInputEvent.compositionUpdate => NveEventKind.compositionUpdate,
-          NveTextInputEvent.compositionEnd => NveEventKind.compositionEnd,
-          null => NveEventKind.textChange,
-        };
-        payload = NveTextPayload(utf8.decode(slice, allowMalformed: true));
-      } else if (table == nveTableScroll) {
-        kind = NveEventKind.scroll;
-        payload = NveScrollPayload(
-          x: _bitsF32(p0),
-          y: _bitsF32(p1),
-          contentWidth: _bitsF32(p2),
-          contentHeight: _bitsF32(p3),
-        );
-      } else if (table == nveTableLayout) {
-        kind = NveEventKind.layout;
-        payload = NveLayoutPayload(
-          x: _bitsF32(p0),
-          y: _bitsF32(p1),
-          width: _bitsF32(p2),
-          height: _bitsF32(p3),
-        );
-      } else {
-        kind = NveEventKind.tableEvent;
-        payload = NveTableEventPayload(tableKey: table, eventId: eventId, bytes: slice);
-      }
-
       events.add(
-        NveEvent(
-          surfaceId: surfaceId,
-          nodeId: nodeId,
-          timestampUs: ts,
-          kind: kind,
-          name: name,
-          payload: payload,
+        decodeRecord(
+          timestampUs: bd.getUint64(base + 0, Endian.little),
+          table: bd.getUint64(base + 8, Endian.little),
+          surfaceId: bd.getUint32(base + 16, Endian.little),
+          nodeId: bd.getUint32(base + 20, Endian.little),
+          eventId: bd.getUint32(base + 24, Endian.little),
+          flags: bd.getUint32(base + 28, Endian.little),
+          p0: bd.getUint32(base + 32, Endian.little),
+          p1: bd.getUint32(base + 36, Endian.little),
+          p2: bd.getUint32(base + 40, Endian.little),
+          p3: bd.getUint32(base + 44, Endian.little),
+          p4: bd.getUint32(base + 48, Endian.little),
+          p5: bd.getUint32(base + 52, Endian.little),
+          bytesOff: bd.getUint32(base + 56, Endian.little),
+          bytesLen: bd.getUint32(base + 60, Endian.little),
+          arena: arena,
         ),
       );
     }
@@ -599,10 +715,21 @@ class NveEventRingCodec {
     for (final ev in events) {
       switch (ev.payload) {
         case NveEmptyPayload():
-          if (ev.kind == NveEventKind.blur) {
-            w.pushBlur(ev.surfaceId, ev.nodeId, ev.timestampUs);
-          } else {
-            w.pushFocus(ev.surfaceId, ev.nodeId, ev.timestampUs);
+          switch (ev.kind) {
+            case NveEventKind.focus:
+              w.pushFocus(ev.surfaceId, ev.nodeId, ev.timestampUs);
+            case NveEventKind.blur:
+              w.pushBlur(ev.surfaceId, ev.nodeId, ev.timestampUs);
+            case NveEventKind.press:
+              w.pushPress(ev.surfaceId, ev.nodeId, ev.timestampUs, 0.0, 0.0);
+            case NveEventKind.longPress:
+              w.pushLongPress(ev.surfaceId, ev.nodeId, ev.timestampUs, 0.0, 0.0);
+            default:
+              throw ArgumentError.value(
+                ev.kind,
+                'ev.kind',
+                'Unsupported NveEventKind for NveEmptyPayload',
+              );
           }
         case NvePointPayload(:final x, :final y):
           if (ev.kind == NveEventKind.longPress) {
@@ -635,19 +762,48 @@ class NveEventRingCodec {
         case NveBinValuePayload(:final bytes):
           w.pushCustom(ev.surfaceId, ev.nodeId, ev.timestampUs, ev.name ?? '', bytes);
         case NveKeyPayload(:final key, :final code, :final modifiers, :final keyCode, :final isComposing):
-          w.pushKeyDown(
-            ev.surfaceId,
-            ev.nodeId,
-            ev.timestampUs,
-            key,
-            meta: (modifiers & nveWireEventFlagModMeta) != 0,
-            ctrl: (modifiers & nveWireEventFlagModCtrl) != 0,
-            shift: (modifiers & nveWireEventFlagModShift) != 0,
-            alt: (modifiers & nveWireEventFlagModAlt) != 0,
-            code: code,
-            keyCode: keyCode,
-            isComposing: isComposing,
-          );
+          final keyEvId = ev.kind == NveEventKind.keyUp
+              ? NveWireInteractionEvent.keyUp
+              : NveWireInteractionEvent.keyDown;
+          final keyBytes = utf8.encode(key);
+          final codeBytes = utf8.encode(code);
+          var flags = (modifiers & 0x1F) | (isComposing ? nveWireEventFlagComposing : 0);
+          final payload = <int>[keyCode, keyBytes.length, 0, 0, 0, 0];
+          if (keyBytes.length <= nveWireEventInlineKeyCap) {
+            final kb = Uint8List(nveWireEventInlineKeyCap);
+            kb.setRange(0, keyBytes.length, keyBytes);
+            final kbd = ByteData.sublistView(kb);
+            for (var i = 0; i < 4; i++) {
+              payload[2 + i] = kbd.getUint32(i * 4, Endian.little);
+            }
+            flags |= nveWireEventFlagInlineKeyUtf8;
+            if (codeBytes.isNotEmpty) flags |= nveWireEventFlagUtf8Bytes;
+            w.pushEvent(
+              nveWireTableKeyInteraction,
+              ev.surfaceId,
+              ev.nodeId,
+              ev.timestampUs,
+              keyEvId,
+              flags,
+              payload,
+              codeBytes,
+            );
+          } else {
+            final combined = BytesBuilder(copy: false)
+              ..add(keyBytes)
+              ..add(codeBytes);
+            flags |= nveWireEventFlagKeySplitBytes | nveWireEventFlagUtf8Bytes;
+            w.pushEvent(
+              nveWireTableKeyInteraction,
+              ev.surfaceId,
+              ev.nodeId,
+              ev.timestampUs,
+              keyEvId,
+              flags,
+              payload,
+              combined.takeBytes(),
+            );
+          }
         case NvePointerPayload(:final x, :final y, :final modifiers, :final flags):
           final evId = switch (ev.kind) {
             NveEventKind.pointerDown => NveWireInteractionEvent.pointerDown,

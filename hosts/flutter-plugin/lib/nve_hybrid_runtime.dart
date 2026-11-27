@@ -14,7 +14,7 @@ import 'dart:ffi' as ffi;
 export 'src/direct_ffi.dart';
 export 'src/nve_bin_codec.dart';
 export 'src/nve_bin_value.dart';
-export 'src/nve_core_abi.generated.dart';
+export 'src/nve_core_abi.generated.dart' hide NveEvent;
 
 /// Owned heap byte buffer returned across hybrid C-ABI vtables and released via `free_bytes`.
 final class NveHybridOwnedBytes extends ffi.Struct {

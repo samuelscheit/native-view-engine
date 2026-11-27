@@ -1,4 +1,4 @@
-#include "event_ring_writer.hpp"
+#include "nve_event_batch.hpp"
 #include "nve_pair_client.hpp"
 #include "nve_wire_codecs.generated.hpp"
 
@@ -212,10 +212,16 @@ bool encode_direct_event_batch(NveEventBatch batch, std::vector<uint8_t>& out_ri
       (batch.bytes_len > 0u && batch.bytes == nullptr)) {
     return false;
   }
-  out_ring.reserve(
-      wire::kEventWireHeaderSize +
-      static_cast<size_t>(batch.event_count) * wire::kEventRecordSize +
-      static_cast<size_t>(batch.bytes_len));
+  constexpr size_t kMaxSize = std::numeric_limits<size_t>::max();
+  if (static_cast<size_t>(batch.event_count) >
+      (kMaxSize - wire::kEventWireHeaderSize) / wire::kEventRecordSize) {
+    return false;
+  }
+  const size_t ev_bytes = static_cast<size_t>(batch.event_count) * wire::kEventRecordSize;
+  if (static_cast<size_t>(batch.bytes_len) > kMaxSize - wire::kEventWireHeaderSize - ev_bytes) {
+    return false;
+  }
+  out_ring.reserve(wire::kEventWireHeaderSize + ev_bytes + static_cast<size_t>(batch.bytes_len));
   out_ring.insert(
       out_ring.end(), wire::kEventWireMagicBytes.begin(), wire::kEventWireMagicBytes.end());
   wire::append_le_u16(out_ring, wire::kEventWireVersion);

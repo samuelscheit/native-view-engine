@@ -1,32 +1,28 @@
-//! Reusable owned [`EventBatchBuf`] builder and compact `NVEV` v2 binary wire codec.
+//! Reusable owned [`EventBatchBuf`] builder sealing all [`ValidatedEvents`] invariants by
+//! construction (see `wire.rs` for the `NVEV` v2 binary wire codec).
 
-use crate::ffi::DecodeError;
 use crate::id::{ArenaOffset, ByteLen, EventFlags, EventId, NodeId, SurfaceId, TimestampUs};
 use crate::table::{TableKey, Word};
 
 use super::validated::{validate_one_event, RawEventRef};
 use super::{
     EventEnum, EventValidationError, InteractionEvent, LayoutEvent, NveEvent, NveEventBatch,
-    RawEventBytes, ScrollEvent, TextInputEvent, ValidatedEvent, ValidatedEvents, NVE_EVENT_SIZE,
-    NVE_TABLE_CUSTOM, NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT, NVE_TABLE_SCROLL,
-    NVE_TABLE_TEXT_INPUT,
+    RawEventBytes, ScrollEvent, TextInputEvent, ValidatedEvent, ValidatedEvents, NVE_TABLE_CUSTOM,
+    NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT, NVE_TABLE_SCROLL, NVE_TABLE_TEXT_INPUT,
 };
-
-/// Wire magic bytes for a binary [`EventBatchBuf`] frame (`"NVEV"`).
-pub const NVE_EVENT_WIRE_MAGIC: [u8; 4] = *b"NVEV";
-/// Wire format version for 64-byte [`NveEvent`] batches.
-pub const NVE_EVENT_WIRE_VERSION: u16 = 2;
-/// Fixed header size (`magic[4] + version:u16 + count:u32 + bytes_len:u32`).
-pub const NVE_EVENT_WIRE_HEADER_SIZE: usize = 14;
 
 /// Reusable owned batch of uniform 64-byte [`NveEvent`] records + companion byte arena.
 ///
 /// Seals all [`ValidatedEvents`] invariants by construction so [`Self::as_validated`] is O(1)
 /// with zero re-scanning and zero allocations across frames after calling [`Self::clear`].
+///
+/// Every batch fits the `u32` wire limits (`u32::MAX` events, 4 GiB arena): the infallible
+/// `push_*` / `extend_*` / `encode_wire` helpers drop each event (or frame) that would exceed them;
+/// the `try_*` counterparts report it as [`EventValidationError`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventBatchBuf {
-    events: Vec<NveEvent>,
-    bytes: Vec<u8>,
+    pub(super) events: Vec<NveEvent>,
+    pub(super) bytes: Vec<u8>,
 }
 
 impl EventBatchBuf {
@@ -77,41 +73,96 @@ impl EventBatchBuf {
         NveEventBatch::from_parts(&self.events, &self.bytes)
     }
 
-    fn append_arena(&mut self, data: &[u8]) -> RawEventBytes {
-        if data.is_empty() {
-            return RawEventBytes::EMPTY;
+    #[inline]
+    fn check_event_room(&self) -> Result<(), EventValidationError> {
+        if self.events.len() >= u32::MAX as usize {
+            Err(EventValidationError::EventsLengthOverflow)
+        } else {
+            Ok(())
         }
-        let off = u32::try_from(self.bytes.len()).expect("EventBatchBuf arena exceeds 4 GiB");
-        let len = u32::try_from(data.len()).expect("EventBatchBuf slice exceeds 4 GiB");
-        assert!(
-            off.checked_add(len).is_some(),
-            "EventBatchBuf arena offset + len overflows u32"
-        );
+    }
+
+    fn try_append_arena(&mut self, data: &[u8]) -> Result<RawEventBytes, EventValidationError> {
+        if data.is_empty() {
+            return Ok(RawEventBytes::EMPTY);
+        }
+        let off = u32::try_from(self.bytes.len())
+            .map_err(|_| EventValidationError::BytesLengthOverflow)?;
+        let len = u32::try_from(data.len())
+            .map_err(|_| EventValidationError::BytesLengthOverflow)?;
+        if off.checked_add(len).is_none() {
+            return Err(EventValidationError::BytesLengthOverflow);
+        }
         self.bytes.extend_from_slice(data);
-        RawEventBytes::new(ArenaOffset(off), ByteLen(len))
+        Ok(RawEventBytes::new(ArenaOffset(off), ByteLen(len)))
     }
 
-    fn push_sealed(&mut self, ev: NveEvent) {
-        assert!(
-            self.events.len() < u32::MAX as usize,
-            "EventBatchBuf event count exceeds u32::MAX"
-        );
+    fn try_append_pair(
+        &mut self,
+        first: &[u8],
+        second: &[u8],
+    ) -> Result<RawEventBytes, EventValidationError> {
+        let total = first
+            .len()
+            .checked_add(second.len())
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or(EventValidationError::BytesLengthOverflow)?;
+        if total == 0 {
+            return Ok(RawEventBytes::EMPTY);
+        }
+        let off = u32::try_from(self.bytes.len())
+            .map_err(|_| EventValidationError::BytesLengthOverflow)?;
+        if off.checked_add(total).is_none() {
+            return Err(EventValidationError::BytesLengthOverflow);
+        }
+        self.bytes.extend_from_slice(first);
+        self.bytes.extend_from_slice(second);
+        Ok(RawEventBytes::new(ArenaOffset(off), ByteLen(total)))
+    }
+
+    fn try_push_sealed(
+        &mut self,
+        mut ev: NveEvent,
+        data: &[u8],
+    ) -> Result<(), EventValidationError> {
+        self.check_event_room()?;
+        ev.bytes = self.try_append_arena(data)?;
         self.events.push(ev);
+        Ok(())
     }
 
-    pub fn push_validated(&mut self, ev: ValidatedEvent<'_>) {
+    pub fn try_push_validated(&mut self, ev: ValidatedEvent<'_>) -> Result<(), EventValidationError> {
         let mut raw = ev.raw();
         raw.surface = ev.surface();
         raw.node = ev.node();
-        raw.bytes = self.append_arena(ev.bytes());
-        self.push_sealed(raw);
+        self.try_push_sealed(raw, ev.bytes())
+    }
+
+    pub fn push_validated(&mut self, ev: ValidatedEvent<'_>) {
+        let _ = self.try_push_validated(ev);
+    }
+
+    pub fn try_extend_from_validated(
+        &mut self,
+        other: ValidatedEvents<'_>,
+    ) -> Result<(), EventValidationError> {
+        let next_len = self
+            .events
+            .len()
+            .checked_add(other.len())
+            .ok_or(EventValidationError::EventsLengthOverflow)?;
+        if next_len > u32::MAX as usize {
+            return Err(EventValidationError::EventsLengthOverflow);
+        }
+        self.events.reserve(other.len());
+        for ev in other.iter() {
+            self.try_push_validated(ev)?;
+        }
+        Ok(())
     }
 
     pub fn extend_from_validated(&mut self, other: ValidatedEvents<'_>) {
-        self.events.reserve(other.len());
-        for ev in other.iter() {
-            self.push_validated(ev);
-        }
+        let _ = self.try_extend_from_validated(other);
     }
 
     pub fn try_push_raw(
@@ -119,6 +170,7 @@ impl EventBatchBuf {
         mut ev: NveEvent,
         data: &[u8],
     ) -> Result<(), EventValidationError> {
+        self.check_event_room()?;
         let idx = self.events.len();
         ev.bytes = RawEventBytes::new(
             ArenaOffset::ZERO,
@@ -129,9 +181,7 @@ impl EventBatchBuf {
         validate_one_event(idx, RawEventRef::Aligned(&ev), data)?;
         ev.surface = SurfaceId::from_raw_or_null(ev.surface.raw());
         ev.node = NodeId::from_raw_or_null(ev.node.raw());
-        ev.bytes = self.append_arena(data);
-        self.push_sealed(ev);
-        Ok(())
+        self.try_push_sealed(ev, data)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -146,12 +196,11 @@ impl EventBatchBuf {
         payload: [Word; 6],
         data: &[u8],
     ) {
-        let bytes = self.append_arena(data);
-        self.push_sealed(
+        let _ = self.try_push_sealed(
             NveEvent::new(table, surface, node, timestamp, event)
                 .with_flags(flags.without_internal_framing())
-                .with_payload(payload)
-                .with_bytes(bytes),
+                .with_payload(payload),
+            data,
         );
     }
 
@@ -191,12 +240,11 @@ impl EventBatchBuf {
         payload: [Word; 6],
         text: &str,
     ) {
-        let bytes = self.append_arena(text.as_bytes());
-        self.push_sealed(
+        let _ = self.try_push_sealed(
             NveEvent::new(table, surface, node, timestamp, event.event_id())
                 .with_flags(flags.without_internal_framing().union(EventFlags::UTF8_BYTES))
-                .with_payload(payload)
-                .with_bytes(bytes),
+                .with_payload(payload),
+            text.as_bytes(),
         );
     }
 
@@ -286,34 +334,28 @@ impl EventBatchBuf {
         payload[0] = key_code;
         let base_flags = flags.without_internal_framing();
         if NveEvent::pack_inline_key(&mut payload, key) {
-            let bytes = self.append_arena(code.as_bytes());
             let mut f = base_flags.union(EventFlags::INLINE_KEY_UTF8);
             if !code.is_empty() {
                 f |= EventFlags::UTF8_BYTES;
             }
-            self.push_sealed(
+            let _ = self.try_push_sealed(
                 NveEvent::new(NVE_TABLE_INTERACTION, surface, node, timestamp, event.event_id())
                     .with_flags(f)
-                    .with_payload(payload)
-                    .with_bytes(bytes),
+                    .with_payload(payload),
+                code.as_bytes(),
             );
         } else {
-            let klen = u32::try_from(key.len()).expect("key length exceeds u32::MAX");
+            let Ok(klen) = u32::try_from(key.len()) else {
+                return;
+            };
+            if self.check_event_room().is_err() {
+                return;
+            }
+            let Ok(bytes) = self.try_append_pair(key.as_bytes(), code.as_bytes()) else {
+                return;
+            };
             payload[1] = klen;
-            let off = u32::try_from(self.bytes.len()).expect("EventBatchBuf arena exceeds 4 GiB");
-            let total = key
-                .len()
-                .checked_add(code.len())
-                .and_then(|n| u32::try_from(n).ok())
-                .expect("key + code exceeds u32::MAX");
-            assert!(
-                off.checked_add(total).is_some(),
-                "EventBatchBuf arena offset + len overflows u32"
-            );
-            self.bytes.extend_from_slice(key.as_bytes());
-            self.bytes.extend_from_slice(code.as_bytes());
-            let bytes = RawEventBytes::new(ArenaOffset(off), ByteLen(total));
-            self.push_sealed(
+            self.events.push(
                 NveEvent::new(NVE_TABLE_INTERACTION, surface, node, timestamp, event.event_id())
                     .with_flags(
                         base_flags
@@ -538,6 +580,27 @@ impl EventBatchBuf {
         );
     }
 
+    pub fn try_push_custom(
+        &mut self,
+        surface: SurfaceId,
+        node: NodeId,
+        timestamp: TimestampUs,
+        name: &str,
+        data: &[u8],
+    ) -> Result<(), EventValidationError> {
+        self.check_event_room()?;
+        let nlen = u32::try_from(name.len())
+            .map_err(|_| EventValidationError::BytesLengthOverflow)?;
+        let bytes = self.try_append_pair(name.as_bytes(), data)?;
+        self.events.push(
+            NveEvent::new(NVE_TABLE_CUSTOM, surface, node, timestamp, EventId(0))
+                .with_flags(EventFlags::CUSTOM_NAMED)
+                .with_payload([nlen, 0, 0, 0, 0, 0])
+                .with_bytes(bytes),
+        );
+        Ok(())
+    }
+
     pub fn push_custom(
         &mut self,
         surface: SurfaceId,
@@ -546,102 +609,6 @@ impl EventBatchBuf {
         name: &str,
         data: &[u8],
     ) {
-        let nlen = u32::try_from(name.len()).expect("custom event name exceeds u32::MAX");
-        let off = u32::try_from(self.bytes.len()).expect("EventBatchBuf arena exceeds 4 GiB");
-        let total = name
-            .len()
-            .checked_add(data.len())
-            .and_then(|n| u32::try_from(n).ok())
-            .expect("custom event payload exceeds u32::MAX");
-        assert!(
-            off.checked_add(total).is_some(),
-            "EventBatchBuf arena offset + len overflows u32"
-        );
-        self.bytes.extend_from_slice(name.as_bytes());
-        self.bytes.extend_from_slice(data);
-        let bytes = RawEventBytes::new(ArenaOffset(off), ByteLen(total));
-        self.push_sealed(
-            NveEvent::new(NVE_TABLE_CUSTOM, surface, node, timestamp, EventId(0))
-                .with_flags(EventFlags::CUSTOM_NAMED)
-                .with_payload([nlen, 0, 0, 0, 0, 0])
-                .with_bytes(bytes),
-        );
-    }
-
-    /// Appends this batch as a little-endian `NVEV` v2 wire frame into `out`.
-    pub fn encode_wire(&self, out: &mut Vec<u8>) {
-        let count = u32::try_from(self.events.len()).expect("event count exceeds u32::MAX");
-        let blen = u32::try_from(self.bytes.len()).expect("event arena exceeds u32::MAX");
-        out.reserve(
-            NVE_EVENT_WIRE_HEADER_SIZE + self.events.len() * NVE_EVENT_SIZE + self.bytes.len(),
-        );
-        out.extend_from_slice(&NVE_EVENT_WIRE_MAGIC);
-        out.extend_from_slice(&NVE_EVENT_WIRE_VERSION.to_le_bytes());
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&blen.to_le_bytes());
-        for ev in &self.events {
-            out.extend_from_slice(ev.as_bytes());
-        }
-        out.extend_from_slice(&self.bytes);
-    }
-
-    pub fn to_wire_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        self.encode_wire(&mut out);
-        out
-    }
-
-    /// Decodes and validates an `NVEV` v2 wire frame into an owned [`EventBatchBuf`].
-    pub fn decode_wire(raw: &[u8]) -> Result<Self, DecodeError> {
-        if raw.len() < NVE_EVENT_WIRE_HEADER_SIZE {
-            return Err(DecodeError::Truncated);
-        }
-        let magic = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-        if magic != u32::from_le_bytes(NVE_EVENT_WIRE_MAGIC) {
-            return Err(DecodeError::InvalidMagic(magic));
-        }
-        let version = u16::from_le_bytes([raw[4], raw[5]]);
-        if version != NVE_EVENT_WIRE_VERSION {
-            return Err(DecodeError::UnsupportedVersion(version));
-        }
-        let count = u32::from_le_bytes([raw[6], raw[7], raw[8], raw[9]]) as usize;
-        let bytes_len = u32::from_le_bytes([raw[10], raw[11], raw[12], raw[13]]) as usize;
-
-        let ev_bytes = count
-            .checked_mul(NVE_EVENT_SIZE)
-            .ok_or(DecodeError::Truncated)?;
-        let body_len = ev_bytes
-            .checked_add(bytes_len)
-            .ok_or(DecodeError::Truncated)?;
-        let expected_total = NVE_EVENT_WIRE_HEADER_SIZE
-            .checked_add(body_len)
-            .ok_or(DecodeError::Truncated)?;
-        if raw.len() < expected_total {
-            return Err(DecodeError::Truncated);
-        }
-        if raw.len() > expected_total {
-            return Err(DecodeError::TrailingBytes(raw.len() - expected_total));
-        }
-
-        let ev_slice = &raw[NVE_EVENT_WIRE_HEADER_SIZE..NVE_EVENT_WIRE_HEADER_SIZE + ev_bytes];
-        let arena_slice = &raw[NVE_EVENT_WIRE_HEADER_SIZE + ev_bytes..expected_total];
-
-        let mut events = Vec::with_capacity(count);
-        let (chunks, _) = ev_slice.as_chunks::<NVE_EVENT_SIZE>();
-        for (idx, arr) in chunks.iter().enumerate() {
-            let mut ev = RawEventRef::Foreign(arr).read();
-            ev.surface = SurfaceId::from_raw_or_null(ev.surface.raw());
-            ev.node = NodeId::from_raw_or_null(ev.node.raw());
-            validate_one_event(idx, RawEventRef::Aligned(&ev), arena_slice).map_err(|e| match e {
-                EventValidationError::InvalidUtf8 { .. } => DecodeError::InvalidUtf8,
-                _ => DecodeError::Truncated,
-            })?;
-            events.push(ev);
-        }
-
-        Ok(Self {
-            events,
-            bytes: arena_slice.to_vec(),
-        })
+        let _ = self.try_push_custom(surface, node, timestamp, name, data);
     }
 }

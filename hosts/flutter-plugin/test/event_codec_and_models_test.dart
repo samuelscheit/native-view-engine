@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nve_flutter/nve_flutter.dart';
+import 'package:nve_flutter/nve_hybrid_runtime.dart';
+import 'package:nve_flutter/src/event_codec.dart';
 
 Uint8List _buildNvevV2(List<Uint8List> records, Uint8List arena) {
   final builder = BytesBuilder(copy: false);
@@ -340,10 +341,54 @@ void main() {
       );
     });
 
-    test('handles short, empty, and truncated buffers safely', () {
-      expect(NveEventRingCodec.decode(Uint8List(0)), isEmpty);
-      expect(NveEventRingCodec.decode(Uint8List.fromList(<int>[1, 2, 3])), isEmpty);
-      expect(NveEventRingCodec.decode(Uint8List(4)), isEmpty);
+    test('encodeEvents preserves keyDown/keyUp, MOD_REPEAT, and split >16B keys', () {
+      const longKey = 'MediaTrackPreviousKeyLong';
+      final input = <NveEvent>[
+        const NveEvent(
+          surfaceId: 2,
+          nodeId: 10,
+          timestampUs: 1000,
+          kind: NveEventKind.keyDown,
+          payload: NveKeyPayload(
+            key: 'Enter',
+            code: 'Enter',
+            modifiers: 0x15, // meta | shift | MOD_REPEAT
+            keyCode: 13,
+            isComposing: true,
+          ),
+        ),
+        const NveEvent(
+          surfaceId: 2,
+          nodeId: 10,
+          timestampUs: 2000,
+          kind: NveEventKind.keyUp,
+          payload: NveKeyPayload(
+            key: longKey,
+            code: 'MediaTrackPrevious',
+            modifiers: 0x18, // alt | MOD_REPEAT
+            keyCode: 177,
+          ),
+        ),
+      ];
+      final encoded = NveEventRingCodec.encodeEvents(input);
+      final decoded = NveEventRingCodec.decode(encoded);
+      expect(decoded, hasLength(2));
+      expect(decoded[0].kind, NveEventKind.keyDown);
+      expect(decoded[0].payload, input[0].payload);
+      expect(decoded[1].kind, NveEventKind.keyUp);
+      expect(decoded[1].payload, input[1].payload);
+    });
+
+    test('strictly rejects empty, truncated, trailing, OOB, conflicting flags, invalid UTF-8, and unknown event IDs', () {
+      expect(() => NveEventRingCodec.decode(Uint8List(0)), throwsA(isA<NveEventRingException>()));
+      expect(
+        () => NveEventRingCodec.decode(Uint8List.fromList(<int>[1, 2, 3])),
+        throwsA(isA<NveEventRingException>()),
+      );
+      expect(() => NveEventRingCodec.decode(Uint8List(4)), throwsA(isA<NveEventRingException>()));
+
+      // Valid zero-event batch succeeds.
+      expect(NveEventRingCodec.decode(_buildNvevV2(const <Uint8List>[], Uint8List(0))), isEmpty);
 
       final full = NveEventRingCodec.encodeEvents(<NveEvent>[
         const NveEvent(
@@ -382,12 +427,18 @@ void main() {
           value: <String, Object?>{'a': 1},
         ),
       ]);
+      // Every strict prefix must throw NveEventRingException.
       for (var cut = 0; cut < full.length; cut++) {
-        final partial = NveEventRingCodec.decode(Uint8List.sublistView(full, 0, cut));
-        expect(partial.length, lessThan(5));
+        expect(
+          () => NveEventRingCodec.decode(Uint8List.sublistView(full, 0, cut)),
+          throwsA(isA<NveEventRingException>()),
+        );
       }
+      // Trailing bytes must be rejected.
+      final trailing = Uint8List(full.length + 1)..setRange(0, full.length, full);
+      expect(() => NveEventRingCodec.decode(trailing), throwsA(isA<NveEventRingException>()));
 
-      // Oversized arena length (0xFFFFFFFF) must never throw RangeError.
+      // Oversized arena length (0xFFFFFFFF) rejected cleanly (no RangeError).
       final oversizedArena = ByteData(14)
         ..setUint8(0, 0x4E)
         ..setUint8(1, 0x56)
@@ -396,7 +447,109 @@ void main() {
         ..setUint16(4, 2, Endian.little)
         ..setUint32(6, 1, Endian.little)
         ..setUint32(10, 0xFFFFFFFF, Endian.little);
-      expect(NveEventRingCodec.decode(oversizedArena.buffer.asUint8List()), isEmpty);
+      expect(
+        () => NveEventRingCodec.decode(oversizedArena.buffer.asUint8List()),
+        throwsA(isA<NveEventRingException>()),
+      );
+
+      // Out-of-bounds offset even with len=0 rejected.
+      final oobZeroLen = _buildNvevV2(
+        <Uint8List>[
+          _makeRecord(
+            timestampUs: 1,
+            table: nveTableInteraction,
+            surfaceId: 1,
+            nodeId: 1,
+            eventId: NveInteractionEvent.focus.code,
+            bytesOffset: 5,
+            bytesLen: 0,
+          ),
+        ],
+        Uint8List(0),
+      );
+      expect(() => NveEventRingCodec.decode(oobZeroLen), throwsA(isA<NveEventRingException>()));
+
+      // Conflicting INLINE_KEY_UTF8 | KEY_SPLIT_BYTES rejected.
+      final conflicting = _buildNvevV2(
+        <Uint8List>[
+          _makeRecord(
+            timestampUs: 1,
+            table: nveTableInteraction,
+            surfaceId: 1,
+            nodeId: 1,
+            eventId: NveInteractionEvent.keyDown.code,
+            flags: nveEventFlagInlineKeyUtf8 | nveEventFlagKeySplitBytes,
+          ),
+        ],
+        Uint8List(0),
+      );
+      expect(() => NveEventRingCodec.decode(conflicting), throwsA(isA<NveEventRingException>()));
+
+      // Invalid UTF-8 rejected strictly.
+      final badUtf8 = _buildNvevV2(
+        <Uint8List>[
+          _makeRecord(
+            timestampUs: 1,
+            table: nveTableTextInput,
+            surfaceId: 1,
+            nodeId: 1,
+            eventId: NveTextInputEvent.change.code,
+            flags: nveEventFlagUtf8Bytes,
+            bytesOffset: 0,
+            bytesLen: 2,
+          ),
+        ],
+        Uint8List.fromList(<int>[0xFF, 0xFE]),
+      );
+      expect(() => NveEventRingCodec.decode(badUtf8), throwsA(isA<NveEventRingException>()));
+
+      // Unknown TextInput and Interaction event IDs rejected.
+      final badTextId = _buildNvevV2(
+        <Uint8List>[
+          _makeRecord(
+            timestampUs: 1,
+            table: nveTableTextInput,
+            surfaceId: 1,
+            nodeId: 1,
+            eventId: 99,
+          ),
+        ],
+        Uint8List(0),
+      );
+      expect(() => NveEventRingCodec.decode(badTextId), throwsA(isA<NveEventRingException>()));
+
+      final badInterId = _buildNvevV2(
+        <Uint8List>[
+          _makeRecord(
+            timestampUs: 1,
+            table: nveTableInteraction,
+            surfaceId: 1,
+            nodeId: 1,
+            eventId: 99,
+          ),
+        ],
+        Uint8List(0),
+      );
+      expect(() => NveEventRingCodec.decode(badInterId), throwsA(isA<NveEventRingException>()));
+
+      // OOB custom name length rejected.
+      final badCustomLen = _buildNvevV2(
+        <Uint8List>[
+          _makeRecord(
+            timestampUs: 1,
+            table: nveTableCustom,
+            surfaceId: 1,
+            nodeId: 1,
+            eventId: 0,
+            flags: nveEventFlagCustomNamed,
+            payload: <int>[10],
+            bytesOffset: 0,
+            bytesLen: 2,
+          ),
+        ],
+        Uint8List.fromList(<int>[0x61, 0x62]),
+      );
+      expect(() => NveEventRingCodec.decode(badCustomLen), throwsA(isA<NveEventRingException>()));
     });
   });
 }

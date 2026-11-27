@@ -504,14 +504,11 @@ class NveDirectEventWriter {
     }
   }
 
-  static int _f32Bits(double v) {
-    final bd = ByteData(4)..setFloat32(0, v, Endian.little);
-    return bd.getUint32(0, Endian.little);
-  }
+  static final ByteData _scratch4 = ByteData(4);
 
-  static double _bitsF32(int bits) {
-    final bd = ByteData(4)..setUint32(0, bits, Endian.little);
-    return bd.getFloat32(0, Endian.little);
+  static int _f32Bits(double v) {
+    _scratch4.setFloat32(0, v, Endian.little);
+    return _scratch4.getUint32(0, Endian.little);
   }
 
   static (int, int) _tableAndEventId(NveEventKind kind) => switch (kind) {
@@ -636,144 +633,38 @@ class NveDirectEventWriter {
   }
 
   static List<NveEvent> decodeBatch(NveEventBatch batch) {
-    if (batch.events == ffi.nullptr || batch.eventCount == 0) return const <NveEvent>[];
-    final arenaView = (batch.bytes == ffi.nullptr || batch.bytesLen == 0)
+    if (batch.bytesLen > 0 && batch.bytes == ffi.nullptr) {
+      throw const NveEventRingException('NveEventBatch has non-zero bytesLen with null bytes pointer');
+    }
+    if (batch.eventCount == 0) return const <NveEvent>[];
+    if (batch.events == ffi.nullptr) {
+      throw const NveEventRingException('NveEventBatch has non-zero eventCount with null events pointer');
+    }
+    final arenaView = batch.bytesLen == 0
         ? Uint8List(0)
         : batch.bytes.asTypedList(batch.bytesLen);
     final out = <NveEvent>[];
     for (var i = 0; i < batch.eventCount; i++) {
       final ev = batch.events[i];
-      final off = ev.bytes.offset;
-      final len = ev.bytes.len;
-      final slice = (len == 0 || off + len > arenaView.length)
-          ? Uint8List(0)
-          : Uint8List.fromList(arenaView.sublist(off, off + len));
-      final p0 = ev.payload[0];
-      final p1 = ev.payload[1];
-      final p2 = ev.payload[2];
-      final p3 = ev.payload[3];
-      final p4 = ev.payload[4];
-      final p5 = ev.payload[5];
-      final flags = ev.flags;
-
-      String? name;
-      final NveEventKind kind;
-      final NveEventPayload payload;
-
-      if (ev.table == nveTableCustom) {
-        kind = NveEventKind.custom;
-        final nlen = p0 <= slice.length ? p0 : slice.length;
-        name = utf8.decode(slice.sublist(0, nlen), allowMalformed: true);
-        payload = NveBinValuePayload(Uint8List.fromList(slice.sublist(nlen)));
-      } else if (ev.table == nveTableInteraction) {
-        final ie = NveInteractionEvent.fromCode(ev.event);
-        switch (ie) {
-          case NveInteractionEvent.press:
-            kind = NveEventKind.press;
-            payload = NvePointPayload(x: _bitsF32(p0), y: _bitsF32(p1));
-          case NveInteractionEvent.longPress:
-            kind = NveEventKind.longPress;
-            payload = NvePointPayload(x: _bitsF32(p0), y: _bitsF32(p1));
-          case NveInteractionEvent.focus:
-            kind = NveEventKind.focus;
-            payload = const NveEmptyPayload();
-          case NveInteractionEvent.blur:
-            kind = NveEventKind.blur;
-            payload = const NveEmptyPayload();
-          case NveInteractionEvent.keyDown || NveInteractionEvent.keyUp:
-            kind = ie == NveInteractionEvent.keyDown ? NveEventKind.keyDown : NveEventKind.keyUp;
-            final String key;
-            final String code;
-            if ((flags & nveEventFlagInlineKeyUtf8) != 0) {
-              final klen = p1 <= nveEventInlineKeyCap ? p1 : nveEventInlineKeyCap;
-              final kb = Uint8List(16);
-              final kbd = ByteData.sublistView(kb);
-              kbd.setUint32(0, p2, Endian.little);
-              kbd.setUint32(4, p3, Endian.little);
-              kbd.setUint32(8, p4, Endian.little);
-              kbd.setUint32(12, p5, Endian.little);
-              key = utf8.decode(kb.sublist(0, klen), allowMalformed: true);
-              code = utf8.decode(slice, allowMalformed: true);
-            } else {
-              final klen = p1 <= slice.length ? p1 : slice.length;
-              key = utf8.decode(slice.sublist(0, klen), allowMalformed: true);
-              code = utf8.decode(slice.sublist(klen), allowMalformed: true);
-            }
-            payload = NveKeyPayload(
-              key: key,
-              code: code,
-              modifiers: flags & 0x1F,
-              keyCode: p0,
-              isComposing: (flags & nveEventFlagComposing) != 0,
-            );
-          case NveInteractionEvent.pointerDown ||
-              NveInteractionEvent.pointerMove ||
-              NveInteractionEvent.pointerUp ||
-              NveInteractionEvent.pointerEnter ||
-              NveInteractionEvent.pointerLeave:
-            kind = switch (ie) {
-              NveInteractionEvent.pointerDown => NveEventKind.pointerDown,
-              NveInteractionEvent.pointerMove => NveEventKind.pointerMove,
-              NveInteractionEvent.pointerUp => NveEventKind.pointerUp,
-              NveInteractionEvent.pointerEnter => NveEventKind.pointerEnter,
-              _ => NveEventKind.pointerLeave,
-            };
-            final btn = (flags & nveEventFlagButtonMask) >> nveEventFlagButtonShift;
-            final cap = (flags & nveEventFlagCapture) != 0 ? 0x08 : 0;
-            payload = NvePointerPayload(
-              x: _bitsF32(p0),
-              y: _bitsF32(p1),
-              modifiers: flags & 0x1F,
-              flags: btn | cap,
-            );
-          case NveInteractionEvent.wheel:
-            kind = NveEventKind.wheel;
-            payload = NveWheelPayload(
-              deltaX: _bitsF32(p0),
-              deltaY: _bitsF32(p1),
-              modifiers: flags & 0x1F,
-            );
-          case null:
-            continue;
-        }
-      } else if (ev.table == nveTableTextInput) {
-        kind = switch (NveTextInputEvent.fromCode(ev.event)) {
-          NveTextInputEvent.change => NveEventKind.textChange,
-          NveTextInputEvent.submit => NveEventKind.submit,
-          NveTextInputEvent.compositionStart => NveEventKind.compositionStart,
-          NveTextInputEvent.compositionUpdate => NveEventKind.compositionUpdate,
-          NveTextInputEvent.compositionEnd => NveEventKind.compositionEnd,
-          null => NveEventKind.textChange,
-        };
-        payload = NveTextPayload(utf8.decode(slice, allowMalformed: true));
-      } else if (ev.table == nveTableScroll) {
-        kind = NveEventKind.scroll;
-        payload = NveScrollPayload(
-          x: _bitsF32(p0),
-          y: _bitsF32(p1),
-          contentWidth: _bitsF32(p2),
-          contentHeight: _bitsF32(p3),
-        );
-      } else if (ev.table == nveTableLayout) {
-        kind = NveEventKind.layout;
-        payload = NveLayoutPayload(
-          x: _bitsF32(p0),
-          y: _bitsF32(p1),
-          width: _bitsF32(p2),
-          height: _bitsF32(p3),
-        );
-      } else {
-        kind = NveEventKind.tableEvent;
-        payload = NveTableEventPayload(tableKey: ev.table, eventId: ev.event, bytes: slice);
-      }
-      out.add(NveEvent(
-        surfaceId: ev.surface,
-        nodeId: ev.node,
-        timestampUs: ev.timestamp,
-        kind: kind,
-        name: name,
-        payload: payload,
-      ));
+      out.add(
+        NveEventRingCodec.decodeRecord(
+          timestampUs: ev.timestamp,
+          table: ev.table,
+          surfaceId: ev.surface,
+          nodeId: ev.node,
+          eventId: ev.event,
+          flags: ev.flags,
+          p0: ev.payload[0],
+          p1: ev.payload[1],
+          p2: ev.payload[2],
+          p3: ev.payload[3],
+          p4: ev.payload[4],
+          p5: ev.payload[5],
+          bytesOff: ev.bytes.offset,
+          bytesLen: ev.bytes.len,
+          arena: arenaView,
+        ),
+      );
     }
     return out;
   }

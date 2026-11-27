@@ -102,6 +102,7 @@ public enum NveEventRingError: Error, Equatable, Sendable {
     case invalidEventTable(UInt64, UInt32)
     case invalidBounds
     case invalidUtf8
+    case conflictingFlags
     case trailingBytes(Int)
 }
 
@@ -143,47 +144,75 @@ public enum NveEventRingCodec {
                 throw NveEventRingError.trailingBytes(availableArena - bytesLen)
             }
 
-            func sliceArena(off: Int, len: Int) throws -> UnsafeRawBufferPointer {
-                guard off >= 0, len >= 0, off <= bytesLen, len <= bytesLen - off else {
-                    throw NveEventRingError.invalidBounds
-                }
-                return UnsafeRawBufferPointer(rebasing: raw[(arenaStart + off) ..< (arenaStart + off + len)])
+            let recordsBuf = UnsafeRawBufferPointer(rebasing: raw[wireHeaderBytes ..< arenaStart])
+            let arenaBuf = UnsafeRawBufferPointer(rebasing: raw[arenaStart ..< (arenaStart + bytesLen)])
+            return try decodeRawBufferStrict(records: recordsBuf, count: eventCount, arena: arenaBuf)
+        }
+    }
+
+    internal static func decodeRawBufferStrict(
+        records: UnsafeRawBufferPointer,
+        count: Int,
+        arena: UnsafeRawBufferPointer
+    ) throws -> [NveEvent] {
+        guard count >= 0, records.count >= count * eventRecordBytes else {
+            throw NveEventRingError.truncated
+        }
+        let bytesLen = arena.count
+
+        func sliceArena(off: Int, len: Int) throws -> UnsafeRawBufferPointer {
+            guard off >= 0, len >= 0, off <= bytesLen, len <= bytesLen - off else {
+                throw NveEventRingError.invalidBounds
+            }
+            return UnsafeRawBufferPointer(rebasing: arena[off ..< (off + len)])
+        }
+
+        func decodeUtf8Strict(_ slice: UnsafeRawBufferPointer) throws -> String {
+            guard let s = String(bytes: slice, encoding: .utf8) else {
+                throw NveEventRingError.invalidUtf8
+            }
+            return s
+        }
+
+        var events: [NveEvent] = []
+        events.reserveCapacity(min(count, 4096))
+
+        for i in 0 ..< count {
+            let base = i * eventRecordBytes
+            let ts = UInt64(littleEndian: records.loadUnaligned(fromByteOffset: base + 0, as: UInt64.self))
+            let table = UInt64(littleEndian: records.loadUnaligned(fromByteOffset: base + 8, as: UInt64.self))
+            let surfaceId = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 16, as: UInt32.self))
+            let nodeId = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 20, as: UInt32.self))
+            let eventId = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 24, as: UInt32.self))
+            let flags = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 28, as: UInt32.self))
+            let p0 = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 32, as: UInt32.self))
+            let p1 = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 36, as: UInt32.self))
+            let p2 = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 40, as: UInt32.self))
+            let p3 = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 44, as: UInt32.self))
+            let p4 = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 48, as: UInt32.self))
+            let p5 = UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 52, as: UInt32.self))
+            let bytesOff = Int(UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 56, as: UInt32.self)))
+            let bytesLenRec = Int(UInt32(littleEndian: records.loadUnaligned(fromByteOffset: base + 60, as: UInt32.self)))
+            let arenaSlice = try sliceArena(off: bytesOff, len: bytesLenRec)
+
+            let hasUtf8 = (flags & UInt32(NVE_EVENT_FLAG_UTF8_BYTES)) != 0
+            let hasInlineKey = (flags & UInt32(NVE_EVENT_FLAG_INLINE_KEY_UTF8)) != 0
+            let hasSplitKey = (flags & UInt32(NVE_EVENT_FLAG_KEY_SPLIT_BYTES)) != 0
+            let hasCustom = (flags & UInt32(NVE_EVENT_FLAG_CUSTOM_NAMED)) != 0
+            if (hasInlineKey && hasSplitKey) || (hasCustom && (hasInlineKey || hasSplitKey)) {
+                throw NveEventRingError.conflictingFlags
+            }
+            if hasUtf8 {
+                _ = try decodeUtf8Strict(arenaSlice)
             }
 
-            func decodeUtf8Strict(_ slice: UnsafeRawBufferPointer) throws -> String {
-                guard let s = String(bytes: slice, encoding: .utf8) else {
-                    throw NveEventRingError.invalidUtf8
-                }
-                return s
-            }
+            var name: String?
+            let kind: NveEventKind
+            let payload: NveEventPayload
 
-            var events: [NveEvent] = []
-            events.reserveCapacity(min(eventCount, 4096))
-
-            for i in 0 ..< eventCount {
-                let base = wireHeaderBytes + i * eventRecordBytes
-                let ts = UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: base + 0, as: UInt64.self))
-                let table = UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: base + 8, as: UInt64.self))
-                let surfaceId = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 16, as: UInt32.self))
-                let nodeId = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 20, as: UInt32.self))
-                let eventId = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 24, as: UInt32.self))
-                let flags = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 28, as: UInt32.self))
-                let p0 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 32, as: UInt32.self))
-                let p1 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 36, as: UInt32.self))
-                let p2 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 40, as: UInt32.self))
-                let p3 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 44, as: UInt32.self))
-                let p4 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 48, as: UInt32.self))
-                let p5 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 52, as: UInt32.self))
-                let bytesOff = Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 56, as: UInt32.self)))
-                let bytesLenRec = Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 60, as: UInt32.self)))
-                let arenaSlice = try sliceArena(off: bytesOff, len: bytesLenRec)
-
-                var name: String?
-                let kind: NveEventKind
-                let payload: NveEventPayload
-
-                if table == UInt64(NVE_TABLE_CUSTOM) {
-                    kind = .custom
+            if table == UInt64(NVE_TABLE_CUSTOM) {
+                kind = .custom
+                if hasCustom {
                     let nlen = Int(p0)
                     guard nlen <= arenaSlice.count else {
                         throw NveEventRingError.invalidBounds
@@ -191,132 +220,138 @@ public enum NveEventRingCodec {
                     let nameBuf = UnsafeRawBufferPointer(rebasing: arenaSlice[0 ..< nlen])
                     name = try decodeUtf8Strict(nameBuf)
                     payload = .binValue(Data(arenaSlice[nlen ..< arenaSlice.count]))
-                } else if table == UInt64(NVE_TABLE_INTERACTION) {
-                    switch eventId {
-                    case UInt32(NVE_INTERACTION_EVENT_PRESS.rawValue):
-                        kind = .press
-                        payload = .point(x: Float(bitPattern: p0), y: Float(bitPattern: p1))
-                    case UInt32(NVE_INTERACTION_EVENT_LONG_PRESS.rawValue):
-                        kind = .longPress
-                        payload = .point(x: Float(bitPattern: p0), y: Float(bitPattern: p1))
-                    case UInt32(NVE_INTERACTION_EVENT_FOCUS.rawValue):
-                        kind = .focus
-                        payload = .empty
-                    case UInt32(NVE_INTERACTION_EVENT_BLUR.rawValue):
-                        kind = .blur
-                        payload = .empty
-                    case UInt32(NVE_INTERACTION_EVENT_KEY_DOWN.rawValue),
-                         UInt32(NVE_INTERACTION_EVENT_KEY_UP.rawValue):
-                        kind = eventId == UInt32(NVE_INTERACTION_EVENT_KEY_DOWN.rawValue) ? .keyDown : .keyUp
-                        let key: String
-                        let code: String
-                        if (flags & UInt32(NVE_EVENT_FLAG_INLINE_KEY_UTF8)) != 0 {
-                            let klen = Int(p1)
-                            guard klen <= Int(NVE_EVENT_INLINE_KEY_CAP) else {
-                                throw NveEventRingError.invalidBounds
-                            }
-                            var kb: [UInt8] = []
-                            kb.reserveCapacity(16)
-                            for w in [p2, p3, p4, p5] {
-                                kb.append(UInt8(truncatingIfNeeded: w))
-                                kb.append(UInt8(truncatingIfNeeded: w >> 8))
-                                kb.append(UInt8(truncatingIfNeeded: w >> 16))
-                                kb.append(UInt8(truncatingIfNeeded: w >> 24))
-                            }
-                            guard let decodedKey = String(bytes: kb.prefix(klen), encoding: .utf8) else {
-                                throw NveEventRingError.invalidUtf8
-                            }
-                            key = decodedKey
-                            code = try decodeUtf8Strict(arenaSlice)
-                        } else {
-                            let klen = Int(p1)
-                            guard klen <= arenaSlice.count else {
-                                throw NveEventRingError.invalidBounds
-                            }
-                            key = try decodeUtf8Strict(UnsafeRawBufferPointer(rebasing: arenaSlice[0 ..< klen]))
-                            code = try decodeUtf8Strict(UnsafeRawBufferPointer(rebasing: arenaSlice[klen ..< arenaSlice.count]))
-                        }
-                        payload = .key(
-                            key: key,
-                            code: code,
-                            modifiers: UInt8(flags & 0x1F),
-                            keyCode: p0,
-                            isComposing: (flags & UInt32(NVE_EVENT_FLAG_COMPOSING)) != 0
-                        )
-                    case UInt32(NVE_INTERACTION_EVENT_POINTER_DOWN.rawValue),
-                         UInt32(NVE_INTERACTION_EVENT_POINTER_MOVE.rawValue),
-                         UInt32(NVE_INTERACTION_EVENT_POINTER_UP.rawValue),
-                         UInt32(NVE_INTERACTION_EVENT_POINTER_ENTER.rawValue),
-                         UInt32(NVE_INTERACTION_EVENT_POINTER_LEAVE.rawValue):
-                        switch eventId {
-                        case UInt32(NVE_INTERACTION_EVENT_POINTER_DOWN.rawValue): kind = .pointerDown
-                        case UInt32(NVE_INTERACTION_EVENT_POINTER_MOVE.rawValue): kind = .pointerMove
-                        case UInt32(NVE_INTERACTION_EVENT_POINTER_UP.rawValue): kind = .pointerUp
-                        case UInt32(NVE_INTERACTION_EVENT_POINTER_ENTER.rawValue): kind = .pointerEnter
-                        default: kind = .pointerLeave
-                        }
-                        let btn = UInt8((flags & UInt32(NVE_EVENT_FLAG_BUTTON_MASK)) >> UInt32(NVE_EVENT_FLAG_BUTTON_SHIFT))
-                        let cap: UInt8 = (flags & UInt32(NVE_EVENT_FLAG_CAPTURE)) != 0 ? 0x08 : 0
-                        payload = .pointer(
-                            x: Float(bitPattern: p0),
-                            y: Float(bitPattern: p1),
-                            modifiers: UInt8(flags & 0x1F),
-                            flags: btn | cap
-                        )
-                    case UInt32(NVE_INTERACTION_EVENT_WHEEL.rawValue):
-                        kind = .wheel
-                        payload = .wheel(
-                            deltaX: Float(bitPattern: p0),
-                            deltaY: Float(bitPattern: p1),
-                            modifiers: UInt8(flags & 0x1F)
-                        )
-                    default:
-                        throw NveEventRingError.invalidEventTable(table, eventId)
-                    }
-                } else if table == UInt64(NVE_TABLE_TEXT_INPUT) {
-                    switch eventId {
-                    case UInt32(NVE_TEXT_INPUT_EVENT_CHANGE.rawValue): kind = .textChange
-                    case UInt32(NVE_TEXT_INPUT_EVENT_SUBMIT.rawValue): kind = .submit
-                    case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_START.rawValue): kind = .compositionStart
-                    case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE.rawValue): kind = .compositionUpdate
-                    case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_END.rawValue): kind = .compositionEnd
-                    default:
-                        throw NveEventRingError.invalidEventTable(table, eventId)
-                    }
-                    payload = .text(try decodeUtf8Strict(arenaSlice))
-                } else if table == UInt64(NVE_TABLE_SCROLL) && eventId == UInt32(NVE_SCROLL_EVENT_SCROLL.rawValue) {
-                    kind = .scroll
-                    payload = .scroll(
-                        x: Float(bitPattern: p0),
-                        y: Float(bitPattern: p1),
-                        contentWidth: Float(bitPattern: p2),
-                        contentHeight: Float(bitPattern: p3)
-                    )
-                } else if table == UInt64(NVE_TABLE_LAYOUT) && eventId == UInt32(NVE_LAYOUT_EVENT_LAYOUT.rawValue) {
-                    kind = .layout
-                    payload = .layout(
-                        x: Float(bitPattern: p0),
-                        y: Float(bitPattern: p1),
-                        width: Float(bitPattern: p2),
-                        height: Float(bitPattern: p3)
-                    )
                 } else {
+                    name = ""
+                    payload = .binValue(Data(arenaSlice))
+                }
+            } else if table == UInt64(NVE_TABLE_INTERACTION) {
+                switch eventId {
+                case UInt32(NVE_INTERACTION_EVENT_PRESS.rawValue):
+                    kind = .press
+                    payload = .point(x: Float(bitPattern: p0), y: Float(bitPattern: p1))
+                case UInt32(NVE_INTERACTION_EVENT_LONG_PRESS.rawValue):
+                    kind = .longPress
+                    payload = .point(x: Float(bitPattern: p0), y: Float(bitPattern: p1))
+                case UInt32(NVE_INTERACTION_EVENT_FOCUS.rawValue):
+                    kind = .focus
+                    payload = .empty
+                case UInt32(NVE_INTERACTION_EVENT_BLUR.rawValue):
+                    kind = .blur
+                    payload = .empty
+                case UInt32(NVE_INTERACTION_EVENT_KEY_DOWN.rawValue),
+                     UInt32(NVE_INTERACTION_EVENT_KEY_UP.rawValue):
+                    kind = eventId == UInt32(NVE_INTERACTION_EVENT_KEY_DOWN.rawValue) ? .keyDown : .keyUp
+                    let key: String
+                    let code: String
+                    if hasInlineKey {
+                        let klen = Int(p1)
+                        guard klen <= Int(NVE_EVENT_INLINE_KEY_CAP) else {
+                            throw NveEventRingError.invalidBounds
+                        }
+                        var kb: [UInt8] = []
+                        kb.reserveCapacity(16)
+                        for w in [p2, p3, p4, p5] {
+                            kb.append(UInt8(truncatingIfNeeded: w))
+                            kb.append(UInt8(truncatingIfNeeded: w >> 8))
+                            kb.append(UInt8(truncatingIfNeeded: w >> 16))
+                            kb.append(UInt8(truncatingIfNeeded: w >> 24))
+                        }
+                        guard let decodedKey = String(bytes: kb.prefix(klen), encoding: .utf8) else {
+                            throw NveEventRingError.invalidUtf8
+                        }
+                        key = decodedKey
+                        code = try decodeUtf8Strict(arenaSlice)
+                    } else if hasSplitKey {
+                        let klen = Int(p1)
+                        guard klen <= arenaSlice.count else {
+                            throw NveEventRingError.invalidBounds
+                        }
+                        key = try decodeUtf8Strict(UnsafeRawBufferPointer(rebasing: arenaSlice[0 ..< klen]))
+                        code = try decodeUtf8Strict(UnsafeRawBufferPointer(rebasing: arenaSlice[klen ..< arenaSlice.count]))
+                    } else {
+                        key = try decodeUtf8Strict(arenaSlice)
+                        code = ""
+                    }
+                    payload = .key(
+                        key: key,
+                        code: code,
+                        modifiers: UInt8(flags & 0x1F),
+                        keyCode: p0,
+                        isComposing: (flags & UInt32(NVE_EVENT_FLAG_COMPOSING)) != 0
+                    )
+                case UInt32(NVE_INTERACTION_EVENT_POINTER_DOWN.rawValue),
+                     UInt32(NVE_INTERACTION_EVENT_POINTER_MOVE.rawValue),
+                     UInt32(NVE_INTERACTION_EVENT_POINTER_UP.rawValue),
+                     UInt32(NVE_INTERACTION_EVENT_POINTER_ENTER.rawValue),
+                     UInt32(NVE_INTERACTION_EVENT_POINTER_LEAVE.rawValue):
+                    switch eventId {
+                    case UInt32(NVE_INTERACTION_EVENT_POINTER_DOWN.rawValue): kind = .pointerDown
+                    case UInt32(NVE_INTERACTION_EVENT_POINTER_MOVE.rawValue): kind = .pointerMove
+                    case UInt32(NVE_INTERACTION_EVENT_POINTER_UP.rawValue): kind = .pointerUp
+                    case UInt32(NVE_INTERACTION_EVENT_POINTER_ENTER.rawValue): kind = .pointerEnter
+                    default: kind = .pointerLeave
+                    }
+                    let btn = UInt8((flags & UInt32(NVE_EVENT_FLAG_BUTTON_MASK)) >> UInt32(NVE_EVENT_FLAG_BUTTON_SHIFT))
+                    let cap: UInt8 = (flags & UInt32(NVE_EVENT_FLAG_CAPTURE)) != 0 ? 0x08 : 0
+                    payload = .pointer(
+                        x: Float(bitPattern: p0),
+                        y: Float(bitPattern: p1),
+                        modifiers: UInt8(flags & 0x1F),
+                        flags: btn | cap
+                    )
+                case UInt32(NVE_INTERACTION_EVENT_WHEEL.rawValue):
+                    kind = .wheel
+                    payload = .wheel(
+                        deltaX: Float(bitPattern: p0),
+                        deltaY: Float(bitPattern: p1),
+                        modifiers: UInt8(flags & 0x1F)
+                    )
+                default:
                     throw NveEventRingError.invalidEventTable(table, eventId)
                 }
-
-                events.append(
-                    NveEvent(
-                        surfaceId: surfaceId,
-                        nodeId: nodeId,
-                        timestampUs: ts,
-                        kind: kind,
-                        name: name,
-                        payload: payload
-                    )
+            } else if table == UInt64(NVE_TABLE_TEXT_INPUT) {
+                switch eventId {
+                case UInt32(NVE_TEXT_INPUT_EVENT_CHANGE.rawValue): kind = .textChange
+                case UInt32(NVE_TEXT_INPUT_EVENT_SUBMIT.rawValue): kind = .submit
+                case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_START.rawValue): kind = .compositionStart
+                case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE.rawValue): kind = .compositionUpdate
+                case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_END.rawValue): kind = .compositionEnd
+                default:
+                    throw NveEventRingError.invalidEventTable(table, eventId)
+                }
+                payload = .text(try decodeUtf8Strict(arenaSlice))
+            } else if table == UInt64(NVE_TABLE_SCROLL) && eventId == UInt32(NVE_SCROLL_EVENT_SCROLL.rawValue) {
+                kind = .scroll
+                payload = .scroll(
+                    x: Float(bitPattern: p0),
+                    y: Float(bitPattern: p1),
+                    contentWidth: Float(bitPattern: p2),
+                    contentHeight: Float(bitPattern: p3)
                 )
+            } else if table == UInt64(NVE_TABLE_LAYOUT) && eventId == UInt32(NVE_LAYOUT_EVENT_LAYOUT.rawValue) {
+                kind = .layout
+                payload = .layout(
+                    x: Float(bitPattern: p0),
+                    y: Float(bitPattern: p1),
+                    width: Float(bitPattern: p2),
+                    height: Float(bitPattern: p3)
+                )
+            } else {
+                throw NveEventRingError.invalidEventTable(table, eventId)
             }
-            return events
+
+            events.append(
+                NveEvent(
+                    surfaceId: surfaceId,
+                    nodeId: nodeId,
+                    timestampUs: ts,
+                    kind: kind,
+                    name: name,
+                    payload: payload
+                )
+            )
         }
+        return events
     }
 
     /// Best-effort decoder returning `[]` on any truncated or malformed `NVEV` v2 payload.

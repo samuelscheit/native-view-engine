@@ -276,7 +276,7 @@ void test_seeded_fuzz_corpus() {
   nve_fabric_host_destroy(shared_host);
 
   // (f) EventRing fuzz corpus (300+ cases): truncations, oversized counts/lengths, trailing garbage, random bytes.
-  nve::EventRingWriter valid_ring;
+  nve::EventBatchBuilder valid_ring;
   valid_ring.clear();
   valid_ring.push_press(1, 2, 100, 12.5f, 34.5f);
   valid_ring.push_long_press(1, 2, 200, 15.0f, 36.0f);
@@ -297,7 +297,7 @@ void test_seeded_fuzz_corpus() {
 
   // Null pointer + non-zero len -> false; zero len -> true
   assert(!nve::decode_event_ring(NveBufferSlice{nullptr, 16}, out_events));
-  assert(nve::decode_event_ring(NveBufferSlice{nullptr, 0}, out_events));
+  assert(!nve::decode_event_ring(NveBufferSlice{nullptr, 0}, out_events));
   assert(out_events.empty());
 
   size_t ring_fuzz_cases = 0;

@@ -213,7 +213,7 @@ HEADER_DEPS=(
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_value.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_decoder.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/command_encoder.hpp"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/src/event_ring_writer.hpp"
+  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_event_batch.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_arena.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_runtime.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/src/mock_jsi_runtime_helpers.hpp"

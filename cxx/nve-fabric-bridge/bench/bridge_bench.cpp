@@ -425,7 +425,7 @@ int main(int argc, char** argv) {
 
   if (should_run("mock_jsi_binary_ring_dispatch", cfg)) {
     nve::MockJsiRecorderRuntime rt;
-    nve::EventRingWriter ring;
+    nve::EventBatchBuilder ring;
     std::vector<nve::DecodedEvent> decoded;
     constexpr uint64_t kBatch = 10;
 

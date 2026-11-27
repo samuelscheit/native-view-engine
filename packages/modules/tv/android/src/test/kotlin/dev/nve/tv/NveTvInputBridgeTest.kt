@@ -111,6 +111,16 @@ class NveTvInputBridgeTest {
         assertThrows(IllegalArgumentException::class.java) {
             NveTvEventRingWire.decode(encoded + byteArrayOf(0x00))
         }
+        // Conflicting INLINE_KEY_UTF8 | KEY_SPLIT_BYTES rejected
+        val conflicting = encoded.copyOf()
+        ByteBuffer.wrap(conflicting).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(14 + 28, NveTvEventRingWire.FLAG_INLINE_KEY_UTF8 or NveTvEventRingWire.FLAG_KEY_SPLIT_BYTES)
+        assertThrows(IllegalArgumentException::class.java) { NveTvEventRingWire.decode(conflicting) }
+        // Invalid UTF-8 in code arena rejected strictly
+        val badUtf8 = encoded.copyOf()
+        badUtf8[badUtf8.size - 2] = 0xFF.toByte()
+        badUtf8[badUtf8.size - 1] = 0xFE.toByte()
+        assertThrows(IllegalArgumentException::class.java) { NveTvEventRingWire.decode(badUtf8) }
     }
 
     @Test

@@ -159,6 +159,10 @@ final class NveWireEventBatchWriter {{
     List<int> payload, [
     List<int> data = const <int>[],
   ]) {{
+    const int maxU32 = 0xFFFFFFFF;
+    if (_count >= maxU32 || data.length > maxU32 || _arena.length > maxU32 - data.length) {{
+      return false;
+    }}
     final int off = data.isEmpty ? 0 : _arena.length;
     final int len = data.length;
     if (data.isNotEmpty) {{
@@ -182,9 +186,11 @@ final class NveWireEventBatchWriter {{
     return true;
   }}
 
+  static final ByteData _f32Scratch = ByteData(4);
+
   static int _f32Bits(double v) {{
-    final ByteData bd = ByteData(4)..setFloat32(0, v, Endian.little);
-    return bd.getUint32(0, Endian.little);
+    _f32Scratch.setFloat32(0, v, Endian.little);
+    return _f32Scratch.getUint32(0, Endian.little);
   }}
 
   void pushPress(int surfaceId, int nodeId, int timestampUs, double x, double y) {{
@@ -295,7 +301,12 @@ final class NveWireEventBatchWriter {{
     String name,
     List<int> data,
   ) {{
+    const int maxU32 = 0xFFFFFFFF;
     final List<int> nameBytes = utf8.encode(name);
+    if (nameBytes.length > maxU32 || data.length > maxU32 - nameBytes.length ||
+        _arena.length > maxU32 - (nameBytes.length + data.length)) {{
+      return false;
+    }}
     final BytesBuilder combined = BytesBuilder(copy: false)
       ..add(nameBytes)
       ..add(data);
@@ -324,8 +335,12 @@ final class NveWireEventBatchWriter {{
     int keyCode = 0,
     bool isComposing = false,
   }}) {{
+    const int maxU32 = 0xFFFFFFFF;
     final List<int> keyBytes = utf8.encode(key);
     final List<int> codeBytes = utf8.encode(code);
+    if (keyBytes.length > maxU32 || codeBytes.length > maxU32 - keyBytes.length) {{
+      return false;
+    }}
     int flags = 0;
     if (meta) flags |= nveWireEventFlagModMeta;
     if (ctrl) flags |= nveWireEventFlagModCtrl;

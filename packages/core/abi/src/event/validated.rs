@@ -340,7 +340,9 @@ impl<'a> ValidatedEvents<'a> {
     #[inline]
     pub fn get(&self, index: usize) -> Option<ValidatedEvent<'a>> {
         let raw_ref = self.events.get(index)?;
-        let ev = raw_ref.read();
+        let mut ev = raw_ref.read();
+        ev.surface = SurfaceId::from_raw_or_null(ev.surface.raw());
+        ev.node = NodeId::from_raw_or_null(ev.node.raw());
         let off = ev.bytes.offset.as_usize();
         let len = ev.bytes.len.as_usize();
         // SAFETY: `off..off+len` was validated against `self.bytes.len()` at `ValidatedEvents` ingress.

@@ -156,8 +156,13 @@ pub fn generate_swift_wire_codecs() -> String {
             payload: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0, 0, 0, 0, 0, 0),
             data: Data = Data()
         ) -> Bool {{
-            let off = data.isEmpty ? UInt32(0) : UInt32(arena.count)
-            let len = UInt32(data.count)
+            guard count < UInt32.max,
+                  let curOff = UInt32(exactly: arena.count),
+                  let len = UInt32(exactly: data.count),
+                  curOff <= UInt32.max - len else {{
+                return false
+            }}
+            let off = data.isEmpty ? UInt32(0) : curOff
             if !data.isEmpty {{
                 arena.append(data)
             }}
@@ -175,7 +180,7 @@ pub fn generate_swift_wire_codecs() -> String {
             appendU32(payload.5, to: &events)
             appendU32(off, to: &events)
             appendU32(len, to: &events)
-            count &+= 1
+            count += 1
             return true
         }}
 
@@ -280,6 +285,13 @@ pub fn generate_swift_wire_codecs() -> String {
             data: Data
         ) -> Bool {{
             let nameBytes = Data(name.utf8)
+            guard let nameLen = UInt32(exactly: nameBytes.count),
+                  let dataLen = UInt32(exactly: data.count),
+                  nameLen <= UInt32.max - dataLen,
+                  let curArena = UInt32(exactly: arena.count),
+                  nameLen + dataLen <= UInt32.max - curArena else {{
+                return false
+            }}
             var combined = Data(capacity: nameBytes.count + data.count)
             combined.append(nameBytes)
             combined.append(data)
@@ -290,7 +302,7 @@ pub fn generate_swift_wire_codecs() -> String {
                 timestampUs: timestampUs,
                 eventId: 0,
                 flags: EventFlags.customNamed,
-                payload: (UInt32(nameBytes.count), 0, 0, 0, 0, 0),
+                payload: (nameLen, 0, 0, 0, 0, 0),
                 data: combined
             )
         }}
@@ -337,6 +349,13 @@ pub fn generate_swift_wire_codecs() -> String {
                     data: codeData
                 )
             }}
+            guard let keyLen = UInt32(exactly: keyBytes.count),
+                  let codeLen = UInt32(exactly: codeData.count),
+                  keyLen <= UInt32.max - codeLen,
+                  let curArena = UInt32(exactly: arena.count),
+                  keyLen + codeLen <= UInt32.max - curArena else {{
+                return false
+            }}
             var combined = Data(capacity: keyBytes.count + codeData.count)
             combined.append(contentsOf: keyBytes)
             combined.append(codeData)
@@ -348,7 +367,7 @@ pub fn generate_swift_wire_codecs() -> String {
                 timestampUs: timestampUs,
                 eventId: InteractionEvent.keyDown.rawValue,
                 flags: flags,
-                payload: (keyCode, UInt32(keyBytes.count), 0, 0, 0, 0),
+                payload: (keyCode, keyLen, 0, 0, 0, 0),
                 data: combined
             )
         }}

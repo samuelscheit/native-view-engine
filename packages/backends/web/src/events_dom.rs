@@ -146,12 +146,12 @@ impl RootEventDelegator {
             let Some(el) = target_to_element(ev.target()) else { return };
             let chain = collect_ancestors(&el, &r);
             let st_ref = st.borrow();
-            let Some((id, _)) = chain
+            let id = chain
                 .iter()
                 .find(|(id, _)| st_ref.listens::<Interaction>(*id, InteractionEvent::Press))
-            else {
-                return;
-            };
+                .map(|(id, _)| *id);
+            drop(st_ref);
+            let Some(id) = id else { return };
             let Some(me) = ev.dyn_ref::<web_sys::MouseEvent>() else { return };
             if let Ok(Some(anchor)) = el.closest("a[href]")
                 && r.contains(Some(&anchor))
@@ -175,7 +175,7 @@ impl RootEventDelegator {
             }
             evs.borrow_mut().push_press(
                 sid.get(),
-                *id,
+                id,
                 now_us(),
                 me.client_x() as f32,
                 me.client_y() as f32,
@@ -208,12 +208,13 @@ impl RootEventDelegator {
                 })
                 .map(|(id, target_el)| (*id, read_dom_input_value(target_el)));
             drop(st_ref);
-            if let Some((id, val)) = found
-                && let Some(changed) = sync.borrow_mut().on_input_event(id, val, false)
-            {
-                evs.borrow_mut()
-                    .push_text_change(sid.get(), id, now_us(), &changed);
-                notify_event(&notify);
+            if let Some((id, val)) = found {
+                let changed = sync.borrow_mut().on_input_event(id, val, false);
+                if let Some(changed) = changed {
+                    evs.borrow_mut()
+                        .push_text_change(sid.get(), id, now_us(), &changed);
+                    notify_event(&notify);
+                }
             }
         });
         DomListenerGuard::attach(self.root_target.clone(), "input", false, cb)
@@ -291,6 +292,7 @@ impl RootEventDelegator {
                     full,
                     &mut evs.borrow_mut(),
                 );
+                drop(guard);
                 notify_event(&notify);
             }
         });

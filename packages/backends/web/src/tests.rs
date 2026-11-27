@@ -1315,3 +1315,70 @@ fn patch_css_emits_single_side_padding_margin_logical_combo_overflow_axes_and_ne
     );
     let _ = node;
 }
+
+#[test]
+fn synchronous_reentrant_commit_during_event_callback_has_no_refcell_borrow_conflict() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use nve_abi::{EventBatchBuf, InteractionEvent, SurfaceId, TimestampUs};
+    use nve_components::tables::{Interaction, TextInput};
+    use nve_store::{ChangeSet, NodeId, NodeStore};
+
+    use crate::events::WebEventState;
+    use crate::input_attrs::InputSyncTracker;
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (btn, inp) = {
+        let mut tx = store.tx();
+        let b = tx.create();
+        let i = tx.create();
+        tx.set_children(NodeId::ROOT, &[b, i]);
+        tx.edit::<Interaction>(b).listen(InteractionEvent::Press);
+        tx.edit::<TextInput>(i).value("init");
+        tx.commit_into(&mut changes);
+        (b, i)
+    };
+
+    let state = Rc::new(RefCell::new(WebEventState::new()));
+    let sync = Rc::new(RefCell::new(InputSyncTracker::new()));
+    let events = Rc::new(RefCell::new(EventBatchBuf::new()));
+    state.borrow_mut().sync(&store, &changes, |_, _, _| {});
+
+    // Simulate synchronous `on_event` pumping `WebBackend::commit` -> `state.borrow_mut()` &
+    // `sync.borrow_mut()` & `events.borrow_mut().clear()` inside click / input / compositionend.
+    let reentrant_commit = |st: &Rc<RefCell<WebEventState>>,
+                            sy: &Rc<RefCell<InputSyncTracker>>,
+                            ev: &Rc<RefCell<EventBatchBuf>>,
+                            s: &NodeStore,
+                            c: &ChangeSet| {
+        st.borrow_mut().sync(s, c, |_, _, _| {});
+        sy.borrow_mut().remove(inp);
+        ev.borrow_mut().clear();
+    };
+
+    // 1. Click path: drop `st_ref` before `notify_event`.
+    let st_ref = state.borrow();
+    let click_id = st_ref.listens::<Interaction>(btn, InteractionEvent::Press).then_some(btn);
+    drop(st_ref);
+    assert_eq!(click_id, Some(btn));
+    events.borrow_mut().push_press(SurfaceId::ROOT, btn, TimestampUs(1), 5.0, 5.0);
+    reentrant_commit(&state, &sync, &events, &store, &changes);
+
+    // 2. Input path: release `sync.borrow_mut()` before `notify_event`.
+    let changed = sync.borrow_mut().on_input_event(inp, "abc".into(), false);
+    assert_eq!(changed.as_deref(), Some("abc"));
+    if let Some(val) = changed {
+        events.borrow_mut().push_text_change(SurfaceId::ROOT, inp, TimestampUs(2), &val);
+        reentrant_commit(&state, &sync, &events, &store, &changes);
+    }
+
+    // 3. CompositionEnd path: drop `guard` before `notify_event`.
+    {
+        let mut guard = sync.borrow_mut();
+        let _ = guard.on_input_event(inp, "你好".into(), true);
+        drop(guard);
+        reentrant_commit(&state, &sync, &events, &store, &changes);
+    }
+}

@@ -18,6 +18,9 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **Nested `Text` wrapper/leaf split for inline literals**
   - **Observed**: `text { style: "...", "literal" }` emits a styled parent `Text` element wrapping an unstyled child `Text` leaf node, so host shells that don't inherit text styles render invisible or unstyled leaves.
   - **Mitigation**: `packages/core/dioxus/src/lib.rs` and `cxx/nve-fabric-bridge/src/fabric_adapter.cpp` propagate `text_color` and `font_size` from styled parent `Text` nodes down to unstyled child `Text` leaves; native hosts mount wrapper `Text` nodes with children as containers and leaf `Text` nodes as native text labels.
+- **2 unavoidable heap allocations per bubbling event**
+  - **Observed**: `Event::new` boxes `Rc<RefCell<EventMetadata>>` (the field is `pub(crate)`, so it cannot be reused) and `Runtime::handle_bubbling_event` collects listeners into a fresh `vec![]` per event.
+  - **Mitigation**: `packages/core/dioxus/src/events.rs` reuses all NVE-side payload `Rc<T>` slots and string capacity; `packages/core/dioxus/tests/zero_alloc.rs` pins exactly 2 allocs per bubbling event so any NVE-side regression fails. A fork patch (metadata/listener scratch reuse in `samuelscheit/dioxus`) would reach 0.
 - **Event attribute `"on"` prefix mismatch**
   - **Observed**: `WriteMutations` delivers event attributes prefixed with `"on"` (e.g., `"onclick"`), while `VirtualDom::runtime().handle_event` expects the unprefixed name (`"click"`).
   - **Mitigation**: `packages/core/dioxus/src/lib.rs` strips the leading `"on"` via `attr.name.get(2..)`.

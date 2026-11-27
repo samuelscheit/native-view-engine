@@ -221,11 +221,17 @@ class NveDirectBufferChannelTest {
         assertEquals(-1, NveEventRingCodec.encodeInto(sample, readOnly))
         assertEquals(-1, NveEventRingCodec.encodeSingleInto(sample[0], readOnly))
 
-        // Oversized custom event name (> uint16 max) throws IllegalArgumentException just like encode().
-        val hugeNameEvent = NveEventRingCodec.custom(1, 5, "a".repeat(70_000))
-        assertThrows(IllegalArgumentException::class.java) {
-            NveEventRingCodec.encodeInto(listOf(hugeNameEvent), ByteBuffer.allocateDirect(128 * 1024))
-        }
+        // NVEV v2 frames names with u32 lengths: a > uint16 custom name encodes and round-trips.
+        val hugeName = "a".repeat(70_000)
+        val hugeNameEvent = NveEventRingCodec.custom(1, 5, hugeName, byteArrayOf(1, 2))
+        val hugeBuf = ByteBuffer.allocateDirect(128 * 1024)
+        assertEquals(
+            NveEventRingCodec.encode(listOf(hugeNameEvent)).size,
+            NveEventRingCodec.encodeInto(listOf(hugeNameEvent), hugeBuf),
+        )
+        val hugeDecoded = NveEventRingCodec.decode(hugeBuf).single().payload as NveEventPayload.Custom
+        assertEquals(hugeName, hugeDecoded.name)
+        assertArrayEquals(byteArrayOf(1, 2), hugeDecoded.data)
     }
 
     @Test
