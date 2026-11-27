@@ -180,17 +180,40 @@ impl<I: Idx, T> IndexMut<I> for IndexVec<I, T> {
     }
 }
 
-/// Handle of a variable-length blob in the `ResourceStore`. Raw `0` means "none".
+/// Generational handle of a variable-length flat blob in [`crate::ResourceStore`].
+///
+/// Layout matches [`NodeId`]: low 24 bits hold the dense slot index (`1..=MAX_INDEX`; slot `0` is
+/// reserved) and high 8 bits hold the wrap-around generation counter so recycled slots never alias
+/// stale handles (ABA protection). Raw `0` means "none".
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct ResourceId(pub u32);
 
 impl ResourceId {
     pub const NONE: Self = Self(0);
+    /// Bitmask selecting the 24-bit dense slot index.
+    pub const INDEX_MASK: u32 = 0x00FF_FFFF;
+    /// Maximum valid slot index (`16,777,215` concurrent live resources per surface).
+    pub const MAX_INDEX: u32 = Self::INDEX_MASK;
+
+    #[inline(always)]
+    pub const fn new(index: u32, generation: u8) -> Self {
+        Self((index & Self::INDEX_MASK) | ((generation as u32) << 24))
+    }
 
     #[inline(always)]
     pub const fn raw(self) -> u32 {
         self.0
+    }
+
+    #[inline(always)]
+    pub const fn index(self) -> usize {
+        (self.0 & Self::INDEX_MASK) as usize
+    }
+
+    #[inline(always)]
+    pub const fn generation(self) -> u8 {
+        (self.0 >> 24) as u8
     }
 
     #[inline(always)]

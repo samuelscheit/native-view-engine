@@ -5,7 +5,79 @@
 //! `[byte_len: u32, payload_words...]`, with trailing padding bytes in the final word required
 //! to be zero so identical content hashes deterministically under `xxh64`.
 
-use crate::resource::words_as_le_bytes;
+use core::marker::PhantomData;
+use core::ops::Deref;
+
+use crate::resource::{words_as_le_bytes, FlatResource};
+
+/// Zero-cost proof wrapper guaranteeing `words` passed `R::validate(words)` at ingress.
+///
+/// Constructible only by [`crate::ResourceStore::get`] (after local intern validation or cached
+/// wire-origin validation) or [`Self::try_new`], so [`FlatResource::view`] implementations can
+/// soundly elide redundant per-read UTF-8 validation.
+#[repr(transparent)]
+pub struct ValidatedWords<'a, R: ?Sized> {
+    words: &'a [u32],
+    _marker: PhantomData<fn() -> R>,
+}
+
+impl<R: ?Sized> Clone for ValidatedWords<'_, R> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R: ?Sized> Copy for ValidatedWords<'_, R> {}
+
+impl<R: ?Sized> core::fmt::Debug for ValidatedWords<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("ValidatedWords").field(&self.words).finish()
+    }
+}
+
+impl<R: ?Sized> PartialEq for ValidatedWords<'_, R> {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.words == other.words
+    }
+}
+
+impl<R: ?Sized> Eq for ValidatedWords<'_, R> {}
+
+impl<'a, R: ?Sized> ValidatedWords<'a, R> {
+    /// Sealed constructor used exclusively by [`crate::ResourceStore::get`] after `R::validate`.
+    #[inline(always)]
+    pub(crate) const fn new_unchecked(words: &'a [u32]) -> Self {
+        Self {
+            words,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Underlying validated `u32` word slice.
+    #[inline(always)]
+    pub const fn as_slice(self) -> &'a [u32] {
+        self.words
+    }
+}
+
+impl<'a, R: FlatResource> ValidatedWords<'a, R> {
+    /// Validates `words` via `R::validate` and wraps them on success.
+    #[inline]
+    pub fn try_new(words: &'a [u32]) -> Option<Self> {
+        R::validate(words).then_some(Self::new_unchecked(words))
+    }
+}
+
+impl<R: ?Sized> Deref for ValidatedWords<'_, R> {
+    type Target = [u32];
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        self.words
+    }
+}
 
 /// Number of `u32` payload words required to hold `byte_len` bytes (rounded up to 4 bytes).
 #[inline(always)]
@@ -110,6 +182,20 @@ pub fn read_str_words<'a>(words: &'a [u32], pos: &mut usize) -> Option<&'a str> 
     core::str::from_utf8(bytes).ok()
 }
 
+/// Reads a length-prefixed UTF-8 `&str` starting at `words[*pos]` without re-running UTF-8
+/// validation, advancing `*pos` past it.
+///
+/// # Safety
+///
+/// The caller must guarantee that the length-prefixed block at `words[*pos..]` passed
+/// [`validate_str_words`] (typically proven by [`ValidatedWords`]).
+#[inline]
+pub unsafe fn read_str_words_unchecked<'a>(words: &'a [u32], pos: &mut usize) -> Option<&'a str> {
+    let bytes = read_bytes_words(words, pos)?;
+    // SAFETY: Caller guarantees `bytes` was validated as UTF-8 by `validate_str_words`.
+    Some(unsafe { core::str::from_utf8_unchecked(bytes) })
+}
+
 /// Validates `n` concatenated UTF-8 strings packed as `[len_0, ..., len_{n-1}, bytes_padded...]`.
 #[inline]
 pub fn validate_fixed_str_pack<const N: usize>(words: &[u32], max_per_str: usize) -> bool {
@@ -171,6 +257,34 @@ pub fn read_fixed_str_pack<const N: usize>(words: &[u32], index: usize) -> &str 
         .get(off..end)
         .and_then(|s| core::str::from_utf8(s).ok())
         .unwrap_or("")
+}
+
+/// Reads string `index` (`0..N`) from a validated `[len_0, ..., len_{N-1}, bytes_padded...]` pack
+/// without re-running UTF-8 validation.
+///
+/// # Safety
+///
+/// The caller must guarantee that `words` passed [`validate_fixed_str_pack`] for `N`
+/// (typically proven by [`ValidatedWords`]).
+#[inline]
+pub unsafe fn read_fixed_str_pack_unchecked<const N: usize>(words: &[u32], index: usize) -> &str {
+    if index >= N || words.len() < N {
+        return "";
+    }
+    let mut off = 0usize;
+    for &l in &words[..index] {
+        off = off.saturating_add(l as usize);
+    }
+    let len = words[index] as usize;
+    let Some(end) = off.checked_add(len) else {
+        return "";
+    };
+    let bytes = words_as_le_bytes(&words[N..]);
+    let Some(slice) = bytes.get(off..end) else {
+        return "";
+    };
+    // SAFETY: Caller guarantees `words` passed `validate_fixed_str_pack::<N>`.
+    unsafe { core::str::from_utf8_unchecked(slice) }
 }
 
 /// Writes `N` strings into a compact `[len_0, ..., len_{N-1}, bytes_padded...]` pack.

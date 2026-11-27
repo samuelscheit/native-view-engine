@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, FlatResource, Length, NodeId, NodeStore, NveTable, Rgba, RowPatch};
+use nve_store::{
+    ChangeSet, FlatResource, Length, NodeId, NodeStore, NveTable, Rgba, RowPatch, RowPatchView,
+    ValidatedWords,
+};
 
 use crate::interaction::{CursorKind, InteractionState, StateStyleRule};
 use crate::layout_ext::GridTrack;
@@ -165,9 +168,53 @@ fn core_tables_roundtrip_through_nve2_wire() {
     assert_eq!(v.background(), Rgba::rgb(20, 30, 40));
     assert_eq!(v.opacity(), 0.75);
     assert_eq!(v.visibility(), Visibility::Hidden);
+    // 1. BoxShadows exact field equality
     let shadows = dst.resource::<BoxShadows>(v.box_shadows()).unwrap();
     assert_eq!(shadows.len(), 1);
-    assert_eq!(shadows.get(0).unwrap().blur_radius, 12.0);
+    let sh0 = shadows.get(0).unwrap();
+    assert_eq!(sh0.offset_x, 0.0);
+    assert_eq!(sh0.offset_y, 4.0);
+    assert_eq!(sh0.blur_radius, 12.0);
+    assert_eq!(sh0.spread_radius, 0.0);
+    assert!(!sh0.inset);
+
+    // 2. GridTracks exact field equality
+    let gl = dst.try_row::<GridLayout>(n).unwrap();
+    let cols = dst.resource::<GridTracks>(gl.template_columns()).unwrap();
+    assert_eq!(
+        cols.iter().collect::<Vec<_>>(),
+        vec![GridTrack::Px(100.0), GridTrack::Fr(1.0)]
+    );
+
+    // 3. BackgroundFillRes exact field equality
+    let bg_fill = dst
+        .resource::<BackgroundFillRes>(v.background_fill())
+        .unwrap();
+    assert_eq!(
+        bg_fill.to_owned(),
+        BackgroundFill::linear(
+            90.0,
+            vec![
+                GradientStop::new(0.0, nve_abi::ColorRgba::rgb(255, 0, 0)),
+                GradientStop::new(1.0, nve_abi::ColorRgba::rgb(0, 0, 255)),
+            ],
+        )
+    );
+
+    // 4. Transitions exact field equality
+    let mot = dst.try_row::<Motion>(n).unwrap();
+    let trs = dst.resource::<Transitions>(mot.transitions()).unwrap();
+    assert_eq!(trs.iter().collect::<Vec<_>>(), vec![TransitionSpec::all(200)]);
+
+    // 5. ResponsiveRules exact field equality
+    let resp = dst.try_row::<Responsive>(n).unwrap();
+    let rrules: Vec<_> = dst
+        .resource::<ResponsiveRules>(resp.rules())
+        .unwrap()
+        .iter()
+        .map(|(q, p)| (q, p.get_prop(Visual::OPACITY)))
+        .collect();
+    assert_eq!(rrules, vec![(MediaQuery::min_width(768), Some(0.5))]);
 
     let typo = dst.try_row::<Typography>(n).unwrap();
     assert!(typo.is_font_size_explicit());
@@ -181,14 +228,41 @@ fn core_tables_roundtrip_through_nve2_wire() {
     let tc = dst.try_row::<TextContent>(n).unwrap();
     assert_eq!(tc.text(), "Hello NVE2");
 
+    // 6. StateRules exact field equality
     let ia = dst.try_row::<Interaction>(n).unwrap();
     assert_eq!(ia.cursor(), CursorKind::Pointer);
     assert_eq!(ia.tab_index(), Some(-1));
+    let srules: Vec<_> = dst
+        .resource::<StateRules>(ia.state_rules())
+        .unwrap()
+        .iter()
+        .map(|(st, p)| (st, p.get_prop(Visual::OPACITY)))
+        .collect();
+    assert_eq!(srules, vec![(InteractionState::HOVER, Some(0.9))]);
 
+    // 7. AriaRelations exact field equality
     let a11y = dst.try_row::<Accessibility>(n).unwrap();
     assert_eq!(a11y.role(), Some(AriaRole::Button));
     assert_eq!(a11y.label(), "Submit");
     assert_eq!(a11y.value_now(), Some(42.0));
+    let rel = dst.resource::<AriaRelations>(a11y.relations()).unwrap();
+    assert_eq!(
+        rel.to_owned(),
+        AriaRelations {
+            controls: "panel-1".into(),
+            ..Default::default()
+        }
+    );
+
+    // 8. ImageSrc exact field equality
+    let img = dst.try_row::<Image>(n).unwrap();
+    assert_eq!(img.fit(), ImageFit::Contain);
+    assert_eq!(img.alt(), "logo");
+    let img_src = dst.resource::<ImageSrc>(img.src()).unwrap();
+    assert_eq!(
+        img_src.to_owned(),
+        ImageSrc::Url("https://cdn.example.com/a.png".into())
+    );
 
     let ti = dst.try_row::<TextInput>(n).unwrap();
     assert_eq!(ti.value(), "abc");
@@ -230,6 +304,33 @@ fn resource_validators_reject_truncated_and_corrupt_inputs() {
     let img = ImageSrc::EncodedBytes(Arc::from([1u8, 2, 3, 4]));
     let mut buf = Vec::new();
     assert!(img.write_words(&mut buf));
-    assert!(ImageSrc::validate(&buf));
-    assert_eq!(ImageSrc::view(&buf), ImageSrcView::EncodedBytes(&[1, 2, 3, 4]));
+    let vw = ValidatedWords::<ImageSrc>::try_new(&buf).unwrap();
+    assert_eq!(ImageSrc::view(vw), ImageSrcView::EncodedBytes(&[1, 2, 3, 4]));
+
+    // Hostile valid StateRules with two 20-table HOVER rules (40 distinct synthetic TableKeys)
+    // must validate AND merge via `resolve_patch_from_view` without panicking!
+    let make_20_patch = |base_key: u64| -> Vec<u32> {
+        let mut w = vec![20u32];
+        for i in 0..20u64 {
+            let k = nve_abi::Key64(base_key + i);
+            w.extend_from_slice(&[k.lo(), k.hi(), 1, 0, u32::MAX, i as u32]);
+        }
+        w
+    };
+    let p1 = make_20_patch(0x1000);
+    let p2 = make_20_patch(0x2000);
+    let mut sr_words = vec![2u32];
+    sr_words.push(u32::from(InteractionState::HOVER.bits()));
+    sr_words.push(p1.len() as u32);
+    sr_words.extend_from_slice(&p1);
+    sr_words.push(u32::from(InteractionState::HOVER.bits()));
+    sr_words.push(p2.len() as u32);
+    sr_words.extend_from_slice(&p2);
+    let sr_vw = ValidatedWords::<StateRules>::try_new(&sr_words).expect("valid 2x20 StateRules");
+    let merged = crate::interaction::resolve_patch_from_view(
+        StateRules::view(sr_vw),
+        InteractionState::HOVER,
+    );
+    assert_eq!(merged.table_count(), 40);
+    let _ = RowPatchView::from_words(&p1).unwrap();
 }

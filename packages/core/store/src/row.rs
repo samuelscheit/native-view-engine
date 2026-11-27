@@ -362,20 +362,36 @@ impl<'a> RowWriter<'a> {
         self.resources.get::<R>(ResourceId(self.row[word]))
     }
 
-    /// Points a resource field at an existing defined id (or `ResourceId::NONE`), taking a ref.
+    /// Points a resource field at a live resource of type `R` (or `ResourceId::NONE`), taking a
+    /// ref. Returns `false` without mutating if `word` is not a resource word or `id` is stale,
+    /// dead (zero refs), or of a mismatched resource kind/type.
     #[doc(hidden)]
     #[inline]
-    pub fn put_resource_id(&mut self, word: usize, id: ResourceId) {
-        assert!(
-            word < 32 && (self.desc.resource_words() & (1u32 << word)) != 0,
-            "RowWriter::put_resource_id: word {word} is not a declared resource word on `{}`",
-            self.desc.name()
-        );
-        assert!(
-            id.is_none() || self.resources.is_defined(id),
-            "RowWriter::put_resource_id: undefined ResourceId {id:?} on `{}`",
-            self.desc.name()
-        );
+    pub fn put_resource_id<R: FlatResource>(&mut self, word: usize, id: ResourceId) -> bool {
+        if word >= 32 || (self.desc.resource_words() & (1u32 << word)) == 0 {
+            return false;
+        }
+        if !id.is_none() && !self.resources.is_live_of::<R>(id) {
+            return false;
+        }
+        if ResourceId(self.row[word]) == id {
+            return true;
+        }
+        self.resources.retain(id);
+        self.swap_resource(word, id);
+        true
+    }
+
+    /// Wire/internal counterpart to [`Self::put_resource_id`] accepting any defined resource id
+    /// (including `0`-ref wire-defined entries validated by `WireDecoder` earlier in the frame).
+    #[inline]
+    pub(crate) fn put_resource_id_wire(&mut self, word: usize, id: ResourceId) {
+        if word >= 32 || (self.desc.resource_words() & (1u32 << word)) == 0 {
+            return;
+        }
+        if !id.is_none() && !self.resources.is_defined(id) {
+            return;
+        }
         if ResourceId(self.row[word]) == id {
             return;
         }

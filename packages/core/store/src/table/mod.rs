@@ -215,6 +215,14 @@ impl TableMeta {
     }
 
     #[inline(always)]
+    pub(crate) fn resource_kind(&self, word: usize) -> Option<nve_abi::Key64> {
+        match self {
+            Self::Static(d) => d.resource_kind(word),
+            Self::Dynamic(_) => None,
+        }
+    }
+
+    #[inline(always)]
     pub(crate) fn effects(&self) -> u8 {
         match self {
             Self::Static(d) => d.effects(),

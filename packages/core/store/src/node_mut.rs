@@ -1,9 +1,10 @@
 //! Validated mutable handle ([`NodeMut`]) for zero-check chained edits on a single live node.
 
 use crate::id::{NodeId, NodeIndex, ResourceId};
-use crate::resource::FlatResource;
+use crate::resource::{FlatResource, ResourceStore};
+use crate::row_patch::RowPatchView;
 use crate::store::{NodeRef, NodeStore};
-use crate::table::{NveTable, Prop, ResProp, ScalarField, StrProp};
+use crate::table::{NveTable, Prop, ResProp, ScalarField, StrProp, TableSlot};
 use crate::tx::{writer_at_typed, Transaction};
 
 /// Scoped RAII arena for temporary child resources interned while assembling parent resources
@@ -52,10 +53,135 @@ impl<'a> TempResources<'a> {
         id
     }
 
-    /// Reborrows a [`Transaction`] to attach parent resources referencing the temporary ids.
+    /// Reborrows a scoped transaction handle (without `commit`/`commit_into`) so callers can
+    /// attach parent resources referencing temporary ids without committing before temporaries drop.
     #[inline]
-    pub fn tx(&mut self) -> Transaction<'_> {
+    pub fn tx(&mut self) -> ScopedTx<'_> {
+        ScopedTx { store: self.store }
+    }
+}
+
+/// Non-committing mutation handle borrowed from [`TempResources::tx`].
+///
+/// Prevents premature `commit` / `commit_into` while temporary resource handles are still retained
+/// by [`TempResources`], guaranteeing producer and replica `end_frame` lifecycles stay in lockstep.
+pub struct ScopedTx<'a> {
+    store: &'a mut NodeStore,
+}
+
+impl<'a> ScopedTx<'a> {
+    #[inline(always)]
+    fn inner(&mut self) -> Transaction<'_> {
         Transaction { store: self.store }
+    }
+
+    #[inline(always)]
+    pub fn store(&self) -> &NodeStore {
+        self.store
+    }
+
+    #[inline(always)]
+    pub fn resources_mut(&mut self) -> &mut ResourceStore {
+        &mut self.store.resources
+    }
+
+    #[inline]
+    pub fn create(&mut self) -> NodeId {
+        self.inner().create()
+    }
+
+    #[inline]
+    pub fn spawn(&mut self) -> NodeMut<'_> {
+        let id = self.inner().create();
+        NodeMut::new(self.store, id.node_index())
+    }
+
+    #[inline]
+    pub fn node_mut(&mut self, id: NodeId) -> Option<NodeMut<'_>> {
+        self.store
+            .is_live(id)
+            .then(|| NodeMut::new(self.store, id.node_index()))
+    }
+
+    #[inline]
+    pub fn edit<T: NveTable>(&mut self, id: NodeId) -> T::Mut<'_> {
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        T::from_row_writer(writer_at_typed::<T>(self.store, id.node_index()))
+    }
+
+    #[inline]
+    pub fn attach<T: NveTable>(&mut self, id: NodeId) {
+        self.inner().attach::<T>(id);
+    }
+
+    #[inline]
+    pub fn set<T: NveTable, V: ScalarField>(&mut self, id: NodeId, prop: Prop<T, V>, value: V) {
+        self.inner().set(id, prop, value);
+    }
+
+    #[inline]
+    pub fn set_str<T: NveTable>(&mut self, id: NodeId, prop: StrProp<T>, text: &str) {
+        self.inner().set_str(id, prop, text);
+    }
+
+    #[inline]
+    pub fn set_resource<T: NveTable, R: FlatResource>(
+        &mut self,
+        id: NodeId,
+        prop: ResProp<T, R>,
+        value: Option<R>,
+    ) {
+        self.inner().set_resource(id, prop, value);
+    }
+
+    #[inline]
+    pub fn set_resource_id<T: NveTable, R: FlatResource>(
+        &mut self,
+        id: NodeId,
+        prop: ResProp<T, R>,
+        rid: ResourceId,
+    ) -> bool {
+        self.inner().set_resource_id(id, prop, rid)
+    }
+
+    #[inline]
+    pub fn apply_row_patch(&mut self, id: NodeId, patch: RowPatchView<'_>) {
+        self.inner().apply_row_patch(id, patch);
+    }
+
+    #[inline]
+    pub fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
+        self.inner().set_children(parent, children);
+    }
+
+    #[inline]
+    pub fn try_set_children(&mut self, parent: NodeId, children: &[NodeId]) -> bool {
+        self.inner().try_set_children(parent, children)
+    }
+
+    #[inline]
+    pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        self.inner().append_child(parent, child);
+    }
+
+    #[inline]
+    pub fn detach<T: NveTable>(&mut self, id: NodeId) {
+        self.inner().detach::<T>(id);
+    }
+
+    #[inline]
+    pub fn detach_slot(&mut self, id: NodeId, slot: TableSlot) {
+        self.inner().detach_slot(id, slot);
+    }
+
+    #[inline]
+    pub fn command<T: NveTable>(&mut self, id: NodeId, op: u32, payload: &[u8]) {
+        self.inner().command::<T>(id, op, payload);
+    }
+
+    #[inline]
+    pub fn remove(&mut self, id: NodeId) {
+        self.inner().remove(id);
     }
 }
 
@@ -154,7 +280,8 @@ impl<'a> NodeMut<'a> {
         self
     }
 
-    /// Points one resource property on this node at an already-interned [`ResourceId`].
+    /// Points one resource property on this node at a live [`ResourceId`] of type `R` (or
+    /// `ResourceId::NONE`). Ignores stale, dead, or mismatched-kind ids.
     #[inline]
     pub fn set_resource_id<T: NveTable, R: FlatResource>(
         &mut self,
@@ -162,8 +289,7 @@ impl<'a> NodeMut<'a> {
         rid: ResourceId,
     ) -> &mut Self {
         let mut w = writer_at_typed::<T>(self.store, self.index);
-        w.put_resource_id(prop.word as usize, rid);
-        if prop.explicit_bit != u8::MAX {
+        if w.put_resource_id::<R>(prop.word as usize, rid) && prop.explicit_bit != u8::MAX {
             w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
         }
         self

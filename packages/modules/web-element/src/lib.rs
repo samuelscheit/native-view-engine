@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use nve_abi::Key64;
 use nve_store::{
-    read_str_words, validate_str_words, write_str_words, FlatResource, NveTable, Res, Str,
+    read_str_words_unchecked, validate_str_words, write_str_words, FlatResource, NveTable, Res,
+    Str, ValidatedWords,
 };
 
 const MAX_ATTRS: usize = 512;
@@ -64,8 +65,11 @@ impl<'a> Iterator for WebElementAttrsIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let k = read_str_words(self.words, &mut self.pos)?;
-        let v = read_str_words(self.words, &mut self.pos)?;
+        // SAFETY: `WebElementAttrsView` is only constructible from `ValidatedWords<WebElementAttrs>`,
+        // whose `validate` checked every key/value span via `validate_str_words`.
+        let k = unsafe { read_str_words_unchecked(self.words, &mut self.pos) }?;
+        // SAFETY: Same validated invariant as `k`.
+        let v = unsafe { read_str_words_unchecked(self.words, &mut self.pos) }?;
         self.remaining -= 1;
         Some((k, v))
     }
@@ -110,8 +114,8 @@ impl FlatResource for WebElementAttrs {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> WebElementAttrsView<'_> {
-        WebElementAttrsView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> WebElementAttrsView<'_> {
+        WebElementAttrsView(words.as_slice())
     }
 }
 
@@ -150,6 +154,21 @@ mod tests {
         let attrs = store.resource::<WebElementAttrs>(row.attrs()).unwrap();
         let got: Vec<(&str, &str)> = attrs.iter().collect();
         assert_eq!(got, vec![("theme", "dark")]);
+
+        let orig = WebElementAttrs::from_pairs(vec![
+            ("theme".into(), "dark".into()),
+            ("aria-label".into(), "Chart".into()),
+        ]);
+        let mut words = Vec::new();
+        assert!(orig.write_words(&mut words));
+        let vw = nve_store::ValidatedWords::<WebElementAttrs>::try_new(&words).unwrap();
+        let rebuilt = WebElementAttrs::from_pairs(
+            WebElementAttrs::view(vw)
+                .iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
+        );
+        assert_eq!(rebuilt, orig);
         assert!(!WebElementAttrs::validate(&[]));
         assert!(!WebElementAttrs::validate(&[0x7FFF_FFFF]));
     }

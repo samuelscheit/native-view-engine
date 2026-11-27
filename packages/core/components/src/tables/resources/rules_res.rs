@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use nve_abi::Key64;
-use nve_store::{FlatResource, ResourceId, RowPatch, RowPatchView};
+use nve_store::{FlatResource, ResourceId, RowPatch, RowPatchView, ValidatedWords};
 
 use crate::interaction::{InteractionState, StateStyleRule};
 use crate::media::{
@@ -182,8 +182,8 @@ impl FlatResource for ResponsiveRules {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> ResponsiveRulesView<'_> {
-        ResponsiveRulesView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> ResponsiveRulesView<'_> {
+        ResponsiveRulesView(words.as_slice())
     }
 
     fn child_resources(words: &[u32], visit: &mut dyn FnMut(ResourceId)) {
@@ -308,7 +308,7 @@ impl FlatResource for StateRules {
             let Some(&plen_u32) = words.get(pos + 1) else {
                 return false;
             };
-            if state_bits > max_bits {
+            if (state_bits & !max_bits) != 0 {
                 return false;
             }
             pos += 2;
@@ -327,8 +327,8 @@ impl FlatResource for StateRules {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> StateRulesView<'_> {
-        StateRulesView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> StateRulesView<'_> {
+        StateRulesView(words.as_slice())
     }
 
     fn child_resources(words: &[u32], visit: &mut dyn FnMut(ResourceId)) {

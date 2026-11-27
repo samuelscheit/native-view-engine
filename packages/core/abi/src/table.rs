@@ -501,12 +501,27 @@ pub struct TableDesc {
     /// True when word 0 is the hidden `__explicit: u32` bitmask for `#[nve_table(inherited)]`.
     pub inherited: bool,
     pub fields: &'static [FieldDesc],
+    /// `(word_index, FlatResource::KIND)` pairs for every `Res<R>` field in this table.
+    pub resource_kinds: &'static [(u8, Key64)],
 }
 
 impl TableDesc {
     #[inline]
     pub const fn words(&self) -> usize {
         self.defaults.len()
+    }
+
+    /// Returns the expected `FlatResource::KIND` for resource `word`, if declared on this table.
+    #[inline]
+    pub const fn resource_kind(&self, word: usize) -> Option<Key64> {
+        let mut i = 0;
+        while i < self.resource_kinds.len() {
+            if self.resource_kinds[i].0 as usize == word {
+                return Some(self.resource_kinds[i].1);
+            }
+            i += 1;
+        }
+        None
     }
 
     /// Union of all word effects.

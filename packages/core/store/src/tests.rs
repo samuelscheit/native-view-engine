@@ -40,7 +40,7 @@ impl FlatResource for Shadows {
         true
     }
 
-    fn view<'a>(words: &'a [u32]) -> Self::View<'a> {
+    fn view<'a>(words: crate::ValidatedWords<'a, Self>) -> Self::View<'a> {
         words.iter().map(|&w| f32::from_bits(w)).collect()
     }
 }
@@ -593,14 +593,14 @@ fn intern_distinct_rust_types_with_same_kind_do_not_alias() {
         type View<'a> = u32;
         fn write_words(&self, out: &mut Vec<u32>) -> bool { out.push(self.0); true }
         fn validate(w: &[u32]) -> bool { w.len() == 1 }
-        fn view(w: &[u32]) -> u32 { w[0] }
+        fn view(w: crate::ValidatedWords<'_, Self>) -> u32 { w[0] }
     }
     impl FlatResource for CollideB {
         const KIND: nve_hash::Key64 = SHARED_KIND;
         type View<'a> = u32;
         fn write_words(&self, out: &mut Vec<u32>) -> bool { out.push(self.0); true }
         fn validate(w: &[u32]) -> bool { w.len() == 1 }
-        fn view(w: &[u32]) -> u32 { w[0] }
+        fn view(w: crate::ValidatedWords<'_, Self>) -> u32 { w[0] }
     }
 
     let mut store = NodeStore::new();

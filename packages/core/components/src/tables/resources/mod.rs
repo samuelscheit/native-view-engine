@@ -22,9 +22,9 @@ use std::sync::Arc;
 
 use nve_abi::Key64;
 use nve_store::{
-    read_bytes_words, read_fixed_str_pack, read_str_words, validate_bytes_words,
-    validate_fixed_str_pack, validate_str_words, write_bytes_words, write_fixed_str_pack,
-    write_str_words, FlatResource,
+    read_bytes_words, read_fixed_str_pack_unchecked, read_str_words_unchecked,
+    validate_bytes_words, validate_fixed_str_pack, validate_str_words, write_bytes_words,
+    write_fixed_str_pack, write_str_words, FlatResource, ValidatedWords,
 };
 
 pub(super) const MAX_ITEMS: usize = 4096;
@@ -52,22 +52,30 @@ pub struct AriaRelationsView<'a>(&'a [u32]);
 impl<'a> AriaRelationsView<'a> {
     #[inline]
     pub fn controls(self) -> &'a str {
-        read_fixed_str_pack::<4>(self.0, 0)
+        // SAFETY: `AriaRelationsView` is only constructed from `ValidatedWords<AriaRelations>`,
+        // whose `validate` ran `validate_fixed_str_pack::<4>`.
+        unsafe { read_fixed_str_pack_unchecked::<4>(self.0, 0) }
     }
 
     #[inline]
     pub fn labelled_by(self) -> &'a str {
-        read_fixed_str_pack::<4>(self.0, 1)
+        // SAFETY: `AriaRelationsView` is only constructed from `ValidatedWords<AriaRelations>`,
+        // whose `validate` ran `validate_fixed_str_pack::<4>`.
+        unsafe { read_fixed_str_pack_unchecked::<4>(self.0, 1) }
     }
 
     #[inline]
     pub fn described_by(self) -> &'a str {
-        read_fixed_str_pack::<4>(self.0, 2)
+        // SAFETY: `AriaRelationsView` is only constructed from `ValidatedWords<AriaRelations>`,
+        // whose `validate` ran `validate_fixed_str_pack::<4>`.
+        unsafe { read_fixed_str_pack_unchecked::<4>(self.0, 2) }
     }
 
     #[inline]
     pub fn active_descendant(self) -> &'a str {
-        read_fixed_str_pack::<4>(self.0, 3)
+        // SAFETY: `AriaRelationsView` is only constructed from `ValidatedWords<AriaRelations>`,
+        // whose `validate` ran `validate_fixed_str_pack::<4>`.
+        unsafe { read_fixed_str_pack_unchecked::<4>(self.0, 3) }
     }
 
     #[inline]
@@ -110,8 +118,8 @@ impl FlatResource for AriaRelations {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> AriaRelationsView<'_> {
-        AriaRelationsView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> AriaRelationsView<'_> {
+        AriaRelationsView(words.as_slice())
     }
 }
 
@@ -178,11 +186,16 @@ impl FlatResource for ImageSrc {
     }
 
     #[inline]
-    fn view(words: &[u32]) -> ImageSrcView<'_> {
+    fn view(words: ValidatedWords<'_, Self>) -> ImageSrcView<'_> {
+        let slice = words.as_slice();
         let mut pos = 1usize;
-        match words.first().copied() {
-            Some(0) => ImageSrcView::Url(read_str_words(words, &mut pos).unwrap_or("")),
-            Some(1) => ImageSrcView::EncodedBytes(read_bytes_words(words, &mut pos).unwrap_or(&[])),
+        match slice.first().copied() {
+            // SAFETY: `ValidatedWords<ImageSrc>` guarantees `Self::validate` verified UTF-8 via
+            // `validate_str_words` for tag `0`.
+            Some(0) => ImageSrcView::Url(
+                unsafe { read_str_words_unchecked(slice, &mut pos) }.unwrap_or(""),
+            ),
+            Some(1) => ImageSrcView::EncodedBytes(read_bytes_words(slice, &mut pos).unwrap_or(&[])),
             _ => ImageSrcView::Url(""),
         }
     }

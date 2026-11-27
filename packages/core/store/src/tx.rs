@@ -515,52 +515,72 @@ impl Transaction<'_> {
         }
     }
 
-    /// Points one resource property at an already-interned [`ResourceId`] (or `ResourceId::NONE`).
+    /// Points one resource property at a live [`ResourceId`] of type `R` (or `ResourceId::NONE`).
+    /// Returns `false` without mutating if `rid` is stale, dead, or of a mismatched kind/type.
     #[inline]
     pub fn set_resource_id<T: NveTable, R: FlatResource>(
         &mut self,
         id: NodeId,
         prop: ResProp<T, R>,
         rid: ResourceId,
-    ) {
+    ) -> bool {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
         let mut w = writer_at_typed::<T>(self.store, id.node_index());
-        w.put_resource_id(prop.word as usize, rid);
+        if !w.put_resource_id::<R>(prop.word as usize, rid) {
+            return false;
+        }
         if prop.explicit_bit != u8::MAX {
             w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
         }
+        true
     }
 
-    /// Applies every table operation in `patch` onto live node `id`, attaching touched tables on
-    /// demand and validating string/resource word invariants against each table's descriptor.
+    /// Applies every valid table operation in `patch` onto live node `id`, attaching a touched
+    /// table only when at least one op passes word, liveness, and resource-kind checks.
     pub fn apply_row_patch(&mut self, id: NodeId, patch: RowPatchView<'_>) {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
         for table in patch.tables() {
             let Some(slot) = crate::table::slot_of(table.key()) else {
                 continue;
             };
+            let desc = crate::table::desc(slot);
+            let words_len = desc.words();
+            let str_mask = desc.str_words | (desc.str_words << 1);
+            let res_mask = desc.resource_words;
+            let has_valid = table.ops().any(|op| {
+                let wi = op.word() as usize;
+                let bit = 1u32 << (wi & 31);
+                if wi >= words_len || (str_mask & bit) != 0 || op.is_resource() != ((res_mask & bit) != 0) {
+                    return false;
+                }
+                if !op.is_resource() {
+                    return true;
+                }
+                let rid = ResourceId(op.set_bits());
+                rid.is_none()
+                    || desc
+                        .resource_kind(wi)
+                        .is_some_and(|k| self.store.resources.is_live_with_kind(rid, k))
+            });
+            if !has_valid {
+                continue;
+            }
             let mut w = writer_at(self.store, id.node_index(), slot);
-            let words_len = w.desc.words();
-            let str_mask = w.desc.str_words() | (w.desc.str_words() << 1);
-            let res_mask = w.desc.resource_words();
-            let inherited = w.desc.inherited();
+            let inherited = desc.inherited;
             for op in table.ops() {
                 let wi = op.word() as usize;
-                if wi >= words_len {
+                let bit = 1u32 << (wi & 31);
+                if wi >= words_len || (str_mask & bit) != 0 || op.is_resource() != ((res_mask & bit) != 0) {
                     continue;
                 }
-                let bit = 1u32 << wi;
-                if (str_mask & bit) != 0 {
-                    continue;
-                }
-                let is_res = (res_mask & bit) != 0;
-                if op.is_resource() != is_res {
-                    continue;
-                }
-                if is_res {
+                if op.is_resource() {
                     let rid = ResourceId(op.set_bits());
-                    if rid.is_none() || w.resources.is_defined(rid) {
-                        w.put_resource_id(wi, rid);
+                    if rid.is_none()
+                        || desc
+                            .resource_kind(wi)
+                            .is_some_and(|k| w.resources.is_live_with_kind(rid, k))
+                    {
+                        w.put_resource_id_wire(wi, rid);
                     }
                 } else if wi == 0 && inherited {
                     let merged = op.clear_mask().apply(w.words()[0], op.set_bits());

@@ -1,5 +1,5 @@
 //! Deep unit & edge-case tests for `Transform2D`, `LayoutExt`, CSS Grid tracks/placement,
-//! RTL logical inline edges, `compute_sticky_offset`, and extended `StylePatch`.
+//! RTL logical inline edges, `compute_sticky_offset`, and table-generic `RowPatch` overlays.
 
 use nve_abi::{Dimension, EdgeInsets};
 use nve_components::layout_ext::{

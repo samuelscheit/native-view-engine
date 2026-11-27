@@ -225,7 +225,7 @@ impl Transform2D {
     /// Appends canonical, injection-free CSS `transform:` (and optional `transform-origin:`)
     /// declarations into `out`.
     ///
-    /// When `emit_identity_as_none` is `true` (used by sparse `StylePatch` overrides), an identity
+    /// When `emit_identity_as_none` is `true` (used by sparse `RowPatch` overrides), an identity
     /// transform emits `transform:none;` so it cleanly resets a base transform.
     pub fn write_css_decls_into(&self, emit_identity_as_none: bool, out: &mut String) {
         let tx = sanitize(self.translate_x, 0.0);

@@ -21,7 +21,7 @@ pub use encode::WireEncoder;
 
 /// `"NVE2"` little-endian.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"NVE2");
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 /// Header size in words.
 pub const HEADER_WORDS: usize = 6;
 
@@ -79,7 +79,7 @@ pub enum WireError {
     InvalidChildren,
     BadMask { mask: u32, words: u32 },
     InvalidUtf8,
-    /// Resource kind has no registered codec, or its bytes failed to decode.
+    /// Resource definition failed validation (bounds, alignment, flags, missing child, or cycle).
     Resource { id: u32, kind: u64 },
 }
 

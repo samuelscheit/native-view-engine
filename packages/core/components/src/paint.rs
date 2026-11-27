@@ -182,7 +182,7 @@ impl BackgroundFill {
 
     /// Writes the full CSS declaration(s) for this background fill into `out`.
     ///
-    /// When `clear_image_on_solid` is `true` (used inside `StylePatch` overrides for `@media`
+    /// When `clear_image_on_solid` is `true` (used inside `RowPatch` overrides for `@media`
     /// and `:hover`/`:active`), `Solid` emits `background-image:none;background-color:<c>;` so
     /// it cleanly replaces an inherited/base gradient.
     pub fn write_css_decl_into(&self, clear_image_on_solid: bool, out: &mut String) {

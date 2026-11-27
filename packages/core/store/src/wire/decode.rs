@@ -25,6 +25,8 @@ pub struct WireDecoder {
     dynamic_exhausted: bool,
     kids_scratch: Vec<NodeId>,
     res_children_scratch: Vec<ResourceId>,
+    res_base_slots: Option<usize>,
+    res_defined_total: usize,
 }
 
 impl Default for WireDecoder {
@@ -36,6 +38,8 @@ impl Default for WireDecoder {
             dynamic_exhausted: false,
             kids_scratch: Vec::new(),
             res_children_scratch: Vec::new(),
+            res_base_slots: None,
+            res_defined_total: 0,
         }
     }
 }
@@ -83,6 +87,8 @@ impl WireDecoder {
         self.dynamic_exhausted = false;
         self.kids_scratch.clear();
         self.res_children_scratch.clear();
+        self.res_base_slots = None;
+        self.res_defined_total = 0;
     }
 
     fn slot_layout(store: &NodeStore, slot: TableSlot) -> Option<(usize, u32, u32)> {
@@ -139,12 +145,15 @@ impl WireDecoder {
             .saturating_add(bytes.len() / 4)
             .saturating_add(1024)
             .min(NodeId::MAX_INDEX as usize);
-        let max_resource_id = tx
-            .store()
-            .resources
-            .slots()
+        let base_res_slots = *self
+            .res_base_slots
+            .get_or_insert_with(|| tx.store().resources.slots());
+        let max_resource_slot = base_res_slots
+            .saturating_add(1024)
+            .saturating_add(self.res_defined_total)
             .saturating_add(bytes.len() / 24)
-            .saturating_add(1024);
+            .min(ResourceId::MAX_INDEX as usize);
+        let mut cycle_budget = (bytes.len() / 4).max(1024).saturating_mul(8);
         let mut r = R {
             b: bytes,
             at: HEADER_WORDS * 4,
@@ -172,7 +181,8 @@ impl WireDecoder {
                 count,
                 &mut body_r,
                 max_node_index,
-                max_resource_id,
+                max_resource_slot,
+                &mut cycle_budget,
             )?;
             if body_r.at != body.len() {
                 return Err(WireError::TrailingBytes);
@@ -193,7 +203,8 @@ impl WireDecoder {
         count: u32,
         r: &mut R<'_>,
         max_node_index: usize,
-        max_resource_id: usize,
+        max_resource_slot: usize,
+        cycle_budget: &mut usize,
     ) -> Result<(), WireError> {
         match op {
             Op::DeclareTables => {
@@ -223,7 +234,8 @@ impl WireDecoder {
                 }
                 for _ in 0..count {
                     let id = r.u32()?;
-                    if id as usize >= max_resource_id {
+                    let rid = ResourceId(id);
+                    if rid.index() == 0 || rid.index() >= max_resource_slot {
                         return Err(WireError::Resource { id, kind: 0 });
                     }
                     let kind = Key64::from_halves(r.u32()?, r.u32()?);
@@ -245,15 +257,17 @@ impl WireDecoder {
                         return Err(WireError::Resource { id, kind: kind.0 });
                     }
                     let blob = r.bytes(len)?;
-                    if !tx.store_mut().resources.define_at(
-                        ResourceId(id),
+                    if !tx.store_mut().resources.define_at_with_budget(
+                        rid,
                         kind,
                         ephemeral,
                         &self.res_children_scratch,
                         blob,
+                        cycle_budget,
                     ) {
                         return Err(WireError::Resource { id, kind: kind.0 });
                     }
+                    self.res_defined_total = self.res_defined_total.saturating_add(1);
                 }
             }
             Op::Patch => {
@@ -280,11 +294,16 @@ impl WireDecoder {
                         bits &= bits - 1;
                         vals[i] = r.u32()?;
                         let res = ResourceId(vals[i]);
-                        if resource_words & (1 << i) != 0
-                            && !res.is_none()
-                            && !tx.store().resources.is_defined(res)
-                        {
-                            return Err(WireError::Resource { id: res.0, kind: 0 });
+                        if resource_words & (1 << i) != 0 && !res.is_none() {
+                            if let Some(expected) =
+                                tx.store().table_meta(slot).and_then(|m| m.resource_kind(i))
+                            {
+                                if tx.store().resources.kind(res) != Some(expected) {
+                                    return Err(WireError::Resource { id: res.0, kind: expected.0 });
+                                }
+                            } else if !tx.store().resources.is_defined(res) {
+                                return Err(WireError::Resource { id: res.0, kind: 0 });
+                            }
                         }
                     }
                     let mut w = tx.writer(id, slot);
@@ -293,7 +312,7 @@ impl WireDecoder {
                         let i = bits.trailing_zeros() as usize;
                         bits &= bits - 1;
                         if resource_words & (1 << i) != 0 {
-                            w.put_resource_id(i, ResourceId(vals[i]));
+                            w.put_resource_id_wire(i, ResourceId(vals[i]));
                         } else if i == 0 && w.desc.inherited() {
                             w.put_explicit_word(vals[0]);
                         } else {

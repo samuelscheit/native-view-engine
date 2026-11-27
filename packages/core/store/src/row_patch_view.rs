@@ -6,6 +6,7 @@ use nve_abi::Key64;
 
 use crate::id::ResourceId;
 use crate::resource::FlatResource;
+use crate::resource_ingress::ValidatedWords;
 use crate::table::{NveTable, Prop, ResProp, ScalarField};
 
 use super::{RowPatch, WordMask, WordOp, WordOpKind, MAX_PATCH_TABLES, WORD_OP_RESOURCE};
@@ -17,6 +18,13 @@ pub struct RowPatchView<'a>(&'a [u32]);
 impl<'a> RowPatchView<'a> {
     pub const EMPTY: Self = Self(&[0]);
 
+    /// Validates `words` via [`RowPatch::validate`] and returns a zero-copy view on success.
+    #[inline]
+    pub fn from_words(words: &'a [u32]) -> Option<Self> {
+        RowPatch::validate(words).then_some(Self(words))
+    }
+
+    #[doc(hidden)]
     #[inline(always)]
     pub const fn from_validated_words(words: &'a [u32]) -> Self {
         Self(words)
@@ -214,13 +222,18 @@ impl Iterator for WordOpsIter<'_> {
         let clear_mask = WordMask(*self.words.get(self.pos + 1)?);
         let set_bits = *self.words.get(self.pos + 2)?;
         self.pos += 3;
-        let kind = if (wf >> 16) as u16 == WORD_OP_RESOURCE {
+        let word = wf & 0xFFFF;
+        let flags = (wf >> 16) as u16;
+        if word as usize >= MAX_TABLE_WORDS || flags > WORD_OP_RESOURCE {
+            return None;
+        }
+        let kind = if flags == WORD_OP_RESOURCE {
             WordOpKind::Resource
         } else {
             WordOpKind::Scalar
         };
         Some(WordOp::from_validated_raw(
-            (wf & 0xFFFF) as u8,
+            word as u8,
             kind,
             clear_mask,
             set_bits,
@@ -376,8 +389,8 @@ impl FlatResource for RowPatch {
     }
 
     #[inline(always)]
-    fn view<'a>(words: &'a [u32]) -> Self::View<'a> {
-        RowPatchView(words)
+    fn view<'a>(words: ValidatedWords<'a, Self>) -> Self::View<'a> {
+        RowPatchView(words.as_slice())
     }
 
     fn child_resources(words: &[u32], visit: &mut dyn FnMut(ResourceId)) {

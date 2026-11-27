@@ -1201,3 +1201,117 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
     assert!(assertive_tag.contains("role=\"alert\""));
     assert!(assertive_tag.contains("aria-live=\"assertive\""));
 }
+
+#[test]
+fn patch_css_emits_single_side_padding_margin_logical_combo_overflow_axes_and_nested_wire_resources() {
+    use nve_components::interaction::{InteractionState, StateStyleRule};
+    use nve_components::layout_ext::GridTrack;
+    use nve_components::media::{MediaQuery, ResponsiveRule};
+    use nve_components::paint::{BackgroundFill, GradientStop};
+    use nve_components::tables::{
+        BackgroundFillRes, GridLayout, GridTracks, Interaction, Layout, Overflow, Responsive,
+        ResponsiveRules, StateRules, Visual,
+    };
+    use nve_store::wire::{WireDecoder, WireEncoder};
+    use nve_store::{Length, NodeStore};
+
+    // 1. Single-side padding & margin are emitted (never silently dropped).
+    let mut single_side = RowPatch::new();
+    single_side
+        .set(Layout::PADDING_TOP, Length::points(12.0))
+        .set(Layout::MARGIN_LEFT, Length::points(-4.0));
+    let mut css = String::new();
+    crate::patch_css::write_row_patch_decls(&single_side, None, &mut css);
+    assert!(css.contains("padding-top:12px;"), "got: {css}");
+    assert!(css.contains("margin-left:-4px;"), "got: {css}");
+
+    // 2. Combining `.padding(8.0).padding_inline_start(16.0)` preserves top/bottom + logical inline.
+    let combo = RowPatch::new()
+        .padding(8.0)
+        .padding_inline_start(16.0)
+        .margin(6.0)
+        .margin_inline_end(10.0);
+    css.clear();
+    crate::patch_css::write_row_patch_decls(&combo, None, &mut css);
+    assert!(css.contains("padding-top:8px;"), "got: {css}");
+    assert!(css.contains("padding-bottom:8px;"), "got: {css}");
+    assert!(css.contains("padding-inline-start:16px;"), "got: {css}");
+    assert!(css.contains("margin-top:6px;"), "got: {css}");
+    assert!(css.contains("margin-bottom:6px;"), "got: {css}");
+    assert!(css.contains("margin-inline-end:10px;"), "got: {css}");
+
+    // 3. Overflow X/Y distinct, single-axis Y, and equal shorthand.
+    let mut ov_xy = RowPatch::new();
+    ov_xy
+        .set(Visual::OVERFLOW_X, Overflow::Hidden)
+        .set(Visual::OVERFLOW_Y, Overflow::Auto);
+    css.clear();
+    crate::patch_css::write_row_patch_decls(&ov_xy, None, &mut css);
+    assert!(css.contains("overflow-x:hidden;overflow-y:auto;"), "got: {css}");
+
+    let mut ov_y_only = RowPatch::new();
+    ov_y_only.set(Visual::OVERFLOW_Y, Overflow::Scroll);
+    css.clear();
+    crate::patch_css::write_row_patch_decls(&ov_y_only, None, &mut css);
+    assert!(css.contains("overflow-y:scroll;"), "got: {css}");
+    assert!(!css.contains("overflow-x:"), "got: {css}");
+
+    // 4. Nested `BackgroundFillRes` inside `StateRules` + nested `GridTracks` inside `ResponsiveRules`
+    //    round-tripped over `NVE2` wire into a replica `WebBackend` SSR stylesheet!
+    let mut prod = NodeStore::new();
+    let mut prod_changes = ChangeSet::default();
+    let node = {
+        let mut tx = prod.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.with_temp_resources(|scope| {
+            let grad_id = scope.intern(&BackgroundFillRes(BackgroundFill::linear(
+                45.0,
+                vec![
+                    GradientStop::new(0.0, ColorRgba::rgb(255, 0, 0)),
+                    GradientStop::new(1.0, ColorRgba::rgb(0, 0, 255)),
+                ],
+            )));
+            let tracks_id = scope.intern(&GridTracks::new(vec![
+                GridTrack::Fr(1.0),
+                GridTrack::Px(240.0),
+            ]));
+            let hover_patch = RowPatch::new().background_fill_id(grad_id);
+            let media_patch = RowPatch::new().with_res_id(GridLayout::TEMPLATE_COLUMNS, tracks_id);
+            scope.tx().edit::<Interaction>(n).state_rules(Some(StateRules::new(vec![
+                StateStyleRule::new(InteractionState::HOVER, hover_patch),
+            ])));
+            scope.tx().edit::<Responsive>(n).rules(Some(ResponsiveRules::new(vec![
+                ResponsiveRule {
+                    query: MediaQuery::min_width(900),
+                    patch: media_patch,
+                },
+            ])));
+        });
+        tx.commit_into(&mut prod_changes);
+        n
+    };
+    let mut wire = Vec::new();
+    WireEncoder::default().encode(&prod, &prod_changes, &mut wire);
+
+    let mut replica = NodeStore::replica();
+    let mut rep_changes = ChangeSet::default();
+    {
+        let mut rtx = replica.tx();
+        WireDecoder::default().apply(&mut rtx, &wire).unwrap();
+        rtx.commit_into(&mut rep_changes);
+    }
+    let mut web = WebBackend::new();
+    web.commit(&replica, &rep_changes).unwrap();
+    let _html = web.render_html(&replica);
+    let (css_out, _) = web.stylesheet().serialize_css();
+    assert!(
+        css_out.contains("linear-gradient(45deg"),
+        "wire replica Web CSS must emit nested StateRules gradient: {css_out}"
+    );
+    assert!(
+        css_out.contains("grid-template-columns:1fr 240px;"),
+        "wire replica Web CSS must emit nested ResponsiveRules GridTracks: {css_out}"
+    );
+    let _ = node;
+}

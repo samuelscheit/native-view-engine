@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use nve_abi::Key64;
-use nve_store::FlatResource;
+use nve_store::{FlatResource, ValidatedWords};
 
 use crate::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
 
@@ -265,7 +265,7 @@ impl FlatResource for GridTracks {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> GridTracksView<'_> {
-        GridTracksView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> GridTracksView<'_> {
+        GridTracksView(words.as_slice())
     }
 }

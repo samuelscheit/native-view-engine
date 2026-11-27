@@ -55,7 +55,7 @@ use crate::NodeId;
 ///
 /// Valid resource field via `Res<R>` (positive control):
 /// ```
-/// use nve_store::{FlatResource, NveTable, Res};
+/// use nve_store::{FlatResource, NveTable, Res, ValidatedWords};
 /// use nve_abi::Key64;
 /// struct Blob(Vec<u32>);
 /// impl FlatResource for Blob {
@@ -63,7 +63,7 @@ use crate::NodeId;
 ///     type View<'a> = &'a [u32];
 ///     fn write_words(&self, out: &mut Vec<u32>) -> bool { out.extend_from_slice(&self.0); true }
 ///     fn validate(_words: &[u32]) -> bool { true }
-///     fn view(words: &[u32]) -> &[u32] { words }
+///     fn view(words: ValidatedWords<'_, Self>) -> &[u32] { words.as_slice() }
 /// }
 /// #[derive(NveTable)]
 /// #[nve_table(name = "doctest.res_ok", storage = "sparse")]

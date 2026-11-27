@@ -40,9 +40,9 @@ impl FlatResource for EphemeralBlob {
         let mut pos = 0;
         validate_bytes_words(words, &mut pos, 64 * 1024) && pos == words.len()
     }
-    fn view(words: &[u32]) -> &[u8] {
+    fn view(words: nve_store::ValidatedWords<'_, Self>) -> &[u8] {
         let mut pos = 0;
-        read_bytes_words(words, &mut pos).unwrap_or(&[])
+        read_bytes_words(words.as_slice(), &mut pos).unwrap_or(&[])
     }
 }
 
@@ -60,9 +60,9 @@ impl FlatResource for DedupBlob {
         let mut pos = 0;
         validate_bytes_words(words, &mut pos, 64 * 1024) && pos == words.len()
     }
-    fn view(words: &[u32]) -> &[u8] {
+    fn view(words: nve_store::ValidatedWords<'_, Self>) -> &[u8] {
         let mut pos = 0;
-        read_bytes_words(words, &mut pos).unwrap_or(&[])
+        read_bytes_words(words.as_slice(), &mut pos).unwrap_or(&[])
     }
 }
 

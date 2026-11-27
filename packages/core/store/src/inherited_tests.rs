@@ -29,7 +29,7 @@ impl FlatResource for TestBlob {
     fn validate(words: &[u32]) -> bool {
         words.len() == 1
     }
-    fn view(words: &[u32]) -> u32 {
+    fn view(words: crate::ValidatedWords<'_, Self>) -> u32 {
         words[0]
     }
 }

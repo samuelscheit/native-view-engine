@@ -170,7 +170,7 @@ impl StateStyleRule {
 /// Visits every matching [`RowPatchView`] in `rules` in deterministic cascade order
 /// (`Hover < Focus < FocusVisible < Active < Disabled`, preserving declaration order for ties)
 /// with zero heap allocations for up to 16 matching rules.
-fn visit_view_rules_in_cascade<'a>(
+pub fn visit_state_rules_in_cascade<'a>(
     rules: StateRulesView<'a>,
     state: InteractionState,
     mut f: impl FnMut(RowPatchView<'a>),
@@ -276,7 +276,7 @@ pub fn resolve_patch(rules: &[StateStyleRule], state: InteractionState) -> RowPa
 /// Merges all matching rules from a zero-copy [`StateRulesView`] in deterministic cascade order.
 pub fn resolve_patch_from_view(rules: StateRulesView<'_>, state: InteractionState) -> RowPatch {
     let mut merged = RowPatch::new();
-    visit_view_rules_in_cascade(rules, state, |patch| merged.merge_view(patch));
+    visit_state_rules_in_cascade(rules, state, |patch| merged.merge_view(patch));
     merged
 }
 
@@ -303,7 +303,7 @@ pub fn resolve_style_from_view(
     state: InteractionState,
 ) -> VisualSnapshot {
     let mut resolved = *base;
-    visit_view_rules_in_cascade(rules, state, |patch| {
+    visit_state_rules_in_cascade(rules, state, |patch| {
         apply_patch_view_to_visual(patch, &mut resolved);
     });
     resolved
@@ -337,7 +337,7 @@ pub fn resolve_layout_and_style_from_view(
 ) -> (LayoutSnapshot, VisualSnapshot) {
     let mut layout = *base_layout;
     let mut style = *base_style;
-    visit_view_rules_in_cascade(rules, state, |patch| {
+    visit_state_rules_in_cascade(rules, state, |patch| {
         apply_patch_view_to_layout(patch, &mut layout);
         apply_patch_view_to_visual(patch, &mut style);
     });
@@ -363,7 +363,7 @@ pub fn resolve_cursor_from_view(
     state: InteractionState,
 ) -> CursorKind {
     let mut resolved = base;
-    visit_view_rules_in_cascade(rules, state, |patch| {
+    visit_state_rules_in_cascade(rules, state, |patch| {
         if let Some(c) = patch.get_prop(Interaction::CURSOR) {
             resolved = c;
         }

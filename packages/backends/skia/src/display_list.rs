@@ -12,7 +12,7 @@ use nve_components::tables::{
     Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
 };
 use nve_engine::{LayoutRect, StoreLayoutEngine};
-use nve_store::{NodeStore, ResolvedRow, Rgba};
+use nve_store::{NodeStore, ResolvedRow, ResourceId, Rgba};
 
 use crate::motion::MotionDriver;
 use crate::scroll::compute_scroll_content_size;
@@ -183,8 +183,28 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     if !store.is_live(id) || nve_components::tables::is_hidden_text_input(store, id) {
         return;
     }
-    let patch = layout_tree.effective_patch(store, id);
-    let patched_display = patch.get_prop(Layout::DISPLAY);
+    let mut patched_display: Option<Display> = None;
+    let mut patched_bg_fill: Option<ResourceId> = None;
+    let mut color_override = false;
+    let mut font_size_override = false;
+    layout_tree.visit_effective_state_patches(store, id, |pv| {
+        if let Some(d) = pv.get_prop(Layout::DISPLAY) {
+            patched_display = Some(d);
+        }
+        if let Some(rid) = pv.get_res_id(Visual::BACKGROUND_FILL) {
+            patched_bg_fill = Some(rid);
+        } else if pv.get_prop(Visual::BACKGROUND).is_some() {
+            // Solid `bg(...)` override clears any base gradient unless a higher-priority rule
+            // explicitly sets a non-none `BACKGROUND_FILL`.
+            patched_bg_fill = Some(ResourceId::NONE);
+        }
+        if pv.get_prop(Typography::COLOR).is_some() {
+            color_override = true;
+        }
+        if pv.get_prop(Typography::FONT_SIZE).is_some() {
+            font_size_override = true;
+        }
+    });
     if patched_display == Some(Display::None)
         || (patched_display.is_none()
             && store
@@ -267,11 +287,13 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     // 2. Background gradient or solid fill
     if !effective_hidden && in_clip {
         let mut painted_gradient = false;
-        let fill_res = patch
-            .get_res_id(Visual::BACKGROUND_FILL)
-            .filter(|rid| !rid.is_none())
-            .or_else(|| store.try_row::<Visual>(id).map(|v| v.background_fill()))
-            .filter(|rid| !rid.is_none());
+        let fill_res = match patched_bg_fill {
+            Some(rid) => (!rid.is_none()).then_some(rid),
+            None => store
+                .try_row::<Visual>(id)
+                .map(|v| v.background_fill())
+                .filter(|rid| !rid.is_none()),
+        };
         if let Some(fill_res) = fill_res
             && let Some(fill) = store.resource::<BackgroundFillRes>(fill_res)
         {
@@ -307,13 +329,12 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     let typo = resolved_typo.get();
     let effective_weight = typo.font_weight();
     let effective_align = map_text_align(typo.text_align());
-    let color_override = patch.get_prop(Typography::COLOR).is_some() || motion.has_active_color(id);
+    let color_override = color_override || motion.has_active_color(id);
     let effective_color = if color_override {
         style.text_color
     } else {
         ColorRgba::from_u32(typo.color().0)
     };
-    let font_size_override = patch.get_prop(Typography::FONT_SIZE).is_some();
     let effective_font_size = if font_size_override {
         style.font_size
     } else {

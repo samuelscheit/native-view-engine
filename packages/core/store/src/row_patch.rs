@@ -50,7 +50,7 @@ impl WordMask {
 
     #[inline(always)]
     pub const fn apply(self, current: Word, set_bits: Word) -> Word {
-        (current & !self.0) | set_bits
+        (current & !self.0) | (set_bits & self.0)
     }
 }
 
@@ -204,10 +204,8 @@ impl RowPatch {
         let t_idx = match self.tables.binary_search_by_key(&key.0, |t| t.key.0) {
             Ok(i) => i,
             Err(i) => {
-                assert!(
-                    self.tables.len() < MAX_PATCH_TABLES,
-                    "RowPatch exceeds MAX_PATCH_TABLES ({MAX_PATCH_TABLES})"
-                );
+                // Allow unbounded in-memory table merges (e.g. combining multiple valid wire
+                // `StateRules`); `write_words` enforces `<= MAX_PATCH_TABLES` fallibly on encode.
                 self.tables.insert(
                     i,
                     TablePatch {

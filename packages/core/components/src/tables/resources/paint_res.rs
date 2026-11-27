@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use nve_abi::{ColorRgba, Key64};
-use nve_store::{FlatResource, Rgba};
+use nve_store::{FlatResource, Rgba, ValidatedWords};
 
 use crate::motion::{EasingCurve, TransitionProperty, TransitionSpec};
 use crate::paint::{
@@ -150,8 +150,8 @@ impl FlatResource for BoxShadows {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> BoxShadowsView<'_> {
-        BoxShadowsView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> BoxShadowsView<'_> {
+        BoxShadowsView(words.as_slice())
     }
 }
 
@@ -368,20 +368,21 @@ impl FlatResource for BackgroundFillRes {
     }
 
     #[inline]
-    fn view(words: &[u32]) -> BackgroundFillView<'_> {
-        match words.first().copied() {
+    fn view(words: ValidatedWords<'_, Self>) -> BackgroundFillView<'_> {
+        let slice = words.as_slice();
+        match slice.first().copied() {
             Some(0) => BackgroundFillView::Solid(ColorRgba::from_u32(
-                words.get(1).copied().unwrap_or(0),
+                slice.get(1).copied().unwrap_or(0),
             )),
             Some(1) => BackgroundFillView::Linear {
-                angle_deg: f32::from_bits(words.get(1).copied().unwrap_or(180.0f32.to_bits())),
-                stops: GradientStopsView(words.get(3..).unwrap_or(&[])),
+                angle_deg: f32::from_bits(slice.get(1).copied().unwrap_or(180.0f32.to_bits())),
+                stops: GradientStopsView(slice.get(3..).unwrap_or(&[])),
             },
             Some(2) => BackgroundFillView::Radial {
-                center_x: f32::from_bits(words.get(1).copied().unwrap_or(0.5f32.to_bits())),
-                center_y: f32::from_bits(words.get(2).copied().unwrap_or(0.5f32.to_bits())),
-                radius: f32::from_bits(words.get(3).copied().unwrap_or(1.0f32.to_bits())),
-                stops: GradientStopsView(words.get(5..).unwrap_or(&[])),
+                center_x: f32::from_bits(slice.get(1).copied().unwrap_or(0.5f32.to_bits())),
+                center_y: f32::from_bits(slice.get(2).copied().unwrap_or(0.5f32.to_bits())),
+                radius: f32::from_bits(slice.get(3).copied().unwrap_or(1.0f32.to_bits())),
+                stops: GradientStopsView(slice.get(5..).unwrap_or(&[])),
             },
             _ => BackgroundFillView::Solid(ColorRgba::TRANSPARENT),
         }
@@ -572,7 +573,7 @@ impl FlatResource for Transitions {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> TransitionsView<'_> {
-        TransitionsView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> TransitionsView<'_> {
+        TransitionsView(words.as_slice())
     }
 }

@@ -33,8 +33,8 @@ pub use input_hints::{AutofillHint, InputMode};
 pub use interaction::{
     resolve_cursor, resolve_cursor_from_view, resolve_layout_and_style,
     resolve_layout_and_style_from_view, resolve_patch, resolve_patch_from_view, resolve_style,
-    resolve_style_from_view, CursorKind, FocusModality, InteractionState, InteractionTracker,
-    StateStyleRule,
+    resolve_style_from_view, visit_state_rules_in_cascade, CursorKind, FocusModality,
+    InteractionState, InteractionTracker, StateStyleRule,
 };
 pub use keyboard::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,

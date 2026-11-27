@@ -36,13 +36,19 @@ pub struct Canvas {
 mod tests {
     use super::*;
     use nve_abi::ColorRgba;
-    use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore};
+    use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore, ValidatedWords};
 
     #[test]
     fn canvas_table_and_ephemeral_draw_list_work() {
         let mut rec = DrawListRecorder::new();
         rec.clear(ColorRgba::BLACK)
-            .fill_rect(0.0, 0.0, 100.0, 50.0, ColorRgba::WHITE);
+            .fill_rect(0.0, 0.0, 100.0, 50.0, ColorRgba::WHITE)
+            .fill_rounded_rect(4.0, 5.0, 20.0, 10.0, 3.0, ColorRgba::rgb(1, 2, 3))
+            .fill_circle(12.0, 14.0, 6.0, ColorRgba::rgb(4, 5, 6))
+            .stroke_line(0.0, 0.0, 10.0, 10.0, 2.0, ColorRgba::rgb(7, 8, 9))
+            .stroke_polyline(&[(0.0, 0.0), (5.0, 10.0), (10.0, 2.0)], 1.5, ColorRgba::rgb(9, 8, 7))
+            .clip_rect(0.0, 0.0, 50.0, 50.0)
+            .restore_clip();
         let dl = rec.finish();
 
         let mut store = NodeStore::new();
@@ -58,13 +64,35 @@ mod tests {
         let row = store.try_row::<Canvas>(n).unwrap();
         assert_eq!(row.generation(), 1);
         let got = store.resource::<DrawList>(row.draw_list()).unwrap();
-        assert_eq!(got.len(), 2);
-        assert_eq!(got.ops().count(), 2);
+        assert_eq!(got.len(), dl.ops().len());
 
         let mut words = Vec::new();
         assert!(dl.write_words(&mut words));
-        assert!(DrawList::validate(&words));
-        assert_eq!(DrawList::view(&words).len(), 2);
+        let vw = ValidatedWords::<DrawList>::try_new(&words).expect("valid DrawList");
+        let view = DrawList::view(vw);
+        let mut rebuilt = DrawListRecorder::new();
+        for op in view.ops() {
+            match op {
+                CanvasOpRef::Clear { color } => { rebuilt.clear(color); }
+                CanvasOpRef::FillRect { x, y, w, h, color } => { rebuilt.fill_rect(x, y, w, h, color); }
+                CanvasOpRef::FillRoundedRect { x, y, w, h, radius, color } => {
+                    rebuilt.fill_rounded_rect(x, y, w, h, radius, color);
+                }
+                CanvasOpRef::FillCircle { cx, cy, radius, color } => {
+                    rebuilt.fill_circle(cx, cy, radius, color);
+                }
+                CanvasOpRef::StrokeLine { x0, y0, x1, y1, width, color } => {
+                    rebuilt.stroke_line(x0, y0, x1, y1, width, color);
+                }
+                CanvasOpRef::StrokePolyline { points, width, color } => {
+                    let pts: Vec<(f32, f32)> = points.iter().collect();
+                    rebuilt.stroke_polyline(&pts, width, color);
+                }
+                CanvasOpRef::ClipRect { x, y, w, h } => { rebuilt.clip_rect(x, y, w, h); }
+                CanvasOpRef::RestoreClip => { rebuilt.restore_clip(); }
+            }
+        }
+        assert_eq!(rebuilt.finish(), dl);
         assert!(!DrawList::validate(&[]));
         assert!(!DrawList::validate(&[0x7FFF_FFFF]));
     }

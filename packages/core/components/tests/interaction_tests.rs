@@ -1,4 +1,4 @@
-//! Deep unit & edge-case tests for `nve_components::interaction` and unified `StylePatch`.
+//! Deep unit & edge-case tests for `nve_components::interaction` and table-generic `RowPatch`.
 
 use std::mem::{align_of, size_of};
 

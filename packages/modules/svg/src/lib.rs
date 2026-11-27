@@ -17,10 +17,7 @@ pub use picture::{
     VectorPathCmd, VectorShape, MAX_SVG_PATH_COMMANDS, MAX_SVG_PATH_INPUT_BYTES,
 };
 
-use std::sync::Arc;
-
 pub use nve_abi::ColorRgba;
-use nve_codec::{ByteReader, ByteWriter, CodecError, NveDecode, NveEncode};
 use nve_store::{NveTable, Res, Rgba};
 
 /// Vector SVG node table (`nve.svg`).
@@ -40,63 +37,13 @@ pub struct Svg {
 pub const MAX_SVG_SHAPES: usize = 4096;
 pub const MAX_SVG_CMDS: usize = 65536;
 
-/// Fallibly encodes an [`SvgPicture`] enforcing the exact decoder limits (`MAX_SVG_SHAPES` and
-/// `MAX_SVG_CMDS`) at encode time.
-pub fn encode_svg_picture(pic: &SvgPicture, w: &mut ByteWriter) -> Result<(), CodecError> {
-    w.write_f32(pic.view_box.0);
-    w.write_f32(pic.view_box.1);
-    w.write_f32(pic.view_box.2);
-    w.write_f32(pic.view_box.3);
-    w.write_len_max(pic.shapes.len(), MAX_SVG_SHAPES)?;
-    for shape in pic.shapes.iter() {
-        w.write_opt(shape.fill, |w, c| {
-            w.write_u32(c.to_u32());
-            Ok(())
-        })?;
-        w.write_opt(shape.stroke, |w, c| {
-            w.write_u32(c.to_u32());
-            Ok(())
-        })?;
-        w.write_f32(shape.stroke_width);
-        shape.fill_rule.encode(w)?;
-        w.write_len_max(shape.path.len(), MAX_SVG_CMDS)?;
-        for cmd in shape.path.iter() {
-            cmd.encode(w)?;
-        }
-    }
-    Ok(())
-}
-
-/// Decodes an [`SvgPicture`] with full bounds, tag, and trailing-byte validation.
-pub fn decode_svg_picture(bytes: &[u8]) -> Result<SvgPicture, CodecError> {
-    let mut r = ByteReader::new(bytes);
-    let vb = (r.read_f32()?, r.read_f32()?, r.read_f32()?, r.read_f32()?);
-    let shapes = r.read_vec(MAX_SVG_SHAPES, 11, |r| {
-        let fill = r.read_opt(|r| Ok(ColorRgba::from_u32(r.read_u32()?)))?;
-        let stroke = r.read_opt(|r| Ok(ColorRgba::from_u32(r.read_u32()?)))?;
-        let stroke_width = r.read_f32()?;
-        let fill_rule = FillRule::decode(r)?;
-        let path = r.read_vec(
-            MAX_SVG_CMDS,
-            VectorPathCmd::MIN_ENCODED_BYTES,
-            VectorPathCmd::decode,
-        )?;
-        Ok(VectorShape {
-            path: Arc::from(path),
-            fill,
-            stroke,
-            stroke_width,
-            fill_rule,
-        })
-    })?;
-    r.finish()?;
-    Ok(SvgPicture::new(vb, shapes))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore};
+    use nve_store::wire::{WireDecoder, WireEncoder};
+    use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore, ValidatedWords};
 
     #[test]
     fn svg_table_and_picture_resource_roundtrip() {
@@ -119,17 +66,18 @@ mod tests {
         assert_eq!(got.content_hash(), pic.content_hash);
         assert_eq!(got.view_box(), pic.view_box);
         assert_eq!(got.shape_count(), 1);
+        assert_eq!(got.to_owned(), pic);
 
         let mut words = Vec::new();
         assert!(pic.write_words(&mut words));
-        assert!(SvgPicture::validate(&words));
-        assert_eq!(SvgPicture::view(&words).content_hash(), pic.content_hash);
+        let vw = ValidatedWords::<SvgPicture>::try_new(&words).expect("valid flat SvgPicture");
+        assert_eq!(SvgPicture::view(vw).to_owned(), pic);
         assert!(!SvgPicture::validate(&[]));
         assert!(!SvgPicture::validate(&[0, 0, 0, 0, 0, 0, 99999]));
     }
 
     #[test]
-    fn svg_codec_roundtrips_all_variants_and_enforces_caps_and_adversarial_guards() {
+    fn svg_flat_resource_roundtrips_all_variants_rejects_spoofed_hash_and_caps() {
         let rich = SvgPicture::new(
             (1.0, 2.0, 64.0, 48.0),
             vec![
@@ -156,83 +104,92 @@ mod tests {
             ],
         );
 
-        let mut w = ByteWriter::new();
-        encode_svg_picture(&rich, &mut w).unwrap();
-        let bytes = w.into_bytes();
-        let decoded = decode_svg_picture(&bytes).unwrap();
-        assert_eq!(decoded, rich);
+        let mut words = Vec::new();
+        assert!(rich.write_words(&mut words));
+        let vw = ValidatedWords::<SvgPicture>::try_new(&words).expect("valid rich SvgPicture");
+        assert_eq!(SvgPicture::view(vw).to_owned(), rich);
 
-        // Per-byte truncation across entire buffer must fail cleanly.
-        for cut in 0..bytes.len() {
-            assert!(
-                matches!(decode_svg_picture(&bytes[..cut]), Err(CodecError::Truncated { .. })),
-                "truncation at {cut} must return Truncated"
-            );
+        // Per-word truncation across the entire flat buffer must fail cleanly.
+        for cut in 0..words.len() {
+            assert!(!SvgPicture::validate(&words[..cut]), "cut {cut} must fail");
         }
+        // Trailing word rejected.
+        let mut trailing = words.clone();
+        trailing.push(0);
+        assert!(!SvgPicture::validate(&trailing));
 
-        // Trailing bytes must be rejected.
-        let mut trailing = bytes.clone();
-        trailing.push(0xAA);
-        assert_eq!(decode_svg_picture(&trailing), Err(CodecError::TrailingBytes(1)));
+        // Spoofed `content_hash` MUST be rejected (prevents process-global `SvgCache` poisoning).
+        let mut spoofed = words.clone();
+        spoofed[0] ^= 1;
+        assert!(!SvgPicture::validate(&spoofed), "spoofed content_hash lo must fail");
+        let mut spoofed_hi = words.clone();
+        spoofed_hi[1] ^= 0x8000_0000;
+        assert!(!SvgPicture::validate(&spoofed_hi), "spoofed content_hash hi must fail");
+        // Tampered coordinate with stale hash must also fail.
+        let mut tampered_coord = words.clone();
+        tampered_coord[2] = 999.0f32.to_bits();
+        assert!(!SvgPicture::validate(&tampered_coord), "tampered viewBox with stale hash must fail");
 
-        // Bad fill_rule tag (offset: 16 viewBox + 4 shape_count + 5 fill + 5 stroke + 4 stroke_width = 34).
-        let mut bad_rule = bytes.clone();
-        bad_rule[34] = 9;
-        assert_eq!(
-            decode_svg_picture(&bad_rule),
-            Err(CodecError::BadEnum { ty: "FillRule", raw: 9 })
+        // End-to-end wire test: legitimate SvgPicture passes, tampered wire payload is rejected on replica.
+        let mut prod = NodeStore::new();
+        let mut tx = prod.tx();
+        let node = tx.create();
+        tx.set_children(NodeId::ROOT, &[node]);
+        tx.edit::<Svg>(node).picture(Some(rich.clone()));
+        let mut changes = ChangeSet::default();
+        tx.commit_into(&mut changes);
+        let mut wire = Vec::new();
+        WireEncoder::default().encode(&prod, &changes, &mut wire);
+
+        let mut replica = NodeStore::replica();
+        let mut dec = WireDecoder::default();
+        let mut rtx = replica.tx();
+        dec.apply(&mut rtx, &wire).unwrap();
+        rtx.commit_into(&mut ChangeSet::default());
+        let rid = replica.try_row::<Svg>(node).unwrap().picture();
+        assert_eq!(replica.resource::<SvgPicture>(rid).unwrap().to_owned(), rich);
+
+        // Tamper with the encoded content_hash bytes inside the wire frame -> replica refuses to view it.
+        let hash_bytes = rich.content_hash.to_le_bytes();
+        let pos = wire
+            .windows(8)
+            .position(|w| w == hash_bytes)
+            .expect("content_hash present in wire frame");
+        let mut poisoned_wire = wire.clone();
+        poisoned_wire[pos] ^= 0xFF;
+        let mut poisoned_replica = NodeStore::replica();
+        let mut pdec = WireDecoder::default();
+        let mut prtx = poisoned_replica.tx();
+        pdec.apply(&mut prtx, &poisoned_wire).unwrap();
+        prtx.commit_into(&mut ChangeSet::default());
+        let prid = poisoned_replica.try_row::<Svg>(node).unwrap().picture();
+        assert!(
+            poisoned_replica.resource::<SvgPicture>(prid).is_none(),
+            "wire replica must reject SvgPicture with forged content_hash before cache lookup"
         );
 
-        // Bad bool tag on fill Option (offset 20).
-        let mut bad_bool = bytes.clone();
-        bad_bool[20] = 2;
-        assert_eq!(decode_svg_picture(&bad_bool), Err(CodecError::BadBool(2)));
-
-        // Bad VectorPathCmd tag (offset 39 = 34 + 1 fill_rule + 4 cmd_count).
-        let mut bad_cmd = bytes.clone();
-        bad_cmd[39] = 99;
-        assert_eq!(
-            decode_svg_picture(&bad_cmd),
-            Err(CodecError::BadEnum { ty: "VectorPathCmd", raw: 99 })
-        );
-
-        // Lying shape count and lying cmd count must be rejected before allocating.
-        let mut lying_shapes = [0u8; 20];
-        lying_shapes[16..20].copy_from_slice(&((MAX_SVG_SHAPES + 1) as u32).to_le_bytes());
-        assert_eq!(
-            decode_svg_picture(&lying_shapes),
-            Err(CodecError::LenOverflow {
-                len: MAX_SVG_SHAPES + 1,
-                max: MAX_SVG_SHAPES,
-            })
-        );
+        // Bad shape flags and bad command tags rejected.
+        let mut bad_flags = words.clone();
+        bad_flags[7] |= 1 << 5;
+        assert!(!SvgPicture::validate(&bad_flags));
 
         // Encode-side caps reject MAX_SVG_SHAPES + 1 and MAX_SVG_CMDS + 1 without partial output.
         let dummy_shape = VectorShape::filled(vec![VectorPathCmd::Close], ColorRgba::BLACK);
-        let too_many_shapes = SvgPicture::new((0.0, 0.0, 10.0, 10.0), vec![dummy_shape; MAX_SVG_SHAPES + 1]);
-        let mut w_cap = ByteWriter::new();
-        assert_eq!(
-            encode_svg_picture(&too_many_shapes, &mut w_cap),
-            Err(CodecError::LenOverflow {
-                len: MAX_SVG_SHAPES + 1,
-                max: MAX_SVG_SHAPES,
-            })
-        );
+        let too_many_shapes =
+            SvgPicture::new((0.0, 0.0, 10.0, 10.0), vec![dummy_shape; MAX_SVG_SHAPES + 1]);
         let mut out_rollback = vec![0xDEAD_BEEFu32];
         assert!(!too_many_shapes.write_words(&mut out_rollback));
-        assert_eq!(out_rollback, vec![0xDEAD_BEEFu32], "failed FlatResource::write_words must leave zero partial words");
+        assert_eq!(out_rollback, vec![0xDEAD_BEEFu32]);
 
         let too_many_cmds = SvgPicture::new(
             (0.0, 0.0, 10.0, 10.0),
-            vec![VectorShape::filled(vec![VectorPathCmd::Close; MAX_SVG_CMDS + 1], ColorRgba::BLACK)],
+            vec![VectorShape::filled(
+                vec![VectorPathCmd::Close; MAX_SVG_CMDS + 1],
+                ColorRgba::BLACK,
+            )],
         );
-        let mut w_cmds = ByteWriter::new();
-        assert_eq!(
-            encode_svg_picture(&too_many_cmds, &mut w_cmds),
-            Err(CodecError::LenOverflow {
-                len: MAX_SVG_CMDS + 1,
-                max: MAX_SVG_CMDS,
-            })
-        );
+        let mut out_cmds = vec![0xCAFE_BABEu32];
+        assert!(!too_many_cmds.write_words(&mut out_cmds));
+        assert_eq!(out_cmds, vec![0xCAFE_BABEu32]);
     }
 }

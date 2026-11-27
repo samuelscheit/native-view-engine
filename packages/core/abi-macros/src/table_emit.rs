@@ -144,6 +144,7 @@ pub(super) fn emit(t: &Table) -> String {
     );
     let mut inherited_field_mask = 0u32;
     let mut has_no_inherit = false;
+    let mut res_kinds = String::new();
 
     if inherited {
         getters.push_str(
@@ -395,6 +396,9 @@ pub(super) fn emit(t: &Table) -> String {
                 }
             }
             Class::Res(r) => {
+                res_kinds.push_str(&format!(
+                    "(__NVE_LAYOUT.fields[{idx}].word, <{r} as {S}::FlatResource>::KIND),"
+                ));
                 props.push_str(&format!(
                     "{d} pub const {cname}: {S}::ResProp<{id}, {r}> = {{ \
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
@@ -414,11 +418,12 @@ pub(super) fn emit(t: &Table) -> String {
                         {set_explicit_stmt} \
                         self \
                     }} \
-                    #[doc = \"Assigns an already-interned `{r}` `ResourceId` (or `ResourceId::NONE` to clear).\"] \
+                    #[doc = \"Assigns an already-interned `{r}` `ResourceId` (or `ResourceId::NONE` to clear). Ignores stale/dead or wrong-kind ids.\"] \
                     #[inline] pub fn {fname}_id(mut self, rid: {S}::ResourceId) -> Self {{ \
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                        self.0.put_resource_id(__F.word as usize, rid); \
-                        {set_explicit_stmt} \
+                        if self.0.put_resource_id::<{r}>(__F.word as usize, rid) {{ \
+                            {set_explicit_stmt} \
+                        }} \
                         self \
                     }} \
                     #[doc = \"Zero-alloc scratch writer for `{fname}` (`FlatResource` words written directly into `ResourceStore`).\"] \
@@ -448,7 +453,7 @@ pub(super) fn emit(t: &Table) -> String {
                         "#[doc = \"Clears explicit `{fname}`, releasing the resource so it inherits from its parent.\"] \
                         #[inline] pub fn clear_{fname}(mut self) -> Self {{ \
                             const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                            self.0.put_resource_id(__F.word as usize, {S}::ResourceId::NONE); \
+                            let _ = self.0.put_resource_id::<{r}>(__F.word as usize, {S}::ResourceId::NONE); \
                             self.0.clear_explicit_bit({idx}u32, __F.effects); \
                             self \
                         }}"
@@ -568,6 +573,7 @@ const _: () = {{
             events_word: __NVE_LAYOUT.events_word,
             inherited: {inherited},
             fields: &__NVE_FIELDS_ARR,
+            resource_kinds: &[{res_kinds}],
         }};
         type Ref<'a> = {id}Ref<'a>;
         type Mut<'a> = {id}Mut<'a>;

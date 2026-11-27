@@ -1,5 +1,7 @@
 //! `ChangeSet` + `NodeStore` → `NVE2` bytes.
 
+use rustc_hash::FxHashMap;
+
 use crate::changes::ChangeSet;
 use crate::id::ResourceId;
 use crate::resource::words_as_le_bytes;
@@ -9,10 +11,14 @@ use crate::table::TableSlot;
 
 use super::{pad4, Op, HEADER_WORDS, MAGIC, VERSION};
 
-/// Sender-side session state: which tables the receiver already knows.
+/// Sender-side session state: declared table bitmask plus reusable topological-sort scratch
+/// buffers (zero steady-state allocations when encoding nested resources).
 #[derive(Debug, Default, Clone)]
 pub struct WireEncoder {
     declared: u128,
+    topo_state: FxHashMap<ResourceId, u8>,
+    topo_out: Vec<ResourceId>,
+    topo_stack: Vec<(ResourceId, usize)>,
 }
 
 struct W<'a> {
@@ -231,12 +237,17 @@ impl WireEncoder {
                 .resources_defined
                 .iter()
                 .any(|&id| !res.children_of(id).is_empty());
-            let ordered_buf: Vec<ResourceId>;
             let emit_order: &[ResourceId] = if !has_children {
                 &changes.resources_defined
             } else {
-                ordered_buf = topo_sort_defined_resources(&changes.resources_defined, res);
-                &ordered_buf
+                topo_sort_defined_resources_into(
+                    &changes.resources_defined,
+                    res,
+                    &mut self.topo_state,
+                    &mut self.topo_out,
+                    &mut self.topo_stack,
+                );
+                &self.topo_out
             };
             w.begin(Op::DefineResources, 0, emit_order.len() as u32);
             for &id in emit_order {
@@ -244,8 +255,8 @@ impl WireEncoder {
                 let children = res.children_of(id);
                 let raw_words = res.raw_words(id).unwrap_or(&[]);
                 let raw_bytes = words_as_le_bytes(raw_words);
-                let byte_len =
-                    u32::try_from(raw_bytes.len()).expect("NVE2 resource payload exceeds u32::MAX");
+                debug_assert!(raw_bytes.len() <= u32::MAX as usize);
+                let byte_len = raw_bytes.len() as u32;
                 w.u32(id.0);
                 w.u32(kind.lo());
                 w.u32(kind.hi());
@@ -373,21 +384,25 @@ impl WireEncoder {
     }
 }
 
-/// Iterative post-order topological sort of newly defined resources so children always precede
-/// their parent in `Op::DefineResources`.
-fn topo_sort_defined_resources(
+/// Iterative post-order topological sort of newly defined resources into reusable scratch buffers so
+/// children always precede their parent in `Op::DefineResources` with zero steady-state allocs.
+fn topo_sort_defined_resources_into(
     defined: &[ResourceId],
     res: &crate::resource::ResourceStore,
-) -> Vec<ResourceId> {
-    use rustc_hash::FxHashMap;
+    state: &mut FxHashMap<ResourceId, u8>,
+    out: &mut Vec<ResourceId>,
+    stack: &mut Vec<(ResourceId, usize)>,
+) {
     // Map each defined id -> state (`0` = unvisited, `1` = on stack, `2` = emitted).
-    let mut state: FxHashMap<ResourceId, u8> =
-        FxHashMap::with_capacity_and_hasher(defined.len(), Default::default());
+    state.clear();
+    out.clear();
+    stack.clear();
+    state.reserve(defined.len());
+    out.reserve(defined.len());
+    stack.reserve(defined.len());
     for &id in defined {
         state.insert(id, 0);
     }
-    let mut out = Vec::with_capacity(defined.len());
-    let mut stack: Vec<(ResourceId, usize)> = Vec::with_capacity(defined.len());
     for &root in defined {
         if state.get(&root).copied() != Some(0) {
             continue;
@@ -409,5 +424,4 @@ fn topo_sort_defined_resources(
             }
         }
     }
-    out
 }

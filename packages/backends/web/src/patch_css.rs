@@ -154,24 +154,34 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
             out.push(';');
         }
     }
+    let has_pt = prop_written(lm, Layout::PADDING_TOP);
+    let has_pr = prop_written(lm, Layout::PADDING_RIGHT);
+    let has_pb = prop_written(lm, Layout::PADDING_BOTTOM);
+    let has_pl = prop_written(lm, Layout::PADDING_LEFT);
     let pad_logical =
         prop_written(lm, Layout::PADDING_INLINE_LOGICAL) && Layout::PADDING_INLINE_LOGICAL.get(lw);
     if pad_logical {
-        if prop_written(lm, Layout::PADDING_LEFT) {
+        if has_pt {
+            out.push_str("padding-top:");
+            write_compact_px(canonical_f32(Layout::PADDING_TOP.get(lw).value()).max(0.0), out);
+            out.push(';');
+        }
+        if has_pb {
+            out.push_str("padding-bottom:");
+            write_compact_px(canonical_f32(Layout::PADDING_BOTTOM.get(lw).value()).max(0.0), out);
+            out.push(';');
+        }
+        if has_pl {
             out.push_str("padding-inline-start:");
             write_compact_px(canonical_f32(Layout::PADDING_LEFT.get(lw).value()).max(0.0), out);
             out.push(';');
         }
-        if prop_written(lm, Layout::PADDING_RIGHT) {
+        if has_pr {
             out.push_str("padding-inline-end:");
             write_compact_px(canonical_f32(Layout::PADDING_RIGHT.get(lw).value()).max(0.0), out);
             out.push(';');
         }
-    } else if prop_written(lm, Layout::PADDING_TOP)
-        && prop_written(lm, Layout::PADDING_RIGHT)
-        && prop_written(lm, Layout::PADDING_BOTTOM)
-        && prop_written(lm, Layout::PADDING_LEFT)
-    {
+    } else if has_pt && has_pr && has_pb && has_pl {
         write_override_edges(
             "padding",
             EdgeInsets {
@@ -182,25 +192,48 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
             },
             out,
         );
+    } else {
+        for (name, written, val) in [
+            ("padding-top:", has_pt, Layout::PADDING_TOP.get(lw).value()),
+            ("padding-right:", has_pr, Layout::PADDING_RIGHT.get(lw).value()),
+            ("padding-bottom:", has_pb, Layout::PADDING_BOTTOM.get(lw).value()),
+            ("padding-left:", has_pl, Layout::PADDING_LEFT.get(lw).value()),
+        ] {
+            if written {
+                out.push_str(name);
+                write_compact_px(canonical_f32(val).max(0.0), out);
+                out.push(';');
+            }
+        }
     }
+    let has_mt = prop_written(lm, Layout::MARGIN_TOP);
+    let has_mr = prop_written(lm, Layout::MARGIN_RIGHT);
+    let has_mb = prop_written(lm, Layout::MARGIN_BOTTOM);
+    let has_ml = prop_written(lm, Layout::MARGIN_LEFT);
     let mar_logical =
         prop_written(lm, Layout::MARGIN_INLINE_LOGICAL) && Layout::MARGIN_INLINE_LOGICAL.get(lw);
     if mar_logical {
-        if prop_written(lm, Layout::MARGIN_LEFT) {
+        if has_mt {
+            out.push_str("margin-top:");
+            write_compact_px(canonical_f32(Layout::MARGIN_TOP.get(lw).value()), out);
+            out.push(';');
+        }
+        if has_mb {
+            out.push_str("margin-bottom:");
+            write_compact_px(canonical_f32(Layout::MARGIN_BOTTOM.get(lw).value()), out);
+            out.push(';');
+        }
+        if has_ml {
             out.push_str("margin-inline-start:");
             write_compact_px(canonical_f32(Layout::MARGIN_LEFT.get(lw).value()), out);
             out.push(';');
         }
-        if prop_written(lm, Layout::MARGIN_RIGHT) {
+        if has_mr {
             out.push_str("margin-inline-end:");
             write_compact_px(canonical_f32(Layout::MARGIN_RIGHT.get(lw).value()), out);
             out.push(';');
         }
-    } else if prop_written(lm, Layout::MARGIN_TOP)
-        && prop_written(lm, Layout::MARGIN_RIGHT)
-        && prop_written(lm, Layout::MARGIN_BOTTOM)
-        && prop_written(lm, Layout::MARGIN_LEFT)
-    {
+    } else if has_mt && has_mr && has_mb && has_ml {
         write_override_edges(
             "margin",
             EdgeInsets {
@@ -211,6 +244,19 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
             },
             out,
         );
+    } else {
+        for (name, written, val) in [
+            ("margin-top:", has_mt, Layout::MARGIN_TOP.get(lw).value()),
+            ("margin-right:", has_mr, Layout::MARGIN_RIGHT.get(lw).value()),
+            ("margin-bottom:", has_mb, Layout::MARGIN_BOTTOM.get(lw).value()),
+            ("margin-left:", has_ml, Layout::MARGIN_LEFT.get(lw).value()),
+        ] {
+            if written {
+                out.push_str(name);
+                write_compact_px(canonical_f32(val), out);
+                out.push(';');
+            }
+        }
     }
     if prop_written(lm, Layout::FLEX_WRAP) {
         out.push_str("flex-wrap:");
@@ -327,15 +373,41 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
             write_i64(out, i64::from(Visual::Z_INDEX.get(t.vw)));
             out.push(';');
         }
-        if prop_written(t.vm, Visual::OVERFLOW_X) {
-            out.push_str("overflow:");
-            out.push_str(match Visual::OVERFLOW_X.get(t.vw) {
-                Overflow::Visible => "visible",
-                Overflow::Hidden => "hidden",
-                Overflow::Scroll => "scroll",
-                Overflow::Auto => "auto",
-            });
-            out.push(';');
+        let has_ox = prop_written(t.vm, Visual::OVERFLOW_X);
+        let has_oy = prop_written(t.vm, Visual::OVERFLOW_Y);
+        let overflow_kw = |o: Overflow| match o {
+            Overflow::Visible => "visible",
+            Overflow::Hidden => "hidden",
+            Overflow::Scroll => "scroll",
+            Overflow::Auto => "auto",
+        };
+        match (has_ox, has_oy) {
+            (true, true) => {
+                let ox = Visual::OVERFLOW_X.get(t.vw);
+                let oy = Visual::OVERFLOW_Y.get(t.vw);
+                if ox == oy {
+                    out.push_str("overflow:");
+                    out.push_str(overflow_kw(ox));
+                    out.push(';');
+                } else {
+                    out.push_str("overflow-x:");
+                    out.push_str(overflow_kw(ox));
+                    out.push_str(";overflow-y:");
+                    out.push_str(overflow_kw(oy));
+                    out.push(';');
+                }
+            }
+            (true, false) => {
+                out.push_str("overflow-x:");
+                out.push_str(overflow_kw(Visual::OVERFLOW_X.get(t.vw)));
+                out.push(';');
+            }
+            (false, true) => {
+                out.push_str("overflow-y:");
+                out.push_str(overflow_kw(Visual::OVERFLOW_Y.get(t.vw)));
+                out.push(';');
+            }
+            (false, false) => {}
         }
     }
 
@@ -439,6 +511,15 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
         out.push(';');
     }
 }
+
+const _: () = {
+    assert!(Layout::DESC.words() <= 32);
+    assert!(Visual::DESC.words() <= 16);
+    assert!(Typography::DESC.words() <= 16);
+    assert!(Transform::DESC.words() <= 8);
+    assert!(GridItem::DESC.words() <= 8);
+    assert!(Interaction::DESC.words() <= 8);
+};
 
 macro_rules! impl_write_patch_decls {
     ($fn_name:ident, $doc:literal, $param:ty) => {

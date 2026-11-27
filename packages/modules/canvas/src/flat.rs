@@ -2,7 +2,7 @@
 //! [`DrawListView`] / [`CanvasOpRef`] / [`PolylinePoints`] slab readers.
 
 use nve_abi::{ColorRgba, Key64};
-use nve_store::FlatResource;
+use nve_store::{FlatResource, ValidatedWords};
 
 use crate::{CanvasOp, DrawList, MAX_DRAW_OPS, MAX_POLYLINE_POINTS};
 
@@ -437,7 +437,7 @@ impl FlatResource for DrawList {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> DrawListView<'_> {
-        DrawListView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> DrawListView<'_> {
+        DrawListView(words.as_slice())
     }
 }

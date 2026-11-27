@@ -45,11 +45,11 @@ pub use nve_abi::table::{
     effect, table_flags, FieldDesc, FieldKind, OptEncoding, Storage, TableDesc, TableKey, Word,
 };
 pub use nve_abi_macros::{NveTable, WordEnum};
-pub use resource::{words_as_le_bytes, FlatResource, ResourceStore};
+pub use resource::{words_as_le_bytes, FlatResource, ResourceStore, MAX_RESOURCE_WORDS};
 pub use resource_ingress::{
-    padded_word_len, read_bytes_words, read_fixed_str_pack, read_str_words, validate_bytes_words,
-    validate_fixed_str_pack, validate_str_words, write_bytes_words, write_fixed_str_pack,
-    write_str_words,
+    padded_word_len, read_bytes_words, read_fixed_str_pack, read_fixed_str_pack_unchecked,
+    read_str_words, read_str_words_unchecked, validate_bytes_words, validate_fixed_str_pack,
+    validate_str_words, write_bytes_words, write_fixed_str_pack, write_str_words, ValidatedWords,
 };
 pub use row::{DirtyList, RowRef, RowWriter};
 pub use row_patch::{
@@ -62,7 +62,7 @@ pub use table::{
     desc, slot_of, HasEvents, NveTable, Prop, RegistryError, Res, ResProp, ScalarField, Str,
     StrProp, TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
 };
-pub use node_mut::{NodeMut, TempResources};
+pub use node_mut::{NodeMut, ScopedTx, TempResources};
 pub use tx::Transaction;
 pub use value::{GridLine, Length, OptWord, Rgba, WordValue};
 

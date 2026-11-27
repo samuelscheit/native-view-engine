@@ -10,8 +10,8 @@ use std::cell::Cell;
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{
     ChangeSet, EventBatchBuf, EventEnum, EventFlags, FlatResource, GridLine, Length, NodeId,
-    NodeStore, NveTable, Res, ResolvedRow, Rgba, RowPatch, Str, SurfaceEventTracker, SurfaceId,
-    TimestampUs, WordEnum,
+    NodeStore, NveTable, Res, ResolvedRow, Rgba, RowPatch, RowPatchView, Str, SurfaceEventTracker,
+    SurfaceId, TimestampUs, ValidatedWords, WordEnum,
 };
 
 thread_local! {
@@ -129,8 +129,8 @@ impl FlatResource for BenchBlob {
     fn validate(words: &[u32]) -> bool {
         !words.is_empty()
     }
-    fn view(words: &[u32]) -> &[u32] {
-        words
+    fn view(words: ValidatedWords<'_, Self>) -> &[u32] {
+        words.as_slice()
     }
 }
 
@@ -142,6 +142,8 @@ struct BenchLabel {
     text: Str,
     #[effect(paint)]
     blob: Res<BenchBlob>,
+    #[effect(paint)]
+    patch_res: Res<RowPatch>,
 }
 
 #[repr(u8)]
@@ -470,7 +472,7 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
         let mut row_buf = [0u32; 16];
         let n = BenchBox::DESC.words();
         row_buf[..n].copy_from_slice(BenchBox::DESC.defaults);
-        let pv = RowPatch::view(&patch_words);
+        let pv = RowPatchView::from_words(&patch_words).unwrap();
         pv.apply_table::<BenchBox>(&mut row_buf[..n]);
         u64::from(view[0]).wrapping_add(u64::from(row_buf[0]))
     });
@@ -478,6 +480,109 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     assert_eq!(
         allocs_flat_res, 0,
         "steady-state flat ResourceStore dedup hit, ephemeral in-place rewrite, and RowPatchView::apply_table must allocate 0 bytes"
+    );
+
+    // 8b. Steady-state wire-origin `ResourceStore::get`, `tx.apply_row_patch`, and topological
+    //     `WireEncoder::encode` with nested parent->child resources = 0 allocs!
+    let mut nested_patch = RowPatch::new();
+    nested_patch.set(BenchBox::OPACITY, 0.25);
+    let mut nested_patch_words = Vec::new();
+    assert!(nested_patch.write_words(&mut nested_patch_words));
+    let nested_pv = RowPatchView::from_words(&nested_patch_words).unwrap();
+    // Warm initial + one in-place nested parent->child rewrite on `store`, `enc`, and `replica`
+    // so scratch buffers (`visit_marks`, `work_stack`, `old_children_scratch`, `topo_*`) are warm.
+    let (wire_blob_id, synced_child_id) = {
+        let mut tx = store.tx();
+        let child_id = tx.with_temp_resources(|res| {
+            let cid = res.intern(&BenchBlob);
+            let mut rp = RowPatch::new();
+            rp.set_res_id(BenchLabel::BLOB, cid);
+            res.tx()
+                .edit::<BenchLabel>(nodes[3])
+                .patch_res_ephemeral(rp);
+            cid
+        });
+        tx.commit_into(&mut changes);
+        wire_buf.clear();
+        enc.encode(&store, &changes, &mut wire_buf);
+        let mut rtx = replica.tx();
+        dec.apply(&mut rtx, &wire_buf).unwrap();
+        rtx.commit_into(&mut rep_changes);
+
+        // Second frame warms in-place ephemeral rewrite + topological encode with an existing child.
+        let mut tx2 = store.tx();
+        tx2.edit::<BenchLabel>(nodes[3]).patch_res_ephemeral_with(|out| {
+            out.extend_from_slice(&[
+                1,
+                BenchLabel::KEY.lo(),
+                BenchLabel::KEY.hi(),
+                1,
+                u32::from(BenchLabel::BLOB.word()) | (u32::from(nve_store::WORD_OP_RESOURCE) << 16),
+                u32::MAX,
+                child_id.0,
+            ]);
+            true
+        });
+        tx2.commit_into(&mut changes);
+        wire_buf.clear();
+        enc.encode(&store, &changes, &mut wire_buf);
+        let mut rtx2 = replica.tx();
+        dec.apply(&mut rtx2, &wire_buf).unwrap();
+        rtx2.commit_into(&mut rep_changes);
+
+        // Trigger first-read wire validation once so `OnceLock` caches `TypeId`.
+        let pid = replica.row::<BenchLabel>(nodes[3]).patch_res();
+        assert!(replica.resource::<RowPatch>(pid).is_some());
+        (pid, child_id)
+    };
+    let (allocs_wire_get, get_acc) = measure_allocs(|| {
+        let mut acc = 0usize;
+        for _ in 0..100 {
+            acc += replica.resource::<RowPatch>(wire_blob_id).unwrap().table_count();
+        }
+        acc
+    });
+    assert!(get_acc > 0);
+    assert_eq!(
+        allocs_wire_get, 0,
+        "steady-state wire-origin ResourceStore::get (OnceLock cached) must allocate 0 bytes"
+    );
+
+    let (allocs_apply_patch, ()) = measure_allocs(|| {
+        let mut tx = store.tx();
+        tx.apply_row_patch(nodes[0], nested_pv);
+        tx.commit_into(&mut changes);
+    });
+    assert_eq!(
+        allocs_apply_patch, 0,
+        "steady-state tx.apply_row_patch must allocate 0 bytes"
+    );
+
+    let (allocs_wire_topo, wire_len) = measure_allocs(|| {
+        {
+            let mut tx = store.tx();
+            tx.edit::<BenchLabel>(nodes[3]).patch_res_ephemeral_with(|out| {
+                out.extend_from_slice(&[
+                    1,
+                    BenchLabel::KEY.lo(),
+                    BenchLabel::KEY.hi(),
+                    1,
+                    u32::from(BenchLabel::BLOB.word()) | (u32::from(nve_store::WORD_OP_RESOURCE) << 16),
+                    u32::MAX,
+                    synced_child_id.0,
+                ]);
+                true
+            });
+            tx.commit_into(&mut changes);
+        }
+        wire_buf.clear();
+        enc.encode(&store, &changes, &mut wire_buf);
+        wire_buf.len()
+    });
+    assert!(wire_len > 0);
+    assert_eq!(
+        allocs_wire_topo, 0,
+        "steady-state topological WireEncoder::encode with nested child resource must allocate 0 bytes"
     );
 
     // 8. Steady-state SurfaceEventTracker::sync + EventBatchBuf + ValidatedEvents = 0 allocs.

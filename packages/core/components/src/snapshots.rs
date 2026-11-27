@@ -308,6 +308,14 @@ fn apply_layout_ext_words(
     }
 }
 
+const _: () = {
+    assert!(Visual::DESC.words() <= 16);
+    assert!(Typography::DESC.words() <= 16);
+    assert!(Layout::DESC.words() <= 32);
+    assert!(GridItem::DESC.words() <= 8);
+    assert!(Transform::DESC.words() <= 8);
+};
+
 /// Applies all present visual + typography overrides from `patch` onto `style`.
 pub fn apply_patch_view_to_visual(patch: RowPatchView<'_>, style: &mut VisualSnapshot) {
     let vn = Visual::DESC.words();

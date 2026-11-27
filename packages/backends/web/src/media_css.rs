@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use nve_abi::ColorScheme;
-use nve_components::media::{MediaPointer, MediaQuery, ResponsiveRule};
+use nve_components::media::{MediaPointer, MediaQuery};
 use nve_components::tables::ResponsiveRulesView;
 use nve_store::NodeStore;
 
@@ -207,34 +207,3 @@ pub fn compile_node_media_rules_view(
     }
 }
 
-/// Compiles `show_on` + an owned [`ResponsiveRule`] slice into content-addressed CSS rules.
-pub fn compile_node_media_rules(
-    show_on: Option<MediaQuery>,
-    responsive_rules: &[ResponsiveRule],
-    out: &mut Vec<CompiledMediaRule>,
-) {
-    push_show_on_rules(show_on, out);
-    for rule in responsive_rules {
-        if rule.patch.is_empty() || !rule.query.is_valid() {
-            continue;
-        }
-        let mut condition = String::new();
-        if !write_media_css_condition(&rule.query, &mut condition) {
-            continue;
-        }
-        let mut decls = String::new();
-        write_row_patch_decls(&rule.patch, None, &mut decls);
-        if decls.is_empty() {
-            continue;
-        }
-        let class_name = format_media_class(&condition, &decls);
-        push_unique_media(
-            out,
-            CompiledMediaRule {
-                class_name,
-                condition,
-                decls,
-            },
-        );
-    }
-}

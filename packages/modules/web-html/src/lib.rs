@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use nve_abi::Key64;
 use nve_store::{
-    read_str_words, validate_str_words, write_str_words, FlatResource, NveTable, Res, Str, WordEnum,
+    read_str_words_unchecked, validate_str_words, write_str_words, FlatResource, NveTable, Res,
+    Str, ValidatedWords, WordEnum,
 };
 
 /// Trusted HTML fragment node table (`nve.web_html`).
@@ -390,8 +391,11 @@ impl<'a> Iterator for DataAttrListIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let k = read_str_words(self.words, &mut self.pos)?;
-        let v = read_str_words(self.words, &mut self.pos)?;
+        // SAFETY: `DataAttrListView` is only constructible from `ValidatedWords<DataAttrList>`,
+        // whose `validate` checked every key/value span via `validate_str_words`.
+        let k = unsafe { read_str_words_unchecked(self.words, &mut self.pos) }?;
+        // SAFETY: Same validated invariant as `k`.
+        let v = unsafe { read_str_words_unchecked(self.words, &mut self.pos) }?;
         self.remaining -= 1;
         Some((k, v))
     }
@@ -438,8 +442,8 @@ impl FlatResource for DataAttrList {
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> DataAttrListView<'_> {
-        DataAttrListView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> DataAttrListView<'_> {
+        DataAttrListView(words.as_slice())
     }
 }
 
@@ -519,6 +523,21 @@ mod tests {
         assert_eq!(list.len(), 2);
         let pairs: Vec<(&str, &str)> = list.iter().collect();
         assert_eq!(pairs, vec![("data-state", "open"), ("data-x", "42")]);
+
+        let orig = DataAttrList::from_pairs(vec![
+            ("data-state".into(), "open".into()),
+            ("data-x".into(), "42".into()),
+        ]);
+        let mut words = Vec::new();
+        assert!(orig.write_words(&mut words));
+        let vw = nve_store::ValidatedWords::<DataAttrList>::try_new(&words).unwrap();
+        let rebuilt = DataAttrList::from_pairs(
+            DataAttrList::view(vw)
+                .iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
+        );
+        assert_eq!(rebuilt, orig);
         assert!(!DataAttrList::validate(&[]));
         assert!(!DataAttrList::validate(&[0x7FFF_FFFF]));
     }

@@ -5,12 +5,13 @@
 use nve_abi::NodeId;
 use nve_components::interaction::{
     resolve_cursor_from_view, resolve_layout_and_style_from_view, resolve_patch_from_view,
-    resolve_style_from_view, CursorKind, FocusModality, InteractionState, InteractionTracker,
+    resolve_style_from_view, visit_state_rules_in_cascade, CursorKind, FocusModality,
+    InteractionState, InteractionTracker,
 };
 use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{InputKind, Interaction, StateRules, StateRulesView, TextInput, Visual};
 use nve_engine::StoreLayoutEngine;
-use nve_store::{NodeStore, RowPatch};
+use nve_store::{NodeStore, RowPatch, RowPatchView};
 
 use crate::{
     is_display_none, layout_snapshot_of, node_clips_overflow, visual_snapshot_of, HeadlessBackend,
@@ -122,6 +123,19 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             .filter(|res| !res.is_none())
             .and_then(|res| store.resource::<StateRules>(res))
             .unwrap_or(StateRulesView::EMPTY)
+    }
+
+    /// Visits every active [`RowPatchView`] for `id` in deterministic cascade order with zero
+    /// heap allocations (up to 16 matching state rules).
+    #[inline]
+    pub fn visit_effective_state_patches<'a>(
+        &self,
+        store: &'a NodeStore,
+        id: NodeId,
+        f: impl FnMut(RowPatchView<'a>),
+    ) {
+        let rules = self.state_rules_of(store, id);
+        visit_state_rules_in_cascade(rules, self.interaction.state(id), f);
     }
 
     /// Resolves the effective merged [`RowPatch`] for `id` under its current [`InteractionState`].

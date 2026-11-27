@@ -17,7 +17,7 @@ use criterion::{criterion_group, BatchSize, Criterion};
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{
     ChangeSet, FlatResource, GridLine, InheritedTable, Length, NodeId, NodeStore, NveTable, Res,
-    ResolvedRow, Rgba, RowPatch, Str, WordEnum,
+    ResolvedRow, Rgba, RowPatch, RowPatchView, Str, ValidatedWords, WordEnum,
 };
 
 #[repr(u8)]
@@ -67,8 +67,8 @@ impl FlatResource for BenchBlob {
     fn validate(words: &[u32]) -> bool {
         !words.is_empty()
     }
-    fn view(words: &[u32]) -> &[u32] {
-        words
+    fn view(words: ValidatedWords<'_, Self>) -> &[u32] {
+        words.as_slice()
     }
 }
 
@@ -485,7 +485,7 @@ fn bench_flat_resources_and_row_patch(c: &mut Criterion) {
         .set(BenchBox::STAMP, 0xDEAD_BEEF_1234_5678u64);
     assert!(rp.write_words(&mut patch_words));
 
-    let pv = RowPatch::view(&patch_words);
+    let pv = RowPatchView::from_words(&patch_words).expect("valid bench patch");
     let n = BenchBox::DESC.words();
     let mut base = [0u32; 16];
     base[..n].copy_from_slice(BenchBox::DESC.defaults);
@@ -494,6 +494,55 @@ fn bench_flat_resources_and_row_patch(c: &mut Criterion) {
             let mut dst = base;
             pv.apply_table::<BenchBox>(black_box(&mut dst[..n]));
             black_box(dst[0])
+        });
+    });
+
+    // Wire-origin `ResourceStore::get` after initial `OnceLock` cache seal.
+    let mut enc = WireEncoder::default();
+    let mut dec = WireDecoder::default();
+    let mut wire = Vec::new();
+    enc.encode_full(&store, &mut wire);
+    let mut replica = NodeStore::replica();
+    {
+        let mut rtx = replica.tx();
+        dec.apply(&mut rtx, &wire).expect("decode replica");
+        rtx.commit_into(&mut changes);
+    }
+    let wire_rid = replica.row::<BenchLabel>(n_dedup).blob();
+    assert!(replica.resource::<BenchBlob>(wire_rid).is_some());
+    c.bench_function("flat_resource_wire_origin_get_cached", |b| {
+        b.iter(|| black_box(replica.resource::<BenchBlob>(black_box(wire_rid)).expect("cached")[0]));
+    });
+
+    // `tx.apply_row_patch` hot path.
+    let target = {
+        let mut tx = store.tx();
+        let id = tx.create();
+        tx.edit::<BenchBox>(id).opacity(1.0);
+        tx.commit_into(&mut changes);
+        id
+    };
+    c.bench_function("tx_apply_row_patch", |b| {
+        b.iter(|| {
+            let mut tx = store.tx();
+            tx.apply_row_patch(target, black_box(pv));
+            tx.commit_into(&mut changes);
+            black_box(store.row::<BenchBox>(target).opacity())
+        });
+    });
+
+    // `TempResources` scoped intern + drop.
+    c.bench_function("temp_resources_scoped_intern", |b| {
+        b.iter(|| {
+            let mut tx = store.tx();
+            let rid = tx.with_temp_resources(|scope| {
+                scope.intern_with::<BenchBlob>(|out| {
+                    out.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+                    true
+                })
+            });
+            tx.commit_into(&mut changes);
+            black_box(rid)
         });
     });
 }

@@ -1,12 +1,15 @@
 //! Flat 4-byte-aligned [`FlatResource`] implementation for [`SvgPicture`] and zero-copy
 //! [`SvgPictureView`] / [`VectorShapeView`] slab readers.
 
+use std::sync::Arc;
+
 use nve_abi::num::write_f32;
-use nve_abi::{ColorRgba, Key64};
-use nve_store::FlatResource;
+use nve_abi::{ColorRgba, Key64, Xxh64Hasher};
+use nve_store::{FlatResource, ValidatedWords};
 
 use crate::picture::{
     sanitize_view_box, write_css_color, write_path_cmd_into, FillRule, SvgPicture, VectorPathCmd,
+    VectorShape,
 };
 use crate::{MAX_SVG_CMDS, MAX_SVG_SHAPES};
 
@@ -136,6 +139,21 @@ impl<'a> SvgPictureView<'a> {
         let ox = dst_x + (dst_w - vw * scale) * 0.5 - vx * scale;
         let oy = dst_y + (dst_h - vh * scale) * 0.5 - vy * scale;
         Some((scale, ox, oy))
+    }
+
+    /// Materializes an owned [`SvgPicture`] from this zero-copy view.
+    pub fn to_owned(self) -> SvgPicture {
+        let shapes: Vec<VectorShape> = self
+            .shapes()
+            .map(|s| VectorShape {
+                path: Arc::from(s.cmds().collect::<Vec<_>>()),
+                fill: s.fill(),
+                stroke: s.stroke(),
+                stroke_width: s.stroke_width(),
+                fill_rule: s.fill_rule(),
+            })
+            .collect();
+        SvgPicture::new(self.view_box(), shapes)
     }
 }
 
@@ -401,10 +419,17 @@ impl FlatResource for SvgPicture {
         if words.len() < 7 {
             return false;
         }
+        let stored_hash = u64::from(words[0]) | (u64::from(words[1]) << 32);
         let shape_count = words[6] as usize;
         if shape_count > MAX_SVG_SHAPES {
             return false;
         }
+        let mut h = Xxh64Hasher::new(0);
+        for &vb in &words[2..6] {
+            h.update_f32(f32::from_bits(vb));
+        }
+        h.update_u32(shape_count as u32);
+
         let mut pos = 7usize;
         for _ in 0..shape_count {
             let Some(hdr) = words.get(pos..pos + 5) else {
@@ -420,10 +445,30 @@ impl FlatResource for SvgPicture {
             if (flags & FLAG_HAS_STROKE) == 0 && hdr[2] != 0 {
                 return false;
             }
+            if (flags & FLAG_HAS_FILL) != 0 {
+                let c = ColorRgba::from_u32(hdr[1]);
+                h.update(&[1, c.r, c.g, c.b, c.a]);
+            } else {
+                h.update(&[0]);
+            }
+            if (flags & FLAG_HAS_STROKE) != 0 {
+                let c = ColorRgba::from_u32(hdr[2]);
+                h.update(&[1, c.r, c.g, c.b, c.a]);
+            } else {
+                h.update(&[0]);
+            }
+            h.update_f32(f32::from_bits(hdr[3]));
+            let fill_rule = if (flags & FLAG_EVEN_ODD) != 0 {
+                FillRule::EvenOdd
+            } else {
+                FillRule::NonZero
+            };
+            h.update(&[fill_rule as u8]);
             let cmd_count = hdr[4] as usize;
             if cmd_count > MAX_SVG_CMDS {
                 return false;
             }
+            h.update_u32(cmd_count as u32);
             pos += 5;
             for _ in 0..cmd_count {
                 let Some(&tag) = words.get(pos) else {
@@ -438,14 +483,40 @@ impl FlatResource for SvgPicture {
                 if next > words.len() {
                     return false;
                 }
+                match tag {
+                    CMD_MOVE_TO => {
+                        h.update(&[1]);
+                        h.update_f32(f32::from_bits(words[pos + 1]));
+                        h.update_f32(f32::from_bits(words[pos + 2]));
+                    }
+                    CMD_LINE_TO => {
+                        h.update(&[2]);
+                        h.update_f32(f32::from_bits(words[pos + 1]));
+                        h.update_f32(f32::from_bits(words[pos + 2]));
+                    }
+                    CMD_QUAD_TO => {
+                        h.update(&[3]);
+                        for &w in &words[pos + 1..pos + 5] {
+                            h.update_f32(f32::from_bits(w));
+                        }
+                    }
+                    CMD_CUBIC_TO => {
+                        h.update(&[4]);
+                        for &w in &words[pos + 1..pos + 7] {
+                            h.update_f32(f32::from_bits(w));
+                        }
+                    }
+                    CMD_CLOSE => h.update(&[5]),
+                    _ => return false,
+                }
                 pos = next;
             }
         }
-        pos == words.len()
+        pos == words.len() && h.digest() == stored_hash
     }
 
     #[inline(always)]
-    fn view(words: &[u32]) -> SvgPictureView<'_> {
-        SvgPictureView(words)
+    fn view(words: ValidatedWords<'_, Self>) -> SvgPictureView<'_> {
+        SvgPictureView(words.as_slice())
     }
 }
