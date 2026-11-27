@@ -5,8 +5,7 @@
 //! the small per-name `String`s of the spelling helpers: codegen is a cold build step, so those
 //! are not worth a zero-allocation rewrite. The ceilings sit ~25% above the measured counts
 //! (C header 1,420 / tables 5,268 / all files 11,539), so reintroducing an owned intermediate spec (thousands of
-//! allocations) fails here. Byte totals count every buffer growth: each render starts from Askama's
-//! size hint and doubles, so they sit at about 4-5x the output (ceiling 6x).
+//! allocations) fails here. Byte totals count every buffer growth (ceiling 5x the output).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -71,7 +70,7 @@ fn c_abi_header_allocation_ceiling() {
         "C header took {allocs} allocations (ceiling 1800)"
     );
     assert!(
-        bytes <= 6 * header.len(),
+        bytes <= 5 * header.len(),
         "C header allocated {bytes} bytes for {} output bytes",
         header.len()
     );
@@ -89,7 +88,7 @@ fn table_files_allocation_ceiling() {
         "tables took {allocs} allocations (ceiling 6600)"
     );
     assert!(
-        bytes <= 6 * out,
+        bytes <= 5 * out,
         "tables allocated {bytes} bytes for {out} output bytes"
     );
 }
@@ -108,7 +107,7 @@ fn every_host_file_allocation_ceiling() {
         "all files took {allocs} allocations (ceiling 14500)"
     );
     assert!(
-        bytes <= 6 * out,
+        bytes <= 5 * out,
         "all files allocated {bytes} bytes for {out} output bytes"
     );
 }

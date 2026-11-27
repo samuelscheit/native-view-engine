@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use nve_abi::schema::{AbiFileDescriptor, AbiParamDescriptor};
+use nve_abi::schema::AbiFileDescriptor;
 use nve_abi::table::TableDesc;
 
 use super::layout::{RecordLayout, Ty};
@@ -66,6 +66,7 @@ const KEYWORDS: &[&str] = &[
     "try",
     "typealias",
     "var",
+    "where",
     "while",
     // Dart (reserved words only; built-in identifiers are valid members)
     "assert",
@@ -81,6 +82,22 @@ const KEYWORDS: &[&str] = &[
     "with",
 ];
 
+/// Members every generated table already has (`NveTables.X.key`, `NVE_TABLE_X_WORDS`,
+/// `X.DEFAULTS`, the C `_FIELD_LIST` X-macro, ...): a field of the same name would collide.
+const GENERATED_TABLE_MEMBERS: &[&str] = &[
+    "key",
+    "name",
+    "schema_hash",
+    "words",
+    "dense",
+    "flags",
+    "str_words",
+    "resource_words",
+    "defaults",
+    "field_list",
+    "fields",
+];
+
 /// Consts fit `u32`, every signature / alias type resolves, and no record needs an alignment a
 /// target cannot express.
 pub(super) fn abi(
@@ -88,6 +105,11 @@ pub(super) fn abi(
     records: &[RecordLayout<'_>],
 ) -> Result<(), CodegenError> {
     let mut known: BTreeSet<&str> = records.iter().map(|r| r.name).collect();
+    let slab_aligned: BTreeSet<&str> = records
+        .iter()
+        .filter(|r| r.slab_align.is_some())
+        .map(|r| r.name)
+        .collect();
     for file in files {
         known.extend(file.aliases.iter().map(|a| a.name));
         known.extend(file.enums.iter().map(|e| e.name));
@@ -100,9 +122,13 @@ pub(super) fn abi(
             }
         }
     }
+    let known = Known {
+        names: known,
+        slab_aligned,
+    };
     for file in files {
         for a in file.aliases {
-            check_type(a.target, &known, a.name)?;
+            check_type(a.target, Position::AliasTarget, &known, "alias", a.name)?;
         }
         let module_methods = file.modules.iter().flat_map(|m| {
             m.methods
@@ -114,11 +140,10 @@ pub(super) fn abi(
             .iter()
             .map(|f| ("C", f.name, f.params, f.return_type));
         for (owner, name, params, ret) in module_methods.chain(c_functions) {
-            let ctx = format!("{owner}::{name}");
-            params
-                .iter()
-                .try_for_each(|p: &AbiParamDescriptor| check_type(p.ty, &known, &ctx))?;
-            check_type(ret, &known, &ctx)?;
+            for p in params {
+                check_type(p.ty, Position::Param, &known, owner, name)?;
+            }
+            check_type(ret, Position::Return, &known, owner, name)?;
         }
     }
     // Dart `ffi.Struct` cannot over-align: it may only skip an `align(N)` that changes nothing on
@@ -136,16 +161,56 @@ pub(super) fn abi(
     Ok(())
 }
 
-fn check_type(spelling: &str, known: &BTreeSet<&str>, ctx: &str) -> Result<(), CodegenError> {
+/// Where a type appears in a C signature.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Param,
+    Return,
+    Pointee,
+    AliasTarget,
+}
+
+/// The record / alias / enum names the ABI declares, and the records whose alignment only C cannot
+/// reproduce by value.
+struct Known<'a> {
+    names: BTreeSet<&'a str>,
+    slab_aligned: BTreeSet<&'a str>,
+}
+
+/// `spelling` is expressible at `pos` of `owner::name`'s signature (formatted only on error).
+fn check_type(
+    spelling: &str,
+    pos: Position,
+    known: &Known<'_>,
+    owner: &str,
+    name: &str,
+) -> Result<(), CodegenError> {
+    let ctx = || format!("{owner}::{name}");
     match Ty::parse(spelling)? {
-        Ty::Unit | Ty::Void | Ty::Scalar(_) => Ok(()),
-        Ty::Ptr { pointee, .. } => check_type(pointee, known, ctx),
-        Ty::Array { .. } => Err(invalid(format!(
-            "`{ctx}`: arrays cannot cross a C signature by value"
+        Ty::Scalar(_) => Ok(()),
+        // `()` only as a return type; `c_void` only behind a pointer.
+        Ty::Unit if pos == Position::Return => Ok(()),
+        Ty::Void if pos == Position::Pointee => Ok(()),
+        Ty::Unit | Ty::Void => Err(invalid(format!(
+            "`{}`: `{spelling}` is only valid as a return type or pointee",
+            ctx()
         ))),
-        Ty::Named(n) if known.contains(n) => Ok(()),
+        // Behind a pointer the alignment is the producer's concern (see `slab_align`).
+        Ty::Ptr { pointee, .. } => check_type(pointee, Position::Pointee, known, owner, name),
+        Ty::Named(n) if known.slab_aligned.contains(n) && pos != Position::Pointee => {
+            Err(invalid(format!(
+                "`{}` passes `{n}` by value, but C does not reproduce its Rust-only `align(N)`; pass a pointer",
+                ctx()
+            )))
+        }
+        Ty::Named(n) if known.names.contains(n) => Ok(()),
         Ty::Named(n) => Err(invalid(format!(
-            "`{ctx}` uses `{n}`, which the ABI does not declare"
+            "`{}` uses `{n}`, which the ABI does not declare",
+            ctx()
+        ))),
+        Ty::Array { .. } => Err(invalid(format!(
+            "`{}`: arrays cannot cross a C signature by value",
+            ctx()
         ))),
     }
 }
@@ -153,15 +218,34 @@ fn check_type(spelling: &str, known: &BTreeSet<&str>, ctx: &str) -> Result<(), C
 /// The table name is `[a-z0-9._]` (it lands in C strings, Dart `'...'` with `$` interpolation, and
 /// identifiers), and every field is a `snake_case` identifier no target reserves.
 pub(super) fn table(desc: &TableDesc) -> Result<(), CodegenError> {
-    let name_ok = desc.name.starts_with(|c: char| c.is_ascii_lowercase())
-        && desc
-            .name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_');
+    // `[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*`: every dot-separated segment is an identifier.
+    let segment_ok = |seg: &str| {
+        seg.starts_with(|c: char| c.is_ascii_lowercase())
+            && seg
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    let name_ok = desc.name.split('.').all(segment_ok);
     if !name_ok {
         return Err(table_error(desc, "names must match `[a-z][a-z0-9._]*`"));
     }
+    let mut seen = BTreeSet::new();
     for f in desc.fields {
+        if !seen.insert(f.name) {
+            return Err(table_error(
+                desc,
+                &format!("field `{}` is declared twice", f.name),
+            ));
+        }
+        if GENERATED_TABLE_MEMBERS.contains(&f.name) {
+            return Err(table_error(
+                desc,
+                &format!(
+                    "field `{}` collides with a generated table member of the same name",
+                    f.name
+                ),
+            ));
+        }
         let ident_ok = f.name.starts_with(|c: char| c.is_ascii_lowercase())
             && f.name
                 .bytes()
@@ -188,231 +272,4 @@ fn invalid(message: String) -> CodegenError {
 }
 
 #[cfg(test)]
-mod tests {
-    use nve_abi::schema::{
-        AbiCFunctionDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiFieldDescriptor,
-        AbiFileDescriptor, AbiParamDescriptor, AbiRecordDescriptor, AbiStructDescriptor,
-    };
-    use nve_abi::table::{FieldDesc, FieldKind, Storage, TableDesc};
-
-    use super::super::layout::layout_records;
-
-    const fn file(
-        consts: &'static [AbiConstDescriptor],
-        enums: &'static [AbiEnumDescriptor],
-        records: &'static [AbiRecordDescriptor],
-        c_functions: &'static [AbiCFunctionDescriptor],
-    ) -> AbiFileDescriptor {
-        AbiFileDescriptor {
-            namespace: None,
-            consts,
-            aliases: &[],
-            enums,
-            records,
-            modules: &[],
-            c_functions,
-        }
-    }
-
-    const fn record(
-        name: &'static str,
-        fields: &'static [AbiFieldDescriptor],
-        size: usize,
-        explicit_align: Option<usize>,
-    ) -> AbiRecordDescriptor {
-        AbiRecordDescriptor::Struct(AbiStructDescriptor {
-            name,
-            doc: None,
-            size,
-            // What `rustc` reports: an explicit alignment wins over the fields' natural 8.
-            align: match explicit_align {
-                Some(a) => a,
-                None => 8,
-            },
-            explicit_align,
-            expected_size: None,
-            expected_size_64: None,
-            fields,
-        })
-    }
-
-    const fn field(name: &'static str, ty: &'static str, offset: usize) -> AbiFieldDescriptor {
-        AbiFieldDescriptor {
-            name,
-            ty,
-            c_type: None,
-            doc: None,
-            offset,
-            expected_offset: None,
-            expected_offset_64: None,
-        }
-    }
-
-    fn error(f: &'static AbiFileDescriptor) -> String {
-        match layout_records(&[f]).and_then(|r| super::abi(&[f], &r)) {
-            Err(e) => e.to_string(),
-            Ok(()) => String::from("<accepted>"),
-        }
-    }
-
-    #[test]
-    fn consts_signatures_and_arrays_are_validated() {
-        static BIG: AbiFileDescriptor = file(
-            &[AbiConstDescriptor {
-                name: "X",
-                ty: "u32",
-                value: 1 << 32,
-                hex: true,
-                doc: None,
-            }],
-            &[],
-            &[],
-            &[],
-        );
-        assert!(
-            error(&BIG).contains("must be a u32 value"),
-            "{}",
-            error(&BIG)
-        );
-
-        static UNKNOWN: AbiFileDescriptor = file(
-            &[],
-            &[],
-            &[],
-            &[AbiCFunctionDescriptor {
-                name: "f",
-                params: &[AbiParamDescriptor {
-                    name: "a",
-                    ty: "*const Missing",
-                }],
-                return_type: "()",
-                doc: None,
-            }],
-        );
-        assert!(
-            error(&UNKNOWN).contains("uses `Missing`"),
-            "{}",
-            error(&UNKNOWN)
-        );
-
-        static BY_VALUE_ARRAY: AbiFileDescriptor = file(
-            &[],
-            &[],
-            &[],
-            &[AbiCFunctionDescriptor {
-                name: "f",
-                params: &[],
-                return_type: "[u8; 4]",
-                doc: None,
-            }],
-        );
-        assert!(
-            error(&BY_VALUE_ARRAY).contains("arrays cannot cross"),
-            "{}",
-            error(&BY_VALUE_ARRAY)
-        );
-
-        static ZERO_LEN: AbiFileDescriptor = file(
-            &[],
-            &[],
-            &[record("Z", &[field("a", "[u8; 0]", 0)], 0, None)],
-            &[],
-        );
-        assert!(
-            error(&ZERO_LEN).contains("zero-length arrays"),
-            "{}",
-            error(&ZERO_LEN)
-        );
-
-        static HUGE: AbiFileDescriptor = file(
-            &[],
-            &[],
-            &[record(
-                "H",
-                &[field("a", "[u64; 18446744073709551615]", 0)],
-                0,
-                None,
-            )],
-            &[],
-        );
-        assert!(error(&HUGE).contains("overflows usize"), "{}", error(&HUGE));
-
-        static ENUM_FIELD: AbiFileDescriptor = file(
-            &[],
-            &[AbiEnumDescriptor {
-                name: "E",
-                repr: "u8",
-                doc: None,
-                c_prefix: None,
-                dart_fallback: None,
-                variants: &[],
-            }],
-            &[record("R", &[field("e", "E", 0)], 1, None)],
-            &[],
-        );
-        assert!(
-            error(&ENUM_FIELD).contains("stores enum `E` by value"),
-            "{}",
-            error(&ENUM_FIELD)
-        );
-
-        // `align(16)` on a 4-byte record changes its size everywhere: C can, Dart `ffi.Struct` cannot.
-        static OVER: AbiFileDescriptor = file(
-            &[],
-            &[],
-            &[record("O", &[field("a", "u32", 0)], 16, Some(16))],
-            &[],
-        );
-        assert!(
-            error(&OVER).contains("Dart `ffi.Struct` cannot express"),
-            "{}",
-            error(&OVER)
-        );
-    }
-
-    const fn table(name: &'static str, fields: &'static [FieldDesc]) -> TableDesc {
-        TableDesc {
-            key: nve_hash::Key64::of(name),
-            name,
-            schema_hash: 0,
-            storage: Storage::Sparse,
-            flags: 0,
-            defaults: &[0],
-            word_effects: &[0],
-            str_words: 0,
-            resource_words: 0,
-            fields,
-        }
-    }
-
-    const fn u32_field(name: &'static str) -> FieldDesc {
-        FieldDesc {
-            name,
-            kind: FieldKind::U32,
-            word: 0,
-            shift: 0,
-            bits: 32,
-            effects: 0,
-        }
-    }
-
-    #[test]
-    fn table_names_and_fields_are_valid_in_every_target() {
-        static OK_FIELDS: [FieldDesc; 2] = [u32_field("set"), u32_field("get_value")];
-        assert!(super::table(&table("nve.ok_2", &OK_FIELDS)).is_ok());
-        for bad in ["nve.$x", "nve.Text", "", "1nve", "nve.te'xt"] {
-            let t = table(bad, &[]);
-            assert!(super::table(&t).is_err(), "{bad:?} must be rejected");
-        }
-        for (field, why) in [
-            ("default", "reserved word `default`"),
-            ("init", "reserved word `init`"),
-            ("Bad", "must match"),
-        ] {
-            let fields = Box::leak(Box::new([u32_field(field)]));
-            let message = super::table(&table("nve.t", fields))
-                .map_or_else(|e| e.to_string(), |()| String::new());
-            assert!(message.contains(why), "{field}: {message}");
-        }
-    }
-}
+mod tests;

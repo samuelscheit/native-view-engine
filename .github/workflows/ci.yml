@@ -30,7 +30,9 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          # i686 / armv7 Android + wasm32: `record_layouts_match_rustc_on_every_data_model` checks every C
+          # layout against rustc there (required under CI).
+          targets: wasm32-unknown-unknown, i686-linux-android, armv7-linux-androideabi
           components: clippy
 
       - name: Setup Node.js (for Web WASM CDP E2E)
@@ -250,6 +252,9 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          # i686 / armv7 Android + wasm32: `record_layouts_match_rustc_on_every_data_model` checks every C
+          # layout against rustc there (required under CI).
+          targets: wasm32-unknown-unknown, i686-linux-android, armv7-linux-androideabi
           components: clippy
 
       - name: Cache Rust build artifacts
@@ -362,6 +367,9 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          # i686 / armv7 Android + wasm32: `record_layouts_match_rustc_on_every_data_model` checks every C
+          # layout against rustc there (required under CI).
+          targets: wasm32-unknown-unknown, i686-linux-android, armv7-linux-androideabi
           components: clippy
 
       - name: Cache Rust build artifacts

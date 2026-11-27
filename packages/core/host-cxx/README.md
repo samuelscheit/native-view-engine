@@ -6,7 +6,7 @@ keys, and field specs.
 
 | Header | Language | Contents |
 |---|---|---|
-| `nve/host/api.h` | C11 / C++20 | `NVE_API`, `NVE_EXTERN_C_BEGIN/END`, `NVE_STATIC_ASSERT`, `NVE_ALIGNOF`, `NVE_OFFSETOF`, little-endian guard, alignment-free `nve_load_*_le` / `nve_store_*_le`, bit-field extract / sign-extend |
+| `nve/host/api.h` | C11 / C++20 | `NVE_API`, `NVE_EXTERN_C_BEGIN/END`, `NVE_STATIC_ASSERT`, `NVE_ALIGNOF`, `NVE_ALIGNAS`, `NVE_OFFSETOF`, little-endian guard, alignment-free `nve_load_*_le` / `nve_store_*_le`, bit-field extract / sign-extend |
 | `nve/host/xxh64.h` | C11 (`static inline`) / C++20 (`constexpr`) | Canonical XXH64 (`nve_xxh64*`), bit-identical to Rust `nve-hash`, and `NveKey64` |
 | `nve/host/xxh64.hpp` | C++20 | `nve::host::Xxh64Hasher` and `xxh64()` (`constexpr`); `const_id()` / `Key64::of()` are `consteval` and reject non-UTF-8 names at compile time (runtime names: `nve_key64_of`, which returns 0 for invalid UTF-8) |
 | `nve/host/utf8.h` | C11 / C++20 | Allocation-free strict UTF-8 validation (same acceptance as Rust `str::from_utf8`) |

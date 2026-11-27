@@ -73,7 +73,8 @@ fn render(
     template: &dyn askama::DynTemplate,
     relative_path: String,
 ) -> Result<GeneratedFile, CodegenError> {
-    let mut content = String::with_capacity(template.size_hint());
+    // Askama's hint covers only the literal text; every file is larger, so start at 16 KiB.
+    let mut content = String::with_capacity(template.size_hint().max(16 * 1024));
     template
         .dyn_render_into(&mut content)
         .map_err(|e| CodegenError::validation(format!("rendering {relative_path}: {e}")))?;

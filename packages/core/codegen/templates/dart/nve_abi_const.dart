@@ -61,6 +61,14 @@ abstract final class {{ r.name }}Layout {
 }
 {%- endfor %}
 
+/// Size of every ABI record, by name, on each data model `dart:ffi` runs on: what `sizeOf` must
+/// report there (`[64-bit, ILP32 with 8-byte u64 fields, i386 System V]`).
+const Map<String, List<int>> nveAbiRecordSizes = {
+{%- for r in m.records %}
+  '{{ r.name }}': [{{ r.size.p64() }}, {{ r.size.p32() }}, {{ r.size.i386() }}],
+{%- endfor %}
+};
+
 /// `NveSceneView` read straight out of wasm32 linear memory by `SceneReader.fromLinearMemory`.
 const SceneLayout nveSceneLayoutWasm32 = SceneLayout(
 {%- for f in m.scene_view().fields %}

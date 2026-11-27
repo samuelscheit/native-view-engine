@@ -51,7 +51,8 @@ typedef int32_t (*NveHostChannelPublishFn)(void* host_ctx, uint32_t channel_id, 
 {%- endif %}
 {%- if let Some(n) = r.slab_align %}
 /* Rust aligns `{{ r.name }}` slabs to {{ n }} bytes (`align({{ n }})`); that changes no size or layout here, so C
- * keeps the natural alignment Swift's ClangImporter imports as a plain value type. */
+ * keeps the natural alignment Swift's ClangImporter imports as a plain value type. A C producer that
+ * hands Rust a `{{ r.name }}` array must still allocate it {{ n }}-byte aligned (`aligned_alloc({{ n }}, ...)`). */
 {%- endif %}
 {% if r.is_union %}union{% else %}struct{% endif %} {{ r.name }} {
 {%- for f in r.fields %}

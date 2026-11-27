@@ -85,8 +85,9 @@ fn templates_are_lf_only_and_under_650_lines() {
     assert_eq!(checked, 15, "one template per generated file");
 }
 
-/// Integer literals in JS / Dart source that are not exact JavaScript numbers: `>= 2^53`, a value
-/// that does not even parse, or a BigInt `...n` literal. String and comment contents are skipped.
+/// Integer-valued numeric literals in JS / Dart source that are not exact JavaScript numbers:
+/// `>= 2^53` (also spelled `1e20` / `9.1e15`), a value that does not even parse, or a BigInt `...n`
+/// literal. Non-integral literals (`0.5`, `1e-3`) and string / comment contents are skipped.
 fn inexact_js_literals(source: &str) -> Vec<String> {
     let bytes = source.as_bytes();
     let (mut out, mut i) = (Vec::new(), 0);
@@ -100,20 +101,15 @@ fn inexact_js_literals(source: &str) -> Vec<String> {
             let quote = bytes[i];
             i += 1;
             while i < bytes.len() && bytes[i] != quote {
-                i += if bytes[i] == b'\\' { 2 } else { 1 };
+                // An escape skips the whole next character, which may be multi-byte.
+                let skip = usize::from(bytes[i] == b'\\');
+                i += skip + source[i + skip..].chars().next().map_or(1, char::len_utf8);
             }
             i += 1;
-        } else if bytes[i].is_ascii_digit() && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')) {
-            let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+        } else if bytes[i].is_ascii_digit() && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || matches!(bytes[i - 1], b'_' | b'.'))) {
+            let end = numeric_literal_len(rest);
             let token = &rest[..end];
-            let digits = token.replace('_', "");
-            let value = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
-                Some(hex) => u128::from_str_radix(hex, 16),
-                None => digits.parse::<u128>(),
-            };
-            let bad = token.ends_with('n') || value.map_or(true, |v| v >= 1u128 << 53);
-            // `1.5`, `1e3`: the integer part was checked above; the scan stops at the `.` / `e`.
-            if bad && !digits.contains(['e', 'E']) || token.ends_with('n') {
+            if !js_exact_integer(token) {
                 out.push(token.to_owned());
             }
             i += end;
@@ -124,6 +120,51 @@ fn inexact_js_literals(source: &str) -> Vec<String> {
     out
 }
 
+/// Length of the numeric literal `s` starts with: digits / letters / `_`, one `.` fraction, and a
+/// signed decimal exponent (`1.5e+20`).
+fn numeric_literal_len(s: &str) -> usize {
+    let b = s.as_bytes();
+    let word = |from: usize| from + s[from..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(s.len() - from);
+    let mut end = word(0);
+    let hex = s.starts_with("0x") || s.starts_with("0X");
+    if !hex && b.get(end) == Some(&b'.') && b.get(end + 1).is_some_and(u8::is_ascii_digit) {
+        end = word(end + 1);
+    }
+    if !hex && matches!(b.get(end - 1), Some(b'e' | b'E')) && matches!(b.get(end), Some(b'+' | b'-')) {
+        end = word(end + 1);
+    }
+    end
+}
+
+/// Whether the literal is exact in a JS double: a hex or decimal integer `< 2^53`, or not an
+/// integer at all (a fraction). BigInts (`...n`) and unparsable spellings are not.
+fn js_exact_integer(token: &str) -> bool {
+    const LIMIT: u128 = 1 << 53;
+    if token.ends_with('n') {
+        return false;
+    }
+    let digits = token.replace('_', "");
+    if let Some(hex) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+        return u128::from_str_radix(hex, 16).is_ok_and(|v| v < LIMIT);
+    }
+    let (mantissa, exponent) = digits.split_once(['e', 'E']).unwrap_or((&digits, "0"));
+    let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let (Ok(m), Ok(e)) = (format!("{int}{frac}").parse::<u128>(), exponent.parse::<i32>()) else {
+        return false;
+    };
+    // value = m * 10^(e - frac digits)
+    let Ok(frac_len) = i32::try_from(frac.len()) else { return false };
+    let scale = e - frac_len;
+    if scale >= 0 {
+        return 10u128.checked_pow(scale.unsigned_abs()).and_then(|p| m.checked_mul(p)).is_some_and(|v| v < LIMIT);
+    }
+    match 10u128.checked_pow(scale.unsigned_abs()) {
+        // Integral only when the division is exact; a true fraction is not an integer literal.
+        Some(p) => m % p != 0 || m / p < LIMIT,
+        None => true, // 10^-39 and below: m (< 2^128) cannot be a multiple, so a fraction
+    }
+}
+
 #[test]
 fn the_53_bit_scanner_catches_what_it_must() {
     assert_eq!(inexact_js_literals("const a = 9007199254740991; // 9007199254740992"), Vec::<String>::new());
@@ -131,6 +172,18 @@ fn the_53_bit_scanner_catches_what_it_must() {
     assert_eq!(inexact_js_literals("x = 9007199254740992;"), ["9007199254740992"]);
     assert_eq!(inexact_js_literals("x = 0x20000000000000;"), ["0x20000000000000"]);
     assert_eq!(inexact_js_literals("x = 0xFFn;"), ["0xFFn"]);
+    assert_eq!(inexact_js_literals("x = 0xFFFFFFFFFFFFFFFE;"), ["0xFFFFFFFFFFFFFFFE"]);
+    assert_eq!(inexact_js_literals("x = 0xE0000000000000;"), ["0xE0000000000000"]);
+    assert_eq!(inexact_js_literals("x = 0x2000000000000E + 0xEF46DB3751D8E999;"), ["0x2000000000000E", "0xEF46DB3751D8E999"]);
+    assert_eq!(inexact_js_literals("x = 0xDEADBEEF + 1e3 + 0.5 + 1e-3 + 1.5e2 + 9.007199254740991e15;"), Vec::<String>::new());
+    assert_eq!(
+        inexact_js_literals("x = 1e20 + 1E+16 + 9.1e15 + 1_0e15 + 123456789012345678.0 + 1e300;"),
+        ["1e20", "1E+16", "9.1e15", "1_0e15", "123456789012345678.0", "1e300"]
+    );
+    assert_eq!(inexact_js_literals("x = 0.12345678901234567890 + 1.5e-40;"), Vec::<String>::new());
+    // Escapes skip whole (multi-byte) characters; an escape at the end of input is not a panic.
+    assert_eq!(inexact_js_literals("s = '\\é9007199254740993' + \"\\\"\" + 9007199254740993;"), ["9007199254740993"]);
+    assert_eq!(inexact_js_literals("s = '\\"), Vec::<String>::new());
     assert_eq!(inexact_js_literals("x = 999999999999999999999999999999999999999999;").len(), 1);
     assert_eq!(inexact_js_literals("x = a1234567890123456789 + 1.5;"), Vec::<String>::new());
 }
@@ -292,7 +345,7 @@ fn table_specs_are_validated_before_any_host_sees_them() {
 /// `clang` skips, unless `CI` or `NVE_REQUIRE_CLANG` is set.
 #[test]
 fn generated_c_headers_compile_on_every_data_model() {
-    if !common::tool_available("clang") {
+    if !common::tool_available("clang") || !common::tool_available("clang++") {
         assert!(
             std::env::var_os("CI").is_none() && std::env::var_os("NVE_REQUIRE_CLANG").is_none(),
             "clang is required (CI / NVE_REQUIRE_CLANG)"
@@ -312,6 +365,22 @@ fn generated_c_headers_compile_on_every_data_model() {
          + (int)NVE_HASH_VECTOR_COUNT + NVE_TABLE_TEXT_TEXT.word; }\n",
     )
     .expect("write C check");
+    // Degenerate table sets render valid C too: no tables at all, and a table without fields.
+    static EMPTY: TableDesc = table("nve.empty", &[0, 0, 0], &[]);
+    for (name, tables) in [("zero_tables", &[][..]), ("zero_fields", &[&EMPTY][..])] {
+        let files = generate_table_files(tables).expect("degenerate table set");
+        let header = files.iter().find(|f| f.relative_path.ends_with(".h")).expect("tables header");
+        let sub = dir.join(name).join("nve/generated");
+        std::fs::create_dir_all(&sub).expect("degenerate dir");
+        // The header includes the runtime relative to itself (`../host/table_word.h`).
+        common::copy_tree(&repo_root().join("packages/core/host-cxx/include/nve/host"), &dir.join(name).join("nve/host"));
+        std::fs::write(sub.join("nve_tables.generated.h"), &header.content).expect("degenerate header");
+        std::fs::write(
+            dir.join(name).join("check.c"),
+            "#include <nve/generated/nve_tables.generated.h>\nint f(void) { return (int)NVE_TABLE_COUNT; }\n",
+        )
+        .expect("degenerate check");
+    }
     let targets = [
         None,
         Some("i386-unknown-none"),
@@ -323,12 +392,22 @@ fn generated_c_headers_compile_on_every_data_model() {
         Some("wasm32-unknown-unknown"),
         Some("aarch64-none-elf"),
     ];
-    for target in targets {
+    // The export macro's three spellings: consumer (default), the library itself, and a DLL import.
+    let variants: [(&std::path::Path, &[&str]); 5] = [
+        (&dir, &[]),
+        (&dir, &["-DNVE_BUILDING_LIBRARY"]),
+        (&dir, &["-DNVE_IMPORTING_LIBRARY"]),
+        (&dir.join("zero_tables"), &[]),
+        (&dir.join("zero_fields"), &[]),
+    ];
+    for (target, (include, defines)) in targets.iter().flat_map(|t| variants.iter().map(move |v| (*t, *v))) {
+        let src = include.join("check.c");
         for (driver, std) in [("clang", "-std=c11"), ("clang++", "-std=c++20")] {
             let mut cmd = Command::new(driver);
-            // A macOS `SDKROOT` would otherwise be applied to the cross targets.
-            cmd.env_remove("SDKROOT");
+            cmd.args(defines);
             if let Some(t) = target {
+                // A macOS `SDKROOT` would otherwise be applied to the cross target.
+                cmd.env_remove("SDKROOT");
                 cmd.arg(format!("--target={t}")).args(["-ffreestanding", "-Wno-incompatible-sysroot"]);
             }
             if driver == "clang++" {
@@ -340,13 +419,14 @@ fn generated_c_headers_compile_on_every_data_model() {
             }
             let out = cmd
                 .args([std, "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-pedantic", "-I"])
-                .arg(&dir)
+                .arg(include)
                 .arg(&src)
                 .output()
                 .expect("run clang");
             assert!(
                 out.status.success(),
-                "{driver} {std} {target:?} rejected the generated headers:\n{}",
+                "{driver} {std} {target:?} {defines:?} {} rejected the generated headers:\n{}",
+                include.display(),
                 String::from_utf8_lossy(&out.stderr)
             );
         }
@@ -371,13 +451,18 @@ fn record_layouts_match_rustc_on_every_data_model() {
         ("i686-linux-android", Model::I386),
         ("armv7-linux-androideabi", Model::P32),
         ("wasm32-unknown-unknown", Model::P32),
-        (host.as_str(), Model::P64),
+        (host.as_str(), Model::host()),
     ];
     let installed = Command::new("rustup").args(["target", "list", "--installed"]).output();
     let installed = installed.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let installed = format!("{installed}\n{host}");
-    let dir = repo_root().join("target/nve-abi-layout-check");
+    // A per-run crate (parallel runs never share sources) with a shared, incremental target dir.
+    let base = repo_root().join("target/nve-abi-layout-check");
+    let dir = base.join(format!("run-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("src")).expect("check crate dir");
+    // The workspace lockfile pins `nve-abi`'s dependencies to the versions the workspace uses.
+    // (`--locked` cannot apply: Cargo prunes the workspace's other packages from this root's lock.)
+    std::fs::copy(repo_root().join("Cargo.lock"), dir.join("Cargo.lock")).expect("copy Cargo.lock");
     let abi = repo_root().join("packages/core/abi");
     std::fs::write(
         dir.join("Cargo.toml"),
@@ -397,7 +482,7 @@ fn record_layouts_match_rustc_on_every_data_model() {
         }
         let mut asserts = String::from("#![no_std]\n#![allow(unused_imports)]\nuse nve_abi::*;\nuse nve_abi::table::NveTableView;\n");
         for r in &model.records {
-            let rust_align = r.slab_align.unwrap_or(r.align.at(data_model));
+            let rust_align = r.align.at(data_model).max(r.slab_align.unwrap_or(1));
             asserts += &format!(
                 "const _: () = assert!(core::mem::size_of::<{0}>() == {1} && core::mem::align_of::<{0}>() == {2}, \"{0} size/align\");\n",
                 r.name,
@@ -417,7 +502,7 @@ fn record_layouts_match_rustc_on_every_data_model() {
         let out = Command::new(env!("CARGO"))
             .args(["check", "--offline", "--quiet", "--target", target, "--manifest-path"])
             .arg(dir.join("Cargo.toml"))
-            .env("CARGO_TARGET_DIR", dir.join("target"))
+            .env("CARGO_TARGET_DIR", base.join("target"))
             .output()
             .expect("run cargo check");
         assert!(
@@ -427,5 +512,45 @@ fn record_layouts_match_rustc_on_every_data_model() {
         );
         checked += 1;
     }
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(checked > 0 || !required, "no data model was checked");
+}
+
+/// `CNveAbi` is defined once (host-cxx's module map; host-swift's only refers to it), so Swift
+/// imports it with both header directories on the search path, as an app linking the SwiftPM
+/// package and an `nve build --xcframework` framework does.
+#[test]
+fn cnveabi_module_is_defined_once() {
+    if !common::tool_available("swiftc") {
+        assert!(std::env::var_os("NVE_REQUIRE_SWIFT").is_none(), "swiftc is required (NVE_REQUIRE_SWIFT)");
+        eprintln!("SKIP: swiftc not found");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("nve_cnveabi_once_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    common::write_generated_c_abi_headers(&dir);
+    for map in ["packages/core/host-cxx/include/module.modulemap", "packages/core/host-swift/Sources/CNveAbi/include/module.modulemap"] {
+        let text = std::fs::read_to_string(repo_root().join(map)).expect("module map");
+        let definitions = text.lines().filter(|l| l.trim_start().starts_with("module CNveAbi")).count();
+        let expected = usize::from(map.contains("host-cxx"));
+        assert_eq!(definitions, expected, "{map} must {} define `CNveAbi`", if expected == 1 { "" } else { "not" });
+    }
+    std::fs::copy(repo_root().join("packages/core/host-cxx/include/module.modulemap"), dir.join("module.modulemap"))
+        .expect("stage module map");
+    let swift_map_dir = dir.join("swift");
+    std::fs::create_dir_all(&swift_map_dir).expect("swift map dir");
+    std::fs::write(swift_map_dir.join("module.modulemap"), "extern module CNveAbi \"../module.modulemap\"\n").expect("extern map");
+    let src = dir.join("m.swift");
+    std::fs::write(&src, "import CNveAbi\nlet version: UInt32 = NVE_ABI_VERSION\n").expect("swift source");
+    let out = Command::new("swiftc")
+        .arg("-typecheck")
+        .arg("-I")
+        .arg(&dir)
+        .arg("-I")
+        .arg(&swift_map_dir)
+        .arg(&src)
+        .output()
+        .expect("run swiftc");
+    assert!(out.status.success(), "swiftc rejected the two maps:\n{}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
 }

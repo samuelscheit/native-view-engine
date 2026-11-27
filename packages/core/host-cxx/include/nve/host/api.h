@@ -7,7 +7,9 @@
 #ifndef NVE_HOST_API_H
 #define NVE_HOST_API_H
 
+#ifndef __cplusplus
 #include <stdbool.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 

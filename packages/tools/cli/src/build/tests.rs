@@ -7,7 +7,7 @@ use clap::Parser;
 
 use super::apple_tier3::{
     parse_targets, plan_tier3_build, plan_xcframework, ApplePlatformFamily, AppleTier3Target,
-    Tier3BuildRequest, Tier3Error, XcframeworkSlice, NVE_ABI_HEADER_FILE, NVE_INTERFACE_SYMBOL, NVE_MODULE_MAP_FILE,
+    Tier3BuildRequest, Tier3Error, XcframeworkSlice, NVE_ABI_HEADER_FILE, NVE_INTERFACE_SYMBOL, NVE_MODULE_MAP_FILE, NVE_TABLES_HEADER_FILE,
 };
 use super::probe::{
     check_prerequisites, format_tier3_doctor_section, probe_all_tier3_sdks, EnvironmentProbe,
@@ -39,6 +39,7 @@ impl FakeProbe {
         p.rust_src_toolchains.insert("nightly".into());
         p.xcodebuild = true;
         p.files.insert(headers_dir.join(NVE_ABI_HEADER_FILE));
+        p.files.insert(headers_dir.join(NVE_TABLES_HEADER_FILE));
         p.files.insert(headers_dir.join(NVE_MODULE_MAP_FILE));
         p
     }
@@ -365,6 +366,9 @@ fn reports_actionable_diagnostics_for_missing_nightly_rust_src_sdks_and_headers(
         i.kind == MissingPrerequisite::AbiHeader
             && i.summary.contains(NVE_ABI_HEADER_FILE)
             && i.remediation.contains("codegen abi")
+    }));
+    assert!(issues.iter().any(|i| {
+        i.kind == MissingPrerequisite::AbiHeader && i.summary.contains(NVE_TABLES_HEADER_FILE)
     }));
     assert!(issues.iter().any(|i| {
         i.kind == MissingPrerequisite::ModuleMap && i.summary.contains(NVE_MODULE_MAP_FILE)

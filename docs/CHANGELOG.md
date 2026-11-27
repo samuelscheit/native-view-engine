@@ -41,6 +41,30 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
   - **Drift guard**: `nve-arch-invariants` checks every mirrored constant and golden XXH64 digest against `nve_abi`, `nve_store`, and `nve_hash`. A second check keeps the binary-value validators allocation-free (no view, copy, or decode).
   - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` went from 21 to 16 artifacts here; Batch 2A (commit 3) then reorganized it into the 15 host files listed below.
   - **Zero runtime `serde_json` in core**: `NveExportSpec` JSON loading moved into `nve-cli`. `PENDING_CLEANUP_SERDE_JSON` and `PENDING_CLEANUP_PERSONAL_PATHS` are empty.
+  - **Batch 2A Pass-2 fixes (commit 4d)**
+    - **CI** installs i686 / armv7 Android targets for the rustc layout cross-check.
+    - **Alignment:**
+      - `align(N <= 16)` is always `NVE_ALIGNAS(N)`; Swift's ClangImporter accepts it.
+      - Larger values are slab-only when size- and layout-neutral, else an error.
+      - `align(0)`, non-powers of two, and layout `usize` overflow are rejected.
+    - **Validation:**
+      - Enums are rejected by value also inside arrays and aliases.
+      - `()` is allowed only as a return type, `c_void` only behind a pointer.
+      - Slab-aligned records cannot cross C signatures by value.
+      - Table names are checked per segment.
+      - Table fields: duplicates, generated member names, and Swift `where` are rejected.
+    - **53-bit scanner:**
+      - Hex `e` digits are scanned.
+      - Decimal exponents and fractions are evaluated (`1e20`, `9.1e15`).
+      - Escapes step by UTF-8 character.
+    - **Swift module map:** `CNveAbi` is defined once; host-swift's map is an `extern module` reference.
+    - **clang matrix:**
+      - Adds the `NVE_BUILDING_LIBRARY` / `NVE_IMPORTING_LIBRARY` variants.
+      - Adds zero-table and zero-field table headers.
+    - **Dart `ffi.sizeOf` suite:** covers every record on 64-bit, ILP32 and i386.
+    - **Tooling:**
+      - `nve build` probes the tables header.
+      - The CMake codegen target refreshes its stamp.
   - **Pass-2 hardening of the hybrid spec frontend (commit 4c)**
     - **Nesting bound.** It counts every token of a segment: a segment ends only at `,` / `;` / item keywords, attributes are skipped, and closure parameter lists are tracked. This closes the `a = b = ...`, `if .. else if`, `a.b.c`, `1 + 1 + ...`, `f()()`, `x?`, and `as` chains, with no false positives on `//!` runs or flat `1 << i` consts.
     - **Markers.** Markers are checked per item kind and must not repeat. File scope accepts only the namespace, and conflicting namespaces are errors.

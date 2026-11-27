@@ -1,8 +1,9 @@
 //! Per-language spellings of ABI types, names, and values, called from the Askama templates.
 //!
-//! Every function takes the borrowed `nve-abi` descriptors directly. An unsupported type spelling
-//! falls back to a visible `/* unsupported */` marker that fails the host compile, but
-//! [`super::layout`] already rejects such spellings before rendering starts.
+//! Every function takes the borrowed `nve-abi` descriptors directly. [`super::layout`] and
+//! [`super::validate`] reject every type spelling a template cannot express before rendering
+//! starts, so the `/* unsupported */` fallback below is unreachable (and would fail the host
+//! compile if it were not).
 
 use super::layout::{FieldLayout, Scalar, Ty, Width};
 use crate::naming::{screaming_snake_to_camel_case, to_camel_case, to_pascal_case, to_snake_case};
@@ -138,7 +139,7 @@ pub mod c {
     }
 
     /// `16u`, `(sizeof(void*) == 8u ? 16u : 8u)`, or, when i386 System V differs from other 32-bit
-    /// targets, `(sizeof(void*) == 8u ? 96u : (NVE_ABI_U64_FIELD_ALIGN == 8u ? 72u : 68u))`.
+    /// targets, `(sizeof(void*) == 8u ? 24u : (NVE_ABI_U64_FIELD_ALIGN == 8u ? 16u : 12u))`.
     pub fn width(w: &Width) -> String {
         if let Some(n) = w.fixed() {
             return format!("{n}u");

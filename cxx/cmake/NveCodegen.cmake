@@ -54,6 +54,7 @@ function(nve_ensure_abi_codegen)
       "${_nve_repo_root}/packages/core/components/src/tables/*.rs"
       "${_nve_repo_root}/packages/core/codegen/src/*.rs"
       "${_nve_repo_root}/packages/core/codegen/templates/*"
+      "${_nve_repo_root}/packages/tools/cli/src/codegen.rs"
     )
     foreach(_src IN LISTS _nve_abi_sources)
       if("${_src}" IS_NEWER_THAN "${_nve_stamp}")
@@ -98,6 +99,7 @@ function(nve_ensure_abi_codegen)
   if(_nve_cargo_bin AND NOT TARGET nve_codegen_abi)
     add_custom_target(nve_codegen_abi
       COMMAND "${_nve_cargo_bin}" run --locked -p nve-cli -- codegen abi
+      COMMAND "${CMAKE_COMMAND}" -E touch "${_nve_stamp}"
       WORKING_DIRECTORY "${_nve_repo_root}"
       COMMENT "Regenerating NVE host ABI / table / XXH64 vector files"
       VERBATIM

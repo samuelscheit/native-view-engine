@@ -194,6 +194,21 @@ impl Width {
             f(self.0[2], other.0[2]),
         ])
     }
+
+    /// [`Self::zip`] for arithmetic that can overflow `usize`.
+    fn try_zip(
+        self,
+        other: Self,
+        f: impl Fn(usize, usize) -> Option<usize>,
+        ctx: &str,
+    ) -> Result<Self, CodegenError> {
+        let mut out = [0; 3];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = f(self.0[i], other.0[i])
+                .ok_or_else(|| bad_type(ctx, "layout arithmetic overflows usize"))?;
+        }
+        Ok(Self(out))
+    }
 }
 
 /// Size and alignment of one type.
@@ -264,16 +279,15 @@ pub fn layout_records<'a>(
     let mut shapes: BTreeMap<&'a str, Shape> = BTreeMap::new();
     let mut enums: BTreeSet<&'a str> = BTreeSet::new();
     let embedded = embedded_by_value(files);
-    for file in files {
-        for alias in file.aliases {
-            let shape = shape_of(Ty::parse(alias.target)?, &shapes, alias.name)?;
-            shapes.insert(alias.name, shape);
-        }
-        for e in file.enums {
-            let repr = Scalar::parse(e.repr).ok_or_else(|| bad_type(e.repr, "enum repr"))?;
-            shapes.insert(e.name, repr.shape());
-            enums.insert(e.name);
-        }
+    // Enums have no storable shape (C enums are `int`-sized), so every by-value use, also through
+    // an array or an alias, is rejected; they are collected before any alias is shaped.
+    for e in files.iter().flat_map(|f| f.enums) {
+        Scalar::parse(e.repr).ok_or_else(|| bad_type(e.repr, "enum repr"))?;
+        enums.insert(e.name);
+    }
+    for alias in files.iter().flat_map(|f| f.aliases) {
+        let shape = shape_of(Ty::parse(alias.target)?, &shapes, &enums, alias.name)?;
+        shapes.insert(alias.name, shape);
     }
     let mut out = Vec::new();
     for file in files {
@@ -293,15 +307,26 @@ pub fn layout_records<'a>(
     Ok(out)
 }
 
-fn shape_of(ty: Ty<'_>, shapes: &BTreeMap<&str, Shape>, ctx: &str) -> Result<Shape, CodegenError> {
+fn shape_of(
+    ty: Ty<'_>,
+    shapes: &BTreeMap<&str, Shape>,
+    enums: &BTreeSet<&str>,
+    ctx: &str,
+) -> Result<Shape, CodegenError> {
     Ok(match ty {
+        // A pointer's size does not depend on its pointee, so the pointee is not walked.
         Ty::Ptr { .. } => Shape::POINTER,
+        Ty::Named(name) if enums.contains(name) => {
+            return Err(CodegenError::validation(format!(
+                "`{ctx}` stores enum `{name}` by value: C enums are `int`-sized whatever the Rust repr; store its integer repr"
+            )));
+        }
         Ty::Scalar(s) => s.shape(),
         Ty::Array { len: 0, .. } => {
             return Err(bad_type(ctx, "zero-length arrays are not valid C"));
         }
         Ty::Array { elem, len } => {
-            let e = shape_of(Ty::parse(elem)?, shapes, ctx)?;
+            let e = shape_of(Ty::parse(elem)?, shapes, enums, ctx)?;
             let mut size = [0; 3];
             for (out, n) in size.iter_mut().zip(e.size.0) {
                 *out = n
@@ -322,9 +347,14 @@ fn shape_of(ty: Ty<'_>, shapes: &BTreeMap<&str, Shape>, ctx: &str) -> Result<Sha
     })
 }
 
-/// Names of records some other record stores by value (`T`, `[T; N]`), so their alignment is
-/// part of a containing layout.
+/// Names of records some other record stores by value (`T`, `[T; N]`, or through a type alias),
+/// so their alignment is part of a containing layout.
 fn embedded_by_value<'a>(files: &[&'a AbiFileDescriptor]) -> BTreeSet<&'a str> {
+    let aliases: BTreeMap<&str, &str> = files
+        .iter()
+        .flat_map(|f| f.aliases)
+        .map(|a| (a.name, a.target))
+        .collect();
     let mut out = BTreeSet::new();
     for record in files.iter().flat_map(|f| f.records) {
         let fields = match record {
@@ -333,11 +363,19 @@ fn embedded_by_value<'a>(files: &[&'a AbiFileDescriptor]) -> BTreeSet<&'a str> {
         };
         for f in fields {
             let mut ty = Ty::parse(f.abi_type());
-            while let Ok(Ty::Array { elem, .. }) = ty {
-                ty = Ty::parse(elem);
-            }
-            if let Ok(Ty::Named(name)) = ty {
-                out.insert(name);
+            // Arrays and alias chains (bounded by the alias count, so a cycle cannot loop).
+            for _ in 0..=aliases.len() {
+                match ty {
+                    Ok(Ty::Array { elem, .. }) => ty = Ty::parse(elem),
+                    Ok(Ty::Named(name)) => match aliases.get(name) {
+                        Some(target) => ty = Ty::parse(target),
+                        None => {
+                            out.insert(name);
+                            break;
+                        }
+                    },
+                    _ => break,
+                }
             }
         }
     }
@@ -358,37 +396,50 @@ fn layout_record<'a>(
     let (mut end, mut align) = (Width::same(0), Width::same(1));
     for desc in descs {
         let ty = Ty::parse(desc.abi_type())?;
-        if let Ty::Named(n) = ty
-            && enums.contains(n)
-        {
-            return Err(CodegenError::validation(format!(
-                "`{name}.{}` stores enum `{n}` by value: C enums are `int`-sized whatever the Rust repr; store its integer repr",
-                desc.name
-            )));
-        }
-        let shape = shape_of(ty, shapes, name)?;
+        let ctx = name; // record-level context: no per-field allocation on the success path
+        let shape = shape_of(ty, shapes, enums, ctx)?;
         let offset = if is_union {
             Width::same(0)
         } else {
-            end.zip(shape.align, round_up)
+            end.try_zip(shape.align, round_up, ctx)?
         };
-        end = end.zip(offset.zip(shape.size, |o, s| o + s), usize::max);
+        end = end.zip(
+            offset.try_zip(shape.size, usize::checked_add, ctx)?,
+            usize::max,
+        );
         align = align.zip(shape.align, usize::max);
         fields.push(FieldLayout { desc, ty, offset });
     }
     let natural_align = align;
-    let natural_size = end.zip(align, round_up);
+    let natural_size = end.try_zip(align, round_up, name)?;
     let (mut alignas, mut slab_align) = (None, None);
-    if let Some(explicit) = explicit_align.filter(|&a| align.0.iter().any(|&n| a > n)) {
-        let over = align.zip(Width::same(explicit), usize::max);
-        if natural_size.zip(over, round_up) != natural_size || embedded.contains(name) {
-            alignas = Some(explicit);
-            align = over;
-        } else {
-            slab_align = Some(explicit);
+    if let Some(explicit) = explicit_align {
+        if !explicit.is_power_of_two() {
+            return Err(bad_type(name, "`align(N)` must be a non-zero power of two"));
+        }
+        if align.0.iter().any(|&n| explicit > n) {
+            let over = align.zip(Width::same(explicit), usize::max);
+            if explicit <= MAX_C_ALIGNAS {
+                // C reproduces it exactly (Swift's ClangImporter imports `_Alignas` up to 16).
+                alignas = Some(explicit);
+                align = over;
+            } else if natural_size.try_zip(over, round_up, name)? == natural_size
+                && !embedded.contains(name)
+            {
+                // Larger alignments only align Rust-owned slabs (`NveRenderNode`'s 64-byte rows):
+                // allowed when they change no size and no containing layout.
+                slab_align = Some(explicit);
+            } else {
+                return Err(bad_type(
+                    name,
+                    &format!(
+                        "`align({explicit})` changes the C layout, and C / Swift hosts cannot over-align past {MAX_C_ALIGNAS}"
+                    ),
+                ));
+            }
         }
     }
-    let size = end.zip(align, round_up);
+    let size = end.try_zip(align, round_up, name)?;
     Ok(RecordLayout {
         name,
         doc,
@@ -402,8 +453,12 @@ fn layout_record<'a>(
     })
 }
 
-const fn round_up(n: usize, align: usize) -> usize {
-    n.div_ceil(align) * align
+/// Largest `align(N)` C reproduces with `NVE_ALIGNAS(N)` (Swift's ClangImporter rejects more).
+pub const MAX_C_ALIGNAS: usize = 16;
+
+/// `n` rounded up to `align` (a power of two, so never 0), or `None` on overflow.
+fn round_up(n: usize, align: usize) -> Option<usize> {
+    n.div_ceil(align).checked_mul(align)
 }
 
 /// `rustc`'s offsets are those of the running build; every declared contract must hold too.
@@ -472,158 +527,4 @@ fn check_against_rustc(
 }
 
 #[cfg(test)]
-mod tests {
-    use nve_abi::schema::{
-        AbiFieldDescriptor, AbiFileDescriptor, AbiRecordDescriptor, AbiStructDescriptor,
-    };
-
-    use super::{Model, Ty, layout_records};
-
-    const fn field(
-        name: &'static str,
-        ty: &'static str,
-        offset: usize,
-        expected: Option<usize>,
-    ) -> AbiFieldDescriptor {
-        AbiFieldDescriptor {
-            name,
-            ty,
-            c_type: None,
-            doc: None,
-            offset,
-            expected_offset: expected,
-            expected_offset_64: None,
-        }
-    }
-
-    const fn file(records: &'static [AbiRecordDescriptor]) -> AbiFileDescriptor {
-        AbiFileDescriptor {
-            namespace: None,
-            consts: &[],
-            aliases: &[],
-            enums: &[],
-            records,
-            modules: &[],
-            c_functions: &[],
-        }
-    }
-
-    const fn record(
-        fields: &'static [AbiFieldDescriptor],
-        size: usize,
-        expected_size: Option<usize>,
-    ) -> AbiRecordDescriptor {
-        AbiRecordDescriptor::Struct(AbiStructDescriptor {
-            name: "S",
-            doc: None,
-            size,
-            align: 8,
-            explicit_align: None,
-            expected_size,
-            expected_size_64: None,
-            fields,
-        })
-    }
-
-    // `{ u8 tag; u64 value; const void* ptr; }` as `rustc` lays it out on this 64-bit host.
-    static OK: [AbiRecordDescriptor; 1] = [record(
-        &[
-            field("tag", "u8", 0, Some(0)),
-            field("value", "u64", 8, None),
-            field("ptr", "*const c_void", 16, None),
-        ],
-        24,
-        None,
-    )];
-
-    #[test]
-    fn three_data_models_from_one_descriptor() {
-        assert_eq!(
-            Model::host(),
-            Model::P64,
-            "the codegen tests run on a 64-bit host"
-        );
-        let ok = file(&OK);
-        let r = layout_records(&[&ok]).expect("valid layout");
-        let [tag, value, ptr] = r[0].fields.as_slice() else {
-            panic!("three fields")
-        };
-        assert_eq!(tag.offset.fixed(), Some(0));
-        assert_eq!(
-            value.offset.0,
-            [8, 8, 4],
-            "i386 System V aligns u64 to 4 inside structs"
-        );
-        assert_eq!(ptr.offset.0, [16, 16, 12]);
-        assert_eq!(r[0].size.0, [24, 24, 16]);
-        assert!(!r[0].is_fixed());
-    }
-
-    #[test]
-    fn drift_from_rustc_or_a_contract_is_an_error() {
-        static WRONG_OFFSET: [AbiRecordDescriptor; 1] = [record(
-            &[field("tag", "u8", 0, None), field("value", "u64", 4, None)],
-            16,
-            None,
-        )];
-        let err = layout_records(&[&file(&WRONG_OFFSET)])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("`value` offset 8 != rustc 4"), "{err}");
-
-        static BROKEN_CONTRACT: [AbiRecordDescriptor; 1] = [record(
-            &[
-                field("tag", "u8", 0, None),
-                field("value", "u64", 8, Some(8)),
-            ],
-            16,
-            None,
-        )];
-        let err = layout_records(&[&file(&BROKEN_CONTRACT)])
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("breaks `offset = Some(8)`"),
-            "differs on i386: {err}"
-        );
-
-        static WRONG_SIZE: [AbiRecordDescriptor; 1] =
-            [record(&[field("a", "u64", 0, None)], 8, Some(16))];
-        assert!(
-            layout_records(&[&file(&WRONG_SIZE)])
-                .unwrap_err()
-                .to_string()
-                .contains("`size =")
-        );
-
-        static UNDECLARED: [AbiRecordDescriptor; 1] =
-            [record(&[field("a", "Later", 0, None)], 4, None)];
-        assert!(
-            layout_records(&[&file(&UNDECLARED)])
-                .unwrap_err()
-                .to_string()
-                .contains("before it is declared")
-        );
-    }
-
-    #[test]
-    fn type_spellings() {
-        assert_eq!(
-            Ty::parse("*mut NveFrameStats").ok(),
-            Some(Ty::Ptr {
-                mutable: true,
-                pointee: "NveFrameStats"
-            })
-        );
-        assert_eq!(
-            Ty::parse("[u32; 5]").ok(),
-            Some(Ty::Array {
-                elem: "u32",
-                len: 5
-            })
-        );
-        assert_eq!(Ty::parse("()").ok(), Some(Ty::Unit));
-        assert!(Ty::parse("Option<fn()>").is_err());
-        assert!(Ty::parse("[u8; x]").is_err());
-    }
-}
+mod tests;
