@@ -2,7 +2,7 @@
 //! composition/cursor-rect state for [`crate::SkiaBackend`] over `&NodeStore`.
 
 use nve_abi::NodeId;
-use nve_components::tables::{is_node_display_none, InputKind, TextInput, Typography};
+use nve_components::tables::{is_subtree_display_none, InputKind, TextInput, Typography};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
@@ -191,7 +191,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn set_focused_node(&mut self, store: &NodeStore, node_id: Option<NodeId>) {
         let node_id = node_id.filter(|&raw| {
             let sid = StoreNodeId(raw);
-            store.is_live(sid) && !is_node_display_none(store, sid)
+            store.is_live(sid) && !is_subtree_display_none(store, sid)
         });
         if self.focus.focused_node == node_id {
             return;
@@ -263,7 +263,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             return;
         };
         let id = StoreNodeId(raw);
-        if !store.is_live(id) || is_node_display_none(store, id) {
+        if !store.is_live(id) || is_subtree_display_none(store, id) {
             self.focus = TextFocusState::default();
             return;
         }

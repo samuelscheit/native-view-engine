@@ -28,10 +28,6 @@ use crate::wasm_snapshot::{
 #[cfg(feature = "app-issues")]
 use crate::wasm_wake::{PumpNext, WebAsyncWakeGuard};
 pub(crate) use crate::wasm_wake::{browser_viewport, install_resize_listener, WindowResizeListener};
-#[cfg(feature = "app-kitchen-sink")]
-use nve_example_kitchen_sink::{decode_kitchen_sink_state, KITCHEN_SINK_STATE_VERSION};
-#[cfg(feature = "app-studio")]
-use nve_studio_workspace::{WorkspaceState, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
 #[cfg(any(feature = "dev", feature = "multi-window"))]
 #[wasm_bindgen(inline_js = "export function nve_extract_binary_message(data) {
@@ -350,20 +346,16 @@ fn find_mount_container(
     Ok((window, container))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn start_surface_app_inner<F>(
     app_name: &'static str,
-    app_slug: &'static str,
-    schema_version: u32,
     surface_id: SurfaceId,
     mount_id: &str,
     ws_url: Option<String>,
     hydrate: bool,
-    state_is_valid: fn(&[u8]) -> bool,
     build_session: F,
 ) -> Result<WebAppController, JsValue>
 where
-    F: FnOnce(SurfaceId, WebBackend, Viewport, Option<&[u8]>) -> (WebAppSession, bool),
+    F: FnOnce(SurfaceId, WebBackend, Viewport) -> WebAppSession,
 {
     if surface_id == 0 {
         return Err(JsValue::from_str("surface_id must be non-zero"));
@@ -378,30 +370,40 @@ where
     let enable_persistence = !is_ssr_demo && surface_id == DEFAULT_SURFACE_ID;
     let has_restored_dom = container.get_attribute("data-nve-restored").as_deref() == Some("1");
 
-    let persisted_state = if is_reset {
-        clear_persisted_snapshot(app_slug, schema_version);
-        None
-    } else if enable_persistence {
-        load_persisted_state(app_slug, schema_version, false)
+    let mut session_val = build_session(surface_id, WebBackend::new(), viewport);
+    let snapshot_slug = session_val.app_slug();
+    let restored_from_snapshot = if let Some(slug) = snapshot_slug {
+        let schema_version = session_val.schema_version();
+        let restored = if is_reset {
+            clear_persisted_snapshot(slug, schema_version);
+            false
+        } else if enable_persistence {
+            load_persisted_state(slug, schema_version, false)
+                .as_deref()
+                .is_some_and(|bytes| session_val.try_restore_state(bytes))
+        } else {
+            false
+        };
+        if has_restored_dom && !restored {
+            // Cached HTML existed without matching valid binary state: purge corrupt storage and fall back cleanly.
+            clear_persisted_snapshot(slug, schema_version);
+        }
+        if restored {
+            session_val.apply_initial_viewport();
+        }
+        restored
     } else {
-        None
+        false
     };
-
-    let valid_state = persisted_state.filter(|bytes| state_is_valid(bytes));
-    let can_restore_state = valid_state.is_some();
-    if has_restored_dom && !can_restore_state {
-        // Cached HTML existed without matching valid binary state: purge corrupt storage and fall back cleanly.
-        clear_persisted_snapshot(app_slug, schema_version);
-    }
 
     // Hydrate only when pre-rendered DOM matches the state we are booting into:
     // - Layer 1 restored snapshot + valid binary state -> zero-mismatch hydration
     // - Cold build-time SSR / `?ssr=1` + clean default state -> zero-mismatch hydration
     // - Corrupt/partial state mismatch -> clean full mount fallback with zero panic.
     let should_hydrate = if has_restored_dom {
-        can_restore_state
+        restored_from_snapshot
     } else {
-        !can_restore_state && hydrate
+        !restored_from_snapshot && hydrate
     };
 
     let backend = if should_hydrate {
@@ -409,24 +411,20 @@ where
     } else {
         WebBackend::mount_into(container.clone())
     };
-    let (session_val, restored_from_snapshot) =
-        build_session(surface_id, backend, viewport, valid_state.as_deref());
+    session_val.replace_backend(backend);
     let session = Rc::new(RefCell::new(session_val));
 
-    let (snapshot_guard, snapshot_trigger) =
-        if enable_persistence && session.borrow().app_slug().is_some() {
-            let (guard, trigger) = SnapshotPersistenceGuard::install(
-                &window,
-                Rc::downgrade(&session),
-                container_for_snapshot,
-                app_slug,
-                schema_version,
-                !is_reset,
-            );
-            (Some(guard), Some(trigger))
-        } else {
-            (None, None)
-        };
+    let (snapshot_guard, snapshot_trigger) = if enable_persistence && snapshot_slug.is_some() {
+        let (guard, trigger) = SnapshotPersistenceGuard::install(
+            &window,
+            Rc::downgrade(&session),
+            container_for_snapshot,
+            !is_reset,
+        );
+        (Some(guard), Some(trigger))
+    } else {
+        (None, None)
+    };
 
     let generation = NEXT_SHELL_GENERATION.with(|c| {
         let next = c.get();
@@ -540,16 +538,6 @@ where
 }
 
 #[cfg(feature = "app-studio")]
-pub(crate) fn is_valid_studio_state(bytes: &[u8]) -> bool {
-    WorkspaceState::from_bytes(bytes).is_some()
-}
-
-#[cfg(feature = "app-kitchen-sink")]
-pub(crate) fn is_valid_kitchen_sink_state(bytes: &[u8]) -> bool {
-    decode_kitchen_sink_state(bytes).is_some()
-}
-
-#[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn start_studio_workspace_app(
     mount_id: &str,
@@ -567,14 +555,11 @@ pub fn start_studio_workspace_app_on_surface(
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "StudioWorkspaceApp",
-        "studio",
-        STUDIO_SNAPSHOT_SCHEMA_VERSION,
         surface_id,
         mount_id,
         ws_url,
         false,
-        is_valid_studio_state,
-        WebAppSession::new_studio_workspace_with_state,
+        WebAppSession::new_studio_workspace,
     )
 }
 
@@ -596,13 +581,10 @@ pub fn start_kitchen_sink_app_on_surface(
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "KitchenSinkApp",
-        "kitchen-sink",
-        KITCHEN_SINK_STATE_VERSION,
         surface_id,
         mount_id,
         ws_url,
         false,
-        is_valid_kitchen_sink_state,
-        WebAppSession::new_kitchen_sink_with_state,
+        WebAppSession::new_kitchen_sink,
     )
 }

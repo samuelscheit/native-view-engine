@@ -227,36 +227,32 @@ mod real_impl {
                 return;
             };
             let hidden_input = nve_components::tables::is_hidden_text_input(store, id);
-            if let Some(layout) = store.try_row::<Layout>(id) {
+            let (props, ext_storage) = if let Some(layout) = store.try_row::<Layout>(id) {
                 let props = NveYogaLayoutProps::from_store_layout(&layout);
                 let mut ext = NveYogaLayoutExt::from_store_layout(&layout);
                 if hidden_input {
                     ext.display = 1;
                 }
-                unsafe {
-                    nve_yg_node_apply_layout(entry.yg_node, &props);
-                    nve_yg_node_apply_layout_ext(entry.yg_node, &ext);
-                }
+                (props, Some(ext))
             } else {
                 let props = NveYogaLayoutProps {
                     flex_shrink: 1.0,
                     ..Default::default()
                 };
-                if hidden_input {
-                    let ext = NveYogaLayoutExt {
-                        display: 1,
-                        ..Default::default()
-                    };
-                    unsafe {
-                        nve_yg_node_apply_layout(entry.yg_node, &props);
-                        nve_yg_node_apply_layout_ext(entry.yg_node, &ext);
-                    }
-                } else {
-                    unsafe {
-                        nve_yg_node_apply_layout(entry.yg_node, &props);
-                        nve_yg_node_apply_layout_ext(entry.yg_node, std::ptr::null());
-                    }
-                }
+                let ext = hidden_input.then(|| NveYogaLayoutExt {
+                    display: 1,
+                    ..Default::default()
+                });
+                (props, ext)
+            };
+            let ext_ptr = ext_storage
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref);
+            // SAFETY: `entry.yg_node` is a valid Yoga node owned by `self.nodes`; `props` is a
+            // valid stack reference and `ext_ptr` is either null or points to live `ext_storage`.
+            unsafe {
+                nve_yg_node_apply_layout(entry.yg_node, &props);
+                nve_yg_node_apply_layout_ext(entry.yg_node, ext_ptr);
             }
 
             let text_row = store.try_row::<TextContent>(id);

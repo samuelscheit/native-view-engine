@@ -9,7 +9,7 @@ use nve_backend_skia::{
     SkiaBackend, StateStyleRule, StylePatch, TransitionProperty, TransitionSpec,
 };
 use nve_components::tables::{
-    InputKind, Interaction, Layout, Motion, StateRules, TextContent, TextInput, Transform,
+    Display, InputKind, Interaction, Layout, Motion, StateRules, TextContent, TextInput, Transform,
     Transitions, Typography, Visual,
 };
 use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
@@ -172,4 +172,63 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     assert!(backend.display_list().ops.is_empty());
     let vr = backend.layout_of(visible.raw()).expect("now-hidden layout");
     assert_eq!((vr.width, vr.height), (0.0, 0.0));
+}
+
+#[test]
+fn ancestor_display_none_clears_and_rejects_child_text_input_focus() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut backend = SkiaBackend::new();
+    backend.set_viewport(
+        1,
+        Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        },
+    );
+
+    let (container, child) = {
+        let mut tx = store.tx();
+        let parent = tx.create();
+        let input = tx.create();
+        tx.set_children(NodeId::ROOT, &[parent]);
+        tx.set_children(parent, &[input]);
+        tx.edit::<Layout>(parent)
+            .width(Length::points(220.0))
+            .height(Length::points(60.0));
+        tx.edit::<TextInput>(input)
+            .input_kind(InputKind::Text)
+            .value("nested");
+        tx.edit::<Layout>(input)
+            .width(Length::points(180.0))
+            .height(Length::points(36.0));
+        tx.commit_into(&mut changes);
+        (parent, input)
+    };
+    backend.commit(&store, &changes).unwrap();
+
+    backend.set_focused_node(&store, Some(child.raw()));
+    assert_eq!(backend.focused_node(), Some(child.raw()));
+
+    // Hiding the ancestor clears focus on the focused child TextInput during commit.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Layout>(container).display(Display::None);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).unwrap();
+    assert_eq!(
+        backend.focused_node(),
+        None,
+        "hiding an ancestor with Display::None must clear focus on child TextInput"
+    );
+
+    // Direct set_focused_node on a child under a Display::None ancestor is also rejected.
+    backend.set_focused_node(&store, Some(child.raw()));
+    assert_eq!(
+        backend.focused_node(),
+        None,
+        "set_focused_node must reject focusing a child under a Display::None parent"
+    );
 }

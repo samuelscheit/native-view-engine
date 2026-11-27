@@ -23,7 +23,6 @@ yoga = ["nve-backend-skia/yoga"]
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-dioxus = { workspace = true }
 nve-store = { workspace = true }
 nve-components = { workspace = true }
 nve-canvas = { workspace = true }
@@ -44,6 +43,9 @@ winit = { workspace = true }
 softbuffer = { workspace = true }
 tungstenite = { workspace = true }
 crossbeam-channel = { workspace = true }
+
+[dev-dependencies]
+nve-dioxus = { workspace = true }
 
 [lints]
 workspace = true

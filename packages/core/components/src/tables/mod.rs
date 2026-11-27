@@ -84,6 +84,26 @@ pub fn is_node_display_none(store: &nve_store::NodeStore, id: nve_store::NodeId)
         || is_hidden_text_input(store, id)
 }
 
+/// Returns `true` when `id` or any ancestor is excluded from layout, paint, hit-testing, and focus
+/// (`Layout::display == Display::None` or `TextInput::input_kind == InputKind::Hidden`).
+#[inline]
+pub fn is_subtree_display_none(store: &nve_store::NodeStore, id: nve_store::NodeId) -> bool {
+    let mut cur = id;
+    for _ in 0..256 {
+        if is_node_display_none(store, cur) {
+            return true;
+        }
+        let Some(parent) = store.parent(cur) else {
+            break;
+        };
+        if parent == cur {
+            break;
+        }
+        cur = parent;
+    }
+    false
+}
+
 /// Default cross-platform core realization priority order (`Image > TextInput > Scroll > Link > TextContent`).
 /// Backends/hosts prepend any higher-priority module tables (`Svg`, `Canvas`, `WebView`, `Video`,
 /// `Camera`, `WebHtml`, 3P tables) before installing onto a [`nve_store::NodeStore`].

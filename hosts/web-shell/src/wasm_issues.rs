@@ -101,7 +101,7 @@ fn build_issues_session(
     backend: WebBackend,
     viewport: Viewport,
     api_base: &str,
-) -> (WebAppSession, bool) {
+) -> WebAppSession {
     let cfg = if api_base.trim().is_empty() {
         FetchConfig::same_origin()
     } else {
@@ -115,7 +115,7 @@ fn build_issues_session(
     );
     let surface = DioxusSurface::new(surface_id, BrowserIssuesRoot)
         .with_context(IssuesBootConfig { client });
-    (WebAppSession::new(surface_id, surface, backend, viewport), false)
+    WebAppSession::new(surface_id, surface, backend, viewport)
 }
 
 /// Mounts the cross-platform `examples/fullstack-issues` Dioxus app onto `#<mount_id>` backed by
@@ -128,14 +128,11 @@ pub fn start_issues_app(
     let base = api_base.unwrap_or_default();
     start_surface_app_inner(
         "IssuesApp",
-        "issues",
-        1,
         DEFAULT_SURFACE_ID,
         mount_id,
         None,
         false,
-        |_| false,
-        move |surface_id, backend, viewport, _| {
+        move |surface_id, backend, viewport| {
             build_issues_session(surface_id, backend, viewport, &base)
         },
     )

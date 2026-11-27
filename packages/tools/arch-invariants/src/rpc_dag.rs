@@ -1,10 +1,69 @@
 //! Fullstack framework RPC/server/query layer purity and workspace-wide `fnv` crate ban,
 //! powered by `guppy`'s `PackageGraph` and multi-target `CargoSet` resolver.
 
-use guppy::graph::PackageGraph;
+use std::collections::{BTreeMap, VecDeque};
 
-use crate::dag::{rel_manifest, transitive_chains, workspace_rel_dir, TARGET_TRIPLES_ALL};
+use guppy::graph::PackageGraph;
+use guppy::PackageId;
+
+use crate::dag::{rel_manifest, transitive_chains, workspace_rel_dir};
 use crate::Violation;
+
+const RPC_TARGET_TRIPLES: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+    "wasm32-wasip2",
+    "aarch64-linux-android",
+    "aarch64-apple-ios",
+];
+
+/// Combines multi-target `CargoSet` resolution (`RPC_TARGET_TRIPLES`, including `wasm32-wasip2`,
+/// Android, and iOS) with a full BFS over all declared non-dev (`normal` + `build`) links
+/// regardless of `cfg(...)` target predicate so target-gated dependencies (e.g.
+/// `[target.'cfg(target_os = "wasi")'.dependencies]`) and transitive build-script edges cannot
+/// bypass purity checks.
+fn non_dev_chains_all_cfgs<'g>(
+    graph: &'g PackageGraph,
+    root_id: &'g PackageId,
+) -> BTreeMap<&'g PackageId, Vec<String>> {
+    let mut chains = transitive_chains(graph, root_id, false, RPC_TARGET_TRIPLES);
+    let Ok(root_pkg) = graph.metadata(root_id) else {
+        return chains;
+    };
+    let mut visited: BTreeMap<&'g PackageId, Vec<String>> = BTreeMap::new();
+    let mut queue: VecDeque<&'g PackageId> = VecDeque::new();
+    visited.insert(root_pkg.id(), vec![root_pkg.name().to_string()]);
+    queue.push_back(root_pkg.id());
+
+    while let Some(curr_id) = queue.pop_front() {
+        let Some(curr_chain) = visited.get(curr_id).cloned() else {
+            continue;
+        };
+        let Ok(curr_pkg) = graph.metadata(curr_id) else {
+            continue;
+        };
+        for link in curr_pkg.direct_links() {
+            if link.dev_only() {
+                continue;
+            }
+            let next_id = link.to().id();
+            if visited.contains_key(next_id) {
+                continue;
+            }
+            let mut next_chain = curr_chain.clone();
+            next_chain.push(link.to().name().to_string());
+            visited.insert(next_id, next_chain);
+            queue.push_back(next_id);
+        }
+    }
+    visited.remove(root_pkg.id());
+    for (dep_id, chain) in visited {
+        chains.entry(dep_id).or_insert(chain);
+    }
+    chains
+}
 
 /// Bans:
 /// 1. `packages/core/*` -> `packages/framework/*` dependencies (direct or transitive).
@@ -24,7 +83,7 @@ pub fn check_framework_rpc_server_purity(graph: &PackageGraph) -> Vec<Violation>
 
         // 1. Core crates must never depend on packages/framework/*.
         if dir.starts_with("packages/core/") {
-            for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
+            for (dep_id, chain) in non_dev_chains_all_cfgs(graph, pkg.id()) {
                 if let Ok(dep) = graph.metadata(dep_id)
                     && workspace_rel_dir(&dep)
                         .is_some_and(|dep_dir| dep_dir.starts_with("packages/framework/"))
@@ -56,7 +115,7 @@ pub fn check_framework_rpc_server_purity(graph: &PackageGraph) -> Vec<Violation>
             scanned_fw += 1;
         }
 
-        let chains = transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL);
+        let chains = non_dev_chains_all_cfgs(graph, pkg.id());
         for (dep_id, chain) in &chains {
             let Ok(dep) = graph.metadata(dep_id) else {
                 continue;
@@ -125,7 +184,7 @@ pub fn check_framework_rpc_server_purity(graph: &PackageGraph) -> Vec<Violation>
 pub fn check_zero_fnv_crate_dep(graph: &PackageGraph) -> Vec<Violation> {
     let mut violations = Vec::new();
     for pkg in graph.workspace().iter() {
-        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
+        for (dep_id, chain) in non_dev_chains_all_cfgs(graph, pkg.id()) {
             if let Ok(dep) = graph.metadata(dep_id)
                 && dep.name() == "fnv"
             {
