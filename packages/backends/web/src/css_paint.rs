@@ -4,6 +4,7 @@ use nve_abi::num::{write_i64, write_u64};
 use nve_abi::ColorRgba;
 use nve_components::paint::write_css_gradient;
 use nve_components::tables::{
+    FontStyle,
     text_decoration, BackgroundFillRes, BoxShadows, Image, Overflow, OverflowWrap, Scroll,
     ScrollAxes, Scrollbars, TextAlign, TextContent, Transform, Typography, Visibility, Visual,
     WhiteSpace, WordBreak,
@@ -179,6 +180,11 @@ pub(super) fn write_visual_and_typography_css(
             out.push_str("font-family:");
             out.push_str(family.trim());
             out.push(';');
+        }
+        match t.font_style() {
+            FontStyle::Normal => {}
+            FontStyle::Italic => out.push_str("font-style:italic;"),
+            FontStyle::Oblique => out.push_str("font-style:oblique;"),
         }
         match t.text_align() {
             TextAlign::Start => {}

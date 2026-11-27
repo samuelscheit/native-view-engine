@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 guppy = "0.19"
 nve-abi = { workspace = true }
+nve-components = { workspace = true }
 nve-hash = { workspace = true }
 nve-store = { workspace = true }
 proc-macro2 = { version = "1", features = ["span-locations"] }

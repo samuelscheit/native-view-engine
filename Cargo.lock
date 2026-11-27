@@ -2487,6 +2487,7 @@ version = "0.1.0"
 dependencies = [
  "guppy",
  "nve-abi",
+ "nve-components",
  "nve-hash",
  "nve-store",
  "proc-macro2",

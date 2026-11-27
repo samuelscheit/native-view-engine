@@ -12,6 +12,7 @@ pub mod dag;
 pub mod host_runtimes;
 pub mod hot_path;
 pub mod hygiene;
+pub mod inline_style_keys;
 pub mod purity;
 pub mod rpc_dag;
 pub mod spec_registry;

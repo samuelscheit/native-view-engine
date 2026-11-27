@@ -256,7 +256,7 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             };
             rsx! {
                 view {
-                    style: "display: inline-flex; align-items: center; vertical-align: baseline; padding-horizontal: 7px; padding-vertical: 2px; border-radius: 999px; background-color: {bg}; border-width: 1px; border-color: {border};",
+                    style: "display: inline-flex; align-items: center; padding-horizontal: 7px; padding-vertical: 2px; border-radius: 999px; background-color: {bg}; border-width: 1px; border-color: {border};",
                     text {
                         style: "display: inline; font-size: 11px; font-weight: 600; color: {fg};",
                         "{label}"
@@ -269,7 +269,7 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             rsx! {
                 view {
                     nve_table: crate::render::html_semantic(nve_web_html::SemanticElement::Kbd),
-                    style: "display: inline-flex; align-items: center; vertical-align: baseline; padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    style: "display: inline-flex; align-items: center; padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     text {
                         style: "display: inline; font-size: 11px; font-weight: 600; font-family: monospace; color: {theme.text.primary.hex()};",
                         "{keys}"

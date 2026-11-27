@@ -273,7 +273,7 @@ fn HeroInteractiveCard() -> Element {
         view {
             test_id: "landing-hero-preview",
             nve_style: card_resp,
-            style: "width: 540px; max-width: 100%; align-self: flex-start; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()}; overflow: hidden;",
+            style: "width: 540px; max-width: 100%; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()}; overflow: hidden;",
 
             // Card chrome header: window dots + switchable mode tabs (stacked on mobile)
             view {

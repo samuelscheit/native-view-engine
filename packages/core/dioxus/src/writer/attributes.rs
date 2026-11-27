@@ -142,6 +142,9 @@ impl StoreMutationTx<'_, '_> {
             "flex-shrink" | "flexShrink" => {
                 self.tx.edit::<Layout>(node).flex_shrink(f.max(0.0));
             }
+            "flex-basis" | "flexBasis" => {
+                self.tx.edit::<Layout>(node).flex_basis(Length::points(f.max(0.0)));
+            }
             "gap" => {
                 let l = Length::points(f.max(0.0));
                 self.tx.edit::<Layout>(node).row_gap(l).column_gap(l);

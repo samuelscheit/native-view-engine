@@ -361,6 +361,7 @@ pub(super) fn parse_inline_css_to_typed(css: &str) -> TypedStyle {
             "width" => ts = ts.width(parse_dim(v)),
             "height" => ts = ts.height(parse_dim(v)),
             "min-width" | "minWidth" => ts = ts.min_width(parse_dim(v)),
+            "flex-basis" | "flexBasis" => ts = ts.flex_basis(parse_dim(v)),
             "min-height" | "minHeight" => ts = ts.min_height(parse_dim(v)),
             "max-width" | "maxWidth" => ts = ts.max_width(parse_dim(v)),
             "max-height" | "maxHeight" => ts = ts.max_height(parse_dim(v)),

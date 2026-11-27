@@ -6,7 +6,7 @@ use std::rc::Rc;
 use nve_abi::hash::HashSet;
 use nve_components::interaction::CursorKind;
 use nve_components::tables::{
-    Interaction, Motion, Responsive, ResponsiveRules, Scroll, StateRules, Transitions,
+    Interaction, Motion, Responsive, ResponsiveRules, Scroll, ScrollAxes, StateRules, Transitions,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -250,9 +250,15 @@ pub fn resolve_store_node_style(
         out.classes.push_str("nve");
     }
     // Scroll-container marker: snapshot restore, hydration DSD promotion, and `wasm_snapshot`
-    // locate scroll offsets via `.nve-s` in DOM order.
-    if store.has::<Scroll>(id) {
-        out.classes.push_str(" nve-s");
+    // locate scroll offsets via `.nve-s` in DOM order. `nve-sy` / `nve-sx` name the scrolling
+    // axes so the base layer can keep scroll content at its natural size on those axes.
+    if let Some(scroll) = store.try_row::<Scroll>(id) {
+        out.classes.push_str(match scroll.axes() {
+            ScrollAxes::Vertical => " nve-s nve-sy",
+            ScrollAxes::Horizontal => " nve-s nve-sx",
+            ScrollAxes::Both => " nve-s nve-sy nve-sx",
+            ScrollAxes::None => " nve-s",
+        });
     }
 
     let mut decls = String::new();

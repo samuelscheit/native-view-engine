@@ -68,6 +68,49 @@ fn scroll_containers_carry_nve_s_marker_in_ssr_and_live_class_resolution() {
 }
 
 #[test]
+fn scroll_axes_classes_restore_automatic_min_size_of_scroll_content() {
+    use nve_backend_web::NVE_BASE_RESET_CSS;
+    use nve_components::tables::ScrollAxes;
+
+    let cases = [
+        (ScrollAxes::Vertical, &["nve-s", "nve-sy"][..], &["nve-sx"][..]),
+        (ScrollAxes::Horizontal, &["nve-s", "nve-sx"], &["nve-sy"]),
+        (ScrollAxes::Both, &["nve-s", "nve-sy", "nve-sx"], &[]),
+        (ScrollAxes::None, &["nve-s"], &["nve-sy", "nve-sx"]),
+    ];
+    let mut web = web();
+    let mut store = NodeStore::new();
+    commit(&mut web, &mut store, |tx| {
+        let ids: Vec<NodeId> = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (axes, ..))| {
+                let id = node(tx, 10 + i as u32);
+                tx.edit::<Scroll>(id).axes(*axes);
+                id
+            })
+            .collect();
+        tx.set_children(NodeId::ROOT, &ids);
+    });
+    let mut live = StyleSheetCache::new();
+    for (i, (axes, present, absent)) in cases.into_iter().enumerate() {
+        let classes = live.resolve_node(&store, NodeId(10 + i as u32)).classes;
+        let tokens: Vec<&str> = classes.split(' ').collect();
+        for c in present {
+            assert!(tokens.contains(c), "{axes:?}: missing {c} in {classes}");
+        }
+        for c in absent {
+            assert!(!tokens.contains(c), "{axes:?}: unexpected {c} in {classes}");
+        }
+    }
+    // The axis rules must follow the `min-*:0` reset in the same zero-specificity layer to win.
+    let reset = NVE_BASE_RESET_CSS.find("min-height:0}").expect("reset rule");
+    let sy = NVE_BASE_RESET_CSS.find(":where(.nve-sy>.nve){min-height:auto}").expect("nve-sy rule");
+    let sx = NVE_BASE_RESET_CSS.find(":where(.nve-sx>.nve){min-width:auto}").expect("nve-sx rule");
+    assert!(reset < sy && reset < sx);
+}
+
+#[test]
 fn snapshot_bootstrap_scripts_enforce_strict_900_byte_budget() {
     let boot = WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG;
     assert!(

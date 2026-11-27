@@ -131,6 +131,7 @@ macro_rules! define_element {
                 flex => "flex",
                 flex_grow => "flex-grow",
                 flex_shrink => "flex-shrink",
+                flex_basis => "flex-basis",
                 gap => "gap",
                 padding => "padding",
                 padding_horizontal => "padding-horizontal",

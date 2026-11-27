@@ -28,6 +28,11 @@ pub const NVE_BASE_RESET_CSS: &str = concat!(
     "*,*::before,*::after{box-sizing:border-box}",
     "html,body{margin:0;padding:0;min-height:100%}",
     ":where(.nve){display:flex;flex-direction:column;position:relative;min-width:0;min-height:0}",
+    // Scroll content keeps CSS's automatic minimum size on the scrolling axes: with the `min-*:0`
+    // reset above, `flex-shrink:1` children would otherwise be squeezed to fit the viewport and
+    // the container would never scroll. `auto` only binds on the parent's main axis.
+    ":where(.nve-sy>.nve){min-height:auto}",
+    ":where(.nve-sx>.nve){min-width:auto}",
     ":where(.nve-r){display:flex;flex-direction:column;width:100%;min-width:0}",
     ":where(span.nve){display:inline;color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}",
     ":where(.nve:is(strong,em,s,kbd)){display:inline}",

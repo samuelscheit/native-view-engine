@@ -3,12 +3,11 @@
 
 use nve_abi::num::parse_f32;
 use nve_abi::{ColorRgba, Dimension};
-use nve_store::{Length, NodeId, Rgba, Transaction};
+use nve_store::{Length, NodeId, Transaction};
 
-use crate::tables::{
-    self, AlignItems, BoxShadows, Display, FlexDirection, FlexWrap, JustifyContent, Layout,
-    Overflow, OverflowWrap, TextAlign, Typography, Visibility, Visual, WhiteSpace, WordBreak,
-};
+#[path = "css_decl.rs"]
+mod decl;
+use decl::{parse_css_decl, write_parsed_decl};
 
 /// Style-layer bit for [`Layout`].
 pub const STYLE_LAYER_LAYOUT: u8 = 1 << 0;
@@ -38,29 +37,33 @@ const BIT_COLUMN_GAP: u64 = 1 << 14;
 const BIT_PADDING_H: u64 = 1 << 15;
 const BIT_PADDING_V: u64 = 1 << 16;
 const BIT_MARGIN: u64 = 1 << 17;
-const LAYOUT_PROPS_MASK: u64 = (1 << 18) - 1;
+const BIT_FLEX_BASIS: u64 = 1 << 18;
+const LAYOUT_PROPS_MASK: u64 = (1 << 19) - 1;
 
-const BIT_BACKGROUND: u64 = 1 << 18;
-const BIT_BORDER_COLOR: u64 = 1 << 19;
-const BIT_BORDER_WIDTH: u64 = 1 << 20;
-const BIT_BORDER_RADIUS: u64 = 1 << 21;
-const BIT_OPACITY: u64 = 1 << 22;
-const BIT_VISIBILITY: u64 = 1 << 23;
-const BIT_OVERFLOW_X: u64 = 1 << 24;
-const BIT_OVERFLOW_Y: u64 = 1 << 25;
-const BIT_BOX_SHADOW: u64 = 1 << 26;
-const BIT_Z_INDEX: u64 = 1 << 27;
-const VISUAL_PROPS_MASK: u64 = ((1 << 28) - 1) & !LAYOUT_PROPS_MASK;
+const BIT_BACKGROUND: u64 = 1 << 19;
+const BIT_BORDER_COLOR: u64 = 1 << 20;
+const BIT_BORDER_WIDTH: u64 = 1 << 21;
+const BIT_BORDER_RADIUS: u64 = 1 << 22;
+const BIT_OPACITY: u64 = 1 << 23;
+const BIT_VISIBILITY: u64 = 1 << 24;
+const BIT_OVERFLOW_X: u64 = 1 << 25;
+const BIT_OVERFLOW_Y: u64 = 1 << 26;
+const BIT_BOX_SHADOW: u64 = 1 << 27;
+const BIT_Z_INDEX: u64 = 1 << 28;
+const VISUAL_PROPS_MASK: u64 = ((1 << 29) - 1) & !LAYOUT_PROPS_MASK;
 
-const BIT_COLOR: u64 = 1 << 28;
-const BIT_OVERFLOW_WRAP: u64 = 1 << 29;
-const BIT_WORD_BREAK: u64 = 1 << 30;
-const BIT_WHITE_SPACE: u64 = 1 << 31;
-const BIT_LINE_HEIGHT: u64 = 1 << 32;
-const BIT_FONT_SIZE: u64 = 1 << 33;
-const BIT_FONT_WEIGHT: u64 = 1 << 34;
-const BIT_TEXT_ALIGN: u64 = 1 << 35;
-const TYPOGRAPHY_PROPS_MASK: u64 = ((1 << 36) - 1) & !(LAYOUT_PROPS_MASK | VISUAL_PROPS_MASK);
+const BIT_COLOR: u64 = 1 << 29;
+const BIT_OVERFLOW_WRAP: u64 = 1 << 30;
+const BIT_WORD_BREAK: u64 = 1 << 31;
+const BIT_WHITE_SPACE: u64 = 1 << 32;
+const BIT_LINE_HEIGHT: u64 = 1 << 33;
+const BIT_FONT_SIZE: u64 = 1 << 34;
+const BIT_FONT_WEIGHT: u64 = 1 << 35;
+const BIT_TEXT_ALIGN: u64 = 1 << 36;
+const BIT_FONT_FAMILY: u64 = 1 << 37;
+const BIT_FONT_STYLE: u64 = 1 << 38;
+const BIT_TEXT_DECORATION: u64 = 1 << 39;
+const TYPOGRAPHY_PROPS_MASK: u64 = ((1 << 40) - 1) & !(LAYOUT_PROPS_MASK | VISUAL_PROPS_MASK);
 
 /// Parses a pixel-suffixed or unitless CSS numeric scalar.
 pub fn parse_px(raw: &str) -> Option<f32> {
@@ -233,12 +236,15 @@ pub fn css_key_bits(key: &str) -> Option<u64> {
         "align-items" | "alignItems" => BIT_ALIGN_ITEMS,
         "flex" | "flex-grow" | "flexGrow" => BIT_FLEX_GROW,
         "flex-shrink" | "flexShrink" => BIT_FLEX_SHRINK,
+        "flex-basis" | "flexBasis" => BIT_FLEX_BASIS,
         "gap" => BIT_ROW_GAP | BIT_COLUMN_GAP,
         "row-gap" | "rowGap" => BIT_ROW_GAP,
         "column-gap" | "columnGap" => BIT_COLUMN_GAP,
         "padding" => BIT_PADDING_H | BIT_PADDING_V,
         "padding-horizontal" | "paddingHorizontal" => BIT_PADDING_H,
         "padding-vertical" | "paddingVertical" => BIT_PADDING_V,
+        "padding-top" | "paddingTop" | "padding-bottom" | "paddingBottom" => BIT_PADDING_V,
+        "padding-left" | "paddingLeft" | "padding-right" | "paddingRight" => BIT_PADDING_H,
         "margin" => BIT_MARGIN,
         "background" | "background-color" | "backgroundColor" => BIT_BACKGROUND,
         "border-color" | "borderColor" => BIT_BORDER_COLOR,
@@ -259,6 +265,9 @@ pub fn css_key_bits(key: &str) -> Option<u64> {
         "font-size" | "fontSize" => BIT_FONT_SIZE,
         "font-weight" | "fontWeight" => BIT_FONT_WEIGHT,
         "text-align" | "textAlign" => BIT_TEXT_ALIGN,
+        "font-family" | "fontFamily" => BIT_FONT_FAMILY,
+        "font-style" | "fontStyle" => BIT_FONT_STYLE,
+        "text-decoration" | "textDecoration" | "text-decoration-line" => BIT_TEXT_DECORATION,
         _ => return None,
     })
 }
@@ -277,300 +286,6 @@ pub fn css_key_rank(key: &str) -> u8 {
 #[inline]
 pub fn css_attr_layer(key: &str) -> u8 {
     css_key_bits(key).map_or(0, prop_bits_to_layers)
-}
-
-enum ParsedDecl {
-    Width(Length),
-    Height(Length),
-    MinWidth(Length),
-    MinHeight(Length),
-    MaxWidth(Length),
-    MaxHeight(Length),
-    Display(Display),
-    FlexDirection(FlexDirection),
-    FlexWrap(FlexWrap),
-    JustifyContent(JustifyContent),
-    AlignItems(AlignItems),
-    FlexGrow(f32),
-    FlexShrink(f32),
-    Gap(Length),
-    RowGap(Length),
-    ColumnGap(Length),
-    Padding(Length),
-    PaddingH(Length),
-    PaddingV(Length),
-    Margin(Length),
-    Background(Rgba),
-    BorderColor(Rgba),
-    BorderWidth(f32),
-    BorderRadius(f32),
-    Opacity(f32),
-    Visibility(Visibility),
-    Overflow(Overflow),
-    OverflowX(Overflow),
-    OverflowY(Overflow),
-    BoxShadow(Option<BoxShadows>),
-    ZIndex(i32),
-    Color(Rgba),
-    OverflowWrap(OverflowWrap),
-    WordBreak(WordBreak),
-    WhiteSpace(WhiteSpace),
-    LineHeight(Length),
-    FontSize(f32),
-    FontWeight(u16),
-    TextAlign(TextAlign),
-}
-
-#[inline]
-fn parse_overflow(value: &str) -> Option<Overflow> {
-    match value.trim() {
-        "visible" => Some(Overflow::Visible),
-        "hidden" => Some(Overflow::Hidden),
-        "scroll" => Some(Overflow::Scroll),
-        "auto" => Some(Overflow::Auto),
-        _ => None,
-    }
-}
-
-#[inline]
-fn parse_visibility(value: &str) -> Option<Visibility> {
-    let trimmed = value.trim();
-    if trimmed.eq_ignore_ascii_case("hidden") || trimmed.eq_ignore_ascii_case("collapse") {
-        Some(Visibility::Hidden)
-    } else if trimmed.eq_ignore_ascii_case("visible") || trimmed.eq_ignore_ascii_case("initial") {
-        Some(Visibility::Visible)
-    } else if trimmed.eq_ignore_ascii_case("inherit")
-        || trimmed.eq_ignore_ascii_case("unset")
-        || trimmed.eq_ignore_ascii_case("revert")
-        || trimmed.eq_ignore_ascii_case("revert-layer")
-    {
-        Some(Visibility::Inherit)
-    } else {
-        None
-    }
-}
-
-#[inline]
-fn parse_line_height(value: &str) -> Option<Length> {
-    let trimmed = value.trim();
-    if let Some(px) = trimmed
-        .strip_suffix("px")
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        && px > 0.0
-    {
-        Some(Length::points(px))
-    } else if let Some(pct) = trimmed
-        .strip_suffix('%')
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        && pct > 0.0
-    {
-        Some(Length::percent(pct))
-    } else if let Some(mult) = parse_f32(trimmed)
-        && mult > 0.0
-    {
-        Some(Length::percent(mult * 100.0))
-    } else {
-        None
-    }
-}
-
-/// Parses one CSS declaration into `(canonical_prop_bits, Option<ParsedDecl>)`.
-/// Returns `None` iff `key` is unrecognized; returns `Some((bits, None))` when `key` is recognized
-/// (preserving its layer bits) but `value` fails validation.
-fn parse_css_decl(key: &str, value: &str) -> Option<(u64, Option<ParsedDecl>)> {
-    let bits = css_key_bits(key)?;
-    let v = value.trim();
-    let parsed: Option<ParsedDecl> = match key {
-        "width" => try_parse_dim(v).map(|d| ParsedDecl::Width(dim_to_length(d))),
-        "height" => try_parse_dim(v).map(|d| ParsedDecl::Height(dim_to_length(d))),
-        "min-width" | "minWidth" => try_parse_dim(v).map(|d| ParsedDecl::MinWidth(dim_to_length(d))),
-        "min-height" | "minHeight" => try_parse_dim(v).map(|d| ParsedDecl::MinHeight(dim_to_length(d))),
-        "max-width" | "maxWidth" => try_parse_dim(v).map(|d| ParsedDecl::MaxWidth(dim_to_length(d))),
-        "max-height" | "maxHeight" => try_parse_dim(v).map(|d| ParsedDecl::MaxHeight(dim_to_length(d))),
-        "display" => match v {
-            "flex" => Some(Display::Flex),
-            "block" => Some(Display::Block),
-            "inline" => Some(Display::Inline),
-            "inline-block" => Some(Display::InlineBlock),
-            "inline-flex" => Some(Display::InlineFlex),
-            "contents" => Some(Display::Contents),
-            "grid" => Some(Display::Grid),
-            "none" => Some(Display::None),
-            _ => None,
-        }
-        .map(ParsedDecl::Display),
-        "flex-direction" | "flexDirection" => match v {
-            "column" => Some(FlexDirection::Column),
-            "row" => Some(FlexDirection::Row),
-            "column-reverse" | "columnReverse" => Some(FlexDirection::ColumnReverse),
-            "row-reverse" | "rowReverse" => Some(FlexDirection::RowReverse),
-            _ => None,
-        }
-        .map(ParsedDecl::FlexDirection),
-        "flex-wrap" | "flexWrap" => match v {
-            "nowrap" | "noWrap" => Some(FlexWrap::NoWrap),
-            "wrap" => Some(FlexWrap::Wrap),
-            "wrap-reverse" | "wrapReverse" => Some(FlexWrap::WrapReverse),
-            _ => None,
-        }
-        .map(ParsedDecl::FlexWrap),
-        "justify-content" | "justifyContent" => match v {
-            "flex-start" | "start" | "flexStart" => Some(JustifyContent::FlexStart),
-            "center" => Some(JustifyContent::Center),
-            "flex-end" | "end" | "flexEnd" => Some(JustifyContent::FlexEnd),
-            "space-between" | "spaceBetween" => Some(JustifyContent::SpaceBetween),
-            "space-around" | "spaceAround" => Some(JustifyContent::SpaceAround),
-            "space-evenly" | "spaceEvenly" => Some(JustifyContent::SpaceEvenly),
-            _ => None,
-        }
-        .map(ParsedDecl::JustifyContent),
-        "align-items" | "alignItems" => match v {
-            "stretch" => Some(AlignItems::Stretch),
-            "flex-start" | "start" | "flexStart" => Some(AlignItems::FlexStart),
-            "center" => Some(AlignItems::Center),
-            "flex-end" | "end" | "flexEnd" => Some(AlignItems::FlexEnd),
-            "baseline" => Some(AlignItems::Baseline),
-            _ => None,
-        }
-        .map(ParsedDecl::AlignItems),
-        "flex" | "flex-grow" | "flexGrow" => parse_f32(v).map(ParsedDecl::FlexGrow),
-        "flex-shrink" | "flexShrink" => parse_f32(v).map(ParsedDecl::FlexShrink),
-        "gap" => parse_px(v).map(|px| ParsedDecl::Gap(Length::points(px))),
-        "row-gap" | "rowGap" => parse_px(v).map(|px| ParsedDecl::RowGap(Length::points(px))),
-        "column-gap" | "columnGap" => parse_px(v).map(|px| ParsedDecl::ColumnGap(Length::points(px))),
-        "padding" => parse_px(v).map(|px| ParsedDecl::Padding(Length::points(px))),
-        "padding-horizontal" | "paddingHorizontal" => parse_px(v).map(|px| ParsedDecl::PaddingH(Length::points(px))),
-        "padding-vertical" | "paddingVertical" => parse_px(v).map(|px| ParsedDecl::PaddingV(Length::points(px))),
-        "margin" => parse_px(v).map(|px| ParsedDecl::Margin(Length::points(px))),
-        "background" | "background-color" | "backgroundColor" => parse_color(v).map(|c| ParsedDecl::Background(Rgba(c.to_u32()))),
-        "color" => parse_color(v).map(|c| ParsedDecl::Color(Rgba(c.to_u32()))),
-        "border-color" | "borderColor" => parse_color(v).map(|c| ParsedDecl::BorderColor(Rgba(c.to_u32()))),
-        "border-width" | "borderWidth" => parse_px(v).map(ParsedDecl::BorderWidth),
-        "border-radius" | "borderRadius" => parse_px(v).map(ParsedDecl::BorderRadius),
-        "opacity" => parse_f32(v).map(|f| ParsedDecl::Opacity(f.clamp(0.0, 1.0))),
-        "visibility" => parse_visibility(v).map(ParsedDecl::Visibility),
-        "overflow" => parse_overflow(v).map(ParsedDecl::Overflow),
-        "overflow-x" | "overflowX" => parse_overflow(v).map(ParsedDecl::OverflowX),
-        "overflow-y" | "overflowY" => parse_overflow(v).map(ParsedDecl::OverflowY),
-        "overflow-wrap" | "overflowWrap" | "word-wrap" => match v {
-            "normal" => Some(OverflowWrap::Normal),
-            "break-word" => Some(OverflowWrap::BreakWord),
-            "anywhere" => Some(OverflowWrap::Anywhere),
-            _ => None,
-        }
-        .map(ParsedDecl::OverflowWrap),
-        "word-break" | "wordBreak" => match v {
-            "normal" => Some(WordBreak::Normal),
-            "break-all" => Some(WordBreak::BreakAll),
-            "keep-all" => Some(WordBreak::KeepAll),
-            "break-word" => Some(WordBreak::BreakWord),
-            _ => None,
-        }
-        .map(ParsedDecl::WordBreak),
-        "white-space" | "whiteSpace" => match v {
-            "normal" => Some(WhiteSpace::Normal),
-            "nowrap" => Some(WhiteSpace::NoWrap),
-            "pre" => Some(WhiteSpace::Pre),
-            "pre-wrap" => Some(WhiteSpace::PreWrap),
-            "pre-line" => Some(WhiteSpace::PreLine),
-            _ => None,
-        }
-        .map(ParsedDecl::WhiteSpace),
-        "line-height" | "lineHeight" => parse_line_height(v).map(ParsedDecl::LineHeight),
-        "box-shadow" | "boxShadow" => {
-            if v.eq_ignore_ascii_case("none") {
-                Some(ParsedDecl::BoxShadow(None))
-            } else {
-                let shadows = tables::parse_box_shadow(v);
-                (!shadows.is_empty()).then(|| ParsedDecl::BoxShadow(Some(BoxShadows(shadows.into()))))
-            }
-        }
-        "font-size" | "fontSize" => parse_px(v).map(ParsedDecl::FontSize),
-        "font-weight" | "fontWeight" => try_parse_font_weight(v).map(ParsedDecl::FontWeight),
-        "text-align" | "textAlign" => match v {
-            "left" | "start" => Some(TextAlign::Left),
-            "center" => Some(TextAlign::Center),
-            "right" | "end" => Some(TextAlign::Right),
-            "justify" => Some(TextAlign::Justify),
-            _ => None,
-        }
-        .map(ParsedDecl::TextAlign),
-        "z-index" | "zIndex" => v.parse::<i32>().ok().map(ParsedDecl::ZIndex),
-        _ => None,
-    };
-    Some((bits, parsed))
-}
-
-fn write_parsed_decl(tx: &mut Transaction<'_>, id: NodeId, decl: ParsedDecl) {
-    match decl {
-        ParsedDecl::Width(l) => { tx.edit::<Layout>(id).width(l); }
-        ParsedDecl::Height(l) => { tx.edit::<Layout>(id).height(l); }
-        ParsedDecl::MinWidth(l) => { tx.edit::<Layout>(id).min_width(l); }
-        ParsedDecl::MinHeight(l) => { tx.edit::<Layout>(id).min_height(l); }
-        ParsedDecl::MaxWidth(l) => { tx.edit::<Layout>(id).max_width(l); }
-        ParsedDecl::MaxHeight(l) => { tx.edit::<Layout>(id).max_height(l); }
-        ParsedDecl::Display(d) => { tx.edit::<Layout>(id).display(d); }
-        ParsedDecl::FlexDirection(fd) => { tx.edit::<Layout>(id).flex_direction(fd); }
-        ParsedDecl::FlexWrap(fw) => { tx.edit::<Layout>(id).flex_wrap(fw); }
-        ParsedDecl::JustifyContent(jc) => { tx.edit::<Layout>(id).justify_content(jc); }
-        ParsedDecl::AlignItems(ai) => { tx.edit::<Layout>(id).align_items(ai); }
-        ParsedDecl::FlexGrow(v) => { tx.edit::<Layout>(id).flex_grow(v); }
-        ParsedDecl::FlexShrink(v) => { tx.edit::<Layout>(id).flex_shrink(v); }
-        ParsedDecl::Gap(l) => { tx.edit::<Layout>(id).row_gap(l).column_gap(l); }
-        ParsedDecl::RowGap(l) => { tx.edit::<Layout>(id).row_gap(l); }
-        ParsedDecl::ColumnGap(l) => { tx.edit::<Layout>(id).column_gap(l); }
-        ParsedDecl::Padding(l) => {
-            tx.edit::<Layout>(id)
-                .padding_top(l)
-                .padding_right(l)
-                .padding_bottom(l)
-                .padding_left(l);
-        }
-        ParsedDecl::PaddingH(l) => { tx.edit::<Layout>(id).padding_left(l).padding_right(l); }
-        ParsedDecl::PaddingV(l) => { tx.edit::<Layout>(id).padding_top(l).padding_bottom(l); }
-        ParsedDecl::Margin(l) => {
-            tx.edit::<Layout>(id)
-                .margin_top(l)
-                .margin_right(l)
-                .margin_bottom(l)
-                .margin_left(l);
-        }
-        ParsedDecl::Background(c) => { tx.edit::<Visual>(id).background(c); }
-        ParsedDecl::BorderColor(c) => { tx.edit::<Visual>(id).border_color(c); }
-        ParsedDecl::BorderWidth(v) => { tx.edit::<Visual>(id).border_width(v); }
-        ParsedDecl::BorderRadius(v) => { tx.edit::<Visual>(id).border_radius(v); }
-        ParsedDecl::Opacity(v) => { tx.edit::<Visual>(id).opacity(v); }
-        ParsedDecl::Visibility(vis) => { tx.edit::<Visual>(id).visibility(vis); }
-        ParsedDecl::Overflow(ov) => { tx.edit::<Visual>(id).overflow_x(ov).overflow_y(ov); }
-        ParsedDecl::OverflowX(ov) => { tx.edit::<Visual>(id).overflow_x(ov); }
-        ParsedDecl::OverflowY(ov) => { tx.edit::<Visual>(id).overflow_y(ov); }
-        ParsedDecl::BoxShadow(bs) => { tx.edit::<Visual>(id).box_shadows(bs); }
-        ParsedDecl::ZIndex(z) => { tx.edit::<Visual>(id).z_index(z); }
-        ParsedDecl::Color(c) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_COLOR;
-            row.color(c).set(set);
-        }
-        ParsedDecl::OverflowWrap(ow) => { tx.edit::<Typography>(id).overflow_wrap(ow); }
-        ParsedDecl::WordBreak(wb) => { tx.edit::<Typography>(id).word_break(wb); }
-        ParsedDecl::WhiteSpace(ws) => { tx.edit::<Typography>(id).white_space(ws); }
-        ParsedDecl::LineHeight(lh) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_LINE_HEIGHT;
-            row.line_height(lh).set(set);
-        }
-        ParsedDecl::FontSize(v) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_FONT_SIZE;
-            row.font_size(v).set(set);
-        }
-        ParsedDecl::FontWeight(w) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_FONT_WEIGHT;
-            row.font_weight(w).set(set);
-        }
-        ParsedDecl::TextAlign(ta) => { tx.edit::<Typography>(id).text_align(ta); }
-    }
 }
 
 /// Applies an inline `style="..."` string in a single pass, writing declarations in `layers`
