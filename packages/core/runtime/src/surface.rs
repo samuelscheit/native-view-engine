@@ -198,11 +198,13 @@ impl SurfaceRuntime {
         Ok(())
     }
 
-    /// Connects this surface as a thin client to a live `nve pair` / `nve-wire` server.
+    /// Connects this surface as a thin client to a live `nve pair` / `nve-wire` server,
+    /// replacing any local app or previous pairing.
     ///
-    /// Fails with [`RuntimeError::InvalidArg`] if a local app is attached or the URI/token/cert
-    /// pin is invalid, or [`RuntimeError::Unsupported`] when built without `feature = "wire"` /
-    /// on wasm32.
+    /// A local app is swapped for the pairing in one write (replica reset, app dropped, session
+    /// installed); a failed connect leaves it running. Fails with [`RuntimeError::InvalidArg`]
+    /// when the URI/token/cert pin is invalid, or [`RuntimeError::Unsupported`] when built
+    /// without `feature = "wire"` / on wasm32.
     pub fn pair_connect(&mut self, uri: &str, token: &str) -> Result<(), RuntimeError> {
         self.pair_connect_shared(uri, token)
     }
@@ -219,37 +221,36 @@ impl SurfaceRuntime {
         self.check_not_poisoned()?;
         self.check_owner_thread()?;
         let mut validated = Some(PairSession::validate_and_parse(uri, token)?);
-        let old_pair = self.with_write(|inner| {
-            if inner.app.is_some() {
-                return Err(RuntimeError::InvalidArg(
-                    "cannot pair while an app is attached",
-                ));
-            }
+        let (old_pair, old_app) = self.with_write(|inner| {
             if let Some(existing) = inner.pair.take() {
                 inner.reset_for_app_change();
                 inner.state.needs_render = false;
                 inner.state.needs_publish = false;
                 inner.state.metrics.pair_connected = 0;
-                return Ok(Some(existing));
+                return Ok((Some(existing), None));
             }
-            // Fast path: no prior pair running; clear stale wake latch and spawn directly.
-            self.pair_connected.store(false, Ordering::Release);
-            let _ = self.wake.take_pending();
+            // Fast path: no prior pair running (a local app at most). Spawn BEFORE touching the
+            // app so a failed spawn leaves it running; then swap it out in this same write.
             let Some(parsed) = validated.take() else {
                 return Err(RuntimeError::InvalidArg("invalid pairing URI"));
             };
+            self.pair_connected.store(false, Ordering::Release);
+            let _ = self.wake.take_pending();
             let session = PairSession::spawn_parsed(
                 parsed,
                 Arc::clone(&self.wake),
                 Arc::clone(&self.pair_connected),
             )?;
+            let old_app = inner.app.take();
             inner.reset_for_app_change();
             inner.state.needs_render = false;
             inner.state.needs_publish = false;
             inner.state.metrics.pair_connected = 0;
             inner.pair = Some(session);
-            Ok(None)
+            Ok((None, old_app))
         })?;
+        // The replaced app (and any module it owns) is destroyed outside the surface lock.
+        drop(old_app);
         if let Some(mut old) = old_pair {
             // Join the old worker completely OUTSIDE the write lock before reusing `pair_connected`
             // and clearing the wake latch so it can never clobber the replacement session.
@@ -259,12 +260,8 @@ impl SurfaceRuntime {
             let Some(parsed) = validated.take() else {
                 return Err(RuntimeError::InvalidArg("invalid pairing URI"));
             };
+            // The owner thread is the only mutator, so no app can have been attached meanwhile.
             self.with_write(|inner| {
-                if inner.app.is_some() {
-                    return Err(RuntimeError::InvalidArg(
-                        "cannot pair while an app is attached",
-                    ));
-                }
                 let session = PairSession::spawn_parsed(
                     parsed,
                     Arc::clone(&self.wake),

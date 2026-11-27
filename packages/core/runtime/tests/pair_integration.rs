@@ -363,22 +363,88 @@ fn c_abi_embedded_pair_live_frames_events_reconnect_keyframe_and_disconnect() {
     unsafe { (api.destroy)(h) };
 }
 
+/// A local app publishing one `LOCAL_APP` keyframe, with state, counting its drops.
+struct LocalSceneApp {
+    frame: Vec<u8>,
+    rendered: bool,
+    drops: &'static AtomicUsize,
+}
+
+impl RuntimeApp for LocalSceneApp {
+    fn render_frame(&mut self, _frame_id: u64) -> AppFrame<'_> {
+        if std::mem::replace(&mut self.rendered, true) {
+            AppFrame::Clean
+        } else {
+            AppFrame::Wire(&self.frame)
+        }
+    }
+
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+        false
+    }
+
+    fn snapshot_state(&mut self) -> Result<&[u8], nve_runtime::app::CapabilityUnsupported> {
+        Ok(b"local-state")
+    }
+}
+
+impl Drop for LocalSceneApp {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 #[test]
-fn rust_api_pair_connect_rejects_when_app_attached() {
+fn pair_connect_swaps_a_local_app_atomically_and_failed_connects_keep_it() {
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
     let mut rt = RuntimeBuilder::new()
         .viewport(Viewport {
             width: 320.0,
             height: 240.0,
             scale_factor: 1.0,
         })
-        .app(Box::new(DummyLocalApp))
+        .app(Box::new(LocalSceneApp {
+            frame: encode_scene("LOCAL_APP"),
+            rendered: false,
+            drops: &DROPS,
+        }))
         .build();
-    let err = rt
-        .pair_connect("ws://127.0.0.1:8092/nve-wire", "tok")
-        .expect_err("pairing must fail while local app is attached");
-    assert!(matches!(err, RuntimeError::InvalidArg(_)));
+    let _ = rt.tick(0.016).unwrap();
+    let scene_text = |rt: &nve_runtime::SurfaceRuntime| read_text_slab(rt.acquire_scene().unwrap().view());
+    assert!(scene_text(&rt).contains("LOCAL_APP"));
+
+    // Rejected connects never touch the running app, its scene, or its state.
+    for bad in ["", "not-a-url", "wss://127.0.0.1:8092/nve-wire", "ws://127.0.0.1:0/nve-wire"] {
+        assert!(matches!(rt.pair_connect(bad, "tok"), Err(RuntimeError::InvalidArg(_))), "{bad}");
+        assert_eq!(DROPS.load(Ordering::Acquire), 0, "{bad}");
+        assert_eq!(rt.snapshot_state().unwrap(), b"local-state", "{bad}");
+        assert!(!rt.pair_is_connected());
+        assert!(scene_text(&rt).contains("LOCAL_APP"), "{bad}");
+    }
+
+    // A valid connect replaces the app in one write: dropped, replica reset, pairing installed.
+    let token = "app-to-pair-tok";
+    let srv = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        token,
+    ))
+    .unwrap();
+    let _ = srv.broadcast_scene_keyframe(1, &encode_scene("REMOTE_SCENE"));
+    rt.pair_connect(&format!("ws://{}/nve-wire", srv.wss_addr()), token)
+        .expect("pairing replaces the local app");
+    assert_eq!(DROPS.load(Ordering::Acquire), 1, "the local app is dropped by the switch");
+    assert!(matches!(rt.snapshot_state(), Err(RuntimeError::Unsupported(_))), "no app remains");
+    assert!(!scene_text(&rt).contains("LOCAL_APP"), "the app's scene is reset at the switch");
+    assert!(wait_until(Duration::from_secs(3), || rt.pair_is_connected()));
+    assert!(wait_until(Duration::from_secs(3), || {
+        let _ = rt.tick(0.016).unwrap();
+        scene_text(&rt).contains("REMOTE_SCENE")
+    }));
+    // And back: attaching an app replaces the pairing.
+    assert!(rt.attach_app(Box::new(DummyLocalApp)).is_ok());
     assert!(!rt.pair_is_connected());
-    rt.pair_disconnect().expect("disconnect when not paired is ok");
+    srv.shutdown();
 }
 
 /// Builds a corrupt mid-frame `NVE2` packet whose 24-byte header and op 1 (`CreateNodes`) are

@@ -11,7 +11,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -70,9 +69,14 @@ bool load_app(NveWinHost& host, const Options& o) {
   return false;
 }
 
+/// Restores the app state, or on `--reset-state` / `NVE_RESET_STATE` clears it (cold start).
 void restore(NveWinHost& host, const Options& o) {
-  std::error_code ec;
-  if (!o.no_state && std::filesystem::exists(o.state_path, ec) && host.restore_state(o.state_path, o.schema_version)) {
+  if (o.no_state) return;
+  if (o.reset_state) {
+    if (!host.clear_state(o.state_path)) {
+      std::cerr << "[nve-windows-shell] clearing " << o.state_path << " failed: " << host.last_error() << "\n";
+    }
+  } else if (host.restore_state(o.state_path, o.schema_version)) {
     std::cerr << "[nve-windows-shell] restored app state from " << o.state_path << "\n";
   }
 }
@@ -182,10 +186,7 @@ int main(int argc, char* argv[]) {
     o.state_path = app_state::resolve_path(o.dylib_path.empty() ? "nve-windows-shell-builtin" : o.dylib_path);
   }
   o.no_state = o.no_state || o.state_path.empty() || !o.pair_uri.empty();
-  if (o.reset_state && !o.state_path.empty()) {
-    std::error_code ec;
-    std::filesystem::remove(o.state_path, ec);
-  }
+  o.reset_state = o.reset_state || app_state::reset_requested();
 
   ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   return o.screenshot_path.empty() ? run_window(o) : screenshot(o);

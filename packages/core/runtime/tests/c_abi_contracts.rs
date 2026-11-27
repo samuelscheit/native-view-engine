@@ -332,7 +332,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
         );
         assert_eq!(
             (api.attach_app_interface)(h, Some(failing_null_surface_get_interface)),
-            NveRuntimeStatus::InvalidArg.as_i32()
+            NveRuntimeStatus::Unsupported.as_i32()
         );
         {
             let mut intact = NveRuntimeSceneView::default();

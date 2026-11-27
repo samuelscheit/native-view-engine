@@ -62,8 +62,11 @@ class NveWinHost {
   bool submit_frame(std::span<const uint8_t> nve2);
 
   // --- App state & dev loop -----------------------------------------------------------------
-  bool save_state(const std::string& path, uint32_t schema_version);
-  bool restore_state(const std::string& path, uint32_t schema_version);
+  /// App-state files are the runtime's crash-atomic, checksummed `StateFile`.
+  bool save_state(std::string_view path, uint32_t schema_version);
+  bool restore_state(std::string_view path, uint32_t schema_version);
+  /// Deletes the state file (cold start, `--reset-state`).
+  bool clear_state(std::string_view path);
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   void set_event_callback(EventCallback callback);
@@ -104,6 +107,8 @@ class NveWinHost {
   [[nodiscard]] size_t view_count() const noexcept { return tree_.size(); }
   [[nodiscard]] uint32_t surface_id() const noexcept { return config_.surface_id; }
   [[nodiscard]] bool is_loaded() const noexcept { return session_->has_app(); }
+  /// The runtime's message for the last failed call on this thread.
+  [[nodiscard]] std::string last_error() const { return session_->last_error(); }
   [[nodiscard]] uint32_t hovered_node() const noexcept { return hovered_; }
   [[nodiscard]] host::HostSession& session() noexcept { return *session_; }
 #if defined(_WIN32)

@@ -3,8 +3,9 @@
 #   nve::runtime     `libnve_runtime` (`nve_runtime_get_interface`)
 #   nve::canvas_cxx  `nve.canvas` table binding + `NVE_DRAW1` codec
 # plus, for host test suites, `nve::host_test_support` (`nve/host/testing/scripted_app.hpp`),
-# `nve_add_app_module_fixtures(prefix)`, and `nve_host_sanitize(<targets>)` (ASan + UBSan when
-# `NVE_HOST_SANITIZE` is on: by default for Debug / untyped builds with a supporting toolchain).
+# `nve_add_app_module_fixtures(prefix)` / `nve_use_app_module_fixtures(target prefix)`, and
+# `nve_host_sanitize(<targets>)` (ASan + UBSan when `NVE_HOST_SANITIZE` is on: by default for
+# Debug / untyped builds with a supporting toolchain).
 #
 #   include("${NVE_ROOT}/cxx/cmake/NveHostStack.cmake")
 #   target_link_libraries(my_host PRIVATE nve::host_cxx nve::runtime nve::canvas_cxx)

@@ -3,6 +3,7 @@
 //! Every entry point runs through [`with_runtime`]: null-handle rejection, panic containment,
 //! and `RuntimeError` → status / thread-local `last_error` mapping live in one place.
 
+mod app_files;
 mod hooks;
 
 use std::cell::RefCell;
@@ -228,9 +229,7 @@ unsafe extern "C" fn rt_attach_app_interface(
         // Construct the adapter BEFORE resetting or replacing live surface state so a failing
         // `nve_get_interface` leaves any existing app and published view intact.
         // SAFETY: Host guarantees `f` is a valid NVE `nve_get_interface` symbol.
-        let adapter = unsafe { CAbiAppAdapter::from_get_interface(f, rt.surface_id) }.ok_or(
-            RuntimeError::InvalidArg("app interface returned null surface API or app handle"),
-        )?;
+        let adapter = unsafe { CAbiAppAdapter::from_get_interface(f, rt.surface_id) }?;
         rt.attach_app_shared(Box::new(adapter))
     })
 }
@@ -412,10 +411,14 @@ static RUNTIME_API: NveRuntimeApi = NveRuntimeApi {
     set_viewport: rt_set_viewport,
     set_text_measurer: hooks::rt_set_text_measurer,
     attach_app_interface: rt_attach_app_interface,
+    load_app_module: app_files::rt_load_app_module,
     set_props: hooks::rt_set_props,
     drain_emitted_events: hooks::rt_drain_emitted_events,
     snapshot_state: hooks::rt_snapshot_state,
     restore_state: hooks::rt_restore_state,
+    save_state_file: app_files::rt_save_state_file,
+    restore_state_file: app_files::rt_restore_state_file,
+    clear_state_file: app_files::rt_clear_state_file,
     apply_hot_patch: hooks::rt_apply_hot_patch,
     submit_nve2: rt_submit_nve2,
     tick: rt_tick,

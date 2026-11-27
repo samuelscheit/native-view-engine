@@ -63,21 +63,11 @@ public final class NveRuntimeSession {
     /// `true` when `api` matches this build's ABI version, struct size, schema hash and has every slot.
     public static func isCompatible(_ api: UnsafePointer<NveRuntimeApi>) -> Bool {
         let a = api.pointee
-        // Every slot is a non-optional C function pointer imported as an implicitly unwrapped
-        // optional; reading it through `Mirror` would allocate, so check each one directly.
-        let slots: [Bool] = [
-            a.create != nil, a.destroy != nil, a.set_wake_callback != nil, a.set_viewport != nil,
-            a.set_text_measurer != nil, a.attach_app_interface != nil, a.set_props != nil,
-            a.drain_emitted_events != nil, a.snapshot_state != nil, a.restore_state != nil,
-            a.apply_hot_patch != nil, a.submit_nve2 != nil, a.tick != nil, a.dispatch_events != nil,
-            a.hit_test != nil, a.scroll_by != nil, a.scene_acquire != nil, a.scene_release != nil,
-            a.resource_payload != nil, a.get_metrics != nil, a.pair_connect != nil,
-            a.pair_disconnect != nil, a.pair_is_connected != nil, a.last_error != nil,
-        ]
+        // Slot completeness is the generated `nve_runtime_api_slots_complete` (one list per ABI).
         return a.abi_version == NVE_RUNTIME_ABI_VERSION
             && Int(a.struct_size) == MemoryLayout<NveRuntimeApi>.size
             && a.schema_hash == NVE_RUNTIME_SCHEMA_HASH
-            && slots.allSatisfy { $0 }
+            && nve_runtime_api_slots_complete(api) != 0
     }
 
     public init(

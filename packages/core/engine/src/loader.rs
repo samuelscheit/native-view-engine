@@ -19,8 +19,12 @@ static STAGED_COPY_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 pub enum LoaderError {
+    /// The library could not be staged (missing / unreadable source, temp dir failure).
     Io(std::io::Error),
+    /// The OS loader rejected the staged copy (`dlopen` / `LoadLibraryW`).
     Load(libloading::Error),
+    /// The library loaded but exports no `nve_get_interface`.
+    MissingEntry(libloading::Error),
     MissingSurfaceInterface,
     NullHandle,
 }
@@ -76,7 +80,7 @@ impl StagedDylib {
             Err(err) => {
                 drop(lib);
                 let _ = std::fs::remove_file(&loaded_copy);
-                return Err(LoaderError::Load(err));
+                return Err(LoaderError::MissingEntry(err));
             }
         };
         Ok(Self {

@@ -138,8 +138,11 @@ class NveGtkHost {
   bool submit_frame(std::span<const uint8_t> nve2);
 
   // --- App state & dev loop -----------------------------------------------------------------
-  bool save_state(const std::string& path, uint32_t schema_version);
-  bool restore_state(const std::string& path, uint32_t schema_version);
+  /// App-state files are the runtime's crash-atomic, checksummed `StateFile`.
+  bool save_state(std::string_view path, uint32_t schema_version);
+  bool restore_state(std::string_view path, uint32_t schema_version);
+  /// Deletes the state file (cold start, `--reset-state`).
+  bool clear_state(std::string_view path);
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   void set_event_callback(EventCallback callback);
@@ -171,6 +174,8 @@ class NveGtkHost {
   [[nodiscard]] uint32_t surface_id() const noexcept { return config_.surface_id; }
   [[nodiscard]] uint32_t host_instance_id() const noexcept { return host_instance_id_; }
   [[nodiscard]] bool is_loaded() const noexcept { return session_->has_app(); }
+  /// The runtime's message for the last failed call on this thread.
+  [[nodiscard]] std::string last_error() const { return session_->last_error(); }
   [[nodiscard]] uint64_t reconcile_update_count() const noexcept { return reconcile_update_count_; }
   [[nodiscard]] const GtkTextureLruCache& texture_cache() const noexcept { return textures_; }
   [[nodiscard]] std::span<const uint8_t> canvas_draw_list_for_node_id(uint32_t node_id) const noexcept;
