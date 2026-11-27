@@ -11,6 +11,7 @@ pub mod builder;
 pub mod c_api;
 mod lock;
 mod pair;
+mod publish;
 mod state;
 pub mod surface;
 pub use nve_engine::wake;

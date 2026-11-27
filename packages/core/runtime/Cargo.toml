@@ -7,7 +7,9 @@ description = "Framework-agnostic host runtime for NVE: zero-copy NveRuntimeScen
 
 [lib]
 name = "nve_runtime"
-crate-type = ["rlib"]
+# `cdylib` = `libnve_runtime.{dylib,so}` / `nve_runtime.dll` for `dart:ffi` (Flutter) and other
+# dynamic hosts; CMake hosts link the `staticlib` via `cxx/cmake/NveRuntime.cmake`.
+crate-type = ["rlib", "cdylib"]
 
 [features]
 default = ["wire"]

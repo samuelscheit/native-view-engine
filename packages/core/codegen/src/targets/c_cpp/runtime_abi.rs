@@ -14,6 +14,9 @@ pub fn generate_c_runtime_abi_h() -> String {
     let layout_rect = spec
         .find_struct("NveLayoutRect")
         .expect("runtime_abi_descriptor must declare NveLayoutRect");
+    let scroll_offset = spec
+        .find_struct("NveScrollOffset")
+        .expect("runtime_abi_descriptor must declare NveScrollOffset");
     let node_row = spec
         .find_struct("NveNodeRow")
         .expect("runtime_abi_descriptor must declare NveNodeRow");
@@ -155,6 +158,7 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out);
 
     emit_c_struct(&mut out, layout_rect);
+    emit_c_struct(&mut out, scroll_offset);
     emit_c_struct(&mut out, node_row);
     emit_c_struct(&mut out, config);
     emit_c_struct(&mut out, metrics);
@@ -319,10 +323,15 @@ pub fn generate_c_runtime_abi_h() -> String {
     );
 
     emit_fixed_asserts(&mut out, layout_rect, 16);
+    emit_fixed_asserts(&mut out, scroll_offset, nve_abi::NVE_SCROLL_OFFSET_SIZE);
     emit_fixed_asserts(&mut out, node_row, 32);
     emit_fixed_asserts(&mut out, config, 24);
     emit_fixed_asserts(&mut out, metrics, 64);
 
+    // Fixed-width header first, then pointers: the pointer base and 64-bit size come straight
+    // from the compiled Rust layout (the header is pointer-aligned on every target).
+    let ptr_base = core::mem::offset_of!(nve_abi::NveRuntimeSceneView, rows);
+    let view_size = core::mem::size_of::<nve_abi::NveRuntimeSceneView>();
     let mut ptr_slot = 0usize;
     for f in &scene_view.fields {
         if let Some(off) = f.offset {
@@ -334,7 +343,7 @@ pub fn generate_c_runtime_abi_h() -> String {
         } else {
             writeln!(
                 out,
-                "NVE_STATIC_ASSERT(offsetof(NveRuntimeSceneView, {}) == 40u + {ptr_slot}u * sizeof(void*), \"NveRuntimeSceneView.{} offset mismatch\");",
+                "NVE_STATIC_ASSERT(offsetof(NveRuntimeSceneView, {}) == {ptr_base}u + {ptr_slot}u * sizeof(void*), \"NveRuntimeSceneView.{} offset mismatch\");",
                 f.name, f.name
             );
             ptr_slot += 1;
@@ -342,7 +351,7 @@ pub fn generate_c_runtime_abi_h() -> String {
     }
     writeln!(
         out,
-        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeSceneView) == 96u, \"NveRuntimeSceneView must be 96 bytes on 64-bit\");"
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeSceneView) == {view_size}u, \"NveRuntimeSceneView must be {view_size} bytes on 64-bit\");"
     );
     writeln!(
         out,

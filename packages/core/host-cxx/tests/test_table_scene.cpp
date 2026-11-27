@@ -298,8 +298,8 @@ void test_runtime_scene_reader_and_session_mock() {
       NveLayoutRect{10.0f, 20.0f, 120.0f, 40.0f},
   };
   state.view = NveRuntimeSceneView{
-      NVE_RUNTIME_SCHEMA_HASH, 3u, 2u, 0u, 0u, 0u, 0u, 0u,
-      rows.data(), rects.data(), nullptr, nullptr, nullptr, nullptr, nullptr,
+      NVE_RUNTIME_SCHEMA_HASH, 3u, 2u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+      rows.data(), rects.data(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
   };
 
   auto noop_i32 = [](NveRuntimeHandle) -> int32_t { return NVE_RUNTIME_OK; };

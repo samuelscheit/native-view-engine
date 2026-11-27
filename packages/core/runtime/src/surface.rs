@@ -516,7 +516,9 @@ impl SurfaceRuntime {
                     "target node is not a scroll container",
                 ));
             }
-            let (x, y, _changed) = state.scene.apply_scroll_delta(store, id, dx, dy);
+            let (x, y, changed) = state.scene.apply_scroll_delta(store, id, dx, dy);
+            // The published view carries scroll offsets: the next `tick` republishes them.
+            state.needs_publish |= changed;
             Ok((x, y))
         })
     }

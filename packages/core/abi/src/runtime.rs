@@ -25,6 +25,9 @@ pub const NVE_RUNTIME_ABI_VERSION: u32 = 1;
 /// Exact byte size of one `NveLayoutRect` record (16 bytes).
 pub const NVE_LAYOUT_RECT_SIZE: usize = 16;
 
+/// Exact byte size of one `NveScrollOffset` record (12 bytes).
+pub const NVE_SCROLL_OFFSET_SIZE: usize = 12;
+
 /// Exact byte size of one `NveNodeRow` record (32 bytes, matching `nve_store::NodeRow`).
 pub const NVE_NODE_ROW_SIZE: usize = 32;
 
@@ -87,6 +90,21 @@ pub struct NveLayoutRect {
     pub width: f32,
     #[nve_abi(offset = 12)]
     pub height: f32,
+}
+
+/// Visual child shift of one scroll container: hosts paint and hit-test its children at
+/// `rect - (x, y)` (scroll offset minus any virtualized `Scroll::virtual_top_spacer`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, NveAbi)]
+#[nve_abi(size = 12)]
+pub struct NveScrollOffset {
+    /// Raw `NodeId` of the scroll container.
+    #[nve_abi(offset = 0)]
+    pub node_id: u32,
+    #[nve_abi(offset = 4)]
+    pub x: f32,
+    #[nve_abi(offset = 8)]
+    pub y: f32,
 }
 
 /// Zero-copy 32-byte per-node header mirroring `nve_store::NodeRow` directly across C FFI.
@@ -231,6 +249,11 @@ pub struct NveRuntimeSceneView {
     /// Number of published [`NveTableView`] descriptors in `tables`.
     #[nve_abi(offset = 36)]
     pub table_count: u32,
+    /// Count of [`NveScrollOffset`] entries in `scroll_offsets`.
+    #[nve_abi(offset = 40)]
+    pub scroll_count: u32,
+    #[nve_abi(offset = 44)]
+    pub _reserved: u32,
     /// Borrowed slice of `node_capacity` [`NveNodeRow`] headers directly from `NodeStore`.
     pub rows: *const NveNodeRow,
     /// Borrowed slice of `node_capacity` [`NveLayoutRect`] boxes indexed by `NodeIndex`.
@@ -245,6 +268,9 @@ pub struct NveRuntimeSceneView {
     pub removed_ids: *const u32,
     /// Borrowed slice of `table_count` [`NveTableView`] table views.
     pub tables: *const NveTableView,
+    /// Borrowed slice of `scroll_count` [`NveScrollOffset`] entries (every scroll container with a
+    /// non-default offset, ascending `node_id`); published rects are pre-scroll.
+    pub scroll_offsets: *const NveScrollOffset,
 }
 
 impl Default for NveRuntimeSceneView {
@@ -258,6 +284,8 @@ impl Default for NveRuntimeSceneView {
             text_slab_len: 0,
             children_slab_len: 0,
             table_count: 0,
+            scroll_count: 0,
+            _reserved: 0,
             rows: core::ptr::null(),
             rects: core::ptr::null(),
             text_slab: core::ptr::null(),
@@ -265,6 +293,7 @@ impl Default for NveRuntimeSceneView {
             dirty_indices: core::ptr::null(),
             removed_ids: core::ptr::null(),
             tables: core::ptr::null(),
+            scroll_offsets: core::ptr::null(),
         }
     }
 }
@@ -381,6 +410,12 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "width", "f32", b"@", offset_of!(NveLayoutRect, width));
     hash_rt_field(&mut h, "height", "f32", b"@", offset_of!(NveLayoutRect, height));
 
+    h.update(b";NveScrollOffset");
+    h.update_u64(size_of::<NveScrollOffset>() as u64);
+    hash_rt_field(&mut h, "node_id", "u32", b"@", offset_of!(NveScrollOffset, node_id));
+    hash_rt_field(&mut h, "x", "f32", b"@", offset_of!(NveScrollOffset, x));
+    hash_rt_field(&mut h, "y", "f32", b"@", offset_of!(NveScrollOffset, y));
+
     h.update(b";NveNodeRow");
     h.update_u64(size_of::<NveNodeRow>() as u64);
     h.update_u64(NVE_NODE_ROW_FLAG_LIVE as u64);
@@ -435,13 +470,16 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "text_slab_len", "u32", b"@", offset_of!(NveRuntimeSceneView, text_slab_len));
     hash_rt_field(&mut h, "children_slab_len", "u32", b"@", offset_of!(NveRuntimeSceneView, children_slab_len));
     hash_rt_field(&mut h, "table_count", "u32", b"@", offset_of!(NveRuntimeSceneView, table_count));
-    hash_rt_field(&mut h, "rows", "*const NveNodeRow", b"#", 8);
-    hash_rt_field(&mut h, "rects", "*const NveLayoutRect", b"#", 9);
-    hash_rt_field(&mut h, "text_slab", "*const u8", b"#", 10);
-    hash_rt_field(&mut h, "children_slab", "*const u32", b"#", 11);
-    hash_rt_field(&mut h, "dirty_indices", "*const u32", b"#", 12);
-    hash_rt_field(&mut h, "removed_ids", "*const u32", b"#", 13);
-    hash_rt_field(&mut h, "tables", "*const NveTableView", b"#", 14);
+    hash_rt_field(&mut h, "scroll_count", "u32", b"@", offset_of!(NveRuntimeSceneView, scroll_count));
+    hash_rt_field(&mut h, "_reserved", "u32", b"@", offset_of!(NveRuntimeSceneView, _reserved));
+    hash_rt_field(&mut h, "rows", "*const NveNodeRow", b"#", 10);
+    hash_rt_field(&mut h, "rects", "*const NveLayoutRect", b"#", 11);
+    hash_rt_field(&mut h, "text_slab", "*const u8", b"#", 12);
+    hash_rt_field(&mut h, "children_slab", "*const u32", b"#", 13);
+    hash_rt_field(&mut h, "dirty_indices", "*const u32", b"#", 14);
+    hash_rt_field(&mut h, "removed_ids", "*const u32", b"#", 15);
+    hash_rt_field(&mut h, "tables", "*const NveTableView", b"#", 16);
+    hash_rt_field(&mut h, "scroll_offsets", "*const NveScrollOffset", b"#", 17);
 
     h.update(b";NveRuntimeApi");
     hash_rt_field(&mut h, "abi_version", "u32", b"@", offset_of!(NveRuntimeApi, abi_version));
@@ -486,6 +524,13 @@ const RUNTIME_CONSTS: &[AbiConstDescriptor] = &[
         doc: Some("Exact byte stride of one `NveLayoutRect` record (16 bytes)."),
     },
     AbiConstDescriptor {
+        name: "NVE_SCROLL_OFFSET_SIZE",
+        ty: "u32",
+        value: NVE_SCROLL_OFFSET_SIZE as u64,
+        hex: false,
+        doc: Some("Exact byte stride of one `NveScrollOffset` record (12 bytes)."),
+    },
+    AbiConstDescriptor {
         name: "NVE_NODE_ROW_SIZE",
         ty: "u32",
         value: NVE_NODE_ROW_SIZE as u64,
@@ -505,6 +550,7 @@ const RUNTIME_ENUMS: &[AbiEnumDescriptor] = &[<NveRuntimeStatus as NveEnumSchema
 
 const RUNTIME_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveLayoutRect as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveScrollOffset as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveNodeRow as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeConfig as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeMetrics as NveStructSchema>::SCHEMA),
@@ -529,6 +575,8 @@ pub const fn runtime_abi_descriptor() -> AbiFileDescriptor {
 const _: () = {
     assert!(size_of::<NveLayoutRect>() == NVE_LAYOUT_RECT_SIZE);
     assert!(align_of::<NveLayoutRect>() == 4);
+    assert!(size_of::<NveScrollOffset>() == NVE_SCROLL_OFFSET_SIZE);
+    assert!(align_of::<NveScrollOffset>() == 4);
     assert!(size_of::<NveNodeRow>() == NVE_NODE_ROW_SIZE);
     assert!(align_of::<NveNodeRow>() == 4);
     assert!(size_of::<NveRuntimeConfig>() == 24);

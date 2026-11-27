@@ -43,6 +43,12 @@ impl ScrollOffsets {
         self.last_requested_y.remove(&id);
     }
 
+    /// Every tracked `(container, (x, y))` offset, in unspecified order.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (AbiNodeId, (f32, f32))> + '_ {
+        self.offsets.iter().map(|(&id, &xy)| (id, xy))
+    }
+
     #[inline]
     pub fn clear(&mut self) {
         self.offsets.clear();
