@@ -18,5 +18,9 @@ criterion = { workspace = true }
 name = "headless_bench"
 harness = false
 
+[[bench]]
+name = "frame0_boot"
+harness = false
+
 [lints]
 workspace = true

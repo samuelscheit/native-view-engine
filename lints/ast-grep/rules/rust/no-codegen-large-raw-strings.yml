@@ -1,8 +1,8 @@
 id: rust-no-codegen-large-raw-strings
 language: rust
-severity: warning
-message: "Multi-line raw string literal (>= 8 lines) in `packages/core/codegen/src/` is banned [stage: Post1B1E]; move static target code to checked-in files or templates."
-note: "[stage: Post1B1E] Flip to `error` once Track 1B-1e replaces inline raw template blocks."
+severity: error
+message: "Multi-line raw string literal (>= 8 lines) in `packages/core/codegen/src/` is banned; move static target code to checked-in `templates/` (Askama) or `packages/core/host-*` runtimes."
+note: "Permanently enforced since Track 1B-1e: emitters render static target code from Askama templates or static host runtimes, never inline raw blocks."
 files:
   - "packages/core/codegen/src/**/*.rs"
 ignores:

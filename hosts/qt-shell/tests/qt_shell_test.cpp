@@ -450,11 +450,6 @@ void test_real_counter_dylib() {
   }
   NVE_CHECK(reset_after_reload != 0);
 
-  const QString counter_snap =
-      QDir::temp().filePath(QStringLiteral("nve_qt_counter_%1.nvesnap").arg(QCoreApplication::applicationPid()));
-  QFile::remove(counter_snap);
-  NVE_CHECK(widget.saveSnapshot(counter_snap, 1));
-
   widget.simulatePressOnNodeId(reset_after_reload, 20.0f, 20.0f);
   QCoreApplication::processEvents();
   NVE_CHECK(find_label(QStringLiteral("Count: 0")) != nullptr);
@@ -462,35 +457,11 @@ void test_real_counter_dylib() {
       NveMapEntry{nve::make_str_slice("initialCount"), nve::make_i64_value(0)},
   };
   NVE_CHECK(widget.applyProps(reset_initial, 1u));
-
-  nve::qt::NveQtWidget cold_counter;
-  cold_counter.resize(640, 420);
-  uint64_t counter_restore_us = 0;
-  NVE_CHECK(cold_counter.replayFrame0Snapshot(counter_snap, 1, 1, &counter_restore_us));
-  std::cout << "[qt_shell_test] Cold mmap Frame-0 restore (counter dylib): "
-            << counter_restore_us << " us\n";
-
-  bool saw_f0_count2 = false;
-  for (QLabel* lbl : cold_counter.findChildren<QLabel*>()) {
-    if (lbl->text() == QStringLiteral("Count: 2")) saw_f0_count2 = true;
-  }
-  NVE_CHECK(saw_f0_count2 && !cold_counter.isAppLoaded());
-
-  err_code = -1;
-  err_msg.clear();
-  NVE_CHECK(cold_counter.loadDylib(counter_path, 1, &err_code, &err_msg));
-  NVE_CHECK(err_code == 0);
-  bool saw_live_count2 = false;
-  for (QLabel* lbl : cold_counter.findChildren<QLabel*>()) {
-    if (lbl->text() == QStringLiteral("Count: 2")) saw_live_count2 = true;
-  }
-  NVE_CHECK(saw_live_count2);
-  QFile::remove(counter_snap);
 }
 
 } // namespace
 
-void nve_test_qt_snapshot_a11y_and_media();
+void nve_test_qt_a11y_and_media();
 void nve_test_qt_canvas_and_pair();
 void nve_test_qt_window_manager();
 
@@ -500,7 +471,7 @@ int main(int argc, char* argv[]) {
   test_error_codes_and_stateful_fixture();
   test_attach_props_events_morph_and_measurer();
   test_real_counter_dylib();
-  nve_test_qt_snapshot_a11y_and_media();
+  nve_test_qt_a11y_and_media();
   nve_test_qt_canvas_and_pair();
   nve_test_qt_window_manager();
 

@@ -18,7 +18,8 @@ pub const NVE_EVENT_FLAG_CAPTURE: u8 = 1 << 3;
 pub const NVE_EVENT_FLAG_COMPOSING: u8 = 1 << 4;
 
 /// Direct FFI event matching `struct NveDirectEvent` in `nve_abi.generated.h`
-/// (96 bytes on 64-bit, 72 bytes on 32-bit, align 8).
+/// (96 bytes on 64-bit, 72 bytes on 32-bit, align 8). `align(8)` keeps it 72 bytes on i386 System V
+/// too, whose 64-bit fields are otherwise 4-byte aligned; C reproduces it with `NVE_ALIGNAS(8)`.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, NveAbi)]
 #[nve_abi(size_64 = 96)]

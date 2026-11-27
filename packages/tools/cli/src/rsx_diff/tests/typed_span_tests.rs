@@ -136,10 +136,10 @@ fn literal_leaf_edits_patch_and_lower_like_the_typed_attribute_path() {
         ),
         (
             "padding: Length::points(1.0),",
-            "padding: Length::points(-2.0),",
+            "padding: Length::points(2.0),",
             "padding",
-            "-2px",
-            V::LengthPx(-2.0),
+            "2px",
+            V::LengthPx(2.0),
         ),
         (
             "background_color: Rgba::rgb(10, 20, 30),",
@@ -412,9 +412,9 @@ fn template_targets_carry_ordinal_line_column_path_and_test_id() {
 fn typed_only_attributes_theme_tokens_and_untargetable_elements_stay_typed_but_rebuild() {
     let cases = [
         (
-            "\"margin-top\": 4.0,",
-            "\"margin-top\": 6.0,",
-            "`margin-top` has no string TemplatePatch form",
+            "\"top\": 4.0,",
+            "\"top\": 6.0,",
+            "`top` has no string TemplatePatch form",
         ),
         (
             "cursor: CursorKind::Pointer,",

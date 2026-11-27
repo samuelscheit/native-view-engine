@@ -75,19 +75,19 @@ enable_testing()
 
 add_library(nve_test_dylib_no_entry SHARED tests/test_dylib_fixtures.c)
 target_compile_definitions(nve_test_dylib_no_entry PRIVATE NVE_FIXTURE_NO_ENTRY=1)
-target_include_directories(nve_test_dylib_no_entry PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+target_link_libraries(nve_test_dylib_no_entry PRIVATE nve::host_cxx)
 
 add_library(nve_test_dylib_no_surface SHARED tests/test_dylib_fixtures.c)
 target_compile_definitions(nve_test_dylib_no_surface PRIVATE NVE_FIXTURE_NO_SURFACE=1)
-target_include_directories(nve_test_dylib_no_surface PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+target_link_libraries(nve_test_dylib_no_surface PRIVATE nve::host_cxx)
 
 add_library(nve_test_dylib_stateful SHARED tests/test_dylib_fixtures.c)
 target_compile_definitions(nve_test_dylib_stateful PRIVATE NVE_FIXTURE_STATEFUL=1)
-target_include_directories(nve_test_dylib_stateful PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+target_link_libraries(nve_test_dylib_stateful PRIVATE nve::host_cxx)
 
 add_library(nve_test_dylib_create_fail SHARED tests/test_dylib_fixtures.c)
 target_compile_definitions(nve_test_dylib_create_fail PRIVATE NVE_FIXTURE_CREATE_FAIL=1)
-target_include_directories(nve_test_dylib_create_fail PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+target_link_libraries(nve_test_dylib_create_fail PRIVATE nve::host_cxx)
 
 add_executable(nve_macos_shell_test tests/macos_shell_test.mm)
 target_compile_options(nve_macos_shell_test PRIVATE -fobjc-arc -Wall -Wextra -Werror)

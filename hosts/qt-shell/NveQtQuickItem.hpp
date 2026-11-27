@@ -111,29 +111,6 @@ class NveQtQuickItem : public QQuickItem {
   bool isPaired() const noexcept;
   bool isPairedConnected() const noexcept;
 
-  /// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` file before any dylib loads.
-  Q_INVOKABLE bool replaySnapshot(
-      const QString& snapshotPath,
-      uint32_t expectedSchemaVersion = 1,
-      uint32_t surfaceId = 1,
-      uint64_t* outRestoreUs = nullptr);
-
-  /// Alias for `replaySnapshot` matching `NveQtWidget::replayFrame0Snapshot`.
-  bool replayFrame0Snapshot(
-      const QString& snapshotPath,
-      uint32_t expectedSchemaVersion = 1,
-      uint32_t surfaceId = 1,
-      uint64_t* outRestoreUs = nullptr) {
-    return replaySnapshot(snapshotPath, expectedSchemaVersion, surfaceId, outRestoreUs);
-  }
-
-  /// Freeze-dries the live shadow tree into a complete Frame-0 `CommandBuffer` + `snapshot_state()`
-  /// and writes it atomically to `snapshotPath`.
-  Q_INVOKABLE bool saveSnapshot(const QString& snapshotPath, uint32_t schemaVersion = 1) const;
-
-  /// Configures automatic atomic snapshot persistence on item teardown / window close.
-  Q_INVOKABLE void setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion = 1);
-
   /// Forward structured typed props to `NveComponentApi::set_props`, re-render if dirty,
   /// sync scene, and drain outbound events.
   bool applyProps(const nve::PropMap& props);

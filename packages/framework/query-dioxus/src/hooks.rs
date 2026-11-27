@@ -15,7 +15,6 @@ use dioxus_signals::{CopyValue, ReadableExt, Signal, WritableExt};
 use nve_query::{QueryHandle, QueryMode, QueryOptions, QuerySnapshot, Shared};
 use nve_rpc::{encode_args, CborCodec, Procedure, Query, RpcCodec, RpcError};
 
-pub use crate::action_hooks::{use_action, UseAction};
 use crate::bridge::{consume_bridge, DioxusQueryBridge, ErasedQueryClient};
 use crate::suspense::BoundaryQuerySet;
 
@@ -53,6 +52,31 @@ struct QueryHookState<T> {
     external_wait_seq: Option<u32>,
     previous_data: Option<Shared<T>>,
     suspend_waiter: Option<SuspendWaiter>,
+    /// The boundary reference this hook holds (at most one per hook), released on key switch
+    /// and unmount.
+    boundary_record: Option<(BoundaryQuerySet, QueryHandle)>,
+}
+
+impl<T> QueryHookState<T> {
+    /// Moves this hook's single boundary reference to `handle` in `set`.
+    fn record_in_boundary(&mut self, set: BoundaryQuerySet, handle: QueryHandle) {
+        if self
+            .boundary_record
+            .as_ref()
+            .is_some_and(|(s, h)| *h == handle && s.ptr_eq(&set))
+        {
+            return;
+        }
+        self.release_boundary_record();
+        set.record(handle);
+        self.boundary_record = Some((set, handle));
+    }
+
+    fn release_boundary_record(&mut self) {
+        if let Some((set, handle)) = self.boundary_record.take() {
+            set.forget(handle);
+        }
+    }
 }
 
 /// `Copy` reactive handle returned by [`use_query`] / [`use_query_with`].
@@ -164,8 +188,18 @@ where
         P::Error: core::fmt::Debug,
     {
         match self.suspend_result()? {
-            Ok(data) => Ok(data),
-            Err(err) => Err(RenderError::Error(CapturedError::from_display(err))),
+            Ok(data) => {
+                if let Some((set, handle)) = self.state.read().boundary_record.as_ref() {
+                    set.clear_errored_handle(*handle);
+                }
+                Ok(data)
+            }
+            Err(err) => {
+                if let Some((set, handle)) = self.state.read().boundary_record.as_ref() {
+                    set.retain_errored(*handle);
+                }
+                Err(RenderError::Error(CapturedError::from_display(err)))
+            }
         }
     }
 
@@ -180,7 +214,8 @@ where
         // Always attribute `handle` to the nearest `<QuerySuspense>` boundary (if mounted inside
         // one) so SSR streaming dehydrates ONLY that boundary's handles.
         if let Some(boundary_set) = try_consume_context::<BoundaryQuerySet>() {
-            boundary_set.record(handle);
+            let mut state = self.state;
+            state.write().record_in_boundary(boundary_set, handle);
         }
 
         let _ver = *slot_sig.read();
@@ -192,7 +227,14 @@ where
         }
 
         let mode = bridge.client().mode();
+        let inv_ver = snap.invalidation_version;
+        // A client fetch still in flight or a slot task still retrying (backoff sleep between
+        // attempts) means the committed error is transient: keep suspending until the retry
+        // loop succeeds or exhausts instead of tripping the enclosing `ErrorBoundary` early.
+        let retry_pending = mode == QueryMode::Client
+            && (snap.is_fetching || bridge.has_active_slot_task_for(handle, inv_ver));
         let has_current_error = snap.error.is_some()
+            && !retry_pending
             && (!snap.is_invalidated
                 || snap.completed_invalidation_version == snap.invalidation_version);
 
@@ -216,7 +258,6 @@ where
         }
 
         // Pending / fetching / `is_stream_pending` / retrying after invalidation.
-        let inv_ver = snap.invalidation_version;
         if mode == QueryMode::Client
             && !snap.is_fetching
             && !snap.is_stream_pending
@@ -328,6 +369,7 @@ where
             external_wait_seq: None,
             previous_data: None,
             suspend_waiter: None,
+            boundary_record: None,
         })
     });
 
@@ -335,6 +377,7 @@ where
     use_drop(move || {
         let (bridge, handle, waiter) = {
             let mut st = state.write();
+            st.release_boundary_record();
             (st.bridge.clone(), st.handle, st.suspend_waiter.take())
         };
         if let Some(waiter) = waiter
@@ -367,6 +410,8 @@ where
         {
             waiter.task.cancel();
         }
+        // Keep the enclosing boundary's attribution bounded to live keys only.
+        state.write().release_boundary_record();
         let new_handle = bridge
             .client()
             .subscribe::<P>(&args, options)

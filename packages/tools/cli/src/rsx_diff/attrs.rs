@@ -291,12 +291,12 @@ attr_table! {
     "padding-bottom" => AttrKind::Pixels { float: None }, true;
     "padding-left" => AttrKind::Pixels { float: None }, true;
     "margin" => SIGNED, true;
-    "margin-top" => SIGNED, false; "margin-right" => SIGNED, false;
-    "margin-bottom" => SIGNED, false; "margin-left" => SIGNED, false;
+    "margin-top" => SIGNED, true; "margin-right" => SIGNED, true;
+    "margin-bottom" => SIGNED, true; "margin-left" => SIGNED, true;
     // Visual.
     "background" => AttrKind::Color, true; "background-color" => AttrKind::Color, true;
     "color" => AttrKind::Color, true; "border-color" => AttrKind::Color, true;
-    "border" => AttrKind::Text, false;
+    "border" => AttrKind::Text, true;
     "border-width" => PX, true;
     "border-top-width" => PX, false; "border-right-width" => PX, false;
     "border-bottom-width" => PX, false; "border-left-width" => PX, false;

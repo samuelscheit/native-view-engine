@@ -36,84 +36,6 @@ void send_left_click(QWidget* target, const QPointF& local_pos) {
   QCoreApplication::sendEvent(target, &release);
 }
 
-void test_frame0_mmap_snapshot_roundtrip() {
-  const QString fixture_snap = QDir::temp().filePath(
-      QStringLiteral("nve_qt_fixture_%1.nvesnap").arg(QCoreApplication::applicationPid()));
-  QFile::remove(fixture_snap);
-
-  {
-    nve::qt::NveQtWidget writer;
-    writer.resize(400, 240);
-    NVE_CHECK(writer.loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 1));
-    writer.simulatePressOnNodeId(2, 5.0f, 5.0f);
-    writer.simulatePressOnNodeId(2, 5.0f, 5.0f);
-    writer.simulatePressOnNodeId(2, 5.0f, 5.0f);
-    auto* lbl = qobject_cast<QLabel*>(writer.nativeWidgetForNodeId(3));
-    NVE_CHECK(lbl != nullptr && lbl->text() == QStringLiteral("Fixture:3"));
-    NVE_CHECK(writer.saveSnapshot(fixture_snap, 2));
-  }
-
-  nve::qt::NveQtWidget cold;
-  cold.resize(400, 240);
-  uint64_t restore_us = 0;
-  NVE_CHECK(!cold.replayFrame0Snapshot(fixture_snap, 99, 1, &restore_us));
-  NVE_CHECK(cold.replayFrame0Snapshot(fixture_snap, 2, 1, &restore_us));
-  std::cout << "[qt_shell_test] Cold mmap Frame-0 restore (fixture dylib): "
-            << restore_us << " us\n";
-
-  NVE_CHECK(!cold.isAppLoaded());
-  NVE_CHECK(cold.nodeCount() == 3);
-  auto* f0_lbl = qobject_cast<QLabel*>(cold.nativeWidgetForNodeId(3));
-  NVE_CHECK(f0_lbl != nullptr && f0_lbl->text() == QStringLiteral("Fixture:3"));
-
-  NVE_CHECK(cold.loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 1));
-  NVE_CHECK(cold.isAppLoaded());
-  auto* live_lbl = qobject_cast<QLabel*>(cold.nativeWidgetForNodeId(3));
-  NVE_CHECK(live_lbl != nullptr && live_lbl->text() == QStringLiteral("Fixture:3"));
-  QFile::remove(fixture_snap);
-
-  const char* studio_env = std::getenv("NVE_TEST_STUDIO_DYLIB");
-  if (studio_env != nullptr && studio_env[0] != '\0') {
-    const QString studio_path = QString::fromUtf8(studio_env);
-    const QString studio_snap = QDir::temp().filePath(
-        QStringLiteral("nve_qt_studio_%1.nvesnap").arg(QCoreApplication::applicationPid()));
-    QFile::remove(studio_snap);
-
-    auto has_text = [](nve::qt::NveQtWidget& w, const QString& needle) {
-      for (QLabel* l : w.findChildren<QLabel*>()) {
-        if (l->text().contains(needle)) return true;
-      }
-      return false;
-    };
-
-    {
-      nve::qt::NveQtWidget studio_writer;
-      studio_writer.resize(960, 640);
-      NVE_CHECK(studio_writer.loadDylib(studio_path, 1));
-      const NveMapEntry studio_props[2] = {
-          NveMapEntry{nve::make_str_slice("accent"), nve::make_str_value("violet")},
-          NveMapEntry{nve::make_str_slice("view"), nve::make_str_value("metrics")},
-      };
-      NVE_CHECK(studio_writer.applyProps(studio_props, 2u));
-      NVE_CHECK(has_text(studio_writer, QStringLiteral("Live Metrics")));
-      NVE_CHECK(studio_writer.saveSnapshot(studio_snap, 1));
-    }
-
-    nve::qt::NveQtWidget studio_cold;
-    studio_cold.resize(960, 640);
-    uint64_t studio_restore_us = 0;
-    NVE_CHECK(studio_cold.replayFrame0Snapshot(studio_snap, 1, 1, &studio_restore_us));
-    std::cout << "[qt_shell_test] Cold mmap Frame-0 restore (studio-workspace): "
-              << studio_restore_us << " us\n";
-    NVE_CHECK(!studio_cold.isAppLoaded());
-    NVE_CHECK(has_text(studio_cold, QStringLiteral("Live Metrics")));
-
-    NVE_CHECK(studio_cold.loadDylib(studio_path, 1));
-    NVE_CHECK(has_text(studio_cold, QStringLiteral("Live Metrics")));
-    QFile::remove(studio_snap);
-  }
-}
-
 struct MockA11yImeQtApp {
   static inline MockA11yImeQtApp* last_instance = nullptr;
   uint32_t surface_id{1};
@@ -499,8 +421,7 @@ void test_image_scroll_and_incremental_reconciliation() {
 
 } // namespace
 
-void nve_test_qt_snapshot_a11y_and_media() {
-  test_frame0_mmap_snapshot_roundtrip();
+void nve_test_qt_a11y_and_media() {
   test_accessibility_and_ime_text_input();
   test_image_scroll_and_incremental_reconciliation();
 }

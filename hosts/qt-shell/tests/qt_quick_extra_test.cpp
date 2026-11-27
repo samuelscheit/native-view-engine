@@ -33,47 +33,6 @@ void send_quick_key(QQuickItem* item, int key, const QString& text) {
   QCoreApplication::sendEvent(item, &ev);
 }
 
-void test_mmap_snapshot_roundtrip() {
-  const QString snap_path = QDir::temp().filePath(
-      QStringLiteral("nve_qt_quick_fixture_%1.nvesnap").arg(QCoreApplication::applicationPid()));
-  QFile::remove(snap_path);
-
-  {
-    nve::NveQtQuickItem writer;
-    writer.setSize(QSizeF(400, 240));
-    NVE_CHECK(writer.loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 1));
-    writer.dispatchPress(2, 5.0f, 5.0f);
-    writer.dispatchPress(2, 5.0f, 5.0f);
-    writer.dispatchPress(2, 5.0f, 5.0f);
-    NVE_CHECK(writer.sceneNodeText(3) == "Fixture:3");
-    NVE_CHECK(writer.saveSnapshot(snap_path, 4));
-  }
-
-  QQuickWindow win;
-  win.resize(400, 240);
-  auto* cold = new nve::NveQtQuickItem(win.contentItem());
-  cold->setSize(QSizeF(400, 240));
-
-  uint64_t restore_us = 0;
-  NVE_CHECK(!cold->replaySnapshot(snap_path, 99, 1, &restore_us));
-  NVE_CHECK(cold->replaySnapshot(snap_path, 4, 1, &restore_us));
-  std::cout << "[qt_quick_test] Cold mmap Frame-0 restore (fixture dylib): "
-            << restore_us << " us\n";
-
-  NVE_CHECK(!cold->isAppLoaded() && cold->nodeCount() == 3u && cold->sceneNodeText(3) == "Fixture:3");
-
-  win.show();
-  QCoreApplication::processEvents();
-  std::unique_ptr<QSGNode> f0_sg(cold->syncSceneGraphNode(nullptr));
-  NVE_CHECK(f0_sg != nullptr && cold->sceneGraphStats().textTextureNodes >= 1u);
-
-  NVE_CHECK(cold->loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 1));
-  NVE_CHECK(cold->isAppLoaded() && cold->sceneNodeText(3) == "Fixture:3");
-
-  f0_sg.reset();
-  QFile::remove(snap_path);
-}
-
 void test_z_index_hit_test_and_paint_order() {
   struct ZIndexComponent {
     BinaryCmdHelper cmd;
@@ -163,35 +122,11 @@ void test_live_counter_and_studio_dylibs() {
     NVE_CHECK(item->hotReload(counter_path, &err_code, &err_msg));
     NVE_CHECK(err_code == 0 && find_node_by_text("Count: 2") != 0u);
 
-    const QString counter_snap = QDir::temp().filePath(
-        QStringLiteral("nve_qt_quick_counter_%1.nvesnap").arg(QCoreApplication::applicationPid()));
-    QFile::remove(counter_snap);
-    NVE_CHECK(item->saveSnapshot(counter_snap, 1));
     const NveMapEntry reset_initial[1] = {
         NveMapEntry{nve::make_str_slice("initialCount"), nve::make_i64_value(0)},
     };
     NVE_CHECK(item->applyProps(reset_initial, 1u));
-
-    nve::NveQtQuickItem cold_counter;
-    cold_counter.setSize(QSizeF(640, 420));
-    uint64_t restore_us = 0;
-    NVE_CHECK(cold_counter.replaySnapshot(counter_snap, 1, 1, &restore_us));
-    std::cout << "[qt_quick_test] Cold mmap Frame-0 restore (counter dylib): "
-              << restore_us << " us\n";
-
-    auto cold_has_text = [&](std::string_view needle) {
-      const NveSceneView view = cold_counter.sceneView();
-      for (uint32_t i = 0u; i < view.node_count; ++i) {
-        if (nve::scene_node_text(view, view.nodes[i]) == needle) return true;
-      }
-      return false;
-    };
-    NVE_CHECK(!cold_counter.isAppLoaded() && cold_has_text("Count: 2"));
-    NVE_CHECK(cold_counter.loadDylib(counter_path, 1));
-    NVE_CHECK(cold_counter.isAppLoaded() && cold_has_text("Count: 2"));
-
     sg.reset();
-    QFile::remove(counter_snap);
   }
 
   const char* studio_env = std::getenv("NVE_TEST_STUDIO_DYLIB");
@@ -226,24 +161,7 @@ void test_live_counter_and_studio_dylibs() {
     std::unique_ptr<QSGNode> sg(studio->syncSceneGraphNode(nullptr));
     NVE_CHECK(sg != nullptr && studio->sceneGraphStats().geometryNodes > 5u);
     NVE_CHECK(studio->sceneGraphStats().textTextureNodes > 5u);
-
-    const QString studio_snap = QDir::temp().filePath(
-        QStringLiteral("nve_qt_quick_studio_%1.nvesnap").arg(QCoreApplication::applicationPid()));
-    QFile::remove(studio_snap);
-    NVE_CHECK(studio->saveSnapshot(studio_snap, 1));
-
-    nve::NveQtQuickItem cold_studio;
-    cold_studio.setSize(QSizeF(960, 640));
-    uint64_t studio_us = 0;
-    NVE_CHECK(cold_studio.replaySnapshot(studio_snap, 1, 1, &studio_us));
-    std::cout << "[qt_quick_test] Cold mmap Frame-0 restore (studio-workspace): "
-              << studio_us << " us\n";
-    NVE_CHECK(!cold_studio.isAppLoaded() && has_substr(cold_studio, "Live Metrics"));
-    NVE_CHECK(cold_studio.loadDylib(studio_path, 1));
-    NVE_CHECK(cold_studio.isAppLoaded() && has_substr(cold_studio, "Live Metrics"));
-
     sg.reset();
-    QFile::remove(studio_snap);
   }
 }
 
@@ -394,7 +312,6 @@ void test_accessibility_and_ime_input_method() {
 } // namespace
 
 void nve_test_qt_quick_extra() {
-  test_mmap_snapshot_roundtrip();
   test_z_index_hit_test_and_paint_order();
   test_live_counter_and_studio_dylibs();
   test_accessibility_and_ime_input_method();

@@ -156,7 +156,7 @@ fn dioxus_virtual_dom_wait_for_suspense_resolves_waterfall_in_ssr_mode() {
     let verify_cli = erased_query_client(FlakyTransport::default());
     assert_eq!(verify_cli.hydrate_bytes(&delta).unwrap(), 2);
     assert!(registry.mark_flushed("wf"));
-    assert!(!registry.has_pending());
+    assert!(registry.pending_handles().is_empty());
 }
 
 #[test]

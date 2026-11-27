@@ -16,19 +16,25 @@ pub(super) fn cpp_method_signature(method: &HybridMethodSpec) -> String {
     format!("{ret} {mname}({})", params.join(", "))
 }
 
-pub(super) fn cpp_owned_type(ty: &HybridType) -> String {
+/// The C / C++ spelling of a scalar (`bool`, `<stdint.h>` integers, `size_t`, `float`, `double`).
+fn c_scalar_type(ty: &HybridType) -> Option<&'static str> {
+    Some(match ty {
+        HybridType::Bool => "bool",
+        HybridType::U8 => "uint8_t",
+        HybridType::U16 => "uint16_t",
+        HybridType::Usize => "size_t",
+        HybridType::I32 => "int32_t",
+        HybridType::U32 => "uint32_t",
+        HybridType::I64 => "int64_t",
+        HybridType::U64 => "uint64_t",
+        HybridType::F32 => "float",
+        HybridType::F64 => "double",
+        _ => return None,
+    })
+}
+
+pub(crate) fn cpp_owned_type(ty: &HybridType) -> String {
     match ty {
-        HybridType::Void => "void".to_string(),
-        HybridType::Bool => "bool".to_string(),
-        HybridType::U8 => "uint8_t".to_string(),
-        HybridType::U16 => "uint16_t".to_string(),
-        HybridType::Usize => "size_t".to_string(),
-        HybridType::I32 => "int32_t".to_string(),
-        HybridType::U32 => "uint32_t".to_string(),
-        HybridType::I64 => "int64_t".to_string(),
-        HybridType::U64 => "uint64_t".to_string(),
-        HybridType::F32 => "float".to_string(),
-        HybridType::F64 => "double".to_string(),
         HybridType::String => "std::string".to_string(),
         HybridType::Bytes => "std::vector<uint8_t>".to_string(),
         HybridType::Optional(inner) => format!("std::optional<{}>", cpp_owned_type(inner)),
@@ -40,90 +46,11 @@ pub(super) fn cpp_owned_type(ty: &HybridType) -> String {
         HybridType::Value => "DynamicValue".to_string(),
         HybridType::ConstPtr(inner) => format!("const {}*", cpp_owned_type(inner)),
         HybridType::MutPtr(inner) => format!("{}*", cpp_owned_type(inner)),
-        HybridType::FixedArray { elem, len } => format!("std::array<{}, {len}>", cpp_owned_type(elem)),
-    }
-}
-
-pub(super) fn cpp_param_type(ty: &HybridType) -> String {
-    match ty {
-        HybridType::String => "std::string_view".to_string(),
-        HybridType::Bytes => "std::span<const uint8_t>".to_string(),
-        HybridType::Value => "NveValue".to_string(),
-        HybridType::Struct(name) => format!("const {name}&"),
-        HybridType::Optional(inner) => format!("const std::optional<{}>&", cpp_owned_type(inner)),
-        HybridType::Vec(inner) => format!("const std::vector<{}>&", cpp_owned_type(inner)),
-        other => cpp_owned_type(other),
-    }
-}
-
-pub(super) fn c_pod_type(ty: &HybridType) -> String {
-    match ty {
-        HybridType::Bool => "bool".to_string(),
-        HybridType::U8 => "uint8_t".to_string(),
-        HybridType::U16 => "uint16_t".to_string(),
-        HybridType::Usize => "size_t".to_string(),
-        HybridType::I32 => "int32_t".to_string(),
-        HybridType::U32 => "uint32_t".to_string(),
-        HybridType::I64 => "int64_t".to_string(),
-        HybridType::U64 => "uint64_t".to_string(),
-        HybridType::F32 => "float".to_string(),
-        HybridType::F64 => "double".to_string(),
-        HybridType::Enum(name) | HybridType::Struct(name) => format!("NveHybrid{name}"),
-        _ => unreachable!("non-POD type in c_pod_type"),
-    }
-}
-
-pub(super) fn c_abi_field_decl(ty: &HybridType, fname: &str) -> String {
-    match ty {
-        HybridType::FixedArray { elem, len } => format!("{} {fname}[{len}]", c_pod_type(elem)),
-        HybridType::ConstPtr(inner) => match inner.as_ref() {
-            HybridType::Void => format!("const void* {fname}"),
-            HybridType::Struct(name) => format!("const struct NveHybrid{name}* {fname}"),
-            other => format!("const {}* {fname}", c_pod_type(other)),
-        },
-        HybridType::MutPtr(inner) => match inner.as_ref() {
-            HybridType::Void => format!("void* {fname}"),
-            HybridType::Struct(name) => format!("struct NveHybrid{name}* {fname}"),
-            other => format!("{}* {fname}", c_pod_type(other)),
-        },
-        other => format!("{} {fname}", c_pod_type(other)),
-    }
-}
-
-pub(super) fn is_c_abi_struct(s: &HybridStructSpec, spec: &HybridFileSpec) -> bool {
-    if s.is_union || s.fields.is_empty() {
-        return false;
-    }
-    s.fields.iter().all(|f| match &f.ty {
-        HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
-            matches!(inner.as_ref(), HybridType::Void) || inner.is_pod(spec)
+        HybridType::FixedArray { elem, len } => {
+            format!("std::array<{}, {len}>", cpp_owned_type(elem))
         }
-        other => other.is_pod(spec),
-    })
-}
-
-pub(super) fn c_fn_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
-    match ty {
         HybridType::Void => "void".to_string(),
-        HybridType::ConstPtr(inner) => match inner.as_ref() {
-            HybridType::Void => "const void*".to_string(),
-            HybridType::Struct(name) => format!("const NveHybrid{name}*"),
-            other => format!("const {}*", c_pod_type(other)),
-        },
-        HybridType::MutPtr(inner) => match inner.as_ref() {
-            HybridType::Void => "void*".to_string(),
-            HybridType::Struct(name) => format!("NveHybrid{name}*"),
-            other => format!("{}*", c_pod_type(other)),
-        },
-        other => c_param_type(other, spec),
-    }
-}
-
-pub(super) fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
-    if let Some(suffix) = ty.optional_pod_suffix(spec) {
-        return format!("NveHybridOpt{suffix}");
-    }
-    match ty {
+        // Listed, so a new `HybridType` variant fails to compile here instead of falling through.
         HybridType::Bool
         | HybridType::U8
         | HybridType::U16
@@ -133,9 +60,174 @@ pub(super) fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         | HybridType::I64
         | HybridType::U64
         | HybridType::F32
-        | HybridType::F64
-        | HybridType::Enum(_) => c_pod_type(ty),
-        HybridType::Struct(_) if ty.is_pod(spec) => c_pod_type(ty),
+        | HybridType::F64 => c_scalar_type(ty).unwrap_or_default().to_string(),
+    }
+}
+
+pub(super) fn cpp_param_type(ty: &HybridType) -> String {
+    match ty {
+        HybridType::String => "std::string_view".to_string(),
+        HybridType::Bytes => "std::span<const uint8_t>".to_string(),
+        HybridType::Value => "const DynamicValue&".to_string(),
+        HybridType::Struct(name) => format!("const {name}&"),
+        HybridType::Optional(inner) => format!("const std::optional<{}>&", cpp_owned_type(inner)),
+        HybridType::Vec(_) | HybridType::FixedArray { .. } => {
+            format!("const {}&", cpp_owned_type(ty))
+        }
+        other => cpp_owned_type(other),
+    }
+}
+
+/// The C spelling of a type with a C value form: scalars, enums (`uint32_t` typedefs), and POD
+/// structs. `None` for every other type (`[T; N]` crosses as encoded bytes, never by value).
+pub(super) fn c_value_type(ty: &HybridType, spec: &HybridFileSpec) -> Option<String> {
+    match ty {
+        HybridType::Enum(name) => Some(format!("NveHybrid{name}")),
+        HybridType::Struct(name) if ty.is_pod(spec) => Some(format!("NveHybrid{name}")),
+        scalar => c_scalar_type(scalar).map(str::to_owned),
+    }
+}
+
+/// [`c_value_type`], or the error naming the type that has no C value form.
+pub(super) fn require_c_value_type(
+    ty: &HybridType,
+    spec: &HybridFileSpec,
+) -> Result<String, CodegenError> {
+    c_value_type(ty, spec).ok_or_else(|| {
+        CodegenError::validation(format!(
+            "hybrid C ABI: `{}` has no C value form",
+            ty.canonical_signature()
+        ))
+    })
+}
+
+/// The C pointee of a struct field `*const T` / `*mut T`: `void`, a POD struct by tag (complete
+/// before or after this struct), or a scalar / enum. `None` for `[T; N]` and every other type, so
+/// the struct stays C++-only.
+fn c_field_pointee_type(inner: &HybridType, spec: &HybridFileSpec) -> Option<String> {
+    match inner {
+        HybridType::Void => Some("void".to_string()),
+        HybridType::Struct(name) if inner.is_pod(spec) => Some(format!("struct NveHybrid{name}")),
+        other => c_value_type(other, spec),
+    }
+}
+
+/// Which way a POD struct field crosses between the C++ wrapper and its C ABI struct.
+#[derive(Clone, Copy)]
+pub(super) enum AbiDirection {
+    ToAbi,
+    FromAbi,
+}
+
+/// `dst = src` for one POD field across the C ABI: enums cast, POD structs convert, and `[T; N]`
+/// (nested too) copy element by element, so a C++ wrapper is never `memcpy`d onto its C struct.
+pub(super) fn emit_cpp_abi_copy(
+    out: &mut CodeWriter,
+    indent: &str,
+    dst: &str,
+    src: &str,
+    ty: &HybridType,
+    dir: AbiDirection,
+    depth: usize,
+) {
+    match (ty, dir) {
+        (HybridType::Enum(_), AbiDirection::ToAbi) => {
+            writeln!(out, "{indent}{dst} = static_cast<uint32_t>({src});");
+        }
+        (HybridType::Enum(e), AbiDirection::FromAbi) => {
+            writeln!(out, "{indent}{dst} = static_cast<{e}>({src});");
+        }
+        (HybridType::Struct(_), AbiDirection::ToAbi) => {
+            writeln!(out, "{indent}{dst} = {src}.to_abi();");
+        }
+        (HybridType::Struct(s), AbiDirection::FromAbi) => {
+            writeln!(out, "{indent}{dst} = {s}::from_abi({src});");
+        }
+        (HybridType::FixedArray { elem, len }, _) => {
+            let i = format!("_nve_i{depth}");
+            writeln!(out, "{indent}for (size_t {i} = 0; {i} < {len}u; ++{i}) {{");
+            let (dst, src) = (format!("{dst}[{i}]"), format!("{src}[{i}]"));
+            emit_cpp_abi_copy(
+                out,
+                &format!("{indent}  "),
+                &dst,
+                &src,
+                elem,
+                dir,
+                depth + 1,
+            );
+            writeln!(out, "{indent}}}");
+        }
+        _ => writeln!(out, "{indent}{dst} = {src};"),
+    }
+}
+
+/// One C struct field declaration, `None` when `ty` has no C form (the struct then stays C++-only).
+fn c_abi_field_decl(ty: &HybridType, fname: &str, spec: &HybridFileSpec) -> Option<String> {
+    match ty {
+        // `[[T; M]; N]` is `T name[N][M]`: dimensions outermost first.
+        HybridType::FixedArray { .. } => {
+            let (dims, elem) = ty.fixed_array_dims();
+            let dims: String = dims.iter().map(|len| format!("[{len}]")).collect();
+            Some(format!("{} {fname}{dims}", c_value_type(elem, spec)?))
+        }
+        HybridType::ConstPtr(inner) => {
+            Some(format!("const {}* {fname}", c_field_pointee_type(inner, spec)?))
+        }
+        HybridType::MutPtr(inner) => Some(format!("{}* {fname}", c_field_pointee_type(inner, spec)?)),
+        other => Some(format!("{} {fname}", c_value_type(other, spec)?)),
+    }
+}
+
+/// The C field declarations of `s` when it is a C ABI struct (non-empty, not a union, and every
+/// field has a C form), else `None`.
+pub(super) fn c_abi_struct_fields(
+    s: &HybridStructSpec,
+    spec: &HybridFileSpec,
+) -> Option<Vec<String>> {
+    if s.is_union || s.fields.is_empty() {
+        return None;
+    }
+    s.fields
+        .iter()
+        .map(|f| c_abi_field_decl(&f.ty, &c_field_ident(&f.name), spec))
+        .collect()
+}
+
+/// A static C function's parameter / return type: values, `void`, and pointers to them.
+pub(super) fn c_fn_type(ty: &HybridType, spec: &HybridFileSpec) -> Result<String, CodegenError> {
+    let pointer = |inner: &HybridType, constness: &str| {
+        let pointee = match inner {
+            HybridType::Void => Some("void".to_string()),
+            // Any struct: C functions also take opaque handles to non-POD ones.
+            HybridType::Struct(name) => Some(format!("NveHybrid{name}")),
+            other => c_value_type(other, spec),
+        };
+        pointee
+            .map(|pointee| format!("{constness}{pointee}*"))
+            .ok_or_else(|| {
+                CodegenError::validation(format!(
+                    "hybrid C function: pointer to `{}` has no C form",
+                    inner.canonical_signature()
+                ))
+            })
+    };
+    match ty {
+        HybridType::Void => Ok("void".to_string()),
+        HybridType::ConstPtr(inner) => pointer(inner, "const "),
+        HybridType::MutPtr(inner) => pointer(inner, ""),
+        other => Ok(c_param_type(other, spec)),
+    }
+}
+
+pub(super) fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if let Some(suffix) = ty.optional_pod_suffix(spec) {
+        return format!("NveHybridOpt{suffix}");
+    }
+    if let Some(value) = c_value_type(ty, spec) {
+        return value;
+    }
+    match ty {
         HybridType::String => "NveStrSlice".to_string(),
         HybridType::Bytes => "NveBufferSlice".to_string(),
         HybridType::Value => "NveValue".to_string(),
@@ -149,115 +241,7 @@ pub(super) fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     }
     match ty {
         HybridType::Void => "void".to_string(),
-        HybridType::Bool
-        | HybridType::U8
-        | HybridType::U16
-        | HybridType::Usize
-        | HybridType::I32
-        | HybridType::U32
-        | HybridType::I64
-        | HybridType::U64
-        | HybridType::F32
-        | HybridType::F64
-        | HybridType::Enum(_) => c_pod_type(ty),
-        HybridType::Struct(_) if ty.is_pod(spec) => c_pod_type(ty),
-        _ => "NveHybridOwnedBytes".to_string(),
-    }
-}
-
-pub(super) fn emit_cpp_bin_write(out: &mut CodeWriter, indent: &str, w: &str, expr: &str, ty: &HybridType) {
-    match ty {
-        HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});"),
-        HybridType::U8
-        | HybridType::U16
-        | HybridType::Usize
-        | HybridType::I32
-        | HybridType::U32
-        | HybridType::I64
-        | HybridType::U64 => {
-            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>({expr}));");
-        }
-        HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{w}.write_f64(static_cast<double>({expr}));");
-        }
-        HybridType::Enum(_) => {
-            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>(static_cast<uint32_t>({expr})));");
-        }
-        HybridType::String => writeln!(out, "{indent}{w}.write_str({expr});"),
-        HybridType::Bytes => writeln!(out, "{indent}{w}.write_bytes({expr});"),
-        HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encode_bin({w});"),
-        HybridType::Value => writeln!(out, "{indent}{w}.write_raw({expr}.bin_bytes);"),
-        HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({expr}.has_value()) {{");
-            emit_cpp_bin_write(out, &format!("{indent}  "), w, &format!("(*{expr})"), inner);
-            writeln!(out, "{indent}}} else {{");
-            writeln!(out, "{indent}  {w}.write_null();");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{w}.write_array(static_cast<uint32_t>({expr}.size()), [&](BinWriter& _aw) {{");
-            writeln!(out, "{indent}  for (const auto& _elem : {expr}) {{");
-            emit_cpp_bin_write(out, &format!("{indent}    "), "_aw", "_elem", inner);
-            writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}}});");
-        }
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {
-            writeln!(out, "{indent}{w}.write_null();");
-        }
-    }
-}
-
-pub(super) fn emit_cpp_bin_read(out: &mut CodeWriter, indent: &str, r: &str, dst: &str, ty: &HybridType) {
-    match ty {
-        HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.read_bool();"),
-        HybridType::U8 => writeln!(out, "{indent}{dst} = static_cast<uint8_t>({r}.read_i64());"),
-        HybridType::U16 => writeln!(out, "{indent}{dst} = static_cast<uint16_t>({r}.read_i64());"),
-        HybridType::Usize => writeln!(out, "{indent}{dst} = static_cast<size_t>({r}.read_i64());"),
-        HybridType::I32 => writeln!(out, "{indent}{dst} = static_cast<int32_t>({r}.read_i64());"),
-        HybridType::U32 => writeln!(out, "{indent}{dst} = static_cast<uint32_t>({r}.read_i64());"),
-        HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.read_i64();"),
-        HybridType::U64 => writeln!(out, "{indent}{dst} = static_cast<uint64_t>({r}.read_i64());"),
-        HybridType::F32 => writeln!(out, "{indent}{dst} = static_cast<float>({r}.read_f64());"),
-        HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.read_f64();"),
-        HybridType::Enum(e) => {
-            writeln!(out, "{indent}{dst} = static_cast<{e}>(static_cast<uint32_t>({r}.read_i64()));");
-        }
-        HybridType::String => writeln!(out, "{indent}{dst} = {r}.read_str();"),
-        HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.read_bytes();"),
-        HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}::decode_bin({r});"),
-        HybridType::Value => writeln!(out, "{indent}{dst} = DynamicValue{{{r}.read_raw_value()}};"),
-        HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({r}.read_null_if_present()) {{");
-            writeln!(out, "{indent}  {dst} = std::nullopt;");
-            writeln!(out, "{indent}}} else {{");
-            writeln!(out, "{indent}  {} _opt_v{{}};", cpp_owned_type(inner));
-            emit_cpp_bin_read(out, &format!("{indent}  "), r, "_opt_v", inner);
-            writeln!(out, "{indent}  {dst} = std::move(_opt_v);");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{{");
-            writeln!(out, "{indent}  const uint32_t _n = {r}.begin_array();");
-            writeln!(out, "{indent}  {dst}.clear();");
-            writeln!(out, "{indent}  {dst}.reserve(_n);");
-            writeln!(out, "{indent}  for (uint32_t _i = 0; _i < _n; ++_i) {{");
-            writeln!(out, "{indent}    {} _elem{{}};", cpp_owned_type(inner));
-            emit_cpp_bin_read(out, &format!("{indent}    "), r, "_elem", inner);
-            writeln!(out, "{indent}    {dst}.push_back(std::move(_elem));");
-            writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {}
+        other => c_value_type(other, spec).unwrap_or_else(|| "NveHybridOwnedBytes".to_string()),
     }
 }
 
@@ -292,7 +276,14 @@ pub(super) fn emit_cpp_fill_nve_value(
     match ty {
         HybridType::Optional(inner) if cpp_prop_is_direct_nve_value(inner) => {
             writeln!(out, "{indent}if ({expr}.has_value()) {{");
-            emit_cpp_fill_nve_value(out, &format!("{indent}  "), dst, &format!("(*{expr})"), inner, idx);
+            emit_cpp_fill_nve_value(
+                out,
+                &format!("{indent}  "),
+                dst,
+                &format!("(*{expr})"),
+                inner,
+                idx,
+            );
             writeln!(out, "{indent}}} else {{");
             writeln!(out, "{indent}  {dst}.tag = NVE_VAL_NULL;");
             writeln!(out, "{indent}}}");
@@ -309,15 +300,24 @@ pub(super) fn emit_cpp_fill_nve_value(
         | HybridType::I64
         | HybridType::U64 => {
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_I64;");
-            writeln!(out, "{indent}{dst}.data.i64_val = static_cast<int64_t>({expr});");
+            writeln!(
+                out,
+                "{indent}{dst}.data.i64_val = static_cast<int64_t>({expr});"
+            );
         }
         HybridType::Enum(_) => {
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_I64;");
-            writeln!(out, "{indent}{dst}.data.i64_val = static_cast<int64_t>(static_cast<uint32_t>({expr}));");
+            writeln!(
+                out,
+                "{indent}{dst}.data.i64_val = static_cast<int64_t>(static_cast<uint32_t>({expr}));"
+            );
         }
         HybridType::F32 | HybridType::F64 => {
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_F64;");
-            writeln!(out, "{indent}{dst}.data.f64_val = static_cast<double>({expr});");
+            writeln!(
+                out,
+                "{indent}{dst}.data.f64_val = static_cast<double>({expr});"
+            );
         }
         HybridType::String => {
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_STR;");
@@ -333,14 +333,35 @@ pub(super) fn emit_cpp_fill_nve_value(
                 "{indent}{dst}.data.bytes_val = NveBufferSlice{{{expr}.data(), {expr}.size()}};"
             );
         }
+        HybridType::Value => {
+            writeln!(out, "{indent}{dst} = _prop_tree_{idx}.root();");
+        }
+        // An absent non-direct option is `Null` itself, never an encoded null inside `Bytes`.
+        HybridType::Optional(_) => {
+            writeln!(out, "{indent}if ({expr}.has_value()) {{");
+            writeln!(out, "{indent}  {dst}.tag = NVE_VAL_BYTES;");
+            writeln!(
+                out,
+                "{indent}  {dst}.data.bytes_val = ::nve::hybrid::to_slice(_prop_bin_{idx});"
+            );
+            writeln!(out, "{indent}}} else {{");
+            writeln!(out, "{indent}  {dst}.tag = NVE_VAL_NULL;");
+            writeln!(out, "{indent}}}");
+        }
         _ => {
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_BYTES;");
-            writeln!(out, "{indent}{dst}.data.bytes_val = _prop_bin_{idx}.slice();");
+            writeln!(
+                out,
+                "{indent}{dst}.data.bytes_val = ::nve::hybrid::to_slice(_prop_bin_{idx});"
+            );
         }
     }
 }
 
-pub(super) fn cpp_prop_default_initializer(ty: &HybridType, def: Option<&HybridDefaultValue>) -> String {
+pub(super) fn cpp_prop_default_initializer(
+    ty: &HybridType,
+    def: Option<&HybridDefaultValue>,
+) -> String {
     let Some(def) = def else {
         return "{}".to_string();
     };
@@ -368,5 +389,40 @@ pub(super) fn cpp_prop_default_initializer(ty: &HybridType, def: Option<&HybridD
             format!("{enum_name}::{variant}")
         }
         (HybridDefaultValue::None, _) => "{}".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::hybrid::HybridFieldSpec;
+
+    /// Unvalidated specs reach the helpers in-crate: a pointer to `[T; N]` has no C form, so the
+    /// struct stays C++-only and a C function signature fails instead of panicking.
+    #[test]
+    fn pointers_to_fixed_arrays_have_no_c_form() {
+        let array_ptr = HybridType::ConstPtr(Box::new(HybridType::FixedArray {
+            elem: Box::new(HybridType::U32),
+            len: 4,
+        }));
+        let spec = HybridFileSpec {
+            structs: vec![HybridStructSpec {
+                name: "Holder".to_owned(),
+                fields: vec![HybridFieldSpec {
+                    name: "values".to_owned(),
+                    ty: array_ptr.clone(),
+                    doc: None,
+                    offset: None,
+                    offset_64: None,
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(c_abi_struct_fields(&spec.structs[0], &spec), None);
+        assert!(c_fn_type(&array_ptr, &spec).is_err());
+        assert!(require_c_value_type(&array_ptr, &spec).is_err());
+        let u32_ptr = HybridType::MutPtr(Box::new(HybridType::U32));
+        assert_eq!(c_fn_type(&u32_ptr, &spec).ok().as_deref(), Some("uint32_t*"));
     }
 }

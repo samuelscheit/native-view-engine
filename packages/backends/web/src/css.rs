@@ -52,7 +52,7 @@ pub const NVE_BASE_RESET_CSS: &str = concat!(
     "}",
     ".nve:is(dialog:not([open]),[popover]:not(:popover-open)){display:none}",
     "dialog.nve::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}",
-    ".nve-slot,[data-nve-dsd-host]{display:contents}",
+    ".nve-slot,[data-nve-dsd-host]:not([hidden]){display:contents}[data-nve-dsd-host][hidden]{display:none}",
     "[dir=\"rtl\"] [data-nve-mirror=\"directional\"],[dir=\"rtl\"][data-nve-mirror=\"directional\"]{transform:scaleX(-1)}"
 );
 
@@ -108,16 +108,16 @@ pub(crate) fn write_compact_dim(d: Dimension, out: &mut String) {
     match d {
         Dimension::Auto => out.push_str("auto"),
         Dimension::Points(v) => write_compact_px(v, out),
-        Dimension::Percent(v) => {
-            let v = canonical_f32(v);
-            if v == 0.0 {
-                out.push('0');
-            } else {
-                write_f32(out, v);
-                out.push('%');
-            }
-        }
+        Dimension::Percent(v) => write_percent(v, out),
     }
+}
+
+/// Formats a CSS percentage, never unitless: `0%` of an indefinite size resolves like
+/// `auto`/`content`, unlike the length `0`.
+#[inline]
+fn write_percent(v: f32, out: &mut String) {
+    write_f32(out, canonical_f32(v));
+    out.push('%');
 }
 
 #[inline]
@@ -125,13 +125,7 @@ pub(crate) fn write_compact_length(l: Length, out: &mut String) {
     if l.is_points() {
         write_compact_px(l.value(), out);
     } else if l.is_percent() {
-        let v = canonical_f32(l.value());
-        if v == 0.0 {
-            out.push('0');
-        } else {
-            write_f32(out, v);
-            out.push('%');
-        }
+        write_percent(l.value(), out);
     } else {
         out.push_str("auto");
     }

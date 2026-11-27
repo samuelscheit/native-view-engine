@@ -1,7 +1,7 @@
 /// Native View Engine (NVE) Flutter host bindings and widgets.
 ///
 /// Crisp barrel facade re-exporting:
-/// - Generated C-ABI `dart:ffi` structs (`nve_core_abi.generated.dart`, `nve_scene_abi.generated.dart`)
+/// - The static `nve_host` runtime with its generated ABI constants, tables, and `dart:ffi` structs
 /// - Compact binary `NveBinValue` zero-copy codec (`nve_bin_value.dart`)
 /// - Direct FFI props & event writers (`direct_ffi.dart`)
 /// - Strongly typed `EventRing` codec (`event_codec.dart`)
@@ -10,11 +10,11 @@
 /// - Live pairing client & surface (`nve_pair_client.dart`, `nve_paired_surface.dart`)
 library nve_flutter;
 
+export 'package:nve_host/nve_host.dart';
+export 'package:nve_host/nve_host_ffi.dart';
 export 'nve_hybrid_runtime.dart';
 export 'src/app_instance.dart';
 export 'src/channel_client.dart';
 export 'src/event_codec.dart';
-export 'src/nve_hash.generated.dart';
 export 'src/nve_pair_client.dart';
 export 'src/nve_paired_surface.dart';
-export 'src/nve_scene_abi.generated.dart';

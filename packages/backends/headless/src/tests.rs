@@ -1,14 +1,14 @@
-use nve_abi::{ColorRgba, EventMask, NVE_PRIMARY_SLOT_NONE};
+use nve_abi::{EventMask, NVE_PRIMARY_SLOT_NONE};
 use nve_components::tables::{
     core_realization_order, FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
 };
-use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
+use nve_engine::{Frame0File, Frame0Meta, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
 
 use crate::{HeadlessBackend, HeadlessMutation};
 
 #[test]
-fn headless_commit_layout_hit_test_scene_view_and_reloc_export() {
+fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
     let mut store = NodeStore::new();
     store.set_realization_order(core_realization_order());
     let mut changes = ChangeSet::default();
@@ -68,15 +68,23 @@ fn headless_commit_layout_hit_test_scene_view_and_reloc_export() {
     let title_node = nodes.iter().find(|n| n.node_id == title.raw()).unwrap();
     assert_eq!(title_node.primary_slot, TextContent::slot().0);
 
-    // Frame-0 NVERELOC export round-trips cleanly.
-    let reloc = backend
-        .export_scene_reloc(&store, 1, 1, "headless-test", ColorRgba::BLACK)
-        .unwrap();
-    let parsed = SceneRelocView::from_bytes(&reloc, VerifyMode::Full).unwrap();
-    assert_eq!(parsed.nodes().len(), 4);
-    let reloc_title = parsed.find_node_by_id(title.raw()).unwrap().1;
-    assert_eq!(parsed.text_of(reloc_title).unwrap(), "Dashboard");
-    assert_eq!(reloc_title.primary_slot(), TextContent::slot().0);
+    // Frame-0 NVE2 export round-trips cleanly into a cold replica with live layout.
+    let meta = Frame0Meta {
+        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+        app_build_id: 1,
+        env_hash: 0,
+    };
+    let frame0_bytes = Frame0File::encode(&store, meta).unwrap();
+    let mut cold_backend = HeadlessBackend::new();
+    cold_backend.set_viewport(1, Viewport { width: 400.0, height: 300.0, scale_factor: 2.0 });
+    let mut cold = StoreWireReplica::new(cold_backend, core_realization_order());
+    let (footer, _) = Frame0File::boot_bytes_into_replica(&frame0_bytes, meta, &mut cold).unwrap();
+    assert_eq!(footer.node_count, 4);
+    assert_eq!(
+        cold.store().try_row::<TextContent>(title).map(|t| t.text()),
+        Some("Dashboard")
+    );
+    assert_eq!(cold.backend().layout_of(btn.raw()), Some(btn_rect));
 
     let dump = backend.dump_tree(&store);
     assert!(dump.contains("Dashboard"));
@@ -220,15 +228,7 @@ fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fix
     // position: fixed box is anchored to viewport (20, 10), NOT parent (50+20, 100+10).
     let fr = backend.layout_of(fixed_box.raw()).unwrap();
     assert_eq!((fr.x, fr.y, fr.width, fr.height), (20.0, 10.0, 60.0, 30.0));
-
-    // NVERELOC export emits real CSS box-shadow string (not empty "").
-    let reloc = backend
-        .export_scene_reloc(&store, 1, 1, "shadow-test", ColorRgba::BLACK)
-        .unwrap();
-    let parsed = SceneRelocView::from_bytes(&reloc, VerifyMode::Full).unwrap();
-    let reloc_p = parsed.find_node_by_id(parent.raw()).unwrap().1;
-    let shadow_css = parsed.box_shadow_of(reloc_p).unwrap();
-    assert!(shadow_css.contains("2px 4px 8px"), "unexpected box_shadow: {shadow_css}");
+    let _ = parent;
 
     // Stale generation query after removal returns None (no cross-generation rect aliasing).
     let mut tx = store.tx();

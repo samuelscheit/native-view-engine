@@ -46,6 +46,15 @@ class DynamicValue {
     return v;
   }
 
+  /// Reads and fully validates `r`'s next value. On malformed input `r` fails (sticky, like every
+  /// read) and the result is null, so struct decoders stay uniformly sticky-error.
+  [[nodiscard]] static DynamicValue read(BinReader& r) {
+    const std::span<const uint8_t> bytes = r.read_checked_value();
+    DynamicValue v;
+    if (r.ok()) v.bytes_.assign(bytes.begin(), bytes.end());
+    return v;
+  }
+
   [[nodiscard]] std::span<const uint8_t> bytes() const noexcept { return bytes_; }
   [[nodiscard]] BinTag tag() const noexcept { return static_cast<BinTag>(bytes_.front()); }
   [[nodiscard]] bool is_null() const noexcept { return tag() == BinTag::Null; }

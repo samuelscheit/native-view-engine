@@ -6,7 +6,7 @@
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
-import 'nve_core_abi.generated.dart';
+import 'package:nve_host/nve_host.dart';
 
 /// Owned dynamic value encoded in NVE's compact binary `NveBinValue` format (binary).
 class NveHybridDynamicValue {

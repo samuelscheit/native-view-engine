@@ -123,6 +123,38 @@ impl ChangeSet {
             && self.resources_released.is_empty()
     }
 
+    /// Fallibly pre-sizes top-level vectors ahead of a bulk `NVE2` keyframe commit (`Frame0File`
+    /// boot), bounded by `payload_bytes / 4` and [`NodeId::MAX_INDEX`].
+    pub fn reserve_for_frame0(
+        &mut self,
+        node_count: usize,
+        payload_bytes: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        let capped = node_count
+            .min(payload_bytes / 4)
+            .min(NodeId::MAX_INDEX as usize);
+        if capped == 0 {
+            return Ok(());
+        }
+        if self.created.capacity() < capped {
+            self.created
+                .try_reserve(capped.saturating_sub(self.created.len()))?;
+        }
+        if self.children.capacity() < capped {
+            self.children
+                .try_reserve(capped.saturating_sub(self.children.len()))?;
+        }
+        if self.touched.capacity() < capped {
+            self.touched
+                .try_reserve(capped.saturating_sub(self.touched.len()))?;
+        }
+        if self.effects.capacity() < capped {
+            self.effects
+                .try_reserve(capped.saturating_sub(self.effects.len()))?;
+        }
+        Ok(())
+    }
+
     /// Overwrites `self` with a copy of `other` while reusing existing `Vec` capacities.
     pub fn copy_from(&mut self, other: &ChangeSet) {
         self.clear();

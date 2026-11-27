@@ -1,7 +1,5 @@
-//! Configuration types (`SsrLocalPoolConfig`, `StreamPlan`, `SsrPageOptions`) and safe HTML
-//! attribute / raw-script escaping helpers.
+//! Configuration types (`SsrLocalPoolConfig`, `StreamPlan`, `SsrPageOptions`).
 
-use core::fmt::Write as _;
 use core::time::Duration;
 
 use http::StatusCode;
@@ -36,7 +34,9 @@ pub struct SsrLocalPoolConfig {
     /// Number of dedicated OS worker threads running single-threaded Tokio `LocalSet` runtimes.
     /// Defaults to `available_parallelism().clamp(1, 16)`.
     pub worker_count: usize,
-    /// Bounded incoming job queue capacity per worker before returning [`crate::SsrError::PoolOverloaded`].
+    /// Maximum queued + actively streaming renders per worker before
+    /// [`crate::SsrError::PoolOverloaded`] (a render holds its slot until it completes, hits
+    /// `total_deadline`, or the client disconnects).
     pub queue_capacity_per_worker: usize,
 }
 
@@ -136,7 +136,10 @@ pub struct SsrPageOptions {
     /// Optional ES module URL emitted as `<script type="module" async src="..."></script>`
     /// strictly after `seq=0` query hydration ack (or `<template data-nve-stream-end>` on fast path).
     pub async_boot_src: Option<String>,
-    /// Opt-in pre-hydration inline event replay snippet (`false` by default for strict zero-inline-JS CSP).
+    /// Opt-in pre-hydration inline event replay snippet (`false` by default for strict
+    /// zero-inline-JS CSP). Enabling it emits an inline `<script data-nve-replay>`, which a strict
+    /// CSP blocks unless `script-src` allows it (its hash or a per-request nonce, or a relaxed
+    /// `'unsafe-inline'`).
     pub enable_event_replay: bool,
     /// HTTP response status code (defaults to `200 OK`).
     pub status: StatusCode,
@@ -249,97 +252,4 @@ impl SsrPageOptions {
         self.status = status;
         self
     }
-}
-
-/// Appends `val` escaped for a double-quoted HTML attribute value (zero extra allocation when
-/// `out` already has capacity).
-pub(crate) fn push_attr_escaped(val: &str, out: &mut String) {
-    let mut last = 0usize;
-    for (idx, ch) in val.char_indices() {
-        let esc = match ch {
-            '&' => "&amp;",
-            '"' => "&quot;",
-            '\'' => "&#39;",
-            '<' => "&lt;",
-            '>' => "&gt;",
-            '\0' => "\u{FFFD}",
-            _ => continue,
-        };
-        if idx > last {
-            out.push_str(&val[last..idx]);
-        }
-        out.push_str(esc);
-        last = idx + ch.len_utf8();
-    }
-    if last < val.len() {
-        out.push_str(&val[last..]);
-    }
-}
-
-/// Escapes case-insensitive `</script` breakout sequences inside inert `<script>` data elements
-/// (zero-copy fast path when `<` is absent).
-pub(crate) fn push_script_data_escaped(data: &str, out: &mut String) {
-    if !data.contains('<') {
-        out.push_str(data);
-        return;
-    }
-    const NEEDLE: &[u8] = b"</script";
-    let bytes = data.as_bytes();
-    let nlen = NEEDLE.len();
-    let mut last = 0usize;
-    let mut i = 0usize;
-    while i + nlen <= bytes.len() {
-        if bytes[i] == b'<'
-            && bytes[i + 1] == b'/'
-            && bytes[i..i + nlen].eq_ignore_ascii_case(NEEDLE)
-        {
-            out.push_str(&data[last..i]);
-            out.push_str("<\\/");
-            out.push_str(&data[i + 2..i + nlen]);
-            i += nlen;
-            last = i;
-        } else {
-            i += 1;
-        }
-    }
-    out.push_str(&data[last..]);
-}
-
-pub(crate) fn push_stylesheet_links(links: &[String], out: &mut String) {
-    for href in links {
-        let trimmed = href.trim();
-        if !trimmed.is_empty() {
-            out.push_str("<link rel=\"stylesheet\" href=\"");
-            push_attr_escaped(trimmed, out);
-            out.push_str("\">\n");
-        }
-    }
-}
-
-pub(crate) fn push_modulepreload_link(src: Option<&str>, out: &mut String) {
-    if let Some(trimmed) = src.map(str::trim).filter(|s| !s.is_empty()) {
-        out.push_str("<link rel=\"modulepreload\" href=\"");
-        push_attr_escaped(trimmed, out);
-        out.push_str("\">\n");
-    }
-}
-
-pub(crate) fn push_async_boot_script(src: Option<&str>, out: &mut String) {
-    if let Some(trimmed) = src.map(str::trim).filter(|s| !s.is_empty()) {
-        out.push_str("<script type=\"module\" async src=\"");
-        push_attr_escaped(trimmed, out);
-        out.push_str("\"></script>\n");
-    }
-}
-
-pub(crate) fn push_query_payload_tag(seq: u64, base64_nveq: &str, out: &mut String) {
-    let _ = write!(
-        out,
-        "<script type=\"application/x-nve-query\" data-nve-seq=\"{seq}\">"
-    );
-    push_script_data_escaped(base64_nveq, out);
-    let _ = writeln!(
-        out,
-        "</script><template data-nve-q-ack=\"{seq}\"></template>"
-    );
 }

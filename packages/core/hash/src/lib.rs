@@ -6,8 +6,9 @@
 //! - [`Xxh64Hasher`] streams the same digest for runtime data (wire trailers, resource dedup,
 //!   persisted snapshots).
 //! - [`Key64`] splits into `(lo, hi)` `u32` halves so Dart-web / JavaScript hosts (53-bit safe
-//!   integers) compare keys without `BigInt`. Generated host mirrors live in
-//!   `nve_hash.generated.{h,hpp,dart,ts,swift,java}` (`nve codegen abi`).
+//!   integers) compare keys without `BigInt`. The host ports live in the static
+//!   `packages/core/host-*` runtimes, checked against golden vectors `nve codegen abi` generates
+//!   from this crate.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 #![no_std]

@@ -178,17 +178,6 @@ mod enabled {
             self.resync.mark_keyframe_applied();
         }
 
-        #[inline]
-        #[allow(dead_code)]
-        pub(crate) fn auth_rejected(&self) -> bool {
-            self.client.auth_rejections() > 0
-        }
-
-        #[allow(dead_code)]
-        pub(crate) fn last_error(&self) -> Option<String> {
-            self.client.last_error()
-        }
-
         pub(crate) fn try_recv_event(&self) -> Option<PairInboundEvent> {
             while let Some(item) = self.client.try_recv_item() {
                 match item {
@@ -317,16 +306,6 @@ mod disabled {
         }
 
         pub(crate) fn mark_keyframe_applied(&mut self) {}
-
-        #[allow(dead_code)]
-        pub(crate) fn auth_rejected(&self) -> bool {
-            false
-        }
-
-        #[allow(dead_code)]
-        pub(crate) fn last_error(&self) -> Option<String> {
-            None
-        }
 
         pub(crate) fn try_recv_event(&self) -> Option<PairInboundEvent> {
             None

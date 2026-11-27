@@ -5,11 +5,17 @@
 mod bin_codec;
 #[cfg(feature = "wire")]
 mod bin_view;
+#[cfg(feature = "wire")]
+mod bin_writer;
+#[cfg(all(test, feature = "wire"))]
+mod bin_writer_tests;
 mod ffi_events;
 mod ffi_types;
 mod ffi_views;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "wire")]
+mod value_tree;
 
 /// Maximum permitted container nesting depth for `NveBinValue` encoding & decoding.
 #[cfg(feature = "wire")]
@@ -19,11 +25,16 @@ pub const NVE_BIN_VALUE_MAX_DEPTH: usize = 64;
 pub use bin_codec::{encode_bin_value, encode_bin_value_to_vec};
 #[cfg(feature = "wire")]
 pub use bin_view::{BinArrayIter, BinMapIter, BinValueView};
+#[cfg(feature = "wire")]
+pub use bin_writer::{BinArrayWriter, BinMapWriter, BinWriter};
+#[cfg(feature = "wire")]
+pub use value_tree::NveValueTree;
 pub use ffi_events::{
     NveDirectEvent, NveEventBatch, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE,
     NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
     NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
 };
+pub(crate) use ffi_types::guarded_slice;
 pub use ffi_types::{
     NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveStrSlice, NveValue,
     NveValueArray, NveValueData, NveValueMap, NveValueTag,

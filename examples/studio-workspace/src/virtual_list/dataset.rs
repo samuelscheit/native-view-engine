@@ -44,7 +44,7 @@ const STREAM_SUBJECTS: &[&str] = &[
     "Skia GPU surface handoff",
     "WASM DOM flexbox commit",
     "QUIC live pairing ack window",
-    "Mmap snapshot frame-0 boot",
+    "Frame-0 NVE2 keyframe boot",
 ];
 const STREAM_DETAILS: &[&str] = &[
     "Zero per-frame heap allocation; deterministic O(log N) prefix sum slice.",

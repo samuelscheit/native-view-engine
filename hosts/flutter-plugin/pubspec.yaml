@@ -13,6 +13,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # Static host runtime + generated ABI / table data (`nve codegen abi`).
+  nve_host:
+    path: ../../packages/core/host-dart
 
 dev_dependencies:
   flutter_test:

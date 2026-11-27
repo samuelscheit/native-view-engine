@@ -1,7 +1,8 @@
 # nve_host (Dart)
 
-Zero-dependency pure-Dart NVE host runtime for the VM, Flutter, and Dart-web. It imports no
-`dart:ffi` and no `dart:io`.
+Zero-dependency pure-Dart NVE host runtime for the VM, Flutter, and Dart-web. Its main library
+(`nve_host.dart`) imports no `dart:ffi` and no `dart:io`; the generated native `dart:ffi` structs
+live behind the separate `nve_host_ffi.dart`.
 
 **64-bit rule:** every 64-bit value is a `Key64(lo, hi)` of unsigned 32-bit halves:
 
@@ -31,6 +32,12 @@ already-closed mark is rejected, and a rejected write leaves no bytes.
 | `src/table_reader.dart` | `FieldKind`, `FieldSpec`, `LengthValue`, `Rgba`, `TableReader` |
 | `src/scene_reader.dart` | `SceneReader` over slabs or over wasm32 linear memory via a generated `SceneLayout` |
 | `src/hybrid_runtime.dart` | `HybridStatus`, `HostStatus`, `HybridException`, `DynamicValue` |
+| `src/hybrid_ffi.dart` | Native `dart:ffi` hybrid vtable typedefs, `HybridOwnedBytes`, `HybridArena`, owned-bytes helpers (`nve_host_ffi.dart`) |
+| `src/value_tree.dart` | Native `NveValueTree` FFI tree builder and `HybridPropsBuilder` / `HybridPropsWriter` (`nve_host_ffi.dart`) |
+
+## Generated data
+
+`nve codegen abi` writes `lib/src/generated/nve_abi_const.generated.dart` and `nve_tables.generated.dart` (web-safe, exported by `nve_host.dart`), `nve_abi_ffi.generated.dart` (`dart:ffi` structs, exported by `nve_host_ffi.dart`), and `test/src/hash_vectors.generated.dart` (all gitignored).
 
 ## Verify
 

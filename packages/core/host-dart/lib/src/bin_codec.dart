@@ -21,7 +21,7 @@ enum BinTag { nullValue, boolValue, i64, f64, str, bytes, array, map }
 /// Maximum container nesting depth (Rust `NVE_BIN_VALUE_MAX_DEPTH`).
 const int binValueMaxDepth = 64;
 
-enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark }
+enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark, invalidAlignment }
 
 final class BinCodecException implements Exception {
   const BinCodecException(this.kind, this.message);
@@ -140,6 +140,14 @@ final class BinReader {
     return utf8String(_length());
   }
 
+  /// Reads a `Str` value's validated UTF-8 bytes as a zero-copy view (no UTF-16 decode).
+  Uint8List readStrUtf8() {
+    _expect(BinTag.str);
+    final len = _length();
+    final at = _checkUtf8(len);
+    return Uint8List.sublistView(bytes, at, at + len);
+  }
+
   Uint8List readBytes() {
     _expect(BinTag.bytes);
     return take(_length());
@@ -151,7 +159,22 @@ final class BinReader {
   /// Entry count of a map; read each entry as [readMapKey] then a value.
   int beginMap() => _openContainer(BinTag.map, 5).$1;
 
+  /// Opens an array, runs [body] with reads clamped to the array's payload, restores the outer
+  /// limit, and throws [BinErrorKind.trailingBytes] if [body] leaves unconsumed bytes.
+  T readArrayScope<T>(T Function(int count) body) => _readContainerScope(BinTag.array, 1, body);
+
+  /// Opens a map, runs [body] with reads clamped to the map's payload, restores the outer limit,
+  /// and throws [BinErrorKind.trailingBytes] if [body] leaves unconsumed bytes.
+  T readMapScope<T>(T Function(int count) body) => _readContainerScope(BinTag.map, 5, body);
+
   String readMapKey() => utf8String(_length());
+
+  /// Reads a map key's validated UTF-8 bytes as a zero-copy view (no UTF-16 decode).
+  Uint8List readMapKeyUtf8() {
+    final len = _length();
+    final at = _checkUtf8(len);
+    return Uint8List.sublistView(bytes, at, at + len);
+  }
 
   /// Skips one value in O(1).
   void skipValue() {
@@ -178,6 +201,20 @@ final class BinReader {
     final start = _pos;
     skipValue();
     return Uint8List.sublistView(bytes, start, _pos);
+  }
+
+  /// Fully validates and consumes the next value, returning a view of its encoded bytes.
+  Uint8List readCheckedValue() {
+    final start = _pos;
+    checkValue();
+    return Uint8List.sublistView(bytes, start, _pos);
+  }
+
+  /// Throws [BinErrorKind.trailingBytes] unless every byte up to the active limit was consumed.
+  void requireDone() {
+    if (!isAtEnd) {
+      throw BinCodecException(BinErrorKind.trailingBytes, '$remaining trailing bytes');
+    }
   }
 
   /// Fully validates and consumes the next value (Rust `BinValueView::parse` rules).
@@ -231,6 +268,22 @@ final class BinReader {
       throw _truncated(count);
     }
     return (count, end);
+  }
+
+  T _readContainerScope<T>(BinTag tag, int minEntryBytes, T Function(int count) body) {
+    final (count, end) = _openContainer(tag, minEntryBytes);
+    final outer = _limit;
+    _limit = end;
+    final T result;
+    try {
+      result = body(count);
+    } finally {
+      _limit = outer;
+    }
+    if (_pos != end) {
+      throw BinCodecException(BinErrorKind.trailingBytes, '${end - _pos} bytes');
+    }
+    return result;
   }
 
   void _checkValue(int depth) {

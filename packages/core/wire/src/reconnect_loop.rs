@@ -10,7 +10,7 @@ use nve_wire_core::{NveWireKind, NveWireUri};
 use tokio::sync::mpsc;
 
 use crate::client::ClientInboundEvent;
-use crate::reconnect::{encode_transport, ReconnectConfig, SharedState, WireInboundItem};
+use crate::reconnect::{ReconnectConfig, SharedState, WireInboundItem};
 use crate::{NveWireClient, NveWireClientConfig, NveWireTransportError};
 
 const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -102,7 +102,7 @@ pub(crate) fn activate_session(
     shared.set_last_error(None);
     shared
         .transport
-        .store(encode_transport(client.transport_kind()), Ordering::Release);
+        .store(client.transport_kind() as u8, Ordering::Release);
     shared
         .server_session_id
         .store(client.session_id(), Ordering::Release);
@@ -110,7 +110,7 @@ pub(crate) fn activate_session(
     shared.connected.store(true, Ordering::Release);
     if reconnected {
         shared.reconnect_count.fetch_add(1, Ordering::Release);
-        let _ = client.request_keyframe();
+        let _ = client.request_keyframe_reconnect_init();
     }
     let _ = push_inbound_item(
         inbound_tx,
@@ -274,11 +274,15 @@ async fn drive_session(
                         if cmd_sid != session_id {
                             continue;
                         }
-                        match client.request_keyframe() {
+                        // Control recovery requests must never be silently dropped under outbound
+                        // backpressure; await capacity under `stop_fut` so `WireResyncState` never wedges.
+                        let send_res = tokio::select! {
+                            biased;
+                            _ = &mut stop_fut => return true,
+                            res = client.send_keyframe_request_async(false) => res,
+                        };
+                        match send_res {
                             Ok(()) => shared.update_metrics_from(client),
-                            Err(NveWireTransportError::Backpressure(_)) => {
-                                shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
-                            }
                             Err(_) => return false,
                         }
                     }
@@ -298,10 +302,10 @@ async fn drive_session(
                         shared.fire_wake();
                     }
                     Some(ClientInboundEvent::Overflowed) => {
-                        shared.update_metrics_from(client);
                         if !push_inbound_overflow(inbound_tx, inbound_drain, session_id, shared) {
                             return true;
                         }
+                        shared.update_metrics_from(client);
                         shared.fire_wake();
                     }
                     None => return false,

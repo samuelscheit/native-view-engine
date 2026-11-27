@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dioxus_signals::WritableExt;
 use nve_abi::{NveMapEntry, NveValue};
-use nve_engine::{NativeStateStore, StateStoreConfig};
+use nve_engine::StateFile;
 
 use super::codec::{write_header, HEADER_SIZE};
 use super::*;
@@ -78,16 +78,16 @@ fn roundtrip_all_signal_value_types_and_bin_value() {
 }
 
 #[test]
-fn incremental_delta_folding_and_arena_compaction_equivalence() {
-    let dir = TempDir::new("compact_eq");
-    let arena_path = dir.path().join("state.nvemmap");
+fn incremental_delta_folding_and_state_file_roundtrip_equivalence() {
+    let dir = TempDir::new("state_file_eq");
+    let state_path = dir.path().join("state.nve");
 
     let mut base = SignalTableSnapshot::new(2);
     base.set_named("App", "count", SignalValue::I64(1));
     base.set_named("App", "tab", SignalValue::Str("board".into()));
     base.set_named("App", "ephemeral", SignalValue::Bool(true));
 
-    let mut store = NativeStateStore::open(&arena_path, 2, StateStoreConfig::default()).unwrap();
+    let mut store = StateFile::open(&state_path, 2).unwrap();
     SignalArchive::save_to_store(&mut store, &base).unwrap();
 
     // Delta 1: mutate count, add filter.
@@ -110,26 +110,25 @@ fn incremental_delta_folding_and_arena_compaction_equivalence() {
     // Unchanged diff produces empty delta.
     assert!(step2.diff_since(&step2).is_empty());
 
-    // Fold deltas onto base loaded from MmapOffsetArena.
+    // Fold deltas onto base loaded from StateFile.
     let mut folded = SignalArchive::load_from_store(&store).unwrap();
     folded.apply_delta_bytes(&d1_bytes).unwrap();
     folded.apply_delta_bytes(&d2_bytes).unwrap();
     assert_eq!(folded, step2);
 
     SignalArchive::save_to_store(&mut store, &folded).unwrap();
-    store.compact().unwrap();
     drop(store);
 
-    let reopened = NativeStateStore::open(&arena_path, 2, StateStoreConfig::default()).unwrap();
-    let from_compacted = SignalArchive::load_from_store(&reopened).unwrap();
-    assert_eq!(from_compacted, folded);
-    assert_eq!(from_compacted, step2);
+    let reopened = StateFile::open(&state_path, 2).unwrap();
+    let from_reopened = SignalArchive::load_from_store(&reopened).unwrap();
+    assert_eq!(from_reopened, folded);
+    assert_eq!(from_reopened, step2);
 }
 
 #[test]
 fn registry_handles_schema_evolution_added_removed_and_retyped_slots() {
     let dir = TempDir::new("schema_evo");
-    let arena_path = dir.path().join("evo.nvemmap");
+    let state_path = dir.path().join("evo.nve");
 
     // App v1 state:
     let v1_count = Rc::new(RefCell::new(10i32));
@@ -179,7 +178,7 @@ fn registry_handles_schema_evolution_added_removed_and_retyped_slots() {
         );
     }
 
-    let mut store = NativeStateStore::open(&arena_path, 1, StateStoreConfig::default()).unwrap();
+    let mut store = StateFile::open(&state_path, 1).unwrap();
     reg_v1.persist_to_store(&mut store).unwrap();
 
     // Mutate count and persist incrementally.

@@ -28,7 +28,7 @@ pub(crate) fn WorkspaceStatsSection() -> Element {
             fallback: rsx! {
                 view {
                     test_id: "stats-skeleton",
-                    style: "width: 100%; padding-vertical: 14px; padding-horizontal: 16px; border-radius: 10px; border-width: 1px; border-color: {border_hex}; background: {surface_hex}; display: flex; flex-direction: row; align-items: center; justify-content: space-between;",
+                    style: "width: 100%; padding: 14px 16px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: row; align-items: center; justify-content: space-between;",
                     text {
                         style: "font-size: 13px; color: {muted_hex};",
                         "Loading workspace stats..."
@@ -40,7 +40,7 @@ pub(crate) fn WorkspaceStatsSection() -> Element {
                 rsx! {
                     view {
                         test_id: "stats-error-boundary",
-                        style: "width: 100%; padding-vertical: 14px; padding-horizontal: 16px; border-radius: 10px; border-width: 1px; border-color: {danger_hex}; background: {surface_hex}; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;",
+                        style: "width: 100%; padding: 14px 16px; border-radius: 10px; border: 1px solid {danger_hex}; background: {surface_hex}; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;",
                         text {
                             style: "font-size: 13px; color: {danger_hex};",
                             "Failed to load workspace stats: {msg}"
@@ -122,7 +122,7 @@ fn WorkspaceStatsContent() -> Element {
             }
             view {
                 test_id: "stats-comments",
-                style: "flex: 1; min-width: 130px; padding-vertical: 12px; padding-horizontal: 14px; border-radius: 10px; border-width: 1px; border-color: {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; justify-content: center; gap: 4px;",
+                style: "flex: 1 1 130px; min-width: 110px; padding: 12px 14px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; justify-content: center; gap: 4px;",
                 text {
                     style: "font-size: 11px; font-weight: 600; color: {muted_hex};",
                     "Discussion"
@@ -149,7 +149,7 @@ fn StatMetricTile(
     rsx! {
         view {
             test_id: "{test_id}",
-            style: "flex: 1; min-width: 110px; padding-vertical: 12px; padding-horizontal: 14px; border-radius: 10px; border-width: 1px; border-color: {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 4px;",
+            style: "flex: 1 1 110px; min-width: 96px; padding: 12px 14px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 4px;",
             text {
                 style: "font-size: 11px; font-weight: 600; color: {muted_hex};",
                 "{label}"
@@ -183,7 +183,7 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
             fallback: rsx! {
                 view {
                     test_id: "comments-skeleton",
-                    style: "width: 100%; padding: 16px; border-radius: 10px; border-width: 1px; border-color: {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 6px;",
+                    style: "width: 100%; padding: 16px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 6px;",
                     text {
                         style: "font-size: 13px; font-weight: 600; color: {muted_hex};",
                         "Featured Discussion · Issue #{id_num}"
@@ -199,7 +199,7 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
                 rsx! {
                     view {
                         test_id: "comments-error-boundary",
-                        style: "width: 100%; padding: 16px; border-radius: 10px; border-width: 1px; border-color: {danger_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
+                        style: "width: 100%; padding: 16px; border-radius: 10px; border: 1px solid {danger_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
                         Row {
                             justify: Some("space-between".to_owned()),
                             style: Some("flex-wrap: wrap; gap: 8px;".to_owned()),
@@ -251,7 +251,7 @@ fn FeaturedCommentsContent(issue_id: IssueId) -> Element {
     rsx! {
         view {
             test_id: "featured-comments-panel",
-            style: "width: 100%; padding: 16px; border-radius: 10px; border-width: 1px; border-color: {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
+            style: "width: 100%; padding: 16px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
             Row {
                 justify: Some("space-between".to_owned()),
                 text {
@@ -279,7 +279,7 @@ fn FeaturedCommentsContent(issue_id: IssueId) -> Element {
                     view {
                         key: "{comment.id.0}",
                         test_id: "featured-comment-{comment.id.0}",
-                        style: "width: 100%; padding-vertical: 10px; padding-horizontal: 12px; border-radius: 8px; border-width: 1px; border-color: {border_hex}; background: {subtle_bg}; display: flex; flex-direction: column; gap: 4px;",
+                        style: "width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid {border_hex}; background: {subtle_bg}; display: flex; flex-direction: column; gap: 4px;",
                         text {
                             style: "font-size: 12px; font-weight: 600; color: {muted_hex};",
                             "{comment.author}"

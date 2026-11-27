@@ -1,6 +1,6 @@
 #pragma once
 
-#include "nve_scene_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 
 #include <jni.h>
 

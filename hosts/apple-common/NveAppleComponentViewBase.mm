@@ -189,10 +189,6 @@ DefaultNativeViewHooks &default_native_view_hooks() {
   return _nveHost.isPairedConnected;
 }
 
-- (BOOL)hasReplayedFrame0 {
-  return _nveHost.hasReplayedFrame0;
-}
-
 - (nullable NveGetInterfaceFn)defaultNveGetInterface {
   return nullptr;
 }
@@ -242,23 +238,6 @@ DefaultNativeViewHooks &default_native_view_hooks() {
 
 - (void)disconnectPaired {
   [_nveHost disconnectPaired];
-}
-
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs {
-  const BOOL ok = [_nveHost replayFrame0SnapshotAtPath:snapshotPath
-                                 expectedSchemaVersion:expectedSchemaVersion
-                                         restoreTimeUs:outRestoreUs];
-  if (ok) {
-    [self bindNativeViewsToActiveFabricHost];
-  }
-  return ok;
-}
-
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
-             schemaVersion:(uint32_t)schemaVersion {
-  return [_nveHost saveSnapshotAtPath:snapshotPath schemaVersion:schemaVersion];
 }
 
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {

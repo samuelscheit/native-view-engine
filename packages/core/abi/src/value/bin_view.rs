@@ -22,6 +22,16 @@ impl<'a> BinValueView<'a> {
         Ok(Self { bytes, tag })
     }
 
+    /// View over bytes a `parse` already accepted (an owner that stores validated bytes).
+    #[inline]
+    pub(crate) fn from_validated(bytes: &'a [u8]) -> Self {
+        let tag = bytes
+            .first()
+            .and_then(|&raw| NveValueTag::from_u32(u32::from(raw)))
+            .unwrap_or(NveValueTag::Null);
+        Self { bytes, tag }
+    }
+
     #[inline]
     pub const fn tag(&self) -> NveValueTag {
         self.tag

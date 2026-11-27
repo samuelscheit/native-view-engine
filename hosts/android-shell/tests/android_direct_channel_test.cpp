@@ -1,4 +1,4 @@
-#include "nve_scene_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 #include "nve_value.hpp"
 
 #include <jni.h>

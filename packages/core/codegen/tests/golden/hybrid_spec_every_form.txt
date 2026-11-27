@@ -1,0 +1,415 @@
+HybridFileSpec {
+    namespace: Some(
+        "acme_media",
+    ),
+    consts: [
+        HybridConstSpec {
+            name: "MAX_FRAMES",
+            ty: U32,
+            value: 64,
+            hex: true,
+            doc: Some(
+                "Max frames.",
+            ),
+        },
+        HybridConstSpec {
+            name: "LIMIT",
+            ty: U64,
+            value: 1000,
+            hex: false,
+            doc: None,
+        },
+    ],
+    aliases: [
+        HybridAliasSpec {
+            name: "CameraHandle",
+            target: U64,
+            doc: Some(
+                "Opaque handle.",
+            ),
+        },
+    ],
+    enums: [
+        HybridEnumSpec {
+            name: "Mode",
+            variants: [
+                HybridEnumVariant {
+                    name: "Off",
+                    value: 0,
+                    doc: Some(
+                        "Off doc.",
+                    ),
+                },
+                HybridEnumVariant {
+                    name: "On",
+                    value: 7,
+                    doc: None,
+                },
+                HybridEnumVariant {
+                    name: "Auto",
+                    value: 8,
+                    doc: None,
+                },
+            ],
+            doc: Some(
+                "Modes.",
+            ),
+            c_prefix: Some(
+                "NVE_MODE_",
+            ),
+            repr: Some(
+                "u8",
+            ),
+            dart_fallback: Some(
+                "Off",
+            ),
+        },
+    ],
+    structs: [
+        HybridStructSpec {
+            name: "Packet",
+            fields: [
+                HybridFieldSpec {
+                    name: "id",
+                    ty: U32,
+                    doc: Some(
+                        "The id.",
+                    ),
+                    offset: Some(
+                        0,
+                    ),
+                    offset_64: Some(
+                        0,
+                    ),
+                },
+                HybridFieldSpec {
+                    name: "data",
+                    ty: ConstPtr(
+                        U8,
+                    ),
+                    doc: None,
+                    offset: Some(
+                        8,
+                    ),
+                    offset_64: None,
+                },
+                HybridFieldSpec {
+                    name: "len",
+                    ty: Usize,
+                    doc: None,
+                    offset: None,
+                    offset_64: None,
+                },
+                HybridFieldSpec {
+                    name: "arr",
+                    ty: FixedArray {
+                        elem: F32,
+                        len: 4,
+                    },
+                    doc: None,
+                    offset: None,
+                    offset_64: None,
+                },
+            ],
+            doc: None,
+            is_union: false,
+            align: Some(
+                8,
+            ),
+            expected_size: Some(
+                16,
+            ),
+            expected_size_64: Some(
+                24,
+            ),
+        },
+        HybridStructSpec {
+            name: "Num",
+            fields: [
+                HybridFieldSpec {
+                    name: "i",
+                    ty: I64,
+                    doc: None,
+                    offset: None,
+                    offset_64: None,
+                },
+                HybridFieldSpec {
+                    name: "f",
+                    ty: F64,
+                    doc: None,
+                    offset: None,
+                    offset_64: None,
+                },
+            ],
+            doc: None,
+            is_union: true,
+            align: Some(
+                8,
+            ),
+            expected_size: None,
+            expected_size_64: None,
+        },
+    ],
+    modules: [
+        HybridModuleSpec {
+            name: "Camera",
+            trait_name: "CameraSpec",
+            methods: [
+                HybridMethodSpec {
+                    name: "open",
+                    params: [
+                        HybridParamSpec {
+                            name: "handle",
+                            ty: Handle(
+                                "CameraHandle",
+                            ),
+                        },
+                    ],
+                    return_type: Result {
+                        ok: Struct(
+                            "Packet",
+                        ),
+                        err: String,
+                    },
+                    doc: Some(
+                        "Opens.",
+                    ),
+                    has_self: true,
+                    optional: false,
+                },
+                HybridMethodSpec {
+                    name: "torch",
+                    params: [
+                        HybridParamSpec {
+                            name: "on",
+                            ty: Bool,
+                        },
+                    ],
+                    return_type: Optional(
+                        Vec(
+                            Enum(
+                                "Mode",
+                            ),
+                        ),
+                    ),
+                    doc: None,
+                    has_self: true,
+                    optional: true,
+                },
+                HybridMethodSpec {
+                    name: "data",
+                    params: [
+                        HybridParamSpec {
+                            name: "buf",
+                            ty: Bytes,
+                        },
+                        HybridParamSpec {
+                            name: "tags",
+                            ty: Vec(
+                                String,
+                            ),
+                        },
+                    ],
+                    return_type: Bytes,
+                    doc: None,
+                    has_self: true,
+                    optional: false,
+                },
+                HybridMethodSpec {
+                    name: "dynamic",
+                    params: [
+                        HybridParamSpec {
+                            name: "v",
+                            ty: Value,
+                        },
+                    ],
+                    return_type: Value,
+                    doc: None,
+                    has_self: true,
+                    optional: false,
+                },
+                HybridMethodSpec {
+                    name: "nothing",
+                    params: [],
+                    return_type: Void,
+                    doc: None,
+                    has_self: true,
+                    optional: false,
+                },
+            ],
+            doc: Some(
+                "Camera.\nSecond line.",
+            ),
+            explicit_interface_id: Some(
+                4097,
+            ),
+            c_name: Some(
+                "NveCameraApi",
+            ),
+        },
+    ],
+    views: [
+        HybridViewSpec {
+            name: "Preview",
+            trait_name: "PreviewSpec",
+            props: [
+                HybridPropSpec {
+                    name: "mode",
+                    ty: Enum(
+                        "Mode",
+                    ),
+                    default_value: Some(
+                        EnumVariant {
+                            enum_name: "Mode",
+                            variant: "Auto",
+                        },
+                    ),
+                    doc: None,
+                },
+                HybridPropSpec {
+                    name: "bias",
+                    ty: F64,
+                    default_value: Some(
+                        Float(
+                            -1.5,
+                        ),
+                    ),
+                    doc: None,
+                },
+                HybridPropSpec {
+                    name: "offset",
+                    ty: I64,
+                    default_value: Some(
+                        Int(
+                            -9223372036854775808,
+                        ),
+                    ),
+                    doc: None,
+                },
+                HybridPropSpec {
+                    name: "count",
+                    ty: U32,
+                    default_value: Some(
+                        UInt(
+                            3,
+                        ),
+                    ),
+                    doc: None,
+                },
+                HybridPropSpec {
+                    name: "label",
+                    ty: String,
+                    default_value: Some(
+                        String(
+                            "hi \"there\"\n",
+                        ),
+                    ),
+                    doc: None,
+                },
+                HybridPropSpec {
+                    name: "poster",
+                    ty: Optional(
+                        String,
+                    ),
+                    default_value: Some(
+                        None,
+                    ),
+                    doc: None,
+                },
+                HybridPropSpec {
+                    name: "live",
+                    ty: Bool,
+                    default_value: Some(
+                        Bool(
+                            true,
+                        ),
+                    ),
+                    doc: None,
+                },
+                HybridPropSpec {
+                    name: "plain",
+                    ty: I32,
+                    default_value: None,
+                    doc: None,
+                },
+            ],
+            events: [
+                HybridEventSpec {
+                    name: "on_frame",
+                    params: [
+                        HybridParamSpec {
+                            name: "ts",
+                            ty: U64,
+                        },
+                        HybridParamSpec {
+                            name: "size",
+                            ty: U32,
+                        },
+                    ],
+                    doc: None,
+                },
+            ],
+            methods: [
+                HybridMethodSpec {
+                    name: "snap",
+                    params: [],
+                    return_type: Result {
+                        ok: Bytes,
+                        err: String,
+                    },
+                    doc: None,
+                    has_self: true,
+                    optional: false,
+                },
+                HybridMethodSpec {
+                    name: "implicit_method",
+                    params: [
+                        HybridParamSpec {
+                            name: "x",
+                            ty: F32,
+                        },
+                    ],
+                    return_type: Void,
+                    doc: None,
+                    has_self: true,
+                    optional: false,
+                },
+            ],
+            doc: None,
+            explicit_interface_id: Some(
+                4098,
+            ),
+        },
+    ],
+    c_functions: [
+        HybridMethodSpec {
+            name: "nve_cam_open",
+            params: [
+                HybridParamSpec {
+                    name: "handle",
+                    ty: Handle(
+                        "CameraHandle",
+                    ),
+                },
+                HybridParamSpec {
+                    name: "mode",
+                    ty: Enum(
+                        "Mode",
+                    ),
+                },
+                HybridParamSpec {
+                    name: "out",
+                    ty: MutPtr(
+                        Struct(
+                            "Packet",
+                        ),
+                    ),
+                },
+            ],
+            return_type: I32,
+            doc: None,
+            has_self: false,
+            optional: false,
+        },
+    ],
+}

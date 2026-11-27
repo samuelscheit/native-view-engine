@@ -1,4 +1,4 @@
-#include "nve_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 
 #include <stdint.h>
 #include <stdio.h>

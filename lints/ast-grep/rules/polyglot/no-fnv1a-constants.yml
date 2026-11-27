@@ -142,7 +142,7 @@ message: "FNV-1a magic constant is banned; standardize on `xxh64`."
 note: "Matches 32-bit and 64-bit hex/decimal FNV-1a constants in Java hosts."
 ignores:
   - "**/*.generated.*"
-  - "**/dev/nve/android/generated/**"
+  - "**/dev/nve/host/generated/**"
   - "**/src/test/**"
   - "**/src/androidTest/**"
 rule:

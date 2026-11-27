@@ -7,7 +7,7 @@ Native **Qt 6** desktop host shell for Native View Engine, offering both a **GPU
 - **`NveQtQuickItem`** (`NveQtQuickItem.hpp` / `NveQtQuickItem.cpp`, enabled automatically when `Qt6::Quick` is found):
   - `QQuickItem` (`QML_ELEMENT` / `NveSurface` in QML module `Nve 1.0`) rendering NVE's flat 64-byte `NveSceneView` (`nve::SceneTableBuilder`) directly onto Qt 6's hardware-accelerated RHI Scene Graph (Metal on macOS, Vulkan/OpenGL on Linux, D3D11/12 on Windows, Software for headless CI) with zero widget overhead.
   - Retained `QSGNode` tree with `QSGTransformNode`, `QSGOpacityNode`, `QSGClipNode` (hardware scissor clip for rectangular bounds, stencil geometry clip for rounded rects), portable `DrawTriangles` rounded-rect & border `QSGGeometryNode` / `QSGSimpleRectNode`, and generation-tracked per-node HiDPI `QSGTexture` text caching (`QTextLayout` + `QPainter`) so unchanged text nodes never re-rasterize.
-  - Zero-copy `NveDirectEvent` dispatch for press, wheel scroll, focus/blur, and text input, plus live `geometryChange` relayout, `replaySnapshot` / `saveSnapshot` Frame-0 mmap boot, and atomic state-preserving `hotReload`.
+  - Zero-copy `NveDirectEvent` dispatch for press, wheel scroll, focus/blur, and text input, plus live `geometryChange` relayout and atomic state-preserving `hotReload`.
 - **`NveQtWidget`** (`NveQtWidget.hpp` / `NveQtWidget.cpp`):
   - Embeddable `QWidget` composing `nve::NativeHostSession` and `nve::RetainedViewReconciler<QWidget*, QtViewAdapter>`.
   - Custom antialiased `NveQtBoxWidget`, `QLabel`, `QScrollArea`, and `QLineEdit`.

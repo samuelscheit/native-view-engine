@@ -21,7 +21,7 @@ use nve_rpc::{
 use crate::{block_on, DemoErr, GetItem, Item};
 
 #[derive(Clone)]
-struct ErrorMatrixTransport;
+pub(crate) struct ErrorMatrixTransport;
 
 impl Transport for ErrorMatrixTransport {
     fn call_raw<'a>(&'a self, req: RawCall) -> BoxFuture<'a, Result<RawReply, TransportError>> {
@@ -94,7 +94,7 @@ impl Transport for ErrorMatrixTransport {
     }
 }
 
-struct WakeCount(AtomicUsize);
+pub(crate) struct WakeCount(pub(crate) AtomicUsize);
 impl std::task::Wake for WakeCount {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -147,7 +147,7 @@ fn nveq_v2_round_trips_all_four_kinds_sanitizes_errors_and_respects_grace() {
 
     let settled_blob = ssr.dehydrate_bytes().unwrap();
     let pending_blob = ssr
-        .dehydrate_pending_handles(&[h_ok, h_dom, h_pending])
+        .dehydrate_initial_stream_chunk(&[h_ok, h_dom, h_pending], &mut DehydrateCursor::new())
         .unwrap();
 
     // Hydrate into a fresh Client with 5s grace window.
@@ -383,7 +383,7 @@ fn fill_only_hydration_monotonicity_wait_for_settled_and_finish_ssr_stream_work(
     let h3 = ssr.subscribe::<GetItem>(&3, QueryOptions::default()).unwrap();
 
     // Boot chunk marks h1, h2, h3 StreamPending.
-    let pending_blob = ssr.dehydrate_pending_handles(&[h1, h2, h3]).unwrap();
+    let pending_blob = ssr.dehydrate_initial_stream_chunk(&[h1, h2, h3], &mut DehydrateCursor::new()).unwrap();
     // Server settles h1 (Ok) and h2 (DomainErr).
     assert!(block_on(ssr.fetch_handle::<GetItem>(h1)).is_ok());
     assert!(block_on(ssr.fetch_handle::<GetItem>(h2)).is_err());

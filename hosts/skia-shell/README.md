@@ -6,7 +6,7 @@ Cross-platform desktop host (`nve-skia-shell`) that loads any compiled NVE `cdyl
 
 - **Pure Library / Host Split**: Mirrors `packages/backends/web` + `hosts/web-shell` — all `winit`, `softbuffer`, and WebSocket hot-reload host logic lives here while `packages/backends/skia` remains a pure rendering backend library.
 - **2-Tier Hot Reload (`nve dev`)**: Connects to `ws://127.0.0.1:8089` (configurable via `--ws <url>` or disabled via `--no-ws`) to apply Tier-1 template patches and Tier-2 `cdylib` reloads with state preservation.
-- **Instant-Boot Frame-0 `MmapSnapshot`**: Pass `--snapshot <path.nvesnap> [--schema <ver>]` to replay a freeze-dried Frame-0 `CommandBuffer` directly from memory-mapped storage before `dlopen`, restore app state on boot, and atomically persist the latest snapshot on exit.
+- **Frame-0 `frame0.nve2` Pre-Warm**: Pass `--frame0 <path.nve2>` to pre-warm a cold `NodeStore` + live Taffy layout from an `NVE2` keyframe before `dlopen` and atomically refresh it on exit.
 - **Headless Screenshot Capture**: Pass `--screenshot <out.ppm> [--width W] [--height H] [--scale S]` to render headlessly without a display server and write a binary `P6` PPM image.
 - **Hardware GPU Swapchains**: Forward `--features skia`, `--features skia-metal`, `--features skia-vulkan`, or `--features skia-d3d` directly to `nve-backend-skia`.
 
@@ -20,10 +20,10 @@ cargo build -p nve-example-kitchen-sink
 cargo run -p nve-skia-shell -- \
   target/debug/libnve_example_kitchen_sink.dylib --no-ws
 
-# Launch with Frame-0 MmapSnapshot instant boot + atomic save on exit
+# Launch with Frame-0 NVE2 keyframe pre-warm + atomic refresh on exit
 cargo run -p nve-skia-shell -- \
   target/debug/libnve_example_kitchen_sink.dylib \
-  --no-ws --snapshot /tmp/kitchen-sink.nvesnap --schema 1
+  --no-ws --frame0 /tmp/kitchen-sink.nve2
 
 # Headless PPM screenshot capture
 cargo run -p nve-skia-shell -- \

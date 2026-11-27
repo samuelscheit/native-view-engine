@@ -16,7 +16,6 @@ int main() {
   nve_test::test_host_runtime_utilities_and_dylib_errors();
   nve_test::test_retained_view_reconciler();
   nve_test::test_native_host_session();
-  nve_test::test_mmap_snapshot_and_session_instant_boot();
   nve_test::test_direct_scene_view_and_reconciler();
 
   std::cout << "nve_fabric_bridge_test passed ("

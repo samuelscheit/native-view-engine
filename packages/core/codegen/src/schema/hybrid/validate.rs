@@ -1,4 +1,14 @@
+mod generated_names;
+mod idents;
+#[cfg(test)]
+mod tests;
+mod types;
+
 use std::collections::{BTreeMap, BTreeSet};
+
+use generated_names::validate_generated_type_names;
+use idents::{ident_key, validate_ident, validate_top_level_ident, validate_vtable_method_ident};
+use types::validate_type;
 
 use super::*;
 
@@ -28,7 +38,7 @@ impl HybridFileSpec {
         let mut struct_map: BTreeMap<&str, &HybridStructSpec> = BTreeMap::new();
 
         for c in &self.consts {
-            validate_ident("const", &c.name)?;
+            validate_top_level_ident("const", &c.name)?;
             if !const_names.insert(c.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate const name '{}'",
@@ -38,7 +48,7 @@ impl HybridFileSpec {
         }
 
         for a in &self.aliases {
-            validate_ident("type alias", &a.name)?;
+            validate_top_level_ident("type alias", &a.name)?;
             if !type_names.insert(a.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate type name '{}'",
@@ -49,7 +59,7 @@ impl HybridFileSpec {
         }
 
         for e in &self.enums {
-            validate_ident("enum", &e.name)?;
+            validate_top_level_ident("enum", &e.name)?;
             if !type_names.insert(e.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate type name '{}'",
@@ -66,7 +76,7 @@ impl HybridFileSpec {
             let mut variant_values = BTreeSet::new();
             for v in &e.variants {
                 validate_ident("enum variant", &v.name)?;
-                if !variant_names.insert(v.name.as_str()) {
+                if !variant_names.insert(ident_key(&v.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate variant '{}' in enum '{}'",
                         v.name, e.name
@@ -83,7 +93,7 @@ impl HybridFileSpec {
         }
 
         for s in &self.structs {
-            validate_ident("struct", &s.name)?;
+            validate_top_level_ident("struct", &s.name)?;
             if !type_names.insert(s.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate type name '{}'",
@@ -107,7 +117,7 @@ impl HybridFileSpec {
             let mut field_names = BTreeSet::new();
             for f in &s.fields {
                 validate_ident("struct field", &f.name)?;
-                if !field_names.insert(f.name.as_str()) {
+                if !field_names.insert(ident_key(&f.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate field '{}' in struct '{}'",
                         f.name, s.name
@@ -147,9 +157,9 @@ impl HybridFileSpec {
         let mut iface_ids: BTreeMap<u32, String> = BTreeMap::new();
 
         for m in &self.modules {
-            validate_ident("module", &m.name)?;
+            validate_top_level_ident("module", &m.name)?;
             validate_ident("module trait", &m.trait_name)?;
-            if !item_names.insert(m.name.as_str()) {
+            if !item_names.insert(ident_key(&m.name)) {
                 return Err(CodegenError::validation(format!(
                     "duplicate hybrid module/view name '{}'",
                     m.name
@@ -178,6 +188,9 @@ impl HybridFileSpec {
                     m.name
                 )));
             }
+            for method in &m.methods {
+                validate_vtable_method_ident(&format!("module '{}'", m.name), &method.name, false)?;
+            }
             validate_methods(
                 &m.methods,
                 &enum_map,
@@ -188,9 +201,9 @@ impl HybridFileSpec {
         }
 
         for v in &self.views {
-            validate_ident("view", &v.name)?;
+            validate_top_level_ident("view", &v.name)?;
             validate_ident("view trait", &v.trait_name)?;
-            if !item_names.insert(v.name.as_str()) {
+            if !item_names.insert(ident_key(&v.name)) {
                 return Err(CodegenError::validation(format!(
                     "duplicate hybrid module/view name '{}'",
                     v.name
@@ -223,7 +236,7 @@ impl HybridFileSpec {
             let mut member_names = BTreeSet::new();
             for p in &v.props {
                 validate_ident("prop", &p.name)?;
-                if !member_names.insert(p.name.as_str()) {
+                if !member_names.insert(ident_key(&p.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate member '{}' in view '{}'",
                         p.name, v.name
@@ -243,7 +256,7 @@ impl HybridFileSpec {
             }
             for ev in &v.events {
                 validate_ident("event", &ev.name)?;
-                if !member_names.insert(ev.name.as_str()) {
+                if !member_names.insert(ident_key(&ev.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate member '{}' in view '{}'",
                         ev.name, v.name
@@ -252,7 +265,7 @@ impl HybridFileSpec {
                 let mut param_names = BTreeSet::new();
                 for param in &ev.params {
                     validate_ident("event parameter", &param.name)?;
-                    if !param_names.insert(param.name.as_str()) {
+                    if !param_names.insert(ident_key(&param.name)) {
                         return Err(CodegenError::validation(format!(
                             "duplicate parameter '{}' in view '{}' event '{}'",
                             param.name, v.name, ev.name
@@ -264,13 +277,16 @@ impl HybridFileSpec {
                         &enum_map,
                         &struct_map,
                         &alias_names,
-                        &format!("view '{}' event '{}' param '{}'", v.name, ev.name, param.name),
+                        &format!(
+                            "view '{}' event '{}' param '{}'",
+                            v.name, ev.name, param.name
+                        ),
                     )?;
                 }
             }
             for m in &v.methods {
-                validate_ident("method", &m.name)?;
-                if !member_names.insert(m.name.as_str()) {
+                validate_vtable_method_ident(&format!("view '{}'", v.name), &m.name, true)?;
+                if !member_names.insert(ident_key(&m.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate member '{}' in view '{}'",
                         m.name, v.name
@@ -287,6 +303,9 @@ impl HybridFileSpec {
         }
 
         if !self.c_functions.is_empty() {
+            for f in &self.c_functions {
+                validate_top_level_ident("c_function", &f.name)?;
+            }
             validate_methods(
                 &self.c_functions,
                 &enum_map,
@@ -294,29 +313,25 @@ impl HybridFileSpec {
                 &alias_names,
                 "c_functions",
             )?;
+            for f in &self.c_functions {
+                let types = f.params.iter().map(|p| &p.ty).chain([&f.return_type]);
+                for ty in types {
+                    if let HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) = ty
+                        && !matches!(inner.as_ref(), HybridType::Void | HybridType::Struct(_))
+                        && inner.pod_opt_suffix_for(self).is_none()
+                    {
+                        return Err(CodegenError::validation(format!(
+                            "c_function '{}': `{}` must point to void, a scalar, an enum, or a struct",
+                            f.name,
+                            ty.canonical_signature()
+                        )));
+                    }
+                }
+            }
         }
 
-        Ok(())
+        validate_generated_type_names(self)
     }
-}
-
-
-fn validate_ident(kind: &str, name: &str) -> Result<(), CodegenError> {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return Err(CodegenError::validation(format!("{kind} name cannot be empty")));
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return Err(CodegenError::validation(format!(
-            "invalid {kind} identifier '{name}': must start with ASCII letter or '_'"
-        )));
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(CodegenError::validation(format!(
-            "invalid {kind} identifier '{name}': must contain only ASCII alphanumeric or '_'"
-        )));
-    }
-    Ok(())
 }
 
 fn validate_methods(
@@ -329,7 +344,7 @@ fn validate_methods(
     let mut names = BTreeSet::new();
     for m in methods {
         validate_ident("method", &m.name)?;
-        if !names.insert(m.name.as_str()) {
+        if !names.insert(ident_key(&m.name)) {
             return Err(CodegenError::validation(format!(
                 "duplicate method '{}' in {owner}",
                 m.name
@@ -338,7 +353,7 @@ fn validate_methods(
         let mut param_names = BTreeSet::new();
         for p in &m.params {
             validate_ident("parameter", &p.name)?;
-            if !param_names.insert(p.name.as_str()) {
+            if !param_names.insert(ident_key(&p.name)) {
                 return Err(CodegenError::validation(format!(
                     "duplicate parameter '{}' in {owner} method '{}'",
                     p.name, m.name
@@ -371,109 +386,6 @@ fn validate_methods(
     Ok(())
 }
 
-fn validate_type(
-    ty: &HybridType,
-    allow_void: bool,
-    enum_map: &BTreeMap<&str, &HybridEnumSpec>,
-    struct_map: &BTreeMap<&str, &HybridStructSpec>,
-    alias_names: &BTreeSet<&str>,
-    ctx: &str,
-) -> Result<(), CodegenError> {
-    match ty {
-        HybridType::Void => {
-            if !allow_void {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: void/'()' is only permitted as a method return or Result<(), String> ok type"
-                )));
-            }
-            Ok(())
-        }
-        HybridType::Bool
-        | HybridType::U8
-        | HybridType::U16
-        | HybridType::Usize
-        | HybridType::I32
-        | HybridType::U32
-        | HybridType::I64
-        | HybridType::U64
-        | HybridType::F32
-        | HybridType::F64
-        | HybridType::String
-        | HybridType::Bytes
-        | HybridType::Value => Ok(()),
-        HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
-            validate_type(inner, true, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::FixedArray { elem, len } => {
-            if *len == 0 {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: fixed-size array length must be > 0"
-                )));
-            }
-            validate_type(elem, false, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Handle(name) => {
-            if !alias_names.contains(name.as_str()) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: unknown handle alias '{name}'"
-                )));
-            }
-            Ok(())
-        }
-        HybridType::Optional(inner) => {
-            if matches!(inner.as_ref(), HybridType::Result { .. }) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Option<Result<...>> is not supported across FFI"
-                )));
-            }
-            validate_type(inner, false, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Vec(inner) => {
-            if matches!(inner.as_ref(), HybridType::Result { .. }) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Vec<Result<...>> is not supported across FFI"
-                )));
-            }
-            validate_type(inner, false, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Result { ok, err } => {
-            if !allow_void {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Result<T, String> is only supported as a top-level method return type"
-                )));
-            }
-            if matches!(ok.as_ref(), HybridType::Result { .. }) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: nested Result<Result<...>> is not supported"
-                )));
-            }
-            if !matches!(err.as_ref(), HybridType::String) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: Result error type must be String (found '{}')",
-                    err.canonical_signature()
-                )));
-            }
-            validate_type(ok, true, enum_map, struct_map, alias_names, ctx)
-        }
-        HybridType::Struct(name) => {
-            if !struct_map.contains_key(name.as_str()) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: unknown struct or type '{name}'"
-                )));
-            }
-            Ok(())
-        }
-        HybridType::Enum(name) => {
-            if !enum_map.contains_key(name.as_str()) {
-                return Err(CodegenError::validation(format!(
-                    "{ctx}: unknown enum '{name}'"
-                )));
-            }
-            Ok(())
-        }
-    }
-}
-
 fn validate_default_value(
     def: &HybridDefaultValue,
     ty: &HybridType,
@@ -487,19 +399,28 @@ fn validate_default_value(
             return validate_default_value(other, inner, enum_map, view_name, prop_name);
         }
         (HybridDefaultValue::Bool(_), HybridType::Bool) => true,
-        (
-            HybridDefaultValue::Int(_),
-            HybridType::I32 | HybridType::I64 | HybridType::F32 | HybridType::F64,
-        ) => true,
-        (
-            HybridDefaultValue::Int(v),
-            HybridType::U32 | HybridType::U64,
-        ) => *v >= 0,
-        (
-            HybridDefaultValue::UInt(_),
-            HybridType::U32 | HybridType::U64 | HybridType::I32 | HybridType::I64 | HybridType::F32 | HybridType::F64,
-        ) => true,
-        (HybridDefaultValue::Float(_), HybridType::F32 | HybridType::F64) => true,
+        // Integers must fit the target type; floats must stay finite at its precision.
+        (HybridDefaultValue::Int(v), HybridType::I32) => i32::try_from(*v).is_ok(),
+        (HybridDefaultValue::Int(_), HybridType::I64 | HybridType::F32 | HybridType::F64) => true,
+        (HybridDefaultValue::Int(v), HybridType::U32) => u32::try_from(*v).is_ok(),
+        (HybridDefaultValue::Int(v), HybridType::U64) => *v >= 0,
+        (HybridDefaultValue::Int(v), HybridType::U8) => u8::try_from(*v).is_ok(),
+        (HybridDefaultValue::Int(v), HybridType::U16) => u16::try_from(*v).is_ok(),
+        // `usize` is 32-bit on wasm32 / ILP32 hosts, so a default must fit `u32` everywhere.
+        (HybridDefaultValue::Int(v), HybridType::Usize) => u32::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::Usize) => u32::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::U8) => u8::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::U16) => u16::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::U32) => u32::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::I32) => i32::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::I64) => i64::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(_), HybridType::U64 | HybridType::F32 | HybridType::F64) => true,
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the narrowing is what is being checked"
+        )]
+        (HybridDefaultValue::Float(v), HybridType::F32) => (*v as f32).is_finite(),
+        (HybridDefaultValue::Float(v), HybridType::F64) => v.is_finite(),
         (HybridDefaultValue::String(_), HybridType::String) => true,
         (
             HybridDefaultValue::EnumVariant { enum_name, variant },
@@ -584,4 +505,3 @@ fn detect_recursive_value_structs(
     }
     Ok(())
 }
-

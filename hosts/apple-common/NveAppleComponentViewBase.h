@@ -22,7 +22,7 @@ typedef UIImageView NveAppleBaseImageView;
 #define NVE_APPLE_COMPONENT_BASE_CLASS UIView
 #endif
 
-#include "nve_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 
 #ifdef __cplusplus
 #import "NveAppleSupport.h"
@@ -60,7 +60,6 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
 @property (nonatomic, readonly) uint32_t nveLastReconciledRemovedCount;
 @property (nonatomic, readonly) BOOL isPaired;
 @property (nonatomic, readonly) BOOL isPairedConnected;
-@property (nonatomic, readonly) BOOL hasReplayedFrame0;
 
 /// Attach an NVE Rust component interface resolver directly (for statically-linked Rust libraries).
 - (BOOL)attachNveInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId;
@@ -83,15 +82,6 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
 
 /// Disconnect any active paired thin-client session.
 - (void)disconnectPaired;
-
-/// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` snapshot file before loading a dylib.
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs;
-
-/// Atomically persist the current rendered Frame-0 tree and app state to `snapshotPath`.
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
-             schemaVersion:(uint32_t)schemaVersion;
 
 /// Update component props from an NSDictionary via direct FFI (`set_props`) and re-render.
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;

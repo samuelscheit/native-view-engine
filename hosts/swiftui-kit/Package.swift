@@ -16,20 +16,22 @@ let package = Package(
             targets: ["NveSwiftUI"]
         ),
     ],
+    dependencies: [
+        // Static host runtime + the generated C ABI (`nve codegen abi`), shared by every Apple host.
+        .package(path: "../../packages/core/host-swift"),
+    ],
     targets: [
         .target(
-            name: "CNveAbi",
-            path: "Sources/CNveAbi",
-            publicHeadersPath: "include"
-        ),
-        .target(
             name: "NveSwiftUI",
-            dependencies: ["CNveAbi"],
+            dependencies: [
+                .product(name: "CNveAbi", package: "host-swift"),
+                .product(name: "NveHost", package: "host-swift"),
+            ],
             path: "Sources/NveSwiftUI"
         ),
         .testTarget(
             name: "NveSwiftUITests",
-            dependencies: ["NveSwiftUI", "CNveAbi"],
+            dependencies: ["NveSwiftUI", .product(name: "CNveAbi", package: "host-swift"), .product(name: "NveHost", package: "host-swift")],
             path: "Tests/NveSwiftUITests"
         ),
     ]

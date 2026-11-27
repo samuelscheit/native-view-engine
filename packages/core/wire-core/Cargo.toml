@@ -7,7 +7,6 @@ description = "Sans-I/O NveWireFrame v2 protocol, compact NodePatchDelta codec, 
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-engine = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
