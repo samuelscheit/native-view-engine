@@ -454,6 +454,8 @@ fn emit_c_core_struct_or_union(out: &mut CodeWriter, s: &HybridStructSpec) {
         "NveBufferSlice" => Some("NVE_TYPE_BUFFER_SLICE_DEFINED"),
         "NveStrSlice" => Some("NVE_TYPE_STR_SLICE_DEFINED"),
         "NveEventBatch" => Some("NVE_TYPE_EVENT_BATCH_DEFINED"),
+        "NveSizeConstraints" => Some("NVE_TYPE_SIZE_CONSTRAINTS_DEFINED"),
+        "NveIntrinsicSize" => Some("NVE_TYPE_INTRINSIC_SIZE_DEFINED"),
         _ => None,
     };
     if let Some(g) = guard {

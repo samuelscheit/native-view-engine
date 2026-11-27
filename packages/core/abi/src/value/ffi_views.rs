@@ -157,6 +157,7 @@ impl<'a> NveMapRef<'a> {
     /// # Safety
     /// All nested pointers inside `entries` must remain valid for `'a`.
     #[inline] pub const unsafe fn from_slice(entries: &'a [NveMapEntry]) -> Self { Self { entries } }
+    #[inline] pub const fn as_slice(&self) -> &'a [NveMapEntry] { self.entries }
     #[inline] pub const fn len(&self) -> usize { self.entries.len() }
     #[inline] pub const fn is_empty(&self) -> bool { self.entries.is_empty() }
     #[inline] pub fn get(&self, key: &str) -> Option<NveValueRef<'a>> {

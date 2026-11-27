@@ -24,10 +24,13 @@ function(nve_ensure_abi_codegen)
 
   get_filename_component(_nve_repo_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../.." ABSOLUTE)
   set(_nve_include_dir "${_nve_repo_root}/cxx/nve-fabric-bridge/include")
+  set(_nve_host_include_dir "${_nve_repo_root}/packages/core/host-cxx/include/nve/host")
   set(_nve_generated_headers
     "${_nve_include_dir}/nve_abi.generated.h"
     "${_nve_include_dir}/nve_scene_abi.generated.h"
-    "${_nve_repo_root}/packages/core/host-cxx/include/nve/host/nve_runtime_abi.generated.h"
+    "${_nve_host_include_dir}/nve_abi.generated.h"
+    "${_nve_host_include_dir}/nve_runtime_abi.generated.h"
+    "${_nve_host_include_dir}/nve_tables.generated.h"
   )
 
   set(_nve_needs_codegen FALSE)

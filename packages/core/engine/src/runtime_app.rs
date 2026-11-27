@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use nve_abi::{FrameId, NveEventBatchRef};
+use nve_abi::{
+    FrameId, NveDirectEvent, NveEventBatchRef, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
+};
 use nve_store::{ChangeSet, NodeStore, Transaction};
 
 use crate::HotPatchMsg;
@@ -62,6 +64,36 @@ pub trait RuntimeApp {
 
     /// Applies a Tier-1 binary hot-reload patch payload. Returns `true` if the surface dirtied.
     fn apply_hot_patch(&mut self, _patch: &HotPatchMsg) -> bool {
+        false
+    }
+
+    /// Applies embedded-component props (`NveComponentApi::set_props`). `Some(true)` when the app
+    /// needs a re-render; `None` when the app exposes no component interface.
+    fn set_props(&mut self, _props: NvePropsRef<'_>) -> Option<bool> {
+        None
+    }
+
+    /// Outbound component events emitted since the last drain, borrowed until the next `&mut self`
+    /// call (`NveComponentApi::drain_emitted_events`).
+    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+        &[]
+    }
+
+    /// Intrinsic size under `constraints` (`NveLayoutApi::measure`); `None` when the app exposes no
+    /// layout interface.
+    fn measure(&mut self, _constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
+        None
+    }
+
+    /// Serialized app state for a Tier-2 hot swap, borrowed until the next `&mut self` call
+    /// (`&[]` when stateless or unsupported).
+    fn snapshot_state(&mut self) -> &[u8] {
+        &[]
+    }
+
+    /// Restores state captured by [`Self::snapshot_state`]. Returns `true` when the app applied it
+    /// (and needs a re-render); `false` when the app exposes no dev interface.
+    fn restore_state(&mut self, _state: &[u8]) -> bool {
         false
     }
 }

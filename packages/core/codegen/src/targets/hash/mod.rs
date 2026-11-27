@@ -1,5 +1,5 @@
 //! Single-source **XXH64** host mirrors (`nve_hash.generated.*`) of the canonical Rust `nve-hash`
-//! crate: C11, constexpr C++20, Swift, Java, and 53-bit-safe Dart / TypeScript (digests as
+//! crate: C11, constexpr C++20, Java, and 53-bit-safe Dart / TypeScript (digests as
 //! `(lo, hi)` `u32` halves, never `BigInt`). Every file embeds the same golden vectors, computed
 //! here by `nve_hash::xxh64`, plus a self-check (`verify…TestVectors`) covering one-shot and
 //! chunked streaming digests.
@@ -7,7 +7,6 @@
 mod c;
 mod dart;
 mod java;
-mod swift;
 mod typescript;
 
 use nve_hash::{xxh64, PRIME1};
@@ -66,7 +65,6 @@ pub fn generate_all_hash_files() -> Vec<GeneratedFile> {
     [
         ("cxx/nve-fabric-bridge/include/nve_hash.generated.h", c::generate_c_hash()),
         ("cxx/nve-fabric-bridge/include/nve_hash.generated.hpp", c::generate_cpp_hash()),
-        ("hosts/swiftui-kit/Sources/NveSwiftUI/NveHash.generated.swift", swift::generate_swift_hash()),
         ("hosts/flutter-plugin/lib/src/nve_hash.generated.dart", dart::generate_dart_hash()),
         ("hosts/web-shell/nve_hash.generated.ts", typescript::generate_ts_hash()),
         (

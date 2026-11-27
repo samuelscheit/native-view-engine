@@ -15,26 +15,11 @@ use super::*;
 #[test]
 fn all_core_tables_fit_32_words_and_register_cleanly() {
     register_core_tables();
-    let descs = [
-        Layout::DESC,
-        GridLayout::DESC,
-        GridItem::DESC,
-        Visual::DESC,
-        Typography::DESC,
-        TextContent::DESC,
-        Transform::DESC,
-        Motion::DESC,
-        Responsive::DESC,
-        Interaction::DESC,
-        Accessibility::DESC,
-        DebugId::DESC,
-        StreamBoundary::DESC,
-        Link::DESC,
-        Scroll::DESC,
-        Image::DESC,
-        TextInput::DESC,
-    ];
-    for d in descs {
+    let mut keys = std::collections::HashSet::new();
+    for d in CORE_TABLE_DESCS {
+        assert!(keys.insert(d.key), "duplicate table key `{}`", d.name);
+        assert_eq!(d.key, nve_abi::Key64::of(d.name), "{}", d.name);
+        assert!(nve_store::slot_of(d.key).is_some(), "`{}` not registered", d.name);
         assert!(
             d.words() <= nve_abi::table::MAX_TABLE_WORDS,
             "table `{}` has {} words (> 32)",

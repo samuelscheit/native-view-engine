@@ -4,7 +4,7 @@
 // UTF-8 `text_slab`, and every published `NveTableView` once on `open()`.
 // `RuntimeSceneGuard` pairs `scene_acquire` with automatic `scene_release` (and releases immediately
 // if validation ever fails so reader locks can never leak).
-// `RuntimeSession` wraps the 17-slot `NveRuntimeApi` vtable with RAII `destroy` and move-only
+// `RuntimeSession` wraps the full `NveRuntimeApi` vtable with RAII `destroy` and move-only
 // ownership.
 #pragma once
 
@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "nve_runtime_abi.generated.h"
 #include "scene_reader.hpp"
@@ -242,7 +243,11 @@ class RuntimeSession {
            api->scroll_by != nullptr && api->scene_acquire != nullptr &&
            api->scene_release != nullptr && api->get_metrics != nullptr &&
            api->pair_connect != nullptr && api->pair_disconnect != nullptr &&
-           api->pair_is_connected != nullptr && api->last_error != nullptr;
+           api->pair_is_connected != nullptr && api->set_props != nullptr &&
+           api->drain_emitted_events != nullptr && api->measure != nullptr &&
+           api->apply_hot_patch != nullptr && api->snapshot_state != nullptr &&
+           api->restore_state != nullptr && api->set_text_measurer != nullptr &&
+           api->resource_bytes != nullptr && api->last_error != nullptr;
   }
 
   [[nodiscard]] static std::optional<RuntimeSession> create(
@@ -310,8 +315,7 @@ class RuntimeSession {
 
   [[nodiscard]] NveRuntimeStatus submit_nve2(std::span<const uint8_t> bytes) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
-    const NveBufferSlice slice{bytes.empty() ? nullptr : bytes.data(), bytes.size()};
-    return static_cast<NveRuntimeStatus>(api_->submit_nve2(handle_, slice));
+    return static_cast<NveRuntimeStatus>(api_->submit_nve2(handle_, slice_of(bytes)));
   }
 
   [[nodiscard]] NveRuntimeStatus tick(float dt_s, bool* out_changed = nullptr) noexcept {
@@ -397,6 +401,73 @@ class RuntimeSession {
     return valid() && api_->pair_is_connected(handle_) != 0u;
   }
 
+  /// Embedded-component props (`NveComponentApi::set_props` of the attached app).
+  [[nodiscard]] NveRuntimeStatus set_props(const struct NveMapEntry* entries, uint32_t count,
+                                           bool* out_changed = nullptr) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    uint32_t changed = 0u;
+    const auto st = static_cast<NveRuntimeStatus>(api_->set_props(handle_, entries, count, &changed));
+    if (out_changed != nullptr) *out_changed = (changed != 0u);
+    return st;
+  }
+
+  /// Outbound app events since the last drain; borrowed until the next owner-thread call.
+  [[nodiscard]] NveRuntimeStatus drain_emitted_events(NveEventBatch* out_batch) noexcept {
+    if (!valid() || out_batch == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->drain_emitted_events(handle_, out_batch));
+  }
+
+  /// Intrinsic app size (`NveLayoutApi::measure`); `NVE_RUNTIME_UNSUPPORTED` without one.
+  [[nodiscard]] NveRuntimeStatus measure(NveSizeConstraints constraints, NveIntrinsicSize* out_size) noexcept {
+    if (!valid() || out_size == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->measure(handle_, constraints, out_size));
+  }
+
+  /// Applies one binary `NVP1` Tier-1 hot patch.
+  [[nodiscard]] NveRuntimeStatus apply_hot_patch(std::span<const uint8_t> patch_nvp1,
+                                                 bool* out_changed = nullptr) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    uint32_t changed = 0u;
+    const auto st = static_cast<NveRuntimeStatus>(api_->apply_hot_patch(handle_, slice_of(patch_nvp1), &changed));
+    if (out_changed != nullptr) *out_changed = (changed != 0u);
+    return st;
+  }
+
+  /// App state for Tier-2 hot swap / instant boot; borrowed until the next owner-thread call.
+  [[nodiscard]] NveRuntimeStatus snapshot_state(std::span<const uint8_t>* out_state) noexcept {
+    if (!valid() || out_state == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    NveBufferSlice slice{};
+    const auto st = static_cast<NveRuntimeStatus>(api_->snapshot_state(handle_, &slice));
+    *out_state = (st == NVE_RUNTIME_OK && slice.ptr != nullptr) ? std::span<const uint8_t>(slice.ptr, slice.len)
+                                                                 : std::span<const uint8_t>();
+    return st;
+  }
+
+  [[nodiscard]] NveRuntimeStatus restore_state(std::span<const uint8_t> state) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->restore_state(handle_, slice_of(state)));
+  }
+
+  /// Installs a host text measurer (`cb == nullptr` restores the built-in heuristic). `ctx` must
+  /// outlive the measurer.
+  [[nodiscard]] NveRuntimeStatus set_text_measurer(NveTextMeasureFn cb, void* ctx) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->set_text_measurer(handle_, cb, ctx));
+  }
+
+  /// Replaces `out` with the wire encoding of resource `id` (`ImageSrc`, `BoxShadows`, …).
+  [[nodiscard]] NveRuntimeStatus resource_bytes(uint32_t id, std::vector<uint8_t>& out) const {
+    out.clear();
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    size_t len = 0u;
+    auto st = static_cast<NveRuntimeStatus>(api_->resource_bytes(handle_, id, nullptr, 0u, &len));
+    if (st != NVE_RUNTIME_OK || len == 0u) return st;
+    out.resize(len);
+    st = static_cast<NveRuntimeStatus>(api_->resource_bytes(handle_, id, out.data(), out.size(), &len));
+    if (st != NVE_RUNTIME_OK) out.clear();
+    return st;
+  }
+
   [[nodiscard]] std::string last_error() const {
     if (api_ == nullptr) return {};
     const size_t needed = api_->last_error(nullptr, 0u);
@@ -409,6 +480,10 @@ class RuntimeSession {
   }
 
  private:
+  [[nodiscard]] static NveBufferSlice slice_of(std::span<const uint8_t> bytes) noexcept {
+    return NveBufferSlice{bytes.empty() ? nullptr : bytes.data(), bytes.size()};
+  }
+
   RuntimeSession(const NveRuntimeApi* api, NveRuntimeHandle handle) noexcept
       : api_(api), handle_(handle) {}
 

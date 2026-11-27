@@ -368,9 +368,17 @@ const _: () = {
     assert!(offset_of!(NveRuntimeApi, pair_connect) == 16 + 13 * PTR_SIZE);
     assert!(offset_of!(NveRuntimeApi, pair_disconnect) == 16 + 14 * PTR_SIZE);
     assert!(offset_of!(NveRuntimeApi, pair_is_connected) == 16 + 15 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 16 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, set_props) == 16 + 16 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, drain_emitted_events) == 16 + 17 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, measure) == 16 + 18 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, apply_hot_patch) == 16 + 19 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, snapshot_state) == 16 + 20 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, restore_state) == 16 + 21 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, set_text_measurer) == 16 + 22 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, resource_bytes) == 16 + 23 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 24 * PTR_SIZE);
     assert!(
-        size_of::<NveRuntimeApi>() == align_up(16 + 17 * PTR_SIZE, align_of::<NveRuntimeApi>())
+        size_of::<NveRuntimeApi>() == align_up(16 + 25 * PTR_SIZE, align_of::<NveRuntimeApi>())
     );
 };
 
@@ -451,6 +459,6 @@ const _: () = {
 
     assert!(size_of::<NveRuntimeSceneView>() == 96);
     assert!(align_of::<NveRuntimeSceneView>() == 8);
-    assert!(size_of::<NveRuntimeApi>() == 152);
+    assert!(size_of::<NveRuntimeApi>() == 216);
     assert!(align_of::<NveRuntimeApi>() == 8);
 };

@@ -294,6 +294,8 @@ macro_rules! word_enum {
         #[allow(dead_code)]
         impl $name {
             pub const ALL: &'static [$name] = &[$($name::$variant),+];
+            /// Variant names in [`Self::ALL`] order (host codegen mirrors).
+            pub const NAMES: &'static [&'static str] = &[$(stringify!($variant)),+];
             #[inline(always)]
             pub const fn to_word(self) -> u32 { self as u32 }
             #[inline(always)]

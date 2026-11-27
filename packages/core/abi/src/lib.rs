@@ -16,6 +16,7 @@ pub mod host;
 mod layout_asserts;
 pub mod num;
 pub mod runtime;
+mod runtime_methods;
 pub mod scene;
 pub mod schema;
 pub mod style_types;
@@ -45,7 +46,8 @@ pub use host::{
 };
 pub use runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
-    NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, NveRuntimeWakeFn,
+    NveRuntimeHandle, NveRuntimeMethod, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus,
+    NveRuntimeWakeFn, NveTextMeasureFn, NVE_RUNTIME_API_METHODS,
     NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION,
     NVE_RUNTIME_SCHEMA_HASH,
 };

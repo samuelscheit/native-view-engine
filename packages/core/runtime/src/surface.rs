@@ -9,7 +9,7 @@ use nve_abi::{
     NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveRuntimeSceneView, SurfaceId,
 };
 use nve_components::tables::{Overflow, Scroll, Visual};
-use nve_engine::{HotPatchMsg, Viewport};
+use nve_engine::Viewport;
 use nve_layout::DynLayoutEngine;
 use nve_store::{ChangeSet, NodeId};
 
@@ -442,19 +442,6 @@ impl SurfaceRuntime {
                 return Ok(false);
             }
             Ok(false)
-        })
-    }
-
-    pub fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> Result<bool, RuntimeError> {
-        self.with_write(|inner| {
-            let changed = inner
-                .app
-                .as_mut()
-                .is_some_and(|app| app.apply_hot_patch(patch));
-            if changed {
-                inner.state.needs_render = true;
-            }
-            Ok(changed)
         })
     }
 
