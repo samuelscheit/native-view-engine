@@ -32,11 +32,12 @@ pub use registry::{
 pub use route::DocsRoute;
 pub use shell::{Breadcrumbs, DocsNavbar, DocsShell, DocsSidebar, DocsToc, PageFooter, SearchModal};
 pub use state::{
-    DocsAppState, DocsViewport, MOBILE_BREAKPOINT_PT, TOC_BREAKPOINT_PT, navigate_to,
+    DocsAppState, DocsState, DocsViewport, MOBILE_BREAKPOINT_PT, TOC_BREAKPOINT_PT, navigate_to,
     navigate_to_target, use_docs_state,
 };
 pub use theme::{
-    CalloutTone, callout_tone, docs_theme_config, syntax_color, system_appearance,
+    CalloutTone, callout_tone, docs_theme_config, snapshot_appearance, syntax_color,
+    system_appearance,
 };
 
 /// Root Dioxus component for a mounted `nve-docs` documentation application.
@@ -44,12 +45,14 @@ pub use theme::{
 /// Consumes its initial [`DocsAppState`] injected via [`DioxusSurface::new_with_context`]
 /// by [`create_docs_surface`] / [`create_docs_surface_at_route`] / [`create_docs_surface_with_viewport`],
 /// wraps the shell in `nve_router::RouterProvider<DocsRoute>`, and provides reactive
-/// `Signal<DocsAppState>` context to all shell and MDX AST renderer components.
+/// [`DocsState`] context to all shell and MDX AST renderer components, following live OS
+/// appearance changes.
 #[component]
 pub fn DocsApp() -> Element {
     let initial = use_hook(consume_context::<DocsAppState>);
     let initial_route = initial.active_route.clone();
-    let state_sig = use_hook(move || provide_context(Signal::new(initial)));
+    let state_sig = use_hook(move || provide_context(DocsState::new_maybe_sync(initial)));
+    state::use_follow_os_appearance(state_sig);
 
     let renderer = RouteRenderer::new(move |route: &DocsRoute| {
         state::sync_route_from_router(state_sig, route);

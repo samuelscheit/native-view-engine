@@ -1,6 +1,6 @@
 ---
 title: "UI Components (nve-ui)"
-description: "15 accessible, themeable, zero-external-CSS Dioxus UI components, UiTheme tokens, zero-alloc StyleBuf, FocusTrap/RovingFocus, and 100k-row Fenwick VirtualList."
+description: "15 accessible, themeable, zero-external-CSS Dioxus UI components, OKLCH Theme tokens, zero-alloc StyleBuf, FocusTrap/RovingFocus, and 100k-row Fenwick VirtualList."
 badge: "15"
 order: 2
 ---
@@ -25,13 +25,14 @@ Explore live `nve-ui` buttons, badges, inputs, switches, tabs, cards, and theme 
 
 <LiveDemo id="ui-playground" hydrate="visible" height={340} />
 
-## Design Tokens: `UiTheme` & `ThemeProvider`
+## Design Tokens: `Theme` & `ThemeProvider`
 
-`ThemeProvider` injects a reactive `UiTheme` signal into the Dioxus tree (`use_theme()` / `use_theme_signal()`), synchronized with live OS appearance changes via `nve-system-env::SystemEnvBridge` (`NVT2`):
+`ThemeProvider` injects a reactive, `Copy` `nve_ui::Theme` into the Dioxus tree (`use_theme()` / `use_theme_signal()`). Every color is generated at compile time in OKLCH from one neutral scale plus a brand accent, for four polarities (Light, Dark, High-Contrast Light, High-Contrast Dark). `ThemeConfig` follows the OS appearance by default (`ThemeMode::System`):
 
-- **`UiPalette`** — Semantic surface, elevated card, border, primary accent, destructive, muted foreground, and focus-ring RGBA colors (`rgba_to_hex` helper for inline styling).
-- **`SpacingScale` & `RadiiScale`** — Consistent numeric steps scaled automatically by `UiDensity` (`Compact`, `Comfortable`, `Spacious`).
-- **`TypographyScale`** — Heading, body, caption, and monospace sizes scaled by OS accessibility `font_scale_x1000`.
+- **Color roles** — `surface` (canvas → base → raised → overlay, sunken, subtle), `state` layers, `text` (primary, secondary, tertiary, link, on_accent), `border` (subtle, default, strong, focus), `status` tones (`accent`, `success`, `warning`, `danger`, `info`; each `solid` / `on_solid` / `subtle` / `border` / `text`), and `syntax`. Every pairing is contrast-tested (WCAG 2.1 + APCA).
+- **`Spacing` & `Radius`** — Numeric steps scaled by `UiDensity` (`Compact`, `Comfortable`, `Spacious`).
+- **`Typography`, `Elevation`, `Motion`, `Layer`, `Breakpoint`** — Type styles, shadows, durations/springs, z-scale, and size-class breakpoints.
+- **`Accent::from_srgb`** — Runtime accent overrides re-derive a contrast-safe tone in ~2 µs.
 
 ```rust title="Using ThemeProvider, Card, Button, and use_toast" highlight="6-9,13-22"
 use nve_dioxus::prelude::*;
@@ -43,7 +44,7 @@ pub fn SettingsCard() -> Element {
     let toasts = use_toast();
 
     rsx! {
-        ThemeProvider { theme: UiTheme::dark(),
+        ThemeProvider { theme: Theme::DARK,
             Card { variant: CardVariant::Elevated,
                 Col { gap: 12.0,
                     Row { justify: "space-between",

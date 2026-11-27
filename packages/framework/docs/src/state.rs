@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use dioxus_core::consume_context;
-use dioxus_signals::{ReadableExt, Signal, WritableExt};
+use dioxus_core::{consume_context, use_drop, use_hook};
+use dioxus_signals::{ReadableExt, SyncSignal, WritableExt};
+use nve_system_env::SystemEnvClient;
 use nve_clipboard::ClipboardClient;
 use nve_host_services::HostServiceProvider;
 use nve_mdx::{CompiledPage, CompiledSite, NavNode, PrevNext, SearchHit, SearchIndex};
@@ -15,7 +16,7 @@ use crate::registry::{CustomPageRegistry, PlaygroundRegistry};
 use crate::route::DocsRoute;
 use nve_ui::{Appearance, Theme, ThemeMode};
 
-use crate::theme::{docs_theme_config, system_appearance};
+use crate::theme::{docs_theme_config, snapshot_appearance, system_appearance};
 
 /// Viewport width threshold (pt) below which the sidebar collapses into a slide-over drawer.
 pub const MOBILE_BREAKPOINT_PT: f32 = 960.0;
@@ -223,13 +224,6 @@ impl DocsAppState {
         self.theme_mode = if self.theme().is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
     }
 
-    /// Synchronize the host appearance from `nve_system_env`; returns `true` if it changed.
-    pub fn sync_with_system_env(&mut self) -> bool {
-        let next = system_appearance(self.host_services.as_ref(), self.config.default_dark);
-        let changed = next != self.appearance;
-        self.appearance = next;
-        changed
-    }
 
     /// Toggle the mobile slide-over sidebar drawer.
     pub fn toggle_mobile_drawer(&mut self) {
@@ -443,13 +437,43 @@ fn find_breadcrumbs(
     false
 }
 
+/// Shared reactive docs state. `Sync` so host-event handlers (OS appearance changes from
+/// `nve-system-env`, delivered on the publisher's thread) can write it directly.
+pub type DocsState = SyncSignal<DocsAppState>;
+
 /// Consume the shared reactive [`DocsAppState`] signal inside any `nve-docs` component.
-pub fn use_docs_state() -> Signal<DocsAppState> {
-    consume_context::<Signal<DocsAppState>>()
+pub fn use_docs_state() -> DocsState {
+    consume_context::<DocsState>()
+}
+
+/// Follows live OS appearance changes (`nve-system-env` theme events) into
+/// [`DocsAppState::appearance`] for the lifetime of the calling scope. [`ThemeMode::System`]
+/// then re-resolves the theme; an explicit user mode stays pinned.
+pub fn use_follow_os_appearance(state: DocsState) {
+    let host = use_hook(|| Arc::clone(&state.peek().host_services));
+    let subscription = use_hook(|| {
+        let fallback_dark = state.peek().config.default_dark;
+        SystemEnvClient::new(host.as_ref())
+            .subscribe_theme(false, move |snapshot| {
+                let next = snapshot_appearance(snapshot, fallback_dark);
+                let mut state = state;
+                if state.try_peek().is_ok_and(|s| s.appearance != next)
+                    && let Ok(mut s) = state.try_write()
+                {
+                    s.appearance = next;
+                }
+            })
+            .ok()
+    });
+    use_drop(move || {
+        if let (Some(id), Some(bus)) = (subscription, host.typed_event_bus()) {
+            bus.unsubscribe(id);
+        }
+    });
 }
 
 /// Navigate both [`DocsAppState`] and the surrounding `nve-router` [`Navigator`](nve_router::Navigator).
-pub fn navigate_to(mut state: Signal<DocsAppState>, route: DocsRoute) {
+pub fn navigate_to(mut state: DocsState, route: DocsRoute) {
     let nav_route = route.clone();
     state.write().navigate(route);
     if let Some(nav) = try_use_navigator::<DocsRoute>()
@@ -461,7 +485,7 @@ pub fn navigate_to(mut state: Signal<DocsAppState>, route: DocsRoute) {
 
 /// Navigate to a route and optional heading anchor across state and router.
 pub fn navigate_to_target(
-    mut state: Signal<DocsAppState>,
+    mut state: DocsState,
     route: Option<DocsRoute>,
     anchor: Option<String>,
 ) {
@@ -476,7 +500,7 @@ pub fn navigate_to_target(
 }
 
 /// Sync `DocsAppState::active_route` when `nve-router` drives navigation externally (e.g. Back/Forward).
-pub fn sync_route_from_router(mut state: Signal<DocsAppState>, route: &DocsRoute) {
+pub fn sync_route_from_router(mut state: DocsState, route: &DocsRoute) {
     if state.read().active_route != *route {
         state.write().navigate(route.clone());
     }

@@ -19,7 +19,9 @@ use nve_docs::{
 use nve_clipboard::MemoryClipboard;
 use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_mdx::{CompileOptions, CompiledSite, SiteSource, compile_site_with_validation};
-use nve_system_env::MemorySystemEnv;
+use nve_components::tables::{Typography, is_subtree_display_none};
+use nve_system_env::{ColorScheme, ContrastLevel, MemorySystemEnv, ThemeSnapshot};
+use nve_ui::{composite, wcag_contrast};
 
 pub const RUST_SNIPPET: &str =
     "fn main() {\n    let surface = create_docs_surface();\n    println!(\"ready\");\n}";
@@ -194,6 +196,7 @@ pub struct DocsHarness {
     pub surface: DioxusSurface,
     pub backend: HeadlessBackend,
     pub services: Arc<MemoryHostServices>,
+    pub sys_env: Arc<MemorySystemEnv>,
     frame_id: u64,
     ts: u64,
 }
@@ -202,7 +205,8 @@ impl DocsHarness {
     pub fn mount(route: &str, viewport: DocsViewport) -> Self {
         let services = Arc::new(MemoryHostServices::new());
         services.register(MemoryClipboard::new());
-        services.register(MemorySystemEnv::new());
+        let sys_env = Arc::new(MemorySystemEnv::new());
+        services.register_arc(sys_env.clone());
         let host: Arc<dyn HostServiceProvider> = services.clone();
         let surface = create_docs_surface_with_viewport(
             1,
@@ -226,11 +230,64 @@ impl DocsHarness {
             surface,
             backend,
             services,
+            sys_env,
             frame_id: 0,
             ts: 0,
         };
         h.render();
         h
+    }
+
+    /// Switches the host OS appearance through the live path (state + typed event bus publish),
+    /// then renders.
+    pub fn set_os_theme(&mut self, scheme: ColorScheme, contrast: ContrastLevel) {
+        let snapshot = ThemeSnapshot { color_scheme: Some(scheme), contrast, ..ThemeSnapshot::default() };
+        self.sys_env.set_theme_and_publish(self.services.typed_events(), snapshot);
+        self.render();
+    }
+
+    /// Every visible text run whose effective (inherited) color is below `min` WCAG contrast
+    /// against its effective painted background (translucent ancestors composited). Runs under a
+    /// faded (`opacity < 1`, i.e. disabled) or hidden ancestor are exempt, as in WCAG 1.4.3.
+    pub fn text_contrast_violations(&self, min: f64) -> Vec<String> {
+        let store = self.surface.store();
+        let mut out = Vec::new();
+        for id in store.live_nodes() {
+            let Some(text) = store.try_row::<TextContent>(id) else { continue };
+            if text.text().trim().is_empty() || is_subtree_display_none(store, id) {
+                continue;
+            }
+            let mut fg = None;
+            let mut layers = Vec::new();
+            let mut faded = false;
+            let mut cur = Some(id);
+            while let Some(n) = cur {
+                if fg.is_none()
+                    && let Some(t) = store.try_row::<Typography>(n)
+                    && t.set() & Typography::SET_COLOR != 0
+                {
+                    fg = Some(ColorRgba::from_u32(t.color().0));
+                }
+                if let Some(v) = store.try_row::<Visual>(n) {
+                    faded |= v.opacity() < 1.0;
+                    let bg = ColorRgba::from_u32(v.background().0);
+                    if bg.a > 0 {
+                        layers.push(bg);
+                    }
+                }
+                cur = store.parent(n);
+            }
+            if faded {
+                continue;
+            }
+            let bg = layers.iter().rev().fold(ColorRgba::WHITE, |under, &over| composite(over, under));
+            let fg = composite(fg.unwrap_or(ColorRgba::BLACK), bg);
+            let ratio = wcag_contrast(fg, bg);
+            if ratio < min {
+                out.push(format!("{:?}: {ratio:.2} (fg {fg:?} on {bg:?})", text.text()));
+            }
+        }
+        out
     }
 
     pub fn render(&mut self) {

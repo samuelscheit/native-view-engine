@@ -67,10 +67,7 @@ pub fn SearchModal() -> Element {
             close_on_escape: true,
             close_on_backdrop: true,
             test_id: Some("docs-search-dialog".to_string()),
-            style: Some(format!(
-                "min-width: 340px; max-width: 600px; width: 100%; background-color: {}; border-color: {};",
-                theme.surface.base.hex(), theme.border.default.hex()
-            )),
+            style: Some("min-width: 340px; max-width: 600px; width: 100%;".to_string()),
             on_close: move |_| {
                 state.write().close_search();
             },
@@ -207,7 +204,7 @@ pub fn SearchModal() -> Element {
 }
 
 fn handle_search_nav_key(
-    mut state: Signal<crate::state::DocsAppState>,
+    mut state: crate::state::DocsState,
     mut local_trap: Signal<FocusTrap>,
     data: &KeyEventData,
     hit_list: &[nve_mdx::SearchHit],

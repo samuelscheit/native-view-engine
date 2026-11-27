@@ -128,18 +128,11 @@ fn docs_theme_follows_os_with_docs_brand_and_syntax_and_callout_tones() {
         DocsViewport::desktop_default(),
     );
     assert_eq!(app_state.theme_mode, ThemeMode::System);
-    assert!(app_state.theme().is_dark());
-    sys_env.set_theme(ThemeSnapshot {
-        color_scheme: Some(ColorScheme::Light),
-        ..ThemeSnapshot::default()
-    });
-    assert!(app_state.sync_with_system_env());
-    assert!(!app_state.theme().is_dark(), "System mode follows the OS switch");
-    assert!(!app_state.sync_with_system_env());
-    // The user toggle pins the opposite scheme and survives later OS changes.
+    assert!(app_state.theme().is_dark(), "None scheme falls back to config.default_dark");
+    // The user toggle pins the opposite of the resolved scheme.
     app_state.toggle_theme();
-    assert_eq!(app_state.theme_mode, ThemeMode::Dark);
-    assert!(app_state.theme().is_dark());
+    assert_eq!(app_state.theme_mode, ThemeMode::Light);
+    assert!(!app_state.theme().is_dark());
 }
 
 #[test]
@@ -351,7 +344,9 @@ fn cmd_k_search_modal_filters_nvs2_index_and_navigates() {
     assert!(h.maybe_find("docs-search-dialog").is_none());
 
     h.press("docs-search-trigger");
-    assert!(h.maybe_find("docs-search-dialog").is_some());
+    // The dialog owns its elevated overlay surface (no shell override).
+    let dialog = h.find("docs-search-dialog");
+    assert_eq!(h.bg(dialog), Theme::preset(Polarity::Light, AppBrand::Docs).surface.overlay);
 
     // Type unique query present only in /guides/components
     h.type_text("docs-search-input", "quantum-flux-capacitor");
@@ -365,6 +360,68 @@ fn cmd_k_search_modal_filters_nvs2_index_and_navigates() {
     h.keydown("docs-search-input", "Enter", false, false, false, false);
     assert!(h.maybe_find("docs-search-dialog").is_none());
     assert_eq!(h.text_of("docs-page-title"), "Interactive Components");
+
+    h.set_os_theme(ColorScheme::Dark, ContrastLevel::Standard);
+    h.press("docs-search-trigger");
+    let dialog = h.find("docs-search-dialog");
+    let dark = Theme::preset(Polarity::Dark, AppBrand::Docs);
+    assert_eq!(h.bg(dialog), dark.surface.overlay);
+    assert_ne!(dark.surface.overlay, dark.surface.base, "overlay elevation is distinct in Dark");
+}
+
+#[test]
+fn live_os_appearance_changes_rethemes_mounted_docs_until_user_pins_a_mode() {
+    let mut h = DocsHarness::mount("/", DocsViewport::desktop_default());
+    let root = h.find("docs-root");
+    assert_eq!(h.raw_str(root, "data-theme").as_deref(), Some("light"));
+
+    // OS switches after mount: the live nve-system-env subscription re-resolves System mode.
+    for (scheme, contrast, polarity, attr) in [
+        (ColorScheme::Dark, ContrastLevel::Standard, Polarity::Dark, "dark"),
+        (ColorScheme::Dark, ContrastLevel::High, Polarity::HighContrastDark, "dark"),
+        (ColorScheme::Light, ContrastLevel::High, Polarity::HighContrastLight, "light"),
+        (ColorScheme::Light, ContrastLevel::Standard, Polarity::Light, "light"),
+    ] {
+        h.set_os_theme(scheme, contrast);
+        let root = h.find("docs-root");
+        assert_eq!(h.raw_str(root, "data-theme").as_deref(), Some(attr), "{polarity:?}");
+        assert_eq!(h.bg(root), Theme::preset(polarity, AppBrand::Docs).surface.canvas, "{polarity:?}");
+    }
+
+    // The user toggle pins Dark; later OS changes no longer override it.
+    h.press("docs-theme-toggle");
+    h.set_os_theme(ColorScheme::Light, ContrastLevel::Standard);
+    let root = h.find("docs-root");
+    assert_eq!(h.raw_str(root, "data-theme").as_deref(), Some("dark"));
+    assert_eq!(h.bg(root), Theme::preset(Polarity::Dark, AppBrand::Docs).surface.canvas);
+}
+
+/// Rendered-contrast guard: every visible text run of the mounted fixture site (shell, MDX
+/// content, code, callouts, search results) meets WCAG AA (AAA in high contrast) against its
+/// actual painted background, in all four polarities.
+#[test]
+fn every_rendered_text_run_is_readable_in_all_four_polarities() {
+    let mut failures = Vec::new();
+    for route in ["/", "/guides/components"] {
+        let mut h = DocsHarness::mount(route, DocsViewport::desktop_default());
+        for (scheme, contrast, min) in [
+            (ColorScheme::Light, ContrastLevel::Standard, 4.5),
+            (ColorScheme::Dark, ContrastLevel::Standard, 4.5),
+            (ColorScheme::Light, ContrastLevel::High, 7.0),
+            (ColorScheme::Dark, ContrastLevel::High, 7.0),
+        ] {
+            h.set_os_theme(scheme, contrast);
+            for v in h.text_contrast_violations(min) {
+                failures.push(format!("{route} {scheme:?}/{contrast:?}: {v}"));
+            }
+        }
+        h.press("docs-search-trigger");
+        h.type_text("docs-search-input", "component");
+        for v in h.text_contrast_violations(7.0) {
+            failures.push(format!("{route} search (HC Dark): {v}"));
+        }
+    }
+    assert!(failures.is_empty(), "{} low-contrast text runs:\n{}", failures.len(), failures.join("\n"));
 }
 
 #[test]
@@ -381,6 +438,8 @@ fn theme_follows_os_then_toggle_pins_canvas_and_surface_colors() {
 
     // Toggle pins dark mode.
     h.press("docs-theme-toggle");
+    // A pinned mode survives a later OS change (here: OS confirms Light).
+    h.set_os_theme(ColorScheme::Light, ContrastLevel::Standard);
     let root_id = h.find("docs-root");
     let nav_id = h.find("docs-navbar");
     assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("dark"));

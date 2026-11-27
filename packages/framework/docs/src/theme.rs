@@ -4,7 +4,7 @@
 use nve_abi::ColorRgba;
 use nve_host_services::HostServiceProvider;
 use nve_mdx::{CalloutKind, TokenKind};
-use nve_system_env::{ColorScheme, SystemEnvClient};
+use nve_system_env::{SystemEnvClient, ThemeSnapshot};
 use nve_ui::{AppBrand, Appearance, Syntax, Theme, ThemeConfig, ThemeMode, Tone};
 
 /// Docs theme preferences: Docs brand, following the OS unless the user toggles a mode.
@@ -15,18 +15,26 @@ pub const fn docs_theme_config(mode: ThemeMode) -> ThemeConfig {
 /// Reads the host appearance from `nve-system-env`; `fallback_dark` applies when the host
 /// does not report a color scheme.
 pub fn system_appearance(provider: &dyn HostServiceProvider, fallback_dark: bool) -> Appearance {
-    let fallback = if fallback_dark { Appearance::DARK } else { Appearance::LIGHT };
     match SystemEnvClient::new(provider).get_theme() {
-        Ok(snapshot) => Appearance {
-            scheme: match snapshot.color_scheme {
-                Some(ColorScheme::Dark) => ColorScheme::Dark,
-                Some(ColorScheme::Light) => ColorScheme::Light,
-                None => fallback.scheme,
-            },
-            contrast: snapshot.contrast,
-        },
-        Err(_) => fallback,
+        Ok(snapshot) => snapshot_appearance(&snapshot, fallback_dark),
+        Err(_) => fallback_appearance(fallback_dark),
     }
+}
+
+/// Maps an `nve-system-env` [`ThemeSnapshot`] to an [`Appearance`]; `fallback_dark` applies
+/// when the host does not report a color scheme.
+pub const fn snapshot_appearance(snapshot: &ThemeSnapshot, fallback_dark: bool) -> Appearance {
+    Appearance {
+        scheme: match snapshot.color_scheme {
+            Some(scheme) => scheme,
+            None => fallback_appearance(fallback_dark).scheme,
+        },
+        contrast: snapshot.contrast,
+    }
+}
+
+const fn fallback_appearance(fallback_dark: bool) -> Appearance {
+    if fallback_dark { Appearance::DARK } else { Appearance::LIGHT }
 }
 
 /// Foreground color of an MDX syntax token.
