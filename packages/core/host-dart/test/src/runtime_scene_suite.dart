@@ -123,9 +123,36 @@ void _runScrollOffsets(Check c, _Frame f) {
   }
 }
 
+/// `ResourceVersions`: stable while bytes are, bumped exactly for dirty ids, reset on a new epoch
+/// or a frame gap (including the `u32` carry of the 64-bit frame id), never reused.
+void _runResourceVersions(Check c) {
+  final v = ResourceVersions();
+  Uint32List ids(List<int> l) => Uint32List.fromList(l);
+  v.observe(0, const Key64(1, 0), ids([]));
+  final a = v.versionOf(7), b = v.versionOf(9);
+  c.that(a != b, 'distinct ids, distinct versions');
+  v.observe(0, const Key64(1, 0), ids([7]));
+  c.eq(v.versionOf(7), a, 'repeat observe of one frame is a no-op');
+  v.observe(0, const Key64(2, 0), ids([7]));
+  final a2 = v.versionOf(7);
+  c.that(a2 != a && v.versionOf(9) == b, 'dirty id re-versioned, clean id kept');
+  v.observe(0, const Key64(4, 0), ids([]));
+  final b3 = v.versionOf(9);
+  c.that(b3 != b && v.versionOf(7) != a2, 'frame gap drops every version');
+  v.observe(1, const Key64(5, 0), ids([]));
+  c.that(v.versionOf(9) != b3, 'new scene epoch drops every version');
+  v.observe(1, const Key64(0xFFFFFFFF, 3), ids([]));
+  final carried = v.versionOf(9);
+  v.observe(1, const Key64(0, 4), ids([]));
+  c.eq(v.versionOf(9), carried, 'consecutive across the lo -> hi carry');
+  final other = ResourceVersions()..observe(0, const Key64(1, 0), ids([]));
+  c.that(other.versionOf(7) > carried, 'versions are never reused across instances');
+}
+
 void runRuntimeScene(Check c) {
   final f = _Frame();
   _runScrollOffsets(c, f);
+  _runResourceVersions(c);
   final s = f.open();
 
   c.eq(s.frameId, const Key64(7, 0xFFFF0000), 'frameId exact above 2^53');

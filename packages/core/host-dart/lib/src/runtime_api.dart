@@ -1,5 +1,5 @@
 /// Validated `dart:ffi` binding of the single `NveRuntimeApi` vtable exported by `libnve_runtime`
-/// (`nve_runtime_get_interface`), plus the native heap and error type shared by sessions.
+/// (`nve_runtime_get_interface`), plus the error type shared by sessions.
 library;
 
 import 'dart:convert' show utf8;
@@ -9,6 +9,7 @@ import 'dart:io' show Platform;
 import 'generated/nve_abi_ffi.generated.dart';
 import 'generated/nve_runtime_abi.generated.dart';
 import 'key64.dart';
+import 'native_heap.dart';
 
 /// Status-carrying failure of one `NveRuntimeApi` call (`message` includes `last_error`).
 final class RuntimeException implements Exception {
@@ -21,32 +22,6 @@ final class RuntimeException implements Exception {
   String toString() => 'RuntimeException(${status.name}): $message';
 }
 
-/// Zero-filled libc heap blocks for out-parameters and borrowed argument bytes.
-abstract final class NativeHeap {
-  static final ffi.DynamicLibrary _libc =
-      Platform.isWindows ? ffi.DynamicLibrary.open('ucrtbase.dll') : ffi.DynamicLibrary.process();
-  static final ffi.Pointer<ffi.Void> Function(int, int) _calloc = _libc
-      .lookupFunction<ffi.Pointer<ffi.Void> Function(ffi.Size, ffi.Size), ffi.Pointer<ffi.Void> Function(int, int)>(
-          'calloc');
-  static final void Function(ffi.Pointer<ffi.Void>) _free =
-      _libc.lookupFunction<ffi.Void Function(ffi.Pointer<ffi.Void>), void Function(ffi.Pointer<ffi.Void>)>('free');
-
-  /// [bytes] zeroed bytes (at least 1); throws [OutOfMemoryError] on allocation failure.
-  static ffi.Pointer<T> zeroed<T extends ffi.NativeType>(int bytes) {
-    final p = _calloc(1, bytes < 1 ? 1 : bytes);
-    if (p.address == 0) {
-      throw const OutOfMemoryError();
-    }
-    return p.cast<T>();
-  }
-
-  static void free(ffi.Pointer<ffi.NativeType> p) {
-    if (p.address != 0) {
-      _free(p.cast<ffi.Void>());
-    }
-  }
-}
-
 /// Splits a VM `int` holding raw `u64` bits into exact `Key64` halves.
 Key64 key64FromBits(int bits) => Key64(bits & 0xFFFFFFFF, (bits >>> 32) & 0xFFFFFFFF);
 
@@ -57,11 +32,16 @@ final class RuntimeApi {
         destroy = vtable.ref.destroy.asFunction(),
         setWakeCallback = vtable.ref.setWakeCallback.asFunction(),
         setViewport = vtable.ref.setViewport.asFunction(),
+        setTextMeasurer = vtable.ref.setTextMeasurer.asFunction(),
         attachAppInterface = vtable.ref.attachAppInterface.asFunction(),
+        loadAppModule = vtable.ref.loadAppModule.asFunction(),
         setProps = vtable.ref.setProps.asFunction(),
         drainEmittedEvents = vtable.ref.drainEmittedEvents.asFunction(),
         snapshotState = vtable.ref.snapshotState.asFunction(),
         restoreState = vtable.ref.restoreState.asFunction(),
+        saveStateFile = vtable.ref.saveStateFile.asFunction(),
+        restoreStateFile = vtable.ref.restoreStateFile.asFunction(),
+        clearStateFile = vtable.ref.clearStateFile.asFunction(),
         applyHotPatch = vtable.ref.applyHotPatch.asFunction(),
         resourcePayload = vtable.ref.resourcePayload.asFunction(),
         submitNve2 = vtable.ref.submitNve2.asFunction(),
@@ -80,7 +60,7 @@ final class RuntimeApi {
   /// Resolves `nve_runtime_get_interface` from [library] and validates the returned vtable.
   ///
   /// Throws [ArgumentError] when the symbol is missing and [StateError] when the library speaks a
-  /// different ABI version, vtable size, or schema hash.
+  /// different ABI version, vtable size, or schema hash, or leaves any slot NULL.
   factory RuntimeApi.fromLibrary(ffi.DynamicLibrary library) {
     final getInterface = library.lookupFunction<NveRuntimeGetInterfaceNative, NveRuntimeGetInterfaceDart>(
       'nve_runtime_get_interface',
@@ -100,11 +80,17 @@ final class RuntimeApi {
     if (schema != nveRuntimeSchemaHash) {
       throw StateError('runtime schema $schema != $nveRuntimeSchemaHash (regenerate bindings)');
     }
+    if (!runtimeApiSlotsComplete(vtable)) {
+      throw StateError('runtime vtable leaves a slot NULL (of $nveRuntimeApiSlotCount)');
+    }
     return RuntimeApi._(library, vtable);
   }
 
-  /// Opens `libnve_runtime` at [path] (default: the platform library name on the loader path).
-  factory RuntimeApi.open([String? path]) => RuntimeApi.fromLibrary(ffi.DynamicLibrary.open(path ?? defaultLibraryName));
+  /// Opens `libnve_runtime` at [path]; without one, the platform library name on the loader path,
+  /// or the process image on iOS (where `libnve_runtime` is always statically linked).
+  factory RuntimeApi.open([String? path]) => path == null && Platform.isIOS
+      ? RuntimeApi.process()
+      : RuntimeApi.fromLibrary(ffi.DynamicLibrary.open(path ?? defaultLibraryName));
 
   /// Uses a `libnve_runtime` statically linked into the running process (iOS, CMake hosts).
   factory RuntimeApi.process() => RuntimeApi.fromLibrary(ffi.DynamicLibrary.process());
@@ -123,11 +109,16 @@ final class RuntimeApi {
   final NveRuntimeDestroyDart destroy;
   final NveRuntimeSetWakeCallbackDart setWakeCallback;
   final NveRuntimeSetViewportDart setViewport;
+  final NveRuntimeSetTextMeasurerDart setTextMeasurer;
   final NveRuntimeAttachAppInterfaceDart attachAppInterface;
+  final NveRuntimeLoadAppModuleDart loadAppModule;
   final NveRuntimeSetPropsDart setProps;
   final NveRuntimeDrainEmittedEventsDart drainEmittedEvents;
   final NveRuntimeSnapshotStateDart snapshotState;
   final NveRuntimeRestoreStateDart restoreState;
+  final NveRuntimeSaveStateFileDart saveStateFile;
+  final NveRuntimeRestoreStateFileDart restoreStateFile;
+  final NveRuntimeClearStateFileDart clearStateFile;
   final NveRuntimeApplyHotPatchDart applyHotPatch;
   final NveRuntimeResourcePayloadDart resourcePayload;
   final NveRuntimeSubmitNve2Dart submitNve2;

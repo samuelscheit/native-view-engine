@@ -296,3 +296,43 @@ final class RuntimeSceneReader {
     return text(offset, len);
   }
 }
+
+/// Content versions of published resources across observed frames, for host caches keyed by
+/// resource content (decoded images): a version stays stable while the resource's bytes do and is
+/// never reused, so a stale decode (or a failed one) never answers for new bytes.
+///
+/// Folds `scene_epoch` + per-frame `dirty_resources` in: a new epoch, or a frame gap (the
+/// skipped frames' dirty lists are gone), drops every version; otherwise exactly the dirty ids.
+/// Zero hashing: invalidation costs O(dirty ids) per frame.
+final class ResourceVersions {
+  /// Shared by every instance, so versions of different sessions / painters never collide in one
+  /// shared cache.
+  static int _next = 0;
+
+  final Map<int, int> _versions = <int, int>{};
+  int _epoch = -1;
+  Key64? _frame;
+
+  /// Folds in one published frame (repeat calls for the same frame are no-ops).
+  void observe(int sceneEpoch, Key64 frameId, Uint32List dirtyResources) {
+    final last = _frame;
+    if (last == frameId && sceneEpoch == _epoch) {
+      return;
+    }
+    if (sceneEpoch != _epoch || last == null || !_follows(frameId, last)) {
+      _versions.clear();
+    } else {
+      dirtyResources.forEach(_versions.remove);
+    }
+    _epoch = sceneEpoch;
+    _frame = frameId;
+  }
+
+  /// Version of [resourceId]'s current bytes.
+  int versionOf(int resourceId) => _versions[resourceId] ??= ++_next;
+
+  static bool _follows(Key64 next, Key64 prev) {
+    final lo = (prev.lo + 1) & 0xFFFFFFFF;
+    return next.lo == lo && next.hi == (lo == 0 ? (prev.hi + 1) & 0xFFFFFFFF : prev.hi);
+  }
+}

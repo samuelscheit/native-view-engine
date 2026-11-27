@@ -15,6 +15,7 @@ import 'generated/nve_abi_ffi.generated.dart';
 import 'generated/nve_runtime_abi.generated.dart';
 import 'hybrid_ffi.dart' show HybridArena, checkedNativeBytes;
 import 'key64.dart';
+import 'native_heap.dart';
 import 'runtime_api.dart';
 import 'runtime_scene_reader.dart';
 import 'scene_reader.dart' show SceneErrorKind, SceneException;
@@ -201,16 +202,27 @@ final class RuntimeSession {
   ffi.NativeCallable<NveRuntimeWakeNative>? _wake;
   ffi.DynamicLibrary? _appLibrary;
 
-  final ffi.Pointer<ffi.Uint32> _outU32 = NativeHeap.zeroed<ffi.Uint32>(4);
-  final ffi.Pointer<ffi.Uint64> _outU64 = NativeHeap.zeroed<ffi.Uint64>(8);
-  final ffi.Pointer<ffi.Float> _outF32 = NativeHeap.zeroed<ffi.Float>(8);
-  final ffi.Pointer<NveRuntimeSceneView> _view =
-      NativeHeap.zeroed<NveRuntimeSceneView>(ffi.sizeOf<NveRuntimeSceneView>());
-  final ffi.Pointer<NveRuntimeMetrics> _metrics =
-      NativeHeap.zeroed<NveRuntimeMetrics>(ffi.sizeOf<NveRuntimeMetrics>());
-  final ffi.Pointer<NveStrSlice> _strs = NativeHeap.zeroed<NveStrSlice>(2 * ffi.sizeOf<NveStrSlice>());
-  final ffi.Pointer<NveBufferSlice> _buffer = NativeHeap.zeroed<NveBufferSlice>(ffi.sizeOf<NveBufferSlice>());
-  final ffi.Pointer<NveEventBatch> _batch = NativeHeap.zeroed<NveEventBatch>(ffi.sizeOf<NveEventBatch>());
+  // One zeroed scratch block holds every fixed-size out-parameter / argument record (8-byte
+  // aligned sub-blocks): one allocation per session, one free in [dispose].
+  static int _align8(int n) => (n + 7) & ~7;
+  static final int _atMetrics = _align8(ffi.sizeOf<NveRuntimeSceneView>());
+  static final int _atStrs = _atMetrics + _align8(ffi.sizeOf<NveRuntimeMetrics>());
+  static final int _atBuffer = _atStrs + _align8(2 * ffi.sizeOf<NveStrSlice>());
+  static final int _atBatch = _atBuffer + _align8(ffi.sizeOf<NveBufferSlice>());
+  static final int _atU64 = _atBatch + _align8(ffi.sizeOf<NveEventBatch>());
+  static final int _atF32 = _atU64 + 8;
+  static final int _atU32 = _atF32 + 8;
+  static final int _scratchBytes = _atU32 + 8;
+
+  final ffi.Pointer<ffi.Uint8> _scratch = NativeHeap.zeroed<ffi.Uint8>(_scratchBytes);
+  late final ffi.Pointer<NveRuntimeSceneView> _view = _scratch.cast();
+  late final ffi.Pointer<NveRuntimeMetrics> _metrics = (_scratch + _atMetrics).cast();
+  late final ffi.Pointer<NveStrSlice> _strs = (_scratch + _atStrs).cast();
+  late final ffi.Pointer<NveBufferSlice> _buffer = (_scratch + _atBuffer).cast();
+  late final ffi.Pointer<NveEventBatch> _batch = (_scratch + _atBatch).cast();
+  late final ffi.Pointer<ffi.Uint64> _outU64 = (_scratch + _atU64).cast();
+  late final ffi.Pointer<ffi.Float> _outF32 = (_scratch + _atF32).cast();
+  late final ffi.Pointer<ffi.Uint32> _outU32 = (_scratch + _atU32).cast();
   final _NativeBlock _bytes = _NativeBlock();
   final _NativeBlock _events = _NativeBlock();
   bool _inScene = false;
@@ -231,16 +243,21 @@ final class RuntimeSession {
   }
 
   /// Registers [onWake] (delivered asynchronously on this isolate) or clears it with `null`.
+  ///
+  /// The runtime swaps sinks atomically and waits for an in-flight wake of the old one, so the
+  /// previous callable closes only after the swap succeeded; a failed swap keeps it installed.
   void setWakeListener(void Function()? onWake) {
-    api.check(api.setWakeCallback(_live, ffi.nullptr, ffi.nullptr), 'set_wake_callback');
-    _wake?.close();
-    _wake = null;
-    if (onWake == null) {
-      return;
+    final handle = _live;
+    final next =
+        onWake == null ? null : ffi.NativeCallable<NveRuntimeWakeNative>.listener((ffi.Pointer<ffi.Void> _) => onWake());
+    try {
+      api.check(api.setWakeCallback(handle, next?.nativeFunction ?? ffi.nullptr, ffi.nullptr), 'set_wake_callback');
+    } on Object {
+      next?.close();
+      rethrow;
     }
-    final callable = ffi.NativeCallable<NveRuntimeWakeNative>.listener((ffi.Pointer<ffi.Void> _) => onWake());
-    _wake = callable;
-    api.check(api.setWakeCallback(_handle, callable.nativeFunction, ffi.nullptr), 'set_wake_callback');
+    _wake?.close();
+    _wake = next;
   }
 
   void setViewport(double width, double height, double scaleFactor) =>
@@ -255,6 +272,15 @@ final class RuntimeSession {
   /// Attaches `nve_get_interface` (or [symbol]) exported by [module].
   void attachAppLibrary(ffi.DynamicLibrary module, {String symbol = 'nve_get_interface'}) =>
       attachApp(lookupAppInterface(module, symbol: symbol), keepAlive: module);
+
+  /// Loads the app cdylib at [path] from a private staged copy and attaches it (`load_app_module`;
+  /// a rebuilt file always runs new code). [carryState] moves the running app's dev state into
+  /// the new one. A failure leaves the running app untouched.
+  void loadAppModule(String path, {bool carryState = false}) {
+    final handle = _live;
+    api.check(api.loadAppModule(handle, _utf8Args(path).$1, carryState ? 1 : 0), 'load_app_module');
+    _appLibrary = null;
+  }
 
   /// Detaches the app (the scene keeps its last frame until new content arrives).
   void detachApp() {
@@ -317,7 +343,8 @@ final class RuntimeSession {
     if (payload == null) {
       return null;
     }
-    String str(NveStrSlice s) => utf8.decode(checkedNativeBytes(s.ptr, s.len));
+    // Malformed app text becomes U+FFFD instead of dropping the whole drained batch.
+    String str(NveStrSlice s) => utf8.decode(checkedNativeBytes(s.ptr, s.len), allowMalformed: true);
     return RuntimeEvent(NveEventKind.fromCode(e.kind),
         payload: payload,
         nodeId: e.nodeId,
@@ -336,12 +363,12 @@ final class RuntimeSession {
 
   /// Canonical payload bytes and kind of published resource [resourceId] (`resource_payload`).
   /// The bytes borrow runtime memory: valid only inside the [withScene] read that fetched them.
-  /// `null` for `0` or an id the current scene does not reference.
+  /// `null` for `0`, an id outside `u32`, or an id the current scene does not reference.
   (Key64, Uint8List)? resourcePayload(int resourceId) {
     if (!_inScene) {
       throw StateError('resourcePayload outside withScene');
     }
-    if (resourceId == 0) {
+    if (resourceId <= 0 || resourceId > 0xFFFFFFFF) {
       return null;
     }
     final status = api.resourcePayload(_handle, resourceId, _outU64, _buffer);
@@ -360,6 +387,27 @@ final class RuntimeSession {
 
   /// Restores a [snapshotState] result and schedules a re-render (`restore_state`).
   void restoreState(Uint8List state) => api.check(api.restoreState(_live, _borrow(state)), 'restore_state');
+
+  /// Writes the app's state snapshot to [path] as a crash-atomic `StateFile` tagged
+  /// [schemaVersion] (`save_state_file`); `false` when the app has no state.
+  bool saveStateFile(String path, int schemaVersion) =>
+      _found(api.saveStateFile(_live, _utf8Args(path).$1, schemaVersion), 'save_state_file');
+
+  /// Restores a [saveStateFile] file (`restore_state_file`); `false` when it is missing, corrupt,
+  /// or of an older schema (the runtime quarantines / rotates those).
+  bool restoreStateFile(String path, int schemaVersion) =>
+      _found(api.restoreStateFile(_live, _utf8Args(path).$1, schemaVersion), 'restore_state_file');
+
+  /// Deletes a state file for a cold start (`clear_state_file`; already absent is fine).
+  void clearStateFile(String path) => api.check(api.clearStateFile(_live, _utf8Args(path).$1), 'clear_state_file');
+
+  bool _found(int status, String what) {
+    if (status == NveRuntimeStatus.notFound.code) {
+      return false;
+    }
+    api.check(status, what);
+    return true;
+  }
 
   /// Validates and forwards one `NVP1` hot patch (`apply_hot_patch`); `true` when it changed the app.
   bool applyHotPatch(Uint8List patch) {
@@ -477,18 +525,26 @@ final class RuntimeSession {
 
   /// Connects the embedded pairing client to [uri] (`nve://host:port` / `quic://…`).
   void pairConnect(String uri, {String token = ''}) {
-    final u = utf8EncodedLength(uri);
-    final t = utf8EncodedLength(token);
-    final bytes = _bytes.reserve(u + t);
-    final view = bytes.asTypedList(u + t);
-    _encodeUtf8(token, view, _encodeUtf8(uri, view, 0));
-    (_strs + 0).ref
-      ..ptr = u == 0 ? ffi.nullptr : bytes
-      ..len = u;
-    (_strs + 1).ref
-      ..ptr = t == 0 ? ffi.nullptr : bytes + u
-      ..len = t;
-    api.check(api.pairConnect(_live, (_strs + 0).ref, (_strs + 1).ref), 'pair_connect');
+    final handle = _live;
+    final (u, t) = _utf8Args(uri, token);
+    api.check(api.pairConnect(handle, u, t), 'pair_connect');
+  }
+
+  /// UTF-8 copies of [a] and [b] in the reusable byte block, as the two scratch `NveStrSlice`s
+  /// (valid until the next call that reuses the block).
+  (NveStrSlice, NveStrSlice) _utf8Args(String a, [String b = '']) {
+    final la = utf8EncodedLength(a);
+    final lb = utf8EncodedLength(b);
+    final bytes = _bytes.reserve(la + lb);
+    final view = bytes.asTypedList(la + lb);
+    _encodeUtf8(b, view, _encodeUtf8(a, view, 0));
+    final sa = (_strs + 0).ref
+      ..ptr = la == 0 ? ffi.nullptr : bytes
+      ..len = la;
+    final sb = (_strs + 1).ref
+      ..ptr = lb == 0 ? ffi.nullptr : bytes + la
+      ..len = lb;
+    return (sa, sb);
   }
 
   void pairDisconnect() => api.check(api.pairDisconnect(_live), 'pair_disconnect');
@@ -545,15 +601,14 @@ final class RuntimeSession {
       return;
     }
     _reader = null;
-    api.setWakeCallback(_handle, ffi.nullptr, ffi.nullptr);
-    _wake?.close();
-    _wake = null;
+    // `destroy` drains in-flight wake callbacks before freeing, so only then can the listener's
+    // native trampoline close without a worker thread invoking a closed callable.
     api.destroy(_handle);
     _handle = ffi.nullptr;
+    _wake?.close();
+    _wake = null;
     _appLibrary = null;
-    for (final p in <ffi.Pointer<ffi.NativeType>>[_outU32, _outU64, _outF32, _view, _metrics, _strs, _buffer, _batch]) {
-      NativeHeap.free(p);
-    }
+    NativeHeap.free(_scratch);
     _bytes.free();
     _events.free();
   }

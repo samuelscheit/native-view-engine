@@ -52,6 +52,48 @@ void runRuntimeIngress(Check c) {
   c.eq(_offsetOf<NveScrollOffset>(12, (s) => s.ref.y = 1, 4), 8, 'NveScrollOffset.y @8');
   c.eq(_offsetOf<NveTableView>(ffi.sizeOf<NveTableView>(), (t) => t.ref.rows = p, _ptr), 24, 'NveTableView.rows @24');
 
+  // NveRuntimeConfig / NveRuntimeMetrics (Rust `layout_asserts.rs`) and the NveRuntimeApi vtable.
+  c.eq(ffi.sizeOf<NveRuntimeConfig>(), 24, 'NveRuntimeConfig size');
+  int configOffset(void Function(NveRuntimeConfig c) write) => _offsetOf<NveRuntimeConfig>(24, (p) => write(p.ref), 4);
+  c.eq(configOffset((v) => v.surfaceId = 1), 0, 'config.surface_id @0');
+  c.eq(configOffset((v) => v.width = 1), 4, 'config.width @4');
+  c.eq(configOffset((v) => v.height = 1), 8, 'config.height @8');
+  c.eq(configOffset((v) => v.scaleFactor = 1), 12, 'config.scale_factor @12');
+  c.eq(configOffset((v) => v.flags = 1), 16, 'config.flags @16');
+  c.eq(ffi.sizeOf<NveRuntimeMetrics>(), 64, 'NveRuntimeMetrics size');
+  int metricsOffset(void Function(NveRuntimeMetrics m) write, [int width = 8]) =>
+      _offsetOf<NveRuntimeMetrics>(64, (p) => write(p.ref), width);
+  c.eq(metricsOffset((m) => m.frameId = 1), 0, 'metrics.frame_id @0');
+  c.eq(metricsOffset((m) => m.reconcileUs = 1), 8, 'metrics.reconcile_us @8');
+  c.eq(metricsOffset((m) => m.layoutUs = 1), 16, 'metrics.layout_us @16');
+  c.eq(metricsOffset((m) => m.publishUs = 1), 24, 'metrics.publish_us @24');
+  c.eq(metricsOffset((m) => m.wireBytesRx = 1), 32, 'metrics.wire_bytes_rx @32');
+  c.eq(metricsOffset((m) => m.wireBytesTx = 1), 40, 'metrics.wire_bytes_tx @40');
+  c.eq(metricsOffset((m) => m.liveNodes = 1, 4), 48, 'metrics.live_nodes @48');
+  c.eq(metricsOffset((m) => m.dirtyNodes = 1, 4), 52, 'metrics.dirty_nodes @52');
+  c.eq(metricsOffset((m) => m.pairConnected = 1, 4), 56, 'metrics.pair_connected @56');
+  final apiSize = ffi.sizeOf<NveRuntimeApi>();
+  c.eq(apiSize, 16 + nveRuntimeApiSlotCount * _ptr, 'NveRuntimeApi size: header + $nveRuntimeApiSlotCount slots');
+  int apiOffset(void Function(NveRuntimeApi a) write, [int? width]) =>
+      _offsetOf<NveRuntimeApi>(apiSize, (p) => write(p.ref), width ?? _ptr);
+  c.eq(apiOffset((a) => a.abiVersion = 1, 4), 0, 'api.abi_version @0');
+  c.eq(apiOffset((a) => a.structSize = 1, 4), 4, 'api.struct_size @4');
+  c.eq(apiOffset((a) => a.schemaHash = 1, 8), 8, 'api.schema_hash @8');
+  c.eq(apiOffset((a) => a.create = p.cast()), 16, 'api.create is slot 0');
+  c.eq(apiOffset((a) => a.setTextMeasurer = p.cast()), 16 + 4 * _ptr, 'api.set_text_measurer is slot 4');
+  c.eq(apiOffset((a) => a.lastError = p.cast()), 16 + (nveRuntimeApiSlotCount - 1) * _ptr, 'api.last_error is last');
+  final api = NativeHeap.zeroed<NveRuntimeApi>(apiSize);
+  try {
+    c.eq(runtimeApiSlotsComplete(ffi.nullptr), false, 'NULL vtable is incomplete');
+    c.eq(runtimeApiSlotsComplete(api), false, 'zeroed vtable is incomplete');
+    api.cast<ffi.Uint8>().asTypedList(apiSize).fillRange(16, apiSize, 0x10);
+    c.eq(runtimeApiSlotsComplete(api), true, 'every slot set');
+    (api.cast<ffi.Uint8>() + 16 + 9 * _ptr).asTypedList(_ptr).fillRange(0, _ptr, 0);
+    c.eq(runtimeApiSlotsComplete(api), false, 'one NULL slot is incomplete');
+  } finally {
+    NativeHeap.free(api);
+  }
+
   // ---- untrusted ingress ----------------------------------------------------------------------
   final view = NativeHeap.zeroed<NveRuntimeSceneView>(viewSize);
   final table = NativeHeap.zeroed<NveTableView>(ffi.sizeOf<NveTableView>());

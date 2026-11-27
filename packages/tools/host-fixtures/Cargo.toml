@@ -3,7 +3,12 @@ name = "nve-host-fixtures"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Writes real NVE2 scene frames (standard tables, resources, canvas draw lists) that native host suites submit to libnve_runtime"
+description = "Host-suite fixtures: real NVE2 scene frames (standard tables, resources, canvas draw lists) and an echo app module, both driven through libnve_runtime"
+
+[lib]
+name = "nve_host_fixture_app"
+path = "src/echo_app.rs"
+crate-type = ["cdylib"]
 
 [[bin]]
 name = "nve-host-fixtures"
@@ -13,6 +18,7 @@ path = "src/main.rs"
 nve-abi = { workspace = true }
 nve-canvas = { workspace = true }
 nve-components = { workspace = true }
+nve-engine = { workspace = true }
 nve-store = { workspace = true }
 
 [lints]
