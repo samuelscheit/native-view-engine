@@ -81,6 +81,12 @@ pub trait RuntimeApp {
         Err(CapabilityUnsupported)
     }
 
+    /// `true` when [`Self::snapshot_state`] / [`Self::restore_state`] are supported: lets the
+    /// runtime check the capability before touching state files, without serializing state.
+    fn supports_state(&self) -> bool {
+        false
+    }
+
     /// Serializes app state (instant boot / Tier-2 hot swap), borrowed until the next call on `self`.
     fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {
         Err(CapabilityUnsupported)

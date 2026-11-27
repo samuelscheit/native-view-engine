@@ -1,5 +1,8 @@
 //! `NveRuntimeSceneView::scene_epoch`: hosts detect every scene reset (keyframe, detach) even when the new scene reuses the same node ids.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
+
 use nve_components::tables::TextContent;
 use nve_abi::{FrameId, NveEventBatchRef};
 use nve_runtime::{AppFrame, RuntimeApp, RuntimeBuilder, SurfaceRuntime};
@@ -72,4 +75,126 @@ fn every_scene_reset_bumps_the_epoch_and_plain_frames_do_not() {
     assert_eq!(epoch(&rt).0, e4, "ticking an unchanged surface keeps the epoch");
     rt.detach_app().expect("detach");
     assert!(epoch(&rt).0 != e4, "detaching the app discards its scene");
+}
+
+/// Valid `NVE2` header and first op, then an unknown op: the body fails mid-transaction.
+fn mid_frame_corrupt(frame_num: u32) -> Vec<u8> {
+    let words: [u32; 12] = [
+        0x3245_564E, 1, frame_num, 0, 2, 12, // header: "NVE2", v1, frame, flags, 2 ops, 12 words
+        3 | (1 << 16), 1, 99, // CreateNodes(count 1) -> node 99
+        0xFE | (1 << 16), 1, 0xDEAD_BEEF, // unknown op
+    ];
+    words.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+#[test]
+fn a_frame_failing_mid_body_resets_the_scene_into_a_new_epoch() {
+    let mut rt = RuntimeBuilder::new().build();
+    rt.submit_nve2(&keyframe("a")).expect("keyframe");
+    let (e0, _) = epoch(&rt);
+    assert!(rt.submit_nve2(&mid_frame_corrupt(2)).is_err(), "corrupt body");
+    let (e1, _) = epoch(&rt);
+    assert_eq!(e1, e0.wrapping_add(1), "partially applied ops are discarded with a new epoch");
+    rt.submit_nve2(&keyframe("b")).expect("recovery keyframe");
+    assert_eq!(epoch(&rt).0, e1, "the first keyframe after the reset stays in the reset epoch");
+}
+
+#[test]
+fn swapping_one_app_for_another_starts_a_new_epoch() {
+    let mut rt = RuntimeBuilder::new().build();
+    rt.attach_app(Box::new(OneFrameApp(Some(keyframe("one")), Vec::new()))).expect("attach one");
+    let _ = rt.tick(0.0);
+    let (e1, _) = epoch(&rt);
+    rt.attach_app(Box::new(OneFrameApp(Some(keyframe("two")), Vec::new()))).expect("attach two");
+    let _ = rt.tick(0.0);
+    let (e2, _) = epoch(&rt);
+    assert_eq!(e2, e1.wrapping_add(1), "same node ids, different app: exactly one new epoch");
+}
+
+/// Direct-store app that switches to a different boxed `NodeStore` (a different resource
+/// namespace) without any runtime reset. `command`: 1 re-renders, 2 switches stores (async work).
+struct StoreSwitchingApp {
+    stores: [Box<NodeStore>; 2],
+    nodes: [NodeId; 2],
+    active: usize,
+    changes: ChangeSet,
+    /// Creation changes of each store, rendered the first time it is active.
+    created: [Option<ChangeSet>; 2],
+    command: Arc<AtomicU8>,
+    switch: bool,
+}
+
+impl StoreSwitchingApp {
+    fn new(command: Arc<AtomicU8>) -> Self {
+        let build = |label: &str| {
+            let mut store = Box::new(NodeStore::new());
+            let mut tx = store.tx();
+            let n = tx.create();
+            tx.edit::<TextContent>(n).text(label);
+            tx.set_children(NodeId::ROOT, &[n]);
+            let mut created = ChangeSet::default();
+            tx.commit_into(&mut created);
+            (store, n, created)
+        };
+        let (left, l, lc) = build("left");
+        let (right, r, rc) = build("right");
+        Self { stores: [left, right], nodes: [l, r], active: 0, changes: ChangeSet::default(), created: [Some(lc), Some(rc)], command, switch: false }
+    }
+}
+
+impl RuntimeApp for StoreSwitchingApp {
+    fn render_frame(&mut self, _frame_id: FrameId) -> AppFrame<'_> {
+        if std::mem::take(&mut self.switch) {
+            self.active ^= 1;
+        }
+        if let Some(created) = self.created[self.active].take() {
+            self.changes = created;
+            return AppFrame::Direct { changes: &self.changes };
+        }
+        let (store, node) = (&mut self.stores[self.active], self.nodes[self.active]);
+        let mut tx = store.tx();
+        tx.edit::<TextContent>(node).text("rendered");
+        tx.commit_into(&mut self.changes);
+        AppFrame::Direct { changes: &self.changes }
+    }
+
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+        false
+    }
+
+    fn poll_async_work(&mut self) -> bool {
+        match self.command.swap(0, Ordering::AcqRel) {
+            0 => false,
+            c => {
+                self.switch = c == 2;
+                true
+            }
+        }
+    }
+
+    fn direct_store(&self) -> Option<&NodeStore> {
+        Some(&self.stores[self.active])
+    }
+
+    fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+        Some(&mut self.stores[self.active])
+    }
+}
+
+#[test]
+fn a_direct_app_switching_resource_stores_starts_a_new_epoch() {
+    let command = Arc::new(AtomicU8::new(0));
+    let mut rt = RuntimeBuilder::new().app(Box::new(StoreSwitchingApp::new(Arc::clone(&command)))).build();
+    let _ = rt.tick(0.0).expect("mount");
+    let (e0, f0) = epoch(&rt);
+    command.store(1, Ordering::Release);
+    assert!(rt.tick(0.0).expect("same store"));
+    let (e1, f1) = epoch(&rt);
+    assert!(f1 > f0 && e1 == e0, "re-rendering the same store keeps the epoch");
+    command.store(2, Ordering::Release);
+    assert!(rt.tick(0.0).expect("switched store"));
+    assert_eq!(epoch(&rt).0, e0.wrapping_add(1), "another store's resource ids are another namespace");
+    command.store(1, Ordering::Release);
+    assert!(rt.tick(0.0).expect("stay"));
+    assert_eq!(epoch(&rt).0, e0.wrapping_add(1), "staying on the new store keeps its epoch");
 }

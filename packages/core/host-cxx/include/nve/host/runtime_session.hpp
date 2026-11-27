@@ -80,7 +80,8 @@ class RuntimeSceneReader {
   [[nodiscard]] uint32_t table_count() const noexcept { return static_cast<uint32_t>(tables_.size()); }
   /// Visual scroll shifts sorted by `node_id`; subtract from descendants' (pre-scroll) rects.
   [[nodiscard]] std::span<const NveScrollOffset> scroll_offsets() const noexcept { return scroll_; }
-  /// Live resource ids (re)defined on this frame, sorted: drop host caches keyed by them.
+  /// Live resource ids (re)defined on this frame, strictly ascending (validated by `open`): drop
+  /// host caches keyed by them.
   [[nodiscard]] std::span<const uint32_t> dirty_resources() const noexcept { return dirty_resources_; }
 
   /// Visual shift of scroll container `node_id` (`{0, 0}` when not scrolled; O(log n)).
@@ -201,6 +202,10 @@ class RuntimeSceneReader {
       if (v->scroll_offsets[i - 1u].node_id >= v->scroll_offsets[i].node_id) {
         return SceneError::UnsortedScrollOffsets;
       }
+    }
+    // Documented sorted + deduplicated: hosts may binary-search or merge it.
+    for (uint32_t i = 1u; i < v->dirty_resource_count; ++i) {
+      if (v->dirty_resources[i - 1u] >= v->dirty_resources[i]) return SceneError::UnsortedDirtyResources;
     }
     return SceneError::None;
   }

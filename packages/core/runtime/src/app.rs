@@ -65,6 +65,10 @@ impl<A: NveApp> RuntimeApp for NveAppAdapter<A> {
         Ok(self.app.drain_emitted_events())
     }
 
+    fn supports_state(&self) -> bool {
+        true
+    }
+
     fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {
         Ok(self.app.snapshot_state())
     }
@@ -103,6 +107,9 @@ unsafe fn query_interface<T: Copy>(get_iface: NveGetInterfaceFn, id: u32) -> Opt
     // SAFETY: Caller guarantees the `nve_get_interface` contract for `id`.
     let ptr = unsafe { get_iface(id) };
     if ptr.is_null() {
+        return None;
+    }
+    if !ptr.cast::<T>().is_aligned() {
         return None;
     }
     let slots = ptr.cast::<*const ()>();
@@ -229,6 +236,10 @@ impl RuntimeApp for CAbiAppAdapter {
         let batch = unsafe { (component.drain_emitted_events)(self.handle) };
         // SAFETY: A structurally valid batch points to `len` initialized `NveDirectEvent`s.
         Ok(unsafe { batch.try_as_slice() }.unwrap_or(&[]))
+    }
+
+    fn supports_state(&self) -> bool {
+        self.dev_api.is_some()
     }
 
     fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {

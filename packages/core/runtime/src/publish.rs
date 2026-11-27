@@ -4,7 +4,9 @@
 use nve_abi::{
     NveLayoutRect, NveNodeRow, NveRuntimeSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH,
 };
+use nve_components::tables::{TextContent, TextInput, Typography};
 use nve_layout::ScrollOffsets;
+use nve_store::NveTable;
 use nve_store::{ChangeSet, NodeId, NodeStore, TableSlot};
 
 use crate::builder::Timer;
@@ -112,6 +114,10 @@ impl SurfaceState {
         laid_out: bool,
     ) {
         let t_pub = Timer::start();
+        if self.epoch_resources != PublishedResources::None && self.epoch_resources != resources {
+            self.scene_epoch = self.scene_epoch.wrapping_add(1);
+        }
+        self.epoch_resources = resources;
         let cap = store.capacity();
         if self.rects.len() < cap {
             self.rects.resize(cap, NveLayoutRect::default());
@@ -125,6 +131,7 @@ impl SurfaceState {
         self.dirty_epoch = self.dirty_epoch.wrapping_add(1);
         if self.dirty_epoch == 0 {
             self.dirty_stamp.fill(0);
+            self.inherit_stamp.fill(0);
             self.dirty_epoch = 1;
         }
         let epoch = self.dirty_epoch;
@@ -158,6 +165,7 @@ impl SurfaceState {
                 self.dirty_indices.push(idx as u32);
             }
         }
+        self.dirty_inherited_typography(store, changes, epoch);
 
         self.removed_ids.clear();
         for &id in &changes.removed {
@@ -266,5 +274,51 @@ impl SurfaceState {
             self.metrics.live_nodes = store.stats().live_nodes as u32;
         }
         self.needs_publish = false;
+    }
+}
+
+impl SurfaceState {
+    /// `dirty_indices` covers inherited styling: when a node's `Typography` row changes, attaches,
+    /// or detaches, every text / text-input descendant that inherits from it is dirty too, so
+    /// retained hosts restyle exactly `dirty_indices` instead of walking the whole tree.
+    ///
+    /// O(union of the changed nodes' subtrees), zero allocations once the stamp / stack warm:
+    /// changed roots are stamped first and a walk never enters another root's subtree (that
+    /// root walks it), so nested changes visit each node once.
+    fn dirty_inherited_typography(&mut self, store: &NodeStore, changes: &ChangeSet, epoch: u32) {
+        let Some(typo) = changes.table(Typography::slot()) else {
+            return;
+        };
+        let cap = self.dirty_stamp.len();
+        if self.inherit_stamp.len() < cap {
+            self.inherit_stamp.resize(cap, 0);
+        }
+        let roots = || typo.nodes.iter().chain(&typo.detached).copied();
+        for id in roots() {
+            if id.index() < cap && store.is_live(id) {
+                self.inherit_stamp[id.index()] = epoch;
+            }
+        }
+        let (text, input) = (TextContent::slot(), TextInput::slot());
+        for root in roots() {
+            if !store.is_live(root) {
+                continue;
+            }
+            self.inherit_stack.clear();
+            self.inherit_stack.extend_from_slice(store.children(root));
+            while let Some(id) = self.inherit_stack.pop() {
+                let idx = id.index();
+                if idx >= cap || !store.is_live(id) || self.inherit_stamp[idx] == epoch {
+                    continue;
+                }
+                if (store.has_slot(id, text) || store.has_slot(id, input))
+                    && self.dirty_stamp[idx] != epoch
+                {
+                    self.dirty_stamp[idx] = epoch;
+                    self.dirty_indices.push(idx as u32);
+                }
+                self.inherit_stack.extend_from_slice(store.children(id));
+            }
+        }
     }
 }

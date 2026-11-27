@@ -1041,3 +1041,32 @@ fn pair_lifecycle_edge_cases_busy_rebind_detach_null_non_owner_and_destroy() {
     srv1.shutdown();
     srv2.shutdown();
 }
+
+#[test]
+fn pair_connect_and_disconnect_each_start_a_new_scene_epoch() {
+    let epoch = |rt: &nve_runtime::SurfaceRuntime| rt.acquire_scene().unwrap().view().scene_epoch;
+    let mut rt = RuntimeBuilder::new().build();
+    rt.submit_nve2(&encode_scene("LOCAL")).expect("local keyframe");
+    let e0 = epoch(&rt);
+    let token = "epoch-tok";
+    let srv = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        token,
+    ))
+    .unwrap();
+    let _ = srv.broadcast_scene_keyframe(1, &encode_scene("REMOTE"));
+    rt.pair_connect(&format!("ws://{}/nve-wire", srv.wss_addr()), token).expect("pair");
+    let e1 = epoch(&rt);
+    assert_eq!(e1, e0.wrapping_add(1), "pairing discards the local scene");
+    assert!(wait_until(Duration::from_secs(3), || {
+        let _ = rt.tick(0.016).unwrap();
+        read_text_slab(rt.acquire_scene().unwrap().view()).contains("REMOTE")
+    }));
+    assert_eq!(epoch(&rt), e1, "the paired keyframe lands in the pairing's epoch");
+    rt.pair_disconnect().expect("disconnect");
+    assert_eq!(epoch(&rt), e1.wrapping_add(1), "disconnecting discards the remote scene");
+    rt.pair_disconnect().expect("idempotent");
+    assert_eq!(epoch(&rt), e1.wrapping_add(1), "disconnecting nothing keeps the epoch");
+    srv.shutdown();
+}

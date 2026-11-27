@@ -1,8 +1,12 @@
 //! `NveRuntimeSceneView::dirty_resources`: every frame lists exactly the live resource ids whose
 //! bytes changed (created, recycled from the free list), so hosts can key caches by resource id.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
+use nve_abi::{FrameId, NveEventBatchRef};
 use nve_components::tables::{Image, ImageSrc};
-use nve_runtime::{RuntimeBuilder, SurfaceRuntime};
+use nve_runtime::{AppFrame, RuntimeApp, RuntimeBuilder, SurfaceRuntime};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, NodeId, NodeStore, ResourceId};
 
@@ -101,4 +105,94 @@ fn recycled_and_new_resource_ids_are_listed_and_untouched_ones_are_not() {
     let (dirty, bytes_c) = published(&rt, a);
     assert_eq!(dirty, vec![a], "the freed slot is recycled and reported dirty");
     assert_ne!(bytes_c, bytes_a, "the recycled id carries new bytes");
+}
+
+/// Direct-store app rewriting one ephemeral `Image::src` in place on every render: the same id
+/// is (re)defined with new bytes. `pending` renders run as async work inside the NEXT tick, so
+/// several renders merge into one published frame.
+struct EphemeralApp {
+    store: NodeStore,
+    changes: ChangeSet,
+    node: NodeId,
+    generation: u32,
+    pending: Arc<AtomicU32>,
+}
+
+impl EphemeralApp {
+    fn new(pending: Arc<AtomicU32>) -> Self {
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        let mut tx = store.tx();
+        let node = tx.create();
+        tx.edit::<Image>(node).src_ephemeral(ImageSrc::Url("gen-0".into()));
+        tx.set_children(NodeId::ROOT, &[node]);
+        tx.commit_into(&mut changes);
+        Self { store, changes, node, generation: 0, pending }
+    }
+}
+
+impl RuntimeApp for EphemeralApp {
+    fn render_frame(&mut self, _frame_id: FrameId) -> AppFrame<'_> {
+        if self.generation > 0 {
+            let mut tx = self.store.tx();
+            tx.edit::<Image>(self.node).src_ephemeral(ImageSrc::Url(format!("gen-{}", self.generation)));
+            tx.commit_into(&mut self.changes);
+        }
+        self.generation += 1;
+        AppFrame::Direct { changes: &self.changes }
+    }
+
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+        false
+    }
+
+    fn poll_async_work(&mut self) -> bool {
+        self.pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    fn direct_store(&self) -> Option<&NodeStore> {
+        Some(&self.store)
+    }
+
+    fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+        Some(&mut self.store)
+    }
+}
+
+fn mounted_ephemeral_app() -> (SurfaceRuntime, Arc<AtomicU32>, u32, Vec<u8>) {
+    let pending = Arc::new(AtomicU32::new(0));
+    let mut rt = RuntimeBuilder::new().app(Box::new(EphemeralApp::new(Arc::clone(&pending)))).build();
+    let _ = rt.tick(0.0).expect("mount");
+    let created = dirty_only(&rt);
+    assert_eq!(created.len(), 1, "the created ephemeral resource is dirty: {created:?}");
+    let (_, bytes) = published(&rt, created[0]);
+    assert!(!bytes.is_empty());
+    (rt, pending, created[0], bytes)
+}
+
+#[test]
+fn direct_store_ephemeral_rewrites_in_place_are_dirty_every_frame() {
+    let (mut rt, pending, id, mut prev) = mounted_ephemeral_app();
+    for frame in 1..=3 {
+        pending.store(1, Ordering::Release);
+        assert!(rt.tick(0.0).expect("rewrite"), "frame {frame} changed");
+        let (dirty, bytes) = published(&rt, id);
+        assert_eq!(dirty, vec![id], "frame {frame}: an in-place rewrite keeps the id and MUST be dirty");
+        assert_ne!(bytes, prev, "frame {frame}: the same id carries new bytes");
+        prev = bytes;
+    }
+    assert!(!rt.tick(0.0).expect("idle"), "nothing pending: no new frame");
+}
+
+#[test]
+fn rewrites_merged_across_pumps_of_one_tick_are_listed_once() {
+    let (mut rt, pending, id, _) = mounted_ephemeral_app();
+    pending.store(3, Ordering::Release);
+    assert!(rt.tick(0.0).expect("three renders in one tick"));
+    assert_eq!(pending.load(Ordering::Acquire), 0, "every pending render ran in this tick");
+    let (dirty, bytes) = published(&rt, id);
+    assert_eq!(dirty, vec![id], "one id rewritten by several pumps is listed once");
+    assert!(bytes.ends_with(b"gen-3"), "the last rewrite wins: {bytes:?}");
 }

@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use nve_engine::loader::{LoaderError, StagedDylib};
-use nve_engine::{PersistenceError, StateFile};
+use nve_engine::{CapabilityUnsupported, PersistenceError, StateFile, MAX_STATE_FILE_BYTES};
 
 use crate::app::{CAbiAppAdapter, RuntimeApp};
 use crate::builder::RuntimeError;
@@ -38,6 +38,18 @@ impl SurfaceRuntime {
     fn check_file_op(&self) -> Result<(), RuntimeError> {
         self.check_not_poisoned()?;
         self.check_owner_thread()
+    }
+
+    /// [`Self::check_file_op`] plus an attached app with state support and no scene held
+    /// (`SceneBusy`): a state file is never opened (created, rotated, quarantined) for a call
+    /// that cannot complete.
+    fn check_state_op(&self, capability: &'static str) -> Result<(), RuntimeError> {
+        self.check_file_op()?;
+        self.with_write(|inner| {
+            with_app(inner, capability, |app| {
+                if app.supports_state() { Ok(()) } else { Err(CapabilityUnsupported) }
+            })
+        })
     }
 
     /// Loads the app `cdylib` at `path` from a private staged copy and attaches it, replacing the
@@ -100,6 +112,9 @@ impl SurfaceRuntime {
         if state.is_empty() {
             return Err(RuntimeError::NotFound("app has no state to save"));
         }
+        if state.len() > MAX_STATE_FILE_BYTES {
+            return Err(RuntimeError::InvalidArg("app state exceeds MAX_STATE_FILE_BYTES"));
+        }
         let mut file = StateFile::open(path, schema_version).map_err(persistence_error)?;
         file.save(&state).map_err(persistence_error)?;
         Ok(())
@@ -119,7 +134,7 @@ impl SurfaceRuntime {
         path: &Path,
         schema_version: u32,
     ) -> Result<(), RuntimeError> {
-        self.check_file_op()?;
+        self.check_state_op("app does not support state restore (NVE_IFACE_DEV)")?;
         let file = StateFile::open(path, schema_version).map_err(persistence_error)?;
         let Some(state) = file.load().map_err(persistence_error)? else {
             let recovery = file.recovery_stats();

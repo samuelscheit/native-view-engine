@@ -67,12 +67,7 @@ impl StateFile {
         let path = path.as_ref().to_path_buf();
         #[cfg(not(target_arch = "wasm32"))]
         let (recovery, cached) = {
-            if path.file_name().is_none() {
-                return Err(PersistenceError::Io(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "state file path must include a file name",
-                )));
-            }
+            require_file_name(&path)?;
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
             {
@@ -268,10 +263,23 @@ impl StateFile {
     /// Deletes the state file at `path` (a cold start); succeeds when it is already absent.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn remove(path: &Path) -> Result<(), PersistenceError> {
+        require_file_name(path)?;
         match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(PersistenceError::Io(e)),
         }
     }
+}
+
+/// Every state file operation needs a path naming a file (`""`, `/`, `..` are `Io` errors).
+#[cfg(not(target_arch = "wasm32"))]
+fn require_file_name(path: &Path) -> Result<(), PersistenceError> {
+    if path.file_name().is_none() {
+        return Err(PersistenceError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "state file path must include a file name",
+        )));
+    }
+    Ok(())
 }

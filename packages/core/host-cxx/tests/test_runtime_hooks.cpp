@@ -237,6 +237,67 @@ void test_scroll_offsets() {
   CHECK(err == SceneError::NullSlab);
 }
 
+std::vector<uint32_t> dirty_resources_of(RuntimeSession& session, uint32_t* epoch) {
+  std::optional<RuntimeSceneGuard> guard = session.acquire_scene();
+  CHECK(guard.has_value());
+  if (!guard) return {};
+  *epoch = guard->reader().scene_epoch();
+  CHECK(guard->reader().scene_epoch() == guard->raw().scene_epoch);
+  const std::span<const uint32_t> ids = guard->reader().dirty_resources();
+  return {ids.begin(), ids.end()};
+}
+
+void test_scene_epoch_and_dirty_resources() {
+  RuntimeSession session = make_session();
+  uint32_t e0 = 0u;
+  CHECK(session.submit_nve2(blob_frame(1u, kBlobId)) == NVE_RUNTIME_OK);
+  CHECK(dirty_resources_of(session, &e0) == std::vector<uint32_t>{kBlobId});
+
+  // A delta that only re-points the row defines no resource: nothing dirty, same epoch.
+  uint32_t e1 = 0u;
+  CHECK(session.submit_nve2(blob_frame(2u, kBlobId)) == NVE_RUNTIME_OK);
+  CHECK(dirty_resources_of(session, &e1).empty());
+  CHECK(e1 == e0);
+
+  // A new session's keyframe over the live replica resets the scene: new epoch, ids redefined.
+  uint32_t e2 = 0u;
+  CHECK(session.submit_nve2(blob_frame(1u, kBlobId)) == NVE_RUNTIME_OK);
+  CHECK(dirty_resources_of(session, &e2) == std::vector<uint32_t>{kBlobId});
+  CHECK(e2 == e0 + 1u);
+
+  // A rejected frame keeps the scene and its epoch.
+  const std::array<uint8_t, 4> junk{1u, 2u, 3u, 4u};
+  CHECK(session.submit_nve2(junk) != NVE_RUNTIME_OK);
+  uint32_t e3 = 0u;
+  (void)dirty_resources_of(session, &e3);
+  CHECK(e3 == e2);
+
+  // Synthetic views: unsorted / duplicate ids are rejected, ascending ones are served.
+  NveRuntimeSceneView view{};
+  view.schema_hash = NVE_RUNTIME_SCHEMA_HASH;
+  view.scene_epoch = 42u;
+  const std::array<uint32_t, 3> sorted{2u, 5u, 9u};
+  view.dirty_resources = sorted.data();
+  view.dirty_resource_count = static_cast<uint32_t>(sorted.size());
+  const std::optional<RuntimeSceneReader> reader = RuntimeSceneReader::open(&view);
+  CHECK(reader.has_value() && reader->scene_epoch() == 42u && reader->dirty_resources().size() == 3u);
+  SceneError err = SceneError::None;
+  const std::array<uint32_t, 2> unsorted{5u, 2u};
+  view.dirty_resources = unsorted.data();
+  view.dirty_resource_count = 2u;
+  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == SceneError::UnsortedDirtyResources);
+  const std::array<uint32_t, 2> duplicate{3u, 3u};
+  view.dirty_resources = duplicate.data();
+  err = SceneError::None;
+  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == SceneError::UnsortedDirtyResources);
+  view.dirty_resources = nullptr;
+  err = SceneError::None;
+  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == SceneError::NullSlab);
+}
+
 }  // namespace
 
 int main() {
@@ -245,6 +306,7 @@ int main() {
   test_resource_payload();
   test_app_hooks_without_app();
   test_scroll_offsets();
+  test_scene_epoch_and_dirty_resources();
   if (g_failures != 0) {
     std::fprintf(stderr, "test_runtime_hooks: %d failure(s)\n", g_failures);
     return 1;

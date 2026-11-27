@@ -574,14 +574,21 @@ impl Column {
         self.index.set(node_index, 0);
     }
 
-    /// Number of addressable rows (dense: node capacity; sparse: packed rows).
-    #[inline]
-    /// Rows published in `NveTableView`: dense tables stop at the store's node capacity (the
-    /// power-of-two growth tail belongs to no node) and publish no owners (row = node index).
-    pub(crate) fn published_row_count(&self, capacity: usize) -> usize {
-        if self.is_dense() { self.row_count().min(capacity) } else { self.row_count() }
+    /// `(rows, owners, row_count)` exactly as published in `NveTableView`: dense tables stop at
+    /// the store's node `capacity` (the power-of-two growth tail belongs to no node) and publish
+    /// no owners (row = node index). The one source for publishing and drift validation: an
+    /// empty slice publishes a null pointer on both paths.
+    pub(crate) fn published_storage(&self, capacity: usize) -> (&[Word], &[u32], usize) {
+        if self.is_dense() {
+            let rc = self.row_count().min(capacity);
+            (&self.rows[..rc * self.w], &[], rc)
+        } else {
+            (&self.rows, &self.owners, self.row_count())
+        }
     }
 
+    /// Number of addressable rows (dense: node capacity; sparse: packed rows).
+    #[inline]
     pub(crate) fn row_count(&self) -> usize {
         self.masks.len()
     }

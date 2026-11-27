@@ -174,18 +174,21 @@ impl SurfaceRuntime {
         &self,
         mut app: Box<dyn RuntimeApp>,
     ) -> Result<(), RuntimeError> {
-        let (had_pending, old_pair) = self.with_write(|inner| {
+        let (had_pending, old_pair, old_app) = self.with_write(|inner| {
             let old_pair = inner.pair.take();
             if old_pair.is_some() {
                 inner.state.metrics.pair_connected = 0;
             }
             inner.reset_for_app_change();
             let pending = app.install_wake_bridge(Arc::clone(&self.wake));
-            inner.app = Some(app);
+            let old_app = inner.app.replace(app);
             inner.state.needs_render = true;
             inner.state.needs_publish = true;
-            Ok((pending, old_pair))
+            Ok((pending, old_pair, old_app))
         })?;
+        // The replaced app (and the module it owns) is destroyed outside the surface lock: its
+        // `destroy` may block or re-enter (wake sinks), and its code unloads with it.
+        drop(old_app);
         // Shut down any replaced pairing worker OUTSIDE the surface write lock to avoid deadlocks.
         if let Some(mut pair) = old_pair {
             pair.shutdown();
@@ -324,17 +327,19 @@ impl SurfaceRuntime {
     }
 
     pub(crate) fn detach_app_shared(&self) -> Result<(), RuntimeError> {
-        self.with_write(|inner| {
+        let old_app = self.with_write(|inner| {
             // Only reset when a local app was actually attached so `attach_app_interface(h, NULL)`
             // while paired never wipes the live paired replica.
-            if inner.app.is_some() {
+            let old_app = inner.app.take();
+            if old_app.is_some() {
                 inner.reset_for_app_change();
-                inner.app = None;
                 inner.state.needs_render = false;
                 inner.state.needs_publish = false;
             }
-            Ok(())
-        })
+            Ok(old_app)
+        })?;
+        drop(old_app);
+        Ok(())
     }
 
     pub fn add_tick_hook(&mut self, hook: Box<dyn FrameTickHook>) -> Result<(), RuntimeError> {

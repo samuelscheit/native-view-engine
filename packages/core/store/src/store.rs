@@ -539,11 +539,7 @@ impl NodeStore {
     /// owners (row = node index) and at most `capacity()` rows.
     pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[u32], usize)> {
         let c = self.columns[slot.0 as usize].as_ref()?;
-        let rc = c.published_row_count(self.capacity());
-        if c.is_dense() {
-            return Some((&c.rows[..rc * c.w], &[], rc));
-        }
-        Some((&c.rows, &c.owners, rc))
+        Some(c.published_storage(self.capacity()))
     }
 
     pub fn stats(&self) -> StoreStats {

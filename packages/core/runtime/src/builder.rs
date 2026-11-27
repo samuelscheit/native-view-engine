@@ -224,10 +224,13 @@ impl RuntimeBuilder {
                     dirty_indices: Vec::new(),
                     dirty_stamp: Vec::new(),
                     dirty_epoch: 0,
+                    inherit_stamp: Vec::new(),
+                    inherit_stack: Vec::new(),
                     removed_ids: Vec::new(),
                     published_scroll: Vec::new(),
                     dirty_resources: Vec::new(),
                     published_resources: PublishedResources::None,
+                    epoch_resources: PublishedResources::None,
                     published_view: NveRuntimeSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,
                         ..NveRuntimeSceneView::default()

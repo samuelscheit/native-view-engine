@@ -37,38 +37,43 @@ impl std::fmt::Display for LoaderError {
 
 impl std::error::Error for LoaderError {}
 
-/// Canonical RAII dynamic-library loader that stages a unique copy before calling `dlopen`
-/// (avoiding OS image caching and Windows DLL locks) and unloads before removing the temp copy.
+/// Whether [`StagedDylib`] loads a private copy (desktop) or the file in place (mobile).
+///
+/// Android (API 29+ SELinux `execute_no_trans` / W^X) only executes code from the APK's
+/// `nativeLibraryDir`, and `std::env::temp_dir()` there (`/data/local/tmp`) is not app-writable;
+/// iOS only loads signed images from the bundle. Mobile hot reload therefore relies on the dev
+/// tooling pushing a uniquely named (versioned) library per generation.
+pub const STAGES_PRIVATE_COPY: bool = !cfg!(any(target_os = "android", target_os = "ios"));
+
+/// Canonical RAII dynamic-library loader. On desktop it stages a unique copy in a private
+/// (`0700`, exclusively created) staging directory before calling `dlopen` (a rebuilt file at the
+/// same path always runs new code; no Windows DLL locks) and unloads before removing the copy.
+/// On Android / iOS it loads the file in place ([`STAGES_PRIVATE_COPY`]).
 pub struct StagedDylib {
     lib: Option<Library>,
     get_interface: NveGetInterfaceFn,
-    loaded_copy: PathBuf,
+    loaded_path: PathBuf,
+    /// `true` when `loaded_path` is our private copy (removed after unloading).
+    owns_copy: bool,
 }
 
 impl StagedDylib {
     pub fn load(dylib_path: &Path, subdir: &str, label: &str) -> Result<Self, LoaderError> {
-        let ext = dylib_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("dylib");
-        let stem = dylib_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("nve_app");
-        let seq = STAGED_COPY_SEQ.fetch_add(1, Ordering::Relaxed);
-        let temp_dir = std::env::temp_dir().join(subdir);
-        std::fs::create_dir_all(&temp_dir).map_err(LoaderError::Io)?;
-        let loaded_copy = temp_dir.join(format!(
-            "{stem}_{label}_{}_{seq}.{ext}",
-            std::process::id()
-        ));
-        std::fs::copy(dylib_path, &loaded_copy).map_err(LoaderError::Io)?;
-
-        // SAFETY: Loading an NVE app `cdylib` staged on disk via `libloading`.
-        let lib = match unsafe { Library::new(&loaded_copy) } {
+        let (loaded_path, owns_copy) = if STAGES_PRIVATE_COPY {
+            (stage_private_copy(dylib_path, subdir, label)?, true)
+        } else {
+            (dylib_path.to_path_buf(), false)
+        };
+        let discard = |path: &Path| {
+            if owns_copy {
+                let _ = std::fs::remove_file(path);
+            }
+        };
+        // SAFETY: Loading an NVE app `cdylib` via `libloading`.
+        let lib = match unsafe { Library::new(&loaded_path) } {
             Ok(lib) => lib,
             Err(err) => {
-                let _ = std::fs::remove_file(&loaded_copy);
+                discard(&loaded_path);
                 return Err(LoaderError::Load(err));
             }
         };
@@ -79,14 +84,15 @@ impl StagedDylib {
             Ok(sym) => *sym,
             Err(err) => {
                 drop(lib);
-                let _ = std::fs::remove_file(&loaded_copy);
+                discard(&loaded_path);
                 return Err(LoaderError::MissingEntry(err));
             }
         };
         Ok(Self {
             lib: Some(lib),
             get_interface,
-            loaded_copy,
+            loaded_path,
+            owns_copy,
         })
     }
 
@@ -94,8 +100,9 @@ impl StagedDylib {
         self.get_interface
     }
 
+    /// The file the OS loaded: the private staged copy on desktop, the source path on mobile.
     pub fn loaded_copy_path(&self) -> &Path {
-        &self.loaded_copy
+        &self.loaded_path
     }
 }
 
@@ -104,8 +111,80 @@ impl Drop for StagedDylib {
         // Unload the dynamic library before removing the temporary copy so Windows
         // releases the OS file lock prior to deletion.
         drop(self.lib.take());
-        let _ = std::fs::remove_file(&self.loaded_copy);
+        if self.owns_copy {
+            let _ = std::fs::remove_file(&self.loaded_path);
+        }
     }
+}
+
+/// Copies `dylib_path` into `<temp>/<subdir>` under a unique name. The directory is private
+/// (created `0700`; an existing one must be a real directory we own, tightened to `0700`) and
+/// the copy is created exclusively, so no other user can swap the code between copy and `dlopen`.
+fn stage_private_copy(dylib_path: &Path, subdir: &str, label: &str) -> Result<PathBuf, LoaderError> {
+    /// Fresh names tried when a stale copy (a crashed process with a recycled pid) holds one.
+    const MAX_NAME_ATTEMPTS: u32 = 16;
+    let ext = dylib_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or(std::env::consts::DLL_EXTENSION);
+    let stem = dylib_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("nve_app");
+    let dir = ensure_private_dir(std::env::temp_dir().join(subdir)).map_err(LoaderError::Io)?;
+    let mut src = std::fs::File::open(dylib_path).map_err(LoaderError::Io)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o700);
+    let mut attempt = 0u32;
+    let (copy, mut dst) = loop {
+        let seq = STAGED_COPY_SEQ.fetch_add(1, Ordering::Relaxed);
+        let copy = dir.join(format!("{stem}_{label}_{}_{seq}.{ext}", std::process::id()));
+        match options.open(&copy) {
+            Ok(file) => break (copy, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt + 1 < MAX_NAME_ATTEMPTS => {
+                attempt += 1;
+            }
+            Err(err) => return Err(LoaderError::Io(err)),
+        }
+    };
+    if let Err(err) = std::io::copy(&mut src, &mut dst).and_then(|_| dst.sync_all()) {
+        drop(dst);
+        let _ = std::fs::remove_file(&copy);
+        return Err(LoaderError::Io(err));
+    }
+    Ok(copy)
+}
+
+fn ensure_private_dir(dir: PathBuf) -> std::io::Result<PathBuf> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    match builder.create(&dir) {
+        Ok(()) => return Ok(dir),
+        Err(err) if err.kind() != std::io::ErrorKind::AlreadyExists => return Err(err),
+        Err(_) => {}
+    }
+    let meta = std::fs::symlink_metadata(&dir)?;
+    if !meta.file_type().is_dir() {
+        return Err(std::io::Error::other(format!(
+            "staging path {} is not a directory",
+            dir.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Tightening the mode only succeeds for the directory's owner, so a directory another
+        // user planted is rejected (EPERM) and one we created earlier becomes private.
+        if meta.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = meta;
+    Ok(dir)
 }
 
 /// Summary returned after a successful transactional [`HotAppInstance::reload`].
@@ -356,5 +435,55 @@ impl Drop for HotAppInstance {
             self.handle = std::ptr::null_mut();
         }
         drop(self.staged.take());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod staging_tests {
+    use super::ensure_private_dir;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("nve-loader-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&dir);
+        dir
+    }
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::symlink_metadata(path).expect("test fs op").permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn staging_dir_is_created_private() {
+        let dir = scratch("fresh");
+        ensure_private_dir(dir.clone()).expect("create");
+        assert_eq!(mode(&dir), 0o700);
+        ensure_private_dir(dir.clone()).expect("reuse");
+        std::fs::remove_dir_all(&dir).expect("test fs op");
+    }
+
+    #[test]
+    fn an_own_shared_staging_dir_is_tightened() {
+        let dir = scratch("loose");
+        std::fs::create_dir(&dir).expect("test fs op");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("test fs op");
+        ensure_private_dir(dir.clone()).expect("own dir");
+        assert_eq!(mode(&dir), 0o700, "group / other access removed");
+        std::fs::remove_dir_all(&dir).expect("test fs op");
+    }
+
+    #[test]
+    fn symlinked_or_file_staging_paths_are_rejected() {
+        let target = scratch("target");
+        std::fs::create_dir(&target).expect("test fs op");
+        let link = scratch("link");
+        std::os::unix::fs::symlink(&target, &link).expect("test fs op");
+        assert!(ensure_private_dir(link.clone()).is_err(), "a symlink is never followed");
+        std::fs::remove_file(&link).expect("test fs op");
+        std::fs::write(&link, b"x").expect("test fs op");
+        assert!(ensure_private_dir(link.clone()).is_err(), "a file is not a directory");
+        std::fs::remove_file(&link).expect("test fs op");
+        std::fs::remove_dir_all(&target).expect("test fs op");
     }
 }

@@ -237,17 +237,16 @@ impl crate::store::NodeStore {
             let Some(col) = self.columns[slot.0 as usize].as_ref() else {
                 continue;
             };
-            let dense = col.is_dense();
-            let row_count = col.published_row_count(self.capacity());
-            let rows_ptr = if col.rows.is_empty() {
+            let (rows, owners, row_count) = col.published_storage(self.capacity());
+            let rows_ptr = if rows.is_empty() {
                 core::ptr::null()
             } else {
-                col.rows.as_ptr()
+                rows.as_ptr()
             };
-            let owners_ptr = if dense || col.owners.is_empty() {
+            let owners_ptr = if owners.is_empty() {
                 core::ptr::null()
             } else {
-                col.owners.as_ptr()
+                owners.as_ptr()
             };
             let dirty_ptr = if dirty_count == 0 {
                 core::ptr::null()

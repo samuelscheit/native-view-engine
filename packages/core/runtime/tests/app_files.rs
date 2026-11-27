@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use loader_common::{compile_test_cdylib, dylib_ext, SHARED_ABI_DEFS};
 use nve_abi::{
-    NveBufferSlice, NveRuntimeApi, NveRuntimeConfig, NveRuntimeHandle, NveRuntimeStatus,
+    NveBufferSlice, NveRuntimeApi, NveRuntimeConfig, NveRuntimeHandle, NveRuntimeSceneView, NveRuntimeStatus,
     NveStrSlice, NVE_RUNTIME_ABI_VERSION,
 };
 use nve_engine::StateFile;
@@ -23,6 +23,7 @@ const INVALID: i32 = NveRuntimeStatus::InvalidArg as i32;
 const UNSUPPORTED: i32 = NveRuntimeStatus::Unsupported as i32;
 const IO: i32 = NveRuntimeStatus::Io as i32;
 const NOT_FOUND: i32 = NveRuntimeStatus::NotFound as i32;
+const BUSY: i32 = NveRuntimeStatus::Busy as i32;
 
 /// A stateful app whose snapshot is `<VERSION>:<state>` (empty without state); `restore_state`
 /// keeps what follows the first `:`, so a snapshot of any version restores into any other.
@@ -402,4 +403,67 @@ fn state_files_round_trip_quarantine_corruption_and_rotate_older_schemas() {
         assert_eq!((rt.api.restore_state_file)(std::ptr::null_mut(), p, 1), INVALID);
         assert_eq!((rt.api.clear_state_file)(std::ptr::null_mut(), p), INVALID);
     }
+}
+
+/// Every file in `dir` with its bytes (sorted), to prove a call left the disk untouched.
+fn disk(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<_> = std::fs::read_dir(dir)
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap_or_default()))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
+#[test]
+fn state_calls_that_cannot_complete_never_touch_the_disk() {
+    let fx = fixtures();
+    let dir = Scratch::new("state-preconditions");
+    let path = dir.0.join("app.nvestate");
+    let missing_dir = dir.0.join("never-created").join("app.nvestate");
+    let rt = Rt::new();
+    assert_eq!(rt.load(&fx.v1, false), OK);
+    assert_eq!(rt.restore(b"s:abc"), OK);
+    assert_eq!(rt.save_file(&path, 7), OK);
+    let valid = std::fs::read(&path).unwrap();
+    let mut corrupt = valid.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+
+    // `(file contents, schema the caller asks for)`: a valid file, a corrupt one (would be
+    // quarantined), and an older-schema one (would be rotated).
+    let cases: [(&[u8], u32); 3] = [(&valid, 7), (&corrupt, 7), (&valid, 8)];
+
+    // Busy: a held scene blocks every state call BEFORE the file is opened.
+    for (bytes, schema) in cases {
+        std::fs::write(&path, bytes).unwrap();
+        let before = disk(&dir.0);
+        let mut view = NveRuntimeSceneView::default();
+        // SAFETY: `rt.h` is live; the scene is released below on this thread.
+        assert_eq!(unsafe { (rt.api.scene_acquire)(rt.h, &mut view) }, OK);
+        assert_eq!(rt.restore_file(&path, schema), BUSY, "restore while a scene is held");
+        assert_eq!(rt.save_file(&path, schema), BUSY, "save while a scene is held");
+        assert_eq!(rt.save_file(&missing_dir, schema), BUSY);
+        // SAFETY: Releases the scene acquired above.
+        assert_eq!(unsafe { (rt.api.scene_release)(rt.h) }, OK);
+        assert_eq!(disk(&dir.0), before, "busy calls left the files in place (schema {schema})");
+    }
+
+    // No app: restore is unsupported for missing, corrupt, and older-schema files alike.
+    assert_eq!(rt.detach(), OK);
+    for (bytes, schema) in cases {
+        std::fs::write(&path, bytes).unwrap();
+        let before = disk(&dir.0);
+        assert_eq!(rt.restore_file(&path, schema), UNSUPPORTED);
+        assert_eq!(rt.save_file(&path, schema), UNSUPPORTED);
+        assert_eq!(rt.restore_file(&missing_dir, schema), UNSUPPORTED);
+        assert_eq!(disk(&dir.0), before, "no-app calls left the files in place (schema {schema})");
+    }
+    assert!(!missing_dir.parent().unwrap().exists(), "no directory is created for a call that fails");
+
+    // A path without a file name is an I/O error for every file operation, never "already absent".
+    assert_eq!(rt.clear_file(Path::new("")), IO);
+    assert_eq!(rt.clear_file(Path::new("/")), IO);
 }

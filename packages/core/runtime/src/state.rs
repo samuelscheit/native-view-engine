@@ -8,7 +8,7 @@ use nve_abi::{
 use nve_engine::LayoutRect;
 use nve_layout::{DynLayoutEngine, LaidOutScene};
 use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeStore, RealizationOrder, ResourceStore};
+use nve_store::{ChangeSet, NodeId, NodeStore, RealizationOrder, ResourceStore};
 
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
@@ -52,6 +52,10 @@ pub(crate) struct SurfaceState {
     pub(crate) dirty_indices: Vec<u32>,
     pub(crate) dirty_stamp: Vec<u32>,
     pub(crate) dirty_epoch: u32,
+    /// `dirty_epoch`-stamped roots of this frame's inherited-typography walk.
+    pub(crate) inherit_stamp: Vec<u32>,
+    /// Reusable DFS stack of the inherited-typography walk.
+    pub(crate) inherit_stack: Vec<NodeId>,
     pub(crate) removed_ids: Vec<u32>,
     /// Visual scroll shifts published through `NveRuntimeSceneView::scroll_offsets`.
     pub(crate) published_scroll: Vec<NveScrollOffset>,
@@ -61,6 +65,10 @@ pub(crate) struct SurfaceState {
     /// `ResourceStore` of the store `published_view` borrows; lets `resource_payload` serve any
     /// `scene_acquire` thread without touching `!Sync` apps.
     pub(crate) published_resources: PublishedResources,
+    /// Resource source the current `scene_epoch` publishes (`None` until the first publish after
+    /// a reset): resource ids from another source are a different namespace, so a change of
+    /// source starts a new epoch even without a replica reset.
+    pub(crate) epoch_resources: PublishedResources,
     pub(crate) metrics: NveRuntimeMetrics,
     pub(crate) needs_render: bool,
     pub(crate) needs_publish: bool,
@@ -203,6 +211,7 @@ impl RuntimeInner {
 
     fn reset_replica_and_state(replica_store: &mut NodeStore, state: &mut SurfaceState) {
         state.scene_epoch = state.scene_epoch.wrapping_add(1);
+        state.epoch_resources = PublishedResources::None;
         state.invalidate_published_view();
         state.metrics.live_nodes = 0;
         state.rects.clear();
