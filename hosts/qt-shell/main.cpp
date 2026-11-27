@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -134,9 +133,12 @@ void start_app(QtHost& host, LaunchOptions& o, const std::function<void(const st
   } else {
     builtin();
   }
-  std::error_code ec;
-  if (!o.no_state && !o.state_path.empty() && std::filesystem::exists(o.state_path, ec) &&
-      host.restore_state(o.state_path, o.schema_version)) {
+  if (o.no_state) return;  // nothing to restore or clear
+  if (o.reset_state) {
+    if (!host.clear_state(o.state_path)) {
+      std::cerr << "[nve-qt-shell] clearing " << o.state_path << " failed: " << host.last_error() << "\n";
+    }
+  } else if (host.restore_state(o.state_path, o.schema_version)) {
     std::cerr << "[nve-qt-shell] restored app state from " << o.state_path << "\n";
   }
 }
@@ -237,15 +239,12 @@ int main(int argc, char* argv[]) {
       return 2;
     }
   }
-  // `NVE_STATE_DISABLE` / `NVE_STATE_PATH` / `NVE_RESET_STATE` are honored by `resolve_path`.
+  // `NVE_STATE_DISABLE` / `NVE_STATE_PATH` via `resolve_path`; `NVE_RESET_STATE` via `reset_requested`.
   if (!o.no_state && o.state_path.empty() && o.pair_uri.empty()) {
     o.state_path = app_state::resolve_path(o.dylib_path.empty() ? "nve-qt-shell-builtin" : o.dylib_path);
   }
   o.no_state = o.no_state || o.state_path.empty();
-  if (o.reset_state && !o.state_path.empty()) {
-    std::error_code ec;
-    std::filesystem::remove(o.state_path, ec);
-  }
+  o.reset_state = o.reset_state || app_state::reset_requested();
 
   if (o.quick) {
 #ifdef NVE_QT_HAS_QUICK

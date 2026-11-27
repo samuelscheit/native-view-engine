@@ -54,8 +54,12 @@ class QtHost {
   bool submit_frame(std::span<const uint8_t> nve2);
 
   // --- App state & dev loop -----------------------------------------------------------------
-  bool save_state(const std::string& path, uint32_t schema_version);
-  bool restore_state(const std::string& path, uint32_t schema_version);
+  /// App-state files (`state.nve`, written atomically by the runtime).
+  bool save_state(std::string_view path, uint32_t schema_version);
+  bool restore_state(std::string_view path, uint32_t schema_version);
+  /// Deletes the state file (`--reset-state`); `true` when it is gone (also when it never existed).
+  bool clear_state(std::string_view path);
+  [[nodiscard]] std::string last_error() const { return session_->last_error(); }
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   void set_event_callback(EventCallback callback);

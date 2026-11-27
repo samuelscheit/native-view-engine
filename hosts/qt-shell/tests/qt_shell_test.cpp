@@ -195,9 +195,21 @@ void test_modules_hot_reload_and_state() {
   NVE_CHECK(!host.load_dylib(NVE_TEST_NO_ENTRY_MODULE, &err, &msg) && err == nve::host::ModuleError::MissingEntry);
   NVE_CHECK(!host.load_dylib(NVE_TEST_NO_SURFACE_MODULE, &err, &msg) &&
             err == nve::host::ModuleError::MissingSurface);
+  NVE_CHECK(!host.load_dylib(NVE_TEST_PARTIAL_SURFACE_MODULE, &err, &msg) &&
+            err == nve::host::ModuleError::MissingSurface);
   NVE_CHECK(!host.is_loaded() && widget.viewCount() == 0u);
 
-  NVE_CHECK(host.load_dylib(NVE_TEST_COUNTER_MODULE, &err, &msg));
+  // The dev loop: one app path, rebuilt in place between reloads.
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "nve_qt_app_files_test";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::string app_path =
+      (dir / ("app" + std::filesystem::path(NVE_TEST_COUNTER_MODULE).extension().string())).string();
+  const auto build = [&](const char* fixture) {
+    std::filesystem::copy_file(fixture, app_path, std::filesystem::copy_options::overwrite_existing);
+  };
+  build(NVE_TEST_COUNTER_MODULE);
+  NVE_CHECK(host.load_dylib(app_path, &err, &msg));
   NVE_CHECK(host.is_loaded() && widget.viewCount() == 5u);
   NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
   NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
@@ -213,21 +225,28 @@ void test_modules_hot_reload_and_state() {
   NVE_CHECK(!host.reload_dylib(NVE_TEST_NO_SURFACE_MODULE, &err, &msg));  // a failed reload keeps the app
   NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
   NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 3");
-  NVE_CHECK(host.reload_dylib(NVE_TEST_COUNTER_MODULE, &err, &msg));
+  // Reloading the rebuilt file runs its NEW code (a press counts 2) and carries the state.
+  build(NVE_TEST_COUNTER_DOUBLE_MODULE);
+  NVE_CHECK(host.reload_dylib(app_path, &err, &msg));
   NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 3");
   NVE_CHECK(widget.viewCount() == 5u && frame(widget, CounterApp::kIncrement) == inc && inc->hasFocus());
+  NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 5");
   widget.hide();
 
-  // App-state file: save, mutate, restore; wrong schema / missing file refuse.
-  const std::string path = (std::filesystem::temp_directory_path() / "nve_qt_state_test.nvestate").string();
+  // App-state file (runtime `StateFile`): save, mutate, restore; a newer file / missing file
+  // refuse; clearing is a cold start.
+  const std::string path = (dir / "state.nvestate").string();
   NVE_CHECK(host.save_state(path, 4u));
   NVE_CHECK(host.simulate_press(CounterApp::kReset));
   NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 0");
-  NVE_CHECK(!host.restore_state(path, 5u));
+  NVE_CHECK(!host.restore_state(path, 3u));  // written by a newer schema: refused, kept
   NVE_CHECK(!host.restore_state(path + ".missing", 4u));
   NVE_CHECK(host.restore_state(path, 4u));
-  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 3");
-  std::filesystem::remove(path);
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 5");
+  NVE_CHECK(host.clear_state(path) && !std::filesystem::exists(path) && !host.restore_state(path, 4u));
+  NVE_CHECK(host.clear_state(path));  // already gone: still a cold start
+  std::filesystem::remove_all(dir);
 
   // Switching apps: views of nodes the new app does not have are dropped; a reused id keeps its
   // view only when its native kind matches.

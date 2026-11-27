@@ -63,11 +63,6 @@ target_link_libraries(nve_qt_shell PRIVATE nve_qt_shell_lib)
 enable_testing()
 
 nve_add_app_module_fixtures(nve_qt_fixture)
-set(_nve_qt_fixture_defs
-  NVE_TEST_COUNTER_MODULE="$<TARGET_FILE:nve_qt_fixture_counter>"
-  NVE_TEST_NO_SURFACE_MODULE="$<TARGET_FILE:nve_qt_fixture_no_surface>"
-  NVE_TEST_NO_ENTRY_MODULE="$<TARGET_FILE:nve_qt_fixture_no_entry>"
-)
 
 add_executable(nve_qt_shell_test
   tests/qt_shell_test.cpp
@@ -77,9 +72,8 @@ add_executable(nve_qt_shell_test
   tests/qt_window_manager_test.cpp
 )
 target_compile_options(nve_qt_shell_test PRIVATE ${_nve_qt_warnings})
-target_compile_definitions(nve_qt_shell_test PRIVATE ${_nve_qt_fixture_defs})
+nve_use_app_module_fixtures(nve_qt_shell_test nve_qt_fixture)
 target_link_libraries(nve_qt_shell_test PRIVATE nve_qt_shell_lib nve::host_test_support)
-add_dependencies(nve_qt_shell_test nve_qt_fixture_counter nve_qt_fixture_no_surface nve_qt_fixture_no_entry)
 add_test(NAME qt_shell_test COMMAND nve_qt_shell_test)
 set_tests_properties(qt_shell_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
