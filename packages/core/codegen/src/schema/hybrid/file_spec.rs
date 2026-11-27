@@ -31,6 +31,9 @@ impl HybridFileSpec {
     /// a type can be used before it is declared.
     pub(crate) fn resolve_named_types(&mut self) {
         let Self { consts, aliases, enums, structs, modules, views, c_functions, .. } = self;
+        if enums.is_empty() && aliases.is_empty() {
+            return;
+        }
         let enum_names: BTreeSet<&str> = enums.iter().map(|e| e.name.as_str()).collect();
         let alias_names: BTreeSet<String> = aliases.iter().map(|a| a.name.clone()).collect();
         let rewrite = |ty: &mut HybridType| rewrite_named_type(ty, &enum_names, &alias_names);

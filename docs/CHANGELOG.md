@@ -39,8 +39,15 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 - **Track 1B-1e — Static host runtimes and dead codegen removal (Parts 1 and 2, commits 0–2)**
   - **Five checked-in host runtimes**: `packages/core/host-{cxx,swift,java,dart,ts}` hold XXH64 / `Key64`, the `NveBinValue` reader and writer, and the word-table and scene readers. Each has its own native suite, and `scripts/host-runtimes.sh` runs them (C/C++ and TS in `check-all.sh --quick`). Dart and TS keep every 64-bit value exact on the web.
   - **Drift guard**: `nve-arch-invariants` checks every mirrored constant and golden XXH64 digest against `nve_abi`, `nve_store`, and `nve_hash`. A second check keeps the binary-value validators allocation-free (no view, copy, or decode).
-  - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` now emits 16 artifacts.
+  - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` went from 21 to 16 artifacts here; Batch 2A (commit 3) then reorganized it into the 15 host files listed below.
   - **Zero runtime `serde_json` in core**: `NveExportSpec` JSON loading moved into `nve-cli`. `PENDING_CLEANUP_SERDE_JSON` and `PENDING_CLEANUP_PERSONAL_PATHS` are empty.
+  - **Pass-2 hardening of the hybrid spec frontend (commit 4c)**
+    - **Nesting bound.** It counts every token of a segment: a segment ends only at `,` / `;` / item keywords, attributes are skipped, and closure parameter lists are tracked. This closes the `a = b = ...`, `if .. else if`, `a.b.c`, `1 + 1 + ...`, `f()()`, `x?`, and `as` chains, with no false positives on `//!` runs or flat `1 << i` consts.
+    - **Markers.** Markers are checked per item kind and must not repeat. File scope accepts only the namespace, and conflicting namespaces are errors.
+    - **Members and fields.** Member / field attributes are allow-listed, and `#[optional]` is rejected inside views.
+    - **Ranges.** `repr` ranges are enforced for discriminants, and type ranges for prop defaults.
+    - **Signatures.** `ref` / `mut` / `@` parameters, `unsafe` members, and by-value or typed `self` are rejected.
+    - **Docs.** `/** */` docs are de-decorated.
   - **Batch 2A Pass-1 hardening (commit 4b)**
     - **Explicit alignment.** C now honors Rust `#[repr(C, align(N))]` with `NVE_ALIGNAS`. This fixes a 68- vs 72-byte `NveDirectEvent` ABI mismatch on i386 that the first data-model asserts had locked in.
     - **Layouts checked against `rustc`.** `const` asserts for every record, field, and data model compile on i686 / armv7 Android, wasm32, and the 64-bit host.

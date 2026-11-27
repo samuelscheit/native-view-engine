@@ -37,11 +37,26 @@ pub(super) fn parse_enum(
     reject_generics(&e.generics)?;
     let args = Args::parse(marker, keys::ENUM)?;
     let name = ident(&e.ident)?;
+    let repr = attrs::repr(&e.attrs)?;
+    if repr.align.is_some() {
+        return Err(error_at(
+            e.ident.span(),
+            "`#[repr(align(N))]` is not valid on an enum",
+        ));
+    }
+    // Largest discriminant the integer repr can hold (u32 when unspecified).
+    let max = match repr.int.as_deref() {
+        Some("u8") => u32::from(u8::MAX),
+        Some("u16") => u32::from(u16::MAX),
+        Some("i32") => i32::MAX.unsigned_abs(),
+        _ => u32::MAX,
+    };
     let mut variants = Vec::with_capacity(e.variants.len());
     // The value an implicit discriminant takes; `None` after `u32::MAX`, where only an explicit
     // discriminant may follow.
     let mut next: Option<u32> = Some(0);
     for v in &e.variants {
+        attrs::check_member_attrs(&v.attrs, &[], "an enum variant")?;
         if !matches!(v.fields, syn::Fields::Unit) {
             return Err(error_at(
                 v.fields.span(),
@@ -57,6 +72,13 @@ pub(super) fn parse_enum(
                 )
             })?,
         };
+        if value > max {
+            let repr_name = repr.int.as_deref().unwrap_or("u32");
+            return Err(error_at(
+                v.ident.span(),
+                format!("discriminant {value} does not fit `#[repr({repr_name})]`"),
+            ));
+        }
         next = value.checked_add(1);
         variants.push(HybridEnumVariant {
             name: ident(&v.ident)?,
@@ -69,7 +91,7 @@ pub(super) fn parse_enum(
         variants,
         doc: attrs::docs(&e.attrs),
         c_prefix: args.string("c_prefix")?,
-        repr: attrs::repr(&e.attrs)?.int,
+        repr: repr.int,
         dart_fallback: args.string("dart_fallback")?,
     })
 }
@@ -82,8 +104,25 @@ pub(super) fn parse_record<'a>(
     is_union: bool,
 ) -> Result<HybridStructSpec, CodegenError> {
     let args = Args::parse(marker, keys::RECORD)?;
+    let repr = attrs::repr(item_attrs)?;
+    if let Some(int) = &repr.int {
+        return Err(error_at(
+            name.span(),
+            format!("`#[repr({int})]` is not valid on a struct or union"),
+        ));
+    }
+    let align = match (args.usize("align")?, repr.align) {
+        (Some(_), Some(_)) => {
+            return Err(error_at(
+                name.span(),
+                "give the alignment once: `align = N` or `#[repr(align(N))]`",
+            ));
+        }
+        (a, b) => a.or(b),
+    };
     let mut out = Vec::new();
     for f in fields {
+        attrs::check_member_attrs(&f.attrs, &["offset", "offset64"], "a record field")?;
         let Some(field_name) = &f.ident else {
             return Err(error_at(f.span(), "hybrid struct fields must be named"));
         };
@@ -100,7 +139,7 @@ pub(super) fn parse_record<'a>(
         fields: out,
         doc: attrs::docs(item_attrs),
         is_union,
-        align: args.usize("align")?.or(attrs::repr(item_attrs)?.align),
+        align,
         expected_size: args.usize("size")?,
         expected_size_64: args.usize("size_64")?,
     })
@@ -162,7 +201,40 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
                 "hybrid trait methods are declarations only (no default body)",
             ));
         }
-        attrs::reject_unknown_markers(&f.attrs)?;
+        let member_attrs: &[&str] = if module.is_some() {
+            &["optional"]
+        } else {
+            &["prop", "event", "method"]
+        };
+        let what = if module.is_some() {
+            "a module member"
+        } else {
+            "a view member"
+        };
+        attrs::check_member_attrs(&f.attrs, member_attrs, what).map_err(|e| {
+            // Name the real mistake for view-only / module-only member attributes.
+            match (module.is_some(), attrs::find(&f.attrs, "prop").or(attrs::find(&f.attrs, "event"))) {
+                (true, Some(a)) => error_at(
+                    attrs::span(a),
+                    "#[prop] / #[event] are only valid inside #[nve_hybrid_view], not #[nve_hybrid_module]",
+                ),
+                _ => match (module.is_none(), attrs::find(&f.attrs, "optional")) {
+                    (true, Some(a)) => error_at(attrs::span(a), "#[optional] is only valid inside #[nve_hybrid_module]"),
+                    _ => e,
+                },
+            }
+        })?;
+        for flag in ["event", "method", "optional"] {
+            if let Some(a) = attrs::find(&f.attrs, flag) {
+                Args::parse(a, keys::NONE)?;
+            }
+        }
+        if let Some(t) = f.sig.unsafety {
+            return Err(error_at(
+                t.span,
+                "hybrid trait members cannot be `unsafe fn`",
+            ));
+        }
         let sig = signature(&f.sig, attrs::docs(&f.attrs), Receiver::Allowed)?;
         let prop = attrs::find(&f.attrs, "prop");
         let event = attrs::find(&f.attrs, "event");
@@ -269,22 +341,25 @@ pub(super) fn c_function(
     doc: Option<String>,
     abi: Option<&Abi>,
 ) -> Result<HybridMethodSpec, CodegenError> {
-    match abi {
-        None => {
-            return Err(error_at(
-                sig.fn_token.span,
-                "C functions must be declared `extern \"C\"`",
-            ));
-        }
-        Some(abi) if abi.name.as_ref().is_some_and(|n| n.value() != "C") => {
-            return Err(error_at(
-                abi.span(),
-                "only the `extern \"C\"` ABI is supported",
-            ));
-        }
-        Some(_) => {}
-    }
+    let Some(abi) = abi else {
+        return Err(error_at(
+            sig.fn_token.span,
+            "C functions must be declared `extern \"C\"`",
+        ));
+    };
+    check_c_abi(abi)?;
     signature(sig, doc, Receiver::Forbidden)
+}
+
+/// `extern` / `extern "C"`; any other ABI string is an error.
+pub(super) fn check_c_abi(abi: &Abi) -> Result<(), CodegenError> {
+    match &abi.name {
+        Some(name) if name.value() != "C" => Err(error_at(
+            abi.span(),
+            "only the `extern \"C\"` ABI is supported",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// A method / C function signature. `async`, `const`, variadics, generics, and an `extern` ABI on
@@ -328,6 +403,9 @@ pub(super) fn signature(
             FnArg::Receiver(r) if receiver == Receiver::Forbidden => {
                 return Err(error_at(r.span(), "C functions cannot take `self`"));
             }
+            FnArg::Receiver(r) if r.colon_token.is_some() || r.reference.is_none() => {
+                return Err(error_at(r.span(), "members take `&self` or `&mut self`"));
+            }
             FnArg::Receiver(_) => has_self = true,
             FnArg::Typed(t) => {
                 let Pat::Ident(name) = t.pat.as_ref() else {
@@ -336,6 +414,12 @@ pub(super) fn signature(
                         "parameters must be plain identifiers",
                     ));
                 };
+                if name.by_ref.is_some() || name.mutability.is_some() || name.subpat.is_some() {
+                    return Err(error_at(
+                        name.span(),
+                        "parameters must be plain identifiers (no `ref`, `mut`, or `@`)",
+                    ));
+                }
                 params.push(HybridParamSpec {
                     name: ident(&name.ident)?,
                     ty: convert_type(&t.ty)?,

@@ -286,7 +286,7 @@ fn every_form_matches_its_golden_snapshot() {
 }
 
 const EXTRAS: &str = r#"
-#![nve_hybrid_namespace(name = "file_level")]
+#![nve_hybrid_namespace(name = "acme")]
 
 /** Block doc. */
 #[nve_hybrid_enum]
@@ -305,7 +305,7 @@ extern "C" {
     pub fn nve_block_fn(a: u32) -> Edge;
 }
 
-#[nve_hybrid_namespace(name = "from_extern_fn")]
+#[nve_hybrid_namespace(name = "acme")]
 #[nve_hybrid_c_fn]
 pub unsafe extern "C" fn nve_free_fn(e: *mut Aligned);
 
@@ -318,8 +318,8 @@ pub trait PathSpec {
 #[test]
 fn extern_blocks_path_attributes_multi_repr_and_file_input() {
     let spec = parse_hybrid_rust_spec(EXTRAS).expect("extras parse");
-    // A later item's namespace wins; the file-level one is applied first.
-    assert_eq!(spec.namespace.as_deref(), Some("from_extern_fn"));
+    // The file-level namespace and the same one repeated on an `extern fn` agree.
+    assert_eq!(spec.namespace.as_deref(), Some("acme"));
     let edge = &spec.enums[0];
     assert_eq!(edge.doc.as_deref(), Some("Block doc."));
     assert_eq!(
@@ -525,8 +525,39 @@ fn unsupported_forms_are_located_errors() {
             "#[nve_hybrid_struc]\npub struct S { pub x: u8 }".into(),
             "unknown hybrid spec attribute",
         ),
-        ("#[nve_hybrid_module]\npub trait T {".into(), ""),
-        ("#[nve_hybrid_struct]\npub struct".into(), ""),
+        ("#[nve_hybrid_module]\npub trait T {".into(), "unbalanced delimiter"),
+        ("#[nve_hybrid_struct]\npub struct".into(), "unexpected end of input"),
+        // Markers: wrong item kind, duplicates, file scope, namespaces.
+        ("#[nve_hybrid_struct]\npub enum E { A }".into(), "`#[nve_hybrid_struct]` is not valid on an enum"),
+        ("#[nve_hybrid_c_fn]\npub const X: u32 = 1;".into(), "`#[nve_hybrid_c_fn]` is not valid on a const"),
+        ("#[nve_hybrid_struct]\n#[nve_hybrid_struct]\npub struct S { pub x: u8 }".into(), "is given twice"),
+        ("#![nve_hybrid_struct]\n#[nve_hybrid_const]\npub const X: u32 = 1;".into(), "not valid on the file"),
+        ("#![nve_hybrid_namespace(name = \"a\")]\n#[nve_hybrid_namespace(name = \"b\")]\n#[nve_hybrid_const]\npub const X: u32 = 1;".into(), "namespace `b` conflicts with `a`"),
+        // Member and field attributes.
+        (view("    #[porp] fn x(&self) -> i32;"), "unexpected attribute `#[porp]`"),
+        (view("    #[optional] fn x(&self);"), "#[optional] is only valid inside #[nve_hybrid_module]"),
+        (view("    #[event(bubbles)] fn on_x(&self);"), "this attribute takes no arguments"),
+        (view("    #[prop] #[prop] fn x(&self) -> i32;"), "is given twice"),
+        (module("    #[optional(x)] fn f(&self);"), "this attribute takes no arguments"),
+        (module("    unsafe fn f(&self);"), "cannot be `unsafe fn`"),
+        (module("    fn f(self);"), "`&self` or `&mut self`"),
+        (module("    fn f(self: Box<Self>);"), "`&self` or `&mut self`"),
+        (module("    fn f(&self, mut a: u32);"), "no `ref`, `mut`, or `@`"),
+        (module("    fn f(&self, ref a: u32);"), "no `ref`, `mut`, or `@`"),
+        ("#[nve_hybrid_struct]\npub struct S {\n    #[offset(0)] #[offset(0)] pub x: u8,\n}".into(), "is given twice"),
+        ("#[nve_hybrid_struct]\npub struct S {\n    #[ofset(0)] pub x: u8,\n}".into(), "unexpected attribute `#[ofset]`"),
+        ("#[nve_hybrid_struct]\npub struct S {\n    #[offset(-4)] pub x: u8,\n}".into(), "non-negative integer"),
+        ("#[nve_hybrid_enum]\npub enum E {\n    #[prop] A,\n}".into(), "unexpected attribute `#[prop]` on an enum variant"),
+        // Argument syntax.
+        ("#[nve_hybrid_const(x = 1)]\npub const X: u32 = 1;".into(), "this attribute takes no arguments"),
+        ("#[nve_hybrid_struct(a::b = 1)]\npub struct S { pub x: u8 }".into(), "plain identifiers"),
+        // `repr` / `align` consistency and ranges.
+        ("#[nve_hybrid_enum]\n#[repr(align(8))]\npub enum E { A }".into(), "not valid on an enum"),
+        ("#[nve_hybrid_struct]\n#[repr(u8)]\npub struct S { pub x: u8 }".into(), "not valid on a struct or union"),
+        ("#[nve_hybrid_struct(align = 8)]\n#[repr(C, align(8))]\npub struct S { pub x: u8 }".into(), "give the alignment once"),
+        ("#[nve_hybrid_struct]\n#[repr(align(8))]\n#[repr(align(16))]\npub struct S { pub x: u8 }".into(), "`align(N)` is given twice"),
+        ("#[nve_hybrid_enum]\n#[repr(u8)]\npub enum E { A = 255, B }".into(), "does not fit `#[repr(u8)]`"),
+        ("extern \"system\" {}".into(), "only the `extern \"C\"` ABI"),
     ];
     for (source, expected) in &cases {
         let (line, col, message) =
@@ -555,60 +586,185 @@ fn unsupported_forms_are_located_errors() {
     );
 }
 
-/// 100k-level nesting is rejected before `syn` recurses, on a thread with a 2 MiB stack.
+/// Runs `f` on a thread with a 2 MiB stack (the default for spawned threads), so a recursion the
+/// nesting pre-check misses overflows here instead of passing on a large main-thread stack.
+fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(f)
+        .expect("spawn")
+        .join()
+        .expect("no stack overflow")
+}
+
+/// Every prefix / infix / postfix / keyword / group form, 100k deep, is rejected before `syn`
+/// (or the AST's recursive `Drop` / spans) can overflow a 2 MiB stack.
 #[test]
-fn deep_nesting_is_rejected_without_overflowing_a_small_stack() {
+fn deep_nesting_of_every_form_is_rejected_on_a_small_stack() {
     let deep = 100_000;
-    let fields = [
-        "*const ".repeat(deep) + "u8",
-        "&".repeat(deep) + "u8",
-        "Option<".repeat(deep) + "u8" + &">".repeat(deep),
-        "(".repeat(deep) + "u8" + &")".repeat(deep),
-        "[".repeat(deep) + "u8" + &"; 1]".repeat(deep),
-        "fn() -> ".repeat(deep) + "u8",
+    let rep = |s: &str| s.repeat(deep);
+    let types = [
+        rep("*const ") + "u8",
+        rep("&") + "u8",
+        rep("Option<") + "u8" + &rep(">"),
+        rep("(") + "u8" + &rep(")"),
+        rep("[") + "u8" + &rep("; 1]"),
+        rep("fn() -> ") + "u8",
+        rep("extern \"C\" fn() -> ") + "u8",
     ];
-    let mut sources: Vec<String> = fields
+    let exprs = [
+        rep("-") + "1",
+        rep("!") + "1",
+        rep("return ") + "1",
+        rep("|| ") + "1",
+        rep("|x,| ") + "1",
+        rep("a = ") + "1",
+        rep("a += ") + "1",
+        "1".to_owned() + &rep(" + 1"),
+        "a".to_owned() + &rep(".b"),
+        "f".to_owned() + &rep("()"),
+        "a".to_owned() + &rep("[0]"),
+        "a".to_owned() + &rep("?"),
+        "1".to_owned() + &rep(" as u8"),
+        rep("if a { 1 } else ") + "{ 1 }",
+        rep("match a { _ => ") + "1" + &rep(" }"),
+        rep("loop { break ") + "1" + &rep(" }"),
+        rep("while a { ") + &rep(" }"),
+        rep("for x in a { ") + &rep(" }"),
+        rep("{ let a = ") + "1" + &rep("; a }"),
+        rep("become ") + "1",
+        rep("..") + "1",
+        rep("1..=") + "1",
+        rep("x @ ") + "1",
+        rep("move || ") + "1",
+    ];
+    let mut sources: Vec<String> = types
         .iter()
         .map(|ty| format!("#[nve_hybrid_struct]\npub struct S {{ pub x: {ty} }}"))
         .collect();
-    sources.push(format!(
-        "#[nve_hybrid_const]\npub const X: u32 = {}1;",
-        "-".repeat(deep)
-    ));
-    sources.push(format!(
-        "#[nve_hybrid_const]\npub const X: u32 = {}1;",
-        "return ".repeat(deep)
-    ));
-    sources.push(format!(
-        "#[nve_hybrid_const]\npub const X: u32 = {}1;",
-        "|| ".repeat(deep)
-    ));
-    let worker = std::thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
-        .spawn(move || {
-            sources
-                .iter()
-                .map(|s| try_location(s).map(|(_, _, m)| m))
-                .collect::<Vec<_>>()
-        });
-    for result in worker.expect("spawn").join().expect("no stack overflow") {
-        let message = result.expect("a parse error");
+    sources.extend(
+        exprs
+            .iter()
+            .map(|e| format!("#[nve_hybrid_const]\npub const X: u32 = {e};")),
+    );
+    let results = on_small_stack(move || {
+        sources
+            .iter()
+            .map(|s| try_location(s).map(|(_, _, m)| m))
+            .collect::<Vec<_>>()
+    });
+    for (i, result) in results.into_iter().enumerate() {
+        let message = result.unwrap_or_else(|e| panic!("form #{i}: {e}"));
         assert!(
             message.contains("nests deeper than 128 levels"),
-            "{message}"
+            "form #{i}: {message}"
         );
     }
-    // Realistic nesting well under the bound still parses on the same small stack.
-    let ok = std::thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
-        .spawn(|| {
-            parse_hybrid_rust_spec(&format!(
-                "#[nve_hybrid_struct]\npub struct S {{ pub x: {}u8{} }}",
-                "Option<".repeat(40),
-                ">".repeat(40)
-            ))
-            .is_ok()
+}
+
+/// Realistic inputs never trip the bound: forms nested just under it, long runs of `//!` docs
+/// and of flat consts (a segment ends at `;`), and hundreds of items.
+#[test]
+fn nesting_under_the_bound_and_long_flat_specs_still_parse() {
+    let ok = |source: String| {
+        on_small_stack(move || {
+            parse_hybrid_rust_spec(&source)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         })
-        .expect("spawn");
-    assert!(ok.join().expect("no stack overflow"));
+    };
+    ok(format!(
+        "#[nve_hybrid_struct]\npub struct S {{ pub x: {}u8{} }}",
+        "Option<".repeat(40),
+        ">".repeat(40)
+    ))
+    .expect("40 Option<");
+    ok(format!(
+        "#[nve_hybrid_struct]\npub struct S {{ pub x: {}u8 }}",
+        "*const ".repeat(60)
+    ))
+    .expect("60 *const");
+    let not_nesting = |e: String| assert!(!e.contains("nests deeper"), "{e}");
+    not_nesting(
+        ok(format!(
+            "#[nve_hybrid_struct]\npub struct S {{ pub x: [u8; {}1{}] }}",
+            "(".repeat(100),
+            ")".repeat(100)
+        ))
+        .expect_err("a parenthesized array length is not a literal"),
+    );
+    let docs = "//! doc line\n".repeat(150);
+    ok(format!("{docs}#[nve_hybrid_const]\npub const X: u32 = 1;")).expect("150 //! lines");
+    let consts: String = (0..70)
+        .map(|i| format!("#[nve_hybrid_const]\npub const F{i}: u32 = 1 << {i};\n"))
+        .collect();
+    not_nesting(ok(consts).expect_err("`1 << i` is not an unsigned literal"));
+    // The heaviest recursive forms just under the bound: accepted by the pre-check (the value
+    // itself is then rejected), and `syn` parses, spans, and drops them on the 2 MiB stack.
+    // `(form, tokens per repetition)`: the bound counts tokens.
+    for (form, tokens) in [
+        ("-", 1),
+        ("!", 1),
+        ("return ", 1),
+        ("|| ", 2),
+        ("&", 1),
+        ("a = ", 2),
+        ("move || ", 3),
+    ] {
+        not_nesting(
+            ok(format!(
+                "#[nve_hybrid_const]\npub const X: u32 = {}1;",
+                form.repeat(115 / tokens)
+            ))
+            .expect_err("not an unsigned literal"),
+        );
+    }
+    not_nesting(
+        ok(format!(
+            "#[nve_hybrid_const]\npub const X: u32 = 1{};",
+            " + 1".repeat(55)
+        ))
+        .expect_err("not a literal"),
+    );
+    let structs: String = (0..300)
+        .map(|i| format!("/// Doc.\n#[nve_hybrid_struct]\npub struct S{i} {{ pub x: u32 }}\n"))
+        .collect();
+    ok(structs).expect("300 items");
+    let attrs: String = (0..200).map(|i| format!("#[doc = \"{i}\"]\n")).collect();
+    ok(format!("{attrs}#[nve_hybrid_const]\npub const X: u32 = 1;")).expect("200 outer attributes");
+}
+
+#[test]
+fn block_docs_and_prop_default_ranges() {
+    let spec = parse_hybrid_rust_spec(
+        "/**\n * First line.\n * Second line.\n */\n#[nve_hybrid_const]\npub const X: u32 = 1;",
+    )
+    .expect("block doc");
+    assert_eq!(
+        spec.consts[0].doc.as_deref(),
+        Some("First line.\nSecond line.")
+    );
+    for (ty, default) in [
+        ("u8", "300"),
+        ("i32", "4294967295"),
+        ("f32", "1e300"),
+        ("u32", "-1"),
+    ] {
+        let source = format!(
+            "#[nve_hybrid_view]\npub trait V {{ #[prop(default = {default})] fn x(&self) -> {ty}; }}"
+        );
+        assert!(
+            matches!(
+                parse_hybrid_rust_spec(&source),
+                Err(CodegenError::Validation(_))
+            ),
+            "default {default} must not fit {ty}"
+        );
+    }
+    assert!(
+        parse_hybrid_rust_spec(
+            "#[nve_hybrid_view]\npub trait V { #[prop(default = 255)] fn x(&self) -> u8; }"
+        )
+        .is_ok()
+    );
 }

@@ -49,18 +49,92 @@ pub(super) fn has(attrs: &[Attribute], name: &str) -> bool {
     find(attrs, name).is_some()
 }
 
-/// Rejects misspelled `nve_hybrid_*` markers, which would otherwise make the item silently vanish.
-pub(super) fn reject_unknown_markers(attrs: &[Attribute]) -> Result<(), CodegenError> {
+/// The `nve_hybrid_*` markers in `attrs` (any style) are known, valid on this item kind
+/// (`allowed`, described as `what`), and each given at most once.
+pub(super) fn check_markers(
+    attrs: &[Attribute],
+    allowed: &[&str],
+    what: &str,
+) -> Result<(), CodegenError> {
+    let mut seen: Vec<String> = Vec::new();
     for a in attrs {
-        if let Some(seg) = a.path().segments.last() {
-            let name = seg.ident.to_string();
-            if name.starts_with("nve_hybrid_") && !MARKERS.contains(&name.as_str()) {
-                return Err(error_at(
-                    seg.span(),
-                    format!("unknown hybrid spec attribute `#[{name}]`"),
-                ));
-            }
+        let Some(seg) = a.path().segments.last() else {
+            continue;
+        };
+        if a.path().is_ident("doc") || a.path().is_ident("repr") {
+            continue;
         }
+        let name = seg.ident.to_string();
+        if !name.starts_with("nve_hybrid_") {
+            continue;
+        }
+        if !MARKERS.contains(&name.as_str()) {
+            return Err(error_at(
+                seg.span(),
+                format!("unknown hybrid spec attribute `#[{name}]`"),
+            ));
+        }
+        if !allowed.contains(&name.as_str()) {
+            return Err(error_at(
+                seg.span(),
+                format!("`#[{name}]` is not valid on {what}"),
+            ));
+        }
+        if seen.contains(&name) {
+            return Err(error_at(seg.span(), format!("`#[{name}]` is given twice")));
+        }
+        seen.push(name);
+    }
+    Ok(())
+}
+
+/// Standard Rust attributes that are harmless on any spec member or field.
+const STANDARD_ATTRS: &[&str] = &[
+    "doc",
+    "cfg",
+    "cfg_attr",
+    "allow",
+    "warn",
+    "deny",
+    "forbid",
+    "expect",
+    "deprecated",
+    "must_use",
+    "rustfmt",
+    "clippy",
+];
+
+/// The attributes on a trait member / record field / variant: standard Rust attributes, plus each
+/// of `allowed` at most once. Anything else (`#[porp]`, a misplaced `#[offset]`) is an error.
+pub(super) fn check_member_attrs(
+    attrs: &[Attribute],
+    allowed: &[&str],
+    what: &str,
+) -> Result<(), CodegenError> {
+    let mut seen: Vec<String> = Vec::new();
+    for a in attrs {
+        let Some(first) = a.path().segments.first() else {
+            continue;
+        };
+        if STANDARD_ATTRS.iter().any(|s| first.ident == *s) {
+            continue;
+        }
+        let name = a
+            .path()
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
+        if !allowed.contains(&name.as_str()) {
+            return Err(error_at(
+                a.span(),
+                format!("unexpected attribute `#[{name}]` on {what}"),
+            ));
+        }
+        if seen.contains(&name) {
+            return Err(error_at(a.span(), format!("`#[{name}]` is given twice")));
+        }
+        seen.push(name);
     }
     Ok(())
 }
@@ -73,13 +147,28 @@ pub(super) fn docs(attrs: &[Attribute]) -> Option<String> {
             Meta::NameValue(nv) => match &nv.value {
                 Expr::Lit(syn::ExprLit {
                     lit: Lit::Str(s), ..
-                }) => Some(s.value().trim().to_owned()),
+                }) => Some(doc_text(&s.value())),
                 _ => None,
             },
             _ => None,
         })
         .collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// One doc attribute's text: trimmed, and for a multi-line `/** ... */` comment each line's leading
+/// ` * ` decoration removed.
+fn doc_text(raw: &str) -> String {
+    let lines: Vec<&str> = raw
+        .lines()
+        .map(|l| {
+            let t = l.trim();
+            t.strip_prefix("* ")
+                .or_else(|| t.strip_prefix('*'))
+                .unwrap_or(t)
+        })
+        .collect();
+    lines.join("\n").trim().to_owned()
 }
 
 /// One attribute's `key = value` arguments, parsed once.
@@ -109,7 +198,11 @@ impl Args {
                         .map(ToString::to_string)
                         .unwrap_or_default();
                     let span = meta.path.span();
-                    if !allowed.contains(&key.as_str()) {
+                    if allowed.is_empty() {
+                        failure = Some(error_at(span, "this attribute takes no arguments"));
+                    } else if meta.path.get_ident().is_none() {
+                        failure = Some(error_at(span, "attribute keys are plain identifiers"));
+                    } else if !allowed.contains(&key.as_str()) {
                         failure = Some(error_at(
                             span,
                             format!(
@@ -190,7 +283,7 @@ pub(super) struct Repr {
 /// `transparent`, and anything else is rejected.
 pub(super) fn repr(attrs: &[Attribute]) -> Result<Repr, CodegenError> {
     let mut out = Repr::default();
-    for attr in outer(attrs).filter(|a| is_named(a, "repr")) {
+    for attr in outer(attrs).filter(|a| a.path().is_ident("repr")) {
         attr.parse_nested_meta(|meta| {
             let span = meta.path.span();
             let key = meta
@@ -222,7 +315,9 @@ pub(super) fn repr(attrs: &[Attribute]) -> Result<Repr, CodegenError> {
                     if !n.is_power_of_two() {
                         return Err(meta.error("`align(N)` needs a power of two"));
                     }
-                    out.align = Some(n);
+                    if out.align.replace(n).is_some() {
+                        return Err(meta.error("`align(N)` is given twice"));
+                    }
                     Ok(())
                 }
                 "packed" => Err(syn::Error::new(
@@ -245,12 +340,18 @@ pub(super) fn offset(attrs: &[Attribute], name: &str) -> Result<Option<usize>, C
     let Some(attr) = find(attrs, name) else {
         return Ok(None);
     };
-    let lit: LitInt = attr
-        .parse_args()
-        .map_err(|e| error_at(e.span(), e.to_string()))?;
-    lit.base10_parse::<usize>()
-        .map(Some)
-        .map_err(|_| error_at(lit.span(), "field offset exceeds usize::MAX"))
+    let lit: LitInt = attr.parse_args().map_err(|e| {
+        error_at(
+            e.span(),
+            format!("expected `#[{name}(N)]` with a non-negative integer N: {e}"),
+        )
+    })?;
+    lit.base10_parse::<usize>().map(Some).map_err(|_| {
+        error_at(
+            lit.span(),
+            format!("expected `#[{name}(N)]` with a non-negative integer N that fits usize"),
+        )
+    })
 }
 
 /// The span to report a whole attribute at.

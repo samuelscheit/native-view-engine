@@ -95,38 +95,36 @@ pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
         if is_binary_ext(rel) || rel == "Cargo.lock" || is_self_invariant_file(rel) {
             continue;
         }
-        if let Some(content) = idx.read_text(rel) {
-            for (i, line) in content.lines().take(25).enumerate() {
-                let t = line.trim();
-                let is_comment = t.starts_with("//")
-                    || t.starts_with("/*")
-                    || t.starts_with('*')
-                    || t.starts_with('#')
-                    || t.starts_with("<!--");
-                if is_comment && t.contains("@generated") {
-                    // Codegen templates carry the banner they emit; they are sources, not output.
-                    if rel.starts_with(CODEGEN_TEMPLATES_DIR) {
-                        break;
-                    }
-                    let in_java_gen = rel.contains("dev/nve/host/generated/");
-                    let has_dot_gen = Path::new(rel)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.contains(".generated."));
-                    if !in_java_gen && !has_dot_gen {
-                        violations.push(Violation::new(
-                            rel,
-                            i + 1,
-                            line,
-                            "Non-Java `@generated` file must include `.generated.` in its filename",
-                        ));
-                    }
-                    break;
-                }
-            }
+        if let Some(content) = idx.read_text(rel)
+            && let Some((line_no, line)) = misnamed_generated_banner(rel, &content)
+        {
+            violations.push(Violation::new(
+                rel,
+                line_no,
+                line,
+                "Non-Java `@generated` file must include `.generated.` in its filename",
+            ));
         }
     }
     violations
+}
+
+/// The `@generated` banner line (1-based) of a file that carries one but is not named as generated
+/// output: non-Java files need `.generated.` in the name, Java lives in `dev/nve/host/generated/`.
+/// Codegen templates carry the banner they emit; they are sources, not output.
+pub fn misnamed_generated_banner<'a>(rel: &str, content: &'a str) -> Option<(usize, &'a str)> {
+    if rel.starts_with(CODEGEN_TEMPLATES_DIR) {
+        return None;
+    }
+    let (i, line) = content.lines().take(25).enumerate().find(|(_, line)| {
+        let t = line.trim();
+        let is_comment = ["//", "/*", "*", "#", "<!--"].iter().any(|p| t.starts_with(p));
+        is_comment && t.contains("@generated")
+    })?;
+    let in_java_gen = rel.contains("dev/nve/host/generated/");
+    let has_dot_gen =
+        Path::new(rel).file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(".generated."));
+    (!in_java_gen && !has_dot_gen).then_some((i + 1, line))
 }
 
 pub fn check_zero_json_buzzword(idx: &RepoIndex) -> Vec<Violation> {

@@ -487,19 +487,20 @@ fn validate_default_value(
             return validate_default_value(other, inner, enum_map, view_name, prop_name);
         }
         (HybridDefaultValue::Bool(_), HybridType::Bool) => true,
-        (
-            HybridDefaultValue::Int(_),
-            HybridType::I32 | HybridType::I64 | HybridType::F32 | HybridType::F64,
-        ) => true,
-        (
-            HybridDefaultValue::Int(v),
-            HybridType::U32 | HybridType::U64,
-        ) => *v >= 0,
-        (
-            HybridDefaultValue::UInt(_),
-            HybridType::U32 | HybridType::U64 | HybridType::I32 | HybridType::I64 | HybridType::F32 | HybridType::F64,
-        ) => true,
-        (HybridDefaultValue::Float(_), HybridType::F32 | HybridType::F64) => true,
+        // Integers must fit the target type; floats must stay finite at its precision.
+        (HybridDefaultValue::Int(v), HybridType::I32) => i32::try_from(*v).is_ok(),
+        (HybridDefaultValue::Int(_), HybridType::I64 | HybridType::F32 | HybridType::F64) => true,
+        (HybridDefaultValue::Int(v), HybridType::U32) => u32::try_from(*v).is_ok(),
+        (HybridDefaultValue::Int(v), HybridType::U64) => *v >= 0,
+        (HybridDefaultValue::UInt(v), HybridType::U8) => u8::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::U16) => u16::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::U32) => u32::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::I32) => i32::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::I64) => i64::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(_), HybridType::U64 | HybridType::F32 | HybridType::F64) => true,
+        #[expect(clippy::cast_possible_truncation, reason = "the narrowing is what is being checked")]
+        (HybridDefaultValue::Float(v), HybridType::F32) => (*v as f32).is_finite(),
+        (HybridDefaultValue::Float(v), HybridType::F64) => v.is_finite(),
         (HybridDefaultValue::String(_), HybridType::String) => true,
         (
             HybridDefaultValue::EnumVariant { enum_name, variant },

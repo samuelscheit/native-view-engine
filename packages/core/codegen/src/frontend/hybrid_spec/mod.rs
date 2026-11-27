@@ -35,6 +35,9 @@ use types::{convert_type, error_at, ident, is_hex, syn_error, unsigned};
 
 /// Parses a declarative Rust `.rs` hybrid specification source string into a validated
 /// [`HybridFileSpec`].
+///
+/// Side effect: releases the calling thread's `proc_macro2` span table afterwards, so a
+/// `proc_macro2::Span` the caller created earlier on the same thread must not be used again.
 pub fn parse_hybrid_rust_spec(source: &str) -> Result<HybridFileSpec, CodegenError> {
     let file = parse_tokens(source);
     // Spans of this parse are no longer needed: free their per-thread source map (the CLI and
@@ -66,6 +69,11 @@ fn parse_tokens(source: &str) -> Result<HybridFileSpec, CodegenError> {
     depth::check_nesting(tokens.clone())?;
     let ast: syn::File = syn::parse2(tokens).map_err(|e| syn_error(&e, body))?;
     let mut file = HybridFileSpec::default();
+    attrs::check_markers(
+        &ast.attrs,
+        &[NAMESPACE],
+        "the file (only `#![nve_hybrid_namespace]`)",
+    )?;
     apply_namespace(&ast.attrs, &mut file)?;
     for item in &ast.items {
         parse_item(item, &mut file)?;
@@ -73,16 +81,27 @@ fn parse_tokens(source: &str) -> Result<HybridFileSpec, CodegenError> {
     Ok(file)
 }
 
-/// `#[nve_hybrid_namespace(name = "...")]` (inner or outer) sets the file namespace.
+const NAMESPACE: &str = "nve_hybrid_namespace";
+
+/// `#[nve_hybrid_namespace(name = "...")]` (inner or outer) sets the file namespace; a second,
+/// different namespace anywhere in the file is an error.
 fn apply_namespace(attrs: &[Attribute], file: &mut HybridFileSpec) -> Result<(), CodegenError> {
     for attr in attrs.iter().filter(|a| {
         a.path()
             .segments
             .last()
-            .is_some_and(|s| s.ident == "nve_hybrid_namespace")
+            .is_some_and(|s| s.ident == NAMESPACE)
     }) {
         match Args::parse(attr, keys::NAMESPACE)?.string("name")? {
-            Some(name) => file.namespace = Some(name),
+            Some(name) => match &file.namespace {
+                Some(prev) if *prev != name => {
+                    return Err(error_at(
+                        attr.span(),
+                        format!("namespace `{name}` conflicts with `{prev}`"),
+                    ));
+                }
+                _ => file.namespace = Some(name),
+            },
             None => {
                 return Err(error_at(
                     attr.span(),
@@ -109,9 +128,26 @@ fn item_attrs(item: &Item) -> &[Attribute] {
     }
 }
 
+/// The markers valid on each item kind (besides the namespace, valid anywhere).
+fn markers_for(item: &Item) -> (&'static [&'static str], &'static str) {
+    match item {
+        Item::Const(_) => (&[NAMESPACE, "nve_hybrid_const"], "a const"),
+        Item::Type(_) => (&[NAMESPACE, "nve_hybrid_alias"], "a type alias"),
+        Item::Enum(_) => (&[NAMESPACE, "nve_hybrid_enum"], "an enum"),
+        Item::Struct(_) => (&[NAMESPACE, "nve_hybrid_struct"], "a struct"),
+        Item::Union(_) => (&[NAMESPACE, "nve_hybrid_union"], "a union"),
+        Item::Trait(_) => (
+            &[NAMESPACE, "nve_hybrid_module", "nve_hybrid_view"],
+            "a trait",
+        ),
+        _ => (&[NAMESPACE], "this item"),
+    }
+}
+
 fn parse_item(item: &Item, file: &mut HybridFileSpec) -> Result<(), CodegenError> {
     let item_attrs = item_attrs(item);
-    attrs::reject_unknown_markers(item_attrs)?;
+    let (allowed, what) = markers_for(item);
+    attrs::check_markers(item_attrs, allowed, what)?;
     apply_namespace(item_attrs, file)?;
     match item {
         Item::Use(_) => {}
@@ -188,6 +224,7 @@ fn parse_item(item: &Item, file: &mut HybridFileSpec) -> Result<(), CodegenError
             foreign_fn(&f, f.sig.abi.as_ref(), file)?;
         }
         Item::ForeignMod(m) => {
+            items::check_c_abi(&m.abi)?;
             for foreign in &m.items {
                 let ForeignItem::Fn(f) = foreign else {
                     return Err(error_at(
@@ -214,7 +251,7 @@ fn foreign_fn(
     abi: Option<&syn::Abi>,
     file: &mut HybridFileSpec,
 ) -> Result<(), CodegenError> {
-    attrs::reject_unknown_markers(&f.attrs)?;
+    attrs::check_markers(&f.attrs, &[NAMESPACE, "nve_hybrid_c_fn"], "a function")?;
     apply_namespace(&f.attrs, file)?;
     let Some(marker) = attrs::find(&f.attrs, "nve_hybrid_c_fn") else {
         return Err(error_at(

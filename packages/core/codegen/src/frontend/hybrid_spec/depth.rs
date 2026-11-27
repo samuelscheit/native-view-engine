@@ -1,16 +1,17 @@
 //! Iterative nesting pre-check that runs before `syn` sees a spec.
 //!
-//! `syn` parses types and expressions recursively, so deeply nested input overflows the stack
-//! before any frontend check can run: `*const` repeated 100k times, `Option<Option<...>>`,
-//! `((((...))))`, `- - - 1`, `fn() -> fn() -> ...`, `|| || ...`, `return return ...`. This walk
-//! uses an explicit stack and rejects input whose nesting exceeds [`MAX_NESTING`], with the
-//! location of the token that crossed the limit.
+//! `syn` parses, spans, and drops its AST recursively: prefix / infix / postfix chains
+//! (`- - x`, `a = b = c`, `a.b.c`, `1 + 1 + ...`, `f()()`, `x?`, `x as T`, `if .. else if`),
+//! nested groups, and `<...>` all recurse, so deep input overflows the stack before any frontend
+//! check can run. Listing recursive tokens leaks; this walk bounds *every* token instead.
 //!
-//! Nesting at a token = enclosing bracket groups + open `<` + the *chain* of recursion-inducing
-//! tokens since the last separator (`,` `;` `=`) in the same group: prefix operators
-//! (`*` `&` `-` `!` `|`), `->`, and keywords that prefix another type or expression.
+//! Nesting at a token = enclosing bracket groups + open `<` + the tokens of the current
+//! *segment*. A segment ends at `,` or `;` (`syn` parses list elements and statements in a loop)
+//! and at an item keyword (`pub`, `struct`, ...: items are parsed in a loop too). Attributes
+//! (`#[..]`, `#![..]`) are parsed in a loop as well and count nothing. Inside an open closure
+//! parameter list (`|a, b|`) a `,` does not end the segment. Open `<` resets at `;`.
 
-use proc_macro2::{Spacing, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 
 use super::types::error_at;
 use crate::error::CodegenError;
@@ -18,9 +19,11 @@ use crate::error::CodegenError;
 /// Maximum nesting accepted from a spec (the same bound as type conversion).
 pub(super) const MAX_NESTING: usize = 128;
 
-/// Keywords after which `syn` recurses into another type or expression.
-const CHAIN_KEYWORDS: &[&str] = &[
-    "return", "break", "yield", "move", "async", "await", "box", "dyn", "impl", "static",
+/// Keywords that only start an item, after which `syn` starts afresh. (`const`, `fn`, and
+/// `extern` also appear inside types such as `*const T` and `extern "C" fn() -> T`, so they cannot
+/// end a segment.)
+const ITEM_KEYWORDS: &[&str] = &[
+    "pub", "struct", "enum", "union", "trait", "type", "use", "mod",
 ];
 
 /// Nesting state of one bracket group being walked.
@@ -28,12 +31,16 @@ struct Frame {
     tokens: proc_macro2::token_stream::IntoIter,
     /// Nesting of the enclosing groups.
     base: usize,
-    /// Open `<` not yet closed by a `>` in this group.
+    /// Open `<` not yet closed by a `>` in this group (reset at `;`).
     angles: usize,
-    /// Recursion-inducing tokens since the last separator in this group.
-    chain: usize,
+    /// Tokens of the current segment.
+    segment: usize,
+    /// A closure parameter list `|...|` is open, so `,` does not end the segment.
+    closure_params: bool,
     /// The previous token was a `-` joined to the next punct (the start of `->`).
     after_minus: bool,
+    /// The previous token was `#` (or `#!`): the next bracket group is an attribute.
+    attribute: bool,
 }
 
 impl Frame {
@@ -42,13 +49,15 @@ impl Frame {
             tokens: tokens.into_iter(),
             base,
             angles: 0,
-            chain: 0,
+            segment: 0,
+            closure_params: false,
             after_minus: false,
+            attribute: false,
         }
     }
 
     fn depth(&self) -> usize {
-        self.base + self.angles + self.chain
+        self.base + self.angles + self.segment
     }
 }
 
@@ -61,9 +70,18 @@ pub(super) fn check_nesting(tokens: TokenStream) -> Result<(), CodegenError> {
             continue;
         };
         let after_minus = std::mem::take(&mut frame.after_minus);
+        let attribute = std::mem::take(&mut frame.attribute);
         match &tree {
+            // `#[..]` / `#![..]`: parsed in a loop by `syn`, so its tokens count nothing here
+            // (its contents are still walked, as a group).
+            TokenTree::Group(g) if attribute && g.delimiter() == Delimiter::Bracket => {
+                let inner = frame.base + 1;
+                stack.push(Frame::new(g.stream(), inner));
+                continue;
+            }
             TokenTree::Group(g) => {
-                let inner = frame.depth() + 1;
+                frame.segment += 1;
+                let inner = frame.depth();
                 if inner > MAX_NESTING {
                     return Err(too_deep(g.span_open()));
                 }
@@ -71,24 +89,43 @@ pub(super) fn check_nesting(tokens: TokenStream) -> Result<(), CodegenError> {
                 continue;
             }
             TokenTree::Punct(p) => match p.as_char() {
-                ',' | ';' | '=' => frame.chain = 0,
-                '<' => frame.angles += 1,
-                // `->` counts once, at its `-`.
+                '#' => frame.attribute = true,
+                '!' if attribute => frame.attribute = true,
+                ';' => {
+                    frame.segment = 0;
+                    frame.angles = 0;
+                    frame.closure_params = false;
+                }
+                ',' if !frame.closure_params => frame.segment = 0,
+                '<' => {
+                    frame.angles += 1;
+                    frame.segment += 1;
+                }
+                // `->`: counted once, at its `-`.
                 '>' if after_minus => {}
-                '>' => frame.angles = frame.angles.saturating_sub(1),
-                '*' | '&' | '!' | '|' => frame.chain += 1,
+                '>' => {
+                    frame.angles = frame.angles.saturating_sub(1);
+                    frame.segment += 1;
+                }
+                '|' => {
+                    // `||` is an empty parameter list (or `or`); a lone `|` opens or closes one.
+                    if p.spacing() == Spacing::Alone {
+                        frame.closure_params = !frame.closure_params;
+                    }
+                    frame.segment += 1;
+                }
                 '-' => {
-                    frame.chain += 1;
                     frame.after_minus = p.spacing() == Spacing::Joint;
+                    frame.segment += 1;
                 }
-                _ => {}
+                _ => frame.segment += 1,
             },
-            TokenTree::Ident(i) => {
-                if CHAIN_KEYWORDS.contains(&i.to_string().as_str()) {
-                    frame.chain += 1;
-                }
+            TokenTree::Ident(i) if ITEM_KEYWORDS.iter().any(|kw| i == *kw) => {
+                frame.segment = 0;
+                frame.angles = 0;
+                frame.closure_params = false;
             }
-            TokenTree::Literal(_) => {}
+            TokenTree::Ident(_) | TokenTree::Literal(_) => frame.segment += 1,
         }
         if frame.depth() > MAX_NESTING {
             return Err(too_deep(tree.span()));
