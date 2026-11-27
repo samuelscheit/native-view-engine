@@ -365,3 +365,107 @@ fn invalidated_sibling_observing_in_flight_bridge_fetch_does_not_double_fire_on_
         "sibling observing in-flight bridge refetch after invalidation must not double-fire on failure"
     );
 }
+
+#[test]
+fn invalidation_after_external_prefetch_settlement_triggers_refetch() {
+    let transport = RegTransport::new("Pre");
+    transport.inner.lock().unwrap().defer_queries = true;
+    let client = erased_query_client_with_clock(
+        transport.clone(),
+        Shared::new(ManualClock::new(1_000)),
+        QueryClientConfig::default(),
+    );
+    let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
+    let mut cx = core::task::Context::from_waker(&waker);
+
+    #[component]
+    fn View(id: u64) -> Element {
+        let mut opts = QueryOptions::default().stale_time_ms(60_000);
+        opts.max_retries = 0;
+        let q = use_query_with::<GetItem>(id, opts);
+        let label = q
+            .data()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "EMPTY".into());
+        rsx! { text { "R:{id}:{label}" } }
+    }
+
+    #[component]
+    fn Root() -> Element {
+        let (client, id) = dioxus_core::consume_context::<(ErasedQueryClient, u64)>();
+        rsx! {
+            QueryClientProvider {
+                client: client,
+                View { id: id }
+            }
+        }
+    }
+
+    // Case 1: External prefetch settles ("Pre"), then `invalidate_tags` lands BEFORE the hook's
+    // next render -> hook must NOT swallow the invalidation and MUST refetch "Post".
+    let mut ext1 = Box::pin(client.prefetch::<GetItem>(&30));
+    assert!(matches!(core::pin::Pin::as_mut(&mut ext1).poll(&mut cx), Poll::Pending));
+
+    let mut s1 = DioxusSurface::new(1, Root).with_context((client.clone(), 30u64));
+    let mut web1 = WebBackend::new();
+    let mut frame1 = 0;
+    let _ = render_once(&mut s1, &mut web1, &mut frame1);
+    let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
+
+    transport.release_all();
+    assert!(matches!(
+        core::pin::Pin::as_mut(&mut ext1).poll(&mut cx),
+        Poll::Ready(Ok(_))
+    ));
+    transport.inner.lock().unwrap().name = "Post".into();
+    let _ = client.invalidate_tags(&[Tag64::keyed("item", 30)]);
+    let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
+    assert!(
+        web1.render_html().contains("R:30:Post"),
+        "invalidation right after external prefetch completion must trigger refetch: {}",
+        web1.render_html()
+    );
+
+    // Case 2: External prefetch settles ("Pre2"), `invalidate_tags` bumps inv_ver, a SECOND
+    // external fetch starts on the invalidated slot and is CANCELLED -> hook MUST still refetch "Post2".
+    {
+        let mut g = transport.inner.lock().unwrap();
+        g.defer_queries = true;
+        g.name = "Pre2".into();
+    }
+    let mut ext2 = Box::pin(client.prefetch::<GetItem>(&31));
+    assert!(matches!(core::pin::Pin::as_mut(&mut ext2).poll(&mut cx), Poll::Pending));
+
+    let mut s2 = DioxusSurface::new(1, Root).with_context((client.clone(), 31u64));
+    let mut web2 = WebBackend::new();
+    let mut frame2 = 0;
+    let _ = render_once(&mut s2, &mut web2, &mut frame2);
+    let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
+
+    transport.release_all();
+    assert!(matches!(
+        core::pin::Pin::as_mut(&mut ext2).poll(&mut cx),
+        Poll::Ready(Ok(_))
+    ));
+    {
+        let mut g = transport.inner.lock().unwrap();
+        g.defer_queries = true;
+        g.name = "Post2".into();
+    }
+    let invalidated = client.invalidate_tags(&[Tag64::keyed("item", 31)]);
+    let mut ext2_second = Box::pin(client.fetch_handle::<GetItem>(invalidated[0]));
+    assert!(matches!(
+        core::pin::Pin::as_mut(&mut ext2_second).poll(&mut cx),
+        Poll::Pending
+    ));
+    let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
+
+    drop(ext2_second);
+    transport.release_all();
+    let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
+    assert!(
+        web2.render_html().contains("R:31:Post2"),
+        "hook must still recover when invalidation + cancelled 2nd external fetch follow prefetch: {}",
+        web2.render_html()
+    );
+}

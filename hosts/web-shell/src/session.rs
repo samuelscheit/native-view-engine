@@ -58,7 +58,7 @@ pub enum HotReloadAction {
     DevStatus { message: String, latency_ms: u64 },
 }
 
-/// Result of one bounded [`WebAppSession::pump_async_work`] tick.
+/// Result of one bounded [`WebAppSession::pump_async_work_with`] tick.
 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
 #[derive(Debug, Clone, Copy)]
 pub struct AsyncPumpOutcome {
@@ -476,20 +476,11 @@ impl WebAppSession {
 
     /// Polls any ready Dioxus async tasks/effects (such as `nve-query` fetches or mutations) and
     /// renders incremental frames until the scheduler rests with `waker` armed, bounded to avoid
-    /// starving browser painting. When the per-tick pump cap is reached while work remains,
-    /// `AsyncPumpOutcome::hit_cap` is `true` so hosts yield to paint and schedule a macrotask
-    /// continuation instead of looping microtasks.
-    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-    pub fn pump_async_work(
-        &mut self,
-        waker: &core::task::Waker,
-    ) -> Result<AsyncPumpOutcome, BackendError> {
-        self.pump_async_work_with(waker, || {})
-    }
-
-    /// Variant of [`Self::pump_async_work`] invoking `on_before_poll` immediately before each
-    /// `poll_work` iteration so wake schedulers can discard already-absorbed wakes from prior
-    /// event/render passes without losing wakes fired during the final settling `poll_work`.
+    /// starving browser painting. Invokes `on_before_poll` immediately before each `poll_work`
+    /// iteration so wake schedulers can discard already-absorbed wakes from prior event/render
+    /// passes without losing wakes fired during the final settling `poll_work`. When the per-tick
+    /// pump cap is reached while work remains, `AsyncPumpOutcome::hit_cap` is `true` so hosts
+    /// yield to paint and schedule a macrotask continuation instead of looping microtasks.
     #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     pub fn pump_async_work_with<F: FnMut()>(
         &mut self,

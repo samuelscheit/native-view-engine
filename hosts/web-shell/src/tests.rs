@@ -560,14 +560,14 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
     session.render_initial().unwrap();
 
     let waker = Waker::noop();
-    let idle = session.pump_async_work(waker).unwrap();
+    let idle = session.pump_async_work_with(waker, || {}).unwrap();
     assert!(idle.timing.is_none());
     assert!(!idle.hit_cap);
 
     // Kick off the 24-step render-chained async burst -> first tick MUST hit MAX_PUMPS (8) before
     // reaching STEP:24 and report `hit_cap = true` so the browser host yields to paint via macrotask.
     gate.trigger();
-    let first = session.pump_async_work(waker).unwrap();
+    let first = session.pump_async_work_with(waker, || {}).unwrap();
     assert!(first.timing.is_some());
     assert!(
         first.hit_cap,
@@ -581,7 +581,7 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
 
     let mut final_hit_cap = true;
     for _ in 0..8 {
-        let next = session.pump_async_work(waker).unwrap();
+        let next = session.pump_async_work_with(waker, || {}).unwrap();
         final_hit_cap = next.hit_cap;
         if session.backend().render_html().contains("STEP:24") {
             break;

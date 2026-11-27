@@ -201,9 +201,10 @@ pub struct QuerySnapshot<T, E> {
     /// tag/wildcard invalidation, `set_query_data`, or hydration — never on fetch start, error, or
     /// cancellation — allowing reactive hooks to trigger at most one refetch per invalidation.
     pub invalidation_version: u64,
-    /// Monotonic settled-fetch sequence counter. Advances ONLY when a fetch settles with data or
-    /// a committed error (never on cancellation), allowing reactive hooks waiting on an external
-    /// fetch to distinguish settled completion from cancellation even when `stale_time_ms == 0`.
+    /// Monotonic committed-state sequence counter. Advances on every data or error commit (fetch,
+    /// `set_query_data`, hydration) and never on cancellation or invalidation, allowing reactive
+    /// hooks waiting on an external fetch to distinguish settled completion from cancellation even
+    /// when `stale_time_ms == 0`.
     pub completed_seq: u32,
 }
 

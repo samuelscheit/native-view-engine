@@ -227,7 +227,7 @@ where
     }
 
     // Subscribe the calling component to this slot's reactive signal so invalidations wake it.
-    let (handle, slot_sig, mut fetched_for_key, mut last_inv_ver, external_wait_seq) = {
+    let (handle, slot_sig, mut fetched_for_key, last_inv_ver, external_wait_seq) = {
         let st = state.read();
         (
             st.handle,
@@ -247,17 +247,15 @@ where
         {
             let mut st = state.write();
             st.external_wait_seq = None;
-            // Only latch as fetched if the external fetch actually settled (data or committed
-            // error); if `completed_seq` did not advance, it was cancelled and `should_initial`
-            // recovers across cold, time-stale, and invalidated slots cleanly.
+            // Only latch `fetched_for_key` if the external fetch actually settled (data or
+            // committed error); leave `last_invalidation_ver` untouched so any invalidation that
+            // landed right after external completion still triggers `should_refetch_invalidated`.
             if snap.completed_seq != wait_seq {
                 st.fetched_for_key = true;
-                st.last_invalidation_ver = snap.invalidation_version;
                 fetched_for_key = true;
-                last_inv_ver = snap.invalidation_version;
             }
         }
-        let should_initial = !fetched_for_key && bridge.client().needs_fetch(handle);
+        let should_initial = !fetched_for_key && !snap.is_fetching && snap.is_stale;
         let should_refetch_invalidated =
             snap.is_invalidated && !snap.is_fetching && last_inv_ver != snap.invalidation_version;
         if should_initial || should_refetch_invalidated {

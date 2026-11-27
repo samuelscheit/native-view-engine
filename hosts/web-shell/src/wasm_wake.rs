@@ -15,7 +15,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 #[cfg(feature = "app-issues")]
-pub(crate) use crate::wake_sched::{PumpNext, ScheduleKind, WakeScheduler};
+pub(crate) use crate::wake_sched::{DirectPumpEnter, PumpNext, ScheduleKind, WakeScheduler};
 
 #[cfg(feature = "app-issues")]
 #[wasm_bindgen(inline_js = "export function nve_queue_microtask(cb) { queueMicrotask(cb); }
@@ -80,14 +80,15 @@ impl WebFrameWaker {
         self: &Arc<Self>,
         waker: &Waker,
         f: impl FnOnce(&Waker) -> (PumpNext, R),
-    ) -> Option<R> {
-        if !self
+    ) -> Result<R, DirectPumpEnter> {
+        match self
             .sched
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .on_direct_pump_enter()
         {
-            return None;
+            DirectPumpEnter::Entered => {}
+            other => return Err(other),
         }
         let (next, res) = f(waker);
         let follow = self
@@ -96,7 +97,7 @@ impl WebFrameWaker {
             .unwrap_or_else(|e| e.into_inner())
             .on_pump_exit(next);
         self.dispatch(follow);
-        Some(res)
+        Ok(res)
     }
 }
 
@@ -137,24 +138,25 @@ impl WebAsyncWakeGuard {
         &self,
         guard: &mut crate::session::WebAppSession,
     ) -> Result<bool, JsValue> {
-        self.inner
-            .run_direct_pump(&self.waker, |waker| {
-                let replayed = match crate::wasm_api::run_initial_frame_and_events(guard) {
-                    Ok(v) => v,
-                    Err(err) => return (PumpNext::Done, Err(err)),
-                };
-                match guard.pump_async_work_with(waker, || self.inner.clear_mid_pump_wake()) {
-                    Ok(out) => (
-                        PumpNext::from_hit_cap(out.hit_cap),
-                        Ok(replayed || out.timing.is_some()),
-                    ),
-                    Err(e) => (
-                        PumpNext::Done,
-                        Err(JsValue::from_str(&format!("initial async pump failed: {e}"))),
-                    ),
-                }
-            })
-            .ok_or_else(|| JsValue::from_str("async wake scheduler unavailable at boot"))?
+        match self.inner.run_direct_pump(&self.waker, |waker| {
+            let replayed = match crate::wasm_api::run_initial_frame_and_events(guard) {
+                Ok(v) => v,
+                Err(err) => return (PumpNext::Done, Err(err)),
+            };
+            match guard.pump_async_work_with(waker, || self.inner.clear_mid_pump_wake()) {
+                Ok(out) => (
+                    PumpNext::from_hit_cap(out.hit_cap),
+                    Ok(replayed || out.timing.is_some()),
+                ),
+                Err(e) => (
+                    PumpNext::Done,
+                    Err(JsValue::from_str(&format!("initial async pump failed: {e}"))),
+                ),
+            }
+        }) {
+            Ok(res) => res,
+            Err(_) => Err(JsValue::from_str("async wake scheduler unavailable at boot")),
+        }
     }
 
     #[inline]
@@ -178,33 +180,37 @@ impl AsyncWakeHandle {
     /// Pumps DOM events and any spawned async work inside one direct-pump window so task-spawning
     /// clicks never allocate a wasted microtask closure before synchronous draining.
     pub(crate) fn run_event_pump(&self, guard: &mut crate::session::WebAppSession) -> bool {
-        self.inner
-            .run_direct_pump(&self.waker, |waker| {
-                let ev = match guard.pump_events() {
-                    Ok(f) => f.is_some(),
-                    Err(err) => {
-                        web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
-                        return (PumpNext::Done, false);
-                    }
-                };
-                match guard.pump_async_work_with(waker, || self.inner.clear_mid_pump_wake()) {
-                    Ok(out) => (
-                        PumpNext::from_hit_cap(out.hit_cap),
-                        ev || out.timing.is_some(),
-                    ),
-                    Err(err) => {
-                        web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
-                        (PumpNext::Done, ev)
-                    }
-                }
-            })
-            .unwrap_or_else(|| match guard.pump_events() {
+        match self.inner.run_direct_pump(&self.waker, |waker| {
+            let ev = match guard.pump_events() {
                 Ok(f) => f.is_some(),
                 Err(err) => {
                     web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
-                    false
+                    return (PumpNext::Done, false);
                 }
-            })
+            };
+            match guard.pump_async_work_with(waker, || self.inner.clear_mid_pump_wake()) {
+                Ok(out) => (
+                    PumpNext::from_hit_cap(out.hit_cap),
+                    ev || out.timing.is_some(),
+                ),
+                Err(err) => {
+                    web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                    (PumpNext::Done, ev)
+                }
+            }
+        }) {
+            Ok(rendered) => rendered,
+            Err(DirectPumpEnter::Shutdown) => false,
+            Err(DirectPumpEnter::AlreadyPumping | DirectPumpEnter::Entered) => {
+                match guard.pump_events() {
+                    Ok(f) => f.is_some(),
+                    Err(err) => {
+                        web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                        false
+                    }
+                }
+            }
+        }
     }
 }
 

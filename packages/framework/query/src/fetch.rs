@@ -356,7 +356,9 @@ mod tests {
             _ => panic!("expected atomic takeover FetchStart::Started after cancel"),
         };
 
-        // 5. Completing ticket2 bumps `completed_seq` to 1; a subsequent fetch exposes `1` to waiters.
+        // 5. Completing ticket2 bumps `completed_seq` to 1 (reflected in both `Wait` and `read()`);
+        //    `set_query_data` bumps it to 2; hydration populates a non-zero `completed_seq` as well.
+        assert_eq!(client.read::<FetchA>(h).completed_seq, 0);
         let reply = nve_rpc::CallReply {
             value: 42u64,
             raw_body: bytes::Bytes::from_static(&[0x18, 0x2a]),
@@ -364,6 +366,7 @@ mod tests {
             invalidate_all: false,
         };
         assert!(client.complete_fetch::<FetchA>(ticket2, Ok(reply)));
+        assert_eq!(client.read::<FetchA>(h).completed_seq, 1);
         let ticket3 = match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
             FetchStart::Started(ticket, _) => ticket,
             _ => panic!("expected Started after prior fetch completed"),
@@ -373,8 +376,26 @@ mod tests {
             _ => panic!("expected Wait with completed_seq=1"),
         }
         client.cancel_fetch_ticket(ticket3);
+        assert_eq!(client.read::<FetchA>(h).completed_seq, 1);
 
-        // 6. Evicted handle returns Unavailable.
+        client.set_query_data::<FetchA>(&1, 99u64).unwrap();
+        assert_eq!(client.read::<FetchA>(h).completed_seq, 2);
+        assert_eq!(client.read::<FetchB>(h).completed_seq, 0);
+
+        let blob = client.dehydrate_bytes().unwrap();
+        let hydrated = QueryClient::with_clock(
+            DummyTransport,
+            CborCodec::default(),
+            clock.clone(),
+            crate::QueryClientConfig::default(),
+        );
+        assert_eq!(hydrated.hydrate_bytes(&blob).unwrap(), 1);
+        let hh = hydrated
+            .subscribe::<FetchA>(&1, QueryOptions::default())
+            .unwrap();
+        assert!(hydrated.read::<FetchA>(hh).completed_seq >= 1);
+
+        // 6. Evicted handle returns Unavailable and `read()` reports `completed_seq == 0`.
         client.unsubscribe(h);
         clock.advance(1);
         assert_eq!(client.gc_sweep(64), 1);
@@ -382,5 +403,6 @@ mod tests {
             client.begin_fetch_or_wait_snapshot::<FetchA>(h),
             FetchStart::Unavailable
         ));
+        assert_eq!(client.read::<FetchA>(h).completed_seq, 0);
     }
 }
