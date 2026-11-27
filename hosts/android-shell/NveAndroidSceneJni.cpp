@@ -1,34 +1,45 @@
-// Packs an acquired `NveRuntimeSceneView` into `dev.nve.host.RuntimeSceneReader`'s frame
-// (`long[] header` + `ByteBuffer[] slabs`) with cached zero-copy `DirectByteBuffer`s, and serves
-// published resource bytes.
+// Packs an acquired `NveRuntimeSceneView` into the generated `NveJniFrame` layout read by
+// `dev.nve.host.RuntimeSceneReader` (`long[]` header + `ByteBuffer[]` slabs) with cached zero-copy
+// `DirectByteBuffer`s, and serves published resource bytes.
 #include "NveAndroidSurface.hpp"
 
+#include <span>
 
 using nve::android::AndroidSurface;
 using nve::android::CachedDirectBuffer;
+using nve::android::clear_exception;
 using nve::android::status_of;
 using nve::android::surface_of;
+namespace frame = nve::jni_frame;
 
 namespace nve::android {
 
-jobject CachedDirectBuffer::sync(JNIEnv* env, const void* ptr, size_t len) {
+bool CachedDirectBuffer::sync(JNIEnv* env, const void* ptr, size_t len, jobject* out) {
+  *out = nullptr;
   if (ptr == nullptr || len == 0u) {
     release(env);
-    return nullptr;
+    return true;
   }
-  if (ref_ != nullptr && ptr_ == ptr && len_ == len) return ref_;
+  if (ref_ != nullptr && ptr_ == ptr && len_ == len) {
+    *out = ref_;
+    return true;
+  }
   release(env);
   jobject local = env->NewDirectByteBuffer(const_cast<void*>(ptr), static_cast<jlong>(len));
   if (local == nullptr) {
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    return nullptr;
+    clear_exception(env);
+    return false;
   }
   ref_ = env->NewGlobalRef(local);
   env->DeleteLocalRef(local);
-  if (ref_ == nullptr) return nullptr;
+  if (ref_ == nullptr) {  // OOM: `NewGlobalRef` may leave an OutOfMemoryError pending
+    clear_exception(env);
+    return false;
+  }
   ptr_ = ptr;
   len_ = len;
-  return ref_;
+  *out = ref_;
+  return true;
 }
 
 void CachedDirectBuffer::release(JNIEnv* env) noexcept {
@@ -48,16 +59,77 @@ void JavaCallback::release(JNIEnv* env) noexcept {
 
 namespace {
 
-using nve::android::kHeaderLen;
-using nve::android::kHeaderTables;
-using nve::android::kHeaderTableStride;
-using nve::android::kSlabsLen;
-using nve::android::kSlabTables;
-using nve::android::kSlabTableStride;
-
 template <class T>
 size_t bytes_of(std::span<const T> s) noexcept {
   return s.size() * sizeof(T);
+}
+
+/// Fills one `slabs[slot]`; `false` (exception cleared) on any JNI failure.
+bool set_slab(JNIEnv* env, AndroidSurface& s, jobjectArray slabs, size_t slot, const void* ptr, size_t len) {
+  jobject buf = nullptr;
+  if (!s.slabs[slot].sync(env, ptr, len, &buf)) return false;
+  env->SetObjectArrayElement(slabs, static_cast<jsize>(slot), buf);
+  return !clear_exception(env);  // e.g. ArrayStoreException: `slabs` is not a ByteBuffer[]
+}
+
+/// Packs the acquired scene; `false` on a JNI failure (the caller reports it).
+bool pack(JNIEnv* env, AndroidSurface& s, jlongArray header, jobjectArray slabs) {
+  const nve::host::RuntimeSceneReader& r = s.scene->reader();
+  const NveRuntimeSceneView& v = s.scene->raw();
+  jlong h[frame::HEADER_LEN];
+  h[frame::H_SCHEMA] = static_cast<jlong>(v.schema_hash);
+  h[frame::H_FRAME_ID] = static_cast<jlong>(v.frame_id);
+  h[frame::H_NODE_CAPACITY] = v.node_capacity;
+  h[frame::H_DIRTY_COUNT] = v.dirty_count;
+  h[frame::H_MOVED_COUNT] = v.moved_count;
+  h[frame::H_REMOVED_COUNT] = v.removed_count;
+  h[frame::H_TEXT_LEN] = v.text_slab_len;
+  h[frame::H_CHILDREN_LEN] = v.children_slab_len;
+  h[frame::H_TABLE_COUNT] = v.table_count;
+  h[frame::H_SCROLL_COUNT] = v.scroll_count;
+  h[frame::H_SCENE_EPOCH] = v.scene_epoch;
+  h[frame::H_DIRTY_RESOURCE_COUNT] = v.dirty_resource_count;
+  const bool slabs_ok =
+      set_slab(env, s, slabs, frame::S_ROWS, r.rows().data(), bytes_of(r.rows())) &&
+      set_slab(env, s, slabs, frame::S_RECTS, r.rects().data(), bytes_of(r.rects())) &&
+      set_slab(env, s, slabs, frame::S_TEXT, r.text_slab().data(), r.text_slab().size()) &&
+      set_slab(env, s, slabs, frame::S_CHILDREN, r.children_slab().data(), bytes_of(r.children_slab())) &&
+      set_slab(env, s, slabs, frame::S_DIRTY, r.dirty_indices().data(), bytes_of(r.dirty_indices())) &&
+      set_slab(env, s, slabs, frame::S_MOVED, r.moved_indices().data(), bytes_of(r.moved_indices())) &&
+      set_slab(env, s, slabs, frame::S_REMOVED, r.removed_ids().data(), bytes_of(r.removed_ids())) &&
+      set_slab(env, s, slabs, frame::S_DIRTY_RESOURCES, r.dirty_resources().data(), bytes_of(r.dirty_resources())) &&
+      set_slab(env, s, slabs, frame::S_SCROLL_OFFSETS, r.scroll_offsets().data(), bytes_of(r.scroll_offsets()));
+  if (!slabs_ok) return false;
+  for (uint32_t t = 0u; t < v.table_count; ++t) {
+    const NveTableView& tv = v.tables[t];
+    jlong* th = h + frame::H_TABLES + t * frame::TABLE_HEADER_STRIDE;
+    th[frame::TH_KEY] = static_cast<jlong>((static_cast<uint64_t>(tv.key_hi) << 32u) | tv.key_lo);
+    th[frame::TH_SLOT] = tv.slot;
+    th[frame::TH_WORDS] = tv.words;
+    th[frame::TH_ROW_COUNT] = tv.row_count;
+    th[frame::TH_DIRTY_COUNT] = tv.dirty_count;
+    th[frame::TH_ROW_INDEX_DIR_LEN] = tv.row_index_dir_len;
+    th[frame::TH_ROW_INDEX_PAGE_COUNT] = tv.row_index_page_count;
+    const size_t base = frame::S_TABLES + t * frame::TABLE_SLAB_STRIDE;
+    const size_t word = sizeof(uint32_t);
+    const size_t row_words = static_cast<size_t>(tv.row_count) * tv.words;
+    const size_t page_words = static_cast<size_t>(tv.row_index_page_count) * NVE_ROW_INDEX_PAGE_LEN;
+    const bool ok =
+        set_slab(env, s, slabs, base + frame::TS_ROWS, tv.rows, row_words * word) &&
+        set_slab(env, s, slabs, base + frame::TS_OWNERS, tv.owners, tv.owners != nullptr ? tv.row_count * word : 0u) &&
+        set_slab(env, s, slabs, base + frame::TS_DIRTY_ROWS, tv.dirty_rows, tv.dirty_count * word) &&
+        set_slab(env, s, slabs, base + frame::TS_ROW_INDEX_DIR, tv.row_index_dir, tv.row_index_dir_len * word) &&
+        set_slab(env, s, slabs, base + frame::TS_ROW_INDEX_PAGES, tv.row_index_pages, page_words * word);
+    if (!ok) return false;
+  }
+  // Only tables that disappeared since the previous frame still hold stale buffers.
+  const size_t stale_end = frame::S_TABLES + static_cast<size_t>(s.prev_table_count) * frame::TABLE_SLAB_STRIDE;
+  for (size_t slot = frame::S_TABLES + v.table_count * frame::TABLE_SLAB_STRIDE; slot < stale_end; ++slot) {
+    if (!set_slab(env, s, slabs, slot, nullptr, 0u)) return false;
+  }
+  s.prev_table_count = v.table_count;
+  env->SetLongArrayRegion(header, 0, static_cast<jsize>(frame::H_TABLES + v.table_count * frame::TABLE_HEADER_STRIDE), h);
+  return !clear_exception(env);
 }
 
 }  // namespace
@@ -68,9 +140,9 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env,
                                                                    jlongArray header, jobjectArray slabs) {
   AndroidSurface* s = surface_of(handle);
   if (s == nullptr || header == nullptr || slabs == nullptr) return NVE_RUNTIME_INVALID_ARG;
-  if (static_cast<size_t>(env->GetArrayLength(header)) < kHeaderLen ||
-      static_cast<size_t>(env->GetArrayLength(slabs)) < kSlabsLen) {
-    s->last_error = "acquireScene needs RuntimeSceneReader.HEADER_LEN / SLABS_LEN arrays";
+  if (static_cast<size_t>(env->GetArrayLength(header)) < frame::HEADER_LEN ||
+      static_cast<size_t>(env->GetArrayLength(slabs)) < frame::SLABS_LEN) {
+    s->last_error = "acquireScene needs NveJniFrame.HEADER_LEN / SLABS_LEN arrays";
     return NVE_RUNTIME_INVALID_ARG;
   }
   s->scene.reset();
@@ -83,58 +155,18 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env,
                     std::to_string(static_cast<int>(scene_error)) + ")";
     return NVE_RUNTIME_ERROR;
   }
-  const nve::host::RuntimeSceneReader& r = s->scene->reader();
-  const NveRuntimeSceneView& v = s->scene->raw();
-  if (v.table_count > nve::android::kMaxTables) {
+  if (s->scene->raw().table_count > frame::MAX_TABLES) {
     s->scene.reset();
-    s->last_error = "scene publishes more than 128 tables";
+    s->last_error = "scene publishes more than NveJniFrame.MAX_TABLES tables";
     return NVE_RUNTIME_ERROR;
   }
-
-  jlong h[kHeaderLen];
-  h[0] = static_cast<jlong>(v.schema_hash);
-  h[1] = static_cast<jlong>(v.frame_id);
-  h[2] = v.node_capacity;
-  h[3] = v.dirty_count;
-  h[4] = v.removed_count;
-  h[5] = v.text_slab_len;
-  h[6] = v.children_slab_len;
-  h[7] = v.table_count;
-  h[nve::android::kHeaderSceneEpoch] = v.scene_epoch;
-  h[nve::android::kHeaderDirtyResourceCount] = v.dirty_resource_count;
-  auto set_slab = [&](size_t slot, const void* ptr, size_t len) {
-    env->SetObjectArrayElement(slabs, static_cast<jsize>(slot), s->slabs[slot].sync(env, ptr, len));
-  };
-  set_slab(nve::android::kSlabRows, r.rows().data(), bytes_of(r.rows()));
-  set_slab(nve::android::kSlabRects, r.rects().data(), bytes_of(r.rects()));
-  set_slab(nve::android::kSlabText, r.text_slab().data(), r.text_slab().size());
-  set_slab(nve::android::kSlabChildren, r.children_slab().data(), bytes_of(r.children_slab()));
-  set_slab(nve::android::kSlabDirty, r.dirty_indices().data(), bytes_of(r.dirty_indices()));
-  set_slab(nve::android::kSlabRemoved, r.removed_ids().data(), bytes_of(r.removed_ids()));
-  set_slab(nve::android::kSlabDirtyResources, r.dirty_resources().data(), bytes_of(r.dirty_resources()));
-  for (uint32_t t = 0u; t < v.table_count; ++t) {
-    const NveTableView& tv = v.tables[t];
-    jlong* th = h + kHeaderTables + t * kHeaderTableStride;
-    th[0] = static_cast<jlong>((static_cast<uint64_t>(tv.key_hi) << 32u) | tv.key_lo);
-    th[1] = tv.slot;
-    th[2] = tv.words;
-    th[3] = tv.row_count;
-    th[4] = tv.dirty_count;
-    const size_t base = kSlabTables + t * kSlabTableStride;
-    const size_t row_words = static_cast<size_t>(tv.row_count) * tv.words;
-    set_slab(base, tv.rows, row_words * sizeof(uint32_t));
-    set_slab(base + 1u, tv.owners, tv.owners != nullptr ? tv.row_count * sizeof(uint32_t) : 0u);
-    set_slab(base + 2u, tv.dirty_rows, tv.dirty_count * sizeof(uint32_t));
-  }
-  // Tables that disappeared since the last frame drop their stale buffers.
-  for (size_t slot = kSlabTables + v.table_count * kSlabTableStride; slot < kSlabsLen; ++slot) {
-    set_slab(slot, nullptr, 0u);
-  }
-  env->SetLongArrayRegion(header, 0, static_cast<jsize>(kHeaderTables + v.table_count * kHeaderTableStride), h);
-  if (env->ExceptionCheck()) {  // e.g. a slab array of the wrong element type
-    env->ExceptionClear();
+  if (!pack(env, *s, header, slabs)) {
+    // A partially filled `slabs` array may reference buffers of the cache: drop them all so the
+    // next acquire re-fills every slot from scratch.
     s->scene.reset();
-    s->last_error = "acquireScene could not fill the packed frame arrays";
+    nve::android::release_buffers(*s, env);
+    s->prev_table_count = static_cast<uint32_t>(frame::MAX_TABLES);
+    s->last_error = "acquireScene could not fill the packed frame arrays (wrong array type or out of memory)";
     return NVE_RUNTIME_INVALID_ARG;
   }
   s->last_error.clear();
@@ -161,7 +193,7 @@ JNIEXPORT jobject JNICALL Java_dev_nve_host_NativeRuntime_resource(JNIEnv* env, 
   static uint8_t empty = 0u;  // non-null address: some JVMs reject `NewDirectByteBuffer(NULL, 0)`
   void* data = res->bytes.empty() ? &empty : const_cast<uint8_t*>(res->bytes.data());
   jobject buf = env->NewDirectByteBuffer(data, static_cast<jlong>(res->bytes.size()));
-  if (buf == nullptr && env->ExceptionCheck()) env->ExceptionClear();
+  if (buf == nullptr) clear_exception(env);
   return buf;
 }
 

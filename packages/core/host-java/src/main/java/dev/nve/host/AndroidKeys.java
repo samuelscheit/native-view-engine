@@ -50,11 +50,12 @@ public final class AndroidKeys {
     /**
      * W3C {@code key}: the produced character for printable keys ({@code unicodeChar} from
      * {@code KeyEvent.getUnicodeChar()}, already shifted), else the named key, else
-     * {@code "Unidentified"}.
+     * {@code "Unidentified"}. Surrogate code points (never characters on their own) and the
+     * {@code COMBINING_ACCENT} flag bit are not printable characters.
      */
     public static String key(int keyCode, int unicodeChar) {
         if (unicodeChar > 0x1F && unicodeChar != 0x7F && Character.isValidCodePoint(unicodeChar)
-                && (unicodeChar & 0x80000000) == 0) {
+                && (unicodeChar < Character.MIN_SURROGATE || unicodeChar > Character.MAX_SURROGATE)) {
             return new String(Character.toChars(unicodeChar));
         }
         final String named = named(keyCode);

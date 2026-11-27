@@ -22,6 +22,13 @@ final class TableSceneTest {
         return b;
     }
 
+    /** One row-index page: node index {@code owners[r]} maps to {@code r + 1}. */
+    static ByteBuffer sparseIndexPage(int... nodeIndexes) {
+        final int[] page = new int[dev.nve.host.generated.NveAbi.ROW_INDEX_PAGE_LEN];
+        for (int r = 0; r < nodeIndexes.length; r++) page[nodeIndexes[r]] = r + 1;
+        return words(page);
+    }
+
     static ByteBuffer rows() {
         return words(
                 200 | (0xFFD << 8) | (1 << 20), 0x42480001, 0x80402010, 0, 3, Float.floatToRawIntBits(1.5f),
@@ -44,7 +51,7 @@ final class TableSceneTest {
         }
         c.throwsA(IllegalArgumentException.class, () -> FieldSpec.word(31, FieldKind.STR), "string past word 31");
         c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(0, 0, 8, null), "null kind");
-        final TableReader t = new TableReader().attach(VISUAL, 0, 6, 2, rows(), null, null, 0);
+        final TableReader t = new TableReader().attach(VISUAL, 0, 6, 2, rows(), null, null, 0, null, 0, null, 0);
         c.throwsA(IndexOutOfBoundsException.class, () -> t.u32(0, FieldSpec.word(6, FieldKind.U32)), "field past row");
         c.throwsA(IndexOutOfBoundsException.class, () -> t.i32(0, FieldSpec.word(31, FieldKind.I32)), "i32 field past row");
         c.throwsA(IndexOutOfBoundsException.class, () -> t.strOffset(0, FieldSpec.word(3, FieldKind.U32)), "strOffset of a non-string spec");
@@ -72,10 +79,12 @@ final class TableSceneTest {
         c.eq(Rgba.g(0x80402010), 0x20, "g");
         c.eq(Rgba.b(0x80402010), 0x40, "b");
         c.eq(Rgba.a(0x80402010), 0x80, "a");
+        c.eq(Rgba.toArgb(0x80402010), 0x80102040, "RGBA8888 -> ARGB8888");
+        c.eq(Rgba.toArgb(0xFF0000FF), 0xFFFF0000, "opaque red");
     }
 
     static void denseTable(Check c) {
-        final TableReader t = new TableReader().attach(VISUAL, 4, 6, 2, rows(), null, words(1), 1);
+        final TableReader t = new TableReader().attach(VISUAL, 4, 6, 2, rows(), null, words(1), 1, null, 0, null, 0);
         c.that(!t.isSparse() && t.key().equals(VISUAL) && t.slot() == 4, "dense header");
         c.eq(t.u32(0, OPACITY), 200, "opacity");
         c.eq(t.i32(0, Z), -3, "z -3");
@@ -100,19 +109,43 @@ final class TableSceneTest {
         // Non-zero buffer position: reads are relative to it.
         final ByteBuffer shifted = words(0xDEAD, 7, 8);
         shifted.position(4);
-        c.eq(new TableReader().attach(VISUAL, 0, 2, 1, shifted, null, null, 0).word(0, 1), 8, "position-relative");
+        c.eq(new TableReader().attach(VISUAL, 0, 2, 1, shifted, null, null, 0, null, 0, null, 0).word(0, 1), 8, "position-relative");
     }
 
     static void sparseAndInvalid(Check c) {
-        final TableReader t = new TableReader().attach(Key64.of(1L), 0, 2, 2, words(1, 2, 3, 4), words(0x00010007, 0x00020003), null, 0);
-        c.that(t.isSparse(), "sparse");
-        c.eq(t.rowOf(0x00020003), 1, "sparse rowOf");
+        // Rows owned by index 7 (generation 1) and index 3 (generation 2), with the published index.
+        final TableReader t = new TableReader().attach(Key64.of(1L), 0, 2, 2, words(1, 2, 3, 4),
+                words(0x01000007, 0x02000003), null, 0, words(0), 1, sparseIndexPage(7, 3), 1);
+        c.that(t.isSparse() && t.isAttached(), "sparse");
+        c.eq(t.rowOf(0x02000003), 1, "sparse rowOf");
+        c.eq(t.rowOf(0x01000003), -1, "sparse rowOf checks the generation");
         c.eq(t.rowOf(1), -1, "sparse miss");
-        c.eq(t.owner(0), 0x00010007, "sparse owner");
-        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 2, 3, words(1, 2, 3, 4), null, null, 0), "short rows");
-        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 33, 0, null, null, null, 0), "33 words");
-        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 0, 0, null, null, null, 0), "0 words");
-        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 2, 2, words(1, 2, 3, 4), words(1), null, 0), "short owners");
-        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 2, 0, null, null, null, 2), "null dirty");
+        c.eq(t.rowOfNode(7), 0, "O(1) row of node index");
+        c.eq(t.rowOfNode(256), -1, "index past the directory");
+        c.eq(t.rowOfNode(-1), -1, "negative index");
+        c.eq(t.owner(0), 0x01000007, "sparse owner");
+        final TableReader noPage = new TableReader().attach(Key64.of(1L), 0, 2, 2, words(1, 2, 3, 4),
+                words(0x01000007, 0x02000003), null, 0, words(-1), 1, sparseIndexPage(7, 3), 1);
+        c.eq(noPage.rowOfNode(7), -1, "NO_PAGE directory slot");
+        final TableReader lying = new TableReader().attach(Key64.of(1L), 0, 2, 1, words(1, 2),
+                words(0x01000007), null, 0, words(0), 1, sparseIndexPage(3, 7), 1);
+        c.eq(lying.rowOfNode(7), -1, "an index entry past row_count is rejected");
+        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(Key64.of(1L), 0, 2, 2, words(1, 2, 3, 4),
+                words(0x01000007, 0x02000003), null, 0, words(0), 1, words(0, 1), 1), "short index pages");
+        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(Key64.of(1L), 0, 2, 2, words(1, 2, 3, 4),
+                words(0x01000007, 0x02000003), null, 0, null, 1, sparseIndexPage(7, 3), 1), "null index dir");
+
+        // Detached: every read throws, even through a reference retained past the frame.
+        t.detach();
+        c.that(!t.isAttached() && t.rowCount() == 0 && !t.isSparse(), "detach drops counts and buffers");
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.word(0, 0), "detached word");
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.owner(0), "detached owner");
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.dirtyRow(0), "detached dirty row");
+        c.eq(t.rowOf(0x02000003), -1, "detached rowOf misses");
+        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 2, 3, words(1, 2, 3, 4), null, null, 0, null, 0, null, 0), "short rows");
+        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 33, 0, null, null, null, 0, null, 0, null, 0), "33 words");
+        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 0, 0, null, null, null, 0, null, 0, null, 0), "0 words");
+        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 2, 2, words(1, 2, 3, 4), words(1), null, 0, null, 0, null, 0), "short owners");
+        c.throwsA(IllegalArgumentException.class, () -> new TableReader().attach(VISUAL, 0, 2, 0, null, null, null, 2, null, 0, null, 0), "null dirty");
     }
 }

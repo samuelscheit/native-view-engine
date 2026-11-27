@@ -64,7 +64,7 @@ public final class SceneSemantics {
     public static boolean pressable(RuntimeSceneReader s, Tables t, int index) {
         final int r = s.rowOf(t.interaction, index);
         return r >= 0 && !t.interaction.bool(r, NveTables.Interaction.DISABLED)
-                && (t.interaction.u32(r, NveTables.Interaction.EVENT_MASK) & NveTables.Interaction.EVENT_MASK_PRESS) != 0;
+                && (t.interaction.u32(r, NveTables.Interaction.EVENT_MASK) & NveTables.Values.EventMask.PRESS) != 0;
     }
 
     /** {@code v} when finite, else {@code fallback} (hostile / corrupt rows never reach the UI as NaN). */
@@ -78,8 +78,8 @@ public final class SceneSemantics {
             Float.intBitsToFloat(NveTables.Typography.FONT_SIZE.extract(TYPO_DEFAULTS[NveTables.Typography.FONT_SIZE.word]));
     public static final int DEFAULT_FONT_WEIGHT =
             NveTables.Typography.FONT_WEIGHT.extract(TYPO_DEFAULTS[NveTables.Typography.FONT_WEIGHT.word]);
-    private static final int STYLE_FIELDS = NveTables.Typography.SET_COLOR | NveTables.Typography.SET_FONT_SIZE
-            | NveTables.Typography.SET_FONT_WEIGHT | NveTables.Typography.SET_FONT_STYLE | NveTables.Typography.SET_TEXT_ALIGN;
+    private static final int STYLE_FIELDS = NveTables.Values.TypographySet.COLOR | NveTables.Values.TypographySet.FONT_SIZE
+            | NveTables.Values.TypographySet.FONT_WEIGHT | NveTables.Values.TypographySet.FONT_STYLE | NveTables.Values.TypographySet.TEXT_ALIGN;
 
     /** Inherited text style: explicit fields (by {@code SET_*} bit) win, ancestors fill the rest. */
     public static final class TextStyle {
@@ -98,23 +98,23 @@ public final class SceneSemantics {
             fontSize = DEFAULT_FONT_SIZE;
             fontWeight = DEFAULT_FONT_WEIGHT;
             italic = false;
-            align = NveTables.Typography.TEXT_ALIGN_START;
+            align = NveTables.Values.TextAlign.START;
             final TableReader ty = t.typography;
             int pending = STYLE_FIELDS;
             for (int i = index, steps = 0; ty != null && i > 0 && pending != 0 && steps < s.nodeCapacity(); steps++) {
                 final int r = s.rowOf(ty, i);
                 if (r >= 0) {
                     final int set = ty.u32(r, NveTables.Typography.SET) & pending;
-                    if ((set & NveTables.Typography.SET_COLOR) != 0) color = ty.color(r, NveTables.Typography.COLOR);
-                    if ((set & NveTables.Typography.SET_FONT_SIZE) != 0) {
+                    if ((set & NveTables.Values.TypographySet.COLOR) != 0) color = ty.color(r, NveTables.Typography.COLOR);
+                    if ((set & NveTables.Values.TypographySet.FONT_SIZE) != 0) {
                         final float size = ty.f32(r, NveTables.Typography.FONT_SIZE);
                         fontSize = size > 0f && Float.isFinite(size) ? size : DEFAULT_FONT_SIZE;
                     }
-                    if ((set & NveTables.Typography.SET_FONT_WEIGHT) != 0) fontWeight = ty.u32(r, NveTables.Typography.FONT_WEIGHT);
-                    if ((set & NveTables.Typography.SET_FONT_STYLE) != 0) {
-                        italic = ty.u32(r, NveTables.Typography.FONT_STYLE) == NveTables.Typography.FONT_STYLE_ITALIC;
+                    if ((set & NveTables.Values.TypographySet.FONT_WEIGHT) != 0) fontWeight = ty.u32(r, NveTables.Typography.FONT_WEIGHT);
+                    if ((set & NveTables.Values.TypographySet.FONT_STYLE) != 0) {
+                        italic = ty.u32(r, NveTables.Typography.FONT_STYLE) == NveTables.Values.FontStyle.ITALIC;
                     }
-                    if ((set & NveTables.Typography.SET_TEXT_ALIGN) != 0) align = ty.u32(r, NveTables.Typography.TEXT_ALIGN);
+                    if ((set & NveTables.Values.TypographySet.TEXT_ALIGN) != 0) align = ty.u32(r, NveTables.Typography.TEXT_ALIGN);
                     pending &= ~set;
                 }
                 final int parent = s.parent(i);

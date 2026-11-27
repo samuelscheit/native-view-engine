@@ -5,9 +5,9 @@ import dev.nve.host.FieldKind;
 import dev.nve.host.FieldSpec;
 import dev.nve.host.Key64;
 
-/** Word-table keys, schema hashes, default rows, and field specs for {@code TableReader}. */
-public final class NveTables {
-    private NveTables() {}
+/** {{ doc }} */
+public final class {{ class }} {
+    private {{ class }}() {}
 
     /** Key, row width, and field specs of one generated word table. */
     public static final class Info {
@@ -45,12 +45,6 @@ public final class NveTables {
         public static final int RESOURCE_WORDS = 0x{{ "{:08X}"|format(t.desc.resource_words) }};
 {%- for f in t.desc.fields %}
         public static final FieldSpec {{ spell::screaming(f.name) }} = new FieldSpec({{ f.word }}, {{ f.shift }}, {{ model::host_bits(f) }}, FieldKind.{{ model::kind::java(f.kind) }});
-{%- if let Some(vs) = f.values %}
-{%- let field = spell::screaming(f.name) %}
-{%- for (name, value) in vs.values %}
-        public static final int {{ field }}_{{ spell::screaming(name) }} = {{ value }};
-{%- endfor %}
-{%- endif %}
 {%- endfor %}
 
         /** A fresh copy of the default row. */
@@ -61,6 +55,22 @@ public final class NveTables {
         }
     }
 {%- endfor %}
+
+
+    /** Named field value sets ({@code word_enum!} variants, flag bits), one class per set. */
+    public static final class Values {
+        private Values() {}
+{%- for s in value_sets %}
+
+        /** {@code {{ s.name }}} field values. */
+        public static final class {{ s.name }} {
+            private {{ s.name }}() {}
+{%- for (n, v) in s.values %}
+            public static final int {{ spell::screaming(n) }} = {{ v }};
+{%- endfor %}
+        }
+{%- endfor %}
+    }
 
     private static final Info[] ALL = {
 {%- for t in tables %}

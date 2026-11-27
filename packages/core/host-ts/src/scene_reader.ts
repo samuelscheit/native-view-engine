@@ -22,6 +22,11 @@ export interface TableViewLayout {
   readonly rows: number;
   readonly owners: number;
   readonly dirtyRows: number;
+  /** ABI v4 sparse row index (`NveTableView::row_index_*`): offsets of its two counts and slabs. */
+  readonly rowIndexDirLen: number;
+  readonly rowIndexPageCount: number;
+  readonly rowIndexDir: number;
+  readonly rowIndexPages: number;
 }
 
 /** Byte offsets of `NveSceneView` fields inside wasm32 linear memory, plus the node stride. */

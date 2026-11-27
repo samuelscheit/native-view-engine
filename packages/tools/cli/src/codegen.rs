@@ -145,7 +145,7 @@ pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBu
     let mut files = nve_codegen::generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS)
         .map_err(|e| format!("ABI codegen failed: {e}"))?;
     files.extend(module_table_headers().map_err(|e| format!("module table codegen failed: {e}"))?);
-    files.extend(nve_codegen::generate_java_host_files(CANVAS_TABLES));
+    files.extend(nve_codegen::generate_java_host_files(CANVAS_TABLES).map_err(|e| format!("Java host codegen failed: {e}"))?);
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
 }
 

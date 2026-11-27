@@ -22,12 +22,19 @@ final class TableViewLayout {
     required this.words,
     required this.rowCount,
     required this.dirtyCount,
+    required this.rowIndexDirLen,
+    required this.rowIndexPageCount,
     required this.rows,
     required this.owners,
     required this.dirtyRows,
+    required this.rowIndexDir,
+    required this.rowIndexPages,
   });
 
   final int stride, keyLo, keyHi, slot, words, rowCount, dirtyCount, rows, owners, dirtyRows;
+
+  /// ABI v4 sparse row index (`NveTableView::row_index_*`): offsets of its two counts and slabs.
+  final int rowIndexDirLen, rowIndexPageCount, rowIndexDir, rowIndexPages;
 }
 
 /// Byte offsets of `NveSceneView` fields inside wasm32 linear memory (pointers are u32), plus the

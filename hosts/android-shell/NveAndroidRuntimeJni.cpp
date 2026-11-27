@@ -2,13 +2,12 @@
 // hit testing, scrolling, and pairing over `nve::host::RuntimeSession` (`libnve_runtime`).
 #include "NveAndroidSurface.hpp"
 
-#include <dlfcn.h>
-
 #include <cmath>
 #include <span>
 #include <utility>
 
 using nve::android::AndroidSurface;
+using nve::android::clear_exception;
 using nve::android::release_buffers;
 using nve::android::release_scene;
 using nve::android::status_of;
@@ -68,7 +67,7 @@ jstring java_string(JNIEnv* env, const uint8_t* p, size_t n) {
     i += need + 1u;
   }
   jstring str = env->NewString(reinterpret_cast<const jchar*>(out.data()), static_cast<jsize>(out.size()));
-  if (str == nullptr && env->ExceptionCheck()) env->ExceptionClear();
+  if (str == nullptr) clear_exception(env);
   return str;
 }
 
@@ -76,8 +75,11 @@ std::string utf8_of(JNIEnv* env, jstring str) {
   std::string out;
   if (env == nullptr || str == nullptr) return out;
   const jsize n = env->GetStringLength(str);
-  const jchar* chars = env->GetStringCritical(str, nullptr);
-  if (chars == nullptr) return out;
+  // A plain copy, not `GetStringCritical`: no GC pinning, and allocation below is legal.
+  std::u16string units(static_cast<size_t>(n), u'\0');
+  if (n > 0) env->GetStringRegion(str, 0, n, reinterpret_cast<jchar*>(units.data()));
+  if (clear_exception(env)) return out;
+  const char16_t* chars = units.data();
   out.reserve(static_cast<size_t>(n));
   for (jsize i = 0; i < n; ++i) {
     uint32_t cp = chars[i];
@@ -103,7 +105,6 @@ std::string utf8_of(JNIEnv* env, jstring str) {
       out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
     }
   }
-  env->ReleaseStringCritical(str, chars);
   return out;
 }
 
@@ -112,13 +113,6 @@ std::string utf8_of(JNIEnv* env, jstring str) {
 namespace {
 
 float positive_or(float v, float fallback) noexcept { return std::isfinite(v) && v > 0.0f ? v : fallback; }
-
-void close_library(void*& lib) noexcept {
-  if (lib != nullptr) {
-    dlclose(lib);
-    lib = nullptr;
-  }
-}
 
 }  // namespace
 
@@ -139,18 +133,25 @@ JNIEXPORT jlong JNICALL Java_dev_nve_host_NativeRuntime_create(JNIEnv* env, jcla
   return reinterpret_cast<jlong>(s);
 }
 
-JNIEXPORT void JNICALL Java_dev_nve_host_NativeRuntime_destroy(JNIEnv* env, jclass, jlong handle) {
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_destroy(JNIEnv* env, jclass, jlong handle) {
   AndroidSurface* s = surface_of(handle);
-  if (s == nullptr) return;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (std::this_thread::get_id() != s->owner_thread) {
+    // Freeing the surface (and the app it runs) under its owner thread would be a use-after-free:
+    // refuse and leak instead. The runtime would refuse the owner-thread calls anyway.
+    s->last_error = "destroy must run on the thread that created the surface";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   release_buffers(*s, env);
-  // Drain in-flight wake / measure calls before their Java targets go away.
+  // Drain in-flight wake / measure calls before their Java targets go away; the runtime drops
+  // the app and unloads its module (`load_app_module`) in `reset`.
   (void)s->session.clear_wake_callback();
   s->session.reset();
-  close_library(s->app_library);
   s->wake.release(env);
   s->measurer.release(env);  // the runtime (and its measurer hook) is gone: no call can race this
   if (s->measure_out != nullptr && env != nullptr) env->DeleteGlobalRef(s->measure_out);
   delete s;
+  return NVE_RUNTIME_OK;
 }
 
 JNIEXPORT jstring JNICALL Java_dev_nve_host_NativeRuntime_lastError(JNIEnv* env, jclass, jlong handle) {
@@ -159,43 +160,21 @@ JNIEXPORT jstring JNICALL Java_dev_nve_host_NativeRuntime_lastError(JNIEnv* env,
   return nve::android::java_string(env, reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
 }
 
-JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_attachApp(JNIEnv* env, jclass, jlong handle, jstring so_path) {
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_attachApp(JNIEnv* env, jclass, jlong handle, jstring so_path,
+                                                                jboolean carry_state) {
   AndroidSurface* s = surface_of(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
-  const std::string path = utf8_of(env, so_path);
-  void* lib = path.empty() ? nullptr : dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-  if (lib == nullptr) {
-    const char* why = dlerror();
-    s->last_error = "dlopen(" + path + ") failed: " + (why != nullptr ? why : "empty path");
-    return NVE_RUNTIME_NOT_FOUND;
-  }
-  auto get_iface = reinterpret_cast<NveGetInterfaceFn>(dlsym(lib, "nve_get_interface"));
-  if (get_iface == nullptr) {
-    dlclose(lib);
-    s->last_error = path + " exports no nve_get_interface";
-    return NVE_RUNTIME_NOT_FOUND;
-  }
-  const NveRuntimeStatus st = s->session.attach_app_interface(get_iface);
-  if (st != NVE_RUNTIME_OK) {
-    dlclose(lib);  // the previous app (if any) stays attached
-    return status_of(*s, st);
-  }
-  // The runtime dropped the previous app instance inside `attach`: its code is unreferenced now.
-  close_library(s->app_library);
-  s->app_library = lib;
-  s->last_error.clear();
-  return NVE_RUNTIME_OK;
+  // The runtime owns the module (`load_app_module`): it unloads an old module only after its app
+  // is destroyed, so no host-side `dlclose` can ever race a live app.
+  return status_of(*s, s->session.load_app_module(utf8_of(env, so_path), carry_state == JNI_TRUE));
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_detachApp(JNIEnv* env, jclass, jlong handle) {
   AndroidSurface* s = surface_of(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
-  const NveRuntimeStatus st = s->session.detach_app();
-  if (st != NVE_RUNTIME_OK) return status_of(*s, st);
-  close_library(s->app_library);
-  return status_of(*s, st);
+  return status_of(*s, s->session.detach_app());
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_submitFrame(JNIEnv* env, jclass, jlong handle, jobject buf,

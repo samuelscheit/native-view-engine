@@ -30,7 +30,7 @@ public final class EventsJniTest {
         Files.deleteIfExists(log);
         final long h = NativeRuntime.create(5, 360f, 800f, 1f);
         final Fixtures.Scene scene = new Fixtures.Scene(h);
-        c.eq(NativeRuntime.attachApp(h, args[1]), 0, "attach showcase app");
+        c.eq(NativeRuntime.attachApp(h, args[1], false), 0, "attach showcase app");
         final int[] out = new int[1];
         c.eq(NativeRuntime.tick(h, 0f, out), 0, "first render");
         c.eq(title(scene, fx), "Hello NVE", "first frame");
@@ -79,9 +79,24 @@ public final class EventsJniTest {
         c.eq(NativeRuntime.dispatchEvents(h, bad, 22, out), NveRuntimeAbi.STATUS_INVALID_ARG, "unknown payload tag");
         bad.putInt(0, 0x7FFFFFFF);
         c.eq(NativeRuntime.dispatchEvents(h, bad, 22, out), NveRuntimeAbi.STATUS_INVALID_ARG, "count past the ring");
+        bad.putInt(0, 1).put(21, (byte) 0);
+        for (int kind : new int[] {0, NveAbi.EVENT_TABLE_EVENT + 1, 0xFF}) {
+            bad.put(20, (byte) kind);
+            c.eq(NativeRuntime.dispatchEvents(h, bad, 22, out), NveRuntimeAbi.STATUS_INVALID_ARG, "unknown event kind " + kind);
+        }
+        // TEXT payload `u32 len = 2` + bytes 0xC3 0x28 (a broken 2-byte sequence) is not UTF-8.
+        bad.put(20, (byte) NveAbi.EVENT_TEXT_CHANGE).put(21, (byte) 3).putInt(22, 2).put(26, (byte) 0xC3).put(27, (byte) 0x28);
+        c.eq(NativeRuntime.dispatchEvents(h, bad, 28, out), NveRuntimeAbi.STATUS_INVALID_ARG, "malformed UTF-8 text");
+        // CUSTOM payload: `u16 name len = 1` + 0xFF name + `u32 data len = 0`.
+        bad.put(20, (byte) NveAbi.EVENT_CUSTOM).put(21, (byte) 5).putShort(22, (short) 1).put(24, (byte) 0xFF).putInt(25, 0);
+        c.eq(NativeRuntime.dispatchEvents(h, bad, 29, out), NveRuntimeAbi.STATUS_INVALID_ARG, "malformed UTF-8 custom name");
         ring.reset().empty(NveAbi.EVENT_BLUR, fx.id("input"), 1L);
         c.eq(NativeRuntime.dispatchEvents(h, ring.buffer(), ring.length() + 1, out), NveRuntimeAbi.STATUS_INVALID_ARG, "trailing byte");
         c.eq(Files.size(log), before, "rejected rings never reach the app");
+        bad.put(24, (byte) 'x');
+        c.eq(NativeRuntime.dispatchEvents(h, bad, 29, out), 0, "the same custom event with a UTF-8 name is accepted");
+        final long accepted = Files.size(log);
+        c.that(accepted > before, "the accepted custom event reached the app");
         ring.reset();
         c.eq(NativeRuntime.dispatchEvents(h, ring.buffer(), ring.length(), out), 0, "empty ring is valid");
         c.eq(out[0], 0, "empty ring changes nothing");

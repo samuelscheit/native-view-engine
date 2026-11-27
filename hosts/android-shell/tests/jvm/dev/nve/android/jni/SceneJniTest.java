@@ -10,6 +10,7 @@ import dev.nve.host.RuntimeSurface;
 import dev.nve.host.SceneSemantics;
 import dev.nve.host.TableReader;
 import dev.nve.host.generated.NveAbi;
+import dev.nve.host.generated.NveJniFrame;
 import dev.nve.host.generated.NveModuleTables;
 import dev.nve.host.generated.NveRuntimeAbi;
 import dev.nve.host.generated.NveTables;
@@ -86,7 +87,7 @@ public final class SceneJniTest {
         c.eq(str(s, NveTables.Accessibility.KEY, input, NveTables.Accessibility.LABEL), "Password", "a11y label");
         final int button = fx.id("button");
         c.eq(table(s, NveTables.Accessibility.KEY).u32(row(s, NveTables.Accessibility.KEY, button), NveTables.Accessibility.ROLE),
-                NveTables.Accessibility.ROLE_BUTTON, "button role");
+                NveTables.Values.AriaRole.BUTTON, "button role");
         c.eq(str(s, NveTables.DebugId.KEY, button, NveTables.DebugId.TEST_ID), "submit-btn", "test id");
         semantics(c, fx, s);
         c.that(s.primaryTable(s.resolve(fx.id("scroll"))) != null, "scroll container realizes a table");
@@ -99,11 +100,11 @@ public final class SceneJniTest {
         final TableReader image = table(s, NveTables.Image.KEY);
         final int ir = s.rowOf(image, s.resolve(fx.id("image")));
         c.eq(image.u32(ir, NveTables.Image.SRC), fx.id("logo_res"), "image src id");
-        c.eq(image.u32(ir, NveTables.Image.FIT), NveTables.Image.FIT_CONTAIN, "image fit");
+        c.eq(image.u32(ir, NveTables.Image.FIT), NveTables.Values.ImageFit.CONTAIN, "image fit");
         final long[] kf = new long[1];
         final ByteBuffer logo = NativeRuntime.resource(h, fx.id("logo_res"), kf);
         c.that(logo != null && kf[0] == ImageSource.KIND.value(), "image resource kind");
-        c.eq(s.sceneEpoch() != 0 || s.frameId() > 0, true, "frame header");
+        final int keyframeEpoch = s.sceneEpoch();
         final List<Integer> createdRes = new ArrayList<>();
         for (int i = 0; i < s.dirtyResourceCount(); i++) createdRes.add(s.dirtyResource(i));
         c.that(createdRes.contains(fx.id("logo_res")) && createdRes.contains(fx.id("canvas_res")), "keyframe resources are dirty: " + createdRes);
@@ -122,6 +123,7 @@ public final class SceneJniTest {
         final ByteBuffer f2 = fx.frame("showcase_2.nve2");
         c.eq(NativeRuntime.submitFrame(h, f2, f2.remaining()), 0, "submit delta");
         s = scene.acquire();
+        c.eq(s.sceneEpoch(), keyframeEpoch, "a delta stays in the keyframe's epoch");
         c.eq(str(s, NveTables.Text.KEY, title, NveTables.Text.TEXT), "Hello again", "edited text");
         final List<Integer> removed = new ArrayList<>();
         for (int i = 0; i < s.removedCount(); i++) removed.add(s.removedId(i));
@@ -142,6 +144,7 @@ public final class SceneJniTest {
             c.that(NativeRuntime.resource(h, fx.id("logo_res"), kf) == null, "released image resource is gone");
         }
         scene.release();
+        recycledAndEphemeral(c, fx, h, scene, keyframeEpoch);
 
         // Bad input never crashes: heap buffer, short length, corrupt bytes.
         c.eq(NativeRuntime.submitFrame(h, ByteBuffer.allocate(8), 8), NveRuntimeAbi.STATUS_INVALID_ARG, "heap buffer rejected");
@@ -150,7 +153,60 @@ public final class SceneJniTest {
         c.that(NativeRuntime.submitFrame(h, junk, 32) != 0, "corrupt frame rejected");
         c.that(!NativeRuntime.lastError(h).isEmpty(), "corrupt frame explains itself");
         c.eq(NativeRuntime.acquireScene(h, new long[3], new ByteBuffer[3]), NveRuntimeAbi.STATUS_INVALID_ARG, "short packed arrays");
-        NativeRuntime.destroy(h);
+        c.eq(NativeRuntime.acquireScene(h, new long[NveJniFrame.HEADER_LEN - 1], new ByteBuffer[NveJniFrame.SLABS_LEN]),
+                NveRuntimeAbi.STATUS_INVALID_ARG, "a header one word short of NveJniFrame.HEADER_LEN");
+        final RuntimeSceneReader repacked = scene.acquire();
+        c.that(repacked.resolve(title) > 0, "a full frame follows a rejected acquire");
+        scene.release();
+        threadAffinity(c, h);
+        c.eq(NativeRuntime.destroy(h), NveRuntimeAbi.STATUS_OK, "destroy on the owner thread");
+    }
+
+    /** `destroy` from another thread is refused (the surface is not freed under its owner). */
+    static void threadAffinity(Expect c, long h) throws Exception {
+        final int[] status = {-1};
+        final Thread other = new Thread(() -> status[0] = NativeRuntime.destroy(h));
+        other.start();
+        other.join();
+        c.eq(status[0], NveRuntimeAbi.STATUS_INVALID_ARG, "off-thread destroy is refused");
+        c.that(NativeRuntime.lastError(h).contains("thread"), "off-thread destroy explains itself");
+        c.eq(NativeRuntime.tick(h, 0f, null), 0, "the surface survives a refused destroy");
+    }
+
+    /**
+     * `dirty_resources` through JNI for ids whose bytes change without a new id: a freed id
+     * recycled by a new image source, and an ephemeral draw list rewritten in place.
+     */
+    static void recycledAndEphemeral(Expect c, Fixtures fx, long h, Fixtures.Scene scene, int epoch) throws Exception {
+        final ByteBuffer f3 = fx.frame("showcase_3.nve2");
+        c.eq(NativeRuntime.submitFrame(h, f3, f3.remaining()), 0, "submit recycle frame");
+        RuntimeSceneReader s = scene.acquire();
+        c.eq(s.sceneEpoch(), epoch, "recycling stays in the epoch");
+        final int recycled = fx.id("recycled_res");
+        final int eph = fx.id("canvas_eph_res");
+        c.eq(recycled, fx.id("logo_res"), "the fixture recycles the freed logo id");
+        c.that(s.isResourceDirty(recycled), "a recycled id is dirty");
+        c.that(s.isResourceDirty(eph) && !s.isResourceDirty(fx.id("hero_res")), "new ephemeral id dirty, untouched hero clean");
+        final long[] kf = new long[1];
+        final ByteBuffer img = NativeRuntime.resource(h, recycled, kf);
+        c.eq(img == null ? null : ImageSource.decode(img).url, "asset://recycled.png", "the recycled id serves its new bytes");
+        final ByteBuffer d3 = NativeRuntime.resource(h, eph, kf);
+        final byte[] before = new byte[d3 == null ? 0 : d3.remaining()];
+        if (d3 != null) d3.get(before);
+        scene.release();
+
+        final ByteBuffer f4 = fx.frame("showcase_4.nve2");
+        c.eq(NativeRuntime.submitFrame(h, f4, f4.remaining()), 0, "submit ephemeral rewrite");
+        s = scene.acquire();
+        c.eq(s.dirtyResourceCount(), 1, "only the rewritten ephemeral id is dirty");
+        c.that(s.isResourceDirty(eph), "an in-place ephemeral rewrite keeps its id and is dirty");
+        final ByteBuffer d4 = NativeRuntime.resource(h, eph, kf);
+        final byte[] after = new byte[d4 == null ? 0 : d4.remaining()];
+        if (d4 != null) d4.get(after);
+        c.that(before.length > 0 && !java.util.Arrays.equals(before, after), "the same id carries new draw-list bytes");
+        c.eq(table(s, NveModuleTables.Canvas.KEY).u32(row(s, NveModuleTables.Canvas.KEY, fx.id("canvas")), NveModuleTables.Canvas.DRAW_LIST),
+                eph, "canvas row points at the ephemeral id");
+        scene.release();
     }
 
     /** {@link SceneSemantics} over real tables: kinds, pressability, and inherited typography. */
@@ -167,11 +223,11 @@ public final class SceneJniTest {
         final SceneSemantics.TextStyle st = new SceneSemantics.TextStyle();
         st.resolve(s, t, s.resolve(fx.id("row0")));
         c.that(Rgba.r(st.color) == 1 && Rgba.g(st.color) == 2 && Rgba.b(st.color) == 3, "row inherits the column color");
-        c.that(st.italic && st.align == NveTables.Typography.TEXT_ALIGN_CENTER, "row inherits italic + center through the scroll");
+        c.that(st.italic && st.align == NveTables.Values.TextAlign.CENTER, "row inherits italic + center through the scroll");
         c.that(st.fontSize == SceneSemantics.DEFAULT_FONT_SIZE && st.fontWeight == SceneSemantics.DEFAULT_FONT_WEIGHT, "unset fields keep defaults");
         st.resolve(s, t, s.resolve(fx.id("title")));
         c.that(Rgba.r(st.color) == 248 && st.fontSize == 24f && st.fontWeight == 700, "explicit fields win");
-        c.that(st.italic && st.align == NveTables.Typography.TEXT_ALIGN_CENTER, "title inherits what it does not set");
+        c.that(st.italic && st.align == NveTables.Values.TextAlign.CENTER, "title inherits what it does not set");
         st.resolve(s, t, 0);
         c.that(st.fontSize == SceneSemantics.DEFAULT_FONT_SIZE, "null index resolves to defaults");
     }
@@ -257,24 +313,51 @@ public final class SceneJniTest {
         return out;
     }
 
+    static int epoch(Fixtures.Scene scene) {
+        final int e = scene.acquire().sceneEpoch();
+        scene.release();
+        return e;
+    }
+
     static void hotReload(Expect c, Path v1, Path v2, Path bad) {
         final long h = NativeRuntime.create(3, 400f, 400f, 1f);
         final Fixtures.Scene scene = new Fixtures.Scene(h);
-        c.eq(NativeRuntime.attachApp(h, v1.toString()), 0, "attach v1");
+        final int e0 = epoch(scene);
+        c.eq(NativeRuntime.attachApp(h, v1.toString(), false), 0, "attach v1 (runtime load_app_module)");
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick v1");
         c.eq(onlyText(scene), "generation one", "v1 renders");
-        c.eq(NativeRuntime.attachApp(h, v2.toString()), 0, "hot reload v2");
+        final int e1 = epoch(scene);
+        c.eq(e1, e0 + 1, "attaching an app starts a new epoch");
+        c.eq(NativeRuntime.attachApp(h, v2.toString(), true), 0, "hot reload v2 (carry state)");
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick v2");
         c.eq(onlyText(scene), "generation two", "v2 replaces v1");
-        c.that(NativeRuntime.attachApp(h, bad.toString()) != 0, "null interface rejected");
-        c.that(NativeRuntime.attachApp(h, "/nonexistent/libn\u00f6pe.so") == NveRuntimeAbi.STATUS_NOT_FOUND
-                && NativeRuntime.lastError(h).contains("dlopen(/nonexistent/libn\u00f6pe.so)"), "missing library, non-ASCII error survives JNI");
+        final int e2 = epoch(scene);
+        c.eq(e2, e1 + 1, "a hot reload starts a new epoch");
+        c.that(NativeRuntime.attachApp(h, bad.toString(), false) == NveRuntimeAbi.STATUS_UNSUPPORTED, "null surface interface rejected");
+        c.that(NativeRuntime.attachApp(h, "/nonexistent/libn\u00f6pe.so", false) == NveRuntimeAbi.STATUS_IO
+                && NativeRuntime.lastError(h).contains("/nonexistent/libn\u00f6pe.so"), "missing library, non-ASCII error survives JNI: " + NativeRuntime.lastError(h));
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick after failed reloads");
         c.eq(onlyText(scene), "generation two", "failed reloads keep the running app");
-        c.that(NativeRuntime.pairConnect(h, "ws://127.0.0.1:9/x", "t") == NveRuntimeAbi.STATUS_INVALID_ARG, "no pairing while an app runs");
+        c.eq(epoch(scene), e2, "failed reloads keep the epoch");
+
+        // Pairing replaces a running app atomically; an invalid URI keeps it.
+        c.eq(NativeRuntime.pairConnect(h, "not-a-url", "t"), NveRuntimeAbi.STATUS_INVALID_ARG, "invalid pairing URI rejected");
+        c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick after the rejected pairing");
+        c.eq(onlyText(scene), "generation two", "a rejected pairing keeps the running app");
+        c.eq(NativeRuntime.pairConnect(h, "ws://127.0.0.1:9/nve-wire", "t"), 0, "pairing replaces the running app");
+        c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick while pairing");
+        final int e3 = epoch(scene);
+        c.eq(e3, e2 + 1, "pairing starts a new epoch");
+        c.eq(onlyText(scene), null, "the app's scene is gone with the app");
+        c.eq(NativeRuntime.pairDisconnect(h), 0, "disconnect");
+        c.eq(epoch(scene), e3 + 1, "disconnecting starts a new epoch");
+
+        c.eq(NativeRuntime.attachApp(h, v1.toString(), false), 0, "attach v1 again");
+        c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick v1 again");
         c.eq(NativeRuntime.detachApp(h), 0, "detach");
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick detached");
         final RuntimeSceneReader s = scene.acquire();
+        c.eq(s.sceneEpoch(), e3 + 3, "detaching starts a new epoch");
         c.that(s.findTable(NveTables.Text.KEY) == null || s.findTable(NveTables.Text.KEY).rowCount() == 0, "detached scene is empty");
         scene.release();
         NativeRuntime.destroy(h);

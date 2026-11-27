@@ -127,6 +127,40 @@ public final class Utf8 {
         return o + 3;
     }
 
+    /**
+     * {@code s} as a well-formed UTF-16 string: every lone surrogate becomes U+FFFD (what the
+     * runtime's UTF-8 boundary would do). Returns {@code s.toString()} itself when it is already
+     * well-formed, so text fields can compare the result to their content to see whether a
+     * replacement happened. Platform text widgets can hold lone surrogates (IME / paste); call this
+     * before {@link EventRingWriter#text} and keep the widget in sync with the result.
+     */
+    public static String wellFormed(CharSequence s) {
+        final int n = s.length();
+        int i = 0;
+        while (i < n && !loneSurrogateAt(s, i)) i += pairAt(s, i) ? 2 : 1;
+        if (i == n) return s.toString();
+        final StringBuilder out = new StringBuilder(n).append(s, 0, i);
+        while (i < n) {
+            if (loneSurrogateAt(s, i)) {
+                out.append('\uFFFD');
+                i++;
+            } else {
+                final int step = pairAt(s, i) ? 2 : 1;
+                out.append(s, i, i + step);
+                i += step;
+            }
+        }
+        return out.toString();
+    }
+
+    private static boolean pairAt(CharSequence s, int i) {
+        return Character.isHighSurrogate(s.charAt(i)) && i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1));
+    }
+
+    private static boolean loneSurrogateAt(CharSequence s, int i) {
+        return Character.isSurrogate(s.charAt(i)) && !pairAt(s, i);
+    }
+
     /** Throws unless {@code s[i]} is a high surrogate followed by a low surrogate. */
     static void requirePair(CharSequence s, int i) {
         if (!Character.isHighSurrogate(s.charAt(i)) || i + 1 >= s.length() || !Character.isLowSurrogate(s.charAt(i + 1))) {

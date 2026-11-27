@@ -8,7 +8,10 @@ import java.nio.ByteBuffer;
  * ({@code hosts/android-shell}: {@code libnve_android_shell}); load it before the first call.
  *
  * <p>A {@code long} handle is one runtime surface. All calls except {@link #pairIsConnected} must
- * run on the thread that called {@link #create} (the runtime's owner thread). Every {@code int}
+ * run on the thread that called {@link #create} (the runtime's owner thread; {@link #destroy}
+ * from another thread is refused and leaks the surface rather than freeing it under its owner).
+ * {@link #pairIsConnected} may run on any thread but must not race {@link #destroy} of the same
+ * handle ({@link RuntimeSurface} serializes the two). Every {@code int}
  * result is an {@code NveRuntimeAbi.STATUS_*} code (never negative); values come back through
  * caller-owned out arrays so they never collide with statuses (node ids are raw unsigned
  * {@code u32} bits). {@link #lastError} explains failures.
@@ -35,14 +38,24 @@ public final class NativeRuntime {
     /** New surface, or {@code 0} on failure. */
     public static native long create(int surfaceId, float width, float height, float scaleFactor);
 
-    /** Releases the scene, clears callbacks, detaches the app, and frees the surface. */
-    public static native void destroy(long handle);
+    /**
+     * Releases the scene, clears callbacks, detaches the app, and frees the surface; refused
+     * ({@code STATUS_INVALID_ARG}, the surface stays alive) off the owner thread.
+     */
+    public static native int destroy(long handle);
 
     /** Last failure message of this handle ({@code ""} when none). */
     public static native String lastError(long handle);
 
-    /** Loads {@code soPath} and attaches its {@code nve_get_interface} app (hot reload when one is attached). */
-    public static native int attachApp(long handle, String soPath);
+    /**
+     * Loads the app module at {@code soPath} through the runtime's {@code load_app_module} (a
+     * private staged copy on desktop, in place on Android / iOS) and attaches it, replacing the
+     * running app or pairing; the previous module unloads after its app is destroyed.
+     * {@code carryState} restores the running app's {@code NVE_IFACE_DEV} state into the new app.
+     * A failure ({@code STATUS_IO}, {@code STATUS_NOT_FOUND}, {@code STATUS_UNSUPPORTED}) keeps the
+     * running app.
+     */
+    public static native int attachApp(long handle, String soPath, boolean carryState);
 
     public static native int detachApp(long handle);
 
@@ -67,8 +80,8 @@ public final class NativeRuntime {
     public static native int scrollBy(long handle, int nodeId, float dx, float dy, float[] outXY);
 
     /**
-     * Acquires the published scene into {@code header} (length {@link RuntimeSceneReader#HEADER_LEN})
-     * and {@code slabs} (length {@link RuntimeSceneReader#SLABS_LEN}).
+     * Acquires the published scene into {@code header} (length {@code NveJniFrame.HEADER_LEN}) and
+     * {@code slabs} (length {@code NveJniFrame.SLABS_LEN}).
      */
     public static native int acquireScene(long handle, long[] header, ByteBuffer[] slabs);
 
@@ -90,7 +103,10 @@ public final class NativeRuntime {
      */
     public static native int setWakeListener(long handle, Runnable listener);
 
-    /** Connects to an {@code nve pair} server ({@code ws://host:port/...}, or TLS with {@code cert_sha256}). */
+    /**
+     * Connects to an {@code nve pair} server ({@code ws://host:port/...}, or TLS with
+     * {@code cert_sha256}), replacing a running local app; an invalid URI keeps it running.
+     */
     public static native int pairConnect(long handle, String uri, String token);
 
     public static native int pairDisconnect(long handle);

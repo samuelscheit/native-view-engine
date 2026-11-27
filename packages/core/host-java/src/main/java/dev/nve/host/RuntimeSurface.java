@@ -1,9 +1,11 @@
 package dev.nve.host;
 
+import dev.nve.host.generated.NveJniFrame;
 import dev.nve.host.generated.NveRuntimeAbi;
 import java.nio.Buffer;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -12,17 +14,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * scene arrays + {@link RuntimeSceneReader}, a growable {@link EventRingWriter}, and wake
  * coalescing onto the owner thread.
  *
- * <p>Use it on its owner thread only (the thread that constructs it; Android: the main thread).
- * The wake listener may fire on any thread; it posts at most one pending {@link #render} to
- * {@code ownerThread}.
+ * <p>Use it on its owner thread only (the thread that constructs it; Android: the main thread),
+ * except {@link #isPaired}, which any thread may call. The wake listener may fire on any thread;
+ * it posts at most one pending {@link #render} to {@code ownerThread}.
  *
  * <p>Frames: each new frame reaches the {@link FrameConsumer} while the scene is acquired. Inside
  * {@code onFrame} the reader and {@link #resource} bytes are valid; nothing may touch the native
- * scene afterwards (the reader is {@link RuntimeSceneReader#detach detached} before release). Calls
- * that would write the runtime are re-entrancy safe: {@link #send} and {@link #scrollBy} made
- * inside {@code onFrame} (e.g. by listeners that fire while the consumer mutates its UI) run right
- * after the scene is released; structural calls ({@link #attachApp}, {@link #setViewport}, ...)
- * inside {@code onFrame} are programming errors and throw.
+ * scene afterwards (the reader and every pooled table reader are {@link RuntimeSceneReader#detach
+ * detached} before release). Calls that would write the runtime are re-entrancy safe: {@link #send}
+ * and {@link #scrollBy} made inside {@code onFrame} (e.g. by listeners that fire while the consumer
+ * mutates its UI) run right after the scene is released, and the frames they cause are delivered
+ * by the same {@link #render} loop (bounded; the rest is posted), never by recursion. Structural
+ * calls ({@link #attachApp}, {@link #setViewport}, ...) inside {@code onFrame} throw.
  */
 public final class RuntimeSurface implements AutoCloseable {
     /** Receives each new frame while the scene is acquired. */
@@ -37,24 +40,33 @@ public final class RuntimeSurface implements AutoCloseable {
 
     static final int INITIAL_RING_BYTES = 64 * 1024;
     static final int MAX_RING_BYTES = 16 * 1024 * 1024;
+    /** Frames one {@link #render} delivers back to back before posting the rest (UI fairness). */
+    static final int MAX_FRAMES_PER_RENDER = 4;
+    /** Upper bound of the {@code dt} passed to {@code tick} (a long pause is not one huge step). */
+    static final float MAX_TICK_SECONDS = 0.25f;
 
-    private final long[] header = new long[RuntimeSceneReader.HEADER_LEN];
-    private final ByteBuffer[] slabs = new ByteBuffer[RuntimeSceneReader.SLABS_LEN];
+    private final long[] header = new long[NveJniFrame.HEADER_LEN];
+    private final ByteBuffer[] slabs = new ByteBuffer[NveJniFrame.SLABS_LEN];
     private final RuntimeSceneReader reader = new RuntimeSceneReader();
     private final int surfaceId;
     private final Executor ownerThread;
     private final AtomicBoolean renderPosted = new AtomicBoolean();
+    /** Guards {@link #handle} between {@link #close} and the cross-thread {@link #isPaired}. */
+    private final Object handleLock = new Object();
     private final int[] out = new int[1];
     private final long[] kind = new long[1];
     private final float[] scrollOut = new float[2];
     private EventRingWriter ring;
-    private long handle;
+    private volatile long handle;
     private FrameConsumer consumer;
     private boolean needsFrame = true;
     private boolean inFrame;
     private boolean closeAfterFrame;
-    private boolean renderAfterFrame;
-    private final java.util.ArrayList<float[]> deferredScrolls = new java.util.ArrayList<>();
+    private long lastTickNanos;
+    // Scrolls made inside `onFrame`, replayed after release (typed: node ids are raw u32 bits).
+    private int[] deferredScrollIds = new int[4];
+    private float[] deferredScrollDeltas = new float[8];
+    private int deferredScrolls;
 
     /** @throws IllegalStateException when the runtime cannot create the surface */
     public RuntimeSurface(int surfaceId, float width, float height, float scaleFactor, Executor ownerThread) {
@@ -76,7 +88,8 @@ public final class RuntimeSurface implements AutoCloseable {
     }
 
     public String lastError() {
-        return handle == 0L ? "" : NativeRuntime.lastError(handle);
+        final long h = handle;
+        return h == 0L ? "" : NativeRuntime.lastError(h);
     }
 
     private void structural(String what) {
@@ -89,10 +102,15 @@ public final class RuntimeSurface implements AutoCloseable {
         return status;
     }
 
-    /** Loads and attaches (hot-reloads) the app {@code .so}; returns a {@code STATUS_*} code. */
-    public int attachApp(String soPath) {
+    /**
+     * Loads the app {@code .so} through the runtime ({@code load_app_module}: a private staged copy
+     * on desktop, in place on Android) and attaches it, replacing the running app (hot reload) or
+     * pairing; {@code carryState} restores the running app's state into it. A failure keeps the
+     * running app. Returns a {@code STATUS_*} code.
+     */
+    public int attachApp(String soPath, boolean carryState) {
         structural("attachApp");
-        return afterStructuralChange(NativeRuntime.attachApp(handle, soPath));
+        return afterStructuralChange(NativeRuntime.attachApp(handle, soPath, carryState));
     }
 
     public int detachApp() {
@@ -100,7 +118,7 @@ public final class RuntimeSurface implements AutoCloseable {
         return afterStructuralChange(NativeRuntime.detachApp(handle));
     }
 
-    /** Streams the scene from an {@code nve pair} server instead of a local app. */
+    /** Streams the scene from an {@code nve pair} server, replacing any local app. */
     public int pair(String uri, String token) {
         structural("pair");
         return afterStructuralChange(NativeRuntime.pairConnect(handle, uri, token == null ? "" : token));
@@ -111,8 +129,12 @@ public final class RuntimeSurface implements AutoCloseable {
         return afterStructuralChange(NativeRuntime.pairDisconnect(handle));
     }
 
+    /** Cross-thread safe: never races {@link #close}. */
     public boolean isPaired() {
-        return handle != 0L && NativeRuntime.pairIsConnected(handle);
+        synchronized (handleLock) {
+            final long h = handle;
+            return h != 0L && NativeRuntime.pairIsConnected(h);
+        }
     }
 
     /** Applies a host-produced {@code NVE2} frame (direct buffer). */
@@ -145,14 +167,17 @@ public final class RuntimeSurface implements AutoCloseable {
             writer.write(ring);
         } catch (BufferOverflowException e) {
             ring.truncate(count, length);  // the batch is all-or-nothing
-            final int st = inFrame || count == 0 ? NveRuntimeAbi.STATUS_OK : flush();
+            final int st = inFrame || count == 0 ? NveRuntimeAbi.STATUS_OK : dispatchPending();
             if (st != NveRuntimeAbi.STATUS_OK) return st;
             if (!growAndRetry(writer)) return NveRuntimeAbi.STATUS_INVALID_ARG;
         } catch (RuntimeException e) {
             ring.truncate(count, length);
             throw e;
         }
-        return inFrame ? NveRuntimeAbi.STATUS_OK : flush();
+        if (inFrame) return NveRuntimeAbi.STATUS_OK;
+        final int st = dispatchPending();
+        if (needsFrame) render();
+        return st;
     }
 
     private boolean growAndRetry(EventWriter writer) {
@@ -175,14 +200,13 @@ public final class RuntimeSurface implements AutoCloseable {
         return false;
     }
 
-    /** Dispatches and clears the pending ring, then renders when the app changed. */
-    private int flush() {
+    /** Dispatches and clears the pending ring; a changed app schedules a frame ({@code needsFrame}). */
+    private int dispatchPending() {
         if (ring.count() == 0) return NveRuntimeAbi.STATUS_OK;
         out[0] = 0;
         final int st = NativeRuntime.dispatchEvents(handle, ring.buffer(), ring.length(), out);
         ring.reset();
         if (st == NveRuntimeAbi.STATUS_OK && out[0] != 0) needsFrame = true;
-        render();
         return st;
     }
 
@@ -196,26 +220,51 @@ public final class RuntimeSurface implements AutoCloseable {
     /** Syncs the runtime's scroll offset of {@code nodeId} (hit testing, app scroll state); deferred inside {@code onFrame}. */
     public int scrollBy(int nodeId, float dx, float dy) {
         if (handle == 0L) return NveRuntimeAbi.STATUS_INVALID_ARG;
-        if (inFrame) {
-            deferredScrolls.add(new float[] {Float.intBitsToFloat(nodeId), dx, dy});
-            return NveRuntimeAbi.STATUS_OK;
+        if (!inFrame) return NativeRuntime.scrollBy(handle, nodeId, dx, dy, scrollOut);
+        if (deferredScrolls == deferredScrollIds.length) {
+            deferredScrollIds = Arrays.copyOf(deferredScrollIds, deferredScrolls * 2);
+            deferredScrollDeltas = Arrays.copyOf(deferredScrollDeltas, deferredScrolls * 4);
         }
-        return NativeRuntime.scrollBy(handle, nodeId, dx, dy, scrollOut);
+        deferredScrollIds[deferredScrolls] = nodeId;
+        deferredScrollDeltas[deferredScrolls * 2] = dx;
+        deferredScrollDeltas[deferredScrolls * 2 + 1] = dy;
+        deferredScrolls++;
+        return NveRuntimeAbi.STATUS_OK;
     }
 
     /**
-     * Ticks the runtime and hands a changed frame to the consumer. Returns {@code true} when a
-     * frame was delivered. Inside {@code onFrame} it only schedules a render (posted to the owner
-     * thread after the frame is released).
+     * Ticks the runtime and hands each changed frame to the consumer, then applies what the
+     * consumer deferred (scrolls, events) and delivers the frames those cause, up to
+     * {@link #MAX_FRAMES_PER_RENDER} (the rest is posted to the owner thread). Returns {@code true}
+     * when a frame was delivered. Inside {@code onFrame} it only schedules a render.
      */
     public boolean render() {
         if (handle == 0L) return false;
         if (inFrame) {
-            renderAfterFrame = true;
+            needsFrame = true;
             return false;
         }
+        boolean delivered = false;
+        for (int frames = 0; handle != 0L; frames++) {
+            if (frames == MAX_FRAMES_PER_RENDER) {
+                onWake();  // more work is pending: continue on a later owner-thread turn
+                break;
+            }
+            if (!deliverFrame()) break;
+            delivered = true;
+            if (closeAfterFrame) {
+                close();
+                break;
+            }
+            if (!replayDeferred() && !needsFrame) break;
+        }
+        return delivered;
+    }
+
+    /** One tick + (when changed) one acquired frame handed to the consumer. */
+    private boolean deliverFrame() {
         out[0] = 0;
-        final int st = NativeRuntime.tick(handle, 0f, out);
+        final int st = NativeRuntime.tick(handle, tickSeconds(), out);
         if (st != NveRuntimeAbi.STATUS_OK || (out[0] == 0 && !needsFrame) || consumer == null) return false;
         if (NativeRuntime.acquireScene(handle, header, slabs) != NveRuntimeAbi.STATUS_OK) return false;
         inFrame = true;
@@ -226,28 +275,31 @@ public final class RuntimeSurface implements AutoCloseable {
             return true;
         } finally {
             reader.detach();
-            java.util.Arrays.fill(slabs, null);
+            Arrays.fill(slabs, null);
             NativeRuntime.releaseScene(handle);
             inFrame = false;
-            afterFrame();
         }
     }
 
-    private void afterFrame() {
-        if (closeAfterFrame) {
-            close();
-            return;
+    /** Seconds since the previous tick, clamped to {@code [0, MAX_TICK_SECONDS]} (0 on the first). */
+    private float tickSeconds() {
+        final long now = System.nanoTime();
+        final long prev = lastTickNanos;
+        lastTickNanos = now;
+        if (prev == 0L) return 0f;
+        return Math.min(Math.max((now - prev) / 1e9f, 0f), MAX_TICK_SECONDS);
+    }
+
+    /** Replays deferred scrolls and dispatches deferred events; {@code true} when a scroll ran. */
+    private boolean replayDeferred() {
+        final boolean scrolled = deferredScrolls > 0;
+        for (int i = 0; i < deferredScrolls; i++) {
+            NativeRuntime.scrollBy(handle, deferredScrollIds[i], deferredScrollDeltas[i * 2],
+                    deferredScrollDeltas[i * 2 + 1], scrollOut);
         }
-        for (int i = 0; i < deferredScrolls.size(); i++) {
-            final float[] s = deferredScrolls.get(i);
-            NativeRuntime.scrollBy(handle, Float.floatToRawIntBits(s[0]), s[1], s[2], scrollOut);
-        }
-        deferredScrolls.clear();
-        if (ring.count() > 0) flush();
-        if (renderAfterFrame) {
-            renderAfterFrame = false;
-            onWake();
-        }
+        deferredScrolls = 0;
+        dispatchPending();
+        return scrolled;
     }
 
     /**
@@ -283,8 +335,11 @@ public final class RuntimeSurface implements AutoCloseable {
             closeAfterFrame = true;
             return;
         }
-        final long h = handle;
-        handle = 0L;
+        final long h;
+        synchronized (handleLock) {
+            h = handle;
+            handle = 0L;
+        }
         NativeRuntime.destroy(h);
     }
 }

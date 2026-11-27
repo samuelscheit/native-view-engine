@@ -84,7 +84,7 @@ fn table_files_allocation_ceiling() {
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
     );
     assert!(
-        // Java `NveTables` names every field value (`{FIELD}_{VALUE}`, ~650 constants).
+        // Measured 5009: 17 tables mirrored into five languages (value sets deduplicated).
         allocs <= 5_400,
         "tables took {allocs} allocations (ceiling 5400)"
     );
@@ -103,12 +103,15 @@ fn every_host_file_allocation_ceiling() {
         .map(|f| f.content.len())
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
+    // Measured 12016 (ABI v4 records, plus `NveRuntimeAbi.java` and the two JNI frame layouts at
+    // ~450 together); the ceiling keeps the documented ~25% headroom.
     assert!(
-        allocs <= 11_500,
-        "all files took {allocs} allocations (ceiling 11500)"
+        allocs <= 15_000,
+        "all files took {allocs} allocations (ceiling 15000)"
     );
     assert!(
         bytes <= 5 * out,
         "all files allocated {bytes} bytes for {out} output bytes"
     );
 }
+

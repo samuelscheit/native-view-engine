@@ -3,8 +3,10 @@
 //! `libnve_runtime` end to end instead of hand-encoded wire bytes.
 //!
 //! Files: `showcase_1.nve2` (keyframe), `showcase_2.nve2` (delta: text edit, image swap, node
-//! removal), `hot_v1.nve2` / `hot_v2.nve2` (hot-reload generations), and `showcase.ids`
-//! (`name=value` lines: raw node ids, resource ids, and expected strings).
+//! removal), `showcase_3.nve2` (a new image source recycling the freed logo id, the canvas draw
+//! list moved to an ephemeral resource), `showcase_4.nve2` (that ephemeral draw list rewritten
+//! in place: same id, new bytes), `hot_v1.nve2` / `hot_v2.nve2` (hot-reload generations), and
+//! `showcase.ids` (`name=value` lines: raw node ids and resource ids).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -149,6 +151,27 @@ fn run(dir: PathBuf) -> Result<(), String> {
     write(&dir, "showcase_2.nve2", &frame2)?;
     let hero = res(s.image, &src);
 
+    let draw = |w: f32| {
+        let mut d = DrawList::builder();
+        d.fill_rect(0.0, 0.0, w, 40.0, ColorRgba::rgba(30, 41, 59, 255));
+        d.finish()
+    };
+    let canvas_res_of = |src: &Source| src.store.try_row::<Canvas>(s.canvas).map_or(0, |r| r.draw_list().0);
+    let frame3 = src.frame(|tx| {
+        tx.edit::<Image>(s.image).src(Some(ImageSrc::Url("asset://recycled.png".into())));
+        tx.edit::<Canvas>(s.canvas).draw_list_ephemeral(draw(60.0)).generation(2);
+    });
+    write(&dir, "showcase_3.nve2", &frame3)?;
+    let recycled = res(s.image, &src);
+    let canvas_eph = canvas_res_of(&src);
+    let frame4 = src.frame(|tx| {
+        tx.edit::<Canvas>(s.canvas).draw_list_ephemeral(draw(90.0)).generation(3);
+    });
+    write(&dir, "showcase_4.nve2", &frame4)?;
+    if canvas_res_of(&src) != canvas_eph {
+        return Err("the ephemeral draw list was not rewritten in place".into());
+    }
+
     let mut out = String::new();
     for (name, id) in [
         ("column", s.column),
@@ -164,7 +187,10 @@ fn run(dir: PathBuf) -> Result<(), String> {
     ] {
         let _ = writeln!(out, "{name}={}", id.raw());
     }
-    let _ = writeln!(out, "logo_res={logo}\nhero_res={hero}\ncanvas_res={canvas_res}");
+    let _ = writeln!(
+        out,
+        "logo_res={logo}\nhero_res={hero}\ncanvas_res={canvas_res}\nrecycled_res={recycled}\ncanvas_eph_res={canvas_eph}"
+    );
     write(&dir, "showcase.ids", out.as_bytes())?;
 
     for (name, label) in [("hot_v1.nve2", "generation one"), ("hot_v2.nve2", "generation two")] {

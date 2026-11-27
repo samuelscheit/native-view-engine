@@ -12,6 +12,7 @@ public final class HostTestMain {
         RuntimeSceneTest.run(c);
         EventRingTest.run(c);
         GeneratedTest.run(c);
+        HostTextTest.run(c);
         System.out.println("host-java: " + c.passed + " checks passed, " + c.failed + " failed");
         if (c.failed != 0) System.exit(1);
     }

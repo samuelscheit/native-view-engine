@@ -70,7 +70,7 @@ const SceneLayout wasm32Layout = SceneLayout(
   tables: 60,
   nodeStride: nodeStride,
   tableView: TableViewLayout(
-    stride: 36,
+    stride: 52,
     keyLo: 0,
     keyHi: 4,
     slot: 8,
@@ -80,6 +80,10 @@ const SceneLayout wasm32Layout = SceneLayout(
     rows: 24,
     owners: 28,
     dirtyRows: 32,
+    rowIndexDirLen: 36,
+    rowIndexPageCount: 40,
+    rowIndexDir: 44,
+    rowIndexPages: 48,
   ),
 );
 
@@ -166,7 +170,7 @@ void runHardening(Check c) {
       removedIds: 56, tables: 60, nodeStride: node,
       tableView: TableViewLayout(
         stride: table, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, //
-        dirtyRows: 32,
+        dirtyRows: 32, rowIndexDirLen: 36, rowIndexPageCount: 40, rowIndexDir: 44, rowIndexPages: 48,
       ),
     );
     expectScene(c, SceneErrorKind.missingSlab, () => SceneReader.fromLinearMemory(strideMem, strideView, bad, schema),

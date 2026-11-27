@@ -41,7 +41,10 @@ const WASM32: SceneLayout = {
   schemaHash: 0, frameId: 8, nodeCount: 16, dirtyCount: 20, removedCount: 24, textSlabLen: 28,
   childrenSlabLen: 32, tableCount: 36, nodes: 40, textSlab: 44, childrenSlab: 48, dirtyIndices: 52,
   removedIds: 56, tables: 60, nodeStride: NODE_STRIDE,
-  tableView: { stride: 36, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, dirtyRows: 32 },
+  tableView: {
+    stride: 52, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, dirtyRows: 32,
+    rowIndexDirLen: 36, rowIndexPageCount: 40, rowIndexDir: 44, rowIndexPages: 48,
+  },
 };
 
 /** One frame in a 4 KiB linear memory; returns [memory, viewPtr]. */

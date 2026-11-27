@@ -18,6 +18,10 @@ final class Check {
         that(actual == expected, what + ": expected 0x" + Long.toHexString(expected) + ", got 0x" + Long.toHexString(actual));
     }
 
+    void eq(String actual, String expected, String what) {
+        that(expected.equals(actual), what + ": expected \"" + expected + "\", got \"" + actual + "\"");
+    }
+
     /** Asserts {@code body} throws {@code type} (and returns it for further checks). */
     <T extends Throwable> T throwsA(Class<T> type, Runnable body, String what) {
         try {

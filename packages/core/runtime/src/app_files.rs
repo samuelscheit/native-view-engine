@@ -15,10 +15,12 @@ use crate::surface::SurfaceRuntime;
 /// `std::env::temp_dir()` subdirectory holding staged module copies (each removed on unload).
 const MODULE_STAGING_DIR: &str = "nve-runtime-modules";
 
-fn loader_error(e: LoaderError) -> RuntimeError {
+/// The loader failure as a runtime error naming the module `path` (hosts show it to developers).
+fn loader_error(e: LoaderError, path: &Path) -> RuntimeError {
+    let path = path.display();
     match e {
-        LoaderError::Io(e) => RuntimeError::Io(format!("cannot stage app module: {e}")),
-        LoaderError::Load(e) => RuntimeError::Io(format!("cannot load app module: {e}")),
+        LoaderError::Io(e) => RuntimeError::Io(format!("cannot stage app module {path}: {e}")),
+        LoaderError::Load(e) => RuntimeError::Io(format!("cannot load app module {path}: {e}")),
         LoaderError::MissingEntry(_) => {
             RuntimeError::NotFound("app module exports no `nve_get_interface`")
         }
@@ -68,7 +70,7 @@ impl SurfaceRuntime {
     ) -> Result<(), RuntimeError> {
         self.check_file_op()?;
         let label = format!("surface{}", self.surface_id);
-        let module = StagedDylib::load(path, MODULE_STAGING_DIR, &label).map_err(loader_error)?;
+        let module = StagedDylib::load(path, MODULE_STAGING_DIR, &label).map_err(|e| loader_error(e, path))?;
         let mut app = CAbiAppAdapter::from_staged_dylib(module, self.surface_id)?;
         if carry_state
             && let Some(state) = self.app_state_copy()?

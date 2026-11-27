@@ -1,129 +1,97 @@
 package dev.nve.host;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import static dev.nve.host.generated.NveJniFrame.*;
 
-/** {@link RuntimeSceneReader} over hand-built {@code NveRuntimeSceneView} slabs and the packed JNI frame. */
+import java.nio.ByteBuffer;
+
+/** {@link RuntimeSceneReader} over packed frames from {@link PackedSceneBuilder} (the JNI layout). */
 final class RuntimeSceneTest {
     private RuntimeSceneTest() {}
 
-    static final long SCHEMA = RuntimeSceneReader.SCHEMA.value();
     static final int CAP = 4;
-    static final int ROOT = (1 << 24) | 1;      // index 1, generation 1
-    static final int CHILD = (3 << 24) | 2;     // index 2, generation 3
     static final int VISUAL_SLOT = 0;
     static final int TEXT_SLOT = 33;            // second `table_set` word
-    static final int[] TEXT = {'h', 0xC3, 0xA9, 0xF0, 0x9F, 0x9A, 0x80};
     static final FieldSpec BG = FieldSpec.word(0, FieldKind.COLOR);
     static final Key64 VISUAL_KEY = Key64.of("nve.visual");
     static final Key64 TEXT_KEY = Key64.of("nve.text");
     static final FieldSpec TEXT_FIELD = FieldSpec.word(0, FieldKind.STR);
 
-    static ByteBuffer words(int... w) {
-        return TableSceneTest.words(w);
-    }
-
-    static ByteBuffer bytes(int... v) {
-        final ByteBuffer b = ByteBuffer.allocateDirect(v.length);
-        for (int x : v) b.put((byte) x);
-        b.flip();
+    /** Index 1 root (visual), 2 text child of generation 3 (visual + text, primary = text), 3 free. */
+    static PackedSceneBuilder builder() {
+        final PackedSceneBuilder b = new PackedSceneBuilder(CAP, 9L, 3)
+                .generation(2, 3)
+                .node(2, 1, 4f, 4.5f, 5f, 5.5f)
+                .primary(2, TEXT_SLOT)
+                .effects(2, 5)
+                .dirty(1, 2)
+                .moved()
+                .removed(0x77);
+        b.table(VISUAL_KEY, VISUAL_SLOT, 1, true).set(1, BG, 0x11).set(2, BG, 0x22).dirtyRows(2);
+        b.table(TEXT_KEY, TEXT_SLOT, 2, false).set(2, TEXT_FIELD, "h\u00e9");
+        b.appendText("\ud83d\ude80");
         return b;
     }
 
-    /** Index 0 null, 1 root (visual), 2 text child (visual + text, primary = text), 3 free. */
-    static ByteBuffer rows(int childOff, int childLen) {
-        final ByteBuffer b = ByteBuffer.allocateDirect(CAP * RuntimeSceneReader.NODE_ROW_SIZE).order(ByteOrder.LITTLE_ENDIAN);
-        row(b, 1, 1, 0, childOff, childLen, 1, 0xFF, 0);
-        row(b, 2, 1 | 2, ROOT, 0, 0, 3, TEXT_SLOT, 0x5);
-        row(b, 3, 0, 0, 0, 0, 2, 0xFF, 0);
-        b.put(3 * 32 + 31, (byte) 0);  // free slot
-        return b;
-    }
-
-    static void row(ByteBuffer b, int index, int tableBits, int parent, int off, int len, int gen, int primary, int effects) {
-        final int at = index * 32;
-        b.putInt(at, (tableBits & 1) << VISUAL_SLOT);
-        b.putInt(at + 4, (tableBits & 2) != 0 ? 1 << (TEXT_SLOT - 32) : 0);
-        b.putInt(at + 16, parent).putInt(at + 20, off).putInt(at + 24, len);
-        b.put(at + 28, (byte) gen).put(at + 29, (byte) primary).put(at + 30, (byte) effects).put(at + 31, (byte) 1);
-    }
-
-    static ByteBuffer rects() {
-        final ByteBuffer b = ByteBuffer.allocateDirect(CAP * 16).order(ByteOrder.LITTLE_ENDIAN);
-        for (int i = 0; i < CAP * 4; i++) b.putFloat(i * 4, i * 0.5f);
-        return b;
-    }
-
-    static TableReader[] tables() {
-        return new TableReader[] {
-            new TableReader().attach(VISUAL_KEY, VISUAL_SLOT, 1, CAP, words(0, 0x11, 0x22, 0x33), null, words(2), 1),
-            // Row 0 is owned by a stale generation of index 2; row 1 is the live CHILD.
-            new TableReader().attach(TEXT_KEY, TEXT_SLOT, 2, 2, words(0, 1, 0, 3), words((1 << 24) | 2, CHILD), null, 0),
-        };
-    }
-
-    static RuntimeSceneReader attach(RuntimeSceneReader r, ByteBuffer rows, ByteBuffer children, int childrenLen,
-                                     ByteBuffer dirty, int dirtyCount, TableReader[] tables) {
-        return r.attach(SCHEMA, 9L, 3, CAP, rows, rects(), bytes(TEXT), TEXT.length, children, childrenLen,
-                dirty, dirtyCount, words(0x77), 1, null, 0, tables, tables.length);
-    }
-
-    static RuntimeSceneReader scene() {
-        return attach(new RuntimeSceneReader(), rows(0, 1), words(CHILD), 1, words(1, 2), 2, tables());
+    static int child(PackedSceneBuilder b) {
+        return b.nodeId(2);
     }
 
     static void run(Check c) {
         nodes(c);
         tablesAndText(c);
+        deltasAndScroll(c);
         rejects(c);
-        packed(c);
+        detach(c);
         steadyState(c);
     }
 
     static void nodes(Check c) {
-        final RuntimeSceneReader s = scene();
+        final PackedSceneBuilder b = builder();
+        final RuntimeSceneReader s = b.attach(new RuntimeSceneReader());
+        final int root = b.nodeId(1);
+        final int child = child(b);
         c.eq(s.frameId(), 9, "frame id");
         c.eq(s.sceneEpoch(), 3, "scene epoch");
         c.eq(s.nodeCapacity(), CAP, "capacity");
         c.that(!s.isLive(0) && s.isLive(1) && s.isLive(2) && !s.isLive(3) && !s.isLive(4) && !s.isLive(-1), "liveness");
-        c.eq(s.nodeId(1), ROOT, "root id");
-        c.eq(s.nodeId(2), CHILD, "child id");
+        c.eq(s.nodeId(2), child, "child id");
+        c.eq(child, (3 << 24) | 2, "generation 3");
         c.eq(s.nodeId(3), 0, "free slot id");
-        c.eq(s.resolve(CHILD), 2, "resolve");
+        c.eq(s.resolve(child), 2, "resolve");
         c.eq(s.resolve((2 << 24) | 2), -1, "stale generation");
         c.eq(s.resolve(3), -1, "free slot");
         c.eq(s.resolve(0), -1, "null id");
         c.eq(s.resolve(CAP), -1, "past capacity");
-        c.eq(RuntimeSceneReader.indexOf(CHILD), 2, "indexOf");
+        c.eq(RuntimeSceneReader.indexOf(child), 2, "indexOf");
         c.eq(RuntimeSceneReader.generationOf(0xFF000001), 255, "generationOf unsigned");
-        c.eq(s.parent(2), ROOT, "parent");
+        c.eq(s.parent(2), root, "parent");
         c.eq(s.parent(1), 0, "root parent");
         c.eq(s.childCount(1), 1, "child count");
-        c.eq(s.childId(1, 0), CHILD, "child id");
+        c.eq(s.childId(1, 0), child, "child id");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.childId(1, 1), "child oob");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.childId(1, -1), "child negative");
         c.eq(s.generation(2), 3, "generation");
         c.eq(s.effects(2), 5, "effects");
-        c.eq(s.flags(2), RuntimeSceneReader.FLAG_LIVE, "flags");
+        c.eq(s.flags(2), dev.nve.host.generated.NveRuntimeAbi.NODE_ROW_FLAG_LIVE, "flags");
         c.that(s.hasTable(2, VISUAL_SLOT) && s.hasTable(2, TEXT_SLOT) && !s.hasTable(1, TEXT_SLOT), "table bits");
         c.that(!s.hasTable(2, 127) && !s.hasTable(2, 128) && !s.hasTable(2, -1), "table bits out of range");
         c.that(s.x(2) == 4f && s.y(2) == 4.5f && s.width(2) == 5f && s.height(2) == 5.5f, "rect");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.x(CAP), "rect oob");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.parent(CAP), "row oob");
-        c.eq(s.dirtyCount(), 2, "dirty count");
-        c.eq(s.dirtyIndex(1), 2, "dirty index");
-        c.throwsA(IndexOutOfBoundsException.class, () -> s.dirtyIndex(2), "dirty oob");
-        c.eq(s.removedId(0), 0x77, "removed");
-        c.throwsA(IndexOutOfBoundsException.class, () -> s.removedId(1), "removed oob");
+
         // A corrupt child span (off + len past the slab, or `u32` wrap) never reads out of range.
-        final RuntimeSceneReader bad = attach(new RuntimeSceneReader(), rows(0, 2), words(CHILD), 1, null, 0, tables());
+        final ByteBuffer[] slabs = b.slabs();
+        slabs[S_ROWS].putInt(32 + 24, 2);
+        final RuntimeSceneReader bad = new RuntimeSceneReader().attach(b.header(), slabs);
         c.throwsA(IndexOutOfBoundsException.class, () -> bad.childCount(1), "span past slab");
-        final RuntimeSceneReader wrap = attach(new RuntimeSceneReader(), rows(-1, 2), words(CHILD), 1, null, 0, tables());
+        slabs[S_ROWS].putInt(32 + 20, -1);
+        final RuntimeSceneReader wrap = new RuntimeSceneReader().attach(b.header(), slabs);
         c.throwsA(IndexOutOfBoundsException.class, () -> wrap.childId(1, 0), "span offset wrap");
     }
 
     static void tablesAndText(Check c) {
-        final RuntimeSceneReader s = scene();
+        final PackedSceneBuilder b = builder();
+        final RuntimeSceneReader s = b.attach(new RuntimeSceneReader());
         final TableReader visual = s.findTable(VISUAL_KEY);
         final TableReader text = s.tableAtSlot(TEXT_SLOT);
         c.that(visual != null && visual == s.tableAtSlot(VISUAL_SLOT) && visual == s.table(0), "visual lookup");
@@ -133,11 +101,12 @@ final class RuntimeSceneTest {
         c.that(s.primaryTable(2) == text && s.primaryTable(1) == null, "primary table");
         c.eq(s.rowOf(visual, 2), 2, "dense row");
         c.eq(visual.color(s.rowOf(visual, 2), BG), 0x22, "dense value");
-        c.eq(s.rowOf(text, 2), 1, "sparse row skips stale owner");
+        c.eq(visual.dirtyRow(0), 2, "dense dirty row");
+        c.eq(s.rowOf(text, 2), 0, "sparse row through the published index");
         c.eq(s.rowOf(text, 1), -1, "no table bit");
         c.eq(s.rowOf(text, 3), -1, "free node");
         c.eq(s.rowOf(null, 2), -1, "null table");
-        c.that(s.text(text, 1, TEXT_FIELD).equals("h\u00e9"), "string field");
+        c.that(s.text(text, 0, TEXT_FIELD).equals("h\u00e9"), "string field");
         c.that(s.text(3, 4).equals("\ud83d\ude80"), "astral text");
         c.that(s.text(7, 0).isEmpty(), "empty at end");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.text(2, 1), "split char start");
@@ -146,13 +115,45 @@ final class RuntimeSceneTest {
         c.throwsA(IndexOutOfBoundsException.class, () -> s.text(8, 0), "offset past slab");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.text(Integer.MAX_VALUE, 2), "text overflow");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.table(2), "table oob");
-        // Re-attach without the text table: slot map and sparse index are per frame.
-        final TableReader[] onlyVisual = {tables()[0]};
-        attach(s, rows(0, 1), words(CHILD), 1, null, 0, onlyVisual);
+
+        // An index entry whose row is owned by another generation of the slot is not the node's row.
+        final ByteBuffer[] stale = b.slabs();
+        stale[S_TABLES + TABLE_SLAB_STRIDE + TS_OWNERS].putInt(0, (1 << 24) | 2);
+        final RuntimeSceneReader st = new RuntimeSceneReader().attach(b.header(), stale);
+        c.eq(st.rowOf(st.tableAtSlot(TEXT_SLOT), 2), -1, "stale owner generation is no row");
+
+        // Re-attach without the text table: the slot map is per frame, the old reader detached.
+        final PackedSceneBuilder onlyVisual = new PackedSceneBuilder(CAP, 10L, 3).generation(2, 3).node(2, 1, 0f, 0f, 1f, 1f);
+        onlyVisual.table(VISUAL_KEY, VISUAL_SLOT, 1, true).set(2, BG, 1);
+        onlyVisual.attach(s);
         c.that(s.tableAtSlot(TEXT_SLOT) == null && s.primaryTable(2) == null, "slot map reset");
-        final TableReader[] moved = {new TableReader().attach(TEXT_KEY, TEXT_SLOT, 2, 1, words(0, 3), words(CHILD), null, 0)};
-        attach(s, rows(0, 1), words(CHILD), 1, null, 0, moved);
-        c.eq(s.rowOf(s.tableAtSlot(TEXT_SLOT), 2), 0, "sparse index rebuilt per frame");
+        c.that(!text.isAttached(), "a pooled table not published this frame is detached");
+    }
+
+    static void deltasAndScroll(Check c) {
+        final PackedSceneBuilder b = builder().moved(3, 1).dirty(2).dirtyResources(3, 9, 0x80000000)
+                .scroll(1, 0f, 30f).scroll((3 << 24) | 2, 4f, 0f);
+        final RuntimeSceneReader s = b.attach(new RuntimeSceneReader());
+        c.eq(s.dirtyCount(), 1, "dirty count");
+        c.eq(s.dirtyIndex(0), 2, "dirty index");
+        c.throwsA(IndexOutOfBoundsException.class, () -> s.dirtyIndex(1), "dirty oob");
+        c.eq(s.movedCount(), 2, "moved count");
+        c.that(s.movedIndex(0) == 3 && s.movedIndex(1) == 1, "moved indexes");
+        c.throwsA(IndexOutOfBoundsException.class, () -> s.movedIndex(2), "moved oob");
+        c.eq(s.removedId(0), 0x77, "removed");
+        c.throwsA(IndexOutOfBoundsException.class, () -> s.removedId(1), "removed oob");
+        c.that(s.dirtyResourceCount() == 3 && s.dirtyResource(1) == 9, "dirty resources");
+        c.that(s.isResourceDirty(3) && s.isResourceDirty(0x80000000) && !s.isResourceDirty(4), "dirty resource lookup (unsigned)");
+        c.eq(s.scrollCount(), 2, "scroll count");
+        c.that(s.scrollY(1) == 30f && s.scrollX(1) == 0f, "root scroll");
+        c.that(s.scrollX((3 << 24) | 2) == 4f, "child scroll");
+        c.that(s.scrollX(2) == 0f && s.scrollY(99) == 0f && s.scrollIndexOf(0) == -1, "unscrolled nodes are zero");
+
+        c.eq(s.relationTo(0L, 3), RuntimeSceneReader.FRAME_RESET, "no previous frame");
+        c.eq(s.relationTo(8L, 3), RuntimeSceneReader.FRAME_NEXT, "the next frame");
+        c.eq(s.relationTo(9L, 3), RuntimeSceneReader.FRAME_SAME, "a redelivered frame");
+        c.eq(s.relationTo(7L, 3), RuntimeSceneReader.FRAME_RESET, "a skipped frame");
+        c.eq(s.relationTo(8L, 2), RuntimeSceneReader.FRAME_RESET, "another epoch");
     }
 
     static SceneException.Kind kindOf(Check c, Runnable body, String what) {
@@ -160,122 +161,85 @@ final class RuntimeSceneTest {
         return e == null ? null : e.kind();
     }
 
+    interface Corrupt {
+        void apply(long[] h, ByteBuffer[] s);
+    }
+
+    static SceneException.Kind reject(Check c, PackedSceneBuilder b, Corrupt corrupt, String what) {
+        final long[] h = b.header();
+        final ByteBuffer[] s = b.slabs();
+        corrupt.apply(h, s);
+        return kindOf(c, () -> new RuntimeSceneReader().attach(h, s), what);
+    }
+
     static void rejects(Check c) {
-        final RuntimeSceneReader r = new RuntimeSceneReader();
-        c.that(kindOf(c, () -> r.attach(1L, 0, 0, 0, null, null, null, 0, null, 0, null, 0, null, 0, null, 0, null, 0), "schema")
-                == SceneException.Kind.SCHEMA_MISMATCH, "schema kind");
-        c.that(kindOf(c, () -> r.attach(SCHEMA, 0, 0, CAP, words(1), rects(), null, 0, null, 0, null, 0, null, 0, null, 0, null, 0), "short rows")
-                == SceneException.Kind.MISSING_SLAB, "rows kind");
-        kindOf(c, () -> r.attach(SCHEMA, 0, 0, CAP, rows(0, 1), words(1), null, 0, null, 0, null, 0, null, 0, null, 0, null, 0), "short rects");
-        kindOf(c, () -> r.attach(SCHEMA, 0, 0, CAP, rows(0, 1), rects(), null, 3, null, 0, null, 0, null, 0, null, 0, null, 0), "null text");
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 2, null, 0, tables()), "short children");
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, words(1), 2, tables()), "short dirty");
-        kindOf(c, () -> r.attach(SCHEMA, 0, 0, -1, null, null, null, 0, null, 0, null, 0, null, 0, null, 0, null, 0), "negative capacity");
-        kindOf(c, () -> r.attach(SCHEMA, 0, 0, (1 << 24) + 1, null, null, null, 0, null, 0, null, 0, null, 0, null, 0, null, 0), "capacity past index space");
-        c.that(kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, words(0), 1, tables()), "dirty null slot")
-                == SceneException.Kind.INVALID_NODE, "dirty kind");
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, words(CAP), 1, tables()), "dirty past capacity");
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, words(-1), 1, tables()), "dirty u32 max");
-        final TableReader dup = new TableReader().attach(Key64.of(5L), TEXT_SLOT, 1, 0, null, words(), null, 0);
-        c.that(kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, null, 0, new TableReader[] {tables()[1], dup}), "duplicate slot")
-                == SceneException.Kind.INVALID_TABLE, "duplicate kind");
-        final TableReader far = new TableReader().attach(Key64.of(5L), 128, 1, 0, null, null, null, 0);
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, null, 0, new TableReader[] {far}), "slot 128");
-        final TableReader wide = new TableReader().attach(Key64.of(5L), 1, 1, CAP + 1, words(0, 0, 0, 0, 0), null, null, 0);
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, null, 0, new TableReader[] {wide}), "dense rows past capacity");
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, null, 0, new TableReader[] {new TableReader()}), "unattached table");
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, null, 0, new TableReader[1]), "null table");
-        // A rejected frame detaches the reader: nothing of the previous frame stays readable.
-        final RuntimeSceneReader live = scene();
-        kindOf(c, () -> attach(live, rows(0, 1), words(CHILD), 1, words(0), 1, tables()), "reject over a live frame");
+        final PackedSceneBuilder b = builder();
+        final int text = S_TABLES + TABLE_SLAB_STRIDE;
+        final int textH = H_TABLES + TABLE_HEADER_STRIDE;
+        c.that(reject(c, b, (h, s) -> h[H_SCHEMA] = 1L, "schema") == SceneException.Kind.SCHEMA_MISMATCH, "schema kind");
+        c.that(reject(c, b, (h, s) -> s[S_ROWS] = RuntimeSceneTestBuffers.words(1), "short rows") == SceneException.Kind.MISSING_SLAB, "rows kind");
+        reject(c, b, (h, s) -> s[S_RECTS] = RuntimeSceneTestBuffers.words(1), "short rects");
+        reject(c, b, (h, s) -> s[S_TEXT] = null, "null text");
+        reject(c, b, (h, s) -> h[H_CHILDREN_LEN] = 2, "short children");
+        reject(c, b, (h, s) -> h[H_DIRTY_COUNT] = 3, "short dirty");
+        reject(c, b, (h, s) -> h[H_SCROLL_COUNT] = 1, "short scroll offsets");
+        reject(c, b, (h, s) -> h[H_NODE_CAPACITY] = -1, "negative capacity");
+        reject(c, b, (h, s) -> h[H_NODE_CAPACITY] = (1 << 24) + 1, "capacity past index space");
+        c.that(reject(c, builder().dirty(0), (h, s) -> { }, "dirty null slot") == SceneException.Kind.INVALID_NODE, "dirty kind");
+        reject(c, builder().dirty(CAP), (h, s) -> { }, "dirty past capacity");
+        reject(c, builder().dirty(-1), (h, s) -> { }, "dirty u32 max");
+        reject(c, builder().moved(0), (h, s) -> { }, "moved null slot");
+        reject(c, builder().moved(CAP), (h, s) -> { }, "moved past capacity");
+        reject(c, builder().dirtyResources(9, 3), (h, s) -> { }, "unsorted dirty resources");
+        reject(c, builder().dirtyResources(3, 3), (h, s) -> { }, "duplicate dirty resources");
+        reject(c, builder().dirtyResources(0x80000000, 1), (h, s) -> { }, "dirty resources sort unsigned");
+        reject(c, builder().scroll(5, 0f, 1f).scroll(2, 0f, 1f), (h, s) -> { }, "unsorted scroll offsets");
+        reject(c, builder().scroll(5, 0f, 1f).scroll(5, 0f, 1f), (h, s) -> { }, "duplicate scroll offsets");
+        c.that(reject(c, b, (h, s) -> h[textH + TH_SLOT] = VISUAL_SLOT, "duplicate slot") == SceneException.Kind.INVALID_TABLE, "duplicate kind");
+        reject(c, b, (h, s) -> h[textH + TH_SLOT] = 128, "slot 128");
+        reject(c, b, (h, s) -> h[H_TABLES + TH_ROW_COUNT] = CAP + 1, "dense rows past capacity");
+        reject(c, b, (h, s) -> h[H_TABLES + TH_WORDS] = 0, "zero-word table");
+        reject(c, b, (h, s) -> h[H_TABLE_COUNT] = MAX_TABLES + 1, "129 tables");
+        reject(c, b, (h, s) -> h[textH + TH_ROW_COUNT] = 1L << 32, "row count past int");
+        c.that(reject(c, b, (h, s) -> s[text + TS_ROWS] = null, "table rows missing") == SceneException.Kind.INVALID_TABLE, "table rows kind");
+        reject(c, b, (h, s) -> s[text + TS_ROW_INDEX_PAGES] = null, "row index pages missing");
+        reject(c, b, (h, s) -> h[textH + TH_ROW_INDEX_DIR_LEN] = 5, "row index dir past its slab");
+        kindOf(c, () -> new RuntimeSceneReader().attach(new long[3], b.slabs()), "short header");
+        kindOf(c, () -> new RuntimeSceneReader().attach(b.header(), new ByteBuffer[7]), "short slabs");
+        kindOf(c, () -> new RuntimeSceneReader().attach(null, null), "null arrays");
+        final RuntimeSceneReader empty = new PackedSceneBuilder(0, 1L, 0).dirty().attach(new RuntimeSceneReader());
+        c.that(empty.nodeCapacity() == 0 && !empty.isLive(0) && empty.resolve((1 << 24) | 1) == -1, "empty frame");
+    }
+
+    /** A rejected or released frame leaves nothing readable, through retained references too. */
+    static void detach(Check c) {
+        final PackedSceneBuilder b = builder();
+        final RuntimeSceneReader live = b.attach(new RuntimeSceneReader());
+        final TableReader retained = live.findTable(TEXT_KEY);
+        final PackedSceneBuilder bad = builder().dirty(0);
+        kindOf(c, () -> live.attach(bad.header(), bad.slabs()), "reject over a live frame");
         c.that(live.nodeCapacity() == 0 && live.tableCount() == 0 && live.tableAtSlot(VISUAL_SLOT) == null && !live.isLive(1),
                 "rejected frame leaves the reader detached");
         c.throwsA(IndexOutOfBoundsException.class, () -> live.x(1), "detached reads throw instead of touching freed buffers");
-        final RuntimeSceneReader detached = scene();
-        detached.detach();
-        c.that(detached.nodeCapacity() == 0 && detached.dirtyCount() == 0 && detached.findTable(VISUAL_KEY) == null, "detach");
-        // A rejected dirty frame leaves no stale slot entries behind for the next good frame.
-        kindOf(c, () -> attach(r, rows(0, 1), words(CHILD), 1, words(0), 1, tables()), "rejected frame");
-        attach(r, rows(0, 1), words(CHILD), 1, null, 0, new TableReader[0]);
-        c.that(r.tableAtSlot(VISUAL_SLOT) == null, "no stale slot after rejection");
-        final RuntimeSceneReader empty = new RuntimeSceneReader().attach(SCHEMA, 1L, 0, 0, null, null, null, 0, null, 0, null, 0, null, 0, null, 0, null, 0);
-        c.that(empty.nodeCapacity() == 0 && !empty.isLive(0) && empty.resolve(ROOT) == -1, "empty frame");
-    }
+        c.that(!retained.isAttached(), "a retained table reader is detached with the frame");
+        c.throwsA(IndexOutOfBoundsException.class, () -> retained.word(0, 0), "retained table reader refuses reads");
 
-    static long[] header(int tableCount) {
-        final long[] h = new long[RuntimeSceneReader.HEADER_LEN];
-        h[RuntimeSceneReader.H_SCHEMA] = SCHEMA;
-        h[RuntimeSceneReader.H_FRAME_ID] = 11;
-        h[RuntimeSceneReader.H_NODE_CAPACITY] = CAP;
-        h[RuntimeSceneReader.H_DIRTY_COUNT] = 1;
-        h[RuntimeSceneReader.H_REMOVED_COUNT] = 0;
-        h[RuntimeSceneReader.H_TEXT_LEN] = TEXT.length;
-        h[RuntimeSceneReader.H_CHILDREN_LEN] = 1;
-        h[RuntimeSceneReader.H_TABLE_COUNT] = tableCount;
-        h[RuntimeSceneReader.H_SCENE_EPOCH] = 4;
-        h[RuntimeSceneReader.H_DIRTY_RESOURCE_COUNT] = 2;
-        final long[][] t = {{VISUAL_KEY.value(), VISUAL_SLOT, 1, CAP, 1}, {TEXT_KEY.value(), TEXT_SLOT, 2, 2, 0}};
-        for (int i = 0; i < tableCount; i++) {
-            System.arraycopy(t[i], 0, h, RuntimeSceneReader.H_TABLES + i * RuntimeSceneReader.H_TABLE_STRIDE, 5);
-        }
-        return h;
-    }
-
-    static ByteBuffer[] slabs() {
-        final ByteBuffer[] s = new ByteBuffer[RuntimeSceneReader.SLABS_LEN];
-        s[RuntimeSceneReader.S_ROWS] = rows(0, 1);
-        s[RuntimeSceneReader.S_RECTS] = rects();
-        s[RuntimeSceneReader.S_TEXT] = bytes(TEXT);
-        s[RuntimeSceneReader.S_CHILDREN] = words(CHILD);
-        s[RuntimeSceneReader.S_DIRTY] = words(2);
-        s[RuntimeSceneReader.S_DIRTY_RESOURCES] = words(3, 9);
-        final int t0 = RuntimeSceneReader.S_TABLES;
-        s[t0] = words(0, 0x11, 0x22, 0x33);
-        s[t0 + 2] = words(2);
-        s[t0 + RuntimeSceneReader.S_TABLE_STRIDE] = words(0, 1, 0, 3);
-        s[t0 + RuntimeSceneReader.S_TABLE_STRIDE + 1] = words((1 << 24) | 2, CHILD);
-        return s;
-    }
-
-    static void packed(Check c) {
-        final RuntimeSceneReader s = new RuntimeSceneReader().attach(header(2), slabs());
-        c.eq(s.frameId(), 11, "packed frame");
-        c.eq(s.sceneEpoch(), 4, "packed scene epoch");
-        c.that(s.dirtyResourceCount() == 2 && s.dirtyResource(0) == 3 && s.dirtyResource(1) == 9, "packed dirty resources");
-        c.throwsA(IndexOutOfBoundsException.class, () -> s.dirtyResource(2), "dirty resource bound");
-        final long[] lying = header(2);
-        lying[RuntimeSceneReader.H_DIRTY_RESOURCE_COUNT] = 3;
-        kindOf(c, () -> new RuntimeSceneReader().attach(lying, slabs()), "dirty resource count past its slab");
-        c.eq(s.tableCount(), 2, "packed tables");
-        c.that(s.text(s.tableAtSlot(TEXT_SLOT), 1, TEXT_FIELD).equals("h\u00e9"), "packed sparse string");
-        c.eq(s.tableAtSlot(VISUAL_SLOT).dirtyRow(0), 2, "packed dirty row");
-        c.that(!s.tableAtSlot(VISUAL_SLOT).isSparse() && s.tableAtSlot(TEXT_SLOT).isSparse(), "packed owners");
-        c.eq(RuntimeSceneReader.HEADER_LEN, 10 + 128 * 5, "header len");
-        c.eq(RuntimeSceneReader.SLABS_LEN, 7 + 128 * 3, "slabs len");
-        final long[] tooMany = header(0);
-        tooMany[RuntimeSceneReader.H_TABLE_COUNT] = RuntimeSceneReader.MAX_TABLES + 1;
-        c.that(kindOf(c, () -> new RuntimeSceneReader().attach(tooMany, slabs()), "129 tables") == SceneException.Kind.INVALID_TABLE, "too many kind");
-        final long[] negative = header(2);
-        negative[RuntimeSceneReader.H_CHILDREN_LEN] = -1;
-        kindOf(c, () -> new RuntimeSceneReader().attach(negative, slabs()), "negative count");
-        final long[] huge = header(2);
-        huge[RuntimeSceneReader.H_TABLES + 3] = 1L << 32;
-        kindOf(c, () -> new RuntimeSceneReader().attach(huge, slabs()), "row count past int");
-        final ByteBuffer[] noRows = slabs();
-        noRows[RuntimeSceneReader.S_TABLES] = null;
-        c.that(kindOf(c, () -> new RuntimeSceneReader().attach(header(2), noRows), "table rows missing") == SceneException.Kind.INVALID_TABLE, "table rows kind");
-        kindOf(c, () -> new RuntimeSceneReader().attach(new long[3], slabs()), "short header");
-        kindOf(c, () -> new RuntimeSceneReader().attach(header(2), new ByteBuffer[7]), "short slabs");
-        kindOf(c, () -> new RuntimeSceneReader().attach(null, null), "null arrays");
+        b.attach(live);
+        final TableReader visual = live.findTable(VISUAL_KEY);
+        live.detach();
+        c.that(live.nodeCapacity() == 0 && live.dirtyCount() == 0 && live.movedCount() == 0 && live.scrollCount() == 0
+                && live.findTable(VISUAL_KEY) == null, "detach");
+        c.throwsA(IndexOutOfBoundsException.class, () -> visual.color(2, BG), "released dense table refuses reads");
+        c.throwsA(IndexOutOfBoundsException.class, () -> live.dirtyResource(0), "released deltas refuse reads");
     }
 
     static void steadyState(Check c) {
         if (!Alloc.supported()) return;
         final RuntimeSceneReader s = new RuntimeSceneReader();
-        final long[] h = header(2);
-        final ByteBuffer[] slabs = slabs();
+        final PackedSceneBuilder b = builder().moved(3).scroll(1, 0f, 2f);
+        final long[] h = b.header();
+        final ByteBuffer[] slabs = b.slabs();
         s.attach(h, slabs);
-        s.rowOf(s.tableAtSlot(TEXT_SLOT), 2);  // warm the pooled sparse index
         final int[] sink = new int[1];
         final long bytes = Alloc.bytes(() -> {
             for (int frame = 0; frame < 64; frame++) {
@@ -283,10 +247,22 @@ final class RuntimeSceneTest {
                 for (int d = 0; d < s.dirtyCount(); d++) {
                     final int i = s.dirtyIndex(d);
                     sink[0] += s.nodeId(i) + s.childCount(i) + Float.floatToRawIntBits(s.width(i))
-                            + s.rowOf(s.tableAtSlot(TEXT_SLOT), i) + s.rowOf(s.tableAtSlot(VISUAL_SLOT), i);
+                            + s.rowOf(s.tableAtSlot(TEXT_SLOT), i) + s.rowOf(s.tableAtSlot(VISUAL_SLOT), i)
+                            + Float.floatToRawIntBits(s.scrollY(s.nodeId(i)));
                 }
+                for (int m = 0; m < s.movedCount(); m++) sink[0] += s.movedIndex(m);
+                s.detach();
             }
         });
-        c.eq(bytes, 0, "steady-state packed attach + reads allocate nothing");
+        c.eq(bytes, 0, "steady-state packed attach + O(1) reads + detach allocate nothing");
+    }
+}
+
+/** Small direct little-endian buffers for corrupting packed frames. */
+final class RuntimeSceneTestBuffers {
+    private RuntimeSceneTestBuffers() {}
+
+    static ByteBuffer words(int... w) {
+        return TableSceneTest.words(w);
     }
 }

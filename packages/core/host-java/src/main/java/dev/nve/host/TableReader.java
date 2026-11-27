@@ -1,5 +1,6 @@
 package dev.nve.host;
 
+import dev.nve.host.generated.NveAbi;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -7,13 +8,18 @@ import java.nio.ByteOrder;
  * Reusable zero-copy reader over one published word table ({@code NveTableView}) in direct buffers.
  *
  * <p>Dense tables: row {@code i} belongs to node index {@code i} ({@code owners == null}). Sparse
- * tables: row {@code r} belongs to raw {@code NodeId} {@code owners[r]} (unsorted). Reads never
- * allocate; out-of-range access throws {@link IndexOutOfBoundsException}. {@link #attach} sets the
- * buffers' byte order to little-endian and reads relative to their current position.
+ * tables: row {@code r} belongs to raw {@code NodeId} {@code owners[r]} (unsorted), and the store's
+ * paged node-index → row index ({@code rowIndexDir} / {@code rowIndexPages}) resolves a node's row
+ * in O(1). Reads never allocate; out-of-range access throws {@link IndexOutOfBoundsException}.
+ * {@link #attach} sets the buffers' byte order to little-endian and reads relative to their
+ * current position. {@link #detach} drops every buffer: any later read throws instead of touching
+ * released native memory.
  */
 public final class TableReader {
     /** Maximum words per table row (Rust {@code MAX_TABLE_WORDS}). */
     public static final int MAX_WORDS = 32;
+    private static final int PAGE_BITS = NveAbi.ROW_INDEX_PAGE_BITS;
+    private static final int PAGE_LEN = NveAbi.ROW_INDEX_PAGE_LEN;
 
     private Key64 key = Key64.ZERO;
     private int slot;
@@ -26,31 +32,70 @@ public final class TableReader {
     private int ownersBase;
     private ByteBuffer dirtyRows;
     private int dirtyBase;
+    private ByteBuffer indexDir;
+    private int indexDirBase;
+    private int indexDirLen;
+    private ByteBuffer indexPages;
+    private int indexPagesBase;
+    private int indexPageCount;
 
     /**
-     * Rebinds this reader. Throws {@link IllegalArgumentException} when {@code words} is outside
-     * {@code 1..32} or a buffer is missing / shorter than its count.
+     * Rebinds this reader to one {@code NveTableView}. {@code rowIndexDir} / {@code rowIndexPages}
+     * are the sparse row index ({@code null} / {@code 0} for dense tables). Throws
+     * {@link IllegalArgumentException} when {@code words} is outside {@code 1..32}, a count is
+     * negative, or a buffer is missing / shorter than its count; the reader is then detached.
      */
     public TableReader attach(
             Key64 key, int slot, int words, int rowCount,
-            ByteBuffer rows, ByteBuffer owners, ByteBuffer dirtyRows, int dirtyCount) {
-        if (words < 1 || words > MAX_WORDS) throw new IllegalArgumentException("words " + words);
-        if (rowCount < 0 || dirtyCount < 0) throw new IllegalArgumentException("negative count");
-        requireWords(rows, (long) rowCount * words, "rows");
-        if (owners != null) requireWords(owners, rowCount, "owners");
-        requireWords(dirtyRows, dirtyCount, "dirtyRows");
+            ByteBuffer rows, ByteBuffer owners, ByteBuffer dirtyRows, int dirtyCount,
+            ByteBuffer rowIndexDir, int rowIndexDirLen, ByteBuffer rowIndexPages, int rowIndexPageCount) {
+        try {
+            if (words < 1 || words > MAX_WORDS) throw new IllegalArgumentException("words " + words);
+            if (rowCount < 0 || dirtyCount < 0 || rowIndexDirLen < 0 || rowIndexPageCount < 0) {
+                throw new IllegalArgumentException("negative count");
+            }
+            requireWords(rows, (long) rowCount * words, "rows");
+            if (owners != null) requireWords(owners, rowCount, "owners");
+            requireWords(dirtyRows, dirtyCount, "dirtyRows");
+            requireWords(rowIndexDir, rowIndexDirLen, "rowIndexDir");
+            requireWords(rowIndexPages, (long) rowIndexPageCount * PAGE_LEN, "rowIndexPages");
+        } catch (IllegalArgumentException e) {
+            detach();
+            throw e;
+        }
         this.key = key;
         this.slot = slot;
         this.words = words;
         this.rowCount = rowCount;
         this.dirtyCount = dirtyCount;
-        this.rows = rows == null ? null : rows.order(ByteOrder.LITTLE_ENDIAN);
-        this.rowsBase = rows == null ? 0 : rows.position();
-        this.owners = owners == null ? null : owners.order(ByteOrder.LITTLE_ENDIAN);
-        this.ownersBase = owners == null ? 0 : owners.position();
-        this.dirtyRows = dirtyRows == null ? null : dirtyRows.order(ByteOrder.LITTLE_ENDIAN);
-        this.dirtyBase = dirtyRows == null ? 0 : dirtyRows.position();
+        this.rows = le(rows);
+        this.rowsBase = base(rows);
+        this.owners = le(owners);
+        this.ownersBase = base(owners);
+        this.dirtyRows = le(dirtyRows);
+        this.dirtyBase = base(dirtyRows);
+        this.indexDir = le(rowIndexDir);
+        this.indexDirBase = base(rowIndexDir);
+        this.indexDirLen = rowIndexDirLen;
+        this.indexPages = le(rowIndexPages);
+        this.indexPagesBase = base(rowIndexPages);
+        this.indexPageCount = rowIndexPageCount;
         return this;
+    }
+
+    /**
+     * Drops every buffer and count: later reads throw ({@link #isAttached} is {@code false}). The
+     * key stays (it references no native memory) so a pooled reader re-attaching to the same table
+     * reuses it without allocating.
+     */
+    public void detach() {
+        slot = words = rowCount = dirtyCount = indexDirLen = indexPageCount = 0;
+        rows = owners = dirtyRows = indexDir = indexPages = null;
+        rowsBase = ownersBase = dirtyBase = indexDirBase = indexPagesBase = 0;
+    }
+
+    public boolean isAttached() {
+        return words > 0;
     }
 
     static void requireWords(ByteBuffer buf, long count, String what) {
@@ -59,6 +104,14 @@ public final class TableReader {
         if (buf.remaining() / 4 < count) {
             throw new IllegalArgumentException(what + " holds " + buf.remaining() / 4 + " words, need " + count);
         }
+    }
+
+    private static ByteBuffer le(ByteBuffer b) {
+        return b == null ? null : b.order(ByteOrder.LITTLE_ENDIAN);
+    }
+
+    private static int base(ByteBuffer b) {
+        return b == null ? 0 : b.position();
     }
 
     public Key64 key() {
@@ -153,13 +206,26 @@ public final class TableReader {
         return owners == null ? r : owners.getInt(ownersBase + r * 4);
     }
 
-    /** Row of {@code ownerId} (raw {@code NodeId} sparse, node index dense), or {@code -1}; O(rows) sparse. */
+    /**
+     * Row of node slot {@code index}, or {@code -1}; O(1) for both storages (sparse: the published
+     * row index). The row may belong to a stale generation: {@link #rowOf} also checks the owner.
+     */
+    public int rowOfNode(int index) {
+        if (index < 0) return -1;
+        if (owners == null) return index < rowCount ? index : -1;
+        final int dirSlot = index >>> PAGE_BITS;
+        if (dirSlot >= indexDirLen) return -1;
+        final int page = indexDir.getInt(indexDirBase + dirSlot * 4);  // NO_PAGE (-1) fails the bound
+        if (page < 0 || page >= indexPageCount) return -1;
+        final int rowPlusOne = indexPages.getInt(indexPagesBase + (page * PAGE_LEN + (index & (PAGE_LEN - 1))) * 4);
+        return rowPlusOne <= 0 || rowPlusOne > rowCount ? -1 : rowPlusOne - 1;
+    }
+
+    /** Row of {@code ownerId} (raw {@code NodeId} sparse, node index dense), or {@code -1}; O(1). */
     public int rowOf(int ownerId) {
-        if (owners == null) return ownerId >= 0 && ownerId < rowCount ? ownerId : -1;
-        for (int r = 0; r < rowCount; r++) {
-            if (owners.getInt(ownersBase + r * 4) == ownerId) return r;
-        }
-        return -1;
+        if (owners == null) return rowOfNode(ownerId);
+        final int r = rowOfNode(RuntimeSceneReader.indexOf(ownerId));
+        return r >= 0 && owners.getInt(ownersBase + r * 4) == ownerId ? r : -1;
     }
 
     public int dirtyRow(int i) {

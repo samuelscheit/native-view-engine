@@ -1,6 +1,7 @@
 package dev.nve.android.jni;
 
 import dev.nve.host.NativeRuntime;
+import dev.nve.host.generated.NveJniFrame;
 import dev.nve.host.generated.NveRuntimeAbi;
 import dev.nve.host.RuntimeSceneReader;
 import java.io.IOException;
@@ -41,8 +42,8 @@ final class Fixtures {
 
     /** One reusable packed frame + reader; {@link #acquire} attaches it, {@link #release} drops it. */
     static final class Scene {
-        final long[] header = new long[RuntimeSceneReader.HEADER_LEN];
-        final java.nio.ByteBuffer[] slabs = new java.nio.ByteBuffer[RuntimeSceneReader.SLABS_LEN];
+        final long[] header = new long[NveJniFrame.HEADER_LEN];
+        final java.nio.ByteBuffer[] slabs = new java.nio.ByteBuffer[NveJniFrame.SLABS_LEN];
         final RuntimeSceneReader reader = new RuntimeSceneReader();
         final long handle;
 

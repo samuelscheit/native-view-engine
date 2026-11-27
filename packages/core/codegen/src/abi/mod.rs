@@ -7,6 +7,7 @@
 //! this crate never depends on a table crate. Templates are checked by `rustc` at compile time.
 
 pub mod java_host;
+pub mod jni_frame;
 pub mod layout;
 pub mod model;
 pub mod spell;
@@ -26,6 +27,7 @@ use model::{
     AbiModel, ConstsModel, HashVector, RuntimeAbiModel, TableModel, consts_model, hash_vectors,
     tables_model, value_sets,
 };
+use jni_frame::JniFrameModel;
 use spell::{c, dart, ts};
 
 const CORE: AbiFileDescriptor = core_abi_descriptor();
@@ -58,7 +60,9 @@ templates! {
     CVectors: "c/hash_vectors.h" => vectors: [HashVector];
     SwiftVectors: "swift/HashVectors.swift" => vectors: [HashVector];
     JavaAbi: "java/NveAbi.java" => m: AbiModel<'a>;
-    JavaTables: "java/NveTables.java" => tables: [TableModel<'a>];
+    JavaRuntimeAbi: "java/NveRuntimeAbi.java" => m: RuntimeAbiModel<'a>;
+    JavaJniFrame: "java/NveJniFrame.java" => m: JniFrameModel;
+    CxxJniFrame: "c/nve_jni_frame.hpp" => m: JniFrameModel;
     JavaVectors: "java/HashVectors.java" => vectors: [HashVector];
     DartAbiConst: "dart/nve_abi_const.dart" => m: AbiModel<'a>;
     DartAbiFfi: "dart/nve_abi_ffi.dart" => m: AbiModel<'a>;
@@ -81,7 +85,7 @@ pub fn runtime_abi_model(base: &AbiModel<'_>) -> Result<RuntimeAbiModel<'static>
 
 /// Renders one template into a pre-sized buffer, ending in exactly one `\n` (Askama drops a
 /// template's final newline). Output is LF-only by construction (asserted).
-fn render(
+pub(crate) fn render(
     template: &dyn askama::DynTemplate,
     relative_path: String,
 ) -> Result<GeneratedFile, CodegenError> {
@@ -113,12 +117,25 @@ pub fn generate_c_abi_header() -> Result<String, CodegenError> {
 pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
     let m = abi_model()?;
     let runtime = runtime_abi_model(&m)?;
+    let jni = JniFrameModel::new();
     Ok(vec![
         render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?,
         render(&CRuntimeAbi { m: &runtime }, C_RUNTIME_ABI_HEADER.to_owned())?,
         render(
             &JavaAbi { m: &m },
             format!("{JAVA}/main/java/dev/nve/host/generated/NveAbi.java"),
+        )?,
+        render(
+            &JavaRuntimeAbi { m: &runtime },
+            format!("{JAVA}/main/java/dev/nve/host/generated/NveRuntimeAbi.java"),
+        )?,
+        render(
+            &JavaJniFrame { m: &jni },
+            format!("{JAVA}/main/java/dev/nve/host/generated/NveJniFrame.java"),
+        )?,
+        render(
+            &CxxJniFrame { m: &jni },
+            format!("{CXX}/include/nve/generated/nve_jni_frame.generated.hpp"),
         )?,
         render(
             &DartAbiConst { m: &m },
@@ -174,6 +191,17 @@ struct SwiftTables<'a> {
     consts: &'a [ConstsModel],
 }
 
+/// Java word-table mirror (`NveTables`, and `NveModuleTables` for capability modules): field
+/// specs, default rows, `Info` / `all()`, and one `Values.<Set>` class per value set.
+#[derive(Template)]
+#[template(path = "java/NveTables.java", escape = "none")]
+pub(crate) struct JavaTables<'a> {
+    pub(crate) class: &'a str,
+    pub(crate) doc: &'a str,
+    pub(crate) tables: &'a [TableModel<'a>],
+    pub(crate) value_sets: &'a [&'static ValueSetDesc],
+}
+
 /// Dart word-table mirror: field specs plus one `Nve<Set>` constant class per value set.
 #[derive(Template)]
 #[template(path = "dart/nve_tables.dart", escape = "none")]
@@ -203,7 +231,12 @@ pub fn generate_table_files(
             format!("{SWIFT}/Sources/NveHost/NveTables.generated.swift"),
         )?,
         render(
-            &JavaTables { tables },
+            &JavaTables {
+                class: "NveTables",
+                doc: "Word-table keys, schema hashes, default rows, field specs, and value sets for {@code TableReader}.",
+                tables,
+                value_sets: &sets,
+            },
             format!("{JAVA}/main/java/dev/nve/host/generated/NveTables.java"),
         )?,
         render(
