@@ -7,6 +7,7 @@
 // String views borrow the scene and are valid only while its `RuntimeSceneGuard` is held.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -121,6 +122,9 @@ struct NodeData {
   NodeKind kind = NodeKind::View;
   NveLayoutRect rect{};   // absolute (not scroll-shifted)
   NveLayoutRect local{};  // relative to the parent's rect
+  /// Content box (inside border and padding) relative to `rect`'s origin: where a host draws
+  /// text, images, inputs and canvases (layout rects are border boxes).
+  NveLayoutRect content{};
   std::span<const uint32_t> children;  // packed `NodeId`s
   VisualStyle visual;
   TextStyle text_style;
@@ -147,9 +151,10 @@ struct NodeData {
 
 /// Every core table a retained-view host renders, bound to one scene.
 struct SceneTables {
-  BoundTable visual, typography, text, image, text_input, scroll, accessibility, interaction, link;
+  BoundTable layout, visual, typography, text, image, text_input, scroll, accessibility, interaction, link;
 
   void bind(const RuntimeSceneReader& scene) {
+    layout.bind(scene, NVE_TABLE_LAYOUT_DESC);
     visual.bind(scene, NVE_TABLE_VISUAL_DESC);
     typography.bind(scene, NVE_TABLE_TYPOGRAPHY_DESC);
     text.bind(scene, NVE_TABLE_TEXT_DESC);
@@ -237,6 +242,26 @@ struct SceneTables {
                          static_cast<uint8_t>(v.bits(NVE_TABLE_VISUAL_VISIBILITY)),
                          v.bits(NVE_TABLE_VISUAL_BOX_SHADOWS),
                          v.bits(NVE_TABLE_VISUAL_BACKGROUND_FILL)};
+
+  // Content box: border (`nve.visual.border_width`, all sides) + padding. Percent padding resolves
+  // against the containing block's width on every side, as in CSS and the runtime's layout.
+  {
+    const NveLayoutRect* p = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr;
+    const float basis = p != nullptr ? p->width : n.rect.width;  // the root's block is the viewport
+    const RowRef l = t.layout.at(index);
+    const auto pad = [&](NveFieldSpec f) {
+      const LengthValue v = l.length(f);
+      const float px = v.unit == NVE_LENGTH_POINTS ? v.value : v.unit == NVE_LENGTH_PERCENT ? basis * v.value / 100.0f : 0.0f;
+      return std::isfinite(px) && px > 0.0f ? px : 0.0f;
+    };
+    const float border = std::isfinite(n.visual.border_width) && n.visual.border_width > 0.0f ? n.visual.border_width : 0.0f;
+    const float left = border + pad(NVE_TABLE_LAYOUT_PADDING_LEFT);
+    const float top = border + pad(NVE_TABLE_LAYOUT_PADDING_TOP);
+    const float right = border + pad(NVE_TABLE_LAYOUT_PADDING_RIGHT);
+    const float bottom = border + pad(NVE_TABLE_LAYOUT_PADDING_BOTTOM);
+    n.content = NveLayoutRect{left, top, std::max(0.0f, n.rect.width - left - right),
+                              std::max(0.0f, n.rect.height - top - bottom)};
+  }
 
   n.text = t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene);
 

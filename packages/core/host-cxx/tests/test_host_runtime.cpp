@@ -132,6 +132,11 @@ void test_writer_round_trip_and_retained_tree() {
   w.set(4u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, length_points(40.0f));
   w.set_str(5u, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "typed");
   w.set_str(5u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, "Name");
+  // Content box: 2px border + 10px left / 25%-of-parent-width (50px) top / 4px right padding.
+  w.set_f32(5u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, 2.0f);
+  w.set(5u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_LEFT, length_points(10.0f));
+  w.set(5u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_TOP, length_percent(25.0f));
+  w.set(5u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_RIGHT, length_points(4.0f));
   w.attach(6u, NVE_TABLE_SCROLL_DESC);  // defaults-only row
   CHECK(!w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, std::string_view("\xFF", 1)));  // invalid UTF-8
   CHECK(!w.set(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, 1u));  // `Str` needs set_str
@@ -167,6 +172,12 @@ void test_writer_round_trip_and_retained_tree() {
       CHECK(res && res->kind == kImageSrcKind);
       const auto decoded = res ? decode_image_src(res->bytes) : std::nullopt;
       CHECK(decoded && decoded->is_url() && decoded->url == "file:///tmp/a.png");
+      CHECK(img.content.x == 0.0f && img.content.y == 0.0f && img.content.width == img.rect.width &&
+            img.content.height == img.rect.height);  // no border, no padding
+      const NodeData input = read_node(guard->reader(), h.tables, 5u, TextStyle{});
+      CHECK(input.rect.width == 200.0f && input.rect.height >= 54.0f);  // padding + border are in the rect
+      CHECK(input.content.x == 12.0f && input.content.y == 52.0f && input.content.width == 182.0f);
+      CHECK(input.content.height == input.rect.height - 54.0f);
     }
   }
 
