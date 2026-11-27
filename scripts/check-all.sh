@@ -387,7 +387,7 @@ suite_rust_clippy() {
   cargo clippy --locked --workspace --all-targets -- -D warnings
   cargo clippy --locked -p nve-ui --features spatial-focus --all-targets -- -D warnings
   if has_wasm_target; then
-    cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy --locked -p nve-web-shell -p nve-docs-site --target wasm32-unknown-unknown -- -D warnings
   fi
 }
 
@@ -725,7 +725,7 @@ fi
 
 # 1c. Rust WASM check
 if command -v cargo >/dev/null 2>&1 && has_wasm_target; then
-  run_suite "Rust WASM check" suite_rust_wasm "wasm32-unknown-unknown (web-shell + hash/rpc/server/issues-api)"
+  run_suite "Rust WASM check" suite_rust_wasm "wasm32-unknown-unknown (web-shell + docs-site + hash/rpc/server/issues-api)"
 else
   skip_suite "Rust WASM check" "wasm32-unknown-unknown target not installed"
 fi

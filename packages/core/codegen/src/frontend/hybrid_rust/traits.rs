@@ -1,10 +1,12 @@
+use nve_abi::InterfaceId;
+
 use super::*;
 
 impl Parser {
     pub(super) fn parse_module_trait(
         &mut self,
         explicit_name: Option<String>,
-        explicit_interface_id: Option<u32>,
+        explicit_interface_id: Option<InterfaceId>,
         c_name: Option<String>,
         doc: Option<String>,
     ) -> Result<HybridModuleSpec, CodegenError> {
@@ -53,7 +55,7 @@ impl Parser {
     pub(super) fn parse_view_trait(
         &mut self,
         explicit_name: Option<String>,
-        explicit_interface_id: Option<u32>,
+        explicit_interface_id: Option<InterfaceId>,
         doc: Option<String>,
     ) -> Result<HybridViewSpec, CodegenError> {
         let trait_name = self.expect_ident("trait")?;

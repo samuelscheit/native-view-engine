@@ -174,30 +174,36 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
         &v_handle_hygiene,
     );
 
-    for dir in [
-        "abi",
-        "store",
-        "engine",
-        "tables",
-        "components",
-        "codec",
-        "interop",
-        "wire-core",
-        "dioxus",
-        "host-services",
-    ] {
-        for rel in idx.rs_files_under(&format!("packages/core/{dir}/src")) {
-            if is_test_or_bench_rs(&rel) {
-                continue;
-            }
-            if let Some(parsed) = idx.parse_rust(&rel) {
-                let target = if dir == "store" && rel != "packages/core/store/src/events.rs" {
-                    &mut v_store
-                } else {
-                    &mut v_1b1d
-                };
-                ast_layout::scan_bare_primitive_domain_fields(&rel, &parsed.raw, &parsed.ast, target);
-                ast_layout::scan_bare_handle_params(&rel, &parsed.raw, &parsed.ast, &mut v_handle_params);
+    for pkg in idx.graph.workspace().iter() {
+        let Some(dir) = pkg.source().workspace_path().map(|p| p.as_str().replace('\\', "/")) else {
+            continue;
+        };
+        if dir.starts_with("packages/core/") {
+            for rel in idx.rs_files_under(&format!("{dir}/src")) {
+                if is_test_or_bench_rs(&rel) {
+                    continue;
+                }
+                if let Some(parsed) = idx.parse_rust(&rel) {
+                    let target = if dir == "packages/core/store"
+                        && rel != "packages/core/store/src/events.rs"
+                    {
+                        &mut v_store
+                    } else {
+                        &mut v_1b1d
+                    };
+                    ast_layout::scan_bare_primitive_domain_fields(
+                        &rel,
+                        &parsed.raw,
+                        &parsed.ast,
+                        target,
+                    );
+                    ast_layout::scan_bare_handle_params(
+                        &rel,
+                        &parsed.raw,
+                        &parsed.ast,
+                        &mut v_handle_params,
+                    );
+                }
             }
         }
     }

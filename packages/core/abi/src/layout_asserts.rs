@@ -180,7 +180,7 @@ const _: () = {
             )
     );
     assert!(size_of::<NveDirectEvent>() == if PTR_SIZE == 8 { 96 } else { 72 });
-    assert!(align_of::<NveDirectEvent>() == 8);
+    assert!(align_of::<NveDirectEvent>() == align_of::<u64>());
 
     assert!(offset_of!(NveEventBatch, ptr) == 0);
     assert!(offset_of!(NveEventBatch, len) == PTR_SIZE);

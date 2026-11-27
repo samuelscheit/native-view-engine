@@ -4,7 +4,7 @@
 //! Flutter, SwiftUI/UIKit, Jetpack Compose, Web DOM) with unified surface lifecycle,
 //! layout negotiation, gesture arbitration, typed native views, and shared binary channels.
 
-#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+#![cfg_attr(all(doctest, feature = "channel"), doc = include_str!("../README.md"))]
 
 #[cfg(feature = "channel")]
 pub mod channel;
@@ -91,6 +91,8 @@ pub struct InteropRuntime {
     pub channels: NveChannelBus,
     #[cfg(feature = "window")]
     pub windows: WindowManager,
+    #[cfg(feature = "plugin-host")]
+    pub plugins: NvePluginHost,
 }
 
 impl InteropRuntime {
@@ -105,7 +107,39 @@ impl InteropRuntime {
             channels: NveChannelBus::new(),
             #[cfg(feature = "window")]
             windows: WindowManager::new(),
+            #[cfg(feature = "plugin-host")]
+            plugins: NvePluginHost::new(),
         }
+    }
+
+    /// Registers an in-process plugin allocating its surface from `self.surfaces`.
+    #[cfg(feature = "plugin-host")]
+    pub fn register_plugin_in_process(
+        &mut self,
+        name: impl Into<String>,
+        get_interface: nve_abi::NveGetInterfaceFn,
+        req: PluginRequirement,
+    ) -> Result<PluginId, PluginError> {
+        self.plugins
+            .register_in_process(&mut self.surfaces, name, get_interface, req)
+    }
+
+    /// Loads a dynamic (`cdylib`) plugin allocating its surface from `self.surfaces`.
+    #[cfg(all(feature = "plugin-host", not(target_arch = "wasm32")))]
+    pub fn load_plugin_dynamic(
+        &mut self,
+        name: impl Into<String>,
+        dylib_path: &std::path::Path,
+        req: PluginRequirement,
+    ) -> Result<PluginId, PluginError> {
+        self.plugins
+            .load_dynamic(&mut self.surfaces, name, dylib_path, req)
+    }
+
+    /// Unloads a plugin and destroys its surface in `self.surfaces`.
+    #[cfg(feature = "plugin-host")]
+    pub fn unload_plugin(&mut self, plugin_id: PluginId) -> Result<PluginMetadata, PluginError> {
+        self.plugins.unload(&mut self.surfaces, plugin_id)
     }
 
     /// Arbitrates a pointer event starting at `innermost_surface` by resolving its live
@@ -164,6 +198,7 @@ impl InteropRuntime {
             feature = "layout",
             feature = "channel",
             feature = "window",
+            feature = "plugin-host",
         ))]
         for rec in &torn_down {
             #[cfg(feature = "gesture")]
@@ -176,6 +211,8 @@ impl InteropRuntime {
             if let Some(handle) = self.windows.handle_for_surface(rec.surface_id) {
                 let _ = self.windows.close_window(handle);
             }
+            #[cfg(feature = "plugin-host")]
+            self.plugins.detach_destroyed_surface(rec.surface_id);
         }
         Ok(torn_down)
     }

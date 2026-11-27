@@ -24,7 +24,7 @@ use crate::error::CodegenError;
 use crate::naming::{to_pascal_case, to_snake_case};
 pub(crate) use file_spec::hash_str;
 use file_spec::{hash_method, hash_transitive_types};
-use nve_abi::{Key64, Xxh64Hasher};
+use nve_abi::{InterfaceId, Key64, Xxh64Hasher};
 
 /// Base interface ID for generated hybrid vtables (`>= 0x1000_0000`), keeping the low range
 /// (`1..=4`) permanently reserved for core NVE interfaces (`NVE_IFACE_SURFACE..NVE_IFACE_DEV`).
@@ -37,7 +37,7 @@ pub const NVE_HYBRID_INTERFACE_ID_MASK: u32 = 0x0FFF_FFFF;
 pub const NVE_HYBRID_ABI_VERSION: u32 = 1;
 
 /// Computes a deterministic hybrid `interface_id >= 0x1000_0000` for a module or view.
-pub fn compute_hybrid_interface_id(kind: &str, name: &str) -> u32 {
+pub fn compute_hybrid_interface_id(kind: &str, name: &str) -> InterfaceId {
     let mut h = Xxh64Hasher::new(0);
     h.update(b"nve.hybrid.iface.v1:");
     h.update(kind.as_bytes());
@@ -45,7 +45,7 @@ pub fn compute_hybrid_interface_id(kind: &str, name: &str) -> u32 {
     h.update(name.as_bytes());
     let k = Key64(h.digest());
     let folded = (k.lo() ^ k.hi()) & NVE_HYBRID_INTERFACE_ID_MASK;
-    NVE_HYBRID_INTERFACE_ID_BASE | folded
+    InterfaceId(NVE_HYBRID_INTERFACE_ID_BASE | folded)
 }
 
 /// Target languages emitted by the Hybrid FFI generator.
@@ -489,7 +489,7 @@ pub struct HybridModuleSpec {
     /// interfaces `NVE_IFACE_SURFACE..NVE_IFACE_DEV`). When `None`, defaults to deterministic
     /// XXH64 ID `>= 0x1000_0000`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub explicit_interface_id: Option<u32>,
+    pub explicit_interface_id: Option<InterfaceId>,
     /// Optional explicit C vtable struct name (e.g. `"NveSurfaceApi"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub c_name: Option<String>,
@@ -498,7 +498,7 @@ pub struct HybridModuleSpec {
 impl HybridModuleSpec {
     /// Interface ID: returns `explicit_interface_id` when set, otherwise a deterministic ID
     /// in the reserved hybrid range (`>= 0x1000_0000`).
-    pub fn interface_id(&self) -> u32 {
+    pub fn interface_id(&self) -> InterfaceId {
         self.explicit_interface_id
             .unwrap_or_else(|| compute_hybrid_interface_id("module", &self.name))
     }
@@ -511,7 +511,7 @@ impl HybridModuleSpec {
         hash_str(&mut h, &self.name);
         if let Some(id) = self.explicit_interface_id {
             hash_str(&mut h, "iface_id");
-            h.update(&id.to_le_bytes());
+            h.update(&id.raw().to_le_bytes());
         }
         let mut ref_structs = BTreeSet::new();
         let mut ref_enums = BTreeSet::new();
@@ -539,13 +539,13 @@ pub struct HybridViewSpec {
     /// Optional explicit fixed interface ID override. Defaults to deterministic XXH64 ID
     /// `>= 0x1000_0000` when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub explicit_interface_id: Option<u32>,
+    pub explicit_interface_id: Option<InterfaceId>,
 }
 
 impl HybridViewSpec {
     /// Interface ID: returns `explicit_interface_id` when set, otherwise a deterministic ID
     /// in the reserved hybrid range (`>= 0x1000_0000`).
-    pub fn interface_id(&self) -> u32 {
+    pub fn interface_id(&self) -> InterfaceId {
         self.explicit_interface_id
             .unwrap_or_else(|| compute_hybrid_interface_id("view", &self.name))
     }
@@ -558,7 +558,7 @@ impl HybridViewSpec {
         hash_str(&mut h, &self.name);
         if let Some(id) = self.explicit_interface_id {
             hash_str(&mut h, "iface_id");
-            h.update(&id.to_le_bytes());
+            h.update(&id.raw().to_le_bytes());
         }
         let mut ref_structs = BTreeSet::new();
         let mut ref_enums = BTreeSet::new();

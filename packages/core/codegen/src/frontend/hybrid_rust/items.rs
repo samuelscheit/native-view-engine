@@ -310,7 +310,8 @@ impl Parser {
                 }
                 if let Some(attr) = mod_attr {
                     let explicit_name = attr_string_arg(attr, "name");
-                    let explicit_interface_id = attr_u32_arg(attr, "interface_id")?;
+                    let explicit_interface_id =
+                        attr_u32_arg(attr, "interface_id")?.map(nve_abi::InterfaceId);
                     let c_name = attr_string_arg(attr, "c_name");
                     file.modules.push(self.parse_module_trait(
                         explicit_name,
@@ -320,7 +321,8 @@ impl Parser {
                     )?);
                 } else if let Some(attr) = view_attr {
                     let explicit_name = attr_string_arg(attr, "name");
-                    let explicit_interface_id = attr_u32_arg(attr, "interface_id")?;
+                    let explicit_interface_id =
+                        attr_u32_arg(attr, "interface_id")?.map(nve_abi::InterfaceId);
                     file.views.push(self.parse_view_trait(
                         explicit_name,
                         explicit_interface_id,

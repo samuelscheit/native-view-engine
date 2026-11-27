@@ -1,5 +1,5 @@
 //! Criterion micro-benchmarks for `nve-interop`: cross-framework `GestureArbitrator`
-//! nested-scroll arbitration and `NveChannelBus` pub/sub dispatch.
+//! nested-scroll arbitration, `SurfaceOrchestrator` lookup/churn, and `NveChannelBus` dispatch.
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
@@ -7,7 +7,6 @@ fn main() {}
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::hint::black_box;
-
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -32,50 +31,45 @@ mod native {
         ];
         for &sid in &chain {
             let mut caps = GestureCapabilities::vertical_scroll(FrameworkKind::Nve);
-            if sid.raw() < 6 {
+            if sid.index_u32() < 6 {
                 caps.scroll_edges.at_bottom = true;
             }
             arb.set_capabilities(sid, caps);
         }
 
+        let down_s = PointerSample {
+            pointer_id: 1,
+            phase: PointerPhase::Down,
+            x: 20.0,
+            y: 100.0,
+            delta_x: 0.0,
+            delta_y: 0.0,
+            timestamp_us: TimestampUs(1_000),
+        };
+        let move_s = PointerSample {
+            pointer_id: 1,
+            phase: PointerPhase::Move,
+            x: 20.0,
+            y: 50.0,
+            delta_x: 0.0,
+            delta_y: -50.0,
+            timestamp_us: TimestampUs(2_000),
+        };
+        let up_s = PointerSample {
+            pointer_id: 1,
+            phase: PointerPhase::Up,
+            x: 20.0,
+            y: 50.0,
+            delta_x: 0.0,
+            delta_y: 0.0,
+            timestamp_us: TimestampUs(3_000),
+        };
+
         c.bench_function("interop_gesture_arbitrate_8_deep_scroll_cycle", |b| {
             b.iter(|| {
-                let down = arb.arbitrate(
-                    black_box(&chain),
-                    PointerSample {
-                        pointer_id: 1,
-                        phase: PointerPhase::Down,
-                        x: 20.0,
-                        y: 100.0,
-                        delta_x: 0.0,
-                        delta_y: 0.0,
-                        timestamp_us: TimestampUs(1_000),
-                    },
-                );
-                let mv = arb.arbitrate(
-                    black_box(&chain),
-                    PointerSample {
-                        pointer_id: 1,
-                        phase: PointerPhase::Move,
-                        x: 20.0,
-                        y: 50.0,
-                        delta_x: 0.0,
-                        delta_y: -50.0,
-                        timestamp_us: TimestampUs(2_000),
-                    },
-                );
-                let up = arb.arbitrate(
-                    black_box(&chain),
-                    PointerSample {
-                        pointer_id: 1,
-                        phase: PointerPhase::Up,
-                        x: 20.0,
-                        y: 50.0,
-                        delta_x: 0.0,
-                        delta_y: 0.0,
-                        timestamp_us: TimestampUs(3_000),
-                    },
-                );
+                let down = arb.arbitrate(black_box(&chain), black_box(down_s));
+                let mv = arb.arbitrate(black_box(&chain), black_box(move_s));
+                let up = arb.arbitrate(black_box(&chain), black_box(up_s));
                 black_box((down.winner, mv.winner, up.winner))
             });
         });
@@ -102,6 +96,21 @@ mod native {
             });
         });
 
+        let mut churn_orch = SurfaceOrchestrator::new();
+        let env = SurfaceEnvironment::default();
+        c.bench_function("interop_surface_orchestrator_register_destroy_churn", |b| {
+            b.iter(|| {
+                let id = churn_orch
+                    .register_root(FrameworkKind::Nve, "Churn", black_box(env.clone()))
+                    .expect("register churn surface");
+                let torn = churn_orch
+                    .destroy_surface(black_box(id))
+                    .expect("destroy churn surface");
+                let drained = churn_orch.drain_events().len();
+                black_box((torn.len(), drained))
+            });
+        });
+
         let mut runtime = InteropRuntime::new();
         let root = runtime
             .surfaces
@@ -119,37 +128,45 @@ mod native {
             );
         }
         let leaf = cur;
-        c.bench_function("interop_runtime_arbitrate_pointer_8_deep_zero_alloc", |b| {
+        let down_s = PointerSample {
+            pointer_id: 1,
+            phase: PointerPhase::Down,
+            x: 10.0,
+            y: 10.0,
+            delta_x: 0.0,
+            delta_y: 0.0,
+            timestamp_us: TimestampUs(100),
+        };
+        let move_s = PointerSample {
+            pointer_id: 1,
+            phase: PointerPhase::Move,
+            x: 10.0,
+            y: 40.0,
+            delta_x: 0.0,
+            delta_y: 30.0,
+            timestamp_us: TimestampUs(150),
+        };
+        let up_s = PointerSample {
+            pointer_id: 1,
+            phase: PointerPhase::Up,
+            x: 10.0,
+            y: 40.0,
+            delta_x: 0.0,
+            delta_y: 0.0,
+            timestamp_us: TimestampUs(200),
+        };
+        c.bench_function("interop_runtime_arbitrate_pointer_8_deep_scroll_cycle", |b| {
             b.iter(|| {
                 let d = runtime
-                    .arbitrate_pointer(
-                        black_box(leaf),
-                        PointerSample {
-                            pointer_id: 1,
-                            phase: PointerPhase::Down,
-                            x: 10.0,
-                            y: 10.0,
-                            delta_x: 0.0,
-                            delta_y: 0.0,
-                            timestamp_us: TimestampUs(100),
-                        },
-                    )
+                    .arbitrate_pointer(black_box(leaf), black_box(down_s))
                     .expect("arbitrate pointer down");
+                let m = runtime
+                    .arbitrate_pointer(black_box(leaf), black_box(move_s))
+                    .expect("arbitrate pointer move");
                 let u = runtime
-                    .arbitrate_pointer(
-                        black_box(leaf),
-                        PointerSample {
-                            pointer_id: 1,
-                            phase: PointerPhase::Up,
-                            x: 10.0,
-                            y: 10.0,
-                            delta_x: 0.0,
-                            delta_y: 0.0,
-                            timestamp_us: TimestampUs(200),
-                        },
-                    )
+                    .arbitrate_pointer(black_box(leaf), black_box(up_s))
                     .expect("arbitrate pointer up");
-                black_box((d.winner, u.winner))
+                black_box((d.winner, m.winner, u.winner))
             });
         });
     }

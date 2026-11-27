@@ -9,7 +9,7 @@ use core::fmt;
 use core::mem::{align_of, size_of};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 
-use nve_codec::NveCodec;
+use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec, NveDecode, NveEncode};
 
 /// Dense slot index into `NodeStore`'s node table (`0` is reserved for null).
 ///
@@ -42,68 +42,155 @@ impl fmt::Display for NodeIndex {
     }
 }
 
+/// Shared generational handle (`index: 24 | generation: 8`) implementation sealing the canonical
+/// null invariant (`x.is_null() <=> x == Self::NULL`) across constructors, `NveCodec`, and `serde`.
+macro_rules! impl_generational_handle {
+    ($name:ident, $label:literal, $root_doc:literal) => {
+        impl $name {
+            pub const NULL: Self = Self(0);
+            #[doc = $root_doc]
+            pub const ROOT: Self = Self(1);
+            pub const INDEX_BITS: u32 = 24;
+            pub const MAX_INDEX: u32 = (1 << Self::INDEX_BITS) - 1;
+
+            /// Constructs a handle from a 24-bit slot index and 8-bit generation.
+            ///
+            /// Any index-`0` input canonicalizes to [`Self::NULL`] so `x.is_null() <=> x == Self::NULL`.
+            /// Debug-asserts `index <= MAX_INDEX`; for untrusted inputs use [`Self::try_new`] or
+            /// [`Self::from_raw`].
+            #[inline(always)]
+            pub const fn new(index: u32, generation: u8) -> Self {
+                debug_assert!(
+                    index <= Self::MAX_INDEX,
+                    concat!(stringify!($name), " index exceeds 24-bit MAX_INDEX")
+                );
+                let masked = index & Self::MAX_INDEX;
+                if masked == 0 {
+                    Self::NULL
+                } else {
+                    Self(((generation as u32) << Self::INDEX_BITS) | masked)
+                }
+            }
+
+            /// Fallible constructor rejecting null index `0` and any index `> MAX_INDEX`.
+            #[inline(always)]
+            pub const fn try_new(index: u32, generation: u8) -> Option<Self> {
+                if index == 0 || index > Self::MAX_INDEX {
+                    None
+                } else {
+                    Some(Self(((generation as u32) << Self::INDEX_BITS) | index))
+                }
+            }
+
+            /// Decodes a raw `u32` at FFI/wire ingress, rejecting any handle whose 24-bit index is `0`
+            /// (both `0` and non-zero generations paired with index `0`).
+            #[inline(always)]
+            pub const fn from_raw(raw: u32) -> Option<Self> {
+                if (raw & Self::MAX_INDEX) == 0 {
+                    None
+                } else {
+                    Some(Self(raw))
+                }
+            }
+
+            /// Decodes a nullable raw `u32` at FFI/wire ingress, canonicalizing any index-`0` value
+            /// to [`Self::NULL`].
+            #[inline(always)]
+            pub const fn from_raw_or_null(raw: u32) -> Self {
+                if (raw & Self::MAX_INDEX) == 0 {
+                    Self::NULL
+                } else {
+                    Self(raw)
+                }
+            }
+
+            #[inline(always)]
+            pub const fn index(self) -> usize {
+                (self.0 & Self::MAX_INDEX) as usize
+            }
+
+            #[inline(always)]
+            pub const fn index_u32(self) -> u32 {
+                self.0 & Self::MAX_INDEX
+            }
+
+            #[inline(always)]
+            pub const fn generation(self) -> u8 {
+                (self.0 >> Self::INDEX_BITS) as u8
+            }
+
+            /// Returns `true` when the 24-bit slot index is `0`.
+            #[inline(always)]
+            pub const fn is_null(self) -> bool {
+                self.index_u32() == 0
+            }
+
+            #[inline(always)]
+            pub const fn raw(self) -> u32 {
+                self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                if self.is_null() {
+                    f.write_str(concat!($label, "(null)"))
+                } else {
+                    write!(f, concat!($label, "({},{})"), self.index_u32(), self.generation())
+                }
+            }
+        }
+
+        impl NveEncode for $name {
+            #[inline]
+            fn encode(&self, w: &mut ByteWriter) -> Result<(), CodecError> {
+                w.write_u32(self.0);
+                Ok(())
+            }
+        }
+
+        impl NveDecode for $name {
+            const MIN_ENCODED_BYTES: usize = 4;
+
+            #[inline]
+            fn decode(r: &mut ByteReader<'_>) -> Result<Self, CodecError> {
+                Ok(Self::from_raw_or_null(r.read_u32()?))
+            }
+        }
+
+        #[cfg(feature = "serde")]
+        impl serde::Serialize for $name {
+            #[inline]
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                self.0.serialize(serializer)
+            }
+        }
+
+        #[cfg(feature = "serde")]
+        impl<'de> serde::Deserialize<'de> for $name {
+            #[inline]
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                u32::deserialize(deserializer).map(Self::from_raw_or_null)
+            }
+        }
+    };
+}
+
 /// Generational node identity: `index: 24 | generation: 8`. Raw `0` is [`NodeId::NULL`].
 ///
 /// Indices are recycled only at frame boundaries; the 8-bit generation catches stale IDs across
 /// frames without hash maps or heap allocations.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct NodeId(u32);
 
+impl_generational_handle!(
+    NodeId,
+    "node",
+    "Reserved root node of every surface (index `1`, generation `0`)."
+);
+
 impl NodeId {
-    pub const NULL: Self = Self(0);
-    /// Reserved root node of every surface (index `1`, generation `0`).
-    pub const ROOT: Self = Self(1);
-    pub const INDEX_BITS: u32 = 24;
-    pub const MAX_INDEX: u32 = (1 << Self::INDEX_BITS) - 1;
-
-    /// Constructs a `NodeId` from a 24-bit slot index and 8-bit generation.
-    ///
-    /// Debug-asserts `index <= MAX_INDEX` so overflowing indices never silently mask to `NULL`.
-    /// For untrusted inputs, use [`Self::try_new`] or [`Self::from_raw`].
-    #[inline(always)]
-    pub const fn new(index: u32, generation: u8) -> Self {
-        debug_assert!(
-            index <= Self::MAX_INDEX,
-            "NodeId index exceeds 24-bit MAX_INDEX"
-        );
-        Self(((generation as u32) << Self::INDEX_BITS) | (index & Self::MAX_INDEX))
-    }
-
-    /// Fallible constructor rejecting null index `0` and any index `> MAX_INDEX`.
-    #[inline(always)]
-    pub const fn try_new(index: u32, generation: u8) -> Option<Self> {
-        if index == 0 || index > Self::MAX_INDEX {
-            None
-        } else {
-            Some(Self(((generation as u32) << Self::INDEX_BITS) | index))
-        }
-    }
-
-    /// Decodes a raw `u32` at FFI/wire ingress, rejecting any handle whose 24-bit index is `0`
-    /// (both `0` and non-zero generations paired with index `0`).
-    #[inline(always)]
-    pub const fn from_raw(raw: u32) -> Option<Self> {
-        if (raw & Self::MAX_INDEX) == 0 {
-            None
-        } else {
-            Some(Self(raw))
-        }
-    }
-
-    /// Decodes a nullable raw `u32` at FFI/wire ingress, canonicalizing any index-`0` value to
-    /// [`Self::NULL`].
-    #[inline(always)]
-    pub const fn from_raw_or_null(raw: u32) -> Self {
-        if (raw & Self::MAX_INDEX) == 0 {
-            Self::NULL
-        } else {
-            Self(raw)
-        }
-    }
-
     #[inline(always)]
     pub const fn from_index(index: NodeIndex, generation: u8) -> Self {
         Self::new(index.0, generation)
@@ -113,42 +200,6 @@ impl NodeId {
     pub const fn node_index(self) -> NodeIndex {
         NodeIndex(self.0 & Self::MAX_INDEX)
     }
-
-    #[inline(always)]
-    pub const fn index(self) -> usize {
-        (self.0 & Self::MAX_INDEX) as usize
-    }
-
-    #[inline(always)]
-    pub const fn index_u32(self) -> u32 {
-        self.0 & Self::MAX_INDEX
-    }
-
-    #[inline(always)]
-    pub const fn generation(self) -> u8 {
-        (self.0 >> Self::INDEX_BITS) as u8
-    }
-
-    /// Returns `true` when the 24-bit slot index is `0` (including non-zero generations with index `0`).
-    #[inline(always)]
-    pub const fn is_null(self) -> bool {
-        self.index_u32() == 0
-    }
-
-    #[inline(always)]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_null() {
-            f.write_str("node(null)")
-        } else {
-            write!(f, "node({},{})", self.index_u32(), self.generation())
-        }
-    }
 }
 
 /// Reserved root node ID for every surface (`NodeId::ROOT`).
@@ -157,101 +208,17 @@ pub const ROOT_NODE_ID: NodeId = NodeId::ROOT;
 /// Generational surface identity: `index: 24 | generation: 8`. Raw `0` is [`SurfaceId::NULL`].
 ///
 /// Raw FFI structs keep `SurfaceId` as a plain `u32` (never `NonZeroU32` inside `extern "C"` POD
-/// so zero-initialized C buffers never trigger UB); ingress validation rejects any index-`0` value.
+/// so zero-initialized C buffers never trigger UB); ingress validation rejects/canonicalizes any
+/// index-`0` value.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct SurfaceId(u32);
 
-impl SurfaceId {
-    pub const NULL: Self = Self(0);
-    /// Conventional first surface (index `1`, generation `0`).
-    pub const ROOT: Self = Self(1);
-    pub const INDEX_BITS: u32 = 24;
-    pub const MAX_INDEX: u32 = (1 << Self::INDEX_BITS) - 1;
-
-    /// Constructs a `SurfaceId` from a 24-bit slot index and 8-bit generation.
-    ///
-    /// Debug-asserts `index <= MAX_INDEX` so overflowing indices never silently mask to `NULL`.
-    /// For untrusted inputs, use [`Self::try_new`] or [`Self::from_raw`].
-    #[inline(always)]
-    pub const fn new(index: u32, generation: u8) -> Self {
-        debug_assert!(
-            index <= Self::MAX_INDEX,
-            "SurfaceId index exceeds 24-bit MAX_INDEX"
-        );
-        Self(((generation as u32) << Self::INDEX_BITS) | (index & Self::MAX_INDEX))
-    }
-
-    /// Fallible constructor rejecting null index `0` and any index `> MAX_INDEX`.
-    #[inline(always)]
-    pub const fn try_new(index: u32, generation: u8) -> Option<Self> {
-        if index == 0 || index > Self::MAX_INDEX {
-            None
-        } else {
-            Some(Self(((generation as u32) << Self::INDEX_BITS) | index))
-        }
-    }
-
-    /// Decodes a raw `u32` at FFI/JS/wire ingress, rejecting any handle whose 24-bit index is `0`
-    /// (both `0` and non-zero generations paired with index `0`).
-    #[inline(always)]
-    pub const fn from_raw(raw: u32) -> Option<Self> {
-        if (raw & Self::MAX_INDEX) == 0 {
-            None
-        } else {
-            Some(Self(raw))
-        }
-    }
-
-    /// Decodes a nullable raw `u32` at FFI/wire ingress, canonicalizing any index-`0` value to
-    /// [`Self::NULL`].
-    #[inline(always)]
-    pub const fn from_raw_or_null(raw: u32) -> Self {
-        if (raw & Self::MAX_INDEX) == 0 {
-            Self::NULL
-        } else {
-            Self(raw)
-        }
-    }
-
-    #[inline(always)]
-    pub const fn index(self) -> usize {
-        (self.0 & Self::MAX_INDEX) as usize
-    }
-
-    #[inline(always)]
-    pub const fn index_u32(self) -> u32 {
-        self.0 & Self::MAX_INDEX
-    }
-
-    #[inline(always)]
-    pub const fn generation(self) -> u8 {
-        (self.0 >> Self::INDEX_BITS) as u8
-    }
-
-    /// Returns `true` when the 24-bit slot index is `0` (including non-zero generations with index `0`).
-    #[inline(always)]
-    pub const fn is_null(self) -> bool {
-        self.index_u32() == 0
-    }
-
-    #[inline(always)]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Display for SurfaceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_null() {
-            f.write_str("surface(null)")
-        } else {
-            write!(f, "surface({},{})", self.index_u32(), self.generation())
-        }
-    }
-}
+impl_generational_handle!(
+    SurfaceId,
+    "surface",
+    "Conventional first surface (index `1`, generation `0`)."
+);
 
 /// Monotonic 64-bit frame identifier.
 #[repr(transparent)]
@@ -576,6 +543,8 @@ impl ZIndex {
 /// Modular C ABI interface identifier passed to `nve_get_interface`.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct InterfaceId(pub u32);
 
 impl InterfaceId {
@@ -585,15 +554,35 @@ impl InterfaceId {
     }
 }
 
+impl fmt::Display for InterfaceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::UpperHex for InterfaceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::UpperHex::fmt(&self.0, f)
+    }
+}
+
 /// Direct prop field index in `NvePropEntry`.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct PropFieldId(pub u16);
 
 impl PropFieldId {
     #[inline(always)]
     pub const fn raw(self) -> u16 {
         self.0
+    }
+}
+
+impl fmt::Display for PropFieldId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

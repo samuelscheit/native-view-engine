@@ -11,7 +11,6 @@ pub type SubscriptionId = u64;
 /// channel bus, and island operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteropError {
-    InvalidSurfaceId(SurfaceId),
     SurfaceNotFound(SurfaceId),
     SurfaceSlotsExhausted,
     ParentNotFound(SurfaceId),
@@ -45,7 +44,6 @@ impl From<crate::window::WindowError> for InteropError {
 impl fmt::Display for InteropError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidSurfaceId(id) => write!(f, "invalid surface id {id}"),
             Self::SurfaceNotFound(id) => write!(f, "surface {id} not found"),
             Self::SurfaceSlotsExhausted => {
                 f.write_str("all 24-bit generational surface slots have been exhausted or retired")

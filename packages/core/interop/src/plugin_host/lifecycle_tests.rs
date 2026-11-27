@@ -236,11 +236,24 @@ unsafe extern "C" fn broken_null_handle_get_interface(id: InterfaceId) -> *const
 
 #[test]
 fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
-    let mut host = NvePluginHost::new();
+    let mut runtime = crate::InteropRuntime::new();
 
-    // 1. Reject plugin missing NVE_IFACE_SURFACE.
+    // Register an application root surface first (`SurfaceId::ROOT`) — plugins mounted on the
+    // same orchestrator must NEVER collide with `SurfaceId::ROOT`!
+    let app_root = runtime
+        .surfaces
+        .register_root(
+            crate::FrameworkKind::Flutter,
+            "AppRoot",
+            crate::SurfaceEnvironment::default(),
+        )
+        .unwrap();
+    assert_eq!(app_root, SurfaceId::ROOT);
+    let _ = runtime.surfaces.drain_events();
+
+    // 1. Reject plugin missing NVE_IFACE_SURFACE without burning surface slots or emitting events.
     assert_eq!(
-        host.register_in_process(
+        runtime.register_plugin_in_process(
             "bad-no-surface",
             broken_missing_surface_get_interface,
             PluginRequirement::SURFACE_ONLY
@@ -250,7 +263,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
 
     // 2. Reject surface-only plugin when caller requires NVE_IFACE_COMPONENT.
     assert_eq!(
-        host.register_in_process(
+        runtime.register_plugin_in_process(
             "needs-component",
             surface_only_get_interface,
             PluginRequirement::EMBEDDED_COMPONENT
@@ -260,35 +273,42 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
             interface_id: NVE_IFACE_COMPONENT,
         })
     );
+    assert!(runtime.surfaces.drain_events().is_empty());
 
-    // 3. Surface-only plugin mounts cleanly under SURFACE_ONLY requirement.
-    let p_min = host
-        .register_in_process(
+    // 3. Surface-only plugin mounts cleanly under SURFACE_ONLY requirement with distinct SurfaceId.
+    let p_min = runtime
+        .register_plugin_in_process(
             "minimal-widget",
             surface_only_get_interface,
             PluginRequirement::SURFACE_ONLY,
         )
         .unwrap();
-    let min_slot = host.get(p_min).unwrap();
+    let min_slot = runtime.plugins.get(p_min).unwrap();
     let min_sid = min_slot.surface_id();
     assert!(!min_sid.is_null());
+    assert_ne!(min_sid, app_root);
+    assert!(runtime.surfaces.get(app_root).is_some());
+    assert!(runtime.surfaces.get(min_sid).is_some());
     assert!(min_slot.capabilities().surface);
     assert!(!min_slot.capabilities().component);
     assert!(!min_slot.capabilities().layout);
 
-    // 4. Full-featured plugin gets a distinct generational SurfaceId.
-    let p_full = host
-        .register_in_process(
+    // 4. Full-featured plugin gets a distinct generational SurfaceId visible in shared orchestrator.
+    let p_full = runtime
+        .register_plugin_in_process(
             "studio-inspector-plugin",
             plugin_v1_get_interface,
             PluginRequirement::EMBEDDED_COMPONENT,
         )
         .unwrap();
-    assert_eq!(host.active_count(), 2);
+    assert_eq!(runtime.plugins.active_count(), 2);
+    assert_eq!(runtime.surfaces.active_count(), 3);
+    assert_eq!(runtime.surfaces.drain_events().len(), 2);
 
-    let slot = host.get_mut(p_full).unwrap();
+    let slot = runtime.plugins.get_mut(p_full).unwrap();
     let full_sid = slot.surface_id();
     assert_ne!(full_sid, min_sid);
+    assert_ne!(full_sid, app_root);
     assert!(slot.capabilities().component && slot.capabilities().dev && slot.capabilities().layout);
     assert_eq!(
         slot.measure(NveSizeConstraints::loose(400.0, 200.0)),
@@ -309,7 +329,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     // 5. Failed hot-swap (broken plugin returning null handle or missing surface)
     // must NOT crash or destroy v1!
     assert_eq!(
-        host.hot_swap_in_process(
+        runtime.plugins.hot_swap_in_process(
             p_full,
             broken_null_handle_get_interface,
             PluginRequirement::SURFACE_ONLY
@@ -317,7 +337,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
         Err(PluginError::NullHandleReturned)
     );
     assert_eq!(
-        host.hot_swap_in_process(
+        runtime.plugins.hot_swap_in_process(
             p_full,
             broken_missing_surface_get_interface,
             PluginRequirement::SURFACE_ONLY
@@ -325,13 +345,14 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
         Err(PluginError::MissingSurfaceInterface)
     );
     // Original v1 slot is still live at generation 1 with counter=43!
-    let still_v1 = host.get_mut(p_full).unwrap();
+    let still_v1 = runtime.plugins.get_mut(p_full).unwrap();
     assert_eq!(still_v1.generation(), 1);
     let f_after_fail = still_v1.render(FrameId(2)).unwrap().to_vec();
     assert_eq!(decode_first_text(&f_after_fail), "v1:count=43");
 
-    // 6. Valid hot-swap v1 -> v2 preserves isolated surface_id (20_001) and counter=43!
-    let gen2 = host
+    // 6. Valid hot-swap v1 -> v2 preserves isolated surface_id and counter=43!
+    let gen2 = runtime
+        .plugins
         .hot_swap_in_process(
             p_full,
             plugin_v2_get_interface,
@@ -340,7 +361,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
         .unwrap();
     assert_eq!(gen2, 2);
 
-    let v2_slot = host.get_mut(p_full).unwrap();
+    let v2_slot = runtime.plugins.get_mut(p_full).unwrap();
     assert_eq!(v2_slot.surface_id(), full_sid);
     assert_eq!(v2_slot.generation(), 2);
     let f2 = v2_slot.render(FrameId(3)).unwrap().to_vec();
@@ -349,28 +370,105 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     // 7. Duplicate name rejected; unload destroys the generational surface so re-registering
     // never aliases the unloaded SurfaceId!
     assert!(matches!(
-        host.register_in_process(
+        runtime.register_plugin_in_process(
             "studio-inspector-plugin",
             plugin_v1_get_interface,
             PluginRequirement::SURFACE_ONLY
         ),
         Err(PluginError::DuplicatePluginName(_))
     ));
-    let unloaded = host.unload(p_full).unwrap();
+    let unloaded = runtime.unload_plugin(p_full).unwrap();
     assert_eq!(unloaded.generation, 2);
-    assert!(host.surfaces().get(full_sid).is_none());
-    assert_eq!(host.active_count(), 1);
-    assert!(host.find_by_name("studio-inspector-plugin").is_none());
+    assert!(runtime.surfaces.get(full_sid).is_none());
+    assert_eq!(runtime.plugins.active_count(), 1);
+    assert!(runtime.plugins.find_by_name("studio-inspector-plugin").is_none());
 
-    let p_reborn = host
-        .register_in_process(
+    let p_reborn = runtime
+        .register_plugin_in_process(
             "studio-inspector-plugin",
             plugin_v1_get_interface,
             PluginRequirement::SURFACE_ONLY,
         )
         .unwrap();
-    let reborn_sid = host.get(p_reborn).unwrap().surface_id();
+    let reborn_sid = runtime.plugins.get(p_reborn).unwrap().surface_id();
     assert_ne!(reborn_sid, full_sid);
     assert!(reborn_sid.generation() > 0 || reborn_sid.index() != full_sid.index());
-    assert!(host.surfaces().get(full_sid).is_none());
+    assert!(runtime.surfaces.get(full_sid).is_none());
+}
+
+#[test]
+fn failed_pre_create_plugin_loads_burn_zero_generations_and_emit_zero_events() {
+    let mut surfaces = crate::SurfaceOrchestrator::new();
+    let mut host = NvePluginHost::new();
+
+    for i in 0..100u32 {
+        assert_eq!(
+            host.register_in_process(
+                &mut surfaces,
+                format!("missing-surface-{i}"),
+                broken_missing_surface_get_interface,
+                PluginRequirement::SURFACE_ONLY,
+            ),
+            Err(PluginError::MissingSurfaceInterface)
+        );
+        assert_eq!(
+            host.register_in_process(
+                &mut surfaces,
+                format!("missing-component-{i}"),
+                surface_only_get_interface,
+                PluginRequirement::EMBEDDED_COMPONENT,
+            ),
+            Err(PluginError::MissingRequiredInterface {
+                interface_name: "NVE_IFACE_COMPONENT",
+                interface_id: NVE_IFACE_COMPONENT,
+            })
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let missing_path = std::env::temp_dir()
+                .join(format!("nve_nonexistent_plugin_test_{i}.so"));
+            assert!(matches!(
+                host.load_dynamic(
+                    &mut surfaces,
+                    format!("missing-dylib-{i}"),
+                    &missing_path,
+                    PluginRequirement::SURFACE_ONLY,
+                ),
+                Err(PluginError::Io(_) | PluginError::LibraryLoadFailed(_))
+            ));
+        }
+    }
+
+    assert_eq!(host.active_count(), 0);
+    assert_eq!(surfaces.active_count(), 0);
+    assert!(
+        surfaces.drain_events().is_empty(),
+        "300 failed pre-create loads must emit zero surface events"
+    );
+
+    // Next valid plugin mount must still receive slot 1, generation 0 (0 burned generations!).
+    let pid = host
+        .register_in_process(
+            &mut surfaces,
+            "first-valid",
+            surface_only_get_interface,
+            PluginRequirement::SURFACE_ONLY,
+        )
+        .unwrap();
+    assert_eq!(host.get(pid).unwrap().surface_id(), SurfaceId::new(1, 0));
+
+    // Exhausting u32 PluginId fails cleanly before allocating a surface.
+    host.set_next_plugin_id_for_test(u32::MAX);
+    let _ = surfaces.drain_events();
+    assert_eq!(
+        host.register_in_process(
+            &mut surfaces,
+            "overflow-id",
+            surface_only_get_interface,
+            PluginRequirement::SURFACE_ONLY,
+        ),
+        Err(PluginError::PluginIdsExhausted)
+    );
+    assert!(surfaces.drain_events().is_empty());
+    assert_eq!(surfaces.active_count(), 1);
 }

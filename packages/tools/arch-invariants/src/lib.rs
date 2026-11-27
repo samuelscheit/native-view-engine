@@ -9,6 +9,7 @@ pub mod ast_enums;
 pub mod ast_layout;
 pub mod bench;
 pub mod dag;
+pub mod handle_hygiene;
 pub mod hot_path;
 pub mod hygiene;
 pub mod purity;

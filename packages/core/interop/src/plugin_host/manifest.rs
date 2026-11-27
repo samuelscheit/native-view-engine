@@ -75,6 +75,7 @@ pub enum PluginError {
     },
     NullHandleReturned,
     SurfaceSlotsExhausted,
+    PluginIdsExhausted,
     PluginNotFound(PluginId),
     DuplicatePluginName(String),
     InvalidPluginName(String),
@@ -105,6 +106,7 @@ impl fmt::Display for PluginError {
             Self::SurfaceSlotsExhausted => {
                 f.write_str("plugin host exhausted all generational surface slots")
             }
+            Self::PluginIdsExhausted => f.write_str("plugin host exhausted 32-bit plugin IDs"),
             Self::PluginNotFound(id) => write!(f, "plugin {id} not found"),
             Self::DuplicatePluginName(name) => write!(f, "plugin '{name}' is already registered"),
             Self::InvalidPluginName(name) => write!(f, "invalid plugin name: '{name}'"),

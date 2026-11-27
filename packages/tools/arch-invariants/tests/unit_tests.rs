@@ -567,3 +567,73 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
         "CargoSet must catch macOS-gated optional third-party serde_json: {v_sj:?}"
     );
 }
+
+#[test]
+fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
+    // 1. Privacy lock in id.rs: catches pub, pub(crate), pub(super), and missing structs.
+    let bad_id_rs = r#"
+        pub struct NodeId(pub(crate) u32);
+        pub struct SurfaceId(pub(super) u32);
+    "#;
+    let ast = syn::parse_file(bad_id_rs).unwrap();
+    let mut v = Vec::new();
+    ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", bad_id_rs, &ast, &mut v);
+    assert_eq!(v.len(), 2, "must catch pub(crate) and pub(super) tuple fields: {v:?}");
+
+    let missing_id_rs = "pub struct NodeId(u32);";
+    let ast_miss = syn::parse_file(missing_id_rs).unwrap();
+    let mut v_miss = Vec::new();
+    ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", missing_id_rs, &ast_miss, &mut v_miss);
+    assert_eq!(v_miss.len(), 1, "must fail if SurfaceId struct is missing: {v_miss:?}");
+
+    let good_id_rs = "pub struct NodeId(u32); pub struct SurfaceId(u32);";
+    let ast_ok = syn::parse_file(good_id_rs).unwrap();
+    let mut v_ok = Vec::new();
+    ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", good_id_rs, &ast_ok, &mut v_ok);
+    assert!(v_ok.is_empty(), "valid private handles in id.rs must pass: {v_ok:?}");
+
+    // 2. StoreNodeId anywhere (including inside fn) + raw tuple/struct ctors (ignoring enum variants).
+    let bad_user = r#"
+        type StoreNodeId = u32;
+        enum LocalEnum { NodeId(u32), SurfaceId(u32) }
+        fn f() {
+            use nve_abi::NodeId as StoreNodeId;
+            let _a = NodeId(1);
+            let _b = nve_abi::SurfaceId(2);
+            let _c = NodeId { 0: 3 };
+            let _d = crate::id::SurfaceId { 0: 4 };
+            let _ok1 = LocalEnum::NodeId(5);
+            let _ok2 = other_mod::LocalEnum::SurfaceId(6);
+        }
+    "#;
+    let ast_u = syn::parse_file(bad_user).unwrap();
+    let mut vu = Vec::new();
+    ast_layout::scan_handle_hygiene("packages/core/engine/src/foo.rs", bad_user, &ast_u, &mut vu);
+    assert_eq!(
+        vu.len(),
+        6,
+        "expected type StoreNodeId + nested use StoreNodeId + 2 tuple ctors + 2 struct ctors (and 0 enum-variant FPs): {vu:?}"
+    );
+
+    // 3. Bare & wrapped primitive handle params across fn, nested fn, extern "C", and bare fn types.
+    let bad_params = r#"
+        extern "C" {
+            fn c_entry(surface_id: u32, node_id: *const u32);
+        }
+        type Callback = fn(frame_id: u64, interface_id: Option<u32>);
+        fn outer(surface_id: Option<u32>, node_id: &u32, frame_id: &mut u64) {
+            fn inner(node_id: &[u32], surface_id: Vec<u32>, interface_id: *mut u32) {}
+        }
+        #[wasm_bindgen]
+        pub fn js_boundary(surface_id: u32, node_id: u32) {}
+        pub fn typed_ok(surface_id: SurfaceId, node_id: Option<NodeId>, frame_id: FrameId) {}
+    "#;
+    let ast_p = syn::parse_file(bad_params).unwrap();
+    let mut vp = Vec::new();
+    ast_layout::scan_bare_handle_params("packages/core/engine/src/p.rs", bad_params, &ast_p, &mut vp);
+    assert_eq!(
+        vp.len(),
+        10,
+        "expected 2 extern + 2 bare fn + 3 outer + 3 nested inner violations (0 for wasm_bindgen/typed): {vp:?}"
+    );
+}

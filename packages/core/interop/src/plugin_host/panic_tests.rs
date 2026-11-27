@@ -214,11 +214,13 @@ unsafe extern "C" {
 #[test]
 fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_healthy() {
     set_host_panic_mode(HostPanicMode::Healthy);
+    let mut surfaces = crate::SurfaceOrchestrator::new();
     let mut host = NvePluginHost::new();
 
     // Mount healthy sibling plugin first.
     let healthy_id = host
         .register_in_process(
+            &mut surfaces,
             "healthy-sibling",
             nve_test_healthy_plugin_iface,
             PluginRequirement::SURFACE_ONLY,
@@ -230,6 +232,7 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     set_host_panic_mode(HostPanicMode::PanicCreate);
     let create_err: InteropError = host
         .register_in_process(
+            &mut surfaces,
             "flaky",
             nve_test_flaky_plugin_iface,
             PluginRequirement::EMBEDDED_COMPONENT,
@@ -244,17 +247,20 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
         other => panic!("expected InteropError::Plugin, got {other:?}"),
     }
     assert_eq!(host.active_count(), 1);
+    assert_eq!(surfaces.active_count(), 1);
 
     // 2. Mount flaky plugin in healthy mode so we can trigger panics on each runtime method.
     set_host_panic_mode(HostPanicMode::Healthy);
     let flaky_id = host
         .register_in_process(
+            &mut surfaces,
             "flaky",
             nve_test_flaky_plugin_iface,
             PluginRequirement::EMBEDDED_COMPONENT,
         )
         .expect("mount flaky plugin");
     assert_eq!(host.active_count(), 2);
+    assert_eq!(surfaces.active_count(), 2);
 
     // 3. Panicking `render` returns Err(InteropError::Plugin(...)).
     set_host_panic_mode(HostPanicMode::PanicRender);
@@ -360,8 +366,10 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
 
     // 9. Panicking `destroy` during `unload` survives cleanly and leaves sibling intact.
     set_host_panic_mode(HostPanicMode::PanicDestroy);
-    host.unload(flaky_id).expect("unload panicking plugin");
+    host.unload(&mut surfaces, flaky_id)
+        .expect("unload panicking plugin");
     set_host_panic_mode(HostPanicMode::Healthy);
     assert_eq!(host.active_count(), 1);
+    assert_eq!(surfaces.active_count(), 1);
     assert!(host.get_mut(healthy_id).unwrap().render(FrameId(2)).is_ok());
 }

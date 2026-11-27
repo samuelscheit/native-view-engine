@@ -144,7 +144,7 @@ impl HybridFileSpec {
         detect_recursive_value_structs(&struct_map)?;
 
         let mut item_names = BTreeSet::new();
-        let mut iface_ids: BTreeMap<u32, String> = BTreeMap::new();
+        let mut iface_ids: BTreeMap<InterfaceId, String> = BTreeMap::new();
 
         for m in &self.modules {
             validate_ident("module", &m.name)?;
@@ -163,14 +163,14 @@ impl HybridFileSpec {
             }
             let iface_id = m.interface_id();
             if let Some(explicit) = m.explicit_interface_id {
-                if explicit == 0 {
+                if explicit.raw() == 0 {
                     return Err(CodegenError::validation(format!(
                         "module '{}' explicit interface_id cannot be 0",
                         m.name
                     )));
                 }
             } else {
-                assert!(iface_id >= NVE_HYBRID_INTERFACE_ID_BASE);
+                assert!(iface_id.raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
             }
             if let Some(prev) = iface_ids.insert(iface_id, format!("module '{}'", m.name)) {
                 return Err(CodegenError::validation(format!(
@@ -204,14 +204,14 @@ impl HybridFileSpec {
             }
             let iface_id = v.interface_id();
             if let Some(explicit) = v.explicit_interface_id {
-                if explicit == 0 {
+                if explicit.raw() == 0 {
                     return Err(CodegenError::validation(format!(
                         "view '{}' explicit interface_id cannot be 0",
                         v.name
                     )));
                 }
             } else {
-                assert!(iface_id >= NVE_HYBRID_INTERFACE_ID_BASE);
+                assert!(iface_id.raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
             }
             if let Some(prev) = iface_ids.insert(iface_id, format!("view '{}'", v.name)) {
                 return Err(CodegenError::validation(format!(

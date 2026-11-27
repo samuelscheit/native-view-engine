@@ -31,6 +31,14 @@ pub(super) fn c_core_type(ty: &HybridType) -> String {
     }
 }
 
+pub(super) fn emit_guarded_c_typedef(out: &mut CodeWriter, target: &HybridType, name: &str) {
+    let guard = format!("NVE_TYPEDEF_{}_DEFINED", to_snake_case(name).to_ascii_uppercase());
+    writeln!(out, "#ifndef {guard}");
+    writeln!(out, "#define {guard}");
+    writeln!(out, "typedef {} {name};", c_core_type(target));
+    writeln!(out, "#endif");
+}
+
 // ============================================================================
 // Core ABI Target 1 & 2: C11 / C++20 / Swift (`nve_abi.generated.h`)
 // ============================================================================
@@ -141,28 +149,16 @@ pub fn generate_c_core_abi_h() -> String {
     }
 
     // Handle & scalar aliases (emitted before structs so ABI structs/vtables can reference them).
-    // Shared core+scene typedefs are guarded so `nve_abi.generated.h` and `nve_scene_abi.generated.h`
-    // can be included in either order under strict C/C++ compilers.
-    writeln!(out, "#ifndef NVE_ABI_SHARED_HANDLES_DEFINED");
-    writeln!(out, "#define NVE_ABI_SHARED_HANDLES_DEFINED");
-    for a in &spec.aliases {
-        if matches!(a.name.as_str(), "NveNodeId" | "NveFrameId" | "NveByteLen") {
-            writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
-        }
-    }
-    writeln!(out, "#endif");
+    // Each typedef carries its own include-order-independent guard so `nve_abi.generated.h` and
+    // `nve_scene_abi.generated.h` can be included in either order under strict C/C++ compilers.
     for a in &spec.aliases {
         if matches!(
             a.name.as_str(),
-            "NveNodeId"
-                | "NveFrameId"
-                | "NveByteLen"
-                | "NveHostInvokeFn"
-                | "NveHostChannelPublishFn"
+            "NveHostInvokeFn" | "NveHostChannelPublishFn"
         ) {
             continue;
         }
-        writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
+        emit_guarded_c_typedef(&mut out, &a.target, &a.name);
     }
     writeln!(out);
 

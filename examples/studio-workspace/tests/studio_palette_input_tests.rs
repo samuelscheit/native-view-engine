@@ -9,7 +9,7 @@ use nve_abi::{
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{NveApp, StoreBackend, StoreWireReplica, Viewport};
-use nve_interop::{NvePluginHost, PluginRequirement};
+use nve_interop::PluginRequirement;
 use nve_studio_workspace::{
     fuzzy_score, AccentTheme, ActiveView, LayoutEngineMode, StudioWorkspaceModule,
     MOBILE_BREAKPOINT_PT,
@@ -204,11 +204,11 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         assert!(status.success());
     }
 
-    let mut plugin_host = NvePluginHost::new();
-    let pid = plugin_host
-        .load_dynamic("aether-studio", &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
+    let mut runtime = nve_interop::InteropRuntime::new();
+    let pid = runtime
+        .load_plugin_dynamic("aether-studio", &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("load studio cdylib as plugin");
-    let slot = plugin_host.get_mut(pid).unwrap();
+    let slot = runtime.plugins.get_mut(pid).unwrap();
     let plugin_sid = slot.surface_id();
     assert!(!plugin_sid.is_null());
     assert!(slot.capabilities().surface);
@@ -225,11 +225,12 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     let pf1 = slot.render(FrameId(1)).unwrap().to_vec();
     assert!(pf1.len() > 24);
 
-    let gen2 = plugin_host
+    let gen2 = runtime
+        .plugins
         .hot_swap_dynamic(pid, &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("hot-swap studio plugin");
     assert_eq!(gen2, 2);
-    let slot2 = plugin_host.get_mut(pid).unwrap();
+    let slot2 = runtime.plugins.get_mut(pid).unwrap();
     assert_eq!(slot2.surface_id(), plugin_sid);
     let pf2 = slot2.render(FrameId(2)).unwrap().to_vec();
 

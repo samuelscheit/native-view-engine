@@ -6,7 +6,7 @@ use super::type_helpers::*;
 pub(super) fn emit_dart_client(
     out: &mut CodeWriter,
     pascal: &str,
-    interface_id: u32,
+    interface_id: nve_abi::InterfaceId,
     schema_hash: u64,
     methods: &[HybridMethodSpec],
     view: Option<&HybridViewSpec>,

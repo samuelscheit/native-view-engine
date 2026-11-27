@@ -4,13 +4,13 @@ use nve_abi::hash::HashMap;
 use nve_abi::{SurfaceId, TimestampUs};
 use serde::{Deserialize, Serialize};
 
-use crate::surface::FrameworkKind;
+use crate::surface::{FrameworkKind, SurfaceOrchestrator};
 
-pub(super) const INLINE_CHAIN_CAP: usize = 16;
+pub(super) const INLINE_CHAIN_CAP: usize = SurfaceOrchestrator::INLINE_ANCESTOR_CAP;
 
 /// Zero-dependency inline small-buffer surface ancestor chain.
-/// Stores up to 16 nested surfaces inline with zero heap allocation, spilling to `Vec` only on
-/// unusually deep trees (`len > 16`).
+/// Stores up to `INLINE_CHAIN_CAP` (32) nested surfaces inline with zero heap allocation,
+/// spilling to `Vec` only on unusually deep trees (`len > 32`).
 #[derive(Debug, Clone)]
 pub(super) enum SurfaceChain {
     Inline {
@@ -207,10 +207,10 @@ impl<K: Copy + Eq + std::hash::Hash, V, const N: usize> FastKeyMap<K, V, N> {
             Self::Inline { len, keys, vals } => {
                 let mut i = 0usize;
                 while i < usize::from(*len) {
-                    let should_keep = {
-                        let k = keys[i];
-                        let v = vals[i].as_mut().expect("occupied inline map slot");
-                        keep(k, v)
+                    let should_keep = if let Some(v) = vals[i].as_mut() {
+                        keep(keys[i], v)
+                    } else {
+                        false
                     };
                     if should_keep {
                         i += 1;

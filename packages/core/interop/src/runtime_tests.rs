@@ -1,6 +1,7 @@
 #[cfg(feature = "channel")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(any(feature = "gesture", feature = "channel"))]
 use nve_abi::TimestampUs;
 
 use super::*;

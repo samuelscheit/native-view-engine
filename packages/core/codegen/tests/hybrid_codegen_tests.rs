@@ -289,7 +289,7 @@ fn parses_realistic_multi_item_rust_spec_accurately() {
     assert_eq!(crypto.name, "Crypto");
     assert_eq!(crypto.trait_name, "CryptoSpec");
     assert_eq!(crypto.methods.len(), 10);
-    assert!(crypto.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
+    assert!(crypto.interface_id().raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
 
     assert_eq!(spec.views.len(), 1);
     let video = &spec.views[0];
@@ -298,7 +298,7 @@ fn parses_realistic_multi_item_rust_spec_accurately() {
     assert_eq!(video.props.len(), 5);
     assert_eq!(video.events.len(), 2);
     assert_eq!(video.methods.len(), 2);
-    assert!(video.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
+    assert!(video.interface_id().raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
     assert_ne!(crypto.interface_id(), video.interface_id());
     assert_ne!(crypto.schema_hash(&spec), video.schema_hash(&spec));
 }
@@ -1639,8 +1639,8 @@ pub trait UserAnalyticsSpec {
 "#;
 
     let spec = parse_hybrid_rust_spec(spec_src).expect("parse fixed interface_id + layout spec");
-    assert_eq!(spec.modules[0].interface_id(), 1);
-    assert!(spec.modules[1].interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
+    assert_eq!(spec.modules[0].interface_id(), nve_abi::InterfaceId(1));
+    assert!(spec.modules[1].interface_id().raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
     assert_eq!(spec.structs[0].align, Some(16));
     assert_eq!(spec.structs[0].expected_size, Some(16));
     assert_eq!(spec.structs[0].fields[3].offset, Some(12));
@@ -1691,11 +1691,11 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
 
     // Verify core modular interfaces keep exact fixed IDs 1..=5
     assert_eq!(core.modules.len(), 5);
-    assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE.raw());
-    assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT.raw());
-    assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT.raw());
-    assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV.raw());
-    assert_eq!(core.modules[4].interface_id(), nve_abi::NVE_IFACE_HOST.raw());
+    assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE);
+    assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT);
+    assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT);
+    assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV);
+    assert_eq!(core.modules[4].interface_id(), nve_abi::NVE_IFACE_HOST);
 
     // Verify scene node layout descriptors
     let render_node = scene.find_struct("NveRenderNode").expect("NveRenderNode");

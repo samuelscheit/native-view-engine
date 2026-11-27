@@ -285,6 +285,45 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
         String::from_utf8_lossy(&status_cpp.stderr)
     );
 
+    // Reverse include order (`nve_scene_abi.generated.h` BEFORE `nve_abi.generated.h`) in C11 & C++20.
+    let c11_rev = tmp.join("check_abi_rev.c");
+    std::fs::write(
+        &c11_rev,
+        "#include \"nve_scene_abi.generated.h\"\n#include \"nve_abi.generated.h\"\nint check_abi_rev(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveDirectEvent)); }\n",
+    )
+    .unwrap();
+    let status_c11_rev = std::process::Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+        .arg("-I")
+        .arg(&tmp)
+        .arg(&c11_rev)
+        .output()
+        .expect("run clang reverse-order C11 ABI headers");
+    assert!(
+        status_c11_rev.status.success(),
+        "Generated C11 ABI headers failed in reverse include order:\n{}",
+        String::from_utf8_lossy(&status_c11_rev.stderr)
+    );
+
+    let cpp_rev = tmp.join("check_abi_rev.cpp");
+    std::fs::write(
+        &cpp_rev,
+        "#include \"nve_scene_abi.generated.h\"\n#include \"nve_abi.generated.h\"\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nint check_abi_cpp_rev() { return static_cast<int>(NVE_PRIMARY_SLOT_NONE); }\n",
+    )
+    .unwrap();
+    let status_cpp_rev = std::process::Command::new("clang++")
+        .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+        .arg("-I")
+        .arg(&tmp)
+        .arg(&cpp_rev)
+        .output()
+        .expect("run clang++ reverse-order C++20 ABI headers");
+    assert!(
+        status_cpp_rev.status.success(),
+        "Generated C++20 ABI headers failed in reverse include order:\n{}",
+        String::from_utf8_lossy(&status_cpp_rev.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

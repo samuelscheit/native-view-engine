@@ -1,4 +1,4 @@
-use super::core_abi::c_core_type;
+use super::core_abi::{c_core_type, emit_guarded_c_typedef};
 use crate::schema::hybrid::core_abi::{
     compute_scene_schema_hash, scene_abi_spec, ResolvedSceneAbi,
 };
@@ -96,12 +96,9 @@ pub fn generate_c_scene_abi_h() -> String {
         }
     }
     writeln!(out);
-    writeln!(out, "#ifndef NVE_ABI_SHARED_HANDLES_DEFINED");
-    writeln!(out, "#define NVE_ABI_SHARED_HANDLES_DEFINED");
     for a in &spec.aliases {
-        writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
+        emit_guarded_c_typedef(&mut out, &a.target, &a.name);
     }
-    writeln!(out, "#endif");
     writeln!(out);
     writeln!(
         out,

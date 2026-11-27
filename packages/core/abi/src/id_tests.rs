@@ -41,18 +41,55 @@ fn node_and_surface_id_try_new_and_from_raw_reject_null_and_overflow() {
 }
 
 #[test]
-fn index_zero_with_nonzero_generation_is_treated_as_null() {
+fn index_zero_with_nonzero_generation_canonicalizes_to_null_at_all_ingresses() {
     let bad_node = NodeId::new(0, 1);
+    assert_eq!(bad_node, NodeId::NULL);
     assert!(bad_node.is_null());
     assert_eq!(bad_node.index_u32(), 0);
-    assert_eq!(bad_node.generation(), 1);
+    assert_eq!(bad_node.generation(), 0);
     assert_eq!(bad_node.to_string(), "node(null)");
+    assert_eq!(NodeId::new(0, 255), NodeId::NULL);
 
     let bad_surface = SurfaceId::new(0, 1);
+    assert_eq!(bad_surface, SurfaceId::NULL);
     assert!(bad_surface.is_null());
     assert_eq!(bad_surface.index_u32(), 0);
-    assert_eq!(bad_surface.generation(), 1);
+    assert_eq!(bad_surface.generation(), 0);
     assert_eq!(bad_surface.to_string(), "surface(null)");
+    assert_eq!(SurfaceId::new(0, 255), SurfaceId::NULL);
+
+    // NveCodec ingress seals `0x0100_0000` -> canonical `NULL` and preserves live handles.
+    let bad_bytes = 0x0100_0000u32.to_le_bytes();
+    assert_eq!(NodeId::decode_exact(&bad_bytes).unwrap(), NodeId::NULL);
+    assert_eq!(SurfaceId::decode_exact(&bad_bytes).unwrap(), SurfaceId::NULL);
+
+    let live_node = NodeId::new(42, 7);
+    let live_surf = SurfaceId::new(19, 3);
+    assert_eq!(
+        NodeId::decode_exact(&live_node.encode_to_vec().unwrap()).unwrap(),
+        live_node
+    );
+    assert_eq!(
+        SurfaceId::decode_exact(&live_surf.encode_to_vec().unwrap()).unwrap(),
+        live_surf
+    );
+
+    // Serde ingress seals `0x0100_0000` -> canonical `NULL` and preserves live handles.
+    #[cfg(feature = "serde")]
+    {
+        use serde::de::value::{Error as DeError, U32Deserializer};
+        use serde::Deserialize;
+
+        let de_bad = U32Deserializer::<DeError>::new(0x0100_0000);
+        assert_eq!(NodeId::deserialize(de_bad).unwrap(), NodeId::NULL);
+        let de_bad_surf = U32Deserializer::<DeError>::new(0x0100_0000);
+        assert_eq!(SurfaceId::deserialize(de_bad_surf).unwrap(), SurfaceId::NULL);
+
+        let de_live_node = U32Deserializer::<DeError>::new(live_node.raw());
+        assert_eq!(NodeId::deserialize(de_live_node).unwrap(), live_node);
+        let de_live_surf = U32Deserializer::<DeError>::new(live_surf.raw());
+        assert_eq!(SurfaceId::deserialize(de_live_surf).unwrap(), live_surf);
+    }
 }
 
 #[test]
@@ -64,6 +101,9 @@ fn display_formats_cleanly_for_live_and_null_handles() {
     assert_eq!(SurfaceId::NULL.to_string(), "surface(null)");
     assert_eq!(SurfaceId::ROOT.to_string(), "surface(1,0)");
     assert_eq!(SurfaceId::new(7, 3).to_string(), "surface(7,3)");
+
+    assert_eq!(InterfaceId(5).to_string(), "5");
+    assert_eq!(PropFieldId(12).to_string(), "12");
 }
 
 #[test]

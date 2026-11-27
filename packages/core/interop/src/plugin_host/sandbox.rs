@@ -12,7 +12,7 @@ use nve_engine::loader::{LoaderError, StagedDylib};
 
 use super::manifest::{
     resolve_and_validate_tables, PluginCapabilities, PluginError, PluginId, PluginMetadata,
-    PluginRequirement, PluginSourceKind,
+    PluginRequirement, PluginSourceKind, ResolvedTables,
 };
 
 /// Safe RAII wrapper owning one live `nve_get_interface`-compatible plugin instance.
@@ -28,17 +28,41 @@ pub struct NvePluginSlot {
 }
 
 impl NvePluginSlot {
-    /// Instantiates an in-process plugin from its `nve_get_interface` entry point.
-    pub fn from_in_process(
+    /// Opens a dynamic library and validates its required ABI interfaces before any surface slot
+    /// is allocated.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn open_and_validate_dylib(
+        plugin_id: PluginId,
+        generation: u64,
+        dylib_path: &Path,
+        req: PluginRequirement,
+    ) -> Result<(StagedDylib, ResolvedTables), PluginError> {
+        let staged = StagedDylib::load(
+            dylib_path,
+            "nve-plugin-host",
+            &format!("p{plugin_id}_g{generation}"),
+        )
+        .map_err(|err| match err {
+            LoaderError::Io(io) => PluginError::Io(io.to_string()),
+            LoaderError::Load(load) => PluginError::LibraryLoadFailed(load.to_string()),
+            other => PluginError::LibraryLoadFailed(other.to_string()),
+        })?;
+        let tables = resolve_and_validate_tables(staged.get_interface(), req)?;
+        Ok((staged, tables))
+    }
+
+    /// Instantiates a plugin slot from pre-validated ABI tables.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_resolved_tables(
         plugin_id: PluginId,
         name: String,
         surface_id: SurfaceId,
         generation: u64,
-        get_interface: NveGetInterfaceFn,
-        req: PluginRequirement,
+        tables: ResolvedTables,
         prior_state: Option<&[u8]>,
+        source: PluginSourceKind,
+        #[cfg(not(target_arch = "wasm32"))] staged: Option<StagedDylib>,
     ) -> Result<Self, PluginError> {
-        let tables = resolve_and_validate_tables(get_interface, req)?;
         nve_engine::clear_last_ffi_panic();
         let handle = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: `tables.surface.create` was resolved from a validated NVE C-ABI plugin.
@@ -84,14 +108,14 @@ impl NvePluginSlot {
 
         Ok(Self {
             #[cfg(not(target_arch = "wasm32"))]
-            staged: None,
+            staged,
             metadata: PluginMetadata {
                 plugin_id,
                 name,
                 surface_id,
                 generation,
                 capabilities: tables.capabilities,
-                source: PluginSourceKind::InProcess,
+                source,
             },
             surface: tables.surface,
             layout: tables.layout,
@@ -99,6 +123,30 @@ impl NvePluginSlot {
             dev: tables.dev,
             handle,
         })
+    }
+
+    /// Instantiates an in-process plugin from its `nve_get_interface` entry point.
+    pub fn from_in_process(
+        plugin_id: PluginId,
+        name: String,
+        surface_id: SurfaceId,
+        generation: u64,
+        get_interface: NveGetInterfaceFn,
+        req: PluginRequirement,
+        prior_state: Option<&[u8]>,
+    ) -> Result<Self, PluginError> {
+        let tables = resolve_and_validate_tables(get_interface, req)?;
+        Self::from_resolved_tables(
+            plugin_id,
+            name,
+            surface_id,
+            generation,
+            tables,
+            prior_state,
+            PluginSourceKind::InProcess,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
     }
 
     /// Loads a compiled dynamic library (`cdylib`) using `nve_engine::loader::StagedDylib`.
@@ -112,28 +160,18 @@ impl NvePluginSlot {
         req: PluginRequirement,
         prior_state: Option<&[u8]>,
     ) -> Result<Self, PluginError> {
-        let staged = StagedDylib::load(
-            dylib_path,
-            "nve-plugin-host",
-            &format!("p{plugin_id}_g{generation}"),
-        )
-        .map_err(|err| match err {
-            LoaderError::Io(io) => PluginError::Io(io.to_string()),
-            LoaderError::Load(load) => PluginError::LibraryLoadFailed(load.to_string()),
-            other => PluginError::LibraryLoadFailed(other.to_string()),
-        })?;
-        let mut slot = Self::from_in_process(
+        let (staged, tables) =
+            Self::open_and_validate_dylib(plugin_id, generation, dylib_path, req)?;
+        Self::from_resolved_tables(
             plugin_id,
             name,
             surface_id,
             generation,
-            staged.get_interface(),
-            req,
+            tables,
             prior_state,
-        )?;
-        slot.staged = Some(staged);
-        slot.metadata.source = PluginSourceKind::DynamicLibrary(dylib_path.to_path_buf());
-        Ok(slot)
+            PluginSourceKind::DynamicLibrary(dylib_path.to_path_buf()),
+            Some(staged),
+        )
     }
 
     pub fn metadata(&self) -> &PluginMetadata {

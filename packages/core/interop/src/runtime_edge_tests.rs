@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+#[cfg(any(feature = "gesture", feature = "channel"))]
 use nve_abi::TimestampUs;
 
 use super::*;
@@ -298,10 +299,15 @@ fn surface_orchestrator_and_runtime_reject_stale_and_null_handles_on_every_metho
         .register_child(live_other, FrameworkKind::SwiftUI, "LiveChild")
         .unwrap();
 
+    // Drain setup events before verifying that rejected stale/null calls emit zero events.
+    let _ = runtime.surfaces.drain_events();
+
+    let future_gen = SurfaceId::new(live_other.index_u32(), live_other.generation().wrapping_add(1));
     let bad_handles = [
         first,
         SurfaceId::NULL,
         SurfaceId::new(0, 1),
+        future_gen,
         SurfaceId::new(99_999, 0),
     ];
     let mut chain_buf = [SurfaceId::NULL; SurfaceOrchestrator::INLINE_ANCESTOR_CAP];
@@ -359,7 +365,19 @@ fn surface_orchestrator_and_runtime_reject_stale_and_null_handles_on_every_metho
         assert_eq!(
             runtime
                 .surfaces
+                .transition_state(stale, LifecycleState::Destroyed),
+            Err(InteropError::SurfaceNotFound(stale))
+        );
+        assert_eq!(
+            runtime
+                .surfaces
                 .propagate_lifecycle(stale, LifecycleState::Resumed),
+            Err(InteropError::SurfaceNotFound(stale))
+        );
+        assert_eq!(
+            runtime
+                .surfaces
+                .propagate_lifecycle(stale, LifecycleState::Destroyed),
             Err(InteropError::SurfaceNotFound(stale))
         );
         assert_eq!(
@@ -416,7 +434,8 @@ fn surface_orchestrator_and_runtime_reject_stale_and_null_handles_on_every_metho
         );
     }
 
-    // Live surfaces remain completely untouched.
+    // Rejected calls must emit zero events and leave live surfaces completely untouched.
+    assert!(runtime.surfaces.drain_events().is_empty());
     assert_eq!(runtime.surfaces.get(reused).unwrap().component_name, "Reused");
     assert_eq!(runtime.surfaces.active_count(), 3);
 }
@@ -488,16 +507,37 @@ fn surface_orchestrator_fifo_reuse_retires_slot_at_generation_255_and_reports_ex
 
 #[test]
 fn surface_orchestrator_seeded_model_property_test() {
+    use std::sync::{Arc, Mutex};
+
     #[derive(Clone)]
     struct ModelNode {
         parent: Option<SurfaceId>,
         children: Vec<SurfaceId>,
+        has_hook: bool,
+    }
+
+    fn model_post_order(model: &BTreeMap<SurfaceId, ModelNode>, root: SurfaceId) -> Vec<SurfaceId> {
+        let mut out = Vec::new();
+        let mut stack = vec![(root, false)];
+        while let Some((id, visited)) = stack.pop() {
+            if visited {
+                out.push(id);
+            } else if let Some(node) = model.get(&id) {
+                stack.push((id, true));
+                for &child in node.children.iter().rev() {
+                    stack.push((child, false));
+                }
+            }
+        }
+        out
     }
 
     let mut orch = SurfaceOrchestrator::new();
     let mut model: BTreeMap<SurfaceId, ModelNode> = BTreeMap::new();
     let mut model_roots: Vec<SurfaceId> = Vec::new();
     let mut dead_handles: Vec<SurfaceId> = Vec::new();
+    let fired_hooks: Arc<Mutex<Vec<SurfaceId>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut chain_buf = [SurfaceId::NULL; SurfaceOrchestrator::INLINE_ANCESTOR_CAP];
     let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
     let next_rand = |s: &mut u64| -> usize {
         *s ^= *s << 13;
@@ -521,11 +561,20 @@ fn surface_orchestrator_seeded_model_property_test() {
                     .unwrap();
                 assert!(!model.contains_key(&id));
                 assert!(!dead_handles.contains(&id));
+                let attach_hook = step % 2 == 0;
+                if attach_hook {
+                    let log = Arc::clone(&fired_hooks);
+                    orch.register_teardown_hook(id, move |rec| {
+                        log.lock().unwrap().push(rec.surface_id);
+                    })
+                    .unwrap();
+                }
                 model.insert(
                     id,
                     ModelNode {
                         parent: None,
                         children: Vec::new(),
+                        has_hook: attach_hook,
                     },
                 );
                 model_roots.push(id);
@@ -538,12 +587,21 @@ fn surface_orchestrator_seeded_model_property_test() {
                     .unwrap();
                 assert!(!model.contains_key(&id));
                 assert!(!dead_handles.contains(&id));
+                let attach_hook = step % 3 == 0;
+                if attach_hook {
+                    let log = Arc::clone(&fired_hooks);
+                    orch.register_teardown_hook(id, move |rec| {
+                        log.lock().unwrap().push(rec.surface_id);
+                    })
+                    .unwrap();
+                }
                 model.get_mut(&parent).unwrap().children.push(id);
                 model.insert(
                     id,
                     ModelNode {
                         parent: Some(parent),
                         children: Vec::new(),
+                        has_hook: attach_hook,
                     },
                 );
             }
@@ -584,34 +642,95 @@ fn surface_orchestrator_seeded_model_property_test() {
                     model.get_mut(&target).unwrap().parent = new_parent;
                 }
             }
-            // Destroy subtree
+            // Destroy subtree — compute expected post-order independently from model!
             _ if !live.is_empty() => {
                 let target = live[next_rand(&mut rng) % live.len()];
+                let expected_order = model_post_order(&model, target);
+                let expected_hooks: Vec<SurfaceId> = expected_order
+                    .iter()
+                    .copied()
+                    .filter(|id| model[id].has_hook)
+                    .collect();
+                fired_hooks.lock().unwrap().clear();
+
                 let torn = orch.destroy_surface(target).unwrap();
+                let torn_ids: Vec<SurfaceId> = torn.iter().map(|r| r.surface_id).collect();
+                assert_eq!(torn_ids, expected_order);
+                assert_eq!(*fired_hooks.lock().unwrap(), expected_hooks);
+
                 let parent = model[&target].parent;
                 match parent {
                     Some(p) => model.get_mut(&p).unwrap().children.retain(|&c| c != target),
                     None => model_roots.retain(|&r| r != target),
                 }
-                for rec in torn {
-                    assert!(model.remove(&rec.surface_id).is_some());
-                    dead_handles.push(rec.surface_id);
+                for id in expected_order {
+                    assert!(model.remove(&id).is_some());
+                    dead_handles.push(id);
                 }
             }
             _ => {}
         }
 
-        // Verify structural invariants against reference model after every step.
+        // Verify structural invariants and ancestor chains against reference model after every step.
         assert_eq!(orch.active_count(), model.len());
         assert_eq!(orch.roots(), model_roots.as_slice());
         for (&id, node) in &model {
             let rec = orch.get(id).expect("live model node must exist");
             assert_eq!(rec.parent, node.parent);
             assert_eq!(rec.children, node.children);
+            let chain = orch.ancestor_chain(id).unwrap();
+            if chain.len() <= chain_buf.len() {
+                let len = orch.ancestor_chain_into(id, &mut chain_buf).unwrap().unwrap();
+                assert_eq!(&chain_buf[..len], chain.as_slice());
+            } else {
+                assert_eq!(orch.ancestor_chain_into(id, &mut chain_buf).unwrap(), None);
+            }
         }
         // Spot-check up to 8 dead handles for permanent ABA rejection.
         for &dead in dead_handles.iter().rev().take(8) {
             assert!(orch.get(dead).is_none());
         }
     }
+}
+
+#[test]
+fn destroy_surface_is_panic_safe_when_teardown_hook_panics() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let mut orch = SurfaceOrchestrator::new();
+    let root = orch
+        .register_root(FrameworkKind::Nve, "Root", SurfaceEnvironment::default())
+        .unwrap();
+    let mid = orch
+        .register_child(root, FrameworkKind::Flutter, "Mid")
+        .unwrap();
+    let leaf = orch
+        .register_child(mid, FrameworkKind::SwiftUI, "Leaf")
+        .unwrap();
+
+    orch.register_teardown_hook(leaf, |_| {
+        panic!("simulated teardown hook failure on leaf");
+    })
+    .unwrap();
+    orch.register_teardown_hook(root, |_| {})
+        .unwrap();
+
+    let res = catch_unwind(AssertUnwindSafe(|| {
+        let _ = orch.destroy_surface(root);
+    }));
+    assert!(res.is_err(), "panicking hook should unwind");
+
+    // All state mutations committed BEFORE hooks ran: zero leaked slots, roots, or active_count!
+    assert_eq!(orch.active_count(), 0);
+    assert!(orch.roots().is_empty());
+    assert!(orch.get(root).is_none());
+    assert!(orch.get(mid).is_none());
+    assert!(orch.get(leaf).is_none());
+
+    // Subsequent registration cleanly reuses the freed slots with bumped generations.
+    let fresh = orch
+        .register_root(FrameworkKind::Nve, "Fresh", SurfaceEnvironment::default())
+        .unwrap();
+    assert_eq!(fresh.generation(), 1);
+    assert_eq!(orch.active_count(), 1);
 }
