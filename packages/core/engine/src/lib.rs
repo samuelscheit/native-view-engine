@@ -5,7 +5,6 @@
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 pub mod app;
-pub mod frame_arena;
 pub mod hotreload;
 pub mod instant_boot;
 pub mod layout;
@@ -21,7 +20,6 @@ use nve_abi::{DecodeError, FrameId, NodeId, SurfaceId};
 use nve_store::{ChangeSet, NodeStore};
 
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
-pub use frame_arena::{FrameArena, FRAME_ARENA_BASE_ALIGN};
 pub use store_backend::{StoreBackend, StoreWireReplica};
 
 pub use hotreload::HotPatchMsg;

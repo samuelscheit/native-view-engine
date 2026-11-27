@@ -1,19 +1,13 @@
-//! Zero-copy memory layout & allocator prototypes for NVE app-state snapshotting
-//! and per-frame UI tree allocation benchmarks.
+//! Zero-copy memory layout prototypes for NVE app-state snapshotting (Studio Workspace):
 //!
-//! - **Workload A** (Studio Workspace app-state):
-//!   - [`baseline_codec`]: JSON (`serde_json`-style) owned encode/decode baseline.
-//!   - [`reloc`]: `NVERELOC` / `RelocSlice<T>` aligned zero-copy buffer (`Full`, `HeaderOnly`,
-//!     and `Unchecked` mmap load modes) over production `nve_engine::reloc`.
-//!   - [`workspace_arena`]: Studio Workspace adapter directly over production
-//!     [`nve_engine::MmapOffsetArena`] with `TrustedUtf8Str`, double-buffered root commits,
-//!     and `msync`.
-//! - **Workload B** (Per-frame UI tree & prop allocation):
-//!   - [`frame_arena`]: UI tree benchmark harness over production [`nve_engine::FrameArena`] vs
-//!     standard `Vec` + `String` heap allocation baseline.
+//! - [`baseline_codec`]: JSON (`serde_json`-style) owned encode/decode baseline.
+//! - [`reloc`]: `NVERELOC` / `RelocSlice<T>` aligned zero-copy buffer (`Full`, `HeaderOnly`,
+//!   and `Unchecked` mmap load modes) over production `nve_engine::reloc`.
+//! - [`workspace_arena`]: Studio Workspace adapter directly over production
+//!   [`nve_engine::MmapOffsetArena`] with `TrustedUtf8Str`, double-buffered root commits,
+//!   and `msync`.
 
 pub mod baseline_codec;
-pub mod frame_arena;
 pub mod reloc;
 pub mod workspace_arena;
 

@@ -45,9 +45,6 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Track 3B — Native Host Linkage & OS Parity (Post-Track 1B-1e / 1B-2)**
   - Fix `compose-kit` 15 missing JNI exports in `hosts/android-shell`, `swiftui-kit` empty `NveSurfaceRepresentable` + `TextInput`/IME, `windows-shell` keyboard/IME/UIA, and bind `NVE_IFACE_HOST = 5` across native hosts (Apple, Android, Qt, GTK, Windows) directly against `libnve_runtime` (zero throwaway C++/JNI/Swift rewrites).
 
-- [ ] **Adopt `FrameArena` on Hot `nve-dioxus` / `nve-engine` Per-Frame Allocation Paths**
-  - Wire `FrameArena` bump-reset allocation into hot `nve-dioxus`/`nve-engine` per-frame paths (`XXH64` and `FrameArena` landed).
-
 - [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (Web TV D-Pad Remaining)**
   - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad), Phase 2 (standalone `packages/modules/tv` + real `tvOS`/`watchOS`/`visionOS`/`iOS` SDK builds + static `NveInterfaceResolver`), and Phase 3 CLI (`nve build --target tvos/visionos/watchos` + `.xcframework` recipes) are landed; remaining work is Web TV D-Pad key handling in `nve-backend-web`.
 

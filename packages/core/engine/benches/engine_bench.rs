@@ -1,5 +1,5 @@
-//! Criterion benchmarks for `nve-engine`: 64-byte-aligned `FrameArena` bump allocation & reset
-//! and zero-copy `NVERELOC` scene archive encoding + verification.
+//! Criterion benchmarks for `nve-engine`: zero-copy `NVERELOC` scene archive encoding +
+//! verification.
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
@@ -12,30 +12,9 @@ mod native {
     use nve_abi::ColorRgba;
     use nve_components::{LayoutSnapshot, VisualSnapshot};
     use nve_engine::{
-        encode_scene_reloc, FrameArena, LayoutRect, SceneRelocInput, SceneRelocNodeInput,
-        SceneRelocView, VerifyMode, Viewport,
+        encode_scene_reloc, LayoutRect, SceneRelocInput, SceneRelocNodeInput, SceneRelocView,
+        VerifyMode, Viewport,
     };
-
-    fn bench_frame_arena(c: &mut Criterion) {
-        let mut arena = FrameArena::with_capacity(64 * 1024);
-        c.bench_function("frame_arena_alloc_1000_rects_and_reset", |b| {
-            b.iter(|| {
-                arena.reset();
-                let mut sum = 0.0f32;
-                for i in 0..1000u32 {
-                    let x = black_box(i as f32);
-                    let r = arena.alloc_val(LayoutRect {
-                        x,
-                        y: x * 2.0,
-                        width: 100.0,
-                        height: 32.0,
-                    });
-                    sum += r.x;
-                }
-                black_box(sum)
-            });
-        });
-    }
 
     fn bench_scene_reloc(c: &mut Criterion) {
         let child_indices: Vec<u32> = (1..64u32).collect();
@@ -98,7 +77,7 @@ mod native {
         });
     }
 
-    criterion_group!(benches, bench_frame_arena, bench_scene_reloc);
+    criterion_group!(benches, bench_scene_reloc);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

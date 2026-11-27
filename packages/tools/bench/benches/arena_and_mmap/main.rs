@@ -10,9 +10,6 @@ use crate_codecs::{
     write_serde_json,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use nve_bench::arena_mmap::frame_arena::{
-    recommended_frame_arena_capacity, run_arena_frames, run_heap_frames,
-};
 use nve_bench::arena_mmap::reloc::{write_reloc_workspace, MmapRelocWorkspace, VerifyMode};
 use nve_bench::arena_mmap::workspace_arena::{
     mutate_task_in_place, populate_workspace_arena, random_read_workspace_arena, workspace_tasks,
@@ -22,7 +19,7 @@ use nve_bench::arena_mmap::{
     deterministic_mutation_indices, deterministic_read_indices, generate_workspace_tasks,
     random_read_owned_tasks, TempFileGuard,
 };
-use nve_engine::{FrameArena, MmapOffsetArena};
+use nve_engine::MmapOffsetArena;
 
 fn bench_workload_a_build_and_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("workload_a/build_and_write");
@@ -411,43 +408,11 @@ fn bench_workload_a_incremental_mutate(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_workload_b_ui_tree_100_frames(c: &mut Criterion) {
-    let mut group = c.benchmark_group("workload_b/ui_tree_100_frames");
-    const FRAMES: u32 = 100;
-
-    for &(label, nodes) in &[
-        ("1k", 1_000usize),
-        ("10k", 10_000usize),
-        ("50k", 50_000usize),
-    ] {
-        group.throughput(Throughput::Elements((nodes as u64) * (FRAMES as u64)));
-
-        group.bench_with_input(
-            BenchmarkId::new("heap_vec_string", label),
-            &nodes,
-            |b, &n| {
-                b.iter(|| black_box(run_heap_frames(black_box(n), FRAMES)));
-            },
-        );
-
-        let mut arena = FrameArena::with_capacity(recommended_frame_arena_capacity(nodes));
-        group.bench_with_input(
-            BenchmarkId::new("frame_arena_bump_reset", label),
-            &nodes,
-            |b, &n| {
-                b.iter(|| black_box(run_arena_frames(&mut arena, black_box(n), FRAMES)));
-            },
-        );
-    }
-    group.finish();
-}
-
 criterion_group!(
     benches,
     bench_workload_a_build_and_write,
     bench_workload_a_cold_load,
     bench_workload_a_random_read,
     bench_workload_a_incremental_mutate,
-    bench_workload_b_ui_tree_100_frames,
 );
 criterion_main!(benches);
