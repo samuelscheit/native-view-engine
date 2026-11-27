@@ -1,12 +1,13 @@
 id: rust-no-noderow-heap-fields
 language: rust
 severity: error
-message: "Per-node struct (`NodeRow`/`NodeRecord`/`NodeData`/`NodeColdData`/`NodeEntry`) must stay flat/SoA without heap-container fields."
-note: "Bans `Vec`, `String`, `Box`, `HashMap`, `BTreeMap`, `Arc`, `Rc`, `HashSet`, `BTreeSet`, `VecDeque`, `SmallVec`, `Cow`, and `IndexVec` in per-node structs (excluding `PhantomData<...>` and raw pointers `*const`/`*mut`)."
+message: "Per-node struct (`NodeRow`/`NodeRecord`/`NodeData`/`NodeColdData`/`NodeEntry`/`*Node`) must stay flat/SoA without heap-container fields."
+note: "Bans `Vec`, `String`, `Box`, `HashMap`, `BTreeMap`, `Arc`, `Rc`, `HashSet`, `BTreeSet`, `VecDeque`, `SmallVec`, `Cow`, and `IndexVec` in `NodeRow`/`NodeRecord`/`NodeData`/`NodeColdData`/`NodeEntry`, and bans `HashMap`, `Box`, and `Vec<NodeId>` in any `*Node` struct (excluding `PhantomData<...>` and raw pointers `*const`/`*mut`)."
 files:
   - "packages/**/*.rs"
 ignores:
   - "packages/tools/arch-invariants/**"
+  - "packages/tools/bench/**"
   - "**/tests/**"
   - "**/benches/**"
   - "**/*_tests.rs"
@@ -14,20 +15,58 @@ ignores:
   - "**/tests_*.rs"
   - "**/test.rs"
 rule:
-  kind: type_identifier
-  regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc|HashSet|BTreeSet|VecDeque|SmallVec|Cow|IndexVec)$'
-  inside:
-    stopBy: end
-    any:
-      - kind: field_declaration
-      - kind: ordered_field_declaration_list
-    inside:
-      stopBy: end
-      kind: struct_item
-      has:
-        field: name
-        kind: type_identifier
-        regex: '^(?:NodeRow|NodeRecord|NodeData|NodeColdData|NodeEntry)$'
+  any:
+    - kind: type_identifier
+      regex: '^(?:Vec|String|Box|HashMap|BTreeMap|Arc|Rc|HashSet|BTreeSet|VecDeque|SmallVec|Cow|IndexVec)$'
+      inside:
+        stopBy: end
+        any:
+          - kind: field_declaration
+          - kind: ordered_field_declaration_list
+        inside:
+          stopBy: end
+          kind: struct_item
+          has:
+            field: name
+            kind: type_identifier
+            regex: '^(?:NodeRow|NodeRecord|NodeData|NodeColdData|NodeEntry)$'
+    - kind: type_identifier
+      regex: '^(?:HashMap|Box)$'
+      inside:
+        stopBy: end
+        any:
+          - kind: field_declaration
+          - kind: ordered_field_declaration_list
+        inside:
+          stopBy: end
+          kind: struct_item
+          has:
+            field: name
+            kind: type_identifier
+            regex: '^[A-Za-z0-9_]+Node$'
+    - kind: generic_type
+      all:
+        - has:
+            field: type
+            kind: type_identifier
+            regex: '^Vec$'
+        - has:
+            field: type_arguments
+            has:
+              kind: type_identifier
+              regex: '^NodeId$'
+      inside:
+        stopBy: end
+        any:
+          - kind: field_declaration
+          - kind: ordered_field_declaration_list
+        inside:
+          stopBy: end
+          kind: struct_item
+          has:
+            field: name
+            kind: type_identifier
+            regex: '^[A-Za-z0-9_]+Node$'
   not:
     any:
       - matches: rust-in-test-code

@@ -43,8 +43,7 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     }
 
     // POD Option FFI structs
-    for inner in spec.collect_pod_option_types() {
-        let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
+    for (suffix, inner) in spec.collect_pod_option_types() {
         writeln!(body, "final class NveHybridOpt{suffix} extends ffi.Struct {{");
         writeln!(body, "  @ffi.Bool()");
         writeln!(body, "  external bool isSome;");

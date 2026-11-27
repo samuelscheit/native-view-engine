@@ -1,6 +1,6 @@
 //! Criterion benchmarks for `nve-layout-yoga` (runs live Yoga C++20 layout when built with
-//! `RN_REACT_COMMON_DIR`, otherwise benchmarks the equivalent `TaffyStoreLayout` baseline over
-//! the same 128-node `NodeStore` flexbox tree alongside `YogaLayoutEngine::is_available`).
+//! `RN_REACT_COMMON_DIR`, otherwise falls back to benchmarking the equivalent `TaffyStoreLayout`
+//! baseline over the same 128-node `NodeStore` flexbox tree).
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
@@ -63,13 +63,15 @@ mod native {
                 });
             });
         } else {
+            debug_assert!(!YogaLayoutEngine::is_available());
+            // Fallback: Yoga C++20 is unavailable without `RN_REACT_COMMON_DIR`, so benchmark the
+            // equivalent `TaffyStoreLayout` baseline over the same 128-node `NodeStore` tree.
             let mut fallback = TaffyStoreLayout::new();
             fallback.sync_changes(&store, &changes);
             fallback.compute_layout(&store, NodeId::ROOT, vp);
             let mut tick = 0u32;
             c.bench_function("layout_yoga_unavailable_taffy_baseline_128_nodes", |b| {
                 b.iter(|| {
-                    let avail = black_box(YogaLayoutEngine::is_available());
                     tick = tick.wrapping_add(1);
                     let mut tx = store.tx();
                     tx.edit::<Layout>(ids[(tick as usize) % ids.len()])
@@ -77,7 +79,7 @@ mod native {
                     tx.commit_into(&mut changes);
                     fallback.sync_changes(&store, &changes);
                     fallback.compute_layout(&store, NodeId::ROOT, vp);
-                    black_box((avail, fallback.layout_of(ids[0])))
+                    black_box(fallback.layout_of(ids[0]))
                 });
             });
         }

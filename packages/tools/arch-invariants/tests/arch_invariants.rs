@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use guppy::graph::PackageGraph;
 use nve_arch_invariants::{
     assert_no_violations, assert_staged_violations, ast_enums, ast_layout, bench, dag,
-    find_files_named, hygiene, is_cfg_test_attr, is_self_invariant_file, is_test_or_bench_rs,
-    rel_path, repo_index, Stage, Violation,
+    find_files_named, hot_path, hygiene, is_cfg_test_attr, is_self_invariant_file,
+    is_test_or_bench_rs, purity, rel_path, repo_index, Stage, Violation,
 };
 
 // ============================================================================
@@ -196,7 +196,7 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
     let (v_readme, v_doctest) = hygiene::check_crate_readmes_and_doctest_hooks(idx);
     assert_no_violations("Every packages/** crate has non-empty README.md (>= 5 lines)", &v_readme);
     assert_no_violations(
-        "Every workspace lib crate wires README.md into rustdoc doctests",
+        "Every packages/** library crate wires README.md into rustdoc doctests",
         &v_doctest,
     );
     assert_no_violations(
@@ -230,6 +230,60 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
         }
     }
     assert_no_violations("Zero hardcoded *_SCHEMA_HASH hex literals", &v_hashes);
+}
+
+#[test]
+fn active_hot_path_utf8_alloc_guards_and_zero_fnv1a_repo_wide() {
+    let idx = repo_index();
+    assert_no_violations(
+        "Zero hot-path allocations or UTF-8 re-validation in packages/core/store & EXISTING_HOT_PATH_FILES",
+        &hot_path::check_hot_path_perf_and_utf8(idx),
+    );
+    assert_no_violations(
+        "Zero FNV-1a identifiers or offset/prime constants repo-wide (code, docs, scripts)",
+        &hot_path::check_zero_fnv1a_repo_wide(idx),
+    );
+}
+
+#[test]
+fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
+    let idx = repo_index();
+    let mut v_table = Vec::new();
+    let mut v_purity = Vec::new();
+
+    for rel in idx.rs_files_under("packages") {
+        if is_test_or_bench_rs(&rel) || is_self_invariant_file(&rel) {
+            continue;
+        }
+        let Some(parsed) = idx.parse_rust(&rel) else {
+            continue;
+        };
+        purity::scan_table_and_codec_hygiene(&rel, &parsed.raw, &parsed.ast, &mut v_table);
+        if rel.starts_with("packages/core/") {
+            purity::scan_platform_purity(&rel, &parsed.raw, &parsed.ast, &mut v_purity);
+        }
+    }
+
+    assert_staged_violations(
+        Stage::Post1B1D,
+        "NveTable field hygiene (#[bits], sentinels, split bools), Unset variants, SET_* masks, Tier-1 encode/decode_bytes, dioxus numeric->String",
+        &v_table,
+    );
+    assert_staged_violations(
+        Stage::Post1B1D,
+        "Platform purity: zero CSS/HTML formatters in packages/core/* and zero motion/MotionClock in core",
+        &v_purity,
+    );
+    assert_staged_violations(
+        Stage::Post1B1D,
+        "Zero banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
+        &purity::check_banned_4_letter_acronyms(idx),
+    );
+    assert_staged_violations(
+        Stage::Post1B1E,
+        "Codegen Dart 53-bit const int safety & legacy wire/reloc/hybrid_rust/scene_abi path bans",
+        &purity::check_codegen_hygiene_and_dart_53bit(idx),
+    );
 }
 
 #[test]
@@ -444,12 +498,142 @@ fn unit_syn_ast_checks_positive_and_negative() {
     assert_eq!(v_abi.len(), 1, "only missing NveEvent should fail: {v_abi:?}");
     assert!(v_abi[0].reason.contains("`NveEvent`"));
 
-    // Personal path/endpoint & anti-stub bench unit checks
+    // Personal path/endpoint & anti-stub bench unit checks (unused `use std::hint::black_box;` MUST fail!)
     assert!(hygiene::detect_personal_endpoint_or_path("/Users/alice/dev", false).is_some());
     assert!(hygiene::detect_personal_endpoint_or_path("https://box.tail.ts.net", false).is_some());
     assert!(hygiene::detect_personal_endpoint_or_path("192.168.1.5", false).is_some());
     assert!(hygiene::detect_personal_endpoint_or_path("192.168.1.5", true).is_none());
     assert!(hygiene::detect_personal_endpoint_or_path("127.0.0.1", false).is_none());
     assert!(bench::check_bench_not_stub("fn main() {}").is_some());
+    assert!(
+        bench::check_bench_not_stub("use std::hint::black_box; fn b(c: &mut Criterion) { let _ = 1; }")
+            .is_some(),
+        "unused black_box import without call must fail anti-stub check"
+    );
     assert!(bench::check_bench_not_stub("use std::hint::black_box; fn b(c: &mut Criterion) { black_box(1); }").is_none());
+}
+
+#[test]
+fn unit_restored_active_and_staged_scanners_positive_and_negative() {
+    // 1. Inner `#![cfg(test)]` must skip entire file across AST scanners.
+    let inner_test_src = "#![cfg(test)]\npub const BAD_SCHEMA_HASH: u64 = 0x1234;\npub fn write_css() {}\npub fn hot() { let _ = std::str::from_utf8(b\"x\"); }";
+    let inner_ast = syn::parse_file(inner_test_src).unwrap();
+    let mut v = Vec::new();
+    ast_layout::scan_hardcoded_schema_hashes("a.rs", inner_test_src, &inner_ast, &mut v);
+    purity::scan_platform_purity("packages/core/abi/src/a.rs", inner_test_src, &inner_ast, &mut v);
+    hot_path::scan_hot_path_ast("packages/core/store/src/a.rs", inner_test_src, &inner_ast, true, &mut v);
+    assert!(v.is_empty(), "inner #![cfg(test)] must skip entire file: {v:?}");
+
+    // 2. Nested `mod`/`impl` hardcoded `*_SCHEMA_HASH` must be caught.
+    let nested_hash = "mod inner { impl Foo { const MY_SCHEMA_HASH: u64 = 0xDEAD_BEEF; } }";
+    let nested_ast = syn::parse_file(nested_hash).unwrap();
+    let mut vh = Vec::new();
+    ast_layout::scan_hardcoded_schema_hashes("a.rs", nested_hash, &nested_ast, &mut vh);
+    assert_eq!(vh.len(), 1, "expected nested impl SCHEMA_HASH violation: {vh:?}");
+
+    // 3. WebBackend::new() `#[cfg(feature = "camera")]` must be caught.
+    let web_src = "impl WebBackend { pub fn new() { #[cfg(feature = \"camera\")] let _ = 1; } }";
+    let web_ast = syn::parse_file(web_src).unwrap();
+    let mut vw = Vec::new();
+    assert!(dag::scan_web_backend_ast("web.rs", web_src, &web_ast, &mut vw));
+    assert_eq!(vw.len(), 1, "expected camera cfg violation: {vw:?}");
+
+    // 4. Hot-path UTF-8 & alloc guards (cold `fn new` & `debug_assert!` exempt; hot fn caught).
+    let hot_src = r#"
+        fn new() { let _ = String::new(); let _ = std::str::from_utf8(b"ok"); }
+        fn hot_step(b: &[u8]) {
+            debug_assert!(std::str::from_utf8(b).is_ok());
+            let _ = std::str::from_utf8(b);
+            let _ = format!("hi");
+        }
+    "#;
+    let hot_ast = syn::parse_file(hot_src).unwrap();
+    let mut vhot = Vec::new();
+    hot_path::scan_hot_path_ast("packages/core/store/src/tx.rs", hot_src, &hot_ast, true, &mut vhot);
+    assert_eq!(vhot.len(), 2, "expected from_utf8 + format! violations only: {vhot:?}");
+
+    // 5. FNV-1a text & identifier scan.
+    assert!(hot_path::line_has_fnv1a("use fnv::FnvHashMap;"));
+    assert!(hot_path::line_has_fnv1a("const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;"));
+    assert!(!hot_path::line_has_fnv1a("use nve_hash::xxh64;"));
+
+    // 6. Staged table hygiene, platform purity, and Dart 53-bit checks.
+    let tbl_src = r#"
+        #[derive(NveTable)]
+        pub struct BadTable {
+            #[bits(16)] pub small: u16,
+            #[default(u32::MAX)] pub sentinel: u32,
+            pub has_color: bool,
+            pub color: u32,
+        }
+        pub enum BadAlign { Unset, Left }
+        pub const SET_COLOR: u32 = 1;
+        #[repr(C)] pub struct Pod { pub x: u32 }
+        impl Pod { pub fn encode_bytes(&self) {} }
+    "#;
+    let tbl_ast = syn::parse_file(tbl_src).unwrap();
+    let mut vt = Vec::new();
+    purity::scan_table_and_codec_hygiene("packages/core/tables/src/t.rs", tbl_src, &tbl_ast, &mut vt);
+    assert_eq!(vt.len(), 6, "expected bits + default + split bool + Unset + SET_ + encode_bytes: {vt:?}");
+
+    let mut vd = Vec::new();
+    purity::scan_dart_53bit_safety("dart/a.rs", "const int H = 0x1234567890ABCDEF;", &mut vd);
+    assert_eq!(vd.len(), 1, "expected Dart 53-bit violation: {vd:?}");
+
+    // 7. Multi-platform guppy CargoSet catches optional third-party features & macOS-only edges.
+    let lib = |n: &str, d: &str| {
+        format!(r#"[{{"kind":["lib"],"crate_types":["lib"],"name":"{n}","src_path":"{d}/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true}}]"#)
+    };
+    let multi_json = format!(
+        r#"{{
+        "version": 1, "workspace_root": "/repo", "target_directory": "/repo/target",
+        "workspace_members": ["path+file:///repo/packages/core/foo#0.1.0"],
+        "packages": [
+            {{
+                "id": "path+file:///repo/packages/core/foo#0.1.0", "name": "nve-foo", "version": "0.1.0",
+                "manifest_path": "/repo/packages/core/foo/Cargo.toml", "targets": {t_foo},
+                "features": {{"opt": ["third-party/json"]}},
+                "dependencies": [
+                    {{"name": "third-party", "req": "^1", "kind": null, "optional": false, "uses_default_features": false, "features": [], "target": "cfg(target_os = \"macos\")"}}
+                ]
+            }},
+            {{
+                "id": "registry+https://github.com/rust-lang/crates.io-index#third-party@1.0.0", "name": "third-party", "version": "1.0.0",
+                "manifest_path": "/cargo/third-party/Cargo.toml", "targets": {t_tp},
+                "features": {{"json": ["dep:serde_json"]}},
+                "dependencies": [
+                    {{"name": "serde_json", "req": "^1", "kind": null, "optional": true, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{
+                "id": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "name": "serde_json", "version": "1.0.0",
+                "manifest_path": "/cargo/serde_json/Cargo.toml", "targets": {t_sj}, "features": {{}}, "dependencies": []
+            }}
+        ],
+        "resolve": {{
+            "nodes": [
+                {{
+                    "id": "path+file:///repo/packages/core/foo#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#third-party@1.0.0"],
+                    "deps": [{{"name": "third_party", "pkg": "registry+https://github.com/rust-lang/crates.io-index#third-party@1.0.0", "dep_kinds": [{{"kind": null, "target": "cfg(target_os = \"macos\")"}}]}}]
+                }},
+                {{
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#third-party@1.0.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0"],
+                    "deps": [{{"name": "serde_json", "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{"id": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "dependencies": [], "deps": []}}
+            ]
+        }}
+    }}"#,
+        t_foo = lib("nve_foo", "/repo/packages/core/foo"),
+        t_tp = lib("third_party", "/cargo/third-party"),
+        t_sj = lib("serde_json", "/cargo/serde_json"),
+    );
+    let multi_graph = PackageGraph::from_json(&multi_json).expect("valid multi-platform graph");
+    let v_sj = dag::check_zero_serde_json(&multi_graph);
+    assert!(
+        v_sj.iter().any(|x| x.snippet.contains("nve-foo -> third-party -> serde_json")),
+        "CargoSet must catch macOS-gated optional third-party serde_json: {v_sj:?}"
+    );
 }

@@ -6,7 +6,7 @@ use nve_abi::Xxh64Hasher;
 
 use super::schema_bridge::from_abi_descriptor;
 use super::{
-    HybridEnumSpec, HybridFileSpec, HybridModuleSpec, HybridType,
+    HybridEnumSpec, HybridFileSpec, HybridModuleSpec, HybridStructSpec, HybridType,
 };
 use crate::naming::{to_pascal_case, to_snake_case};
 
@@ -47,27 +47,65 @@ pub const fn core_abi_schema_hash() -> u64 {
     nve_abi::NVE_CORE_ABI_SCHEMA_HASH
 }
 
+/// Pre-resolved core Scene ABI struct definitions & verified layout constants shared across
+/// schema hashing and all target emitters (C, Dart, Java, TypeScript).
+pub struct ResolvedSceneAbi<'a> {
+    pub render_node: &'a HybridStructSpec,
+    pub table_view: &'a HybridStructSpec,
+    pub scene_view: &'a HybridStructSpec,
+    pub node_meta: &'a HybridStructSpec,
+    pub node_size: usize,
+    pub node_align: usize,
+    pub meta_size: usize,
+    pub meta_align: usize,
+}
+
+impl<'a> ResolvedSceneAbi<'a> {
+    /// Resolves the canonical Scene ABI structs and sizes from `spec` in one place.
+    pub fn from_spec(spec: &'a HybridFileSpec) -> Self {
+        let render_node = spec
+            .find_struct("NveRenderNode")
+            .expect("scene_abi_descriptor must declare NveRenderNode");
+        let table_view = spec
+            .find_struct("NveTableView")
+            .expect("scene_abi_descriptor must declare NveTableView");
+        let scene_view = spec
+            .find_struct("NveSceneView")
+            .expect("scene_abi_descriptor must declare NveSceneView");
+        let node_meta = spec
+            .find_struct("NveNodeMeta")
+            .expect("scene_abi_descriptor must declare NveNodeMeta");
+        let node_size = render_node
+            .expected_size
+            .expect("NveRenderNode must declare size = 64");
+        let node_align = render_node.align.unwrap_or(NVE_RENDER_NODE_ALIGN);
+        let meta_size = node_meta
+            .expected_size
+            .expect("NveNodeMeta must declare size = 64");
+        let meta_align = node_meta.align.unwrap_or(NVE_NODE_META_ALIGN);
+        Self {
+            render_node,
+            table_view,
+            scene_view,
+            node_meta,
+            node_size,
+            node_align,
+            meta_size,
+            meta_align,
+        }
+    }
+}
+
 /// Computes the exact XXH64 Scene ABI schema hash from the colocated Scene ABI
 /// `HybridFileSpec` using the identical byte sequence verified by `packages/core/abi/src/scene/types.rs`.
 pub fn compute_scene_schema_hash(spec: &HybridFileSpec) -> u64 {
-    let render_node = spec
-        .find_struct("NveRenderNode")
-        .expect("scene_abi_descriptor must declare NveRenderNode");
-    let table_view = spec
-        .find_struct("NveTableView")
-        .expect("scene_abi_descriptor must declare NveTableView");
-    let scene_view = spec
-        .find_struct("NveSceneView")
-        .expect("scene_abi_descriptor must declare NveSceneView");
-    let node_meta = spec
-        .find_struct("NveNodeMeta")
-        .expect("scene_abi_descriptor must declare NveNodeMeta");
-    let node_size = render_node
-        .expected_size
-        .expect("NveRenderNode must declare size = 64");
-    let meta_size = node_meta
-        .expected_size
-        .expect("NveNodeMeta must declare size = 64");
+    let scene = ResolvedSceneAbi::from_spec(spec);
+    let render_node = scene.render_node;
+    let table_view = scene.table_view;
+    let scene_view = scene.scene_view;
+    let node_meta = scene.node_meta;
+    let node_size = scene.node_size;
+    let meta_size = scene.meta_size;
 
     let mut h = Xxh64Hasher::new(0);
     h.update(b"NveRenderNode");

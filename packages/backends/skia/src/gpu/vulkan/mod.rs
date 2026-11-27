@@ -8,6 +8,8 @@
 //! `PRESENT_SRC_KHR`).
 
 #[cfg(feature = "skia-vulkan")]
+mod guards;
+#[cfg(feature = "skia-vulkan")]
 mod setup;
 
 use super::{GpuSurfaceConfig, GpuSurfaceError, SwapchainExtent};
@@ -47,10 +49,14 @@ mod imp {
         ColorType, Surface,
     };
 
+    use super::guards::{
+        DeviceGuard, InstanceGuard, SurfaceGuard, SwapchainGuard, SyncObjectsGuard,
+    };
     use super::setup::{
         create_device, create_instance, create_skia_vulkan_context, create_sync_objects,
-        create_vk_surface, create_vk_swapchain, load_vulkan_entry, map_ash_to_skia_format,
-        pick_physical_device, required_surface_extensions, FrameSyncObjects,
+        create_vk_surface, create_vk_swapchain, destroy_sync_objects, load_vulkan_entry,
+        map_ash_to_skia_format, pick_physical_device, required_surface_extensions,
+        FrameSyncObjects, SkiaVulkanContextParams, VkSwapchainParams,
     };
     use super::VulkanSwapchainConfig;
     use crate::gpu::ganesh::{
@@ -64,6 +70,7 @@ mod imp {
         surface_khr: ash_vk::SurfaceKHR,
         swapchain_khr: ash_vk::SwapchainKHR,
         images: Vec<ash_vk::Image>,
+        vk_extent: ash_vk::Extent2D,
         format: ash_vk::Format,
         color_type: ColorType,
         sync_frames: Vec<FrameSyncObjects>,
@@ -76,8 +83,8 @@ mod imp {
     }
 
     enum VulkanTarget {
-        Window(VulkanWindowState),
-        Offscreen { surface: Surface },
+        Window(Box<VulkanWindowState>),
+        Offscreen { surface: Option<Surface> },
     }
 
     /// Platform-specific Vulkan swapchain resources managed by [`GaneshPresenter`].
@@ -109,27 +116,31 @@ mod imp {
             unsafe {
                 let _ = self.device.device_wait_idle();
             }
+            for sync in &mut win.sync_frames {
+                sync.in_flight_pending = false;
+            }
             win.active_surface.take();
             win.active_image_index = None;
             let old = win.swapchain_khr;
-            let (new_sc, new_images, new_format, new_ct) = create_vk_swapchain(
-                &win.surface_loader,
-                &win.swapchain_loader,
-                self.physical_device,
-                win.surface_khr,
-                next,
-                win.vsync,
-                win.min_image_count,
-                old,
-            )?;
+            let created = create_vk_swapchain(&VkSwapchainParams {
+                surface_loader: &win.surface_loader,
+                swapchain_loader: &win.swapchain_loader,
+                physical_device: self.physical_device,
+                surface: win.surface_khr,
+                extent: next,
+                vsync: win.vsync,
+                requested_images: win.min_image_count,
+                old_swapchain: old,
+            })?;
             // SAFETY: Device is idle and all Skia surfaces referencing `old` swapchain images have been dropped.
             unsafe {
                 win.swapchain_loader.destroy_swapchain(old, None);
             }
-            win.swapchain_khr = new_sc;
-            win.images = new_images;
-            win.format = new_format;
-            win.color_type = new_ct;
+            win.swapchain_khr = created.swapchain;
+            win.images = created.images;
+            win.vk_extent = created.extent;
+            win.format = created.format;
+            win.color_type = created.color_type;
             win.swapchain_dirty = false;
             Ok(())
         }
@@ -142,22 +153,24 @@ mod imp {
             unsafe {
                 let _ = self.device.device_wait_idle();
             }
-            if let VulkanTarget::Window(win) = &mut self.target {
-                win.active_surface.take();
-                // SAFETY: Device is idle, `active_surface` is dropped, and every handle belongs to `self.device`/`self.instance`.
-                unsafe {
-                    for sync in &win.sync_frames {
-                        self.device.destroy_semaphore(sync.image_available, None);
-                        self.device.destroy_semaphore(sync.render_finished, None);
-                        self.device.destroy_fence(sync.in_flight, None);
+            match &mut self.target {
+                VulkanTarget::Window(win) => {
+                    win.active_surface.take();
+                    destroy_sync_objects(&self.device, &win.sync_frames);
+                    // SAFETY: Device is idle, `active_surface` is dropped, and every handle belongs to `self.device`/`self.instance`.
+                    unsafe {
+                        win.swapchain_loader
+                            .destroy_swapchain(win.swapchain_khr, None);
+                        win.surface_loader.destroy_surface(win.surface_khr, None);
                     }
-                    win.swapchain_loader
-                        .destroy_swapchain(win.swapchain_khr, None);
-                    win.surface_loader.destroy_surface(win.surface_khr, None);
+                }
+                VulkanTarget::Offscreen { surface } => {
+                    // Drop the Skia Surface BEFORE abandoning DirectContext and destroying VkDevice/VkInstance.
+                    surface.take();
                 }
             }
             self.direct_context.release_resources_and_abandon();
-            // SAFETY: Skia context is abandoned and all child Vulkan objects were destroyed above.
+            // SAFETY: All Skia surfaces are dropped, Skia context is abandoned, and all child Vulkan objects were destroyed above.
             unsafe {
                 self.device.destroy_device(None);
                 self.instance.destroy_instance(None);
@@ -182,8 +195,10 @@ mod imp {
             &mut self,
         ) -> Option<(&mut Surface, &mut DirectContext)> {
             match &mut self.target {
-                VulkanTarget::Offscreen { surface } => Some((surface, &mut self.direct_context)),
-                VulkanTarget::Window(_) => None,
+                VulkanTarget::Offscreen { surface: Some(surface) } => {
+                    Some((surface, &mut self.direct_context))
+                }
+                _ => None,
             }
         }
 
@@ -191,44 +206,57 @@ mod imp {
             &mut self,
             prev: SwapchainExtent,
             next: SwapchainExtent,
-        ) -> Result<(), GpuSurfaceError> {
+        ) -> Result<bool, GpuSurfaceError> {
+            if next.width == prev.width && next.height == prev.height {
+                return Ok(false);
+            }
             match &mut self.target {
-                VulkanTarget::Window(_) => self.recreate_window_swapchain(next),
+                VulkanTarget::Window(_) => {
+                    self.recreate_window_swapchain(next)?;
+                    Ok(true)
+                }
                 VulkanTarget::Offscreen { surface } => {
-                    if next.width != prev.width || next.height != prev.height {
-                        let _ = self.direct_context.flush_submit_and_sync_cpu();
-                        *surface = create_ganesh_offscreen_surface(
-                            &mut self.direct_context,
-                            next,
-                            "Vulkan",
-                        )?;
-                    }
-                    Ok(())
+                    let _ = self.direct_context.flush_submit_and_sync_cpu();
+                    *surface = Some(create_ganesh_offscreen_surface(
+                        &mut self.direct_context,
+                        next,
+                        "Vulkan",
+                    )?);
+                    Ok(true)
                 }
             }
         }
 
-        fn begin_native_frame(&mut self, extent: SwapchainExtent) -> Result<bool, GpuSurfaceError> {
+        fn begin_native_frame(
+            &mut self,
+            extent: SwapchainExtent,
+            recreations: &mut u64,
+        ) -> Result<(), GpuSurfaceError> {
             let needs_recreate = matches!(
                 &self.target,
                 VulkanTarget::Window(win) if win.swapchain_dirty
             );
             if needs_recreate {
                 self.recreate_window_swapchain(extent)?;
+                *recreations += 1;
             }
 
             if let VulkanTarget::Window(win) = &mut self.target {
-                let sync = &win.sync_frames[win.current_sync];
-                // SAFETY: `sync.in_flight` is a live fence owned by `self.device` and created signaled.
-                unsafe {
-                    self.device
-                        .wait_for_fences(&[sync.in_flight], true, u64::MAX)
-                        .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence wait: {e}")))?;
-                    self.device
-                        .reset_fences(&[sync.in_flight])
-                        .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence reset: {e}")))?;
+                let sync = &mut win.sync_frames[win.current_sync];
+                if sync.in_flight_pending {
+                    // SAFETY: `sync.in_flight` is a live fence owned by `self.device` with a submitted signal in flight.
+                    unsafe {
+                        self.device
+                            .wait_for_fences(&[sync.in_flight], true, u64::MAX)
+                            .map_err(|e| {
+                                GpuSurfaceError::PresentFailed(format!("fence wait: {e}"))
+                            })?;
+                    }
+                    sync.in_flight_pending = false;
                 }
                 // SAFETY: `win.swapchain_khr` and `sync.image_available` are live handles on `self.device`.
+                // Note: `sync.in_flight` is intentionally NOT reset here — it is reset immediately before
+                // `queue_submit` in `present_native_frame` so acquire/render failures never leave it unsignaled.
                 let acquired = unsafe {
                     win.swapchain_loader.acquire_next_image(
                         win.swapchain_khr,
@@ -276,7 +304,7 @@ mod imp {
                     ash_vk::ImageUsageFlags::COLOR_ATTACHMENT.as_raw();
 
                 let backend_rt = backend_render_targets::make_vk(
-                    (extent.width as i32, extent.height as i32),
+                    (win.vk_extent.width as i32, win.vk_extent.height as i32),
                     &image_info,
                 );
                 let mut surface = surfaces::wrap_backend_render_target(
@@ -304,7 +332,7 @@ mod imp {
                 win.active_surface = Some(surface);
             }
 
-            Ok(needs_recreate)
+            Ok(())
         }
 
         fn active_surface_mut(&mut self) -> Result<&mut Surface, GpuSurfaceError> {
@@ -313,7 +341,9 @@ mod imp {
                     .active_surface
                     .as_mut()
                     .ok_or(GpuSurfaceError::DrawableUnavailable),
-                VulkanTarget::Offscreen { surface } => Ok(surface),
+                VulkanTarget::Offscreen { surface } => surface
+                    .as_mut()
+                    .ok_or(GpuSurfaceError::DrawableUnavailable),
             }
         }
 
@@ -356,6 +386,9 @@ mod imp {
                     }
                 }
                 VulkanTarget::Offscreen { surface } => {
+                    let surface = surface
+                        .as_mut()
+                        .ok_or(GpuSurfaceError::DrawableUnavailable)?;
                     self.direct_context
                         .flush_and_submit_surface(surface, SyncCpu::Yes)
                         .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))?;
@@ -370,7 +403,7 @@ mod imp {
                     .active_image_index
                     .take()
                     .ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                let sync = &win.sync_frames[win.current_sync];
+                let sync = &mut win.sync_frames[win.current_sync];
                 let wait_sems = [sync.render_finished];
                 let swapchains = [win.swapchain_khr];
                 let image_indices = [image_index];
@@ -395,11 +428,18 @@ mod imp {
                         )));
                     }
                 }
-                // Signal the frame fence once queued work drains so the next ring slot stays safe.
-                // SAFETY: `self.queue` and `sync.in_flight` are live handles; the fence was reset in `begin_native_frame`.
+                // Reset immediately before `queue_submit`; if `queue_submit` fails, `in_flight_pending`
+                // stays `false` so the next frame does not hang waiting on an unsignaled fence.
+                // SAFETY: `self.device`, `self.queue`, and `sync.in_flight` are valid live handles.
                 unsafe {
-                    let _ = self.device.queue_submit(self.queue, &[], sync.in_flight);
+                    self.device
+                        .reset_fences(&[sync.in_flight])
+                        .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence reset: {e}")))?;
+                    self.device
+                        .queue_submit(self.queue, &[], sync.in_flight)
+                        .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence submit: {e}")))?;
                 }
+                sync.in_flight_pending = true;
                 win.current_sync = (win.current_sync + 1) % win.sync_frames.len();
             }
             Ok(())
@@ -419,31 +459,44 @@ mod imp {
             let vk_cfg = VulkanSwapchainConfig::from_surface_config(config)?;
             let entry = load_vulkan_entry()?;
             let (instance, instance_exts) = create_instance(&entry, &[])?;
+            let instance_guard = InstanceGuard(Some(instance));
             let (physical_device, queue_family_index) =
-                pick_physical_device(&instance, None, &[])?;
+                pick_physical_device(instance_guard.get(), None, &[])?;
             let (device, queue, device_exts) =
-                create_device(&instance, physical_device, queue_family_index, &[])?;
-            let mut direct_context = create_skia_vulkan_context(
-                &entry,
-                &instance,
+                create_device(instance_guard.get(), physical_device, queue_family_index, &[])?;
+            let device_guard = DeviceGuard(Some(device));
+            let mut direct_context = create_skia_vulkan_context(&SkiaVulkanContextParams {
+                entry: &entry,
+                instance: instance_guard.get(),
                 physical_device,
-                &device,
+                device: device_guard.get(),
                 queue,
                 queue_family_index,
-                &instance_exts,
-                &device_exts,
-            )?;
-            let surface =
-                create_ganesh_offscreen_surface(&mut direct_context, vk_cfg.extent, "Vulkan")?;
+                instance_exts: &instance_exts,
+                device_exts: &device_exts,
+            })?;
+            let surface = match create_ganesh_offscreen_surface(
+                &mut direct_context,
+                vk_cfg.extent,
+                "Vulkan",
+            ) {
+                Ok(s) => s,
+                Err(err) => {
+                    direct_context.release_resources_and_abandon();
+                    return Err(err);
+                }
+            };
             Ok(Self::new(
                 VulkanNativeSwapchain {
-                    target: VulkanTarget::Offscreen { surface },
+                    target: VulkanTarget::Offscreen {
+                        surface: Some(surface),
+                    },
                     direct_context,
                     queue,
                     queue_family_index,
                     physical_device,
-                    device,
-                    instance,
+                    device: device_guard.disarm(),
+                    instance: instance_guard.disarm(),
                     _entry: entry,
                 },
                 vk_cfg.extent,
@@ -467,57 +520,74 @@ mod imp {
             let entry = load_vulkan_entry()?;
             let surface_exts = required_surface_extensions(disp_handle.as_raw())?;
             let (instance, instance_exts) = create_instance(&entry, &surface_exts)?;
-            let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+            let instance_guard = InstanceGuard(Some(instance));
+            let surface_loader = ash::khr::surface::Instance::new(&entry, instance_guard.get());
             let surface_khr = create_vk_surface(
                 &entry,
-                &instance,
+                instance_guard.get(),
                 disp_handle.as_raw(),
                 win_handle.as_raw(),
             )?;
+            let surface_guard = SurfaceGuard(&surface_loader, Some(surface_khr));
 
             let swapchain_ext = ash::khr::swapchain::NAME;
             let (physical_device, queue_family_index) = pick_physical_device(
-                &instance,
-                Some((&surface_loader, surface_khr)),
+                instance_guard.get(),
+                Some((&surface_loader, surface_guard.get())),
                 &[swapchain_ext],
             )?;
-            let (device, queue, device_exts) =
-                create_device(&instance, physical_device, queue_family_index, &[swapchain_ext])?;
-
-            let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &device);
-            let (swapchain_khr, images, format, color_type) = create_vk_swapchain(
-                &surface_loader,
-                &swapchain_loader,
+            let (device, queue, device_exts) = create_device(
+                instance_guard.get(),
                 physical_device,
-                surface_khr,
-                vk_cfg.extent,
-                vk_cfg.vsync,
-                vk_cfg.min_image_count,
-                ash_vk::SwapchainKHR::null(),
+                queue_family_index,
+                &[swapchain_ext],
             )?;
+            let device_guard = DeviceGuard(Some(device));
 
-            let sync_frames = create_sync_objects(&device, vk_cfg.frames_in_flight)?;
-            let direct_context = create_skia_vulkan_context(
-                &entry,
-                &instance,
+            let swapchain_loader =
+                ash::khr::swapchain::Device::new(instance_guard.get(), device_guard.get());
+            let created = create_vk_swapchain(&VkSwapchainParams {
+                surface_loader: &surface_loader,
+                swapchain_loader: &swapchain_loader,
                 physical_device,
-                &device,
+                surface: surface_guard.get(),
+                extent: vk_cfg.extent,
+                vsync: vk_cfg.vsync,
+                requested_images: vk_cfg.min_image_count,
+                old_swapchain: ash_vk::SwapchainKHR::null(),
+            })?;
+            let swapchain_guard = SwapchainGuard(&swapchain_loader, Some(created.swapchain));
+
+            let sync_frames = create_sync_objects(device_guard.get(), vk_cfg.frames_in_flight)?;
+            let sync_guard = SyncObjectsGuard(device_guard.get(), sync_frames);
+            let direct_context = create_skia_vulkan_context(&SkiaVulkanContextParams {
+                entry: &entry,
+                instance: instance_guard.get(),
+                physical_device,
+                device: device_guard.get(),
                 queue,
                 queue_family_index,
-                &instance_exts,
-                &device_exts,
-            )?;
+                instance_exts: &instance_exts,
+                device_exts: &device_exts,
+            })?;
+
+            let sync_frames = sync_guard.disarm();
+            let swapchain_khr = swapchain_guard.disarm();
+            let device = device_guard.disarm();
+            let surface_khr = surface_guard.disarm();
+            let instance = instance_guard.disarm();
 
             Ok(Self::new(
                 VulkanNativeSwapchain {
-                    target: VulkanTarget::Window(VulkanWindowState {
+                    target: VulkanTarget::Window(Box::new(VulkanWindowState {
                         surface_loader,
                         swapchain_loader,
                         surface_khr,
                         swapchain_khr,
-                        images,
-                        format,
-                        color_type,
+                        images: created.images,
+                        vk_extent: created.extent,
+                        format: created.format,
+                        color_type: created.color_type,
                         sync_frames,
                         current_sync: 0,
                         active_image_index: None,
@@ -525,7 +595,7 @@ mod imp {
                         swapchain_dirty: false,
                         vsync: vk_cfg.vsync,
                         min_image_count: vk_cfg.min_image_count,
-                    }),
+                    })),
                     direct_context,
                     queue,
                     queue_family_index,

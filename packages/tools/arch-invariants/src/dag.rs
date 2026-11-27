@@ -1,11 +1,14 @@
-//! Workspace dependency DAG and module-boundary checks powered by `guppy` + `target-spec`.
+//! Workspace dependency DAG and module-boundary checks powered by `guppy` `FeatureGraph` /
+//! `CargoSet` + `target-spec` across Linux, macOS, Windows, and `wasm32-unknown-unknown`.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use guppy::graph::{BuildTargetId, PackageGraph, PackageMetadata};
+use guppy::graph::cargo::{CargoOptions, CargoSet};
+use guppy::graph::feature::StandardFeatures;
+use guppy::graph::{BuildTargetId, DependencyDirection, PackageGraph, PackageMetadata};
 use guppy::platform::{EnabledTernary, Platform, PlatformSpec, TargetFeatures};
 use guppy::PackageId;
-use syn::visit::Visit;
+use syn::visit::{self, Visit};
 
 use crate::{is_cfg_test_attr, line_at, RepoIndex, Violation};
 
@@ -18,6 +21,25 @@ pub const APPROVED_HOST_CARGO_TOMLS: &[&str] = &[
 
 /// Pre-existing runtime `serde_json` allowlist (Track 1B-1e).
 const PENDING_CLEANUP_SERDE_JSON: &[(&str, &str)] = &[("nve-codegen", "Track 1B-1e")];
+
+const TARGET_TRIPLES_ALL: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+];
+
+const TARGET_TRIPLES_NATIVE: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+];
+
+fn platform_spec(triple: &'static str) -> PlatformSpec {
+    PlatformSpec::from(
+        Platform::new(triple, TargetFeatures::Unknown).expect("valid target triple"),
+    )
+}
 
 fn workspace_rel_dir(pkg: &PackageMetadata<'_>) -> Option<String> {
     pkg.source()
@@ -32,27 +54,83 @@ fn rel_manifest(pkg: &PackageMetadata<'_>) -> String {
     }
 }
 
-/// Shortest transitive dependency chains from `root_id`.
-///
-/// For workspace crates, follows ALL normal & build edges (including optional deps, plus root dev
-/// edges when `include_dev` is true). For third-party crates, evaluates real `target-spec`
-/// `PlatformSpec`s for both native host and `wasm32-unknown-unknown`, following only non-optional
-/// normal runtime dependencies enabled on real targets (automatically ignoring `cfg(hax)`,
-/// third-party build-script deps like `skia-bindings -> serde_json`, and optional wasm-only deps
-/// like `getrandom -> js-sys / wasm-bindgen`).
+/// Shortest transitive dependency chains reachable from `root_id` using `guppy`'s `CargoSet`
+/// feature-graph resolver (with ALL features of `root_id` enabled) across every platform in
+/// `triples`, PLUS direct `[build-dependencies]` of workspace crates (while excluding third-party
+/// build-script dependencies like `skia-bindings -> serde_json`).
 fn transitive_chains<'g>(
     graph: &'g PackageGraph,
     root_id: &'g PackageId,
     include_dev: bool,
+    triples: &[&'static str],
 ) -> BTreeMap<&'g PackageId, Vec<String>> {
-    let host = PlatformSpec::from(
-        Platform::new("x86_64-unknown-linux-gnu", TargetFeatures::Unknown)
-            .expect("valid host target triple"),
-    );
-    let mut visited: BTreeMap<&'g PackageId, Vec<String>> = BTreeMap::new();
+    let fg = graph.feature_graph();
     let Ok(root_pkg) = graph.metadata(root_id) else {
-        return visited;
+        return BTreeMap::new();
     };
+    let Ok(root_set) = graph.resolve_ids([root_id]) else {
+        return BTreeMap::new();
+    };
+    let initials = root_set.to_feature_set(StandardFeatures::All);
+    let features_only = fg.resolve_none();
+    let host_linux = platform_spec("x86_64-unknown-linux-gnu");
+
+    let mut active_ids: BTreeSet<&'g PackageId> = BTreeSet::new();
+    active_ids.insert(root_pkg.id());
+
+    for &triple in triples {
+        let target = platform_spec(triple);
+        let mut opts = CargoOptions::new();
+        opts.set_include_dev(include_dev)
+            .set_target_platform(target)
+            .set_host_platform(host_linux.clone());
+        if let Ok(cargo_set) = CargoSet::new(initials.clone(), features_only.clone(), &opts) {
+            for pid in cargo_set
+                .target_features()
+                .to_package_set()
+                .package_ids(DependencyDirection::Forward)
+            {
+                active_ids.insert(pid);
+            }
+        }
+    }
+
+    // Also inspect direct `[build-dependencies]` of workspace crates in the active set (and their
+    // target closures on host) so workspace build-deps (e.g. `nve-engine -> build dioxus-core`)
+    // are always caught without pulling third-party build scripts (e.g. `skia-bindings -> serde_json`).
+    let mut ws_build_roots: Vec<&'g PackageId> = Vec::new();
+    for &pid in &active_ids {
+        if let Ok(pkg) = graph.metadata(pid)
+            && pkg.in_workspace()
+        {
+            for link in pkg.direct_links() {
+                if link.build().is_present() {
+                    ws_build_roots.push(link.to().id());
+                }
+            }
+        }
+    }
+    if !ws_build_roots.is_empty()
+        && let Ok(bset) = graph.resolve_ids(ws_build_roots)
+    {
+        let b_initials = bset.to_feature_set(StandardFeatures::All);
+        let mut opts = CargoOptions::new();
+        opts.set_include_dev(false)
+            .set_target_platform(host_linux.clone())
+            .set_host_platform(host_linux);
+        if let Ok(cargo_set) = CargoSet::new(b_initials, features_only, &opts) {
+            for pid in cargo_set
+                .target_features()
+                .to_package_set()
+                .package_ids(DependencyDirection::Forward)
+            {
+                active_ids.insert(pid);
+            }
+        }
+    }
+
+    // Reconstruct shortest readable dependency chains restricted to `active_ids`.
+    let mut visited: BTreeMap<&'g PackageId, Vec<String>> = BTreeMap::new();
     let mut queue: VecDeque<&'g PackageId> = VecDeque::new();
     visited.insert(root_pkg.id(), vec![root_pkg.name().to_string()]);
     queue.push_back(root_pkg.id());
@@ -64,22 +142,19 @@ fn transitive_chains<'g>(
         let Ok(curr_pkg) = graph.metadata(curr_id) else {
             continue;
         };
-        let curr_is_ws = curr_pkg.in_workspace();
         for link in curr_pkg.direct_links() {
-            let is_active = if curr_is_ws {
-                (include_dev && curr_id == root_id) || !link.dev_only()
+            let allow_edge = if curr_id == root_id {
+                include_dev || !link.dev_only()
+            } else if curr_pkg.in_workspace() {
+                !link.dev_only()
             } else {
-                // Third-party crate: follow non-optional normal runtime deps enabled on host
-                // via real `target-spec` evaluation (skips `cfg(hax)`, third-party build-script
-                // deps like `skia-bindings -> serde_json`, and wasm-only shims like
-                // `getrandom` / `web-time` -> `js-sys` / `wasm-bindgen`).
-                link.normal().status().required_on(&host) != EnabledTernary::Disabled
+                link.normal().is_present()
             };
-            if !is_active {
+            if !allow_edge {
                 continue;
             }
             let next = link.to();
-            if !visited.contains_key(next.id()) {
+            if active_ids.contains(next.id()) && !visited.contains_key(next.id()) {
                 let mut next_chain = curr_chain.clone();
                 next_chain.push(next.name().to_string());
                 visited.insert(next.id(), next_chain);
@@ -87,6 +162,7 @@ fn transitive_chains<'g>(
             }
         }
     }
+
     visited.remove(root_id);
     visited
 }
@@ -113,7 +189,7 @@ pub fn check_packages_to_hosts_deps(graph: &PackageGraph) -> Vec<Violation> {
         if !dir.starts_with("packages/") {
             continue;
         }
-        for (dep_id, chain) in transitive_chains(graph, pkg.id(), true) {
+        for (dep_id, chain) in transitive_chains(graph, pkg.id(), true, TARGET_TRIPLES_ALL) {
             let Ok(dep) = graph.metadata(dep_id) else {
                 continue;
             };
@@ -148,7 +224,7 @@ pub fn check_core_zero_dioxus(graph: &PackageGraph) -> Vec<Violation> {
             continue;
         }
         scanned += 1;
-        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false) {
+        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
             if let Ok(dep) = graph.metadata(dep_id)
                 && dep.name().starts_with("dioxus")
             {
@@ -176,7 +252,11 @@ pub fn check_core_zero_platform_crates(graph: &PackageGraph) -> Vec<Violation> {
             continue;
         }
         scanned += 1;
-        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false) {
+        // Evaluate across all 3 native targets via `CargoSet`, PLUS direct workspace edges on all 4
+        // targets (including `wasm32`) so direct/workspace-mediated `web-sys`/`js-sys`/`wasm-bindgen`/
+        // `skia-safe` edges are always caught while third-party wasm shims (`getrandom`/`web-time`/
+        // `tokio` -> `js-sys`/`wasm-bindgen` on wasm32) do not false-positive.
+        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_NATIVE) {
             if let Ok(dep) = graph.metadata(dep_id)
                 && BANNED_PLATFORM_CRATES.contains(&dep.name())
             {
@@ -186,6 +266,21 @@ pub fn check_core_zero_platform_crates(graph: &PackageGraph) -> Vec<Violation> {
                     chain.join(" -> "),
                     "packages/core/* must not depend on platform crates (`web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`)",
                 ));
+            }
+        }
+        // Also check direct workspace edges on wasm32 (a core crate may never directly list
+        // `web-sys`/`js-sys`/`wasm-bindgen`/`skia-safe` even behind `cfg(target_arch = "wasm32")`).
+        for link in pkg.direct_links() {
+            if !link.dev_only() && BANNED_PLATFORM_CRATES.contains(&link.to().name()) {
+                let snippet = format!("{} -> {}", pkg.name(), link.to().name());
+                if !violations.iter().any(|v| v.snippet == snippet) {
+                    violations.push(Violation::new(
+                        rel_manifest(&pkg),
+                        1,
+                        snippet,
+                        "packages/core/* must not depend on platform crates (`web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`)",
+                    ));
+                }
             }
         }
     }
@@ -208,7 +303,7 @@ pub fn check_zero_serde_json(graph: &PackageGraph) -> Vec<Violation> {
         if !in_scope {
             continue;
         }
-        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false) {
+        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
             if let Ok(dep) = graph.metadata(dep_id)
                 && dep.name() == "serde_json"
             {
@@ -250,7 +345,7 @@ pub fn check_core_backend_module_deps(graph: &PackageGraph) -> Vec<Violation> {
         if !dir.starts_with("packages/core/") && !dir.starts_with("packages/backends/") {
             continue;
         }
-        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false) {
+        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
             if let Ok(dep) = graph.metadata(dep_id)
                 && workspace_rel_dir(&dep).is_some_and(|d| d.starts_with("packages/modules/"))
             {
@@ -267,10 +362,7 @@ pub fn check_core_backend_module_deps(graph: &PackageGraph) -> Vec<Violation> {
 }
 
 pub fn check_module_root_spec_and_wasm32_dev_deps(graph: &PackageGraph) -> Vec<Violation> {
-    let wasm32 = PlatformSpec::from(
-        Platform::new("wasm32-unknown-unknown", TargetFeatures::Unknown)
-            .expect("valid wasm32-unknown-unknown triple"),
-    );
+    let wasm32 = platform_spec("wasm32-unknown-unknown");
     let mut violations = Vec::new();
 
     for pkg in graph.workspace().iter() {
@@ -280,7 +372,8 @@ pub fn check_module_root_spec_and_wasm32_dev_deps(graph: &PackageGraph) -> Vec<V
         if dir.starts_with("packages/modules/") {
             let is_root_spec = dir.matches('/').count() == 2;
             if is_root_spec {
-                for (dep_id, chain) in transitive_chains(graph, pkg.id(), false) {
+                for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL)
+                {
                     if let Ok(dep) = graph.metadata(dep_id)
                         && (dep.name().starts_with("nve-backend-")
                             || BANNED_PLATFORM_CRATES.contains(&dep.name()))
@@ -331,10 +424,13 @@ pub fn check_module_root_spec_and_wasm32_dev_deps(graph: &PackageGraph) -> Vec<V
 }
 
 /// Uses `syn` AST inspection to verify `impl WebBackend { pub fn new(...) }` never auto-registers
-/// optional module symbols.
+/// optional module symbols or feature-gates `camera` / `motion` module wiring.
 pub fn scan_web_backend_new_auto_reg(idx: &RepoIndex) -> Vec<Violation> {
     let web_files = idx.rs_files_under("packages/backends/web/src");
-    assert!(!web_files.is_empty(), "expected Rust sources under packages/backends/web/src");
+    assert!(
+        !web_files.is_empty(),
+        "expected Rust sources under packages/backends/web/src"
+    );
 
     let mut found_new = false;
     let mut violations = Vec::new();
@@ -353,13 +449,43 @@ pub fn scan_web_backend_new_auto_reg(idx: &RepoIndex) -> Vec<Violation> {
     violations
 }
 
+fn cfg_meta_has_banned_module_feature(meta: &syn::Meta) -> Option<&'static str> {
+    match meta {
+        syn::Meta::NameValue(nv) if nv.path.is_ident("feature") => {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = &nv.value
+            {
+                match s.value().as_str() {
+                    "camera" => return Some("camera"),
+                    "motion" => return Some("motion"),
+                    _ => {}
+                }
+            }
+            None
+        }
+        syn::Meta::List(list) => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .ok()
+            .and_then(|items| items.iter().find_map(cfg_meta_has_banned_module_feature)),
+        _ => None,
+    }
+}
+
 pub fn scan_web_backend_ast(
     rel: &str,
     raw: &str,
     ast: &syn::File,
     out: &mut Vec<Violation>,
 ) -> bool {
-    struct IdentScan<'a> {
+    if is_cfg_test_attr(&ast.attrs) {
+        return false;
+    }
+
+    struct NewBodyScan<'a> {
         rel: &'a str,
         raw: &'a str,
         out: &'a mut Vec<Violation>,
@@ -372,7 +498,7 @@ pub fn scan_web_backend_ast(
         "CameraPreview",
         "MotionDriver",
     ];
-    impl<'ast> Visit<'ast> for IdentScan<'_> {
+    impl<'ast> Visit<'ast> for NewBodyScan<'_> {
         fn visit_ident(&mut self, i: &'ast syn::Ident) {
             let s = i.to_string();
             if BANNED.contains(&s.as_str()) {
@@ -384,6 +510,24 @@ pub fn scan_web_backend_ast(
                     format!("WebBackend::new() must not auto-register optional module symbol `{s}`"),
                 ));
             }
+        }
+
+        fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+            if attr.path().is_ident("cfg")
+                && let Ok(meta) = attr.parse_args::<syn::Meta>()
+                && let Some(feat) = cfg_meta_has_banned_module_feature(&meta)
+            {
+                let ln = attr.pound_token.span.start().line;
+                self.out.push(Violation::new(
+                    self.rel,
+                    ln,
+                    line_at(self.raw, ln),
+                    format!(
+                        "WebBackend::new() must not feature-gate optional module auto-registration (`feature = \"{feat}\"`)"
+                    ),
+                ));
+            }
+            visit::visit_attribute(self, attr);
         }
     }
 
@@ -400,7 +544,11 @@ pub fn scan_web_backend_ast(
                     && !is_cfg_test_attr(&func.attrs)
                 {
                     found = true;
-                    IdentScan { rel, raw, out }.visit_block(&func.block);
+                    let mut scanner = NewBodyScan { rel, raw, out };
+                    for attr in &func.attrs {
+                        scanner.visit_attribute(attr);
+                    }
+                    scanner.visit_block(&func.block);
                 }
             }
         }

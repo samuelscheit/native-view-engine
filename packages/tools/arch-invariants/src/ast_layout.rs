@@ -41,9 +41,15 @@ pub fn scan_repr_c_abi_locks(
     let mut usize_consts = BTreeMap::new();
 
     for (rel, ast) in abi_files {
+        if is_cfg_test_attr(&ast.attrs) {
+            continue;
+        }
         collect_abi_items(rel, &ast.items, &mut abi_structs, &mut const_tokens, &mut usize_consts);
     }
     for (rel, ast) in store_files {
+        if is_cfg_test_attr(&ast.attrs) {
+            continue;
+        }
         collect_abi_items(rel, &ast.items, &mut store_structs, &mut const_tokens, &mut usize_consts);
     }
 
@@ -196,6 +202,9 @@ pub fn scan_bare_primitive_domain_fields(
     ast: &syn::File,
     out: &mut Vec<Violation>,
 ) {
+    if is_cfg_test_attr(&ast.attrs) {
+        return;
+    }
     scan_domain_fields_in_items(rel, raw, &ast.items, out);
 }
 
@@ -269,19 +278,75 @@ pub fn scan_hardcoded_schema_hashes(
     ast: &syn::File,
     out: &mut Vec<Violation>,
 ) {
-    for item in &ast.items {
-        if let Item::Const(c) = item
-            && !is_cfg_test_attr(&c.attrs)
-            && c.ident.to_string().contains("SCHEMA_HASH")
-            && matches!(&*c.expr, Expr::Lit(l) if matches!(&l.lit, Lit::Int(i) if i.to_string().starts_with("0x") || i.to_string().starts_with("0X")))
-        {
-            let ln = c.ident.span().start().line;
-            out.push(Violation::new(
-                rel,
-                ln,
-                line_at(raw, ln),
-                "Hardcoded `*_SCHEMA_HASH = 0x...` hex literal is banned; compute via `const fn xxh64`",
-            ));
+    if is_cfg_test_attr(&ast.attrs) {
+        return;
+    }
+    scan_schema_hash_items(rel, raw, &ast.items, out);
+}
+
+fn is_hex_int_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Lit(l) if matches!(&l.lit, Lit::Int(i) if i.to_string().starts_with("0x") || i.to_string().starts_with("0X"))
+    )
+}
+
+fn scan_schema_hash_items(rel: &str, raw: &str, items: &[Item], out: &mut Vec<Violation>) {
+    for item in items {
+        match item {
+            Item::Const(c)
+                if !is_cfg_test_attr(&c.attrs)
+                    && c.ident.to_string().contains("SCHEMA_HASH")
+                    && is_hex_int_expr(&c.expr) =>
+            {
+                let ln = c.ident.span().start().line;
+                out.push(Violation::new(
+                    rel,
+                    ln,
+                    line_at(raw, ln),
+                    "Hardcoded `*_SCHEMA_HASH = 0x...` hex literal is banned; compute via `const fn xxh64`",
+                ));
+            }
+            Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
+                if let Some((_, sub)) = &m.content {
+                    scan_schema_hash_items(rel, raw, sub, out);
+                }
+            }
+            Item::Impl(imp) if !is_cfg_test_attr(&imp.attrs) => {
+                for ii in &imp.items {
+                    if let syn::ImplItem::Const(c) = ii
+                        && !is_cfg_test_attr(&c.attrs)
+                        && c.ident.to_string().contains("SCHEMA_HASH")
+                        && is_hex_int_expr(&c.expr)
+                    {
+                        let ln = c.ident.span().start().line;
+                        out.push(Violation::new(
+                            rel,
+                            ln,
+                            line_at(raw, ln),
+                            "Hardcoded `*_SCHEMA_HASH = 0x...` hex literal is banned; compute via `const fn xxh64`",
+                        ));
+                    }
+                }
+            }
+            Item::Trait(tr) if !is_cfg_test_attr(&tr.attrs) => {
+                for ti in &tr.items {
+                    if let syn::TraitItem::Const(c) = ti
+                        && !is_cfg_test_attr(&c.attrs)
+                        && c.ident.to_string().contains("SCHEMA_HASH")
+                        && c.default.as_ref().is_some_and(|(_, expr)| is_hex_int_expr(expr))
+                    {
+                        let ln = c.ident.span().start().line;
+                        out.push(Violation::new(
+                            rel,
+                            ln,
+                            line_at(raw, ln),
+                            "Hardcoded `*_SCHEMA_HASH = 0x...` hex literal is banned; compute via `const fn xxh64`",
+                        ));
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -307,7 +372,7 @@ fn stream_contains_ident(ts: TokenStream, target: &str) -> bool {
     })
 }
 
-fn has_attr_list_ident(attrs: &[Attribute], attr_name: &str, target: &str) -> bool {
+pub(crate) fn has_attr_list_ident(attrs: &[Attribute], attr_name: &str, target: &str) -> bool {
     attrs.iter().any(|a| {
         if !a.path().is_ident(attr_name) {
             return false;

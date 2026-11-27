@@ -152,8 +152,7 @@ fn emit_c11_header(spec: &HybridFileSpec) -> String {
     }
 
     // POD Optional<T> structs
-    for inner in spec.collect_pod_option_types() {
-        let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
+    for (suffix, inner) in spec.collect_pod_option_types() {
         writeln!(out, "typedef struct NveHybridOpt{suffix} {{");
         writeln!(out, "  bool is_some;");
         writeln!(out, "  {} value;", c_pod_type(&inner));

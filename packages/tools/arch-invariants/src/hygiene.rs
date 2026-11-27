@@ -174,7 +174,13 @@ pub fn check_personal_endpoints_or_paths(idx: &RepoIndex) -> Vec<Violation> {
         let cfg_test_ranges = if !is_test_or_doc && rel.ends_with(".rs") && content.contains("test")
         {
             syn::parse_file(&content)
-                .map(|ast| collect_cfg_test_line_ranges(&ast.items))
+                .map(|ast| {
+                    if is_cfg_test_attr(&ast.attrs) {
+                        vec![(1, usize::MAX)]
+                    } else {
+                        collect_cfg_test_line_ranges(&ast.items)
+                    }
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -284,7 +290,7 @@ pub fn check_crate_readmes_and_doctest_hooks(idx: &RepoIndex) -> (Vec<Violation>
                     lib_rel,
                     1,
                     "missing #![cfg_attr(doctest, doc = include_str!(\"../README.md\"))]",
-                    "Workspace library crate must wire README.md into rustdoc doctests",
+                    "Every `packages/**` library crate must wire README.md into rustdoc doctests",
                 ));
             }
         }
@@ -405,6 +411,10 @@ fn collect_cfg_test_line_ranges(items: &[syn::Item]) -> Vec<(usize, usize)> {
             syn::Item::Mod(m) => Some(&m.attrs),
             syn::Item::Fn(f) => Some(&f.attrs),
             syn::Item::Struct(s) => Some(&s.attrs),
+            syn::Item::Enum(e) => Some(&e.attrs),
+            syn::Item::Trait(t) => Some(&t.attrs),
+            syn::Item::Macro(m) => Some(&m.attrs),
+            syn::Item::Type(t) => Some(&t.attrs),
             syn::Item::Impl(i) => Some(&i.attrs),
             syn::Item::Const(c) => Some(&c.attrs),
             syn::Item::Static(s) => Some(&s.attrs),

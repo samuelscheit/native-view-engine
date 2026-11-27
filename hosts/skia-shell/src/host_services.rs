@@ -23,7 +23,7 @@ use nve_host_services::{
     pack_typed, HostEvent, HostServiceProvider, HostServiceRegistry, InvokeResult, ServiceError,
     TypedEventBus,
 };
-use nve_interop::{NveChannelBus, WindowCommand, WindowHandleId, WindowLifecycleEvent};
+use nve_interop::{WindowCommand, WindowHandleId, WindowLifecycleEvent};
 use nve_linking::NativeLinking;
 use nve_secure_store::NativeSecureStore;
 use nve_system_env::{
@@ -154,8 +154,6 @@ impl WindowServiceBackend for SkiaWindowBackend {
 /// remains valid and immovable across Tier-2 `cdylib` reloads and secondary window spawns.
 pub struct SkiaHostServices {
     inner: Arc<dyn HostServiceProvider>,
-    #[cfg(test)]
-    channel_bus: Arc<Mutex<NveChannelBus>>,
     typed_events: Arc<TypedEventBus>,
     window_backend: Arc<SkiaWindowBackend>,
     window_backend_typed: (TypeId, Arc<dyn Any + Send + Sync>),
@@ -177,16 +175,12 @@ impl SkiaHostServices {
         native.register(NativeLinking::new());
         native.register(NativeSystemEnv::new());
         native.register(NativeHaptics::new());
-        let bus = native.channel_bus();
-        Self::with_provider(native, bus)
+        Self::with_provider(native)
     }
 
     /// Creates a host service backed by a custom [`HostServiceProvider`] (such as
-    /// `nve_host_services::MemoryHostServices` in tests) and shared [`NveChannelBus`].
-    pub fn with_provider(
-        inner: Arc<dyn HostServiceProvider>,
-        channel_bus: Arc<Mutex<NveChannelBus>>,
-    ) -> Arc<Self> {
+    /// `nve_host_services::MemoryHostServices` in tests).
+    pub fn with_provider(inner: Arc<dyn HostServiceProvider>) -> Arc<Self> {
         let env_client = SystemEnvClient::new(&*inner);
         let initial_theme = env_client.get_theme().unwrap_or_default();
         let initial_locale = env_client.get_locale().unwrap_or_default();
@@ -203,13 +197,9 @@ impl SkiaHostServices {
 
         let window_backend = Arc::new(SkiaWindowBackend::new());
         let window_backend_typed = pack_typed::<dyn WindowServiceBackend>(window_backend.clone());
-        #[cfg(not(test))]
-        let _ = channel_bus;
 
         Arc::new(Self {
             inner,
-            #[cfg(test)]
-            channel_bus,
             typed_events,
             window_backend,
             window_backend_typed,
@@ -336,11 +326,6 @@ impl SkiaHostServices {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&handle)
-    }
-
-    #[cfg(test)]
-    pub fn channel_bus(&self) -> Arc<Mutex<NveChannelBus>> {
-        Arc::clone(&self.channel_bus)
     }
 
     #[cfg(test)]

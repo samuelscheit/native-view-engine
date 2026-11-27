@@ -21,8 +21,8 @@ use nve_host_services::{
     resolve_typed, FfiHostServices, HostServiceProvider, MemoryHostServices, ServiceError,
 };
 use nve_interop::{
-    SurfacePresentation, WindowCommand, WindowDescriptor, WindowError, WindowLifecycleEvent,
-    WindowLifecycleState, WindowRect,
+    NveChannelBus, SurfacePresentation, WindowCommand, WindowDescriptor, WindowError,
+    WindowLifecycleEvent, WindowLifecycleState, WindowRect,
 };
 use nve_linking::{LinkingClient, MemoryLinking};
 use nve_secure_store::{MemorySecureStore, SecureStoreClient};
@@ -41,6 +41,7 @@ use crate::host_services::{
 pub(super) struct TestMemoryHandles {
     pub(super) linking: Arc<MemoryLinking>,
     pub(super) haptics: Arc<MemoryHaptics>,
+    pub(super) channel_bus: Arc<Mutex<NveChannelBus>>,
 }
 
 pub(super) fn make_memory_services() -> (TestMemoryHandles, Arc<SkiaHostServices>) {
@@ -75,9 +76,16 @@ pub(super) fn make_memory_services() -> (TestMemoryHandles, Arc<SkiaHostServices
     mem.register_arc(sys_env);
     mem.register_arc(haptics.clone());
 
-    let bus = mem.channel_bus();
-    let svc = SkiaHostServices::with_provider(mem, bus);
-    (TestMemoryHandles { linking, haptics }, svc)
+    let channel_bus = mem.channel_bus();
+    let svc = SkiaHostServices::with_provider(mem);
+    (
+        TestMemoryHandles {
+            linking,
+            haptics,
+            channel_bus,
+        },
+        svc,
+    )
 }
 
 #[test]
@@ -149,8 +157,7 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
     let received = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let rx_clone = Arc::clone(&received);
     let custom_channel_id = {
-        let bus_arc = services.channel_bus();
-        let mut bus = bus_arc.lock().unwrap();
+        let mut bus = handles.channel_bus.lock().unwrap();
         let id = bus.ensure_channel("skia.custom").unwrap();
         bus.subscribe_by_id(id, None, false, move |msg| {
             rx_clone.lock().unwrap().push(msg.as_bytes().to_vec());

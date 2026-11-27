@@ -3,9 +3,30 @@
 use std::collections::BTreeMap;
 
 use guppy::graph::BuildTargetId;
+use syn::visit::{self, Visit};
 
 use crate::ast_layout::file_contains_ident;
 use crate::{RepoIndex, Violation};
+
+fn ast_calls_black_box(src: &str) -> bool {
+    struct BlackBoxCallScan(bool);
+    impl<'ast> Visit<'ast> for BlackBoxCallScan {
+        fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(ep) = &*node.func
+                && ep.path.segments.last().is_some_and(|s| s.ident == "black_box")
+            {
+                self.0 = true;
+            }
+            visit::visit_expr_call(self, node);
+        }
+    }
+    let Ok(ast) = syn::parse_file(src) else {
+        return false;
+    };
+    let mut scan = BlackBoxCallScan(false);
+    scan.visit_file(&ast);
+    scan.0
+}
 
 pub fn check_bench_not_stub(src: &str) -> Option<&'static str> {
     let has_runner = file_contains_ident(src, "criterion_main")
@@ -13,10 +34,12 @@ pub fn check_bench_not_stub(src: &str) -> Option<&'static str> {
         || file_contains_ident(src, "Criterion")
         || file_contains_ident(src, "divan")
         || (file_contains_ident(src, "Instant") && file_contains_ident(src, "now"));
-    let has_black_box = file_contains_ident(src, "black_box");
+    let has_black_box = ast_calls_black_box(src);
     match (has_runner, has_black_box) {
         (false, _) => Some("Benchmark stub detected: missing real benchmark runner"),
-        (true, false) => Some("Benchmark missing `black_box`: LLVM may optimize measured work away"),
+        (true, false) => {
+            Some("Benchmark missing `black_box(...)` call: LLVM may optimize measured work away")
+        }
         (true, true) => None,
     }
 }

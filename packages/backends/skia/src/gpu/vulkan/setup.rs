@@ -18,6 +18,37 @@ pub(super) struct FrameSyncObjects {
     pub(super) image_available: ash_vk::Semaphore,
     pub(super) render_finished: ash_vk::Semaphore,
     pub(super) in_flight: ash_vk::Fence,
+    pub(super) in_flight_pending: bool,
+}
+
+pub(super) struct SkiaVulkanContextParams<'a> {
+    pub(super) entry: &'a ash::Entry,
+    pub(super) instance: &'a ash::Instance,
+    pub(super) physical_device: ash_vk::PhysicalDevice,
+    pub(super) device: &'a ash::Device,
+    pub(super) queue: ash_vk::Queue,
+    pub(super) queue_family_index: u32,
+    pub(super) instance_exts: &'a [String],
+    pub(super) device_exts: &'a [String],
+}
+
+pub(super) struct VkSwapchainParams<'a> {
+    pub(super) surface_loader: &'a ash::khr::surface::Instance,
+    pub(super) swapchain_loader: &'a ash::khr::swapchain::Device,
+    pub(super) physical_device: ash_vk::PhysicalDevice,
+    pub(super) surface: ash_vk::SurfaceKHR,
+    pub(super) extent: SwapchainExtent,
+    pub(super) vsync: bool,
+    pub(super) requested_images: u32,
+    pub(super) old_swapchain: ash_vk::SwapchainKHR,
+}
+
+pub(super) struct CreatedSwapchain {
+    pub(super) swapchain: ash_vk::SwapchainKHR,
+    pub(super) images: Vec<ash_vk::Image>,
+    pub(super) extent: ash_vk::Extent2D,
+    pub(super) format: ash_vk::Format,
+    pub(super) color_type: ColorType,
 }
 
 pub(super) fn load_vulkan_entry() -> Result<ash::Entry, GpuSurfaceError> {
@@ -212,16 +243,8 @@ pub(super) fn create_device(
     Ok((device, queue, ext_names))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn create_skia_vulkan_context(
-    entry: &ash::Entry,
-    instance: &ash::Instance,
-    physical_device: ash_vk::PhysicalDevice,
-    device: &ash::Device,
-    queue: ash_vk::Queue,
-    queue_family_index: u32,
-    instance_exts: &[String],
-    device_exts: &[String],
+    params: &SkiaVulkanContextParams<'_>,
 ) -> Result<DirectContext, GpuSurfaceError> {
     let get_proc = |gpo: vk::GetProcOf| {
         // SAFETY: Skia queries Vulkan entrypoints using valid handles and NUL-terminated names while `entry`/`instance` are live.
@@ -229,11 +252,11 @@ pub(super) fn create_skia_vulkan_context(
             let f = match gpo {
                 vk::GetProcOf::Instance(inst, name) => {
                     let vk_inst = ash_vk::Instance::from_raw(inst as _);
-                    entry.get_instance_proc_addr(vk_inst, name)
+                    params.entry.get_instance_proc_addr(vk_inst, name)
                 }
                 vk::GetProcOf::Device(dev, name) => {
                     let vk_dev = ash_vk::Device::from_raw(dev as _);
-                    (instance.fp_v1_0().get_device_proc_addr)(vk_dev, name)
+                    (params.instance.fp_v1_0().get_device_proc_addr)(vk_dev, name)
                 }
             };
             f.map(|fp| fp as *const std::ffi::c_void)
@@ -241,15 +264,15 @@ pub(super) fn create_skia_vulkan_context(
         }
     };
 
-    let inst_ext_refs: Vec<&str> = instance_exts.iter().map(String::as_str).collect();
-    let dev_ext_refs: Vec<&str> = device_exts.iter().map(String::as_str).collect();
+    let inst_ext_refs: Vec<&str> = params.instance_exts.iter().map(String::as_str).collect();
+    let dev_ext_refs: Vec<&str> = params.device_exts.iter().map(String::as_str).collect();
     // SAFETY: All Vulkan handles are valid and kept alive in `VulkanNativeSwapchain` longer than the returned `DirectContext`.
     let backend_context = unsafe {
         vk::BackendContext::new_builder(
-            instance.handle().as_raw() as _,
-            physical_device.as_raw() as _,
-            device.handle().as_raw() as _,
-            (queue.as_raw() as _, queue_family_index as usize),
+            params.instance.handle().as_raw() as _,
+            params.physical_device.as_raw() as _,
+            params.device.handle().as_raw() as _,
+            (params.queue.as_raw() as _, params.queue_family_index as usize),
             &get_proc,
             Some((1, 1, 0).into()),
         )
@@ -367,29 +390,23 @@ pub(super) fn create_vk_surface(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn create_vk_swapchain(
-    surface_loader: &ash::khr::surface::Instance,
-    swapchain_loader: &ash::khr::swapchain::Device,
-    physical_device: ash_vk::PhysicalDevice,
-    surface: ash_vk::SurfaceKHR,
-    extent: SwapchainExtent,
-    vsync: bool,
-    requested_images: u32,
-    old_swapchain: ash_vk::SwapchainKHR,
-) -> Result<(ash_vk::SwapchainKHR, Vec<ash_vk::Image>, ash_vk::Format, ColorType), GpuSurfaceError>
-{
+    params: &VkSwapchainParams<'_>,
+) -> Result<CreatedSwapchain, GpuSurfaceError> {
     // SAFETY: `surface_loader`, `physical_device`, and `surface` are valid live Vulkan handles.
     let caps = unsafe {
-        surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
+        params
+            .surface_loader
+            .get_physical_device_surface_capabilities(params.physical_device, params.surface)
     }
     .map_err(|e| GpuSurfaceError::SurfaceCreationFailed(format!("surface caps: {e}")))?;
     // SAFETY: `surface_loader`, `physical_device`, and `surface` are valid live Vulkan handles.
-    let formats =
-        unsafe { surface_loader.get_physical_device_surface_formats(physical_device, surface) }
-            .map_err(|e| {
-                GpuSurfaceError::SurfaceCreationFailed(format!("surface formats: {e}"))
-            })?;
+    let formats = unsafe {
+        params
+            .surface_loader
+            .get_physical_device_surface_formats(params.physical_device, params.surface)
+    }
+    .map_err(|e| GpuSurfaceError::SurfaceCreationFailed(format!("surface formats: {e}")))?;
 
     let surface_fmt = formats
         .iter()
@@ -409,17 +426,19 @@ pub(super) fn create_vk_swapchain(
         _ => ColorType::BGRA8888,
     };
 
-    let mut image_count = requested_images.max(caps.min_image_count).max(2);
+    let mut image_count = params.requested_images.max(caps.min_image_count).max(2);
     if caps.max_image_count > 0 && image_count > caps.max_image_count {
         image_count = caps.max_image_count;
     }
 
-    let present_mode = if vsync {
+    let present_mode = if params.vsync {
         ash_vk::PresentModeKHR::FIFO
     } else {
         // SAFETY: `surface_loader`, `physical_device`, and `surface` are valid live Vulkan handles.
         let modes = unsafe {
-            surface_loader.get_physical_device_surface_present_modes(physical_device, surface)
+            params
+                .surface_loader
+                .get_physical_device_surface_present_modes(params.physical_device, params.surface)
         }
         .unwrap_or_default();
         if modes.contains(&ash_vk::PresentModeKHR::MAILBOX) {
@@ -435,17 +454,19 @@ pub(super) fn create_vk_swapchain(
         caps.current_extent
     } else {
         ash_vk::Extent2D {
-            width: extent
+            width: params
+                .extent
                 .width
                 .clamp(caps.min_image_extent.width, caps.max_image_extent.width),
-            height: extent
+            height: params
+                .extent
                 .height
                 .clamp(caps.min_image_extent.height, caps.max_image_extent.height),
         }
     };
 
     let info = ash_vk::SwapchainCreateInfoKHR::default()
-        .surface(surface)
+        .surface(params.surface)
         .min_image_count(image_count)
         .image_format(surface_fmt.format)
         .image_color_space(surface_fmt.color_space)
@@ -457,17 +478,43 @@ pub(super) fn create_vk_swapchain(
         .composite_alpha(ash_vk::CompositeAlphaFlagsKHR::OPAQUE)
         .present_mode(present_mode)
         .clipped(true)
-        .old_swapchain(old_swapchain);
+        .old_swapchain(params.old_swapchain);
 
     // SAFETY: `swapchain_loader` and `info` reference valid live surface/swapchain handles.
-    let swapchain = unsafe { swapchain_loader.create_swapchain(&info, None) }.map_err(|e| {
-        GpuSurfaceError::SurfaceCreationFailed(format!("vkCreateSwapchainKHR failed: {e}"))
-    })?;
+    let swapchain = unsafe { params.swapchain_loader.create_swapchain(&info, None) }.map_err(
+        |e| GpuSurfaceError::SurfaceCreationFailed(format!("vkCreateSwapchainKHR failed: {e}")),
+    )?;
     // SAFETY: `swapchain` was just created on `swapchain_loader`.
-    let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }.map_err(|e| {
-        GpuSurfaceError::SurfaceCreationFailed(format!("vkGetSwapchainImagesKHR failed: {e}"))
-    })?;
-    Ok((swapchain, images, surface_fmt.format, color_type))
+    let images = match unsafe { params.swapchain_loader.get_swapchain_images(swapchain) } {
+        Ok(imgs) => imgs,
+        Err(e) => {
+            // SAFETY: `swapchain` was created above and has no active references on error.
+            unsafe {
+                params.swapchain_loader.destroy_swapchain(swapchain, None);
+            }
+            return Err(GpuSurfaceError::SurfaceCreationFailed(format!(
+                "vkGetSwapchainImagesKHR failed: {e}"
+            )));
+        }
+    };
+    Ok(CreatedSwapchain {
+        swapchain,
+        images,
+        extent: vk_extent,
+        format: surface_fmt.format,
+        color_type,
+    })
+}
+
+pub(super) fn destroy_sync_objects(device: &ash::Device, sync_frames: &[FrameSyncObjects]) {
+    // SAFETY: All semaphores and fences in `sync_frames` belong to `device` and are no longer in use.
+    unsafe {
+        for sync in sync_frames {
+            device.destroy_semaphore(sync.image_available, None);
+            device.destroy_semaphore(sync.render_finished, None);
+            device.destroy_fence(sync.in_flight, None);
+        }
+    }
 }
 
 pub(super) fn create_sync_objects(
@@ -479,20 +526,49 @@ pub(super) fn create_sync_objects(
     let fence_info = ash_vk::FenceCreateInfo::default().flags(ash_vk::FenceCreateFlags::SIGNALED);
     for _ in 0..count {
         // SAFETY: `device` is a valid live Vulkan logical device and `sem_info` is initialized.
-        let image_available = unsafe { device.create_semaphore(&sem_info, None) }.map_err(|e| {
-            GpuSurfaceError::SurfaceCreationFailed(format!("create_semaphore: {e}"))
-        })?;
+        let image_available = match unsafe { device.create_semaphore(&sem_info, None) } {
+            Ok(s) => s,
+            Err(e) => {
+                destroy_sync_objects(device, &out);
+                return Err(GpuSurfaceError::SurfaceCreationFailed(format!(
+                    "create_semaphore: {e}"
+                )));
+            }
+        };
         // SAFETY: `device` is a valid live Vulkan logical device and `sem_info` is initialized.
-        let render_finished = unsafe { device.create_semaphore(&sem_info, None) }.map_err(|e| {
-            GpuSurfaceError::SurfaceCreationFailed(format!("create_semaphore: {e}"))
-        })?;
+        let render_finished = match unsafe { device.create_semaphore(&sem_info, None) } {
+            Ok(s) => s,
+            Err(e) => {
+                // SAFETY: `image_available` was just created on `device`.
+                unsafe {
+                    device.destroy_semaphore(image_available, None);
+                }
+                destroy_sync_objects(device, &out);
+                return Err(GpuSurfaceError::SurfaceCreationFailed(format!(
+                    "create_semaphore: {e}"
+                )));
+            }
+        };
         // SAFETY: `device` is a valid live Vulkan logical device and `fence_info` is initialized.
-        let in_flight = unsafe { device.create_fence(&fence_info, None) }
-            .map_err(|e| GpuSurfaceError::SurfaceCreationFailed(format!("create_fence: {e}")))?;
+        let in_flight = match unsafe { device.create_fence(&fence_info, None) } {
+            Ok(f) => f,
+            Err(e) => {
+                // SAFETY: Both semaphores were just created on `device`.
+                unsafe {
+                    device.destroy_semaphore(render_finished, None);
+                    device.destroy_semaphore(image_available, None);
+                }
+                destroy_sync_objects(device, &out);
+                return Err(GpuSurfaceError::SurfaceCreationFailed(format!(
+                    "create_fence: {e}"
+                )));
+            }
+        };
         out.push(FrameSyncObjects {
             image_available,
             render_finished,
             in_flight,
+            in_flight_pending: false,
         });
     }
     Ok(out)

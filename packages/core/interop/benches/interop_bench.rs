@@ -1,5 +1,5 @@
 //! Criterion micro-benchmarks for `nve-interop`: cross-framework `GestureArbitrator`
-//! nested-scroll arbitration, `SurfaceOrchestrator` ancestor chains, and `NveChannelBus` dispatch.
+//! nested-scroll arbitration and `NveChannelBus` pub/sub dispatch.
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}

@@ -71,6 +71,7 @@ mod imp {
     struct D3D12WindowState {
         swap_chain: IDXGISwapChain3,
         buffers: Vec<(Surface, BackendRenderTarget)>,
+        buffer_extent: SwapchainExtent,
         active_index: Option<usize>,
         vsync: bool,
         buffer_count: u32,
@@ -118,18 +119,18 @@ mod imp {
             &mut self,
             prev: SwapchainExtent,
             next: SwapchainExtent,
-        ) -> Result<(), GpuSurfaceError> {
+        ) -> Result<bool, GpuSurfaceError> {
             if next.width == prev.width && next.height == prev.height {
-                return Ok(());
+                return Ok(false);
             }
             match &mut self.target {
                 D3D12Target::Window(win) => {
                     let _ = self.direct_context.flush_submit_and_sync_cpu();
-                    // Release all Skia surfaces & COM buffer references before ResizeBuffers.
+                    // DXGI requires releasing all COM backbuffer references before ResizeBuffers.
                     win.buffers.clear();
                     win.active_index = None;
                     // SAFETY: All Skia surfaces and COM backbuffer references were flushed and dropped above.
-                    unsafe {
+                    let resize_res = unsafe {
                         win.swap_chain.ResizeBuffers(
                             win.buffer_count,
                             next.width,
@@ -137,16 +138,27 @@ mod imp {
                             DXGI_FORMAT_R8G8B8A8_UNORM,
                             Default::default(),
                         )
+                    };
+                    if let Err(err) = resize_res {
+                        // Restore wrappers for the unchanged previous backbuffers so `win.buffers`
+                        // is not left empty if `ResizeBuffers` fails transiently.
+                        if let Ok(restored) = wrap_dxgi_backbuffers(
+                            &win.swap_chain,
+                            &mut self.direct_context,
+                            win.buffer_extent,
+                            win.buffer_count,
+                        ) {
+                            win.buffers = restored;
+                        }
+                        return Err(GpuSurfaceError::SurfaceCreationFailed(format!(
+                            "IDXGISwapChain::ResizeBuffers failed: {err}"
+                        )));
                     }
-                    .map_err(|e| {
-                        GpuSurfaceError::SurfaceCreationFailed(format!(
-                            "IDXGISwapChain::ResizeBuffers failed: {e}"
-                        ))
-                    })?;
+                    win.buffer_extent = next;
                     win.buffers = wrap_dxgi_backbuffers(
                         &win.swap_chain,
                         &mut self.direct_context,
-                        next,
+                        win.buffer_extent,
                         win.buffer_count,
                     )?;
                 }
@@ -156,11 +168,23 @@ mod imp {
                         create_ganesh_offscreen_surface(&mut self.direct_context, next, "D3D12")?;
                 }
             }
-            Ok(())
+            Ok(true)
         }
 
-        fn begin_native_frame(&mut self, _extent: SwapchainExtent) -> Result<bool, GpuSurfaceError> {
+        fn begin_native_frame(
+            &mut self,
+            _extent: SwapchainExtent,
+            _recreations: &mut u64,
+        ) -> Result<(), GpuSurfaceError> {
             if let D3D12Target::Window(win) = &mut self.target {
+                if win.buffers.is_empty() {
+                    win.buffers = wrap_dxgi_backbuffers(
+                        &win.swap_chain,
+                        &mut self.direct_context,
+                        win.buffer_extent,
+                        win.buffer_count,
+                    )?;
+                }
                 // SAFETY: `win.swap_chain` is a valid live `IDXGISwapChain3`.
                 let idx = unsafe { win.swap_chain.GetCurrentBackBufferIndex() } as usize;
                 if idx >= win.buffers.len() {
@@ -168,14 +192,17 @@ mod imp {
                 }
                 win.active_index = Some(idx);
             }
-            Ok(false)
+            Ok(())
         }
 
         fn active_surface_mut(&mut self) -> Result<&mut Surface, GpuSurfaceError> {
             match &mut self.target {
                 D3D12Target::Window(win) => {
                     let idx = win.active_index.ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    Ok(&mut win.buffers[idx].0)
+                    win.buffers
+                        .get_mut(idx)
+                        .map(|(surface, _)| surface)
+                        .ok_or(GpuSurfaceError::DrawableUnavailable)
                 }
                 D3D12Target::Offscreen { surface } => Ok(surface),
             }
@@ -185,7 +212,11 @@ mod imp {
             let (surface, sync) = match &mut self.target {
                 D3D12Target::Window(win) => {
                     let idx = win.active_index.ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    (&mut win.buffers[idx].0, SyncCpu::No)
+                    let (surface, _) = win
+                        .buffers
+                        .get_mut(idx)
+                        .ok_or(GpuSurfaceError::DrawableUnavailable)?;
+                    (surface, SyncCpu::No)
                 }
                 D3D12Target::Offscreen { surface } => (surface, SyncCpu::Yes),
             };
@@ -292,6 +323,7 @@ mod imp {
                     target: D3D12Target::Window(D3D12WindowState {
                         swap_chain,
                         buffers,
+                        buffer_extent: d3d_cfg.extent,
                         active_index: None,
                         vsync: d3d_cfg.vsync,
                         buffer_count: d3d_cfg.buffer_count,

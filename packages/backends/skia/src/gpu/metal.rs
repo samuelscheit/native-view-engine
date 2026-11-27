@@ -114,24 +114,32 @@ mod imp {
             &mut self,
             prev: SwapchainExtent,
             next: SwapchainExtent,
-        ) -> Result<(), GpuSurfaceError> {
+        ) -> Result<bool, GpuSurfaceError> {
+            let dims_changed = next.width != prev.width || next.height != prev.height;
             match &mut self.target {
                 MetalTarget::WindowLayer { layer, .. } => {
                     layer.setContentsScale(next.scale_factor as f64);
-                    layer.setDrawableSize(CGSize::new(next.width as f64, next.height as f64));
+                    if dims_changed {
+                        layer.setDrawableSize(CGSize::new(next.width as f64, next.height as f64));
+                    }
+                    Ok(dims_changed)
                 }
                 MetalTarget::Offscreen { surface } => {
-                    if next.width != prev.width || next.height != prev.height {
+                    if dims_changed {
                         let _ = self.direct_context.flush_submit_and_sync_cpu();
                         *surface =
                             create_ganesh_offscreen_surface(&mut self.direct_context, next, "Metal")?;
                     }
+                    Ok(dims_changed)
                 }
             }
-            Ok(())
         }
 
-        fn begin_native_frame(&mut self, _extent: SwapchainExtent) -> Result<bool, GpuSurfaceError> {
+        fn begin_native_frame(
+            &mut self,
+            _extent: SwapchainExtent,
+            _recreations: &mut u64,
+        ) -> Result<(), GpuSurfaceError> {
             match &mut self.target {
                 MetalTarget::WindowLayer {
                     layer,
@@ -172,7 +180,7 @@ mod imp {
                 }
                 MetalTarget::Offscreen { .. } => {}
             }
-            Ok(false)
+            Ok(())
         }
 
         fn active_surface_mut(&mut self) -> Result<&mut Surface, GpuSurfaceError> {

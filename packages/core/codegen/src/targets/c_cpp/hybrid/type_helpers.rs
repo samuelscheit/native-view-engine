@@ -136,9 +136,10 @@ pub(super) fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         HybridType::String => "NveStrSlice".to_string(),
         HybridType::Bytes => "NveBufferSlice".to_string(),
         HybridType::Value => "NveValue".to_string(),
-        HybridType::Optional(inner) if inner.is_pod(spec) => {
-            format!("NveHybridOpt{}", inner.pod_opt_suffix().expect("validated POD optional has suffix"))
-        }
+        HybridType::Optional(inner) => match inner.pod_opt_suffix_for(spec) {
+            Some(suffix) => format!("NveHybridOpt{suffix}"),
+            None => "NveBufferSlice".to_string(),
+        },
         _ => "NveBufferSlice".to_string(),
     }
 }
@@ -158,9 +159,10 @@ pub(super) fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         | HybridType::F64
         | HybridType::Enum(_) => c_pod_type(ty),
         HybridType::Struct(_) if ty.is_pod(spec) => c_pod_type(ty),
-        HybridType::Optional(inner) if inner.is_pod(spec) => {
-            format!("NveHybridOpt{}", inner.pod_opt_suffix().expect("validated POD optional has suffix"))
-        }
+        HybridType::Optional(inner) => match inner.pod_opt_suffix_for(spec) {
+            Some(suffix) => format!("NveHybridOpt{suffix}"),
+            None => "NveHybridOwnedBytes".to_string(),
+        },
         _ => "NveHybridOwnedBytes".to_string(),
     }
 }

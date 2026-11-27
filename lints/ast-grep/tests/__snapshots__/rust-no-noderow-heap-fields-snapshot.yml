@@ -42,6 +42,39 @@ snapshots:
       style: secondary
       start: 52
       end: 72
+  "pub struct LayoutNode {\n    pub children: Vec<NodeId>,\n}\n":
+    labels:
+    - source: Vec<NodeId>
+      style: primary
+      start: 42
+      end: 53
+    - source: Vec
+      style: secondary
+      start: 42
+      end: 45
+    - source: NodeId
+      style: secondary
+      start: 46
+      end: 52
+    - source: NodeId
+      style: secondary
+      start: 46
+      end: 52
+    - source: LayoutNode
+      style: secondary
+      start: 11
+      end: 21
+    - source: |-
+        pub struct LayoutNode {
+            pub children: Vec<NodeId>,
+        }
+      style: secondary
+      start: 0
+      end: 56
+    - source: "pub children: Vec<NodeId>"
+      style: secondary
+      start: 28
+      end: 53
   "pub struct NodeColdData {\n    pub ordered: BTreeMap<u32, u32>,\n}\n":
     labels:
     - source: BTreeMap
@@ -433,3 +466,45 @@ snapshots:
       style: secondary
       start: 29
       end: 64
+  "pub struct RenderNode {\n    pub extra: Box<u32>,\n}\n":
+    labels:
+    - source: Box
+      style: primary
+      start: 39
+      end: 42
+    - source: RenderNode
+      style: secondary
+      start: 11
+      end: 21
+    - source: |-
+        pub struct RenderNode {
+            pub extra: Box<u32>,
+        }
+      style: secondary
+      start: 0
+      end: 50
+    - source: "pub extra: Box<u32>"
+      style: secondary
+      start: 28
+      end: 47
+  "pub struct SceneNode {\n    pub props: std::collections::HashMap<u32, u32>,\n}\n":
+    labels:
+    - source: HashMap
+      style: primary
+      start: 56
+      end: 63
+    - source: SceneNode
+      style: secondary
+      start: 11
+      end: 20
+    - source: |-
+        pub struct SceneNode {
+            pub props: std::collections::HashMap<u32, u32>,
+        }
+      style: secondary
+      start: 0
+      end: 76
+    - source: "pub props: std::collections::HashMap<u32, u32>"
+      style: secondary
+      start: 27
+      end: 73
