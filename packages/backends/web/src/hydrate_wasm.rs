@@ -92,7 +92,7 @@ export function nve_promote_dsd_stream_host(container) {
     }
   }
 
-  if (host.querySelector('template[data-nve-stream-end]')) host.remove();
+  if (host.querySelector('template[data-nve-stream-end]') && !host.querySelector('script[type=\"application/x-nve-query\"]')) host.remove();
   else host.setAttribute('hidden', '');
 
   for (let i = 0; i < scrolls.length; i++) {

@@ -11,7 +11,7 @@ pub(crate) mod state;
 pub mod types;
 
 pub use engine::{DehydrateError, QueryClient, WakeCallback};
-pub use hydrate::DehydrateCursor;
+pub use hydrate::{nveq_entry_count, DehydrateCursor};
 pub use optimistic::{OptimisticHandle, OptimisticTx};
 pub use slab::{QueryMeta, QuerySlotId};
 #[cfg(not(target_arch = "wasm32"))]

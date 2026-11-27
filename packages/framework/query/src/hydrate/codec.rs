@@ -28,6 +28,15 @@ use crate::slab::{rpc_status_from_u8, MAX_PROTOCOL_ERR_MSG_BYTES};
 
 const MAGIC: [u8; 4] = *b"NVEQ";
 pub const NVEQ_VERSION: u8 = 2;
+
+/// Reads the encoded entry count from an `NVEQ` v2 header in O(1) without decoding payloads.
+#[inline]
+pub fn nveq_entry_count(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() < 9 || bytes[0..4] != MAGIC || bytes[4] != NVEQ_VERSION {
+        return None;
+    }
+    Some(u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]))
+}
 const MAX_HYDRATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HYDRATE_ENTRIES: usize = 4096;
 const MAX_HYDRATE_TAGS_PER_ENTRY: usize = 128;

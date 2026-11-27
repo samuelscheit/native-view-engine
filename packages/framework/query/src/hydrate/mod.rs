@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use nve_hash::xxh64;
 use nve_rpc::{MaybeSend, MaybeSync, Tag64, Transport};
 
-pub use self::codec::{DehydrateError, NVEQ_VERSION};
+pub use self::codec::{nveq_entry_count, DehydrateError, NVEQ_VERSION};
 use self::codec::{
     decode_hydration_entries, encode_hydration_entries, DehydrateEntryRef, DehydratePayloadRef,
     HydratedPayload,
@@ -262,6 +262,96 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 })
                 .collect();
             encode_hydration_entries(&refs)
+        })
+    }
+
+    /// Atomically dehydrates the `seq=0` initial streaming SSR payload: includes every currently
+    /// settled live entry (`Ok`, `DomainErr`, `ProtocolErr`) AND a `StreamPending` marker for
+    /// every unsettled live handle in `pending_handles`, recording emitted settled revisions in
+    /// `cursor` so subsequent [`Self::dehydrate_handles_delta`] chunks never duplicate them.
+    pub fn dehydrate_initial_stream_chunk(
+        &self,
+        pending_handles: &[QueryHandle],
+        cursor: &mut DehydrateCursor,
+    ) -> Result<Vec<u8>, DehydrateError> {
+        let now_ms = self.inner.clock.now_ms();
+        self.inner.state.with(|s| {
+            let mut tag_bufs: Vec<Vec<Tag64>> = Vec::new();
+            let mut settled_slots: Vec<(QuerySlotId, u32, u32)> = Vec::new();
+            let mut pending_slots: Vec<QuerySlotId> = Vec::new();
+
+            for (idx, &meta) in s.metas.iter().enumerate() {
+                if meta.is_free() {
+                    continue;
+                }
+                let payload = &s.payloads[idx];
+                if settled_payload_ref(meta, payload).is_none() {
+                    continue;
+                }
+                let slot = QuerySlotId(idx as u32);
+                let mut tags = Vec::new();
+                s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
+                tag_bufs.push(tags);
+                settled_slots.push((slot, meta.slot_gen, payload.completed_seq));
+            }
+
+            for &handle in pending_handles {
+                if !s.is_live(handle) {
+                    continue;
+                }
+                if settled_slots.iter().any(|&(slot, _, _)| slot == handle.slot)
+                    || pending_slots.contains(&handle.slot)
+                {
+                    continue;
+                }
+                let idx = handle.slot.index();
+                let meta = s.metas[idx];
+                if meta.has_data() || meta.has_error() {
+                    continue;
+                }
+                let mut tags = Vec::new();
+                s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
+                tag_bufs.push(tags);
+                pending_slots.push(handle.slot);
+            }
+
+            let mut refs: Vec<DehydrateEntryRef<'_>> =
+                Vec::with_capacity(settled_slots.len() + pending_slots.len());
+            for (i, &(slot, _, _)) in settled_slots.iter().enumerate() {
+                let idx = slot.index();
+                let meta = s.metas[idx];
+                let payload = &s.payloads[idx];
+                if let Some(wire) = settled_payload_ref(meta, payload) {
+                    refs.push(DehydrateEntryRef {
+                        proc_id: meta.proc_id,
+                        age_ms: compute_age_ms(now_ms, meta.updated_at_ms),
+                        subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
+                        tags: tag_bufs[i].as_slice(),
+                        encoded_args: &payload.encoded_args,
+                        payload: wire,
+                    });
+                }
+            }
+            let offset = settled_slots.len();
+            for (j, &slot) in pending_slots.iter().enumerate() {
+                let idx = slot.index();
+                let meta = s.metas[idx];
+                let payload = &s.payloads[idx];
+                refs.push(DehydrateEntryRef {
+                    proc_id: meta.proc_id,
+                    age_ms: 0,
+                    subscribed_all: (meta.flags & FLAG_SUBSCRIBED_ALL) != 0,
+                    tags: tag_bufs[offset + j].as_slice(),
+                    encoded_args: &payload.encoded_args,
+                    payload: DehydratePayloadRef::StreamPending,
+                });
+            }
+
+            let encoded = encode_hydration_entries(&refs)?;
+            for (slot, slot_gen, completed_seq) in settled_slots {
+                cursor.emitted.insert(slot, (slot_gen, completed_seq));
+            }
+            Ok(encoded)
         })
     }
 

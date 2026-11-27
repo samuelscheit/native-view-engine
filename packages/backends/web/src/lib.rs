@@ -400,6 +400,13 @@ impl WebBackend {
         &self.stylesheet
     }
 
+    /// Seeds additional SSR structural class hashes (comma-separated, e.g. from a late mid-stream
+    /// `<style data-nve-ssr-chunk data-nve-hashes="...">` element moved into `document.head`) so
+    /// subsequent client renders never duplicate already-present CSS rules.
+    pub fn seed_ssr_hashes(&mut self, hashes_csv: &str) -> usize {
+        self.stylesheet.seed_ssr_hashes(hashes_csv)
+    }
+
     /// Mounts `ROOT_NODE_ID` into an existing browser DOM container (e.g. `#app`),
     /// adopts the static `.nve` base reset stylesheet, and attaches a single root event delegator
     /// plus a global `window` `keydown` listener.
