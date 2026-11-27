@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, FrameId, LayoutProps, NativeEventKind, NveDirectEvent, StyleProps, SurfaceId,
+    FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps, SurfaceId,
     ROOT_NODE_ID,
 };
 use nve_engine::{RenderBackend, Viewport};
@@ -69,12 +69,12 @@ impl DesktopApp for SurfaceCounterApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
         let mut handled = false;
-        for ev in events {
-            if ev.surface_id == self.surface_id
-                && ev.node_id == 4
-                && ev.kind == NativeEventKind::Press as u8
+        for ev in events.iter() {
+            if ev.surface_id() == self.surface_id
+                && ev.node_id() == 4
+                && ev.kind() == Some(NativeEventKind::Press)
             {
                 self.presses += 1;
                 handled = true;

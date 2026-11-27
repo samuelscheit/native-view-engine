@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, FrameId, LayoutProps, NativeEventKind, NveDirectEvent, StyleProps, SurfaceId,
+    FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps, SurfaceId,
     ROOT_NODE_ID,
 };
 use nve_backend_skia::gpu::{
@@ -111,10 +111,10 @@ impl DesktopApp for MockCounterApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
         let mut handled = false;
-        for ev in events {
-            if ev.node_id == 4 && ev.kind == NativeEventKind::Press as u8 {
+        for ev in events.iter() {
+            if ev.node_id() == 4 && ev.kind() == Some(NativeEventKind::Press) {
                 self.count += 1;
                 self.button_color = ColorRgba::rgb(16, 185, 129);
                 handled = true;

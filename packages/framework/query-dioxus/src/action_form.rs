@@ -97,11 +97,11 @@ where
                         active_ctrl.write().apply_server_errors(&list);
                     }
                     Ok(typed_args) => {
-                        let pending_guard = action_hook.begin_pending_guard();
+                        let (client, pending_guard) = action_hook.begin_pending_guard();
                         let mounted_cb = Rc::clone(&mounted);
                         action_hook.spawn_in_provider(async move {
                             match action_hook
-                                .call_with_pending_guard(typed_args, pending_guard)
+                                .call_with_pending_guard(client, typed_args, pending_guard)
                                 .await
                             {
                                 Ok(reply) => {

@@ -2,8 +2,10 @@
 //! feature `dev`), canonical 0ms snapshot capture, and zero-copy `NveSceneTable` mirroring
 //! (feature `scene-view`).
 
+#[cfg(feature = "app-studio")]
+use nve_abi::NveDirectEvent;
 #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
-use nve_abi::{native_events_to_direct, NveDirectEvent, NveEventBatchRef};
+use nve_abi::{native_events_to_direct, NveEventBatchRef};
 use nve_abi::{
     pack_key_modifiers, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId,
     ROOT_NODE_ID,
@@ -11,6 +13,7 @@ use nve_abi::{
 #[cfg(feature = "scene-view")]
 use crate::scene::SceneMirror;
 use nve_backend_web::{WebBackend, WebSnapshotPayload};
+#[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
 use nve_dioxus::DioxusSurface;
 #[cfg(feature = "dev")]
 use nve_engine::HotPatchMsg;
@@ -55,7 +58,19 @@ pub enum HotReloadAction {
     DevStatus { message: String, latency_ms: u64 },
 }
 
+/// Result of one bounded [`WebAppSession::pump_async_work`] tick.
+#[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+#[derive(Debug, Clone, Copy)]
+pub struct AsyncPumpOutcome {
+    /// Timing of the last rendered frame during this pump tick, if any work rendered.
+    pub timing: Option<FrameTiming>,
+    /// `true` when the per-tick pump cap (`MAX_PUMPS`) was reached while async work may still be
+    /// pending; browser hosts must yield to paint and continue via a macrotask (`setTimeout(0)`).
+    pub hit_cap: bool,
+}
+
 enum SessionApp {
+    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     Dioxus(Box<DioxusSurface>),
     #[cfg(feature = "app-studio")]
     Studio(Box<StudioWorkspaceModule>),
@@ -66,6 +81,7 @@ enum SessionApp {
 impl SessionApp {
     fn app_slug(&self) -> Option<&'static str> {
         match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(_) => None,
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => Some("studio"),
@@ -76,6 +92,7 @@ impl SessionApp {
 
     fn schema_version(&self) -> u32 {
         match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(_) => 1,
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => STUDIO_SNAPSHOT_SCHEMA_VERSION,
@@ -90,6 +107,7 @@ impl SessionApp {
         sink: &mut S,
     ) -> Result<(u64, nve_engine::BackendApplyStats), BackendError> {
         match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(surface) => surface.flush_into_timed(frame_id, sink),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.flush_into_timed(frame_id, sink),
@@ -98,6 +116,7 @@ impl SessionApp {
         }
     }
 
+    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     fn poll_work(&mut self, waker: &core::task::Waker) -> bool {
         match self {
             Self::Dioxus(surface) => surface.poll_work(waker),
@@ -110,6 +129,7 @@ impl SessionApp {
 
     fn dispatch_events(&mut self, events: &[NativeEvent]) -> bool {
         match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(surface) => surface.dispatch_events(events),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => {
@@ -129,6 +149,7 @@ impl SessionApp {
     #[cfg(feature = "dev")]
     fn apply_hot_patch(&mut self, msg: &HotPatchMsg) -> bool {
         match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(surface) => surface.apply_hot_patch(msg),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.apply_hot_patch(msg),
@@ -139,6 +160,7 @@ impl SessionApp {
 
     fn snapshot_state(&mut self) -> Option<Vec<u8>> {
         match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(_) => None,
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => Some(module.snapshot_state().to_vec()),
@@ -150,6 +172,7 @@ impl SessionApp {
     #[cfg_attr(not(any(feature = "app-studio", feature = "app-kitchen-sink")), allow(unused_variables))]
     fn try_restore_state(&mut self, bytes: &[u8]) -> bool {
         match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(_) => false,
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.try_restore_state(bytes),
@@ -174,6 +197,7 @@ pub struct WebAppSession {
 }
 
 impl WebAppSession {
+    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     pub fn new(
         surface_id: SurfaceId,
         surface: DioxusSurface,
@@ -339,6 +363,7 @@ impl WebAppSession {
             let viewport = self.runner.backend().viewport();
             let schema_version = self.schema_version();
             let mut canonical = match &self.app {
+                #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
                 SessionApp::Dioxus(_) => return None,
                 #[cfg(feature = "app-studio")]
                 SessionApp::Studio(_) => {
@@ -452,25 +477,27 @@ impl WebAppSession {
     /// Polls any ready Dioxus async tasks/effects (such as `nve-query` fetches or mutations) and
     /// renders incremental frames until the scheduler rests with `waker` armed, bounded to avoid
     /// starving browser painting. When the per-tick pump cap is reached while work remains,
-    /// `waker` is re-invoked so the host schedules a continuation tick instead of stalling.
+    /// `AsyncPumpOutcome::hit_cap` is `true` so hosts yield to paint and schedule a macrotask
+    /// continuation instead of looping microtasks.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     pub fn pump_async_work(
         &mut self,
         waker: &core::task::Waker,
-    ) -> Result<Option<FrameTiming>, BackendError> {
+    ) -> Result<AsyncPumpOutcome, BackendError> {
         const MAX_PUMPS: usize = 8;
         let mut last = None;
-        let mut exhausted = true;
+        let mut hit_cap = true;
         for _ in 0..MAX_PUMPS {
             if !self.app.poll_work(waker) {
-                exhausted = false;
+                hit_cap = false;
                 break;
             }
             last = Some(self.render_and_submit()?);
         }
-        if exhausted {
-            waker.wake_by_ref();
-        }
-        Ok(last)
+        Ok(AsyncPumpOutcome {
+            timing: last,
+            hit_cap,
+        })
     }
 
     /// Decodes and applies one binary `NVP1` hot-patch frame from `nve dev`.

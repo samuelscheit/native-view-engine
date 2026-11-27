@@ -61,7 +61,9 @@ pub use wasm_api::{start_kitchen_sink_app, start_kitchen_sink_app_on_surface};
 #[cfg(all(target_arch = "wasm32", feature = "app-studio"))]
 pub use wasm_api::{start_studio_workspace_app, start_studio_workspace_app_on_surface};
 #[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
-pub use wasm_issues::{nve_probe_cross_origin_cors, nve_probe_fetch_transport, start_issues_app};
+pub use wasm_issues::start_issues_app;
+#[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
+pub use wasm_issues::{nve_probe_cross_origin_cors, nve_probe_fetch_transport};
 #[cfg(all(target_arch = "wasm32", feature = "scene-view"))]
 pub use wasm_api::{nve_web_scene_view_ptr, nve_web_scene_view_ptr_for_surface};
 #[cfg(target_arch = "wasm32")]

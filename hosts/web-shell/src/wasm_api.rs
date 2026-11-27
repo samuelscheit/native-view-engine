@@ -26,9 +26,9 @@ use crate::wasm_snapshot::{
     clear_persisted_snapshot, load_persisted_state, query_has_reset, query_has_ssr_demo,
     SnapshotPersistenceGuard, SnapshotTrigger,
 };
-pub(crate) use crate::wasm_wake::{
-    install_resize_listener, WebAsyncWakeGuard, WindowResizeListener,
-};
+#[cfg(feature = "app-issues")]
+use crate::wasm_wake::{PumpNext, WebAsyncWakeGuard};
+pub(crate) use crate::wasm_wake::{browser_viewport, install_resize_listener, WindowResizeListener};
 #[cfg(feature = "app-kitchen-sink")]
 use nve_example_kitchen_sink::{decode_kitchen_sink_state, KITCHEN_SINK_STATE_VERSION};
 #[cfg(feature = "app-studio")]
@@ -48,22 +48,27 @@ struct ActiveShell {
     generation: u64,
     #[cfg(feature = "multi-window")]
     window_handle: Option<WindowHandleId>,
+    #[cfg_attr(not(any(feature = "scene-view", feature = "app-issues")), allow(dead_code))]
     session: Rc<RefCell<WebAppSession>>,
+    #[cfg(feature = "app-issues")]
     snapshot_trigger: Option<SnapshotTrigger>,
     #[cfg(feature = "dev")]
     _hot_reload: Option<HotReloadSocket>,
     _resize_listener: Option<WindowResizeListener>,
     _snapshot_guard: Option<SnapshotPersistenceGuard>,
+    #[cfg(feature = "app-issues")]
     _async_wake: WebAsyncWakeGuard,
 }
 
-/// Pumps async Dioxus tasks/effects for `(surface_id, generation)`. Returns `true` if the session
-/// is momentarily borrowed (re-entrancy) and should be re-scheduled on the next microtask.
+/// Pumps async Dioxus tasks/effects for `(surface_id, generation)`. Returns [`PumpNext::Microtask`]
+/// if the session is momentarily borrowed (re-entrancy), [`PumpNext::Macrotask`] if `MAX_PUMPS`
+/// was hit so the browser paints before continuing, or [`PumpNext::Done`].
+#[cfg(feature = "app-issues")]
 pub(crate) fn pump_surface_async_work(
     surface_id: SurfaceId,
     generation: u64,
     waker: &std::task::Waker,
-) -> bool {
+) -> PumpNext {
     let target = ACTIVE_SHELLS.with(|shells| {
         let map = shells.borrow();
         let active = map.get(&surface_id)?;
@@ -73,24 +78,28 @@ pub(crate) fn pump_surface_async_work(
         Some((Rc::clone(&active.session), active.snapshot_trigger.clone()))
     });
     let Some((session, snapshot_trigger)) = target else {
-        return false;
+        return PumpNext::Done;
     };
     match session.try_borrow_mut() {
-        Ok(mut guard) => {
-            match guard.pump_async_work(waker) {
-                Ok(Some(_)) => {
-                    if let Some(t) = snapshot_trigger.as_ref() {
-                        t.schedule_debounced();
-                    }
+        Ok(mut guard) => match guard.pump_async_work(waker) {
+            Ok(outcome) => {
+                if outcome.timing.is_some()
+                    && let Some(t) = snapshot_trigger.as_ref()
+                {
+                    t.schedule_debounced();
                 }
-                Ok(None) => {}
-                Err(err) => {
-                    web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                if outcome.hit_cap {
+                    PumpNext::Macrotask
+                } else {
+                    PumpNext::Done
                 }
             }
-            false
-        }
-        Err(_) => true,
+            Err(err) => {
+                web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                PumpNext::Done
+            }
+        },
+        Err(_) => PumpNext::Microtask,
     }
 }
 
@@ -297,40 +306,6 @@ impl WebAppController {
     }
 }
 
-pub(crate) fn browser_viewport(container: &web_sys::Element) -> Viewport {
-    let window = web_sys::window();
-    let scale = window
-        .as_ref()
-        .map(|w| w.device_pixel_ratio() as f32)
-        .filter(|d| d.is_finite() && *d > 0.0)
-        .unwrap_or(1.0);
-    let rect = container.get_bounding_client_rect();
-    let win_w = window
-        .as_ref()
-        .and_then(|w| w.inner_width().ok())
-        .and_then(|v| v.as_f64())
-        .filter(|v| v.is_finite() && *v > 0.0);
-    let rect_w = (rect.width().is_finite() && rect.width() > 0.0).then_some(rect.width());
-    let width = match (win_w, rect_w) {
-        (Some(w), Some(r)) => w.min(r) as f32,
-        (Some(w), None) => w as f32,
-        (None, Some(r)) => r as f32,
-        (None, None) => 1280.0,
-    };
-    let win_h = window
-        .as_ref()
-        .and_then(|w| w.inner_height().ok())
-        .and_then(|v| v.as_f64())
-        .filter(|v| v.is_finite() && *v > 0.0);
-    let rect_h = (rect.height().is_finite() && rect.height() > 0.0).then_some(rect.height());
-    let height = match (rect_h, win_h) {
-        (Some(r), _) => r as f32,
-        (None, Some(h)) => h as f32,
-        (None, None) => 720.0,
-    };
-    Viewport { width, height, scale_factor: scale }
-}
-
 pub(crate) fn set_hud_status(state: &str, text: &str) {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -452,8 +427,12 @@ where
         c.set(next.wrapping_add(1));
         next
     });
+    #[cfg(feature = "app-issues")]
     let async_wake = WebAsyncWakeGuard::new(surface_id, generation);
+    #[cfg(feature = "app-issues")]
     let wake_for_events = async_wake.waker().clone();
+    #[cfg(feature = "app-issues")]
+    let macrotask_for_events = async_wake.macrotask_handle();
 
     let session_for_events = Rc::clone(&session);
     let trigger_for_events = snapshot_trigger.clone();
@@ -461,16 +440,24 @@ where
         if let Ok(mut guard) = session_for_events.try_borrow_mut() {
             match guard.pump_events() {
                 Ok(ev_frame) => {
-                    let async_frame = match guard.pump_async_work(&wake_for_events) {
-                        Ok(frame) => frame,
+                    #[cfg(feature = "app-issues")]
+                    let async_rendered = match guard.pump_async_work(&wake_for_events) {
+                        Ok(outcome) => {
+                            if outcome.hit_cap {
+                                macrotask_for_events.schedule_macrotask();
+                            }
+                            outcome.timing.is_some()
+                        }
                         Err(err) => {
                             web_sys::console::error_1(&JsValue::from_str(&format!(
                                 "[NVE Web] {err}"
                             )));
-                            None
+                            false
                         }
                     };
-                    if (ev_frame.is_some() || async_frame.is_some())
+                    #[cfg(not(feature = "app-issues"))]
+                    let async_rendered = false;
+                    if (ev_frame.is_some() || async_rendered)
                         && let Some(t) = trigger_for_events.as_ref()
                     {
                         t.schedule_debounced();
@@ -489,14 +476,23 @@ where
             .render_initial()
             .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
         // Immediately pump any pre-hydration events / reconciled dirty controls queued during
-        // Frame-0 hydration handoff AND arm the async Dioxus scheduler waker.
+        // Frame-0 hydration handoff (and arm the async Dioxus scheduler waker when enabled).
         let replayed_frame = guard
             .pump_events()
             .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))?;
-        let async_frame = guard
-            .pump_async_work(async_wake.waker())
-            .map_err(|e| JsValue::from_str(&format!("initial async pump failed: {e}")))?;
-        if (replayed_frame.is_some() || async_frame.is_some())
+        #[cfg(feature = "app-issues")]
+        let async_rendered = {
+            let outcome = guard
+                .pump_async_work(async_wake.waker())
+                .map_err(|e| JsValue::from_str(&format!("initial async pump failed: {e}")))?;
+            if outcome.hit_cap {
+                async_wake.schedule_macrotask();
+            }
+            outcome.timing.is_some()
+        };
+        #[cfg(not(feature = "app-issues"))]
+        let async_rendered = false;
+        if (replayed_frame.is_some() || async_rendered)
             && let Some(t) = snapshot_trigger.as_ref()
         {
             t.schedule_debounced();
@@ -547,11 +543,13 @@ where
                 #[cfg(feature = "multi-window")]
                 window_handle,
                 session: Rc::clone(&session),
+                #[cfg(feature = "app-issues")]
                 snapshot_trigger: snapshot_trigger.clone(),
                 #[cfg(feature = "dev")]
                 _hot_reload: hot_reload,
                 _resize_listener: resize_listener,
                 _snapshot_guard: snapshot_guard,
+                #[cfg(feature = "app-issues")]
                 _async_wake: async_wake,
             },
         );

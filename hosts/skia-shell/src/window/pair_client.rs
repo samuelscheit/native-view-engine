@@ -9,7 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use nve_abi::{direct_event_to_native, encode_events, FrameId, NveDirectEvent, SurfaceId};
+use nve_abi::{direct_event_to_native, encode_events, FrameId, SurfaceId};
 use nve_wire::{
     parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireKind, NveWireMetrics,
     NveWireTransportKind, NveWireUri, DEFAULT_WIRE_WSS_PATH,
@@ -315,14 +315,11 @@ impl DesktopApp for PairedRemoteApp {
         }
     }
 
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
         if events.is_empty() || !self.connected.load(Ordering::Relaxed) {
             return false;
         }
-        let owned: Vec<_> = events
-            .iter()
-            .filter_map(|raw| direct_event_to_native(unsafe { nve_abi::NveDirectEventRef::from_raw(raw) }))
-            .collect();
+        let owned: Vec<_> = events.iter().filter_map(direct_event_to_native).collect();
         if owned.is_empty() {
             return false;
         }

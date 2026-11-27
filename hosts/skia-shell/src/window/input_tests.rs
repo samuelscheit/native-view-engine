@@ -2,8 +2,8 @@ use std::path::Path;
 
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, FrameId, LayoutProps, NativeEventKind, NodeId, NveDirectEvent,
-    NveDirectEventRef, RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
+    FlexDirection, FrameId, LayoutProps, NativeEventKind, NodeId, RawPropValue, StyleProps,
+    SurfaceId, ROOT_NODE_ID,
 };
 use nve_backend_skia::FOCUS_RING_COLOR;
 use nve_engine::{RenderBackend, Viewport};
@@ -162,10 +162,9 @@ impl DesktopApp for MockTextInputApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
         let mut handled = false;
-        for raw in events {
-            let ev = unsafe { NveDirectEventRef::from_raw(raw) };
+        for ev in events.iter() {
             match (ev.kind(), ev.payload_tag()) {
                 (Some(NativeEventKind::Focus), 0) => {
                     self.focus_log.push((ev.node_id(), "focus"));

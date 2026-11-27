@@ -77,16 +77,19 @@ function findChromeBinary() {
   throw new Error("Chrome/Chromium binary not found. Set NVE_CHROME_BIN.");
 }
 
-function runChecked(cmd, args, cwd = REPO_ROOT) {
+function runChecked(cmd, args, cwd = REPO_ROOT, extraEnv = null) {
   console.log(`==> ${cmd} ${args.join(" ")}`);
-  const r = spawnSync(cmd, args, { cwd, stdio: "inherit" });
+  const env = extraEnv ? { ...process.env, ...extraEnv } : process.env;
+  const r = spawnSync(cmd, args, { cwd, env, stdio: "inherit" });
   if (r.status !== 0) {
     throw new Error(`Command failed (${r.status}): ${cmd} ${args.join(" ")}`);
   }
 }
 
 function startProbeServer(issuesPkgDir) {
-  const abortedCount = { value: 0 };
+  const timeoutAbortedCount = { value: 0 };
+  const dropAbortedCount = { value: 0 };
+  const pkgRootPrefix = issuesPkgDir.endsWith(path.sep) ? issuesPkgDir : issuesPkgDir + path.sep;
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -120,7 +123,7 @@ function startProbeServer(issuesPkgDir) {
       if (p.startsWith("/pkg/issues/")) {
         const rel = p.slice("/pkg/issues/".length);
         const abs = path.resolve(issuesPkgDir, rel);
-        if (!abs.startsWith(issuesPkgDir) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+        if (!abs.startsWith(pkgRootPrefix) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
           res.writeHead(404);
           res.end("Not Found");
           return;
@@ -181,7 +184,8 @@ function startProbeServer(issuesPkgDir) {
         return;
       }
 
-      if (p === "/probe/rpc/probe.v1.Test/Slow") {
+      if (p === "/probe/rpc/probe.v1.Test/SlowTimeout" || p === "/probe/rpc/probe.v1.Test/SlowDrop") {
+        const isDrop = p.endsWith("/SlowDrop");
         const t = setTimeout(() => {
           if (!res.destroyed) {
             res.writeHead(200, { ...corsHeaders, "Content-Type": "application/cbor" });
@@ -191,7 +195,8 @@ function startProbeServer(issuesPkgDir) {
         res.on("close", () => {
           clearTimeout(t);
           if (!res.writableEnded) {
-            abortedCount.value++;
+            if (isDrop) dropAbortedCount.value++;
+            else timeoutAbortedCount.value++;
           }
         });
         return;
@@ -203,7 +208,7 @@ function startProbeServer(issuesPkgDir) {
     server.on("error", reject);
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
-      resolve({ server, port: addr.port, abortedCount });
+      resolve({ server, port: addr.port, timeoutAbortedCount, dropAbortedCount });
     });
   });
 }
@@ -340,6 +345,12 @@ class CdpClient {
     if (!this.listeners.has(method)) this.listeners.set(method, []);
     this.listeners.get(method).push(fn);
   }
+  off(method, fn) {
+    const arr = this.listeners.get(method);
+    if (!arr) return;
+    const idx = arr.indexOf(fn);
+    if (idx >= 0) arr.splice(idx, 1);
+  }
   send(method, params = {}) {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
@@ -397,9 +408,17 @@ async function openTab(debugPort) {
   return cdp;
 }
 
-async function navigateAndWait(cdp, url) {
-  const loaded = new Promise((resolve) => {
-    const handler = () => resolve();
+async function navigateAndWait(cdp, url, timeoutMs = 15000) {
+  const loaded = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cdp.off("Page.loadEventFired", handler);
+      reject(new Error(`Timed out waiting for Page.loadEventFired on ${url}`));
+    }, timeoutMs);
+    const handler = () => {
+      clearTimeout(timer);
+      cdp.off("Page.loadEventFired", handler);
+      resolve();
+    };
     cdp.on("Page.loadEventFired", handler);
   });
   await cdp.send("Page.navigate", { url });
@@ -431,7 +450,9 @@ async function main() {
   if (!skipBuild) {
     runChecked("cargo", ["build", "--locked", "-p", "nve-example-issues-server"]);
     const wasmArgs = releaseWasm ? ["--release", "issues"] : ["--dev", "issues"];
-    runChecked(path.join(WEB_SHELL_DIR, "build.sh"), wasmArgs);
+    runChecked(path.join(WEB_SHELL_DIR, "build.sh"), wasmArgs, REPO_ROOT, {
+      NVE_ISSUES_PROBES: "1",
+    });
   }
   const serverBin = path.join(REPO_ROOT, "target/debug/nve-example-issues-server");
   if (!fs.existsSync(serverBin)) {
@@ -571,13 +592,40 @@ async function main() {
     if (createAfterOk - createBeforeOk !== 1) {
       throw new Error(`Expected 1 CreateIssue call on valid submit, saw ${createAfterOk - createBeforeOk}`);
     }
-    console.log("  PASS: CreateIssue succeeded (1 RPC) and auto-refetched #4 via Nve-Invalidate.");
+    const resetAfterOk = await evalJs(
+      cdp,
+      `({ val: document.querySelector('[testid="create-title-input"]')?.value, dirty: document.querySelector('[testid="create-issue-form"]')?.getAttribute("data-nve-dirty") })`
+    );
+    if (resetAfterOk.val !== "" || resetAfterOk.dirty !== "false") {
+      throw new Error(`Expected create-title-input to reset cleanly after CreateIssue, got ${JSON.stringify(resetAfterOk)}`);
+    }
+    console.log("  PASS: CreateIssue succeeded (1 RPC), reset form cleanly, and auto-refetched #4 via Nve-Invalidate.");
 
-    // 1d. Optimistic CloseIssue + Filter Tabs.
+    // 1d. Optimistic CloseIssue (pause network via CDP Fetch.enable to prove instant optimistic UI BEFORE server replies!) + Filter Tabs.
+    await cdp.send("Fetch.enable", {
+      patterns: [{ urlPattern: "*Issues/Close*", requestStage: "Request" }],
+    });
+    let pausedCloseReqId = null;
+    const closePaused = new Promise((resolve) => {
+      const onPaused = (p) => {
+        pausedCloseReqId = p.requestId;
+        cdp.off("Fetch.requestPaused", onPaused);
+        resolve();
+      };
+      cdp.on("Fetch.requestPaused", onPaused);
+    });
     await evalJs(cdp, `document.querySelector('[testid="issue-close-4"]').click()`);
+    await closePaused;
     await waitFor(
       cdp,
-      "issue #4 switches to Closed state",
+      "optimistic CloseIssue shows Closed BEFORE server responds",
+      `() => document.querySelector('[testid="issue-state-4"]')?.textContent?.includes("Closed")`
+    );
+    await cdp.send("Fetch.continueRequest", { requestId: pausedCloseReqId });
+    await cdp.send("Fetch.disable");
+    await waitFor(
+      cdp,
+      "confirmed CloseIssue remains Closed after server response",
       `() => document.querySelector('[testid="issue-state-4"]')?.textContent?.includes("Closed")`
     );
     await evalJs(cdp, `document.querySelector('[testid="filter-closed"]').click()`);
@@ -642,10 +690,14 @@ async function main() {
     if (!String(probeReport).startsWith("OK:")) {
       throw new Error(`FetchTransport browser probe failed: ${probeReport}`);
     }
-    if (probe.abortedCount.value < 1) {
-      throw new Error(`Expected dropped FetchPromiseFuture to abort server stream (abortedCount=${probe.abortedCount.value})`);
+    if (probe.timeoutAbortedCount.value < 1 || probe.dropAbortedCount.value < 1) {
+      throw new Error(
+        `Expected BOTH timeout and dropped FetchPromiseFuture to abort server streams (timeoutAborted=${probe.timeoutAbortedCount.value}, dropAborted=${probe.dropAbortedCount.value})`
+      );
     }
-    console.log(`  PASS: All FetchTransport browser probes passed (server saw ${probe.abortedCount.value} aborted streams).`);
+    console.log(
+      `  PASS: All FetchTransport browser probes passed (timeoutAborted=${probe.timeoutAbortedCount.value}, dropAborted=${probe.dropAbortedCount.value}).`
+    );
 
     // -------------------------------------------------------------------------
     // 3. Real Cross-Origin CORS Preflight (OPTIONS + POST from distinct origin)

@@ -12,7 +12,7 @@ use core::task::{Context, Poll};
 use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
-use http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use http::header::{CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::body::Body;
@@ -172,41 +172,38 @@ impl IssuesHttpService {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
             .header(CACHE_CONTROL, "no-store")
             .body(Full::new(Bytes::from(html)))
             .expect("static HTML response builds cleanly")
     }
+}
 
-    fn serve_wasm_asset(&self, path: &str) -> Response<Full<Bytes>> {
-        let Some(root) = self.wasm_dir.as_deref() else {
-            return protocol_error_response(nve_rpc::RpcStatus::NotFound, "wasm assets disabled")
-                .map(Full::new);
-        };
-        let Some(rel) = path.strip_prefix("/pkg/issues/") else {
-            return protocol_error_response(nve_rpc::RpcStatus::NotFound, "not found")
-                .map(Full::new);
-        };
-        let Some(target) = resolve_safe_subpath(root, rel) else {
+fn read_wasm_asset_sync(root: &Path, rel: &str) -> Response<Full<Bytes>> {
+    let Some(target) = resolve_safe_subpath(root, rel) else {
+        return protocol_error_response(nve_rpc::RpcStatus::NotFound, "asset not found")
+            .map(Full::new);
+    };
+    let mime = match target.extension().and_then(|e| e.to_str()) {
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("json") => "application/json; charset=utf-8",
+        _ => {
             return protocol_error_response(nve_rpc::RpcStatus::NotFound, "asset not found")
                 .map(Full::new);
-        };
-        let Ok(bytes) = std::fs::read(&target) else {
-            return protocol_error_response(nve_rpc::RpcStatus::NotFound, "asset not found")
-                .map(Full::new);
-        };
-        let mime = match target.extension().and_then(|e| e.to_str()) {
-            Some("js" | "mjs") => "application/javascript; charset=utf-8",
-            Some("wasm") => "application/wasm",
-            Some("json") => "application/json; charset=utf-8",
-            _ => "application/octet-stream",
-        };
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, mime)
-            .header(CACHE_CONTROL, "no-store")
-            .body(Full::new(Bytes::from(bytes)))
-            .expect("static asset response builds cleanly")
-    }
+        }
+    };
+    let Ok(bytes) = std::fs::read(&target) else {
+        return protocol_error_response(nve_rpc::RpcStatus::NotFound, "asset not found")
+            .map(Full::new);
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, mime)
+        .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(CACHE_CONTROL, "no-store")
+        .body(Full::new(Bytes::from(bytes)))
+        .expect("static asset response builds cleanly")
 }
 
 fn resolve_safe_subpath(root: &Path, rel: &str) -> Option<PathBuf> {
@@ -253,8 +250,30 @@ where
 
     fn call(&self, req: Request<B>) -> Self::Future {
         if *req.method() == Method::GET && req.uri().path().starts_with("/pkg/issues/") {
-            let resp = self.serve_wasm_asset(req.uri().path());
-            return Box::pin(async move { Ok(resp) });
+            let Some(root) = self.wasm_dir.clone() else {
+                let resp =
+                    protocol_error_response(nve_rpc::RpcStatus::NotFound, "wasm assets disabled")
+                        .map(Full::new);
+                return Box::pin(async move { Ok(resp) });
+            };
+            let rel = req
+                .uri()
+                .path()
+                .strip_prefix("/pkg/issues/")
+                .unwrap_or("")
+                .to_owned();
+            return Box::pin(async move {
+                let resp = tokio::task::spawn_blocking(move || read_wasm_asset_sync(&root, &rel))
+                    .await
+                    .unwrap_or_else(|_| {
+                        protocol_error_response(
+                            nve_rpc::RpcStatus::Internal,
+                            "asset reader task failed",
+                        )
+                        .map(Full::new)
+                    });
+                Ok(resp)
+            });
         }
         if *req.method() == Method::GET && req.uri().path() == "/issues" {
             let auth_res = IssuesAuth.try_resolve_sync(self.rpc.server().state(), req.headers());

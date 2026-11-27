@@ -148,10 +148,11 @@ impl<T, C> QueryClient<T, C> {
                             .is_some_and(|prev| prev.as_ref() == reply.raw_body.as_ref());
                     let has_layers = !payload.optimistic_layers.is_empty();
 
-                    meta.updated_at_ms = now_ms;
+                    meta.updated_at_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
                     meta.invalidated_epoch = ticket.wildcard_epoch;
                     meta.flags |= FLAG_HAS_DATA;
                     meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED);
+                    payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
 
                     let job = if !same_bytes || has_layers {
                         payload.raw_response = Some(reply.raw_body);
@@ -179,6 +180,7 @@ impl<T, C> QueryClient<T, C> {
                 Err(shared_err) => {
                     meta.flags |= FLAG_HAS_ERROR;
                     payload.committed_error = Some(shared_err);
+                    payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
                     let wake = s.mark_dirty(ticket.handle.slot);
                     (true, wake, waiters, None)
                 }

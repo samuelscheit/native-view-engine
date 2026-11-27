@@ -15,7 +15,9 @@ impl<A: DesktopApp> DesktopSession<A> {
     ) -> Result<(), DesktopHostError> {
         let mut direct = Vec::with_capacity(events.len());
         native_events_to_direct(events, &mut direct);
-        if self.app.dispatch_events(&direct) {
+        // SAFETY: `direct` borrows solely from `events`, which remains live for the call duration.
+        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
+        if self.app.dispatch_events(batch) {
             self.render_and_rasterize()?;
         } else {
             self.rasterize_current();

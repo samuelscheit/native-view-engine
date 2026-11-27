@@ -300,7 +300,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.viewport.width,
             self.viewport.height,
         )];
-        self.app.dispatch_events(&event)
+        // SAFETY: `NveDirectEvent::layout` contains only scalar geometry and no borrowed pointers.
+        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
+        self.app.dispatch_events(batch)
     }
 
     /// Presents the current retained `DisplayList` directly through a hardware or offscreen
@@ -366,7 +368,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             content_width,
             content_height,
         )];
-        let handled = self.app.dispatch_events(&event);
+        // SAFETY: `NveDirectEvent::scroll` contains only scalar geometry and no borrowed pointers.
+        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
+        let handled = self.app.dispatch_events(batch);
         if handled {
             self.render_and_rasterize()?;
         } else if offset_changed {

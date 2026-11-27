@@ -2,7 +2,7 @@ use std::path::Path;
 
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EventMask, FlexDirection, FrameId,
-    LayoutProps, NativeEventKind, NveDirectEvent, NveDirectEventRef, StyleProps, SurfaceId,
+    LayoutProps, NativeEventKind, StyleProps, SurfaceId,
     ROOT_NODE_ID,
 };
 use nve_engine::Viewport;
@@ -69,10 +69,9 @@ impl DesktopApp for MockScrollAndKeyApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
         let mut handled = false;
-        for raw in events {
-            let ev = unsafe { NveDirectEventRef::from_raw(raw) };
+        for ev in events.iter() {
             match (ev.kind(), ev.payload_tag()) {
                 (Some(NativeEventKind::Scroll), 2) => {
                     self.scroll_events.push((

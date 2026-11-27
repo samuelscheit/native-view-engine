@@ -101,59 +101,66 @@ fn native_sleep_ms(ms: u32) -> BoxFuture<'static, ()> {
         cv: Condvar,
     }
 
-    static WHEEL: OnceLock<Arc<TimerWheel>> = OnceLock::new();
-    let wheel = Arc::clone(WHEEL.get_or_init(|| {
-        let wheel = Arc::new(TimerWheel {
-            state: Mutex::new(BTreeMap::new()),
-            next_seq: std::sync::atomic::AtomicU64::new(1),
-            cv: Condvar::new(),
-        });
-        let bg = Arc::clone(&wheel);
-        let _ = std::thread::Builder::new()
-            .name("nve-query-timer".into())
-            .spawn(move || {
-                let mut to_wake = Vec::new();
-                let mut guard = bg.state.lock().unwrap_or_else(|e| e.into_inner());
-                loop {
-                    let now = Instant::now();
-                    while let Some((&(deadline, _), _)) = guard.first_key_value() {
-                        if deadline > now {
-                            break;
-                        }
-                        if let Some((_, entry)) = guard.pop_first() {
-                            entry.done.store(true, Ordering::Release);
-                            if let Some(w) = entry
-                                .waker
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .take()
-                            {
-                                to_wake.push(w);
+    static WHEEL: OnceLock<Option<Arc<TimerWheel>>> = OnceLock::new();
+    let Some(wheel) = WHEEL
+        .get_or_init(|| {
+            let wheel = Arc::new(TimerWheel {
+                state: Mutex::new(BTreeMap::new()),
+                next_seq: std::sync::atomic::AtomicU64::new(1),
+                cv: Condvar::new(),
+            });
+            let bg = Arc::clone(&wheel);
+            std::thread::Builder::new()
+                .name("nve-query-timer".into())
+                .spawn(move || {
+                    let mut to_wake = Vec::new();
+                    let mut guard = bg.state.lock().unwrap_or_else(|e| e.into_inner());
+                    loop {
+                        let now = Instant::now();
+                        while let Some((&(deadline, _), _)) = guard.first_key_value() {
+                            if deadline > now {
+                                break;
+                            }
+                            if let Some((_, entry)) = guard.pop_first() {
+                                entry.done.store(true, Ordering::Release);
+                                if let Some(w) = entry
+                                    .waker
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .take()
+                                {
+                                    to_wake.push(w);
+                                }
                             }
                         }
-                    }
-                    if !to_wake.is_empty() {
-                        drop(guard);
-                        for w in to_wake.drain(..) {
-                            w.wake();
+                        if !to_wake.is_empty() {
+                            drop(guard);
+                            for w in to_wake.drain(..) {
+                                w.wake();
+                            }
+                            guard = bg.state.lock().unwrap_or_else(|e| e.into_inner());
+                            continue;
                         }
-                        guard = bg.state.lock().unwrap_or_else(|e| e.into_inner());
-                        continue;
+                        if let Some((&(next_deadline, _), _)) = guard.first_key_value() {
+                            let wait = next_deadline.saturating_duration_since(Instant::now());
+                            let (g, _) = bg
+                                .cv
+                                .wait_timeout(guard, wait)
+                                .unwrap_or_else(|e| e.into_inner());
+                            guard = g;
+                        } else {
+                            guard = bg.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+                        }
                     }
-                    if let Some((&(next_deadline, _), _)) = guard.first_key_value() {
-                        let wait = next_deadline.saturating_duration_since(Instant::now());
-                        let (g, _) = bg
-                            .cv
-                            .wait_timeout(guard, wait)
-                            .unwrap_or_else(|e| e.into_inner());
-                        guard = g;
-                    } else {
-                        guard = bg.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
-                    }
-                }
-            });
-        wheel
-    }));
+                })
+                .ok()
+                .map(|_| wheel)
+        })
+        .as_ref()
+        .map(Arc::clone)
+    else {
+        return Box::pin(yield_once());
+    };
 
     let deadline = Instant::now() + Duration::from_millis(u64::from(ms));
     let seq = wheel.next_seq.fetch_add(1, Ordering::Relaxed);

@@ -118,21 +118,27 @@ where
         if bridge.client().mode() == QueryMode::SsrReadOnly {
             return;
         }
-        spawn_query_fetch::<P>(bridge, handle);
+        bridge.clear_slot_attempt(handle.slot);
+        let inv_ver = bridge.client().read::<P>(handle).invalidation_version;
+        spawn_query_fetch::<P>(bridge, handle, inv_ver);
     }
 }
 
-fn spawn_query_fetch<P>(bridge: DioxusQueryBridge, handle: QueryHandle)
+fn spawn_query_fetch<P>(bridge: DioxusQueryBridge, handle: QueryHandle, inv_ver: u64)
 where
     P: Procedure<Effect = Query>,
     CborCodec: RpcCodec<P::Output> + RpcCodec<P::Error>,
 {
     let client = bridge.client().clone();
-    let bridge_for_sleep = bridge.clone();
+    let bridge_for_task = bridge.clone();
     bridge.spawn_slot_fetch(handle.slot, async move {
-        let _ = client
-            .fetch_handle_with_retry::<P, _, _>(handle, |ms| bridge_for_sleep.sleep_ms(ms))
-            .await;
+        if client
+            .fetch_handle_with_retry::<P, _, _>(handle, |ms| bridge_for_task.sleep_ms(ms))
+            .await
+            .is_ok()
+        {
+            bridge_for_task.clear_slot_attempt_if(handle, inv_ver);
+        }
     });
 }
 
@@ -240,7 +246,9 @@ where
                 st.fetched_for_key = true;
                 st.last_invalidation_ver = snap.invalidation_version;
             }
-            spawn_query_fetch::<P>(bridge, handle);
+            if bridge.claim_slot_attempt(handle, snap.invalidation_version) {
+                spawn_query_fetch::<P>(bridge, handle, snap.invalidation_version);
+            }
         } else if !fetched_for_key && !snap.is_fetching {
             state.write().fetched_for_key = true;
         }
@@ -389,27 +397,31 @@ where
         }
     }
 
-    /// Synchronously increments `pending_count` and returns an RAII guard so same-frame double
-    /// submits in [`crate::ActionForm`] are blocked immediately before spawning the async task.
-    pub(crate) fn begin_pending_guard(&self) -> PendingGuard<P::Output, P::Error> {
+    /// Synchronously resolves the provider-owned [`ErasedQueryClient`], increments `pending_count`,
+    /// and returns an RAII guard BEFORE spawning so same-frame component unmount never panics on
+    /// `self.bridge.read()` and double submits in [`crate::ActionForm`] are blocked immediately.
+    pub(crate) fn begin_pending_guard(
+        &self,
+    ) -> (ErasedQueryClient, PendingGuard<P::Output, P::Error>) {
+        let client = self.bridge.read().client().clone();
         let mut ui = self.ui;
         {
             let mut w = ui.write();
             w.pending_count = w.pending_count.saturating_add(1);
             w.error = None;
         }
-        PendingGuard { sig: Some(ui) }
+        (client, PendingGuard { sig: Some(ui) })
     }
 
     pub(crate) async fn call_with_pending_guard(
         &self,
+        client: ErasedQueryClient,
         args: P::Args,
         _pending_guard: PendingGuard<P::Output, P::Error>,
     ) -> Result<CallReply<P::Output>, Shared<RpcError<P::Error>>>
     where
         P::Output: Clone,
     {
-        let client = self.bridge.read().client().clone();
         let mut ui = self.ui;
         match client.execute_action::<P>(&args).await {
             Ok((reply, _refetch)) => {
@@ -434,15 +446,17 @@ where
     }
 
     /// Fire-and-forget action trigger spawning inside [`crate::QueryClientProvider`]'s scope so
-    /// unmounting the triggering row/modal never cancels the in-flight mutation.
+    /// unmounting the triggering row/modal never cancels or panics the in-flight mutation.
     pub fn run(&self, args: P::Args)
     where
         P::Output: Clone,
     {
         let this = *self;
-        let pending_guard = self.begin_pending_guard();
+        let (client, pending_guard) = self.begin_pending_guard();
         self.spawn_in_provider(async move {
-            let _ = this.call_with_pending_guard(args, pending_guard).await;
+            let _ = this
+                .call_with_pending_guard(client, args, pending_guard)
+                .await;
         });
     }
 

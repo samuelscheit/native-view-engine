@@ -309,7 +309,7 @@ impl DesktopApp for HostAwareMockApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, _events: &[nve_abi::NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
         false
     }
 

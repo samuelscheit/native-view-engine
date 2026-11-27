@@ -7,7 +7,7 @@
 
 use axum::Router;
 use bytes::Bytes;
-use http::header::{ACCEPT, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN};
+use http::header::{ACCEPT, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN, X_CONTENT_TYPE_OPTIONS};
 use http::{Method, Request, StatusCode};
 use http_body_util::{BodyExt as _, Full};
 use hyper_util::client::legacy::Client;
@@ -230,6 +230,10 @@ async fn fullstack_issues_end_to_end_native_web_0js_and_mobile_skew() {
         .unwrap();
     let issues_page = raw_client.request(auth_page_req).await.unwrap();
     assert_eq!(issues_page.status(), StatusCode::OK);
+    assert_eq!(
+        issues_page.headers().get(X_CONTENT_TYPE_OPTIONS).unwrap(),
+        "nosniff"
+    );
     let page_bytes = issues_page.into_body().collect().await.unwrap().to_bytes();
     let page_html = core::str::from_utf8(&page_bytes).unwrap();
     assert!(page_html.contains("Renamed via 0-JS form"));
@@ -373,6 +377,96 @@ async fn fullstack_issues_end_to_end_native_web_0js_and_mobile_skew() {
     assert_eq!(bg_issue.title, "Created via 0-JS PRG");
     assert_eq!(bg_issue.priority, Some(2));
 
+    // 10. Unicode case-insensitive duplicate-title rejection (Café vs CAFÉ).
+    let uni_ok = call::<CreateIssue>(
+        &native_http,
+        &CreateIssueInput {
+            title: "Café Unicode Title".into(),
+            priority: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(uni_ok.value.title, "Café Unicode Title");
+    let uni_dup = call::<CreateIssue>(
+        &native_http,
+        &CreateIssueInput {
+            title: "CAFÉ UNICODE TITLE".into(),
+            priority: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        uni_dup,
+        RpcError::Domain {
+            status: RpcStatus::Unprocessable,
+            error: ApiError::Validation(_),
+        }
+    ));
+
     let _ = tx.send(());
     task.await.unwrap();
+}
+
+#[tokio::test]
+async fn static_wasm_asset_handler_enforces_extension_allowlist_and_nosniff() {
+    let tmp = std::env::temp_dir().join(format!(
+        "nve-issues-wasm-asset-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("manifest.json"), b"{\"js\":\"a.js\"}").unwrap();
+    std::fs::write(tmp.join("secret.txt"), b"do not serve").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let (tx, rx) = oneshot::channel::<()>();
+
+    let server = build_issues_server(IssueStore::seeded(), [origin.clone()]);
+    let svc = IssuesHttpService::new(server).with_wasm_dir(&tmp);
+    let task = tokio::spawn(async move {
+        serve_service_with_shutdown(listener, svc, async {
+            let _ = rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let raw_client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
+
+    // Allowed `.json` asset -> 200 + application/json + nosniff.
+    let ok_resp = raw_client
+        .get(format!("{origin}/pkg/issues/manifest.json").parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(ok_resp.status(), StatusCode::OK);
+    assert_eq!(
+        ok_resp.headers().get(CONTENT_TYPE).unwrap(),
+        "application/json; charset=utf-8"
+    );
+    assert_eq!(
+        ok_resp.headers().get(X_CONTENT_TYPE_OPTIONS).unwrap(),
+        "nosniff"
+    );
+
+    // Non-allowlisted `.txt` file -> 404.
+    let blocked_resp = raw_client
+        .get(format!("{origin}/pkg/issues/secret.txt").parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(blocked_resp.status(), StatusCode::NOT_FOUND);
+
+    // Traversal attempt -> 404.
+    let trav_resp = raw_client
+        .get(format!("{origin}/pkg/issues/../secret.txt").parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(trav_resp.status(), StatusCode::NOT_FOUND);
+
+    let _ = tx.send(());
+    task.await.unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
 }

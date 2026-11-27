@@ -203,6 +203,7 @@ impl<'a> NveEventBatchRef<'a> {
     /// # Safety
     /// Caller must ensure all nested pointers inside `events` are valid for `'a`.
     #[inline] pub const unsafe fn from_slice(events: &'a [NveDirectEvent]) -> Self { Self { events } }
+    #[inline] pub const fn as_slice(&self) -> &'a [NveDirectEvent] { self.events }
     #[inline] pub const fn len(&self) -> usize { self.events.len() }
     #[inline] pub const fn is_empty(&self) -> bool { self.events.is_empty() }
     #[inline] pub fn get(&self, index: usize) -> Option<NveDirectEventRef<'a>> {

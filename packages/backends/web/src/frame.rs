@@ -235,9 +235,7 @@ impl RenderSink for WebBackend {
         if !adopting_ssr {
             #[cfg(target_arch = "wasm32")]
             {
-                if let Some(old_el) = self.dom_nodes.remove(&node_id) {
-                    old_el.remove();
-                }
+                let replaced_old = self.dom_nodes.remove(&node_id);
                 self.ime_guards.borrow_mut().remove(&node_id);
                 if let Some(doc) = web_sys::window().and_then(|w| w.document())
                     && let Some(el) = dom::create_dom_element_for_tag(&doc, &eff_tag)
@@ -255,7 +253,19 @@ impl RenderSink for WebBackend {
                     if let Some(nv) = self.native_views.get_mut(&node_id) {
                         native_view::sync_native_view_dom_attrs(&el, nv);
                     }
+                    // Replace the previous DOM element in-place when `node_id` was already mounted
+                    // so retained-list child reconciliation (`plan_keyed_child_ops`, zero DOM
+                    // readbacks) never leaves a recreated node detached from its parent.
+                    if let Some(old_el) = replaced_old {
+                        if let Some(parent) = old_el.parent_node() {
+                            let _ = parent.replace_child(&el, &old_el);
+                        } else {
+                            old_el.remove();
+                        }
+                    }
                     self.dom_nodes.insert(node_id, el);
+                } else if let Some(old_el) = replaced_old {
+                    old_el.remove();
                 }
             }
             #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]

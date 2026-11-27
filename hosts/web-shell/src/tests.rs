@@ -500,24 +500,14 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
 }
 
 #[test]
-fn pump_async_work_reinvokes_waker_when_pump_cap_is_hit() {
+fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::task::{Poll, Wake, Waker};
+    use std::task::{Poll, Waker};
     use nve_dioxus::prelude::*;
     use nve_dioxus::DioxusSurface;
-
-    struct CountWaker(AtomicUsize);
-    impl Wake for CountWaker {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
 
     #[derive(Clone, Default)]
     struct StepGate {
@@ -569,25 +559,35 @@ fn pump_async_work_reinvokes_waker_when_pump_cap_is_hit() {
     let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
 
-    let wake_count = Arc::new(CountWaker(AtomicUsize::new(0)));
-    let waker = Waker::from(Arc::clone(&wake_count));
-    assert!(session.pump_async_work(&waker).unwrap().is_none());
+    let waker = Waker::noop();
+    let idle = session.pump_async_work(waker).unwrap();
+    assert!(idle.timing.is_none());
+    assert!(!idle.hit_cap);
 
-    // Kick off the 24-step render-chained async burst -> first tick hits MAX_PUMPS and re-wakes!
+    // Kick off the 24-step render-chained async burst -> first tick MUST hit MAX_PUMPS (8) before
+    // reaching STEP:24 and report `hit_cap = true` so the browser host yields to paint via macrotask.
     gate.trigger();
-    let first = session.pump_async_work(&waker).unwrap();
-    assert!(first.is_some());
+    let first = session.pump_async_work(waker).unwrap();
+    assert!(first.timing.is_some());
     assert!(
-        wake_count.0.load(Ordering::SeqCst) >= 1,
-        "hitting MAX_PUMPS MUST re-invoke waker so remaining async work does not stall"
+        first.hit_cap,
+        "24-step burst must hit MAX_PUMPS (8) and signal macrotask continuation"
+    );
+    assert!(
+        !session.backend().render_html().contains("STEP:24"),
+        "first tick must bound work at MAX_PUMPS instead of running all 24 steps: {}",
+        session.backend().render_html()
     );
 
+    let mut final_hit_cap = true;
     for _ in 0..8 {
+        let next = session.pump_async_work(waker).unwrap();
+        final_hit_cap = next.hit_cap;
         if session.backend().render_html().contains("STEP:24") {
             break;
         }
-        let _ = session.pump_async_work(&waker).unwrap();
     }
+    assert!(!final_hit_cap, "settled burst must clear hit_cap");
     assert!(
         session.backend().render_html().contains("STEP:24"),
         "continuation pumps must finish all 24 steps: {}",

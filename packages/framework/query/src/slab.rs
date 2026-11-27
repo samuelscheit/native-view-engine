@@ -45,7 +45,7 @@ pub(crate) const FLAG_HYDRATED: u16 = 1 << 9;
 pub struct QueryMeta {
     pub proc_id: ProcId,
     pub args_hash: u64,
-    pub updated_at_ms: u64,
+    pub updated_at_ms: i64,
     pub invalidated_epoch: u32,
     pub stale_time_ms: u32,
     pub gc_time_ms: u32,
@@ -116,11 +116,12 @@ impl QueryMeta {
             return true;
         }
         let eff_stale = if (self.flags & FLAG_HYDRATED) != 0 {
-            u64::from(self.stale_time_ms.max(hydration_grace_ms))
+            i64::from(self.stale_time_ms.max(hydration_grace_ms))
         } else {
-            u64::from(self.stale_time_ms)
+            i64::from(self.stale_time_ms)
         };
-        now_ms.saturating_sub(self.updated_at_ms) >= eff_stale
+        let now_i64 = i64::try_from(now_ms).unwrap_or(i64::MAX);
+        now_i64.saturating_sub(self.updated_at_ms) >= eff_stale
     }
 }
 
@@ -137,6 +138,7 @@ pub(crate) struct QueryPayload {
     pub optimistic_layers: Vec<OptimisticLayer>,
     pub last_inactive_ms: u64,
     pub active_pos: u32,
+    pub completed_seq: u32,
     pub in_flight_waiters: Vec<core::task::Waker>,
     pub options: QueryOptions,
 }
@@ -154,6 +156,7 @@ impl QueryPayload {
             optimistic_layers: Vec::new(),
             last_inactive_ms: 0,
             active_pos: NONE_IDX,
+            completed_seq: 0,
             in_flight_waiters: Vec::new(),
             options: QueryOptions::default(),
         }
@@ -172,6 +175,7 @@ impl QueryPayload {
         self.optimistic_layers.clear();
         self.last_inactive_ms = 0;
         self.active_pos = NONE_IDX;
+        self.completed_seq = 0;
         self.options = QueryOptions::default();
         core::mem::take(&mut self.in_flight_waiters)
     }

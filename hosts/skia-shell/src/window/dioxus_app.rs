@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Wake, Waker};
 
-use nve_abi::{FrameId, NveDirectEvent, NveEventBatchRef, SurfaceId};
+use nve_abi::{FrameId, NveEventBatchRef, SurfaceId};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, Viewport};
 
@@ -93,12 +93,11 @@ impl DesktopApp for DioxusDesktopApp {
         self.surface.render_frame_slice(frame_id)
     }
 
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
         if events.is_empty() {
             return false;
         }
-        let batch = unsafe { NveEventBatchRef::from_slice(events) };
-        self.surface.dispatch_direct_events(batch)
+        self.surface.dispatch_direct_events(events)
     }
 
     fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {

@@ -140,7 +140,7 @@ impl CacheState {
         self.metas[slot.index()] = QueryMeta {
             proc_id,
             args_hash: key_hash,
-            updated_at_ms: now_ms,
+            updated_at_ms: i64::try_from(now_ms).unwrap_or(i64::MAX),
             invalidated_epoch: self.wildcard_epoch,
             stale_time_ms: options.stale_time_ms,
             gc_time_ms: options.gc_time_ms,

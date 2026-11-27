@@ -239,8 +239,9 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 .map(|(&idx, tags)| {
                     let meta = s.metas[idx];
                     let payload = &s.payloads[idx];
-                    let age_ms = u32::try_from(now_ms.saturating_sub(meta.updated_at_ms))
-                        .unwrap_or(u32::MAX);
+                    let now_i64 = i64::try_from(now_ms).unwrap_or(i64::MAX);
+                    let elapsed = now_i64.saturating_sub(meta.updated_at_ms).max(0) as u64;
+                    let age_ms = u32::try_from(elapsed).unwrap_or(u32::MAX);
                     DehydrateEntryRef {
                         proc_id: meta.proc_id,
                         age_ms,
@@ -267,11 +268,10 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let mut waiters = Vec::new();
             let mut wake_cb: Option<WakeCallback> = None;
 
-            let grace = self.inner.config.hydration_grace_ms;
+            let now_i64 = i64::try_from(now_ms).unwrap_or(i64::MAX);
             for entry in entries {
                 let key_hash = query_key_hash(entry.proc_id, &entry.encoded_args);
-                let age = u64::from(entry.age_ms);
-                let updated_at = now_ms.saturating_sub(age);
+                let updated_at = now_i64.saturating_sub(i64::from(entry.age_ms));
                 let body_hash = xxh64(&entry.raw_body, BODY_HASH_SEED);
 
                 let slot = if let Some(existing) =
@@ -307,19 +307,12 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
 
                 let idx = slot.index();
                 let meta = &mut s.metas[idx];
-                let eff_grace = u64::from(meta.stale_time_ms.max(grace));
-                let pre_boot_expired = age > now_ms && age >= eff_grace;
                 meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
                 meta.optimistic_rev = meta.optimistic_rev.wrapping_add(1);
                 meta.updated_at_ms = updated_at;
                 meta.invalidated_epoch = s.wildcard_epoch;
-                if pre_boot_expired {
-                    meta.flags |= FLAG_HAS_DATA | FLAG_IS_INVALIDATED;
-                    meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_FETCHING | FLAG_HYDRATED);
-                } else {
-                    meta.flags |= FLAG_HAS_DATA | FLAG_HYDRATED;
-                    meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING);
-                }
+                meta.flags |= FLAG_HAS_DATA | FLAG_HYDRATED;
+                meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING);
 
                 let payload = &mut s.payloads[idx];
                 waiters.append(&mut payload.in_flight_waiters);
@@ -328,6 +321,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 payload.committed = None;
                 payload.committed_error = None;
                 payload.effective_optimistic = None;
+                payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
                 wake_cb = s.mark_dirty(slot);
             }
             (wake_cb, waiters)

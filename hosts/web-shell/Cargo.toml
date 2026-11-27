@@ -26,6 +26,8 @@ app-issues = [
     "dep:nve-example-issues-client",
     "dep:dioxus-core",
 ]
+# Opt-in browser E2E probes for `FetchTransport` and cross-origin CORS (excluded from production `app-issues`).
+issues-probes = ["app-issues"]
 # `nve dev` Tier-1/2 hot-reload WebSocket (binary NVP1), the `NveWebHost` NVT1/NVD1 pairing client
 # and the semantic-style hydration probe used by the E2E suite.
 dev = []

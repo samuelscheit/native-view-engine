@@ -527,7 +527,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let meta = &mut s.metas[idx];
             meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
             let new_fetch_gen = meta.fetch_gen;
-            meta.updated_at_ms = now_ms;
+            meta.updated_at_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
             meta.invalidated_epoch = s.wildcard_epoch;
             meta.flags |= FLAG_HAS_DATA;
             meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING | FLAG_HYDRATED);
@@ -538,6 +538,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             payload.raw_body_hash = raw_hash;
             payload.committed = Some(into_shared_any(value));
             payload.committed_error = None;
+            payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
             settle_layers_up_to(payload, new_fetch_gen);
             let job = prepare_recompute_job(handle.slot, &mut s.metas[idx], &mut s.payloads[idx]);
             let wake = s.mark_dirty(handle.slot);

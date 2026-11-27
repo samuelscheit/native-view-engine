@@ -307,7 +307,7 @@ mod tests {
             self.buf = b.finish().to_vec();
             &self.buf
         }
-        fn dispatch_events(&mut self, _events: &[nve_abi::NveDirectEvent]) -> bool {
+        fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
             self.count += 1;
             true
         }

@@ -67,7 +67,7 @@ pub(crate) fn state_badge(state: IssueState) -> (&'static str, BadgeVariant) {
 }
 
 /// Top-level portable issue-tracker application wrapping [`IssuesWorkspace`] in
-/// [`ThemeProvider`] and [`QueryClientProvider`].
+/// [`ThemeProvider()`] and [`QueryClientProvider()`].
 #[component]
 pub fn IssuesApp(
     client: ErasedQueryClient,
@@ -85,8 +85,8 @@ pub fn IssuesApp(
     }
 }
 
-/// Interactive issue-tracker workspace (must be mounted inside [`QueryClientProvider`] and
-/// [`ThemeProvider`]).
+/// Interactive issue-tracker workspace (must be mounted inside [`QueryClientProvider()`] and
+/// [`ThemeProvider()`]).
 #[component]
 pub fn IssuesWorkspace() -> Element {
     let theme = use_theme();

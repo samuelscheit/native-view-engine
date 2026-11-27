@@ -50,7 +50,13 @@ bundle_features() {
   case "$1" in
     studio) echo "--no-default-features --features app-studio" ;;
     kitchen-sink) echo "--no-default-features --features app-kitchen-sink" ;;
-    issues) echo "--no-default-features --features app-issues" ;;
+    issues)
+      if [[ "${NVE_ISSUES_PROBES:-0}" == "1" ]]; then
+        echo "--no-default-features --features app-issues,issues-probes"
+      else
+        echo "--no-default-features --features app-issues"
+      fi
+      ;;
     dev) echo "" ;;
   esac
 }

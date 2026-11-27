@@ -1,24 +1,38 @@
-//! Coalesced `queueMicrotask` async frame wakeup for `hosts/web-shell` (`wasm32`).
-//!
-//! Bridges `std::task::Waker` from `DioxusSurface::poll_work` back into `WebAppSession` without
-//! holding `RefMut<WebAppSession>` across `.await` points and without any `unsafe` waker vtables.
+//! Coalesced async frame wakeup (`queueMicrotask` + `setTimeout(0)` macrotask yield on pump cap)
+//! and `ResizeObserver` listener for `hosts/web-shell` (`wasm32`).
 
 use std::rc::Rc;
+#[cfg(feature = "app-issues")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "app-issues")]
 use std::sync::Arc;
+#[cfg(feature = "app-issues")]
 use std::task::{Wake, Waker};
 
+#[cfg(feature = "app-issues")]
 use nve_abi::SurfaceId;
 use nve_engine::Viewport;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-#[wasm_bindgen(inline_js = "export function nve_queue_microtask(cb) { queueMicrotask(cb); }")]
+#[cfg(feature = "app-issues")]
+#[wasm_bindgen(inline_js = "export function nve_queue_microtask(cb) { queueMicrotask(cb); }
+export function nve_schedule_macrotask(cb) { setTimeout(cb, 0); }")]
 extern "C" {
     fn nve_queue_microtask(cb: &JsValue);
+    fn nve_schedule_macrotask(cb: &JsValue);
 }
 
+#[cfg(feature = "app-issues")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PumpNext {
+    Done,
+    Microtask,
+    Macrotask,
+}
+
+#[cfg(feature = "app-issues")]
 struct WebFrameWaker {
     surface_id: SurfaceId,
     generation: u64,
@@ -26,8 +40,9 @@ struct WebFrameWaker {
     alive: AtomicBool,
 }
 
+#[cfg(feature = "app-issues")]
 impl WebFrameWaker {
-    fn schedule(self: &Arc<Self>) {
+    fn schedule(self: &Arc<Self>, macrotask: bool) {
         if !self.alive.load(Ordering::Acquire) {
             return;
         }
@@ -41,35 +56,43 @@ impl WebFrameWaker {
                 return;
             }
             let waker = Waker::from(Arc::clone(&waker_arc));
-            let retry = crate::wasm_api::pump_surface_async_work(
+            match crate::wasm_api::pump_surface_async_work(
                 waker_arc.surface_id,
                 waker_arc.generation,
                 &waker,
-            );
-            if retry {
-                waker_arc.schedule();
+            ) {
+                PumpNext::Done => {}
+                PumpNext::Microtask => waker_arc.schedule(false),
+                PumpNext::Macrotask => waker_arc.schedule(true),
             }
         });
-        nve_queue_microtask(&cb);
+        if macrotask {
+            nve_schedule_macrotask(&cb);
+        } else {
+            nve_queue_microtask(&cb);
+        }
     }
 }
 
+#[cfg(feature = "app-issues")]
 impl Wake for WebFrameWaker {
     fn wake(self: Arc<Self>) {
-        self.schedule();
+        self.schedule(false);
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.schedule();
+        self.schedule(false);
     }
 }
 
 /// Owned lifecycle guard keeping a surface's async `Waker` active until unmount.
+#[cfg(feature = "app-issues")]
 pub(crate) struct WebAsyncWakeGuard {
     inner: Arc<WebFrameWaker>,
     waker: Waker,
 }
 
+#[cfg(feature = "app-issues")]
 impl WebAsyncWakeGuard {
     pub(crate) fn new(surface_id: SurfaceId, generation: u64) -> Self {
         let inner = Arc::new(WebFrameWaker {
@@ -86,8 +109,31 @@ impl WebAsyncWakeGuard {
     pub(crate) fn waker(&self) -> &Waker {
         &self.waker
     }
+
+    #[inline]
+    pub(crate) fn schedule_macrotask(&self) {
+        self.inner.schedule(true);
+    }
+
+    #[inline]
+    pub(crate) fn macrotask_handle(&self) -> MacrotaskHandle {
+        MacrotaskHandle(Arc::clone(&self.inner))
+    }
 }
 
+#[cfg(feature = "app-issues")]
+#[derive(Clone)]
+pub(crate) struct MacrotaskHandle(Arc<WebFrameWaker>);
+
+#[cfg(feature = "app-issues")]
+impl MacrotaskHandle {
+    #[inline]
+    pub(crate) fn schedule_macrotask(&self) {
+        self.0.schedule(true);
+    }
+}
+
+#[cfg(feature = "app-issues")]
 impl Drop for WebAsyncWakeGuard {
     fn drop(&mut self) {
         self.inner.alive.store(false, Ordering::Release);
@@ -112,7 +158,7 @@ where
     let cb_win = Rc::clone(&callback);
     let container_win = container.clone();
     let on_resize = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-        cb_win(crate::wasm_api::browser_viewport(&container_win));
+        cb_win(browser_viewport(&container_win));
     });
     let registered_win_resize = window
         .add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref())
@@ -122,7 +168,7 @@ where
     let cb_obs = callback;
     let container_obs = container.clone();
     let on_observe = Closure::<dyn FnMut(JsValue)>::new(move |_entries: JsValue| {
-        cb_obs(crate::wasm_api::browser_viewport(&container_obs));
+        cb_obs(browser_viewport(&container_obs));
     });
     let (resize_observer, registered_observe) =
         match web_sys::ResizeObserver::new(on_observe.as_ref().unchecked_ref()) {
@@ -158,4 +204,38 @@ impl Drop for WindowResizeListener {
             observer.disconnect();
         }
     }
+}
+
+pub(crate) fn browser_viewport(container: &web_sys::Element) -> Viewport {
+    let window = web_sys::window();
+    let scale = window
+        .as_ref()
+        .map(|w| w.device_pixel_ratio() as f32)
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .unwrap_or(1.0);
+    let rect = container.get_bounding_client_rect();
+    let win_w = window
+        .as_ref()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let rect_w = (rect.width().is_finite() && rect.width() > 0.0).then_some(rect.width());
+    let width = match (win_w, rect_w) {
+        (Some(w), Some(r)) => w.min(r) as f32,
+        (Some(w), None) => w as f32,
+        (None, Some(r)) => r as f32,
+        (None, None) => 1280.0,
+    };
+    let win_h = window
+        .as_ref()
+        .and_then(|w| w.inner_height().ok())
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let rect_h = (rect.height().is_finite() && rect.height() > 0.0).then_some(rect.height());
+    let height = match (rect_h, win_h) {
+        (Some(r), _) => r as f32,
+        (None, Some(h)) => h as f32,
+        (None, None) => 720.0,
+    };
+    Viewport { width, height, scale_factor: scale }
 }

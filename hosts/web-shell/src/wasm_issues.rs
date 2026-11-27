@@ -2,28 +2,37 @@
 //! probes for `examples/fullstack-issues` (`feature = "app-issues"`).
 
 use std::cell::RefCell;
+#[cfg(feature = "issues-probes")]
 use std::future::Future;
+#[cfg(feature = "issues-probes")]
 use std::pin::Pin;
 use std::rc::Rc;
+#[cfg(feature = "issues-probes")]
 use std::sync::Arc;
+#[cfg(feature = "issues-probes")]
 use std::task::{Context, Poll, Wake, Waker};
 
+#[cfg(feature = "issues-probes")]
 use bytes::Bytes;
 use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::Viewport;
+#[cfg(feature = "issues-probes")]
 use nve_example_issues_api::{
     AddComment, AddCommentInput, ApiError, GetIssue, IssueFilter, IssueId, ListIssues,
 };
 use nve_example_issues_client::IssuesApp;
+#[cfg(feature = "issues-probes")]
+use nve_http_web::CredentialsMode;
 use nve_http_web::{
-    attach_browser_lifecycle, browser_sleep_ms, BrowserClock, CredentialsMode, FetchConfig,
-    FetchTransport, LifecycleGuard,
+    attach_browser_lifecycle, browser_sleep_ms, BrowserClock, FetchConfig, FetchTransport,
+    LifecycleGuard,
 };
 use nve_query::{QueryClientConfig, Shared};
 use nve_query_dioxus::{erased_query_client_with_clock, ErasedQueryClient, SleepHandle};
+#[cfg(feature = "issues-probes")]
 use nve_rpc::{
     call, Effect, ProcId, RawCall, RpcError, RpcStatus, Tag64, Transport, TransportErrorKind,
     CONTENT_TYPE_CBOR,
@@ -33,6 +42,7 @@ use wasm_bindgen::prelude::*;
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
 use crate::wasm_api::{start_surface_app_inner, WebAppController};
 
+#[cfg(feature = "issues-probes")]
 #[wasm_bindgen(inline_js = "export function nve_issues_deferred() {
   let resolve, reject;
   const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
@@ -131,26 +141,53 @@ pub fn start_issues_app(
     )
 }
 
+#[cfg(feature = "issues-probes")]
 struct PendingPromise {
     deferred: JsValue,
     fut: Pin<Box<dyn Future<Output = Result<String, String>>>>,
     scheduled: bool,
 }
 
+#[cfg(feature = "issues-probes")]
+enum PromiseEntry {
+    Idle(PendingPromise),
+    Polling { woken: bool },
+}
+
+#[cfg(feature = "issues-probes")]
 thread_local! {
     static NEXT_PROMISE_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
-    static PENDING_PROMISES: RefCell<std::collections::BTreeMap<u64, PendingPromise>> =
+    static PENDING_PROMISES: RefCell<std::collections::BTreeMap<u64, PromiseEntry>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 
+#[cfg(feature = "issues-probes")]
 struct PromiseWaker(u64);
 
+#[cfg(feature = "issues-probes")]
+fn schedule_promise_poll(id: u64) {
+    let cb = Closure::once_into_js(move || {
+        poll_promise_task(id);
+    });
+    nve_issues_schedule_microtask(&cb);
+}
+
+#[cfg(feature = "issues-probes")]
 fn poll_promise_task(id: u64) {
     let entry = PENDING_PROMISES.with(|map| {
         let mut guard = map.borrow_mut();
-        let mut item = guard.remove(&id)?;
-        item.scheduled = false;
-        Some(item)
+        let slot = guard.get_mut(&id)?;
+        let prev = std::mem::replace(slot, PromiseEntry::Polling { woken: false });
+        match prev {
+            PromiseEntry::Idle(mut item) => {
+                item.scheduled = false;
+                Some(item)
+            }
+            PromiseEntry::Polling { woken } => {
+                *slot = PromiseEntry::Polling { woken };
+                None
+            }
+        }
     });
     let Some(mut item) = entry else {
         return;
@@ -158,16 +195,34 @@ fn poll_promise_task(id: u64) {
     let waker = Waker::from(Arc::new(PromiseWaker(id)));
     let mut cx = Context::from_waker(&waker);
     match item.fut.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(val)) => nve_issues_resolve(&item.deferred, &val),
-        Poll::Ready(Err(err)) => nve_issues_reject(&item.deferred, &err),
-        Poll::Pending => {
+        Poll::Ready(Ok(val)) => {
             PENDING_PROMISES.with(|map| {
-                map.borrow_mut().insert(id, item);
+                map.borrow_mut().remove(&id);
             });
+            nve_issues_resolve(&item.deferred, &val);
+        }
+        Poll::Ready(Err(err)) => {
+            PENDING_PROMISES.with(|map| {
+                map.borrow_mut().remove(&id);
+            });
+            nve_issues_reject(&item.deferred, &err);
+        }
+        Poll::Pending => {
+            let woken_during_poll = PENDING_PROMISES.with(|map| {
+                let mut guard = map.borrow_mut();
+                let woken = matches!(guard.get(&id), Some(PromiseEntry::Polling { woken: true }));
+                item.scheduled = woken;
+                guard.insert(id, PromiseEntry::Idle(item));
+                woken
+            });
+            if woken_during_poll {
+                schedule_promise_poll(id);
+            }
         }
     }
 }
 
+#[cfg(feature = "issues-probes")]
 impl Wake for PromiseWaker {
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();
@@ -177,25 +232,28 @@ impl Wake for PromiseWaker {
         let id = self.0;
         let should_schedule = PENDING_PROMISES.with(|map| {
             let mut guard = map.borrow_mut();
-            let Some(item) = guard.get_mut(&id) else {
-                return false;
-            };
-            if item.scheduled {
-                return false;
+            match guard.get_mut(&id) {
+                Some(PromiseEntry::Polling { woken }) => {
+                    *woken = true;
+                    false
+                }
+                Some(PromiseEntry::Idle(item)) => {
+                    if item.scheduled {
+                        return false;
+                    }
+                    item.scheduled = true;
+                    true
+                }
+                None => false,
             }
-            item.scheduled = true;
-            true
         });
-        if !should_schedule {
-            return;
+        if should_schedule {
+            schedule_promise_poll(id);
         }
-        let cb = Closure::once_into_js(move || {
-            poll_promise_task(id);
-        });
-        nve_issues_schedule_microtask(&cb);
     }
 }
 
+#[cfg(feature = "issues-probes")]
 fn future_to_js_promise(fut: impl Future<Output = Result<String, String>> + 'static) -> JsValue {
     let deferred = nve_issues_deferred();
     let promise = nve_issues_promise(&deferred);
@@ -207,11 +265,11 @@ fn future_to_js_promise(fut: impl Future<Output = Result<String, String>> + 'sta
     PENDING_PROMISES.with(|map| {
         map.borrow_mut().insert(
             id,
-            PendingPromise {
+            PromiseEntry::Idle(PendingPromise {
                 deferred,
                 fut: Box::pin(fut),
                 scheduled: false,
-            },
+            }),
         );
     });
     poll_promise_task(id);
@@ -220,6 +278,7 @@ fn future_to_js_promise(fut: impl Future<Output = Result<String, String>> + 'sta
 
 /// Real-browser probe exercising `FetchTransport` happy path, streaming `ReadableStream` cap,
 /// `Content-Length` cap, `redirect: "manual"` 302 rejection, timeout, and abort-on-drop.
+#[cfg(feature = "issues-probes")]
 #[wasm_bindgen]
 pub fn nve_probe_fetch_transport(probe_origin: String) -> JsValue {
     future_to_js_promise(async move {
@@ -281,25 +340,30 @@ pub fn nve_probe_fetch_transport(probe_origin: String) -> JsValue {
             return Err(format!("expected Redirect on 302, got {redir_err:?}"));
         }
 
-        // 5. Timeout -> Timeout
+        // 5. Timeout -> Timeout (distinct endpoint from drop probe so server verifies both aborts)
         let timeout_t = FetchTransport::with_config(base_cfg().with_timeout_ms(120));
         let timeout_err = timeout_t
-            .call_raw(make_call("probe.v1.Test/Slow", Bytes::new()))
+            .call_raw(make_call("probe.v1.Test/SlowTimeout", Bytes::new()))
             .await
             .err()
-            .ok_or_else(|| "Slow unexpectedly succeeded".to_owned())?;
+            .ok_or_else(|| "SlowTimeout unexpectedly succeeded".to_owned())?;
         if timeout_err.kind != TransportErrorKind::Timeout {
             return Err(format!("expected Timeout, got {timeout_err:?}"));
         }
 
-        // 6. Mid-flight Future drop triggers AbortController.abort() cleanly
+        // 6. Mid-flight Future drop triggers AbortController.abort() cleanly AFTER the request
+        // reaches the server (sleeping briefly before drop guarantees the HTTP request is truly
+        // in-flight on the server rather than cancelled before Chrome dispatches it).
         {
-            let mut cx = Context::from_waker(Waker::noop());
-            let mut slow_fut = ok_t.call_raw(make_call("probe.v1.Test/Slow", Bytes::new()));
-            let first_poll = slow_fut.as_mut().poll(&mut cx);
-            if !first_poll.is_pending() {
-                return Err("expected Pending on Slow first poll".to_owned());
+            let mut slow_fut = ok_t.call_raw(make_call("probe.v1.Test/SlowDrop", Bytes::new()));
+            {
+                let mut cx = Context::from_waker(Waker::noop());
+                let first_poll = slow_fut.as_mut().poll(&mut cx);
+                if !first_poll.is_pending() {
+                    return Err("expected Pending on SlowDrop first poll".to_owned());
+                }
             }
+            browser_sleep_ms(80).await;
             drop(slow_fut);
         }
         browser_sleep_ms(150).await;
@@ -311,6 +375,7 @@ pub fn nve_probe_fetch_transport(probe_origin: String) -> JsValue {
 /// Real-browser probe exercising cross-origin CORS preflight (`OPTIONS` + `POST /rpc/*` with
 /// `Authorization: Bearer`) and verifying `Access-Control-Expose-Headers` exposes both
 /// `Nve-Invalidate` and `Nve-Error-Kind`.
+#[cfg(feature = "issues-probes")]
 #[wasm_bindgen]
 pub fn nve_probe_cross_origin_cors(issues_origin: String) -> JsValue {
     future_to_js_promise(async move {

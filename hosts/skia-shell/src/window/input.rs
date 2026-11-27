@@ -212,7 +212,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         } else {
             let mut direct = Vec::with_capacity(events.len());
             native_events_to_direct(&events, &mut direct);
-            self.app.dispatch_events(&direct)
+            // SAFETY: `direct` borrows solely from `events`, which outlives `dispatch_events`.
+            let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
+            self.app.dispatch_events(batch)
         };
         if handled {
             self.render_and_rasterize()?;
@@ -298,7 +300,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             0,
             false,
         )];
-        let handled = self.app.dispatch_events(&event);
+        // SAFETY: `key` and `""` remain valid for the duration of `dispatch_events`.
+        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
+        let handled = self.app.dispatch_events(batch);
         if handled {
             self.render_and_rasterize()?;
         }
@@ -529,7 +533,9 @@ impl<A: DesktopApp> DesktopSession<A> {
                 });
                 let mut direct = Vec::with_capacity(events.len());
                 native_events_to_direct(&events, &mut direct);
-                if self.app.dispatch_events(&direct) {
+                // SAFETY: `direct` borrows solely from `events`, which outlives `dispatch_events`.
+                let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
+                if self.app.dispatch_events(batch) {
                     self.render_and_rasterize()?;
                     Ok(true)
                 } else {

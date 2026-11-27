@@ -11,7 +11,7 @@ use dioxus_core::{
 };
 use dioxus_core_macro::{component, rsx, Props};
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
-use nve_query::{Clock, QueryClient, QueryClientConfig, QuerySlotId, Shared};
+use nve_query::{Clock, QueryClient, QueryClientConfig, QueryHandle, QuerySlotId, Shared};
 use nve_rpc::{BoxFuture, CborCodec, RawCall, RawReply, Transport, TransportError};
 
 use crate::sleep::{default_sleep_callback, SleepHandle};
@@ -139,6 +139,7 @@ struct BridgeSlots {
     alive: bool,
     signals: Vec<Option<(Signal<u32>, u32)>>,
     slot_tasks: Vec<Option<Task>>,
+    last_attempted: Vec<Option<(u32, u64)>>,
     dirty_buf: Vec<(QuerySlotId, u32)>,
     to_update_buf: Vec<(Signal<u32>, u32)>,
 }
@@ -169,6 +170,7 @@ impl DioxusQueryBridge {
                 alive: true,
                 signals: Vec::new(),
                 slot_tasks: Vec::new(),
+                last_attempted: Vec::new(),
                 dirty_buf: Vec::with_capacity(16),
                 to_update_buf: Vec::with_capacity(16),
             })),
@@ -200,8 +202,44 @@ impl DioxusQueryBridge {
         Some(Runtime::current().in_scope(self.provider_scope, || spawn(fut)))
     }
 
-    /// Spawns (or replaces) the provider-owned fetch task for `slot`, which is cancelled only when
-    /// the last UI subscriber on `slot` unmounts or the provider itself unmounts.
+    /// Records `(handle.generation, invalidation_version)` as the latest fetch attempt watermark
+    /// for `handle.slot`. Returns `true` when this caller should initiate the fetch and `false`
+    /// when a sibling already attempted (or failed) this exact `(slot_gen, invalidation_version)`.
+    pub(crate) fn claim_slot_attempt(&self, handle: QueryHandle, invalidation_version: u64) -> bool {
+        let mut slots = self.slots.borrow_mut();
+        let idx = handle.slot.index();
+        if idx >= slots.last_attempted.len() {
+            slots.last_attempted.resize(idx + 1, None);
+        }
+        let token = (handle.generation, invalidation_version);
+        if slots.last_attempted[idx] == Some(token) {
+            return false;
+        }
+        slots.last_attempted[idx] = Some(token);
+        true
+    }
+
+    /// Clears the per-slot attempt watermark unconditionally (e.g. on explicit `refetch()`).
+    pub(crate) fn clear_slot_attempt(&self, slot: QuerySlotId) {
+        let mut slots = self.slots.borrow_mut();
+        if let Some(entry) = slots.last_attempted.get_mut(slot.index()) {
+            *entry = None;
+        }
+    }
+
+    /// Clears the per-slot attempt watermark only if it still matches `(handle.generation, inv)`
+    /// (called when a fetch resolves `Ok`, allowing future time-based stale revalidation).
+    pub(crate) fn clear_slot_attempt_if(&self, handle: QueryHandle, invalidation_version: u64) {
+        let mut slots = self.slots.borrow_mut();
+        if let Some(entry) = slots.last_attempted.get_mut(handle.slot.index())
+            && *entry == Some((handle.generation, invalidation_version))
+        {
+            *entry = None;
+        }
+    }
+
+    /// Spawns (or replaces) the provider-owned fetch task for `slot`, cancelling any superseded
+    /// prior task outside the `RefCell` borrow so orphaned retry loops cannot outlive unmount.
     pub(crate) fn spawn_slot_fetch(
         &self,
         slot: QuerySlotId,
@@ -210,12 +248,17 @@ impl DioxusQueryBridge {
         let Some(task) = self.spawn_in_provider(fut) else {
             return;
         };
-        let mut slots = self.slots.borrow_mut();
-        let idx = slot.index();
-        if idx >= slots.slot_tasks.len() {
-            slots.slot_tasks.resize(idx + 1, None);
+        let prev = {
+            let mut slots = self.slots.borrow_mut();
+            let idx = slot.index();
+            if idx >= slots.slot_tasks.len() {
+                slots.slot_tasks.resize(idx + 1, None);
+            }
+            slots.slot_tasks[idx].replace(task)
+        };
+        if let Some(prev) = prev {
+            prev.cancel();
         }
-        slots.slot_tasks[idx] = Some(task);
     }
 
     /// Acquires (or refcount-increments) the dense `Signal<u32>` for `slot`, allocating it inside
@@ -245,6 +288,9 @@ impl DioxusQueryBridge {
             if *count == 0 {
                 let sig = *sig;
                 slots.signals[idx] = None;
+                if let Some(attempt) = slots.last_attempted.get_mut(idx) {
+                    *attempt = None;
+                }
                 let task = slots.slot_tasks.get_mut(idx).and_then(Option::take);
                 drop(slots);
                 if let Some(task) = task {

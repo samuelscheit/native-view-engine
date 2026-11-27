@@ -108,24 +108,48 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 ticket_and_call = Some(pair);
                 break;
             }
-            let still_fetching = self.inner.state.with(|s| {
-                s.is_live(handle)
-                    && s.metas[handle.slot.index()].proc_id == P::ID
-                    && s.metas[handle.slot.index()].is_fetching()
+            let wait_snapshot = self.inner.state.with(|s| {
+                if !s.is_live(handle) {
+                    return None;
+                }
+                let idx = handle.slot.index();
+                let meta = s.metas[idx];
+                if meta.proc_id != P::ID || !meta.is_fetching() {
+                    return None;
+                }
+                let inv_ver = ((u64::from(s.wildcard_epoch)) << 32) | u64::from(meta.fetch_gen);
+                Some((s.payloads[idx].completed_seq, inv_ver))
             });
-            if !still_fetching {
+            let Some((pre_completed_seq, pre_inv_ver)) = wait_snapshot else {
                 let snap = self.read::<P>(handle);
                 if let Some(err) = snap.error {
                     return Err(err);
                 }
                 return Ok(snap.data);
-            }
+            };
             self.wait_for_in_flight(handle).await;
-            let snap = self.read::<P>(handle);
-            if let Some(err) = snap.error {
-                return Err(err);
-            }
-            if snap.data.is_some() && !snap.is_invalidated {
+            let settled_by_leader = self.inner.state.with(|s| {
+                if !s.is_live(handle) {
+                    return true;
+                }
+                let idx = handle.slot.index();
+                let meta = s.metas[idx];
+                if meta.proc_id != P::ID {
+                    return true;
+                }
+                let cur_completed_seq = s.payloads[idx].completed_seq;
+                if cur_completed_seq == pre_completed_seq {
+                    return false;
+                }
+                let cur_inv_ver = ((u64::from(s.wildcard_epoch)) << 32) | u64::from(meta.fetch_gen);
+                cur_inv_ver == pre_inv_ver
+                    || (!meta.is_invalidated(s.wildcard_epoch) && meta.has_data())
+            });
+            if settled_by_leader {
+                let snap = self.read::<P>(handle);
+                if let Some(err) = snap.error {
+                    return Err(err);
+                }
                 return Ok(snap.data);
             }
         }

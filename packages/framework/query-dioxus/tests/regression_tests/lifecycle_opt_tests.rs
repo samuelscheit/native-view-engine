@@ -194,22 +194,24 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
         )
         .unwrap();
 
-    type BridgeSlot = Rc<RefCell<Option<(DioxusQueryBridge, Signal<bool>)>>>;
+    type BridgeSlot = Rc<RefCell<Option<(DioxusQueryBridge, Signal<bool>, Signal<u32>)>>>;
     let slot: BridgeSlot = Rc::new(RefCell::new(None));
 
     #[component]
     fn Inner(mut show_provider: Signal<bool>) -> Element {
         let q = use_query_with::<GetItem>(1, QueryOptions::default().stale_time_ms(60_000));
         let act = use_action::<RenameItem>();
+        let raw_sig = use_signal(|| 0u32);
         let bridge = dioxus_core::consume_context::<DioxusQueryBridge>();
         let slot = dioxus_core::consume_context::<BridgeSlot>();
         use_hook(move || {
-            *slot.borrow_mut() = Some((bridge, show_provider));
+            *slot.borrow_mut() = Some((bridge, show_provider, raw_sig));
         });
         let name = q.data().map(|d| d.name.clone()).unwrap_or_default();
+        let raw_v = *raw_sig.read();
         rsx! {
             Col {
-                text { "VAL:{name}" }
+                text { "VAL:{name}:{raw_v}" }
                 Button {
                     test_id: "unmount-provider-btn".to_owned(),
                     on_press: move |_| {
@@ -261,31 +263,30 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert!(web.render_html().contains("VAL:Base"));
 
-    let (bridge, _) = slot.borrow().clone().unwrap();
+    let (bridge, _, mut raw_sig) = slot.borrow().clone().unwrap();
     assert_eq!(bridge.live_signal_count(), 1);
 
-    // Warm one flush cycle, then verify:
+    // Warm both `flush_dirty_slots` and the same-subscriber `raw_sig` once, then verify:
     // 1. Quiet/no-op `flush_dirty_slots` performs 0 total heap allocations.
-    // 2. Dirty `flush_dirty_slots` adds 0 bridge allocations on top of raw `dioxus_signals::Signal::set`.
+    // 2. Dirty `flush_dirty_slots` adds EXACTLY 0 bridge allocations on top of raw `Signal::set`.
     let _ = client.invalidate_tags(&[Tag64::keyed("item", 1)]);
     surface.in_root_scope(|| bridge.flush_dirty_slots());
+    surface.in_root_scope(|| raw_sig.set(1));
     let (_, quiet_allocs) = count_allocs(|| {
         surface.in_root_scope(|| bridge.flush_dirty_slots());
     });
     assert_eq!(quiet_allocs, 0, "quiet flush_dirty_slots must allocate 0 times");
 
-    let mut raw_sig = surface.in_root_scope(|| Signal::new(0u32));
-    let _ = surface.in_root_scope(|| *raw_sig.read());
     let (_, raw_sig_allocs) = count_allocs(|| {
-        surface.in_root_scope(|| raw_sig.set(1));
+        surface.in_root_scope(|| raw_sig.set(2));
     });
     let _ = client.invalidate_tags(&[Tag64::keyed("item", 1)]);
     let (_, flush_allocs) = count_allocs(|| {
         surface.in_root_scope(|| bridge.flush_dirty_slots());
     });
-    assert!(
-        flush_allocs <= raw_sig_allocs + 1,
-        "flush_dirty_slots added unexpected bridge allocations (flush={flush_allocs}, raw_signal_set={raw_sig_allocs})"
+    assert_eq!(
+        flush_allocs, raw_sig_allocs,
+        "flush_dirty_slots must add exactly 0 bridge allocations over raw Signal::set"
     );
 
     // Click KillProvider: applies optimistic patch, spawns task, and IMMEDIATELY unmounts provider
@@ -313,4 +314,279 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
     // Re-subscribe and verify the optimistic patch was rolled back cleanly to "Base"!
     let h = client.subscribe::<GetItem>(&1, QueryOptions::default()).unwrap();
     assert_eq!(client.read::<GetItem>(h).data.unwrap().name, "Base");
+}
+
+#[test]
+fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
+    let transport = RegTransport::new("Start");
+    let client = erased_query_client_with_clock(
+        transport.clone(),
+        Shared::new(ManualClock::new(1_000)),
+        QueryClientConfig::default(),
+    );
+
+    #[component]
+    fn RunRow(mut show_row: Signal<bool>) -> Element {
+        let act = use_action::<RenameItem>();
+        rsx! {
+            Button {
+                test_id: "run-and-unmount-btn".to_owned(),
+                on_press: move |_| {
+                    act.run(RenameItemInput {
+                        id: 1,
+                        name: "FromRun".into(),
+                    });
+                    show_row.set(false);
+                },
+                "Run"
+            }
+        }
+    }
+
+    #[component]
+    fn FormRow(mut show_form: Signal<bool>) -> Element {
+        let mut ctrl = use_signal(FormController::new);
+        use_hook(move || {
+            ctrl.write().set_text("name", "FromActionForm");
+        });
+        rsx! {
+            ActionForm::<RenameItem> {
+                action: "/items/rename".to_owned(),
+                test_id: "unmount-action-form".to_owned(),
+                controller: Some(ctrl),
+                FormField { name: "name".to_owned(), test_id: "uf-name".to_owned() }
+                FormSubmitButton { test_id: "uf-submit".to_owned(), "Submit" }
+            }
+            Button {
+                test_id: "hide-form-btn".to_owned(),
+                on_press: move |_| show_form.set(false),
+                "Hide"
+            }
+        }
+    }
+
+    #[component]
+    fn Root() -> Element {
+        let client = dioxus_core::consume_context::<ErasedQueryClient>();
+        let show_row = use_signal(|| true);
+        let show_form = use_signal(|| true);
+        rsx! {
+            ThemeProvider {
+                theme: UiTheme::light(),
+                QueryClientProvider {
+                    client: client,
+                    Col {
+                        if show_row() {
+                            RunRow { show_row: show_row }
+                        }
+                        if show_form() {
+                            FormRow { show_form: show_form }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut surface = DioxusSurface::new(1, Root).with_context(client);
+    let mut web = WebBackend::new();
+    let mut frame = 0;
+    let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
+
+    let _ = render_once(&mut surface, &mut web, &mut frame);
+    let find = |web: &WebBackend, tid: &str| {
+        web.iter_nodes()
+            .find_map(|(id, el)| {
+                matches!(
+                    el.raw_props.get("testID"),
+                    Some(nve_abi::RawPropValue::String(s)) if s == tid
+                )
+                .then_some(id)
+            })
+            .unwrap()
+    };
+
+    // 1. Trigger UseAction::run() and immediately unmount RunRow before first task poll.
+    let run_btn = find(&web, "run-and-unmount-btn");
+    assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
+        surface_id: 1,
+        node_id: run_btn,
+        timestamp_us: 0,
+        kind: nve_abi::NativeEventKind::Press,
+        payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
+    }]));
+    let _ = render_once(&mut surface, &mut web, &mut frame);
+    let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
+    assert_eq!(transport.inner.lock().unwrap().action_calls, 1);
+    assert_eq!(transport.inner.lock().unwrap().name, "FromRun");
+
+    // 2. Submit ActionForm and unmount FormRow in the SAME event batch before first task poll.
+    let form_id = find(&web, "unmount-action-form");
+    let hide_btn = find(&web, "hide-form-btn");
+    assert!(surface.dispatch_events(&[
+        nve_abi::NativeEvent {
+            surface_id: 1,
+            node_id: form_id,
+            timestamp_us: 0,
+            kind: nve_abi::NativeEventKind::Submit,
+            payload: nve_abi::EventPayload::Text(String::new()),
+        },
+        nve_abi::NativeEvent {
+            surface_id: 1,
+            node_id: hide_btn,
+            timestamp_us: 0,
+            kind: nve_abi::NativeEventKind::Press,
+            payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
+        },
+    ]));
+    let _ = render_once(&mut surface, &mut web, &mut frame);
+    let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
+    assert_eq!(transport.inner.lock().unwrap().action_calls, 2);
+    assert_eq!(transport.inner.lock().unwrap().name, "FromActionForm");
+}
+
+#[test]
+fn spawn_slot_fetch_supersede_cancels_sleeping_retry_and_siblings_dedupe_failed_query() {
+    use std::sync::Mutex;
+
+    // Part A: Two mounted siblings sharing a failing query fire ONLY 1 request (not 2!).
+    let fail_transport = RegTransport::new("Err");
+    fail_transport.inner.lock().unwrap().fail_queries = true;
+    let fail_client = erased_query_client_with_clock(
+        fail_transport.clone(),
+        Shared::new(ManualClock::new(1_000)),
+        QueryClientConfig::default(),
+    );
+
+    #[component]
+    fn FailSibling() -> Element {
+        let mut opts = QueryOptions::default().stale_time_ms(60_000);
+        opts.max_retries = 0;
+        let q = use_query_with::<GetItem>(1, opts);
+        let has_err = q.error().is_some();
+        rsx! { text { "ERR:{has_err}" } }
+    }
+
+    #[component]
+    fn FailRoot() -> Element {
+        let client = dioxus_core::consume_context::<ErasedQueryClient>();
+        rsx! {
+            QueryClientProvider {
+                client: client,
+                Col {
+                    FailSibling {}
+                    FailSibling {}
+                }
+            }
+        }
+    }
+
+    let mut s1 = DioxusSurface::new(1, FailRoot).with_context(fail_client);
+    let mut w1 = WebBackend::new();
+    let mut f1 = 0;
+    let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
+    let _ = render_once(&mut s1, &mut w1, &mut f1);
+    let _ = pump_settled(&mut s1, &mut w1, &waker, &mut f1);
+    assert_eq!(
+        fail_transport.inner.lock().unwrap().query_calls,
+        1,
+        "two siblings sharing a failing query must not each fire a duplicate fetch"
+    );
+
+    // Part B: Superseding a sleeping retry task cancels the old task (no ghost fetch after unmount).
+    #[derive(Default)]
+    struct SleepGate {
+        released: bool,
+        wakers: Vec<Waker>,
+    }
+    let sleep_gate = Arc::new(Mutex::new(SleepGate::default()));
+    let gate_for_sleep = Arc::clone(&sleep_gate);
+    let sleep = SleepHandle::new(move |_ms| {
+        let gate = Arc::clone(&gate_for_sleep);
+        Box::pin(async move {
+            core::future::poll_fn(|cx| {
+                let mut g = gate.lock().unwrap();
+                if g.released {
+                    core::task::Poll::Ready(())
+                } else {
+                    g.wakers.push(cx.waker().clone());
+                    core::task::Poll::Pending
+                }
+            })
+            .await;
+        })
+    });
+
+    let retry_transport = RegTransport::new("Retry");
+    retry_transport.inner.lock().unwrap().transient_failures_left = 1;
+    let retry_client = erased_query_client_with_clock(
+        retry_transport.clone(),
+        Shared::new(ManualClock::new(1_000)),
+        QueryClientConfig::default(),
+    );
+
+    type CtrlSlot = Rc<RefCell<Option<(Signal<bool>, UseQuery<GetItem>)>>>;
+    let ctrl_slot: CtrlSlot = Rc::new(RefCell::new(None));
+
+    #[component]
+    fn RetryView(show: Signal<bool>) -> Element {
+        let mut opts = QueryOptions::default().stale_time_ms(60_000);
+        opts.max_retries = 2;
+        let q = use_query_with::<GetItem>(2, opts);
+        let slot = dioxus_core::consume_context::<CtrlSlot>();
+        use_hook(move || {
+            *slot.borrow_mut() = Some((show, q));
+        });
+        let name = q.data().map(|d| d.name.clone()).unwrap_or_default();
+        rsx! { text { "R:{name}" } }
+    }
+
+    #[component]
+    fn RetryRoot() -> Element {
+        let (client, sleep) = dioxus_core::consume_context::<(ErasedQueryClient, SleepHandle)>();
+        let show = use_signal(|| true);
+        rsx! {
+            QueryClientProvider {
+                client: client,
+                sleep: Some(sleep),
+                if show() {
+                    RetryView { show: show }
+                }
+            }
+        }
+    }
+
+    let mut s2 = DioxusSurface::new(1, RetryRoot)
+        .with_context((retry_client, sleep))
+        .with_context(Rc::clone(&ctrl_slot));
+    let mut w2 = WebBackend::new();
+    let mut f2 = 0;
+    let _ = render_once(&mut s2, &mut w2, &mut f2);
+    let _ = pump_settled(&mut s2, &mut w2, &waker, &mut f2);
+    // Task 1 failed attempt 1 and is now parked in sleep_gate.
+    assert_eq!(retry_transport.inner.lock().unwrap().query_calls, 1);
+
+    // Supersede Task 1 with an explicit refetch (Task 2 succeeds), then unmount RetryView!
+    let (mut show_sig, q_handle) = ctrl_slot.borrow().unwrap();
+    s2.in_root_scope(|| q_handle.refetch());
+    let _ = pump_settled(&mut s2, &mut w2, &waker, &mut f2);
+    assert_eq!(retry_transport.inner.lock().unwrap().query_calls, 2);
+    s2.in_root_scope(|| show_sig.set(false));
+    let _ = render_once(&mut s2, &mut w2, &mut f2);
+
+    // Releasing the old sleep gate MUST NOT trigger any ghost retry from cancelled Task 1!
+    let wakers = {
+        let mut g = sleep_gate.lock().unwrap();
+        g.released = true;
+        core::mem::take(&mut g.wakers)
+    };
+    for w in wakers {
+        w.wake();
+    }
+    let _ = pump_settled(&mut s2, &mut w2, &waker, &mut f2);
+    assert_eq!(
+        retry_transport.inner.lock().unwrap().query_calls,
+        2,
+        "superseded retry task must be cancelled and never fire ghost fetches after unmount"
+    );
 }

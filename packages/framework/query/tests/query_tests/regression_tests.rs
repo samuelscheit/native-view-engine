@@ -123,7 +123,7 @@ impl std::task::Wake for WakeCounter {
 }
 
 #[test]
-fn pre_boot_hydration_age_above_grace_marks_slot_invalidated_and_stale() {
+fn pre_boot_hydration_age_above_grace_marks_slot_stale_without_clamping() {
     let src_clock = Shared::new(ManualClock::new(1_000));
     let src = QueryClient::with_clock(
         ScriptedTransport::default(),
@@ -162,8 +162,8 @@ fn pre_boot_hydration_age_above_grace_marks_slot_invalidated_and_stale() {
     let snap = dst.read::<GetItem>(h);
     assert!(snap.data.is_some());
     assert!(
-        snap.is_invalidated && snap.is_stale,
-        "pre-boot hydrated entry exceeding grace window must be marked invalidated & stale"
+        snap.is_stale && !snap.is_invalidated,
+        "pre-boot hydrated entry exceeding grace window must be stale via exact signed updated_at_ms without permanently invalidating"
     );
     assert!(dst.needs_fetch(h));
 
@@ -380,4 +380,162 @@ fn optimistic_action_dropped_mid_flight_rolls_back_and_invalidates_static_tags()
         snap.is_invalidated,
         "dropping action mid-network-call has ambiguous server state and must invalidate static tags"
     );
+}
+
+#[test]
+fn hydrated_entry_preserves_exact_pre_boot_age_and_subsequent_stale_time() {
+    let src_clock = Shared::new(ManualClock::new(100_000));
+    let src = QueryClient::with_clock(
+        ScriptedTransport::default(),
+        CborCodec::default(),
+        src_clock.clone(),
+        QueryClientConfig::default(),
+    );
+    src.set_query_data::<GetItem>(
+        &1,
+        Item {
+            id: 1,
+            title: "HydratedExact".into(),
+            closed: false,
+        },
+    )
+    .unwrap();
+    // 20 s elapsed before dehydration.
+    src_clock.advance(20_000);
+    let blob = src.dehydrate_bytes().unwrap();
+
+    // Case 1: age (20_000) > now_ms (5_000), grace = 30_000 -> remaining freshness MUST be 10_000 ms
+    // (stale at now_ms = 15_000, NOT clamped to updated_at = 0 / stale at 30_000).
+    let dst_clock = Shared::new(ManualClock::new(5_000));
+    let dst = QueryClient::with_clock(
+        ScriptedTransport::default(),
+        CborCodec::default(),
+        dst_clock.clone(),
+        QueryClientConfig {
+            hydration_grace_ms: 30_000,
+            ..QueryClientConfig::default()
+        },
+    );
+    assert_eq!(dst.hydrate_bytes(&blob).unwrap(), 1);
+    let h = dst.subscribe::<GetItem>(&1, QueryOptions::default()).unwrap();
+    assert!(!dst.read::<GetItem>(h).is_stale);
+    dst_clock.advance(9_999);
+    assert!(!dst.read::<GetItem>(h).is_stale);
+    dst_clock.advance(1);
+    assert!(
+        dst.read::<GetItem>(h).is_stale,
+        "entry with age=20s hydrated at now=5s with 30s grace must go stale at now=15s"
+    );
+
+    // Case 2: age (20_000) > now_ms (50) and > grace (5_000), hydrated BEFORE component subscribes
+    // with stale_time_ms(60_000) -> MUST NOT be permanently invalidated; stays fresh for 40_000 ms!
+    let dst2_clock = Shared::new(ManualClock::new(50));
+    let dst2 = QueryClient::with_clock(
+        ScriptedTransport::default(),
+        CborCodec::default(),
+        dst2_clock.clone(),
+        QueryClientConfig {
+            hydration_grace_ms: 5_000,
+            ..QueryClientConfig::default()
+        },
+    );
+    assert_eq!(dst2.hydrate_bytes(&blob).unwrap(), 1);
+    let h2 = dst2
+        .subscribe::<GetItem>(&1, QueryOptions::default().stale_time_ms(60_000))
+        .unwrap();
+    let snap = dst2.read::<GetItem>(h2);
+    assert!(!snap.is_invalidated);
+    assert!(
+        !snap.is_stale,
+        "20s-old hydrated entry must respect caller's 60s stale_time_ms even when now_ms=50"
+    );
+    dst2_clock.advance(39_999);
+    assert!(!dst2.read::<GetItem>(h2).is_stale);
+    dst2_clock.advance(1);
+    assert!(dst2.read::<GetItem>(h2).is_stale);
+}
+
+#[test]
+fn cancelled_leader_takeover_works_on_stale_data_and_prior_error() {
+    let clock = Shared::new(ManualClock::new(1_000));
+    let transport = DeferredTransport::new(false);
+    let client = QueryClient::with_clock(
+        transport.clone(),
+        CborCodec::default(),
+        clock.clone(),
+        QueryClientConfig::default(),
+    );
+
+    // Case 1: Stale data revalidation (has data, !is_invalidated, is_stale == true).
+    let h_stale = client
+        .subscribe::<GetItem>(&10, QueryOptions::default().stale_time_ms(5_000))
+        .unwrap();
+    client
+        .set_query_data::<GetItem>(
+            &10,
+            Item {
+                id: 10,
+                title: "StaleV1".into(),
+                closed: false,
+            },
+        )
+        .unwrap();
+    clock.advance(10_000);
+    assert!(client.read::<GetItem>(h_stale).is_stale);
+    assert!(!client.read::<GetItem>(h_stale).is_invalidated);
+
+    transport.state.lock().unwrap().defer = true;
+    let waker = Waker::from(Arc::new(WakeCounter(AtomicUsize::new(0))));
+    let mut leader = Box::pin(client.fetch_handle::<GetItem>(h_stale));
+    let mut follower = Box::pin(client.fetch_handle::<GetItem>(h_stale));
+    assert!(matches!(
+        Pin::as_mut(&mut leader).poll(&mut Context::from_waker(&waker)),
+        Poll::Pending
+    ));
+    assert!(matches!(
+        Pin::as_mut(&mut follower).poll(&mut Context::from_waker(&waker)),
+        Poll::Pending
+    ));
+    drop(leader);
+    transport.release();
+    let res = match Pin::as_mut(&mut follower).poll(&mut Context::from_waker(&waker)) {
+        Poll::Ready(r) => r.expect("follower must take over stale-data revalidation"),
+        Poll::Pending => panic!("follower should resolve after takeover"),
+    };
+    assert_eq!(
+        res.expect("fresh data expected").title,
+        "Deferred #10 v1",
+        "cancelled leader must not cause follower to return stale V1 data"
+    );
+
+    // Case 2: Prior error on slot (committed_error.is_some()), leader drops mid-retry -> follower
+    // MUST take over and resolve Ok instead of returning the old error!
+    let h_err = client
+        .subscribe::<GetItem>(&11, QueryOptions::default())
+        .unwrap();
+    let (bad_ticket, _) = client.begin_fetch_for::<GetItem>(h_err).unwrap();
+    assert!(client.complete_fetch::<GetItem>(
+        bad_ticket,
+        Err(nve_rpc::RpcError::Transport(TransportError::network("old failure"))),
+    ));
+    assert!(client.read::<GetItem>(h_err).error.is_some());
+
+    transport.state.lock().unwrap().defer = true;
+    let mut err_leader = Box::pin(client.fetch_handle::<GetItem>(h_err));
+    let mut err_follower = Box::pin(client.fetch_handle::<GetItem>(h_err));
+    assert!(matches!(
+        Pin::as_mut(&mut err_leader).poll(&mut Context::from_waker(&waker)),
+        Poll::Pending
+    ));
+    assert!(matches!(
+        Pin::as_mut(&mut err_follower).poll(&mut Context::from_waker(&waker)),
+        Poll::Pending
+    ));
+    drop(err_leader);
+    transport.release();
+    let res2 = match Pin::as_mut(&mut err_follower).poll(&mut Context::from_waker(&waker)) {
+        Poll::Ready(r) => r.expect("follower must take over retry after prior error"),
+        Poll::Pending => panic!("follower should resolve after takeover"),
+    };
+    assert_eq!(res2.expect("fresh item expected").title, "Deferred #11 v2");
 }

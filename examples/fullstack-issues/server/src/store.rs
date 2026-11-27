@@ -96,12 +96,8 @@ impl IssueStore {
                     return false;
                 }
                 if let Some(q) = filter.query.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    let found = issue
-                        .title
-                        .as_bytes()
-                        .windows(q.len())
-                        .any(|w| w.eq_ignore_ascii_case(q.as_bytes()));
-                    if !found {
+                    let q_lower = q.to_lowercase();
+                    if !issue.title.to_lowercase().contains(&q_lower) {
                         return false;
                     }
                 }
@@ -131,11 +127,12 @@ impl IssueStore {
     pub fn create(&self, input: &CreateIssueInput) -> Result<Issue, ApiError> {
         input.validate().map_err(ApiError::Validation)?;
         let trimmed = input.title.trim();
+        let trimmed_lower = trimmed.to_lowercase();
         let mut guard = self.inner.write().expect("issue store lock poisoned");
         if guard
             .issues
             .values()
-            .any(|existing| existing.title.eq_ignore_ascii_case(trimmed))
+            .any(|existing| existing.title.to_lowercase() == trimmed_lower)
         {
             let mut errs = FieldErrors::new();
             errs.push("title", "an issue with this title already exists");
@@ -167,6 +164,7 @@ impl IssueStore {
     pub fn rename(&self, input: &RenameIssueInput) -> Result<Issue, ApiError> {
         input.validate().map_err(ApiError::Validation)?;
         let trimmed = input.title.trim();
+        let trimmed_lower = trimmed.to_lowercase();
         let mut guard = self.inner.write().expect("issue store lock poisoned");
         if !guard.issues.contains_key(&input.id) {
             return Err(ApiError::NotFound(input.id));
@@ -174,7 +172,7 @@ impl IssueStore {
         if guard
             .issues
             .values()
-            .any(|existing| existing.id != input.id && existing.title.eq_ignore_ascii_case(trimmed))
+            .any(|existing| existing.id != input.id && existing.title.to_lowercase() == trimmed_lower)
         {
             let mut errs = FieldErrors::new();
             errs.push("title", "an issue with this title already exists");

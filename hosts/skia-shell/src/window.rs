@@ -39,7 +39,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nve_abi::{ColorRgba, FrameId, NveDirectEvent, SurfaceId};
+use nve_abi::{ColorRgba, FrameId, NveEventBatchRef, SurfaceId};
 use nve_backend_skia::encode_rgb_png;
 use nve_backend_skia::gpu::GpuBackendKind;
 use nve_backend_skia::raster::PixelBuffer;
@@ -175,7 +175,7 @@ impl Default for DesktopPreviewOptions {
 pub trait DesktopApp {
     fn generation(&self) -> u64;
     fn render(&mut self, frame_id: FrameId) -> &[u8];
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool;
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool;
     /// Forwards one binary `NVP1` hot-patch frame to the app's `NveDevApi::apply_hot_patch`.
     fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool;
     fn reload(
@@ -286,9 +286,9 @@ impl DesktopApp for HotAppSlot {
         }
     }
 
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
         match self.instance.as_mut() {
-            Some(inst) => inst.dispatch_events(events),
+            Some(inst) => inst.dispatch_events(events.as_slice()),
             None => false,
         }
     }
