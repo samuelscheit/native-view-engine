@@ -34,7 +34,7 @@ fn word_enums() -> Vec<WordEnum> {
     word_enums![
         Overflow, Visibility, FontStyle, TextAlign, WhiteSpace, WordBreak, OverflowWrap,
         VerticalAlign, ScrollAxes, Scrollbars, ImageFit, InputKind, LinkTarget, AriaRole,
-        AriaTriState, AriaLive, AriaOrientation, AriaAutoComplete, Display, Position,
+        AriaTriState, AriaLive, AriaOrientation, AriaAutoComplete, CursorKind, Display, Position,
         FlexDirection, FlexWrap, AlignItems, AlignSelf, AlignContent, JustifyContent,
     ]
 }

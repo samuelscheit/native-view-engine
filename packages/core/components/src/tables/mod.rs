@@ -19,7 +19,7 @@ mod tests;
 pub use box_shadow::{parse_box_shadow, write_box_shadows_css, BoxShadow};
 pub use interaction::{
     Accessibility, AccessibilityMut, AccessibilityRef, AriaAutoComplete, AriaLive, AriaOrientation,
-    AriaRole, AriaTriState, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
+    AriaRole, AriaTriState, CursorKind, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
     InteractionRef, StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
     NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
 };
