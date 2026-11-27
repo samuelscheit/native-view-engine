@@ -16,15 +16,11 @@ use nve_ui::prelude::*;
 #[component]
 pub(crate) fn WorkspaceStatsSection() -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
-    let border_hex = p.border.as_ref().to_owned();
-    let surface_hex = p.surface.as_ref().to_owned();
-    let muted_hex = p.text_secondary.as_ref().to_owned();
-    let danger_hex = p.danger.as_ref().to_owned();
+    let border_hex = theme.border.default.hex();
+    let surface_hex = theme.surface.base.hex();
+    let muted_hex = theme.text.secondary.hex();
+    let danger_hex = theme.status.danger.text.hex();
 
-    let err_border = danger_hex.clone();
-    let err_surface = surface_hex.clone();
-    let err_text = danger_hex;
 
     rsx! {
         QuerySuspense {
@@ -41,15 +37,12 @@ pub(crate) fn WorkspaceStatsSection() -> Element {
             },
             error_fallback: move |report: UiErrorReport, reset: ErrorBoundaryReset| {
                 let msg = report.message;
-                let b = err_border.clone();
-                let s = err_surface.clone();
-                let t = err_text.clone();
                 rsx! {
                     view {
                         test_id: "stats-error-boundary",
-                        style: "width: 100%; padding-vertical: 14px; padding-horizontal: 16px; border-radius: 10px; border-width: 1px; border-color: {b}; background: {s}; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;",
+                        style: "width: 100%; padding-vertical: 14px; padding-horizontal: 16px; border-radius: 10px; border-width: 1px; border-color: {danger_hex}; background: {surface_hex}; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;",
                         text {
-                            style: "font-size: 13px; color: {t};",
+                            style: "font-size: 13px; color: {danger_hex};",
                             "Failed to load workspace stats: {msg}"
                         }
                         Button {
@@ -70,11 +63,10 @@ pub(crate) fn WorkspaceStatsSection() -> Element {
 #[component]
 fn WorkspaceStatsContent() -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
-    let border_hex = p.border.as_ref();
-    let surface_hex = p.surface.as_ref();
-    let fg_hex = p.text_primary.as_ref();
-    let muted_hex = p.text_secondary.as_ref();
+    let border_hex = theme.border.default.hex();
+    let surface_hex = theme.surface.base.hex();
+    let fg_hex = theme.text.primary.hex();
+    let muted_hex = theme.text.secondary.hex();
 
     let stats_query = use_query_with::<GetWorkspaceStats>(
         StatsRequest::default(),
@@ -178,17 +170,12 @@ fn StatMetricTile(
 #[component]
 pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
-    let border_hex = p.border.as_ref().to_owned();
-    let surface_hex = p.surface.as_ref().to_owned();
-    let muted_hex = p.text_secondary.as_ref().to_owned();
-    let danger_hex = p.danger.as_ref().to_owned();
+    let border_hex = theme.border.default.hex();
+    let surface_hex = theme.surface.base.hex();
+    let muted_hex = theme.text.secondary.hex();
+    let danger_hex = theme.status.danger.text.hex();
     let id_num = issue_id.0;
 
-    let err_border = danger_hex.clone();
-    let err_surface = surface_hex.clone();
-    let err_text = danger_hex;
-    let err_muted = muted_hex.clone();
 
     rsx! {
         QuerySuspense {
@@ -209,14 +196,10 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
             },
             error_fallback: move |report: UiErrorReport, reset: ErrorBoundaryReset| {
                 let msg = report.message;
-                let b = err_border.clone();
-                let s = err_surface.clone();
-                let t = err_text.clone();
-                let m = err_muted.clone();
                 rsx! {
                     view {
                         test_id: "comments-error-boundary",
-                        style: "width: 100%; padding: 16px; border-radius: 10px; border-width: 1px; border-color: {b}; background: {s}; display: flex; flex-direction: column; gap: 10px;",
+                        style: "width: 100%; padding: 16px; border-radius: 10px; border-width: 1px; border-color: {danger_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
                         Row {
                             justify: Some("space-between".to_owned()),
                             style: Some("flex-wrap: wrap; gap: 8px;".to_owned()),
@@ -224,12 +207,12 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
                                 gap: Some(4.0),
                                 align: Some("flex-start".to_owned()),
                                 text {
-                                    style: "font-size: 13px; font-weight: 700; color: {t};",
+                                    style: "font-size: 13px; font-weight: 700; color: {danger_hex};",
                                     "Could not load discussion for Issue #{id_num}"
                                 }
                                 text {
                                     test_id: "comments-error-message",
-                                    style: "font-size: 12px; color: {m};",
+                                    style: "font-size: 12px; color: {muted_hex};",
                                     "{msg}"
                                 }
                             }
@@ -252,12 +235,11 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
 #[component]
 fn FeaturedCommentsContent(issue_id: IssueId) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
-    let border_hex = p.border.as_ref();
-    let surface_hex = p.surface.as_ref();
-    let subtle_bg = p.surface_subtle.as_ref();
-    let fg_hex = p.text_primary.as_ref();
-    let muted_hex = p.text_secondary.as_ref();
+    let border_hex = theme.border.default.hex();
+    let surface_hex = theme.surface.base.hex();
+    let subtle_bg = theme.surface.subtle.hex();
+    let fg_hex = theme.text.primary.hex();
+    let muted_hex = theme.text.secondary.hex();
     let id_num = issue_id.0;
 
     let comments_query = use_query_with::<ListComments>(

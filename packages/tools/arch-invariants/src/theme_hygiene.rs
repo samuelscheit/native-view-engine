@@ -11,6 +11,7 @@ pub const THEMED_SOURCE_DIRS: &[&str] = &[
     "examples/nve-docs-site/src",
     "examples/studio-workspace/src",
     "examples/kitchen-sink/src",
+    "examples/fullstack-issues/client/src",
 ];
 
 /// Files that legitimately hold color literals: the token generator itself and the CSS color
