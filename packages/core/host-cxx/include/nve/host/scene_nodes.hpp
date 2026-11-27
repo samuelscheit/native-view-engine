@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -155,13 +156,18 @@ struct AccessibilityData {
 };
 
 /// One decoded node. Views borrow the scene (valid while its guard is held).
-struct NodeData {
+/// Identity and geometry of one live node: all a geometry-only `move` needs.
+struct NodeGeometry {
   uint32_t id = 0u;      // packed `NodeId`
   uint32_t index = 0u;
   uint32_t parent = 0u;  // packed `NodeId`, 0 for the root
   NodeKind kind = NodeKind::View;
   NveLayoutRect rect{};   // absolute (not scroll-shifted)
   NveLayoutRect local{};  // relative to the parent's rect
+};
+
+/// Everything a view shows for one live node.
+struct NodeData : NodeGeometry {
   std::span<const uint32_t> children;  // packed `NodeId`s
   VisualStyle visual;
   TextStyle text_style;
@@ -280,38 +286,53 @@ struct SceneTables {
   return s;
 }
 
-/// Decodes only the identity and geometry of live node `index`: `id`, `index`, `parent`, `kind`,
-/// `rect`, `local`, `children`. Every other field keeps its default.
-[[nodiscard]] inline NodeData read_geometry(const RuntimeSceneReader& scene, const SceneTables& t,
-                                            uint32_t index) noexcept {
+namespace detail {
+/// Fills `g` from `row` of node `index` (`kind` before the text-wrapper rule).
+inline void read_geometry_row(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
+                              const NveNodeRow& row, NodeGeometry& g) noexcept {
+  g.index = index;
+  g.id = make_node_id(index, row.generation);
+  g.parent = index == kRootIndex ? 0u : row.parent;
+  g.kind = t.kind_of(row.primary_slot);
+  g.rect = sealed_rect(*scene.rect(index));
+  g.local = g.rect;
+  if (const NveLayoutRect* p = g.parent != 0u ? scene.rect(node_index(g.parent)) : nullptr) {
+    const NveLayoutRect parent = sealed_rect(*p);
+    g.local.x = finite_or(g.local.x - parent.x, 0.0f);  // FLT_MAX - -FLT_MAX overflows
+    g.local.y = finite_or(g.local.y - parent.y, 0.0f);
+  }
+}
+
+/// An empty text wrapper of run leaves realizes as a container (see `NodeKind`).
+[[nodiscard]] constexpr NodeKind realized_kind(NodeKind kind, bool has_children, std::string_view text) noexcept {
+  return kind == NodeKind::Text && has_children && text.empty() ? NodeKind::View : kind;
+}
+}  // namespace detail
+
+/// Identity and geometry of live node `index` (`std::nullopt` when it has no row).
+[[nodiscard]] inline std::optional<NodeGeometry> read_geometry(const RuntimeSceneReader& scene, const SceneTables& t,
+                                                               uint32_t index) noexcept {
+  const NveNodeRow* row = scene.row(index);
+  if (row == nullptr) return std::nullopt;
+  NodeGeometry g;
+  detail::read_geometry_row(scene, t, index, *row, g);
+  if (g.kind == NodeKind::Text && !scene.node_children(index).value_or(std::span<const uint32_t>()).empty()) {
+    g.kind = detail::realized_kind(g.kind, true, t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene));
+  }
+  return g;
+}
+
+/// Decodes live node `index` (a default `NodeData` when it has no row). `text_style` is its
+/// resolved (inherited) style.
+[[nodiscard]] inline NodeData read_node(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
+                                        const TextStyle& text_style) noexcept {
   NodeData n;
   const NveNodeRow* row = scene.row(index);
   if (row == nullptr) return n;
-  n.index = index;
-  n.id = make_node_id(index, row->generation);
-  n.parent = index == kRootIndex ? 0u : row->parent;
-  n.kind = t.kind_of(row->primary_slot);
-  n.rect = sealed_rect(*scene.rect(index));
-  n.local = n.rect;
-  if (const NveLayoutRect* p = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr) {
-    const NveLayoutRect parent = sealed_rect(*p);
-    n.local.x = finite_or(n.local.x - parent.x, 0.0f);  // FLT_MAX - -FLT_MAX overflows
-    n.local.y = finite_or(n.local.y - parent.y, 0.0f);
-  }
+  detail::read_geometry_row(scene, t, index, *row, n);
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
-  // An empty text wrapper of run leaves realizes as a container (see `NodeKind`).
-  if (n.kind == NodeKind::Text && !n.children.empty() &&
-      t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene).empty()) {
-    n.kind = NodeKind::View;
-  }
-  return n;
-}
-
-/// Decodes live node `index`. `text_style` is its resolved (inherited) style.
-[[nodiscard]] inline NodeData read_node(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
-                                        const TextStyle& text_style) noexcept {
-  NodeData n = read_geometry(scene, t, index);
-  if (n.index != index) return n;
+  n.text = t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene);
+  n.kind = detail::realized_kind(n.kind, !n.children.empty(), n.text);
   n.text_style = text_style;
 
   const RowRef v = t.visual.at(index);
@@ -326,8 +347,6 @@ struct SceneTables {
                          static_cast<uint8_t>(v.bits(NVE_TABLE_VISUAL_VISIBILITY)),
                          v.bits(NVE_TABLE_VISUAL_BOX_SHADOWS),
                          v.bits(NVE_TABLE_VISUAL_BACKGROUND_FILL)};
-
-  n.text = t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene);
 
   if (t.image.has(index)) {
     const RowRef r = t.image.at(index);

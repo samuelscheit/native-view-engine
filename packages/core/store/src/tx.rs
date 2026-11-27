@@ -316,6 +316,34 @@ impl Transaction<'_> {
         touch(row, &mut s.touched, parent, effect::LAYOUT);
     }
 
+    /// A child that joined another parent: its row (`parent`) changed and it inherits a new
+    /// context (typography, layout), so it is dirty in its own right — not merely moved.
+    #[inline]
+    fn mark_reparented(&mut self, child: NodeIndex) {
+        let s = &mut *self.store;
+        touch(&mut s.nodes[child], &mut s.touched, child, effect::LAYOUT | effect::MEASURE | effect::PAINT);
+    }
+
+    /// `set`: clears the parent pointer of every child of `parent` and flags it `CHILD_SEEN`;
+    /// `!set`: drops those flags again (zero allocations).
+    fn flag_children(&mut self, parent: NodeId, set: bool) {
+        let NodeStore { nodes, children, .. } = &mut *self.store;
+        let owner = nodes[parent.node_index()].children;
+        for &c in children.get(owner) {
+            let Some(r) = nodes.get_mut(c.node_index()) else {
+                continue;
+            };
+            if set {
+                if r.parent == parent {
+                    r.parent = NodeId::NULL;
+                    r.flags |= CHILD_SEEN;
+                }
+            } else {
+                r.flags &= !CHILD_SEEN;
+            }
+        }
+    }
+
     /// Returns `true` if `candidate` equals `node` or is an ancestor of `node`.
     fn is_ancestor_or_self(&self, candidate: NodeId, mut node: NodeId) -> bool {
         let mut hops = 0usize;
@@ -398,28 +426,20 @@ impl Transaction<'_> {
             return false;
         }
         let parent_idx = parent.node_index();
-        // Clear previous parent pointers without allocating a temporary Vec.
-        {
-            let NodeStore {
-                nodes, children, ..
-            } = &mut *self.store;
-            let old_span = nodes[parent_idx].children;
-            for &c in children.get(old_span) {
-                if let Some(r) = nodes.get_mut(c.node_index())
-                    && r.parent == parent
-                {
-                    r.parent = NodeId::NULL;
-                }
-            }
-        }
+        // Clear previous parent pointers, flagging the old children (`CHILD_SEEN` scratch) so a
+        // child that stays is told apart from one that arrives — without a temporary Vec.
+        self.flag_children(parent, true);
         for &c in new_children {
-            if let Some(prev) = self.store.parent(c)
-                && prev != parent
-            {
-                self.detach_child(c);
+            let idx = c.node_index();
+            if self.store.nodes[idx].flags & CHILD_SEEN == 0 {
+                if self.store.parent(c).is_some() {
+                    self.detach_child(c);
+                }
+                self.mark_reparented(idx);
             }
-            self.store.nodes[c.node_index()].parent = parent;
+            self.store.nodes[idx].parent = parent;
         }
+        self.flag_children(parent, false);
         let s = &mut *self.store;
         let old_span = s.nodes[parent_idx].children;
         let span = s.children.replace(old_span, new_children);
@@ -444,6 +464,7 @@ impl Transaction<'_> {
         {
             return;
         }
+        let moved_in = self.store.parent(child) != Some(parent);
         self.detach_child(child);
         let parent_idx = parent.node_index();
         let s = &mut *self.store;
@@ -452,6 +473,9 @@ impl Transaction<'_> {
         s.nodes[parent_idx].children = new_span;
         s.nodes[child.node_index()].parent = parent;
         self.mark_children(parent_idx);
+        if moved_in {
+            self.mark_reparented(child.node_index());
+        }
     }
 
     /// Appends `child` to `parent` (zero heap allocations).

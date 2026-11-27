@@ -248,7 +248,7 @@ void NveGtkHost::Adapter::update(GtkNodeView*& v, const host::NodeData& node) {
   v->synced = true;
 }
 
-void NveGtkHost::Adapter::move(GtkNodeView*& v, const host::NodeData& node) {
+void NveGtkHost::Adapter::move(GtkNodeView*& v, const host::NodeGeometry& node) {
   ++host->reconcile_move_count_;
   host->apply_geometry(*v, node);
 }
@@ -275,6 +275,8 @@ void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
     GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v->widget);
     g_signal_handler_disconnect(gtk_scrolled_window_get_hadjustment(sw), v->h_handler);
     g_signal_handler_disconnect(gtk_scrolled_window_get_vadjustment(sw), v->v_handler);
+    // The content may outlive this view (GTK refs): it must not lead back to freed memory.
+    g_object_set_data(G_OBJECT(v->content), kScrollOwnerKey, nullptr);
     gtk_internal::unparent_children(v->content);
     gtk_scrolled_window_set_child(sw, nullptr);
   } else if (v->kind == WidgetKind::Fixed) {
@@ -296,7 +298,7 @@ void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
   v = nullptr;
 }
 
-void NveGtkHost::Adapter::set_children(const host::NodeData&, GtkNodeView** parent_view,
+void NveGtkHost::Adapter::set_children(const host::NodeGeometry&, GtkNodeView** parent_view,
                                        std::span<GtkNodeView** const> kids) {
   GtkWidget* container = parent_view != nullptr ? (*parent_view)->content : host->root_widget_;
   if (container == nullptr) return;  // leaf widgets (label, picture, ...) render no children
@@ -359,7 +361,7 @@ void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {
   }
 }
 
-void NveGtkHost::apply_geometry(GtkNodeView& v, const host::NodeData& node) {
+void NveGtkHost::apply_geometry(GtkNodeView& v, const host::NodeGeometry& node) {
   GtkWidget* w = v.widget;
   v.local = node.local;
   gtk_widget_set_size_request(w, px(node.rect.width) > 0 ? px(node.rect.width) : -1,

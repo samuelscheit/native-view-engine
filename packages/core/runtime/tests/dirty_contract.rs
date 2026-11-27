@@ -318,7 +318,7 @@ fn parent_origin_move_moves_a_child_whose_absolute_rect_is_unchanged() {
 }
 
 #[test]
-fn reparenting_with_an_unchanged_absolute_rect_moves_by_its_new_parent_origin() {
+fn reparenting_with_an_unchanged_absolute_rect_is_dirty() {
     // ROOT -> column[p1 (h=20, padding-top 20)[x (h=10)], p2 (h=20)]: x sits at y=20, 20 below
     // p1's origin; p2 starts at y=20, so x reparented into p2 keeps y=20 at origin 0 there.
     let (mut h, ids) = Harness::mount(|tx| {
@@ -339,12 +339,41 @@ fn reparenting_with_an_unchanged_absolute_rect_moves_by_its_new_parent_origin() 
     assert_eq!((h.last.rects[x.index()].y, h.last.rects[p2.index()].y), (20.0, 20.0));
     let f = h.step(move |tx| tx.set_children(p2, &[x]));
     assert_eq!(f.rects[x.index()].y, 20.0, "x keeps its absolute rect across the reparent");
-    assert_eq!(Frame::sorted(&f.dirty), Frame::sorted(&[p1.index() as u32, p2.index() as u32]));
-    assert_eq!(f.moved, [x.index() as u32], "its origin inside the new parent changed (20 -> 0)");
-    // And back: same absolute rect again, origin 0 -> 20.
-    let f = h.step(move |tx| tx.set_children(p1, &[x]));
+    // Its row's `parent` changed (and its inherited context): dirty, never merely moved.
+    let both = [p1.index() as u32, p2.index() as u32, x.index() as u32];
+    assert_eq!(Frame::sorted(&f.dirty), Frame::sorted(&both));
+    assert!(f.moved.is_empty());
+    // And back, through `insert_child`: dirty again.
+    let f = h.step(move |tx| tx.insert_child(p1, 0, x));
     assert_eq!(f.rects[x.index()].y, 20.0);
-    assert_eq!(f.moved, [x.index() as u32]);
+    assert_eq!(Frame::sorted(&f.dirty), Frame::sorted(&both));
+}
+
+#[test]
+fn reparenting_between_parents_at_one_origin_is_dirty() {
+    // ROOT -> column[p1[p2 (empty), x (h=10)]]: p2 and x share p1's origin. Moving x into p2
+    // keeps its absolute AND parent-relative boxes — no geometry changes for x at all, yet the
+    // host must relink it under p2.
+    let (mut h, ids) = Harness::mount(|tx| {
+        let column = tx.create();
+        tx.edit::<Layout>(column).width(Length::points(100.0));
+        let p1 = tx.create();
+        let p2 = tx.create();
+        let x = tx.create();
+        tx.edit::<Layout>(x).height(Length::points(10.0));
+        tx.set_children(p1, &[p2, x]);
+        tx.set_children(column, &[p1]);
+        tx.set_children(NodeId::ROOT, &[column]);
+        vec![p1, p2, x]
+    });
+    let (p1, p2, x) = (ids[0], ids[1], ids[2]);
+    let (rp1, rp2) = (h.last.rects[p1.index()], h.last.rects[p2.index()]);
+    assert_eq!((rp1.x, rp1.y), (rp2.x, rp2.y), "p1 and p2 share an origin");
+    let (local, rect) = (h.last.local(x.index()), h.last.rects[x.index()]);
+    let f = h.step(move |tx| tx.set_children(p2, &[x]));
+    assert_eq!((f.local(x.index()), f.rects[x.index()]), (local, rect), "x keeps every box");
+    assert!(f.dirty.contains(&(x.index() as u32)), "reparented child must be dirty: {:?}", f.dirty);
+    assert!(!f.moved.contains(&(x.index() as u32)));
 }
 
 #[test]

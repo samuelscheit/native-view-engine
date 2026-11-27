@@ -11,6 +11,7 @@
 #include <map>
 #include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "check.h"
@@ -144,11 +145,44 @@ void test_reparent_with_unchanged_absolute_rect() {
   (void)h.sync();
   auto& v = h.rec.views;
   CHECK(v[5].local.y == 20.0f && v[5].attached_to == 3u);
+  const int updates = v[5].updates;
   w.set_children(4u, std::vector<uint32_t>{5u});
   CHECK(h.submit());
   (void)h.sync();
   CHECK(v[5].attached_to == 4u && v[3].children.empty() && v[4].children == std::vector<uint32_t>{5u});
-  CHECK(v[5].local.y == 0.0f && v[5].moves == 1);
+  CHECK(v[5].local.y == 0.0f && v[5].updates == updates + 1 && v[5].moves == 0);  // reparented: dirty
+}
+
+/// A reparent that changes no geometry at all (both parents at one origin) still relinks the view
+/// and re-inherits typography from its new parent.
+void test_reparent_between_styled_parents_at_one_origin() {
+  Harness<MovingRecorder> h;
+  CHECK(h.host != nullptr);
+  if (!h.host) return;
+  Nve2Writer& w = h.w;  // ROOT(1) -> column(2)[p1(3)[p2(4), x(5) "x"]]: p2 empty at p1's origin
+  for (uint32_t id = 1u; id <= 5u; ++id) w.create(id);
+  w.set(2u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, length_points(100.0f));
+  for (const auto& [id, size] : {std::pair{3u, 20.0f}, std::pair{4u, 30.0f}}) {
+    w.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE);
+    w.set_f32(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, size);
+  }
+  CHECK(w.set_str(5u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "x"));
+  set_height(w, 5u, 10.0f);
+  w.set_children(3u, std::vector<uint32_t>{4u, 5u});
+  w.set_children(2u, std::vector<uint32_t>{3u});
+  w.set_children(1u, std::vector<uint32_t>{2u});
+  CHECK(h.submit());
+  (void)h.sync();
+  auto& v = h.rec.views;
+  CHECK(v[5].attached_to == 3u && v[5].style.font_size == 20.0f);
+  const NveLayoutRect local = v[5].local;
+  w.set_children(4u, std::vector<uint32_t>{5u});
+  CHECK(h.submit());
+  (void)h.sync();
+  CHECK(v[5].attached_to == 4u && v[4].children == std::vector<uint32_t>{5u});
+  CHECK(v[3].children == std::vector<uint32_t>{4u});
+  CHECK(v[5].style.font_size == 30.0f);
+  CHECK(v[5].local.x == local.x && v[5].local.y == local.y && v[5].local.width == local.width);
 }
 
 /// Sparse rows swap-remove: removing a middle row moves the last row into its place, and freed
@@ -331,6 +365,18 @@ void test_dirty_resource_updates_its_clean_users() {
   before = updates();
   CHECK(h.sync() == 1u && v[5].updates == before[3] + 1);
 
+  // A background fill (`nve.res.background_fill`, solid: tag 0 + RGBA) read by the column.
+  const Key64 kFillKind = Key64::of("nve.res.background_fill");
+  w.define_resource(12u, kFillKind, std::vector<uint8_t>{0u, 1u, 2u, 3u, 4u});
+  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND_FILL, 12u);
+  CHECK(h.submit());
+  (void)h.sync();
+  w.define_resource(12u, kFillKind, std::vector<uint8_t>{0u, 9u, 8u, 7u, 6u});
+  CHECK(h.submit());
+  before = updates();
+  CHECK(h.sync() == 1u);
+  CHECK((updates() == std::vector<int>{before[0] + 1, before[1], before[2], before[3]}));
+
   // Node 3 re-points to 9: a later republish of 7 reaches only nodes 4 and 5; one of 9 only 3.
   w.define_resource(9u, kImageSrcKind, url("file:///tmp/c.png"));
   w.set(3u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 9u);
@@ -391,10 +437,10 @@ struct Counter {
   uint32_t tag(const NodeData& n) { return static_cast<uint32_t>(n.kind); }
   Handle create(const NodeData& n) { return n.id; }
   void update(Handle&, const NodeData&) { ++updates; }
-  void move(Handle&, const NodeData&) { ++moves; }
+  void move(Handle&, const NodeGeometry&) { ++moves; }
   void update_root(const NodeData&) {}
   void destroy(uint32_t, Handle&) {}
-  void set_children(const NodeData&, Handle*, std::span<Handle* const>) {}
+  void set_children(const NodeGeometry&, Handle*, std::span<Handle* const>) {}
 };
 
 /// 10k nodes: ROOT -> [filler(3) of 8996 text leaves, list(2) of 1000 rows]. A paint edit of one
@@ -419,6 +465,10 @@ void test_ten_thousand_nodes_sync_is_o_changed() {
   w.set_children(2u, rows);
   w.set_children(3u, leaves);
   w.set_children(1u, std::vector<uint32_t>{3u, 2u});  // the list last: shifting it moves nothing else
+  // 100 leaves read one image resource (republished below).
+  constexpr uint32_t kImage = 77u, kImageUsers = 100u;
+  w.define_resource(kImage, kImageSrcKind, encode_image_url("file:///tmp/0.png"));
+  for (uint32_t i = 0u; i < kImageUsers; ++i) w.set(kFirstLeaf + 100u + i, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, kImage);
   CHECK(h.submit());
   using Clock = std::chrono::steady_clock;
   const auto us = [](Clock::duration d) { return std::chrono::duration<double, std::micro>(d).count(); };
@@ -433,13 +483,16 @@ void test_ten_thousand_nodes_sync_is_o_changed() {
     w.set(kFirstLeaf + 7u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(static_cast<uint8_t>(round), 1, 2));
     CHECK(h.submit());
     auto guard = h.host->runtime().acquire_scene();
+    CHECK(guard.has_value());
     if (!guard) continue;
+    const size_t updates = h.rec.updates, moves = h.rec.moves;
     const size_t before = g_allocs.load();
     t0 = Clock::now();
     const size_t updated = h.tree.sync(guard->reader(), h.tables, h.rec);
     paint_us = us(Clock::now() - t0);
     paint_allocs = g_allocs.load() - before;
     CHECK(updated == 1u && h.tree.moved() == 0u);
+    CHECK(h.rec.updates == updates + 1u && h.rec.moves == moves);
   }
   CHECK(paint_allocs == 0u);
 
@@ -450,20 +503,45 @@ void test_ten_thousand_nodes_sync_is_o_changed() {
     set_height(w, kFirstRow, round % 2u == 0u ? 20.0f : 10.0f);
     CHECK(h.submit());
     auto guard = h.host->runtime().acquire_scene();
+    CHECK(guard.has_value());
     if (!guard) continue;
+    const size_t updates = h.rec.updates, moves = h.rec.moves;
     const size_t before = g_allocs.load();
     t0 = Clock::now();
     shift_updates = h.tree.sync(guard->reader(), h.tables, h.rec);
     shift_us = us(Clock::now() - t0);
     shift_allocs = g_allocs.load() - before;
     shift_moves = h.tree.moved();
+    CHECK(h.rec.updates == updates + shift_updates && h.rec.moves == moves + shift_moves);
   }
   CHECK(shift_updates == 1u);
   CHECK(shift_moves == kRows);  // 999 shifted rows + the auto-height list
   CHECK(shift_allocs == 0u);
+
+  // Republishing the image under its id: exactly its 100 users update, zero allocations.
+  double resource_us = 0.0;
+  size_t resource_allocs = 0u;
+  for (uint32_t round = 0u; round < 6u; ++round) {
+    const std::string url = "file:///tmp/" + std::to_string(round + 1u) + ".png";
+    w.define_resource(kImage, kImageSrcKind, encode_image_url(url));
+    CHECK(h.submit());
+    auto guard = h.host->runtime().acquire_scene();
+    CHECK(guard.has_value());
+    if (!guard) continue;
+    const size_t updates = h.rec.updates;
+    const size_t before = g_allocs.load();
+    t0 = Clock::now();
+    const size_t updated = h.tree.sync(guard->reader(), h.tables, h.rec);
+    resource_us = us(Clock::now() - t0);
+    resource_allocs = g_allocs.load() - before;
+    CHECK(updated == kImageUsers && h.rec.updates == updates + kImageUsers && h.tree.moved() == 0u);
+  }
+  CHECK(resource_allocs == 0u);
   printf("retained_tree 10k nodes: full sync %.0f us; 1 paint edit %.1f us (%zu allocs); "
-         "1000-row shift %.1f us (%zu updates, %zu moves, %zu allocs)\n",
-         full_us, paint_us, paint_allocs, shift_us, shift_updates, shift_moves, shift_allocs);
+         "1000-row shift %.1f us (%zu updates, %zu moves, %zu allocs); "
+         "resource republish %.1f us (%u updates, %zu allocs)\n",
+         full_us, paint_us, paint_allocs, shift_us, shift_updates, shift_moves, shift_allocs, resource_us,
+         kImageUsers, resource_allocs);
 }
 
 }  // namespace
@@ -473,6 +551,7 @@ int main() {
   test_adapters_without_move_fall_back_to_update();
   test_parent_origin_move_refreshes_child_local();
   test_reparent_with_unchanged_absolute_rect();
+  test_reparent_between_styled_parents_at_one_origin();
   test_sparse_rows_survive_compaction_and_slot_reuse();
   test_cascade_recreated_view_is_relinked();
   test_skipped_frame_resyncs_fully();
