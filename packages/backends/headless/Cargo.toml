@@ -18,5 +18,9 @@ criterion = { workspace = true }
 name = "headless_bench"
 harness = false
 
+[[bench]]
+name = "taffy_hoisted_bench"
+harness = false
+
 [lints]
 workspace = true

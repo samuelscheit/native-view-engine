@@ -1,50 +1,16 @@
 //! Verifies ZERO steady-state heap allocations across `TaffyStoreLayout::sync_changes` +
 //! `TaffyStoreLayout::compute_layout` + `HeadlessBackend::commit` using a counting global allocator.
 
-use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "support/counting_alloc.rs"]
+mod counting_alloc;
 
+use counting_alloc::count_allocs;
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_components::tables::{
     core_realization_order, FlexDirection, Layout, TextContent, Transform, Typography, Visual,
 };
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
-
-struct CountingAlloc;
-
-static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-// SAFETY: Delegates directly to `std::alloc::System` while recording allocation counts in a lock-free atomic.
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
-        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: Caller upholds `GlobalAlloc::alloc` preconditions; delegated verbatim to `System`.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: AllocLayout) {
-        // SAFETY: Caller upholds `GlobalAlloc::dealloc` preconditions; delegated verbatim to `System`.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: AllocLayout, new_size: usize) -> *mut u8 {
-        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: Caller upholds `GlobalAlloc::realloc` preconditions; delegated verbatim to `System`.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAlloc = CountingAlloc;
-
-#[inline]
-fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, usize) {
-    let before = ALLOC_CALLS.load(Ordering::SeqCst);
-    let r = f();
-    let after = ALLOC_CALLS.load(Ordering::SeqCst);
-    (r, after - before)
-}
 
 #[test]
 fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {

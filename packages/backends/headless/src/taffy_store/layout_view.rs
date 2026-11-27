@@ -14,6 +14,7 @@ use taffy::{
     TraverseTree,
 };
 
+use super::hoisted::HoistedLists;
 use super::style_view::StyleView;
 use super::{ResolvedTextStyle, UnroundedBox};
 
@@ -25,7 +26,7 @@ pub(super) struct LayoutView<'s> {
     pub(super) resolved_text: &'s [ResolvedTextStyle],
     pub(super) caches: &'s mut [Cache],
     pub(super) boxes: &'s mut [UnroundedBox],
-    pub(super) hoisted: &'s mut [Vec<NodeId>],
+    pub(super) hoisted: &'s mut HoistedLists,
     pub(super) measurer: &'s dyn TextMeasurer,
 }
 
@@ -185,9 +186,12 @@ impl LayoutPartialTree for LayoutView<'_> {
                 (_, false) => {
                     tree.clear_hoisted_children(n);
                     let ro: &Self = tree;
-                    compute_leaf_layout(inputs, &ro.style(n), |_, _| 0.0, |k, a| {
-                        ro.measure(n, k, a)
-                    })
+                    compute_leaf_layout(
+                        inputs,
+                        &ro.style(n),
+                        |_, _| 0.0,
+                        |k, a| ro.measure(n, k, a),
+                    )
                 }
             };
             if inputs.run_mode == RunMode::PerformLayout {
@@ -211,17 +215,14 @@ impl LayoutContainingBlock for LayoutView<'_> {
 
     #[inline]
     fn clear_hoisted_children(&mut self, n: taffy::NodeId) {
-        self.hoisted[ix(n)].clear();
+        self.hoisted.clear(ix(n));
     }
 
     #[inline]
     fn add_hoisted_children(&mut self, n: taffy::NodeId, hoisted: &[taffy::NodeId]) {
-        let dst = &mut self.hoisted[ix(n)];
-        for &c in hoisted {
-            if let Some(id) = self.store.id_at(ix(c)) {
-                dst.push(id);
-            }
-        }
+        let store = self.store;
+        self.hoisted
+            .extend(ix(n), hoisted.iter().filter_map(|&c| store.id_at(ix(c))));
     }
 }
 

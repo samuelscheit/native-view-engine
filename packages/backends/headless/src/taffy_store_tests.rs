@@ -175,7 +175,7 @@ fn taffy_clears_stale_hoisted_children_and_propagates_rtl_detach() {
     layout.compute_layout(&store, NodeId::ROOT, vp);
     assert!(layout.resolved_rtl(rtl_parent));
     assert!(layout.resolved_rtl(child));
-    assert!(!layout.hoisted[host.index()].is_empty());
+    assert!(!layout.hoisted.get(host.index()).is_empty());
 
     // 1) Detach Layout from `rtl_parent`: both `rtl_parent` and `child` must revert to LTR.
     // 2) Reparent `abs_child` away so `host` becomes a leaf: `host`'s hoisted list must clear
@@ -192,7 +192,7 @@ fn taffy_clears_stale_hoisted_children_and_propagates_rtl_detach() {
     assert!(!layout.resolved_rtl(rtl_parent));
     assert!(!layout.resolved_rtl(child));
     assert!(
-        layout.hoisted[host.index()].is_empty(),
+        layout.hoisted.get(host.index()).is_empty(),
         "leaf container must clear stale hoisted children"
     );
     let r_abs = layout.layout_of(abs_child).unwrap();

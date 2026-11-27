@@ -4,6 +4,7 @@
 //! and `unsafe impl Send`. Holds only dense `Vec<taffy::Cache>`, 16 B unrounded boxes, 16 B absolute
 //! rounded rects, and resolved inherited direction/typography arrays.
 
+mod hoisted;
 mod layout_view;
 mod style_view;
 
@@ -17,11 +18,12 @@ use nve_components::tables::{
 use nve_engine::{HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
 
+use taffy::compute_root_layout;
 use taffy::geometry::Size;
 use taffy::style::AvailableSpace;
 use taffy::tree::{Cache, ClearState};
-use taffy::compute_root_layout;
 
+use hoisted::HoistedLists;
 use layout_view::LayoutView;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -61,7 +63,8 @@ pub struct TaffyStoreLayout {
     node_gens: Vec<u8>,
     resolved_rtl: Vec<bool>,
     resolved_text: Vec<ResolvedTextStyle>,
-    hoisted: Vec<Vec<NodeId>>,
+    /// Out-of-flow boxes per containing block, in one flat pooled-CSR buffer.
+    hoisted: HoistedLists,
     layout_gen: u64,
     last_viewport: Option<(NodeId, f32, f32)>,
     measurer: Arc<dyn TextMeasurer>,
@@ -71,6 +74,10 @@ pub struct TaffyStoreLayout {
     round_stack: Vec<(NodeId, f32, f32, bool)>,
     /// Set when any structural / direction / typography change requires inheritance propagation.
     inherit_dirty: bool,
+    /// Set when any cache entry was invalidated since the last full pass; when clear,
+    /// `compute_layout` is a no-op (Taffy 0.16 re-runs the root positioning pass for unclaimed
+    /// `position: fixed` boxes even on a full cache hit, allocating every frame).
+    layout_dirty: bool,
 }
 
 #[inline]
@@ -103,13 +110,14 @@ impl TaffyStoreLayout {
             node_gens: Vec::new(),
             resolved_rtl: Vec::new(),
             resolved_text: Vec::new(),
-            hoisted: Vec::new(),
+            hoisted: HoistedLists::default(),
             layout_gen: 0,
             last_viewport: None,
             measurer: Arc::new(HeuristicTextMeasurer),
             inherit_stack: Vec::new(),
             round_stack: Vec::new(),
             inherit_dirty: true,
+            layout_dirty: true,
         }
     }
 
@@ -118,6 +126,7 @@ impl TaffyStoreLayout {
         for c in &mut self.caches {
             c.clear();
         }
+        self.layout_dirty = true;
     }
 
     pub fn text_measurer(&self) -> &Arc<dyn TextMeasurer> {
@@ -132,10 +141,11 @@ impl TaffyStoreLayout {
         self.node_gens.clear();
         self.resolved_rtl.clear();
         self.resolved_text.clear();
-        self.hoisted.clear();
+        self.hoisted.reset();
         self.layout_gen = 0;
         self.last_viewport = None;
         self.inherit_dirty = true;
+        self.layout_dirty = true;
     }
 
     fn ensure_capacity(&mut self, cap: usize) {
@@ -147,8 +157,8 @@ impl TaffyStoreLayout {
             self.node_gens.resize(cap, 0);
             self.resolved_rtl.resize(cap, false);
             self.resolved_text.resize(cap, ResolvedTextStyle::default());
-            self.hoisted.resize_with(cap, Vec::new);
         }
+        self.hoisted.ensure_len(cap);
     }
 
     /// Invalidates cached Taffy entries for all layout/measure/structural changes in `changes`.
@@ -171,6 +181,7 @@ impl TaffyStoreLayout {
         for &id in &changes.removed {
             let idx = id.index();
             if idx < self.caches.len() {
+                self.layout_dirty = true;
                 self.caches[idx].clear();
                 self.boxes[idx] = UnroundedBox::default();
                 self.rects[idx] = LayoutRect::default();
@@ -178,7 +189,7 @@ impl TaffyStoreLayout {
                 self.node_gens[idx] = 0;
                 self.resolved_rtl[idx] = false;
                 self.resolved_text[idx] = ResolvedTextStyle::default();
-                self.hoisted[idx].clear();
+                self.hoisted.release(idx);
             }
         }
         for &id in &changes.created {
@@ -188,7 +199,7 @@ impl TaffyStoreLayout {
             self.rects[idx] = LayoutRect::default();
             self.rect_gen[idx] = 0;
             self.node_gens[idx] = id.generation();
-            self.hoisted[idx].clear();
+            self.hoisted.release(idx);
             self.mark_dirty(store, id);
         }
         for &id in &changes.children {
@@ -208,10 +219,12 @@ impl TaffyStoreLayout {
             c.clear();
         }
         self.inherit_dirty = true;
+        self.layout_dirty = true;
     }
 
     #[inline]
     fn mark_dirty(&mut self, store: &NodeStore, mut id: NodeId) {
+        self.layout_dirty = true;
         let mut steps = 0usize;
         while store.is_live(id) {
             steps += 1;
@@ -303,6 +316,7 @@ impl TaffyStoreLayout {
         self.ensure_capacity(store.capacity());
         if !store.is_live(root) {
             self.layout_gen = self.layout_gen.wrapping_add(1).max(1);
+            self.layout_dirty = true;
             return;
         }
 
@@ -310,9 +324,15 @@ impl TaffyStoreLayout {
         if self.last_viewport != Some(vp_key) {
             self.caches[root.index()].clear();
             self.last_viewport = Some(vp_key);
+            self.layout_dirty = true;
         }
 
         self.propagate_inheritance(store, root);
+        if !self.layout_dirty {
+            // Nothing was invalidated since the last pass: every box and rounded rect is current.
+            return;
+        }
+        self.layout_dirty = false;
 
         let mut view = LayoutView {
             store,
@@ -334,6 +354,7 @@ impl TaffyStoreLayout {
                 height: AvailableSpace::Definite(viewport.height),
             },
         );
+        self.hoisted.compact_if_fragmented();
 
         // Fused cumulative rounding + absolute origin accumulation (honoring containing-block
         // hoisting for `position: absolute` and `position: fixed`).
@@ -365,7 +386,7 @@ impl TaffyStoreLayout {
             let self_hidden = ancestor_hidden || crate::is_display_none(store, id);
 
             if !self_hidden {
-                for &child in self.hoisted[idx].iter().rev() {
+                for &child in self.hoisted.get(idx).iter().rev() {
                     if store.is_live(child) {
                         self.round_stack.push((child, cx, cy, false));
                     }
@@ -387,7 +408,7 @@ impl TaffyStoreLayout {
             && self.layout_gen != 0
             && self.rect_gen[idx] == self.layout_gen
             && self.node_gens[idx] == id.generation())
-            .then(|| self.rects[idx])
+        .then(|| self.rects[idx])
     }
 
     #[inline]
