@@ -280,13 +280,16 @@ attr_table! {
     "align-items" => AttrKind::Keyword(&ALIGN_ITEMS), true;
     "align-self" => AttrKind::Keyword(&ALIGN_SELF), false;
     "flex" => GROW, true; "flex-grow" => GROW, true; "flex-shrink" => GROW, true;
-    "flex-basis" => AttrKind::Dimension { float: NON_NEGATIVE_PX }, false;
+    "flex-basis" => AttrKind::Dimension { float: NON_NEGATIVE_PX }, true;
     "gap" => PX, true; "row-gap" => PX, true; "column-gap" => PX, true;
     "top" => INSET, false; "right" => INSET, false; "bottom" => INSET, false; "left" => INSET, false;
     // Spacing.
     "padding" => PX, true; "padding-horizontal" => PX, true; "padding-vertical" => PX, true;
-    "padding-top" => PX, false; "padding-right" => PX, false;
-    "padding-bottom" => PX, false; "padding-left" => PX, false;
+    // Numeric `padding-{top,right,bottom,left}` aren't in `apply_numeric_attr` yet; string & `Length::points` lower cleanly.
+    "padding-top" => AttrKind::Pixels { float: None }, true;
+    "padding-right" => AttrKind::Pixels { float: None }, true;
+    "padding-bottom" => AttrKind::Pixels { float: None }, true;
+    "padding-left" => AttrKind::Pixels { float: None }, true;
     "margin" => SIGNED, true;
     "margin-top" => SIGNED, false; "margin-right" => SIGNED, false;
     "margin-bottom" => SIGNED, false; "margin-left" => SIGNED, false;
@@ -306,13 +309,13 @@ attr_table! {
     "overflow-x" => AttrKind::Keyword(&OVERFLOW), true;
     "overflow-y" => AttrKind::Keyword(&OVERFLOW), true;
     // Typography. `line-height` / `font-weight` numbers are not honoured by the typed path.
-    "font-family" => AttrKind::Text, false;
+    "font-family" => AttrKind::Text, true;
     "font-size" => AttrKind::Pixels { float: Some(NumberRule::Px { min: 1.0 }) }, true;
     "font-weight" => AttrKind::Text, true;
-    "font-style" => AttrKind::Keyword(&FONT_STYLE), false;
+    "font-style" => AttrKind::Keyword(&FONT_STYLE), true;
     "line-height" => AttrKind::Text, true;
     "text-align" => AttrKind::Keyword(&TEXT_ALIGN), true;
-    "text-decoration" => AttrKind::Text, false;
+    "text-decoration" => AttrKind::Text, true;
     "white-space" => AttrKind::Keyword(&WHITE_SPACE), true;
     "overflow-wrap" => AttrKind::Keyword(&OVERFLOW_WRAP), true;
     "word-break" => AttrKind::Keyword(&WORD_BREAK), true;

@@ -412,9 +412,9 @@ fn template_targets_carry_ordinal_line_column_path_and_test_id() {
 fn typed_only_attributes_theme_tokens_and_untargetable_elements_stay_typed_but_rebuild() {
     let cases = [
         (
-            "\"padding-top\": 4.0,",
-            "\"padding-top\": 6.0,",
-            "`padding-top` has no string TemplatePatch form",
+            "\"margin-top\": 4.0,",
+            "\"margin-top\": 6.0,",
+            "`margin-top` has no string TemplatePatch form",
         ),
         (
             "cursor: CursorKind::Pointer,",
