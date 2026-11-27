@@ -37,7 +37,6 @@ pub mod stylesheet;
 #[cfg(target_arch = "wasm32")]
 mod stylesheet_wasm;
 pub mod table_system;
-pub mod transition_css;
 pub mod visual_viewport;
 #[cfg(target_arch = "wasm32")]
 mod wasm_dom;
@@ -270,12 +269,12 @@ impl WebBackend {
     fn warm_stylesheet(&mut self, store: &NodeStore, changes: &ChangeSet) {
         for &id in &changes.created {
             if store.is_live(id) {
-                let _ = self.stylesheet.resolve_node(store, id);
+                let _ = self.stylesheet.resolve_node(store, id, self.renderer.registry());
             }
         }
         for (&id, &fx) in changes.touched.iter().zip(changes.effects.iter()) {
             if store.is_live(id) && fx != nve_abi::table::effect::COMPOSITE {
-                let _ = self.stylesheet.resolve_node(store, id);
+                let _ = self.stylesheet.resolve_node(store, id, self.renderer.registry());
             }
         }
     }

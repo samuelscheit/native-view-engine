@@ -264,14 +264,14 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     ));
-    if !dylib_path.exists() {
-        let status = std::process::Command::new("cargo")
-            .args(["build", "-p", "nve-example-kitchen-sink"])
-            .current_dir(workspace_root)
-            .status()
-            .expect("build cdylib");
-        assert!(status.success());
-    }
+    // Always rebuild (incremental no-op when fresh): a dylib left over from an older commit
+    // speaks a stale wire format and fails spuriously.
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "nve-example-kitchen-sink"])
+        .current_dir(workspace_root)
+        .status()
+        .expect("build cdylib");
+    assert!(status.success());
 
     let mut host = HeadlessBackend::new();
     host.set_viewport(

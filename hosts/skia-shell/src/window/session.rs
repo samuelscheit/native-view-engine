@@ -25,6 +25,7 @@ use nve_engine::{
 use nve_store::ChangeSet;
 #[cfg(test)]
 use nve_store::NodeStore;
+use nve_motion_skia::MotionDriver;
 use nve_svg_skia::SvgSkiaSystem;
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
@@ -42,7 +43,8 @@ pub(super) fn now_us() -> u64 {
         .unwrap_or(0)
 }
 
-/// Creates a [`StoreWireReplica<SkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`).
+/// Creates a [`StoreWireReplica<SkiaBackend>`] configured with shell table systems (`Canvas` +
+/// `Svg`) and the `nve-motion` frame hook.
 pub fn new_shell_skia_replica(
     surface_id: SurfaceId,
     viewport: Viewport,
@@ -51,6 +53,7 @@ pub fn new_shell_skia_replica(
     let mut backend = SkiaBackend::new();
     backend.register_table_system(CanvasSkiaSystem);
     backend.register_table_system(SvgSkiaSystem);
+    backend.register_frame_hook(MotionDriver::new());
     backend.set_viewport(surface_id, viewport);
     StoreWireReplica::new(backend, core_realization_order())
 }
@@ -77,6 +80,8 @@ pub struct DesktopSession<A: DesktopApp> {
     last_frame_bytes: Vec<u8>,
     frame_counter: FrameId,
     last_telemetry: Option<FrameTelemetry>,
+    /// Wall-clock instant of the previous animation tick (`None` while idle).
+    last_animation_tick: Option<Instant>,
     #[cfg(feature = "skia")]
     skia_renderer: SkiaCanvasRenderer,
     #[cfg(feature = "skia")]
@@ -145,6 +150,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             last_frame_bytes,
             frame_counter: FrameId::ZERO,
             last_telemetry: None,
+            last_animation_tick: None,
             #[cfg(feature = "skia")]
             skia_renderer: SkiaCanvasRenderer::new(),
             #[cfg(feature = "skia")]
@@ -445,6 +451,27 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.rasterize_current();
         }
         Ok(())
+    }
+
+    /// Advances frame-hook animations by the wall-clock time since the previous tick (clamped to
+    /// 100 ms) and re-rasterizes; returns whether another frame must be scheduled.
+    pub fn tick_animations(&mut self) -> bool {
+        if !self.replica.backend().needs_next_frame() {
+            self.last_animation_tick = None;
+            return false;
+        }
+        let now = Instant::now();
+        let dt_s = self
+            .last_animation_tick
+            .replace(now)
+            .map_or(0.0, |prev| now.duration_since(prev).as_secs_f32().min(0.1));
+        let (store, backend) = self.replica.store_and_backend_mut();
+        let animating = backend.advance_animations(store, dt_s);
+        self.rasterize_current();
+        if !animating {
+            self.last_animation_tick = None;
+        }
+        animating
     }
 
     /// Renders a frame from the app into `SkiaBackend` and rasterizes into `pixel_buffer`.

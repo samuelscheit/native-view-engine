@@ -288,7 +288,7 @@ impl WebBackend {
     }
 
     pub(crate) fn sync_full_element(&mut self, store: &NodeStore, id: NodeId, el: &web_sys::Element) {
-        let resolved = self.stylesheet.resolve_node(store, id);
+        let resolved = self.stylesheet.resolve_node(store, id, self.renderer.registry());
         if el.class_name() != resolved.classes {
             el.set_class_name(&resolved.classes);
         }

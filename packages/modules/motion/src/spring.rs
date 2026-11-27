@@ -8,7 +8,7 @@
 
 use std::f64::consts::TAU;
 
-use crate::media::MediaEnv;
+use nve_components::media::MediaEnv;
 
 /// Default positional threshold below which a spring is considered settled.
 pub const DEFAULT_REST_DISPLACEMENT: f32 = 1e-3;
@@ -177,6 +177,24 @@ impl SpringSpec {
         let k = f64::from(self.stiffness).max(MIN_STIFFNESS);
         let m = f64::from(self.mass).max(MIN_MASS);
         (k / m).sqrt() as f32
+    }
+
+    /// Time in seconds for a step response to stay within `0.1 %` of its target: the slowest
+    /// decay envelope (`zeta * omega_0` underdamped, the slow root overdamped, `(1 + x) e^-x`
+    /// critically damped) reaching `1e-3`, clamped to `[0.01, 10]`.
+    pub fn settle_duration_s(&self) -> f32 {
+        const LN_1E3: f64 = 6.907_755_278_982_137;
+        const CRITICAL_X: f64 = 9.233_413; // (1 + x) e^-x = 1e-3
+        let omega = f64::from(self.angular_frequency());
+        let zeta = f64::from(self.damping_ratio());
+        let secs = if (zeta - 1.0).abs() <= 1e-3 {
+            CRITICAL_X / omega
+        } else if zeta < 1.0 {
+            LN_1E3 / (zeta * omega).max(1e-6)
+        } else {
+            LN_1E3 / (omega * (zeta - (zeta * zeta - 1.0).sqrt())).max(1e-6)
+        };
+        secs.clamp(0.01, 10.0) as f32
     }
 
     /// Dimensionless damping ratio `zeta = damping / (2 * sqrt(stiffness * mass))`.

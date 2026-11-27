@@ -14,6 +14,7 @@ nve-hash = { workspace = true }
 nve-store = { workspace = true }
 nve-components = { workspace = true }
 nve-dioxus = { workspace = true }
+nve-motion = { workspace = true }
 nve-engine = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }

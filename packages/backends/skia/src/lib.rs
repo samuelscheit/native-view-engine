@@ -11,12 +11,12 @@
 
 mod display_list;
 mod focus;
+pub mod frame_hook;
 pub mod font;
 pub mod gpu;
 mod hit_test;
 pub mod image_cache;
 mod interaction;
-mod motion;
 pub mod raster;
 mod reloc_scene;
 mod scroll;
@@ -72,7 +72,7 @@ pub use image_cache::{
     compute_image_placement, decode_image_uri, decode_png, encode_rgb_png, DecodedImage,
     ImageCache, ImageDecodeError, ImageDrawPlacement,
 };
-pub use motion::MotionDriver;
+pub use frame_hook::{NodeTargets, SkiaFrameHook, SkiaFrameHooks, TargetsOf};
 pub use nve_components::interaction::{
     CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
@@ -81,7 +81,6 @@ pub use nve_components::layout_ext::{
     GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
     PositionInsets, PositionMode,
 };
-pub use nve_components::motion::{EasingCurve, MotionPreference, TransitionProperty, TransitionSpec};
 pub use nve_components::paint::{
     lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
     LinearGradient, RadialGradient,
@@ -190,7 +189,7 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) last_virtual_scroll_x: HashMap<NodeId, f32>,
     pub(crate) last_virtual_scroll_y: HashMap<NodeId, f32>,
     pub(crate) focus: TextFocusState,
-    pub(crate) motion: MotionDriver,
+    pub(crate) frame_hooks: SkiaFrameHooks,
     pub(crate) table_registry: SkiaTableRegistry,
     pub(crate) table_events: EventBatchBuf,
     pub(crate) sort_scratch: Vec<NodeId>,
@@ -232,7 +231,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             last_virtual_scroll_x: HashMap::new(),
             last_virtual_scroll_y: HashMap::new(),
             focus: TextFocusState::default(),
-            motion: MotionDriver::new(),
+            frame_hooks: SkiaFrameHooks::default(),
             table_registry: SkiaTableRegistry::new(),
             table_events: EventBatchBuf::new(),
             sort_scratch: Vec::new(),
@@ -292,7 +291,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             last_virtual_scroll_x: self.last_virtual_scroll_x,
             last_virtual_scroll_y: self.last_virtual_scroll_y,
             focus: self.focus,
-            motion: self.motion,
+            frame_hooks: self.frame_hooks,
             table_registry: self.table_registry,
             table_events: self.table_events,
             sort_scratch: self.sort_scratch,
@@ -367,7 +366,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             &self.layout_tree,
             &self.scroll_offsets,
             &self.focus,
-            &self.motion,
+            &self.frame_hooks,
             &self.table_registry,
             self.text_engine.as_ref(),
             clip_bounds,
@@ -431,7 +430,7 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         let t_mount = Instant::now();
         self.reconcile_scroll_offsets(store);
         self.reconcile_focus_state(store);
-        self.reconcile_motion_after_frame(store, changes);
+        self.frame_hooks_after_commit(store, changes);
         for cmd in &changes.commands {
             let _ = self.table_registry.dispatch_command(
                 store,
@@ -467,7 +466,7 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         self.last_virtual_scroll_x.clear();
         self.last_virtual_scroll_y.clear();
         self.focus = TextFocusState::default();
-        self.motion = MotionDriver::new();
+        self.frame_hooks.reset();
         self.table_events.clear();
     }
 }

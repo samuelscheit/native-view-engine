@@ -14,7 +14,7 @@ use nve_components::tables::{
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::{NodeStore, ResolvedRow, ResourceId, Rgba};
 
-use crate::motion::MotionDriver;
+use crate::frame_hook::SkiaFrameHooks;
 use crate::scroll::compute_scroll_content_size;
 use crate::table_system::SkiaTableRegistry;
 use crate::text::{CosmicTextEngine, TextAlign};
@@ -168,7 +168,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     layout_tree: &HeadlessBackend<L>,
     scroll_offsets: &HashMap<NodeId, (f32, f32)>,
     focus: &TextFocusState,
-    motion: &MotionDriver,
+    frame_hooks: &SkiaFrameHooks,
     table_registry: &SkiaTableRegistry,
     text_engine: &CosmicTextEngine,
     clip_bounds: LayoutRect,
@@ -225,15 +225,12 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     let rect = offset_rect(base_rect, node_offset);
 
     let mut style = layout_tree.effective_visual(store, id);
-    motion.apply_animated_style(id, &mut style);
+    frame_hooks.apply_visual(id, &mut style);
     if style.opacity <= 0.001 {
         return;
     }
 
-    let effective_tf = motion.resolve_animated_transform(
-        id,
-        layout_tree.effective_transform(store, id),
-    );
+    let effective_tf = frame_hooks.resolve_transform(id, layout_tree.effective_transform(store, id));
     let has_tf = effective_tf.is_some_and(|t| !t.is_identity());
     let any_tf = in_transform || has_tf;
 
@@ -329,7 +326,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     let typo = resolved_typo.get();
     let effective_weight = typo.font_weight();
     let effective_align = map_text_align(typo.text_align());
-    let color_override = color_override || motion.has_active_color(id);
+    let color_override = color_override || frame_hooks.overrides_text_color(id);
     let effective_color = if color_override {
         style.text_color
     } else {
@@ -442,7 +439,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                         layout_tree,
                         scroll_offsets,
                         focus,
-                        motion,
+                        frame_hooks,
                         table_registry,
                         text_engine,
                         child_clip,
@@ -463,7 +460,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                         layout_tree,
                         scroll_offsets,
                         focus,
-                        motion,
+                        frame_hooks,
                         table_registry,
                         text_engine,
                         child_clip,

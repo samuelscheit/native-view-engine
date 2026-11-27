@@ -10,7 +10,7 @@ use nve_components::snapshots::transform_from_patch;
 use nve_components::tables::{Display, GridLayout, GridTracks};
 use nve_components::{RowPatch, StylePatchExt};
 use nve_store::NodeStore;
-use nve_components::transform::{affine_concat, lerp_transform_2d, Transform2D};
+use nve_components::transform::{affine_concat, Transform2D};
 
 fn assert_close(actual: f32, expected: f32, eps: f32, label: &str) {
     assert!(
@@ -80,17 +80,6 @@ fn transform2d_matrix_map_and_inverse_roundtrip_all_modes() {
     let p_cat = nve_components::transform::affine_map_point(&m_cat, 25.0, 40.0);
     assert_close(p_cat.0, p_seq.0, 1e-4, "concat x");
     assert_close(p_cat.1, p_seq.1, 1e-4, "concat y");
-
-    // 8. Lerp interpolation
-    let mid = lerp_transform_2d(
-        &Transform2D::IDENTITY,
-        &Transform2D::translate(20.0, -10.0).with_scale(2.0).with_rotate(90.0),
-        0.5,
-    );
-    assert_close(mid.translate_x, 10.0, 1e-4, "lerp tx");
-    assert_close(mid.translate_y, -5.0, 1e-4, "lerp ty");
-    assert_close(mid.scale_x, 1.5, 1e-4, "lerp sx");
-    assert_close(mid.rotate_deg, 45.0, 1e-4, "lerp rot");
 }
 
 #[test]

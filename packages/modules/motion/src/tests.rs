@@ -2,16 +2,15 @@
 //! interpolation, and `MotionClock` unit tests.
 
 use nve_abi::{ColorRgba, NodeId};
+use nve_components::media::MediaEnv;
+use nve_components::snapshots::VisualSnapshot as StyleProps;
+use nve_store::{FlatResource, ValidatedWords};
 
-use crate::snapshots::VisualSnapshot as StyleProps;
-
-use crate::media::MediaEnv;
-use crate::motion::{
+use crate::{
     lerp_color_rgba, lerp_style_property, lerp_style_props, resolve_transition_for, EasingCurve,
-    MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionPreference, TimedTransition,
-    TransitionProperty, TransitionSpec,
+    MotionClock, MotionCompletion, MotionKey, MotionPreference, SpringSpec, SpringState,
+    TimedTransition, TransitionProperty, TransitionSpec, Transitions,
 };
-use crate::spring::{SpringSpec, SpringState};
 
 #[test]
 fn spring_regimes_converge_across_variable_dt_without_nan_or_explosion() {
@@ -166,7 +165,7 @@ fn reduced_motion_snaps_immediately_and_fires_completion_callbacks() {
     let pref = MotionPreference::from_media_env(&env);
     assert_eq!(pref, MotionPreference::Reduce);
 
-    let mut clock: MotionGroup = MotionClock::with_preference(pref);
+    let mut clock = MotionClock::with_preference(pref);
     clock.animate_spring("opacity", SpringSpec::bouncy(), 0.0, 1.0);
     clock.animate_transition(
         (NodeId::new(42, 0), TransitionProperty::Opacity),
@@ -182,7 +181,7 @@ fn reduced_motion_snaps_immediately_and_fires_completion_callbacks() {
 
     assert!(!clock.has_active_animations());
     assert_eq!(clock.active_count(), 0);
-    assert_eq!(clock.value_named("opacity"), Some(1.0));
+    assert_eq!(clock.value(&MotionKey::named("opacity")), Some(1.0));
     assert_eq!(clock.velocity(&MotionKey::from("opacity")), Some(0.0));
     assert_eq!(
         clock.value(&MotionKey::from((NodeId::new(42, 0), TransitionProperty::Opacity))),
@@ -207,13 +206,13 @@ fn motion_clock_retargets_active_spring_with_velocity_and_drops_to_zero_idle() {
 
     let done = clock.tick(0.05);
     assert!(done.is_empty());
-    let mid_val = clock.value_named("x").unwrap();
+    let mid_val = clock.value(&MotionKey::named("x")).unwrap();
     let mid_vel = clock.velocity(&MotionKey::from("x")).unwrap();
     assert!(mid_val > 0.0 && mid_vel > 0.0);
 
     // Retarget mid-flight via animate_spring: keeps live value & velocity.
     clock.animate_spring("x", SpringSpec::snappy(), 0.0, 20.0);
-    assert_eq!(clock.value_named("x"), Some(mid_val));
+    assert_eq!(clock.value(&MotionKey::named("x")), Some(mid_val));
     assert_eq!(clock.velocity(&MotionKey::from("x")), Some(mid_vel));
 
     let mut completions = Vec::new();
@@ -224,23 +223,13 @@ fn motion_clock_retargets_active_spring_with_velocity_and_drops_to_zero_idle() {
         }
     }
     assert!(!clock.has_active_animations());
-    assert_eq!(clock.value_named("x"), Some(20.0));
+    assert_eq!(clock.value(&MotionKey::named("x")), Some(20.0));
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].final_value, 20.0);
 }
 
 #[test]
-fn easing_curves_evaluate_accurately_and_format_canonical_css() {
-    assert_eq!(EasingCurve::Linear.to_css(), "linear");
-    assert_eq!(EasingCurve::Ease.to_css(), "ease");
-    assert_eq!(EasingCurve::EaseIn.to_css(), "ease-in");
-    assert_eq!(EasingCurve::EaseOut.to_css(), "ease-out");
-    assert_eq!(EasingCurve::EaseInOut.to_css(), "ease-in-out");
-    assert_eq!(
-        EasingCurve::CubicBezier(0.34, 1.56, 0.64, 1.0).to_css(),
-        "cubic-bezier(0.34,1.56,0.64,1)"
-    );
-
+fn easing_curves_evaluate_accurately() {
     // Exact endpoints and midpoint properties.
     for curve in [
         EasingCurve::Linear,
@@ -250,6 +239,10 @@ fn easing_curves_evaluate_accurately_and_format_canonical_css() {
         EasingCurve::EaseInOut,
         EasingCurve::CubicBezier(0.0, 0.0, 0.0, 1.0), // vertical slope edge case
         EasingCurve::CubicBezier(1.0, 0.0, 1.0, 1.0), // vertical slope edge case
+        EasingCurve::CubicBezier(f32::NAN, 2.0, f32::INFINITY, -1.0), // sanitized
+        EasingCurve::Spring(SpringSpec::bouncy()),
+        EasingCurve::Spring(SpringSpec::stiff()),
+        EasingCurve::Spring(SpringSpec::from_duration_bounce(0.4, -0.5)),
     ] {
         assert_eq!(curve.sample(0.0), 0.0);
         assert_eq!(curve.sample(1.0), 1.0);
@@ -267,32 +260,91 @@ fn easing_curves_evaluate_accurately_and_format_canonical_css() {
 }
 
 #[test]
-fn transition_spec_css_formatting_and_property_resolution() {
+fn spring_easing_overshoots_and_settles_within_its_duration() {
+    let bouncy = EasingCurve::Spring(SpringSpec::bouncy());
+    let peak = (1..100).map(|i| bouncy.sample(i as f32 / 100.0)).fold(0.0, f32::max);
+    assert!(peak > 1.05, "underdamped spring easing must overshoot (peak {peak})");
+    assert!((bouncy.sample(0.999) - 1.0).abs() < 2e-3, "settled at t -> 1");
+    let stiff = EasingCurve::Spring(SpringSpec::stiff());
+    let mut prev = 0.0;
+    for i in 1..100 {
+        let v = stiff.sample(i as f32 / 100.0);
+        assert!(v + 1e-4 >= prev && v <= 1.0 + 1e-3, "near-critical spring is monotonic");
+        prev = v;
+    }
+    // Settle duration matches the regime and stays finite for undamped springs.
+    assert!(SpringSpec::stiff().settle_duration_s() < SpringSpec::bouncy().settle_duration_s());
+    assert_eq!(SpringSpec::new(100.0, 0.0, 1.0).settle_duration_s(), 10.0);
+    let spec = TransitionSpec::spring(TransitionProperty::Opacity, SpringSpec::gentle());
+    assert_eq!(
+        spec.duration_ms,
+        (SpringSpec::gentle().settle_duration_s() * 1000.0).round() as u32
+    );
+}
+
+#[test]
+fn transitions_resource_roundtrips_and_rejects_hostile_words() {
     let specs = [
         TransitionSpec::all(200).easing(EasingCurve::Ease),
         TransitionSpec::new(TransitionProperty::BackgroundColor, 150)
-            .easing(EasingCurve::EaseOut)
-            .delay_ms(25),
+            .easing(EasingCurve::CubicBezier(0.34, 1.56, 0.64, 1.0))
+            .delay_ms(25)
+            .reduced_motion_instant(false),
+        TransitionSpec::spring(TransitionProperty::Transform, SpringSpec::bouncy()),
     ];
-    let mut css = String::new();
-    TransitionSpec::write_css_list_into(&specs, &mut css);
-    assert_eq!(
-        css,
-        "transition:all 200ms ease,background-color 150ms ease-out 25ms;"
-    );
+    let mut words = Vec::new();
+    assert!(Transitions::new(specs).write_words(&mut words));
+    let view = Transitions::view(ValidatedWords::try_new(&words).expect("valid"));
+    assert_eq!(view.len(), 3);
+    assert_eq!(view.iter().collect::<Vec<_>>(), specs.to_vec());
 
-    assert_eq!(
-        resolve_transition_for(&specs, TransitionProperty::BackgroundColor)
-            .unwrap()
-            .duration_ms,
-        150
-    );
-    assert_eq!(
-        resolve_transition_for(&specs, TransitionProperty::Opacity)
-            .unwrap()
-            .duration_ms,
-        200
-    );
+    let winner = |p| resolve_transition_for(view.iter(), p).map(|s| s.duration_ms);
+    assert_eq!(winner(TransitionProperty::BackgroundColor), Some(150));
+    assert_eq!(winner(TransitionProperty::Opacity), Some(200));
+
+    // Every truncation, unknown property/easing tag, non-finite or out-of-range parameter fails.
+    for cut in 0..words.len() {
+        assert!(!Transitions::validate(&words[..cut]), "cut {cut}");
+    }
+    let hostile: [(usize, u32); 6] = [
+        (1, 11),                         // unknown property
+        (1, 7 << 8),                     // unknown easing tag
+        (1, 2 << 16),                    // reduced-motion flag out of range
+        (12, f32::NAN.to_bits()),        // cubic-bezier y1 = NaN
+        (11, 2.0f32.to_bits()),          // cubic-bezier x1 > 1
+        (18, 0.0f32.to_bits()),          // spring stiffness = 0
+    ];
+    for (i, w) in hostile {
+        let mut bad = words.clone();
+        bad[i] = w;
+        assert!(!Transitions::validate(&bad), "word {i} = {w:#x} must fail");
+    }
+    // Producers cannot intern what replicas reject.
+    let nan_spring = Transitions::new([TransitionSpec::all(10)
+        .easing(EasingCurve::Spring(SpringSpec { mass: f32::NAN, ..SpringSpec::snappy() }))]);
+    assert!(!nan_spring.write_words(&mut Vec::new()));
+}
+
+#[test]
+fn motion_clock_slab_keeps_node_runs_contiguous_and_counts_exact() {
+    let mut clock = MotionClock::new();
+    let (a, b) = (NodeId::new(1, 0), NodeId::new(2, 0));
+    for node in [b, a] {
+        for prop in [TransitionProperty::Opacity, TransitionProperty::BackgroundColor] {
+            clock.animate_transition((node, prop), TransitionSpec::all(100), 0.0, 1.0);
+        }
+    }
+    clock.animate_spring(MotionKey::named("sheet"), SpringSpec::snappy(), 0.0, 1.0);
+    assert_eq!((clock.len(), clock.active_count()), (5, 5));
+    clock.remove_node(a);
+    assert_eq!((clock.len(), clock.active_count()), (3, 3));
+    assert!(clock.value(&MotionKey::from((a, TransitionProperty::Opacity))).is_none());
+    assert!(clock.value(&MotionKey::from((b, TransitionProperty::Opacity))).is_some());
+    clock.set_immediate(MotionKey::named("sheet"), 0.5);
+    assert_eq!(clock.active_count(), 2);
+    assert!(clock.remove(&MotionKey::from((b, TransitionProperty::Opacity))));
+    assert!(!clock.remove(&MotionKey::from((b, TransitionProperty::Opacity))));
+    assert_eq!(clock.active_count(), 1);
 }
 
 #[test]

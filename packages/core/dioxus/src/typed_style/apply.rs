@@ -9,8 +9,8 @@ use nve_components::media::ResponsiveRule;
 use nve_components::tables::{
     self, AlignItems, BackgroundFillRes, BoxShadows, Direction, Display,
     FlexDirection as TableFlexDir, GridItem, GridLayout, GridLine as TableGridLine, GridTracks,
-    Image, ImageFit, Interaction, JustifyContent, Layout, Motion, Overflow, Position, Responsive,
-    ResponsiveRules, StateRules, TextAlign, Transform, Transitions, Typography, Visual,
+    Image, ImageFit, Interaction, JustifyContent, Layout, Overflow, Position, Responsive,
+    ResponsiveRules, StateRules, TextAlign, Transform, Typography, Visual,
 };
 use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
 
@@ -288,11 +288,6 @@ impl TypedStyle {
                 }
             }
         }
-
-        if !self.transitions.is_empty() {
-            tx.edit::<Motion>(node)
-                .transitions(Some(Transitions(self.transitions.clone().into())));
-        }
     }
 
     /// Resets fields/tables that were written by `self` but are no longer set in `next` (or all
@@ -404,9 +399,6 @@ impl TypedStyle {
             && tx.store().has::<Responsive>(node)
         {
             tx.edit::<Responsive>(node).rules(None);
-        }
-        if !self.transitions.is_empty() && next.is_none_or(|n| n.transitions.is_empty()) {
-            tx.detach::<Motion>(node);
         }
     }
 }

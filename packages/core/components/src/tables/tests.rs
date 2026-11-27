@@ -9,7 +9,6 @@ use nve_store::{
 use crate::interaction::{CursorKind, InteractionState, StateStyleRule};
 use crate::layout_ext::GridTrack;
 use crate::media::{MediaQuery, ResponsiveRule};
-use crate::motion::TransitionSpec;
 use crate::paint::{BackgroundFill, GradientStop};
 use crate::style_ext::StylePatchExt;
 
@@ -26,7 +25,6 @@ fn all_core_tables_fit_32_words_and_register_cleanly() {
         Typography::DESC,
         TextContent::DESC,
         Transform::DESC,
-        Motion::DESC,
         Responsive::DESC,
         Interaction::DESC,
         Accessibility::DESC,
@@ -101,8 +99,6 @@ fn core_tables_roundtrip_through_nve2_wire() {
         .font_family("Inter");
     tx.edit::<TextContent>(n).text("Hello NVE2");
     tx.edit::<Transform>(n).translate_x(12.0).rotate_deg(15.0);
-    tx.edit::<Motion>(n)
-        .transitions(Some(Transitions::new(vec![TransitionSpec::all(200)])));
     tx.edit::<Responsive>(n)
         .rules(Some(ResponsiveRules::new(vec![ResponsiveRule {
             query: MediaQuery::min_width(768),
@@ -202,12 +198,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
         )
     );
 
-    // 4. Transitions exact field equality
-    let mot = dst.try_row::<Motion>(n).unwrap();
-    let trs = dst.resource::<Transitions>(mot.transitions()).unwrap();
-    assert_eq!(trs.iter().collect::<Vec<_>>(), vec![TransitionSpec::all(200)]);
-
-    // 5. ResponsiveRules exact field equality
+    // 4. ResponsiveRules exact field equality
     let resp = dst.try_row::<Responsive>(n).unwrap();
     let rrules: Vec<_> = dst
         .resource::<ResponsiveRules>(resp.rules())
@@ -281,7 +272,6 @@ fn resource_validators_reject_truncated_and_corrupt_inputs() {
     assert!(!GridTracks::validate(empty));
     assert!(!BoxShadows::validate(empty));
     assert!(!BackgroundFillRes::validate(empty));
-    assert!(!Transitions::validate(empty));
     assert!(!ResponsiveRules::validate(empty));
     assert!(!StateRules::validate(empty));
     assert!(!AriaRelations::validate(empty));
@@ -291,7 +281,6 @@ fn resource_validators_reject_truncated_and_corrupt_inputs() {
     let huge = [0x7FFF_FFFFu32];
     assert!(!GridTracks::validate(&huge));
     assert!(!BoxShadows::validate(&huge));
-    assert!(!Transitions::validate(&huge));
     assert!(!ResponsiveRules::validate(&huge));
     assert!(!StateRules::validate(&huge));
     assert!(!BackgroundFillRes::validate(&[99, 0]));

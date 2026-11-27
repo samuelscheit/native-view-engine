@@ -330,24 +330,3 @@ pub fn affine_concat(outer: &[f32; 6], inner: &[f32; 6]) -> [f32; 6] {
         outer[1] * inner[4] + outer[3] * inner[5] + outer[5],
     ]
 }
-
-/// Linearly interpolates every component of [`Transform2D`] at progress `t`.
-#[inline]
-pub fn lerp_transform_2d(from: &Transform2D, to: &Transform2D, t: f32) -> Transform2D {
-    if !t.is_finite() || t <= 0.0 {
-        return *from;
-    }
-    if (t - 1.0).abs() <= f32::EPSILON {
-        return *to;
-    }
-    let lerp = |a: f32, b: f32| a + (b - a) * t;
-    Transform2D {
-        translate_x: lerp(from.translate_x, to.translate_x),
-        translate_y: lerp(from.translate_y, to.translate_y),
-        scale_x: lerp(from.scale_x, to.scale_x),
-        scale_y: lerp(from.scale_y, to.scale_y),
-        rotate_deg: lerp(from.rotate_deg, to.rotate_deg),
-        origin_x: lerp(from.origin_x, to.origin_x).clamp(0.0, 1.0),
-        origin_y: lerp(from.origin_y, to.origin_y).clamp(0.0, 1.0),
-    }
-}

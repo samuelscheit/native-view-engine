@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use nve_components::SpringSpec;
+use nve_motion::SpringSpec;
 use nve_i18n::{CalendarDate, Currency, LocaleId};
 use nve_ui::{DateRange, UiDensity, UiTheme};
 

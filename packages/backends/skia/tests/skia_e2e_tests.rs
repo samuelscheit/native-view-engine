@@ -1,22 +1,22 @@
 //! End-to-end integration tests for `SkiaBackend` over `NodeStore`:
-//! - Interactive `:hover`/`:active`/`:focus` + `MotionDriver` visual & transform transitions
+//! - Interactive `:hover`/`:active`/`:focus` state styling and cursor resolution
 //! - `Transform2D` + sticky positioning hit-testing and painting
 //! - `SceneRelocView` Frame-0 zero-layout instant-boot painting
 
 use nve_abi::{ColorRgba, FrameId, InteractionEvent, SurfaceId};
 use nve_backend_skia::{
-    CursorKind, EasingCurve, FocusModality, InteractionState, MotionPreference, PixelBuffer,
-    RowPatch, SkiaBackend, StateStyleRule, StylePatchExt, TransitionProperty, TransitionSpec,
+    CursorKind, FocusModality, InteractionState, PixelBuffer, RowPatch, SkiaBackend,
+    StateStyleRule, StylePatchExt,
 };
 use nve_components::tables::{
-    Display, InputKind, Interaction, Layout, Motion, StateRules, TextContent, TextInput, Transform,
-    Transitions, Typography, Visual,
+    Display, InputKind, Interaction, Layout, StateRules, TextContent, TextInput, Transform,
+    Typography, Visual,
 };
 use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 #[test]
-fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
+fn skia_interaction_state_focus_and_reloc_frame0_roundtrip() {
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
@@ -33,12 +33,6 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
             .bg(ColorRgba::rgb(59, 130, 246))
             .cursor(CursorKind::Pointer),
     )];
-    let transitions = vec![
-        TransitionSpec::new(TransitionProperty::BackgroundColor, 200)
-            .easing(EasingCurve::Linear),
-        TransitionSpec::new(TransitionProperty::Transform, 200)
-            .easing(EasingCurve::Linear),
-    ];
 
     let mut tx = store.tx();
     let btn = tx.create();
@@ -53,7 +47,6 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
         .listen(InteractionEvent::Press)
         .cursor(CursorKind::Pointer)
         .state_rules(Some(StateRules(rules.into())));
-    tx.edit::<Motion>(btn).transitions(Some(Transitions(transitions.into())));
     tx.edit::<Transform>(btn).translate_x(10.0);
     tx.edit::<TextContent>(txt).text("Click me");
     tx.edit::<Typography>(txt).color(Rgba::WHITE).font_size(14.0);
@@ -61,24 +54,15 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
 
     backend.commit(&store, &changes).unwrap();
 
-    // Pointer hover triggers smooth transition.
+    // Pointer hover applies the state rule instantly (no animation without a frame hook).
     assert!(backend.pointer_move(&store, 40.0, 20.0));
     assert_eq!(backend.current_cursor(&store), CursorKind::Pointer);
-    assert!(backend.needs_next_frame());
-
-    // Step halfway (0.1s / 0.2s): interpolated color is strictly between start and end.
-    assert!(backend.advance_animations(&store, 0.1));
-    let mid = backend.animated_style(&store, btn).unwrap();
-    assert!(mid.background.b > 42 && mid.background.b < 246);
-
-    // Step past duration: settles to idle (`needs_next_frame() == false`).
-    assert!(!backend.advance_animations(&store, 0.2));
+    assert_eq!(
+        backend.animated_style(&store, btn).unwrap().background,
+        ColorRgba::rgb(59, 130, 246)
+    );
     assert!(!backend.needs_next_frame());
-
-    // Reduced-motion mode snaps immediately.
-    backend.set_motion_preference(&store, MotionPreference::Reduce);
     assert!(backend.pointer_leave(&store));
-    assert!(!backend.needs_next_frame());
 
     // Focus tracking via keyboard modality.
     assert!(backend.set_interaction_focus(&store, Some(btn), FocusModality::Keyboard));

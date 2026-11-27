@@ -121,8 +121,8 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         }
 
         let effective_tf = self
-            .motion
-            .resolve_animated_transform(id, self.layout_tree.effective_transform(store, id));
+            .frame_hooks
+            .resolve_transform(id, self.layout_tree.effective_transform(store, id));
         let (px, py) = if let Some(tf) = effective_tf
             && !tf.is_identity()
         {

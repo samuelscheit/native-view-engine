@@ -19,7 +19,6 @@ use nve_abi::{Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_components::interaction::CursorKind;
 use nve_components::layout_ext::LayoutExt;
 use nve_components::media::MediaQuery;
-use nve_components::motion::TransitionSpec;
 use nve_components::paint::BackgroundFill;
 use nve_components::transform::Transform2D;
 use nve_components::{LayoutSnapshot, VisualSnapshot};
@@ -52,8 +51,8 @@ impl IntoAttributeValue for ShowOn {
 /// Direct binary layout + visual style payload forwarded via Dioxus `AttributeValue::Any`.
 ///
 /// Writes directly into `NodeStore` word tables (`Layout`, `Visual`, `Typography`, `Transform`,
-/// `Interaction`, `Responsive`, `Motion`, `GridLayout`, `GridItem`) without formatting or
-/// parsing any CSS strings.
+/// `Interaction`, `Responsive`, `GridLayout`, `GridItem`) without formatting or parsing any CSS
+/// strings. Capability-module tables (e.g. `nve_motion::Motion`) attach via `nve_table`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
     pub layout: LayoutSnapshot,
@@ -72,7 +71,6 @@ pub struct TypedStyle {
     pub responsive: Vec<PendingResponsiveRule>,
     pub cursor: Option<CursorKind>,
     pub state_rules: Vec<PendingStateRule>,
-    pub transitions: Vec<TransitionSpec>,
 }
 
 impl Default for TypedStyle {
@@ -102,7 +100,6 @@ impl TypedStyle {
             responsive: Vec::new(),
             cursor: None,
             state_rules: Vec::new(),
-            transitions: Vec::new(),
         }
     }
 

@@ -1,8 +1,8 @@
-//! `Visual` (dense), `Typography` / `TextContent` (sparse), `Transform`, `Motion`, `Responsive`.
+//! `Visual` (dense), `Typography` / `TextContent` (sparse), `Transform`, `Responsive`.
 
 use nve_store::{word_flags, Length, NveTable, Res, Rgba, Str, WordEnum};
 
-use super::resources::{BackgroundFillRes, BoxShadows, ResponsiveRules, Transitions};
+use super::resources::{BackgroundFillRes, BoxShadows, ResponsiveRules};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
@@ -221,14 +221,6 @@ pub struct Transform {
     #[effect(composite)]
     #[default(0.5)]
     pub origin_y: f32,
-}
-
-/// Declarative transitions.
-#[derive(NveTable)]
-#[nve_table(name = "nve.motion", storage = "sparse", flags = "publish")]
-pub struct Motion {
-    #[effect(composite, paint)]
-    pub transitions: Res<Transitions>,
 }
 
 /// `@media` visibility gate and responsive rule patches.

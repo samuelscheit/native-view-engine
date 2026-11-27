@@ -48,18 +48,12 @@ pub use nve_components::media::{
 pub use nve_components::tables::{Display, FlexWrap, Overflow, TextAlign};
 pub use nve_components::{LayoutSnapshot, StylePatchExt, VisualSnapshot};
 pub use nve_store::RowPatch;
-pub use nve_components::motion::{
-    lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for,
-    EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
-    TimedTransition, TransitionProperty, TransitionSpec,
-};
 pub use nve_components::paint::{
     lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
     LinearGradient, RadialGradient,
 };
-pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
 pub use nve_components::transform::{
-    affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
+    affine_concat, affine_inverse_map_point, affine_map_point, Transform2D,
 };
 pub use signal_archive::{
     reconcile_signal_entry, signal_slot_id, BinValueSlot, HydrationReport, SignalArchive,
@@ -157,8 +151,6 @@ pub mod prelude {
     pub use nve_components::StylePatchExt;
     pub use nve_store::RowPatch;
     pub use nve_components::input_hints::{AutofillHint, InputMode};
-    pub use nve_components::motion::{EasingCurve, TransitionProperty, TransitionSpec};
     pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-    pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
     pub use nve_components::transform::Transform2D;
 }

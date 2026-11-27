@@ -16,6 +16,7 @@ nve-dioxus = { workspace = true }
 nve-engine = { workspace = true }
 nve-i18n = { workspace = true }
 nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false }
+nve-motion = { workspace = true }
 nve-tv = { workspace = true, optional = true }
 nve-web-html = { workspace = true }
 base64 = { workspace = true }

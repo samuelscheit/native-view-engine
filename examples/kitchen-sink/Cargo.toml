@@ -21,6 +21,7 @@ nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-store = { workspace = true }
 nve-interop = { workspace = true }
+nve-motion = { workspace = true }
 nve-ui = { workspace = true }
 nve-i18n = { workspace = true }
 dioxus-core = { workspace = true }

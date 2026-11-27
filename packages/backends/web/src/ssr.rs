@@ -162,7 +162,7 @@ impl WebBackend {
             return;
         }
         let (tag, _ns) = self.renderer.registry().resolve_tag(store, id);
-        let resolved = sheet.resolve_node(store, id);
+        let resolved = sheet.resolve_node(store, id, self.renderer.registry());
 
         out.push('<');
         out.push_str(tag);

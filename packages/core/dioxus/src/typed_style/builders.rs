@@ -1,4 +1,4 @@
-//! Visual, typography, responsive, interaction-state, and transition builders on [`TypedStyle`].
+//! Visual, typography, responsive, and interaction-state builders on [`TypedStyle`].
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -7,7 +7,6 @@ use nve_abi::{ColorRgba, FlexAlign, FlexDirection, FlexJustify};
 use nve_components::interaction::{CursorKind, InteractionState};
 use nve_components::layout_ext::GridTrack;
 use nve_components::media::MediaQuery;
-use nve_components::motion::TransitionSpec;
 use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 use nve_components::StylePatchExt;
 use nve_store::RowPatch;
@@ -381,20 +380,6 @@ impl TypedStyle {
         build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
     ) -> Self {
         self.on_state_with(InteractionState::DISABLED, build)
-    }
-
-    // --- Declarative style transitions ---
-
-    #[inline]
-    pub fn transition(mut self, spec: TransitionSpec) -> Self {
-        self.transitions.push(spec);
-        self
-    }
-
-    #[inline]
-    pub fn transitions(mut self, specs: &[TransitionSpec]) -> Self {
-        self.transitions.extend_from_slice(specs);
-        self
     }
 }
 

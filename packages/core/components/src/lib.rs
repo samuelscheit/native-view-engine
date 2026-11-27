@@ -1,8 +1,8 @@
-//! Cross-platform core word tables (`tables::*`), motion/spring curves, responsive/state style
-//! patches, paint fills, transforms, and shared CSS/color parsers.
+//! Cross-platform core word tables (`tables::*`), responsive/state style patches, paint fills,
+//! transforms, and shared CSS/color parsers.
 //!
-//! Zero dependencies on optional capability modules (`svg`, `canvas`, `blur`, `webview`, `video`,
-//! `camera`, `web-element`, `web-html`).
+//! Zero dependencies on optional capability modules (`motion`, `svg`, `canvas`, `blur`, `webview`,
+//! `video`, `camera`, `web-element`, `web-html`).
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
@@ -13,14 +13,9 @@ pub mod interaction;
 pub mod keyboard;
 pub mod layout_ext;
 pub mod media;
-pub mod motion;
-pub mod motion_clock;
-#[cfg(test)]
-mod motion_tests;
 pub mod paint;
 pub mod reconcile;
 pub mod snapshots;
-pub mod spring;
 pub mod style_ext;
 pub mod tables;
 mod tracker;
@@ -48,11 +43,6 @@ pub use media::{
     ColorScheme, MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, MEDIA_FLAG_HAS_MAX_WIDTH,
     MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
-pub use motion::{
-    lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for,
-    EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
-    TimedTransition, TransitionProperty, TransitionSpec,
-};
 pub use nve_store::{RowPatch, RowPatchView};
 pub use paint::{
     lerp_color_premul, normalize_stops, sample_gradient_stops, sample_normalized_stops,
@@ -68,14 +58,9 @@ pub use snapshots::{
     apply_patch_view_to_layout, apply_patch_view_to_layout_ext, apply_patch_view_to_visual,
     transform_from_patch, transform_from_patch_view, LayoutSnapshot, VisualSnapshot,
 };
-pub use spring::{
-    MotionPreference, SpringSpec, SpringState, DEFAULT_REST_DISPLACEMENT, DEFAULT_REST_VELOCITY,
-};
 pub use style_ext::StylePatchExt;
 pub use tables::{Display, FlexWrap, Overflow, TextAlign};
-pub use transform::{
-    affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
-};
+pub use transform::{affine_concat, affine_inverse_map_point, affine_map_point, Transform2D};
 
 pub use css::{
     apply_css_attr_layers_status_to_tx, apply_css_attr_layers_to_tx, apply_css_attr_to_tx,

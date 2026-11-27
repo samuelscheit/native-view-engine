@@ -23,6 +23,8 @@ use nve_components::tables::{
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend};
 use nve_store::{ChangeSet, EventBatchBuf, NodeId, NodeStore, TableSlot};
 
+use crate::stylesheet::ResolvedNodeStyle;
+
 #[path = "table_system_ctx.rs"]
 mod ctx;
 #[path = "table_system_ssr.rs"]
@@ -64,6 +66,10 @@ pub trait WebTableSystem: Send + Sync + 'static {
 
     /// Emits extra inline CSS declarations into `out` (e.g. `backdrop-filter:...;`).
     fn write_inline_css(&self, _store: &NodeStore, _node: NodeId, _out: &mut String) {}
+
+    /// Contributes content-addressed class and `@media` rules for `node` to the shared stylesheet
+    /// (SSR `<style>` and live constructable sheets), e.g. compiled `transition` lists.
+    fn resolve_style(&self, _store: &NodeStore, _node: NodeId, _out: &mut ResolvedNodeStyle) {}
 
     /// Synchronizes live/mirror DOM state when this table's row changes on `node`.
     fn commit_node(

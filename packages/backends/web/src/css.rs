@@ -59,7 +59,7 @@ pub fn canonical_f32_bits(v: f32) -> u32 {
 }
 
 /// Formats a deterministic content-addressed class token `<prefix><8hex>` from the XXH64 digest.
-pub(crate) fn format_content_class(prefix: &str, parts: &[&[u8]]) -> String {
+pub fn format_content_class(prefix: &str, parts: &[&[u8]]) -> String {
     let mut h = nve_abi::Xxh64Hasher::new(0);
     for part in parts {
         h.update(part);

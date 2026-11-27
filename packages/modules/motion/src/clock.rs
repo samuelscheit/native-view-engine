@@ -1,13 +1,12 @@
 //! Time-driven eased transitions ([`TimedTransition`]), unified [`MotionTrack`]s, and the
-//! zero-idle-CPU [`MotionClock`] / [`MotionGroup`] track manager.
+//! zero-idle-CPU [`MotionClock`] track slab.
 
-use std::borrow::Cow;
+use nve_abi::{Key64, NodeId};
 
-use nve_abi::hash::HashMap;
-use nve_abi::NodeId;
-
-use crate::motion::{lerp_f32, EasingCurve, TransitionProperty, TransitionSpec};
+use crate::easing::EasingCurve;
+use crate::interpolate::lerp_f32;
 use crate::spring::{MotionPreference, SpringSpec, SpringState};
+use crate::table::{TransitionProperty, TransitionSpec};
 
 /// Time-driven eased scalar transition supporting delay, mid-flight retargeting, and
 /// reduced-motion instant completion.
@@ -158,61 +157,56 @@ impl MotionTrack {
     }
 }
 
-/// Identifier for a track managed by [`MotionClock`] / [`MotionGroup`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Identifier of a [`MotionClock`] track: a compile-time-hashable name or a node property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MotionKey {
-    Named(Cow<'static, str>),
-    NodeProp(NodeId, TransitionProperty),
+    Named(Key64),
+    Node(NodeId, TransitionProperty),
 }
 
-impl From<&'static str> for MotionKey {
+impl MotionKey {
+    /// Named key hashed with `xxh64` (`const`, so call sites can bake it at compile time).
     #[inline]
-    fn from(name: &'static str) -> Self {
-        Self::Named(Cow::Borrowed(name))
+    pub const fn named(name: &str) -> Self {
+        Self::Named(Key64::of(name))
     }
 }
 
-impl From<String> for MotionKey {
+impl From<&str> for MotionKey {
     #[inline]
-    fn from(name: String) -> Self {
-        Self::Named(Cow::Owned(name))
+    fn from(name: &str) -> Self {
+        Self::named(name)
     }
 }
 
 impl From<(NodeId, TransitionProperty)> for MotionKey {
     #[inline]
     fn from((id, prop): (NodeId, TransitionProperty)) -> Self {
-        Self::NodeProp(id, prop)
+        Self::Node(id, prop)
     }
 }
 
-/// Deterministic completion notification emitted once when an active track settles.
-#[derive(Debug, Clone, PartialEq)]
+/// Completion notification emitted once when an active track settles.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotionCompletion {
     pub key: MotionKey,
     pub final_value: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct TrackEntry {
-    track: MotionTrack,
-    active: bool,
-}
-
-/// Zero-idle-CPU coordinator for named and node-keyed spring & timed transitions.
+/// Zero-idle-CPU coordinator for named and node-keyed spring & timed tracks.
 ///
-/// Tracks whether any animation is active (`has_active_animations()`) so native display links
-/// sleep at 0% idle CPU/GPU once settled, and fires deterministic [`MotionCompletion`] events
-/// even when [`MotionPreference::Reduce`] snaps animations immediately.
+/// Tracks live in a dense slab sorted by [`MotionKey`] (parallel `keys` / `tracks` / `active`
+/// columns): lookups are a binary search, a node's tracks are contiguous, and [`Self::tick_with`]
+/// visits tracks in key order with zero allocations. `has_active_animations()` lets display links
+/// sleep once everything settled; completions fire even when [`MotionPreference::Reduce`] snaps.
 #[derive(Debug, Clone, Default)]
 pub struct MotionClock {
-    tracks: HashMap<MotionKey, TrackEntry>,
+    keys: Vec<MotionKey>,
+    tracks: Vec<MotionTrack>,
+    active: Vec<bool>,
     preference: MotionPreference,
     active_count: usize,
 }
-
-/// Ergonomic alias for [`MotionClock`].
-pub type MotionGroup = MotionClock;
 
 impl MotionClock {
     #[inline]
@@ -223,9 +217,8 @@ impl MotionClock {
     #[inline]
     pub fn with_preference(preference: MotionPreference) -> Self {
         Self {
-            tracks: HashMap::default(),
             preference,
-            active_count: 0,
+            ..Self::default()
         }
     }
 
@@ -252,16 +245,42 @@ impl MotionClock {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.tracks.len()
+        self.keys.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.tracks.is_empty()
+        self.keys.is_empty()
+    }
+
+    #[inline]
+    fn find(&self, key: &MotionKey) -> Result<usize, usize> {
+        self.keys.binary_search(key)
+    }
+
+    /// Writes `track` at `key` (inserting in sorted position) and keeps `active_count` exact.
+    fn put(&mut self, key: MotionKey, track: MotionTrack, active: bool) {
+        match self.find(&key) {
+            Ok(i) => {
+                match (self.active[i], active) {
+                    (false, true) => self.active_count += 1,
+                    (true, false) => self.active_count -= 1,
+                    _ => {}
+                }
+                self.tracks[i] = track;
+                self.active[i] = active;
+            }
+            Err(i) => {
+                self.active_count += usize::from(active);
+                self.keys.insert(i, key);
+                self.tracks.insert(i, track);
+                self.active.insert(i, active);
+            }
+        }
     }
 
     /// Starts or mid-flight retargets a spring track, preserving exact live velocity if `key`
-    /// already holds a spring.
+    /// already holds a track.
     pub fn animate_spring(
         &mut self,
         key: impl Into<MotionKey>,
@@ -282,47 +301,21 @@ impl MotionClock {
         target: f32,
     ) {
         let key = key.into();
-        if let Some(entry) = self.tracks.get_mut(&key) {
-            let was_active = entry.active;
-            match &mut entry.track {
-                MotionTrack::Spring {
-                    spec: existing_spec,
-                    state,
-                } => {
-                    *existing_spec = spec;
+        let state = match self.find(&key) {
+            Ok(i) => match self.tracks[i] {
+                MotionTrack::Spring { mut state, .. } => {
                     state.retarget(target);
+                    state
                 }
-                other => {
-                    let cur = other.value();
-                    let vel = other.velocity();
-                    entry.track = MotionTrack::Spring {
-                        spec,
-                        state: SpringState::with_velocity(cur, vel, target),
-                    };
-                }
-            }
-            let needs_step = !entry.track.is_settled();
-            if needs_step && !was_active {
-                entry.active = true;
-                self.active_count += 1;
-            }
-            return;
-        }
-        let state = SpringState::with_velocity(initial_if_absent, velocity_if_absent, target);
-        let active = !state.is_settled(&spec);
-        if active {
-            self.active_count += 1;
-        }
-        self.tracks.insert(
-            key,
-            TrackEntry {
-                track: MotionTrack::Spring { spec, state },
-                active,
+                other => SpringState::with_velocity(other.value(), other.velocity(), target),
             },
-        );
+            Err(_) => SpringState::with_velocity(initial_if_absent, velocity_if_absent, target),
+        };
+        let active = !state.is_settled(&spec);
+        self.put(key, MotionTrack::Spring { spec, state }, active);
     }
 
-    /// Starts or smoothly retargets a timed CSS-easing transition track.
+    /// Starts or smoothly retargets a timed eased transition track.
     pub fn animate_transition(
         &mut self,
         key: impl Into<MotionKey>,
@@ -331,130 +324,95 @@ impl MotionClock {
         target: f32,
     ) {
         let key = key.into();
-        let from = self
-            .tracks
-            .get(&key)
-            .map_or(initial_if_absent, |e| e.track.value());
-        let was_active = self.tracks.get(&key).is_some_and(|e| e.active);
+        let from = self.value(&key).unwrap_or(initial_if_absent);
         let transition = TimedTransition::new(from, target, &spec);
         let active = (from - target).abs() > f32::EPSILON || !transition.is_settled();
-        match (was_active, active) {
-            (false, true) => self.active_count += 1,
-            (true, false) => self.active_count = self.active_count.saturating_sub(1),
-            _ => {}
-        }
-        self.tracks.insert(
-            key,
-            TrackEntry {
-                track: MotionTrack::Timed(transition),
-                active,
-            },
-        );
+        self.put(key, MotionTrack::Timed(transition), active);
     }
 
     /// Immediately sets `key` to a settled scalar `value` without animating.
     pub fn set_immediate(&mut self, key: impl Into<MotionKey>, value: f32) {
-        let key = key.into();
-        if let Some(prev) = self.tracks.get(&key)
-            && prev.active
-        {
-            self.active_count = self.active_count.saturating_sub(1);
-        }
-        self.tracks.insert(
-            key,
-            TrackEntry {
-                track: MotionTrack::Spring {
-                    spec: SpringSpec::snappy(),
-                    state: SpringState::settled(value),
-                },
-                active: false,
-            },
-        );
+        let track = MotionTrack::Spring {
+            spec: SpringSpec::snappy(),
+            state: SpringState::settled(value),
+        };
+        self.put(key.into(), track, false);
     }
 
-    /// Advances all active tracks by `dt_s` seconds and returns deterministically ordered
-    /// [`MotionCompletion`] events for tracks that settled on this tick.
+    /// Advances all active tracks by `dt_s` seconds and returns key-ordered completions.
     pub fn tick(&mut self, dt_s: f32) -> Vec<MotionCompletion> {
         let mut completed = Vec::new();
         self.tick_with(dt_s, |ev| completed.push(ev));
         completed
     }
 
-    /// Advances all active tracks by `dt_s` seconds, invoking `on_complete` in deterministic key
-    /// order for every track that settles on this tick.
+    /// Advances all active tracks by `dt_s` seconds, invoking `on_complete` in key order for every
+    /// track that settles on this tick (zero allocations).
     pub fn tick_with(&mut self, dt_s: f32, mut on_complete: impl FnMut(MotionCompletion)) {
         if self.active_count == 0 {
             return;
         }
         let pref = self.preference;
-        let mut settled: Vec<MotionCompletion> = Vec::new();
-        for (key, entry) in &mut self.tracks {
-            if !entry.active {
-                continue;
-            }
-            if entry.track.step(dt_s, pref) {
-                entry.active = false;
-                self.active_count = self.active_count.saturating_sub(1);
-                settled.push(MotionCompletion {
-                    key: key.clone(),
-                    final_value: entry.track.value(),
+        for i in 0..self.keys.len() {
+            if self.active[i] && self.tracks[i].step(dt_s, pref) {
+                self.active[i] = false;
+                self.active_count -= 1;
+                on_complete(MotionCompletion {
+                    key: self.keys[i],
+                    final_value: self.tracks[i].value(),
                 });
             }
-        }
-        settled.sort_by(|a, b| a.key.cmp(&b.key));
-        for ev in settled {
-            on_complete(ev);
         }
     }
 
     #[inline]
     pub fn value(&self, key: &MotionKey) -> Option<f32> {
-        self.tracks.get(key).map(|e| e.track.value())
-    }
-
-    #[inline]
-    pub fn value_named(&self, name: &str) -> Option<f32> {
-        self.tracks.iter().find_map(|(k, e)| {
-            matches!(k, MotionKey::Named(n) if n.as_ref() == name).then_some(e.track.value())
-        })
+        self.track(key).map(MotionTrack::value)
     }
 
     #[inline]
     pub fn velocity(&self, key: &MotionKey) -> Option<f32> {
-        self.tracks.get(key).map(|e| e.track.velocity())
+        self.track(key).map(MotionTrack::velocity)
     }
 
     #[inline]
     pub fn track(&self, key: &MotionKey) -> Option<&MotionTrack> {
-        self.tracks.get(key).map(|e| &e.track)
+        self.find(key).ok().map(|i| &self.tracks[i])
     }
 
+    /// Removes `key`, returning whether it existed.
     pub fn remove(&mut self, key: &MotionKey) -> bool {
-        if let Some(removed) = self.tracks.remove(key) {
-            if removed.active {
-                self.active_count = self.active_count.saturating_sub(1);
-            }
-            true
-        } else {
-            false
-        }
+        let Ok(i) = self.find(key) else {
+            return false;
+        };
+        self.remove_range(i..i + 1);
+        true
     }
 
-    /// Removes all tracks bound to `node_id`.
-    pub fn remove_node(&mut self, node_id: NodeId) {
-        let mut removed_active = 0usize;
-        self.tracks.retain(|k, entry| {
-            let drop_it = matches!(k, MotionKey::NodeProp(id, _) if *id == node_id);
-            if drop_it && entry.active {
-                removed_active += 1;
-            }
-            !drop_it
-        });
-        self.active_count = self.active_count.saturating_sub(removed_active);
+    /// Removes every track bound to `node` (one contiguous run of the sorted slab).
+    pub fn remove_node(&mut self, node: NodeId) {
+        let start = self
+            .keys
+            .partition_point(|k| *k < MotionKey::Node(node, TransitionProperty::All));
+        let end = start
+            + self.keys[start..]
+                .iter()
+                .take_while(|k| matches!(k, MotionKey::Node(n, _) if *n == node))
+                .count();
+        self.remove_range(start..end);
+    }
+
+    fn remove_range(&mut self, range: std::ops::Range<usize>) {
+        self.active_count -= self.active[range.clone()].iter().filter(|a| **a).count();
+        self.keys.drain(range.clone());
+        self.tracks.drain(range.clone());
+        self.active.drain(range);
     }
 
     pub fn clear(&mut self) {
+        self.keys.clear();
         self.tracks.clear();
+        self.active.clear();
         self.active_count = 0;
     }
 }

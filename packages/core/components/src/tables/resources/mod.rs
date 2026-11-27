@@ -11,7 +11,7 @@ mod rules_res;
 pub use grid_tracks::{GridTracks, GridTracksIter, GridTracksView};
 pub use paint_res::{
     BackgroundFillRes, BackgroundFillView, BoxShadows, BoxShadowsIter, BoxShadowsView,
-    GradientStopsIter, GradientStopsView, Transitions, TransitionsIter, TransitionsView,
+    GradientStopsIter, GradientStopsView,
 };
 pub use rules_res::{
     ResponsiveRules, ResponsiveRulesIter, ResponsiveRulesView, StateRules, StateRulesIter,

@@ -34,11 +34,10 @@ pub use resources::{
     AriaRelations, AriaRelationsView, BackgroundFillRes, BackgroundFillView, BoxShadows,
     BoxShadowsIter, BoxShadowsView, GradientStopsIter, GradientStopsView, GridTracks,
     GridTracksIter, GridTracksView, ImageSrc, ImageSrcView, ResponsiveRules, ResponsiveRulesIter,
-    ResponsiveRulesView, StateRules, StateRulesIter, StateRulesView, Transitions, TransitionsIter,
-    TransitionsView,
+    ResponsiveRulesView, StateRules, StateRulesIter, StateRulesView,
 };
 pub use visual::{
-    FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive, ResponsiveMut,
+    FontStyle, Overflow, OverflowWrap, Responsive, ResponsiveMut,
     ResponsiveRef, TextAlign, TextContent, TextContentMut, TextContentRef, TextDecoration,
     Transform, TransformMut, TransformRef, Typography, TypographyMut, TypographyRef, VerticalAlign,
     Visibility, Visual, VisualMut, VisualRef, WhiteSpace, WordBreak,
@@ -64,7 +63,6 @@ pub fn register_core_tables() {
     let _ = Typography::slot();
     let _ = TextContent::slot();
     let _ = Transform::slot();
-    let _ = Motion::slot();
     let _ = Responsive::slot();
     let _ = Interaction::slot();
     let _ = Accessibility::slot();
@@ -116,7 +114,12 @@ pub fn is_subtree_display_none(store: &nve_store::NodeStore, id: nve_store::Node
 /// Default cross-platform core realization priority order (`Image > TextInput > Scroll > Link > TextContent`).
 /// Backends/hosts prepend any higher-priority module tables (`Svg`, `Canvas`, `WebView`, `Video`,
 /// `Camera`, `WebHtml`, 3P tables) before installing onto a [`nve_store::NodeStore`].
+///
+/// Also registers every core table first: replicas are built with this order, and a wire
+/// declaration for a core table must resolve to the static slot typed lookups use — not to a
+/// dynamic slot because this process happened not to touch that table yet.
 pub fn core_realization_order() -> RealizationOrder {
+    register_core_tables();
     RealizationOrder::new()
         .with::<Image>()
         .with::<TextInput>()

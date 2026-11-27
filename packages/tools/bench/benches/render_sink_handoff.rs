@@ -18,6 +18,7 @@ use nve_components::tables::{core_realization_order, Interaction};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, StoreWireReplica};
+use nve_motion::{EasingCurve, TransitionProperty, TransitionSpec};
 use nve_store::NodeStore;
 
 #[derive(Clone, PartialEq)]
@@ -85,10 +86,6 @@ fn rich_extended_app() -> Element {
                 GradientStop::new(1.0, ColorRgba::rgb(124, 58, 237)),
             ],
         )
-        .transition(
-            TransitionSpec::new(TransitionProperty::BackgroundColor, 160)
-                .easing(EasingCurve::EaseOut),
-        )
         .on_hover_with(|p| {
             p.scale(1.02).linear_gradient(
                 90.0,
@@ -107,6 +104,14 @@ fn rich_extended_app() -> Element {
                 pressable {
                     key: "{i}",
                     nve_style: card_style.clone(),
+                    nve_table: nve_dioxus::table_attr_fn(|tx, node| {
+                        nve_motion::write_transitions(
+                            tx,
+                            node,
+                            &[TransitionSpec::new(TransitionProperty::BackgroundColor, 160)
+                                .easing(EasingCurve::EaseOut)],
+                        );
+                    }),
                     view {
                         nve_style: TypedStyle::new()
                             .width_px(20.0)

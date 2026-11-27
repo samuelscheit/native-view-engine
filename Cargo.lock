@@ -2563,6 +2563,7 @@ dependencies = [
  "nve-hash",
  "nve-interop",
  "nve-layout-yoga",
+ "nve-motion",
  "nve-store",
  "rkyv",
  "serde",
@@ -2856,6 +2857,7 @@ dependencies = [
  "nve-engine",
  "nve-i18n",
  "nve-interop",
+ "nve-motion",
  "nve-store",
  "nve-ui",
  "nve-web-html-web",
@@ -2974,6 +2976,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-motion"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-components",
+ "nve-store",
+]
+
+[[package]]
+name = "nve-motion-skia"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-backend-skia",
+ "nve-components",
+ "nve-engine",
+ "nve-motion",
+ "nve-store",
+]
+
+[[package]]
+name = "nve-motion-web"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-backend-web",
+ "nve-engine",
+ "nve-motion",
+ "nve-store",
+]
+
+[[package]]
 name = "nve-query"
 version = "0.1.0"
 dependencies = [
@@ -3071,6 +3106,7 @@ dependencies = [
  "nve-host-services",
  "nve-interop",
  "nve-linking",
+ "nve-motion-skia",
  "nve-secure-store",
  "nve-store",
  "nve-svg-skia",
@@ -3192,6 +3228,7 @@ dependencies = [
  "nve-engine",
  "nve-i18n",
  "nve-interop",
+ "nve-motion",
  "nve-store",
  "nve-tv",
  "nve-web-html",
@@ -3272,6 +3309,7 @@ dependencies = [
  "nve-example-kitchen-sink",
  "nve-http-web",
  "nve-interop",
+ "nve-motion-web",
  "nve-query",
  "nve-query-dioxus",
  "nve-rpc",

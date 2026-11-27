@@ -6,6 +6,7 @@ use dioxus_core::EventHandler;
 use dioxus_core_macro::Props;
 use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
+use nve_motion::{MotionPreference, SpringSpec, SpringState};
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::use_theme_rgba;

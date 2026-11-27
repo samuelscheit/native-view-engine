@@ -1,0 +1,18 @@
+[package]
+name = "nve-motion-skia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-backend-skia = { workspace = true }
+nve-components = { workspace = true }
+nve-motion = { workspace = true }
+nve-store = { workspace = true }
+
+[dev-dependencies]
+nve-engine = { workspace = true }
+
+[lints]
+workspace = true

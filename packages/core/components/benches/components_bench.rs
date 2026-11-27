@@ -1,5 +1,5 @@
 //! Criterion micro-benchmarks for `nve-components` hot paths: CSS color/dimension parsing,
-//! spring physics integration, 2D affine transforms, and gradient stop sampling.
+//! 2D affine transforms, and gradient stop sampling.
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
@@ -12,7 +12,7 @@ mod native {
     use nve_abi::ColorRgba;
     use nve_components::{
         affine_concat, affine_map_point, parse_color, parse_dim, sample_gradient_stops,
-        GradientStop, MotionPreference, SpringSpec, SpringState, Transform2D,
+        GradientStop, Transform2D,
     };
 
     fn bench_css_parsers(c: &mut Criterion) {
@@ -50,8 +50,7 @@ mod native {
         });
     }
 
-    fn bench_motion_and_paint(c: &mut Criterion) {
-        let spec = SpringSpec::default();
+    fn bench_transform_and_paint(c: &mut Criterion) {
         let stops = [
             GradientStop {
                 offset: 0.0,
@@ -66,20 +65,6 @@ mod native {
                 color: ColorRgba::rgb(16, 185, 129),
             },
         ];
-
-        c.bench_function("components_spring_60_steps", |b| {
-            b.iter(|| {
-                let mut state = SpringState::new(0.0, 1.0);
-                for _ in 0..60 {
-                    state.step(
-                        black_box(&spec),
-                        black_box(1.0 / 60.0),
-                        MotionPreference::Full,
-                    );
-                }
-                black_box(state.value)
-            });
-        });
 
         c.bench_function("components_transform2d_concat_map", |b| {
             let t1 = Transform2D {
@@ -118,7 +103,7 @@ mod native {
         });
     }
 
-    criterion_group!(benches, bench_css_parsers, bench_motion_and_paint);
+    criterion_group!(benches, bench_css_parsers, bench_transform_and_paint);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

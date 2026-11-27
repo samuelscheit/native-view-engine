@@ -1,0 +1,17 @@
+[package]
+name = "nve-motion-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-backend-web = { workspace = true }
+nve-motion = { workspace = true }
+nve-store = { workspace = true }
+
+[dev-dependencies]
+nve-engine = { workspace = true }
+
+[lints]
+workspace = true

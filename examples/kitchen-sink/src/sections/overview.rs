@@ -4,6 +4,7 @@
 
 use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
+use nve_motion::TransitionSpec;
 use nve_ui::{
     use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Col,
     IconButton, Orientation, Row, Separator, Stack,
@@ -45,7 +46,6 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
         .bg(colors.surface_subtle)
         .border(1.0, colors.border)
         .cursor(CursorKind::Pointer)
-        .transition(TransitionSpec::all(150))
         .on_hover_with(|patch| patch.bg(colors.accent).border(1.0, colors.accent))
         .on_active_with(|patch| patch.opacity(0.85))
         .on_focus_visible_with(|patch| patch.border(2.0, colors.border_focus));
@@ -145,6 +145,9 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                         pressable {
                             test_id: "ks-hover-demo",
                             nve_style: hover_card_style,
+                            nve_table: nve_dioxus::table_attr_fn(|tx, node| {
+                                nve_motion::write_transitions(tx, node, &[TransitionSpec::all(150)]);
+                            }),
                             onpress: move |_| {
                                 last_action.set("Activated interactive pseudo-state tile".to_owned());
                             },
