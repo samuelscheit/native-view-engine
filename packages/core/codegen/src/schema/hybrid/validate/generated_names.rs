@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::error::CodegenError;
 use crate::naming::to_pascal_case;
-use crate::schema::hybrid::HybridFileSpec;
+use crate::schema::hybrid::{HybridFileSpec, PodOptionScope};
 
 /// The type namespaces generated names live in. C, C++, Swift (which imports the C header), and
 /// Dart share the C spellings; Rust never spells `NveHybrid<Name>` but has its own carriers.
@@ -41,12 +41,12 @@ impl Registry {
 }
 
 /// Checks every generated type name of every target against every other:
-/// - user enums / structs: verbatim `Name` everywhere, the C type `NveHybrid<Name>` (C, Swift,
-///   Dart FFI), and for structs the Rust carrier `NveHybridRaw<Name>`;
+/// - user aliases, enums, and structs: verbatim `Name` everywhere; enums and structs also the C
+///   type `NveHybrid<Name>` (C, Swift, Dart FFI), and structs the Rust carrier `NveHybridRaw<Name>`;
 /// - modules / views: `Hybrid<P>Spec`, `<P>Client` (C++), `<P>HybridClient` (Swift, Kotlin, Dart,
-///   TS), `<P>Hybrid` (Rust trait), `NveHybrid<P>VTable`; views also `<P>Props`,
-///   `<P><Event>Event`, and `<P>WasmExports` (TS);
-/// - C options `NveHybridOpt<Suffix>`, the file's `<Stem>HybridFile` (Swift) and
+///   TS), `<P>Hybrid` (Rust trait), `<P>WasmExports` (TS), `NveHybrid<P>VTable`; views also
+///   `<P>Props` and `<P><Event>Event`;
+/// - C options `NveHybridOpt<Suffix>` (one inner type per suffix), the file's `<Stem>HybridFile` (Swift) and
 ///   `<Stem>HybridSchema` (Kotlin), and the runtime's `NveHybridStatus` / `NveHybridOwnedBytes`
 ///   (everywhere) / `NveHybridValue` (Rust).
 pub(super) fn validate_generated_type_names(spec: &HybridFileSpec) -> Result<(), CodegenError> {
@@ -58,6 +58,9 @@ pub(super) fn validate_generated_type_names(spec: &HybridFileSpec) -> Result<(),
     let stem = spec.stem_pascal();
     names.claim(EVERY_SCOPE, &format!("{stem}HybridFile"), "the spec file")?;
     names.claim(EVERY_SCOPE, &format!("{stem}HybridSchema"), "the spec file")?;
+    for alias in &spec.aliases {
+        names.claim(EVERY_SCOPE, &alias.name, &format!("alias '{}'", alias.name))?;
+    }
     for e in &spec.enums {
         let origin = format!("enum '{}'", e.name);
         names.claim(EVERY_SCOPE, &e.name, &origin)?;
@@ -78,13 +81,13 @@ pub(super) fn validate_generated_type_names(spec: &HybridFileSpec) -> Result<(),
             "{}Client",
             "{}HybridClient",
             "{}Hybrid",
+            "{}WasmExports",
             "NveHybrid{}VTable",
         ] {
             names.claim(EVERY_SCOPE, &pattern.replace("{}", &pascal), &origin)?;
         }
         let Some(view) = view else { continue };
         names.claim(EVERY_SCOPE, &format!("{pascal}Props"), &origin)?;
-        names.claim(EVERY_SCOPE, &format!("{pascal}WasmExports"), &origin)?;
         for ev in &view.events {
             let event = format!("{pascal}{}Event", to_pascal_case(&ev.name));
             names.claim(
@@ -94,7 +97,9 @@ pub(super) fn validate_generated_type_names(spec: &HybridFileSpec) -> Result<(),
             )?;
         }
     }
-    for (suffix, inner) in spec.collect_pod_option_types() {
+    // Every use, not one per suffix: `Option<u32>` and `Option<U32>` (struct `U32`) would share
+    // `NveHybridOpt<U32>` with two layouts.
+    for (suffix, inner) in spec.pod_option_uses(PodOptionScope::WithCFunctions) {
         let origin = format!("the C option of `{}`", inner.canonical_signature());
         names.claim(EVERY_SCOPE, &format!("NveHybridOpt{suffix}"), &origin)?;
     }

@@ -167,11 +167,11 @@ fn comment_ranges(line: &str, state: &mut LexState) -> Vec<Range<usize>> {
     comments
 }
 
-/// Whether the `r` at `i` starts a raw (byte) string literal: `r"`, `r#"`, `br"`, not `bar"`.
+/// Whether the `r` at `i` starts a raw string literal: `r"`, `r#"`, byte `br"`, C `cr"`, not `bar"`.
 fn starts_literal(bytes: &[u8], i: usize) -> bool {
     let is_ident = |at: Option<usize>| at.is_some_and(|at| bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_');
     let before = i.checked_sub(1);
-    !is_ident(before) || (before.is_some_and(|b| bytes[b] == b'b') && !is_ident(i.checked_sub(2)))
+    !is_ident(before) || (before.is_some_and(|b| matches!(bytes[b], b'b' | b'c')) && !is_ident(i.checked_sub(2)))
 }
 
 /// A hex literal of >= 14 digits (> 53 bits) cannot be represented exactly by a JS Number.
@@ -200,6 +200,12 @@ fn has_wide_hex_format(code: &str) -> bool {
             return false;
         };
         let close = open + len;
+        // A `{` before the `}` (a Rust block around an emitted string) is not this placeholder's:
+        // restart at it, so the placeholder inside is still checked.
+        if let Some(inner) = code[open + 1..close].find('{') {
+            at = open + 1 + inner;
+            continue;
+        }
         at = close + 1;
         let spec = code[open + 1..close].rsplit_once(':').map_or("", |(_, spec)| spec);
         // `0x` right before the placeholder, or before digits that lead into it.

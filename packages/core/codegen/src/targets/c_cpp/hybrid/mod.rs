@@ -18,6 +18,8 @@ mod type_helpers;
 pub(crate) use bin_emitter::{emit_cpp_bin_read, emit_cpp_bin_write};
 pub(crate) use type_helpers::cpp_owned_type;
 
+use std::collections::BTreeSet;
+
 use crate::writer::CodeWriter;
 use codec_emitter::emit_cpp20_spec;
 use type_helpers::{
@@ -32,7 +34,7 @@ use crate::naming::{
 use crate::schema::export::GeneratedFile;
 use crate::schema::hybrid::{
     HybridDefaultValue, HybridEnumSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec,
-    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION,
+    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, PodOptionScope,
 };
 
 /// Emits `<Stem>HybridAbi.generated.h` (pure C11) and `<Stem>HybridSpec.generated.hpp` (C++20).
@@ -164,7 +166,7 @@ fn emit_c11_header(spec: &HybridFileSpec) -> Result<String, CodegenError> {
     }
 
     // POD Optional<T> structs
-    for (suffix, inner) in spec.collect_pod_option_types() {
+    for (suffix, inner) in spec.collect_pod_option_types(PodOptionScope::WithCFunctions) {
         writeln!(out, "typedef struct NveHybridOpt{suffix} {{");
         writeln!(out, "  bool is_some;");
         writeln!(out, "  {} value;", require_c_value_type(&inner, spec)?);
@@ -174,6 +176,27 @@ fn emit_c11_header(spec: &HybridFileSpec) -> Result<String, CodegenError> {
 
     // Direct static `extern "C"` functions (default for statically linked builds; zero vtable, LTO-inlinable)
     if !spec.c_functions.is_empty() {
+        // Opaque handles: structs without a C form that C functions point to are incomplete
+        // file-scope typedefs (a tag first named in a prototype would be scoped to it).
+        let opaque: BTreeSet<&str> = spec
+            .c_functions
+            .iter()
+            .flat_map(|f| f.params.iter().map(|p| &p.ty).chain([&f.return_type]))
+            .filter_map(|ty| match ty {
+                HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => match inner.as_ref() {
+                    HybridType::Struct(name) => Some(name.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .filter(|name| spec.find_struct(name).is_none_or(|s| c_abi_struct_fields(s, spec).is_none()))
+            .collect();
+        for name in &opaque {
+            writeln!(out, "typedef struct NveHybrid{name} NveHybrid{name};");
+        }
+        if !opaque.is_empty() {
+            writeln!(out);
+        }
         for f in &spec.c_functions {
             let ret = c_fn_type(&f.return_type, spec)?;
             let params = f

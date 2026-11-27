@@ -27,7 +27,7 @@ use crate::naming::{
 use crate::schema::export::GeneratedFile;
 use crate::schema::hybrid::{
     HybridDefaultValue, HybridEnumSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec,
-    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, DefaultLiteral,
+    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, DefaultLiteral, PodOptionScope,
 };
 
 /// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and `package:nve_host`.
@@ -47,7 +47,7 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     }
 
     // Private POD Option FFI structs (library-private to avoid cross-file export collisions)
-    for (suffix, inner) in spec.collect_pod_option_types() {
+    for (suffix, inner) in spec.collect_pod_option_types(PodOptionScope::Interfaces) {
         let field_ty = dart_ffi_struct_field_type(&inner)?;
         writeln!(
             body,

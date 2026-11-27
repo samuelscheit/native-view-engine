@@ -49,8 +49,18 @@ pub(crate) fn cpp_owned_type(ty: &HybridType) -> String {
         HybridType::FixedArray { elem, len } => {
             format!("std::array<{}, {len}>", cpp_owned_type(elem))
         }
-        // Every scalar, and `void` (the one remaining type without a scalar spelling).
-        scalar_or_void => c_scalar_type(scalar_or_void).unwrap_or("void").to_string(),
+        HybridType::Void => "void".to_string(),
+        // Listed, so a new `HybridType` variant fails to compile here instead of falling through.
+        HybridType::Bool
+        | HybridType::U8
+        | HybridType::U16
+        | HybridType::Usize
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::I64
+        | HybridType::U64
+        | HybridType::F32
+        | HybridType::F64 => c_scalar_type(ty).unwrap_or_default().to_string(),
     }
 }
 

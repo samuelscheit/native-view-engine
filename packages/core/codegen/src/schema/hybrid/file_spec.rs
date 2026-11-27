@@ -176,44 +176,48 @@ impl HybridFileSpec {
         out.push(s);
     }
 
-    /// Collects all distinct `(suffix, inner)` POD types wrapped in `HybridType::Optional(T)`
-    /// across every module, view, and static C function signature (used to emit exact
-    /// `NveHybridOpt<T>` C-ABI structs).
-    pub fn collect_pod_option_types(&self) -> Vec<(std::borrow::Cow<'static, str>, HybridType)> {
-        let mut by_suffix: BTreeMap<std::borrow::Cow<'static, str>, HybridType> = BTreeMap::new();
-        let interfaces = self
-            .modules
-            .iter()
-            .map(|m| &m.methods)
-            .chain(self.views.iter().map(|v| &v.methods));
-        for method in interfaces.flatten().chain(&self.c_functions) {
-            for ty in method
-                .params
-                .iter()
-                .map(|p| &p.ty)
-                .chain([&method.return_type])
-            {
-                collect_pod_opts_in_type(ty, self, &mut by_suffix);
-            }
+    /// Every `(suffix, inner)` use of a C option `NveHybridOpt<suffix>`: an `Option<T>` of a POD
+    /// `T` as a parameter, return, or `Result` ok type of a method in `scope`. Two uses may share a
+    /// suffix; validation rejects two different `inner`s on one suffix.
+    pub fn pod_option_uses(
+        &self,
+        scope: PodOptionScope,
+    ) -> impl Iterator<Item = (Cow<'static, str>, &HybridType)> + '_ {
+        let interfaces = self.modules.iter().map(|m| &m.methods).chain(self.views.iter().map(|v| &v.methods));
+        let c_functions = match scope {
+            PodOptionScope::Interfaces => &self.c_functions[..0],
+            PodOptionScope::WithCFunctions => &self.c_functions[..],
+        };
+        interfaces
+            .flatten()
+            .chain(c_functions)
+            .flat_map(|method| method.params.iter().map(|p| &p.ty).chain([&method.return_type]))
+            .filter_map(|ty| {
+                let ty = match ty {
+                    HybridType::Result { ok, .. } => ok,
+                    other => other,
+                };
+                let HybridType::Optional(inner) = ty else { return None };
+                Some((inner.pod_opt_suffix_for(self)?, inner.as_ref()))
+            })
+    }
+
+    /// The distinct C options `NveHybridOpt<suffix>` of `scope`, by suffix.
+    pub fn collect_pod_option_types(&self, scope: PodOptionScope) -> Vec<(Cow<'static, str>, HybridType)> {
+        let mut by_suffix: BTreeMap<Cow<'static, str>, HybridType> = BTreeMap::new();
+        for (suffix, inner) in self.pod_option_uses(scope) {
+            by_suffix.entry(suffix).or_insert_with(|| inner.clone());
         }
         by_suffix.into_iter().collect()
     }
 }
 
-fn collect_pod_opts_in_type(
-    ty: &HybridType,
-    file: &HybridFileSpec,
-    out: &mut BTreeMap<std::borrow::Cow<'static, str>, HybridType>,
-) {
-    match ty {
-        HybridType::Optional(inner) => {
-            if let Some(suffix) = inner.pod_opt_suffix_for(file) {
-                out.entry(suffix).or_insert_with(|| (**inner).clone());
-            }
-        }
-        HybridType::Result { ok, .. } => collect_pod_opts_in_type(ok, file, out),
-        _ => {}
-    }
+/// Which signatures carry C options: Dart, Rust, Swift, TS, and Kotlin bind only modules and views;
+/// the C header also declares the static C functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PodOptionScope {
+    Interfaces,
+    WithCFunctions,
 }
 
 pub(crate) fn hash_str(h: &mut Xxh64Hasher, s: &str) {

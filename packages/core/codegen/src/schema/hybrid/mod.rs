@@ -5,7 +5,7 @@
 mod file_spec;
 mod validate;
 
-pub use file_spec::HybridFileSpec;
+pub use file_spec::{HybridFileSpec, PodOptionScope};
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;

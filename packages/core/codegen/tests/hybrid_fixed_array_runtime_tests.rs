@@ -197,17 +197,13 @@ declare module 'node:assert/strict' {
 "#;
 
 /// The Rust edge spec (`[[bool; 33]; 2]` and `[Phase; 2]` in a POD struct, among every other codec
-/// shape) compiles as C++20, type-checks as Swift 6, and passes strict `dart analyze`.
+/// shape) compiles as C++20, type-checks as Swift 6, and passes strict `dart analyze` and `tsc`.
 #[test]
-fn edge_spec_with_nested_pod_arrays_compiles_in_cpp20_swift_and_dart() {
+fn edge_spec_with_nested_pod_arrays_compiles_in_cpp20_swift_dart_and_ts() {
     let dir = temp_test_dir("edge");
     generate(EDGE_SPEC, &[HybridTarget::Cpp, HybridTarget::Swift, HybridTarget::TypeScript], &dir);
-    if common::require_tool("dart") {
-        let pkg = dir.join("dart");
-        generate(EDGE_SPEC, &[HybridTarget::Dart], &pkg.join("lib"));
-        common::dart::setup_offline_dart_pkg(&pkg, "nve_edge");
-        common::dart::analyze(&pkg);
-    }
+    analyze_dart(EDGE_SPEC, &dir.join("dart"), "nve_edge");
+    tsc_check(&dir);
     let abi = std::fs::read_to_string(dir.join("ShadowHybridAbi.generated.h")).expect("read C header");
     assert!(abi.contains("bool grid[2][33];"), "nested C array dimensions, outermost first");
     if common::require_tool("clang++") {
@@ -235,17 +231,28 @@ fn edge_spec_with_nested_pod_arrays_compiles_in_cpp20_swift_and_dart() {
 }
 
 /// A struct field may hold an opaque `*const [T; N]`: no C form, so the struct stays C++-only, and
-/// every target still generates (C++ compiles) instead of panicking.
+/// static C functions take it as an opaque handle (a file-scope incomplete typedef). The C header
+/// passes C11 and C++20 `-Werror`, and the Dart and TypeScript bindings pass their strict checkers.
 #[test]
 fn opaque_pointers_to_fixed_arrays_keep_their_struct_out_of_the_c_abi() {
-    let src = "#[nve_hybrid_struct]\npub struct Holder { pub values: *const [u32; 4], pub n: u32 }\n";
+    let src = "#[nve_hybrid_struct]\npub struct Holder { pub values: *const [u32; 4], pub n: u32 }\n\
+               #[nve_hybrid_c_fn]\npub extern \"C\" fn nve_holder_len(holder: *const Holder) -> u32;\n\
+               #[nve_hybrid_c_fn]\npub extern \"C\" fn nve_holder_take(holder: *mut Holder) -> *mut Holder;\n\
+               #[nve_hybrid_c_fn]\npub extern \"C\" fn nve_holder_pick(index: Option<u32>) -> u32;\n";
     let dir = temp_test_dir("array_ptr");
-    let targets = [HybridTarget::Cpp, HybridTarget::Swift, HybridTarget::Dart, HybridTarget::TypeScript, HybridTarget::Rust];
+    let targets = [HybridTarget::Cpp, HybridTarget::Swift, HybridTarget::TypeScript, HybridTarget::Rust];
     generate(src, &targets, &dir);
     let abi = std::fs::read_to_string(dir.join("HolderHybridAbi.generated.h")).expect("read C header");
-    assert!(!abi.contains("NveHybridHolder"), "no C struct for a field without a C form");
+    assert!(abi.contains("typedef struct NveHybridHolder NveHybridHolder;"), "an opaque handle, not a C struct");
+    assert!(!abi.contains("typedef struct NveHybridHolder {"), "no C struct for a field without a C form");
+    assert!(abi.contains("NVE_API NveHybridHolder* nve_holder_take(NveHybridHolder* holder);"));
+    assert!(abi.contains("typedef struct NveHybridOptU32 {"), "C function options are C types");
+    common::write_generated_c_abi_headers(&dir);
+    let c_check = dir.join("check.c");
+    std::fs::write(&c_check, "#include \"HolderHybridAbi.generated.h\"\nint main(void) { return 0; }\n")
+        .expect("write C check");
+    common::check_c11_syntax(&c_check, &[&dir], &dir);
     if common::require_tool("clang++") {
-        common::write_generated_c_abi_headers(&dir);
         let check = dir.join("check.cpp");
         std::fs::write(&check, "#include \"HolderHybridSpec.generated.hpp\"\nint main() { return 0; }\n")
             .expect("write C++ check");
@@ -257,7 +264,38 @@ fn opaque_pointers_to_fixed_arrays_keep_their_struct_out_of_the_c_abi() {
             "clang++ opaque array pointer",
         );
     }
+    let spec = parse_hybrid_rust_spec(src).expect("parse opaque-pointer spec");
+    for target in [HybridTarget::Dart, HybridTarget::Rust] {
+        let out = generate_hybrid_target(&spec, target).expect("generate");
+        assert!(
+            out.files.iter().all(|f| !f.content.contains("NveHybridOptU32")),
+            "{target:?} binds no C function, so it declares none of their options"
+        );
+    }
+    analyze_dart(src, &dir.join("dart"), "nve_holder");
+    tsc_check(&dir);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Generates `spec_src` as Dart into the package `pkg` and runs strict `dart analyze` on it.
+fn analyze_dart(spec_src: &str, pkg: &Path, name: &str) {
+    if common::require_tool("dart") {
+        generate(spec_src, &[HybridTarget::Dart], &pkg.join("lib"));
+        common::dart::setup_offline_dart_pkg(pkg, name);
+        common::dart::analyze(pkg);
+    }
+}
+
+/// Strict `tsc --noEmit` over the generated `.ts` files in `dir`.
+fn tsc_check(dir: &Path) {
+    if !common::require_tool("node") {
+        return;
+    }
+    common::ts::prepare_offline_host_ts_pkg(dir);
+    std::fs::write(dir.join("package.json"), r#"{"type": "module"}"#).expect("write package.json");
+    let tsconfig = dir.join("tsconfig.json");
+    std::fs::write(&tsconfig, common::ts::STRICT_TSCONFIG).expect("write tsconfig.json");
+    common::ts::run_tsc_no_emit(&tsconfig);
 }
 
 /// Kotlin / JNI has no fixed-array form: the target rejects `[T; N]` instead of emitting a lossy codec.

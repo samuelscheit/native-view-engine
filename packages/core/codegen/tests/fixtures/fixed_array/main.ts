@@ -22,6 +22,9 @@ const bundle: FixedBundle = {
   tag: [9, 0, 255],
 };
 const flags = [Array<boolean>(33).fill(false), Array<boolean>(33).fill(false)];
+flags[0]![0] = true;
+flags[0]![32] = true;
+flags[1]![5] = true;
 const pod: FixedPod = {
   v: [1.5, -2, 0, 3.25],
   points: [{ x: 1, y: 2 }, { x: 3, y: 4 }],
@@ -42,7 +45,9 @@ for (const value of [bundle, { ...bundle, tag: null }]) {
 {
   const w = new BinWriter();
   encodeFixedPod(w, pod);
-  assert.deepEqual(decodeFixedPod(new BinReader(w.bytes)), pod);
+  const r = new BinReader(w.bytes);
+  assert.deepEqual(decodeFixedPod(r), pod);
+  r.requireEnd();
 }
 
 assert.throws(() => encodeFixedBundle(new BinWriter(), { ...bundle, matrix: [[1, 2], [3], [5, 6]] }), RangeError);

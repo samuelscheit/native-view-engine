@@ -2,7 +2,7 @@
 //! options.
 
 use crate::naming::{escape_c_like_string, rust_ident};
-use crate::schema::hybrid::{HybridEnumSpec, HybridFileSpec, HybridStructSpec, HybridType};
+use crate::schema::hybrid::{HybridEnumSpec, HybridFileSpec, HybridStructSpec, HybridType, PodOptionScope};
 use crate::writer::CodeWriter;
 
 use super::emit_doc_comments;
@@ -243,7 +243,7 @@ fn emit_raw_carrier(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
 
 /// `NveHybridOpt<T>`: `is_some` crosses as a `u8` and `value` as its raw carrier.
 pub(super) fn emit_pod_option_structs(out: &mut CodeWriter, spec: &HybridFileSpec) {
-    for (suffix, inner) in spec.collect_pod_option_types() {
+    for (suffix, inner) in spec.collect_pod_option_types(PodOptionScope::Interfaces) {
         let fields = [
             RecordField {
                 ident: "is_some".to_owned(),

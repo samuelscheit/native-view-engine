@@ -1,4 +1,4 @@
-//! Live Rust provider of `fixed_array_hybrid.nve.rs` for the compiled C++20 and Swift drivers:
+//! Live Rust provider of `fixed_array_hybrid.nve.rs` for the C++20, Swift, and Dart drivers:
 //! every reply is a deterministic transform of its input, so the drivers can check each `[T; N]`
 //! crossed both ways element by element.
 

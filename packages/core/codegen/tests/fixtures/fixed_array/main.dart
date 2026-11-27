@@ -209,6 +209,7 @@ void liveChecks(ffi.DynamicLibrary lib) {
   }
   expect(remote, 'tryTag error');
   expect(same(codec.retag(const <int>[1, 2, 255]), const <int>[0, 2, 1]) && codec.retag(null) == null, 'retag');
+  expectThrows<RangeError>('retag with 4 bytes', () => codec.retag(const <int>[1, 2, 3, 4]));
 
   final mirrored = codec.mirror(samplePod());
   expect(same(mirrored.v, const <double>[-1.5, 2.0, -0.0, -3.25]), 'mirror v');

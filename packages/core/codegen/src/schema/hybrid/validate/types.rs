@@ -7,7 +7,7 @@ use super::super::*;
 /// Most elements one `[T; N]` holds, nested dimensions multiplied (`[[T; M]; N]` holds `N * M`).
 /// Swift's Clang importer drops C struct array fields over 4,096 elements, and the cap keeps
 /// eager defaults and C arrays small on every host.
-pub const MAX_FIXED_ARRAY_ELEMENTS: usize = 4_096;
+pub(crate) const MAX_FIXED_ARRAY_ELEMENTS: usize = 4_096;
 
 /// The element count of `[T; N]` with every nested dimension multiplied, `None` on overflow.
 fn fixed_array_elements(ty: &HybridType) -> Option<usize> {

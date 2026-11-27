@@ -257,6 +257,7 @@ fn rejects_type_names_spelling_another_generated_type() {
         "ProbeClient",
         "ProbeHybridClient",
         "ProbeHybrid",
+        "ProbeWasmExports",
     ] {
         assert!(
             error_of(&with_struct(name)).contains("collides with the one of"),
@@ -301,6 +302,35 @@ fn rejects_generated_names_that_collide_with_each_other() {
         ..Default::default()
     });
     assert!(error_of(&s).contains("generated type name 'NveHybridOptVTable'"));
+    // Two different option types on one `NveHybridOpt<Suffix>`: `Option<u32>` and `Option<U32>`
+    // (struct `U32`), `Option<point_2d>` and `Option<Point2d>` (both pascal-case to `Point2d`).
+    for (first, second, suffix) in [("U32", None, "U32"), ("point_2d", Some("Point2d"), "Point2d")] {
+        let mut s = with_struct(first);
+        let opt = |name: &str| HybridType::Optional(Box::new(HybridType::Struct(name.to_owned())));
+        let other = match second {
+            Some(name) => {
+                let mut extra = s.structs[1].clone();
+                extra.name = name.to_owned();
+                s.structs.push(extra);
+                opt(name)
+            }
+            None => HybridType::Optional(Box::new(HybridType::U32)),
+        };
+        s.modules[0].methods[0].params = vec![param("a", opt(first)), param("b", other)];
+        assert!(
+            error_of(&s).contains(&format!("generated type name 'NveHybridOpt{suffix}'")),
+            "{first}: {}",
+            error_of(&s)
+        );
+    }
+    // An alias spells its name verbatim in every target.
+    let mut s = spec("run", "shape", "x");
+    s.aliases.push(HybridAliasSpec {
+        name: "ProbeClient".to_owned(),
+        target: HybridType::U64,
+        doc: None,
+    });
+    assert!(error_of(&s).contains("generated type name 'ProbeClient'"));
 }
 
 #[test]
@@ -314,7 +344,7 @@ fn c_function_options_get_their_c_option_type() {
             vec![param("other", HybridType::Optional(Box::new(HybridType::Struct("Other".to_owned()))))],
         )
     });
-    let suffixes: Vec<_> = s.collect_pod_option_types().into_iter().map(|(suffix, _)| suffix).collect();
+    let suffixes: Vec<_> = s.collect_pod_option_types(PodOptionScope::WithCFunctions).into_iter().map(|(suffix, _)| suffix).collect();
     assert_eq!(suffixes, ["Other"]);
     let mut clash = s.clone();
     clash.structs[0].name = "OptOther".to_owned();

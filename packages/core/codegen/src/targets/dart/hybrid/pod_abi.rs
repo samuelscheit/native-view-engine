@@ -42,8 +42,9 @@ pub(super) fn emit_dart_pod_abi_conversions(out: &mut CodeWriter, s: &HybridStru
     writeln!(out, "  );");
 }
 
-/// Writes `src` (a Dart value of `ty`) into the C memory `dst`; every array level checks its
-/// length first, so a list of the wrong length never writes a partial struct.
+/// Writes `src` (a Dart value of `ty`) into the C memory `dst`. Every array level checks its length
+/// before writing its elements; a wrong inner row throws after the rows before it were written, so
+/// `dst` must be scratch memory the caller drops on a throw (`toAbi`, a call's arena).
 fn emit_abi_write(
     out: &mut CodeWriter,
     indent: &str,

@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn spec_needs_dart_ffi(spec: &HybridFileSpec) -> bool {
     !spec.modules.is_empty()
         || !spec.views.is_empty()
-        || !spec.collect_pod_option_types().is_empty()
+        || !spec.collect_pod_option_types(PodOptionScope::Interfaces).is_empty()
         || spec.structs.iter().any(|s| s.is_pod(spec))
         || spec_any_type(spec, type_needs_dart_ffi)
 }
