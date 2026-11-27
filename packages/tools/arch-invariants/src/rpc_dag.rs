@@ -1,36 +1,25 @@
 //! Fullstack framework RPC/server/query layer purity and workspace-wide `fnv` crate ban,
-//! powered by `guppy`'s `PackageGraph` and multi-target `CargoSet` resolver.
+//! enforced via a deterministic cfg-agnostic BFS over all declared non-dev (`normal` + `build`)
+//! links in `guppy`'s `PackageGraph`.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use guppy::graph::PackageGraph;
 use guppy::PackageId;
 
-use crate::dag::{rel_manifest, transitive_chains, workspace_rel_dir};
+use crate::dag::{rel_manifest, workspace_rel_dir};
 use crate::Violation;
 
-const RPC_TARGET_TRIPLES: &[&str] = &[
-    "x86_64-unknown-linux-gnu",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-    "wasm32-unknown-unknown",
-    "wasm32-wasip2",
-    "aarch64-linux-android",
-    "aarch64-apple-ios",
-];
-
-/// Combines multi-target `CargoSet` resolution (`RPC_TARGET_TRIPLES`, including `wasm32-wasip2`,
-/// Android, and iOS) with a full BFS over all declared non-dev (`normal` + `build`) links
-/// regardless of `cfg(...)` target predicate so target-gated dependencies (e.g.
+/// Deterministic cfg-agnostic BFS over all declared non-dev (`normal` + `build`) links in `graph`
+/// regardless of `cfg(...)` target predicate, guaranteeing that target-gated dependencies (e.g.
 /// `[target.'cfg(target_os = "wasi")'.dependencies]`) and transitive build-script edges cannot
 /// bypass purity checks.
 fn non_dev_chains_all_cfgs<'g>(
     graph: &'g PackageGraph,
     root_id: &'g PackageId,
 ) -> BTreeMap<&'g PackageId, Vec<String>> {
-    let mut chains = transitive_chains(graph, root_id, false, RPC_TARGET_TRIPLES);
     let Ok(root_pkg) = graph.metadata(root_id) else {
-        return chains;
+        return BTreeMap::new();
     };
     let mut visited: BTreeMap<&'g PackageId, Vec<String>> = BTreeMap::new();
     let mut queue: VecDeque<&'g PackageId> = VecDeque::new();
@@ -44,25 +33,24 @@ fn non_dev_chains_all_cfgs<'g>(
         let Ok(curr_pkg) = graph.metadata(curr_id) else {
             continue;
         };
-        for link in curr_pkg.direct_links() {
-            if link.dev_only() {
-                continue;
-            }
-            let next_id = link.to().id();
+        let mut targets: Vec<(&'g PackageId, &'g str)> = curr_pkg
+            .direct_links()
+            .filter(|link| !link.dev_only())
+            .map(|link| (link.to().id(), link.to().name()))
+            .collect();
+        targets.sort_unstable_by(|a, b| a.1.cmp(b.1).then_with(|| a.0.cmp(b.0)));
+        for (next_id, next_name) in targets {
             if visited.contains_key(next_id) {
                 continue;
             }
             let mut next_chain = curr_chain.clone();
-            next_chain.push(link.to().name().to_string());
+            next_chain.push(next_name.to_string());
             visited.insert(next_id, next_chain);
             queue.push_back(next_id);
         }
     }
     visited.remove(root_pkg.id());
-    for (dep_id, chain) in visited {
-        chains.entry(dep_id).or_insert(chain);
-    }
-    chains
+    visited
 }
 
 /// Bans:

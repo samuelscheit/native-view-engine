@@ -388,9 +388,13 @@ where
     let enable_persistence = !is_ssr_demo && surface_id == DEFAULT_SURFACE_ID;
     let has_restored_dom = container.get_attribute("data-nve-restored").as_deref() == Some("1");
 
-    let mut session_val = build_session(surface_id, WebBackend::new(), viewport);
-    let snapshot_slug = session_val.app_slug();
-    let restored_from_snapshot = if let Some(slug) = snapshot_slug {
+    let deferred_vp = Viewport {
+        width: 0.0,
+        height: 0.0,
+        scale_factor: 1.0,
+    };
+    let mut session_val = build_session(surface_id, WebBackend::new(), deferred_vp);
+    let restored_from_snapshot = if let Some(slug) = session_val.app_slug() {
         let schema_version = session_val.schema_version();
         let restored = if is_reset {
             clear_persisted_snapshot(slug, schema_version);
@@ -405,9 +409,6 @@ where
         if has_restored_dom && !restored {
             // Cached HTML existed without matching valid binary state: purge corrupt storage and fall back cleanly.
             clear_persisted_snapshot(slug, schema_version);
-        }
-        if restored {
-            session_val.apply_initial_viewport();
         }
         restored
     } else {
@@ -429,17 +430,20 @@ where
     } else {
         WebBackend::mount_into(container.clone())
     };
-    session_val.replace_backend(backend);
+    session_val.replace_backend_with_viewport(backend, viewport);
+    session_val.apply_initial_viewport();
     let session = Rc::new(RefCell::new(session_val));
 
-    let (snapshot_guard, snapshot_trigger) = if enable_persistence && snapshot_slug.is_some() {
-        let (guard, trigger) = SnapshotPersistenceGuard::install(
+    let (snapshot_guard, snapshot_trigger) = if enable_persistence {
+        match SnapshotPersistenceGuard::install(
             &window,
-            Rc::downgrade(&session),
+            &session,
             container_for_snapshot,
             !is_reset,
-        );
-        (Some(guard), Some(trigger))
+        ) {
+            Some((guard, trigger)) => (Some(guard), Some(trigger)),
+            None => (None, None),
+        }
     } else {
         (None, None)
     };
