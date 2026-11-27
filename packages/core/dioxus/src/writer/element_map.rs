@@ -32,9 +32,14 @@ impl From<ElementId> for ElementSlot {
     }
 }
 
-/// Reverse entry of a node slot that is not bound. Dioxus `ElementId`s are dense slab indices,
-/// so `u32` entries halve the reverse table; ids at or above `UNBOUND` are refused at `bind`.
+/// Reverse entry of a node slot that is not bound (`u32` entries halve the reverse table).
 const UNBOUND: u32 = u32::MAX;
+
+/// Dioxus `ElementId`s are dense slab indices of live elements, and every bound element maps to
+/// a distinct node of the 24-bit `NodeId` index space, so a valid id stays below this bound. A
+/// larger id is a corrupt mutation stream: refusing it caps `el_to_node` at 64 MiB instead of
+/// letting one bogus id `resize` the table to gigabytes.
+const MAX_ELEMENTS: usize = 1 << NodeId::INDEX_BITS;
 
 #[derive(Debug, Default)]
 pub(crate) struct ElementMap {
@@ -56,8 +61,9 @@ impl ElementMap {
     /// keeps resolving to `node`.
     #[inline]
     pub(crate) fn bind(&mut self, el: ElementId, node: NodeId) {
-        let Some(raw) = u32::try_from(el.0).ok().filter(|&raw| raw != UNBOUND) else {
-            debug_assert!(false, "ElementId {} exceeds the dense element table", el.0);
+        // Refused ids stay unbound, so later mutations naming them resolve to no node and are
+        // skipped like any other unknown id.
+        let Some(raw) = u32::try_from(el.0).ok().filter(|_| el.0 < MAX_ELEMENTS) else {
             return;
         };
         if let Some(prev) = self.element_of(node)
@@ -160,21 +166,27 @@ mod tests {
         );
     }
 
-    #[cfg(not(debug_assertions))]
     #[test]
-    fn out_of_range_element_ids_are_refused() {
+    fn out_of_range_element_ids_are_refused_without_growing_the_table() {
         let mut map = ElementMap::with_root();
         let node = NodeId::new(4, 1);
-        for el in [ElementId(usize::MAX), ElementId(u32::MAX as usize)] {
+        for el in [
+            ElementId(MAX_ELEMENTS),
+            ElementId(u32::MAX as usize - 1),
+            ElementId(u32::MAX as usize),
+            ElementId(usize::MAX),
+        ] {
             map.bind(el, node);
             assert_eq!(map.element_of(node), None);
+            assert_eq!(map.node_of(el), None);
+            assert_eq!(
+                map.el_to_node.len(),
+                1,
+                "a refused id must not grow the table"
+            );
         }
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "exceeds the dense element table")]
-    fn out_of_range_element_ids_are_a_debug_bug() {
-        ElementMap::with_root().bind(ElementId(usize::MAX), NodeId::new(4, 1));
+        // The largest valid id still binds.
+        map.bind(ElementId(MAX_ELEMENTS - 1), node);
+        assert_eq!(map.element_of(node), Some(ElementId(MAX_ELEMENTS - 1)));
     }
 }

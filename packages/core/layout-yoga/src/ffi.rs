@@ -3,9 +3,9 @@
 use std::ffi::c_void;
 
 use nve_components::tables::{
-    AlignItems, Display, FlexDirection, JustifyContent, LayoutDirection, LayoutRef, Position,
+    AlignItems, Direction, Display, FlexDirection, JustifyContent, LayoutRef, Position,
 };
-use nve_store::{Length, LengthKind};
+use nve_store::Length;
 
 #[repr(C)]
 pub struct YGConfig {
@@ -107,19 +107,18 @@ pub struct NveYogaLayoutExt {
 
 #[inline]
 fn encode_len(l: Length) -> (u8, f32) {
-    match l.kind() {
-        LengthKind::Auto => (0, 0.0),
-        LengthKind::Px => (1, l.value()),
-        LengthKind::Percent => (2, l.value()),
+    if l.is_points() {
+        (1, l.value())
+    } else if l.is_percent() {
+        (2, l.value())
+    } else {
+        (0, 0.0)
     }
 }
 
 #[inline]
 fn len_px(l: Length) -> f32 {
-    match l.kind() {
-        LengthKind::Px => l.value(),
-        _ => 0.0,
-    }
+    if l.is_points() { l.value() } else { 0.0 }
 }
 
 impl NveYogaLayoutProps {
@@ -201,7 +200,10 @@ impl NveYogaLayoutExt {
             aspect_ratio: if has_ar { ar } else { 0.0 },
             position_mode: match l.position() {
                 Position::Relative => 0,
-                Position::Absolute => 1,
+                // Yoga has no viewport-fixed positioning: a fixed box is laid out as absolute
+                // (correct when its containing block is the root, as for the headless engine's
+                // root-hoisted fixed boxes).
+                Position::Absolute | Position::Fixed => 1,
                 Position::Sticky => 2,
             },
             top_tag,
@@ -213,9 +215,9 @@ impl NveYogaLayoutExt {
             left_tag,
             left_val,
             direction: match l.direction() {
-                LayoutDirection::Inherit => 0,
-                LayoutDirection::Ltr => 1,
-                LayoutDirection::Rtl => 2,
+                Direction::Inherit => 0,
+                Direction::Ltr => 1,
+                Direction::Rtl => 2,
             },
             has_pad_start: u8::from(pad_inline),
             pad_start: if pad_inline { len_px(l.padding_left()) } else { 0.0 },

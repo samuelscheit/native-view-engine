@@ -41,10 +41,10 @@ pub use nve_components::layout_ext::{
 pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
-pub(crate) use snapshot::{
-    box_visual, is_display_contents, is_display_none, length_to_dim, node_clips_overflow,
-    without_box_paint,
+pub(crate) use nve_components::tables::{
+    box_visual, generates_box, is_display_contents, node_clips_overflow, paint_of_box,
 };
+pub(crate) use snapshot::{is_display_none, length_to_dim};
 pub use snapshot::{layout_snapshot_of, visual_snapshot_of};
 pub use taffy_store::{ResolvedTextStyle, TaffyStoreLayout};
 

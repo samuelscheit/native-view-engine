@@ -13,7 +13,7 @@ use nve_engine::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::{
-    is_display_none, layout_snapshot_of, visual_snapshot_of, HeadlessBackend,
+    HeadlessBackend, is_display_none, layout_snapshot_of, paint_of_box, visual_snapshot_of,
 };
 
 impl<L: StoreLayoutEngine> HeadlessBackend<L> {
@@ -72,11 +72,16 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         resolve_patch(rules, self.interaction.state(id.raw()))
     }
 
-    /// Resolves the effective [`VisualSnapshot`] for `id` with active pseudo-state rules applied.
+    /// Resolves the effective [`VisualSnapshot`] for `id` with active pseudo-state rules applied
+    /// (never box paint for a box-less `display: contents` node).
     pub fn effective_visual(&self, store: &NodeStore, id: StoreNodeId) -> VisualSnapshot {
         let base = visual_snapshot_of(store, id);
         let rules = self.state_rules_of(store, id);
-        resolve_style(&base, rules, self.interaction.state(id.raw()))
+        paint_of_box(
+            store,
+            id,
+            resolve_style(&base, rules, self.interaction.state(id.raw())),
+        )
     }
 
     /// Resolves both [`LayoutSnapshot`] and [`VisualSnapshot`] for `id` with active state rules.
@@ -90,12 +95,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         let rules = self.state_rules_of(store, id);
         let (layout, visual) =
             resolve_layout_and_style(&base_l, &base_v, rules, self.interaction.state(id.raw()));
-        // State rules must not give a box-less `display: contents` node box paint either.
-        if id == StoreNodeId::ROOT || !crate::is_display_contents(store, id) {
-            (layout, visual)
-        } else {
-            (layout, crate::without_box_paint(visual))
-        }
+        (layout, paint_of_box(store, id, visual))
     }
 
     /// Resolves the effective [`CursorKind`] for `id` under its current [`InteractionState`].

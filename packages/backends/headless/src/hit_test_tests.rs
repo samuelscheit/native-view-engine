@@ -3,9 +3,11 @@
 //! its descendants' boxes still bubble to it.
 
 use nve_abi::{ColorRgba, EventMask};
+use nve_components::interaction::{InteractionState, StateStyleRule};
+use nve_components::style_patch::StylePatch;
 use nve_components::tables::{
-    Display, FlexDirection, Interaction, Layout, Overflow, Position, Transform, Visibility, Visual,
-    core_realization_order,
+    Display, FlexDirection, Interaction, Layout, Overflow, Position, StateRules, Transform,
+    Visibility, Visual, core_realization_order,
 };
 use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, Transaction};
@@ -181,4 +183,87 @@ fn sticky_geometry_skips_contents_ancestors() {
     // `plain` sticks within `row` (its box parent and scroll container), not the 0×0 wrapper:
     // scrolled 15 down, it shifts 15 to stay pinned, inside the 40-tall containing block.
     assert_eq!(f.backend.compute_sticky_delta(&f.store, plain), (0.0, 15.0));
+}
+
+#[test]
+fn hover_state_rules_and_transforms_never_give_a_contents_node_a_box() {
+    let mut f = fixture();
+    let wrapper = f.wrapper;
+    let mut tx = f.store.tx();
+    let hover = StylePatch::new()
+        .bg(ColorRgba::rgb(30, 64, 175))
+        .opacity(0.0);
+    tx.edit::<Interaction>(wrapper).state_rules(Some(StateRules(
+        vec![StateStyleRule::new(InteractionState::HOVER, hover)].into(),
+    )));
+    tx.commit_into(&mut f.changes);
+    assert!(f.backend.commit(&f.store, &f.changes).is_ok());
+
+    // Hovering `plain` bubbles to the wrapper, whose `:hover` rule must not paint (or, with
+    // `opacity: 0`, cull) a box it does not have.
+    let _ = f.backend.dispatch_pointer_move(&f.store, 30.0, 15.0);
+    assert!(
+        f.backend
+            .interaction_state(wrapper.raw())
+            .contains(InteractionState::HOVER)
+    );
+    let visual = f.backend.effective_visual(&f.store, wrapper);
+    assert_eq!(
+        (visual.background, visual.opacity),
+        (ColorRgba::TRANSPARENT, 1.0)
+    );
+    let (_, both) = f.backend.effective_layout_and_visual(&f.store, wrapper);
+    assert_eq!(both, visual);
+    // The wrapper's `translate_x(1000)` transforms nothing.
+    assert_eq!(f.backend.effective_transform(&f.store, wrapper), None);
+}
+
+#[test]
+fn hits_bubble_through_hidden_contents_ancestors() {
+    let mut f = fixture();
+    let (wrapper, plain) = (f.wrapper, f.plain);
+    let mut tx = f.store.tx();
+    tx.edit::<Visual>(wrapper).visibility(Visibility::Hidden);
+    tx.edit::<Visual>(plain).visibility(Visibility::Visible);
+    tx.commit_into(&mut f.changes);
+    assert!(f.backend.commit(&f.store, &f.changes).is_ok());
+    // `plain` is visible again inside the hidden wrapper: its hit bubbles to the wrapper.
+    assert_eq!(
+        f.backend.hit_test(&f.store, 30.0, 15.0),
+        Some(wrapper.raw())
+    );
+}
+
+#[test]
+fn hits_on_overflowing_children_bubble_to_unclipped_boxes_only() {
+    let mut store = NodeStore::new();
+    store.set_realization_order(core_realization_order());
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let parent = sized(&mut tx, 100.0, 20.0);
+    let child = sized(&mut tx, 50.0, 20.0);
+    tx.edit::<Layout>(child)
+        .margin_top(Length::points(40.0))
+        .flex_shrink(0.0);
+    press(&mut tx, parent);
+    tx.set_children(NodeId::ROOT, &[parent]);
+    tx.set_children(parent, &[child]);
+    tx.commit_into(&mut changes);
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(1, VP);
+    assert!(backend.commit(&store, &changes).is_ok());
+    assert_eq!(
+        backend.layout_of(child.raw()).map(|r| (r.y, r.height)),
+        Some((40.0, 20.0))
+    );
+    // `child` overflows `parent` (y 40..60): its hit bubbles to the parent's handler.
+    assert_eq!(backend.hit_test(&store, 10.0, 50.0), Some(parent.raw()));
+    assert_eq!(backend.hit_test(&store, 10.0, 10.0), Some(parent.raw()));
+    assert_eq!(backend.hit_test(&store, 80.0, 50.0), None);
+
+    let mut tx = store.tx();
+    tx.edit::<Visual>(parent).overflow_y(Overflow::Hidden);
+    tx.commit_into(&mut changes);
+    assert!(backend.commit(&store, &changes).is_ok());
+    assert_eq!(backend.hit_test(&store, 10.0, 50.0), None, "clipped away");
 }

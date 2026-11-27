@@ -312,9 +312,12 @@ fn display_none_toggles_walk_inheritance_only_where_contents_is_involved() {
     assert!(!sync(&mut f, &|tx| {
         tx.edit::<Layout>(row).display(Display::Flex);
     }));
-    // `a` is flattened into `row`'s list together with contents children: conservative walk.
-    assert!(sync(&mut f, &|tx| {
+    // `a` sits in `row`'s flattened list, but stays a box either way: the list is unchanged.
+    assert!(!sync(&mut f, &|tx| {
         tx.edit::<Layout>(a).display(Display::None);
+    }));
+    assert!(!sync(&mut f, &|tx| {
+        tx.edit::<Layout>(a).display(Display::Flex);
     }));
     // A contents node changing `display` always reshapes.
     assert!(sync(&mut f, &|tx| {
@@ -330,12 +333,18 @@ fn a_parent_that_stops_flattening_returns_its_list_capacity() {
     let mut f = fixture();
     let (c1, c2) = (f.c1, f.c2);
     assert!(f.layout.box_children.is_flattened(f.row));
+    let row_cap = f.layout.box_children.list_capacity(f.row);
+    assert!(row_cap >= 4);
+    let dead_before = f.layout.box_children.dead_slots();
     commit_frame(&mut f, |tx| {
         tx.edit::<Layout>(c1).display(Display::Flex);
         tx.edit::<Layout>(c2).display(Display::Flex);
     });
     assert!(!f.layout.box_children.is_flattened(f.row));
     assert!(!f.layout.box_children.is_flattened(c1));
+    // The capacity really went back to the pool (dead slots, until compaction reclaims them).
+    assert_eq!(f.layout.box_children.list_capacity(f.row), 0);
+    assert_eq!(f.layout.box_children.dead_slots(), dead_before + row_cap);
     assert_eq!(
         f.layout.box_children.get(&f.store, f.row),
         f.store.children(f.row)

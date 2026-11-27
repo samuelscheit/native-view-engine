@@ -48,9 +48,9 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **TV, Watch & Spatial Platform Backends — Web TV D-Pad Dogfood & Live Verification**
   - Engine (`nve-tv`), backend key interceptor, and `nve-tv-web` controller are landed; remaining: install `WebTvController` in an example app, live Chrome E2E (arrow focus across shelves, `<dialog>` trap, Select activation, gamepad), on-device Tizen/webOS key-code validation, and Android TV host forwarding of Back (consumed by the Activity).
 
----
-
 - [ ] **Dense writer side tables**: `NveMutationWriter`'s four sparse per-node `HashMap`s (`attached_tables`, `typed_styles`, `inline_styles`, `standalone_style_attrs`) become dense generation-checked per-slot tables like `writer/element_map.rs` `ElementMap` (one indexed load per attribute write), or disappear with Track 1B-1d's typed attribute routing; keep `tests/writer_zero_alloc.rs` at 0 allocations.
+
+---
 
 ## P1 — UI & OS Capability Maturity (from [ui-maturity-audit.md](./ui-maturity-audit.md))
 

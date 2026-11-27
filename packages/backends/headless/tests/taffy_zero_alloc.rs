@@ -108,9 +108,14 @@ fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
     let (_, allocs_backend) = count_allocs(|| {
         for i in 0..50u32 {
             let mut tx = store.tx();
+            // `+ 1`: the default `translate_y` is 0, so frame 0 must not rewrite it.
             tx.edit::<Transform>(leaves[(i as usize) % leaves.len()])
-                .translate_y(i as f32);
+                .translate_y(i as f32 + 1.0);
             tx.commit_into(&mut changes);
+            assert!(
+                !changes.touched.is_empty(),
+                "frame {i} must change the store"
+            );
             backend.commit(&store, &changes).unwrap();
         }
     });
@@ -181,9 +186,14 @@ fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
     let (_, allocs_tracked_paint) = count_allocs(|| {
         for i in 0..25u32 {
             let mut tx = store.tx();
+            // Values below lane 1's `0.5..=0.9`, so no frame rewrites a value it left behind.
             tx.edit::<Visual>(leaves[(i as usize) % leaves.len()])
-                .opacity(0.5 + (i % 5) as f32 * 0.1);
+                .opacity(0.05 + i as f32 * 0.01);
             tx.commit_into(&mut changes);
+            assert!(
+                !changes.touched.is_empty(),
+                "frame {i} must change the store"
+            );
             backend.commit(&store, &changes).unwrap();
         }
     });

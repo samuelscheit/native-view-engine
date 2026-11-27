@@ -250,12 +250,15 @@ fn measurer_swap_and_invalidate_all_reopen_the_pass() {
 /// Panics while `armed`, like a faulting host measurer behind `ffi_catch_unwind`.
 struct FaultingMeasurer {
     armed: std::sync::atomic::AtomicBool,
+    /// Faults only on text containing this (`""`: every text).
+    fault_on: &'static str,
 }
 
 impl TextMeasurer for FaultingMeasurer {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
         assert!(
-            !self.armed.load(std::sync::atomic::Ordering::Relaxed),
+            !(self.armed.load(std::sync::atomic::Ordering::Relaxed)
+                && text.contains(self.fault_on)),
             "host measurer fault"
         );
         WeightedMeasurer { scale: 1.0 }.measure(text, font_size, max_width)
@@ -270,6 +273,7 @@ fn a_pass_unwinding_out_of_the_measurer_stays_dirty_and_retries() {
     let mut f = Fixture::new();
     let faulting = Arc::new(FaultingMeasurer {
         armed: AtomicBool::new(true),
+        fault_on: "",
     });
     f.layout.set_text_measurer(faulting.clone());
     let unwound = catch_unwind(AssertUnwindSafe(|| {
@@ -285,4 +289,80 @@ fn a_pass_unwinding_out_of_the_measurer_stays_dirty_and_retries() {
     f.measurer = Arc::new(WeightedMeasurer { scale: 1.0 });
     f.assert_matches_fresh();
     assert!(!f.frame());
+}
+
+#[test]
+fn a_fault_while_measuring_a_fixed_box_never_drops_fixed_subtrees() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let mut f = Fixture::new();
+    let label = f.label;
+    let (fixed, fixed_text) = {
+        let mut tx = f.store.tx();
+        let [fixed, fixed_text] = [(); 2].map(|_| tx.create());
+        tx.edit::<Layout>(fixed)
+            .position(nve_components::tables::Position::Fixed)
+            .inset_right(Length::points(8.0))
+            .inset_bottom(Length::points(6.0));
+        tx.edit::<TextContent>(fixed_text).text("FIXED toast");
+        tx.set_children(fixed, &[fixed_text]);
+        tx.set_children(label, &[fixed]);
+        tx.commit_into(&mut f.changes);
+        (fixed, fixed_text)
+    };
+    f.layout.sync_changes(&f.store, &f.changes);
+    assert!(f.layout.compute_layout(&f.store, NodeId::ROOT, VP));
+    assert_eq!(f.layout.hoisted.get(NodeId::ROOT.index()), &[fixed]);
+    f.assert_matches_fresh();
+
+    // Every in-flow box measures (and the root's in-flow layout is cached) before the root
+    // positioning pass measures the fixed toast's text and faults.
+    let faulting = Arc::new(FaultingMeasurer {
+        armed: AtomicBool::new(true),
+        fault_on: "FIXED",
+    });
+    f.layout.set_text_measurer(faulting.clone());
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        f.layout.compute_layout(&f.store, NodeId::ROOT, VP)
+    }));
+    assert!(
+        unwound.is_err(),
+        "the fixed toast's text must fault mid-pass"
+    );
+
+    faulting.armed.store(false, Ordering::Relaxed);
+    assert!(f.layout.compute_layout(&f.store, NodeId::ROOT, VP));
+    assert_eq!(
+        f.layout.hoisted.get(NodeId::ROOT.index()),
+        &[fixed],
+        "the retry must re-record the root's fixed boxes"
+    );
+    assert!(
+        f.layout.layout_of(fixed_text).is_some(),
+        "fixed subtree laid out"
+    );
+    f.measurer = Arc::new(WeightedMeasurer { scale: 1.0 });
+    f.assert_matches_fresh();
+}
+
+#[test]
+fn switching_the_layout_root_re_resolves_inheritance() {
+    let mut f = Fixture::new();
+    let (parent, label) = (f.parent, f.label);
+    assert!(f.commit(|tx| {
+        tx.edit::<Layout>(NodeId::ROOT)
+            .direction(nve_components::tables::Direction::Rtl);
+    }));
+    assert!(f.layout.resolved_rtl(label), "inherits the root's rtl");
+
+    // Laid out from `parent`, nothing above it is inherited: exactly what a fresh engine does.
+    assert!(f.layout.compute_layout(&f.store, parent, VP));
+    let mut fresh = TaffyStoreLayout::new();
+    fresh.set_text_measurer(Arc::clone(&f.measurer));
+    assert!(fresh.compute_layout(&f.store, parent, VP));
+    for id in [parent, label] {
+        assert_eq!(f.layout.resolved_rtl(id), fresh.resolved_rtl(id), "{id:?}");
+        assert_eq!(f.layout.layout_of(id), fresh.layout_of(id), "{id:?}");
+    }
 }

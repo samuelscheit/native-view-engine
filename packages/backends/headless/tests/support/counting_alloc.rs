@@ -65,7 +65,10 @@ pub fn assert_counts_only_this_thread() {
     use std::hint::{black_box, spin_loop};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
+    // A worker that panics or never starts must fail the probe, not hang it.
+    let deadline = Instant::now() + Duration::from_secs(10);
     let (_, own) = count_allocs(|| black_box(Vec::<u64>::with_capacity(32)));
     assert!(
         own >= 1,
@@ -80,6 +83,9 @@ pub fn assert_counts_only_this_thread() {
         let (go, stop, worker_allocs) = (go.clone(), stop.clone(), worker_allocs.clone());
         std::thread::spawn(move || {
             while !go.load(Ordering::Acquire) {
+                if Instant::now() > deadline {
+                    return;
+                }
                 spin_loop();
             }
             while !stop.load(Ordering::Acquire) {
@@ -90,7 +96,7 @@ pub fn assert_counts_only_this_thread() {
     };
     let (_, during) = count_allocs(|| {
         go.store(true, Ordering::Release);
-        while worker_allocs.load(Ordering::Acquire) < WORKER_ALLOCS {
+        while worker_allocs.load(Ordering::Acquire) < WORKER_ALLOCS && Instant::now() < deadline {
             spin_loop();
         }
     });

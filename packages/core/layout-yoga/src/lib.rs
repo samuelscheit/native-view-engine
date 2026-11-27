@@ -326,7 +326,7 @@ mod real_impl {
         }
 
         fn sync_subtree_if_unseen(&mut self, store: &NodeStore, id: NodeId) {
-            if !store.is_alive(id) {
+            if !store.is_live(id) {
                 return;
             }
             self.ensure_node(store, id);
@@ -407,17 +407,17 @@ mod real_impl {
                 self.computed_rects.remove(&id);
             }
             for &id in &changes.created {
-                if store.is_alive(id) {
+                if store.is_live(id) {
                     self.ensure_node(store, id);
                 }
             }
             for &id in &changes.touched {
-                if store.is_alive(id) {
+                if store.is_live(id) {
                     self.ensure_node(store, id);
                 }
             }
-            for &parent in &changes.children_changed {
-                if store.is_alive(parent) {
+            for &parent in &changes.children {
+                if store.is_live(parent) {
                     self.ensure_node(store, parent);
                     self.sync_children_of(store, parent);
                 }
@@ -425,7 +425,7 @@ mod real_impl {
         }
 
         fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
-            if !store.is_alive(root) {
+            if !store.is_live(root) {
                 self.computed_rects.clear();
                 self.layout_dirty = true;
                 return true;

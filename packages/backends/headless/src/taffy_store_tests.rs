@@ -379,6 +379,28 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             },
             (100.0, 0.0),
         ),
+        // Short text: the ratio's transferred height is a floor (20 px text, 50 px ratio).
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<TextContent>(c).text("hi");
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(2.0);
+            },
+            (100.0, 50.0),
+        ),
+        // Wrapped text taller than the ratio's height keeps its own height.
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<TextContent>(c).text(&"word ".repeat(80));
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(8.0);
+            },
+            (100.0, -1.0),
+        ),
         // An empty text leaf sizes like any empty leaf.
         (
             NveFlexDirection::Row,
@@ -417,12 +439,22 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             },
         );
         let r = layout.layout_of(leaf).expect("leaf laid out");
-        assert_eq!((r.width, r.height), expected, "case {i}");
+        if expected.1 < 0.0 {
+            // Content-sized: taller than the ratio's 12.5 px floor.
+            assert_eq!(r.width, expected.0, "case {i}");
+            assert!(
+                r.height > 12.5,
+                "case {i}: wrapped text height {}",
+                r.height
+            );
+        } else {
+            assert_eq!((r.width, r.height), expected, "case {i}");
+        }
         let c = layout.layout_of(container).expect("container laid out");
         let (cross, leaf_cross) = if direction == NveFlexDirection::Row {
-            (c.height, expected.1)
+            (c.height, r.height)
         } else {
-            (c.width, expected.0)
+            (c.width, r.width)
         };
         assert_eq!(
             cross > 0.0,

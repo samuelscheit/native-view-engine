@@ -1,52 +1,15 @@
-//! Value-type layout/visual snapshots and visibility/overflow helpers over `NodeStore`.
+//! Value-type layout/visual snapshots and visibility helpers over `NodeStore`. Box-generation
+//! predicates (`display: contents`, box paint, clipping) live in `nve_components::tables` so
+//! every backend shares them.
 
 use nve_abi::ColorRgba;
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
-use nve_components::tables::{
-    is_node_display_none, Display, Layout as NveLayout, Overflow, Typography, Visual, VisualRef,
-};
+use nve_components::tables::{Layout as NveLayout, Typography, box_visual, is_node_display_none};
 use nve_store::{Length, NodeId as StoreNodeId, NodeStore};
 
 #[inline]
 pub(crate) fn is_display_none(store: &NodeStore, id: StoreNodeId) -> bool {
     is_node_display_none(store, id)
-}
-
-/// `display: contents`: the node generates no box (its children are laid out, painted, and
-/// hit-tested as children of its parent box). A node that is `display: none` (including hidden
-/// `TextInput`s) is never contents: it removes its whole subtree instead.
-#[inline]
-pub(crate) fn is_display_contents(store: &NodeStore, id: StoreNodeId) -> bool {
-    store
-        .try_row::<NveLayout>(id)
-        .is_some_and(|l| l.display() == Display::Contents)
-        && !is_display_none(store, id)
-}
-
-/// `id`'s `Visual` row when `id` paints a box. A `display: contents` node (other than the root,
-/// which always generates the viewport box) has no box, so its background, border, opacity,
-/// stacking, shadows, and clipping are dropped; inherited text styling is unaffected.
-#[inline]
-pub(crate) fn box_visual(store: &NodeStore, id: StoreNodeId) -> Option<VisualRef<'_>> {
-    store
-        .try_row::<Visual>(id)
-        .filter(|_| id == StoreNodeId::ROOT || !is_display_contents(store, id))
-}
-
-/// Drops the box paint of a resolved snapshot for nodes without a box (see [`box_visual`]).
-#[inline]
-pub(crate) fn without_box_paint(v: VisualSnapshot) -> VisualSnapshot {
-    VisualSnapshot {
-        text_color: v.text_color,
-        font_size: v.font_size,
-        ..VisualSnapshot::default()
-    }
-}
-
-#[inline]
-pub(crate) fn node_clips_overflow(store: &NodeStore, id: StoreNodeId) -> bool {
-    let clips = |o: Overflow| matches!(o, Overflow::Hidden | Overflow::Scroll | Overflow::Auto);
-    box_visual(store, id).is_some_and(|v| clips(v.overflow_x()) || clips(v.overflow_y()))
 }
 
 #[inline]

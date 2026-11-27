@@ -39,16 +39,17 @@ impl ListSpan {
     }
 }
 
-/// Narrows a pool offset or length to the span's `u32`. A pool never nears `u32::MAX`: each live
-/// node sits in at most one list per table and `NodeId` indices are 24-bit, while compaction
-/// keeps dead slots below the live ones.
+/// Spans store `u32` offsets (12-byte spans). The bound is enforced at the pool's only growth
+/// point, [`NodeLists::extend`], so every narrowing through [`narrow`] is in range.
+const MAX_POOL_LEN: usize = u32::MAX as usize;
+
 #[inline(always)]
-fn pool_offset(offset: usize) -> u32 {
+fn narrow(v: usize) -> u32 {
     debug_assert!(
-        u32::try_from(offset).is_ok(),
-        "node list pool exceeds u32 offsets"
+        v <= MAX_POOL_LEN,
+        "node list offset {v} escaped the pool bound"
     );
-    u32::try_from(offset).unwrap_or(u32::MAX)
+    v as u32
 }
 
 /// Per-node `NodeId` lists packed into one flat pool.
@@ -86,7 +87,9 @@ impl NodeLists {
             .map_or(&[], |span| &self.pool[span.range()])
     }
 
-    /// Empties `idx`'s list, keeping its capacity for an in-place rewrite.
+    /// Empties `idx`'s list, keeping its capacity for an in-place rewrite. The capacity stays
+    /// owned (not dead) until the list is refilled, released, or [`NodeLists::compact`] reclaims
+    /// the slack of every list still empty at that point.
     #[inline]
     pub(super) fn clear(&mut self, idx: usize) {
         debug_assert!(
@@ -137,10 +140,11 @@ impl NodeLists {
             }
         };
         let Some(first_overflow) = overflow else {
-            self.spans[idx].len = pool_offset(len);
+            self.spans[idx].len = narrow(len);
             return;
         };
-        let new_start = if span.end_of_capacity() == self.pool.len() {
+        let in_place = span.end_of_capacity() == self.pool.len();
+        let new_start = if in_place {
             // Last span in the pool (or an empty pool): drop its slack and grow in place.
             self.pool.truncate(start + len);
             start
@@ -154,11 +158,25 @@ impl NodeLists {
         self.pool.extend(ids);
         let new_len = self.pool.len() - new_start;
         let new_cap = new_len.max(cap.saturating_mul(2));
+        if new_start + new_cap > MAX_POOL_LEN {
+            // Beyond `u32` offsets (> 4 Gi node ids, unreachable before memory runs out): keep
+            // the list as filled so far and drop the excess ids rather than corrupt offsets.
+            debug_assert!(false, "node list pool exceeds u32 offsets");
+            if in_place {
+                self.pool.truncate(start + len);
+                self.pool.resize(start + cap, NodeId::NULL);
+            } else {
+                self.pool.truncate(new_start);
+                self.dead -= cap;
+            }
+            self.spans[idx].len = narrow(len);
+            return;
+        }
         self.pool.resize(new_start + new_cap, NodeId::NULL);
         self.spans[idx] = ListSpan {
-            start: pool_offset(new_start),
-            len: pool_offset(new_len),
-            cap: pool_offset(new_cap),
+            start: narrow(new_start),
+            len: narrow(new_len),
+            cap: narrow(new_cap),
         };
     }
 
@@ -182,7 +200,7 @@ impl NodeLists {
             let start = self.scratch.len();
             self.scratch.extend_from_slice(&self.pool[span.range()]);
             self.scratch.resize(start + span.cap as usize, NodeId::NULL);
-            span.start = pool_offset(start);
+            span.start = narrow(start);
         }
         core::mem::swap(&mut self.pool, &mut self.scratch);
         self.dead = 0;
@@ -216,6 +234,16 @@ impl NodeLists {
             self.pool.len(),
             "node list pool slot accounting"
         );
+    }
+
+    #[cfg(test)]
+    pub(super) fn dead_slots(&self) -> usize {
+        self.dead
+    }
+
+    #[cfg(test)]
+    pub(super) fn capacity_of(&self, idx: usize) -> usize {
+        self.spans.get(idx).map_or(0, |s| s.cap as usize)
     }
 
     #[cfg(test)]

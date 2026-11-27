@@ -171,14 +171,29 @@ mod tests {
         assert_eq!(inline, "opacity: 0.5");
         assert!(inline.capacity() >= long.len(), "inline buffer reused");
 
+        // `TableAttr` lists: pooled emptied, empty/oversized ones dropped, reused on take.
+        pool.recycle_table_list(Vec::new());
+        pool.recycle_table_list(Vec::with_capacity(MAX_LIST_CAP + 1));
+        assert!(pool.table_lists.is_empty());
+        let mut list = pool.table_list();
+        list.push(("accent", crate::table_attr_fn(|_, _| {})));
+        let cap = list.capacity();
+        pool.recycle_table_list(list);
+        let reused = pool.table_list();
+        assert!(
+            reused.is_empty() && reused.capacity() == cap,
+            "emptied list reused"
+        );
+
         // Count bound.
         for _ in 0..MAX_POOLED + 10 {
             pool.recycle_string(String::with_capacity(8));
             pool.recycle_list(Vec::with_capacity(4));
+            pool.recycle_table_list(Vec::with_capacity(4));
         }
         assert_eq!(
-            (pool.strings.len(), pool.lists.len()),
-            (MAX_POOLED, MAX_POOLED)
+            (pool.strings.len(), pool.lists.len(), pool.table_lists.len()),
+            (MAX_POOLED, MAX_POOLED, MAX_POOLED)
         );
     }
 }

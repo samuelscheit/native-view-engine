@@ -65,6 +65,9 @@ pub struct TaffyStoreLayout {
     node_gens: Vec<u8>,
     resolved_rtl: Vec<bool>,
     resolved_text: Vec<ResolvedTextStyle>,
+    /// Per slot: was `display: contents` at the last inheritance walk. A `display` / hidden-input
+    /// change reshapes flattened box-children lists only when this flips.
+    was_contents: Vec<bool>,
     /// Out-of-flow boxes per containing block, in one flat pooled-CSR buffer.
     hoisted: NodeLists,
     /// Taffy-visible children of parents with `display: contents` children.
@@ -82,6 +85,8 @@ pub struct TaffyStoreLayout {
     /// `compute_layout` is a no-op (Taffy 0.16 re-runs the root positioning pass for unclaimed
     /// `position: fixed` boxes even on a full cache hit, allocating every frame).
     layout_dirty: bool,
+    /// Root of the layout pass in flight; still set on entry only when that pass unwound.
+    pass_root: Option<NodeId>,
 }
 
 #[inline]
@@ -117,6 +122,7 @@ impl TaffyStoreLayout {
             node_gens: Vec::new(),
             resolved_rtl: Vec::new(),
             resolved_text: Vec::new(),
+            was_contents: Vec::new(),
             hoisted: NodeLists::default(),
             box_children: BoxChildren::default(),
             layout_gen: 0,
@@ -126,6 +132,7 @@ impl TaffyStoreLayout {
             round_stack: Vec::new(),
             inherit_dirty: true,
             layout_dirty: true,
+            pass_root: None,
         }
     }
 
@@ -149,6 +156,8 @@ impl TaffyStoreLayout {
         self.node_gens.clear();
         self.resolved_rtl.clear();
         self.resolved_text.clear();
+        self.was_contents.clear();
+        self.pass_root = None;
         self.hoisted.reset();
         self.box_children.reset();
         self.layout_gen = 0;
@@ -165,6 +174,7 @@ impl TaffyStoreLayout {
             self.rect_gen.resize(cap, 0);
             self.node_gens.resize(cap, 0);
             self.resolved_rtl.resize(cap, false);
+            self.was_contents.resize(cap, false);
             self.resolved_text.resize(cap, ResolvedTextStyle::default());
         }
         self.hoisted.ensure_len(cap);
@@ -180,7 +190,8 @@ impl TaffyStoreLayout {
         // no inheritance walk).
         // `direction` and `display` share one packed column word (one change-mask bit), so
         // the changed values decide.
-        let layout_bits = (1u32 << NveLayout::DIRECTION.word()) | (1u32 << NveLayout::DISPLAY.word());
+        let layout_bits =
+            (1u32 << NveLayout::DIRECTION.word()) | (1u32 << NveLayout::DISPLAY.word());
         let layout_reshaped = changes.table(NveLayout::slot()).is_some_and(|td| {
             // A detached `Layout` row may reset `direction` and `display` alike.
             !td.detached.is_empty()
@@ -220,6 +231,7 @@ impl TaffyStoreLayout {
                 self.rect_gen[idx] = 0;
                 self.node_gens[idx] = 0;
                 self.resolved_rtl[idx] = false;
+                self.was_contents[idx] = false;
                 self.resolved_text[idx] = ResolvedTextStyle::default();
                 self.hoisted.release(idx);
                 self.box_children.release(idx);
@@ -232,6 +244,7 @@ impl TaffyStoreLayout {
             self.rects[idx] = LayoutRect::default();
             self.rect_gen[idx] = 0;
             self.node_gens[idx] = id.generation();
+            self.was_contents[idx] = false;
             self.hoisted.release(idx);
             self.box_children.release(idx);
             self.mark_dirty(store, id);
@@ -261,24 +274,12 @@ impl TaffyStoreLayout {
         self.resolved_rtl.get(id.index()).copied() != Some(rtl)
     }
 
-    /// A `display` / hidden-input change on `id` reshapes box children only when `id` is now
-    /// `display: contents`, or was flattened into its nearest box ancestor (whose list is still
-    /// the pre-change one here).
+    /// A `display` / hidden-input change on `id` reshapes box children only when it flips
+    /// whether `id` is `display: contents` (any other value only changes how its own box lays
+    /// out, which `mark_dirty` already covers).
     fn display_change_reshapes_boxes(&self, store: &NodeStore, id: NodeId) -> bool {
-        if crate::is_display_contents(store, id) {
-            return true;
-        }
-        let mut cur = store.parent(id);
-        while let Some(anc) = cur {
-            if self.box_children.is_flattened(anc) {
-                return true;
-            }
-            if !crate::is_display_contents(store, anc) {
-                return false;
-            }
-            cur = store.parent(anc);
-        }
-        false
+        crate::is_display_contents(store, id)
+            != self.was_contents.get(id.index()).copied().unwrap_or(false)
     }
 
     /// Marks every live node dirty (used after full replica load or measurer swap).
@@ -378,12 +379,14 @@ impl TaffyStoreLayout {
 
             self.node_gens[idx] = id.generation();
             self.resolved_rtl[idx] = rtl;
+            let contents = crate::is_display_contents(store, id);
+            self.was_contents[idx] = contents;
             self.resolved_text[idx] = text;
 
             if dir_changed || (text_measure_changed && store.has::<TextContent>(id)) {
                 self.mark_dirty(store, id);
             }
-            if id != root && crate::is_display_contents(store, id) {
+            if id != root && contents {
                 // Never laid out (Taffy only sees its nearest box ancestor's flattened list):
                 // return any list recorded while it still generated a box.
                 self.hoisted.release(idx);
@@ -411,8 +414,25 @@ impl TaffyStoreLayout {
             return true;
         }
 
+        if let Some(unwound) = self.pass_root.take() {
+            // The previous pass unwound (host `TextMeasurer` panic behind `ffi_catch_unwind`).
+            // Taffy caches the root's in-flow layout *before* its positioning pass records the
+            // root's hoisted `position: fixed` boxes, so a retry hitting that cache would skip
+            // them for good: drop the unwound root's cache. (A `Drop` guard cannot do this:
+            // `LayoutView` borrows `caches` for the whole pass.)
+            if let Some(cache) = self.caches.get_mut(unwound.index()) {
+                cache.clear();
+            }
+        }
+
+        // Layout runs in logical points; `scale_factor` only maps the result to device pixels
+        // downstream, so it is not part of the key.
         let vp_key = (root, viewport.width, viewport.height);
         if self.last_viewport != Some(vp_key) {
+            if self.last_viewport.map(|(r, _, _)| r) != Some(root) {
+                // Inheritance is resolved from the root down: a new root needs a fresh walk.
+                self.inherit_dirty = true;
+            }
             self.caches[root.index()].clear();
             self.last_viewport = Some(vp_key);
             self.layout_dirty = true;
@@ -437,6 +457,7 @@ impl TaffyStoreLayout {
             measurer: &*self.measurer,
         };
 
+        self.pass_root = Some(root);
         compute_root_layout(
             &mut view,
             taffy::NodeId::from(root.index() as u64),
@@ -497,8 +518,9 @@ impl TaffyStoreLayout {
             }
         }
         // Cleared only once the pass completed: a pass unwinding out of a host `TextMeasurer`
-        // leaves the engine dirty so the next frame retries instead of skipping.
+        // leaves the engine dirty (and `pass_root` armed) so the next frame retries cleanly.
         self.layout_dirty = false;
+        self.pass_root = None;
         true
     }
 

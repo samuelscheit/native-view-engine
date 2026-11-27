@@ -34,14 +34,24 @@ impl BoxChildren {
         self.out.clear();
     }
 
+    #[cfg(test)]
+    pub(super) fn list_capacity(&self, parent: NodeId) -> usize {
+        self.lists.capacity_of(parent.index())
+    }
+
+    #[cfg(test)]
+    pub(super) fn dead_slots(&self) -> usize {
+        self.lists.dead_slots()
+    }
+
     /// Pool accounting invariant of the underlying lists; unflattened parents own no capacity.
     #[cfg(test)]
     pub(super) fn assert_consistent(&self) {
         self.lists.assert_consistent();
         for (idx, &flat) in self.flattened.iter().enumerate() {
             assert!(
-                flat || self.lists.get(idx).is_empty(),
-                "unflattened parent {idx} keeps a list"
+                flat || self.lists.capacity_of(idx) == 0,
+                "unflattened parent {idx} pins list capacity"
             );
         }
     }

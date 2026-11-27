@@ -18,6 +18,18 @@ pub struct VisualSnapshot {
     pub z_index: i32,
 }
 
+impl VisualSnapshot {
+    /// Keeps only inherited text styling: the snapshot of a node that generates no box.
+    #[inline]
+    pub fn without_box_paint(self) -> Self {
+        Self {
+            text_color: self.text_color,
+            font_size: self.font_size,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for VisualSnapshot {
     fn default() -> Self {
         Self {

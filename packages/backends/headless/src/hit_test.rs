@@ -2,10 +2,12 @@
 //! state tracking ([`HeadlessBackend::hit_test_interaction`]): sticky deltas, `Transform2D`
 //! inverse mapping, scroll offsets, overflow clipping, and `display: contents` pass-through.
 //!
-//! A `display: contents` node generates no box: it has no rect, transform, scroll offset, sticky
-//! delta, or clip, so the walk passes the parent's coordinate space straight to its children.
-//! Events still bubble through it, so it is a hit target whenever the point lands on any
-//! (visible) box of its subtree and no deeper target accepted the hit.
+//! **Bubbling**: a node is a hit candidate whenever the point lands on a visible box of its
+//! subtree (its own box, or a descendant box its clip does not cut away), as DOM events bubble
+//! from the hit box to every ancestor regardless of the ancestor's own extent or `visibility`;
+//! the deepest accepting candidate wins. A `display: contents` node generates no box (no rect,
+//! transform, scroll offset, sticky delta, or clip): the walk passes the parent's coordinate
+//! space straight to its children, and it is a candidate only through its descendants.
 
 use nve_abi::NodeId;
 use nve_components::layout_ext::compute_sticky_offset;
@@ -17,8 +19,8 @@ use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::{
-    HeadlessBackend, MAX_TREE_DEPTH, is_display_contents, is_display_none, length_to_dim,
-    node_clips_overflow,
+    HeadlessBackend, MAX_TREE_DEPTH, generates_box, is_display_contents, is_display_none,
+    length_to_dim, node_clips_overflow,
 };
 
 /// Result of hit-testing one subtree.
@@ -26,8 +28,7 @@ use crate::{
 struct Hit {
     /// Deepest accepting node under the point.
     target: Option<NodeId>,
-    /// The point lies on a visible box of this subtree (lets `display: contents` ancestors,
-    /// which have no box of their own, receive bubbled hits).
+    /// The point lies on a visible box of this subtree, so the hit bubbles to this node.
     covered: bool,
 }
 
@@ -116,8 +117,12 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         )
     }
 
-    /// Reads the `Transform2D` of `id` from `NodeStore`'s `Transform` table, if attached.
+    /// Reads the `Transform2D` of `id` from `NodeStore`'s `Transform` table, if attached and `id`
+    /// generates a box (a `display: contents` node has nothing to transform).
     pub fn effective_transform(&self, store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
+        if !generates_box(store, id) {
+            return None;
+        }
         let t = store.try_row::<TransformTable>(id)?;
         let tf = Transform2D {
             translate_x: t.translate_x(),
@@ -148,46 +153,49 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         y: f32,
         accepts: impl Fn(StoreNodeId) -> bool,
     ) -> Option<NodeId> {
-        self.hit_walk(
+        HitWalk {
+            backend: self,
             store,
-            StoreNodeId::ROOT,
-            (x, y),
-            (0.0, 0.0),
-            false,
-            0,
-            &accepts,
-        )
+            accepts,
+        }
+        .walk(StoreNodeId::ROOT, (x, y), (0.0, 0.0), false, 0)
         .target
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn hit_walk(
+/// One hit-test query: the backend's geometry, the store, and the target predicate.
+struct HitWalk<'a, L: StoreLayoutEngine, F> {
+    backend: &'a HeadlessBackend<L>,
+    store: &'a NodeStore,
+    accepts: F,
+}
+
+impl<L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'_, L, F> {
+    fn walk(
         &self,
-        store: &NodeStore,
         id: StoreNodeId,
         point: (f32, f32),
         offset: (f32, f32),
         inherited_hidden: bool,
         depth: usize,
-        accepts: &dyn Fn(StoreNodeId) -> bool,
     ) -> Hit {
+        let (store, backend) = (self.store, self.backend);
         if depth > MAX_TREE_DEPTH || !store.is_live(id) || is_display_none(store, id) {
             return MISS;
         }
         let hidden = store.try_row::<Visual>(id).map_or(inherited_hidden, |v| {
             v.visibility().resolve(inherited_hidden)
         });
-        let contents = id != StoreNodeId::ROOT && is_display_contents(store, id);
-        let (child_point, child_offset, inside) = if contents {
+        let (child_point, child_offset, inside) = if !generates_box(store, id) {
             (point, offset, false)
         } else {
-            let Some(rect) = self.layout.layout_of(id) else {
+            let Some(rect) = backend.layout.layout_of(id) else {
                 return MISS;
             };
-            let (stx, sty) = self.compute_sticky_delta(store, id);
+            let (stx, sty) = backend.compute_sticky_delta(store, id);
             let r_x = rect.x + offset.0 + stx;
             let r_y = rect.y + offset.1 + sty;
-            let (px, py) = match self.effective_transform(store, id) {
+            let (px, py) = match backend.effective_transform(store, id) {
                 Some(tf) => match tf.inverse_map_surface_point(
                     point.0,
                     point.1,
@@ -210,30 +218,21 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             if !inside && id != StoreNodeId::ROOT && node_clips_overflow(store, id) {
                 return MISS;
             }
-            let (sx, sy) = self.scroll_offset(id.raw());
+            let (sx, sy) = backend.scroll_offset(id.raw());
             let child_offset = (offset.0 + stx - sx, offset.1 + sty - sy);
             ((px, py), child_offset, inside)
         };
 
         let mut covered = inside && !hidden;
         for &cid in store.children(id).iter().rev() {
-            let hit = self.hit_walk(
-                store,
-                cid,
-                child_point,
-                child_offset,
-                hidden,
-                depth + 1,
-                accepts,
-            );
+            let hit = self.walk(cid, child_point, child_offset, hidden, depth + 1);
             if hit.target.is_some() {
                 return hit;
             }
             covered |= hit.covered;
         }
-        let self_hit = if contents { covered } else { inside };
         Hit {
-            target: (self_hit && !hidden && accepts(id)).then_some(id.raw()),
+            target: (covered && (self.accepts)(id)).then_some(id.raw()),
             covered,
         }
     }
