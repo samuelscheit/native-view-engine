@@ -29,6 +29,14 @@ pub struct CachedRule {
     pub css_rule: String,
 }
 
+/// Registration position in a [`StyleSheetCache`] ([`StyleSheetCache::watermark`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CssWatermark {
+    structural: usize,
+    media: usize,
+    state: [usize; STATE_TIER_COUNT],
+}
+
 /// Resolved class list + newly generated rules for a single `NodeStore` node.
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedNodeStyle {
@@ -45,6 +53,9 @@ pub struct ResolvedNodeStyle {
 #[derive(Default)]
 pub struct StyleSheetCache {
     pub(crate) structural: BTreeMap<String, String>,
+    /// Non-empty structural classes in registration order (seeded SSR hashes excluded), so
+    /// [`Self::serialize_css_since`] can emit only rules added after a [`CssWatermark`].
+    pub(crate) structural_order: Vec<String>,
     pub(crate) media: Vec<CompiledMediaRule>,
     pub(crate) media_seen: HashSet<String>,
     pub(crate) state: [Vec<CompiledStateRule>; STATE_TIER_COUNT],
@@ -76,6 +87,7 @@ impl StyleSheetCache {
 
     pub fn clear(&mut self) {
         self.structural.clear();
+        self.structural_order.clear();
         self.media.clear();
         self.media_seen.clear();
         for tier in &mut self.state {
@@ -113,35 +125,14 @@ impl StyleSheetCache {
         let resolved = resolve_store_node_style(store, id, allow_new, |cls| {
             self.structural.contains_key(cls)
         });
-        if let Some((ref cls, ref decls)) = resolved.structural_rule
-            && !self.structural.contains_key(cls)
-        {
-            self.structural.insert(cls.clone(), decls.clone());
-            #[cfg(target_arch = "wasm32")]
-            self.pending_structural.push(CachedRule {
-                class_name: cls.clone(),
-                css_rule: format!("@layer nve-s{{.{cls}{{{decls}}}}}"),
-            });
+        if let Some((cls, decls)) = &resolved.structural_rule {
+            self.register_structural(cls, decls);
         }
-        if let Some((cls, decls)) = resolved.cursor_rule
-            && !self.structural.contains_key(cls)
-        {
-            self.structural.insert(cls.to_owned(), decls.to_owned());
-            #[cfg(target_arch = "wasm32")]
-            self.pending_structural.push(CachedRule {
-                class_name: cls.to_owned(),
-                css_rule: format!("@layer nve-s{{.{cls}{{{decls}}}}}"),
-            });
+        if let Some((cls, decls)) = resolved.cursor_rule {
+            self.register_structural(cls, decls);
         }
-        if let Some((ref cls, ref decls)) = resolved.transition_rule
-            && !self.structural.contains_key(cls)
-        {
-            self.structural.insert(cls.clone(), decls.clone());
-            #[cfg(target_arch = "wasm32")]
-            self.pending_structural.push(CachedRule {
-                class_name: cls.clone(),
-                css_rule: format!("@layer nve-s{{.{cls}{{{decls}}}}}"),
-            });
+        if let Some((cls, decls)) = &resolved.transition_rule {
+            self.register_structural(cls, decls);
         }
         for mr in &resolved.media_rules {
             if self.media_seen.insert(mr.class_name.clone()) {
@@ -167,20 +158,49 @@ impl StyleSheetCache {
         resolved
     }
 
+    /// Registers a structural rule unless its class is already known (registered or seeded).
+    fn register_structural(&mut self, cls: &str, decls: &str) {
+        if self.structural.contains_key(cls) {
+            return;
+        }
+        self.structural.insert(cls.to_owned(), decls.to_owned());
+        if !decls.is_empty() {
+            self.structural_order.push(cls.to_owned());
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.pending_structural.push(CachedRule {
+            class_name: cls.to_owned(),
+            css_rule: format!("@layer nve-s{{.{cls}{{{decls}}}}}"),
+        });
+    }
+
+    /// Position after every rule registered so far (see [`Self::serialize_css_since`]).
+    pub fn watermark(&self) -> CssWatermark {
+        CssWatermark {
+            structural: self.structural_order.len(),
+            media: self.media.len(),
+            state: core::array::from_fn(|t| self.state[t].len()),
+        }
+    }
+
     /// Serializes all accumulated rules (structural, then `@media`, then ordered state tiers)
     /// into CSS Cascade Layers so SSR `<style data-nve-ssr>` and live `adoptedStyleSheets`
     /// maintain identical tier ordering (`nve-base < nve-s < nve-m < nve-st0..4`).
     pub fn serialize_css(&self) -> (String, Vec<String>) {
+        self.serialize_css_since(CssWatermark::default())
+    }
+
+    /// [`Self::serialize_css`] restricted to rules registered after `mark`: O(new rules),
+    /// independent of how many rules were registered or seeded before it.
+    pub fn serialize_css_since(&self, mark: CssWatermark) -> (String, Vec<String>) {
         use core::fmt::Write as _;
         let mut css = String::new();
-        let mut hashes = Vec::with_capacity(self.rule_count());
-        let mut has_structural = false;
-        for (cls, decls) in &self.structural {
-            if !decls.is_empty() {
-                if !has_structural {
-                    css.push_str("@layer nve-s{");
-                    has_structural = true;
-                }
+        let mut hashes = Vec::new();
+        let structural = self.structural_order.get(mark.structural..).unwrap_or_default();
+        if !structural.is_empty() {
+            css.push_str("@layer nve-s{");
+            for cls in structural {
+                let decls = self.structural.get(cls).map_or("", String::as_str);
                 css.push('.');
                 css.push_str(cls);
                 css.push('{');
@@ -188,19 +208,19 @@ impl StyleSheetCache {
                 css.push('}');
                 hashes.push(cls.clone());
             }
-        }
-        if has_structural {
             css.push('}');
         }
-        if !self.media.is_empty() {
+        let media = self.media.get(mark.media..).unwrap_or_default();
+        if !media.is_empty() {
             css.push_str("@layer nve-m{");
-            for mr in &self.media {
+            for mr in media {
                 mr.write_css_rule_into(&mut css);
                 hashes.push(mr.class_name.clone());
             }
             css.push('}');
         }
         for (tier_idx, tier) in self.state.iter().enumerate() {
+            let tier = tier.get(mark.state[tier_idx]..).unwrap_or_default();
             if tier.is_empty() {
                 continue;
             }

@@ -3087,6 +3087,7 @@ dependencies = [
  "minicbor",
  "nve-abi",
  "nve-backend-web",
+ "nve-components",
  "nve-dioxus",
  "nve-http-hyper",
  "nve-query",

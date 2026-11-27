@@ -9,14 +9,16 @@ use nve_store::{NodeId, NodeStore};
 use crate::css::NVE_BASE_RESET_CSS;
 use crate::ssr::SsrOutput;
 use crate::streaming::{sanitize_stream_slot_id, StreamingError, NVE_STREAM_SLOT_PREFIX};
-use crate::stylesheet::StyleSheetCache;
+use crate::stylesheet::{CssWatermark, StyleSheetCache};
 use crate::WebBackend;
 
 /// Tracks already-emitted Option 5 Hybrid CSS class hashes across a streaming SSR response so
-/// subsequent delta slot chunks emit ONLY newly introduced rules.
-#[derive(Debug, Clone, Default)]
+/// subsequent delta slot chunks emit ONLY newly introduced rules, in O(new rules) per chunk.
+#[derive(Default)]
 pub struct SsrStyleTracker {
-    pub sent_hashes: HashSet<String>,
+    /// Every rule registered by the shell and earlier chunks (all of them already sent).
+    sheet: StyleSheetCache,
+    sent: CssWatermark,
 }
 
 impl SsrStyleTracker {
@@ -25,27 +27,46 @@ impl SsrStyleTracker {
         Self::default()
     }
 
-    #[inline]
-    pub fn contains(&self, class_name: &str) -> bool {
-        self.sent_hashes.contains(class_name)
+    /// Tracker for a client/stream that already holds `hashes` (e.g. a resumed stream).
+    pub fn with_sent_hashes<'a>(hashes: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut sheet = StyleSheetCache::new();
+        sheet.seed_ssr_hashes(hashes);
+        let sent = sheet.watermark();
+        Self { sheet, sent }
     }
 
     #[inline]
+    pub fn contains(&self, class_name: &str) -> bool {
+        self.sheet.structural.contains_key(class_name)
+            || self.sheet.media_seen.contains(class_name)
+            || self.sheet.state_seen.contains(class_name)
+    }
+
+    /// Number of known rules (sent or seeded).
+    #[inline]
     pub fn len(&self) -> usize {
-        self.sent_hashes.len()
+        self.sheet.rule_count()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.sent_hashes.is_empty()
+        self.len() == 0
     }
 
-    /// Fresh per-chunk stylesheet pre-seeded with every already-sent hash so serialization
-    /// yields only newly introduced rules.
-    fn delta_sheet(&self) -> StyleSheetCache {
-        let mut sheet = StyleSheetCache::new();
-        sheet.seed_ssr_hashes(self.sent_hashes.iter().map(String::as_str));
-        sheet
+    /// Serializes rules registered since the last call and marks them sent.
+    fn take_unsent_css(&mut self) -> (String, Vec<String>) {
+        let out = self.sheet.serialize_css_since(self.sent);
+        self.sent = self.sheet.watermark();
+        out
+    }
+}
+
+impl core::fmt::Debug for SsrStyleTracker {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SsrStyleTracker")
+            .field("rules", &self.len())
+            .field("sent", &self.sent)
+            .finish()
     }
 }
 
@@ -58,7 +79,7 @@ pub struct PendingStreamSlot {
 }
 
 /// Output produced by [`WebBackend::render_ssr_streaming_shell`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StreamingShellOutput {
     pub ssr: SsrOutput,
     pub style_tracker: SsrStyleTracker,
@@ -166,15 +187,18 @@ impl WebBackend {
         store: &NodeStore,
     ) -> Result<StreamingShellOutput, StreamingError> {
         let root_hash = self.compute_ssr_tree_hash(store);
-        let mut sheet = StyleSheetCache::new();
+        let mut style_tracker = SsrStyleTracker::new();
         let mut html = String::with_capacity(1024);
         let mut state = StreamShellState::default();
-        self.emit_ssr_node(store, NodeId::ROOT, root_hash, &mut sheet, &mut html, Some(&mut state))?;
-
-        let (style_css, rule_hashes) = sheet.serialize_css();
-        let style_tracker = SsrStyleTracker {
-            sent_hashes: rule_hashes.iter().cloned().collect(),
-        };
+        self.emit_ssr_node(
+            store,
+            NodeId::ROOT,
+            root_hash,
+            &mut style_tracker.sheet,
+            &mut html,
+            Some(&mut state),
+        )?;
+        let (style_css, rule_hashes) = style_tracker.take_unsent_css();
         Ok(StreamingShellOutput {
             ssr: SsrOutput {
                 base_css: NVE_BASE_RESET_CSS,
@@ -222,14 +246,12 @@ impl WebBackend {
         if !store.is_live(parent_node_id) {
             return SsrDeltaChunk::default();
         }
-        let mut sheet = style_tracker.delta_sheet();
         let mut html = String::with_capacity(256);
         for &cid in store.children(parent_node_id) {
             // Infallible without a `StreamShellState` (no slot validation).
-            let _ = self.emit_ssr_node(store, cid, 0, &mut sheet, &mut html, None);
+            let _ = self.emit_ssr_node(store, cid, 0, &mut style_tracker.sheet, &mut html, None);
         }
-        let (style_css, rule_hashes) = sheet.serialize_css();
-        style_tracker.sent_hashes.extend(rule_hashes.iter().cloned());
+        let (style_css, rule_hashes) = style_tracker.take_unsent_css();
         SsrDeltaChunk {
             html,
             style_css,
