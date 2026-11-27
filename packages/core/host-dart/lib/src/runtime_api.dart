@@ -73,8 +73,8 @@ final class RuntimeApi {
     if (api.abiVersion != nveRuntimeAbiVersion) {
       throw StateError('runtime ABI version ${api.abiVersion} != $nveRuntimeAbiVersion');
     }
-    if (api.structSize < ffi.sizeOf<NveRuntimeApi>()) {
-      throw StateError('runtime vtable is ${api.structSize} bytes, binding needs ${ffi.sizeOf<NveRuntimeApi>()}');
+    if (api.structSize != ffi.sizeOf<NveRuntimeApi>()) {
+      throw StateError('runtime vtable is ${api.structSize} bytes, binding expects ${ffi.sizeOf<NveRuntimeApi>()}');
     }
     final schema = key64FromBits(api.schemaHash);
     if (schema != nveRuntimeSchemaHash) {

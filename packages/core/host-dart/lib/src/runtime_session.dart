@@ -523,11 +523,14 @@ final class RuntimeSession {
     );
   }
 
-  /// Connects the embedded pairing client to [uri] (`nve://host:port` / `quic://…`).
+  /// Connects the embedded pairing client to [uri] (`nve://host:port` / `quic://…`). On success
+  /// the runtime has atomically replaced (and dropped) any attached local app, so its library is
+  /// released too; a failure leaves the app running.
   void pairConnect(String uri, {String token = ''}) {
     final handle = _live;
     final (u, t) = _utf8Args(uri, token);
     api.check(api.pairConnect(handle, u, t), 'pair_connect');
+    _appLibrary = null;
   }
 
   /// UTF-8 copies of [a] and [b] in the reusable byte block, as the two scratch `NveStrSlice`s
