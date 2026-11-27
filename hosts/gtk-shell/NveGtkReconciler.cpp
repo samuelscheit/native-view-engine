@@ -379,11 +379,9 @@ void NveGtkHost::mark_scroll_extents(GtkWidget* container) {
 }
 
 void NveGtkHost::update_canvas(GtkNodeView& v, uint32_t index) {
-  const canvas::CanvasData c = canvas_.at(index);
-  if (v.synced && c.draw_list == v.canvas_res && c.generation == v.canvas_generation) return;
-  v.canvas_res = c.draw_list;
-  v.canvas_generation = c.generation;
-  const std::span<const uint8_t> bytes = scene_resource(c.draw_list, canvas::kDrawListKind);
+  // Compared by bytes, not id: `RetainedTree` updates this view when its draw list is republished
+  // under the same id.
+  const std::span<const uint8_t> bytes = scene_resource(canvas_.at(index).draw_list, canvas::kDrawListKind);
   if (v.synced && std::ranges::equal(bytes, v.draw_list)) return;
   v.draw_list.assign(bytes.begin(), bytes.end());  // drawn later, after the scene is released
   ++v.redraw_count;

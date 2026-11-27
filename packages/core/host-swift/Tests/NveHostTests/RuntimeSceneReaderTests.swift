@@ -33,6 +33,7 @@ final class RuntimeSceneReaderTests: XCTestCase {
         XCTAssertEqual(s.frameId, 7)
         XCTAssertEqual(s.sceneEpoch, 5)
         XCTAssertEqual(Array(s.dirtyResources), [3, 9])
+        XCTAssertEqual(Array(s.movedIndices), [2])
         XCTAssertEqual(s.nodeCapacity, 4)
         XCTAssertFalse(s.isLive(0))  // reserved null slot
         XCTAssertTrue(s.isLive(1))

@@ -219,17 +219,17 @@ void test_source_change_runs_a_full_pass() {
   CHECK(h.submit());
   CHECK(h.sync() == 4u);  // root + 3 views
   CHECK(h.rec.views.count(40u) == 1u && h.rec.views[3].text == "old");
-  const uint64_t before = h.host->source_generation();
+  const uint32_t before = testing::published_scene_epoch(*h.host);
   CHECK(h.host->attach(&CounterApp::get_interface));
-  CHECK(h.host->source_generation() == before + 1u);
-  (void)h.host->pump();
+  const uint32_t epoch = testing::published_scene_epoch(*h.host);
+  CHECK(epoch != before && epoch != UINT32_MAX);
   CHECK(h.sync() > 0u);
   CHECK(h.rec.views.count(40u) == 0u);  // only the old app had node 40
   CHECK(h.rec.views[CounterApp::kTitle].text == "NVE native host");
   CHECK(h.rec.views[CounterApp::kTitle].attached_to == CounterApp::kColumn);  // relinked
-  // A failed attach leaves the running app (and the generation) untouched.
+  // A failed attach leaves the running app (and its scene) untouched.
   CHECK(!h.host->attach(nullptr));
-  CHECK(h.host->source_generation() == before + 1u && h.host->has_app());
+  CHECK(testing::published_scene_epoch(*h.host) == epoch && h.host->has_app());
 }
 
 /// A dense table (`nve.visual`) stores a zeroed row at every index: nodes without the table must

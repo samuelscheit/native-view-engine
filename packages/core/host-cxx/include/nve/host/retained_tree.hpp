@@ -11,13 +11,17 @@
 //   void destroy(uint32_t id, Handle&);
 //   void set_children(const NodeData& parent, Handle* parent_view /* null for root */,
 //                     std::span<Handle* const> kids);           // in scene child order
+//   uint32_t module_resource(const NodeData&);                 // optional: resource id a module
+//                                                              // table attaches (canvas draw list)
 //
 // The first sync, any `frame_id` that is not the next one (a regression, or a skipped frame whose
-// change sets were never seen), and any change of `source_generation` (pass
-// `HostSession::source_generation()`: a new app or pairing replaces the scene without removals)
-// visit every live node, keeping views whose node, generation and tag still match. Afterwards a
-// sync costs O(changed): `removed_ids`, `dirty_indices` (created, or row, tables or children
-// changed) and descendants whose inherited typography changed get `update`; `moved_indices`
+// change sets were never seen), and any new `scene_epoch` (the runtime discarded its scene: app
+// attach / swap / detach, pairing, keyframe; ids may reappear without removals) visit every live
+// node, keeping views whose node, generation and tag still match. Afterwards a sync costs
+// O(changed): `removed_ids`, `dirty_indices` (created, or row, tables or children changed), views
+// reading a resource listed in `dirty_resources` (image source, box shadows, background fill,
+// `module_resource`: same id, new bytes) and descendants whose inherited typography changed get
+// `update`, so an adapter may skip re-decoding a resource whose id it already applied; `moved_indices`
 // (only the absolute rect or parent-relative origin changed) get `move`, which receives
 // `read_geometry` data (identity and geometry only). Adapters without `move` get a full `update`
 // instead. Views are keyed by node index and checked against the packed `NodeId` generation, so a
@@ -33,6 +37,7 @@
 #include <vector>
 
 #include "bound_table.hpp"
+#include "resource_users.hpp"
 #include "runtime_session.hpp"
 #include "scene_nodes.hpp"
 
@@ -42,6 +47,21 @@ namespace nve::host {
 template <class Adapter>
 concept MovingAdapter = requires(Adapter& a, typename Adapter::Handle& h, const NodeData& n) { a.move(h, n); };
 
+/// `Adapter` reads one more resource per node than `NodeData` names (e.g. a canvas draw list).
+template <class Adapter>
+concept ModuleResourceAdapter = requires(Adapter& a, const NodeData& n) {
+  { a.module_resource(n) } -> std::convertible_to<uint32_t>;
+};
+
+/// Resource ids live node `n`'s views read: image source, box shadows, background fill, and the
+/// adapter's `module_resource`.
+template <class Adapter>
+[[nodiscard]] ResourceUsers::Ids node_resources(Adapter& adapter, const NodeData& n) {
+  uint32_t module = 0u;
+  if constexpr (ModuleResourceAdapter<Adapter>) module = adapter.module_resource(n);
+  return {n.kind == NodeKind::Image ? n.image.src : 0u, n.visual.box_shadows, n.visual.background_fill, module};
+}
+
 template <class Adapter>
 class RetainedTree {
  public:
@@ -49,15 +69,14 @@ class RetainedTree {
 
   /// Reconciles `scene` (bound into `tables`); returns the number of views created or updated
   /// (`moved()` counts the geometry-only `move`s).
-  size_t sync(const RuntimeSceneReader& scene, SceneTables& tables, Adapter& adapter,
-              uint64_t source_generation = 0u) {
-    if (initialized_ && source_generation == source_generation_ && scene.frame_id() == last_frame_) {
+  size_t sync(const RuntimeSceneReader& scene, SceneTables& tables, Adapter& adapter) {
+    const bool same_epoch = initialized_ && scene.scene_epoch() == scene_epoch_;
+    if (same_epoch && scene.frame_id() == last_frame_) {
       moved_ = 0u;
       return 0u;  // this frame is already mirrored
     }
-    const bool full =
-        !initialized_ || scene.frame_id() != last_frame_ + 1u || source_generation != source_generation_;
-    source_generation_ = source_generation;
+    const bool full = !same_epoch || scene.frame_id() != last_frame_ + 1u;
+    scene_epoch_ = scene.scene_epoch();
     tables.bind(scene);
     if (++epoch_ == 0u) {
       for (Entry& e : entries_) e.stamp = e.resolved = e.linked = 0u;
@@ -66,6 +85,7 @@ class RetainedTree {
     initialized_ = true;
     last_frame_ = scene.frame_id();
     if (entries_.size() < scene.node_capacity()) entries_.resize(scene.node_capacity());
+    users_.reserve_views(entries_.size());
     updated_ = 0u;
     moved_ = 0u;
     work_.clear();
@@ -89,6 +109,19 @@ class RetainedTree {
     }
 
     for (const uint32_t i : work_) visit(scene, tables, adapter, i);
+    if (!full) {
+      // Same id, new bytes: re-apply every clean view that read it (collected first: `visit`
+      // re-points the very lists being walked).
+      for (const uint32_t id : scene.dirty_resources()) {
+        users_.for_each_user(id, [&](uint32_t i) { resource_work_.push_back(i); });
+      }
+      for (const uint32_t i : resource_work_) {
+        if (i < entries_.size() && entries_[i].live && entries_[i].stamp != epoch_ && scene.is_live(i)) {
+          visit(scene, tables, adapter, i);
+        }
+      }
+      resource_work_.clear();
+    }
     // Inherited typography: a changed resolved style re-renders descendants until it stops changing.
     for (size_t q = 0; q < cascade_.size(); ++q) {
       const uint32_t i = cascade_[q];
@@ -167,6 +200,7 @@ class RetainedTree {
   void destroy(uint32_t i, Adapter& adapter) {
     Entry& e = entries_[i];
     if (i != kRootIndex) adapter.destroy(e.id, e.handle);
+    users_.clear(i);
     e.live = false;
     e.handle = Handle{};
   }
@@ -214,6 +248,7 @@ class RetainedTree {
       }
       adapter.update(e.handle, node);
     }
+    users_.set(i, node_resources(adapter, node));
     store_applied(e, style);
     ++updated_;
     if (style_changed) {
@@ -248,13 +283,15 @@ class RetainedTree {
   }
 
   std::vector<Entry> entries_;
+  ResourceUsers users_;
   std::vector<uint32_t> work_;
+  std::vector<uint32_t> resource_work_;
   std::vector<uint32_t> cascade_;
   std::vector<uint32_t> relink_;
   std::vector<uint32_t> chain_;
   std::vector<Handle*> kids_;
   uint64_t last_frame_ = 0u;
-  uint64_t source_generation_ = 0u;
+  uint32_t scene_epoch_ = 0u;
   uint32_t epoch_ = 0u;
   size_t updated_ = 0u;
   size_t moved_ = 0u;

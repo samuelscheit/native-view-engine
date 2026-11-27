@@ -1,7 +1,8 @@
 // Live `libnve_runtime` tests of `RetainedTree`'s O(changed) contract: geometry-only changes reach
 // `move` (not `update`), adapters without `move` fall back to `update`, parent-relative origins stay
 // exact across parent moves and reparents, sparse rows resolve correctly across swap-remove
-// compaction and slot reuse, cascade-recreated views are relinked, skipped frames resync fully, and
+// compaction and slot reuse, cascade-recreated views are relinked, skipped frames and new scene
+// epochs resync fully, republished resources re-apply exactly their clean users, and
 // a steady-state sync of a 10k-node tree costs O(changed) work with zero heap allocations.
 #include <atomic>
 #include <chrono>
@@ -13,6 +14,8 @@
 #include <vector>
 
 #include "check.h"
+#include "nve/host/core_resources.hpp"
+#include "nve/host/demo_counter_app.hpp"
 #include "nve/host/testing/recorder.hpp"
 
 // Counts every C++ heap allocation of this binary (the Rust runtime uses its own allocator).
@@ -248,6 +251,86 @@ void test_skipped_frame_resyncs_fully() {
   CHECK(h.rec.views[3].text == "first" && h.rec.views[4].text == "second");
 }
 
+/// A resource republished under the same id re-runs `update` on exactly the clean views that read
+/// it (image source, box shadows, a module-attached id), tracking re-pointed and destroyed users.
+void test_dirty_resource_updates_its_clean_users() {
+  Harness<testing::ModuleRecorder> h;
+  if (!h.host) return;
+  h.rec.module[5u] = 7u;  // node 5 also draws resource 7 (as a canvas would its draw list)
+  Nve2Writer& w = h.w;
+  const auto url = [](const char* u) { return encode_image_url(u); };
+  w.define_resource(7u, kImageSrcKind, url("file:///tmp/a.png"));
+  w.define_resource(8u, kBoxShadowsKind, encode_box_shadows(std::vector<BoxShadow>{BoxShadow{}}));
+  w.set(3u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 7u);
+  w.set(4u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 7u);
+  w.set(5u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BOX_SHADOWS, 8u);
+  mount_column(h);
+  auto& v = h.rec.views;
+  const auto updates = [&] { return std::vector<int>{v[2].updates, v[3].updates, v[4].updates, v[5].updates}; };
+
+  w.define_resource(7u, kImageSrcKind, url("file:///tmp/b.png"));  // same id, new bytes
+  CHECK(h.submit());
+  std::vector<int> before = updates();
+  CHECK(h.sync() == 3u);
+  CHECK((updates() == std::vector<int>{before[0], before[1] + 1, before[2] + 1, before[3] + 1}));
+
+  w.define_resource(8u, kBoxShadowsKind, encode_box_shadows(std::vector<BoxShadow>{BoxShadow{}, BoxShadow{}}));
+  CHECK(h.submit());
+  before = updates();
+  CHECK(h.sync() == 1u && v[5].updates == before[3] + 1);
+
+  // Node 3 re-points to 9: a later republish of 7 reaches only nodes 4 and 5; one of 9 only 3.
+  w.define_resource(9u, kImageSrcKind, url("file:///tmp/c.png"));
+  w.set(3u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 9u);
+  CHECK(h.submit());
+  (void)h.sync();
+  w.define_resource(7u, kImageSrcKind, url("file:///tmp/d.png"));
+  CHECK(h.submit());
+  before = updates();
+  CHECK(h.sync() == 2u);
+  CHECK((updates() == std::vector<int>{before[0], before[1], before[2] + 1, before[3] + 1}));
+  w.define_resource(9u, kImageSrcKind, url("file:///tmp/e.png"));
+  CHECK(h.submit());
+  before = updates();
+  CHECK(h.sync() == 1u && v[3].updates == before[1] + 1);
+
+  // Destroyed users are forgotten: with node 3 gone, a republish of 9 updates nothing.
+  w.remove(3u);
+  w.set_children(2u, std::vector<uint32_t>{4u, 5u});
+  w.define_resource(9u, kImageSrcKind, url("file:///tmp/f.png"));
+  CHECK(h.submit());
+  (void)h.sync();
+  w.define_resource(9u, kImageSrcKind, url("file:///tmp/g.png"));
+  CHECK(h.submit());
+  CHECK(h.sync() == 0u);
+}
+
+/// A new `scene_epoch` (the runtime discarded its scene) forces a full pass even when `frame_id`
+/// is the next one and no removals were published.
+void test_new_scene_epoch_runs_a_full_pass() {
+  Harness<MovingRecorder> h;
+  if (!h.host) return;
+  using demo::CounterApp;
+  mount_column(h);
+  h.w.create(40u);  // a node the next app never has
+  h.w.set_children(1u, std::vector<uint32_t>{2u, 40u});
+  CHECK(h.submit());
+  (void)h.sync();
+  CHECK(h.rec.views.count(40u) == 1u);
+  const int column_updates = h.rec.views[CounterApp::kColumn].updates;
+  const int creates = h.rec.creates;
+  const uint32_t epoch = testing::published_scene_epoch(*h.host);
+  CHECK(h.host->attach(&CounterApp::get_interface));
+  CHECK(testing::published_scene_epoch(*h.host) != epoch);
+  CHECK(h.sync() > 0u);
+  CHECK(h.rec.views.count(40u) == 0u);  // no removal was published: only the full pass drops it
+  CHECK(h.rec.views[CounterApp::kTitle].text == "NVE native host");
+  CHECK(h.rec.views[CounterApp::kColumn].updates > column_updates);  // same node: kept, re-applied
+  CHECK(h.rec.creates < creates + 6);
+  CHECK(h.rec.views[CounterApp::kCount].text == CounterApp::count_label(0));
+  CHECK(h.rec.root_children == std::vector<uint32_t>{CounterApp::kColumn});
+}
+
 /// Adapter that only counts calls (no allocation of its own), for cost and allocation checks.
 struct Counter {
   using Handle = uint32_t;
@@ -299,7 +382,7 @@ void test_ten_thousand_nodes_sync_is_o_changed() {
     if (!guard) continue;
     const size_t before = g_allocs.load();
     t0 = Clock::now();
-    const size_t updated = h.tree.sync(guard->reader(), h.tables, h.rec, h.host->source_generation());
+    const size_t updated = h.tree.sync(guard->reader(), h.tables, h.rec);
     paint_us = us(Clock::now() - t0);
     paint_allocs = g_allocs.load() - before;
     CHECK(updated == 1u && h.tree.moved() == 0u);
@@ -316,7 +399,7 @@ void test_ten_thousand_nodes_sync_is_o_changed() {
     if (!guard) continue;
     const size_t before = g_allocs.load();
     t0 = Clock::now();
-    shift_updates = h.tree.sync(guard->reader(), h.tables, h.rec, h.host->source_generation());
+    shift_updates = h.tree.sync(guard->reader(), h.tables, h.rec);
     shift_us = us(Clock::now() - t0);
     shift_allocs = g_allocs.load() - before;
     shift_moves = h.tree.moved();
@@ -339,6 +422,8 @@ int main() {
   test_sparse_rows_survive_compaction_and_slot_reuse();
   test_cascade_recreated_view_is_relinked();
   test_skipped_frame_resyncs_fully();
+  test_dirty_resource_updates_its_clean_users();
+  test_new_scene_epoch_runs_a_full_pass();
   test_ten_thousand_nodes_sync_is_o_changed();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_retained_tree_test: %d failure(s)\n", g_failures);

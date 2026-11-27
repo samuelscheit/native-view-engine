@@ -121,10 +121,6 @@ class HostSession {
   [[nodiscard]] bool has_app() const noexcept { return attached_ || runtime_.pair_is_connected(); }
   /// The running app came from `load_module` / `reload_module`.
   [[nodiscard]] bool has_module() const noexcept { return module_; }
-  /// Bumped whenever the scene's source changes (attach, module load / reload, pair, unpair): the
-  /// runtime then replaces the scene without removals, so `RetainedTree::sync` takes it to run a
-  /// full pass.
-  [[nodiscard]] uint64_t source_generation() const noexcept { return source_generation_; }
   [[nodiscard]] std::string last_error() const { return runtime_.last_error(); }
 
   /// Installs (or with `{}` removes) the UI-thread wake poster.
@@ -171,7 +167,6 @@ class HostSession {
   void unpair() {
     if (!runtime_.pair_is_connected()) return;
     (void)runtime_.pair_disconnect();
-    ++source_generation_;
   }
 
   /// Advances the runtime (renders the app / applies paired frames) and forwards the app's
@@ -260,7 +255,6 @@ class HostSession {
   void on_source_changed(bool attached, bool module) noexcept {
     attached_ = attached;
     module_ = module;
-    ++source_generation_;
   }
 
   static void on_wake(void* ctx) {
@@ -273,7 +267,6 @@ class HostSession {
   EventSink sink_;
   OwnedEvents drained_;
   EventFactory events_;
-  uint64_t source_generation_ = 0u;
   bool attached_ = false;
   bool module_ = false;
 };

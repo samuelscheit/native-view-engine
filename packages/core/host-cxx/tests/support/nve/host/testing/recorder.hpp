@@ -88,6 +88,15 @@ struct MovingRecorder : Recorder {
   }
 };
 
+/// `MovingRecorder` whose views also read a module-attached resource (as a canvas draw list).
+struct ModuleRecorder : MovingRecorder {
+  std::map<uint32_t, uint32_t> module;  // node id -> resource id
+  uint32_t module_resource(const NodeData& n) const {
+    const auto it = module.find(n.id);
+    return it != module.end() ? it->second : 0u;
+  }
+};
+
 template <class Adapter>
 struct TreeHarness {
   std::unique_ptr<HostSession> host = HostSession::create(RuntimeSession::default_config(1u, 400.0f, 300.0f));
@@ -109,8 +118,15 @@ struct TreeHarness {
   size_t sync() {
     auto guard = host->runtime().acquire_scene();
     if (!guard) return 0u;
-    return tree.sync(guard->reader(), tables, rec, host->source_generation());
+    return tree.sync(guard->reader(), tables, rec);
   }
 };
+
+/// `scene_epoch` of the scene `host` publishes after a pump (`UINT32_MAX` without one).
+inline uint32_t published_scene_epoch(HostSession& host) {
+  (void)host.pump();
+  const auto guard = host.runtime().acquire_scene();
+  return guard ? guard->reader().scene_epoch() : UINT32_MAX;
+}
 
 }  // namespace nve::host::testing

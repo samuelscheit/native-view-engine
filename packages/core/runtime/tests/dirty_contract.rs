@@ -53,7 +53,7 @@ struct Script(Arc<Mutex<VecDeque<Step>>>);
 
 impl FrameTickHook for Script {
     fn tick(&mut self, tx: &mut Transaction<'_>, _dt_s: f32) -> bool {
-        match self.0.lock().unwrap().pop_front() {
+        match self.0.lock().expect("hook steps poisoned").pop_front() {
             Some(mut step) => {
                 step(tx);
                 true
@@ -75,7 +75,7 @@ struct Frame {
 
 impl Frame {
     fn live(&self, i: usize) -> bool {
-        self.rows.get(i).is_some_and(|r| r.flags & NVE_NODE_ROW_FLAG_LIVE as u8 != 0)
+        self.rows.get(i).is_some_and(|r| r.flags & NVE_NODE_ROW_FLAG_LIVE != 0)
     }
 
     /// Origin relative to the parent's rect (own origin for parentless nodes).
@@ -127,7 +127,7 @@ impl Harness {
 
     /// Applies `step` in one tick and returns the checked frame.
     fn step(&mut self, step: impl FnMut(&mut Transaction<'_>) + Send + 'static) -> Frame {
-        self.steps.lock().unwrap().push_back(Box::new(step));
+        self.steps.lock().expect("hook steps poisoned").push_back(Box::new(step));
         assert!(self.rt.tick(0.016).expect("tick"));
         self.next_frame()
     }
@@ -157,6 +157,7 @@ impl Harness {
             removed: slice(v.removed_ids, v.removed_count),
             // SAFETY: `rows` and `rects` span `node_capacity` entries under the reader lock.
             rects: unsafe { std::slice::from_raw_parts(v.rects, cap) }.to_vec(),
+            // SAFETY: as above.
             rows: unsafe { std::slice::from_raw_parts(v.rows, cap) }.to_vec(),
         }
     }

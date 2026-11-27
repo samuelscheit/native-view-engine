@@ -196,6 +196,8 @@ class NveGtkHost {
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
     void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
+    /// Canvas draw list: a republish under the same id re-runs `update`.
+    uint32_t module_resource(const host::NodeData& node) const { return host->canvas_.at(node.index).draw_list; }
   };
 
  private:
