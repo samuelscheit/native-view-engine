@@ -15,8 +15,8 @@
 #include <vector>
 
 #include "nve2_writer.hpp"
-#include "nve_abi.generated.h"
-#include "nve_tables.generated.h"
+#include "../generated/nve_abi.generated.h"
+#include "../generated/nve_tables.generated.h"
 
 namespace nve::host::demo {
 
@@ -52,7 +52,7 @@ class CounterApp {
     auto* self = static_cast<CounterApp*>(h);
     if (!self->mounted_) self->mount();
     if (self->count_dirty_) {
-      self->w_.set_str(kCount, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, count_label(self->count_));
+      self->w_.set_str(kCount, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, count_label(self->count_));
       self->count_dirty_ = false;
     }
     if (!self->w_.pending()) return NveBufferSlice{nullptr, 0u};
@@ -83,7 +83,7 @@ class CounterApp {
       const NveStrSlice s = e.value.data.str_val;
       const std::string_view title(reinterpret_cast<const char*>(s.ptr), s.len);
       if (!self->mounted_) self->mount();
-      changed |= self->w_.set_str(kTitle, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, title) ? 1u : 0u;
+      changed |= self->w_.set_str(kTitle, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, title) ? 1u : 0u;
     }
     return changed;
   }
@@ -128,39 +128,39 @@ class CounterApp {
 
   void text_node(uint32_t id, const char* text, float font_size) {
     w_.create(id);
-    w_.set_str(id, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, text);
-    w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_COLOR);
-    w_.set_f32(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_SIZE, font_size);
-    w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_COLOR, rgba(15, 23, 42));
+    w_.set_str(id, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, text);
+    w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_COLOR);
+    w_.set_f32(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, font_size);
+    w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, rgba(15, 23, 42));
   }
 
   void button(uint32_t id, const char* label, uint32_t background) {
     text_node(id, label, 16.0f);
-    w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_COLOR, rgba(255, 255, 255));
-    w_.set(id, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, length_points(40.0f));
-    w_.set(id, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_PADDING_LEFT, length_points(16.0f));
-    w_.set(id, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_PADDING_RIGHT, length_points(16.0f));
-    w_.set(id, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BACKGROUND, background);
-    w_.set_f32(id, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BORDER_RADIUS, 8.0f);
-    w_.set(id, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_EVENT_MASK, 1u << (NVE_EVENT_PRESS - 1u));
-    w_.set_bool(id, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_FOCUSABLE, true);
-    w_.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_BUTTON);
-    w_.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_LABEL, label);
+    w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, rgba(255, 255, 255));
+    w_.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, length_points(40.0f));
+    w_.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_LEFT, length_points(16.0f));
+    w_.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_RIGHT, length_points(16.0f));
+    w_.set(id, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, background);
+    w_.set_f32(id, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, 8.0f);
+    w_.set(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, 1u << (NVE_EVENT_PRESS - 1u));
+    w_.set_bool(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+    w_.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_BUTTON);
+    w_.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, label);
   }
 
   void mount() {
     mounted_ = true;
     w_.create(1u);  // the receiving replica mirrors node ids exactly, ROOT included
     w_.create(kColumn);
-    w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_ROW_GAP, length_points(12.0f));
-    for (const NveFieldSpec f : {NVE_LAYOUT_PADDING_TOP, NVE_LAYOUT_PADDING_RIGHT, NVE_LAYOUT_PADDING_BOTTOM,
-                                 NVE_LAYOUT_PADDING_LEFT}) {
+    w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ROW_GAP, length_points(12.0f));
+    for (const NveFieldSpec f : {NVE_TABLE_LAYOUT_PADDING_TOP, NVE_TABLE_LAYOUT_PADDING_RIGHT, NVE_TABLE_LAYOUT_PADDING_BOTTOM,
+                                 NVE_TABLE_LAYOUT_PADDING_LEFT}) {
       w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, f, length_points(24.0f));
     }
-    w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
-    w_.set(kColumn, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BACKGROUND, rgba(248, 250, 252));
+    w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
+    w_.set(kColumn, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(248, 250, 252));
     text_node(kTitle, "NVE native host", 22.0f);
-    w_.set(kTitle, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_HEADING);
+    w_.set(kTitle, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_HEADING);
     button(kIncrement, "Increment", rgba(37, 99, 235));
     text_node(kCount, "", 18.0f);
     button(kReset, "Reset", rgba(100, 116, 139));

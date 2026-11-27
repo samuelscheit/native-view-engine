@@ -75,12 +75,12 @@ void test_canvas_nodes() {
   h::Nve2Writer& w = app.w;
   w.create(1u);
   w.create(kCanvas);
-  w.set(kCanvas, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_WIDTH, h::length_points(120.0f));
-  w.set(kCanvas, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(40.0f));
+  w.set(kCanvas, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(120.0f));
+  w.set(kCanvas, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(40.0f));
   const std::vector<uint8_t> first = sparkline(10.0f);
   w.define_resource(5u, kDrawListKind, first);
-  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_CANVAS_DRAW_LIST, 5u);
-  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_CANVAS_GENERATION, 1u);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 5u);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 1u);
   const uint32_t kids[] = {kCanvas};
   w.set_children(1u, kids);
 
@@ -96,14 +96,14 @@ void test_canvas_nodes() {
   NVE_CHECK(host.canvas_redraw_count_for_node_id(kCanvas) == 1u);
 
   // New frame with an unrelated change: no redraw.
-  w.set(kCanvas, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BACKGROUND, h::rgba(1, 1, 1));
+  w.set(kCanvas, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(1, 1, 1));
   flush(host);
   NVE_CHECK(host.canvas_redraw_count_for_node_id(kCanvas) == 1u);
   // New draw list + generation: one redraw with the new bytes.
   const std::vector<uint8_t> second = sparkline(30.0f);
   w.define_resource(6u, kDrawListKind, second);
-  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_CANVAS_DRAW_LIST, 6u);
-  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_CANVAS_GENERATION, 2u);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 6u);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 2u);
   w.release_resource(5u);
   flush(host);
   NVE_CHECK(host.canvas_redraw_count_for_node_id(kCanvas) == 2u);
@@ -123,20 +123,20 @@ void test_scroll_views() {
   w.create(1u);
   w.create(kScroll);
   w.attach(kScroll, NVE_TABLE_SCROLL_DESC);
-  w.set(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(100.0f));
-  w.set_f32(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_FLEX_SHRINK, 0.0f);
-  w.set(kScroll, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_SCROLL));
+  w.set(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(100.0f));
+  w.set_f32(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
+  w.set(kScroll, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_SCROLL));
   w.create(kTall);
-  w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(300.0f));
-  w.set_f32(kTall, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_FLEX_SHRINK, 0.0f);
+  w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(300.0f));
+  w.set_f32(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
   const uint32_t tall[] = {kTall};
   w.set_children(kScroll, tall);
   w.create(kOverflow);  // a plain view with overflow: scroll is a scroll view too
-  w.set(kOverflow, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_OVERFLOW_X, NVE_OVERFLOW_SCROLL);
-  w.set(kOverflow, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(40.0f));
+  w.set(kOverflow, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_X, NVE_OVERFLOW_SCROLL);
+  w.set(kOverflow, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(40.0f));
   w.create(kWide);
-  w.set(kWide, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_WIDTH, h::length_points(900.0f));
-  w.set(kWide, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(10.0f));
+  w.set(kWide, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(900.0f));
+  w.set(kWide, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(10.0f));
   const uint32_t wide[] = {kWide};
   w.set_children(kOverflow, wide);
   const uint32_t kids[] = {kScroll, kOverflow};
@@ -171,17 +171,17 @@ void test_scroll_views() {
 
   // Programmatic scroll is applied once and not echoed back as a user scroll.
   const size_t scrolls = app.count(NVE_EVENT_SCROLL, kScroll);
-  w.set_f32(kScroll, NVE_TABLE_SCROLL_DESC, NVE_SCROLL_REQUESTED_SCROLL_Y, 120.0f);
+  w.set_f32(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 120.0f);
   flush(host);
   NVE_CHECK(approx(gtk_adjustment_get_value(vadj), 120.0, 0.5));
   NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) == scrolls);
   gtk_adjustment_set_value(vadj, 10.0);  // the user scrolls away; an unrelated frame keeps it
-  w.set(kTall, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BACKGROUND, h::rgba(9, 9, 9));
+  w.set(kTall, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(9, 9, 9));
   flush(host);
   NVE_CHECK(approx(gtk_adjustment_get_value(vadj), 10.0, 0.5));
 
   // A growing child grows the scroll extent without touching the scroll node.
-  w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(500.0f));
+  w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(500.0f));
   flush(host);
   NVE_CHECK(request_height(content) == 500);
   gtk_window_destroy(GTK_WINDOW(window));

@@ -337,9 +337,8 @@ void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {
   if (v.image_src == node.image.src && v.synced) return;
   v.image_src = node.image.src;
   GdkTexture* tex = nullptr;
-  std::vector<uint8_t> bytes;
-  if (node.image.src != 0u && session_->runtime().resource_bytes(node.image.src, bytes) == NVE_RUNTIME_OK) {
-    if (const auto src = host::decode_image_src(bytes)) tex = textures_.get(*src);
+  if (const auto src = host::decode_image_src(scene_resource(node.image.src, host::kImageSrcKind))) {
+    tex = textures_.get(*src);
   }
   gtk_picture_set_paintable(GTK_PICTURE(v.widget), tex != nullptr ? GDK_PAINTABLE(tex) : nullptr);
 }
@@ -351,10 +350,9 @@ void NveGtkHost::update_canvas(GtkNodeView& v, uint32_t index) {
   if (v.synced && c.draw_list == v.canvas_res && c.generation == v.canvas_generation) return;
   v.canvas_res = c.draw_list;
   v.canvas_generation = c.generation;
-  std::vector<uint8_t> bytes;
-  if (c.draw_list == 0u || session_->runtime().resource_bytes(c.draw_list, bytes) != NVE_RUNTIME_OK) bytes.clear();
-  if (bytes == v.draw_list && v.synced) return;
-  v.draw_list = std::move(bytes);
+  const std::span<const uint8_t> bytes = scene_resource(c.draw_list, canvas::kDrawListKind);
+  if (v.synced && std::ranges::equal(bytes, v.draw_list)) return;
+  v.draw_list.assign(bytes.begin(), bytes.end());  // drawn later, after the scene is released
   ++v.redraw_count;
   gtk_widget_queue_draw(v.widget);
 }

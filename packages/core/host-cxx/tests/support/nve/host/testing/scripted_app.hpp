@@ -17,7 +17,7 @@
 #include <vector>
 
 #include <nve/host/nve2_writer.hpp>
-#include <nve/host/nve_abi.generated.h>
+#include <nve/generated/nve_abi.generated.h>
 
 namespace nve::host::testing {
 

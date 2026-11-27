@@ -221,14 +221,18 @@ class NveGtkHost {
   static gboolean on_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data);
   static void on_window_size_notify(GObject* object, GParamSpec* pspec, gpointer user_data);
   static void on_window_destroy(GtkWidget* widget, gpointer user_data);
-  static NveIntrinsicSize measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint16_t font_weight,
-                                             float max_width);
+  static void measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+                                 float* out_width, float* out_height);
+  /// Payload of published resource `id` of `kind` (empty when absent); valid only while
+  /// `sync_views` holds the scene.
+  [[nodiscard]] std::span<const uint8_t> scene_resource(uint32_t id, host::Key64 kind) const noexcept;
 
   uint32_t host_instance_id_;
   GtkHostConfig config_;
   std::unique_ptr<host::HostSession> session_;
   host::SceneTables tables_;
   canvas::CanvasTable canvas_;
+  const host::RuntimeSceneGuard* scene_ = nullptr;  // set during `sync_views`
   host::RetainedTree<Adapter> tree_;
   Adapter adapter_{this};
   GtkTextureLruCache textures_{64u};

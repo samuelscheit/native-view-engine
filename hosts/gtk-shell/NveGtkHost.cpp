@@ -191,7 +191,9 @@ void NveGtkHost::sync_views() {
     auto guard = session_->runtime().acquire_scene();
     if (guard) {
       canvas_.bind(guard->reader());
+      scene_ = &*guard;
       (void)tree_.sync(guard->reader(), tables_, adapter_);
+      scene_ = nullptr;
     }
   }
   update_scroll_extents();
@@ -276,10 +278,19 @@ void NveGtkHost::detach_window_resize() {
   window_binding_ = WindowBinding{};
 }
 
-NveIntrinsicSize NveGtkHost::measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint16_t font_weight,
-                                                float max_width) {
+std::span<const uint8_t> NveGtkHost::scene_resource(uint32_t id, host::Key64 kind) const noexcept {
+  if (scene_ == nullptr || id == 0u) return {};
+  const auto res = scene_->resource(id);
+  return res && res->kind == kind ? res->bytes : std::span<const uint8_t>{};
+}
+
+void NveGtkHost::measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight,
+                                    float max_width, float* out_width, float* out_height) {
   const std::string_view sv(reinterpret_cast<const char*>(text.ptr), text.ptr != nullptr ? text.len : 0u);
-  return static_cast<const NveGtkHost*>(ctx)->measure_text(sv, font_size, font_weight, max_width);
+  const uint16_t weight = static_cast<uint16_t>(std::min<uint32_t>(font_weight, 1000u));
+  const NveIntrinsicSize size = static_cast<const NveGtkHost*>(ctx)->measure_text(sv, font_size, weight, max_width);
+  *out_width = size.width;
+  *out_height = size.height;
 }
 
 NveIntrinsicSize NveGtkHost::measure_text(std::string_view text, float font_size, uint16_t font_weight,

@@ -342,11 +342,8 @@ void NveGtkHost::apply_semantics(GtkNodeView& view, const host::NodeData& node) 
 
 void NveGtkHost::apply_css(GtkNodeView& view, const host::NodeData& node) {
   std::vector<host::BoxShadow> shadows;
-  if (node.visual.box_shadows != 0u) {
-    std::vector<uint8_t> bytes;
-    if (session_->runtime().resource_bytes(node.visual.box_shadows, bytes) == NVE_RUNTIME_OK) {
-      if (auto decoded = host::decode_box_shadows(bytes)) shadows = std::move(*decoded);
-    }
+  if (auto decoded = host::decode_box_shadows(scene_resource(node.visual.box_shadows, host::kBoxShadowsKind))) {
+    shadows = std::move(*decoded);
   }
   set_css_rule(view.id, gtk_internal::build_css_rule(scoped_class(view.id), node, view.kind, shadows));
 }

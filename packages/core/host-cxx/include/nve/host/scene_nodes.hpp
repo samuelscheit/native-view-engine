@@ -13,8 +13,8 @@
 #include <string_view>
 
 #include "bound_table.hpp"
-#include "nve_abi.generated.h"
-#include "nve_tables.generated.h"
+#include "../generated/nve_abi.generated.h"
+#include "../generated/nve_tables.generated.h"
 #include "runtime_session.hpp"
 
 namespace nve::host {
@@ -177,31 +177,31 @@ struct SceneTables {
                                                   const RuntimeSceneReader& scene, uint32_t index) noexcept {
   if (!t.typography.has(index)) return parent;
   const RowRef r = t.typography.at(index);
-  const uint32_t set = r.bits(NVE_TYPOGRAPHY_SET);
+  const uint32_t set = r.bits(NVE_TABLE_TYPOGRAPHY_SET);
   TextStyle s = parent;
-  if ((set & NVE_TYPOGRAPHY_SET_COLOR) != 0u) s.color = r.bits(NVE_TYPOGRAPHY_COLOR);
-  if ((set & NVE_TYPOGRAPHY_SET_FONT_SIZE) != 0u) s.font_size = r.f32(NVE_TYPOGRAPHY_FONT_SIZE);
-  if ((set & NVE_TYPOGRAPHY_SET_LINE_HEIGHT) != 0u) s.line_height = r.length(NVE_TYPOGRAPHY_LINE_HEIGHT);
-  if ((set & NVE_TYPOGRAPHY_SET_LETTER_SPACING) != 0u) s.letter_spacing = r.f32(NVE_TYPOGRAPHY_LETTER_SPACING);
-  if ((set & NVE_TYPOGRAPHY_SET_FONT_FAMILY) != 0u) s.font_family = r.str(NVE_TYPOGRAPHY_FONT_FAMILY, scene);
-  if ((set & NVE_TYPOGRAPHY_SET_MAX_LINES) != 0u) s.max_lines = r.bits(NVE_TYPOGRAPHY_MAX_LINES);
+  if ((set & NVE_TYPOGRAPHY_SET_COLOR) != 0u) s.color = r.bits(NVE_TABLE_TYPOGRAPHY_COLOR);
+  if ((set & NVE_TYPOGRAPHY_SET_FONT_SIZE) != 0u) s.font_size = r.f32(NVE_TABLE_TYPOGRAPHY_FONT_SIZE);
+  if ((set & NVE_TYPOGRAPHY_SET_LINE_HEIGHT) != 0u) s.line_height = r.length(NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT);
+  if ((set & NVE_TYPOGRAPHY_SET_LETTER_SPACING) != 0u) s.letter_spacing = r.f32(NVE_TABLE_TYPOGRAPHY_LETTER_SPACING);
+  if ((set & NVE_TYPOGRAPHY_SET_FONT_FAMILY) != 0u) s.font_family = r.str(NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, scene);
+  if ((set & NVE_TYPOGRAPHY_SET_MAX_LINES) != 0u) s.max_lines = r.bits(NVE_TABLE_TYPOGRAPHY_MAX_LINES);
   if ((set & NVE_TYPOGRAPHY_SET_FONT_WEIGHT) != 0u) {
-    s.font_weight = static_cast<uint16_t>(r.bits(NVE_TYPOGRAPHY_FONT_WEIGHT));
+    s.font_weight = static_cast<uint16_t>(r.bits(NVE_TABLE_TYPOGRAPHY_FONT_WEIGHT));
   }
   if ((set & NVE_TYPOGRAPHY_SET_FONT_STYLE) != 0u) {
-    s.font_style = static_cast<uint8_t>(r.bits(NVE_TYPOGRAPHY_FONT_STYLE));
+    s.font_style = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_FONT_STYLE));
   }
   if ((set & NVE_TYPOGRAPHY_SET_WHITE_SPACE) != 0u) {
-    s.white_space = static_cast<uint8_t>(r.bits(NVE_TYPOGRAPHY_WHITE_SPACE));
+    s.white_space = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_WHITE_SPACE));
   }
   if ((set & NVE_TYPOGRAPHY_SET_TEXT_ALIGN) != 0u) {
-    s.text_align = static_cast<uint8_t>(r.bits(NVE_TYPOGRAPHY_TEXT_ALIGN));
+    s.text_align = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_TEXT_ALIGN));
   }
   if ((set & NVE_TYPOGRAPHY_SET_TEXT_DECORATION) != 0u) {
-    s.text_decoration = static_cast<uint8_t>(r.bits(NVE_TYPOGRAPHY_TEXT_DECORATION));
+    s.text_decoration = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION));
   }
   if ((set & NVE_TYPOGRAPHY_SET_VERTICAL_ALIGN) != 0u) {
-    s.vertical_align = static_cast<uint8_t>(r.bits(NVE_TYPOGRAPHY_VERTICAL_ALIGN));
+    s.vertical_align = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_VERTICAL_ALIGN));
   }
   return s;
 }
@@ -226,75 +226,75 @@ struct SceneTables {
   n.text_style = text_style;
 
   const RowRef v = t.visual.at(index);
-  n.visual = VisualStyle{v.bits(NVE_VISUAL_BACKGROUND),
-                         v.bits(NVE_VISUAL_BORDER_COLOR),
-                         v.f32(NVE_VISUAL_BORDER_WIDTH),
-                         v.f32(NVE_VISUAL_BORDER_RADIUS),
-                         v.f32(NVE_VISUAL_OPACITY),
-                         v.i32(NVE_VISUAL_Z_INDEX),
-                         static_cast<uint8_t>(v.bits(NVE_VISUAL_OVERFLOW_X)),
-                         static_cast<uint8_t>(v.bits(NVE_VISUAL_OVERFLOW_Y)),
-                         static_cast<uint8_t>(v.bits(NVE_VISUAL_VISIBILITY)),
-                         v.bits(NVE_VISUAL_BOX_SHADOWS),
-                         v.bits(NVE_VISUAL_BACKGROUND_FILL)};
+  n.visual = VisualStyle{v.bits(NVE_TABLE_VISUAL_BACKGROUND),
+                         v.bits(NVE_TABLE_VISUAL_BORDER_COLOR),
+                         v.f32(NVE_TABLE_VISUAL_BORDER_WIDTH),
+                         v.f32(NVE_TABLE_VISUAL_BORDER_RADIUS),
+                         v.f32(NVE_TABLE_VISUAL_OPACITY),
+                         v.i32(NVE_TABLE_VISUAL_Z_INDEX),
+                         static_cast<uint8_t>(v.bits(NVE_TABLE_VISUAL_OVERFLOW_X)),
+                         static_cast<uint8_t>(v.bits(NVE_TABLE_VISUAL_OVERFLOW_Y)),
+                         static_cast<uint8_t>(v.bits(NVE_TABLE_VISUAL_VISIBILITY)),
+                         v.bits(NVE_TABLE_VISUAL_BOX_SHADOWS),
+                         v.bits(NVE_TABLE_VISUAL_BACKGROUND_FILL)};
 
-  n.text = t.text.at(index).str(NVE_TEXT_TEXT, scene);
+  n.text = t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene);
 
   if (t.image.has(index)) {
     const RowRef r = t.image.at(index);
-    n.image = ImageData{r.bits(NVE_IMAGE_SRC),
-                        r.str(NVE_IMAGE_ALT, scene),
-                        static_cast<uint8_t>(r.bits(NVE_IMAGE_FIT)),
-                        r.boolean(NVE_IMAGE_TINT_ENABLED),
-                        r.bits(NVE_IMAGE_TINT),
-                        static_cast<uint16_t>(r.bits(NVE_IMAGE_INTRINSIC_WIDTH)),
-                        static_cast<uint16_t>(r.bits(NVE_IMAGE_INTRINSIC_HEIGHT))};
+    n.image = ImageData{r.bits(NVE_TABLE_IMAGE_SRC),
+                        r.str(NVE_TABLE_IMAGE_ALT, scene),
+                        static_cast<uint8_t>(r.bits(NVE_TABLE_IMAGE_FIT)),
+                        r.boolean(NVE_TABLE_IMAGE_TINT_ENABLED),
+                        r.bits(NVE_TABLE_IMAGE_TINT),
+                        static_cast<uint16_t>(r.bits(NVE_TABLE_IMAGE_INTRINSIC_WIDTH)),
+                        static_cast<uint16_t>(r.bits(NVE_TABLE_IMAGE_INTRINSIC_HEIGHT))};
   }
   if (t.text_input.has(index)) {
     const RowRef r = t.text_input.at(index);
-    n.input = TextInputData{r.str(NVE_TEXT_INPUT_VALUE, scene),
-                            r.str(NVE_TEXT_INPUT_PLACEHOLDER, scene),
-                            r.boolean(NVE_TEXT_INPUT_MULTILINE),
-                            r.boolean(NVE_TEXT_INPUT_SECURE),
-                            r.boolean(NVE_TEXT_INPUT_READ_ONLY),
-                            r.boolean(NVE_TEXT_INPUT_REQUIRED),
-                            static_cast<uint8_t>(r.bits(NVE_TEXT_INPUT_INPUT_KIND)),
-                            r.bits(NVE_TEXT_INPUT_MAX_LENGTH)};
+    n.input = TextInputData{r.str(NVE_TABLE_TEXT_INPUT_VALUE, scene),
+                            r.str(NVE_TABLE_TEXT_INPUT_PLACEHOLDER, scene),
+                            r.boolean(NVE_TABLE_TEXT_INPUT_MULTILINE),
+                            r.boolean(NVE_TABLE_TEXT_INPUT_SECURE),
+                            r.boolean(NVE_TABLE_TEXT_INPUT_READ_ONLY),
+                            r.boolean(NVE_TABLE_TEXT_INPUT_REQUIRED),
+                            static_cast<uint8_t>(r.bits(NVE_TABLE_TEXT_INPUT_INPUT_KIND)),
+                            r.bits(NVE_TABLE_TEXT_INPUT_MAX_LENGTH)};
   }
   if (t.scroll.has(index)) {
     const RowRef r = t.scroll.at(index);
-    n.scroll = ScrollData{static_cast<uint8_t>(r.bits(NVE_SCROLL_AXES)),
-                          static_cast<uint8_t>(r.bits(NVE_SCROLL_SCROLLBARS)),
-                          r.boolean(NVE_SCROLL_PAGING),
-                          r.boolean(NVE_SCROLL_BOUNCE),
-                          r.f32(NVE_SCROLL_REQUESTED_SCROLL_X),
-                          r.f32(NVE_SCROLL_REQUESTED_SCROLL_Y)};
+    n.scroll = ScrollData{static_cast<uint8_t>(r.bits(NVE_TABLE_SCROLL_AXES)),
+                          static_cast<uint8_t>(r.bits(NVE_TABLE_SCROLL_SCROLLBARS)),
+                          r.boolean(NVE_TABLE_SCROLL_PAGING),
+                          r.boolean(NVE_TABLE_SCROLL_BOUNCE),
+                          r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_X),
+                          r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y)};
   }
   if (t.interaction.has(index)) {
     const RowRef r = t.interaction.at(index);
-    n.interaction = InteractionData{r.bits(NVE_INTERACTION_EVENT_MASK),
-                                    static_cast<uint8_t>(r.bits(NVE_INTERACTION_CURSOR)),
-                                    r.boolean(NVE_INTERACTION_DISABLED),
-                                    r.boolean(NVE_INTERACTION_FOCUSABLE)};
+    n.interaction = InteractionData{r.bits(NVE_TABLE_INTERACTION_EVENT_MASK),
+                                    static_cast<uint8_t>(r.bits(NVE_TABLE_INTERACTION_CURSOR)),
+                                    r.boolean(NVE_TABLE_INTERACTION_DISABLED),
+                                    r.boolean(NVE_TABLE_INTERACTION_FOCUSABLE)};
   }
   if (t.accessibility.has(index)) {
     const RowRef r = t.accessibility.at(index);
     n.a11y = AccessibilityData{true,
-                               static_cast<uint8_t>(r.bits(NVE_ACCESSIBILITY_ROLE)),
-                               static_cast<uint8_t>(r.bits(NVE_ACCESSIBILITY_LEVEL)),
-                               r.boolean(NVE_ACCESSIBILITY_HIDDEN),
-                               static_cast<uint8_t>(r.bits(NVE_ACCESSIBILITY_CHECKED)),
-                               static_cast<uint8_t>(r.bits(NVE_ACCESSIBILITY_SELECTED)),
-                               static_cast<uint8_t>(r.bits(NVE_ACCESSIBILITY_EXPANDED)),
-                               static_cast<uint8_t>(r.bits(NVE_ACCESSIBILITY_PRESSED)),
-                               r.str(NVE_ACCESSIBILITY_LABEL, scene),
-                               r.str(NVE_ACCESSIBILITY_HINT, scene),
-                               r.str(NVE_ACCESSIBILITY_VALUE_TEXT, scene),
-                               r.f32(NVE_ACCESSIBILITY_VALUE_NOW),
-                               r.f32(NVE_ACCESSIBILITY_VALUE_MIN),
-                               r.f32(NVE_ACCESSIBILITY_VALUE_MAX)};
+                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_ROLE)),
+                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_LEVEL)),
+                               r.boolean(NVE_TABLE_ACCESSIBILITY_HIDDEN),
+                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_CHECKED)),
+                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_SELECTED)),
+                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_EXPANDED)),
+                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_PRESSED)),
+                               r.str(NVE_TABLE_ACCESSIBILITY_LABEL, scene),
+                               r.str(NVE_TABLE_ACCESSIBILITY_HINT, scene),
+                               r.str(NVE_TABLE_ACCESSIBILITY_VALUE_TEXT, scene),
+                               r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_NOW),
+                               r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MIN),
+                               r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MAX)};
   }
-  n.href = t.link.at(index).str(NVE_LINK_HREF, scene);
+  n.href = t.link.at(index).str(NVE_TABLE_LINK_HREF, scene);
   return n;
 }
 

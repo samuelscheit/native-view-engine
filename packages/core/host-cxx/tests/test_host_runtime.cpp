@@ -111,28 +111,28 @@ void test_writer_round_trip_and_retained_tree() {
   w.create(1u);
   for (uint32_t id = 2u; id <= 6u; ++id) w.create(id);
   // 2: column with inherited typography; 3: text; 4: image; 5: text input; 6: scroll.
-  w.set(2u, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_WIDTH, length_points(200.0f));
-  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BACKGROUND, rgba(1, 2, 3));
+  w.set(2u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, length_points(200.0f));
+  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(1, 2, 3));
   // overflow_x / overflow_y share word 6: both must survive.
-  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_OVERFLOW_X, NVE_OVERFLOW_HIDDEN);
-  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_OVERFLOW_Y, NVE_OVERFLOW_SCROLL);
-  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_COLOR);
-  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_SIZE, 20.0f);
-  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_COLOR, rgba(9, 9, 9));
-  w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, "héllo");
-  w.set(3u, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, length_points(30.0f));
-  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_WEIGHT);
-  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_WEIGHT, 700u);
+  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_X, NVE_OVERFLOW_HIDDEN);
+  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_Y, NVE_OVERFLOW_SCROLL);
+  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_COLOR);
+  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 20.0f);
+  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, rgba(9, 9, 9));
+  w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "héllo");
+  w.set(3u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, length_points(30.0f));
+  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_WEIGHT);
+  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_WEIGHT, 700u);
   const std::vector<uint8_t> src = encode_image_url("file:///tmp/a.png");
   w.define_resource(7u, kImageSrcKind, src);
-  w.set(4u, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, 7u);
-  w.set(4u, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
-  w.set(4u, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, length_points(40.0f));
-  w.set_str(5u, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, "typed");
-  w.set_str(5u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_LABEL, "Name");
+  w.set(4u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 7u);
+  w.set(4u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
+  w.set(4u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, length_points(40.0f));
+  w.set_str(5u, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "typed");
+  w.set_str(5u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, "Name");
   w.attach(6u, NVE_TABLE_SCROLL_DESC);  // defaults-only row
-  CHECK(!w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, std::string_view("\xFF", 1)));  // invalid UTF-8
-  CHECK(!w.set(3u, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, 1u));  // `Str` needs set_str
+  CHECK(!w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, std::string_view("\xFF", 1)));  // invalid UTF-8
+  CHECK(!w.set(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, 1u));  // `Str` needs set_str
   const uint32_t kids[] = {3u, 4u, 5u, 6u};
   w.set_children(2u, kids);
   const uint32_t root_kids[] = {2u};
@@ -161,12 +161,12 @@ void test_writer_round_trip_and_retained_tree() {
       CHECK(col.scrollable() && !col.wants(NVE_EVENT_PRESS));
       const NodeData img = read_node(guard->reader(), h.tables, 4u, TextStyle{});
       CHECK(img.image.fit == NVE_IMAGE_FIT_CONTAIN);
+      const auto res = guard->resource(img.image.src);
+      CHECK(res && res->kind == kImageSrcKind);
+      const auto decoded = res ? decode_image_src(res->bytes) : std::nullopt;
+      CHECK(decoded && decoded->is_url() && decoded->url == "file:///tmp/a.png");
     }
   }
-  std::vector<uint8_t> res;
-  CHECK(h.host->runtime().resource_bytes(7u, res) == NVE_RUNTIME_OK);
-  const auto decoded = decode_image_src(res);
-  CHECK(decoded && decoded->is_url() && decoded->url == "file:///tmp/a.png");
 
   // Clean frame: nothing to do.
   CHECK(h.sync() == 0u);
@@ -174,14 +174,14 @@ void test_writer_round_trip_and_retained_tree() {
   // Parent typography change cascades to the (untouched) text child only.
   const int text_updates = r.views[3].updates;
   const int image_updates = r.views[4].updates;
-  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_SIZE, 24.0f);
+  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 24.0f);
   CHECK(h.submit());
   CHECK(h.sync() >= 2u);
   CHECK(r.views[3].style.font_size == 24.0f && r.views[3].updates == text_updates + 1);
   CHECK(r.views[4].style.font_size == 24.0f);  // every descendant inherits
 
   // Relayout moves the untouched image when the text above grows.
-  w.set(3u, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, length_points(50.0f));
+  w.set(3u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, length_points(50.0f));
   CHECK(h.submit());
   (void)h.sync();
   CHECK(r.views[4].local.y == 50.0f && r.views[4].updates > image_updates);
@@ -191,7 +191,7 @@ void test_writer_round_trip_and_retained_tree() {
   const uint32_t reordered[] = {5u, 3u, 4u};
   w.set_children(2u, reordered);
   w.define_resource(8u, kImageSrcKind, encode_image_url("data:image/png;base64,AA=="));
-  w.set(3u, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, 8u);
+  w.set(3u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 8u);
   CHECK(h.submit());
   const int destroys = r.destroys;
   (void)h.sync();
@@ -202,7 +202,7 @@ void test_writer_round_trip_and_retained_tree() {
 
   // A recycled slot (new generation) recreates its view.
   w.create(make_node_id(6u, 1u));
-  w.set_str(make_node_id(6u, 1u), NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, "reborn");
+  w.set_str(make_node_id(6u, 1u), NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "reborn");
   const uint32_t with_new[] = {5u, 3u, 4u, make_node_id(6u, 1u)};
   w.set_children(2u, with_new);
   if (h.submit()) {
@@ -213,7 +213,7 @@ void test_writer_round_trip_and_retained_tree() {
 
   // Kind change under a CLEAN parent: the recreated view is relinked into it.
   w.define_resource(9u, kImageSrcKind, encode_image_url("file:///tmp/b.png"));
-  w.set(5u, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, 9u);
+  w.set(5u, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 9u);
   CHECK(h.submit());
   (void)h.sync();
   CHECK(r.views[5].kind == NodeKind::Image && r.views[5].image_src == 9u);

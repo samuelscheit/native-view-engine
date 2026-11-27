@@ -19,7 +19,7 @@
 #include <string_view>
 #include <vector>
 
-#include "nve_abi.generated.h"
+#include "../generated/nve_abi.generated.h"
 #include "table_word.h"
 #include "utf8.h"
 #include "xxh64.hpp"

@@ -72,7 +72,7 @@ inline void flush(NveGtkHost& host) {
 /// Text node helper for scripted scenes.
 inline void text_node(host::Nve2Writer& w, uint32_t id, std::string_view text) {
   w.create(id);
-  (void)w.set_str(id, NVE_TABLE_TEXT_DESC, NVE_TEXT_TEXT, text);
+  (void)w.set_str(id, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, text);
 }
 
 }  // namespace nve::gtk::test

@@ -28,7 +28,7 @@ class CanvasTable {
   [[nodiscard]] bool has(uint32_t index) const noexcept { return table_.has(index); }
   [[nodiscard]] CanvasData at(uint32_t index) const noexcept {
     const host::RowRef r = table_.at(index);
-    return CanvasData{r.bits(NVE_CANVAS_DRAW_LIST), r.bits(NVE_CANVAS_GENERATION)};
+    return CanvasData{r.bits(NVE_TABLE_CANVAS_DRAW_LIST), r.bits(NVE_TABLE_CANVAS_GENERATION)};
   }
   [[nodiscard]] const host::BoundTable& table() const noexcept { return table_; }
 

@@ -21,7 +21,7 @@
 
 #include "app_state.hpp"
 #include "module_loader.hpp"
-#include "nve_abi.generated.h"
+#include "../generated/nve_abi.generated.h"
 #include "runtime_session.hpp"
 
 namespace nve::host {

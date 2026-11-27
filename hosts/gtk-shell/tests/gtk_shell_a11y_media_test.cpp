@@ -44,17 +44,17 @@ std::string data_url(const std::vector<uint8_t>& bytes) {
 }
 
 void a11y(h::Nve2Writer& w, uint32_t id, uint32_t role, std::string_view label) {
-  w.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_ROLE, role);
-  if (!label.empty()) (void)w.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_LABEL, label);
+  w.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, role);
+  if (!label.empty()) (void)w.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, label);
 }
 
 void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t> src, std::string_view alt) {
   w.create(id);
   w.define_resource(res, h::kImageSrcKind, src);
-  w.set(id, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, res);
-  if (!alt.empty()) (void)w.set_str(id, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_ALT, alt);
-  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_WIDTH, h::length_points(32.0f));
-  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(16.0f));
+  w.set(id, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, res);
+  if (!alt.empty()) (void)w.set_str(id, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_ALT, alt);
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(32.0f));
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(16.0f));
 }
 
 GtkAccessibleRole role_of(GtkWidget* w) { return gtk_accessible_get_accessible_role(GTK_ACCESSIBLE(w)); }
@@ -69,60 +69,60 @@ void test_a11y_inputs_images_and_styles() {
   w.create(1u);
   w.create(kColumn);
   // Inherited typography from the column.
-  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_SET,
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
         NVE_TYPOGRAPHY_SET_FONT_STYLE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_TEXT_DECORATION);
-  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
-  (void)w.set_str(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_FAMILY, "Inter\";}");
-  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_TEXT_DECORATION, NVE_TEXT_DECORATION_UNDERLINE);
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
+  (void)w.set_str(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "Inter\";}");
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION, NVE_TEXT_DECORATION_UNDERLINE);
 
   text_node(w, kHeading, "Settings");
   a11y(w, kHeading, NVE_ARIA_ROLE_HEADING, "");
-  w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_LEVEL, 2u);
-  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_MAX_LINES | NVE_TYPOGRAPHY_SET_TEXT_ALIGN);
-  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_MAX_LINES, 1u);
-  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_TEXT_ALIGN, NVE_TEXT_ALIGN_CENTER);
+  w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LEVEL, 2u);
+  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_MAX_LINES | NVE_TYPOGRAPHY_SET_TEXT_ALIGN);
+  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_MAX_LINES, 1u);
+  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_ALIGN, NVE_TEXT_ALIGN_CENTER);
 
   w.create(kCheck);
   a11y(w, kCheck, NVE_ARIA_ROLE_CHECKBOX, "Agree");
-  (void)w.set_str(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_HINT, "Accept the terms");
-  w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_CHECKED, NVE_ARIA_TRI_STATE_TRUE);
-  w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
-  w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_CURSOR, NVE_CURSOR_KIND_POINTER);
-  w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BORDER_COLOR, h::rgba(1, 2, 3));
-  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BORDER_WIDTH, 2.0f);
-  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BORDER_RADIUS, 6.0f);
-  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_OPACITY, 0.5f);
+  (void)w.set_str(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_HINT, "Accept the terms");
+  w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_CHECKED, NVE_ARIA_TRI_STATE_TRUE);
+  w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
+  w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_CURSOR, NVE_CURSOR_KIND_POINTER);
+  w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_COLOR, h::rgba(1, 2, 3));
+  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, 2.0f);
+  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, 6.0f);
+  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 0.5f);
   const h::BoxShadow shadow[] = {{1.0f, 2.0f, 3.0f, 0.0f, h::rgba(0, 0, 0, 128), false}};
   w.define_resource(50u, h::kBoxShadowsKind, h::encode_box_shadows(shadow));
-  w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BOX_SHADOWS, 50u);
-  w.set(kCheck, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(20.0f));
+  w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BOX_SHADOWS, 50u);
+  w.set(kCheck, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(20.0f));
 
   w.create(kDisabled);
   a11y(w, kDisabled, NVE_ARIA_ROLE_BUTTON, "Disabled");
-  w.set(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
-  w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_DISABLED, true);
+  w.set(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
+  w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
 
   w.create(kEntry);
-  (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, "hello");
-  (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_PLACEHOLDER, "Name");
-  w.set_bool(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_SECURE, true);
-  w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_MAX_LENGTH, 12u);
+  (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "hello");
+  (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_PLACEHOLDER, "Name");
+  w.set_bool(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_SECURE, true);
+  w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 12u);
   w.create(kSearch);
-  w.set(kSearch, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_INPUT_KIND, NVE_INPUT_KIND_SEARCH);
+  w.set(kSearch, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_INPUT_KIND, NVE_INPUT_KIND_SEARCH);
   w.create(kNotes);
-  w.set_bool(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_MULTILINE, true);
-  (void)w.set_str(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, "a\nb");
+  w.set_bool(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MULTILINE, true);
+  (void)w.set_str(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "a\nb");
 
   const std::string url = data_url(png(2, 2, h::rgba(0, 255, 0)));
   const std::string file_url = "file://" + tmp;
   image(w, kImgUrl, 60u, h::encode_image_url(url), "Logo");
-  w.set(kImgUrl, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
+  w.set(kImgUrl, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
   image(w, kImgBytes, 61u, h::encode_image_bytes(red), "");
   image(w, kImgFile, 62u, h::encode_image_url(file_url), "");
   image(w, kImgBad, 63u, h::encode_image_url("data:image/png;base64,AAAA"), "");
   text_node(w, kHidden, "hidden");
-  w.set(kHidden, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_VISIBILITY, NVE_VISIBILITY_HIDDEN);
-  w.set_bool(kHidden, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_HIDDEN, true);
+  w.set(kHidden, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_VISIBILITY, NVE_VISIBILITY_HIDDEN);
+  w.set_bool(kHidden, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_HIDDEN, true);
 
   const uint32_t kids[] = {kHeading, kCheck, kDisabled, kEntry, kSearch, kNotes, kImgUrl, kImgBytes, kImgFile, kImgBad, kHidden};
   w.set_children(kColumn, kids);
@@ -131,7 +131,7 @@ void test_a11y_inputs_images_and_styles() {
 
   // Controlled inputs: echo every TextChange back as the new value.
   app.on_event = [](ScriptedApp& a, const nve::host::testing::RecordedEvent& e) {
-    if (e.ev.kind == NVE_EVENT_TEXT_CHANGE) (void)a.w.set_str(e.ev.node_id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, e.text);
+    if (e.ev.kind == NVE_EVENT_TEXT_CHANGE) (void)a.w.set_str(e.ev.node_id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, e.text);
   };
 
   NveGtkHost host;
@@ -184,7 +184,7 @@ void test_a11y_inputs_images_and_styles() {
   int at = 0;
   gtk_editable_insert_text(GTK_EDITABLE(entry), "!", 1, &at);  // typing one char: one event
   NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "!Ada");
-  (void)app.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, "reset");  // app-driven value
+  (void)app.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "reset");  // app-driven value
   flush(host);
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "reset");
   NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u);  // programmatic sets never echo upstream
@@ -208,14 +208,14 @@ void test_a11y_inputs_images_and_styles() {
   NVE_CHECK(host.texture_cache().size() == 3u && host.texture_cache().misses() == 4u);
   // The same bytes under another resource id hit the cache.
   app.w.define_resource(64u, h::kImageSrcKind, h::encode_image_bytes(red));
-  app.w.set(kImgBad, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, 64u);
+  app.w.set(kImgBad, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 64u);
   flush(host);
   NVE_CHECK(paintable(kImgBad) == paintable(kImgBytes) && host.texture_cache().hits() == 1u);
 
   // --- Construct-only role change recreates the widget in place (same parent slot).
   GtkWidget* column = host.widget_for_node_id(kColumn);
   g_object_add_weak_pointer(G_OBJECT(check), reinterpret_cast<gpointer*>(&check));
-  app.w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_SWITCH);
+  app.w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_SWITCH);
   flush(host);
   GtkWidget* sw = host.widget_for_node_id(kCheck);
   NVE_CHECK(check == nullptr);  // the old widget was destroyed (its address may be reused)
