@@ -47,7 +47,6 @@ id image_from_source(NSData *bytes) {
   __weak id<NveAppleComponentViewAdapter> _adapter;
   NveAppleResourceProvider _resources;
   std::unordered_map<uint32_t, Mounted> _views;
-  std::unordered_map<uint64_t, std::vector<int32_t>> _sparse;
   /// Decoded images by resource id; valid while the id's bytes are (see `_invalidateImages:`).
   NSMutableDictionary<NSNumber *, id> *_images;
   uint64_t _imagesFrame;
@@ -200,7 +199,7 @@ id image_from_source(NSData *bytes) {
 - (void)syncFromScene:(const nve::host::RuntimeSceneReader &)scene {
   id<NveAppleComponentViewAdapter> adapter = _adapter;
   if (adapter == nil) return;
-  const SceneTables tables(scene, _sparse);
+  const SceneTables tables(scene);
   [self _invalidateImages:scene];
 
   for (const uint32_t raw : scene.removed_ids()) [self _destroy:raw];

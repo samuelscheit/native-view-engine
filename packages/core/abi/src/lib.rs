@@ -36,7 +36,7 @@ pub use events::{
 pub use ffi::{
     DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
     NveEventPayloadTag, NveFrameStats, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize,
-    NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH,
+    slab_ptr, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH,
     NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 pub use host::{

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -121,7 +122,11 @@ struct BoxShadow {
     const auto color = r.u32();
     const auto inset = r.u8();
     if (!x || !y || !blur || !spread || !color || !inset || *inset > 1u) return std::nullopt;
-    out.push_back(BoxShadow{*x, *y, *blur, *spread, *color, *inset == 1u});
+    // Sealed like `read_node` floats: NaN / Inf never reach a painter (an infinite D2D geometry
+    // fails the whole frame); blur is a non-negative extent, spread may be negative.
+    const auto finite = [](float v) { return std::isfinite(v) ? v : 0.0f; };
+    out.push_back(BoxShadow{finite(*x), finite(*y), std::max(finite(*blur), 0.0f), finite(*spread), *color,
+                            *inset == 1u});
   }
   if (!r.done()) return std::nullopt;
   return out;

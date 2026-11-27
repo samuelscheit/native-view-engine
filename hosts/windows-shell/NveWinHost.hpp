@@ -117,7 +117,7 @@ class NveWinHost {
 
  private:
   bool dispatch(const NveDirectEvent& ev);
-  /// The app source changed (`HostSession::source_generation()` moved): the next sync is a full
+  /// The app source changed (a new `scene_epoch`): the next sync is a full
   /// pass keeping views whose node still matches.
   void source_changed();
   void sync_views();

@@ -2,6 +2,7 @@
 
 #include "NveGtkHost.hpp"
 
+#include <nve/host/testing/scratch_dir.hpp>
 #include <nve/host/testing/scripted_app.hpp>
 
 #include <cmath>
@@ -19,6 +20,7 @@
 
 namespace nve::gtk::test {
 
+using host::testing::ScratchDir;
 using host::testing::ScriptedApp;
 
 inline bool approx(double a, double b, double eps = 1.5) { return std::fabs(a - b) <= eps; }

@@ -122,9 +122,8 @@ void test_modules_hot_reload_and_state() {
   NVE_CHECK(!host.is_loaded() && host.view_count() == 0u);
 
   // The dev loop: one app path, rebuilt in place between reloads.
-  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "nve_gtk_app_files_test";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const ScratchDir scratch("nve-gtk-app-files");
+  const std::filesystem::path& dir = scratch.path();
   const std::string app_path =
       (dir / ("app" + std::filesystem::path(NVE_TEST_COUNTER_MODULE).extension().string())).string();
   const auto build = [&](const char* fixture) {
@@ -162,7 +161,6 @@ void test_modules_hot_reload_and_state() {
   NVE_CHECK(host.restore_state(path, 4u));
   NVE_CHECK(label_text(host.widget_for_node_id(CounterApp::kCount)) == "Count: 5");
   NVE_CHECK(host.clear_state(path) && !std::filesystem::exists(path) && !host.restore_state(path, 4u));
-  std::filesystem::remove_all(dir);
 
   // Switching apps drops the previous app's views.
   ScriptedApp app;
@@ -240,6 +238,7 @@ void test_live_kitchen_sink_if_configured() {
 void nve_test_gtk_a11y_and_media();
 void nve_test_gtk_canvas_scroll_and_pair();
 void nve_test_gtk_window_manager();
+void nve_test_gtk_reconcile();
 
 int main() {
   gtk_init();
@@ -249,6 +248,7 @@ int main() {
   nve_test_gtk_a11y_and_media();
   nve_test_gtk_canvas_scroll_and_pair();
   nve_test_gtk_window_manager();
+  nve_test_gtk_reconcile();
   std::cout << "nve_gtk_shell_test: ok\n";
   return 0;
 }

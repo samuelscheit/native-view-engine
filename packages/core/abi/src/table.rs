@@ -17,6 +17,13 @@ pub const MAX_TABLE_WORDS: usize = 32;
 /// Maximum number of table slots per process (`NodeRow::tables` is a `u128`).
 pub const MAX_TABLE_SLOTS: usize = 128;
 
+/// `log2` of the node indices one [`NveTableView::row_index_pages`] page covers.
+pub const NVE_ROW_INDEX_PAGE_BITS: u32 = 8;
+/// Entries per [`NveTableView::row_index_pages`] page.
+pub const NVE_ROW_INDEX_PAGE_LEN: u32 = 1 << NVE_ROW_INDEX_PAGE_BITS;
+/// [`NveTableView::row_index_dir`] entry of a node-index range that has no page.
+pub const NVE_ROW_INDEX_NO_PAGE: u32 = u32::MAX;
+
 /// Stable 64-bit identity of a table: `xxh64(name)` baked at compile time.
 pub type TableKey = Key64;
 
@@ -189,10 +196,15 @@ pub const fn compute_table_schema_hash(
 /// Zero-copy view of one table published in `NveSceneView::tables`.
 ///
 /// Dense tables: `owners` is null and row `i` belongs to node index `i` (`rows` spans the store's
-/// node capacity). Sparse tables: `rows[r]` belongs to `owners[r]` (raw `NodeId`).
+/// node capacity). Sparse tables: `rows[r]` belongs to `owners[r]` (raw `NodeId`), and the store's
+/// own paged node-index → row index is published alongside, so a host resolves a node's row in
+/// O(1) without building an owner map: node index `n` lives in page
+/// `p = row_index_dir[n >> NVE_ROW_INDEX_PAGE_BITS]` (absent when `n`'s directory slot is out of
+/// range or `NVE_ROW_INDEX_NO_PAGE`), whose entry `row_index_pages[p * NVE_ROW_INDEX_PAGE_LEN +
+/// (n & (NVE_ROW_INDEX_PAGE_LEN - 1))]` is `row + 1` (`0` = no row).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, NveAbi)]
-#[nve_abi(size_64 = 48)]
+#[nve_abi(size_64 = 72)]
 pub struct NveTableView {
     /// Low 32 bits of the `TableKey`.
     #[nve_abi(offset = 0)]
@@ -212,10 +224,22 @@ pub struct NveTableView {
     /// Number of entries in `dirty_rows`.
     #[nve_abi(offset = 20)]
     pub dirty_count: u32,
+    /// Entries in `row_index_dir` (sparse tables; `0` for dense tables).
+    #[nve_abi(offset = 24)]
+    pub row_index_dir_len: u32,
+    /// Pages of `NVE_ROW_INDEX_PAGE_LEN` entries in `row_index_pages` (sparse tables).
+    #[nve_abi(offset = 28)]
+    pub row_index_page_count: u32,
     /// `row_count * words` row words.
     pub rows: *const u32,
     /// Raw `NodeId` owner per row (sparse tables) or null (dense tables).
     pub owners: *const u32,
     /// Row indices changed this frame.
     pub dirty_rows: *const u32,
+    /// Sparse tables: page of each `NVE_ROW_INDEX_PAGE_LEN` node indices, or
+    /// `NVE_ROW_INDEX_NO_PAGE`. Null for dense tables (row = node index).
+    pub row_index_dir: *const u32,
+    /// Sparse tables: `row_index_page_count * NVE_ROW_INDEX_PAGE_LEN` entries of `row + 1`
+    /// (`0` = no row), addressed through `row_index_dir`. Null for dense tables.
+    pub row_index_pages: *const u32,
 }
