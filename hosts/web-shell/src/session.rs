@@ -484,10 +484,23 @@ impl WebAppSession {
         &mut self,
         waker: &core::task::Waker,
     ) -> Result<AsyncPumpOutcome, BackendError> {
+        self.pump_async_work_with(waker, || {})
+    }
+
+    /// Variant of [`Self::pump_async_work`] invoking `on_before_poll` immediately before each
+    /// `poll_work` iteration so wake schedulers can discard already-absorbed wakes from prior
+    /// event/render passes without losing wakes fired during the final settling `poll_work`.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+    pub fn pump_async_work_with<F: FnMut()>(
+        &mut self,
+        waker: &core::task::Waker,
+        mut on_before_poll: F,
+    ) -> Result<AsyncPumpOutcome, BackendError> {
         const MAX_PUMPS: usize = 8;
         let mut last = None;
         let mut hit_cap = true;
         for _ in 0..MAX_PUMPS {
+            on_before_poll();
             if !self.app.poll_work(waker) {
                 hit_cap = false;
                 break;

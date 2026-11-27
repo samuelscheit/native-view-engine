@@ -343,6 +343,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     is_invalidated: false,
                     data_version: 0,
                     invalidation_version: 0,
+                    completed_seq: 0,
                 });
             }
             let idx = handle.slot.index();
@@ -356,6 +357,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     is_invalidated: false,
                     data_version: 0,
                     invalidation_version: 0,
+                    completed_seq: 0,
                 });
             }
             let payload = &s.payloads[idx];
@@ -380,6 +382,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 data_version: meta.data_version,
                 invalidation_version: ((u64::from(s.wildcard_epoch)) << 32)
                     | u64::from(meta.fetch_gen),
+                completed_seq: payload.completed_seq,
             })
         });
 
@@ -437,6 +440,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                             is_invalidated: false,
                             data_version: 0,
                             invalidation_version: 0,
+                            completed_seq: 0,
                         };
                     }
                     let idx = handle.slot.index();
@@ -456,6 +460,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                         data_version: meta.data_version,
                         invalidation_version: ((u64::from(s.wildcard_epoch)) << 32)
                             | u64::from(meta.fetch_gen),
+                        completed_seq: payload.completed_seq,
                     }
                 })
             }

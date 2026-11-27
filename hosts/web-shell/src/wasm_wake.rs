@@ -34,6 +34,14 @@ struct WebFrameWaker {
 
 #[cfg(feature = "app-issues")]
 impl WebFrameWaker {
+    #[inline]
+    fn clear_mid_pump_wake(&self) {
+        self.sched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_mid_pump_wake();
+    }
+
     fn dispatch(self: &Arc<Self>, item: Option<(ScheduleKind, u64)>) {
         let Some((kind, token)) = item else {
             return;
@@ -53,6 +61,7 @@ impl WebFrameWaker {
                 waker_arc.surface_id,
                 waker_arc.generation,
                 &waker,
+                || waker_arc.clear_mid_pump_wake(),
             );
             let follow = waker_arc
                 .sched
@@ -130,24 +139,13 @@ impl WebAsyncWakeGuard {
     ) -> Result<bool, JsValue> {
         self.inner
             .run_direct_pump(&self.waker, |waker| {
-                if let Err(e) = guard.render_initial() {
-                    return (
-                        PumpNext::Done,
-                        Err(JsValue::from_str(&format!("initial frame failed: {e}"))),
-                    );
-                }
-                let replayed = match guard.pump_events() {
-                    Ok(f) => f.is_some(),
-                    Err(e) => {
-                        return (
-                            PumpNext::Done,
-                            Err(JsValue::from_str(&format!("post-hydration event pump failed: {e}"))),
-                        );
-                    }
+                let replayed = match crate::wasm_api::run_initial_frame_and_events(guard) {
+                    Ok(v) => v,
+                    Err(err) => return (PumpNext::Done, Err(err)),
                 };
-                match guard.pump_async_work(waker) {
+                match guard.pump_async_work_with(waker, || self.inner.clear_mid_pump_wake()) {
                     Ok(out) => (
-                        if out.hit_cap { PumpNext::Macrotask } else { PumpNext::Done },
+                        PumpNext::from_hit_cap(out.hit_cap),
                         Ok(replayed || out.timing.is_some()),
                     ),
                     Err(e) => (
@@ -156,8 +154,7 @@ impl WebAsyncWakeGuard {
                     ),
                 }
             })
-            .transpose()
-            .map(|opt| opt.unwrap_or(false))
+            .ok_or_else(|| JsValue::from_str("async wake scheduler unavailable at boot"))?
     }
 
     #[inline]
@@ -190,9 +187,9 @@ impl AsyncWakeHandle {
                         return (PumpNext::Done, false);
                     }
                 };
-                match guard.pump_async_work(waker) {
+                match guard.pump_async_work_with(waker, || self.inner.clear_mid_pump_wake()) {
                     Ok(out) => (
-                        if out.hit_cap { PumpNext::Macrotask } else { PumpNext::Done },
+                        PumpNext::from_hit_cap(out.hit_cap),
                         ev || out.timing.is_some(),
                     ),
                     Err(err) => {
@@ -201,7 +198,13 @@ impl AsyncWakeHandle {
                     }
                 }
             })
-            .unwrap_or(false)
+            .unwrap_or_else(|| match guard.pump_events() {
+                Ok(f) => f.is_some(),
+                Err(err) => {
+                    web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                    false
+                }
+            })
     }
 }
 

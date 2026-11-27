@@ -28,6 +28,7 @@ struct QueryHookState<T> {
     options: QueryOptions,
     last_invalidation_ver: u64,
     fetched_for_key: bool,
+    external_wait_seq: Option<u32>,
     previous_data: Option<Shared<T>>,
 }
 
@@ -172,6 +173,7 @@ where
             options,
             last_invalidation_ver: snap.invalidation_version,
             fetched_for_key: false,
+            external_wait_seq: None,
             previous_data: None,
         })
     });
@@ -218,21 +220,43 @@ where
         st.options = options;
         st.last_invalidation_ver = new_snap.invalidation_version;
         st.fetched_for_key = false;
+        st.external_wait_seq = None;
         st.previous_data = old_data;
     } else if state.read().options != options {
         state.write().options = options;
     }
 
     // Subscribe the calling component to this slot's reactive signal so invalidations wake it.
-    let (handle, slot_sig, fetched_for_key, last_inv_ver) = {
+    let (handle, slot_sig, mut fetched_for_key, mut last_inv_ver, external_wait_seq) = {
         let st = state.read();
-        (st.handle, st.slot_signal, st.fetched_for_key, st.last_invalidation_ver)
+        (
+            st.handle,
+            st.slot_signal,
+            st.fetched_for_key,
+            st.last_invalidation_ver,
+            st.external_wait_seq,
+        )
     };
     let _ = *slot_sig.read();
 
     if bridge.client().mode() == QueryMode::Client {
         let snap = bridge.client().read::<P>(handle);
         let active_for_ver = bridge.has_active_slot_task_for(handle, snap.invalidation_version);
+        if let Some(wait_seq) = external_wait_seq
+            && !snap.is_fetching
+        {
+            let mut st = state.write();
+            st.external_wait_seq = None;
+            // Only latch as fetched if the external fetch actually settled (data or committed
+            // error); if `completed_seq` did not advance, it was cancelled and `should_initial`
+            // recovers across cold, time-stale, and invalidated slots cleanly.
+            if snap.completed_seq != wait_seq {
+                st.fetched_for_key = true;
+                st.last_invalidation_ver = snap.invalidation_version;
+                fetched_for_key = true;
+                last_inv_ver = snap.invalidation_version;
+            }
+        }
         let should_initial = !fetched_for_key && bridge.client().needs_fetch(handle);
         let should_refetch_invalidated =
             snap.is_invalidated && !snap.is_fetching && last_inv_ver != snap.invalidation_version;
@@ -241,20 +265,19 @@ where
                 let mut st = state.write();
                 st.fetched_for_key = true;
                 st.last_invalidation_ver = snap.invalidation_version;
+                st.external_wait_seq = None;
             }
             if !active_for_ver {
                 spawn_query_fetch::<P>(bridge, handle, snap.invalidation_version);
             }
         } else if !fetched_for_key {
             let mut st = state.write();
-            st.fetched_for_key = true;
-            if !snap.is_invalidated || active_for_ver {
+            if !snap.is_fetching || active_for_ver {
+                st.fetched_for_key = true;
                 st.last_invalidation_ver = snap.invalidation_version;
-            } else {
-                // Slot is invalidated with a non-bridge-owned external fetch in flight; keep
-                // `last_invalidation_ver` behind so if the external fetch is cancelled, this hook
-                // still refetches once `is_fetching` drops back to false.
-                st.last_invalidation_ver = snap.invalidation_version.wrapping_sub(1);
+                st.external_wait_seq = None;
+            } else if st.external_wait_seq.is_none() {
+                st.external_wait_seq = Some(snap.completed_seq);
             }
         } else if active_for_ver && last_inv_ver != snap.invalidation_version {
             state.write().last_invalidation_ver = snap.invalidation_version;

@@ -19,6 +19,17 @@ pub(crate) enum PumpNext {
     Macrotask,
 }
 
+impl PumpNext {
+    #[inline]
+    pub(crate) const fn from_hit_cap(hit_cap: bool) -> Self {
+        if hit_cap {
+            Self::Macrotask
+        } else {
+            Self::Done
+        }
+    }
+}
+
 /// Pure deterministic state machine coordinating `Waker::wake`, direct event/boot pumps, and
 /// browser microtask/macrotask ticks without re-entrancy or paint starvation.
 #[derive(Debug)]
@@ -75,6 +86,13 @@ impl WakeScheduler {
     #[cfg(test)]
     pub(crate) fn is_pumping(&self) -> bool {
         self.pumping
+    }
+
+    /// Clears `woken_during_pump` immediately before a `poll_work` pass that is about to drain all
+    /// ready tasks, avoiding a redundant trailing microtask once the pump settles cleanly.
+    #[inline]
+    pub(crate) fn clear_mid_pump_wake(&mut self) {
+        self.woken_during_pump = false;
     }
 
     /// Enters a scheduled microtask or macrotask callback. Returns `false` if the host has shut
@@ -195,18 +213,23 @@ mod tests {
             }
         }
 
+        fn clear_mid_pump_wake(&self) {
+            self.sched.lock().unwrap().clear_mid_pump_wake();
+        }
+
         fn run_tick(self: &Arc<Self>, token: u64, session: &mut WebAppSession) -> bool {
             if !self.sched.lock().unwrap().on_scheduled_tick_enter(token) {
                 return false;
             }
             let waker = Waker::from(Arc::clone(self));
-            let outcome = session.pump_async_work(&waker).unwrap();
-            let next = if outcome.hit_cap {
-                PumpNext::Macrotask
-            } else {
-                PumpNext::Done
-            };
-            let follow = self.sched.lock().unwrap().on_pump_exit(next);
+            let outcome = session
+                .pump_async_work_with(&waker, || self.clear_mid_pump_wake())
+                .unwrap();
+            let follow = self
+                .sched
+                .lock()
+                .unwrap()
+                .on_pump_exit(PumpNext::from_hit_cap(outcome.hit_cap));
             self.enqueue(follow);
             true
         }
@@ -364,11 +387,18 @@ mod tests {
         assert!(!s.on_scheduled_tick_enter(tok1), "stale microtask must be skipped");
         assert!(s.on_scheduled_tick_enter(tok2), "upgraded macrotask must enter");
 
-        // 3. Wake during a non-cap tick (e.g. `yield_once()`) schedules 1 microtask on Done.
+        // 3. Clearing an absorbed mid-pump wake before the final settling `poll_work` yields None,
+        //    while a wake fired AFTER `clear_mid_pump_wake()` (during final poll) schedules 1 microtask.
+        assert_eq!(s.on_wake(), None);
+        s.clear_mid_pump_wake();
+        assert_eq!(s.on_pump_exit(PumpNext::Done), None);
+
+        assert!(s.on_direct_pump_enter());
+        s.clear_mid_pump_wake();
         assert_eq!(s.on_wake(), None);
         let (k3, tok3) = s
             .on_pump_exit(PumpNext::Done)
-            .expect("mid-pump wake on Done must schedule one microtask");
+            .expect("wake fired after clear_mid_pump_wake must schedule one microtask");
         assert_eq!(k3, ScheduleKind::Microtask);
         assert!(s.on_scheduled_tick_enter(tok3));
         assert_eq!(s.on_pump_exit(PumpNext::Done), None);
@@ -402,5 +432,141 @@ mod tests {
         assert!(!s.on_scheduled_tick_enter(tok4));
         assert_eq!(s.on_wake(), None);
         assert!(!s.on_direct_pump_enter());
+    }
+
+    #[test]
+    fn task_spawning_event_drained_synchronously_schedules_zero_microtasks_while_yield_still_wakes() {
+        use nve_abi::{EventPayload, NativeEvent, NativeEventKind, RawPropValue};
+
+        #[component]
+        fn ClickApp() -> Element {
+            let mut clicks = use_signal(|| 0u32);
+            let mut async_done = use_signal(|| 0u32);
+            let mut yield_done = use_signal(|| false);
+            rsx! {
+                view {
+                    text { "CLICKS:{clicks()}:ASYNC:{async_done()}:YIELD:{yield_done()}" }
+                    pressable {
+                        test_id: "spawn-btn",
+                        onpress: move |_| {
+                            clicks += 1;
+                            spawn(async move {
+                                async_done += 1;
+                            });
+                        },
+                        "Spawn"
+                    }
+                    pressable {
+                        test_id: "yield-btn",
+                        onpress: move |_| {
+                            spawn(async move {
+                                let mut yielded = false;
+                                core::future::poll_fn(|cx| {
+                                    if yielded {
+                                        Poll::Ready(())
+                                    } else {
+                                        yielded = true;
+                                        cx.waker().wake_by_ref();
+                                        Poll::Pending
+                                    }
+                                })
+                                .await;
+                                yield_done.set(true);
+                            });
+                        },
+                        "Yield"
+                    }
+                }
+            }
+        }
+
+        let fw = TestFrameWaker::new();
+        let surface = DioxusSurface::new(1, ClickApp);
+        let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
+
+        // Boot inside direct pump to arm `fw` on Dioxus's scheduler channel.
+        assert!(fw.sched.lock().unwrap().on_direct_pump_enter());
+        session.render_initial().unwrap();
+        let waker = Waker::from(Arc::clone(&fw));
+        let boot_out = session
+            .pump_async_work_with(&waker, || fw.clear_mid_pump_wake())
+            .unwrap();
+        let follow = fw
+            .sched
+            .lock()
+            .unwrap()
+            .on_pump_exit(PumpNext::from_hit_cap(boot_out.hit_cap));
+        fw.enqueue(follow);
+        assert!(fw.queues.lock().unwrap().microtasks.is_empty());
+
+        let find = |session: &WebAppSession, tid: &str| {
+            session
+                .backend()
+                .iter_nodes()
+                .find_map(|(id, el)| {
+                    matches!(el.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid)
+                        .then_some(id)
+                })
+                .unwrap()
+        };
+
+        // 1. Task-spawning click drained synchronously inside direct pump -> wakes `fw` during
+        //    `pump_events()`, clears mid-pump wake before settling `poll_work`, schedules 0 ticks!
+        let spawn_btn = find(&session, "spawn-btn");
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: spawn_btn,
+            timestamp_us: 1,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 1.0, y: 1.0 },
+        });
+        assert!(fw.sched.lock().unwrap().on_direct_pump_enter());
+        let _ = session.pump_events().unwrap();
+        let click_out = session
+            .pump_async_work_with(&waker, || fw.clear_mid_pump_wake())
+            .unwrap();
+        let follow = fw
+            .sched
+            .lock()
+            .unwrap()
+            .on_pump_exit(PumpNext::from_hit_cap(click_out.hit_cap));
+        fw.enqueue(follow);
+
+        assert!(session.backend().render_html().contains("CLICKS:1:ASYNC:1"));
+        assert!(
+            fw.mid_pump_wakes.load(Ordering::Acquire) >= 1,
+            "task-spawning click must wake TestFrameWaker during pump_events()"
+        );
+        assert!(
+            fw.queues.lock().unwrap().microtasks.is_empty(),
+            "synchronously drained click must queue 0 trailing microtasks"
+        );
+        assert!(fw.queues.lock().unwrap().macrotasks.is_empty());
+
+        // 2. Yield-once click also drains cleanly inside `pump_async_work_with` -> settles
+        //    `YIELD:true` with 0 wasted trailing microtasks!
+        let yield_btn = find(&session, "yield-btn");
+        session.backend().push_event(NativeEvent {
+            surface_id: 1,
+            node_id: yield_btn,
+            timestamp_us: 2,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 1.0, y: 1.0 },
+        });
+        assert!(fw.sched.lock().unwrap().on_direct_pump_enter());
+        let _ = session.pump_events().unwrap();
+        let y_out = session
+            .pump_async_work_with(&waker, || fw.clear_mid_pump_wake())
+            .unwrap();
+        let follow = fw
+            .sched
+            .lock()
+            .unwrap()
+            .on_pump_exit(PumpNext::from_hit_cap(y_out.hit_cap));
+        fw.enqueue(follow);
+
+        assert!(session.backend().render_html().contains("YIELD:true"));
+        assert!(fw.queues.lock().unwrap().microtasks.is_empty());
+        assert!(fw.queues.lock().unwrap().macrotasks.is_empty());
     }
 }

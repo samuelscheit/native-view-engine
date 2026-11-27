@@ -68,6 +68,7 @@ pub(crate) fn pump_surface_async_work(
     surface_id: SurfaceId,
     generation: u64,
     waker: &std::task::Waker,
+    on_before_poll: impl FnMut(),
 ) -> PumpNext {
     let target = ACTIVE_SHELLS.with(|shells| {
         let map = shells.borrow();
@@ -81,18 +82,14 @@ pub(crate) fn pump_surface_async_work(
         return PumpNext::Done;
     };
     match session.try_borrow_mut() {
-        Ok(mut guard) => match guard.pump_async_work(waker) {
+        Ok(mut guard) => match guard.pump_async_work_with(waker, on_before_poll) {
             Ok(outcome) => {
                 if outcome.timing.is_some()
                     && let Some(t) = snapshot_trigger.as_ref()
                 {
                     t.schedule_debounced();
                 }
-                if outcome.hit_cap {
-                    PumpNext::Macrotask
-                } else {
-                    PumpNext::Done
-                }
+                PumpNext::from_hit_cap(outcome.hit_cap)
             }
             Err(err) => {
                 web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
@@ -101,6 +98,16 @@ pub(crate) fn pump_surface_async_work(
         },
         Err(_) => PumpNext::Microtask,
     }
+}
+
+pub(crate) fn run_initial_frame_and_events(guard: &mut WebAppSession) -> Result<bool, JsValue> {
+    guard
+        .render_initial()
+        .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
+    guard
+        .pump_events()
+        .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))
+        .map(|f| f.is_some())
 }
 
 thread_local! {
@@ -457,15 +464,7 @@ where
         #[cfg(feature = "app-issues")]
         let boot_rendered = async_wake.run_boot_pump(&mut guard)?;
         #[cfg(not(feature = "app-issues"))]
-        let boot_rendered = {
-            guard
-                .render_initial()
-                .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
-            guard
-                .pump_events()
-                .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))?
-                .is_some()
-        };
+        let boot_rendered = run_initial_frame_and_events(&mut guard)?;
         if boot_rendered && let Some(t) = snapshot_trigger.as_ref() {
             t.schedule_debounced();
         }
