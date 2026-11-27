@@ -26,7 +26,7 @@ public final class RuntimeSceneReader {
      * {@code NVE_RUNTIME_SCHEMA_HASH}: fingerprint of the runtime scene + vtable layout read here.
      * {@code hosts/android-shell} locks it against the generated C header with a {@code static_assert}.
      */
-    public static final Key64 SCHEMA = Key64.of(0x9CA6E2D154181C0EL);
+    public static final Key64 SCHEMA = Key64.of(0xDB2CE618E24C0761L);
     public static final int NODE_ROW_SIZE = 32;
     public static final int LAYOUT_RECT_SIZE = 16;
     /** {@code NveNodeRow::flags} bit of an allocated live slot. */

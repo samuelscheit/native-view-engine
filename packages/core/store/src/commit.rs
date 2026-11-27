@@ -224,13 +224,16 @@ impl crate::store::NodeStore {
             let Some(col) = self.columns[slot.0 as usize].as_ref() else {
                 continue;
             };
-            let row_count = col.row_count();
+            // Dense tables publish no owners (row = node index) and only the rows of node slots
+            // that exist; the column's power-of-two growth tail belongs to no node.
+            let dense = col.is_dense();
+            let row_count = if dense { col.row_count().min(self.capacity()) } else { col.row_count() };
             let rows_ptr = if col.rows.is_empty() {
                 core::ptr::null()
             } else {
                 col.rows.as_ptr()
             };
-            let owners_ptr = if col.owners.is_empty() {
+            let owners_ptr = if dense || col.owners.is_empty() {
                 core::ptr::null()
             } else {
                 col.owners.as_ptr()

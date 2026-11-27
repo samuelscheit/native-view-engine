@@ -2898,6 +2898,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-host-fixtures"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-canvas",
+ "nve-components",
+ "nve-store",
+]
+
+[[package]]
 name = "nve-host-services"
 version = "0.1.0"
 dependencies = [

@@ -101,6 +101,10 @@ pub fn generate_all_core_abi_files() -> Vec<GeneratedFile> {
         GeneratedFile {
             relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.generated.h"
                 .to_owned(),
+            content: c_header.clone(),
+        },
+        GeneratedFile {
+            relative_path: "packages/core/host-cxx/include/nve/host/nve_abi.generated.h".to_owned(),
             content: c_header,
         },
         GeneratedFile {

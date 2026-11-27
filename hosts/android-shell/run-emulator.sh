@@ -211,8 +211,12 @@ if command -v ninja >/dev/null 2>&1; then
   CMAKE_GEN_ARGS=(-G Ninja)
 fi
 
-echo "==> [2/5] Building libnve_android_shell.so (arm64-v8a, android-24)..."
+echo "==> [2/5] Building libnve_android_shell.so + libnve_runtime (arm64-v8a, android-24)..."
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_CLANG_AA64"
+export CC_aarch64_linux_android="$NDK_CLANG_AA64"
+export AR_aarch64_linux_android="$NDK_AR"
 cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" "${CMAKE_GEN_ARGS[@]}" \
+  -DNVE_RUNTIME_CARGO_TARGET=aarch64-linux-android \
   -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-24 \
@@ -230,7 +234,7 @@ fi
 # 3. Compile pure-Java NveMainActivity against android.jar and dex via d8.
 GENERATED_JAVA_DIR="$SCRIPT_DIR/android-app/src/dev/nve/android/generated"
 if [[ ! -f "$GENERATED_JAVA_DIR/NveCoreAbi.java" \
-   || ! -f "$GENERATED_JAVA_DIR/NveSceneBuffer.java" ]]; then
+   || ! -f "$GENERATED_JAVA_DIR/NveTables.java" ]]; then
   echo "==> Generating NVE ABI Java bindings (nve-cli codegen abi)..."
   (cd "$REPO_ROOT" && cargo run --locked -p nve-cli -- codegen abi)
 fi
@@ -240,13 +244,13 @@ DEX_DIR="$BUILD_DIR/dex"
 rm -rf "$CLASSES_DIR" "$DEX_DIR"
 mkdir -p "$CLASSES_DIR" "$DEX_DIR"
 
-echo "==> [3/5] Compiling generated Java ABI + NvePairController + NveCanvasView + NveMainActivity (javac --release 11) and dexing (d8)..."
-javac --release 11 -Xlint:deprecation -cp "$ANDROID_JAR" -d "$CLASSES_DIR" \
-  "$GENERATED_JAVA_DIR/NveCoreAbi.java" \
-  "$GENERATED_JAVA_DIR/NveSceneBuffer.java" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NvePairController.java" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NveCanvasView.java" \
-  "$SCRIPT_DIR/android-app/src/dev/nve/android/NveMainActivity.java"
+echo "==> [3/5] Compiling dev.nve.host + generated ABI/tables + the Activity (javac --release 11) and dexing (d8)..."
+JAVA_SOURCES=()
+while IFS= read -r -d '' f; do
+  JAVA_SOURCES+=("$f")
+done < <(find "$REPO_ROOT/packages/core/host-java/src/main/java" "$SCRIPT_DIR/android-app/src/dev/nve/android" \
+  -maxdepth 6 -name '*.java' ! -name 'NveSceneBuffer.java' -print0)
+javac --release 11 -Xlint:deprecation -cp "$ANDROID_JAR" -d "$CLASSES_DIR" "${JAVA_SOURCES[@]}"
 
 CLASS_FILES=()
 while IFS= read -r -d '' f; do

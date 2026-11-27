@@ -510,8 +510,13 @@ impl NodeStore {
     }
 
     /// Dense rows (`row_count * words`) and sparse owners of a table, for scene publishing.
+    /// `(rows, owners, row_count)` exactly as published in `NveTableView`: dense tables have no
+    /// owners (row = node index) and at most `capacity()` rows.
     pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[u32], usize)> {
         let c = self.columns[slot.0 as usize].as_ref()?;
+        if c.is_dense() {
+            return Some((&c.rows, &[], c.row_count().min(self.capacity())));
+        }
         Some((&c.rows, &c.owners, c.row_count()))
     }
 

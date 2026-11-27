@@ -1,37 +1,55 @@
-# Android Prebuilt Host Shell (`hosts/android-shell`)
+# Android Host Shell (`hosts/android-shell`)
 
-Built once against React Native Android Prefab (`ReactAndroid::fabricjni` + `nve_fabric_bridge`), or packaged as a standalone zero-Gradle native Android APK via `run-emulator.sh`.
+`libnve_android_shell` is the JNI half of `dev.nve.host.NativeRuntime`: it binds Java/Kotlin hosts
+to `libnve_runtime` (runtime ABI v2) through `nve::host::RuntimeSession` — no `nve-fabric-bridge`.
+The standalone zero-Gradle APK (`android-app/`) renders the runtime scene on native Android Views.
 
-- **Tier 1 (<50 ms, Emulator & physical Android):** WebSocket `TemplatePatch` applied in-place.
-- **Tier 2 (150–400 ms, Emulator & physical Android):** `nve dev` compiles only the app crate for `aarch64-linux-android` (`lib<app>.so`), pushes it via `adb push` to the app's `filesDir`, and calls `NveMainActivity.nativeLoadDylib(handle, path)` — zero Gradle rebuilds.
+| File | Contents |
+|---|---|
+| `NveAndroidRuntimeJni.cpp` | create/destroy, app attach (`dlopen` + `nve_get_interface`, hot reload) / detach, `submitFrame`, viewport, tick, hit test, `scrollBy`, pairing |
+| `NveAndroidSceneJni.cpp` | packed scene frame for `RuntimeSceneReader` (`long[]` header + cached `DirectByteBuffer` slabs), resource bytes |
+| `NveAndroidEventsJni.cpp` | `EventRing` → `NveDirectEvent` batch, host text measurer and wake listener callbacks into Java |
+| `android-app/` | `NveMainActivity` (lifecycle, pairing intent, keys), `NveSceneRenderer` (frame → Views), `NveViewStyle` (tables → View styles / TalkBack), `NveTextMeasurer` (`StaticLayout` measurement for runtime layout), `NveCanvasView` (`NVE_DRAW1`) |
 
-## Standalone Zero-Gradle APK & Emulator Launcher (`run-emulator.sh`)
+Contracts locked at compile time: CMake reads `RuntimeSceneReader.SCHEMA`, the packed-frame
+`H_*` / `S_*` strides, and `NativeRuntime.STATUS_*` from the Java sources and
+`NveAndroidSurface.hpp` `static_assert`s them against the generated C header. Every call that
+can write releases the held scene first, so the runtime is never `Busy` because of Java.
 
-Build a signed `arm64-v8a` Android APK (`dev.nve.android`) directly from `$ANDROID_HOME` (`javac` + `d8` + `aapt2` + `zipalign` + `apksigner`, no Gradle/Maven downloads) and launch it on an Android Emulator or connected device:
+## Standalone APK & Emulator Launcher (`run-emulator.sh`)
 
 ```bash
-# Build + verify signed APK only (defaults to nve-example-kitchen-sink)
+# Build + verify the signed APK only (defaults to nve-example-kitchen-sink)
 ./hosts/android-shell/run-emulator.sh nve-example-kitchen-sink --build-only
 
-# Build and launch nve-studio-workspace on Pixel_10 (or first available AVD)
-./hosts/android-shell/run-emulator.sh nve-studio-workspace
-
-# Specify an AVD and capture a screenshot after launch
+# Build and launch on Pixel_10 (or the first AVD), with a screenshot
 ./hosts/android-shell/run-emulator.sh nve-example-kitchen-sink --avd Pixel_10 --screenshot /tmp/nve-android.png
 ```
 
-### What `run-emulator.sh` Does
+1. Cross-compiles the app crate for `aarch64-linux-android` (NDK Clang).
+2. Builds `libnve_android_shell.so` and the `libnve_runtime` staticlib (`-DNVE_RUNTIME_CARGO_TARGET=aarch64-linux-android`).
+3. Compiles `dev.nve.host`, the generated `NveCoreAbi` / `NveTables`, and the Activity against `android.jar`, dexes via `d8`, packages, aligns, and signs `build/nve-android-shell.apk`.
+4. Unless `--build-only`, boots an AVD, installs, and launches `dev.nve.android/.NveMainActivity`.
 
-1. Auto-detects `ANDROID_HOME` (or `$HOME/Library/Android/sdk` / `$HOME/Android/Sdk`), latest installed NDK, `build-tools`, and `platforms/android-*`.
-2. Cross-compiles the selected Rust app crate (`nve-example-kitchen-sink` or `nve-studio-workspace`) for `aarch64-linux-android` using the NDK Clang linker.
-3. Cross-compiles `libnve_android_shell.so` (`arm64-v8a`, `android-24`, `c++_shared`) with `NveAndroidSurfaceJni.cpp` backed by `nve::NativeHostSession`.
-4. Compiles `android-app/src/dev/nve/android/NveMainActivity.java` against `android.jar`, dexes via `d8`, packages `AndroidManifest.xml`, `classes.dex`, and `lib/arm64-v8a/{libnve_android_shell.so,libnve_app.so,libc++_shared.so}`, aligns with `zipalign`, and debug-signs + verifies `hosts/android-shell/build/nve-android-shell.apk` via `apksigner`.
-5. Unless `--build-only` is passed, boots the requested/default AVD if no `adb` device is online, installs the APK (`adb install -r`), launches `dev.nve.android/.NveMainActivity`, and optionally captures a PNG screenshot.
+Pairing: launch with `--es pair_connect ws://host:port/nve-wire --es pair_token <token>` or an
+`nve://pair?endpoint=...&token=...` link (TLS transports need `cert_sha256` in the URI).
 
-## Host-Side JNI Bridge Tests (CTest)
+## End-to-end JNI suites (CTest, desktop JVM)
+
+The same JNI library builds for the desktop and runs under a real JVM against real `NVE2` frames
+from `nve-host-fixtures` (production `NodeStore` + standard tables, image and canvas resources):
 
 ```bash
-cmake -S hosts/android-shell -B /tmp/nve-android-host-test -G Ninja \
+cmake -S hosts/android-shell -B /tmp/nve-android-host-test \
   && cmake --build /tmp/nve-android-host-test \
   && ctest --test-dir /tmp/nve-android-host-test --output-on-failure
 ```
+
+- `android_scene_jni_test`: packed frames over every standard table, resources (URL, inline bytes,
+  canvas draw list mirrored raw), deltas (edit, image swap, removal), validation of bad input,
+  viewport, host text measurer (install / fallback / removal), hit test, scroll clamping, app hot
+  reload (v1 → v2, bad interface, missing library), detach.
+- `android_events_jni_test`: every `EventRingWriter` payload reaches a real attached app byte-exact;
+  malformed rings never reach it; the app's re-render after the batch.
+- `android_pair_jni_test`: loopback RFC 6455 pairing server, wake listener on a runtime thread,
+  keyframe render, cross-thread `pairIsConnected`, URI validation, disconnect.

@@ -118,6 +118,15 @@ fn scene_publishes_live_resource_bytes_and_defined_ids() {
         assert_eq!(bytes(&sh), encoded(&shadows));
         let empty = resource(v, ResourceId::NONE);
         assert!(empty.len == 0 && empty.bytes.is_null() && empty.kind_lo == 0, "slot 0 stays empty");
+        // Dense tables publish no owners and no rows past the node slots (ABI contract).
+        // SAFETY: `tables` holds `table_count` views while the scene is acquired.
+        let tables = unsafe { std::slice::from_raw_parts(v.tables, v.table_count as usize) };
+        let visual = tables
+            .iter()
+            .find(|t| (u64::from(t.key_hi) << 32 | u64::from(t.key_lo)) == <Visual as nve_store::NveTable>::DESC.key.0)
+            .expect("visual published");
+        assert!(visual.owners.is_null(), "dense tables publish null owners");
+        assert!(visual.row_count <= v.node_capacity, "dense rows stay within node capacity");
         let mut ids = dirty(v);
         ids.sort_unstable();
         let mut want = vec![src_img.0, src_shadow.0];

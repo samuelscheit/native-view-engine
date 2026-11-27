@@ -37,7 +37,7 @@ pub fn generate_java_tables(tables: &[&TableDesc]) -> String {
          import dev.nve.host.FieldSpec;\n\
          import dev.nve.host.Key64;\n\n\
          /**\n * Published NVE word tables: key, schema hash, layout, field specs, default bits, and\n\
-         \x20* word-enum values per table. Defaults are raw field bits ({@code Float.intBitsToFloat} for\n\
+         \x20* word-enum values per table. {@code DEFAULT_*} are raw field bits ({@code Float.intBitsToFloat} for\n\
          \x20* {@code F32}); {@code STR} fields span two words and have no default.\n */\n\
          public final class NveTables {\n    private NveTables() {}\n",
     );
@@ -101,11 +101,18 @@ fn emit_table(out: &mut String, t: &TableDesc) {
         hash = t.schema_hash,
         sparse = matches!(t.storage, Storage::Sparse),
     );
+    let mut names: Vec<String> = ["NAME", "KEY", "SCHEMA_HASH", "WORDS", "SPARSE"].map(String::from).to_vec();
+    let mut claim = |name: String| {
+        assert!(!names.contains(&name), "{}: generated Java constant {name} collides", t.name);
+        names.push(name.clone());
+        name
+    };
     for f in t.fields {
         let field = to_snake_case(f.name).to_ascii_uppercase();
         let _ = write!(
             out,
-            "\n        public static final FieldSpec {field} = new FieldSpec({}, {}, {}, FieldKind.{});\n",
+            "\n        public static final FieldSpec {} = new FieldSpec({}, {}, {}, FieldKind.{});\n",
+            claim(field.clone()),
             f.word,
             f.shift,
             java_bits(f),
@@ -114,15 +121,16 @@ fn emit_table(out: &mut String, t: &TableDesc) {
         if f.kind != FieldKind::Str {
             let _ = writeln!(
                 out,
-                "        public static final int {field}_DEFAULT = 0x{:08X};",
+                "        public static final int {} = 0x{:08X};",
+                claim(format!("DEFAULT_{field}")),
                 default_bits(t, f)
             );
         }
         for v in f.variants {
             let _ = writeln!(
                 out,
-                "        public static final int {field}_{} = {};",
-                to_snake_case(v.name).to_ascii_uppercase(),
+                "        public static final int {} = {};",
+                claim(format!("{field}_{}", to_snake_case(v.name).to_ascii_uppercase())),
                 v.value
             );
         }
@@ -171,11 +179,11 @@ mod tests {
         assert!(java.contains("public static final boolean SPARSE = true;"));
         assert!(java.contains("public static final int WORDS = 4;"));
         assert!(java.contains("BG_COLOR = new FieldSpec(0, 0, 32, FieldKind.COLOR);"));
-        assert!(java.contains("BG_COLOR_DEFAULT = 0xFF000000;"));
+        assert!(java.contains("DEFAULT_BG_COLOR = 0xFF000000;"));
         assert!(java.contains("LABEL = new FieldSpec(1, 0, 32, FieldKind.STR);"));
-        assert!(!java.contains("LABEL_DEFAULT"), "strings have no default bits");
+        assert!(!java.contains("DEFAULT_LABEL"), "strings have no default bits");
         assert!(java.contains("FIT = new FieldSpec(3, 4, 3, FieldKind.ENUM);"));
-        assert!(java.contains("FIT_DEFAULT = 0x00000004;"), "default bits are shifted and masked");
+        assert!(java.contains("DEFAULT_FIT = 0x00000004;"), "default bits are shifted and masked");
         assert!(java.contains("FIT_COVER = 0;") && java.contains("FIT_SCALE_DOWN = 4;"));
     }
 
@@ -185,6 +193,17 @@ mod tests {
         let a = generate_java_tables(&[&DEMO, &OTHER]);
         assert_eq!(a, generate_java_tables(&[&OTHER, &DEMO]));
         assert!(a.find("class Alpha").unwrap() < a.find("class DemoTable").unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "collides")]
+    fn colliding_constants_are_rejected() {
+        const CLASH: &[FieldDesc] = &[
+            FieldDesc { name: "mode", kind: FieldKind::Enum, word: 0, shift: 0, bits: 2, effects: 0, variants: &[EnumVariant { name: "Fast", value: 1 }] },
+            FieldDesc { name: "mode_fast", kind: FieldKind::U32, word: 1, shift: 0, bits: 32, effects: 0, variants: &[] },
+        ];
+        const T: TableDesc = TableDesc { fields: CLASH, ..DEMO };
+        let _ = generate_java_tables(&[&T]);
     }
 
     #[test]

@@ -28,6 +28,8 @@ function(nve_ensure_abi_codegen)
     "${_nve_include_dir}/nve_abi.generated.h"
     "${_nve_include_dir}/nve_scene_abi.generated.h"
     "${_nve_repo_root}/packages/core/host-cxx/include/nve/host/nve_runtime_abi.generated.h"
+    "${_nve_repo_root}/packages/core/host-cxx/include/nve/host/nve_abi.generated.h"
+    "${_nve_repo_root}/hosts/android-shell/android-app/src/dev/nve/android/generated/NveTables.java"
   )
 
   set(_nve_needs_codegen FALSE)
