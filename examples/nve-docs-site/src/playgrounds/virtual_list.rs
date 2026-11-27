@@ -103,7 +103,7 @@ pub fn VirtualList100kDemo() -> Element {
     preview_state.set_scroll_offset(scroll_offset);
     let slice = preview_state.slice();
 
-    let accent_color = theme.status.accent.solid.hex().to_string();
+    let accent_color = theme.status.accent.text.hex().to_string();
     let text_primary = theme.text.primary.hex().to_string();
     let text_muted = theme.text.tertiary.hex().to_string();
     let border_color = theme.border.default.hex().to_string();

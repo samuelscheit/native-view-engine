@@ -245,12 +245,14 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             let tone = prop_str(&comp, "tone")
                 .or_else(|| prop_str(&comp, "variant"))
                 .unwrap_or("accent");
+            let st = theme.status;
+            let tinted = |t: nve_ui::Tone| (t.subtle.hex(), t.border.hex(), t.text.hex());
             let (bg, border, fg) = match tone {
-                "success" | "tip" => (theme.surface.subtle.hex(), theme.status.success.solid.hex(), theme.status.success.solid.hex()),
-                "warning" => (theme.surface.subtle.hex(), theme.status.warning.solid.hex(), theme.status.warning.solid.hex()),
-                "danger" | "error" => (theme.surface.subtle.hex(), theme.status.danger.solid.hex(), theme.status.danger.solid.hex()),
+                "success" | "tip" => tinted(st.success),
+                "warning" => tinted(st.warning),
+                "danger" | "error" => tinted(st.danger),
                 "muted" | "neutral" => (theme.surface.subtle.hex(), theme.border.default.hex(), theme.text.secondary.hex()),
-                _ => (theme.status.accent.subtle.hex(), theme.status.accent.solid.hex(), theme.status.accent.solid.hex()),
+                _ => tinted(st.accent),
             };
             rsx! {
                 view {

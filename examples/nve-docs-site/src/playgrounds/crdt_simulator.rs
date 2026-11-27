@@ -277,7 +277,7 @@ pub fn CrdtSimulatorDemo() -> Element {
                     view {
                         style: "flex-direction: row; justify-content: space-between; align-items: center;",
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.status.accent.solid.hex()};",
+                            style: "font-size: 13px; font-weight: 700; color: {theme.status.accent.text.hex()};",
                             "Peer A (iOS · id=1)"
                         }
                         Badge {
@@ -323,7 +323,7 @@ pub fn CrdtSimulatorDemo() -> Element {
                     view {
                         style: "flex-direction: row; justify-content: space-between; align-items: center;",
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.status.success.solid.hex()};",
+                            style: "font-size: 13px; font-weight: 700; color: {theme.status.success.text.hex()};",
                             "Peer B (Web · id=2)"
                         }
                         Badge {

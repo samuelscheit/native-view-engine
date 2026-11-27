@@ -273,7 +273,7 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             let chevron = if is_collapsed { "▸" } else { "▾" };
             let expanded_str = if is_collapsed { "false" } else { "true" };
             let header_fg = if is_index_active {
-                theme.status.accent.solid.hex()
+                theme.text.link.hex()
             } else {
                 theme.text.primary.hex()
             };

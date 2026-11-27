@@ -74,7 +74,7 @@ pub fn LiveDemoView(
         Hex::TRANSPARENT
     };
     let prev_fg = if is_preview {
-        theme.status.accent.solid.hex()
+        theme.status.accent.text.hex()
     } else {
         theme.text.secondary.hex()
     };
@@ -84,7 +84,7 @@ pub fn LiveDemoView(
         Hex::TRANSPARENT
     };
     let code_fg = if !is_preview {
-        theme.status.accent.solid.hex()
+        theme.status.accent.text.hex()
     } else {
         theme.text.secondary.hex()
     };

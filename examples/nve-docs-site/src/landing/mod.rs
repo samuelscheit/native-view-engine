@@ -77,7 +77,7 @@ pub(crate) fn PillBadge(
     let theme = state.read().theme();
 
     let (bg, border, fg) = if accent {
-        (theme.status.accent.subtle.hex(), theme.status.accent.solid.hex(), theme.status.accent.solid.hex())
+        (theme.status.accent.subtle.hex(), theme.status.accent.border.hex(), theme.status.accent.text.hex())
     } else if secondary {
         (theme.surface.subtle.hex(), theme.border.default.hex(), theme.status.info.text.hex())
     } else {

@@ -153,7 +153,7 @@ pub fn SearchModal() -> Element {
                                 let is_selected = idx == selected_idx;
                                 let bg = if is_selected { theme.status.accent.subtle.hex() } else { theme.surface.subtle.hex() };
                                 let border_c = if is_selected { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
-                                let title_c = if is_selected { theme.status.accent.solid.hex() } else { theme.text.primary.hex() };
+                                let title_c = if is_selected { theme.text.link.hex() } else { theme.text.primary.hex() };
                                 let tid = format!("docs-search-hit-{idx}");
                                 let sel_attr = if is_selected { "true" } else { "false" };
                                 let hit_route = config.docs_route_for_content(&hit.route);

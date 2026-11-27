@@ -200,7 +200,7 @@ fn InlineNodeView(
                                 inline: child,
                                 font_size: font_size,
                                 base_weight: "500".to_string(),
-                                text_color: theme.status.accent.solid.hex().to_string(),
+                                text_color: theme.text.link.hex().to_string(),
                                 base_path: base_path.clone(),
                             }
                         }

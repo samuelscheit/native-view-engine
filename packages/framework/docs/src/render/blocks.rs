@@ -174,9 +174,9 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
                         None => "•".to_string(),
                     };
                     let marker_color = match item.checked {
-                        Some(true) => theme.status.success.solid.hex(),
+                        Some(true) => theme.status.success.text.hex(),
                         Some(false) => theme.text.secondary.hex(),
-                        None => theme.status.accent.solid.hex(),
+                        None => theme.status.accent.text.hex(),
                     };
                     let checked_attr = item.checked.map(|c| if c { "true" } else { "false" }.to_string());
 

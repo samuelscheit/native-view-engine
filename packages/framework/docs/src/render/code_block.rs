@@ -47,7 +47,7 @@ pub fn HighlightedCodeView(
 
     let copy_label = if is_copied { "Copied" } else { "Copy" };
     let copy_fg = if is_copied {
-        theme.status.success.solid.hex()
+        theme.status.success.text.hex()
     } else {
         theme.text.secondary.hex()
     };
