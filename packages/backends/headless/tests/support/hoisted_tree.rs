@@ -93,7 +93,8 @@ fn fresh_step(frame: usize, len: usize, values: usize) -> usize {
     (frame + frame / len) % values
 }
 
-/// Paint-only frame: one leaf's `Visual::opacity` changes.
+/// Paint-only frame: one leaf's `Visual::opacity` changes (values `0.5..=0.9` never include the
+/// built default `1.0`).
 pub fn commit_paint_frame(
     store: &mut NodeStore,
     changes: &mut ChangeSet,
@@ -108,7 +109,8 @@ pub fn commit_paint_frame(
 }
 
 /// Out-of-flow frame: one absolute badge's `inset_top` changes, re-running its card's and the
-/// root's positioning passes (both rewrite their hoisted lists).
+/// root's positioning passes (both rewrite their hoisted lists). Values `3..=6` never include the
+/// built `2.0`, so a badge's first visit is a real edit too.
 pub fn commit_badge_frame(
     store: &mut NodeStore,
     changes: &mut ChangeSet,
@@ -118,6 +120,6 @@ pub fn commit_badge_frame(
     let len = tree.badges.len();
     let mut tx = store.tx();
     tx.edit::<Layout>(tree.badges[frame % len])
-        .inset_top(Length::points(2.0 + fresh_step(frame, len, 4) as f32));
+        .inset_top(Length::points(3.0 + fresh_step(frame, len, 4) as f32));
     tx.commit_into(changes);
 }

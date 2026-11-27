@@ -8,9 +8,9 @@
 //! - `clear` keeps the span's capacity, so the common "clear + re-add the same boxes" rewrite of a
 //!   dirty container writes in place.
 //! - A list outgrowing its capacity grows in place at the pool tail, else moves to the tail and
-//!   leaves a dead hole.
-//! - Once holes exceed half the pool, [`NodeLists::compact`] repacks every span in node-index
-//!   order (plain CSR plus per-node slack) through a reused scratch buffer.
+//!   leaves a dead hole; either way its capacity at least doubles (amortized O(1) growth).
+//! - Once holes exceed half the pool, [`NodeLists::compact`] repacks every non-empty span in
+//!   node-index order (plain CSR plus per-node slack) through a reused scratch buffer.
 //!
 //! Steady-state rewrites therefore perform zero heap allocations and zero per-node `Vec`s.
 
@@ -29,25 +29,29 @@ struct ListSpan {
 impl ListSpan {
     #[inline(always)]
     fn range(self) -> core::ops::Range<usize> {
-        self.start as usize..(self.start + self.len) as usize
+        let start = self.start as usize;
+        start..start + self.len as usize
     }
 
     #[inline(always)]
     fn end_of_capacity(self) -> usize {
-        (self.start + self.cap) as usize
+        self.start as usize + self.cap as usize
     }
 }
 
+/// Narrows a pool offset or length to the span's `u32`. A pool never nears `u32::MAX`: each live
+/// node sits in at most one list per table and `NodeId` indices are 24-bit, while compaction
+/// keeps dead slots below the live ones.
 #[inline(always)]
 fn pool_offset(offset: usize) -> u32 {
     debug_assert!(
         u32::try_from(offset).is_ok(),
         "node list pool exceeds u32 offsets"
     );
-    offset as u32
+    u32::try_from(offset).unwrap_or(u32::MAX)
 }
 
-/// Per-node out-of-flow child lists packed into one flat `NodeId` pool.
+/// Per-node `NodeId` lists packed into one flat pool.
 #[derive(Debug, Default)]
 pub(super) struct NodeLists {
     spans: Vec<ListSpan>,
@@ -70,9 +74,11 @@ impl NodeLists {
     pub(super) fn reset(&mut self) {
         self.spans.clear();
         self.pool.clear();
+        self.scratch.clear();
         self.dead = 0;
     }
 
+    /// `idx`'s list; empty for slots past [`NodeLists::ensure_len`].
     #[inline]
     pub(super) fn get(&self, idx: usize) -> &[NodeId] {
         self.spans
@@ -83,6 +89,10 @@ impl NodeLists {
     /// Empties `idx`'s list, keeping its capacity for an in-place rewrite.
     #[inline]
     pub(super) fn clear(&mut self, idx: usize) {
+        debug_assert!(
+            idx < self.spans.len(),
+            "clear of node slot {idx} past ensure_len"
+        );
         if let Some(span) = self.spans.get_mut(idx) {
             span.len = 0;
         }
@@ -91,61 +101,64 @@ impl NodeLists {
     /// Empties `idx`'s list and returns its capacity to the pool (node slot created or removed).
     #[inline]
     pub(super) fn release(&mut self, idx: usize) {
+        debug_assert!(
+            idx < self.spans.len(),
+            "release of node slot {idx} past ensure_len"
+        );
         if let Some(span) = self.spans.get_mut(idx) {
             self.dead += span.cap as usize;
             *span = ListSpan::default();
         }
     }
 
-    /// Appends `ids` to `idx`'s list.
-    pub(super) fn extend(&mut self, idx: usize, ids: impl Iterator<Item = NodeId>) {
+    /// Appends `ids` to `idx`'s list. Fills the span's spare capacity first, then (without ever
+    /// trusting `Iterator::size_hint`) grows in place at the pool tail or moves the list to the
+    /// tail, doubling its capacity so repeated single-item growth stays amortized O(1).
+    pub(super) fn extend(&mut self, idx: usize, ids: impl IntoIterator<Item = NodeId>) {
+        debug_assert!(
+            idx < self.spans.len(),
+            "extend of node slot {idx} past ensure_len"
+        );
         let Some(&span) = self.spans.get(idx) else {
             return;
         };
-        let pool_len = self.pool.len();
-        let fits = ids
-            .size_hint()
-            .1
-            .is_some_and(|upper| span.len as usize + upper <= span.cap as usize);
-
-        let next = if fits {
-            let mut at = span.range().end;
-            for id in ids {
-                self.pool[at] = id;
-                at += 1;
-            }
-            ListSpan {
-                len: pool_offset(at) - span.start,
-                ..span
-            }
-        } else if span.end_of_capacity() == pool_len {
-            // Last span in the pool (or an empty pool): drop its slack and grow in place.
-            self.pool.truncate(span.range().end);
-            self.pool.extend(ids);
-            let len = pool_offset(self.pool.len()) - span.start;
-            ListSpan {
-                start: span.start,
-                len,
-                cap: len,
-            }
-        } else {
-            let start = self.pool.len();
-            self.pool.extend_from_within(span.range());
-            self.pool.extend(ids);
-            self.dead += span.cap as usize;
-            let len = pool_offset(self.pool.len() - start);
-            ListSpan {
-                start: pool_offset(start),
-                len,
-                cap: len,
+        let mut ids = ids.into_iter();
+        let start = span.start as usize;
+        let cap = span.cap as usize;
+        let mut len = span.len as usize;
+        let overflow = loop {
+            match ids.next() {
+                None => break None,
+                Some(id) if len < cap => {
+                    self.pool[start + len] = id;
+                    len += 1;
+                }
+                Some(id) => break Some(id),
             }
         };
-        // Capacity-less spans are canonical `{0, 0, 0}` so no stale `start` can outlive a tail
-        // truncation or compaction and index past the pool.
-        self.spans[idx] = if next.cap == 0 {
-            ListSpan::default()
+        let Some(first_overflow) = overflow else {
+            self.spans[idx].len = pool_offset(len);
+            return;
+        };
+        let new_start = if span.end_of_capacity() == self.pool.len() {
+            // Last span in the pool (or an empty pool): drop its slack and grow in place.
+            self.pool.truncate(start + len);
+            start
         } else {
-            next
+            let tail = self.pool.len();
+            self.pool.extend_from_within(start..start + len);
+            self.dead += cap;
+            tail
+        };
+        self.pool.push(first_overflow);
+        self.pool.extend(ids);
+        let new_len = self.pool.len() - new_start;
+        let new_cap = new_len.max(cap.saturating_mul(2));
+        self.pool.resize(new_start + new_cap, NodeId::NULL);
+        self.spans[idx] = ListSpan {
+            start: pool_offset(new_start),
+            len: pool_offset(new_len),
+            cap: pool_offset(new_cap),
         };
     }
 
@@ -156,9 +169,16 @@ impl NodeLists {
         }
     }
 
+    /// Repacks every span in node-index order. Non-empty spans keep their slack (in-place
+    /// rewrites stay cheap); empty spans give theirs back and become canonical `{0, 0, 0}`, so
+    /// slack of lists that emptied out is reclaimed instead of pinned forever.
     fn compact(&mut self) {
         self.scratch.clear();
-        for span in self.spans.iter_mut().filter(|span| span.cap != 0) {
+        for span in &mut self.spans {
+            if span.len == 0 {
+                *span = ListSpan::default();
+                continue;
+            }
             let start = self.scratch.len();
             self.scratch.extend_from_slice(&self.pool[span.range()]);
             self.scratch.resize(start + span.cap as usize, NodeId::NULL);
@@ -183,6 +203,12 @@ impl NodeLists {
             assert!(pair[0].1 <= pair[1].0, "overlapping list spans {pair:?}");
         }
         assert!(self.spans.iter().all(|s| s.len <= s.cap));
+        assert!(
+            self.spans
+                .iter()
+                .all(|s| s.cap != 0 || (s.start == 0 && s.len == 0)),
+            "capacity-less spans must be canonical {{0, 0, 0}}"
+        );
         assert!(owned.last().is_none_or(|&(_, end)| end <= self.pool.len()));
         let live: usize = owned.iter().map(|&(s, e)| e - s).sum();
         assert_eq!(

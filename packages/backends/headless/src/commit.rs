@@ -21,7 +21,6 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
         self.surface_id = surface_id;
         if self.viewport != viewport {
             self.viewport = viewport;
-            self.viewport_dirty = true;
             self.scene_table = NveSceneTable::new();
         }
     }
@@ -86,27 +85,18 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
             }
         }
 
-        // 2. Sync & compute layout directly from `NodeStore` word columns.
+        // 2. Sync & compute layout directly from `NodeStore` word columns. The engine owns the
+        //    single clean-frame gate (`StoreLayoutEngine::compute_layout` contract).
         let t_layout = Instant::now();
         self.layout.sync_changes(store, changes);
-        let needs_layout = self.viewport_dirty
-            || !changes.created.is_empty()
-            || !changes.removed.is_empty()
-            || !changes.children.is_empty()
-            || changes
-                .effects
-                .iter()
-                .any(|&fx| fx & (effect::LAYOUT | effect::MEASURE) != 0);
-        if needs_layout {
-            self.layout
-                .compute_layout(store, StoreNodeId::ROOT, self.viewport);
-            self.viewport_dirty = false;
-        }
+        let laid_out = self
+            .layout
+            .compute_layout(store, StoreNodeId::ROOT, self.viewport);
         let layout_us = t_layout.elapsed().as_micros() as u64;
 
         // 3. Diff computed rects into `last_mutations` when tracking is enabled.
         let t_diff = Instant::now();
-        if self.track_mutations && needs_layout {
+        if self.track_mutations && laid_out {
             let cap = store.capacity();
             if self.prev_rects.len() < cap {
                 self.prev_rects.resize(cap, (0, LayoutRect::default()));
@@ -171,6 +161,5 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
         self.scene_table.clear();
         self.published_tables.clear();
         self.published_dirty_buf.clear();
-        self.viewport_dirty = true;
     }
 }

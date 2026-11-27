@@ -8,35 +8,15 @@ mod counting_alloc;
 #[path = "support/hoisted_tree.rs"]
 mod hoisted_tree;
 
-use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
 use counting_alloc::count_allocs;
-use hoisted_tree::{build_hoisted_tree, commit_badge_frame, commit_paint_frame, CARDS, VIEWPORT};
+use hoisted_tree::{CARDS, VIEWPORT, build_hoisted_tree, commit_badge_frame, commit_paint_frame};
 use nve_backend_headless::TaffyStoreLayout;
 use nve_components::tables::core_realization_order;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 
 #[test]
 fn counting_alloc_probe_fires_on_this_thread_only() {
-    let (_, own) = count_allocs(|| black_box(Vec::<u64>::with_capacity(32)));
-    assert!(
-        own >= 1,
-        "allocator hook must count this thread's allocations"
-    );
-
-    let (_, foreign) = count_allocs(|| {
-        std::thread::spawn(|| black_box(vec![0u8; 4096]).len())
-            .join()
-            .unwrap_or(0)
-    });
-    // `spawn` itself allocates on this thread; the child's 4 KiB buffer must not add a count.
-    let (_, spawn_only) = count_allocs(|| std::thread::spawn(|| 0usize).join().unwrap_or(0));
-    assert_eq!(
-        foreign, spawn_only,
-        "child-thread allocations leaked into this thread's count"
-    );
+    counting_alloc::assert_counts_only_this_thread();
 }
 
 #[test]
@@ -68,53 +48,54 @@ fn taffy_relayout_1k_hoisted() {
     assert_eq!(toast.x, VIEWPORT.width - 16.0 - 200.0);
     assert_eq!(toast.y, VIEWPORT.height - (16.0 + 3.0) - 48.0);
 
-    let paint_frame = |store: &mut NodeStore,
-                       changes: &mut ChangeSet,
-                       layout: &mut TaffyStoreLayout,
-                       frame: usize| {
-        commit_paint_frame(store, changes, &tree, frame);
-        layout.sync_changes(store, changes);
-        layout.compute_layout(store, NodeId::ROOT, VIEWPORT);
-    };
-    let oof_frame = |store: &mut NodeStore,
-                     changes: &mut ChangeSet,
-                     layout: &mut TaffyStoreLayout,
-                     frame: usize| {
-        commit_badge_frame(store, changes, &tree, frame);
-        layout.sync_changes(store, changes);
-        layout.compute_layout(store, NodeId::ROOT, VIEWPORT);
-    };
+    // Each lane keeps its own monotonic frame counter so no measured frame revisits a value its
+    // warm-up already wrote (the store would elide such an edit and the frame measure nothing).
+    // Every frame asserts it really changed the store and whether the engine ran a pass.
+    let mut paint_at = 0usize;
+    let mut paint_frame =
+        |store: &mut NodeStore, changes: &mut ChangeSet, layout: &mut TaffyStoreLayout| {
+            commit_paint_frame(store, changes, &tree, paint_at);
+            paint_at += 1;
+            assert!(
+                !changes.touched.is_empty(),
+                "paint frame must change the store"
+            );
+            layout.sync_changes(store, changes);
+            assert!(
+                !layout.compute_layout(store, NodeId::ROOT, VIEWPORT),
+                "paint-only frame must skip the layout pass"
+            );
+        };
+    let mut oof_at = 0usize;
+    let mut oof_frame =
+        |store: &mut NodeStore, changes: &mut ChangeSet, layout: &mut TaffyStoreLayout| {
+            commit_badge_frame(store, changes, &tree, oof_at);
+            oof_at += 1;
+            assert!(
+                !changes.touched.is_empty(),
+                "badge frame must change the store"
+            );
+            layout.sync_changes(store, changes);
+            assert!(
+                layout.compute_layout(store, NodeId::ROOT, VIEWPORT),
+                "badge frame must run the layout pass"
+            );
+        };
 
     // Warm every scratch buffer across both lanes (two passes over every badge).
-    for frame in 0..tree.badges.len() * 2 {
-        paint_frame(&mut store, &mut changes, &mut layout, frame);
-        oof_frame(&mut store, &mut changes, &mut layout, frame);
+    for _ in 0..tree.badges.len() * 2 {
+        paint_frame(&mut store, &mut changes, &mut layout);
+        oof_frame(&mut store, &mut changes, &mut layout);
     }
 
-    // 1. Steady-state paint frames (sync + compute; the clean pass is skipped instead of letting
-    //    Taffy re-run its allocating root positioning pass for the 100 fixed toasts) while a
-    //    background thread allocates continuously: strictly 0 allocations.
-    let stop = Arc::new(AtomicBool::new(false));
-    let noise = {
-        let stop = Arc::clone(&stop);
-        std::thread::spawn(move || {
-            let mut churn = 0usize;
-            while !stop.load(Ordering::Relaxed) {
-                churn += black_box(vec![churn as u8; 256]).len();
-            }
-            churn
-        })
-    };
+    // 1. Steady-state paint frames (sync + self-gated compute; the engine skips the clean pass
+    //    instead of letting Taffy re-run its allocating root positioning pass for the 100 fixed
+    //    toasts): strictly 0 allocations over 200 frames that each really edit the store.
     let (_, steady) = count_allocs(|| {
-        for frame in 0..200 {
-            paint_frame(&mut store, &mut changes, &mut layout, frame);
+        for _ in 0..200 {
+            paint_frame(&mut store, &mut changes, &mut layout);
         }
     });
-    stop.store(true, Ordering::Relaxed);
-    assert!(
-        noise.join().is_ok_and(|churn| churn > 0),
-        "noise thread must have allocated"
-    );
     assert_eq!(
         steady, 0,
         "steady-state hoisted relayout allocated {steady} times over 200 frames"
@@ -126,13 +107,12 @@ fn taffy_relayout_1k_hoisted() {
     //    same in every round (no amortized hoisted-pool growth).
     let badge = tree.badges[6];
     let before = layout.layout_of(badge).expect("badge laid out");
-    let mut round = |round: usize| -> Vec<usize> {
-        let first = round * tree.badges.len();
-        (first..first + tree.badges.len())
-            .map(|frame| count_allocs(|| oof_frame(&mut store, &mut changes, &mut layout, frame)).1)
+    let mut round = || -> Vec<usize> {
+        (0..tree.badges.len())
+            .map(|_| count_allocs(|| oof_frame(&mut store, &mut changes, &mut layout)).1)
             .collect()
     };
-    let (round_a, round_b) = (round(2), round(3));
+    let (round_a, round_b) = (round(), round());
     assert_eq!(
         round_a, round_b,
         "dirty hoisted relayout allocations drift between rounds"

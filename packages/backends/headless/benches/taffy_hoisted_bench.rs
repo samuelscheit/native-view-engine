@@ -16,14 +16,14 @@ mod hoisted_tree;
 mod native {
     use std::hint::black_box;
 
-    use criterion::{criterion_group, Criterion};
+    use criterion::{Criterion, criterion_group};
     use nve_backend_headless::TaffyStoreLayout;
     use nve_components::tables::core_realization_order;
     use nve_store::{ChangeSet, NodeId, NodeStore};
 
     use crate::counting_alloc::count_allocs;
     use crate::hoisted_tree::{
-        build_hoisted_tree, commit_badge_frame, commit_paint_frame, HoistedTree, VIEWPORT,
+        HoistedTree, VIEWPORT, build_hoisted_tree, commit_badge_frame, commit_paint_frame,
     };
 
     struct Fixture {
@@ -31,10 +31,14 @@ mod native {
         changes: ChangeSet,
         layout: TaffyStoreLayout,
         tree: HoistedTree,
-        frame: usize,
+        /// Independent monotonic frame counter per lane (indexed by `Lane as usize`): a shared
+        /// counter skips values within a lane, so revisits could rewrite an identical value that
+        /// the store elides, and the frame would measure nothing.
+        frames: [usize; 3],
     }
 
     #[derive(Clone, Copy)]
+    #[repr(usize)]
     enum Lane {
         /// `Visual::opacity` edit: clean layout, pass skipped.
         Paint,
@@ -58,7 +62,7 @@ mod native {
                 changes,
                 layout,
                 tree,
-                frame: 0,
+                frames: [0; 3],
             };
             for lane in [Lane::Paint, Lane::OutOfFlow, Lane::Full] {
                 for _ in 0..fixture.tree.badges.len() * 2 {
@@ -68,29 +72,35 @@ mod native {
             fixture
         }
 
-        fn run(&mut self, lane: Lane) {
-            self.frame += 1;
-            let i = self.frame;
-            match lane {
-                Lane::Paint => {
-                    commit_paint_frame(&mut self.store, &mut self.changes, &self.tree, i)
+        /// Runs one frame of `lane`; returns whether the store changed and whether a layout pass
+        /// ran, so probe loops can prove every measured frame does real work.
+        fn run(&mut self, lane: Lane) -> (bool, bool) {
+            let i = self.frames[lane as usize];
+            self.frames[lane as usize] += 1;
+            let changed = match lane {
+                Lane::Paint | Lane::OutOfFlow => {
+                    let commit = if matches!(lane, Lane::Paint) {
+                        commit_paint_frame
+                    } else {
+                        commit_badge_frame
+                    };
+                    commit(&mut self.store, &mut self.changes, &self.tree, i);
+                    self.layout.sync_changes(&self.store, &self.changes);
+                    !self.changes.touched.is_empty()
                 }
-                Lane::OutOfFlow => {
-                    commit_badge_frame(&mut self.store, &mut self.changes, &self.tree, i);
+                Lane::Full => {
+                    self.layout.invalidate_all(&self.store);
+                    false
                 }
-                Lane::Full => {}
-            }
-            if matches!(lane, Lane::Full) {
-                self.layout.invalidate_all(&self.store);
-            } else {
-                self.layout.sync_changes(&self.store, &self.changes);
-            }
-            self.layout
+            };
+            let ran = self
+                .layout
                 .compute_layout(&self.store, NodeId::ROOT, VIEWPORT);
             black_box(
                 self.layout
                     .layout_of(self.tree.toasts[i % self.tree.toasts.len()]),
             );
+            (changed, ran)
         }
     }
 
@@ -105,7 +115,14 @@ mod native {
             const FRAMES: usize = 200;
             let (_, allocs) = count_allocs(|| {
                 for _ in 0..FRAMES {
-                    fixture.run(lane);
+                    let (changed, ran) = fixture.run(lane);
+                    match lane {
+                        Lane::Paint => assert!(changed && !ran, "paint frame must edit and skip"),
+                        Lane::OutOfFlow => {
+                            assert!(changed && ran, "badge frame must edit and lay out")
+                        }
+                        Lane::Full => assert!(ran, "full relayout must run a pass"),
+                    }
                 }
             });
             eprintln!(
@@ -122,6 +139,8 @@ mod native {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
+    // The per-frame allocation counts below are only meaningful if the counter is thread-scoped.
+    counting_alloc::assert_counts_only_this_thread();
     native::benches();
     criterion::Criterion::default()
         .configure_from_args()

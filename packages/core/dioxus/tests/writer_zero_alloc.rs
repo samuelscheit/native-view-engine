@@ -8,8 +8,6 @@ mod counting_alloc;
 #[path = "support/writer_list.rs"]
 mod writer_list;
 
-use std::hint::black_box;
-
 use counting_alloc::count_allocs;
 use nve_dioxus::NveMutationWriter;
 use writer_list::{
@@ -19,21 +17,7 @@ use writer_list::{
 
 #[test]
 fn counting_alloc_probe_fires_on_this_thread_only() {
-    let (_, own) = count_allocs(|| black_box(Vec::<u64>::with_capacity(32)));
-    assert!(
-        own >= 1,
-        "allocator hook must count this thread's allocations"
-    );
-    let (_, with_child_alloc) = count_allocs(|| {
-        std::thread::spawn(|| black_box(vec![0u8; 4096]).len())
-            .join()
-            .unwrap_or(0)
-    });
-    let (_, spawn_only) = count_allocs(|| std::thread::spawn(|| 0usize).join().unwrap_or(0));
-    assert_eq!(
-        with_child_alloc, spawn_only,
-        "child-thread allocations leaked into this count"
-    );
+    counting_alloc::assert_counts_only_this_thread();
 }
 
 fn assert_zero_steady_state(name: &str, mut frame: impl FnMut(usize)) {

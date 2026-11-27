@@ -21,8 +21,17 @@ pub(super) fn layout_once(
 /// Incremental layout must match a from-scratch layout of the same store: every reachable rect and
 /// every hoisted list, with consistent pool accounting.
 pub(super) fn assert_matches_fresh_layout(store: &NodeStore, incremental: &TaffyStoreLayout) {
-    let mut fresh = TaffyStoreLayout::new();
-    fresh.compute_layout(store, NodeId::ROOT, VP);
+    assert_matches_layout_of(store, incremental, TaffyStoreLayout::new());
+}
+
+/// [`assert_matches_fresh_layout`] against a caller-configured `fresh` engine (e.g. a custom
+/// text measurer) that has not laid out yet.
+pub(super) fn assert_matches_layout_of(
+    store: &NodeStore,
+    incremental: &TaffyStoreLayout,
+    mut fresh: TaffyStoreLayout,
+) {
+    assert!(fresh.compute_layout(store, NodeId::ROOT, VP));
     for idx in 0..store.capacity() {
         let Some(id) = store.id_at(idx) else {
             continue;
@@ -145,6 +154,50 @@ fn multi_level_fixed_hoists_past_nested_containing_blocks_to_root() {
     tx.commit_into(&mut changes);
     layout_once(&mut store, &changes, &mut layout);
     assert_eq!(layout.hoisted.get(NodeId::ROOT.index()), &[root_abs, fixed]);
+    assert_matches_fresh_layout(&store, &layout);
+
+    // A layout edit on a detached node reaches no laid-out ancestor: the root list survives.
+    let detached = {
+        let mut tx = store.tx();
+        let detached = tx.create();
+        tx.edit::<Layout>(detached)
+            .position(Position::Fixed)
+            .width(Length::points(9.0));
+        tx.commit_into(&mut changes);
+        detached
+    };
+    layout_once(&mut store, &changes, &mut layout);
+    let mut tx = store.tx();
+    tx.edit::<Layout>(detached).width(Length::points(11.0));
+    tx.commit_into(&mut changes);
+    layout_once(&mut store, &changes, &mut layout);
+    assert_eq!(
+        layout.layout_of(detached),
+        None,
+        "detached nodes are never laid out"
+    );
+    assert_eq!(layout.hoisted.get(NodeId::ROOT.index()), &[root_abs, fixed]);
+    assert_matches_fresh_layout(&store, &layout);
+
+    // Dead-root round trip: every rect goes stale, then the live root re-records the full list.
+    let dead = {
+        let mut tx = store.tx();
+        tx.remove(detached);
+        tx.commit_into(&mut changes);
+        detached
+    };
+    layout.sync_changes(&store, &changes);
+    assert!(
+        layout.compute_layout(&store, dead, VP),
+        "a dead root reports a pass"
+    );
+    assert_eq!(layout.layout_of(fixed), None);
+    assert!(
+        layout.compute_layout(&store, NodeId::ROOT, VP),
+        "live root recomputes"
+    );
+    assert_eq!(layout.hoisted.get(NodeId::ROOT.index()), &[root_abs, fixed]);
+    assert_eq!(layout.hoisted.get(inner.index()), &[abs_in_abs]);
     assert_matches_fresh_layout(&store, &layout);
 }
 

@@ -257,6 +257,9 @@ impl LayoutContainingBlock for LayoutView<'_> {
 
     #[inline]
     fn add_hoisted_children(&mut self, n: taffy::NodeId, hoisted: &[taffy::NodeId]) {
+        if hoisted.is_empty() {
+            return;
+        }
         let store = self.store;
         self.hoisted
             .extend(ix(n), hoisted.iter().filter_map(|&c| store.id_at(ix(c))));

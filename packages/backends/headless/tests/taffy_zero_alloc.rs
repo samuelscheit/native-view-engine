@@ -7,10 +7,15 @@ mod counting_alloc;
 use counting_alloc::count_allocs;
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_components::tables::{
-    core_realization_order, FlexDirection, Layout, TextContent, Transform, Typography, Visual,
+    FlexDirection, Layout, TextContent, Transform, Typography, Visual, core_realization_order,
 };
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
+
+#[test]
+fn counting_alloc_probe_fires_on_this_thread_only() {
+    counting_alloc::assert_counts_only_this_thread();
+}
 
 #[test]
 fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
@@ -70,8 +75,12 @@ fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
         backend.commit(&store, &changes).unwrap();
     }
 
-    // 1. Steady-state cached `TaffyStoreLayout::sync_changes` + `compute_layout` across 50 frames: 0 allocs!
-    let (_, allocs_cached) = count_allocs(|| {
+    // 1. Steady-state paint/composite frames through `sync_changes` + `compute_layout` across 50
+    //    frames: 0 allocs. Honest scope: this measures the engine's self-gated *skip* (every frame
+    //    asserts `compute_layout` returned `false`), not a forced pass over a fully cached tree;
+    //    such a pass is not reachable through the public API and, with fixed boxes, Taffy 0.16
+    //    would re-run its allocating root positioning pass (docs/UPSTREAM.md).
+    let (_, allocs_skipped) = count_allocs(|| {
         for i in 0..50u32 {
             let mut tx = store.tx();
             tx.edit::<Visual>(leaves[(i as usize) % leaves.len()])
@@ -79,13 +88,20 @@ fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
             tx.edit::<Transform>(leaves[(i as usize) % leaves.len()])
                 .translate_x(i as f32);
             tx.commit_into(&mut changes);
+            assert!(
+                !changes.touched.is_empty(),
+                "frame {i} must change the store"
+            );
             layout.sync_changes(&store, &changes);
-            layout.compute_layout(&store, NodeId::ROOT, vp);
+            assert!(
+                !layout.compute_layout(&store, NodeId::ROOT, vp),
+                "paint/composite frame {i} must skip the layout pass"
+            );
         }
     });
     assert_eq!(
-        allocs_cached, 0,
-        "steady-state TaffyStoreLayout::sync_changes + compute_layout allocated {allocs_cached} times"
+        allocs_skipped, 0,
+        "steady-state TaffyStoreLayout::sync_changes + skipped compute_layout allocated {allocs_skipped} times"
     );
 
     // 2. Steady-state `HeadlessBackend::commit` (120 Hz composite/paint lane) across 50 frames: 0 allocs!
@@ -132,9 +148,11 @@ fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
             layout.sync_changes(&store, &changes);
         });
         sync_allocs += a_sync;
-        let (_, a_comp) = count_allocs(|| {
-            layout.compute_layout(&store, NodeId::ROOT, vp);
-        });
+        let (ran, a_comp) = count_allocs(|| layout.compute_layout(&store, NodeId::ROOT, vp));
+        assert!(
+            ran,
+            "Layout::width + TextContent::text frame {i} must run the layout pass"
+        );
         taffy_recompute_allocs += a_comp;
     }
     assert_eq!(

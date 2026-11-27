@@ -71,6 +71,8 @@ mod native {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
+    // The per-frame allocation counts below are only meaningful if the counter is thread-scoped.
+    counting_alloc::assert_counts_only_this_thread();
     native::benches();
     criterion::Criterion::default()
         .configure_from_args()

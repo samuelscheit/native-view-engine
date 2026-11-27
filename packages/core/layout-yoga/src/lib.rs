@@ -168,6 +168,11 @@ mod real_impl {
         computed_rects: HashMap<NodeId, LayoutRect>,
         text_measurer: Arc<dyn TextMeasurer>,
         child_scratch: Vec<YGNodeRef>,
+        /// `StoreLayoutEngine::compute_layout` self-gate: set by every layout-affecting change,
+        /// measurer swap, and reset; cleared only after a completed pass.
+        layout_dirty: bool,
+        /// `(root, width, height, scale)` of the last completed pass.
+        last_pass: Option<(NodeId, f32, f32, f32)>,
     }
 
     unsafe impl Send for YogaLayoutEngine {}
@@ -192,6 +197,8 @@ mod real_impl {
                 computed_rects: HashMap::new(),
                 text_measurer,
                 child_scratch: Vec::new(),
+                layout_dirty: true,
+                last_pass: None,
             })
         }
 
@@ -381,6 +388,14 @@ mod real_impl {
         }
 
         fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
+            let layout_effect = nve_store::effect::LAYOUT | nve_store::effect::MEASURE;
+            if !changes.created.is_empty()
+                || !changes.removed.is_empty()
+                || !changes.children.is_empty()
+                || changes.effects.iter().any(|&fx| fx & layout_effect != 0)
+            {
+                self.layout_dirty = true;
+            }
             for &id in &changes.removed {
                 if let Some(entry) = self.nodes.remove(&id) {
                     unsafe {
@@ -409,17 +424,23 @@ mod real_impl {
             }
         }
 
-        fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) {
+        fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
             if !store.is_alive(root) {
                 self.computed_rects.clear();
-                return;
+                self.layout_dirty = true;
+                return true;
+            }
+            let pass_key = (root, viewport.width, viewport.height, viewport.scale_factor);
+            if !self.layout_dirty && self.last_pass == Some(pass_key) {
+                return false;
             }
             if !self.nodes.contains_key(&root) {
                 self.sync_subtree_if_unseen(store, root);
             }
             let Some(root_yg) = self.nodes.get(&root).map(|e| e.yg_node) else {
                 self.computed_rects.clear();
-                return;
+                self.layout_dirty = true;
+                return true;
             };
             unsafe {
                 nve_yg_config_set_point_scale_factor(self.config, viewport.scale_factor);
@@ -428,6 +449,9 @@ mod real_impl {
             }
             self.computed_rects.clear();
             self.collect_rects(store, root, 0.0, 0.0);
+            self.last_pass = Some(pass_key);
+            self.layout_dirty = false;
+            true
         }
 
         fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
@@ -442,10 +466,13 @@ mod real_impl {
                     unsafe { nve_yg_node_mark_dirty(entry.yg_node) };
                 }
             }
+            self.layout_dirty = true;
         }
 
         fn reset(&mut self) {
             self.clear_all_nodes();
+            self.layout_dirty = true;
+            self.last_pass = None;
         }
     }
 }
@@ -489,7 +516,12 @@ mod unavailable_impl {
             match self._uninhabited {}
         }
 
-        fn compute_layout(&mut self, _store: &NodeStore, _root: NodeId, _viewport: Viewport) {
+        fn compute_layout(
+            &mut self,
+            _store: &NodeStore,
+            _root: NodeId,
+            _viewport: Viewport,
+        ) -> bool {
             match self._uninhabited {}
         }
 

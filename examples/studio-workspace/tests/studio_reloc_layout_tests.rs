@@ -367,8 +367,8 @@ impl StoreLayoutEngine for HostMirrorLayoutEngine {
         self.inner.sync_changes(store, changes);
     }
 
-    fn compute_layout(&mut self, store: &NodeStore, root: StoreNodeId, viewport: Viewport) {
-        self.inner.compute_layout(store, root, viewport);
+    fn compute_layout(&mut self, store: &NodeStore, root: StoreNodeId, viewport: Viewport) -> bool {
+        self.inner.compute_layout(store, root, viewport)
     }
 
     fn layout_of(&self, id: StoreNodeId) -> Option<LayoutRect> {

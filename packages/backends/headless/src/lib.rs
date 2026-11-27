@@ -67,7 +67,6 @@ pub enum HeadlessMutation {
 pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) surface_id: SurfaceId,
     pub(crate) viewport: Viewport,
-    pub(crate) viewport_dirty: bool,
     pub(crate) layout: L,
     text_measurer: Arc<dyn TextMeasurer>,
     pub(crate) prev_rects: Vec<(u64, LayoutRect)>,
@@ -105,7 +104,6 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         Self {
             surface_id: 1,
             viewport: Viewport::default(),
-            viewport_dirty: true,
             layout,
             text_measurer,
             prev_rects: Vec::new(),
@@ -163,7 +161,6 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     pub fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
         self.text_measurer = Arc::clone(&measurer);
         self.layout.set_text_measurer(measurer);
-        self.viewport_dirty = true;
     }
 
     #[inline]
@@ -181,7 +178,6 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         HeadlessBackend {
             surface_id: self.surface_id,
             viewport: self.viewport,
-            viewport_dirty: true,
             layout: new_layout,
             text_measurer: self.text_measurer,
             prev_rects: self.prev_rects,
@@ -201,11 +197,11 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         }
     }
 
-    /// Recomputes layout for `store` immediately (e.g. after swapping layout engines or viewport).
-    pub fn recompute_layout(&mut self, store: &NodeStore) {
+    /// Recomputes layout for `store` immediately (e.g. after swapping layout engines or viewport);
+    /// returns whether the engine ran a pass (it self-gates clean frames).
+    pub fn recompute_layout(&mut self, store: &NodeStore) -> bool {
         self.layout
-            .compute_layout(store, StoreNodeId::ROOT, self.viewport);
-        self.viewport_dirty = false;
+            .compute_layout(store, StoreNodeId::ROOT, self.viewport)
     }
 
     #[inline]

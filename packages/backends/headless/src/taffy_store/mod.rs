@@ -224,6 +224,10 @@ impl TaffyStoreLayout {
 
     /// Marks every live node dirty (used after full replica load or measurer swap).
     pub fn invalidate_all(&mut self, store: &NodeStore) {
+        // Full replica load: drop every per-node list so no dead span outlives its node; the
+        // full pass below re-records hoisted lists and the inheritance walk rebuilds box children.
+        self.hoisted.reset();
+        self.box_children.reset();
         self.ensure_capacity(store.capacity());
         for c in &mut self.caches {
             c.clear();
@@ -333,13 +337,16 @@ impl TaffyStoreLayout {
         self.box_children.compact_if_fragmented();
     }
 
-    /// Computes layout for `root` at `viewport` directly from `store` columns.
-    pub fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) {
+    /// Computes layout for `root` at `viewport` directly from `store` columns, self-gated per the
+    /// [`StoreLayoutEngine::compute_layout`] contract: returns `false` without a pass when
+    /// nothing was invalidated since the last one, `true` when rects may have changed.
+    pub fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
         self.ensure_capacity(store.capacity());
         if !store.is_live(root) {
+            // Every rect becomes stale; stay dirty so a live root recomputes.
             self.layout_gen = self.layout_gen.wrapping_add(1).max(1);
             self.layout_dirty = true;
-            return;
+            return true;
         }
 
         let vp_key = (root, viewport.width, viewport.height);
@@ -352,9 +359,8 @@ impl TaffyStoreLayout {
         self.propagate_inheritance(store, root);
         if !self.layout_dirty {
             // Nothing was invalidated since the last pass: every box and rounded rect is current.
-            return;
+            return false;
         }
-        self.layout_dirty = false;
 
         let mut view = LayoutView {
             store,
@@ -428,6 +434,10 @@ impl TaffyStoreLayout {
                 self.round_stack.push((child, cx, cy, self_hidden));
             }
         }
+        // Cleared only once the pass completed: a pass unwinding out of a host `TextMeasurer`
+        // leaves the engine dirty so the next frame retries instead of skipping.
+        self.layout_dirty = false;
+        true
     }
 
     #[inline]
@@ -467,8 +477,8 @@ impl StoreLayoutEngine for TaffyStoreLayout {
         TaffyStoreLayout::sync_changes(self, store, changes);
     }
 
-    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) {
-        TaffyStoreLayout::compute_layout(self, store, root, viewport);
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
+        TaffyStoreLayout::compute_layout(self, store, root, viewport)
     }
 
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
@@ -493,3 +503,6 @@ mod hoisted_tests;
 
 #[cfg(test)]
 mod contents_tests;
+
+#[cfg(test)]
+mod clean_frame_tests;

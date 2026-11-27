@@ -150,7 +150,15 @@ pub trait StoreLayoutEngine: Send {
     fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet);
 
     /// Computes layout for `root` at `viewport` directly from `store` word columns.
-    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport);
+    ///
+    /// **Self-gating contract**: the engine is the single owner of the clean-frame gate. Callers
+    /// invoke this on every frame after [`StoreLayoutEngine::sync_changes`]; when nothing that
+    /// affects layout changed since the last pass (no layout/measure/structural change, same
+    /// `root` and viewport, no measurer swap or reset), the engine returns `false` without
+    /// running a pass and every [`StoreLayoutEngine::layout_of`] result stays current. Returns
+    /// `true` when a pass ran (layout results may have changed). A pass that unwinds (e.g. a
+    /// panicking host `TextMeasurer`) must leave the engine dirty so the next call retries.
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool;
 
     /// Returns the absolute rounded layout rect of `id` from the latest pass, if live.
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect>;
@@ -174,8 +182,8 @@ impl<L: StoreLayoutEngine + ?Sized> StoreLayoutEngine for Box<L> {
         (**self).sync_changes(store, changes);
     }
 
-    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) {
-        (**self).compute_layout(store, root, viewport);
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
+        (**self).compute_layout(store, root, viewport)
     }
 
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
