@@ -12,7 +12,7 @@ use cosmic_text::{
 };
 use nve_abi::ColorRgba;
 use nve_engine::LayoutRect;
-use nve_layout::TextMeasurer;
+use nve_layout::{TextMeasurer, TextStyle};
 
 use crate::font::BitmapFontTextMeasurer;
 use crate::raster::{
@@ -151,7 +151,7 @@ impl CosmicTextEngine {
             return (0.0, 0.0);
         }
         if !self.has_system_fonts {
-            return BitmapFontTextMeasurer.measure(text, font_size, max_width);
+            return BitmapFontTextMeasurer.measure_text(text, font_size, max_width);
         }
 
         let fs = sanitize_font_size(font_size);
@@ -563,18 +563,10 @@ impl CosmicTextEngine {
     }
 }
 
+/// Measures with the size and weight the Skia painter shapes with; `nowrap` / `pre` never wrap.
 impl TextMeasurer for CosmicTextEngine {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-        self.measure_text(text, font_size, max_width)
-    }
-
-    fn measure_with_weight(
-        &self,
-        text: &str,
-        font_size: f32,
-        font_weight: u16,
-        max_width: Option<f32>,
-    ) -> (f32, f32) {
-        self.measure_text_with_weight(text, font_size, font_weight, max_width)
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
+        let max_width = max_width.filter(|_| style.wraps());
+        self.measure_text_with_weight(text, style.font_size, style.font_weight, max_width)
     }
 }

@@ -161,9 +161,12 @@ class NveGtkHost {
   void set_surface_size(float width, float height, float scale_factor = 0.0f);
   void sync_surface_size_from_widget();
   void attach_window_resize(GtkWindow* window);
-  /// Pango measurement (also installed as the runtime's text measurer).
-  [[nodiscard]] NveIntrinsicSize measure_text(std::string_view text, float font_size, uint16_t font_weight = 400u,
-                                              float max_width = 0.0f) const;
+  /// Pango measurement of `text` with exactly what a label paints (`build_css_rule` + the
+  /// label's wrap / lines / ellipsize): family, size, weight, style, letter spacing, line
+  /// height, and `white-space`; also the runtime's text measurer. `max_width` is INFINITY when
+  /// unconstrained (`0` measures min-content).
+  [[nodiscard]] NveIntrinsicSize measure_text(std::string_view text, const NveRuntimeTextStyle& style,
+                                              float max_width = std::numeric_limits<float>::infinity()) const;
 
   // --- Introspection ------------------------------------------------------------------------
   [[nodiscard]] std::optional<GtkNodeSemantics> accessibility_info_for_node_id(uint32_t node_id) const;
@@ -235,7 +238,7 @@ class NveGtkHost {
   static gboolean on_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data);
   static void on_window_size_notify(GObject* object, GParamSpec* pspec, gpointer user_data);
   static void on_window_destroy(GtkWidget* widget, gpointer user_data);
-  static void measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+  static void measure_trampoline(void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width,
                                  float* out_width, float* out_height);
   /// Payload of published resource `id` of `kind` (empty when absent); valid only while
   /// `sync_views` holds the scene.
@@ -260,6 +263,8 @@ class NveGtkHost {
 
   GtkWidget* viewport_widget_ = nullptr;
   GtkWidget* root_widget_ = nullptr;
+  /// Reused by every `measure_text` (created on first use from `root_widget_`'s Pango context).
+  mutable PangoLayout* measure_layout_ = nullptr;
   GdkDisplay* display_ = nullptr;
   GtkCssProvider* css_provider_ = nullptr;
   guint tick_id_ = 0u;

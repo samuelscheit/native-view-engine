@@ -16,6 +16,148 @@ using namespace nve::gtk;
 using namespace nve::gtk::test;
 using nve::host::demo::CounterApp;
 
+/// The measurer sees the node's whole typography: family, style, letter spacing, line height,
+/// white-space, and max lines change Pango's answer exactly as they change the painted label.
+void test_measure_typography(const NveGtkHost& host) {
+  using nve::host::str_slice;
+  using nve::host::text_style;
+  const auto with = [](auto edit) {
+    NveRuntimeTextStyle s = text_style(16.0f);
+    edit(s);
+    return s;
+  };
+  constexpr std::string_view kNarrow = "iiiiiiiiiiiiiiii";
+  const NveRuntimeTextStyle sans = with([](NveRuntimeTextStyle& s) { s.font_family = str_slice("sans-serif"); });
+  const NveRuntimeTextStyle mono = with([](NveRuntimeTextStyle& s) { s.font_family = str_slice("monospace"); });
+  // Monospace gives `i` a full cell: far wider than a proportional `i`.
+  NVE_CHECK(host.measure_text(kNarrow, mono).width > host.measure_text(kNarrow, sans).width * 1.5f);
+  // Painter and measurer share one normalized list: entries trimmed of spaces / quotes, unsafe
+  // bytes dropped, empties skipped.
+  NVE_CHECK(gtk_internal::font_family_list(" 'Fira Code' , \"x;}\" ,, monospace ") == "Fira Code,x,monospace");
+  NVE_CHECK(gtk_internal::font_family_list("").empty() && gtk_internal::font_family_list(" , ").empty());
+  // A family list falls back past unknown names exactly like the label's CSS.
+  const NveRuntimeTextStyle listed =
+      with([](NveRuntimeTextStyle& s) { s.font_family = str_slice("NoSuchFontNve, monospace"); });
+  NVE_CHECK(approx(host.measure_text(kNarrow, listed).width, host.measure_text(kNarrow, mono).width, 0.5));
+
+  const std::string_view sentence = "Hello wrapping text that is long";
+  const NveIntrinsicSize one_line = host.measure_text(sentence, sans);
+  // `nowrap` / `pre` ignore the width (no extra lines); `normal` / `pre-wrap` wrap.
+  for (const uint8_t ws : {uint8_t{NVE_WHITE_SPACE_NO_WRAP}, uint8_t{NVE_WHITE_SPACE_PRE}}) {
+    NveRuntimeTextStyle s = sans;
+    s.white_space = ws;
+    const NveIntrinsicSize m = host.measure_text(sentence, s, 60.0f);
+    NVE_CHECK(m.width == one_line.width && m.height == one_line.height);
+    NVE_CHECK(host.measure_text(sentence, s, 0.0f).width == one_line.width);  // min-content too
+  }
+  const NveIntrinsicSize wrapped = host.measure_text(sentence, sans, 60.0f);
+  NVE_CHECK(wrapped.width <= 61.0f && wrapped.height > one_line.height * 2.0f);
+  const NveIntrinsicSize min_content = host.measure_text(sentence, sans, 0.0f);
+  NVE_CHECK(min_content.width > 0.0f && min_content.width < one_line.width && min_content.height > wrapped.height);
+
+  // Letter spacing widens by about one spacing per character.
+  const NveRuntimeTextStyle spaced = with([](NveRuntimeTextStyle& s) { s.letter_spacing = 3.0f; });
+  NVE_CHECK(approx(host.measure_text(kNarrow, spaced).width - host.measure_text(kNarrow, text_style(16.0f)).width,
+                   3.0 * kNarrow.size(), 4.0));
+  // Line height: points and percent (a multiplier) set the line box; `max_lines` caps it.
+  const NveRuntimeTextStyle tall = with([](NveRuntimeTextStyle& s) {
+    s.line_height = 40.0f;
+    s.line_height_unit = NVE_LINE_HEIGHT_POINTS;
+  });
+  const NveRuntimeTextStyle tall_pct = with([](NveRuntimeTextStyle& s) {
+    s.line_height = 250.0f;
+    s.line_height_unit = NVE_LINE_HEIGHT_PERCENT;
+  });
+  NVE_CHECK(approx(host.measure_text("a\nb", tall).height, 80.0, 2.0));
+  NVE_CHECK(approx(host.measure_text("a\nb", tall_pct).height, 80.0, 2.0));
+  const NveRuntimeTextStyle two_lines = with([](NveRuntimeTextStyle& s) {
+    s.line_height = 40.0f;
+    s.line_height_unit = NVE_LINE_HEIGHT_POINTS;
+    s.max_lines = 2u;
+  });
+  NVE_CHECK(approx(host.measure_text(sentence, two_lines, 60.0f).height, 80.0, 2.0));
+  NVE_CHECK(host.measure_text(sentence, two_lines, 60.0f).width <= 61.0f);
+  // Italic shapes the same text without collapsing it.
+  NveRuntimeTextStyle italic = sans;
+  italic.font_style = NVE_FONT_STYLE_ITALIC;
+  NVE_CHECK(host.measure_text(sentence, italic).width > one_line.width * 0.8f);
+}
+
+/// GTK's own natural size of `label` (its CSS, wrap, lines, ellipsize) at `for_width`, with the
+/// host's size request lifted for the measurement.
+std::pair<int, int> painted_size(GtkWidget* label, int for_width) {
+  int req_w = -1, req_h = -1;
+  gtk_widget_get_size_request(label, &req_w, &req_h);
+  gtk_widget_set_size_request(label, -1, -1);
+  int nat_w = 0, nat_h = 0;
+  gtk_widget_measure(label, GTK_ORIENTATION_HORIZONTAL, -1, nullptr, &nat_w, nullptr, nullptr);
+  gtk_widget_measure(label, GTK_ORIENTATION_VERTICAL, for_width, nullptr, &nat_h, nullptr, nullptr);
+  gtk_widget_set_size_request(label, req_w, req_h);
+  return {nat_w, nat_h};
+}
+
+/// End to end, measure == paint: the runtime hands each label's resolved typography to Pango,
+/// and GTK, measuring the label it painted (its CSS, wrap, lines), agrees with the box the
+/// runtime laid out: a `nowrap` label in a narrow column keeps one line at full width, a
+/// monospace / letter-spaced / line-height label gets its own metrics, wrapping text wraps
+/// inside the column, and `max_lines` caps it.
+void test_runtime_measures_labels_with_their_typography() {
+  NveGtkHost host(GtkHostConfig{.width = 400.0f, .height = 600.0f});
+  GtkWidget* window = present(host, 400, 600);  // CSS applies to realized, styled widgets
+  ScriptedApp app;
+  constexpr uint32_t kColumn = 2u, kNoWrap = 3u, kMono = 4u, kSpaced = 5u, kTall = 6u, kWraps = 7u, kCapped = 8u;
+  constexpr std::string_view kText = "Hello wrapping text that is long";
+  namespace h = nve::host;
+  auto& w = app.w;
+  w.create(1u);
+  w.create(kColumn);
+  w.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(90.0f));
+  w.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
+  for (const uint32_t id : {kNoWrap, kMono, kSpaced, kTall, kWraps, kCapped}) text_node(w, id, kText);
+  const auto typo = [&](uint32_t id, uint32_t set) { w.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, set); };
+  const auto field = [&](uint32_t id, NveFieldSpec f, uint32_t v) { w.set(id, NVE_TABLE_TYPOGRAPHY_DESC, f, v); };
+  typo(kNoWrap, NVE_TYPOGRAPHY_SET_WHITE_SPACE);
+  field(kNoWrap, NVE_TABLE_TYPOGRAPHY_WHITE_SPACE, NVE_WHITE_SPACE_NO_WRAP);
+  typo(kMono, NVE_TYPOGRAPHY_SET_WHITE_SPACE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_FONT_STYLE);
+  field(kMono, NVE_TABLE_TYPOGRAPHY_WHITE_SPACE, NVE_WHITE_SPACE_PRE);
+  field(kMono, NVE_TABLE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
+  (void)w.set_str(kMono, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "NoSuchFontNve, monospace");
+  typo(kSpaced, NVE_TYPOGRAPHY_SET_WHITE_SPACE | NVE_TYPOGRAPHY_SET_LETTER_SPACING);
+  field(kSpaced, NVE_TABLE_TYPOGRAPHY_WHITE_SPACE, NVE_WHITE_SPACE_NO_WRAP);
+  (void)w.set_f32(kSpaced, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, 2.5f);
+  typo(kTall, NVE_TYPOGRAPHY_SET_LINE_HEIGHT);
+  field(kTall, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, h::length_percent(180.0f));
+  typo(kCapped, NVE_TYPOGRAPHY_SET_MAX_LINES | NVE_TYPOGRAPHY_SET_LINE_HEIGHT);
+  field(kCapped, NVE_TABLE_TYPOGRAPHY_MAX_LINES, 2u);
+  field(kCapped, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, h::length_points(30.0f));
+  const uint32_t kids[] = {kNoWrap, kMono, kSpaced, kTall, kWraps, kCapped};
+  w.set_children(kColumn, kids);
+  const uint32_t root_kids[] = {kColumn};
+  w.set_children(1u, root_kids);
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  flush(host);
+  spin();
+
+  for (const uint32_t id : {kNoWrap, kMono, kSpaced, kTall, kWraps, kCapped}) {
+    GtkWidget* label = host.widget_for_node_id(id);
+    const int laid_w = request_width(label), laid_h = request_height(label);
+    const auto [painted_w, painted_h] = painted_size(label, laid_w);
+    if (!approx(laid_h, painted_h, 1.0) || (id != kWraps && id != kCapped && id != kTall && !approx(laid_w, painted_w, 1.0))) {
+      std::cerr << "node " << id << ": laid out " << laid_w << "x" << laid_h << ", painted " << painted_w << "x"
+                << painted_h << "\n";
+      NVE_CHECK(false);
+    }
+  }
+  const int line = request_height(host.widget_for_node_id(kNoWrap));
+  NVE_CHECK(request_width(host.widget_for_node_id(kNoWrap)) > 90);  // one line, overflowing the column
+  NVE_CHECK(request_width(host.widget_for_node_id(kMono)) > request_width(host.widget_for_node_id(kNoWrap)));
+  NVE_CHECK(request_width(host.widget_for_node_id(kSpaced)) > request_width(host.widget_for_node_id(kNoWrap)));
+  NVE_CHECK(request_width(host.widget_for_node_id(kWraps)) <= 90 && request_height(host.widget_for_node_id(kWraps)) > 2 * line);
+  NVE_CHECK(approx(request_height(host.widget_for_node_id(kCapped)), 60.0, 1.0));  // 2 lines × 30pt
+  NVE_CHECK(request_height(host.widget_for_node_id(kTall)) > request_height(host.widget_for_node_id(kWraps)));
+  gtk_window_destroy(GTK_WINDOW(window));
+}
+
 void test_counter_widgets_measurement_and_events() {
   NveGtkHost host(GtkHostConfig{.surface_id = 7u, .width = 480.0f, .height = 360.0f});
   NVE_CHECK(!host.is_loaded() && host.view_count() == 0u);
@@ -23,15 +165,17 @@ void test_counter_widgets_measurement_and_events() {
   NVE_CHECK(GTK_IS_SCROLLED_WINDOW(host.host_widget()));
 
   // Pango measurement: monotonic in size and weight, wraps under a width constraint.
-  const NveIntrinsicSize small = host.measure_text("Hello NVE", 16.0f);
-  const NveIntrinsicSize big = host.measure_text("Hello NVE", 32.0f);
-  const NveIntrinsicSize bold = host.measure_text("Hello NVE", 16.0f, 800u);
-  const NveIntrinsicSize wrapped = host.measure_text("Hello NVE wrapping text", 16.0f, 400u, 40.0f);
+  using nve::host::text_style;
+  const NveIntrinsicSize small = host.measure_text("Hello NVE", text_style(16.0f));
+  const NveIntrinsicSize big = host.measure_text("Hello NVE", text_style(32.0f));
+  const NveIntrinsicSize bold = host.measure_text("Hello NVE", text_style(16.0f, 800u));
+  const NveIntrinsicSize wrapped = host.measure_text("Hello NVE wrapping text", text_style(16.0f), 40.0f);
   NVE_CHECK(small.width > 0.0f && small.height > 0.0f);
   NVE_CHECK(big.width > small.width * 1.5f && big.height > small.height);
   NVE_CHECK(bold.width >= small.width);
   NVE_CHECK(wrapped.width <= 41.0f && wrapped.height > small.height * 1.5f);
-  NVE_CHECK(host.measure_text("", 16.0f).width == 0.0f);
+  NVE_CHECK(host.measure_text("", text_style(16.0f)).width == 0.0f);
+  test_measure_typography(host);
 
   std::vector<int64_t> counts;
   host.set_event_callback([&counts](std::span<const NveDirectEvent> evs) {
@@ -61,7 +205,7 @@ void test_counter_widgets_measurement_and_events() {
   NVE_CHECK((order == std::vector<GtkWidget*>{title, inc, count, host.widget_for_node_id(CounterApp::kReset)}));
 
   // The runtime laid out text with Pango: the title's width is its measured width.
-  const NveIntrinsicSize title_size = host.measure_text("NVE native host", 22.0f);
+  const NveIntrinsicSize title_size = host.measure_text("NVE native host", text_style(22.0f));
   NVE_CHECK(approx(request_width(title), title_size.width, 2.0));
   // Column fills the surface; its padding offsets the first child.
   NVE_CHECK(request_width(column) == 480);
@@ -243,6 +387,7 @@ void nve_test_gtk_reconcile();
 int main() {
   gtk_init();
   test_counter_widgets_measurement_and_events();
+  test_runtime_measures_labels_with_their_typography();
   test_modules_hot_reload_and_state();
   test_live_kitchen_sink_if_configured();
   nve_test_gtk_a11y_and_media();

@@ -41,7 +41,7 @@ ctest --test-dir hosts/qt-shell/build --output-on-failure
 
 `hosts/gtk-shell` targets Linux Wayland/X11 (and macOS GTK4 via Homebrew) using native **Pango**, **Cairo**, and **AT-SPI**:
 
-- **`NveGtkHost`** — Registers a native `PangoLayout` text measurer (`PANGO_WRAP_WORD_CHAR`) into `NativeHostSession` and reconciles native GTK4 widgets:
+- **`NveGtkHost`** — Registers a native Pango text measurer (one cached `PangoLayout`) that measures each label with the typography it paints (family list, size, weight, style, letter spacing, absolute line height, `nowrap` / `pre`, `max_lines` ellipsizing; shared `font_family_list` / `line_height_points` with the CSS painter) and reconciles native GTK4 widgets:
   - `View` / `Pressable` / wrapper `Text` → `GtkFixed` (`GTK_OVERFLOW_HIDDEN` when rounded)
   - Leaf `Text` → `GtkLabel` (`wrap = TRUE`, `can_target = FALSE`)
   - `ScrollView` → `GtkScrolledWindow` wrapping an inner `GtkFixed`

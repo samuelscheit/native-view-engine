@@ -75,7 +75,7 @@ pub fn abi_model() -> Result<AbiModel<'static>, CodegenError> {
 }
 
 /// The runtime ABI model on top of `base` (`abi_model()`).
-pub fn runtime_abi_model(base: &AbiModel<'_>) -> Result<RuntimeAbiModel<'static>, CodegenError> {
+pub fn runtime_abi_model(base: &AbiModel<'static>) -> Result<RuntimeAbiModel<'static>, CodegenError> {
     RuntimeAbiModel::new(&RUNTIME, base)
 }
 

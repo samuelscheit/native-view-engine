@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #include "nve/host/app_state.hpp"
 #include "nve/host/demo_counter_app.hpp"
 #include "nve/host/host_session.hpp"
+#include "nve/host/nve2_writer.hpp"
 #include "nve/host/testing/recorder.hpp"
 #include "nve/host/testing/scratch_dir.hpp"
 
@@ -216,6 +218,42 @@ void test_sink_reloading_the_module() {
   CHECK(values == (std::vector<int64_t>{1, 1, 2, 3}));
 }
 
+/// `unpair` stops the pairing worker whether it connected or not: against an endpoint nobody
+/// listens on the worker keeps (re)connecting, and a stale "connected?" check never stopped it.
+void test_unpair_stops_a_connecting_worker() {
+#if defined(NVE_RUNTIME_TEST_HAS_WIRE)
+  auto host = HostSession::create(RuntimeSession::default_config());
+  CHECK(host != nullptr);
+  if (!host) return;
+  int wakes = 0;
+  host->set_wake_poster([&wakes] { ++wakes; });
+  std::string error;
+  CHECK(host->pair("ws://127.0.0.1:9/nve-wire", "token", &error));  // discard port: refused
+  CHECK(!host->runtime().pair_is_connected());
+  Nve2Writer w;
+  w.create(1u);
+  const std::vector<uint8_t> frame = [&] {
+    const auto f = w.finish(1u);
+    return std::vector<uint8_t>(f.begin(), f.end());
+  }();
+  // While a pairing worker owns the surface, local frames are refused.
+  CHECK(host->runtime().submit_nve2(frame) == NVE_RUNTIME_INVALID_ARG);
+  host->unpair();
+  CHECK(host->runtime().submit_nve2(frame) == NVE_RUNTIME_OK);  // the worker is gone
+  host->unpair();                                                 // idempotent
+  CHECK(!host->runtime().pair_is_connected());
+  const int seen = wakes;
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // past the first reconnect attempt
+  CHECK(wakes == seen && !host->runtime().pair_is_connected());
+
+  // Any source switch ends pairing too: `unpair` after an attach is a no-op.
+  CHECK(host->pair("ws://127.0.0.1:9/nve-wire", "token", &error));
+  CHECK(host->attach(&CounterApp::get_interface));
+  host->unpair();
+  CHECK(host->has_app() && count(*host) == 0);
+#endif
+}
+
 void test_state_files() {
   auto host = HostSession::create(RuntimeSession::default_config());
   CHECK(host != nullptr);
@@ -325,6 +363,7 @@ int main() {
   test_hot_reload_of_a_rebuilt_module();
   test_reentrant_event_sink();
   test_sink_reloading_the_module();
+  test_unpair_stops_a_connecting_worker();
   test_state_files();
   test_state_paths();
   if (g_failures != 0) {

@@ -5,7 +5,10 @@ Shared `NodeStore` layout layer (`packages/core/layout`, **Core layer**): the `S
 ## Key Public API
 
 - `StoreLayoutEngine`, `DynLayoutEngine`, `TextMeasurer`, `HeuristicTextMeasurer`
-- `TaffyStoreLayout`, `ResolvedTextStyle`, `MAX_TREE_DEPTH`
+- `TextStyle<F>`: the resolved, inherited typography every measurer receives
+  (`TextMeasurer::measure(text, &TextStyle<&str>, max_width)`); `ResolvedTextStyle` =
+  `TextStyle<StrSpan>` kept per node, `resolve_inherited_text` shared by Taffy and Yoga
+- `TaffyStoreLayout`, `MAX_TREE_DEPTH`
 
 ```rust
 use nve_engine::Viewport;

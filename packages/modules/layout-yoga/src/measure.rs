@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nve_components::tables::{
     FlexDirection, Layout, Overflow, Scroll, ScrollAxes, TextContent, Typography, Visual,
 };
-use nve_layout::{HeuristicTextMeasurer, MAX_TREE_DEPTH, TextMeasurer};
+use nve_layout::{HeuristicTextMeasurer, MAX_TREE_DEPTH, TextMeasurer, TextStyle};
 use nve_store::{NodeId, NodeStore, NveTable};
 
 use crate::ffi::{
@@ -118,8 +118,8 @@ const MEASURE_MODE_AT_MOST: u8 = 2;
 
 pub(crate) struct MeasurePayload {
     pub(crate) text: String,
-    pub(crate) font_size: f32,
-    pub(crate) font_weight: u16,
+    /// The node's resolved typography (owned family: the store may change between passes).
+    pub(crate) style: TextStyle<String>,
     pub(crate) measurer: Arc<dyn TextMeasurer>,
     pub(crate) panicked: Arc<AtomicBool>,
 }
@@ -148,8 +148,7 @@ impl RawMeasureState {
             },
             payload: MeasurePayload {
                 text: String::new(),
-                font_size: HeuristicTextMeasurer::DEFAULT_FONT_SIZE,
-                font_weight: 400,
+                style: TextStyle::default(),
                 measurer,
                 panicked,
             },
@@ -211,12 +210,10 @@ extern "C" fn rust_measure_callback(
             }
             _ => None,
         };
-        let (measured_w, measured_h) = payload.measurer.measure_with_weight(
-            &payload.text,
-            payload.font_size,
-            payload.font_weight,
-            max_width,
-        );
+        let (measured_w, measured_h) =
+            payload
+                .measurer
+                .measure(&payload.text, &payload.style.borrowed(), max_width);
         let final_w = match width_mode {
             MEASURE_MODE_EXACTLY if width.is_finite() => width.max(0.0),
             _ => measured_w,

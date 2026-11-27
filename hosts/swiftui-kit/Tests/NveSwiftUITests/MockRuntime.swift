@@ -222,11 +222,15 @@ final class MockRuntime: @unchecked Sendable {
     }
 
     /// Fires the installed text measurer like runtime layout would.
-    func measureText(_ s: String, size: Float, weight: UInt32, maxWidth: Float) -> (width: Float, height: Float)? {
+    func measureText(_ s: String, size: Float, weight: UInt16, maxWidth: Float, family: String = "") -> (width: Float, height: Float)? {
         guard let fn = measurer.0 else { return nil }
-        var s = s
+        var s = s, family = family
         var w: Float = -1, h: Float = -1
-        s.withUTF8 { fn(measurer.1, NveStrSlice(ptr: $0.baseAddress, len: $0.count), size, weight, maxWidth, &w, &h) }
+        family.withUTF8 { f in
+            var style = NveRuntimeTextStyle.sized(size, weight: weight)
+            style.font_family = NveStrSlice(ptr: f.baseAddress, len: f.count)
+            s.withUTF8 { fn(measurer.1, NveStrSlice(ptr: $0.baseAddress, len: $0.count), &style, maxWidth, &w, &h) }
+        }
         return (w, h)
     }
 

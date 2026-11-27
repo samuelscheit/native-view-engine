@@ -1,5 +1,7 @@
 #include "NveGtkInternal.hpp"
 
+#include <nve/host/font_family.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -201,6 +203,23 @@ std::string css_float(double value) {
   return (out.empty() || out == "-0") ? std::string("0") : out;
 }
 
+std::string font_family_list(std::string_view authored) {
+  // Pango splits a family on `,` but does not trim (`"A, monospace"` misses `monospace` on the
+  // CoreText font map), so the entries are joined back with a bare `,`.
+  std::string out;
+  host::for_each_font_family(authored.substr(0u, kMaxFontFamily), [&out](std::string_view name) {
+    std::string entry(name);
+    // Inside a CSS string: drop anything that could end it or the block, and control bytes.
+    std::erase_if(entry, [](char c) {
+      const auto u = static_cast<unsigned char>(c);
+      return u < 0x20u || u == 0x7Fu || c == '"' || c == '\\' || c == '{' || c == '}' || c == ';';
+    });
+    if (!entry.empty()) out += (out.empty() ? "" : ",") + entry;
+    return true;
+  });
+  return out;
+}
+
 std::string css_rgba(uint32_t rgba) {
   const auto ch = [rgba](uint32_t shift) { return std::to_string((rgba >> shift) & 0xFFu); };
   return "rgba(" + ch(0u) + ", " + ch(8u) + ", " + ch(16u) + ", " +
@@ -260,23 +279,15 @@ std::string build_css_rule(const std::string& selector, const host::NodeData& no
     d += t.font_style == NVE_FONT_STYLE_ITALIC    ? "  font-style: italic;\n"
          : t.font_style == NVE_FONT_STYLE_OBLIQUE ? "  font-style: oblique;\n"
                                                   : "  font-style: normal;\n";
-    if (!t.font_family.empty()) {
-      std::string family(t.font_family);
-      // Inside a CSS string: drop anything that could end it or the block, and control bytes.
-      std::erase_if(family, [](char c) {
-        const auto u = static_cast<unsigned char>(c);
-        return u < 0x20u || u == 0x7Fu || c == '"' || c == '\\' || c == '{' || c == '}' || c == ';';
-      });
-      if (family.size() > kMaxFontFamily) family.resize(kMaxFontFamily);
+    if (const std::string family = font_family_list(t.font_family); !family.empty()) {
       d += "  font-family: \"" + family + "\";\n";
     }
     if (t.letter_spacing != 0.0f && std::isfinite(t.letter_spacing)) {
       d += "  letter-spacing: " + css_float(t.letter_spacing) + "px;\n";
     }
-    if (t.line_height.unit == NVE_LENGTH_POINTS && t.line_height.value > 0.0f) {
-      d += "  line-height: " + css_float(t.line_height.value / std::max(t.font_size, 1.0f)) + ";\n";
-    } else if (t.line_height.unit == NVE_LENGTH_PERCENT && t.line_height.value > 0.0f) {
-      d += "  line-height: " + css_float(t.line_height.value / 100.0f) + ";\n";
+    // Absolute: GTK scales a unit-less `line-height` by the font's natural line height.
+    if (const double lh = host::line_height_points(t.line_height.unit, t.line_height.value, t.font_size); lh > 0.0) {
+      d += "  line-height: " + css_float(lh) + "px;\n";
     }
     std::string deco;
     if ((t.text_decoration & NVE_TEXT_DECORATION_UNDERLINE) != 0u) deco += " underline";

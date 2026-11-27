@@ -380,9 +380,14 @@ fn yoga_text_reacquires_measure_hook_root_switch_and_panic_retry() {
     // Caught panic in `TextMeasurer` must keep `layout_dirty = true` so next frame retries cleanly!
     struct PanicOnce(AtomicBool);
     impl TextMeasurer for PanicOnce {
-        fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
+        fn measure(
+            &self,
+            text: &str,
+            style: &nve_layout::TextStyle<&str>,
+            max_width: Option<f32>,
+        ) -> (f32, f32) {
             assert!(!self.0.load(Ordering::Acquire), "simulated measurer panic");
-            nve_layout::HeuristicTextMeasurer.measure(text, font_size, max_width)
+            nve_layout::HeuristicTextMeasurer.measure(text, style, max_width)
         }
     }
     let panic_measurer = Arc::new(PanicOnce(AtomicBool::new(true)));

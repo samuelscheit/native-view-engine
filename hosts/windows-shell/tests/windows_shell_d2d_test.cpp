@@ -14,7 +14,9 @@
 #include <wincodec.h>
 #include <wincrypt.h>
 
+#include <cmath>
 #include <filesystem>
+#include <limits>
 #include <fstream>
 #include <iterator>
 #include <vector>
@@ -72,23 +74,48 @@ struct Offscreen {
 };
 
 void test_directwrite_measurer() {
+  using nve::host::str_slice;
+  using nve::host::text_style;
+  constexpr float kInf = std::numeric_limits<float>::infinity();
   DirectWriteTextMeasurer m;
   NVE_CHECK(m.valid());
-  const NveIntrinsicSize regular = m.measure("Hello NVE", 16.0f, 400u, 0.0f);
-  const NveIntrinsicSize big = m.measure("Hello NVE", 32.0f, 400u, 0.0f);
-  const NveIntrinsicSize bold = m.measure("Hello NVE", 16.0f, 800u, 0.0f);
-  const NveIntrinsicSize wrapped = m.measure("Hello NVE wrapping text", 16.0f, 400u, 40.0f);
+  const NveIntrinsicSize regular = m.measure("Hello NVE", text_style(16.0f), kInf);
+  const NveIntrinsicSize big = m.measure("Hello NVE", text_style(32.0f), kInf);
+  const NveIntrinsicSize bold = m.measure("Hello NVE", text_style(16.0f, 800u), kInf);
+  const NveIntrinsicSize wrapped = m.measure("Hello NVE wrapping text", text_style(16.0f), 40.0f);
   NVE_CHECK(regular.width > 0.0f && regular.height > 0.0f);
   NVE_CHECK(big.width > regular.width * 1.5f && big.height > regular.height);
   NVE_CHECK(bold.width >= regular.width);
   NVE_CHECK(wrapped.width <= 40.0f && wrapped.height > regular.height * 1.5f);
-  NVE_CHECK(m.measure("", 16.0f, 400u, 0.0f).width == 0.0f);
-  NVE_CHECK(m.measure("x", 1.0e30f, 400u, 1.0e30f).width > 0.0f);  // huge sizes clamp, never overflow
+  NVE_CHECK(m.measure("", text_style(16.0f), kInf).width == 0.0f);
+  NVE_CHECK(m.measure("x", text_style(1.0e30f), 1.0e30f).width > 0.0f);  // huge sizes clamp, never overflow
   float w = 0.0f, ht = 0.0f;
   const std::string_view text = "\xC3\xA9t\xC3\xA9";  // UTF-8 through the C trampoline
-  DirectWriteTextMeasurer::measure_trampoline(&m, NveStrSlice{reinterpret_cast<const uint8_t*>(text.data()), text.size()},
-                                              16.0f, 400u, 0.0f, &w, &ht);
+  const NveRuntimeTextStyle base = text_style(16.0f);
+  DirectWriteTextMeasurer::measure_trampoline(&m, str_slice(text), &base, kInf, &w, &ht);
   NVE_CHECK(w > 0.0f && ht > 0.0f);
+
+  // The node's typography reaches DirectWrite exactly as the painter applies it.
+  constexpr std::string_view kNarrow = "iiiiiiiiiiiiiiii";
+  NveRuntimeTextStyle mono = base;
+  mono.font_family = str_slice("NoSuchFontNve, monospace");  // first installed: Consolas
+  NVE_CHECK(m.measure(kNarrow, mono, kInf).width > m.measure(kNarrow, base, kInf).width * 1.5f);
+  NveRuntimeTextStyle spaced = base;
+  spaced.letter_spacing = 3.0f;
+  NVE_CHECK(m.measure(kNarrow, spaced, kInf).width > m.measure(kNarrow, base, kInf).width + 30.0f);
+  const std::string_view sentence = "Hello wrapping text that is long";
+  const NveIntrinsicSize one_line = m.measure(sentence, base, kInf);
+  NveRuntimeTextStyle nowrap = base;
+  nowrap.white_space = NVE_WHITE_SPACE_NO_WRAP;
+  NVE_CHECK(m.measure(sentence, nowrap, 60.0f).height == one_line.height);
+  const NveIntrinsicSize min_content = m.measure(sentence, base, 0.0f);
+  NVE_CHECK(min_content.width > 0.0f && min_content.width < one_line.width && min_content.height > one_line.height);
+  NveRuntimeTextStyle tall = base;
+  tall.line_height = 250.0f;
+  tall.line_height_unit = NVE_LINE_HEIGHT_PERCENT;  // 40pt lines
+  NVE_CHECK(std::fabs(m.measure("a\nb", tall, kInf).height - 80.0f) <= 1.0f);
+  tall.max_lines = 1u;
+  NVE_CHECK(std::fabs(m.measure(sentence, tall, 60.0f).height - 40.0f) <= 1.0f);
   TextPaint clamped;
   clamped.max_lines = 1u;
   IDWriteTextLayout* layout = m.create_layout("one two three four five six", clamped, 40.0f, 0.0f);

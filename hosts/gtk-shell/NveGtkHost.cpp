@@ -95,6 +95,7 @@ NveGtkHost::~NveGtkHost() {
   g_object_unref(css_provider_);
   gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(viewport_widget_), nullptr);
   g_object_unref(viewport_widget_);
+  if (measure_layout_ != nullptr) g_object_unref(measure_layout_);
   gtk_internal::unparent_children(root_widget_);
   g_object_unref(root_widget_);
 }
@@ -305,37 +306,62 @@ std::span<const uint8_t> NveGtkHost::scene_resource(uint32_t id, host::Key64 kin
   return res && res->kind == kind ? res->bytes : std::span<const uint8_t>{};
 }
 
-void NveGtkHost::measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight,
-                                    float max_width, float* out_width, float* out_height) {
-  const std::string_view sv(reinterpret_cast<const char*>(text.ptr), text.ptr != nullptr ? text.len : 0u);
-  const uint16_t weight = static_cast<uint16_t>(std::min<uint32_t>(font_weight, 1000u));
-  const NveIntrinsicSize size = static_cast<const NveGtkHost*>(ctx)->measure_text(sv, font_size, weight, max_width);
+void NveGtkHost::measure_trampoline(void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width,
+                                    float* out_width, float* out_height) {
+  const NveIntrinsicSize size = static_cast<const NveGtkHost*>(ctx)->measure_text(host::str_view(text), *style, max_width);
   *out_width = size.width;
   *out_height = size.height;
 }
 
-NveIntrinsicSize NveGtkHost::measure_text(std::string_view text, float font_size, uint16_t font_weight,
+NveIntrinsicSize NveGtkHost::measure_text(std::string_view text, const NveRuntimeTextStyle& style,
                                           float max_width) const {
   if (text.empty()) return NveIntrinsicSize{0.0f, 0.0f};
-  PangoLayout* layout = gtk_widget_create_pango_layout(root_widget_, nullptr);
+  if (measure_layout_ == nullptr) measure_layout_ = gtk_widget_create_pango_layout(root_widget_, nullptr);
+  PangoLayout* layout = measure_layout_;
+  pango_layout_context_changed(layout);  // the widget's font settings / scale may have changed
   PangoContext* ctx = pango_layout_get_context(layout);
   const PangoFontDescription* base = ctx != nullptr ? pango_context_get_font_description(ctx) : nullptr;
   PangoFontDescription* desc =
       base != nullptr ? pango_font_description_copy(base) : pango_font_description_from_string("Sans");
-  pango_font_description_set_absolute_size(desc, static_cast<double>(positive_or(font_size, 16.0f)) * PANGO_SCALE);
-  pango_font_description_set_weight(desc, static_cast<PangoWeight>(std::clamp<int>(font_weight, 100, 1000)));
+  const float font_size = positive_or(style.font_size, 16.0f);
+  pango_font_description_set_absolute_size(desc, static_cast<double>(font_size) * PANGO_SCALE);
+  pango_font_description_set_weight(desc, static_cast<PangoWeight>(std::clamp<int>(style.font_weight, 100, 1000)));
+  pango_font_description_set_style(desc, style.font_style == NVE_FONT_STYLE_ITALIC    ? PANGO_STYLE_ITALIC
+                                         : style.font_style == NVE_FONT_STYLE_OBLIQUE ? PANGO_STYLE_OBLIQUE
+                                                                                      : PANGO_STYLE_NORMAL);
+  if (const std::string family = gtk_internal::font_family_list(host::str_view(style.font_family)); !family.empty()) {
+    pango_font_description_set_family(desc, family.c_str());
+  }
   pango_layout_set_font_description(layout, desc);
   pango_font_description_free(desc);
+
+  // The label's CSS `letter-spacing` / `line-height` reach Pango as these attributes.
+  PangoAttrList* attrs = pango_attr_list_new();
+  if (style.letter_spacing != 0.0f && std::isfinite(style.letter_spacing)) {
+    pango_attr_list_insert(attrs, pango_attr_letter_spacing_new(static_cast<int>(
+                                      std::clamp(static_cast<double>(style.letter_spacing) * PANGO_SCALE, -1e6, 1e6))));
+  }
+  if (const double lh = host::line_height_points(style.line_height_unit, style.line_height, font_size); lh > 0.0) {
+    pango_attr_list_insert(attrs, pango_attr_line_height_new_absolute(static_cast<int>(
+                                      std::min(lh * PANGO_SCALE, static_cast<double>(std::numeric_limits<int>::max())))));
+  }
+  pango_layout_set_attributes(layout, attrs);
+  pango_attr_list_unref(attrs);
   pango_layout_set_text(layout, text.data(),
                         static_cast<int>(std::min<size_t>(text.size(), std::numeric_limits<int>::max())));
-  if (std::isfinite(max_width) && max_width > 0.0f) {
-    pango_layout_set_width(layout, static_cast<int>(std::min(static_cast<double>(max_width) * PANGO_SCALE,
-                                                             static_cast<double>(std::numeric_limits<int>::max()))));
-    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
-  }
+
+  // Wrapping, lines, and ellipsizing mirror `gtk_label_set_wrap` / `_lines` / `_ellipsize`.
+  const bool wraps = host::white_space_wraps(style.white_space) && std::isfinite(max_width) && max_width >= 0.0f;
+  pango_layout_set_width(layout, wraps ? static_cast<int>(std::min(static_cast<double>(max_width) * PANGO_SCALE,
+                                                                   static_cast<double>(std::numeric_limits<int>::max())))
+                                       : -1);
+  pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+  const bool limited = style.max_lines > 0u;
+  pango_layout_set_ellipsize(layout, limited ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
+  pango_layout_set_height(
+      layout, limited ? -static_cast<int>(std::min<uint32_t>(style.max_lines, std::numeric_limits<int>::max())) : -1);
   PangoRectangle logical{};
   pango_layout_get_pixel_extents(layout, nullptr, &logical);
-  g_object_unref(layout);
   return NveIntrinsicSize{static_cast<float>(std::max(0, logical.width)), static_cast<float>(std::max(0, logical.height))};
 }
 

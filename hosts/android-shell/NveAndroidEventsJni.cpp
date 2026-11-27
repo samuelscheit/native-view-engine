@@ -146,10 +146,14 @@ void on_wake(void* ctx) {
   with_env(s->jvm, [&](JNIEnv* env) { env->CallVoidMethod(s->wake.target, s->wake.method); });
 }
 
-/// `NveRuntimeMeasureTextFn` over `NativeRuntime.TextMeasurer`. Leaves the runtime's zeroed out
-/// slots untouched when Java fails (the runtime maps non-finite / negative sizes to 0 itself).
-void on_measure(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width, float* out_w,
+/// `NveRuntimeMeasureTextFn` over `NativeRuntime.TextMeasurer`, which takes the size and weight
+/// Compose paints with (`nowrap` / `pre` already arrive as an INFINITY `max_width`). Leaves the
+/// runtime's zeroed out slots untouched when Java fails (the runtime maps non-finite / negative
+/// sizes to 0 itself).
+void on_measure(void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width, float* out_w,
                 float* out_h) {
+  const float font_size = style->font_size;
+  const uint32_t font_weight = style->font_weight;
   auto* s = static_cast<AndroidSurface*>(ctx);
   if (s->jvm == nullptr || s->measurer.target == nullptr || s->measure_out == nullptr) return;
   with_env(s->jvm, [&](JNIEnv* env) {

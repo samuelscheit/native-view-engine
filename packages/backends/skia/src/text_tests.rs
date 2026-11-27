@@ -1,6 +1,5 @@
 use nve_abi::ColorRgba;
 use nve_engine::LayoutRect;
-use nve_layout::TextMeasurer;
 
 use crate::font::BitmapFontTextMeasurer;
 use crate::raster::PixelBuffer;
@@ -15,18 +14,18 @@ fn cosmic_engine_discovers_system_fonts_and_measures_proportionally() {
     );
     assert!(engine.loaded_font_count() > 0);
 
-    assert_eq!(engine.measure("", 16.0, None), (0.0, 0.0));
+    assert_eq!(engine.measure_text("", 16.0, None), (0.0, 0.0));
 
-    let (w_narrow, h_narrow) = engine.measure("iiii", 20.0, None);
-    let (w_wide, h_wide) = engine.measure("WWWW", 20.0, None);
+    let (w_narrow, h_narrow) = engine.measure_text("iiii", 20.0, None);
+    let (w_wide, h_wide) = engine.measure_text("WWWW", 20.0, None);
     assert!(
         w_narrow > 0.0 && w_wide > w_narrow * 1.8,
         "expected proportional shaping ('iiii'={w_narrow} vs 'WWWW'={w_wide})"
     );
     assert_eq!(h_narrow, h_wide);
 
-    let (w_small, h_small) = engine.measure("Native View Engine", 12.0, None);
-    let (w_large, h_large) = engine.measure("Native View Engine", 28.0, None);
+    let (w_small, h_small) = engine.measure_text("Native View Engine", 12.0, None);
+    let (w_large, h_large) = engine.measure_text("Native View Engine", 28.0, None);
     assert!(h_large > h_small * 1.8, "h_small={h_small}, h_large={h_large}");
     assert!(w_large > w_small * 1.8, "w_small={w_small}, w_large={w_large}");
 }
@@ -36,23 +35,23 @@ fn cosmic_engine_wraps_under_max_width_handles_newlines_and_unicode() {
     let engine = CosmicTextEngine::shared();
 
     let sample = "Native View Engine renders real HarfBuzz shaped proportional typography";
-    let (unwrapped_w, unwrapped_h) = engine.measure(sample, 16.0, None);
-    let (wrapped_w, wrapped_h) = engine.measure(sample, 16.0, Some(120.0));
+    let (unwrapped_w, unwrapped_h) = engine.measure_text(sample, 16.0, None);
+    let (wrapped_w, wrapped_h) = engine.measure_text(sample, 16.0, Some(120.0));
     assert!(unwrapped_w > 200.0, "expected long line width > 200, got {unwrapped_w}");
     assert!(wrapped_w <= 120.0, "wrapped width must respect max_width=120, got {wrapped_w}");
     assert!(wrapped_h >= unwrapped_h * 2.0);
 
-    let (_, h1) = engine.measure("Line 1", 16.0, None);
-    let (_, h3) = engine.measure("Line 1\nLine 2\nLine 3", 16.0, None);
+    let (_, h1) = engine.measure_text("Line 1", 16.0, None);
+    let (_, h3) = engine.measure_text("Line 1\nLine 2\nLine 3", 16.0, None);
     assert!(h3 >= h1 * 2.5);
 
-    let (mw0_w, mw0_h) = engine.measure("Probe\nLine", 16.0, Some(0.0));
+    let (mw0_w, mw0_h) = engine.measure_text("Probe\nLine", 16.0, Some(0.0));
     assert_eq!(mw0_w, 0.0);
     assert!(mw0_h.is_finite() && mw0_h > 0.0);
-    let (nan_w, nan_h) = engine.measure("Fallback", f32::NAN, Some(f32::INFINITY));
+    let (nan_w, nan_h) = engine.measure_text("Fallback", f32::NAN, Some(f32::INFINITY));
     assert!(nan_w.is_finite() && nan_h.is_finite() && nan_h > 0.0);
 
-    let (uni_w, uni_h) = engine.measure("Café — naïve • 日本語 🚀", 18.0, None);
+    let (uni_w, uni_h) = engine.measure_text("Café — naïve • 日本語 🚀", 18.0, None);
     assert!(uni_w > 20.0 && uni_h > 18.0);
 }
 
@@ -154,8 +153,8 @@ fn cosmic_engine_falls_back_cleanly_to_bitmap_font_when_no_system_fonts_exist() 
     assert!(!fallback.has_system_fonts());
     assert_eq!(fallback.loaded_font_count(), 0);
 
-    let expected = BitmapFontTextMeasurer.measure("Fallback OK", 16.0, None);
-    assert_eq!(fallback.measure("Fallback OK", 16.0, None), expected);
+    let expected = BitmapFontTextMeasurer.measure_text("Fallback OK", 16.0, None);
+    assert_eq!(fallback.measure_text("Fallback OK", 16.0, None), expected);
 
     let mut buf = PixelBuffer::new(200, 60);
     buf.clear(ColorRgba::BLACK);

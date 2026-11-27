@@ -22,12 +22,20 @@ final class TableViewLayout {
     required this.words,
     required this.rowCount,
     required this.dirtyCount,
+    required this.rowIndexDirLen,
+    required this.rowIndexPageCount,
     required this.rows,
     required this.owners,
     required this.dirtyRows,
+    required this.rowIndexDir,
+    required this.rowIndexPages,
   });
 
   final int stride, keyLo, keyHi, slot, words, rowCount, dirtyCount, rows, owners, dirtyRows;
+
+  /// The published sparse node -> row index (`row_index_dir` / `row_index_pages`); this reader
+  /// resolves rows through `owners` and does not read them.
+  final int rowIndexDirLen, rowIndexPageCount, rowIndexDir, rowIndexPages;
 }
 
 /// Byte offsets of `NveSceneView` fields inside wasm32 linear memory (pointers are u32), plus the

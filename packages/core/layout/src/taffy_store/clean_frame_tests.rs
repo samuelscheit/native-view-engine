@@ -9,7 +9,7 @@ use crate::TaffyStoreLayout;
 use nve_components::tables::{
     AlignSelf, Display, FlexDirection, Layout, Overflow, Position, TextContent, Typography, Visual,
 };
-use crate::TextMeasurer;
+use crate::{TextMeasurer, TextStyle};
 use nve_engine::Viewport;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Transaction};
 
@@ -20,23 +20,13 @@ struct WeightedMeasurer {
 }
 
 impl TextMeasurer for WeightedMeasurer {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-        self.measure_with_weight(text, font_size, 400, max_width)
-    }
-
-    fn measure_with_weight(
-        &self,
-        text: &str,
-        font_size: f32,
-        font_weight: u16,
-        max_width: Option<f32>,
-    ) -> (f32, f32) {
-        let natural =
-            text.chars().count() as f32 * font_size * 0.5 * self.scale * f32::from(font_weight)
-                / 400.0;
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
+        let natural = text.chars().count() as f32 * style.font_size * 0.5 * self.scale
+            * f32::from(style.font_weight)
+            / 400.0;
         (
             max_width.map_or(natural, |w| natural.min(w)),
-            font_size * 1.25,
+            style.font_size * 1.25,
         )
     }
 }
@@ -256,13 +246,13 @@ struct FaultingMeasurer {
 }
 
 impl TextMeasurer for FaultingMeasurer {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
         assert!(
             !(self.armed.load(std::sync::atomic::Ordering::Relaxed)
                 && text.contains(self.fault_on)),
             "host measurer fault"
         );
-        WeightedMeasurer { scale: 1.0 }.measure(text, font_size, max_width)
+        WeightedMeasurer { scale: 1.0 }.measure(text, style, max_width)
     }
 }
 

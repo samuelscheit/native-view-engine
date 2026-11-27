@@ -37,6 +37,22 @@ TextPaint TextPaint::from(const host::TextStyle& s) {
   return p;
 }
 
+TextPaint TextPaint::from(const NveRuntimeTextStyle& s) {
+  host::TextStyle t;
+  t.font_size = s.font_size;
+  t.line_height = host::LengthValue{s.line_height_unit == NVE_LINE_HEIGHT_POINTS    ? NVE_LENGTH_POINTS
+                                    : s.line_height_unit == NVE_LINE_HEIGHT_PERCENT ? NVE_LENGTH_PERCENT
+                                                                                    : NVE_LENGTH_AUTO,
+                                    s.line_height};
+  t.letter_spacing = s.letter_spacing;
+  t.font_family = host::str_view(s.font_family);
+  t.max_lines = s.max_lines;
+  t.font_weight = s.font_weight;
+  t.font_style = s.font_style;
+  t.white_space = s.white_space;
+  return from(t);
+}
+
 WinImageSource WinImageSource::from(const host::ImageSource& src) {
   WinImageSource out;
   out.url.assign(src.url);
