@@ -6,7 +6,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use dioxus_core::{AttributeValue, ElementId, WriteMutations};
-use nve_abi::{ComponentKind, LayoutProps, NodeId, RawPropValueRef, StyleProps};
+use nve_abi::{
+    ColorRgba, ComponentKind, Dimension, EdgeInsets, FlexDirection, LayoutProps, NodeId,
+    RawPropValueRef, StyleProps,
+};
 use nve_components::{apply_typed_attr_kind, TypedAttrKind};
 use nve_dioxus::NveMutationWriter;
 use nve_engine::{BackendApplyStats, BackendError, RenderSink};
@@ -51,18 +54,37 @@ fn count_allocs<F: FnOnce()>(f: F) -> usize {
 struct NoopSink {
     layout_calls: usize,
     style_calls: usize,
+    el1_id: NodeId,
+    el2_id: NodeId,
+    el1_layout: Option<LayoutProps>,
+    el1_style: Option<StyleProps>,
+    el2_style: Option<StyleProps>,
 }
 
 impl RenderSink for NoopSink {
     fn begin_frame(&mut self, _: u32, _: u64) {}
-    fn create_node(&mut self, _: NodeId, _: ComponentKind, _: Option<&str>) {}
+    fn create_node(&mut self, id: NodeId, _: ComponentKind, _: Option<&str>) {
+        if self.el1_id == 0 {
+            self.el1_id = id;
+        } else if self.el2_id == 0 {
+            self.el2_id = id;
+        }
+    }
     fn remove_node(&mut self, _: NodeId) {}
     fn set_children(&mut self, _: NodeId, _: &[NodeId]) {}
-    fn set_layout(&mut self, _: NodeId, _: &LayoutProps) {
+    fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
         self.layout_calls += 1;
+        if id == self.el1_id {
+            self.el1_layout = Some(*layout);
+        }
     }
-    fn set_style(&mut self, _: NodeId, _: &StyleProps) {
+    fn set_style(&mut self, id: NodeId, style: &StyleProps) {
         self.style_calls += 1;
+        if id == self.el1_id {
+            self.el1_style = Some(*style);
+        } else if id == self.el2_id {
+            self.el2_style = Some(*style);
+        }
     }
     fn set_text(&mut self, _: NodeId, _: &str) {}
     fn set_event_mask(&mut self, _: NodeId, _: u64) {}
@@ -159,6 +181,12 @@ fn direct_typed_css_parsing_and_writer_updates_perform_zero_heap_allocations() {
     let op_val = AttributeValue::Float(0.75);
     let zi_val = AttributeValue::Int(12);
 
+    sink.layout_calls = 0;
+    sink.style_calls = 0;
+    sink.el1_layout = None;
+    sink.el1_style = None;
+    sink.el2_style = None;
+
     let direct_allocs = count_allocs(|| {
         let mut tx = writer.begin_tx(&mut sink, 1, 2);
         tx.set_attribute("width", None, &w_val, el1);
@@ -175,6 +203,18 @@ fn direct_typed_css_parsing_and_writer_updates_perform_zero_heap_allocations() {
         direct_allocs, 0,
         "warm direct-path standalone typed attrs (including named colors, border, and numeric Float/Int) must allocate 0 bytes"
     );
-    assert!(sink.layout_calls >= 2);
-    assert!(sink.style_calls >= 2);
+    assert_eq!(sink.layout_calls, 1, "frame 2 must flush el1 layout");
+    assert_eq!(sink.style_calls, 2, "frame 2 must flush el1 + el2 styles");
+    let l1 = sink.el1_layout.expect("el1 layout flushed in frame 2");
+    assert_eq!(l1.width, Dimension::Points(240.0));
+    assert_eq!(l1.padding, EdgeInsets::symmetric(8.0, 12.0));
+    assert_eq!(l1.flex_direction, FlexDirection::Row);
+    let s1 = sink.el1_style.expect("el1 style flushed in frame 2");
+    assert_eq!(s1.text_color, ColorRgba::rgb(239, 68, 68));
+    assert_eq!(s1.border_width, 2.0);
+    assert_eq!(s1.border_color, ColorRgba::rgb(239, 68, 68));
+    assert_eq!(s1.opacity, 0.75);
+    assert_eq!(s1.z_index, 12);
+    let s2 = sink.el2_style.expect("el2 style flushed in frame 2");
+    assert_eq!(s2.border_width, 5.0);
 }

@@ -410,15 +410,15 @@ where
             on_ext(ExtStyleDecl::FlexBasis(basis));
         }
         K::FlexGrow => {
-            let Some(v) = parse_f32(value.trim()) else { return false };
+            let Some(v) = parse_f32(value.trim()).filter(|v| *v >= 0.0) else { return false };
             layout.flex_grow = v;
         }
         K::FlexShrink => {
-            let Some(v) = parse_f32(value.trim()) else { return false };
+            let Some(v) = parse_f32(value.trim()).filter(|v| *v >= 0.0) else { return false };
             layout.flex_shrink = v;
         }
         K::Gap => {
-            let Some(v) = parse_px(value) else { return false };
+            let Some(v) = parse_px(value).filter(|v| *v >= 0.0) else { return false };
             layout.gap = v;
         }
         K::Padding => {
@@ -464,7 +464,7 @@ where
             style.border_width = v;
         }
         K::BorderRadius => {
-            let Some(v) = parse_px(value) else { return false };
+            let Some(v) = parse_px(value).filter(|v| *v >= 0.0) else { return false };
             style.border_radius = v;
         }
         K::Opacity => {

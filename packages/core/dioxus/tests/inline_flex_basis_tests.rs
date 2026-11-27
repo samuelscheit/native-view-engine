@@ -564,6 +564,12 @@ fn SameFrameTransitionAndFallbackApp() -> Element {
             text {
                 color: "#0000ff",
                 text { test_id: "default_col_mount", color: "#000000", "d4" }
+                text { test_id: "default_inline_col_mount", style: "color: #000000", "d5" }
+                text {
+                    test_id: "default_typed_col_mount",
+                    nve_style: TypedStyle::new().color(nve_abi::ColorRgba::BLACK),
+                    "d6"
+                }
             }
             pressable { test_id: "cycle", onpress: move |_| step += 1 }
         }
@@ -607,11 +613,13 @@ fn same_frame_layer_removal_default_style_explicit_and_invalid_attr_fallback() {
             "{id} must emit set_style for native backends"
         );
     }
-    assert_eq!(
-        sink.style.get(&sink.node("default_col_mount")).map(|s| s.text_color),
-        Some(ColorRgba::BLACK),
-        "default_col_mount must emit set_style for native backends"
-    );
+    for id in ["default_col_mount", "default_inline_col_mount", "default_typed_col_mount"] {
+        assert_eq!(
+            sink.style.get(&sink.node(id)).map(|s| s.text_color),
+            Some(ColorRgba::BLACK),
+            "{id} must emit set_style for native backends"
+        );
+    }
 
     // Frame 2 (s=1): same-frame layer removal + typed attr insertion, invalid-value fallback, AND
     // dynamic per-property Text overrides (must preserve sibling inherited color / font_size!).

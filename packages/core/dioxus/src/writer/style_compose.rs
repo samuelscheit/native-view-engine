@@ -50,6 +50,21 @@ pub(super) fn effective_layout_ext(
     (!ext.is_default()).then_some(ext)
 }
 
+/// Returns `true` when a `Text` node first transitions an explicit `color` or `font-size` flag
+/// from `false` to `true`, so `set_style` is emitted even for default-valued overrides (`16px`,
+/// `#000000`) and native backends (`headless`/`skia`) mark the node explicit instead of inheriting.
+#[inline]
+const fn became_explicit_text(
+    kind: ComponentKind,
+    prev_color: bool,
+    next_color: bool,
+    prev_font_size: bool,
+    next_font_size: bool,
+) -> bool {
+    matches!(kind, ComponentKind::Text)
+        && ((!prev_color && next_color) || (!prev_font_size && next_font_size))
+}
+
 #[inline]
 fn has_layered_styles(rec: &NodeRecord) -> bool {
     rec.is_dirty_compose()
@@ -222,13 +237,15 @@ impl NveMutationWriter {
             if rec.layout != prev_layout {
                 self.dirty_layout.push(node_id);
             }
-            // Emit `set_style` when a `Text` node first receives an explicit `color`/`font_size`
-            // even if its value equals `StyleProps::default()` (`16px` / `#000000`), so native
-            // backends (`headless`, `skia`) mark it explicit instead of overwriting from parent.
-            let became_explicit_text = rec.kind == ComponentKind::Text
-                && ((!prev_explicit_color && explicit_color)
-                    || (!prev_explicit_font_size && explicit_font_size));
-            if rec.style != prev_style || became_explicit_text {
+            if rec.style != prev_style
+                || became_explicit_text(
+                    rec.kind,
+                    prev_explicit_color,
+                    explicit_color,
+                    prev_explicit_font_size,
+                    explicit_font_size,
+                )
+            {
                 self.dirty_style.push(node_id);
             }
             return;
@@ -511,10 +528,15 @@ impl NveMutationWriter {
             rec.layout = next_layout;
             self.dirty_layout.push(node_id);
         }
-        let became_explicit_text = rec.kind == ComponentKind::Text
-            && ((!prev_explicit_text_color && explicit_text_color)
-                || (!prev_explicit_font_size && explicit_font_size));
-        if next_style != prev_style || became_explicit_text {
+        if next_style != prev_style
+            || became_explicit_text(
+                rec.kind,
+                prev_explicit_text_color,
+                explicit_text_color,
+                prev_explicit_font_size,
+                explicit_font_size,
+            )
+        {
             rec.style = next_style;
             self.dirty_style.push(node_id);
         }

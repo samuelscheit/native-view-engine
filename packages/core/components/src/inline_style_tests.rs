@@ -282,7 +282,11 @@ fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::JustifyContent, "bogus", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::AlignItems, "bogus", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexGrow, "nope", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexGrow, "-1", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexShrink, "nope", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexShrink, "-2", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Gap, "-8px", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::BorderRadius, "-4px", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Opacity, "nope", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FontSize, "0px", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FontSize, "-4px", |_| {}));
