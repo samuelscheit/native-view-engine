@@ -1,33 +1,26 @@
 # NVE Qt 6 Host Shell (`hosts/qt-shell`)
 
-Native **Qt 6** desktop host shell for Native View Engine, offering both a **GPU-composited Qt Quick (`QQuickItem` / Scene Graph `QSGNode`)** adapter and a retained **`QWidget`** adapter built directly on the shared C++20 runtime (`cxx/nve-fabric-bridge/include/nve_host_runtime.hpp`).
+Native **Qt 6** desktop host for Native View Engine with two front ends on one host core: a retained **`QWidget`** tree and a **Qt Quick** item rendering a retained scene graph. Both sit on the shared C++ host stack (`packages/core/host-cxx`: `HostSession`, `RetainedTree`, `SceneTables` / `read_node`, `EventFactory`, `ControlledText`, `app_state`) over `libnve_runtime` and `nve::canvas_cxx`, linked through `cxx/cmake/NveHostStack.cmake`.
 
 ## Architecture
 
-- **`NveQtQuickItem`** (`NveQtQuickItem.hpp` / `NveQtQuickItem.cpp`, enabled automatically when `Qt6::Quick` is found):
-  - `QQuickItem` (`QML_ELEMENT` / `NveSurface` in QML module `Nve 1.0`) rendering NVE's flat 64-byte `NveSceneView` (`nve::SceneTableBuilder`) directly onto Qt 6's hardware-accelerated RHI Scene Graph (Metal on macOS, Vulkan/OpenGL on Linux, D3D11/12 on Windows, Software for headless CI) with zero widget overhead.
-  - Retained `QSGNode` tree with `QSGTransformNode`, `QSGOpacityNode`, `QSGClipNode` (hardware scissor clip for rectangular bounds, stencil geometry clip for rounded rects), portable `DrawTriangles` rounded-rect & border `QSGGeometryNode` / `QSGSimpleRectNode`, and generation-tracked per-node HiDPI `QSGTexture` text caching (`QTextLayout` + `QPainter`) so unchanged text nodes never re-rasterize.
-  - Zero-copy `NveDirectEvent` dispatch for press, wheel scroll, focus/blur, and text input, plus live `geometryChange` relayout and atomic state-preserving `hotReload`.
-- **`NveQtWidget`** (`NveQtWidget.hpp` / `NveQtWidget.cpp`):
-  - Embeddable `QWidget` composing `nve::NativeHostSession` and `nve::RetainedViewReconciler<QWidget*, QtViewAdapter>`.
-  - Custom antialiased `NveQtBoxWidget`, `QLabel`, `QScrollArea`, and `QLineEdit`.
-- **`NveQtCommon.hpp`**: Shared `QColor`, `QFont`, and `QFontMetricsF` text measurement helpers used by both adapters.
-- **`nve_qt_shell`** (`main.cpp`): Standalone preview window (`--dylib <path>`, or `--quick <dylib>` for a live GPU-accelerated `QQuickView`).
+- **`QtHost`** (`NveQtHost.*`): the shared host core: session, app modules (load / hot reload), paired thin clients, state files, queued UI-thread wakes guarded by an alive token, the `QTextLayout` text measurer, event dispatch (press / links / pointer / focus / text / scroll), and content resolution (text, cached images, canvas draw lists). Each front end implements only `sync_views`, `clear_views` and `after_sync`.
+- Shared modules: `NveQtPaint` (boxes, borders, radii, shadows, images, text), `NveQtText` (typography, sanitized scene strings), `NveQtDrawList` (`NVE_DRAW1` via `QPainter`), `NveQtImageCache` (content-keyed LRU), `NveQtSemantics` (accessibility roles / states / value / attributes).
+- **`NveQtWidget`** (`NveQtWidget*`, `NveQtCustomWidgets.cpp`, `NveQtWidgetReconciler.cpp`): painted node widgets, native `QLineEdit` / `QPlainTextEdit` inputs, `QScrollArea` scroll views, accessible widgets.
+- **`NveQtQuickItem`** (`NveQtQuick*`, `NveQtSGBuilder.cpp`; built when `Qt6::Quick` is found): QML `NveSurface` in `import Nve 1.0`. GUI-thread node records feed a retained `QSGNode` tree updated O(changed) in `updatePaintNode` (transform / opacity / clip / scroll nodes, solid rects, per-node HiDPI textures re-rasterized only on paint changes). Host-side picking in paint order, wheel scrolling with chaining, keyboard focus traversal, controlled text editing with IME, and a per-node `QAccessibleInterface` tree.
+- **`NveQtWindowManager`**: multi-window surfaces.
+- **`nve_qt_shell`** (`main.cpp`): standalone window; `--quick` selects the Qt Quick front end.
 
 ## Build, Run & Test
 
 ```bash
-# 1. Build the example Kitchen Sink cdylib
 cargo build -p nve-example-kitchen-sink
-
-# 2. Configure & build Qt 6 host shell (optionally pass -DRN_REACT_COMMON_DIR=... for Yoga + JSI)
-cmake -S hosts/qt-shell -B hosts/qt-shell/build -G Ninja \
-  -DRN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon
+cmake -S hosts/qt-shell -B hosts/qt-shell/build -G Ninja
 cmake --build hosts/qt-shell/build
-
-# 3. Run CTest (runs both QWidget and Qt Quick Scene Graph suites offscreen)
-ctest --test-dir hosts/qt-shell/build --output-on-failure
-
-# 4. Launch GPU-accelerated Qt Quick preview window (or omit --quick for QWidget mode)
-./hosts/qt-shell/build/nve_qt_shell --quick target/debug/libnve_example_kitchen_sink.dylib
+# nve_qt_shell_test (Widgets) + nve_qt_quick_test (Quick, software scene graph), ASan + UBSan.
+NVE_TEST_KITCHEN_SINK_DYLIB=$PWD/target/debug/libnve_example_kitchen_sink.dylib \
+  ctest --test-dir hosts/qt-shell/build --output-on-failure
+./hosts/qt-shell/build/nve_qt_shell --dylib target/debug/libnve_example_kitchen_sink.dylib [--quick]
 ```
+
+Options: `--dylib <path>`, `--pair <uri> [--pair-token <token>]`, `--state <file>`, `--no-state`, `--reset-state`, `--schema <ver>`, `--width` / `--height`. Environment: `NVE_STATE_DISABLE=1`, `NVE_STATE_PATH=<file>`, `NVE_RESET_STATE=1`. State is saved on window close, SIGINT / SIGTERM and shutdown; falling back to the built-in demo app disables persistence.

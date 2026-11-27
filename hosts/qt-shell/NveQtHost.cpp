@@ -258,6 +258,62 @@ std::span<const uint8_t> QtHost::scene_resource(uint32_t id, host::Key64 kind) c
   return res && res->kind == kind ? res->bytes : std::span<const uint8_t>{};
 }
 
+std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, ContentIds& ids, const host::NodeData& node,
+                                                   const canvas::CanvasTable& canvas) {
+  const auto become = [&paint](NodeContent kind) {
+    if (kind != NodeContent::Text) paint.text.clear();
+    if (kind != NodeContent::Image) paint.image = QImage();
+    if (kind != NodeContent::Canvas) paint.draw_list.clear();
+    paint.content = kind;
+  };
+  if (canvas.has(node.index)) {
+    const canvas::CanvasData c = canvas.at(node.index);
+    if (paint.content == NodeContent::Canvas && c.draw_list == ids.canvas_res && c.generation == ids.canvas_generation) {
+      return std::nullopt;
+    }
+    ids.canvas_res = c.draw_list;
+    ids.canvas_generation = c.generation;
+    const std::span<const uint8_t> bytes = scene_resource(c.draw_list, canvas::kDrawListKind);
+    if (paint.content == NodeContent::Canvas && std::ranges::equal(bytes, paint.draw_list)) return std::nullopt;
+    become(NodeContent::Canvas);
+    paint.draw_list.assign(bytes.begin(), bytes.end());
+    return NodeContent::Canvas;
+  }
+  ids.canvas_res = ids.canvas_generation = 0u;
+  if (node.kind == host::NodeKind::Image) {
+    const uint32_t tint = node.image.tint_enabled ? node.image.tint : 0u;
+    if (paint.content == NodeContent::Image && ids.image_src == node.image.src && paint.fit == node.image.fit &&
+        ids.image_tint == tint) {
+      return std::nullopt;
+    }
+    ids.image_src = node.image.src;
+    ids.image_tint = tint;
+    QImage image;
+    if (const auto src = host::decode_image_src(scene_resource(node.image.src, host::kImageSrcKind))) {
+      image = images_.get(*src);
+    }
+    if (!image.isNull() && node.image.tint_enabled) image = tinted_image(image, qcolor(tint));
+    become(NodeContent::Image);
+    paint.image = image;
+    paint.fit = node.image.fit;
+    return NodeContent::Image;
+  }
+  ids.image_src = ids.image_tint = 0u;
+  // Text paints on leaves only (a text wrapper with children is a View holding its runs).
+  if (!node.text.empty() && node.children.empty()) {
+    QString text = display_text(node.text);
+    QtTextStyle style = text_style(node.text_style);
+    if (paint.content == NodeContent::Text && text == paint.text && style == paint.style) return std::nullopt;
+    become(NodeContent::Text);
+    paint.text = std::move(text);
+    paint.style = std::move(style);
+    return NodeContent::Text;
+  }
+  if (paint.content == NodeContent::None) return std::nullopt;
+  become(NodeContent::None);
+  return NodeContent::None;
+}
+
 void QtHost::measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
                                 float* out_width, float* out_height) {
   const auto* self = static_cast<const QtHost*>(ctx);

@@ -1,320 +1,237 @@
-#include "NveQtQuickItem.hpp"
-#include "qt_test_helpers.hpp"
+// Qt Quick host media and semantics: images (data URL / bytes, fit, tint, broken sources, the
+// content-keyed cache, texture reuse), `nve.canvas` draw lists (pixels, generation redraws,
+// corrupt payloads, detach), typography, and the accessible node tree (roles, names, states,
+// values, heading attributes, press action, geometry, change / focus / destroy events).
+#include "qt_quick_helpers.hpp"
 
-#include <QBuffer>
-#include <QColor>
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QImage>
-#include <QQuickWindow>
-#include <QSGNode>
-#include <QUrl>
+#include <nve/canvas/draw_list_encoder.hpp>
+#include <nve/host/core_resources.hpp>
 
-#include <cmath>
-#include <memory>
-#include <string>
-#include <vector>
+#include <algorithm>
 
 namespace {
 
-using nve::qt_test::BinaryCmdHelper;
+using namespace nve::qt;
+using namespace nve::qt::test;
+namespace h = nve::host;
+namespace c = nve::canvas;
 
-struct MockQuickImageComponent {
-  static inline MockQuickImageComponent* last_instance = nullptr;
-  uint32_t surface_id{1};
-  std::string data_uri;
-  std::string file_uri;
-  int ticks{0};
-  BinaryCmdHelper cmd;
-
-  static NveAppHandle create(uint32_t sid) {
-    auto* self = new MockQuickImageComponent();
-    self->surface_id = sid;
-    last_instance = self;
-    return self;
-  }
-  static void destroy(NveAppHandle h) {
-    auto* self = static_cast<MockQuickImageComponent*>(h);
-    if (last_instance == self) last_instance = nullptr;
-    delete self;
-  }
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<MockQuickImageComponent*>(h);
-    self->cmd.begin(self->surface_id, frame_id);
-
-    self->cmd.create_node(2, NVE_COMP_VIEW);
-    self->cmd.create_node(3, NVE_COMP_IMAGE);
-    self->cmd.create_node(4, NVE_COMP_IMAGE);
-    self->cmd.create_node(5, NVE_COMP_TEXT);
-
-    self->cmd.set_children(NVE_ROOT_NODE_ID, {2});
-    self->cmd.set_children(2, {3, 4, 5});
-
-    self->cmd.set_layout(2, 0, 1, 240.0f, 1, 200.0f, 0.0f, 10.0f, 8.0f);
-    self->cmd.set_style(2, 0xFF0F172Au, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
-
-    self->cmd.set_layout(3, 0, 1, 64.0f, 1, 64.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_style(3, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 6.0f, 1.0f, 14.0f);
-    self->cmd.set_raw_prop_string(3, "src", self->data_uri);
-    self->cmd.set_raw_prop_string(3, "resizeMode", "cover");
-
-    self->cmd.set_layout(4, 0, 1, 48.0f, 1, 48.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_style(4, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
-    self->cmd.set_raw_prop_string(4, "src", self->file_uri);
-    self->cmd.set_raw_prop_string(4, "resizeMode", "contain");
-
-    self->cmd.set_layout(5, 0, 1, 140.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_text(5, "Tick:" + std::to_string(self->ticks));
-    self->cmd.set_style(5, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
-
-    return self->cmd.finish();
-  }
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<MockQuickImageComponent*>(h);
-    if (batch.ptr != nullptr && batch.len > 0u) {
-      ++self->ticks;
-      return 1u;
-    }
-    return 0u;
-  }
-  static const void* get_interface(uint32_t iface) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
-    return (iface == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
-  }
-};
-
-void test_quick_image_rendering_and_retained_sg_survival() {
-  QImage green_img(8, 8, QImage::Format_RGBA8888);
-  green_img.fill(QColor(24, 210, 96, 255));
-  QByteArray png_bytes;
-  QBuffer png_buf(&png_bytes);
-  png_buf.open(QIODevice::WriteOnly);
-  NVE_CHECK(green_img.save(&png_buf, "PNG"));
-  const QByteArray b64 = png_bytes.toBase64();
-  const std::string data_uri =
-      "data:image/png;base64," + std::string(b64.constData(), static_cast<size_t>(b64.size()));
-
-  const QString tmp_png = QDir::temp().filePath(
-      QStringLiteral("nve_qt_quick_img_%1.png").arg(QCoreApplication::applicationPid()));
-  {
-    QImage amber_img(8, 8, QImage::Format_RGBA8888);
-    amber_img.fill(QColor(245, 170, 20, 255));
-    NVE_CHECK(amber_img.save(tmp_png, "PNG"));
-  }
-  const QByteArray file_url_utf8 = QUrl::fromLocalFile(tmp_png).toString().toUtf8();
-  const std::string file_uri(file_url_utf8.constData(), static_cast<size_t>(file_url_utf8.size()));
-
-  QQuickWindow win;
-  win.resize(240, 200);
-  auto* item = new nve::NveQtQuickItem(win.contentItem());
-  item->setSize(QSizeF(240, 200));
-
-  NVE_CHECK(item->attachInterface(&MockQuickImageComponent::get_interface, 29u));
-  NVE_CHECK(MockQuickImageComponent::last_instance != nullptr);
-  MockQuickImageComponent::last_instance->data_uri = data_uri;
-  MockQuickImageComponent::last_instance->file_uri = file_uri;
-  NVE_CHECK(item->renderFrame() == 0);
-
-  win.show();
-  QCoreApplication::processEvents();
-  const QImage grabbed = win.grabWindow();
-  NVE_CHECK(!grabbed.isNull() && grabbed.width() > 0 && grabbed.height() > 0);
-  bool saw_green_pixel = false;
-  for (int y = 0; y < grabbed.height() && !saw_green_pixel; y += 2) {
-    for (int x = 0; x < grabbed.width(); x += 2) {
-      const QColor c = grabbed.pixelColor(x, y);
-      if (c.green() > 180 && c.red() < 60 && c.blue() < 130) {
-        saw_green_pixel = true;
-        break;
-      }
-    }
-  }
-  NVE_CHECK(saw_green_pixel);
-
-  std::unique_ptr<QSGNode> sg_root(item->syncSceneGraphNode(nullptr));
-  NVE_CHECK(sg_root != nullptr);
-  const nve::SceneGraphStats s1 = item->sceneGraphStats();
-  NVE_CHECK(s1.imageTextureNodes == 2u && s1.cachedImageTextures == 2u && s1.textTextureNodes == 1u);
-
-  const QSGNode* img3_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3);
-  const QSGNode* img4_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 4);
-  NVE_CHECK(img3_before != nullptr && img4_before != nullptr);
-
-  item->dispatchPress(5, 2.0f, 2.0f);
-  NVE_CHECK(item->sceneNodeText(5) == "Tick:1");
-  NVE_CHECK(item->syncSceneGraphNode(sg_root.get()) == sg_root.get());
-  NVE_CHECK(item->sceneGraphStats().dirtyNodesUpdated == 1u);
-  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3) == img3_before);
-  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 4) == img4_before);
-
-  sg_root.reset();
-  QFile::remove(tmp_png);
+void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t> src) {
+  w.create(id);
+  w.define_resource(res, h::kImageSrcKind, src);
+  w.set(id, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, res);
+  size_node(w, id, 40.0f, 20.0f);
 }
 
-struct MockQuickCanvasComponent {
-  static inline MockQuickCanvasComponent* last_instance = nullptr;
-  uint32_t surface_id{1};
-  std::string draw_list_attr;
-  bool emit_corrupt_raw{false};
-  std::string corrupt_raw;
-  int ticks{0};
-  BinaryCmdHelper cmd;
-
-  static NveAppHandle create(uint32_t sid) {
-    auto* self = new MockQuickCanvasComponent();
-    self->surface_id = sid;
-    last_instance = self;
-    return self;
-  }
-  static void destroy(NveAppHandle h) {
-    auto* self = static_cast<MockQuickCanvasComponent*>(h);
-    if (last_instance == self) last_instance = nullptr;
-    delete self;
-  }
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<MockQuickCanvasComponent*>(h);
-    self->cmd.begin(self->surface_id, frame_id);
-
-    self->cmd.create_node(2, NVE_COMP_VIEW);
-    self->cmd.create_node(3, NVE_COMP_SKIA_CANVAS);
-    self->cmd.create_node(4, NVE_COMP_TEXT);
-
-    self->cmd.set_children(NVE_ROOT_NODE_ID, {2});
-    self->cmd.set_children(2, {3, 4});
-
-    self->cmd.set_layout(2, 0, 1, 240.0f, 1, 140.0f, 0.0f, 10.0f, 8.0f);
-    self->cmd.set_style(2, 0xFF0B1020u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
-
-    self->cmd.set_layout(3, 0, 1, 200.0f, 1, 80.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_style(3, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 6.0f, 1.0f, 14.0f);
-    if (self->emit_corrupt_raw) {
-      self->cmd.set_raw_prop_string(3, "drawList", "");
-      self->cmd.set_text(3, self->corrupt_raw);
-    } else {
-      self->cmd.set_raw_prop_string(3, "drawList", self->draw_list_attr);
-    }
-
-    self->cmd.set_layout(4, 0, 1, 140.0f, 1, 24.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_text(4, "Frame:" + std::to_string(self->ticks));
-    self->cmd.set_style(4, 0x00000000u, 0xFFFFFFFFu, 0u, 0.0f, 0.0f, 1.0f, 14.0f);
-
-    return self->cmd.finish();
-  }
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<MockQuickCanvasComponent*>(h);
-    if (batch.ptr != nullptr && batch.len > 0u) {
-      ++self->ticks;
-      return 1u;
-    }
-    return 0u;
-  }
-  static const void* get_interface(uint32_t iface) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
-    return (iface == NVE_IFACE_SURFACE) ? &kSurface : nullptr;
-  }
-};
-
-void test_quick_draw_list_canvas_gpu_cache_and_corrupt_survival() {
-  const std::vector<float> samples{10.0f, 32.0f, 22.0f, 55.0f, 44.0f, 78.0f};
-  const nve::DrawColorRgba bg_col = nve::DrawColorRgba::rgb(18u, 28u, 52u);
-  const nve::DrawColorRgba cyan_col = nve::DrawColorRgba::rgb(56u, 189u, 248u);
-  const nve::DrawColorRgba pink_col = nve::DrawColorRgba::rgb(244u, 63u, 94u);
-
-  nve::DrawListEncoder cyan_enc;
-  cyan_enc.sparkline(samples, 200.0f, 80.0f, cyan_col, bg_col);
-  const std::vector<uint8_t> cyan_bytes = cyan_enc.finish();
-
-  nve::DrawListEncoder pink_enc;
-  pink_enc.sparkline(samples, 200.0f, 80.0f, pink_col, bg_col);
-  const std::vector<uint8_t> pink_bytes = pink_enc.finish();
-
-  QQuickWindow win;
-  win.resize(240, 140);
-  auto* item = new nve::NveQtQuickItem(win.contentItem());
-  item->setSize(QSizeF(240, 140));
-
-  NVE_CHECK(item->attachInterface(&MockQuickCanvasComponent::get_interface, 37u));
-  NVE_CHECK(MockQuickCanvasComponent::last_instance != nullptr);
-  auto* mock = MockQuickCanvasComponent::last_instance;
-  mock->draw_list_attr = nve::encode_draw_list_attr_base64(cyan_bytes);
-  NVE_CHECK(item->renderFrame() == 0);
-
-  win.show();
-  QCoreApplication::processEvents();
-  const QImage grabbed1 = win.grabWindow();
-  NVE_CHECK(!grabbed1.isNull() && grabbed1.width() > 0 && grabbed1.height() > 0);
-  int bg_px = 0;
-  int cyan_px = 0;
-  for (int y = 0; y < grabbed1.height(); ++y) {
-    for (int x = 0; x < grabbed1.width(); ++x) {
-      const QColor c = grabbed1.pixelColor(x, y);
-      if (std::abs(c.red() - 18) <= 3 && std::abs(c.green() - 28) <= 3 && std::abs(c.blue() - 52) <= 3) {
-        ++bg_px;
-      }
-      if (c.blue() > 210 && c.green() > 150 && c.red() < 90) {
-        ++cyan_px;
-      }
-    }
-  }
-  NVE_CHECK(bg_px > 4000 && cyan_px > 35);
-
-  mock->draw_list_attr = nve::encode_draw_list_attr_base64(pink_bytes);
-  NVE_CHECK(item->renderFrame() == 0);
-  QCoreApplication::processEvents();
-  const QImage grabbed2 = win.grabWindow();
-  int pink_px = 0;
-  for (int y = 0; y < grabbed2.height(); ++y) {
-    for (int x = 0; x < grabbed2.width(); ++x) {
-      const QColor c = grabbed2.pixelColor(x, y);
-      if (c.red() > 210 && c.green() < 100 && c.blue() > 70 && c.blue() < 130) ++pink_px;
-    }
-  }
-  NVE_CHECK(pink_px > 35);
-
-  mock->emit_corrupt_raw = true;
-  mock->corrupt_raw.assign(reinterpret_cast<const char*>(cyan_bytes.data()), 18u);
-  NVE_CHECK(item->renderFrame() == 0);
-  QCoreApplication::processEvents();
-  NVE_CHECK(!win.grabWindow().isNull());
-
-  mock->emit_corrupt_raw = false;
-  mock->draw_list_attr = nve::encode_draw_list_attr_base64(cyan_bytes);
-  NVE_CHECK(item->renderFrame() == 0);
-
-  std::unique_ptr<QSGNode> sg_root(item->syncSceneGraphNode(nullptr));
-  NVE_CHECK(sg_root != nullptr);
-  const nve::SceneGraphStats s1 = item->sceneGraphStats();
-  NVE_CHECK(s1.canvasTextureNodes == 1u && s1.cachedCanvasTextures == 1u && s1.canvasRasterizations == 1u);
-
-  const QSGNode* canvas_sg_before = nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3);
-  NVE_CHECK(canvas_sg_before != nullptr);
-  item->dispatchPress(4, 2.0f, 2.0f);
-  NVE_CHECK(item->sceneNodeText(4) == "Frame:1");
-  (void)item->syncSceneGraphNode(sg_root.get());
-  const nve::SceneGraphStats s2 = item->sceneGraphStats();
-  NVE_CHECK(s2.canvasRasterizations == 1u && s2.canvasTextureNodes == 1u);
-  NVE_CHECK(nve::NveQtQuickItem::retainedSGNodeForNodeId(sg_root.get(), 3) == canvas_sg_before);
-
-  mock->draw_list_attr = nve::encode_draw_list_attr_base64(pink_bytes);
-  NVE_CHECK(item->renderFrame() == 0);
-  (void)item->syncSceneGraphNode(sg_root.get());
-  const nve::SceneGraphStats s3 = item->sceneGraphStats();
-  NVE_CHECK(s3.canvasRasterizations == 2u && s3.canvasTextureNodes == 1u);
-
-  mock->emit_corrupt_raw = true;
-  mock->corrupt_raw.assign(reinterpret_cast<const char*>(cyan_bytes.data()), 18u);
-  NVE_CHECK(item->renderFrame() == 0);
-  (void)item->syncSceneGraphNode(sg_root.get());
-  const nve::SceneGraphStats s4 = item->sceneGraphStats();
-  NVE_CHECK(s4.canvasTextureNodes == 0u && s4.cachedCanvasTextures == 0u);
-
-  sg_root.reset();
+std::vector<uint8_t> two_rects(c::DrawColorRgba second) {
+  c::DrawListEncoder e;
+  e.clear(c::DrawColorRgba::rgb(255, 255, 255))
+      .fill_rect(0.0f, 0.0f, 20.0f, 20.0f, c::DrawColorRgba::rgb(255, 0, 0))
+      .fill_rect(20.0f, 0.0f, 20.0f, 20.0f, second);
+  return e.finish();
 }
 
-} // namespace
+void test_images_and_canvas() {
+  constexpr uint32_t kUrl = 2u, kBytes = 3u, kTint = 4u, kBad = 5u, kContain = 6u, kCanvas = 7u, kSame = 8u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 255, 255));
+  w.set(1u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_DIRECTION, NVE_FLEX_DIRECTION_ROW);
+  w.set(1u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
+  const std::vector<uint8_t> red = png(4, 4, QColor(255, 0, 0));
+  image(w, kUrl, 60u, h::encode_image_url(data_url(png(2, 2, QColor(0, 255, 0)))));
+  image(w, kBytes, 61u, h::encode_image_bytes(red));
+  image(w, kTint, 62u, h::encode_image_bytes(red));
+  w.set_bool(kTint, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_TINT_ENABLED, true);
+  w.set(kTint, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_TINT, h::rgba(0, 0, 255));
+  image(w, kBad, 63u, h::encode_image_url("data:image/png;base64,AAAA"));
+  image(w, kContain, 64u, h::encode_image_bytes(red));  // square image in a 40x20 box: pillarboxed
+  w.set(kContain, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
+  w.create(kCanvas);
+  size_node(w, kCanvas, 40.0f, 20.0f);
+  w.define_resource(70u, c::kDrawListKind, two_rects(c::DrawColorRgba::rgb(0, 0, 255)));
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 70u);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 1u);
+  image(w, kSame, 65u, h::encode_image_bytes(red));  // same bytes as kBytes: one cached decode
+  const uint32_t kids[] = {kUrl, kBytes, kTint, kBad, kContain, kCanvas, kSame};
+  w.set_children(1u, kids);
 
-void nve_test_qt_quick_media_canvas() {
-  test_quick_image_rendering_and_retained_sg_survival();
-  test_quick_draw_list_canvas_gpu_cache_and_corrupt_survival();
+  QuickHarness q(QSize(320, 60));
+  ProbeItem& item = *q.item;
+  NVE_CHECK(item.host().attach_interface(&ScriptedApp::get_interface));
+  QImage img = q.grab();
+  NVE_CHECK(same_rgb(img.pixelColor(20, 10), 0, 255, 0));    // data URL, cover
+  NVE_CHECK(same_rgb(img.pixelColor(60, 10), 255, 0, 0));    // bytes
+  NVE_CHECK(same_rgb(img.pixelColor(100, 10), 0, 0, 255));   // tinted
+  NVE_CHECK(same_rgb(img.pixelColor(140, 10), 255, 255, 255));  // broken: nothing painted
+  NVE_CHECK(same_rgb(img.pixelColor(180, 10), 255, 0, 0) && same_rgb(img.pixelColor(162, 10), 255, 255, 255));
+  NVE_CHECK(same_rgb(img.pixelColor(205, 10), 255, 0, 0) && same_rgb(img.pixelColor(235, 10), 0, 0, 255));
+  NVE_CHECK(same_rgb(img.pixelColor(260, 10), 255, 0, 0));
+  const SceneGraphStats first = item.sceneGraphStats();
+  NVE_CHECK(first.imageRasterizations == 6u && first.canvasRasterizations == 1u);
+  // Content-keyed: the green URL + the red bytes (decoded once for kBytes / kTint / kContain /
+  // kSame); the broken source is not cached.
+  NVE_CHECK(item.host().images().size() == 2u && item.host().images().hits() >= 3u);
+
+  // An unrelated change: no image / canvas re-rasterization.
+  w.set(1u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(250, 250, 250));
+  flush(item.host());
+  (void)q.grab();
+  NVE_CHECK(item.sceneGraphStats().imageRasterizations == first.imageRasterizations);
+  NVE_CHECK(item.sceneGraphStats().canvasRasterizations == first.canvasRasterizations);
+  // Tint change: one image re-rasterized.
+  w.set(kTint, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_TINT, h::rgba(0, 255, 0));
+  flush(item.host());
+  NVE_CHECK(same_rgb(q.at(100, 10), 0, 255, 0));
+  NVE_CHECK(item.sceneGraphStats().imageRasterizations == first.imageRasterizations + 1u);
+
+  // Canvas: a new draw list + generation redraws; a corrupt one paints only the background.
+  w.define_resource(71u, c::kDrawListKind, two_rects(c::DrawColorRgba::rgb(0, 255, 0)));
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 71u);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 2u);
+  w.release_resource(70u);
+  flush(item.host());
+  NVE_CHECK(same_rgb(q.at(235, 10), 0, 255, 0));
+  NVE_CHECK(item.sceneGraphStats().canvasRasterizations == first.canvasRasterizations + 1u);
+  std::vector<uint8_t> corrupt = two_rects(c::DrawColorRgba::rgb(0, 0, 0));
+  corrupt.resize(corrupt.size() - 3u);
+  w.define_resource(72u, c::kDrawListKind, corrupt);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 72u);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 3u);
+  w.set(kCanvas, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(9, 9, 9));
+  flush(item.host());
+  NVE_CHECK(same_rgb(q.at(205, 10), 9, 9, 9) && same_rgb(q.at(235, 10), 9, 9, 9));
+  // Detaching the canvas row: a plain box again (solid rect, no texture).
+  const uint32_t solid = item.sceneGraphStats().solidRectNodes;
+  w.detach(kCanvas, NVE_TABLE_CANVAS_DESC);
+  flush(item.host());
+  NVE_CHECK(same_rgb(q.at(205, 10), 9, 9, 9) && item.sceneGraphStats().solidRectNodes == solid + 1u);
+}
+
+void test_typography_and_accessibility() {
+  constexpr uint32_t kHeading = 2u, kButton = 3u, kCheck = 4u, kSlider = 5u, kHidden = 6u, kDisabled = 7u,
+                     kGroup = 8u, kInner = 9u, kSecret = 10u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_COLOR);  // inherited
+  w.set(1u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, h::rgba(200, 0, 0));
+  text_node(w, kHeading, "Title");
+  w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_HEADING);
+  w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LEVEL, 2u);
+  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE);
+  w.set_f32(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 24.0f);
+  text_node(w, kButton, "Go");
+  w.set(kButton, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_BUTTON);
+  (void)w.set_str(kButton, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_HINT, "Starts it");
+  subscribe(w, kButton, {NVE_EVENT_PRESS});
+  w.create(kCheck);
+  size_node(w, kCheck, 20.0f, 20.0f);
+  w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_CHECKBOX);
+  (void)w.set_str(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, "Agree");
+  w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_CHECKED, NVE_ARIA_TRI_STATE_TRUE);
+  w.create(kSlider);
+  size_node(w, kSlider, 20.0f, 20.0f);
+  w.set(kSlider, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_SLIDER);
+  w.set_f32(kSlider, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_VALUE_NOW, 30.0f);
+  w.set_f32(kSlider, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_VALUE_MAX, 100.0f);
+  text_node(w, kHidden, "hidden");
+  w.set(kHidden, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_VISIBILITY, NVE_VISIBILITY_HIDDEN);
+  text_node(w, kDisabled, "Off");
+  subscribe(w, kDisabled, {NVE_EVENT_PRESS});
+  w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
+  w.create(kGroup);
+  text_node(w, kInner, "Inner");
+  const uint32_t inner[] = {kInner};
+  w.set_children(kGroup, inner);
+  w.create(kSecret);
+  size_node(w, kSecret, 100.0f, 20.0f);
+  w.set_bool(kSecret, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_SECURE, true);
+  (void)w.set_str(kSecret, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "pass");
+  const uint32_t kids[] = {kHeading, kButton, kCheck, kSlider, kHidden, kDisabled, kGroup, kSecret};
+  w.set_children(1u, kids);
+
+  A11yRecorder recorder;
+  QuickHarness q(QSize(300, 300));
+  ProbeItem& item = *q.item;
+  NVE_CHECK(item.host().attach_interface(&ScriptedApp::get_interface));
+  NVE_CHECK(item.nodeRect(kHeading).height() > item.nodeRect(kButton).height());  // 24px font measured
+  const QImage img = q.grab();
+  const QRectF head = item.nodeRect(kHeading);
+  bool red_ink = false;  // inherited text color reached the heading's pixels
+  for (int x = static_cast<int>(head.left()); x < static_cast<int>(head.right()) && !red_ink; ++x) {
+    for (int y = static_cast<int>(head.top()); y < static_cast<int>(head.bottom()) && !red_ink; ++y) {
+      const QColor px = img.pixelColor(x, y);
+      red_ink = px.red() > 150 && px.green() < 60 && px.blue() < 60;
+    }
+  }
+  NVE_CHECK(red_ink);
+
+  // The tree mirrors the scene: item -> nodes, parents and indexes consistent.
+  QAccessibleInterface* root = QAccessible::queryAccessibleInterface(&item);
+  NVE_CHECK(root != nullptr && root->object() == &item && root->role() == QAccessible::Pane);
+  NVE_CHECK(root->childCount() == 8);
+  for (int i = 0; i < root->childCount(); ++i) {
+    QAccessibleInterface* child = root->child(i);
+    NVE_CHECK(child != nullptr && child->isValid() && child->parent() == root && root->indexOfChild(child) == i);
+  }
+  QAccessibleInterface* heading = root->child(0);
+  NVE_CHECK(heading->role() == QAccessible::Heading && heading->text(QAccessible::Name) == "Title");
+  NVE_CHECK(heading->attributesInterface() != nullptr);
+  NVE_CHECK(heading->attributesInterface()->attributeValue(QAccessible::Attribute::Level).toInt() == 2);
+  NVE_CHECK(heading->rect() == QRectF(item.mapToGlobal(head.topLeft()), head.size()).toAlignedRect());
+  QAccessibleInterface* button = root->child(1);
+  NVE_CHECK(button->role() == QAccessible::Button && button->text(QAccessible::Description) == "Starts it");
+  NVE_CHECK(button->actionInterface()->actionNames() == QStringList{QAccessibleActionInterface::pressAction()});
+  button->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
+  NVE_CHECK(app.count(NVE_EVENT_PRESS, kButton) == 1u);
+  button->actionInterface()->doAction(QStringLiteral("bogus"));
+  NVE_CHECK(app.count(NVE_EVENT_PRESS, kButton) == 1u);
+  NVE_CHECK(root->childAt(button->rect().center().x(), button->rect().center().y()) == button);
+  QAccessibleInterface* check = root->child(2);
+  NVE_CHECK(check->role() == QAccessible::CheckBox && check->state().checkable && check->state().checked);
+  QAccessibleInterface* slider = root->child(3);
+  NVE_CHECK(slider->valueInterface() != nullptr && slider->valueInterface()->currentValue().toDouble() == 30.0);
+  NVE_CHECK(slider->valueInterface()->maximumValue().toDouble() == 100.0);
+  NVE_CHECK(root->child(4)->state().invisible);
+  QAccessibleInterface* disabled = root->child(5);
+  NVE_CHECK(disabled->state().disabled && disabled->actionInterface()->actionNames().isEmpty());
+  disabled->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
+  q.click(q.center(kDisabled));
+  NVE_CHECK(app.count(NVE_EVENT_PRESS, kDisabled) == 0u);
+  QAccessibleInterface* group = root->child(6);
+  NVE_CHECK(group->childCount() == 1 && group->child(0)->text(QAccessible::Name) == "Inner");
+  NVE_CHECK(group->child(0)->parent() == group);
+  QAccessibleInterface* secret = root->child(7);
+  NVE_CHECK(secret->role() == QAccessible::EditableText && secret->text(QAccessible::Value) == "••••");
+  NVE_CHECK(item.accessibilityInfoForNodeId(kSecret)->secure && !item.accessibilityInfoForNodeId(999u));
+
+  // Focus: a Focus event, the focused state and the focus child.
+  q.click(q.center(kSecret));
+  NVE_CHECK(A11yRecorder::count(QAccessible::Focus, QString()) >= 1u || secret->state().focused);
+  NVE_CHECK(secret->state().focused && root->focusChild() == secret);
+
+  // Semantics changes post events; removal invalidates the interface and posts ObjectDestroyed.
+  (void)w.set_str(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, "Agreed");
+  w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_CHECKED, NVE_ARIA_TRI_STATE_FALSE);
+  flush(item.host());
+  NVE_CHECK(A11yRecorder::count(QAccessible::NameChanged, QStringLiteral("Agreed")) == 1u);
+  NVE_CHECK(A11yRecorder::count(QAccessible::StateChanged, QStringLiteral("Agreed")) == 1u);
+  NVE_CHECK(check->text(QAccessible::Name) == "Agreed" && !check->state().checked);
+  const QAccessible::Id check_id = QAccessible::uniqueId(check);
+  w.remove(kCheck);
+  const uint32_t rest[] = {kHeading, kButton, kSlider, kHidden, kDisabled, kGroup, kSecret};
+  w.set_children(1u, rest);
+  flush(item.host());
+  NVE_CHECK(A11yRecorder::count(QAccessible::ObjectDestroyed, QStringLiteral("Agreed")) == 1u);  // posted by Qt
+  NVE_CHECK(QAccessible::accessibleInterface(check_id) == nullptr && root->childCount() == 7);
+  NVE_CHECK(root->child(2) == slider);  // surviving interfaces are kept
+}
+
+}  // namespace
+
+void nve_test_qt_quick_media_canvas_a11y() {
+  test_images_and_canvas();
+  test_typography_and_accessibility();
 }

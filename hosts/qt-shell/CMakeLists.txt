@@ -8,12 +8,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(NVE_ENABLE_NATIVE_VIEWS "Enable packages/modules/native-views" OFF)
 
-# Unified prefixes first, then the split Homebrew kegs (qtbase + qtdeclarative).
+# Unified prefixes first, then the split Homebrew kegs (qtbase + qtdeclarative). Qt6 resolves
+# components next to Qt6Config.cmake only, so split kegs also go on its additional-prefix list.
 foreach(_nve_qt_hint IN ITEMS
     "/opt/homebrew/opt/qt" "/opt/homebrew/opt/qtbase" "/opt/homebrew/opt/qtdeclarative"
     "/usr/local/opt/qt" "/usr/local/opt/qtbase" "/usr/local/opt/qtdeclarative")
   if(EXISTS "${_nve_qt_hint}")
     list(APPEND CMAKE_PREFIX_PATH "${_nve_qt_hint}")
+    list(APPEND QT_ADDITIONAL_PACKAGES_PREFIX_PATH "${_nve_qt_hint}")
   endif()
 endforeach()
 find_package(Qt6 REQUIRED COMPONENTS Widgets OPTIONAL_COMPONENTS Quick Qml)
@@ -78,3 +80,32 @@ add_test(NAME qt_shell_test COMMAND nve_qt_shell_test)
 set_tests_properties(qt_shell_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 nve_host_sanitize(nve_qt_shell_lib nve_qt_shell nve_qt_shell_test)
+
+# Qt Quick host (`NveQtQuickItem`, QML `import Nve 1.0` / `NveSurface`): optional with the Quick
+# component (Homebrew: qtdeclarative).
+if(TARGET Qt6::Quick AND TARGET Qt6::Qml)
+  add_library(nve_qt_quick_lib STATIC
+    NveQtQuickItem.hpp
+    NveQtQuickItem.cpp
+    NveQtQuickInput.cpp
+    NveQtQuickAccessible.cpp
+    NveQtSGBuilder.cpp
+  )
+  target_compile_options(nve_qt_quick_lib PRIVATE ${_nve_qt_warnings})
+  target_link_libraries(nve_qt_quick_lib PUBLIC nve_qt_shell_lib Qt6::Quick Qt6::Qml)
+  target_compile_definitions(nve_qt_quick_lib PUBLIC NVE_QT_HAS_QUICK=1)
+  target_link_libraries(nve_qt_shell PRIVATE nve_qt_quick_lib)
+
+  add_executable(nve_qt_quick_test
+    tests/qt_quick_test.cpp
+    tests/qt_quick_input_test.cpp
+    tests/qt_quick_media_canvas_test.cpp
+  )
+  target_compile_options(nve_qt_quick_test PRIVATE ${_nve_qt_warnings})
+  nve_use_app_module_fixtures(nve_qt_quick_test nve_qt_fixture)
+  target_link_libraries(nve_qt_quick_test PRIVATE nve_qt_quick_lib nve::host_test_support)
+  add_test(NAME qt_quick_test COMMAND nve_qt_quick_test)
+  set_tests_properties(qt_quick_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
+  nve_host_sanitize(nve_qt_quick_lib nve_qt_quick_test)
+endif()

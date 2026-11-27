@@ -77,14 +77,16 @@ QAccessible::Role qt_role(uint8_t role) noexcept {
 
 QString qstr(std::string_view s) { return scene_string(s); }
 
+QVariant finite_or_null(float v) { return std::isfinite(v) ? QVariant(static_cast<double>(v)) : QVariant(); }
+
 /// Accessible interface of a `SemanticsCarrier` widget: role, name, description, value (with
 /// range), heading level, ARIA states, and the press action.
-class NveQtAccessibleWidget final : public QAccessibleWidget,
-                                    public QAccessibleValueInterface,
-                                    public QAccessibleAttributesInterface {
+class NveQtAccessibleWidget final : public QAccessibleWidget, public SemanticsInterfaces {
  public:
   NveQtAccessibleWidget(QWidget* w, SemanticsCarrier* carrier)
       : QAccessibleWidget(w, carrier->semantics().role), carrier_(carrier) {}
+
+  const NodeSemantics& accessible_semantics() const override { return carrier_->semantics(); }
 
   QAccessible::Role role() const override { return carrier_->semantics().role; }
 
@@ -121,43 +123,18 @@ class NveQtAccessibleWidget final : public QAccessibleWidget,
     return st;
   }
 
-  QStringList actionNames() const override {
-    return carrier_->semantics().activatable && !carrier_->semantics().disabled ? QStringList{pressAction()}
-                                                                                : QStringList{};
-  }
+  QStringList actionNames() const override { return press_action_names(carrier_->semantics()); }
 
   void doAction(const QString& name) override {
-    if (name == pressAction() && carrier_->semantics().activatable && !carrier_->semantics().disabled) {
-      carrier_->activate();
-    }
+    if (is_press_action(carrier_->semantics(), name)) carrier_->activate();
   }
 
   void* interface_cast(QAccessible::InterfaceType t) override {
-    if (t == QAccessible::ValueInterface && std::isfinite(carrier_->semantics().value_now)) {
-      return static_cast<QAccessibleValueInterface*>(this);
-    }
-    if (t == QAccessible::AttributesInterface) return static_cast<QAccessibleAttributesInterface*>(this);
-    return QAccessibleWidget::interface_cast(t);
-  }
-
-  QVariant currentValue() const override { return static_cast<double>(carrier_->semantics().value_now); }
-  void setCurrentValue(const QVariant&) override {}  // values are app-controlled
-  QVariant maximumValue() const override { return finite_or_null(carrier_->semantics().value_max); }
-  QVariant minimumValue() const override { return finite_or_null(carrier_->semantics().value_min); }
-  QVariant minimumStepSize() const override { return QVariant(); }
-
-  QList<QAccessible::Attribute> attributeKeys() const override {
-    return carrier_->semantics().level != 0u ? QList<QAccessible::Attribute>{QAccessible::Attribute::Level}
-                                             : QList<QAccessible::Attribute>{};
-  }
-  QVariant attributeValue(QAccessible::Attribute key) const override {
-    const uint8_t level = carrier_->semantics().level;
-    return key == QAccessible::Attribute::Level && level != 0u ? QVariant(static_cast<int>(level)) : QVariant();
+    void* own = semantics_interface(t);
+    return own != nullptr ? own : QAccessibleWidget::interface_cast(t);
   }
 
  private:
-  static QVariant finite_or_null(float v) { return std::isfinite(v) ? QVariant(static_cast<double>(v)) : QVariant(); }
-
   SemanticsCarrier* carrier_;
 };
 
@@ -168,6 +145,36 @@ QAccessibleInterface* accessible_factory(const QString&, QObject* object) {
 }
 
 }  // namespace
+
+QStringList press_action_names(const NodeSemantics& s) {
+  return s.activatable && !s.disabled ? QStringList{QAccessibleActionInterface::pressAction()} : QStringList{};
+}
+
+bool is_press_action(const NodeSemantics& s, const QString& name) {
+  return s.activatable && !s.disabled && name == QAccessibleActionInterface::pressAction();
+}
+
+void* SemanticsInterfaces::semantics_interface(QAccessible::InterfaceType t) {
+  if (t == QAccessible::ValueInterface && std::isfinite(accessible_semantics().value_now)) {
+    return static_cast<QAccessibleValueInterface*>(this);
+  }
+  if (t == QAccessible::AttributesInterface) return static_cast<QAccessibleAttributesInterface*>(this);
+  return nullptr;
+}
+
+QVariant SemanticsInterfaces::currentValue() const { return finite_or_null(accessible_semantics().value_now); }
+QVariant SemanticsInterfaces::maximumValue() const { return finite_or_null(accessible_semantics().value_max); }
+QVariant SemanticsInterfaces::minimumValue() const { return finite_or_null(accessible_semantics().value_min); }
+
+QList<QAccessible::Attribute> SemanticsInterfaces::attributeKeys() const {
+  return accessible_semantics().level != 0u ? QList<QAccessible::Attribute>{QAccessible::Attribute::Level}
+                                            : QList<QAccessible::Attribute>{};
+}
+
+QVariant SemanticsInterfaces::attributeValue(QAccessible::Attribute key) const {
+  const uint8_t level = accessible_semantics().level;
+  return key == QAccessible::Attribute::Level && level != 0u ? QVariant(static_cast<int>(level)) : QVariant();
+}
 
 QAccessible::Role accessible_role(const host::NodeData& node) noexcept { return qt_role(host::aria_role(node)); }
 
@@ -227,11 +234,15 @@ QString accessible_value(const NodeSemantics& s) {
   return std::isfinite(s.value_now) ? QString::number(static_cast<double>(s.value_now)) : QString();
 }
 
-void notify_semantics_change(QObject* target, int child, const NodeSemantics& before, const NodeSemantics& after) {
+void notify_semantics_change(QObject* target, const NodeSemantics& before, const NodeSemantics& after) {
+  if (target == nullptr || !QAccessible::isActive()) return;
+  notify_semantics_change(QAccessible::queryAccessibleInterface(target), before, after);
+}
+
+void notify_semantics_change(QAccessibleInterface* target, const NodeSemantics& before, const NodeSemantics& after) {
   if (target == nullptr || !QAccessible::isActive()) return;
   const auto post = [&](QAccessible::Event kind) {
     QAccessibleEvent ev(target, kind);
-    ev.setChild(child);
     QAccessible::updateAccessibility(&ev);
   };
   if (before.label != after.label) post(QAccessible::NameChanged);
@@ -250,7 +261,6 @@ void notify_semantics_change(QObject* target, int child, const NodeSemantics& be
   if (changed.disabled || changed.invisible || changed.checked || changed.selected || changed.expanded ||
       changed.pressed || changed.readOnly) {
     QAccessibleStateChangeEvent ev(target, changed);
-    ev.setChild(child);
     QAccessible::updateAccessibility(&ev);
   }
 }

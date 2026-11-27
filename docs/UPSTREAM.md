@@ -64,6 +64,21 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
   - **Observed**: In GTK 4.24.2 (unchanged on main), `gtk_fixed_get_child_position` uses `gtk_widget_compute_point`, i.e. the child's allocation: it returns `(0, 0)` until the first size-allocate (e.g. headless CTest fixtures) and the old position after `gtk_fixed_move` until the next allocation. Mapping/rooting is irrelevant. The docs promise the put/move translation. Reported: GNOME/gtk#8579 (repro: `docs/research/upstream-repros/gtk-fixed-child-position-unmapped`).
   - **Mitigation**: Read child translation from `gtk_fixed_get_child_transform` + `gsk_transform_to_translate` (see `hosts/gtk-shell/tests/gtk_shell_test.cpp`).
 
+### Qt 6 (`qtbase` / `qtdeclarative 6.12`, Homebrew split kegs)
+
+- **Software scene graph: nodes added under a plain `QSGNode` render with identity state**
+  - **Observed**: `QSGSoftwareRenderableNodeUpdater::updateNodes` seeds a node added after the first frame from `m_stateMap[parent]`, which only transform / opacity / clip / root nodes record (`BasicNodeType` just recurses). A child appended later to a plain `QSGNode` therefore draws at the origin with opacity 1 and no clip (RHI renderers are unaffected).
+  - **Mitigation**: Every container whose children change after attachment is an identity `QSGTransformNode` or another state node; renderables are retained and updated in place (`hosts/qt-shell/NveQtSGBuilder.cpp`).
+- **Software scene graph: `QSGClipNode` honours `clipRect()` only**
+  - **Observed**: Non-rectangular clip geometry (rounded `overflow` clips) is ignored by the software adaptation; RHI backends stencil it.
+  - **Mitigation**: None needed at runtime; `QT_QUICK_BACKEND=software` tests assert the clip node's geometry and check corner pixels on RHI backends only (`hosts/qt-shell/tests/qt_quick_test.cpp`).
+- **`QAccessible::deleteAccessibleInterface` posts `ObjectDestroyed` itself**
+  - **Observed**: Posting it manually before deleting reports every removed node twice; handlers receiving it may query the interface (and its owner) synchronously, including during the owner's destructor.
+  - **Mitigation**: Only delete the interface; `NveQtQuickItem::impl()` is null during teardown so node interfaces turn invalid instead of dereferencing it.
+- **Split Homebrew kegs: `find_package(Qt6 COMPONENTS Quick)` fails with only `CMAKE_PREFIX_PATH`**
+  - **Observed**: Qt6 resolves components next to `Qt6Config.cmake` (qtbase) only; `Qt6Quick` lives in the `qtdeclarative` keg.
+  - **Mitigation**: `hosts/qt-shell/CMakeLists.txt` also appends the kegs to `QT_ADDITIONAL_PACKAGES_PREFIX_PATH`.
+
 ### Eclipse OpenJ9 (`openj9 0.59.0` / OpenJDK 25.0.3) + Android SDK `d8` (`build-tools 36.0.0`)
 
 - **GC stack-slot assertion (`ScavengerRootScanner.hpp:105`) during `d8` dexing**

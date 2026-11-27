@@ -2,6 +2,8 @@
 // radius, outer / inset box shadows), image fit and tint, and the `NVE_DRAW1` canvas painter.
 #pragma once
 
+#include "NveQtText.hpp"
+
 #include <nve/canvas/canvas.hpp>
 #include <nve/host/core_resources.hpp>
 #include <nve/host/scene_nodes.hpp>
@@ -72,5 +74,29 @@ canvas::DrawListDecodeResult paint_draw_list(QPainter& p, const QRectF& bounds, 
 
 /// Rasterizes a draw list into a HiDPI premultiplied image (null when empty, invalid, or zero-sized).
 [[nodiscard]] QImage rasterize_draw_list(std::span<const uint8_t> bytes, QSizeF size, qreal dpr);
+
+/// What a node paints between its background and its border.
+enum class NodeContent : uint8_t { None, Text, Image, Canvas };
+
+/// Everything one node paints inside its own box (outer shadows paint separately, below it).
+struct NodePaint {
+  BoxVisual visual;
+  QRectF content_box;  // relative to the node's box origin
+  bool clip_rounded = false;  // `overflow` clipping with rounded corners
+  NodeContent content = NodeContent::None;
+  QString text;
+  QtTextStyle style;
+  QImage image;
+  uint8_t fit = NVE_IMAGE_FIT_COVER;
+  std::vector<uint8_t> draw_list;  // owned: painted after the scene is released
+
+  [[nodiscard]] bool paints_only_background() const noexcept {
+    return content == NodeContent::None && !visual.has_border() && visual.shadows.empty() && visual.radius <= 0.0;
+  }
+};
+
+/// Paints `n` into `box` (the node's rect, origin = the node's top-left): background, inset
+/// shadows, content (text / image / canvas, clipped to the rounded box), border.
+void paint_node(QPainter& p, const QRectF& box, const NodePaint& n);
 
 }  // namespace nve::qt

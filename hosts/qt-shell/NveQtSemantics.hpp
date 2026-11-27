@@ -49,8 +49,9 @@ struct NodeSemantics {
 [[nodiscard]] QString accessible_value(const NodeSemantics& s);
 
 /// Posts the accessibility events (name / description / value / state) for `before` → `after`
-/// of `target` (`child` = -1 for the object itself).
-void notify_semantics_change(QObject* target, int child, const NodeSemantics& before, const NodeSemantics& after);
+/// of `target` (only while accessibility is active).
+void notify_semantics_change(QAccessibleInterface* target, const NodeSemantics& before, const NodeSemantics& after);
+void notify_semantics_change(QObject* target, const NodeSemantics& before, const NodeSemantics& after);
 
 /// Implemented by host widgets that expose a node's semantics through `NveQtAccessibleWidget`.
 class SemanticsCarrier {
@@ -59,6 +60,27 @@ class SemanticsCarrier {
   [[nodiscard]] virtual const NodeSemantics& semantics() const noexcept = 0;
   /// The accessible press action (no-op when the node has none).
   virtual void activate() {}
+};
+
+/// The press action while `s` is activatable and enabled.
+[[nodiscard]] QStringList press_action_names(const NodeSemantics& s);
+[[nodiscard]] bool is_press_action(const NodeSemantics& s, const QString& name);
+
+/// Value (`value_now` / min / max; app-controlled, read-only) and attributes (heading level)
+/// interfaces over a node's semantics, shared by the widget and the Qt Quick node interfaces.
+class SemanticsInterfaces : public QAccessibleValueInterface, public QAccessibleAttributesInterface {
+ public:
+  [[nodiscard]] virtual const NodeSemantics& accessible_semantics() const = 0;
+  /// `this` as the Value (only with a finite `value_now`) / Attributes interface, else nullptr.
+  [[nodiscard]] void* semantics_interface(QAccessible::InterfaceType t);
+
+  QVariant currentValue() const override;
+  void setCurrentValue(const QVariant&) override {}
+  QVariant maximumValue() const override;
+  QVariant minimumValue() const override;
+  QVariant minimumStepSize() const override { return {}; }
+  QList<QAccessible::Attribute> attributeKeys() const override;
+  QVariant attributeValue(QAccessible::Attribute key) const override;
 };
 
 /// Installs (once) the accessible-interface factory for `SemanticsCarrier` widgets.

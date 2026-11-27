@@ -35,45 +35,13 @@ NveQtNodeWidget::NveQtNodeWidget(QtNodeView* view, QWidget* parent) : QWidget(pa
 }
 
 void NveQtNodeWidget::set_visual(const BoxVisual& visual, const QRectF& content_box, bool clip_rounded) {
-  if (visual == visual_ && content_box == content_box_ && clip_rounded == clip_rounded_) return;
-  const bool mask_changed = clip_rounded != clip_rounded_ || visual.radius != visual_.radius;
-  visual_ = visual;
-  content_box_ = content_box;
-  clip_rounded_ = clip_rounded;
+  NodePaint& n = paint_;
+  if (visual == n.visual && content_box == n.content_box && clip_rounded == n.clip_rounded) return;
+  const bool mask_changed = clip_rounded != n.clip_rounded || visual.radius != n.visual.radius;
+  n.visual = visual;
+  n.content_box = content_box;
+  n.clip_rounded = clip_rounded;
   if (mask_changed) update_mask();
-  update();
-}
-
-void NveQtNodeWidget::set_text(const QString& text, const QtTextStyle& style) {
-  if (content_ == NodeContent::Text && text == text_ && style == style_) return;
-  content_ = NodeContent::Text;
-  text_ = text;
-  style_ = style;
-  update();
-}
-
-void NveQtNodeWidget::set_image(const QImage& image, uint8_t fit) {
-  if (content_ == NodeContent::Image && fit == fit_ && image.cacheKey() == image_.cacheKey()) return;
-  content_ = NodeContent::Image;
-  image_ = image;
-  fit_ = fit;
-  update();
-}
-
-bool NveQtNodeWidget::set_draw_list(std::span<const uint8_t> bytes) {
-  if (content_ == NodeContent::Canvas && std::ranges::equal(bytes, draw_list_)) return false;
-  content_ = NodeContent::Canvas;
-  draw_list_.assign(bytes.begin(), bytes.end());
-  update();
-  return true;
-}
-
-void NveQtNodeWidget::clear_content() {
-  if (content_ == NodeContent::None) return;
-  content_ = NodeContent::None;
-  text_.clear();
-  image_ = QImage();
-  draw_list_.clear();
   update();
 }
 
@@ -87,8 +55,8 @@ void NveQtNodeWidget::activate() {
 
 void NveQtNodeWidget::update_mask() {
   // `overflow: hidden` with rounded corners clips the node's own painting and its children.
-  if (clip_rounded_ && visual_.radius > 0.0 && width() > 0 && height() > 0) {
-    setMask(QRegion(rounded_path(QRectF(rect()), visual_.radius).toFillPolygon().toPolygon()));
+  if (paint_.clip_rounded && paint_.visual.radius > 0.0 && width() > 0 && height() > 0) {
+    setMask(QRegion(rounded_path(QRectF(rect()), paint_.visual.radius).toFillPolygon().toPolygon()));
   } else {
     clearMask();
   }
@@ -96,31 +64,12 @@ void NveQtNodeWidget::update_mask() {
 
 void NveQtNodeWidget::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
-  if (clip_rounded_) update_mask();
+  if (paint_.clip_rounded) update_mask();
 }
 
 void NveQtNodeWidget::paintEvent(QPaintEvent*) {
-  const QRectF box(rect());
   QPainter p(this);
-  p.setRenderHint(QPainter::Antialiasing, true);
-  paint_box_background(p, box, visual_);
-  switch (content_) {
-    case NodeContent::Text:
-      p.save();
-      p.setClipPath(rounded_path(box, visual_.radius), Qt::IntersectClip);
-      (void)layout_text(text_, style_, content_box_.width(), &p, content_box_.topLeft());
-      p.restore();
-      break;
-    case NodeContent::Image: paint_image(p, content_box_, visual_.radius, image_, fit_); break;
-    case NodeContent::Canvas:
-      p.save();
-      p.setClipPath(rounded_path(box, visual_.radius), Qt::IntersectClip);
-      (void)paint_draw_list(p, content_box_, draw_list_);
-      p.restore();
-      break;
-    case NodeContent::None: break;
-  }
-  paint_box_border(p, box, visual_);
+  paint_node(p, QRectF(rect()), paint_);
 }
 
 void NveQtNodeWidget::mousePressEvent(QMouseEvent* event) {

@@ -1,55 +1,45 @@
 #pragma once
 
-#include "NveQtCommon.hpp"
-#include "nve_host_runtime.hpp"
+#include "NveQtHost.hpp"
+#include "NveQtSemantics.hpp"
 
 #include <QPointF>
 #include <QQuickItem>
 #include <QRectF>
 #include <QString>
-#include <QtQml/qqmlregistration.h>
 
 #include <cstdint>
-#include <span>
 #include <memory>
 #include <optional>
-#include <string_view>
 
 class QSGNode;
 
 namespace nve::qt {
 
-/// Telemetry snapshot describing the most recent Qt Scene Graph synchronization pass.
+/// Telemetry of the retained Qt Scene Graph (cumulative, read on the GUI thread).
 struct SceneGraphStats {
-  uint64_t syncCount{0};
-  uint64_t sceneGeneration{0};
-  uint32_t totalSGNodes{0};
-  uint32_t geometryNodes{0};
-  uint32_t clipNodes{0};
-  uint32_t opacityNodes{0};
-  uint32_t textTextureNodes{0};
-  uint32_t imageTextureNodes{0};
-  uint32_t canvasTextureNodes{0};
-  uint64_t textRasterizations{0};
-  uint64_t textCacheHits{0};
-  uint64_t canvasRasterizations{0};
-  uint64_t canvasCacheHits{0};
-  uint32_t cachedTextTextures{0};
-  uint32_t cachedImageTextures{0};
-  uint32_t cachedCanvasTextures{0};
-  uint64_t dirtyNodesUpdated{0};
-  uint64_t retainedNodesReused{0};
+  uint64_t syncCount = 0u;          // `updatePaintNode` passes that had work
+  uint64_t sceneGeneration = 0u;    // published runtime frame last mirrored
+  uint32_t retainedNodes = 0u;      // live node wrappers in the SG tree
+  uint64_t nodesUpdated = 0u;       // node wrappers whose properties were updated
+  uint64_t nodesReused = 0u;        // ... of which already existed (retained across frames)
+  uint64_t textRasterizations = 0u;
+  uint64_t imageRasterizations = 0u;
+  uint64_t canvasRasterizations = 0u;
+  uint64_t boxRasterizations = 0u;  // boxes without content (rounded / border / shadows)
+  uint64_t solidRectNodes = 0u;     // plain backgrounds drawn without a texture
+  uint64_t texturesReused = 0u;     // dirty nodes whose painted texture was still valid
 };
 
-/// Hardware-accelerated Qt Quick (`QQuickItem` / Scene Graph `QSGNode`) host for any Native View
-/// Engine (`nve_get_interface`) app or component.
-///
-/// Reads `NativeHostSession::scene_view()` directly without snapshot materialization or
-/// `SceneTableBuilder`, maintaining a truly retained incremental `QSGNode` tree keyed by
-/// `node_id` so unchanged sibling `QSGNode*` subtrees survive across dirty frames.
+/// Qt Quick host (`QQuickItem` on the retained Qt Scene Graph) for any NVE app: one `QtHost`
+/// runtime surface mirrored by `RetainedTree` into GUI-thread node records, which
+/// `updatePaintNode` turns into a retained `QSGNode` tree (transform / opacity / clip / scroll
+/// per node; plain backgrounds as rect nodes; boxes, text, images and canvases as textures painted
+/// by the same code as the Widgets host, re-rasterized only when they change). Input: mouse
+/// press / links, hover + cursors, wheel scrolling, focus, keyboard activation, text editing with
+/// IME; accessibility exposes every node as a `QAccessibleInterface`.
 class NveQtQuickItem : public QQuickItem {
   Q_OBJECT
-  QML_ELEMENT
 
   Q_PROPERTY(QString dylibPath READ dylibPath WRITE setDylibPath NOTIFY dylibPathChanged)
   Q_PROPERTY(quint32 surfaceId READ surfaceId WRITE setSurfaceId NOTIFY surfaceIdChanged)
@@ -60,137 +50,47 @@ class NveQtQuickItem : public QQuickItem {
  public:
   explicit NveQtQuickItem(QQuickItem* parent = nullptr);
   ~NveQtQuickItem() override;
-
   NveQtQuickItem(const NveQtQuickItem&) = delete;
   NveQtQuickItem& operator=(const NveQtQuickItem&) = delete;
 
-  /// Register `NveQtQuickItem` as `NveSurface` under QML module `"Nve" 1.0`.
+  /// Registers `NveSurface` in the QML module `Nve 1.0`.
   static int registerQmlType();
 
-  /// Attach an in-process `nve_get_interface` entry point directly (no dynamic library owned).
-  bool attachInterface(NveGetInterfaceFn getInterface, uint32_t surfaceId = 1);
+  /// The runtime surface: app sources, state, props, hot patches, input dispatch, pumping.
+  [[nodiscard]] QtHost& host() noexcept;
 
-  /// Load an NVE dynamic library (`cdylib` / `.dylib` / `.so` / `.dll`), mount its surface,
-  /// synchronize the flat `NveSceneView`, and schedule a Scene Graph update.
-  Q_INVOKABLE bool loadDylib(
-      const QString& path,
-      uint32_t surfaceId = 1,
-      int* outErrorCode = nullptr,
-      QString* outErrorMessage = nullptr);
-
-  /// Atomically hot-reload a replacement NVE dynamic library while preserving app state via
-  /// `NveDevApi::snapshot_state` / `restore_state`. Failed reloads leave the live app intact.
-  Q_INVOKABLE bool hotReload(
-      const QString& path,
-      int* outErrorCode = nullptr,
-      QString* outErrorMessage = nullptr);
-
-  /// Alias for `hotReload` matching `NveQtWidget::reloadDylib`.
-  bool reloadDylib(
-      const QString& path,
-      int* outErrorCode = nullptr,
-      QString* outErrorMessage = nullptr) {
-    return hotReload(path, outErrorCode, outErrorMessage);
-  }
-
-  /// Connect in paired thin-client mode (zero local cdylib required). Incoming `NVD1` frames wake
-  /// the Qt GUI thread via `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`; UI input events
-  /// stream upstream as `WireKind::EventBatch`.
-  Q_INVOKABLE bool connectPaired(
-      const QString& endpoint,
-      const QString& token,
-      const QString& transport = QString(),
-      uint32_t surfaceId = 1,
-      QString* outErrorMessage = nullptr);
-  bool connectPaired(
-      const nve::PairClientConfig& config,
-      uint32_t surfaceId = 1,
-      QString* outErrorMessage = nullptr);
+  Q_INVOKABLE bool loadDylib(const QString& path);
+  /// State-preserving hot reload of the loaded (or another) `cdylib`; a failure keeps the app.
+  Q_INVOKABLE bool hotReload(const QString& path = {});
+  Q_INVOKABLE bool connectPaired(const QString& uri, const QString& token);
   Q_INVOKABLE void disconnectPaired();
-  size_t pollPairedFrames();
-  bool isPaired() const noexcept;
-  bool isPairedConnected() const noexcept;
 
-  /// Forward structured typed props to `NveComponentApi::set_props`, re-render if dirty,
-  /// sync scene, and drain outbound events.
-  bool applyProps(const nve::PropMap& props);
-  bool applyProps(const NveMapEntry* entries, uint32_t count);
-
-  /// Apply one binary `NVP1` Tier-1 hot-patch frame (`NveDevApi::apply_hot_patch`) and sync scene.
-  bool applyHotPatch(std::span<const uint8_t> patchNvp1);
-
-  /// Render one frame from the loaded NVE app and synchronize the flat `NveSceneView`.
-  Q_INVOKABLE int32_t renderFrame();
-
-  /// Dispatch zero-copy `NveDirectEvent`s into `NativeHostSession`.
-  uint32_t dispatchDirectEvents(NveEventBatch batch);
-  uint32_t dispatchPress(uint32_t nodeId, float x = 0.0f, float y = 0.0f);
-  uint32_t dispatchPress(uint32_t nodeId, const QPointF& localPoint);
-  uint32_t dispatchScroll(
-      uint32_t nodeId,
-      float offsetX,
-      float offsetY,
-      float contentWidth,
-      float contentHeight);
-  uint32_t dispatchTextChange(uint32_t nodeId, std::string_view text);
-  uint32_t dispatchSubmit(uint32_t nodeId, std::string_view text);
-  uint32_t dispatchFocus(uint32_t nodeId, bool focused);
-
-  /// Per-node accessibility & TextInput metadata queries.
-  std::optional<NodeSemantics> accessibilityInfoForNodeId(uint32_t nodeId) const;
-  QAccessible::Role accessibleRoleForNodeId(uint32_t nodeId) const;
-  QString accessibleNameForNodeId(uint32_t nodeId) const;
-  QString accessibleDescriptionForNodeId(uint32_t nodeId) const;
-  QString imePreeditText(uint32_t nodeId) const;
-  QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
-
-  /// Front-to-back hit-test against the active `NveSceneView`, honoring `z_index`, clip bounds,
-  /// and scroll offsets. Returns `0` if no node matches.
-  uint32_t hitTestNode(const QPointF& itemPos, bool interactiveOnly = false) const;
-
-  /// Locate the deepest `NVE_NODE_KIND_SCROLL_VIEW` enclosing `itemPos`, or `0` if none.
-  uint32_t hitTestScrollableNode(const QPointF& itemPos) const;
-
-  /// Compute a node's resolved bounding rectangle in item-local coordinates.
-  QRectF sceneNodeGlobalBounds(uint32_t nodeId) const;
-
-  /// Zero-copy flat `NveSceneView` directly from `NativeHostSession::scene_view()`.
-  NveSceneView sceneView() const noexcept;
-  std::optional<NveRenderNode> sceneNode(uint32_t nodeId) const;
-  std::string_view sceneNodeText(uint32_t nodeId) const;
-
-  /// Scroll offset state for `NVE_NODE_KIND_SCROLL_VIEW` nodes.
-  QPointF scrollOffsetForNode(uint32_t nodeId) const;
-  void setScrollOffsetForNode(uint32_t nodeId, const QPointF& offset);
-
-  /// Currently focused `NVE_NODE_KIND_TEXT_INPUT` node ID (`0` when unfocused).
-  uint32_t focusedNodeId() const noexcept;
-
-  /// Most recent Scene Graph synchronization statistics.
-  SceneGraphStats sceneGraphStats() const noexcept;
-
-  /// Build/incrementally update the retained Scene Graph node tree.
-  QSGNode* syncSceneGraphNode(QSGNode* oldNode);
-
-  /// Inspect the retained wrapper `QSGNode*` for `nodeId` inside `root` (for verification/tests).
-  static const QSGNode* retainedSGNodeForNodeId(const QSGNode* root, uint32_t nodeId) noexcept;
-
-  QString dylibPath() const;
+  [[nodiscard]] QString dylibPath() const;
   void setDylibPath(const QString& path);
+  [[nodiscard]] quint32 surfaceId() const noexcept;
+  void setSurfaceId(quint32 id);
+  [[nodiscard]] quint32 nodeCount() const;
+  [[nodiscard]] bool isAppLoaded() const noexcept;
+  [[nodiscard]] quint64 sceneGeneration() const noexcept;
 
-  uint32_t surfaceId() const noexcept;
-  void setSurfaceId(uint32_t id);
+  /// Deepest visible node under an item-local point (paint order, z-index, clips, scroll offsets,
+  /// visibility); `0` when none. `interactive_only`: the nearest node taking input instead.
+  [[nodiscard]] uint32_t hitTestNode(QPointF item_pos, bool interactive_only = false) const;
+  /// Item-local rect of a node (scroll offsets of its ancestors applied); empty when absent.
+  [[nodiscard]] QRectF nodeRect(uint32_t node_id) const;
+  [[nodiscard]] std::optional<NodeSemantics> accessibilityInfoForNodeId(uint32_t node_id) const;
+  /// Text shown by a text / text-input node (input: the edited value).
+  [[nodiscard]] QString nodeText(uint32_t node_id) const;
+  [[nodiscard]] QPointF scrollOffsetForNode(uint32_t node_id) const;
+  /// Focused node (`0` when none).
+  [[nodiscard]] uint32_t focusedNodeId() const noexcept;
+  [[nodiscard]] SceneGraphStats sceneGraphStats() const noexcept;
+  /// Retained node wrapper of `node_id` in the tree `updatePaintNode` returned (tests).
+  [[nodiscard]] static const QSGNode* retainedSGNodeForNodeId(const QSGNode* root, uint32_t node_id) noexcept;
 
-  uint32_t nodeCount() const;
-  bool isAppLoaded() const noexcept;
-  uint64_t sceneGeneration() const noexcept;
-
-  void setOnNveEvent(nve::EventCallback callback);
-  void setTextMeasurer(nve::TextMeasurerCallback measurer);
-  static nve::TextMeasurerCallback makeQtTextMeasurer();
-
-  nve::NativeHostSession& session() noexcept;
-  const nve::NativeHostSession& session() const noexcept;
+  class Impl;  // NveQtQuickInternal.hpp
+  /// Null while the item is being destroyed (accessibility may query nodes during teardown).
+  [[nodiscard]] Impl* impl() noexcept { return impl_.get(); }
 
  Q_SIGNALS:
   void dylibPathChanged();
@@ -199,23 +99,24 @@ class NveQtQuickItem : public QQuickItem {
   void sceneChanged();
 
  protected:
-  QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData* updatePaintNodeData) override;
-  void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
+  QSGNode* updatePaintNode(QSGNode* old_node, UpdatePaintNodeData* data) override;
+  void geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) override;
+  void itemChange(ItemChange change, const ItemChangeData& value) override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
+  void hoverMoveEvent(QHoverEvent* event) override;
+  void hoverLeaveEvent(QHoverEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
   void inputMethodEvent(QInputMethodEvent* event) override;
+  void focusOutEvent(QFocusEvent* event) override;
+
+ public:
+  [[nodiscard]] QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;  // public in QQuickItem
 
  private:
-  class Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-} // namespace nve::qt
-
-namespace nve {
-using qt::NveQtQuickItem;
-using qt::SceneGraphStats;
-} // namespace nve
+}  // namespace nve::qt

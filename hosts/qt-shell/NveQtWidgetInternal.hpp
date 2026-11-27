@@ -27,8 +27,6 @@ struct QtNodeView;
 
 /// Native widget family of a node; the `RetainedTree` tag, so a change recreates the view.
 enum class NativeKind : uint32_t { Node, LineEdit, TextEdit, Scroll };
-/// What a node frame paints between its background and its border.
-enum class NodeContent : uint8_t { None, Text, Image, Canvas };
 
 inline constexpr const char* kNodeIdProperty = "nveNodeId";
 
@@ -47,20 +45,18 @@ class NveQtNodeWidget final : public QWidget, public SemanticsCarrier {
   void detach() noexcept { view_ = nullptr; }
 
   void set_visual(const BoxVisual& visual, const QRectF& content_box, bool clip_rounded);
-  void set_text(const QString& text, const QtTextStyle& style);
-  void set_image(const QImage& image, uint8_t fit);
-  /// `true` when the bytes changed (and a repaint was queued).
-  bool set_draw_list(std::span<const uint8_t> bytes);
-  void clear_content();
+  /// Content (`QtHost::resolve_content`); call `update()` after changing it.
+  [[nodiscard]] NodePaint& edit_paint() noexcept { return paint_; }
 
-  [[nodiscard]] NodeContent content() const noexcept { return content_; }
-  [[nodiscard]] const QString& text() const noexcept { return text_; }
-  [[nodiscard]] const QtTextStyle& text_style() const noexcept { return style_; }
-  [[nodiscard]] const QImage& image() const noexcept { return image_; }
-  [[nodiscard]] uint8_t fit() const noexcept { return fit_; }
-  [[nodiscard]] const BoxVisual& visual() const noexcept { return visual_; }
-  [[nodiscard]] QRectF content_box() const noexcept { return content_box_; }
-  [[nodiscard]] std::span<const uint8_t> draw_list() const noexcept { return draw_list_; }
+  [[nodiscard]] const NodePaint& paint() const noexcept { return paint_; }
+  [[nodiscard]] NodeContent content() const noexcept { return paint_.content; }
+  [[nodiscard]] const QString& text() const noexcept { return paint_.text; }
+  [[nodiscard]] const QtTextStyle& text_style() const noexcept { return paint_.style; }
+  [[nodiscard]] const QImage& image() const noexcept { return paint_.image; }
+  [[nodiscard]] uint8_t fit() const noexcept { return paint_.fit; }
+  [[nodiscard]] const BoxVisual& visual() const noexcept { return paint_.visual; }
+  [[nodiscard]] QRectF content_box() const noexcept { return paint_.content_box; }
+  [[nodiscard]] std::span<const uint8_t> draw_list() const noexcept { return paint_.draw_list; }
 
   [[nodiscard]] const NodeSemantics& semantics() const noexcept override;
   void activate() override;
@@ -81,15 +77,7 @@ class NveQtNodeWidget final : public QWidget, public SemanticsCarrier {
   void update_mask();
 
   QtNodeView* view_;
-  BoxVisual visual_;
-  QRectF content_box_;
-  bool clip_rounded_ = false;
-  NodeContent content_ = NodeContent::None;
-  QString text_;
-  QtTextStyle style_;
-  QImage image_;
-  uint8_t fit_ = NVE_IMAGE_FIT_COVER;
-  std::vector<uint8_t> draw_list_;  // painted later, after the scene is released
+  NodePaint paint_;
   bool pressed_ = false;
 };
 
@@ -185,13 +173,8 @@ struct QtNodeView {
   host::ControlledText text;
   uint32_t max_length = 0u;
 
-  // Image / canvas.
-  uint32_t image_src = 0u;
-  uint8_t image_fit = NVE_IMAGE_FIT_COVER;
-  uint32_t image_tint = 0u;  // 0 = untinted
-  uint32_t canvas_res = 0u;
-  uint32_t canvas_generation = 0u;
-  uint64_t redraw_count = 0u;
+  ContentIds content_ids;
+  uint64_t redraw_count = 0u;  // canvas repaints
 };
 
 class NveQtWidget::Impl final : public QtHost {

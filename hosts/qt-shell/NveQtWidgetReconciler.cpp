@@ -204,7 +204,7 @@ void NveQtWidget::Impl::Adapter::update_root(const host::NodeData& node) {
     host->owner_->update();
   }
   NodeSemantics sem = node_semantics(node);
-  notify_semantics_change(host->owner_, -1, host->root_sem_, sem);
+  notify_semantics_change(host->owner_, host->root_sem_, sem);
   host->root_sem_ = std::move(sem);
 }
 
@@ -344,40 +344,10 @@ void NveQtWidget::Impl::update_visual(QtNodeView& v, const host::NodeData& node)
 }
 
 void NveQtWidget::Impl::update_content(QtNodeView& v, const host::NodeData& node) {
-  NveQtNodeWidget& f = *v.frame;
-  if (canvas_.has(node.index)) {
-    const canvas::CanvasData c = canvas_.at(node.index);
-    if (f.content() == NodeContent::Canvas && c.draw_list == v.canvas_res && c.generation == v.canvas_generation) return;
-    v.canvas_res = c.draw_list;
-    v.canvas_generation = c.generation;
-    if (f.set_draw_list(scene_resource(c.draw_list, canvas::kDrawListKind))) ++v.redraw_count;
-    return;
-  }
-  v.canvas_res = v.canvas_generation = 0u;
-  if (node.kind == host::NodeKind::Image) {
-    const uint32_t tint = node.image.tint_enabled ? node.image.tint : 0u;
-    if (f.content() == NodeContent::Image && v.image_src == node.image.src && v.image_fit == node.image.fit &&
-        v.image_tint == tint) {
-      return;
-    }
-    v.image_src = node.image.src;
-    v.image_fit = node.image.fit;
-    v.image_tint = tint;
-    QImage image;
-    if (const auto src = host::decode_image_src(scene_resource(node.image.src, host::kImageSrcKind))) {
-      image = images().get(*src);
-    }
-    if (!image.isNull() && node.image.tint_enabled) image = tinted_image(image, qcolor(tint));
-    f.set_image(image, node.image.fit);
-    return;
-  }
-  v.image_src = 0u;
-  // Text paints on leaves only (a text wrapper with children is a View holding its runs).
-  if (!node.text.empty() && node.children.empty()) {
-    f.set_text(display_text(node.text), text_style(node.text_style));
-  } else {
-    f.clear_content();
-  }
+  const std::optional<NodeContent> repainted = resolve_content(v.frame->edit_paint(), v.content_ids, node, canvas_);
+  if (!repainted) return;
+  if (*repainted == NodeContent::Canvas) ++v.redraw_count;
+  v.frame->update();
 }
 
 void NveQtWidget::Impl::update_text_input(QtNodeView& v, const host::NodeData& node) {
@@ -458,7 +428,7 @@ void NveQtWidget::Impl::update_interaction(QtNodeView& v, const host::NodeData& 
 void NveQtWidget::Impl::apply_semantics(QtNodeView& v, const host::NodeData& node) {
   NodeSemantics sem = node_semantics(node);
   if (v.synced && sem == v.sem) return;
-  notify_semantics_change(v.widget, -1, v.sem, sem);
+  notify_semantics_change(v.widget, v.sem, sem);
   v.sem = std::move(sem);
   v.widget->setEnabled(!v.sem.disabled);
   if (v.frame == nullptr) {  // inputs keep Qt's own accessible text interface

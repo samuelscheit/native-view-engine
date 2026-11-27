@@ -5,6 +5,7 @@
 #pragma once
 
 #include "NveQtImageCache.hpp"
+#include "NveQtPaint.hpp"
 
 #include <nve/host/core_resources.hpp>
 #include <nve/host/host_session.hpp>
@@ -23,6 +24,14 @@
 class QObject;
 
 namespace nve::qt {
+
+/// Scene identities behind a node's resolved content (re-resolved only when they change).
+struct ContentIds {
+  uint32_t image_src = 0u;
+  uint32_t image_tint = 0u;  // 0 = untinted
+  uint32_t canvas_res = 0u;
+  uint32_t canvas_generation = 0u;
+};
 
 struct QtHostConfig {
   uint32_t surface_id = 1u;
@@ -115,6 +124,10 @@ class QtHost {
   /// Payload of published resource `id` of `kind` (empty when absent); valid only in `sync_views`.
   [[nodiscard]] std::span<const uint8_t> scene_resource(uint32_t id, host::Key64 kind) const noexcept;
   [[nodiscard]] bool syncing() const noexcept { return syncing_; }
+  /// Resolves `node`'s content into `paint` (in `sync_views`): a `nve.canvas` draw list, a decoded
+  /// (cached, tinted) image, or leaf text; the content kind repainted, `nullopt` when unchanged.
+  std::optional<NodeContent> resolve_content(NodePaint& paint, ContentIds& ids, const host::NodeData& node,
+                                             const canvas::CanvasTable& canvas);
   /// Mirrors the current scene without ticking.
   size_t sync();
 

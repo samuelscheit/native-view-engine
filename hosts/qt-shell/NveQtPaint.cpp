@@ -276,4 +276,27 @@ void paint_image(QPainter& p, const QRectF& box, qreal radius, const QImage& ima
   p.restore();
 }
 
+void paint_node(QPainter& p, const QRectF& box, const NodePaint& n) {
+  p.setRenderHint(QPainter::Antialiasing, true);
+  paint_box_background(p, box, n.visual);
+  const QRectF content = n.content_box.translated(box.topLeft());
+  switch (n.content) {
+    case NodeContent::Text:
+      p.save();
+      p.setClipPath(rounded_path(box, n.visual.radius), Qt::IntersectClip);
+      (void)layout_text(n.text, n.style, content.width(), &p, content.topLeft());
+      p.restore();
+      break;
+    case NodeContent::Image: paint_image(p, content, n.visual.radius, n.image, n.fit); break;
+    case NodeContent::Canvas:
+      p.save();
+      p.setClipPath(rounded_path(box, n.visual.radius), Qt::IntersectClip);
+      (void)paint_draw_list(p, content, n.draw_list);
+      p.restore();
+      break;
+    case NodeContent::None: break;
+  }
+  paint_box_border(p, box, n.visual);
+}
+
 }  // namespace nve::qt
