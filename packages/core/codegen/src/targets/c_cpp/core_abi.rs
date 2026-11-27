@@ -253,7 +253,11 @@ pub fn generate_c_core_abi_h() -> String {
                 );
                 writeln!(
                     out,
-                    "NVE_STATIC_ASSERT(sizeof(void*) != 4 || sizeof(NveDirectEvent) == 72u || sizeof(NveDirectEvent) == 68u, \"NveDirectEvent size must be 72 (ARM32/wasm32) or 68 (i686) on 32-bit\");"
+                    "NVE_STATIC_ASSERT(sizeof(void*) != 4 || sizeof(NveDirectEvent) == (offsetof(NveValue, data) == 8u ? 72u : 68u), \"NveDirectEvent size must be 72 (ARM32/wasm32) or 68 (i686 SysV) on 32-bit\");"
+                );
+                writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(NVE_ALIGNOF(NveDirectEvent) == (sizeof(void*) == 8u ? 8u : offsetof(NveValue, data)), \"NveDirectEvent alignment must match NveValue alignment\");"
                 );
             }
             "NveEventBatch" => {

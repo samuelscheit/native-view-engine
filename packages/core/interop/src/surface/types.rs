@@ -286,19 +286,14 @@ pub struct EnvironmentOverrides {
     pub theme: Option<ThemeContext>,
     pub safe_area: Option<SafeAreaInsets>,
     pub scale_factor: Option<f32>,
+    #[serde(default)]
+    pub text_scale_factor: Option<f32>,
     pub locale: Option<String>,
+    #[serde(default)]
+    pub reduced_motion: Option<bool>,
 }
 
 impl EnvironmentOverrides {
-    /// Returns `true` when no field override is configured.
-    #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.theme.is_none()
-            && self.safe_area.is_none()
-            && self.scale_factor.is_none()
-            && self.locale.is_none()
-    }
-
     /// Applies any explicitly set override fields onto `env`.
     pub(crate) fn apply_to(&self, env: &mut SurfaceEnvironment) {
         if let Some(theme) = &self.theme {
@@ -310,8 +305,66 @@ impl EnvironmentOverrides {
         if let Some(scale) = self.scale_factor {
             env.scale_factor = scale;
         }
+        if let Some(text_scale) = self.text_scale_factor {
+            env.text_scale_factor = text_scale;
+        }
         if let Some(locale) = &self.locale {
             env.locale = locale.clone();
+        }
+        if let Some(reduced_motion) = self.reduced_motion {
+            env.reduced_motion = reduced_motion;
+        }
+    }
+
+    /// Zero-allocation comparison checking whether `child_env == self.apply(parent_env)`.
+    #[inline]
+    pub(crate) fn matches_resolved(
+        &self,
+        child_env: &SurfaceEnvironment,
+        parent_env: &SurfaceEnvironment,
+    ) -> bool {
+        let exp_theme = self.theme.as_ref().unwrap_or(&parent_env.theme);
+        let exp_safe = self.safe_area.unwrap_or(parent_env.safe_area);
+        let exp_scale = self.scale_factor.unwrap_or(parent_env.scale_factor);
+        let exp_text_scale = self.text_scale_factor.unwrap_or(parent_env.text_scale_factor);
+        let exp_locale = self.locale.as_deref().unwrap_or(parent_env.locale.as_str());
+        let exp_reduced = self.reduced_motion.unwrap_or(parent_env.reduced_motion);
+        child_env.theme == *exp_theme
+            && child_env.safe_area == exp_safe
+            && child_env.scale_factor == exp_scale
+            && child_env.text_scale_factor == exp_text_scale
+            && child_env.locale == exp_locale
+            && child_env.reduced_motion == exp_reduced
+    }
+
+    /// Seals `self.apply(parent_env) == target_env` by recording overrides for any field that
+    /// differs from `parent_env` (while keeping already-pinned fields updated to `target_env`).
+    pub(crate) fn seal_against_parent(
+        &mut self,
+        target_env: &SurfaceEnvironment,
+        parent_env: &SurfaceEnvironment,
+    ) {
+        if self.theme.is_some() || target_env.theme != parent_env.theme {
+            self.theme = Some(target_env.theme.clone());
+        }
+        if self.safe_area.is_some() || target_env.safe_area != parent_env.safe_area {
+            self.safe_area = Some(target_env.safe_area);
+        }
+        if self.scale_factor.is_some() || target_env.scale_factor != parent_env.scale_factor {
+            self.scale_factor = Some(target_env.scale_factor);
+        }
+        if self.text_scale_factor.is_some()
+            || target_env.text_scale_factor != parent_env.text_scale_factor
+        {
+            self.text_scale_factor = Some(target_env.text_scale_factor);
+        }
+        if self.locale.is_some() || target_env.locale != parent_env.locale {
+            self.locale = Some(target_env.locale.clone());
+        }
+        if self.reduced_motion.is_some()
+            || target_env.reduced_motion != parent_env.reduced_motion
+        {
+            self.reduced_motion = Some(target_env.reduced_motion);
         }
     }
 }

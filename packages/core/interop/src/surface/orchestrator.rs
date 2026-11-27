@@ -119,26 +119,40 @@ impl SurfaceOrchestrator {
         }
     }
 
-    /// Registers a surface (root or child), inheriting environment from its parent when present.
-    pub fn register_surface(&mut self, desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
-        let mut resolved_env = match (desc.parent, desc.environment) {
-            (Some(parent_id), Some(explicit_env)) => {
-                if self.get(parent_id).is_none() {
-                    return Err(InteropError::ParentNotFound(parent_id));
-                }
+    /// Registers a surface (root or child), inheriting environment from its parent when present
+    /// and sealing the invariant `child.environment == child.overrides.apply(parent.environment)`.
+    pub fn register_surface(&mut self, mut desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
+        let resolved_env = match (desc.parent, desc.environment) {
+            (Some(parent_id), Some(mut explicit_env)) => {
+                let parent_env = &self
+                    .get(parent_id)
+                    .ok_or(InteropError::ParentNotFound(parent_id))?
+                    .environment;
+                desc.overrides.apply_to(&mut explicit_env);
+                desc.overrides.seal_against_parent(&explicit_env, parent_env);
                 explicit_env
             }
-            (Some(parent_id), None) => self
-                .get(parent_id)
-                .ok_or(InteropError::ParentNotFound(parent_id))?
-                .environment
-                .clone(),
-            (None, Some(explicit_env)) => explicit_env,
-            (None, None) => SurfaceEnvironment::default(),
+            (Some(parent_id), None) => {
+                let mut env = self
+                    .get(parent_id)
+                    .ok_or(InteropError::ParentNotFound(parent_id))?
+                    .environment
+                    .clone();
+                desc.overrides.apply_to(&mut env);
+                env
+            }
+            (None, Some(mut explicit_env)) => {
+                desc.overrides.apply_to(&mut explicit_env);
+                explicit_env
+            }
+            (None, None) => {
+                let mut env = SurfaceEnvironment::default();
+                desc.overrides.apply_to(&mut env);
+                env
+            }
         };
 
         let id = self.allocate_slot_with_limit(SurfaceId::MAX_INDEX)?;
-        desc.overrides.apply_to(&mut resolved_env);
 
         let record = Box::new(SurfaceRecord {
             id,
@@ -303,21 +317,21 @@ impl SurfaceOrchestrator {
         self.active_count
     }
 
-    /// Transitions a single surface to `next_state` (for `Destroyed`, use [`Self::destroy_surface`]).
+    /// Transitions a single surface to a non-destructive lifecycle state (`Resumed`/`Paused`).
+    ///
+    /// Rejects `LifecycleState::Destroyed` with [`InteropError::InvalidLifecycleTransition`] so
+    /// destruction happens through one single mechanism ([`Self::destroy_surface`] or
+    /// [`crate::InteropRuntime::destroy_surface_cascade`]).
     pub fn transition_state(
         &mut self,
         surface_id: SurfaceId,
         next_state: LifecycleState,
     ) -> Result<(), InteropError> {
-        if next_state == LifecycleState::Destroyed {
-            self.destroy_surface(surface_id)?;
-            return Ok(());
-        }
         let record = self
             .get_mut(surface_id)
             .ok_or(InteropError::SurfaceNotFound(surface_id))?;
         let prev = record.state;
-        if !prev.can_transition_to(next_state) {
+        if next_state == LifecycleState::Destroyed || !prev.can_transition_to(next_state) {
             return Err(InteropError::InvalidLifecycleTransition {
                 surface: surface_id,
                 from: prev,
@@ -335,21 +349,21 @@ impl SurfaceOrchestrator {
         Ok(())
     }
 
-    /// Propagates a lifecycle transition (`Resumed` or `Paused`) to `surface_id` and all descendants.
+    /// Propagates a non-destructive lifecycle transition (`Resumed` or `Paused`) to `surface_id`
+    /// and all descendants in pre-order.
+    ///
+    /// Rejects `LifecycleState::Destroyed` with [`InteropError::InvalidLifecycleTransition`]
+    /// (use [`Self::destroy_surface`] or [`crate::InteropRuntime::destroy_surface_cascade`]).
     pub fn propagate_lifecycle(
         &mut self,
         surface_id: SurfaceId,
         next_state: LifecycleState,
     ) -> Result<Vec<SurfaceId>, InteropError> {
-        if next_state == LifecycleState::Destroyed {
-            let torn_down = self.destroy_surface(surface_id)?;
-            return Ok(torn_down.into_iter().map(|r| r.surface_id).collect());
-        }
         let root_state = self
             .get(surface_id)
             .ok_or(InteropError::SurfaceNotFound(surface_id))?
             .state;
-        if !root_state.can_transition_to(next_state) {
+        if next_state == LifecycleState::Destroyed || !root_state.can_transition_to(next_state) {
             return Err(InteropError::InvalidLifecycleTransition {
                 surface: surface_id,
                 from: root_state,

@@ -15,6 +15,8 @@ mod manifest;
 mod reload;
 mod sandbox;
 #[cfg(test)]
+mod cascade_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod panic_tests;
@@ -23,4 +25,4 @@ pub use manifest::{
     PluginCapabilities, PluginError, PluginId, PluginMetadata, PluginRequirement, PluginSourceKind,
 };
 pub use reload::NvePluginHost;
-pub use sandbox::NvePluginSlot;
+pub use sandbox::{NvePluginSlot, PluginSlotMut};

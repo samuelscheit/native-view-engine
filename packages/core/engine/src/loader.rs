@@ -217,6 +217,12 @@ impl HotAppInstance {
         }
     }
 
+    /// Forwards a borrowed [`nve_abi::NveEventBatchRef`] directly across the C FFI boundary.
+    pub fn dispatch_event_batch(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+        // SAFETY: `self.handle` is live and `events` stays valid for the synchronous FFI call.
+        unsafe { (self.surface.dispatch_events)(self.handle, events.as_raw_batch()) != 0 }
+    }
+
     pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
         self.layout.map(|api| {
             // SAFETY: `self.handle` is live and `api` was resolved from the same loaded dylib.

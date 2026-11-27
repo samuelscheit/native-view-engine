@@ -290,7 +290,7 @@ impl DesktopApp for HotAppSlot {
 
     fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
         match self.instance.as_mut() {
-            Some(inst) => inst.dispatch_events(events.as_slice()),
+            Some(inst) => inst.dispatch_event_batch(events),
             None => false,
         }
     }

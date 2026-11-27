@@ -217,6 +217,7 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
         // 2. Normal create + verify happy path does not record any panic, AND verify non-canonical
         // index-0 SurfaceId from C PODs is canonicalized to `SurfaceId::NULL` at FFI ingress.
         set_panic_target(PanicTarget::None);
+        // SAFETY: `SurfaceId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
         let non_canonical_sid = core::mem::transmute::<u32, SurfaceId>(0x0500_0000);
         let h_canon = (surface.create)(non_canonical_sid);
         assert!(!h_canon.is_null());

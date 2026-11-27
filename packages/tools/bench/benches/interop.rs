@@ -77,15 +77,12 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
 
     let mut runtime = InteropRuntime::new();
     let outer = runtime
-        .surfaces
         .register_root(FrameworkKind::Flutter, "OuterList", SurfaceEnvironment::default())
         .expect("register outer surface");
     let middle = runtime
-        .surfaces
         .register_child(outer, FrameworkKind::Nve, "MiddleCarousel")
         .expect("register middle surface");
     let inner = runtime
-        .surfaces
         .register_child(middle, FrameworkKind::ReactNativeFabric, "InnerFeed")
         .expect("register inner surface");
 
@@ -101,7 +98,7 @@ fn bench_gesture_arbitration(c: &mut Criterion) {
     );
 
     let chain = runtime
-        .surfaces
+        .surfaces()
         .ancestor_chain(inner)
         .expect("resolve ancestor chain");
 
@@ -179,7 +176,6 @@ fn bench_intrinsic_layout_negotiation(c: &mut Criterion) {
 
     let mut runtime = InteropRuntime::new();
     let surf = runtime
-        .surfaces
         .register_root(FrameworkKind::Nve, "TextCard", SurfaceEnvironment::default())
         .expect("register text card surface");
     let surface = BenchTextSurface {

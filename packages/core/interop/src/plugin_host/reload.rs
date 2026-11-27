@@ -160,6 +160,29 @@ impl NvePluginHost {
         Ok(plugin_id)
     }
 
+    /// Validates live surface + next generation and snapshots state before a transactional hot-swap.
+    fn prepare_hot_swap(
+        &mut self,
+        surfaces: &SurfaceOrchestrator,
+        plugin_id: PluginId,
+    ) -> Result<(String, SurfaceId, u64, Vec<u8>), PluginError> {
+        let existing = self
+            .slots
+            .get_mut(&plugin_id)
+            .ok_or(PluginError::PluginNotFound(plugin_id))?;
+        let surface_id = existing.surface_id();
+        if surfaces.get(surface_id).is_none() {
+            return Err(PluginError::SurfaceNotLive(surface_id));
+        }
+        let next_gen = existing
+            .generation()
+            .checked_add(1)
+            .ok_or(PluginError::GenerationExhausted(plugin_id))?;
+        let name = existing.metadata().name.clone();
+        let state = existing.snapshot_state();
+        Ok((name, surface_id, next_gen, state))
+    }
+
     /// Transactionally hot-swaps an existing plugin slot to a new in-process `nve_get_interface`
     /// implementation while verifying its surface is still live and preserving snapshotted state.
     pub(crate) fn hot_swap_in_process(
@@ -169,23 +192,8 @@ impl NvePluginHost {
         new_get_interface: NveGetInterfaceFn,
         req: PluginRequirement,
     ) -> Result<u64, PluginError> {
-        let (name, surface_id, next_gen, saved_state) = {
-            let existing = self
-                .slots
-                .get_mut(&plugin_id)
-                .ok_or(PluginError::PluginNotFound(plugin_id))?;
-            let surface_id = existing.surface_id();
-            if surfaces.get(surface_id).is_none() {
-                return Err(PluginError::SurfaceNotLive(surface_id));
-            }
-            let next_gen = existing
-                .generation()
-                .checked_add(1)
-                .ok_or(PluginError::GenerationExhausted(plugin_id))?;
-            let name = existing.metadata().name.clone();
-            let state = existing.snapshot_state();
-            (name, surface_id, next_gen, state)
-        };
+        let (name, surface_id, next_gen, saved_state) =
+            self.prepare_hot_swap(surfaces, plugin_id)?;
 
         let replacement = NvePluginSlot::from_in_process(
             plugin_id,
@@ -212,23 +220,8 @@ impl NvePluginHost {
         new_dylib_path: &Path,
         req: PluginRequirement,
     ) -> Result<u64, PluginError> {
-        let (name, surface_id, next_gen, saved_state) = {
-            let existing = self
-                .slots
-                .get_mut(&plugin_id)
-                .ok_or(PluginError::PluginNotFound(plugin_id))?;
-            let surface_id = existing.surface_id();
-            if surfaces.get(surface_id).is_none() {
-                return Err(PluginError::SurfaceNotLive(surface_id));
-            }
-            let next_gen = existing
-                .generation()
-                .checked_add(1)
-                .ok_or(PluginError::GenerationExhausted(plugin_id))?;
-            let name = existing.metadata().name.clone();
-            let state = existing.snapshot_state();
-            (name, surface_id, next_gen, state)
-        };
+        let (name, surface_id, next_gen, saved_state) =
+            self.prepare_hot_swap(surfaces, plugin_id)?;
 
         let replacement = NvePluginSlot::from_dylib(
             plugin_id,
@@ -274,7 +267,7 @@ impl NvePluginHost {
         self.slots.get(&plugin_id)
     }
 
-    pub fn get_mut(&mut self, plugin_id: PluginId) -> Option<&mut NvePluginSlot> {
+    pub(crate) fn get_mut(&mut self, plugin_id: PluginId) -> Option<&mut NvePluginSlot> {
         self.slots.get_mut(&plugin_id)
     }
 

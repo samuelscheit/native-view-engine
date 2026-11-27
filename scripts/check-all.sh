@@ -435,18 +435,27 @@ suite_rust_rpc_hyper_matrix() {
     -p nve-example-issues-api -p nve-example-issues-client -p nve-example-issues-server
 }
 
+suite_rust_abi_32bit_and_release() {
+  cd "$REPO_ROOT"
+  cargo test --locked --release -p nve-abi --lib id::tests
+  if rustup target list --installed 2>/dev/null | grep -qx "i686-linux-android"; then
+    cargo check --locked -p nve-abi --target i686-linux-android
+  else
+    echo "SKIP: i686-linux-android target not installed"
+  fi
+  if rustup target list --installed 2>/dev/null | grep -qx "armv7-linux-androideabi"; then
+    cargo check --locked -p nve-abi --target armv7-linux-androideabi
+  else
+    echo "SKIP: armv7-linux-androideabi target not installed"
+  fi
+}
+
 suite_rust_wasm() {
   cd "$REPO_ROOT"
   cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
   cargo check --locked -p nve-web-shell --no-default-features --features app-issues --target wasm32-unknown-unknown
   cargo check --locked -p nve-docs-site --target wasm32-unknown-unknown
   cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-http-web -p nve-query-dioxus -p nve-example-issues-api -p nve-example-issues-client --target wasm32-unknown-unknown
-  if rustup target list --installed 2>/dev/null | grep -qx "i686-linux-android"; then
-    cargo check --locked -p nve-abi --target i686-linux-android
-  fi
-  if rustup target list --installed 2>/dev/null | grep -qx "armv7-linux-androideabi"; then
-    cargo check --locked -p nve-abi --target armv7-linux-androideabi
-  fi
 }
 
 suite_rust_wasip2() {
@@ -718,8 +727,10 @@ fi
 # 1b. ABI codegen generate + parity check (required before host builds/tests)
 if command -v cargo >/dev/null 2>&1; then
   run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (21/21)"
+  run_suite "ABI 32-bit targets & release clamp" suite_rust_abi_32bit_and_release "nve-abi release id::tests + i686/armv7 checks"
 else
   skip_suite "ABI codegen parity" "cargo not found"
+  skip_suite "ABI 32-bit targets & release clamp" "cargo not found"
 fi
 
 # 1b2. Rust RPC/Hyper feature matrix & rustdoc check (native, independent of WASM target)

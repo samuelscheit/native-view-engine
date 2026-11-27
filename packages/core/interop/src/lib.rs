@@ -45,7 +45,7 @@ pub use layout::{
 #[cfg(feature = "plugin-host")]
 pub use plugin_host::{
     NvePluginHost, NvePluginSlot, PluginCapabilities, PluginError, PluginId, PluginMetadata,
-    PluginRequirement, PluginSourceKind,
+    PluginRequirement, PluginSlotMut, PluginSourceKind,
 };
 #[cfg(all(feature = "reconcile", feature = "crdt"))]
 pub use reconcile::{CrdtReconcileAdapter, hlc_to_logical_clock};
@@ -133,11 +133,12 @@ impl InteropRuntime {
         &self.plugins
     }
 
-    /// Returns mutable access to one mounted plugin slot (for `render`/`dispatch_events`/`set_props`).
+    /// Returns a sealed mutable borrow guard ([`PluginSlotMut`]) for one mounted plugin slot
+    /// (for `render`/`dispatch_events`/`set_props`) without exposing raw `&mut NvePluginSlot`.
     #[cfg(feature = "plugin-host")]
     #[inline]
-    pub fn plugin_mut(&mut self, plugin_id: PluginId) -> Option<&mut NvePluginSlot> {
-        self.plugins.get_mut(plugin_id)
+    pub fn plugin_mut(&mut self, plugin_id: PluginId) -> Option<PluginSlotMut<'_>> {
+        self.plugins.get_mut(plugin_id).map(PluginSlotMut::new)
     }
 
     /// Registers a surface (root or child), inheriting environment from its parent when present.
@@ -189,8 +190,12 @@ impl InteropRuntime {
         self.surfaces.transition_state(surface_id, state)
     }
 
-    /// Cascades a lifecycle transition down `surface_id`'s subtree (routing `Destroyed` through
-    /// [`Self::destroy_surface_cascade`]).
+    /// Cascades a lifecycle transition down `surface_id`'s subtree.
+    ///
+    /// Non-destructive states (`Resumed`/`Paused`) return transitioned surface IDs in **pre-order**
+    /// (parent before children); `LifecycleState::Destroyed` routes through
+    /// [`Self::destroy_surface_cascade`] and returns destroyed surface IDs in **post-order**
+    /// (leaves before ancestors).
     pub fn propagate_lifecycle(
         &mut self,
         surface_id: SurfaceId,

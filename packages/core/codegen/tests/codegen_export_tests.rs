@@ -431,3 +431,130 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
         update_mode,
     );
 }
+
+#[test]
+fn generated_c_and_cpp_abi_headers_pass_syntax_checks_on_64bit_and_i686() {
+    use std::process::Command;
+
+    let has_clang = Command::new("clang").arg("--version").output().is_ok();
+    let has_clangxx = Command::new("clang++").arg("--version").output().is_ok();
+    if !has_clang || !has_clangxx {
+        return;
+    }
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "nve_codegen_clang_check_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).expect("create clang check temp dir");
+
+    let core = generate_all_core_abi_files();
+    let scene = generate_all_scene_abi_files();
+    let core_h = tmp_dir.join("nve_abi.generated.h");
+    let scene_h = tmp_dir.join("nve_scene_abi.generated.h");
+    std::fs::write(&core_h, &core[0].content).expect("write core header");
+    std::fs::write(&scene_h, &scene[0].content).expect("write scene header");
+
+    let probe_c = tmp_dir.join("probe.c");
+    let probe_cpp = tmp_dir.join("probe.cpp");
+    let probe_src = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nint nve_abi_probe(void) { return (int)sizeof(NveDirectEvent); }\n";
+    let probe_i686 = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nNVE_STATIC_ASSERT(sizeof(NveDirectEvent) == 68u, \"i686 NveDirectEvent must be 68 B\");\nNVE_STATIC_ASSERT(NVE_ALIGNOF(NveDirectEvent) == 4u, \"i686 NveDirectEvent must be 4-byte aligned\");\nint nve_abi_probe(void) { return (int)sizeof(NveDirectEvent); }\n";
+    let probe_armv7 = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nNVE_STATIC_ASSERT(sizeof(NveDirectEvent) == 72u, \"armv7 NveDirectEvent must be 72 B\");\nNVE_STATIC_ASSERT(NVE_ALIGNOF(NveDirectEvent) == 8u, \"armv7 NveDirectEvent must be 8-byte aligned\");\nint nve_abi_probe(void) { return (int)sizeof(NveDirectEvent); }\n";
+    let probe_i686_c = tmp_dir.join("probe_i686.c");
+    let probe_i686_cpp = tmp_dir.join("probe_i686.cpp");
+    let probe_armv7_c = tmp_dir.join("probe_armv7.c");
+    let probe_armv7_cpp = tmp_dir.join("probe_armv7.cpp");
+    std::fs::write(&probe_c, probe_src).expect("write probe.c");
+    std::fs::write(&probe_cpp, probe_src).expect("write probe.cpp");
+    std::fs::write(&probe_i686_c, probe_i686).expect("write probe_i686.c");
+    std::fs::write(&probe_i686_cpp, probe_i686).expect("write probe_i686.cpp");
+    std::fs::write(&probe_armv7_c, probe_armv7).expect("write probe_armv7.c");
+    std::fs::write(&probe_armv7_cpp, probe_armv7).expect("write probe_armv7.cpp");
+
+    let cases: &[(&str, &std::path::Path, &[&str])] = &[
+        (
+            "clang",
+            &probe_c,
+            &["-fsyntax-only", "-std=c11", "-Wall", "-Wextra", "-Werror"],
+        ),
+        (
+            "clang++",
+            &probe_cpp,
+            &["-fsyntax-only", "-std=c++20", "-Wall", "-Wextra", "-Werror"],
+        ),
+        (
+            "clang",
+            &probe_i686_c,
+            &[
+                "-target",
+                "i686-unknown-linux-gnu",
+                "-ffreestanding",
+                "-fsyntax-only",
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ],
+        ),
+        (
+            "clang++",
+            &probe_i686_cpp,
+            &[
+                "-target",
+                "i686-unknown-linux-gnu",
+                "-ffreestanding",
+                "-fsyntax-only",
+                "-std=c++20",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ],
+        ),
+        (
+            "clang",
+            &probe_armv7_c,
+            &[
+                "-target",
+                "armv7-unknown-linux-gnueabihf",
+                "-ffreestanding",
+                "-fsyntax-only",
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ],
+        ),
+        (
+            "clang++",
+            &probe_armv7_cpp,
+            &[
+                "-target",
+                "armv7-unknown-linux-gnueabihf",
+                "-ffreestanding",
+                "-fsyntax-only",
+                "-std=c++20",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ],
+        ),
+    ];
+
+    for (compiler, src, flags) in cases {
+        let out = Command::new(compiler)
+            .args(*flags)
+            .arg("-I")
+            .arg(&tmp_dir)
+            .arg(src)
+            .output()
+            .expect("invoke clang");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{compiler} {flags:?} failed:\n{stderr}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}

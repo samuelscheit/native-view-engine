@@ -126,7 +126,7 @@ impl NvePluginSlot {
     }
 
     /// Instantiates an in-process plugin from its `nve_get_interface` entry point.
-    pub fn from_in_process(
+    pub(super) fn from_in_process(
         plugin_id: PluginId,
         name: String,
         surface_id: SurfaceId,
@@ -151,7 +151,7 @@ impl NvePluginSlot {
 
     /// Loads a compiled dynamic library (`cdylib`) using `nve_engine::loader::StagedDylib`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_dylib(
+    pub(super) fn from_dylib(
         plugin_id: PluginId,
         name: String,
         surface_id: SurfaceId,
@@ -361,6 +361,89 @@ impl NvePluginSlot {
         }))
         .is_ok();
         ok && nve_engine::take_last_ffi_panic().is_none()
+    }
+}
+
+/// Sealed mutable borrow guard over a mounted [`NvePluginSlot`] owned by [`crate::InteropRuntime`].
+///
+/// Exposes every read/write plugin operation (`render`, `dispatch_events`, `measure`, `hit_test`,
+/// `set_props`, `drain_emitted_events`, `apply_hot_patch`, `snapshot_state`, `restore_state`)
+/// while preventing external code from calling `std::mem::swap` / `std::mem::replace` on the
+/// underlying [`NvePluginSlot`] and corrupting `NvePluginHost`'s `name_index`/`surface_index`.
+pub struct PluginSlotMut<'a>(&'a mut NvePluginSlot);
+
+impl<'a> PluginSlotMut<'a> {
+    #[inline(always)]
+    pub(crate) fn new(slot: &'a mut NvePluginSlot) -> Self {
+        Self(slot)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_generation_for_test(&mut self, generation: u64) {
+        self.0.set_generation_for_test(generation);
+    }
+
+    /// Renders one frame, borrowing the plugin's binary `CommandBuffer` slice zero-copy.
+    #[inline]
+    pub fn render(&mut self, frame_id: FrameId) -> Result<&[u8], PluginError> {
+        self.0.render(frame_id)
+    }
+
+    /// Dispatches direct typed FFI events (`NveEventBatch`) into the plugin.
+    #[inline]
+    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
+        self.0.dispatch_events(events)
+    }
+
+    /// Queries intrinsic size via `NVE_IFACE_LAYOUT` if exported.
+    #[inline]
+    pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
+        self.0.measure(constraints)
+    }
+
+    /// Queries gesture disposition via `NVE_IFACE_LAYOUT` if exported.
+    #[inline]
+    pub fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
+        self.0.hit_test(x, y, pointer_phase)
+    }
+
+    /// Updates plugin props via direct structured `NveMapEntry` slice (`NVE_IFACE_COMPONENT`).
+    #[inline]
+    pub fn set_props(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
+        self.0.set_props(entries)
+    }
+
+    /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported.
+    #[inline]
+    pub fn drain_emitted_events(&mut self) -> NveEventBatchRef<'_> {
+        self.0.drain_emitted_events()
+    }
+
+    /// Forwards one binary `NVP1` Tier-1 hot-patch frame via `NVE_IFACE_DEV` if exported.
+    #[inline]
+    pub fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
+        self.0.apply_hot_patch(patch_nvp1)
+    }
+
+    /// Snapshots plugin state via `NVE_IFACE_DEV` if exported.
+    #[inline]
+    pub fn snapshot_state(&mut self) -> Vec<u8> {
+        self.0.snapshot_state()
+    }
+
+    /// Restores plugin state via `NVE_IFACE_DEV` if exported.
+    #[inline]
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        self.0.restore_state(state)
+    }
+}
+
+impl std::ops::Deref for PluginSlotMut<'_> {
+    type Target = NvePluginSlot;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        self.0
     }
 }
 

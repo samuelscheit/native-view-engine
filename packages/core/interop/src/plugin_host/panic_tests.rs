@@ -349,12 +349,12 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
         PluginError::PluginPanicked(ref m) if m.contains("flaky plugin exploded in restore_state")
     ));
     set_host_panic_mode(HostPanicMode::Healthy);
-    let still_live = runtime.plugin_mut(flaky_id).unwrap();
+    let mut still_live = runtime.plugin_mut(flaky_id).unwrap();
     assert_eq!(still_live.generation(), 1);
     assert_eq!(decode_first_text(still_live.render(FrameId(8)).unwrap()), "flaky:11");
 
     // 8. Healthy sibling plugin stayed 100% healthy throughout all flaky panics!
-    let sibling = runtime.plugin_mut(healthy_id).unwrap();
+    let mut sibling = runtime.plugin_mut(healthy_id).unwrap();
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     let sibling_frame = sibling.render(FrameId(1)).unwrap().to_vec();

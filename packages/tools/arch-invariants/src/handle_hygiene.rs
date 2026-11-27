@@ -487,8 +487,10 @@ impl<'ast> Visit<'ast> for BareHandleParamVisitor<'_> {
         visit::visit_foreign_item_fn(self, f);
     }
 
+    /// Visits `extern { ... }` blocks, skipping `#[cfg(test)]` and `#[wasm_bindgen]` foreign
+    /// modules (JS FFI boundaries mirror the `#[wasm_bindgen]` exemption on free/impl functions).
     fn visit_item_foreign_mod(&mut self, fm: &'ast syn::ItemForeignMod) {
-        if is_cfg_test_attr(&fm.attrs) {
+        if is_cfg_test_attr(&fm.attrs) || has_wasm_bindgen_attr(&fm.attrs) {
             return;
         }
         for fi in &fm.items {

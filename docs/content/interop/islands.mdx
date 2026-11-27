@@ -12,11 +12,12 @@ order: 2
 
 ```rust title="packages/core/interop/src/lib.rs"
 pub struct InteropRuntime {
-    pub surfaces: SurfaceOrchestrator,
+    surfaces: SurfaceOrchestrator, // accessed via `surfaces()` & lifecycle/env/cascade methods
     pub layout: LayoutNegotiator,
     pub gestures: GestureArbitrator,
     pub channels: NveChannelBus,
     pub windows: WindowManager,
+    plugins: NvePluginHost,        // accessed via `plugins()`, `plugin_mut()`, & register/unload methods
 }
 ```
 

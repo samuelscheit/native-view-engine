@@ -42,13 +42,13 @@ fn decode_first_text(bytes: &[u8]) -> String {
 }
 
 // ---- Test Plugin V1: full capability plugin (SURFACE + LAYOUT + COMPONENT + DEV) ----
-struct MockPluginState {
-    surface_id: SurfaceId,
-    version_tag: &'static str,
-    counter: u32,
-    frame_buf: Vec<u8>,
-    state_buf: Vec<u8>,
-    out_events: Vec<NveDirectEvent>,
+pub(super) struct MockPluginState {
+    pub(super) surface_id: SurfaceId,
+    pub(super) version_tag: &'static str,
+    pub(super) counter: u32,
+    pub(super) frame_buf: Vec<u8>,
+    pub(super) state_buf: Vec<u8>,
+    pub(super) out_events: Vec<NveDirectEvent>,
 }
 
 unsafe extern "C" fn p1_create(surface_id: SurfaceId) -> NveAppHandle {
@@ -108,7 +108,7 @@ unsafe extern "C" fn p_hit_test(_: NveAppHandle, _: f32, _: f32, _: u8) -> u8 {
     NveGestureDisposition::Claim as u8
 }
 
-unsafe extern "C" fn p_set_props(
+pub(super) unsafe extern "C" fn p_set_props(
     handle: NveAppHandle,
     entries: *const NveMapEntry,
     count: u32,
@@ -159,7 +159,7 @@ unsafe extern "C" fn p_restore(handle: NveAppHandle, state: NveBufferSlice) {
     }
 }
 
-static P1_SURFACE: NveSurfaceApi = NveSurfaceApi {
+pub(super) static P1_SURFACE: NveSurfaceApi = NveSurfaceApi {
     create: p1_create,
     destroy: p_destroy,
     render: p_render,
@@ -185,7 +185,7 @@ static P_DEV: NveDevApi = NveDevApi {
     restore_state: p_restore,
 };
 
-unsafe extern "C" fn plugin_v1_get_interface(id: InterfaceId) -> *const c_void {
+pub(super) unsafe extern "C" fn plugin_v1_get_interface(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => &P1_SURFACE as *const _ as *const c_void,
         NVE_IFACE_LAYOUT => &P_LAYOUT as *const _ as *const c_void,
@@ -195,7 +195,7 @@ unsafe extern "C" fn plugin_v1_get_interface(id: InterfaceId) -> *const c_void {
     }
 }
 
-unsafe extern "C" fn plugin_v2_get_interface(id: InterfaceId) -> *const c_void {
+pub(super) unsafe extern "C" fn plugin_v2_get_interface(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => &P2_SURFACE as *const _ as *const c_void,
         NVE_IFACE_LAYOUT => &P_LAYOUT as *const _ as *const c_void,
@@ -205,7 +205,7 @@ unsafe extern "C" fn plugin_v2_get_interface(id: InterfaceId) -> *const c_void {
     }
 }
 
-unsafe extern "C" fn surface_only_get_interface(id: InterfaceId) -> *const c_void {
+pub(super) unsafe extern "C" fn surface_only_get_interface(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => &P1_SURFACE as *const _ as *const c_void,
         _ => std::ptr::null(),
@@ -472,208 +472,3 @@ fn failed_pre_create_plugin_loads_burn_zero_generations_and_emit_zero_events() {
     assert_eq!(surfaces.active_count(), 1);
 }
 
-#[test]
-fn unload_plugin_cascades_subsystems_and_child_plugins_and_rejects_dead_hotswap() {
-    let mut runtime = crate::InteropRuntime::new();
-
-    let parent_pid = runtime
-        .register_plugin_in_process(
-            "parent-plugin",
-            plugin_v1_get_interface,
-            PluginRequirement::EMBEDDED_COMPONENT,
-        )
-        .unwrap();
-    let child_pid = runtime
-        .register_plugin_in_process(
-            "child-plugin",
-            surface_only_get_interface,
-            PluginRequirement::SURFACE_ONLY,
-        )
-        .unwrap();
-    let parent_sid = runtime.plugins.get(parent_pid).unwrap().surface_id();
-    let child_sid = runtime.plugins.get(child_pid).unwrap().surface_id();
-
-    // Reparent child plugin under parent plugin and attach gesture/layout/channel state.
-    runtime.surfaces.reparent(child_sid, Some(parent_sid)).unwrap();
-    #[cfg(feature = "gesture")]
-    {
-        runtime.gestures.set_capabilities(
-            parent_sid,
-            crate::GestureCapabilities::vertical_scroll(crate::FrameworkKind::Nve),
-        );
-        runtime.gestures.set_capabilities(
-            child_sid,
-            crate::GestureCapabilities::vertical_scroll(crate::FrameworkKind::Nve),
-        );
-        let down = crate::PointerSample {
-            pointer_id: 7,
-            phase: crate::PointerPhase::Down,
-            x: 10.0,
-            y: 10.0,
-            delta_x: 0.0,
-            delta_y: 0.0,
-            timestamp_us: nve_abi::TimestampUs(100),
-        };
-        let _ = runtime.arbitrate_pointer(child_sid, down).unwrap();
-        assert_eq!(runtime.gestures.active_pointer_count(), 1);
-    }
-    #[cfg(feature = "channel")]
-    {
-        let _ = runtime
-            .channels
-            .subscribe("plugin.topic", Some(parent_sid), false, |_| {})
-            .unwrap();
-        let _ = runtime
-            .channels
-            .subscribe("plugin.topic", Some(child_sid), false, |_| {})
-            .unwrap();
-        assert_eq!(runtime.channels.subscriber_count("plugin.topic"), 2);
-    }
-
-    // Unloading parent cascades to child plugin, child surface, gestures, and channels!
-    let meta = runtime.unload_plugin(parent_pid).unwrap();
-    assert_eq!(meta.surface_id, parent_sid);
-    assert_eq!(runtime.plugins().active_count(), 0);
-    assert_eq!(runtime.surfaces().active_count(), 0);
-    assert!(runtime.plugins().find_by_surface(parent_sid).is_none());
-    assert!(runtime.plugins().find_by_surface(child_sid).is_none());
-    #[cfg(feature = "gesture")]
-    {
-        assert_eq!(runtime.gestures.active_pointer_count(), 0);
-        assert!(!runtime.gestures.has_surface_state(parent_sid));
-        assert!(!runtime.gestures.has_surface_state(child_sid));
-    }
-    #[cfg(feature = "channel")]
-    assert_eq!(runtime.channels.subscriber_count("plugin.topic"), 0);
-
-    // `GenerationExhausted` is returned cleanly when a plugin's hot-swap generation reaches u64::MAX.
-    let gen_pid = runtime
-        .register_plugin_in_process(
-            "gen-limit-plugin",
-            plugin_v1_get_interface,
-            PluginRequirement::EMBEDDED_COMPONENT,
-        )
-        .unwrap();
-    runtime
-        .plugin_mut(gen_pid)
-        .unwrap()
-        .set_generation_for_test(u64::MAX);
-    assert_eq!(
-        runtime.hot_swap_plugin_in_process(
-            gen_pid,
-            plugin_v2_get_interface,
-            PluginRequirement::EMBEDDED_COMPONENT,
-        ),
-        Err(PluginError::GenerationExhausted(gen_pid))
-    );
-    let _ = runtime.unload_plugin(gen_pid).unwrap();
-    assert_eq!(runtime.plugins().active_count(), 0);
-    assert_eq!(runtime.surfaces().active_count(), 0);
-
-    // `NvePluginSlot::drain_emitted_events` canonicalizes non-canonical raw C POD handles to NULL.
-    unsafe extern "C" fn p_drain_corrupt_events(handle: NveAppHandle) -> NveEventBatch {
-        // SAFETY: `handle` was allocated by `p1_create` as `Box<MockPluginState>`.
-        let st = unsafe { &mut *(handle as *mut MockPluginState) };
-        st.out_events.clear();
-        st.out_events.push(NveDirectEvent {
-            // SAFETY: `SurfaceId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
-            surface_id: unsafe { core::mem::transmute::<u32, SurfaceId>(0x0500_0000) },
-            // SAFETY: `NodeId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
-            node_id: unsafe { core::mem::transmute::<u32, NodeId>(0x0700_0000) },
-            timestamp_us: 42,
-            kind: 1,
-            payload_tag: 0,
-            modifiers: 0,
-            event_flags: 0,
-            key_code: 0,
-            name: nve_abi::NveStrSlice::EMPTY,
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-            text: nve_abi::NveStrSlice::EMPTY,
-            value: nve_abi::NveValue::null(),
-        });
-        NveEventBatch::from_slice(&st.out_events)
-    }
-    static CORRUPT_COMP: NveComponentApi = NveComponentApi {
-        set_props: p_set_props,
-        drain_emitted_events: p_drain_corrupt_events,
-    };
-    unsafe extern "C" fn corrupt_events_get_interface(id: InterfaceId) -> *const c_void {
-        match id {
-            NVE_IFACE_SURFACE => &P1_SURFACE as *const _ as *const c_void,
-            NVE_IFACE_COMPONENT => &CORRUPT_COMP as *const _ as *const c_void,
-            _ => std::ptr::null(),
-        }
-    }
-    let corrupt_pid = runtime
-        .register_plugin_in_process(
-            "corrupt-events-plugin",
-            corrupt_events_get_interface,
-            PluginRequirement::SURFACE_ONLY,
-        )
-        .unwrap();
-    {
-        let batch = runtime.plugin_mut(corrupt_pid).unwrap().drain_emitted_events();
-        assert_eq!(batch.len(), 1);
-        let ev = batch.get(0).unwrap();
-        assert_eq!(ev.surface_id(), SurfaceId::NULL);
-        assert_eq!(ev.node_id(), NodeId::NULL);
-        assert_eq!(ev.timestamp_us(), 42);
-    }
-    let _ = runtime.unload_plugin(corrupt_pid).unwrap();
-
-    // `destroy_surface_cascade` detaches a mounted plugin AND still cleans up + runs remaining
-    // teardown hooks even if a child teardown hook panics!
-    let p_cas = runtime
-        .register_plugin_in_process(
-            "cascade-plugin",
-            plugin_v1_get_interface,
-            PluginRequirement::EMBEDDED_COMPONENT,
-        )
-        .unwrap();
-    let p_cas_sid = runtime.plugins().get(p_cas).unwrap().surface_id();
-    let leaf_sid = runtime
-        .register_child(p_cas_sid, crate::FrameworkKind::SwiftUI, "Leaf")
-        .unwrap();
-    #[cfg(feature = "channel")]
-    let _ = runtime
-        .channels
-        .subscribe("cascade.topic", Some(p_cas_sid), false, |_| {})
-        .unwrap();
-    let root_hook_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let root_hook_flag = std::sync::Arc::clone(&root_hook_ran);
-    runtime
-        .on_surface_teardown(leaf_sid, |_| panic!("leaf cascade hook boom"))
-        .unwrap();
-    runtime
-        .on_surface_teardown(p_cas_sid, move |_| {
-            root_hook_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        })
-        .unwrap();
-
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = runtime.destroy_surface_cascade(p_cas_sid);
-    }));
-    assert!(res.is_err(), "panicking leaf hook must resume unwind");
-    assert!(
-        root_hook_ran.load(std::sync::atomic::Ordering::SeqCst),
-        "parent teardown hook must still execute after leaf hook panic"
-    );
-    assert_eq!(runtime.plugins().active_count(), 0);
-    assert_eq!(runtime.surfaces().active_count(), 0);
-    #[cfg(feature = "channel")]
-    assert_eq!(runtime.channels.subscriber_count("cascade.topic"), 0);
-
-    // Lifecycle transitions to `Destroyed` via `InteropRuntime` must also cascade-detach plugins.
-    let p_tr = runtime
-        .register_plugin_in_process("tr-plugin", plugin_v1_get_interface, PluginRequirement::SURFACE_ONLY)
-        .unwrap();
-    let tr_sid = runtime.plugins().get(p_tr).unwrap().surface_id();
-    runtime
-        .transition_surface_state(tr_sid, crate::LifecycleState::Destroyed)
-        .unwrap();
-    assert_eq!(runtime.plugins().active_count(), 0);
-    assert_eq!(runtime.surfaces().active_count(), 0);
-}

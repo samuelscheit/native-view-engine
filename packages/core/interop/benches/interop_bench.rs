@@ -104,7 +104,7 @@ mod native {
                 b.iter_batched(
                     || {
                         let mut churn_orch = SurfaceOrchestrator::new();
-                        // Warm 1 cycle in setup so `slots`, `free`, and `events` buffers are hot.
+                        // Warm 1 cycle in setup so `slots` and `free` buffers are hot (`drain_events` takes the event Vec).
                         let warm_id = churn_orch
                             .register_root(FrameworkKind::Nve, "Warm", env.clone())
                             .expect("register warm churn surface");
