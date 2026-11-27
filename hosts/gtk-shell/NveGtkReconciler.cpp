@@ -269,7 +269,7 @@ void NveGtkHost::Adapter::update_root(const host::NodeData& node) {
 void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
   if (v == nullptr) return;
   host->css_dirty_ = host->css_rules_.erase(id) > 0u || host->css_dirty_;
-  host->dirty_scroll_extents_.erase(v);
+  if (v->extents_dirty) std::erase(host->dirty_scroll_extents_, v);
   host->mark_scroll_extents(gtk_widget_get_parent(v->widget));
   if (v->kind == WidgetKind::Scrolled) {
     GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v->widget);
@@ -344,9 +344,11 @@ void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {
 #if GTK_CHECK_VERSION(4, 8, 0)
   gtk_picture_set_content_fit(GTK_PICTURE(v.widget), content_fit(node.image.fit));
 #endif
-  // Only dirty nodes get here: resolve by content (the cache keys URL / encoded bytes), since a
-  // resource id can be republished with new bytes. `GtkPicture` refs its paintable, so a later
+  // Same id, incremental sync, bytes not redefined: the shown texture stays. Otherwise resolve
+  // by content (the cache keys URL / encoded bytes). `GtkPicture` refs its paintable, so a later
   // cache eviction cannot free a shown texture.
+  if (v.synced && tree_.resource_unchanged(scene_->reader(), node.image.src, v.image_src)) return;
+  v.image_src = node.image.src;
   GdkTexture* tex = nullptr;
   if (const auto src = host::decode_image_src(scene_resource(node.image.src, host::kImageSrcKind))) {
     tex = textures_.get(*src);
@@ -376,14 +378,19 @@ void NveGtkHost::apply_geometry(GtkNodeView& v, const host::NodeData& node) {
 void NveGtkHost::mark_scroll_extents(GtkWidget* container) {
   if (container == nullptr) return;
   if (auto* owner = static_cast<GtkNodeView*>(g_object_get_data(G_OBJECT(container), kScrollOwnerKey))) {
-    dirty_scroll_extents_.insert(owner);
+    if (!owner->extents_dirty) {
+      owner->extents_dirty = true;
+      dirty_scroll_extents_.push_back(owner);
+    }
   }
 }
 
 void NveGtkHost::update_canvas(GtkNodeView& v, uint32_t index) {
-  // Compared by bytes, not id: `RetainedTree` updates this view when its draw list is republished
-  // under the same id.
-  const std::span<const uint8_t> bytes = scene_resource(canvas_.at(index).draw_list, canvas::kDrawListKind);
+  const uint32_t id = canvas_.at(index).draw_list;
+  if (v.synced && tree_.resource_unchanged(scene_->reader(), id, v.canvas_res)) return;
+  v.canvas_res = id;
+  // A new id (or redefined bytes) may still carry the shown draw list: redraw only on new bytes.
+  const std::span<const uint8_t> bytes = scene_resource(id, canvas::kDrawListKind);
   if (v.synced && std::ranges::equal(bytes, v.draw_list)) return;
   v.draw_list.assign(bytes.begin(), bytes.end());  // drawn later, after the scene is released
   ++v.redraw_count;
@@ -442,6 +449,7 @@ void NveGtkHost::update_scroll_extents() {
   // `gtk_fixed_get_child_position` reports 0,0, see docs/UPSTREAM.md). Only scroll views whose
   // children were placed, moved, resized or removed since the last sync are re-measured.
   for (GtkNodeView* v : dirty_scroll_extents_) {
+    v->extents_dirty = false;
     float w = 0.0f;
     float h = 0.0f;
     for (GtkWidget* c = gtk_widget_get_first_child(v->content); c != nullptr; c = gtk_widget_get_next_sibling(c)) {

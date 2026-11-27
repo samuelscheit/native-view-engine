@@ -79,11 +79,12 @@ impl Frame {
     }
 
     /// Origin relative to the parent's rect (own origin for parentless nodes).
-    fn local(&self, i: usize) -> [f32; 2] {
+    /// Box of slot `i` relative to its parent's rect (absolute for roots).
+    fn local(&self, i: usize) -> NveLayoutRect {
         let r = self.rects[i];
-        match (self.rows[i].parent & 0x00FF_FFFF) as usize {
-            0 => [r.x, r.y],
-            p => [r.x - self.rects[p].x, r.y - self.rects[p].y],
+        match NodeId::from_raw(self.rows[i].parent).index() {
+            0 => r,
+            p => NveLayoutRect { x: r.x - self.rects[p].x, y: r.y - self.rects[p].y, ..r },
         }
     }
 
@@ -162,9 +163,9 @@ impl Harness {
         }
     }
 
-    /// Oracle: `moved` is exactly the live, non-dirty slots whose rect or parent-relative origin
-    /// differs from the previous frame; every slot that (re)appeared is dirty; no duplicates, no
-    /// overlap, no dead slots.
+    /// Oracle: `moved` is exactly the live, non-dirty slots whose parent-relative box differs from
+    /// the previous frame; every slot that (re)appeared is dirty; no duplicates, no overlap, no
+    /// dead slots.
     fn check(&self, f: &Frame) {
         let (old, mut seen) = (&self.last, vec![0u8; f.rows.len()]);
         for &i in &f.dirty {
@@ -183,7 +184,7 @@ impl Harness {
             }
             let reappeared = !old.live(i) || old.rows[i].generation != f.rows[i].generation;
             assert!(!reappeared, "slot {i} became live without being dirty");
-            if old.rects[i] != f.rects[i] || old.local(i) != f.local(i) {
+            if old.local(i) != f.local(i) {
                 expected_moved.push(i as u32);
             }
         }
@@ -344,6 +345,48 @@ fn reparenting_with_an_unchanged_absolute_rect_moves_by_its_new_parent_origin() 
     let f = h.step(move |tx| tx.set_children(p1, &[x]));
     assert_eq!(f.rects[x.index()].y, 20.0);
     assert_eq!(f.moved, [x.index() as u32]);
+}
+
+#[test]
+fn moving_a_container_moves_only_the_container_not_its_subtree() {
+    // ROOT -> column[spacer (h=10), box[row[leaf, leaf], row[leaf, leaf]]]: growing the spacer
+    // shifts `box` and its whole nested subtree in absolute terms, but only `box` moves relative to
+    // its parent; every descendant keeps its parent-relative box.
+    let (mut h, ids) = Harness::mount(|tx| {
+        let column = tx.create();
+        tx.edit::<Layout>(column).width(Length::points(100.0));
+        let spacer = tx.create();
+        tx.edit::<Layout>(spacer).height(Length::points(10.0));
+        let bx = tx.create();
+        let rows: Vec<NodeId> = (0..2)
+            .map(|_| {
+                let row = tx.create();
+                let leaves: Vec<NodeId> = (0..2)
+                    .map(|_| {
+                        let leaf = tx.create();
+                        tx.edit::<Layout>(leaf).height(Length::points(5.0));
+                        leaf
+                    })
+                    .collect();
+                tx.set_children(row, &leaves);
+                row
+            })
+            .collect();
+        tx.set_children(bx, &rows);
+        tx.set_children(column, &[spacer, bx]);
+        tx.set_children(NodeId::ROOT, &[column]);
+        vec![spacer, bx]
+    });
+    let (spacer, bx) = (ids[0], ids[1]);
+    let before = h.last.rects.clone();
+    let f = h.step(move |tx| {
+        tx.edit::<Layout>(spacer).height(Length::points(30.0));
+    });
+    assert_eq!(f.dirty, [spacer.index() as u32]);
+    // The column grew (size), `box` shifted by 20: nothing below `box` is listed.
+    assert_eq!(Frame::sorted(&f.moved), Frame::sorted(&[2, bx.index() as u32]));
+    let shifted = (1..f.rects.len()).filter(|&i| f.live(i) && f.rects[i].y == before[i].y + 20.0).count();
+    assert_eq!(shifted, 7, "box, 2 rows and 4 leaves moved in absolute terms (rects republished)");
 }
 
 #[test]

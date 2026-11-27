@@ -46,8 +46,11 @@ struct GtkNodeView {
   host::ControlledText text;
   bool synced = false;
 
-  // Canvas.
+  // Image / canvas: the resource ids applied (kept per `RetainedTree::resource_unchanged`).
+  uint32_t image_src = 0u;
+  uint32_t canvas_res = 0u;
   std::vector<uint8_t> draw_list;
+  bool extents_dirty = false;  // queued in `NveGtkHost::dirty_scroll_extents_`
   uint64_t redraw_count = 0u;
 
   [[nodiscard]] float content_width() const noexcept;
