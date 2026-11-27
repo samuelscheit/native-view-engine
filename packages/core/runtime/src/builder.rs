@@ -4,6 +4,7 @@
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use nve_abi::{
     NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
@@ -16,7 +17,8 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::lock::SceneLock;
-use crate::surface::{RuntimeInner, SurfaceRuntime, SurfaceState};
+use crate::state::{RuntimeInner, SurfaceState};
+use crate::surface::SurfaceRuntime;
 use crate::wake::WakeBridge;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,8 +60,12 @@ pub enum RuntimeError {
     SceneBusy,
     /// Invalid binary `NVE2` wire frame payload.
     WireDecode(String),
-    /// Invalid argument passed to the runtime.
+    /// Invalid argument or owner-thread contract violation.
     InvalidArg(&'static str),
+    /// Target node was missing, stale, or not scrollable.
+    NotFound(&'static str),
+    /// A previous mutating operation panicked and invalidated the surface state.
+    Poisoned,
 }
 
 impl RuntimeError {
@@ -68,6 +74,8 @@ impl RuntimeError {
             Self::SceneBusy => NveRuntimeStatus::Busy,
             Self::WireDecode(_) => NveRuntimeStatus::Io,
             Self::InvalidArg(_) => NveRuntimeStatus::InvalidArg,
+            Self::NotFound(_) => NveRuntimeStatus::NotFound,
+            Self::Poisoned => NveRuntimeStatus::Panic,
         }
     }
 }
@@ -78,6 +86,8 @@ impl fmt::Display for RuntimeError {
             Self::SceneBusy => f.write_str("runtime scene is currently locked by an active reader"),
             Self::WireDecode(msg) => write!(f, "NVE2 wire decode failed: {msg}"),
             Self::InvalidArg(msg) => write!(f, "invalid runtime argument: {msg}"),
+            Self::NotFound(msg) => write!(f, "runtime target not found: {msg}"),
+            Self::Poisoned => f.write_str("runtime surface was poisoned by a prior panic"),
         }
     }
 }
@@ -161,28 +171,33 @@ impl RuntimeBuilder {
         };
         scene.set_viewport(self.viewport);
 
+        let realization_order = self.realization.unwrap_or_else(core_realization_order);
         let mut replica_store = NodeStore::replica();
-        replica_store
-            .set_realization_order(self.realization.unwrap_or_else(core_realization_order));
+        replica_store.set_realization_order(realization_order.clone());
 
         let wake = Arc::new(WakeBridge::new());
         let mut app = self.app;
         if let Some(ref mut a) = app {
-            let wake_ref = Arc::clone(&wake);
-            a.install_wake(Arc::new(move || wake_ref.trigger()));
+            a.install_wake_bridge(Arc::clone(&wake));
         }
 
         SurfaceRuntime {
             lock: SceneLock::new(),
             wake,
+            #[cfg(not(target_arch = "wasm32"))]
+            owner_thread: std::thread::current().id(),
+            poisoned: AtomicBool::new(false),
             inner: UnsafeCell::new(RuntimeInner {
                 app,
                 replica_store,
                 state: SurfaceState {
                     surface_id: self.surface_id,
                     frame_id: 0,
+                    realization_order,
                     wire_decoder: WireDecoder::default(),
                     wire_changes: ChangeSet::default(),
+                    hook_changes: ChangeSet::default(),
+                    merged_changes: ChangeSet::default(),
                     empty_changes: ChangeSet::default(),
                     scene,
                     tick_hooks: self.tick_hooks,
@@ -190,6 +205,8 @@ impl RuntimeBuilder {
                     published_tables: Vec::new(),
                     published_dirty_buf: Vec::new(),
                     dirty_indices: Vec::new(),
+                    dirty_stamp: Vec::new(),
+                    dirty_epoch: 0,
                     removed_ids: Vec::new(),
                     published_view: NveRuntimeSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,

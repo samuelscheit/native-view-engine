@@ -10,6 +10,7 @@ pub mod app;
 pub mod builder;
 pub mod c_api;
 mod lock;
+mod state;
 pub mod surface;
 pub mod wake;
 
@@ -17,4 +18,4 @@ pub use app::{AppFrame, CAbiAppAdapter, FrameTickHook, NveAppAdapter, RuntimeApp
 pub use builder::{RuntimeBuilder, RuntimeError};
 pub use c_api::nve_runtime_get_interface;
 pub use surface::{SceneReadGuard, SurfaceRuntime};
-pub use wake::{WakeBridge, WakeCallback};
+pub use wake::{WakeBridge, WakeCallback, WakeToken};

@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nve_abi::{
     NveBufferSlice, NveEventBatch, NveEventBatchRef, NveGetInterfaceFn, NveRuntimeApi,
@@ -10,12 +11,14 @@ use nve_abi::{
     NveRuntimeWakeFn, NveStrSlice, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_engine::Viewport;
-use nve_engine::app::ffi_catch_unwind;
-use nve_store::NodeId;
+use nve_engine::app::format_panic_payload;
 
 use crate::app::CAbiAppAdapter;
-use crate::builder::RuntimeBuilder;
+use crate::builder::{RuntimeBuilder, RuntimeError};
 use crate::surface::SurfaceRuntime;
+
+/// Maximum time `rt_destroy` waits for concurrent readers before refusing to UAF a leaked lock.
+const DESTROY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 thread_local! {
     static LAST_RUNTIME_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -23,15 +26,43 @@ thread_local! {
 
 fn set_last_error(msg: impl Into<String>) {
     let s = msg.into();
-    LAST_RUNTIME_ERROR.with(|cell| {
-        *cell.borrow_mut() = s;
+    let _ = LAST_RUNTIME_ERROR.try_with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut() {
+            *slot = s;
+        }
     });
 }
 
 fn clear_last_error() {
-    LAST_RUNTIME_ERROR.with(|cell| {
-        cell.borrow_mut().clear();
+    let _ = LAST_RUNTIME_ERROR.try_with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut() {
+            slot.clear();
+        }
     });
+}
+
+#[inline]
+fn runtime_catch_unwind<T>(op: &'static str, fallback: T, f: impl FnOnce() -> T) -> T {
+    clear_last_error();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(val) => val,
+        Err(payload) => {
+            let detail = format_panic_payload(&*payload);
+            set_last_error(format!("{op}: {detail}"));
+            fallback
+        }
+    }
+}
+
+#[inline]
+fn status_from_result(res: Result<(), RuntimeError>) -> i32 {
+    match res {
+        Ok(()) => NveRuntimeStatus::Ok.as_i32(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            e.status().as_i32()
+        }
+    }
 }
 
 struct SendPtr(*mut c_void);
@@ -58,8 +89,7 @@ unsafe fn borrow_runtime<'a>(handle: NveRuntimeHandle) -> Option<&'a SurfaceRunt
 }
 
 unsafe extern "C" fn rt_create(config: *const NveRuntimeConfig) -> NveRuntimeHandle {
-    ffi_catch_unwind("nve_runtime::create", std::ptr::null_mut(), || {
-        clear_last_error();
+    runtime_catch_unwind("nve_runtime::create", std::ptr::null_mut(), || {
         let cfg = if config.is_null() {
             NveRuntimeConfig::default()
         } else {
@@ -97,11 +127,22 @@ unsafe extern "C" fn rt_destroy(handle: NveRuntimeHandle) {
     if handle.is_null() {
         return;
     }
-    ffi_catch_unwind("nve_runtime::destroy", (), || {
+    runtime_catch_unwind("nve_runtime::destroy", (), || {
         // SAFETY: `handle` was allocated by `rt_create` via `Box::into_raw` and is freed once.
         let rt = unsafe { &*(handle.cast::<SurfaceRuntime>()) };
-        rt.lock.acquire_write_blocking();
-        // SAFETY: Exclusive write lock acquired above ensures no reader holds references.
+        if let Err(e) = rt.check_owner_thread() {
+            set_last_error(e.to_string());
+            return;
+        }
+        // Drain and clear any host wake callback first so workers stop before reader drain.
+        rt.wake.clear_sink();
+        if !rt.lock.try_acquire_write_timeout(DESTROY_WAIT_TIMEOUT) {
+            set_last_error(
+                "destroy timed out waiting for active scene_acquire reader; leaking runtime to avoid UAF",
+            );
+            return;
+        }
+        // SAFETY: Exclusive write lock acquired above on owner thread ensures no active readers.
         let boxed = unsafe { Box::from_raw(handle.cast::<SurfaceRuntime>()) };
         drop(boxed);
     });
@@ -112,7 +153,7 @@ unsafe extern "C" fn rt_set_wake_callback(
     cb: Option<NveRuntimeWakeFn>,
     ctx: *mut c_void,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::set_wake_callback",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -124,7 +165,8 @@ unsafe extern "C" fn rt_set_wake_callback(
                 Some(func) => {
                     let send_ctx = SendPtr(ctx);
                     rt.set_wake_callback(Arc::new(move || {
-                        // SAFETY: Host guarantees `func(ctx)` is valid until cleared or destroyed.
+                        // SAFETY: Host guarantees `func(ctx)` is valid until `clear_sink`/`destroy`
+                        // returns; `WakeBridge` drains in-flight calls under its `RwLock`.
                         unsafe { func(send_ctx.as_ptr()) };
                     }));
                 }
@@ -141,7 +183,7 @@ unsafe extern "C" fn rt_set_viewport(
     height: f32,
     scale_factor: f32,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::set_viewport",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -149,33 +191,14 @@ unsafe extern "C" fn rt_set_viewport(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            if !width.is_finite()
-                || width <= 0.0
-                || !height.is_finite()
-                || height <= 0.0
-                || !scale_factor.is_finite()
-                || scale_factor <= 0.0
-            {
-                set_last_error("viewport dimensions and scale_factor must be finite and > 0");
-                return NveRuntimeStatus::InvalidArg.as_i32();
-            }
-            let res = rt.with_write_shared(|inner| {
-                if inner.state.scene.set_viewport(Viewport {
+            status_from_result(
+                rt.set_viewport_shared(Viewport {
                     width,
                     height,
                     scale_factor,
-                }) {
-                    inner.state.needs_publish = true;
-                }
-                Ok(())
-            });
-            match res {
-                Ok(()) => NveRuntimeStatus::Ok.as_i32(),
-                Err(e) => {
-                    set_last_error(e.to_string());
-                    e.status().as_i32()
-                }
-            }
+                })
+                .map(|_| ()),
+            )
         },
     )
 }
@@ -184,7 +207,7 @@ unsafe extern "C" fn rt_attach_app_interface(
     handle: NveRuntimeHandle,
     get_iface: Option<NveGetInterfaceFn>,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::attach_app_interface",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -192,40 +215,30 @@ unsafe extern "C" fn rt_attach_app_interface(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            let res = rt.with_write_shared(|inner| {
-                match get_iface {
-                    Some(f) => {
-                        // SAFETY: Host guarantees `f` is a valid NVE `nve_get_interface` symbol.
-                        let Some(adapter) = (unsafe {
-                            CAbiAppAdapter::from_get_interface(f, inner.state.surface_id)
-                        }) else {
-                            return Err(crate::RuntimeError::InvalidArg(
-                                "app interface returned null surface API or app handle",
-                            ));
-                        };
-                        inner.app = Some(Box::new(adapter));
-                        inner.state.needs_render = true;
-                        inner.state.needs_publish = true;
-                    }
-                    None => {
-                        inner.app = None;
-                    }
-                }
-                Ok(())
-            });
-            match res {
-                Ok(()) => NveRuntimeStatus::Ok.as_i32(),
-                Err(e) => {
-                    set_last_error(e.to_string());
-                    e.status().as_i32()
-                }
+            match get_iface {
+                Some(f) => status_from_result(rt.with_write(|inner| {
+                    inner.reset_for_app_change();
+                    // SAFETY: Host guarantees `f` is a valid NVE `nve_get_interface` symbol.
+                    let Some(adapter) = (unsafe {
+                        CAbiAppAdapter::from_get_interface(f, inner.state.surface_id)
+                    }) else {
+                        return Err(RuntimeError::InvalidArg(
+                            "app interface returned null surface API or app handle",
+                        ));
+                    };
+                    inner.app = Some(Box::new(adapter));
+                    inner.state.needs_render = true;
+                    inner.state.needs_publish = true;
+                    Ok(())
+                })),
+                None => status_from_result(rt.detach_app_shared()),
             }
         },
     )
 }
 
 unsafe extern "C" fn rt_submit_nve2(handle: NveRuntimeHandle, frame: NveBufferSlice) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::submit_nve2",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -233,15 +246,12 @@ unsafe extern "C" fn rt_submit_nve2(handle: NveRuntimeHandle, frame: NveBufferSl
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            // SAFETY: Caller guarantees `frame` is readable for `frame.len` bytes for this call.
-            let bytes = unsafe { frame.as_slice() };
-            match rt.with_write_shared(|inner| inner.submit_nve2(bytes)) {
-                Ok(()) => NveRuntimeStatus::Ok.as_i32(),
-                Err(e) => {
-                    set_last_error(e.to_string());
-                    e.status().as_i32()
-                }
-            }
+            // SAFETY: Caller guarantees `frame` is readable for `frame.len` bytes when valid.
+            let Some(bytes) = (unsafe { frame.try_as_slice() }) else {
+                set_last_error("invalid NveBufferSlice (null pointer with len > 0 or len overflow)");
+                return NveRuntimeStatus::InvalidArg.as_i32();
+            };
+            status_from_result(rt.submit_nve2_shared(bytes))
         },
     )
 }
@@ -251,18 +261,12 @@ unsafe extern "C" fn rt_tick(
     dt_s: f32,
     out_changed: *mut u32,
 ) -> i32 {
-    ffi_catch_unwind("nve_runtime::tick", NveRuntimeStatus::Panic.as_i32(), || {
+    runtime_catch_unwind("nve_runtime::tick", NveRuntimeStatus::Panic.as_i32(), || {
         // SAFETY: `handle` checked non-null inside `borrow_runtime`.
         let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
             return NveRuntimeStatus::InvalidArg.as_i32();
         };
-        let dt = if dt_s.is_finite() && dt_s >= 0.0 {
-            dt_s
-        } else {
-            0.0
-        };
-        let _ = rt.wake_bridge().take_pending();
-        match rt.with_write_shared(|inner| inner.tick(dt)) {
+        match rt.tick_shared(dt_s) {
             Ok(changed) => {
                 if !out_changed.is_null() {
                     // SAFETY: Caller provided a non-null output slot.
@@ -283,7 +287,7 @@ unsafe extern "C" fn rt_dispatch_events(
     batch: NveEventBatch,
     out_changed: *mut u32,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::dispatch_events",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -291,18 +295,12 @@ unsafe extern "C" fn rt_dispatch_events(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            // SAFETY: Caller guarantees `batch` points to valid `NveDirectEvent`s for this call.
-            let events = unsafe { NveEventBatchRef::from_raw(batch) };
-            match rt.with_write_shared(|inner| {
-                let changed = inner
-                    .app
-                    .as_mut()
-                    .is_some_and(|app| app.dispatch_events(events));
-                if changed {
-                    inner.state.needs_render = true;
-                }
-                Ok(changed)
-            }) {
+            // SAFETY: Caller guarantees `batch` points to valid `NveDirectEvent`s when structurally valid.
+            let Some(events) = (unsafe { NveEventBatchRef::try_from_raw(batch) }) else {
+                set_last_error("invalid NveEventBatch (null/misaligned pointer or len overflow)");
+                return NveRuntimeStatus::InvalidArg.as_i32();
+            };
+            match rt.dispatch_events_shared(events) {
                 Ok(changed) => {
                     if !out_changed.is_null() {
                         // SAFETY: Caller provided a non-null output slot.
@@ -325,7 +323,7 @@ unsafe extern "C" fn rt_hit_test(
     y: f32,
     out_node_id: *mut u32,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::hit_test",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -360,7 +358,7 @@ unsafe extern "C" fn rt_scroll_by(
     out_x: *mut f32,
     out_y: *mut f32,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::scroll_by",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -368,21 +366,7 @@ unsafe extern "C" fn rt_scroll_by(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            if !dx.is_finite() || !dy.is_finite() {
-                set_last_error("scroll deltas must be finite");
-                return NveRuntimeStatus::InvalidArg.as_i32();
-            }
-            match rt.with_write_shared(|inner| {
-                let store = match inner.app.as_ref().and_then(|a| a.direct_store()) {
-                    Some(s) => s,
-                    None => &inner.replica_store,
-                };
-                let (x, y, _) = inner
-                    .state
-                    .scene
-                    .apply_scroll_delta(store, NodeId(node_id), dx, dy);
-                Ok((x, y))
-            }) {
+            match rt.scroll_by_shared(node_id, dx, dy) {
                 Ok((x, y)) => {
                     if !out_x.is_null() {
                         // SAFETY: Non-null caller out pointer.
@@ -407,7 +391,7 @@ unsafe extern "C" fn rt_scene_acquire(
     handle: NveRuntimeHandle,
     out_view: *mut NveRuntimeSceneView,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::scene_acquire",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -419,6 +403,10 @@ unsafe extern "C" fn rt_scene_acquire(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
+            if let Err(e) = rt.check_not_poisoned() {
+                set_last_error(e.to_string());
+                return e.status().as_i32();
+            }
             if !rt.lock.try_acquire_read() {
                 set_last_error("scene write in progress");
                 return NveRuntimeStatus::Busy.as_i32();
@@ -433,7 +421,7 @@ unsafe extern "C" fn rt_scene_acquire(
 }
 
 unsafe extern "C" fn rt_scene_release(handle: NveRuntimeHandle) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::scene_release",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -455,7 +443,7 @@ unsafe extern "C" fn rt_get_metrics(
     handle: NveRuntimeHandle,
     out_metrics: *mut NveRuntimeMetrics,
 ) -> i32 {
-    ffi_catch_unwind(
+    runtime_catch_unwind(
         "nve_runtime::get_metrics",
         NveRuntimeStatus::Panic.as_i32(),
         || {
@@ -487,38 +475,73 @@ unsafe extern "C" fn rt_pair_connect(
     _uri: NveStrSlice,
     _token: NveStrSlice,
 ) -> i32 {
-    if handle.is_null() {
-        return NveRuntimeStatus::InvalidArg.as_i32();
-    }
-    set_last_error("nve-runtime built without wire pairing support");
-    NveRuntimeStatus::Unsupported.as_i32()
+    runtime_catch_unwind(
+        "nve_runtime::pair_connect",
+        NveRuntimeStatus::Panic.as_i32(),
+        || {
+            // SAFETY: `handle` checked non-null inside `borrow_runtime`.
+            let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
+                return NveRuntimeStatus::InvalidArg.as_i32();
+            };
+            if let Err(e) = rt.check_owner_thread() {
+                set_last_error(e.to_string());
+                return e.status().as_i32();
+            }
+            set_last_error("nve-runtime built without wire pairing support");
+            NveRuntimeStatus::Unsupported.as_i32()
+        },
+    )
 }
 
 unsafe extern "C" fn rt_pair_disconnect(handle: NveRuntimeHandle) -> i32 {
-    if handle.is_null() {
-        return NveRuntimeStatus::InvalidArg.as_i32();
-    }
-    NveRuntimeStatus::Unsupported.as_i32()
+    runtime_catch_unwind(
+        "nve_runtime::pair_disconnect",
+        NveRuntimeStatus::Panic.as_i32(),
+        || {
+            // SAFETY: `handle` checked non-null inside `borrow_runtime`.
+            let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
+                return NveRuntimeStatus::InvalidArg.as_i32();
+            };
+            if let Err(e) = rt.check_owner_thread() {
+                set_last_error(e.to_string());
+                return e.status().as_i32();
+            }
+            set_last_error("nve-runtime built without wire pairing support");
+            NveRuntimeStatus::Unsupported.as_i32()
+        },
+    )
 }
 
-unsafe extern "C" fn rt_pair_is_connected(_handle: NveRuntimeHandle) -> u32 {
-    0
+unsafe extern "C" fn rt_pair_is_connected(handle: NveRuntimeHandle) -> u32 {
+    runtime_catch_unwind("nve_runtime::pair_is_connected", 0, || {
+        if handle.is_null() {
+            return 0;
+        }
+        0
+    })
 }
 
 unsafe extern "C" fn rt_last_error(out_buf: *mut u8, cap: usize) -> usize {
-    LAST_RUNTIME_ERROR.with(|cell| {
-        let s = cell.borrow();
-        let bytes = s.as_bytes();
-        if !out_buf.is_null() && cap > 0 {
-            let n = bytes.len().min(cap.saturating_sub(1));
-            // SAFETY: `out_buf` is valid for `cap` bytes; `n < cap`.
-            unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, n);
-                *out_buf.add(n) = 0;
-            }
-        }
-        bytes.len()
-    })
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        LAST_RUNTIME_ERROR
+            .try_with(|cell| {
+                let Ok(s) = cell.try_borrow() else {
+                    return 0;
+                };
+                let bytes = s.as_bytes();
+                if !out_buf.is_null() && cap > 0 {
+                    let n = bytes.len().min(cap.saturating_sub(1));
+                    // SAFETY: `out_buf` is valid for `cap` bytes; `n < cap`.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, n);
+                        *out_buf.add(n) = 0;
+                    }
+                }
+                bytes.len()
+            })
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
 }
 
 static RUNTIME_API: NveRuntimeApi = NveRuntimeApi {

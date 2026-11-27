@@ -11,15 +11,20 @@ pub mod specs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Writes freshly generated C11/C++20 Core ABI, Scene ABI, and Wire Codec headers
-/// (`nve_abi.generated.h`, `nve_scene_abi.generated.h`, `nve_wire_codecs.generated.hpp`)
-/// directly into `dir` so compiler tests never depend on generated files existing in the repo.
+/// Writes freshly generated C11/C++20 Core ABI, Scene ABI, Runtime ABI, and Wire Codec headers
+/// (`nve_abi.generated.h`, `nve_scene_abi.generated.h`, `nve_runtime_abi.generated.h`,
+/// `nve_wire_codecs.generated.hpp`) directly into `dir` so compiler tests never depend on
+/// generated files existing in the repo.
 pub fn write_generated_c_abi_headers(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create temp header dir");
     for file in nve_codegen::generate_all_abi_files() {
         if let Some(fname) = file
             .relative_path
             .strip_prefix("cxx/nve-fabric-bridge/include/")
+            .or_else(|| {
+                file.relative_path
+                    .strip_prefix("packages/core/host-cxx/include/nve/host/")
+            })
         {
             std::fs::write(dir.join(fname), &file.content)
                 .expect("write generated header");

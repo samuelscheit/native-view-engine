@@ -17,6 +17,7 @@ pub struct ScrollOffsets {
     offsets: HashMap<AbiNodeId, (f32, f32)>,
     last_requested_x: HashMap<AbiNodeId, f32>,
     last_requested_y: HashMap<AbiNodeId, f32>,
+    reconcile_scratch: Vec<ScrollReconcileEntry>,
 }
 
 impl ScrollOffsets {
@@ -98,6 +99,7 @@ pub fn compute_scroll_content_size(
     Some((max_w.max(0.0), max_h.max(0.0)))
 }
 
+#[derive(Debug, Clone, Copy)]
 struct ScrollReconcileEntry {
     raw: AbiNodeId,
     x: f32,
@@ -178,25 +180,32 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     }
 
     /// Prunes removed scroll nodes, honors new `Scroll::requested_scroll_{x,y}`, and re-clamps
-    /// existing offsets against newly laid-out content bounds.
+    /// existing offsets against newly laid-out content bounds (zero steady-state heap allocations).
     pub fn reconcile_scroll_offsets(&mut self, store: &NodeStore) {
-        self.scroll
-            .offsets
-            .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
-        self.scroll
-            .last_requested_x
-            .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
-        self.scroll
-            .last_requested_y
-            .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+        if !self.scroll.offsets.is_empty() {
+            self.scroll
+                .offsets
+                .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+        }
+        if !self.scroll.last_requested_x.is_empty() {
+            self.scroll
+                .last_requested_x
+                .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+        }
+        if !self.scroll.last_requested_y.is_empty() {
+            self.scroll
+                .last_requested_y
+                .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+        }
 
         if store.table_desc(Scroll::slot()).is_none() {
             return;
         }
 
-        let mut updates = Vec::new();
+        let mut updates = std::mem::take(&mut self.scroll.reconcile_scratch);
+        updates.clear();
         self.collect_scroll_reconcile(store, StoreNodeId::ROOT, &mut updates, 0);
-        for entry in updates {
+        for entry in updates.drain(..) {
             if let Some(vx) = entry.req_x {
                 self.scroll.last_requested_x.insert(entry.raw, vx);
             }
@@ -207,6 +216,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
                 self.scroll.set_raw(entry.raw, entry.x, entry.y);
             }
         }
+        self.scroll.reconcile_scratch = updates;
     }
 
     fn collect_scroll_reconcile(

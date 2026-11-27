@@ -2,12 +2,27 @@
 //! `scene_acquire` / `scene_release` calls without self-referential lifetimes.
 
 use std::sync::{Condvar, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Default)]
 struct LockState {
-    readers: u32,
+    /// Active `scene_acquire` / `acquire_scene` readers (released ONLY by `release_read`).
+    scene_readers: u32,
+    /// Active internal RAII readers (`metrics`, `layout_engine_name`), isolated from FFI
+    /// `scene_release` so a spurious release can never corrupt internal borrows.
+    internal_readers: u32,
+    /// Exclusive guard for `LaidOutScene::hit_scratch` `Cell` (safe alongside `scene_readers`
+    /// and `internal_readers`, never alongside another `hit_test` or a writer).
     hit_busy: bool,
     writer: bool,
+}
+
+impl LockState {
+    #[inline]
+    fn has_any_reader(&self) -> bool {
+        self.scene_readers > 0 || self.internal_readers > 0 || self.hit_busy
+    }
 }
 
 /// Non-reentrant-write / multi-reader lock guarding zero-copy `NveRuntimeSceneView` borrows across
@@ -27,7 +42,8 @@ impl SceneLock {
     pub const fn new() -> Self {
         Self {
             state: Mutex::new(LockState {
-                readers: 0,
+                scene_readers: 0,
+                internal_readers: 0,
                 hit_busy: false,
                 writer: false,
             }),
@@ -35,74 +51,106 @@ impl SceneLock {
         }
     }
 
-    /// Attempts to acquire a shared reader lock without blocking.
-    /// Returns `false` if a writer currently holds exclusive access or reader count saturated.
+    /// Attempts to acquire a shared scene reader lock without blocking (`scene_acquire`).
     pub fn try_acquire_read(&self) -> bool {
         let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if g.writer || g.readers == u32::MAX {
+        if g.writer || g.scene_readers == u32::MAX {
             return false;
         }
-        g.readers += 1;
+        g.scene_readers += 1;
         true
     }
 
-    /// Attempts to acquire a shared reader lock that also exclusively guards `hit_test`'s internal
-    /// `Cell` scratch buffer (safe to overlap with `scene_acquire`, never with another `hit_test`
-    /// or writer).
-    pub fn try_acquire_hit_read(&self) -> bool {
+    /// Releases one scene reader lock (`scene_release`); returns `false` if none was held.
+    pub fn release_read(&self) -> bool {
         let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if g.writer || g.hit_busy || g.readers == u32::MAX {
+        if g.scene_readers == 0 {
             return false;
         }
-        g.readers += 1;
+        g.scene_readers -= 1;
+        if !g.has_any_reader() {
+            self.cv.notify_all();
+        }
+        true
+    }
+
+    /// Attempts to acquire an internal RAII reader lock (`metrics`, `layout_engine_name`).
+    fn try_acquire_internal_read(&self) -> bool {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if g.writer || g.internal_readers == u32::MAX {
+            return false;
+        }
+        g.internal_readers += 1;
+        true
+    }
+
+    fn release_internal_read(&self) {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if g.internal_readers > 0 {
+            g.internal_readers -= 1;
+        }
+        if !g.has_any_reader() {
+            self.cv.notify_all();
+        }
+    }
+
+    /// Attempts to acquire a hit-test reader lock guarding `hit_test`'s `Cell` scratch buffer.
+    pub fn try_acquire_hit_read(&self) -> bool {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if g.writer || g.hit_busy {
+            return false;
+        }
         g.hit_busy = true;
         true
     }
 
-    /// Releases one hit-test reader lock.
+    /// Releases the hit-test reader lock.
     pub fn release_hit_read(&self) {
         let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
         g.hit_busy = false;
-        if g.readers > 0 {
-            g.readers -= 1;
-        }
-        if g.readers == 0 {
+        if !g.has_any_reader() {
             self.cv.notify_all();
         }
-    }
-
-    /// Releases one shared reader lock; returns `false` if no reader lock was held.
-    pub fn release_read(&self) -> bool {
-        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if g.readers == 0 {
-            return false;
-        }
-        g.readers -= 1;
-        if g.readers == 0 {
-            self.cv.notify_all();
-        }
-        true
     }
 
     /// Attempts to acquire exclusive write access without blocking (fails if any reader or writer
     /// holds the lock — prevents mutating borrowed scene slabs while a host holds `scene_acquire`).
     pub fn try_acquire_write(&self) -> bool {
         let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if g.writer || g.readers > 0 || g.hit_busy {
+        if g.writer || g.has_any_reader() {
             return false;
         }
         g.writer = true;
         true
     }
 
-    /// Blocks until all active readers/writers finish and acquires exclusive write access (used on
-    /// `destroy`).
-    pub fn acquire_write_blocking(&self) {
+    /// Waits up to `timeout` for active readers/writers to drain and acquires exclusive write
+    /// access (used by FFI `destroy` so a leaked `scene_acquire` cannot deadlock indefinitely).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn try_acquire_write_timeout(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
         let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        while g.writer || g.readers > 0 || g.hit_busy {
-            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        while g.writer || g.has_any_reader() {
+            let Some(rem) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next, res) = self
+                .cv
+                .wait_timeout(g, rem)
+                .unwrap_or_else(|e| e.into_inner());
+            g = next;
+            if res.timed_out() && (g.writer || g.has_any_reader()) {
+                return false;
+            }
         }
         g.writer = true;
+        true
+    }
+
+    /// Single-threaded WASM fallback for `destroy` write lock acquisition.
+    #[cfg(target_arch = "wasm32")]
+    pub fn try_acquire_write_timeout(&self, _timeout: core::time::Duration) -> bool {
+        self.try_acquire_write()
     }
 
     /// Releases exclusive write access.
@@ -117,7 +165,7 @@ impl SceneLock {
     }
 
     pub fn read_guard(&self) -> Option<ReadGuard<'_>> {
-        self.try_acquire_read().then_some(ReadGuard(self))
+        self.try_acquire_internal_read().then_some(ReadGuard(self))
     }
 
     pub fn hit_read_guard(&self) -> Option<HitReadGuard<'_>> {
@@ -135,7 +183,7 @@ impl Drop for WriteGuard<'_> {
 pub struct ReadGuard<'a>(&'a SceneLock);
 impl Drop for ReadGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.0.release_read();
+        self.0.release_internal_read();
     }
 }
 

@@ -247,43 +247,88 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     std::fs::create_dir_all(&tmp).unwrap();
     common::write_generated_c_abi_headers(&tmp);
 
-    let c11_harness = tmp.join("check_abi.c");
-    std::fs::write(
-        &c11_harness,
-        "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nint check_abi_sizes(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveTableView)); }\n",
-    )
-    .unwrap();
-    let status_c11 = std::process::Command::new("clang")
-        .args(["-std=c11", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
-        .arg("-I")
-        .arg(&tmp)
-        .arg(&c11_harness)
-        .output()
-        .expect("run clang on generated C11 ABI headers");
-    assert!(
-        status_c11.status.success(),
-        "Generated C11 ABI headers failed to compile:\n{}",
-        String::from_utf8_lossy(&status_c11.stderr)
-    );
+    // Compile `nve_runtime_abi.generated.h` standalone AND in all 6 include-order permutations
+    // with `nve_abi.generated.h` and `nve_scene_abi.generated.h` under strict C11 and C++20.
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "runtime_standalone",
+            "#include \"nve_runtime_abi.generated.h\"\n",
+            "return (int)(sizeof(NveRuntimeApi) + sizeof(NveRuntimeSceneView) + sizeof(NveTableView));",
+        ),
+        (
+            "core_scene_runtime",
+            "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\n#include \"nve_runtime_abi.generated.h\"\n",
+            "return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveRuntimeSceneView) + sizeof(NveTableView));",
+        ),
+        (
+            "core_runtime_scene",
+            "#include \"nve_abi.generated.h\"\n#include \"nve_runtime_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\n",
+            "return (int)(sizeof(NveRenderNode) + sizeof(NveRuntimeApi) + sizeof(NveTableView));",
+        ),
+        (
+            "scene_core_runtime",
+            "#include \"nve_scene_abi.generated.h\"\n#include \"nve_abi.generated.h\"\n#include \"nve_runtime_abi.generated.h\"\n",
+            "return (int)(sizeof(NveSceneView) + sizeof(NveRuntimeSceneView) + sizeof(NveTableView));",
+        ),
+        (
+            "scene_runtime_core",
+            "#include \"nve_scene_abi.generated.h\"\n#include \"nve_runtime_abi.generated.h\"\n#include \"nve_abi.generated.h\"\n",
+            "return (int)(sizeof(NveSceneView) + sizeof(NveRuntimeApi) + sizeof(NveBufferSlice));",
+        ),
+        (
+            "runtime_core_scene",
+            "#include \"nve_runtime_abi.generated.h\"\n#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\n",
+            "return (int)(sizeof(NveRuntimeSceneView) + sizeof(NveRenderNode) + sizeof(NveEventBatch));",
+        ),
+        (
+            "runtime_scene_core",
+            "#include \"nve_runtime_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\n#include \"nve_abi.generated.h\"\n",
+            "return (int)(sizeof(NveRuntimeApi) + sizeof(NveSceneView) + sizeof(NveStrSlice));",
+        ),
+    ];
 
-    let cpp_harness = tmp.join("check_abi.cpp");
-    std::fs::write(
-        &cpp_harness,
-        "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nstatic_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE);\nint check_abi_cpp() { return static_cast<int>(NVE_PRIMARY_SLOT_NONE); }\n",
-    )
-    .unwrap();
-    let status_cpp = std::process::Command::new("clang++")
-        .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
-        .arg("-I")
-        .arg(&tmp)
-        .arg(&cpp_harness)
-        .output()
-        .expect("run clang++ on generated C++20 ABI headers");
-    assert!(
-        status_cpp.status.success(),
-        "Generated C++20 ABI headers failed to compile:\n{}",
-        String::from_utf8_lossy(&status_cpp.stderr)
-    );
+    for (name, includes, body) in cases {
+        let c11_harness = tmp.join(format!("check_{name}.c"));
+        std::fs::write(
+            &c11_harness,
+            format!("{includes}int check_c11_{name}(void) {{ {body} }}\n"),
+        )
+        .unwrap();
+        let status_c11 = std::process::Command::new("clang")
+            .args(["-std=c11", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+            .arg("-I")
+            .arg(&tmp)
+            .arg(&c11_harness)
+            .output()
+            .expect("run clang on generated C11 ABI headers");
+        assert!(
+            status_c11.status.success(),
+            "Generated C11 ABI headers failed for `{name}`:\n{}",
+            String::from_utf8_lossy(&status_c11.stderr)
+        );
+
+        let cpp_harness = tmp.join(format!("check_{name}.cpp"));
+        std::fs::write(
+            &cpp_harness,
+            format!(
+                "{includes}static_assert(NVE_RUNTIME_SCHEMA_HASH == 0x{:016X}ULL);\nint check_cpp_{name}() {{ {body} }}\n",
+                nve_abi::NVE_RUNTIME_SCHEMA_HASH
+            ),
+        )
+        .unwrap();
+        let status_cpp = std::process::Command::new("clang++")
+            .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+            .arg("-I")
+            .arg(&tmp)
+            .arg(&cpp_harness)
+            .output()
+            .expect("run clang++ on generated C++20 ABI headers");
+        assert!(
+            status_cpp.status.success(),
+            "Generated C++20 ABI headers failed for `{name}`:\n{}",
+            String::from_utf8_lossy(&status_cpp.stderr)
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

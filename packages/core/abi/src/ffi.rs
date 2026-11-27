@@ -47,15 +47,30 @@ impl NveBufferSlice {
         }
     }
 
+    /// Validated slice view returning `None` when `ptr` is null with `len > 0` or
+    /// `len > isize::MAX`.
+    ///
+    /// # Safety
+    /// When `len > 0` and `ptr` is non-null, caller must ensure `ptr` is valid for `len`
+    /// readable bytes for the returned lifetime `'a`.
+    #[inline]
+    pub unsafe fn try_as_slice<'a>(self) -> Option<&'a [u8]> {
+        if self.len == 0 {
+            return Some(&[]);
+        }
+        if self.ptr.is_null() || self.len > isize::MAX as usize {
+            return None;
+        }
+        // SAFETY: Non-null and `len <= isize::MAX` checked above; caller guarantees `ptr` is valid for `len` bytes for `'a`.
+        Some(unsafe { std::slice::from_raw_parts(self.ptr, self.len) })
+    }
+
     /// # Safety
     /// Caller must ensure `ptr` is valid for `len` bytes for the returned lifetime.
+    #[inline]
     pub unsafe fn as_slice<'a>(self) -> &'a [u8] {
-        if self.ptr.is_null() || self.len == 0 {
-            &[]
-        } else {
-            // SAFETY: Non-null and non-zero `len` checked above; caller guarantees `ptr` is valid for `len` bytes for `'a`.
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-        }
+        // SAFETY: Forwards caller's validity precondition to `try_as_slice`.
+        unsafe { self.try_as_slice() }.unwrap_or(&[])
     }
 }
 

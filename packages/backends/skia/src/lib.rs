@@ -343,7 +343,6 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         emit_node_into(
             store,
             &self.layout_tree,
-            self.layout_tree.scene().scroll_offsets().as_map(),
             &self.focus,
             &self.motion,
             &self.table_registry,

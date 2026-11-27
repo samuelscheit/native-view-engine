@@ -1,9 +1,8 @@
 //! Z-ordered, clip-aware, scroll-shifted, sticky-clamped, animated `Transform2D` hit testing for
 //! [`crate::SkiaBackend`] delegating directly to [`nve_layout::LaidOutScene`].
 
-use nve_abi::{EventMask, NodeId};
-use nve_components::tables::{Interaction, Scroll};
-use nve_layout::StoreLayoutEngine;
+use nve_abi::NodeId;
+use nve_layout::{LaidOutScene, StoreLayoutEngine};
 use nve_store::NodeStore;
 
 use crate::SkiaBackend;
@@ -15,11 +14,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             x,
             y,
             |id, base| self.motion.resolve_animated_transform(id.raw(), base),
-            |id| {
-                store
-                    .try_row::<Interaction>(id)
-                    .is_some_and(|i| i.event_mask() != 0)
-            },
+            |id| LaidOutScene::<L>::is_event_target(store, id),
         )
     }
 
@@ -39,12 +34,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             x,
             y,
             |id, base| self.motion.resolve_animated_transform(id.raw(), base),
-            |id| {
-                store.has::<Scroll>(id)
-                    || store
-                        .try_row::<Interaction>(id)
-                        .is_some_and(|i| (u64::from(i.event_mask()) & EventMask::SCROLL) != 0)
-            },
+            |id| LaidOutScene::<L>::is_scroll_container(store, id),
         )
     }
 }

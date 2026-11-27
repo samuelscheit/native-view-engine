@@ -1,309 +1,24 @@
-//! Core [`SurfaceRuntime`] orchestrating `NodeStore`, `LaidOutScene`, `FrameTickHook`s, and
-//! zero-copy [`NveRuntimeSceneView`] publication.
+//! Core [`SurfaceRuntime`] facade: owner-thread affinity, panic/unwind invalidation,
+//! reader/writer [`SceneLock`] guards, and safe Rust / shared FFI operations.
 
 use std::cell::UnsafeCell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use nve_abi::table::NveTableView;
 use nve_abi::{
-    FrameId, NodeId as AbiNodeId, NveEventBatchRef, NveLayoutRect, NveNodeRow, NveRuntimeMetrics,
-    NveRuntimeSceneView, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
+    NodeId as AbiNodeId, NveEventBatchRef, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView,
+    SurfaceId,
 };
-use nve_engine::{HotPatchMsg, LayoutRect, Viewport};
-use nve_layout::{DynLayoutEngine, LaidOutScene};
-use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeId, NodeStore};
+use nve_components::tables::{Overflow, Scroll, Visual};
+use nve_engine::{HotPatchMsg, Viewport};
+use nve_layout::DynLayoutEngine;
+use nve_store::{ChangeSet, NodeId};
 
-use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
-use crate::builder::{RuntimeBuilder, RuntimeError, Timer};
+use crate::app::{FrameTickHook, RuntimeApp};
+use crate::builder::{RuntimeBuilder, RuntimeError};
 use crate::lock::SceneLock;
+use crate::state::RuntimeInner;
 use crate::wake::{WakeBridge, WakeCallback};
-
-// Compile-time proof that `nve_store::NodeRow` and `nve_abi::NveNodeRow` are bit-for-bit identical
-// in stride, alignment compatibility, and every field offset (little-endian `[u32; 4]` == `u128`).
-const _: () = {
-    use core::mem::{align_of, offset_of, size_of};
-    assert!(size_of::<nve_store::NodeRow>() == size_of::<NveNodeRow>());
-    assert!(align_of::<nve_store::NodeRow>() >= align_of::<NveNodeRow>());
-    assert!(offset_of!(nve_store::NodeRow, tables) == offset_of!(NveNodeRow, table_set));
-    assert!(offset_of!(nve_store::NodeRow, parent) == offset_of!(NveNodeRow, parent));
-    assert!(offset_of!(nve_store::NodeRow, children) == offset_of!(NveNodeRow, child_off));
-    assert!(offset_of!(nve_store::NodeRow, generation) == offset_of!(NveNodeRow, generation));
-    assert!(offset_of!(nve_store::NodeRow, primary_slot) == offset_of!(NveNodeRow, primary_slot));
-    assert!(offset_of!(nve_store::NodeRow, effects) == offset_of!(NveNodeRow, effects));
-    assert!(nve_store::LIVE == nve_abi::NVE_NODE_ROW_FLAG_LIVE);
-};
-
-/// Disjoint non-store surface state so `app` / `replica_store` and `state` can be borrowed
-/// simultaneously with zero `unsafe` pointer gymnastics or `Box` moves.
-pub(crate) struct SurfaceState {
-    pub(crate) surface_id: SurfaceId,
-    pub(crate) frame_id: FrameId,
-    pub(crate) wire_decoder: WireDecoder,
-    pub(crate) wire_changes: ChangeSet,
-    pub(crate) empty_changes: ChangeSet,
-    pub(crate) scene: LaidOutScene<DynLayoutEngine>,
-    pub(crate) tick_hooks: Vec<Box<dyn FrameTickHook>>,
-    pub(crate) rects: Vec<NveLayoutRect>,
-    pub(crate) published_tables: Vec<NveTableView>,
-    pub(crate) published_dirty_buf: Vec<u32>,
-    pub(crate) dirty_indices: Vec<u32>,
-    pub(crate) removed_ids: Vec<u32>,
-    pub(crate) published_view: NveRuntimeSceneView,
-    pub(crate) metrics: NveRuntimeMetrics,
-    pub(crate) needs_render: bool,
-    pub(crate) needs_publish: bool,
-}
-
-impl SurfaceState {
-    /// Synchronizes dense `self.rects`, dirty/removed scratch, and `NveTableView`s directly from
-    /// `store` and `self.scene` with zero heap allocations once capacities warm.
-    pub(crate) fn publish_scene(&mut self, store: &NodeStore, changes: &ChangeSet, laid_out: bool) {
-        let t_pub = Timer::start();
-        let cap = store.capacity();
-        if self.rects.len() < cap {
-            self.rects.resize(cap, NveLayoutRect::default());
-        } else if self.rects.len() > cap {
-            self.rects.truncate(cap);
-        }
-
-        if laid_out {
-            for idx in 1..cap {
-                let r = store
-                    .id_at(idx)
-                    .and_then(|id| self.scene.layout_of(id))
-                    .map_or(NveLayoutRect::default(), layout_rect_to_abi);
-                self.rects[idx] = r;
-            }
-        }
-
-        self.dirty_indices.clear();
-        for &id in &changes.created {
-            self.dirty_indices.push(id.index() as u32);
-        }
-        for &id in &changes.touched {
-            self.dirty_indices.push(id.index() as u32);
-        }
-        for &id in &changes.children {
-            self.dirty_indices.push(id.index() as u32);
-        }
-
-        self.removed_ids.clear();
-        for &id in &changes.removed {
-            self.removed_ids.push(id.raw());
-        }
-
-        store.publish_table_views(
-            changes,
-            &mut self.published_tables,
-            &mut self.published_dirty_buf,
-        );
-
-        let rows_slice = store.node_rows();
-        let text_slab = store.text_slab();
-        let children_slab = store.children_slab();
-
-        self.published_view = NveRuntimeSceneView {
-            schema_hash: NVE_RUNTIME_SCHEMA_HASH,
-            frame_id: self.frame_id,
-            node_capacity: rows_slice.len() as u32,
-            dirty_count: self.dirty_indices.len() as u32,
-            removed_count: self.removed_ids.len() as u32,
-            text_slab_len: text_slab.len() as u32,
-            children_slab_len: children_slab.len() as u32,
-            table_count: self.published_tables.len() as u32,
-            rows: if rows_slice.is_empty() {
-                core::ptr::null()
-            } else {
-                // `NodeRow` and `NveNodeRow` are locked bit-for-bit identical at compile time.
-                rows_slice.as_ptr().cast::<NveNodeRow>()
-            },
-            rects: if self.rects.is_empty() {
-                core::ptr::null()
-            } else {
-                self.rects.as_ptr()
-            },
-            text_slab: if text_slab.is_empty() {
-                core::ptr::null()
-            } else {
-                text_slab.as_ptr()
-            },
-            children_slab: if children_slab.is_empty() {
-                core::ptr::null()
-            } else {
-                // `NodeId` is `#[repr(transparent)]` over `u32`.
-                children_slab.as_ptr().cast::<u32>()
-            },
-            dirty_indices: if self.dirty_indices.is_empty() {
-                core::ptr::null()
-            } else {
-                self.dirty_indices.as_ptr()
-            },
-            removed_ids: if self.removed_ids.is_empty() {
-                core::ptr::null()
-            } else {
-                self.removed_ids.as_ptr()
-            },
-            tables: if self.published_tables.is_empty() {
-                core::ptr::null()
-            } else {
-                self.published_tables.as_ptr()
-            },
-        };
-
-        self.metrics.frame_id = self.frame_id;
-        self.metrics.publish_us = t_pub.elapsed_us();
-        self.metrics.dirty_nodes = self.dirty_indices.len() as u32;
-        if laid_out || !changes.created.is_empty() || !changes.removed.is_empty() {
-            self.metrics.live_nodes = store.stats().live_nodes as u32;
-        }
-        self.needs_publish = false;
-    }
-
-    fn apply_wire_and_publish(
-        &mut self,
-        replica: &mut NodeStore,
-        bytes: &[u8],
-    ) -> Result<(), RuntimeError> {
-        {
-            let mut tx = replica.tx();
-            self.wire_decoder
-                .apply(&mut tx, bytes)
-                .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-            tx.commit_into(&mut self.wire_changes);
-        }
-        let t_lay = Timer::start();
-        let laid_out = self.scene.commit(replica, &self.wire_changes);
-        self.scene.reconcile_scroll_offsets(replica);
-        self.metrics.layout_us = t_lay.elapsed_us();
-        let changes = std::mem::take(&mut self.wire_changes);
-        self.publish_scene(replica, &changes, laid_out);
-        self.wire_changes = changes;
-        Ok(())
-    }
-}
-
-pub(crate) struct RuntimeInner {
-    pub(crate) app: Option<Box<dyn RuntimeApp>>,
-    pub(crate) replica_store: NodeStore,
-    pub(crate) state: SurfaceState,
-}
-
-impl RuntimeInner {
-    #[inline]
-    pub(crate) fn active_store(&self) -> &NodeStore {
-        if let Some(ref app) = self.app
-            && let Some(store) = app.direct_store()
-        {
-            return store;
-        }
-        &self.replica_store
-    }
-
-    pub(crate) fn run_hooks(&mut self, dt_s: f32) -> bool {
-        if self.state.tick_hooks.is_empty() {
-            return false;
-        }
-        let mut any = false;
-        if let Some(ref mut app) = self.app
-            && let Some(store) = app.direct_store_mut()
-        {
-            for hook in &mut self.state.tick_hooks {
-                any |= hook.tick(store, dt_s);
-            }
-            return any;
-        }
-        for hook in &mut self.state.tick_hooks {
-            any |= hook.tick(&mut self.replica_store, dt_s);
-        }
-        any
-    }
-
-    pub(crate) fn tick(&mut self, dt_s: f32) -> Result<bool, RuntimeError> {
-        let mut changed = false;
-
-        if let Some(ref mut app) = self.app
-            && app.poll_async_work()
-        {
-            self.state.needs_render = true;
-        }
-
-        if self.run_hooks(dt_s) {
-            self.state.needs_render = true;
-            self.state.needs_publish = true;
-        }
-
-        if self.state.needs_render
-            && let Some(ref mut app) = self.app
-        {
-            self.state.needs_render = false;
-            let next_frame = self.state.frame_id.wrapping_add(1).max(1);
-            let t_rec = Timer::start();
-            match app.render_frame(next_frame) {
-                AppFrame::Clean => {
-                    self.state.metrics.reconcile_us = t_rec.elapsed_us();
-                }
-                AppFrame::Direct { store, changes } => {
-                    self.state.metrics.reconcile_us = t_rec.elapsed_us();
-                    self.state.frame_id = next_frame;
-                    let t_lay = Timer::start();
-                    let laid_out = self.state.scene.commit(store, changes);
-                    self.state.scene.reconcile_scroll_offsets(store);
-                    self.state.metrics.layout_us = t_lay.elapsed_us();
-                    self.state.publish_scene(store, changes, laid_out);
-                    changed = true;
-                }
-                AppFrame::Wire(bytes) => {
-                    self.state.metrics.reconcile_us = t_rec.elapsed_us();
-                    if !bytes.is_empty() {
-                        self.state.frame_id = next_frame;
-                        self.state
-                            .apply_wire_and_publish(&mut self.replica_store, bytes)?;
-                        changed = true;
-                    }
-                }
-            }
-        }
-
-        if self.state.needs_publish {
-            let store = match self.app.as_ref().and_then(|a| a.direct_store()) {
-                Some(s) => s,
-                None => &self.replica_store,
-            };
-            let t_lay = Timer::start();
-            let laid_out = self.state.scene.recompute_layout(store);
-            self.state.scene.reconcile_scroll_offsets(store);
-            self.state.metrics.layout_us = t_lay.elapsed_us();
-            let empty = std::mem::take(&mut self.state.empty_changes);
-            self.state.publish_scene(store, &empty, laid_out);
-            self.state.empty_changes = empty;
-            changed = true;
-        }
-
-        Ok(changed)
-    }
-
-    pub(crate) fn submit_nve2(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        self.state.frame_id = self.state.frame_id.wrapping_add(1).max(1);
-        self.state
-            .apply_wire_and_publish(&mut self.replica_store, bytes)?;
-        self.state.needs_publish = false;
-        Ok(())
-    }
-}
-
-#[inline]
-fn layout_rect_to_abi(r: LayoutRect) -> NveLayoutRect {
-    NveLayoutRect {
-        x: r.x,
-        y: r.y,
-        width: r.width,
-        height: r.height,
-    }
-}
 
 /// RAII read guard returned by [`SurfaceRuntime::acquire_scene`].
 ///
@@ -328,16 +43,28 @@ impl Drop for SceneReadGuard<'_> {
 }
 
 /// Framework-agnostic per-surface host runtime.
+///
+/// # Threading Contract
+/// - **Owner-thread only**: mutating and app-touching operations (`attach_app`, `detach_app`,
+///   `add_tick_hook`, `set_viewport`, `swap_layout_engine`, `submit_nve2`, `tick`,
+///   `dispatch_events`, `apply_hot_patch`, `scroll_by`, and FFI `destroy`) MUST execute on the
+///   thread that created the runtime. Cross-thread calls fail with [`RuntimeError::InvalidArg`].
+/// - **Cross-thread safe**: `acquire_scene` / `scene_acquire`, `scene_release`, `metrics`,
+///   `hit_test`, `hit_test_interaction`, `set_wake_callback`, `clear_wake_callback`, and
+///   [`WakeBridge::trigger`].
 pub struct SurfaceRuntime {
     pub(crate) lock: SceneLock,
     pub(crate) wake: Arc<WakeBridge>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) owner_thread: std::thread::ThreadId,
+    pub(crate) poisoned: AtomicBool,
     pub(crate) inner: UnsafeCell<RuntimeInner>,
 }
 
 impl Drop for SurfaceRuntime {
     fn drop(&mut self) {
-        // Clear any installed C/host wake callback before dropping so background wakers can never
-        // invoke a freed host context pointer after `destroy`.
+        // Synchronously drain and clear any installed host wake callback before dropping so
+        // background wakers can never invoke a freed host context pointer after `destroy`.
         self.wake.clear_sink();
     }
 }
@@ -350,22 +77,75 @@ impl SurfaceRuntime {
             .build()
     }
 
-    fn with_write<T>(
-        &mut self,
-        f: impl FnOnce(&mut RuntimeInner) -> Result<T, RuntimeError>,
-    ) -> Result<T, RuntimeError> {
-        let _guard = self.lock.write_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: `_guard` grants exclusive access and releases even on unwind.
-        f(unsafe { &mut *self.inner.get() })
+    #[inline]
+    pub(crate) fn check_owner_thread(&self) -> Result<(), RuntimeError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::thread::current().id() != self.owner_thread {
+            return Err(RuntimeError::InvalidArg(
+                "mutating runtime operation called from non-owner thread",
+            ));
+        }
+        Ok(())
     }
 
-    pub(crate) fn with_write_shared<T>(
+    #[inline]
+    pub(crate) fn check_not_poisoned(&self) -> Result<(), RuntimeError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(RuntimeError::Poisoned);
+        }
+        Ok(())
+    }
+
+    /// Acquires the exclusive write lock, verifies owner-thread affinity and poison state, and
+    /// structurally invalidates `published_view` on any panic, error, or store pointer drift.
+    pub(crate) fn with_write<T>(
         &self,
         f: impl FnOnce(&mut RuntimeInner) -> Result<T, RuntimeError>,
     ) -> Result<T, RuntimeError> {
+        self.check_not_poisoned()?;
+        self.check_owner_thread()?;
         let _guard = self.lock.write_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: `_guard` grants exclusive access across all threads/FFI callers even on unwind.
-        f(unsafe { &mut *self.inner.get() })
+        // SAFETY: `_guard` grants exclusive access across all threads/FFI callers and releases on unwind.
+        let inner = unsafe { &mut *self.inner.get() };
+
+        struct WriteTxnGuard<'a> {
+            inner: &'a mut RuntimeInner,
+            poisoned: &'a AtomicBool,
+            completed: bool,
+        }
+        impl Drop for WriteTxnGuard<'_> {
+            fn drop(&mut self) {
+                if !self.completed {
+                    self.inner.state.invalidate_published_view();
+                    self.poisoned.store(true, Ordering::Release);
+                }
+            }
+        }
+
+        let mut txn = WriteTxnGuard {
+            inner,
+            poisoned: &self.poisoned,
+            completed: false,
+        };
+        let res = f(txn.inner);
+        if txn.inner.state.published_view.node_capacity > 0 {
+            let store = txn.inner.active_store();
+            let rows = store.node_rows();
+            let text = store.text_slab();
+            let children = store.children_slab();
+            let v = &txn.inner.state.published_view;
+            let rows_ok = v.node_capacity as usize == rows.len()
+                && v.rows == rows.as_ptr().cast::<NveNodeRow>();
+            let text_ok = v.text_slab_len as usize == text.len()
+                && (text.is_empty() || v.text_slab == text.as_ptr());
+            let children_ok = v.children_slab_len as usize == children.len()
+                && (children.is_empty() || v.children_slab == children.as_ptr().cast::<u32>());
+            if res.is_err() || !rows_ok || !text_ok || !children_ok {
+                txn.inner.state.invalidate_published_view();
+            }
+        }
+        txn.completed = true;
+        res
     }
 
     #[inline]
@@ -381,13 +161,34 @@ impl SurfaceRuntime {
         self.wake.clear_sink();
     }
 
-    pub fn attach_app(&mut self, mut app: Box<dyn RuntimeApp>) -> Result<(), RuntimeError> {
-        let wake_ref = Arc::clone(&self.wake);
-        app.install_wake(Arc::new(move || wake_ref.trigger()));
+    pub fn attach_app(&mut self, app: Box<dyn RuntimeApp>) -> Result<(), RuntimeError> {
+        self.attach_app_shared(app)
+    }
+
+    pub(crate) fn attach_app_shared(
+        &self,
+        mut app: Box<dyn RuntimeApp>,
+    ) -> Result<(), RuntimeError> {
+        app.install_wake_bridge(Arc::clone(&self.wake));
         self.with_write(|inner| {
+            inner.reset_for_app_change();
             inner.app = Some(app);
             inner.state.needs_render = true;
             inner.state.needs_publish = true;
+            Ok(())
+        })
+    }
+
+    pub fn detach_app(&mut self) -> Result<(), RuntimeError> {
+        self.detach_app_shared()
+    }
+
+    pub(crate) fn detach_app_shared(&self) -> Result<(), RuntimeError> {
+        self.with_write(|inner| {
+            inner.reset_for_app_change();
+            inner.app = None;
+            inner.state.needs_render = false;
+            inner.state.needs_publish = false;
             Ok(())
         })
     }
@@ -400,6 +201,21 @@ impl SurfaceRuntime {
     }
 
     pub fn set_viewport(&mut self, viewport: Viewport) -> Result<bool, RuntimeError> {
+        self.set_viewport_shared(viewport)
+    }
+
+    pub(crate) fn set_viewport_shared(&self, viewport: Viewport) -> Result<bool, RuntimeError> {
+        if !viewport.width.is_finite()
+            || viewport.width <= 0.0
+            || !viewport.height.is_finite()
+            || viewport.height <= 0.0
+            || !viewport.scale_factor.is_finite()
+            || viewport.scale_factor <= 0.0
+        {
+            return Err(RuntimeError::InvalidArg(
+                "viewport dimensions and scale_factor must be finite and > 0",
+            ));
+        }
         self.with_write(|inner| {
             let changed = inner.state.scene.set_viewport(viewport);
             if changed {
@@ -411,35 +227,63 @@ impl SurfaceRuntime {
 
     pub fn swap_layout_engine(&mut self, engine: DynLayoutEngine) -> Result<(), RuntimeError> {
         self.with_write(|inner| {
-            inner.state.scene.replace_layout_engine(engine);
-            let store = match inner.app.as_ref().and_then(|a| a.direct_store()) {
-                Some(s) => s,
-                None => &inner.replica_store,
-            };
+            let (store, state) = inner.split_store_and_state();
+            state.invalidate_published_view();
+            state.scene.replace_layout_engine(engine);
+            state.frame_id = state.frame_id.wrapping_add(1).max(1);
             let mut full = ChangeSet::default();
             full.created.extend(store.live_nodes());
-            let laid_out = inner.state.scene.commit(store, &full);
-            inner.state.publish_scene(store, &full, laid_out);
+            let laid_out = state.scene.commit(store, &full);
+            state.scene.reconcile_scroll_offsets(store);
+            state.publish_scene(store, &full, laid_out);
             Ok(())
         })
     }
 
     pub fn layout_engine_name(&self) -> Result<&'static str, RuntimeError> {
+        self.check_not_poisoned()?;
         let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
         // SAFETY: Reader lock held for `_guard`'s lifetime.
         Ok(unsafe { &*self.inner.get() }.state.scene.layout_engine_name())
     }
 
     pub fn submit_nve2(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
+        self.submit_nve2_shared(bytes)
+    }
+
+    pub(crate) fn submit_nve2_shared(&self, bytes: &[u8]) -> Result<(), RuntimeError> {
         self.with_write(|inner| inner.submit_nve2(bytes))
     }
 
     pub fn tick(&mut self, dt_s: f32) -> Result<bool, RuntimeError> {
-        let _ = self.wake.take_pending();
-        self.with_write(|inner| inner.tick(dt_s))
+        self.tick_shared(dt_s)
+    }
+
+    pub(crate) fn tick_shared(&self, dt_s: f32) -> Result<bool, RuntimeError> {
+        let dt = if dt_s.is_finite() && dt_s >= 0.0 {
+            dt_s
+        } else {
+            0.0
+        };
+        let (changed, follow_up) = self.with_write(|inner| {
+            // Clear pending wake ONLY after acquiring the write lock so `SceneBusy` never drops wakes.
+            let _ = self.wake.take_pending();
+            inner.tick(dt)
+        })?;
+        if follow_up {
+            self.wake.trigger();
+        }
+        Ok(changed)
     }
 
     pub fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> Result<bool, RuntimeError> {
+        self.dispatch_events_shared(events)
+    }
+
+    pub(crate) fn dispatch_events_shared(
+        &self,
+        events: NveEventBatchRef<'_>,
+    ) -> Result<bool, RuntimeError> {
         self.with_write(|inner| {
             let changed = inner
                 .app
@@ -466,6 +310,7 @@ impl SurfaceRuntime {
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Result<Option<AbiNodeId>, RuntimeError> {
+        self.check_not_poisoned()?;
         let _guard = self.lock.hit_read_guard().ok_or(RuntimeError::SceneBusy)?;
         // SAFETY: `_guard` guarantees no writer and no other `hit_test` accesses
         // `LaidOutScene::hit_scratch` concurrently (safe alongside `scene_acquire` readers).
@@ -474,6 +319,7 @@ impl SurfaceRuntime {
     }
 
     pub fn hit_test_interaction(&self, x: f32, y: f32) -> Result<Option<AbiNodeId>, RuntimeError> {
+        self.check_not_poisoned()?;
         let _guard = self.lock.hit_read_guard().ok_or(RuntimeError::SceneBusy)?;
         // SAFETY: `_guard` serializes `hit_scratch` against concurrent callers and releases on unwind.
         let inner = unsafe { &*self.inner.get() };
@@ -489,21 +335,43 @@ impl SurfaceRuntime {
         dx: f32,
         dy: f32,
     ) -> Result<(f32, f32), RuntimeError> {
+        self.scroll_by_shared(node_id, dx, dy)
+    }
+
+    pub(crate) fn scroll_by_shared(
+        &self,
+        node_id: AbiNodeId,
+        dx: f32,
+        dy: f32,
+    ) -> Result<(f32, f32), RuntimeError> {
+        if !dx.is_finite() || !dy.is_finite() {
+            return Err(RuntimeError::InvalidArg("scroll deltas must be finite"));
+        }
         self.with_write(|inner| {
-            let store = match inner.app.as_ref().and_then(|a| a.direct_store()) {
-                Some(s) => s,
-                None => &inner.replica_store,
-            };
-            let (x, y, _changed) = inner
-                .state
-                .scene
-                .apply_scroll_delta(store, NodeId(node_id), dx, dy);
+            let (store, state) = inner.split_store_and_state();
+            let id = NodeId(node_id);
+            if !store.is_live(id) {
+                return Err(RuntimeError::NotFound("scroll target node is not live"));
+            }
+            let is_scrollable = store.has::<Scroll>(id)
+                || state.scene.scroll_offsets().contains(node_id)
+                || store.try_row::<Visual>(id).is_some_and(|v| {
+                    matches!(v.overflow_x(), Overflow::Scroll | Overflow::Auto)
+                        || matches!(v.overflow_y(), Overflow::Scroll | Overflow::Auto)
+                });
+            if !is_scrollable {
+                return Err(RuntimeError::NotFound(
+                    "target node is not a scroll container",
+                ));
+            }
+            let (x, y, _changed) = state.scene.apply_scroll_delta(store, id, dx, dy);
             Ok((x, y))
         })
     }
 
     /// Acquires a zero-copy [`NveRuntimeSceneView`] guarded by the surface's reader lock.
     pub fn acquire_scene(&self) -> Result<SceneReadGuard<'_>, RuntimeError> {
+        self.check_not_poisoned()?;
         if !self.lock.try_acquire_read() {
             return Err(RuntimeError::SceneBusy);
         }
@@ -516,6 +384,7 @@ impl SurfaceRuntime {
     }
 
     pub fn metrics(&self) -> Result<NveRuntimeMetrics, RuntimeError> {
+        self.check_not_poisoned()?;
         let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
         // SAFETY: Reader lock held for `_guard`'s lifetime.
         Ok(unsafe { &*self.inner.get() }.state.metrics)

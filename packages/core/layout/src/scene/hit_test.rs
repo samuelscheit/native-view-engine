@@ -137,13 +137,26 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         (!tf.is_identity()).then_some(tf)
     }
 
+    /// Returns `true` when `id` subscribes to any UI event via its `Interaction` table.
+    #[inline]
+    pub fn is_event_target(store: &NodeStore, id: StoreNodeId) -> bool {
+        store
+            .try_row::<Interaction>(id)
+            .is_some_and(|i| i.event_mask() != 0)
+    }
+
+    /// Returns `true` when `id` is a scroll container (`Scroll` table or `EventMask::SCROLL`).
+    #[inline]
+    pub fn is_scroll_container(store: &NodeStore, id: StoreNodeId) -> bool {
+        store.has::<Scroll>(id)
+            || store
+                .try_row::<Interaction>(id)
+                .is_some_and(|i| (u64::from(i.event_mask()) & EventMask::SCROLL) != 0)
+    }
+
     /// Hit-tests `(x, y)` in reverse paint order for the deepest node subscribing to events.
     pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<AbiNodeId> {
-        self.hit_test_where(store, x, y, |id| {
-            store
-                .try_row::<Interaction>(id)
-                .is_some_and(|i| i.event_mask() != 0)
-        })
+        self.hit_test_where(store, x, y, |id| Self::is_event_target(store, id))
     }
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest scrollable node (`Scroll` table
@@ -154,12 +167,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         x: f32,
         y: f32,
     ) -> Option<AbiNodeId> {
-        self.hit_test_where(store, x, y, |id| {
-            store.has::<Scroll>(id)
-                || store
-                    .try_row::<Interaction>(id)
-                    .is_some_and(|i| (u64::from(i.event_mask()) & EventMask::SCROLL) != 0)
-        })
+        self.hit_test_where(store, x, y, |id| Self::is_scroll_container(store, id))
     }
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest node `accepts` admits.
@@ -233,6 +241,13 @@ struct HitWalk<'a, L: StoreLayoutEngine, T, F> {
     resolve_transform: T,
     accepts: F,
     scratch: Vec<(i32, u32)>,
+}
+
+struct EnteredNode {
+    child_point: (f32, f32),
+    child_offset: (f32, f32),
+    inside: bool,
+    hidden: bool,
 }
 
 impl<
@@ -317,6 +332,67 @@ impl<
         found
     }
 
+    #[inline(never)]
+    fn enter_node(
+        &self,
+        id: StoreNodeId,
+        point: (f32, f32),
+        offset: (f32, f32),
+        inherited_hidden: bool,
+    ) -> Option<EnteredNode> {
+        let (store, scene) = (self.store, self.scene);
+        if !store.is_live(id) || is_display_none(store, id) {
+            return None;
+        }
+        let visual = store.try_row::<Visual>(id);
+        let hidden = visual
+            .as_ref()
+            .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
+        if !generates_box(store, id) {
+            return Some(EnteredNode {
+                child_point: point,
+                child_offset: offset,
+                inside: false,
+                hidden,
+            });
+        }
+        let rect = scene.layout.layout_of(id)?;
+        let (stx, sty) = scene.sticky_delta_of_box(store, id);
+        let r_x = rect.x + offset.0 + stx;
+        let r_y = rect.y + offset.1 + sty;
+        let base_tf = LaidOutScene::<L>::transform_of_box(store, id);
+        let effective_tf = (self.resolve_transform)(id, base_tf);
+        let (px, py) = match effective_tf {
+            Some(tf) if !tf.is_identity() => tf.inverse_map_surface_point(
+                point.0,
+                point.1,
+                r_x,
+                r_y,
+                rect.width,
+                rect.height,
+            )?,
+            _ => point,
+        };
+        let inside = rect.width > 0.0
+            && rect.height > 0.0
+            && px >= r_x
+            && px <= r_x + rect.width
+            && py >= r_y
+            && py <= r_y + rect.height;
+        let clips = store.has::<Scroll>(id) || visual.as_ref().is_some_and(visual_clips_overflow);
+        if !inside && id != StoreNodeId::ROOT && clips {
+            return None;
+        }
+        let (sx, sy) = scene.scroll.visual_shift(store, id);
+        let child_offset = (offset.0 + stx - sx, offset.1 + sty - sy);
+        Some(EnteredNode {
+            child_point: (px, py),
+            child_offset,
+            inside,
+            hidden,
+        })
+    }
+
     fn walk(
         &mut self,
         id: StoreNodeId,
@@ -325,57 +401,22 @@ impl<
         inherited_hidden: bool,
         depth: usize,
     ) -> Hit {
-        let (store, scene) = (self.store, self.scene);
-        if depth > MAX_TREE_DEPTH || !store.is_live(id) || is_display_none(store, id) {
+        if depth > MAX_TREE_DEPTH {
             return MISS;
         }
-        let visual = store.try_row::<Visual>(id);
-        let hidden = visual
-            .as_ref()
-            .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
-        let (child_point, child_offset, inside) = if !generates_box(store, id) {
-            (point, offset, false)
-        } else {
-            let Some(rect) = scene.layout.layout_of(id) else {
-                return MISS;
-            };
-            let (stx, sty) = scene.sticky_delta_of_box(store, id);
-            let r_x = rect.x + offset.0 + stx;
-            let r_y = rect.y + offset.1 + sty;
-            let base_tf = LaidOutScene::<L>::transform_of_box(store, id);
-            let effective_tf = (self.resolve_transform)(id, base_tf);
-            let (px, py) = match effective_tf {
-                Some(tf) if !tf.is_identity() => match tf.inverse_map_surface_point(
-                    point.0,
-                    point.1,
-                    r_x,
-                    r_y,
-                    rect.width,
-                    rect.height,
-                ) {
-                    Some(p) => p,
-                    None => return MISS,
-                },
-                _ => point,
-            };
-            let inside = rect.width > 0.0
-                && rect.height > 0.0
-                && px >= r_x
-                && px <= r_x + rect.width
-                && py >= r_y
-                && py <= r_y + rect.height;
-            let clips = visual.as_ref().is_some_and(visual_clips_overflow);
-            if !inside && id != StoreNodeId::ROOT && clips {
-                return MISS;
-            }
-            let (sx, sy) = scene.scroll.visual_shift(store, id);
-            let child_offset = (offset.0 + stx - sx, offset.1 + sty - sy);
-            ((px, py), child_offset, inside)
+        let Some(entered) = self.enter_node(id, point, offset, inherited_hidden) else {
+            return MISS;
         };
 
-        let mut covered = inside && !hidden;
-        let children = store.children(id);
-        match self.walk_children(children, child_point, child_offset, hidden, depth + 1) {
+        let mut covered = entered.inside && !entered.hidden;
+        let children = self.store.children(id);
+        match self.walk_children(
+            children,
+            entered.child_point,
+            entered.child_offset,
+            entered.hidden,
+            depth + 1,
+        ) {
             Some(hit) if hit.target.is_some() => return hit,
             Some(_) => covered = true,
             None => {}
@@ -384,5 +425,59 @@ impl<
             target: (covered && (self.accepts)(id)).then_some(id.raw()),
             covered,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nve_abi::EventMask;
+    use nve_components::tables::{Interaction, Layout, Scroll};
+    use nve_engine::Viewport;
+    use nve_store::{ChangeSet, Length, NodeId, NodeStore};
+
+    use crate::{LaidOutScene, TaffyStoreLayout};
+
+    #[test]
+    fn scroll_table_clips_hit_tests_without_explicit_visual_overflow() {
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        let (scroller, child) = {
+            let mut tx = store.tx();
+            let scroller = tx.create();
+            tx.edit::<Layout>(scroller)
+                .width(Length::points(120.0))
+                .height(Length::points(80.0));
+            // Attach `Scroll` with NO `Visual` row — matches Skia's `should_clip_children`.
+            tx.edit::<Scroll>(scroller);
+
+            let child = tx.create();
+            tx.edit::<Layout>(child)
+                .width(Length::points(120.0))
+                .height(Length::points(200.0));
+            tx.edit::<Interaction>(child)
+                .event_mask(EventMask::PRESS as u32);
+
+            tx.set_children(scroller, &[child]);
+            tx.set_children(NodeId::ROOT, &[scroller]);
+            tx.commit_into(&mut changes);
+            (scroller, child)
+        };
+
+        let mut scene = LaidOutScene::new(TaffyStoreLayout::new());
+        scene.set_viewport(Viewport {
+            width: 400.0,
+            height: 400.0,
+            scale_factor: 1.0,
+        });
+        assert!(scene.commit(&store, &changes));
+
+        // Inside the 120x80 scroll viewport hits the interactive child.
+        assert_eq!(scene.hit_test(&store, 40.0, 40.0), Some(child.raw()));
+        // Below the 80px scroll viewport (inside child's 200px overflow) MUST be clipped.
+        assert_eq!(scene.hit_test(&store, 40.0, 140.0), None);
+        assert_eq!(
+            scene.hit_test_scroll_container(&store, 40.0, 40.0),
+            Some(scroller.raw())
+        );
     }
 }

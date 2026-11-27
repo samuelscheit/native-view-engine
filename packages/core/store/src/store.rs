@@ -51,9 +51,33 @@ pub struct NodeRow {
     pub(crate) flags: u8,
 }
 
+// Complete compile-time proof that `NodeRow` and `nve_abi::NveNodeRow` are bit-for-bit identical
+// in size, alignment compatibility, little-endian `[u32; 4]` bitset encoding, and EVERY field
+// offset (including `pub(crate)` `flags` and `ChildSpan::{off, len}`) for zero-copy C FFI export.
 const _: () = {
+    use core::mem::{align_of, offset_of, size_of};
+    use nve_abi::NveNodeRow;
+    assert!(cfg!(target_endian = "little"));
     assert!(size_of::<NodeRow>() == 32);
     assert!(align_of::<NodeRow>() == 32);
+    assert!(size_of::<NodeRow>() == size_of::<NveNodeRow>());
+    assert!(align_of::<NodeRow>() >= align_of::<NveNodeRow>());
+    assert!(size_of::<TableSet>() == size_of::<[u32; 4]>());
+    assert!(offset_of!(NodeRow, tables) == offset_of!(NveNodeRow, table_set));
+    assert!(offset_of!(NodeRow, parent) == offset_of!(NveNodeRow, parent));
+    assert!(
+        offset_of!(NodeRow, children) + offset_of!(ChildSpan, off)
+            == offset_of!(NveNodeRow, child_off)
+    );
+    assert!(
+        offset_of!(NodeRow, children) + offset_of!(ChildSpan, len)
+            == offset_of!(NveNodeRow, child_len)
+    );
+    assert!(offset_of!(NodeRow, generation) == offset_of!(NveNodeRow, generation));
+    assert!(offset_of!(NodeRow, primary_slot) == offset_of!(NveNodeRow, primary_slot));
+    assert!(offset_of!(NodeRow, effects) == offset_of!(NveNodeRow, effects));
+    assert!(offset_of!(NodeRow, flags) == offset_of!(NveNodeRow, flags));
+    assert!(LIVE == nve_abi::NVE_NODE_ROW_FLAG_LIVE);
 };
 
 /// Ordered realization priority list: the first attached [`TableSlot`] in `slots` becomes the

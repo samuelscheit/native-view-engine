@@ -54,6 +54,20 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, "extern \"C\" {{");
     writeln!(out, "#endif");
     writeln!(out);
+    writeln!(out, "#ifndef NVE_API");
+    writeln!(out, "#if defined(NVE_BUILD_SHARED_LIB)");
+    writeln!(out, "#if defined(_WIN32)");
+    writeln!(out, "#define NVE_API __declspec(dllexport)");
+    writeln!(out, "#elif defined(__GNUC__) || defined(__clang__)");
+    writeln!(out, "#define NVE_API __attribute__((visibility(\"default\")))");
+    writeln!(out, "#else");
+    writeln!(out, "#define NVE_API");
+    writeln!(out, "#endif");
+    writeln!(out, "#else");
+    writeln!(out, "#define NVE_API");
+    writeln!(out, "#endif");
+    writeln!(out, "#endif");
+    writeln!(out);
     writeln!(out, "#ifndef NVE_STATIC_ASSERT");
     writeln!(out, "#if defined(__cplusplus)");
     writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)");
@@ -207,11 +221,90 @@ pub fn generate_c_runtime_abi_h() -> String {
     );
     writeln!(out, "}} NveRuntimeApi;");
     writeln!(out);
+    writeln!(out, "/*");
+    writeln!(out, " * Threading, wake-callback, and scene-view lifetime contracts:");
+    writeln!(out, " * - Owner thread affinity: `create` binds the surface to its creating thread.");
+    writeln!(out, " *   All mutating/app-touching calls (`destroy`, `set_viewport`, `attach_app_interface`,");
+    writeln!(out, " *   `submit_nve2`, `tick`, `dispatch_events`, `scroll_by`, `pair_connect`,");
+    writeln!(out, " *   `pair_disconnect`) MUST be invoked on that owner thread (wrong-thread calls");
+    writeln!(out, " *   return `NVE_RUNTIME_INVALID_ARG` with diagnostic text in `last_error`).");
+    writeln!(out, " * - Cross-thread safe calls: `scene_acquire`, `scene_release`, `get_metrics`,");
+    writeln!(out, " *   `hit_test`, `pair_is_connected`, `set_wake_callback`, and `last_error`.");
+    writeln!(out, " * - Borrowed `NveRuntimeSceneView`: all pointers remain valid and immutable ONLY");
+    writeln!(out, " *   between a successful `scene_acquire` and its matching `scene_release`.");
+    writeln!(out, " *   While any reader holds `scene_acquire`, writes fail with `NVE_RUNTIME_BUSY`.");
+    writeln!(out, " * - `NveRuntimeWakeFn(ctx)`: invoked from background/worker threads on coalesced");
+    writeln!(out, " *   wakeups. It MUST be lightweight and strictly non-re-entrant (post a message");
+    writeln!(out, " *   or signal a semaphore on the host loop; NEVER call `set_wake_callback`,");
+    writeln!(out, " *   `destroy`, or mutating `NveRuntimeApi` methods synchronously inside it).");
+    writeln!(out, " *   `set_wake_callback(h, NULL, NULL)` and `destroy(h)` drain all in-flight");
+    writeln!(out, " *   invocations before returning so the host may safely free `ctx` afterward.");
+    writeln!(out, " */");
+    writeln!(out, "NVE_API const NveRuntimeApi* nve_runtime_get_interface(uint32_t abi_version);");
+    writeln!(out);
+
     writeln!(
         out,
-        "const NveRuntimeApi* nve_runtime_get_interface(uint32_t abi_version);"
+        "NVE_STATIC_ASSERT(offsetof(NveBufferSlice, ptr) == 0u, \"NveBufferSlice.ptr @0\");"
     );
-    writeln!(out);
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(offsetof(NveBufferSlice, len) == sizeof(void*), \"NveBufferSlice.len offset\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveBufferSlice) == 16u, \"NveBufferSlice must be 16 bytes on 64-bit\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(offsetof(NveStrSlice, ptr) == 0u, \"NveStrSlice.ptr @0\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(offsetof(NveStrSlice, len) == sizeof(void*), \"NveStrSlice.len offset\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveStrSlice) == 16u, \"NveStrSlice must be 16 bytes on 64-bit\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(offsetof(NveEventBatch, ptr) == 0u, \"NveEventBatch.ptr @0\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(offsetof(NveEventBatch, len) == sizeof(void*), \"NveEventBatch.len offset\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(offsetof(NveEventBatch, _pad) == sizeof(void*) + 4u, \"NveEventBatch._pad offset\");"
+    );
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveEventBatch) == 16u, \"NveEventBatch must be 16 bytes on 64-bit\");"
+    );
+
+    let mut tv_ptr_slot = 0usize;
+    for f in &table_view.fields {
+        if let Some(off) = f.offset {
+            writeln!(
+                out,
+                "NVE_STATIC_ASSERT(offsetof(NveTableView, {}) == {off}u, \"NveTableView.{} offset mismatch\");",
+                f.name, f.name
+            );
+        } else {
+            writeln!(
+                out,
+                "NVE_STATIC_ASSERT(offsetof(NveTableView, {}) == 24u + {tv_ptr_slot}u * sizeof(void*), \"NveTableView.{} offset mismatch\");",
+                f.name, f.name
+            );
+            tv_ptr_slot += 1;
+        }
+    }
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveTableView) == 48u, \"NveTableView must be 48 bytes on 64-bit\");"
+    );
 
     emit_fixed_asserts(&mut out, layout_rect, 16);
     emit_fixed_asserts(&mut out, node_row, 32);
@@ -251,14 +344,33 @@ pub fn generate_c_runtime_abi_h() -> String {
         out,
         "NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, schema_hash) == 8u, \"NveRuntimeApi.schema_hash @8\");"
     );
-    writeln!(
-        out,
-        "NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, create) == 16u, \"NveRuntimeApi.create @16\");"
-    );
-    writeln!(
-        out,
-        "NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, last_error) == 16u + 16u * sizeof(void*), \"NveRuntimeApi.last_error offset\");"
-    );
+    for (slot_idx, fn_name) in [
+        "create",
+        "destroy",
+        "set_wake_callback",
+        "set_viewport",
+        "attach_app_interface",
+        "submit_nve2",
+        "tick",
+        "dispatch_events",
+        "hit_test",
+        "scroll_by",
+        "scene_acquire",
+        "scene_release",
+        "get_metrics",
+        "pair_connect",
+        "pair_disconnect",
+        "pair_is_connected",
+        "last_error",
+    ]
+    .iter()
+    .enumerate()
+    {
+        writeln!(
+            out,
+            "NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, {fn_name}) == 16u + {slot_idx}u * sizeof(void*), \"NveRuntimeApi.{fn_name} offset\");"
+        );
+    }
     writeln!(
         out,
         "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeApi) == 152u, \"NveRuntimeApi must be 152 bytes on 64-bit\");"

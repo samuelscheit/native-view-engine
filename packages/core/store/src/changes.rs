@@ -123,6 +123,65 @@ impl ChangeSet {
             && self.resources_released.is_empty()
     }
 
+    /// Overwrites `self` with a copy of `other` while reusing existing `Vec` capacities.
+    pub fn copy_from(&mut self, other: &ChangeSet) {
+        self.clear();
+        self.frame = other.frame;
+        self.merge_from(other);
+    }
+
+    /// Merges `other` into `self` while preserving `Vec` capacities and keeping `relocated_rows`
+    /// ordered by `TableSlot` for linear `publish_table_views` traversal.
+    pub fn merge_from(&mut self, other: &ChangeSet) {
+        if other.frame > self.frame {
+            self.frame = other.frame;
+        }
+        self.created.extend_from_slice(&other.created);
+        self.removed.extend_from_slice(&other.removed);
+        self.children.extend_from_slice(&other.children);
+        self.touched.extend_from_slice(&other.touched);
+        self.effects.extend_from_slice(&other.effects);
+        for src in other.tables() {
+            if let Some(dst) = self.tables[..self.table_len.as_usize()]
+                .iter_mut()
+                .find(|t| t.slot == src.slot)
+            {
+                dst.nodes.extend_from_slice(&src.nodes);
+                dst.masks.extend_from_slice(&src.masks);
+                dst.detached.extend_from_slice(&src.detached);
+            } else {
+                let dst = self.next_table(src.slot);
+                dst.nodes.extend_from_slice(&src.nodes);
+                dst.masks.extend_from_slice(&src.masks);
+                dst.detached.extend_from_slice(&src.detached);
+            }
+        }
+        if !other.relocated_rows.is_empty() {
+            let had = !self.relocated_rows.is_empty();
+            self.relocated_rows.extend_from_slice(&other.relocated_rows);
+            if had {
+                self.relocated_rows.sort_unstable();
+            }
+        }
+        self.resources_defined
+            .extend_from_slice(&other.resources_defined);
+        self.resources_released
+            .extend_from_slice(&other.resources_released);
+        if !other.commands.is_empty() {
+            let base = self.command_bytes.len() as u32;
+            self.command_bytes.extend_from_slice(&other.command_bytes);
+            for cmd in &other.commands {
+                self.commands.push(Command {
+                    node: cmd.node,
+                    table: cmd.table,
+                    op: cmd.op,
+                    off: base.saturating_add(cmd.off),
+                    len: cmd.len,
+                });
+            }
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.created.clear();
         self.removed.clear();

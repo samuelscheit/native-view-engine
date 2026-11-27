@@ -300,6 +300,7 @@ fn is_per_node_downcast_scope(rel: &str) -> bool {
         || rel.starts_with("packages/core/components/")
         || rel.starts_with("packages/core/tables/")
         || rel.starts_with("packages/core/layout/")
+        || rel.starts_with("packages/core/runtime/")
         || matches!(
             rel,
             "packages/core/store/src/store.rs"
