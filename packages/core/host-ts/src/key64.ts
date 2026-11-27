@@ -14,8 +14,12 @@ export class Key64 {
   readonly lo: number;
   readonly hi: number;
 
-  /** Halves are normalized with `>>> 0`, so any int32 / uint32 bit pattern is accepted. */
+  /**
+   * Halves are normalized with `>>> 0` (wrapping), so any int32 / uint32 bit pattern is accepted;
+   * NaN, ±Infinity, fractions, and unsafe integers throw `RangeError` instead of becoming 0.
+   */
   constructor(lo: number, hi: number) {
+    if (!Number.isSafeInteger(lo) || !Number.isSafeInteger(hi)) throw new RangeError(`Key64 halves ${lo}, ${hi}`);
     this.lo = lo >>> 0;
     this.hi = hi >>> 0;
   }
@@ -86,12 +90,14 @@ export class Key64 {
 
 /** Little-endian `u32` at `b[i .. i + 4)`. */
 export function read32LE(b: Uint8Array, i: number): number {
-  if (i < 0 || i + 4 > b.length) throw new RangeError(`read32 at ${i} outside ${b.length} bytes`);
+  if (!(Number.isInteger(i) && i >= 0 && i <= b.length - 4)) throw new RangeError(`read32 at ${i} outside ${b.length} bytes`);
   return (b[i]! | (b[i + 1]! << 8) | (b[i + 2]! << 16) | (b[i + 3]! << 24)) >>> 0;
 }
 
 export function write32LE(out: Uint8Array, offset: number, v: number): void {
-  if (offset < 0 || offset + 4 > out.length) throw new RangeError(`write32 at ${offset} outside ${out.length} bytes`);
+  if (!(Number.isInteger(offset) && offset >= 0 && offset <= out.length - 4)) {
+    throw new RangeError(`write32 at ${offset} outside ${out.length} bytes`);
+  }
   out[offset] = v & 0xff;
   out[offset + 1] = (v >>> 8) & 0xff;
   out[offset + 2] = (v >>> 16) & 0xff;

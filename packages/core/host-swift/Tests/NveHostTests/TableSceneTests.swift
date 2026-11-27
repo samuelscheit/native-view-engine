@@ -82,6 +82,18 @@ final class TableSceneTests: XCTestCase {
         huge.words = 32
         huge.dirty_count = .max
         XCTAssertNil(TableReader(view: huge))  // null pointers with huge counts
+        // A non-null dirty pointer with a count past the address space is refused, not spanned.
+        let rows: [UInt32] = [0]
+        rows.withUnsafeBufferPointer { rp in
+            var dirty = NveTestTableView()
+            dirty.words = 1
+            dirty.row_count = 1
+            dirty.rows = rp.baseAddress
+            dirty.dirty_rows = rp.baseAddress
+            dirty.dirty_count = .max
+            let fits = UInt64(UInt32.max) <= UInt64(Int.max / MemoryLayout<UInt32>.stride)
+            XCTAssertEqual(TableReader(view: dirty) != nil, fits)
+        }
         let base = try XCTUnwrap(nve_test_scene()).pointee
         var bad = try XCTUnwrap(base.tables).pointee
         bad.words = 0x8000_0001
@@ -101,6 +113,11 @@ final class TableSceneTests: XCTestCase {
         XCTAssertNil(s.children(offset: 2, count: .max))
         // A field past this table's 6-word row reads as nil (spec itself is valid for 32 words).
         let t = try XCTUnwrap(s.table(0))
+        XCTAssertNil(t.row(of: .max))  // dense: compared as UInt64 (would trap via Int on arm64_32)
+        XCTAssertNil(t.row(of: 0x8000_0000))
+        XCTAssertNil(t.str(0, try FieldSpec(word: 3, kind: .u32)))  // not a string spec
+        XCTAssertNil(t.str(0, try FieldSpec(word: 30, kind: .str)))  // past this 6-word row
+        XCTAssertNotNil(t.str(0, label))
         XCTAssertNil(t.bits(0, try FieldSpec(word: 6, kind: .u32)))
         XCTAssertNil(t.i32(0, try FieldSpec(word: 31, kind: .i32)))
     }

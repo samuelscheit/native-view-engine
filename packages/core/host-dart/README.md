@@ -19,6 +19,8 @@ Strings follow Rust `&str` semantics:
 - Writers and `constId` encode in place without building a temporary list.
 
 Counts are checked by division, never by multiplying, so a hostile value cannot wrap the 64-bit VM `int`.
+Container marks are `BinMark` extension types holding the generation and offset, so a stale or
+already-closed mark is rejected, and a rejected write leaves no bytes.
 
 | File | Contents |
 |---|---|

@@ -72,14 +72,18 @@ final class BinReader {
   }
 
   /// Next [count] bytes decoded as strictly validated UTF-8 (a leading U+FEFF is kept).
-  String utf8String(int count) => decodeUtf8PreserveBom(_utf8Run(count));
+  String utf8String(int count) {
+    final at = _checkUtf8(count);
+    return decodeUtf8PreserveBom(Uint8List.sublistView(bytes, at, at + count));
+  }
 
-  Uint8List _utf8Run(int count) {
+  /// Consumes and validates [count] UTF-8 bytes in place (no view, no string); returns their offset.
+  int _checkUtf8(int count) {
     final at = _take(count);
     if (!isValidUtf8(bytes, at, at + count)) {
       throw BinCodecException(BinErrorKind.invalidUtf8, 'at $at');
     }
-    return Uint8List.sublistView(bytes, at, at + count);
+    return at;
   }
 
   // ---- tagged NveBinValue ------------------------------------------------------------------
@@ -241,7 +245,7 @@ final class BinReader {
         readBool();
       case BinTag.str:
         _expect(BinTag.str);
-        _utf8Run(_length()); // validated in place, never decoded
+        _checkUtf8(_length()); // validated in place, never viewed or decoded
       case BinTag.array:
       case BinTag.map:
         if (depth >= binValueMaxDepth) {
@@ -255,7 +259,7 @@ final class BinReader {
         try {
           for (var i = 0; i < count; i++) {
             if (isMap) {
-              _utf8Run(_length());
+              _checkUtf8(_length());
             }
             _checkValue(depth + 1);
           }
@@ -294,7 +298,14 @@ final class BinWriter {
   /// Copy of the written bytes.
   Uint8List toBytes() => Uint8List.fromList(bytes);
 
-  void clear() => _len = 0;
+  /// Empties the buffer (keeping capacity) and invalidates every outstanding [BinMark].
+  void clear() {
+    _len = 0;
+    _generation = (_generation + 1) % BinMark._generations;
+  }
+
+  /// Bumped by [clear]; marks carry it so stale ones are rejected even after a refill.
+  int _generation = 1;
 
   // ---- raw little-endian primitives ---------------------------------------------------------
 
@@ -367,11 +378,14 @@ final class BinWriter {
   /// Throws [BinCodecException] (`invalidUtf8`) on a lone surrogate, writing nothing.
   void writeStr(String v) {
     final n = utf8EncodedLength(v);
+    _admit(5, n); // tag + length + bytes fit, or nothing is written
     u8(BinTag.str.index);
     _writeEncoded(v, n);
   }
 
+  /// Throws [BinCodecException] (`tooLarge`, writing nothing) past the `u32` size limit.
   void writeBytes(List<int> v) {
+    _admit(5, v.length);
     u8(BinTag.bytes.index);
     u32(v.length);
     raw(v);
@@ -382,6 +396,7 @@ final class BinWriter {
   void writeMapKey(String key) => _writeEncoded(key, utf8EncodedLength(key));
 
   void _writeEncoded(String s, int n) {
+    _admit(4, n);
     _ensure(4 + n);
     u32(n);
     for (var i = 0; i < s.length; i += utf16UnitsAt(s, i)) {
@@ -390,25 +405,42 @@ final class BinWriter {
   }
 
   /// Opens an array of [count] values; returns the mark for [end].
-  int beginArray(int count) => _begin(BinTag.array, count);
+  BinMark beginArray(int count) => _begin(BinTag.array, count);
 
   /// Opens a map of [count] entries ([writeMapKey] + value each); returns the mark for [end].
-  int beginMap(int count) => _begin(BinTag.map, count);
+  BinMark beginMap(int count) => _begin(BinTag.map, count);
 
-  /// Patches the payload length of the container opened at [mark] (stale marks are rejected).
-  void end(int mark) {
-    if (mark < 0 || mark > _len - 8) {
-      throw BinCodecException(BinErrorKind.invalidMark, 'mark $mark of $_len');
+  /// Patches the payload length of the container opened at [mark]. A mark from before [clear]
+  /// (even once the buffer refilled), out of range, or not right after an array / map tag throws
+  /// `invalidMark` and writes nothing.
+  void end(BinMark mark) {
+    final pos = mark._position;
+    final valid = mark._generation == _generation &&
+        pos >= 1 &&
+        pos <= _len - 8 &&
+        (_buf[pos - 1] == BinTag.array.index || _buf[pos - 1] == BinTag.map.index) &&
+        // An open container's length field still holds 0; a closed one holds its payload (>= 4).
+        _data.getUint32(pos, Endian.little) == 0;
+    if (!valid) {
+      throw BinCodecException(BinErrorKind.invalidMark, 'mark at $pos (generation ${mark._generation}) of $_len');
     }
-    _data.setUint32(mark, _len - mark - 4, Endian.little);
+    _data.setUint32(pos, _len - pos - 4, Endian.little);
   }
 
-  int _begin(BinTag tag, int count) {
+  BinMark _begin(BinTag tag, int count) {
     u8(tag.index);
-    final mark = _len;
+    final mark = BinMark._(_generation * 0x100000000 + _len);
     u32(0);
     u32(count);
     return mark;
+  }
+
+  /// Throws `tooLarge` before anything is written when `header + payload` more bytes would pass
+  /// the `u32` buffer limit (compared by subtraction: no overflow).
+  void _admit(int header, int payload) {
+    if (payload < 0 || payload > 0xFFFFFFFF - header - _len) {
+      throw BinCodecException(BinErrorKind.tooLarge, 'size $_len + $header + $payload');
+    }
   }
 
   void _ensure(int extra) {
@@ -425,4 +457,14 @@ final class BinWriter {
     _buf = Uint8List(next)..setRange(0, _len, _buf);
     _data = ByteData.sublistView(_buf);
   }
+}
+
+/// An open container of a [BinWriter]: payload-length offset plus the writer generation, packed as
+/// `generation * 2^32 + offset` (below 2^52, so exact on the web). Zero-cost and unforgeable.
+extension type const BinMark._(int _bits) {
+  /// Generations wrap below 2^20 so the packed value stays a safe integer.
+  static const int _generations = 0x100000;
+
+  int get _position => _bits % 0x100000000;
+  int get _generation => _bits ~/ 0x100000000;
 }

@@ -149,7 +149,7 @@ public struct TableReader {
         guard v.words >= 1, v.words <= UInt32(maxTableWords),
               let rowCount = Int(exactly: v.row_count), let dirtyCount = Int(exactly: v.dirty_count),
               let rowWords = Int(exactly: UInt64(v.row_count) * UInt64(v.words)),
-              rowWords <= Int.max / MemoryLayout<UInt32>.stride,
+              rowWords <= Int.max / MemoryLayout<UInt32>.stride, dirtyCount <= Int.max / MemoryLayout<UInt32>.stride,
               rowWords == 0 || v.rows != nil, dirtyCount == 0 || v.dirty_rows != nil
         else { return nil }
         self.init(
@@ -187,8 +187,9 @@ public struct TableReader {
     public func color(_ r: Int, _ f: FieldSpec) -> Rgba? { bits(r, f).map(Rgba.init(packed:)) }
     public func length(_ r: Int, _ f: FieldSpec) -> LengthValue? { bits(r, f).map(LengthValue.init(word:)) }
 
+    /// `{offset, len}` of a `Str` field; `nil` for a non-`Str` spec, past the row, or out of range.
     public func str(_ r: Int, _ f: FieldSpec) -> StrSpan? {
-        guard let offset = word(r, Int(f.word)), let len = word(r, Int(f.word) + 1) else { return nil }
+        guard f.kind == .str, f.fits(words: words), let offset = word(r, Int(f.word)), let len = word(r, Int(f.word) + 1) else { return nil }
         return StrSpan(offset: offset, len: len)
     }
 
@@ -200,7 +201,8 @@ public struct TableReader {
 
     /// Row of `ownerId` (raw `NodeId` for sparse tables, node index for dense ones); O(rows) sparse.
     public func row(of ownerId: UInt32) -> Int? {
-        if owners.isEmpty { return Int(ownerId) < rowCount ? Int(ownerId) : nil }
+        // Compared as `UInt64`: `Int(ownerId)` would trap on 32-bit hosts for ids >= 2^31.
+        if owners.isEmpty { return UInt64(ownerId) < UInt64(rowCount) ? Int(ownerId) : nil }
         return owners.firstIndex(of: ownerId)
     }
 }

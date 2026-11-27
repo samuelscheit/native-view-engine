@@ -669,12 +669,15 @@ host_runtime_suites=(cxx ts)
 for host_rt in "${host_runtime_suites[@]}"; do
   if host_runtime_has_tools "$host_rt"; then
     run_suite "Host runtime $host_rt" "suite_host_$host_rt" "packages/core/host-$host_rt"
-  elif [ "${NVE_HOST_RUNTIMES_OPTIONAL:-0}" = "1" ]; then
-    skip_suite "Host runtime $host_rt" "$(host_runtime_tool "$host_rt") not found (NVE_HOST_RUNTIMES_OPTIONAL=1)"
   else
-    banner "Host runtime $host_rt [MISSING TOOLCHAIN]"
-    printf 'error: %s not found; install it or set NVE_HOST_RUNTIMES_OPTIONAL=1\n' "$(host_runtime_tool "$host_rt")" >&2
-    record_result "Host runtime $host_rt" "FAIL" "-" "$(host_runtime_tool "$host_rt") not found"
+    host_rt_missing="$(host_runtime_missing_tool "$host_rt")"
+    if [ "${NVE_HOST_RUNTIMES_OPTIONAL:-0}" = "1" ]; then
+      skip_suite "Host runtime $host_rt" "$host_rt_missing not found (NVE_HOST_RUNTIMES_OPTIONAL=1)"
+    else
+      banner "Host runtime $host_rt [MISSING TOOLCHAIN]"
+      printf 'error: %s not found; install it or set NVE_HOST_RUNTIMES_OPTIONAL=1\n' "$host_rt_missing" >&2
+      record_result "Host runtime $host_rt" "FAIL" "-" "$host_rt_missing not found"
+    fi
   fi
 done
 

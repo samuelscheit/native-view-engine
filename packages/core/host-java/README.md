@@ -13,7 +13,11 @@ every Java / Kotlin host binding.
 
 - Strings are encoded straight into the writer's buffer, and so is the input to `Xxh64.constId` /
   `Hasher.updateUtf8`. A lone surrogate is rejected with `INVALID_UTF8`; it is never replaced with `?`.
-- `FieldSpec` rejects invalid specs at construction.
+- `FieldSpec` rejects invalid specs at construction. Its checks subtract instead of add, so `int`
+  overflow cannot slip a spec through.
+- Container marks are `long` values carrying the writer's generation, so `end` rejects a stale or
+  already-closed mark.
+- A rejected or oversized write leaves no bytes.
 - Validation does not allocate. The suite proves this with the thread allocation counter.
 
 `attach` sets the passed buffers to little-endian and reads relative to their current position.

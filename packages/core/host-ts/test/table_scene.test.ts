@@ -216,6 +216,9 @@ test('hardening: specs, NaN / fractional / Infinity arguments, hostile tables, B
   const t = new TableReader({ key: VISUAL, slot: 0, words: 6, rowCount: 2, rows: words(ROWS) });
   assert.throws(() => t.u32(0, field(6, FieldKind.U32)), RangeError, 'field past row');
   assert.throws(() => t.i32(0, field(31, FieldKind.I32)), RangeError, 'i32 field past row');
+  assert.throws(() => t.str(0, field(3, FieldKind.U32)), RangeError, 'str of a non-string spec');
+  assert.throws(() => t.str(0, field(5, FieldKind.Str)), RangeError, 'str past the row');
+  assert.deepEqual(t.str(0, LABEL), { offset: 0, len: 3 });
   for (const bad of [NaN, 0.5, Infinity, -1]) {
     assert.throws(() => t.word(bad, 0), RangeError, `row ${bad}`);
     assert.throws(() => t.word(0, bad), RangeError, `word ${bad}`);
@@ -254,6 +257,11 @@ test('hardening: specs, NaN / fractional / Infinity arguments, hostile tables, B
         }),
       `nodeCount ${bad}`,
     );
+  }
+  // Layout strides below 1 are rejected before any arithmetic.
+  for (const [node, table] of [[0, 36], [-1, 36], [NaN, 36], [16, 0], [16, -36], [16, 0.5]] as const) {
+    const bad: SceneLayout = { ...WASM32, nodeStride: node, tableView: { ...WASM32.tableView, stride: table } };
+    expectScene('missingSlab', () => SceneReader.fromLinearMemory(memory, viewPtr, bad, SCHEMA), `strides ${node}/${table}`);
   }
   // Hostile wasm32 table words are rejected before any arithmetic.
   const [hostile, hostileMem, hostileView] = linearMemory(0x8000_0000);

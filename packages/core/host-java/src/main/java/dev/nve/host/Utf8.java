@@ -80,8 +80,8 @@ public final class Utf8 {
             } else {
                 len += 3;
             }
+            if (len > Integer.MAX_VALUE) throw new BinCodecException(BinCodecException.Kind.TOO_LARGE, "over " + len + " bytes");
         }
-        if (len > Integer.MAX_VALUE) throw new BinCodecException(BinCodecException.Kind.TOO_LARGE, len + " bytes");
         return (int) len;
     }
 

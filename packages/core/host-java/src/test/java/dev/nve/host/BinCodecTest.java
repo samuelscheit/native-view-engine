@@ -44,7 +44,7 @@ final class BinCodecTest {
         // BOM is text on both paths.
         for (String s : new String[] {"\ufeff", "\ufeffx", "\ufeff\ufeffx"}) {
             final BinWriter w = new BinWriter();
-            final int m = w.beginMap(1);
+            final long m = w.beginMap(1);
             w.writeMapKey(s);
             w.writeStr(s);
             w.end(m);
@@ -61,13 +61,58 @@ final class BinCodecTest {
         }
         // Stale / foreign marks never patch out of bounds.
         final BinWriter w = new BinWriter();
-        final int mark = w.beginArray(1);
+        final long mark = w.beginArray(1);
         w.writeNull();
         w.clear();
         c.binError(BinCodecException.Kind.INVALID_MARK, () -> w.end(mark), "stale mark after clear");
         w.writeNull();
         c.binError(BinCodecException.Kind.INVALID_MARK, () -> w.end(0), "mark without a container");
         c.binError(BinCodecException.Kind.INVALID_MARK, () -> w.end(-1), "negative mark");
+        // Stale after clear() + refill: the old offset is in range again; nothing may be patched.
+        final BinWriter refill = new BinWriter();
+        final long stale = refill.beginArray(1);
+        refill.clear();
+        refill.writeBytes(new byte[16]);
+        final byte[] before = refill.toByteArray();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> refill.end(stale), "stale mark after refill");
+        c.that(Arrays.equals(refill.toByteArray(), before), "stale end writes nothing");
+        // end(0) / end(1) on a 9-byte buffer would overwrite the I64 tag and payload.
+        final BinWriter nine = new BinWriter();
+        nine.writeI64(0x0102030405060708L);
+        final byte[] nineBefore = nine.toByteArray();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> nine.end(0L), "end(0) on foreign bytes");
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> nine.end((1L << 32) | 1), "forged mark on foreign bytes");
+        c.that(Arrays.equals(nine.toByteArray(), nineBefore), "foreign bytes untouched");
+        final BinWriter staleNine = new BinWriter();
+        final long staleMark = staleNine.beginArray(1);
+        staleNine.clear();
+        staleNine.writeI64(-1);
+        final byte[] staleBefore = staleNine.toByteArray();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> staleNine.end(staleMark), "stale mark after a 9-byte refill");
+        c.that(Arrays.equals(staleNine.toByteArray(), staleBefore), "9-byte refill untouched");
+        // Double end: the second would re-patch a closed container with the grown length.
+        final BinWriter twice = new BinWriter();
+        final long open = twice.beginArray(1);
+        twice.writeNull();
+        twice.end(open);
+        twice.writeNull();
+        final byte[] closed = twice.toByteArray();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> twice.end(open), "double end");
+        c.that(Arrays.equals(twice.toByteArray(), closed), "closed container untouched");
+        // TOO_LARGE is decided before any byte: a zero-RAM 2 GiB string (715,827,880 x U+20AC).
+        final BinWriter huge = new BinWriter();
+        huge.writeNull();
+        c.binError(BinCodecException.Kind.TOO_LARGE, () -> huge.writeStr(new Repeated('\u20ac', 715_827_880)), "2 GiB string");
+        c.eq(huge.size(), 1, "rejected oversized writes leave nothing behind");
+        // A container recreated at the very same offset: only the generation tells them apart.
+        final BinWriter same = new BinWriter();
+        final long old = same.beginArray(1);
+        same.clear();
+        final long fresh = same.beginArray(1);
+        same.writeNull();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> same.end(old), "stale mark on a recreated container");
+        same.end(fresh);
+        BinReader.validate(same.toByteArray());
         // Utf8 ranges are bounds-checked (no overflowed `offset + length`).
         final byte[] bad = bytes(0x41, 0xC0, 0xAF);
         c.throwsA(IndexOutOfBoundsException.class, () -> Utf8.isValid(bad, 1, Integer.MAX_VALUE), "isValid overflow");
@@ -80,35 +125,45 @@ final class BinCodecTest {
         // Validation and steady-state writes allocate nothing per call (the probe must be live).
         c.that(Alloc.supported(), "thread allocation counter is supported and live");
         final BinWriter big = new BinWriter(1 << 20);
-        final int arr = big.beginArray(3);
+        final long arr = big.beginArray(3);
         big.writeBytes(new byte[256 * 1024]);
         big.writeStr(new String(new char[64 * 1024]).replace('\0', 'x'));
         big.writeStr("h\u00e9 \ud83d\ude80");
         big.end(arr);
         final byte[] payload = big.toByteArray();
         BinReader.validate(payload);
+        // Writer reuse alone, tightly. OpenJ9 reports thread allocation at TLH-refill granularity (tens of
+        // KiB), so resolution comes from iterations: < 2.6 B per iteration, while reverting writeStr to
+        // getBytes(UTF_8) costs >= 32 B per iteration (>= 3.2 MiB here).
         final BinWriter reuse = new BinWriter(256);
-        reuse.writeStr("warm-up");
-        final long allocated = Alloc.bytes(() -> {
-            for (int i = 0; i < 200; i++) {
-                new BinReader(payload).checkValue();
+        reuse.writeStr("warm-up \u00e9 \ud83d\ude80");
+        final long written = Alloc.bytes(() -> {
+            for (int i = 0; i < 100_000; i++) {
                 reuse.clear();
-                final int a = reuse.beginArray(2);
+                final long a = reuse.beginArray(3);
                 reuse.writeI64(i);
                 reuse.writeStr("steady \u00e9 \ud83d\ude80");
+                reuse.writeMapKey("key");
                 reuse.end(a);
             }
         });
-        // 200 validations of a 320 KiB payload: any per-string/bytes copy would be >= 64 MiB; the
-        // only allocations left are the 200 BinReader objects (~32 bytes each).
-        c.that(allocated < 64 * 1024, "validation + writer reuse allocation: " + allocated + " bytes");
+        c.that(written < 256 * 1024, "writer reuse allocates nothing per call (" + written + " bytes / 100k iterations)");
+        // Validation: 1000 passes over a 320 KiB payload; the only allocation is each BinReader (~32 B),
+        // while decoding the 64 Ki-char string or copying the 256 KiB bytes would cost >= 64 KiB per pass.
+        // Warm up first so one-time JIT / OSR bookkeeping is not billed to the measured loop.
+        for (int i = 0; i < 100; i++) new BinReader(payload).checkValue();
+        final long validated = Alloc.bytes(() -> {
+            for (int i = 0; i < 1000; i++) new BinReader(payload).checkValue();
+        });
+        // Only the 1000 readers (~32-48 KiB) plus TLH-granularity noise; a decode or copy is >= 64 MiB.
+        c.that(validated < 1024 * 1024, "validation allocates only the reader (" + validated + " bytes / 1000 passes)");
     }
 
     static void golden(Check c, byte[] golden) {
         final BinWriter w = new BinWriter(4);  // forces growth
-        final int map = w.beginMap(1);
+        final long map = w.beginMap(1);
         w.writeMapKey("k");
-        final int arr = w.beginArray(6);
+        final long arr = w.beginArray(6);
         w.writeI64(1);
         w.writeStr("\u00e9");
         w.writeNull();
@@ -178,7 +233,7 @@ final class BinCodecTest {
 
     static byte[] nested(int depth) {
         final BinWriter w = new BinWriter();
-        final int[] marks = new int[depth];
+        final long[] marks = new long[depth];
         for (int i = 0; i < depth; i++) marks[i] = w.beginArray(1);
         w.writeNull();
         for (int i = depth - 1; i >= 0; i--) w.end(marks[i]);
@@ -262,5 +317,36 @@ final class BinCodecTest {
             {0xF4, 0x90, 0x80, 0x80}, {0xE2, 0x80}, {0xE2, 0x28, 0xA1}, {0x80}, {0xF5, 0x80, 0x80, 0x80},
         };
         for (int[] b : bad) c.that(!Utf8.isValid(bytes(b), 0, b.length), "invalid utf8 " + Arrays.toString(b));
+    }
+
+    /** A {@code CharSequence} of {@code length} copies of {@code c} that stores nothing. */
+    static final class Repeated implements CharSequence {
+        private final char c;
+        private final int length;
+
+        Repeated(char c, int length) {
+            this.c = c;
+            this.length = length;
+        }
+
+        @Override
+        public int length() {
+            return length;
+        }
+
+        @Override
+        public char charAt(int index) {
+            return c;
+        }
+
+        @Override
+        public CharSequence subSequence(int start, int end) {
+            return new Repeated(c, end - start);
+        }
+
+        @Override
+        public String toString() {
+            return "Repeated(" + c + " x " + length + ")";
+        }
     }
 }

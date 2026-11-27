@@ -27,6 +27,10 @@ let scene = try SceneReader.open(nve_scene_view(), expectedSchema: Key64(NVE_SCE
   watchOS SDK is present.
 - While validating, reads stay inside the container being checked, and strings are validated in place
   without being decoded.
+- Container marks carry the writer's generation, so `end` rejects a stale mark (from before
+  `clear()`) and a container that is already closed.
+- The allocation guard counts every malloc call through libmalloc's `malloc_logger` hook. It runs in
+  the release suite (`swift test -c release`); in `-Onone` builds even trivial calls allocate.
 
 `Tests/CNveHostTestABI` is a test-only C mirror of those structs. It proves this conformance in CI.
 

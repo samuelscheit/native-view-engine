@@ -57,7 +57,7 @@ public struct SceneReader<View: SceneViewABI> {
               let dirty = buffer(v.dirty_indices, v.dirty_count), let removed = buffer(v.removed_ids, v.removed_count),
               let tables = buffer(v.tables, v.table_count)
         else { throw .nullSlab }
-        guard Utf8.isValid(text) else { throw .invalidUtf8 }
+        guard Utf8.isValid(UnsafeRawBufferPointer(text)) else { throw .invalidUtf8 }
         for (i, t) in tables.enumerated() where TableReader(view: t) == nil {
             throw .invalidTable(index: i)
         }

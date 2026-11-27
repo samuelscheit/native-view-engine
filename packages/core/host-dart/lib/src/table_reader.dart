@@ -18,7 +18,8 @@ enum FieldKind { u32, i32, f32, boolean, enumeration, color, length, str, resour
 final class FieldSpec {
   factory FieldSpec(int word, FieldKind kind, {int shift = 0, int bits = 32}) {
     final span = kind == FieldKind.str ? 2 : 1;
-    if (bits < 1 || bits > 32 || shift < 0 || shift + bits > 32 || word < 0 || word + span > maxTableWords) {
+    // Compare by subtraction after the range checks: `shift + bits` could wrap the 64-bit VM `int`.
+    if (bits < 1 || bits > 32 || shift < 0 || shift > 32 - bits || word < 0 || word > maxTableWords - span) {
       throw ArgumentError('invalid field spec word=$word shift=$shift bits=$bits');
     }
     return FieldSpec._(word, kind, shift, bits);
@@ -35,7 +36,11 @@ final class FieldSpec {
   bool fits(int words) => word + (kind == FieldKind.str ? 2 : 1) <= words;
 
   /// Field bits of [value] (unsigned).
-  int extract(int value) => bits >= 32 ? value >>> shift : (value >>> shift) & ((1 << bits) - 1);
+  /// Masks [value] to 32 bits first, so a negative VM `int` extracts exactly as on the web.
+  int extract(int value) {
+    final word = value & 0xFFFFFFFF;
+    return bits >= 32 ? word >>> shift : (word >>> shift) & ((1 << bits) - 1);
+  }
 
   /// Field bits of [value], sign-extended from [bits].
   int extractSigned(int value) {
@@ -170,7 +175,13 @@ final class TableReader {
   LengthValue length(int r, FieldSpec f) => LengthValue.decode(bits(r, f));
 
   /// `(offset, len)` of a `str` field inside the scene text slab.
-  (int offset, int len) str(int r, FieldSpec f) => (word(r, f.word), word(r, f.word + 1));
+  /// Throws [RangeError] for a non-`str` spec or one past this table's row.
+  (int offset, int len) str(int r, FieldSpec f) {
+    if (f.kind != FieldKind.str || !f.fits(words)) {
+      throw RangeError('${f.kind.name} field at word ${f.word} is not a string in a $words-word row');
+    }
+    return (word(r, f.word), word(r, f.word + 1));
+  }
 
   /// Raw `NodeId` owning sparse row [r], or [r] itself for dense tables.
   int owner(int r) {

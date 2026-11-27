@@ -143,18 +143,45 @@ void runHardening(Check c) {
   for (final (word, shift, bits, kind) in const [
     (0, 24, 16, FieldKind.u32), (0, 0, 0, FieldKind.u32), (0, 0, 33, FieldKind.i32), (0, 31, 2, FieldKind.i32),
     (32, 0, 32, FieldKind.u32), (31, 0, 32, FieldKind.str), (-1, 0, 8, FieldKind.u32), (0, -1, 8, FieldKind.u32), //
+    (0x1FFFFFFFFFFFFF, 0, 32, FieldKind.u32), (0, 0x1FFFFFFFFFFFFF, 1, FieldKind.u32), // overflow-free comparisons
   ]) {
     c.throwsA<ArgumentError>(() => FieldSpec(word, kind, shift: shift, bits: bits), 'bad spec $word/$shift/$bits');
   }
   final t = TableReader(key: visual, slot: 0, words: 6, rowCount: 2, rows: words(rowWords));
   c.throwsA<RangeError>(() => t.u32(0, FieldSpec(6, FieldKind.u32)), 'field past row');
   c.throwsA<RangeError>(() => t.i32(0, FieldSpec(31, FieldKind.i32)), 'i32 field past row');
+  c.throwsA<RangeError>(() => t.str(0, FieldSpec(3, FieldKind.u32)), 'str of a non-string spec');
+  c.throwsA<RangeError>(() => t.str(0, FieldSpec(5, FieldKind.str)), 'str past the row');
+  c.eq(t.str(0, label), (0, 3), 'valid string spec still reads');
+  // A negative VM int extracts its low 32 bits, exactly like the web.
+  c.eq(FieldSpec(0, FieldKind.u32).extract(-1), 0xFFFFFFFF, 'extract(-1) whole word');
+  c.eq(FieldSpec(0, FieldKind.u32, shift: 24, bits: 8).extract(-1), 0xFF, 'extract(-1) top byte');
+  c.eq(FieldSpec(0, FieldKind.i32, shift: 28, bits: 4).extractSigned(-1), -1, 'extractSigned(-1)');
+  // Layout strides below 1 are rejected before any arithmetic (no stride-0 / negative walks).
+  final (strideMem, strideView) = linearMemory();
+  for (final (node, table) in const [(0, 36), (-1, 36), (16, 0), (16, -36)]) {
+    final bad = SceneLayout(
+      schemaHash: 0, frameId: 8, nodeCount: 16, dirtyCount: 20, removedCount: 24, textSlabLen: 28, //
+      childrenSlabLen: 32, tableCount: 36, nodes: 40, textSlab: 44, childrenSlab: 48, dirtyIndices: 52,
+      removedIds: 56, tables: 60, nodeStride: node,
+      tableView: TableViewLayout(
+        stride: table, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, //
+        dirtyRows: 32,
+      ),
+    );
+    expectScene(c, SceneErrorKind.missingSlab, () => SceneReader.fromLinearMemory(strideMem, strideView, bad, schema),
+        'strides $node/$table');
+  }
   // Negative and overflowing counts.
   c.throwsA<ArgumentError>(
       () => TableReader(key: visual, slot: 0, words: 2, rowCount: 0, rows: ByteData(0), dirtyCount: -1), 'dirtyCount -1');
   c.throwsA<ArgumentError>(() => TableReader(key: visual, slot: 0, words: 2, rowCount: -1, rows: ByteData(0)), 'rowCount -1');
   const isWeb = identical(0, 0.0);
   if (!isWeb) {
+    // `shift + bits` with a VM max int wraps negative: the old check let this spec through.
+    final maxInt = (1 << 62) + ((1 << 62) - 1); // computed: no >2^53 literal reaches dart2js
+    c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.u32, shift: maxInt, bits: 1), 'VM shift overflow');
+    c.throwsA<ArgumentError>(() => FieldSpec(maxInt, FieldKind.u32), 'VM word overflow');
     // `rowCount * words` would wrap the 64-bit VM int to a tiny positive number.
     final wrap = (1 << 62) + 1;
     c.throwsA<ArgumentError>(() => TableReader(key: visual, slot: 0, words: 4, rowCount: wrap, rows: words(rowWords)), 'VM wrap');

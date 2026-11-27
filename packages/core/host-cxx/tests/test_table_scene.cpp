@@ -139,13 +139,18 @@ void test_hostile_specs_and_views() {
     CHECK(!t->bits(0, f).has_value());
     CHECK(!t->i32(0, f).has_value());
     CHECK(!t->f32(0, f).has_value());
+    CHECK(!t->str(0, f).has_value());
   }
+  // `str()` only reads `Str` specs that fit the row (a U32 spec at word 3 is not a string).
+  CHECK(!t->str(0, NveFieldSpec{3, 0, 32, NVE_FIELD_U32}).has_value());
+  CHECK(t->str(0, kLabel).has_value());
   // Hostile word counts are rejected before any span is formed (64-bit overflow / 32-bit hosts).
   const TestTableView huge{1u, 2u, 0u, 0x80000001u, 0xFFFFFFFFu, 0u, rows.data(), nullptr, nullptr};
   CHECK(!TableReader::from_view(huge).has_value());
   const TestTableView max_rows{1u, 2u, 0u, 32u, 0xFFFFFFFFu, 0xFFFFFFFFu, rows.data(), nullptr, rows.data()};
   if constexpr (sizeof(void*) == 4) CHECK(!TableReader::from_view(max_rows).has_value());
 }
+
 
 struct SceneFixture {
   std::vector<TestNode> nodes{{1u, 0u, 3u, 2u, 0u}, {2u, 3u, 4u, 0u, 2u}, {3u, 7u, 0u, 0u, 2u}};
@@ -240,12 +245,28 @@ void test_scene_reader_rejects() {
   CHECK(!SceneReader<TestSceneView>::open(&v, kSchema, &err) && err == SceneError::InvalidTable);
 }
 
+void test_scene_slab_counts_fit_the_address_space() {
+  // A node slab of u32::MAX 64-byte records exceeds PTRDIFF_MAX on 32-bit hosts and must be
+  // rejected before a span is formed; on 64-bit hosts the same count is representable.
+  SceneFixture fx;
+  TestSceneView v = fx.view();
+  v.dirty_count = 0xFFFFFFFFu;
+  SceneError err = SceneError::None;
+  const bool opened = SceneReader<TestSceneView>::open(&v, kSchema, &err).has_value();
+  if constexpr (sizeof(void*) == 4) {
+    CHECK(!opened && err == SceneError::NullSlab);
+  } else {
+    CHECK(opened);  // representable; no read happens at open
+  }
+}
+
 }  // namespace
 
 int main() {
   test_table_reader_dense();
   test_table_reader_sparse_and_invalid();
   test_hostile_specs_and_views();
+  test_scene_slab_counts_fit_the_address_space();
   test_scene_reader();
   test_scene_reader_rejects();
   if (g_failures != 0) {

@@ -1,19 +1,19 @@
+import CNveHostTestABI
 import NveHost
 import XCTest
 
-#if canImport(Darwin)
-import Darwin
-
-/// Live heap blocks across all malloc zones (`nil` where unsupported). This catches retained growth;
-/// malloc exposes no public per-call counter, so churn is guarded by storage identity below.
-private func liveHeapBlocks() -> Int? {
-    var stats = malloc_statistics_t()
-    malloc_zone_statistics(nil, &stats)
-    return Int(stats.blocks_in_use)
+/// Allocations (freed temporaries included) the current thread makes inside `body`, counted by the
+/// test-only libmalloc hook in `CNveHostTestABI`; `nil` where the platform has no hook.
+private func allocations(_ body: () throws -> Void) rethrows -> Int64? {
+    guard nve_test_alloc_count_begin() != 0 else { return nil }
+    do {
+        try body()
+    } catch {
+        _ = nve_test_alloc_count_end()
+        throw error
+    }
+    return nve_test_alloc_count_end()
 }
-#else
-private func liveHeapBlocks() -> Int? { nil }
-#endif
 
 final class BinCodecTests: XCTestCase {
     private let golden = Golden.fromHex(Golden.binValueHex)
@@ -217,9 +217,59 @@ final class BinCodecTests: XCTestCase {
         w.clear()
         w.writeNull()
         XCTAssertThrowsError(try w.end(open)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
+
+        // Stale after `clear()` + refill: the old offset is in range again; nothing may be patched.
+        var refill = BinWriter()
+        let stale = refill.beginArray(1)
+        refill.clear()
+        try refill.writeBytes([UInt8](repeating: 0xAB, count: 16))
+        let before = refill.bytes
+        XCTAssertThrowsError(try refill.end(stale)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
+        XCTAssertEqual(refill.bytes, before)
+        // A container recreated at the very same offset: only the generation tells them apart.
+        var same = BinWriter()
+        let old = same.beginArray(1)
+        same.clear()
+        let fresh = same.beginArray(1)
+        same.writeNull()
+        XCTAssertThrowsError(try same.end(old)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
+        try same.end(fresh)
+        try BinReader.validate(same.bytes)
     }
 
-    func testValidationRetainsNothingAndWriterReusesItsStorage() throws {
+    func testMarksNeverPatchForeignBytesAndRejectedWritesLeaveNothing() throws {
+        // Stale after `clear()` + a 9-byte refill.
+        var w = BinWriter()
+        let m = w.beginArray(1)
+        w.clear()
+        w.writeI64(-1)
+        let refill = w.bytes
+        XCTAssertThrowsError(try w.end(m)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
+        XCTAssertEqual(w.bytes, refill)
+        // Double `end`: the second would re-patch a closed container with the grown length.
+        var d = BinWriter()
+        let open = d.beginArray(1)
+        d.writeNull()
+        try d.end(open)
+        d.writeNull()
+        let closed = d.bytes
+        XCTAssertThrowsError(try d.end(open)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
+        XCTAssertEqual(d.bytes, closed)
+        // Oversized bytes are rejected before the tag (a zero-RAM collection claiming 2^32 elements).
+        guard MemoryLayout<Int>.size == 8 else { return }
+        var b = BinWriter()
+        b.writeNull()
+        XCTAssertThrowsError(try b.writeBytes(HugeBytes())) { XCTAssertEqual($0 as? BinError, .tooLarge) }
+        XCTAssertEqual(b.bytes, [0])
+    }
+
+    func testValidationAndWriterReuseDoNotAllocate() throws {
+        #if DEBUG
+        // `-Onone` code allocates on its own (even `u8()` / `clear()` do once per call, measured), so
+        // only the optimized build says anything about this library; `scripts/host-runtimes.sh` runs
+        // the suite with `-c release` too, where this guard executes.
+        try XCTSkipIf(true, "allocation counts are only meaningful in optimized builds (swift test -c release)")
+        #endif
         var big = BinWriter(capacity: 1 << 20)
         let m = big.beginArray(3)
         try big.writeBytes([UInt8](repeating: 0xAB, count: 256 * 1024))
@@ -227,30 +277,32 @@ final class BinCodecTests: XCTestCase {
         try big.writeStr("hé — 🚀")
         try big.end(m)
         let payload = big.bytes
-        try BinReader.validate(payload)
         var w = BinWriter(capacity: 256)
-        for _ in 0..<2 {
-            w.clear()
-            try w.writeStr("warm-up")
-        }
-        let storage = w.bytes.withUnsafeBufferPointer { $0.baseAddress }
-        let capacity = w.bytes.capacity
-        let before = liveHeapBlocks()
-        for i in 0..<2000 {
+        for _ in 0..<2 {  // warm up (first-use runtime metadata, capacity)
             try BinReader.validate(payload)
             w.clear()
-            let a = w.beginArray(2)
-            w.writeI64(Int64(i))
-            try w.writeStr("steady state")
-            try w.end(a)
+            try w.writeStr("warm-up é — 🚀")
         }
-        // The writer never reallocates once warm: same buffer, same capacity after 2000 reuses.
-        XCTAssertEqual(w.bytes.withUnsafeBufferPointer { $0.baseAddress }, storage)
-        XCTAssertEqual(w.bytes.capacity, capacity)
-        if let before, let after = liveHeapBlocks() {
-            // A per-iteration retained allocation would add >= 2000 live blocks; allow runtime noise.
-            XCTAssertLessThan(abs(after - before), 64, "heap blocks \(before) -> \(after)")
-        }
+        // The counter is live: an obviously allocating body must register.
+        let probe = try XCTUnwrap(allocations { _ = [UInt8](repeating: 1, count: 4096).withUnsafeBufferPointer { $0.count } })
+        XCTAssertGreaterThan(probe, 0, "allocation hook is not firing")
+        // Validation: strings are checked in place, bytes skipped — no decode, no copy.
+        let validating = try XCTUnwrap(try allocations {
+            for _ in 0..<200 { try BinReader.validate(payload) }
+        })
+        XCTAssertEqual(validating, 0, "BinReader.validate allocated \(validating) times in 200 passes")
+        // Writer reuse: strings encode straight from `utf8` (an `Array(v.utf8)` temp would count here).
+        let writing = try XCTUnwrap(try allocations {
+            for i in 0..<1000 {
+                w.clear()
+                let a = w.beginArray(3)
+                w.writeI64(Int64(i))
+                try w.writeStr("steady é — 🚀")
+                try w.writeMapKey("key")
+                try w.end(a)
+            }
+        })
+        XCTAssertEqual(writing, 0, "BinWriter reuse allocated \(writing) times in 1000 iterations")
     }
 
     func testUtf8Validation() {
@@ -262,4 +314,12 @@ final class BinCodecTests: XCTestCase {
         let slice = Array("xé".utf8)[1...]
         XCTAssertTrue(Utf8.isValid(slice))  // non-zero startIndex
     }
+}
+
+/// A collection that claims `u32::MAX + 1` zero bytes without storing any (random access, so
+/// `count` is O(1); never iterated).
+private struct HugeBytes: RandomAccessCollection {
+    var startIndex: Int { 0 }
+    var endIndex: Int { Int(UInt32.max) + 1 }
+    subscript(_: Int) -> UInt8 { 0 }
 }

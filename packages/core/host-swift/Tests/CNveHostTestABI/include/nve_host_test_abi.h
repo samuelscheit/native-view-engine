@@ -50,4 +50,9 @@ _Static_assert(offsetof(NveTestTableView, rows) == 24, "NveTableView.rows @24");
 /* Static fixture frame published from C memory (schema 0xF00DFACEC0FFEE11, frame 7). */
 const NveTestSceneView* nve_test_scene(void);
 
+/* Counts every malloc-family allocation made by the calling thread between begin and end (freed
+ * temporaries included). `begin` returns 0 where the platform has no hook; `end` then returns -1. */
+int nve_test_alloc_count_begin(void);
+int64_t nve_test_alloc_count_end(void);
+
 #endif /* NVE_HOST_TEST_ABI_H */

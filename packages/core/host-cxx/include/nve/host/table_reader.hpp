@@ -164,7 +164,9 @@ class TableReader {
     return LengthValue::decode(*b);
   }
 
+  /// `{offset, len}` of a `Str` field; `nullopt` for a non-`Str` / malformed spec or past the row.
   [[nodiscard]] std::optional<StrSpan> str(uint32_t r, FieldSpec f) const noexcept {
+    if (f.kind != static_cast<uint8_t>(NVE_FIELD_STR) || nve_field_fits(f, words_) == 0) return std::nullopt;
     const std::optional<uint32_t> offset = word(r, f.word);
     const std::optional<uint32_t> len = word(r, static_cast<uint32_t>(f.word) + 1u);
     if (!offset || !len) return std::nullopt;

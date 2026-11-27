@@ -70,6 +70,7 @@ final class Xxh64Hasher {
   /// Feeds the UTF-8 encoding of [text] without allocating; throws [BinCodecException]
   /// (`invalidUtf8`) on a lone surrogate (never hashes U+FFFD).
   void updateUtf8(String text) {
+    utf8EncodedLength(text); // validate everything first: a rejected string feeds nothing
     for (var i = 0; i < text.length; i += utf16UnitsAt(text, i)) {
       update(_scratch, 0, encodeUtf8CodePointAt(text, i, _scratch, 0));
     }

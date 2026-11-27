@@ -48,7 +48,7 @@ public final class Xxh64 {
                 stripe(buf, 0);
                 bufLen = 0;
             }
-            for (; i + 32 <= end; i += 32) stripe(bytes, i);
+            for (; end - i >= 32; i += 32) stripe(bytes, i); // `i + 32` could overflow near Integer.MAX_VALUE
             while (i < end) buf[bufLen++] = bytes[i++];
             return this;
         }
@@ -58,6 +58,7 @@ public final class Xxh64 {
          * {@link BinCodecException.Kind#INVALID_UTF8} on a lone surrogate (never hashes {@code ?}).
          */
         public Hasher updateUtf8(CharSequence text) {
+            Utf8.encodedLength(text); // validate everything first: a rejected string feeds nothing
             for (int i = 0; i < text.length(); i += Character.isHighSurrogate(text.charAt(i)) ? 2 : 1) {
                 update(scratch, 0, Utf8.encodeAt(text, i, scratch, 0));
             }

@@ -7,24 +7,39 @@
 
 HOST_RT_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-# Required tool per suite (`check-all.sh` uses it to fail or skip clearly when missing).
-host_runtime_tool() {
+HOST_RUNTIME_SUITES="cxx swift java dart ts"
+
+# Prints the first binary suite `$1` needs that is not on PATH (status 0), or nothing (status 1).
+host_runtime_missing_tool() {
+  local tool
   case "$1" in
-    cxx) printf 'cmake' ;;
-    swift) printf 'swift' ;;
-    java) printf 'javac' ;;
-    dart) printf 'dart' ;;
-    ts) printf 'node' ;;
+    cxx) set -- cmake ctest ;;
+    swift) set -- swift ;;
+    java) set -- javac java ;;
+    dart) set -- dart node ;;  # node runs the dart2js parity build
+    ts)
+      command -v node >/dev/null 2>&1 || { printf 'node'; return 0; }
+      command -v tsc >/dev/null 2>&1 || command -v npx >/dev/null 2>&1 || { printf 'tsc or npx'; return 0; }
+      return 1
+      ;;
+    *)
+      printf 'unknown suite %s' "$1"
+      return 0
+      ;;
   esac
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || { printf '%s' "$tool"; return 0; }
+  done
+  return 1
 }
 
 host_runtime_has_tools() {
-  command -v "$(host_runtime_tool "$1")" >/dev/null 2>&1 || return 1
-  case "$1" in
-    java) command -v java >/dev/null 2>&1 ;;
-    dart) command -v node >/dev/null 2>&1 ;;  # JS parity run
-    *) return 0 ;;
-  esac
+  ! host_runtime_missing_tool "$1" >/dev/null
+}
+
+# Java sources under `$1`, NUL-separated (safe for paths with spaces or newlines).
+host_runtime_java_sources() {
+  find "$1" -name '*.java' -print0
 }
 
 # C11 + C++20 (ASan/UBSan, -Werror) and the negative-compile guards.
@@ -37,10 +52,12 @@ suite_host_cxx() {
   ctest --test-dir "$dir" --output-on-failure
 }
 
-# Swift 6 strict concurrency, warnings as errors; plus a 32-bit `arm64_32` compile when the watchOS SDK exists.
+# Swift 6 strict concurrency, warnings as errors, debug and release (the allocation guard only means
+# something optimized); plus a 32-bit `arm64_32` compile when the watchOS SDK exists.
 suite_host_swift() {
   local pkg="$HOST_RT_ROOT/packages/core/host-swift"
   swift test --package-path "$pkg" --scratch-path "$BUILD_ROOT/host-swift" -Xswiftc -warnings-as-errors
+  swift test -c release --package-path "$pkg" --scratch-path "$BUILD_ROOT/host-swift" -Xswiftc -warnings-as-errors
   if command -v xcrun >/dev/null 2>&1 && xcrun --sdk watchos --show-sdk-path >/dev/null 2>&1; then
     xcrun --sdk watchos swiftc -target arm64_32-apple-watchos9.0 -swift-version 6 -warnings-as-errors \
       -parse-as-library -module-name NveHost -wmo -c "$pkg"/Sources/NveHost/*.swift \
@@ -52,25 +69,32 @@ suite_host_swift() {
 
 # `javac --release 11 -Xlint:all -Werror`, then the plain-main suite.
 suite_host_java() {
-  local out="$BUILD_ROOT/host-java"
+  local out="$BUILD_ROOT/host-java" src
+  local sources=()
   mkdir -p "$out"
-  # shellcheck disable=SC2046
-  javac --release 11 -Xlint:all -Werror -d "$out" $(find "$HOST_RT_ROOT/packages/core/host-java/src" -name '*.java')
+  while IFS= read -r -d '' src; do sources+=("$src"); done \
+    < <(host_runtime_java_sources "$HOST_RT_ROOT/packages/core/host-java/src")
+  javac --release 11 -Xlint:all -Werror -d "$out" "${sources[@]}"
   java -cp "$out" dev.nve.host.HostTestMain
 }
 
 # Analyzer (fatal infos, avoid_js_rounded_ints), VM suite, then the same suite compiled to JS on node.
+# Runs in a source copy under $BUILD_ROOT: pub writes `.dart_tool/` and `pubspec.lock`, and the
+# developer's own copies in the repo must stay untouched.
 suite_host_dart() {
-  local pkg="$HOST_RT_ROOT/packages/core/host-dart"
+  local work="$BUILD_ROOT/host-dart"
+  rm -rf "$work"
+  mkdir -p "$work"
+  (cd "$HOST_RT_ROOT/packages/core/host-dart" && tar cf - --exclude .dart_tool --exclude pubspec.lock --exclude build .) \
+    | (cd "$work" && tar xf -)
   (
-    cd "$pkg"
+    cd "$work"
     dart pub get --offline
     dart analyze --fatal-infos
     dart run --enable-asserts test/host_test.dart
     dart compile js -O2 -o "$BUILD_ROOT/host-dart-web.js" test/web_parity_entry.dart
     node "$BUILD_ROOT/host-dart-web.js"
   )
-  rm -rf "$pkg/.dart_tool" "$pkg/pubspec.lock"
 }
 
 # node:test suites, then `tsc --noEmit` (PATH `tsc`, else TypeScript via npx).
@@ -86,12 +110,26 @@ suite_host_ts() {
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
-  BUILD_ROOT="${BUILD_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/nve-host-runtimes.XXXXXX")}"
-  suites=("${1:-all}")
-  [ "${suites[0]}" = "all" ] && suites=(cxx swift java dart ts)
+  if [ -z "${BUILD_ROOT:-}" ]; then
+    BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/nve-host-runtimes.XXXXXX")"
+    trap 'rm -rf "$BUILD_ROOT"' EXIT  # we created it, so we remove it (also on failure)
+  fi
+  [ "$#" -eq 0 ] && set -- all
+  suites=()
+  for arg in "$@"; do
+    if [ "$arg" = "all" ]; then
+      # shellcheck disable=SC2206
+      suites+=($HOST_RUNTIME_SUITES)
+    elif [[ " $HOST_RUNTIME_SUITES " == *" $arg "* ]]; then
+      suites+=("$arg")
+    else
+      echo "error: unknown suite '$arg' (expected: $HOST_RUNTIME_SUITES all)" >&2
+      exit 2
+    fi
+  done
   for s in "${suites[@]}"; do
-    if ! host_runtime_has_tools "$s"; then
-      echo "error: host-$s needs '$(host_runtime_tool "$s")' (and node for dart/ts, java for java)" >&2
+    if missing="$(host_runtime_missing_tool "$s")"; then
+      echo "error: host-$s needs '$missing', which is not on PATH" >&2
       exit 1
     fi
     printf '\n== host-%s ==\n' "$s"

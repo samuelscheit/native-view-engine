@@ -271,9 +271,10 @@ class BinReader {
 /// Little-endian writer; reuse one instance with `clear()` for allocation-free steady state.
 class BinWriter {
  public:
-  /// Position of an open container's payload-length field.
+  /// An open container: its payload-length field and the writer generation that opened it.
   struct Mark {
     size_t len_pos;
+    uint32_t generation;
   };
 
   BinWriter() = default;
@@ -284,9 +285,11 @@ class BinWriter {
   [[nodiscard]] std::span<const uint8_t> bytes() const noexcept { return buf_; }
   [[nodiscard]] size_t size() const noexcept { return buf_.size(); }
   [[nodiscard]] std::vector<uint8_t> take() && noexcept { return std::move(buf_); }
+  /// Empties the buffer (keeping capacity) and invalidates every outstanding `Mark`.
   void clear() noexcept {
     buf_.clear();
     error_ = BinError::None;
+    ++generation_;
   }
 
   // ---- raw little-endian primitives -------------------------------------------------------
@@ -314,27 +317,40 @@ class BinWriter {
     tag(BinTag::F64);
     f64(v);
   }
-  /// Writes a `Str`; text that is not well-formed UTF-8 records `InvalidUtf8` (and an empty string).
+  /// Writes a `Str`. Text that is not well-formed UTF-8 records `InvalidUtf8`, and a length above
+  /// `u32` records `TooLarge`; either way nothing at all is written (no orphaned tag or length).
   void write_str(std::string_view s) {
+    const auto* p = reinterpret_cast<const uint8_t*>(s.data());
+    if (!admit(p, s.size(), true)) return;
     tag(BinTag::Str);
-    utf8_sized(s);
+    sized(p, s.size());
   }
+  /// Writes `Bytes`; a length above `u32` records `TooLarge` and writes nothing.
   void write_bytes(std::span<const uint8_t> b) {
+    if (!admit(b.data(), b.size(), false)) return;
     tag(BinTag::Bytes);
     sized(b.data(), b.size());
   }
-  /// Writes a map key; text that is not well-formed UTF-8 records `InvalidUtf8` (and an empty key).
-  void write_map_key(std::string_view key) { utf8_sized(key); }
+  /// Writes a map key; invalid UTF-8 or an oversized key records an error and writes nothing.
+  void write_map_key(std::string_view key) {
+    const auto* p = reinterpret_cast<const uint8_t*>(key.data());
+    if (admit(p, key.size(), true)) sized(p, key.size());
+  }
 
   /// Opens an `Array` of `count` values; close it with `end(mark)` after writing them.
   [[nodiscard]] Mark begin_array(uint32_t count) { return begin(BinTag::Array, count); }
   /// Opens a `Map` of `count` entries (`write_map_key` + value each); close it with `end(mark)`.
   [[nodiscard]] Mark begin_map(uint32_t count) { return begin(BinTag::Map, count); }
 
-  /// Closes the container opened at `m`; a mark past the buffer (e.g. stale after `clear()`)
-  /// records `InvalidMark` instead of writing out of bounds.
+  /// Closes the container opened at `m`. A mark from before `clear()` (even once the buffer has
+  /// refilled), past the buffer, not right after an `Array` / `Map` tag, or already closed (an open
+  /// container's length field still holds 0; a closed one holds its payload >= 4) records
+  /// `InvalidMark` and writes nothing.
   void end(Mark m) noexcept {
-    if (buf_.size() < 8u || m.len_pos > buf_.size() - 8u) return record(BinError::InvalidMark);
+    if (m.generation != generation_ || m.len_pos < 1u || buf_.size() < 8u || m.len_pos > buf_.size() - 8u ||
+        !is_container_tag(buf_[m.len_pos - 1u]) || nve_load_u32_le(buf_.data() + m.len_pos) != 0u) {
+      return record(BinError::InvalidMark);
+    }
     const size_t payload = buf_.size() - m.len_pos - 4u;
     if (payload > std::numeric_limits<uint32_t>::max()) return record(BinError::TooLarge);
     nve_store_u32_le(buf_.data() + m.len_pos, static_cast<uint32_t>(payload));
@@ -354,29 +370,32 @@ class BinWriter {
     if (error_ == BinError::None) error_ = e;
   }
 
-  void utf8_sized(std::string_view s) {
-    const auto* p = reinterpret_cast<const uint8_t*>(s.data());
-    if (nve_utf8_valid(p, s.size()) == 0) {
-      record(BinError::InvalidUtf8);
-      u32(0u);
-      return;
-    }
-    sized(p, s.size());
-  }
-
-  void sized(const uint8_t* p, size_t n) {
+  /// Checks a length-prefixed run before anything is written; records the error on rejection.
+  bool admit(const uint8_t* p, size_t n, bool utf8) noexcept {
     if (n > std::numeric_limits<uint32_t>::max()) {
       record(BinError::TooLarge);
-      u32(0u);
-      return;
+      return false;
     }
+    if (utf8 && nve_utf8_valid(p, n) == 0) {
+      record(BinError::InvalidUtf8);
+      return false;
+    }
+    return true;
+  }
+
+  /// Length + bytes of an admitted run (`n` fits `u32`).
+  void sized(const uint8_t* p, size_t n) {
     u32(static_cast<uint32_t>(n));
     buf_.insert(buf_.end(), p, p + n);
   }
 
+  static constexpr bool is_container_tag(uint8_t b) noexcept {
+    return b == static_cast<uint8_t>(BinTag::Array) || b == static_cast<uint8_t>(BinTag::Map);
+  }
+
   Mark begin(BinTag t, uint32_t count) {
     tag(t);
-    const Mark m{buf_.size()};
+    const Mark m{buf_.size(), generation_};
     u32(0u);
     u32(count);
     return m;
@@ -384,6 +403,7 @@ class BinWriter {
 
   std::vector<uint8_t> buf_;
   BinError error_ = BinError::None;
+  uint32_t generation_ = 1u;  ///< bumped by `clear()`; a zero-initialized `Mark{}` never matches
 };
 
 }  // namespace nve::host

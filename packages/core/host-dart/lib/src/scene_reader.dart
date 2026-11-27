@@ -112,7 +112,7 @@ final class SceneReader {
   /// Reads the `NveSceneView` at [viewPtr] inside wasm32 linear [memory] (zero copy).
   factory SceneReader.fromLinearMemory(ByteData memory, int viewPtr, SceneLayout layout, Key64 expectedSchema) {
     int u32(int at) {
-      if (at < 0 || at + 4 > memory.lengthInBytes) {
+      if (at < 0 || at > memory.lengthInBytes - 4) {
         throw SceneException(SceneErrorKind.missingSlab, 'read at $at outside memory (${memory.lengthInBytes})');
       }
       return memory.getUint32(at, Endian.little);
@@ -128,6 +128,10 @@ final class SceneReader {
       return ByteData.sublistView(memory, ptr, ptr + bytes);
     }
 
+    final tl = layout.tableView;
+    if (layout.nodeStride < 1 || tl.stride < 1) {
+      throw SceneException(SceneErrorKind.missingSlab, 'layout strides must be >= 1 (node ${layout.nodeStride}, table ${tl.stride})');
+    }
     final h = viewPtr;
     final schema = Key64(u32(h + layout.schemaHash), u32(h + layout.schemaHash + 4));
     if (schema != expectedSchema) {
@@ -139,9 +143,8 @@ final class SceneReader {
     final dirtyCount = u32(h + layout.dirtyCount);
     final removedCount = u32(h + layout.removedCount);
     final tableCount = u32(h + layout.tableCount);
-    final tl = layout.tableView;
     final tablesBase = u32(h + layout.tables);
-    if (tableCount > 0 && (tablesBase == 0 || tablesBase + tableCount * tl.stride > memory.lengthInBytes)) {
+    if (tableCount > 0 && (tablesBase == 0 || tablesBase > memory.lengthInBytes || (memory.lengthInBytes - tablesBase) ~/ tl.stride < tableCount)) {
       throw SceneException(SceneErrorKind.invalidTable, 'tables [$tablesBase, x$tableCount) outside memory');
     }
     final tables = List<TableReader>.generate(tableCount, (i) {

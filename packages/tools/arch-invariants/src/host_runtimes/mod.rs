@@ -14,6 +14,10 @@ use nve_store::Length;
 
 use crate::{RepoIndex, Violation};
 
+pub mod decl;
+
+use decl::Syntax;
+
 const CXX: &str = "packages/core/host-cxx/include/nve/host/";
 const SWIFT: &str = "packages/core/host-swift/Sources/NveHost/";
 const JAVA: &str = "packages/core/host-java/src/main/java/dev/nve/host/";
@@ -21,25 +25,13 @@ const DART: &str = "packages/core/host-dart/lib/src/";
 const TS: &str = "packages/core/host-ts/src/";
 const HYBRID_STATUS_SOURCE: &str = "packages/core/codegen/src/targets/rust/hybrid/mod.rs";
 
-/// How one language spells a `(name, value)` entry.
-#[derive(Clone, Copy)]
-enum Syntax {
-    /// `Name = 1` (C++ / Swift / Java fields), optionally with a C prefix (`NVE_FIELD_U32 = 0`).
-    Assign(&'static str),
-    /// `NAME(1)` (Java / Dart enhanced enums).
-    Call,
-    /// `Name: 1` (TS `as const` objects).
-    Colon,
-    /// Values are declaration order: the names must appear as one ordered list.
-    Ordered,
-}
-
-/// One mirror site: a file, the declaration that opens the block (`""` = whole file), its syntax,
-/// and per-language renames of Rust variant names.
+/// One mirror site: a file, the declaration that opens the block, its syntax, the C prefix its
+/// names carry (if any), and per-language renames of Rust variant names.
 struct Site {
     file: String,
     marker: &'static str,
     syntax: Syntax,
+    prefix: &'static str,
     renames: &'static [(&'static str, &'static str)],
 }
 
@@ -48,27 +40,12 @@ fn site(dir: &str, file: &str, marker: &'static str, syntax: Syntax) -> Site {
         file: format!("{dir}{file}"),
         marker,
         syntax,
+        prefix: "",
         renames: &[],
     }
 }
 
-fn normalize(s: &str) -> String {
-    s.chars()
-        .filter(|c| !c.is_whitespace() && *c != '_')
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-/// The declaration block starting at `marker` up to its first `}` (values always precede it).
-fn block<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
-    if marker.is_empty() {
-        return Some(text);
-    }
-    let start = text.find(marker)?;
-    let len = text[start..].find('}')?;
-    Some(&text[start..start + len])
-}
-
+/// Each site's declarations must equal `entries` exactly (see [`decl::check_block`]).
 fn check_set(
     idx: &RepoIndex,
     set: &str,
@@ -86,7 +63,7 @@ fn check_set(
             ));
             continue;
         };
-        let Some(body) = block(&text, s.marker) else {
+        let Some(body) = decl::block(&text, s.marker) else {
             out.push(Violation::new(
                 &s.file,
                 0,
@@ -95,61 +72,13 @@ fn check_set(
             ));
             continue;
         };
-        let hay = normalize(body);
-        let name = |n: &str| {
-            s.renames
-                .iter()
-                .find(|(from, _)| *from == n)
-                .map_or(n, |(_, to)| *to)
-                .to_owned()
-        };
-        let needles: Vec<String> = match s.syntax {
-            Syntax::Ordered => {
-                let mut sorted = entries.to_vec();
-                sorted.sort_by_key(|(_, v)| *v);
-                if !sorted
-                    .iter()
-                    .enumerate()
-                    .all(|(i, (_, v))| usize::try_from(*v) == Ok(i))
-                {
-                    out.push(Violation::new(
-                        &s.file,
-                        0,
-                        set,
-                        "values are not 0-based dense: use explicit codes, not order",
-                    ));
-                    continue;
-                }
-                vec![
-                    sorted
-                        .iter()
-                        .map(|(n, _)| name(n))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                ]
-            }
-            Syntax::Assign(prefix) => entries
-                .iter()
-                .map(|(n, v)| format!("{prefix}{}={v}", name(n)))
-                .collect(),
-            Syntax::Call => entries
-                .iter()
-                .map(|(n, v)| format!("{}({v})", name(n)))
-                .collect(),
-            Syntax::Colon => entries
-                .iter()
-                .map(|(n, v)| format!("{}:{v}", name(n)))
-                .collect(),
-        };
-        for needle in needles {
-            if !hay.contains(&normalize(&needle)) {
-                out.push(Violation::new(
-                    &s.file,
-                    0,
-                    &needle,
-                    format!("`{set}` drifted from its Rust source of truth (expected `{needle}`)"),
-                ));
-            }
+        for problem in decl::check_block(entries, s.syntax, s.prefix, s.renames, body) {
+            out.push(Violation::new(
+                &s.file,
+                0,
+                s.marker,
+                format!("`{set}` drifted from its Rust source of truth: {problem}"),
+            ));
         }
     }
 }
@@ -220,7 +149,7 @@ fn host_status_entries() -> Vec<(String, i64)> {
 /// `NveHybridStatus` variants as emitted by codegen (`Name = N,` lines of its enum).
 fn hybrid_status_entries(idx: &RepoIndex, out: &mut Vec<Violation>) -> Vec<(String, i64)> {
     let text = idx.read_text(HYBRID_STATUS_SOURCE).unwrap_or_default();
-    let entries: Vec<(String, i64)> = block(&text, "pub enum NveHybridStatus")
+    let entries: Vec<(String, i64)> = decl::block(&text, "pub enum NveHybridStatus")
         .unwrap_or_default()
         .lines()
         .filter_map(|l| {
@@ -288,8 +217,8 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
                     java: &'static str,
                     dart: &'static str| {
         [
-            site(CXX, "hybrid_runtime.hpp", cxx, Assign("")),
-            site(SWIFT, "HybridRuntime.swift", swift, Assign("")),
+            site(CXX, "hybrid_runtime.hpp", cxx, Assign),
+            site(SWIFT, "HybridRuntime.swift", swift, Assign),
             site(JAVA, "HybridRuntime.java", java, Call),
             site(DART, "hybrid_runtime.dart", dart, Call),
             site(TS, "hybrid_runtime.ts", ts_marker, Colon),
@@ -343,20 +272,13 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         "FieldKind",
         &kinds,
         &[
-            site(
-                CXX,
-                "table_word.h",
-                "typedef enum NveFieldKind",
-                Assign("nve_field_"),
-            ),
+            Site {
+                prefix: "nve_field_",
+                ..site(CXX, "table_word.h", "typedef enum NveFieldKind", Assign)
+            },
             Site {
                 renames: &[("Enum", "enumeration")],
-                ..site(
-                    SWIFT,
-                    "TableReader.swift",
-                    "public enum FieldKind",
-                    Assign(""),
-                )
+                ..site(SWIFT, "TableReader.swift", "public enum FieldKind", Assign)
             },
             site(JAVA, "FieldKind.java", "public enum FieldKind", Ordered),
             Site {
@@ -377,8 +299,8 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         "NveValueTag",
         &tags,
         &[
-            site(CXX, "bin_codec.hpp", "enum class BinTag", Assign("")),
-            site(SWIFT, "BinCodec.swift", "public enum BinTag", Assign("")),
+            site(CXX, "bin_codec.hpp", "enum class BinTag", Assign),
+            site(SWIFT, "BinCodec.swift", "public enum BinTag", Assign),
             site(JAVA, "BinTag.java", "public enum BinTag", Ordered),
             Site {
                 renames: &[("Null", "nullValue"), ("Bool", "boolValue")],
@@ -400,14 +322,12 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         "Length unit tags",
         &units,
         &[
-            site(
-                CXX,
-                "table_word.h",
-                "typedef enum NveLengthUnit",
-                Assign("nve_length_"),
-            ),
-            site(SWIFT, "TableReader.swift", "public enum Unit", Assign("")),
-            site(JAVA, "Length.java", "public final class Length", Assign("")),
+            Site {
+                prefix: "nve_length_",
+                ..site(CXX, "table_word.h", "typedef enum NveLengthUnit", Assign)
+            },
+            site(SWIFT, "TableReader.swift", "public enum Unit", Assign),
+            site(JAVA, "Length.java", "public final class Length", Assign),
             site(DART, "table_reader.dart", "enum LengthUnit", Ordered),
             site(TS, "table_reader.ts", "export const LengthUnit", Colon),
         ],
@@ -458,27 +378,15 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
             .zip(names)
             .zip(files)
         {
-            // C spells the limit as a macro (`#define NVE_MAX_TABLE_WORDS 32u`).
-            let syntax = if name == "NVE_MAX_TABLE_WORDS" {
-                "#define "
-            } else {
-                ""
-            };
-            let needle = if syntax.is_empty() {
-                format!("{name} = {value}")
-            } else {
-                format!("{syntax}{name} {value}u")
-            };
+            // Declarations only (`name = N`, or C's `#define name Nu`), comments ignored, exact value.
             let path = format!("{dir}{file}");
-            if !idx
-                .read_text(&path)
-                .is_some_and(|t| normalize(&t).contains(&normalize(&needle)))
-            {
+            let values = decl::declared_values(&idx.read_text(&path).unwrap_or_default(), name);
+            if values.is_empty() || values.iter().any(|v| *v != value) {
                 out.push(Violation::new(
                     &path,
                     0,
-                    &needle,
-                    format!("`{set}` drifted (expected `{needle}`)"),
+                    name,
+                    format!("`{set}`: `{name}` must be declared as {value}, found {values:?}"),
                 ));
             }
         }
@@ -498,7 +406,7 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         ("packages/core/host-ts/test/golden.ts", true),
     ];
     for (file, halves) in golden {
-        let hay = normalize(&idx.read_text(file).unwrap_or_default());
+        let text = idx.read_text(file).unwrap_or_default();
         for (bytes, seed) in golden_vectors() {
             let d = xxh64(&bytes, seed);
             let needle = if halves {
@@ -506,7 +414,7 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
             } else {
                 format!("0x{d:016x}")
             };
-            if !hay.contains(&needle) {
+            if !decl::contains_hex_token(&text, &needle) {
                 out.push(Violation::new(
                     file,
                     0,

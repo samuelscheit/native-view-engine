@@ -130,14 +130,21 @@ public final class TableReader {
         return bits(r, f);
     }
 
-    /** Text-slab offset of a {@code STR} field. */
+    /** Text-slab offset of a {@code STR} field (throws for a non-{@code STR} spec or one past the row). */
     public int strOffset(int r, FieldSpec f) {
-        return word(r, f.word);
+        return word(r, strWord(f));
     }
 
     /** Text-slab byte length of a {@code STR} field. */
     public int strLen(int r, FieldSpec f) {
-        return word(r, f.word + 1);
+        return word(r, strWord(f) + 1);
+    }
+
+    private int strWord(FieldSpec f) {
+        if (f.kind != FieldKind.STR || !f.fits(words)) {
+            throw new IndexOutOfBoundsException(f.kind + " field at word " + f.word + " is not a string in a " + words + "-word row");
+        }
+        return f.word;
     }
 
     /** Raw {@code NodeId} owning sparse row {@code r}, or {@code r} itself for dense tables. */

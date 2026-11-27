@@ -51,6 +51,12 @@ test('Key64 halves, conversions and 53-bit guards', () => {
   assert.equal(le[1], 0xd6);
   assert.throws(() => Key64.readLE(le, 2), RangeError);
   assert.equal(String(k), 'Key64(0x33e73115985a4fd6)');
+  for (const bad of [NaN, 0.5, Infinity, -Infinity, 2 ** 53]) {
+    assert.throws(() => new Key64(bad, 0), RangeError, `lo ${bad}`);
+    assert.throws(() => new Key64(0, bad), RangeError, `hi ${bad}`);
+    assert.throws(() => Key64.readLE(le, bad), RangeError, `readLE at ${bad}`);
+    assert.throws(() => k.writeLE(le, bad), RangeError, `writeLE at ${bad}`);
+  }
 });
 
 test('constId encodes in place and rejects lone surrogates; update ranges are checked', () => {
@@ -58,6 +64,11 @@ test('constId encodes in place and rejects lone surrogates; update ranges are ch
   for (const lone of ['\ud800', 'x\udc00', '\ud83d', '\ude80\ud83d']) {
     assert.throws(() => constId(lone), (e: unknown) => e instanceof BinCodecError && e.kind === 'invalidUtf8');
   }
+  const atomic = new Xxh64Hasher().updateUtf8('ab');
+  const before = atomic.digest().toHex();
+  assert.throws(() => atomic.updateUtf8('abc\ud800'), BinCodecError);
+  assert.equal(atomic.digest().toHex(), before, 'a rejected string feeds nothing');
+  assert.equal(atomic.updateUtf8('c').digest().toHex(), constId('abc').toHex());
   const bytes = seq(101);
   assert.equal(new Xxh64Hasher(WIRE_SEED).update(bytes, 0, 50).update(bytes, 50, 101).digest().toHex(), '277e092a8c3db1bc');
   for (const [a, b] of [[NaN, 1], [0, 0.5], [2, 1], [0, 102], [-1, 1]] as const) {

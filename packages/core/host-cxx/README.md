@@ -16,8 +16,13 @@ keys, and field specs.
 | `nve/host/scene_reader.hpp` | C++20 | `SceneReader<View>` over the generated `NveSceneView`. It validates once, then does O(1) bounds-checked reads. |
 | `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue` |
 
-`BinWriter` records `InvalidUtf8` for strings that are not well-formed UTF-8 and `InvalidMark` for a
-stale `end(mark)`. While validating, `BinReader` bounds every child read by its container's end, as
+`BinWriter` records `InvalidUtf8` for strings that are not well-formed UTF-8, and `TooLarge` for a
+length above `u32`; a rejected write leaves no bytes at all. `end(mark)` records `InvalidMark`
+when the mark:
+
+- is stale: it predates `clear()`, which bumps the mark's generation;
+- is already closed;
+- does not point just past an `Array` / `Map` tag. While validating, `BinReader` bounds every child read by its container's end, as
 Rust does.
 
 The readers are templates over the generated structs, so the node record layout is never

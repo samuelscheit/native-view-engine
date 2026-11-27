@@ -121,7 +121,8 @@ NVE_INLINE NveKey64 nve_key64_from_halves(uint32_t lo, uint32_t hi) {
 NVE_INLINE int nve_key64_eq(NveKey64 a, NveKey64 b) { return a.value == b.value; }
 
 /* Identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id` / `Key64::of`).
- * Returns 0 and leaves `*out` untouched when `name[0..len)` is not well-formed UTF-8 (a Rust `&str`
+ * Returns 0 and leaves `*out` untouched when `out` is NULL, `name` is NULL with `len > 0`, or
+ * `name[0..len)` is not well-formed UTF-8 (a Rust `&str`
  * can never hold such a name), else 1. */
 #if defined(__cplusplus)
 inline int nve_key64_of(const char* name, size_t len, NveKey64* out) {
@@ -130,7 +131,7 @@ inline int nve_key64_of(const char* name, size_t len, NveKey64* out) {
 static inline int nve_key64_of(const char* name, size_t len, NveKey64* out) {
   const uint8_t* bytes = (const uint8_t*)name;
 #endif
-  if (nve_utf8_valid(bytes, len) == 0) return 0;
+  if (out == NULL || (name == NULL && len > 0u) || nve_utf8_valid(bytes, len) == 0) return 0;
   out->value = nve_xxh64(bytes, len, 0u);
   return 1;
 }

@@ -140,6 +140,9 @@ export class SceneReader {
     const removedCount = u32(h + layout.removedCount);
     const tableCount = u32(h + layout.tableCount);
     const tl = layout.tableView;
+    if (!isIntIn(layout.nodeStride, 1, 0xffff_ffff) || !isIntIn(tl.stride, 1, 0xffff_ffff)) {
+      throw new SceneError('missingSlab', `layout strides must be >= 1 (node ${layout.nodeStride}, table ${tl.stride})`);
+    }
     const tablesBase = u32(h + layout.tables);
     if (tableCount > 0 && (tablesBase === 0 || tablesBase + tableCount * tl.stride > mem.byteLength)) {
       throw new SceneError('invalidTable', `tables [${tablesBase}, x${tableCount}) outside memory`);

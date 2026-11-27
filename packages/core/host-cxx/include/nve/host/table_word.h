@@ -59,7 +59,9 @@ NVE_INLINE uint32_t nve_length_value_bits(uint32_t word) {
 }
 
 /* Packed RGBA8888 channel `0 = r, 1 = g, 2 = b, 3 = a` (`r | g<<8 | b<<16 | a<<24`). */
+/* Any other channel reads 0 (never a shift by >= 32). */
 NVE_INLINE uint8_t nve_color_channel(uint32_t rgba, uint32_t channel) {
+  if (channel >= 4u) return 0u;
   return (uint8_t)((rgba >> (channel * 8u)) & 0xFFu);
 }
 

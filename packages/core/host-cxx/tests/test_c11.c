@@ -48,6 +48,11 @@ static void test_key64(void) {
   NveKey64 untouched = {UINT64_C(7)};
   CHECK(nve_key64_of("\xED\xA0\x80", 3, &untouched) == 0 && untouched.value == 7u);
   CHECK(nve_key64_of("\xC0\xAF", 2, &untouched) == 0 && untouched.value == 7u);
+  /* NULL handling is total (UBSan): empty NULL name is the empty name; NULL with a length or NULL out is rejected. */
+  NveKey64 empty = {0};
+  CHECK(nve_key64_of(NULL, 0, &empty) == 1 && empty.value == UINT64_C(0xEF46DB3751D8E999));
+  CHECK(nve_key64_of(NULL, 5, &untouched) == 0 && untouched.value == 7u);
+  CHECK(nve_key64_of("a", 1, NULL) == 0);
   CHECK(nve_key64_lo(k) == UINT32_C(0x985A4FD6));
   CHECK(nve_key64_hi(k) == UINT32_C(0x33E73115));
   CHECK(nve_key64_eq(nve_key64_from_halves(nve_key64_lo(k), nve_key64_hi(k)), k));
@@ -119,6 +124,9 @@ static void test_table_word(void) {
   CHECK(nve_length_value_bits(UINT32_C(0x3F800003)) == 0u);
   CHECK(nve_color_channel(UINT32_C(0x80402010), 0) == 0x10);
   CHECK(nve_color_channel(UINT32_C(0x80402010), 3) == 0x80);
+  CHECK(nve_color_channel(UINT32_C(0x80402010), 4) == 0); /* no shift by 32 (UBSan) */
+  CHECK(nve_color_channel(UINT32_C(0x80402010), 99) == 0);
+  CHECK(nve_color_channel(UINT32_C(0x80402010), UINT32_MAX) == 0);
 }
 
 static void test_utf8(void) {
@@ -136,6 +144,7 @@ static void test_utf8(void) {
   CHECK(nve_utf8_valid(ok_ascii, 5));
   CHECK(nve_utf8_valid(ok_multi, sizeof ok_multi));
   CHECK(nve_utf8_valid(NULL, 0));
+  CHECK(!nve_utf8_valid(NULL, 5)); /* never dereferences NULL */
   CHECK(!nve_utf8_valid(overlong2, sizeof overlong2));
   CHECK(!nve_utf8_valid(overlong3, sizeof overlong3));
   CHECK(!nve_utf8_valid(overlong4, sizeof overlong4));

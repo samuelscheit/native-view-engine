@@ -9,6 +9,8 @@ public final class BinWriter {
 
     private byte[] buf;
     private int len;
+    /** Bumped by {@link #clear()}; marks carry it so stale ones are rejected after a refill. */
+    private int generation = 1;
 
     public BinWriter() {
         this(64);
@@ -27,8 +29,10 @@ public final class BinWriter {
         return Arrays.copyOf(buf, len);
     }
 
+    /** Empties the buffer (keeping capacity) and invalidates every outstanding container mark. */
     public void clear() {
         len = 0;
+        generation++;
     }
 
     // ---- raw little-endian primitives ---------------------------------------------------------
@@ -93,11 +97,14 @@ public final class BinWriter {
     /** Throws {@link BinCodecException.Kind#INVALID_UTF8} on a lone surrogate, writing nothing. */
     public void writeStr(CharSequence v) {
         final int n = Utf8.encodedLength(v);
+        ensure(5, n); // tag + length + bytes fit, or nothing is written
         u8(BinTag.STR.code());
         writeEncoded(v, n);
     }
 
+    /** Throws {@link BinCodecException.Kind#TOO_LARGE} (writing nothing) when the buffer cannot grow enough. */
     public void writeBytes(byte[] v) {
+        ensure(5, v.length);
         u8(BinTag.BYTES.code());
         u32(v.length);
         raw(v, 0, v.length);
@@ -109,30 +116,39 @@ public final class BinWriter {
     }
 
     private void writeEncoded(CharSequence s, int n) {
-        ensure(4 + n);
+        ensure(4, n);
         u32(n);
         len = Utf8.encode(s, buf, len);
     }
 
-    /** Opens an array of {@code count} values; returns the mark for {@link #end(int)}. */
-    public int beginArray(int count) {
+    /** Opens an array of {@code count} values; returns the opaque mark for {@link #end(long)}. */
+    public long beginArray(int count) {
         return begin(BinTag.ARRAY, count);
     }
 
     /** Opens a map of {@code count} entries ({@link #writeMapKey} + value each). */
-    public int beginMap(int count) {
+    public long beginMap(int count) {
         return begin(BinTag.MAP, count);
     }
 
-    /** Patches the payload length of the container opened at {@code mark} (stale marks are rejected). */
-    public void end(int mark) {
-        if (mark < 0 || mark > len - 8) throw new BinCodecException(BinCodecException.Kind.INVALID_MARK, "mark " + mark + " of " + len);
-        putLe32(mark, len - mark - 4);
+    /**
+     * Patches the payload length of the container opened at {@code mark}. A mark from before
+     * {@link #clear()} (even once the buffer refilled), out of range, or not right after an array /
+     * map tag throws {@link BinCodecException.Kind#INVALID_MARK} and writes nothing.
+     */
+    public void end(long mark) {
+        final int pos = (int) mark;
+        // An open container's length field still holds 0; a closed one holds its payload (>= 4).
+        final boolean valid = (int) (mark >>> 32) == generation && pos >= 1 && pos <= len - 8
+                && (buf[pos - 1] == BinTag.ARRAY.code() || buf[pos - 1] == BinTag.MAP.code())
+                && Xxh64.read32(buf, pos) == 0;
+        if (!valid) throw new BinCodecException(BinCodecException.Kind.INVALID_MARK, "mark 0x" + Long.toHexString(mark) + " of " + len);
+        putLe32(pos, len - pos - 4);
     }
 
-    private int begin(BinTag tag, int count) {
+    private long begin(BinTag tag, int count) {
         u8(tag.code());
-        final int mark = len;
+        final long mark = ((long) generation << 32) | len;
         u32(0);
         u32(count);
         return mark;
@@ -145,8 +161,18 @@ public final class BinWriter {
         buf[at + 3] = (byte) (v >>> 24);
     }
 
+    /** Room for {@code header + payload} more bytes, computed without {@code int} overflow. */
+    private void ensure(int header, int payload) {
+        if (payload < 0 || payload > MAX_SIZE - header - len) {
+            throw new BinCodecException(BinCodecException.Kind.TOO_LARGE, "size " + len + " + " + header + " + " + payload);
+        }
+        ensure(header + payload);
+    }
+
     private void ensure(int extra) {
-        if (extra > MAX_SIZE - len) throw new BinCodecException(BinCodecException.Kind.TOO_LARGE, "size " + len + " + " + extra);
+        if (extra < 0 || extra > MAX_SIZE - len) {
+            throw new BinCodecException(BinCodecException.Kind.TOO_LARGE, "size " + len + " + " + extra);
+        }
         if (len + extra <= buf.length) return;
         final long grown = Math.max((long) buf.length * 2, (long) len + extra);
         buf = Arrays.copyOf(buf, (int) Math.min(grown, MAX_SIZE));

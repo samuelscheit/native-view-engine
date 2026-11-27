@@ -91,6 +91,12 @@ final class Xxh64Test {
         for (String lone : new String[] {"\ud800", "x\udc00", "\ud83d", "\ude80\ud83d"}) {
             c.binError(BinCodecException.Kind.INVALID_UTF8, () -> Xxh64.constId(lone), "constId lone surrogate");
         }
+        // A rejected string feeds nothing: the hasher state is unchanged and stays usable.
+        final Xxh64.Hasher atomic = new Xxh64.Hasher(0).updateUtf8("ab");
+        final long before = atomic.digest();
+        c.binError(BinCodecException.Kind.INVALID_UTF8, () -> atomic.updateUtf8("abc\ud800"), "updateUtf8 lone surrogate");
+        c.eq(atomic.digest(), before, "updateUtf8 is atomic");
+        c.eq(atomic.updateUtf8("c").digest(), Xxh64.constId("abc"), "hasher usable after a rejection");
         final Xxh64.Hasher warm = new Xxh64.Hasher(0);
         warm.updateUtf8("warm \u00e9 \ud83d\ude80");
         final long allocated = Alloc.bytes(() -> {

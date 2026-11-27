@@ -14,7 +14,7 @@ import {
   Key64,
   isValidUtf8,
 } from '../src/index.ts';
-import type { BinErrorKind } from '../src/index.ts';
+import type { BinErrorKind, BinMark } from '../src/index.ts';
 import { GOLDEN_BIN_VALUE as GOLDEN } from './golden.ts';
 
 function expectKind(kind: BinErrorKind, fn: () => unknown, what: string): void {
@@ -23,7 +23,7 @@ function expectKind(kind: BinErrorKind, fn: () => unknown, what: string): void {
 
 function nested(depth: number): Uint8Array {
   const w = new BinWriter();
-  const marks: number[] = [];
+  const marks: BinMark[] = [];
   for (let i = 0; i < depth; i++) marks.push(w.beginArray(1));
   w.writeNull();
   for (const m of marks.reverse()) w.end(m);
@@ -209,8 +209,63 @@ test('hardening: container limit, BOM, lone surrogates, stale marks, NaN counts'
   w.clear();
   expectKind('invalidMark', () => w.end(mark), 'stale mark');
   w.writeNull();
-  expectKind('invalidMark', () => w.end(0), 'mark without container');
-  expectKind('invalidMark', () => w.end(NaN), 'NaN mark');
+  expectKind('invalidMark', () => w.end(0 as BinMark), 'forged mark');
+  expectKind('invalidMark', () => w.end(NaN as BinMark), 'NaN mark');
+  // Stale after clear() + refill: the old offset is in range again; nothing may be patched.
+  const refill = new BinWriter();
+  const stale = refill.beginArray(1);
+  refill.clear();
+  refill.writeBytes(new Uint8Array(16).fill(0xab));
+  const before = refill.toBytes();
+  expectKind('invalidMark', () => refill.end(stale), 'stale mark after refill');
+  assert.deepEqual(refill.toBytes(), before, 'stale end writes nothing');
+  // A container recreated at the very same offset: only the generation tells them apart.
+  const same = new BinWriter();
+  const old = same.beginArray(1);
+  same.clear();
+  const fresh = same.beginArray(1);
+  same.writeNull();
+  expectKind('invalidMark', () => same.end(old), 'stale mark on a recreated container');
+  same.end(fresh);
+  BinReader.validate(same.bytes);
+  // end(0) on a 9-byte buffer, stale after a 9-byte refill, and double end: bytes untouched.
+  const nine = new BinWriter();
+  nine.writeI64(0x0102_0304_0506_0708n);
+  const nineBefore = nine.toBytes();
+  expectKind('invalidMark', () => nine.end(0 as BinMark), 'end(0) on foreign bytes');
+  expectKind('invalidMark', () => nine.end((2 ** 32 + 1) as BinMark), 'forged mark on foreign bytes');
+  assert.deepEqual(nine.toBytes(), nineBefore);
+  const staleNine = new BinWriter();
+  const sm = staleNine.beginArray(1);
+  staleNine.clear();
+  staleNine.writeI64(-1n);
+  const staleBefore = staleNine.toBytes();
+  expectKind('invalidMark', () => staleNine.end(sm), 'stale mark after a 9-byte refill');
+  assert.deepEqual(staleNine.toBytes(), staleBefore);
+  const twice = new BinWriter();
+  const open = twice.beginArray(1);
+  twice.writeNull();
+  twice.end(open);
+  twice.writeNull();
+  const closed = twice.toBytes();
+  expectKind('invalidMark', () => twice.end(open), 'double end');
+  assert.deepEqual(twice.toBytes(), closed);
+  // tooLarge is decided before any byte (an object claiming 2^32 bytes; never read).
+  const huge = new BinWriter();
+  huge.writeNull();
+  expectKind('tooLarge', () => huge.writeBytes({ length: 2 ** 32 } as Uint8Array), '4 GiB bytes');
+  assert.equal(huge.length, 1, 'rejected oversized write leaves nothing behind');
+  for (const bad of [NaN, 0.5, -1, Infinity]) {
+    assert.throws(() => new BinWriter(bad), RangeError, `capacity ${bad}`);
+  }
+  assert.equal(new BinWriter(0).length, 0, 'capacity 0 is clamped up, not rejected');
+  // Generations wrap but packed marks stay exact.
+  const cycling = new BinWriter();
+  for (let i = 0; i < 3000; i++) {
+    cycling.clear();
+    cycling.end(cycling.beginArray(0));
+  }
+  BinReader.validate(cycling.bytes);
   // NaN / fractional / Infinity counts never poison the cursor.
   const r = new BinReader(GOLDEN);
   for (const bad of [NaN, 0.5, Infinity, -1]) {

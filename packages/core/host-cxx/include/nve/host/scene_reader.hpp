@@ -109,8 +109,10 @@ class SceneReader {
   }
 
   template <class T>
+  /// Non-null when counted, and small enough to span on this host (32-bit `PTRDIFF_MAX`).
   static bool slab_ok(const T* p, uint32_t count) noexcept {
-    return count == 0u || p != nullptr;
+    return count == 0u ||
+           (p != nullptr && static_cast<uint64_t>(count) <= static_cast<uint64_t>(PTRDIFF_MAX) / sizeof(T));
   }
 
   static SceneError validate(const View* v, Key64 expected_schema) noexcept {

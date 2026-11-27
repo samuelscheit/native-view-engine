@@ -10,7 +10,7 @@
  * 64-bit integers stay exact: `i64` reads as `bigint` (`readI64`) or `(lo, hi)` halves
  * (`readI64Bits`); a 64-bit value is never squeezed through `Number(...)`.
  */
-import { Key64 } from './key64.ts';
+import { Key64, TWO32 } from './key64.ts';
 import { UTF8_DECODER, isValidUtf8, requireWellFormed } from './utf8.ts';
 
 /** `NveBinValue` tag (Rust `nve_abi::NveValueTag`). */
@@ -42,6 +42,17 @@ export class BinCodecError extends Error {
 }
 
 const UTF8_ENCODER = new TextEncoder();
+
+declare const binMarkBrand: unique symbol;
+
+/**
+ * An open container of a `BinWriter`: `generation * 2^32 + offset` (below 2^52, exact). Branded so
+ * a plain number cannot be passed to `end()`.
+ */
+export type BinMark = number & { readonly [binMarkBrand]: true };
+
+/** Generations wrap below 2^20 so a packed mark stays a safe integer. */
+const MARK_GENERATIONS = 0x10_0000;
 
 /** Zero-copy cursor over `bytes`; byte slices are `subarray` views. */
 export class BinReader {
@@ -304,8 +315,12 @@ export class BinWriter {
   private buf: Uint8Array;
   private view: DataView;
   private len = 0;
+  /** Bumped by `clear()`; marks carry it so stale ones are rejected even after a refill. */
+  private generation = 1;
 
+  /** `capacity` must be a non-negative integer (NaN would make growth loop forever). */
   constructor(capacity = 64) {
+    if (!(Number.isSafeInteger(capacity) && capacity >= 0)) throw new RangeError(`capacity ${capacity}`);
     this.buf = new Uint8Array(Math.max(16, capacity));
     this.view = new DataView(this.buf.buffer);
   }
@@ -324,8 +339,10 @@ export class BinWriter {
     return this.buf.slice(0, this.len);
   }
 
+  /** Empties the buffer (keeping capacity) and invalidates every outstanding `BinMark`. */
   clear(): void {
     this.len = 0;
+    this.generation = (this.generation + 1) % MARK_GENERATIONS;
   }
 
   // ---- raw little-endian primitives ---------------------------------------------------------
@@ -404,11 +421,14 @@ export class BinWriter {
   /** Throws `BinCodecError('invalidUtf8')` on a lone surrogate, writing nothing. */
   writeStr(v: string): void {
     requireWellFormed(v);
+    this.ensure(1 + 4 + 3 * v.length); // tag + length + bytes fit, or nothing is written
     this.u8(BinTag.Str);
-    this.writeMapKey(v);
+    this.encodeChecked(v);
   }
 
+  /** Throws `BinCodecError('tooLarge')`, writing nothing, past the `u32` size limit. */
   writeBytes(v: Uint8Array): void {
+    this.ensure(1 + 4 + v.length);
     this.u8(BinTag.Bytes);
     this.u32(v.length);
     this.raw(v);
@@ -420,41 +440,59 @@ export class BinWriter {
    */
   writeMapKey(key: string): void {
     requireWellFormed(key);
-    this.ensure(4 + 3 * key.length);
-    const { written } = UTF8_ENCODER.encodeInto(key, this.buf.subarray(this.len + 4));
+    this.encodeChecked(key);
+  }
+
+  /** Length-prefixed UTF-8 of an already well-formed string (each string is scanned once). */
+  private encodeChecked(s: string): void {
+    this.ensure(4 + 3 * s.length);
+    const { written } = UTF8_ENCODER.encodeInto(s, this.buf.subarray(this.len + 4));
     this.u32(written);
     this.len += written;
   }
 
   /** Opens an array of `count` values; returns the mark for `end()`. */
-  beginArray(count: number): number {
+  beginArray(count: number): BinMark {
     return this.begin(BinTag.Array, count);
   }
 
   /** Opens a map of `count` entries (`writeMapKey` + value each); returns the mark for `end()`. */
-  beginMap(count: number): number {
+  beginMap(count: number): BinMark {
     return this.begin(BinTag.Map, count);
   }
 
-  /** Patches the payload length of the container opened at `mark`. */
-  end(mark: number): void {
-    if (!(Number.isInteger(mark) && mark >= 0 && mark <= this.len - 8)) {
-      throw new BinCodecError('invalidMark', `mark ${mark} of ${this.len}`);
-    }
-    this.view.setUint32(mark, this.len - mark - 4, true);
+  /**
+   * Patches the payload length of the container opened at `mark`. A mark from before `clear()`
+   * (even once the buffer refilled), out of range, or not right after an array / map tag throws
+   * `BinCodecError('invalidMark')` and writes nothing.
+   */
+  end(mark: BinMark): void {
+    const pos = mark % TWO32;
+    const valid =
+      Number.isInteger(mark) &&
+      Math.floor(mark / TWO32) === this.generation &&
+      pos >= 1 &&
+      pos <= this.len - 8 &&
+      (this.buf[pos - 1] === BinTag.Array || this.buf[pos - 1] === BinTag.Map) &&
+      // An open container's length field still holds 0; a closed one holds its payload (>= 4).
+      this.view.getUint32(pos, true) === 0;
+    if (!valid) throw new BinCodecError('invalidMark', `mark ${mark} of ${this.len}`);
+    this.view.setUint32(pos, this.len - pos - 4, true);
   }
 
-  private begin(tag: BinTag, count: number): number {
+  private begin(tag: BinTag, count: number): BinMark {
     this.u8(tag);
-    const mark = this.len;
+    const mark = (this.generation * TWO32 + this.len) as BinMark;
     this.u32(0);
     this.u32(count);
     return mark;
   }
 
   private ensure(extra: number): void {
+    if (!(Number.isSafeInteger(extra) && extra >= 0) || this.len + extra > 0xffff_ffff) {
+      throw new BinCodecError('tooLarge', `size ${this.len} + ${extra}`);
+    }
     if (this.len + extra <= this.buf.length) return;
-    if (this.len + extra > 0xffff_ffff) throw new BinCodecError('tooLarge', `size ${this.len + extra}`);
     let next = this.buf.length * 2;
     while (next < this.len + extra) next *= 2;
     const grown = new Uint8Array(next);

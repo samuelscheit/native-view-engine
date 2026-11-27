@@ -1,3 +1,4 @@
+import 'dart:collection' show ListMixin;
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
@@ -37,7 +38,7 @@ void expectKind(Check c, BinErrorKind kind, void Function() body, String what) {
 
 Uint8List nested(int depth) {
   final w = BinWriter();
-  final marks = <int>[for (var i = 0; i < depth; i++) w.beginArray(1)];
+  final marks = <BinMark>[for (var i = 0; i < depth; i++) w.beginArray(1)];
   w.writeNull();
   for (final m in marks.reversed) {
     w.end(m);
@@ -219,8 +220,70 @@ void runBinCodec(Check c) {
     ..writeNull()
     ..clear();
   expectKind(c, BinErrorKind.invalidMark, () => mw.end(mark), 'stale mark');
-  mw.writeNull();
-  expectKind(c, BinErrorKind.invalidMark, () => mw.end(0), 'mark without container');
+  // Stale after clear() + refill: the old offset is in range again; nothing may be patched.
+  final refill = BinWriter();
+  final stale = refill.beginArray(1);
+  refill
+    ..clear()
+    ..writeBytes(List<int>.filled(16, 0xAB));
+  final before = refill.toBytes();
+  expectKind(c, BinErrorKind.invalidMark, () => refill.end(stale), 'stale mark after refill');
+  c.that(sameBytes(refill.bytes, before), 'stale end writes nothing');
+  // Stale after clear() + a 9-byte refill, and double end: bytes stay untouched.
+  final nine = BinWriter();
+  final staleNine = nine.beginArray(1);
+  nine
+    ..clear()
+    ..writeI64(-1);
+  final nineBefore = nine.toBytes();
+  expectKind(c, BinErrorKind.invalidMark, () => nine.end(staleNine), 'stale mark after a 9-byte refill');
+  c.that(sameBytes(nine.bytes, nineBefore), '9-byte refill untouched');
+  final twice = BinWriter();
+  final open = twice.beginArray(1);
+  twice
+    ..writeNull()
+    ..end(open)
+    ..writeNull();
+  final closed = twice.toBytes();
+  expectKind(c, BinErrorKind.invalidMark, () => twice.end(open), 'double end');
+  c.that(sameBytes(twice.bytes, closed), 'closed container untouched');
+  // tooLarge is decided before any byte (a zero-RAM list claiming 2^32 elements).
+  final huge = BinWriter()..writeNull();
+  expectKind(c, BinErrorKind.tooLarge, () => huge.writeBytes(HugeList()), '4 GiB bytes');
+  c.eq(huge.length, 1, 'rejected oversized write leaves nothing behind');
+  // A container recreated at the very same offset: only the generation tells them apart.
+  final same = BinWriter();
+  final old = same.beginArray(1);
+  same.clear();
+  final fresh = same.beginArray(1);
+  same.writeNull();
+  expectKind(c, BinErrorKind.invalidMark, () => same.end(old), 'stale mark on a recreated container');
+  same.end(fresh);
+  BinReader.validate(same.toBytes());
+  // Marks survive many clears: the packed generation wraps but stays exact on the web.
+  final cycling = BinWriter();
+  for (var i = 0; i < 3000; i++) {
+    cycling.clear();
+    final m = cycling.beginArray(0);
+    cycling.end(m);
+  }
+  BinReader.validate(cycling.toBytes());
+
+  // Validation over many keys and strings (checked in place: no per-key view or string).
+  final many = BinWriter(1 << 16);
+  final mm = many.beginMap(4000);
+  for (var i = 0; i < 4000; i++) {
+    many
+      ..writeMapKey('key-$i-é')
+      ..writeStr('v$i');
+  }
+  many.end(mm);
+  final manyBytes = many.toBytes();
+  for (var i = 0; i < 20; i++) {
+    BinReader.validate(manyBytes);
+  }
+  final bad = Uint8List.fromList(manyBytes)..[manyBytes.length - 1] = 0xFF; // corrupt the last string byte
+  expectKind(c, BinErrorKind.invalidUtf8, () => BinReader.validate(bad), 'invalid byte in the last value');
 
   // UTF-8.
   c.that(!isValidUtf8(const [-1]), 'negative element');
@@ -236,4 +299,19 @@ void runBinCodec(Check c) {
   ]) {
     c.that(!isValidUtf8(bad), 'invalid utf8 $bad');
   }
+}
+
+/// A list claiming 2^32 zero elements without storing any (only `length` may be read).
+final class HugeList with ListMixin<int> {
+  @override
+  int get length => 0x100000000;
+
+  @override
+  set length(int _) => throw UnsupportedError('fixed');
+
+  @override
+  int operator [](int index) => 0;
+
+  @override
+  void operator []=(int index, int value) => throw UnsupportedError('read-only');
 }

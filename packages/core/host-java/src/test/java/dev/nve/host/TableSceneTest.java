@@ -41,7 +41,9 @@ final class TableSceneTest {
     }
 
     static void hardening(Check c) {
-        final int[][] bad = {{0, 24, 16}, {0, 0, 0}, {0, 0, 33}, {0, 31, 2}, {32, 0, 32}, {-1, 0, 8}, {0, -1, 8}};
+        final int[][] bad = {{0, 24, 16}, {0, 0, 0}, {0, 0, 33}, {0, 31, 2}, {32, 0, 32}, {-1, 0, 8}, {0, -1, 8},
+            // `shift + bits` / `word + span` would overflow int and slip past an additive check.
+            {0, Integer.MAX_VALUE - 10, 20}, {Integer.MAX_VALUE, 0, 32}, {Integer.MAX_VALUE - 1, 0, 32}};
         for (int[] b : bad) {
             c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(b[0], b[1], b[2], FieldKind.U32), "bad spec " + b[0] + "/" + b[1] + "/" + b[2]);
         }
@@ -50,6 +52,10 @@ final class TableSceneTest {
         final TableReader t = new TableReader().attach(VISUAL, 0, 6, 2, rows(), null, null, 0);
         c.throwsA(IndexOutOfBoundsException.class, () -> t.u32(0, FieldSpec.word(6, FieldKind.U32)), "field past row");
         c.throwsA(IndexOutOfBoundsException.class, () -> t.i32(0, FieldSpec.word(31, FieldKind.I32)), "i32 field past row");
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.strOffset(0, FieldSpec.word(3, FieldKind.U32)), "strOffset of a non-string spec");
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.strLen(0, FieldSpec.word(5, FieldKind.STR)), "strLen past the row");
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.strOffset(0, FieldSpec.word(30, FieldKind.STR)), "strOffset far past the row");
+        c.eq(t.strLen(0, LABEL), 3, "valid string spec still reads");
         final SceneException unattached = c.throwsA(SceneException.class,
                 () -> new SceneReader().attach(SCHEMA, SCHEMA.value(), 1L, null, 0, NODE_STRIDE, null, 0, null, 0, null, 0, null, 0,
                         new TableReader[] {new TableReader()}, 1),

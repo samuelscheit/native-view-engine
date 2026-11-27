@@ -5,8 +5,9 @@
 
 #include "api.h"
 
-/* Returns 1 when `p[0..len)` is well-formed UTF-8. */
+/* Returns 1 when `p[0..len)` is well-formed UTF-8 (`p` may be NULL only when `len == 0`). */
 NVE_INLINE int nve_utf8_valid(const uint8_t* p, size_t len) {
+  if (p == NULL) return len == 0u;
   size_t i = 0u;
   while (i < len) {
     const uint8_t b0 = p[i];

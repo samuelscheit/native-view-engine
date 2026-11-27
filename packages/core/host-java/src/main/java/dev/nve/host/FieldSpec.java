@@ -13,8 +13,10 @@ public final class FieldSpec {
      */
     public FieldSpec(int word, int shift, int bits, FieldKind kind) {
         final int span = kind == FieldKind.STR ? 2 : 1;
-        if (kind == null || bits < 1 || bits > 32 || shift < 0 || shift + bits > 32 || word < 0
-                || word + span > TableReader.MAX_WORDS) {
+        // Range-check each operand first, then compare by subtraction: `shift + bits` / `word + span`
+        // could overflow `int` and let a hostile spec through.
+        if (kind == null || bits < 1 || bits > 32 || shift < 0 || shift > 32 - bits || word < 0
+                || word > TableReader.MAX_WORDS - span) {
             throw new IllegalArgumentException("invalid field spec word=" + word + " shift=" + shift + " bits=" + bits);
         }
         this.word = word;

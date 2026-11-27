@@ -58,16 +58,29 @@ public struct BinReader: Sendable {
 
     /// Next `count` bytes, sharing storage with `bytes`.
     public mutating func take(_ count: Int) throws(BinError) -> ArraySlice<UInt8> {
-        guard count >= 0, count <= remaining else { throw .truncated }
-        defer { position += count }
-        return bytes[position..<position + count]
+        let at = try advance(count)
+        return bytes[at..<at + count]
     }
 
     /// Next `count` bytes decoded as strictly validated UTF-8 (a leading U+FEFF is kept).
     public mutating func utf8(_ count: Int) throws(BinError) -> String {
-        let slice = try take(count)
-        guard Utf8.isValid(slice) else { throw .invalidUtf8 }
-        return String(decoding: slice, as: UTF8.self)
+        let at = try checkUtf8(count)
+        return String(decoding: bytes[at..<at + count], as: UTF8.self)
+    }
+
+    /// Consumes `count` bytes and returns their offset (no slice, no allocation).
+    private mutating func advance(_ count: Int) throws(BinError) -> Int {
+        guard count >= 0, count <= remaining else { throw .truncated }
+        defer { position += count }
+        return position
+    }
+
+    /// Consumes and validates `count` UTF-8 bytes in place over the raw buffer; returns their offset.
+    private mutating func checkUtf8(_ count: Int) throws(BinError) -> Int {
+        let at = try advance(count)
+        let valid = bytes.withUnsafeBytes { Utf8.isValid(UnsafeRawBufferPointer(rebasing: $0[at..<at + count])) }
+        guard valid else { throw .invalidUtf8 }
+        return at
     }
 
     // MARK: tagged NveBinValue
@@ -161,9 +174,9 @@ public struct BinReader: Sendable {
     }
 
     private mutating func le(_ count: Int) throws(BinError) -> UInt64 {
-        let slice = try take(count)
+        let at = try advance(count)
         var v: UInt64 = 0
-        for (k, b) in slice.enumerated() { v |= UInt64(b) << (8 * UInt64(k)) }
+        for k in 0..<count { v |= UInt64(bytes[at + k]) << (8 * UInt64(k)) }
         return v
     }
 
@@ -184,9 +197,7 @@ public struct BinReader: Sendable {
     }
 
     /// Validates a UTF-8 run of `length()` bytes in place.
-    private mutating func checkUtf8Run() throws(BinError) {
-        guard Utf8.isValid(try take(try length())) else { throw .invalidUtf8 }
-    }
+    private mutating func checkUtf8Run() throws(BinError) { _ = try checkUtf8(try length()) }
 
     private mutating func checkValue(depth: Int) throws(BinError) {
         switch try peekTag() {
@@ -215,13 +226,24 @@ public struct BinReader: Sendable {
 /// Little-endian writer; reuse one instance with `clear()` (keeps capacity).
 public struct BinWriter: Sendable {
     /// Position of an open container's payload-length field.
-    public struct Mark: Sendable { fileprivate let lengthPosition: Int }
+    /// An open container: its payload-length field and the writer generation that opened it.
+    public struct Mark: Sendable {
+        fileprivate let lengthPosition: Int
+        fileprivate let generation: UInt32
+    }
 
     public private(set) var bytes: [UInt8] = []
 
     public init(capacity: Int = 64) { bytes.reserveCapacity(capacity) }
 
-    public mutating func clear() { bytes.removeAll(keepingCapacity: true) }
+    /// Bumped by `clear()`, so marks from before it are rejected even once the buffer refills.
+    private var generation: UInt32 = 0
+
+    /// Empties the buffer (keeping capacity) and invalidates every outstanding `Mark`.
+    public mutating func clear() {
+        bytes.removeAll(keepingCapacity: true)
+        generation &+= 1
+    }
 
     // MARK: raw little-endian primitives
 
@@ -256,16 +278,32 @@ public struct BinWriter: Sendable {
 
     /// Swift strings are always valid Unicode (no lone surrogates), so they encode without checks or copies.
     public mutating func writeStr(_ v: String) throws(BinError) {
+        guard UInt32(exactly: v.utf8.count) != nil else { throw .tooLarge }  // before any byte
         u8(BinTag.str.rawValue)
-        try sized(v.utf8)
+        try writeUtf8(v)
     }
 
+    /// Throws `.tooLarge` (writing nothing) when `v` exceeds `u32` bytes.
     public mutating func writeBytes<Bytes: Collection>(_ v: Bytes) throws(BinError) where Bytes.Element == UInt8 {
+        guard UInt32(exactly: v.count) != nil else { throw .tooLarge }  // before the tag
         u8(BinTag.bytes.rawValue)
         try sized(v)
     }
 
-    public mutating func writeMapKey(_ key: String) throws(BinError) { try sized(key.utf8) }
+    public mutating func writeMapKey(_ key: String) throws(BinError) { try writeUtf8(key) }
+
+    /// Length-prefixed UTF-8 copied straight from the string's contiguous storage (no temporary).
+    private mutating func writeUtf8(_ text: String) throws(BinError) {
+        var text = text  // `withUTF8` is mutating; native strings are already contiguous (no copy)
+        try text.withUTF8 { (utf8) throws(BinError) in try appendSized(UnsafeRawBufferPointer(utf8)) }
+    }
+
+    private mutating func appendSized(_ raw: UnsafeRawBufferPointer) throws(BinError) {
+        guard let len = UInt32(exactly: raw.count) else { throw .tooLarge }
+        u32(len)
+        bytes.reserveCapacity(bytes.count + raw.count)
+        for b in raw { bytes.append(b) }
+    }
 
     /// Opens an array of `count` values; close it with `end(_:)`.
     public mutating func beginArray(_ count: UInt32) -> Mark { begin(.array, count) }
@@ -274,7 +312,12 @@ public struct BinWriter: Sendable {
     public mutating func beginMap(_ count: UInt32) -> Mark { begin(.map, count) }
 
     public mutating func end(_ mark: Mark) throws(BinError) {
-        guard mark.lengthPosition >= 0, mark.lengthPosition <= bytes.count - 8 else { throw .invalidMark }
+        // Stale (pre-`clear()`), out of range, or not right after an array / map tag: reject, write nothing.
+        // An open container's length field still holds 0; a closed one holds its payload (>= 4).
+        guard mark.generation == generation, mark.lengthPosition >= 1, mark.lengthPosition <= bytes.count - 8,
+              bytes[mark.lengthPosition - 1] == BinTag.array.rawValue || bytes[mark.lengthPosition - 1] == BinTag.map.rawValue,
+              bytes[mark.lengthPosition ..< mark.lengthPosition + 4].allSatisfy({ $0 == 0 })
+        else { throw .invalidMark }
         let payload = bytes.count - mark.lengthPosition - 4
         guard let len = UInt32(exactly: payload) else { throw .tooLarge }
         for k in 0..<4 { bytes[mark.lengthPosition + k] = UInt8(truncatingIfNeeded: len >> (8 * UInt32(k))) }
@@ -292,45 +335,57 @@ public struct BinWriter: Sendable {
 
     private mutating func begin(_ tag: BinTag, _ count: UInt32) -> Mark {
         u8(tag.rawValue)
-        let mark = Mark(lengthPosition: bytes.count)
+        let mark = Mark(lengthPosition: bytes.count, generation: generation)
         u32(0)
         u32(count)
         return mark
     }
 }
 
-/// Allocation-free strict UTF-8 validation (Rust `core::str::from_utf8` acceptance).
+/// Allocation-free strict UTF-8 validation (Rust `core::str::from_utf8` acceptance). The core is
+/// non-generic over raw bytes, so it stays allocation-free even unspecialized (debug, cross-module).
 public enum Utf8 {
-    public static func isValid<Bytes: Collection>(_ bytes: Bytes) -> Bool where Bytes.Element == UInt8, Bytes.Index == Int {
-        var i = bytes.startIndex
-        let end = bytes.endIndex
+    public static func isValid(_ p: UnsafeRawBufferPointer) -> Bool {
+        var i = 0
+        let end = p.count
         while i < end {
-            let b0 = bytes[i]
+            let b0 = p[i]
             if b0 < 0x80 {
                 i += 1
                 continue
             }
-            var need = 0
+            let need: Int
             var lo: UInt8 = 0x80
             var hi: UInt8 = 0xBF
-            switch b0 {
-            case 0xC2...0xDF: need = 1
-            case 0xE0...0xEF:
+            if b0 >= 0xC2 && b0 <= 0xDF {
+                need = 1
+            } else if b0 >= 0xE0 && b0 <= 0xEF {
                 need = 2
                 if b0 == 0xE0 { lo = 0xA0 }
                 if b0 == 0xED { hi = 0x9F }
-            case 0xF0...0xF4:
+            } else if b0 >= 0xF0 && b0 <= 0xF4 {
                 need = 3
                 if b0 == 0xF0 { lo = 0x90 }
                 if b0 == 0xF4 { hi = 0x8F }
-            default: return false
-            }
-            guard need < end - i, (lo...hi).contains(bytes[i + 1]) else { return false }
-            for k in stride(from: 2, through: need, by: 1) where bytes[i + k] & 0xC0 != 0x80 {
+            } else {
                 return false
+            }
+            guard need < end - i, p[i + 1] >= lo, p[i + 1] <= hi else { return false }
+            var k = 2
+            while k <= need {
+                if p[i + k] & 0xC0 != 0x80 { return false }
+                k += 1
             }
             i += need + 1
         }
         return true
+    }
+
+    /// Any byte collection (contiguous storage is validated in place).
+    public static func isValid<Bytes: Collection>(_ bytes: Bytes) -> Bool where Bytes.Element == UInt8 {
+        if let valid = bytes.withContiguousStorageIfAvailable({ isValid(UnsafeRawBufferPointer($0)) }) {
+            return valid
+        }
+        return Array(bytes).withUnsafeBytes { isValid($0) }
     }
 }

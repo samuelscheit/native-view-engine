@@ -12,7 +12,10 @@ so Node runs the sources directly and any bundler can consume them.
   `no-unsafe-bigint64-to-number` enforces this.
 
 Every index, count and offset must be an integer. `NaN`, `Infinity` and fractions throw instead of
-slipping past a bounds check. `FieldSpec` is a nominal class that is validated when constructed.
+slipping past a bounds check. This covers `Key64` halves, `BinWriter` capacity, and layout strides.
+`FieldSpec` is a nominal class that is validated when constructed. A container mark is a branded
+`BinMark` carrying the generation, so a stale or already-closed mark is rejected, and a rejected
+write leaves no bytes.
 Strings reject lone surrogates (`isWellFormed`), are encoded in place with `encodeInto`, and keep a
 leading BOM.
 
@@ -21,7 +24,7 @@ leading BOM.
 | `src/key64.ts` | `Key64`, with `bigint` and safe-integer conversions that throw instead of rounding |
 | `src/utf8.ts` | Strict `isValidUtf8`, BOM-preserving `UTF8_DECODER`, in-place code-point encoding |
 | `src/xxh64.ts` | `Xxh64Hasher`, `xxh64`, `constId`: canonical XXH64, bit-identical to Rust `nve-hash` |
-| `src/bin_codec.ts` | `BinReader` / `BinWriter`, the `NveBinValue` format, `isValidUtf8`, a strict BOM-preserving `UTF8_DECODER` |
+| `src/bin_codec.ts` | `BinReader` / `BinWriter`, the `NveBinValue` format, `BinMark` (generation-checked container marks) |
 | `src/table_reader.ts` | `FieldKind`, `FieldSpec`, `decodeLength`, `rgba`, `TableReader` |
 | `src/scene_reader.ts` | `SceneReader` over slabs or `SceneReader.fromLinearMemory(memory, ptr, layout, schema)` |
 | `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |

@@ -71,6 +71,13 @@ void runXxh64(Check c) {
   for (final lone in const ['\uD800', 'x\uDC00', '\uD83D', '\uDE80\uD83D']) {
     c.throwsA<BinCodecException>(() => constId(lone), 'constId lone surrogate');
   }
+  // A rejected string feeds nothing: the hasher state is unchanged.
+  final atomic = Xxh64Hasher()..updateUtf8('ab');
+  final before = atomic.digest();
+  c.throwsA<BinCodecException>(() => atomic.updateUtf8('abc\uD800'), 'updateUtf8 lone surrogate');
+  c.eq(atomic.digest(), before, 'updateUtf8 is atomic');
+  atomic.updateUtf8('c');
+  c.eq(atomic.digest(), constId('abc'), 'hasher still usable after a rejection');
   final le = List<int>.filled(9, 0);
   k.writeLE(le, 1);
   c.eq(Key64.readLE(le, 1), k, 'LE round trip at odd offset');

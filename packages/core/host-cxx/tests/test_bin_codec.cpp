@@ -300,14 +300,87 @@ void test_stale_marks_never_write_out_of_bounds() {
   CHECK(w.error() == BinError::InvalidMark);
   BinWriter d;
   d.write_null();
-  d.end(BinWriter::Mark{0});
+  d.end(BinWriter::Mark{});
   CHECK(d.error() == BinError::InvalidMark);
   BinWriter far;
   const BinWriter::Mark open = far.begin_array(0);
-  far.end(BinWriter::Mark{open.len_pos + 1u});  // would straddle the end
+  far.end(BinWriter::Mark{open.len_pos + 1u, open.generation});  // not right after a container tag
   CHECK(far.error() == BinError::InvalidMark);
   far.clear();
   CHECK(far.ok());
+
+  // Stale after `clear()` + refill: the old position is in range again, but the generation differs.
+  BinWriter refill;
+  const BinWriter::Mark stale = refill.begin_array(1);
+  refill.clear();
+  const std::vector<uint8_t> sixteen(16, 0xAB);
+  refill.write_bytes(sixteen);
+  const std::vector<uint8_t> before(refill.bytes().begin(), refill.bytes().end());
+  refill.end(stale);
+  CHECK(refill.error() == BinError::InvalidMark);
+  CHECK(std::vector<uint8_t>(refill.bytes().begin(), refill.bytes().end()) == before);  // untouched
+
+  // Refill recreates a container at the very same offset: only the generation can tell them apart.
+  BinWriter same;
+  const BinWriter::Mark old = same.begin_array(1);
+  same.clear();
+  const BinWriter::Mark fresh = same.begin_array(2);
+  same.write_null();
+  same.write_null();
+  same.end(old);
+  CHECK(same.error() == BinError::InvalidMark);
+  BinWriter same_ok;
+  (void)same_ok.begin_array(1);
+  same_ok.clear();
+  const BinWriter::Mark live = same_ok.begin_array(1);
+  same_ok.write_null();
+  same_ok.end(live);
+  CHECK(same_ok.ok() && BinReader::validate(same_ok.bytes()) == BinError::None);
+  (void)fresh;
+}
+
+void test_marks_never_patch_foreign_bytes() {
+  // `end` at offset 0 of a 9-byte buffer would overwrite the I64 tag + 3 payload bytes.
+  BinWriter w;
+  w.write_i64(0x0102030405060708);
+  const std::vector<uint8_t> before(w.bytes().begin(), w.bytes().end());
+  w.end(BinWriter::Mark{0u, 1u});
+  w.end(BinWriter::Mark{1u, 1u});
+  CHECK(w.error() == BinError::InvalidMark);
+  CHECK(std::vector<uint8_t>(w.bytes().begin(), w.bytes().end()) == before);
+  // Stale after `clear()` + a 9-byte refill.
+  BinWriter s;
+  const BinWriter::Mark m = s.begin_array(1);
+  s.clear();
+  s.write_i64(-1);
+  const std::vector<uint8_t> refill(s.bytes().begin(), s.bytes().end());
+  s.end(m);
+  CHECK(s.error() == BinError::InvalidMark);
+  CHECK(std::vector<uint8_t>(s.bytes().begin(), s.bytes().end()) == refill);
+  // Double `end`: the second would re-patch a closed container with the grown length.
+  BinWriter d;
+  const BinWriter::Mark open = d.begin_array(1);
+  d.write_null();
+  d.end(open);
+  CHECK(d.ok());
+  d.write_null();
+  const std::vector<uint8_t> closed(d.bytes().begin(), d.bytes().end());
+  d.end(open);
+  CHECK(d.error() == BinError::InvalidMark);
+  CHECK(std::vector<uint8_t>(d.bytes().begin(), d.bytes().end()) == closed);
+}
+
+void test_rejected_writes_leave_no_bytes() {
+  for (const std::string_view bad : {std::string_view("\xED\xA0\x80"), std::string_view("ok\xC0\xAF")}) {
+    BinWriter w;
+    w.write_null();
+    w.write_str(bad);
+    CHECK(w.error() == BinError::InvalidUtf8 && w.size() == 1u);  // no orphaned tag or length
+    BinWriter k;
+    k.write_null();
+    k.write_map_key(bad);
+    CHECK(k.error() == BinError::InvalidUtf8 && k.size() == 1u);
+  }
 }
 
 void test_validation_is_allocation_free() {
@@ -356,6 +429,8 @@ int main() {
   test_bom_and_invalid_utf8_writes();
   test_stale_marks_never_write_out_of_bounds();
   test_validation_is_allocation_free();
+  test_marks_never_patch_foreign_bytes();
+  test_rejected_writes_leave_no_bytes();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_bin_codec_test: %d failure(s)\n", g_failures);
     return 1;
