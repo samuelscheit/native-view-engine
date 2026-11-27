@@ -6,10 +6,10 @@
 //   uint32_t tag(const NodeData&);                             // view type; a change recreates it
 //   Handle create(const NodeData&);                            // every non-root node
 //   void update(Handle&, const NodeData&);                     // after create and on every change
-//   void move(Handle&, const NodeData&);                       // optional: geometry-only change
+//   void move(Handle&, const NodeGeometry&);                   // optional: geometry-only change
 //   void update_root(const NodeData&);                         // root node (the host's own view)
 //   void destroy(uint32_t id, Handle&);
-//   void set_children(const NodeData& parent, Handle* parent_view /* null for root */,
+//   void set_children(const NodeGeometry& parent, Handle* parent_view /* null for root */,
 //                     std::span<Handle* const> kids);           // in scene child order
 //   uint32_t module_resource(const NodeData&);                 // optional: resource id a module
 //                                                              // table attaches (canvas draw list)
@@ -26,7 +26,7 @@
 // sync (no frame gap or new epoch, whose dirty ids were never seen), and `!scene.resource_dirty(id)`.
 // `moved_indices` (only the box relative to the parent changed; a moved node's descendants are
 // not listed, so adapters position views relative to their parent) get `move`, which receives
-// `read_geometry` data (identity and geometry only). Adapters without `move` get a full `update`
+// the node's `NodeGeometry` (identity and geometry only). Adapters without `move` get a full `update`
 // instead. Views are keyed by node index and checked against the packed `NodeId` generation, so a
 // recycled slot recreates its view.
 //
@@ -35,6 +35,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -48,7 +49,7 @@ namespace nve::host {
 
 /// `Adapter` repositions a view whose geometry alone changed.
 template <class Adapter>
-concept MovingAdapter = requires(Adapter& a, typename Adapter::Handle& h, const NodeData& n) { a.move(h, n); };
+concept MovingAdapter = requires(Adapter& a, typename Adapter::Handle& h, const NodeGeometry& g) { a.move(h, g); };
 
 /// `Adapter` reads one more resource per node than `NodeData` names (e.g. a canvas draw list).
 template <class Adapter>
@@ -95,6 +96,7 @@ class RetainedTree {
     work_.clear();
 
     if (full) {
+      users_.reset();  // every live view re-registers below; stale epochs' ids are dropped
       for (uint32_t i = 0; i < entries_.size(); ++i) {
         const NveNodeRow* row = scene.is_live(i) ? scene.row(i) : nullptr;
         if (entries_[i].live && (row == nullptr || node_generation(entries_[i].id) != row->generation)) {
@@ -272,10 +274,10 @@ class RetainedTree {
   void move(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
     Entry& e = entries_[i];
     if constexpr (MovingAdapter<Adapter>) {
-      const NodeData node = read_geometry(scene, tables, i);
-      if (i != kRootIndex && e.live && e.id == node.id) {
+      const std::optional<NodeGeometry> g = read_geometry(scene, tables, i);
+      if (g && i != kRootIndex && e.live && e.id == g->id) {
         e.stamp = epoch_;
-        adapter.move(e.handle, node);
+        adapter.move(e.handle, *g);
         ++moved_;
         return;
       }
@@ -283,15 +285,17 @@ class RetainedTree {
     visit(scene, tables, adapter, i);
   }
 
+  /// Hands live node `i`'s child views to the adapter (`relink_` may name dead or recycled slots).
   void sync_children(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
     Entry& e = entries_[i];
-    if (!e.live) return;
-    const NodeData node = read_node(scene, tables, i, resolve_style(scene, tables, i));
+    if (!e.live || !scene.is_live(i)) return;
+    const std::optional<NodeGeometry> g = read_geometry(scene, tables, i);
+    if (!g || g->id != e.id) return;
     kids_.clear();
-    for (const uint32_t child : node.children) {
+    for (const uint32_t child : scene.node_children(i).value_or(std::span<const uint32_t>())) {
       if (Handle* h = find(child)) kids_.push_back(h);
     }
-    adapter.set_children(node, i == kRootIndex ? nullptr : &e.handle, std::span<Handle* const>(kids_));
+    adapter.set_children(*g, i == kRootIndex ? nullptr : &e.handle, std::span<Handle* const>(kids_));
   }
 
   std::vector<Entry> entries_;

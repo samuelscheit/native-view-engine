@@ -84,6 +84,7 @@ impl SceneDelta {
             let id = store.id_at(idx);
             let r = id.and_then(&layout_of).unwrap_or_default();
             self.rects[idx] = r;
+            // Dead slots reset to the default box, so a reused slot compares against nothing.
             let local = match id {
                 None => NveLayoutRect::default(),
                 Some(id) => match store.parent(id).and_then(&layout_of) {
@@ -91,7 +92,7 @@ impl SceneDelta {
                     None => r,
                 },
             };
-            if self.locals[idx] != local {
+            if !same_bits(&self.locals[idx], &local) {
                 self.locals[idx] = local;
                 if id.is_some() {
                     self.mark(idx, false);
@@ -111,4 +112,11 @@ impl SceneDelta {
             }
         }
     }
+}
+
+/// Bit equality: total and reflexive (a NaN box equals itself; `-0.0` differs from `0.0`), so a
+/// non-finite rect can neither re-list a node every frame nor hide a real change.
+#[inline]
+fn same_bits(a: &NveLayoutRect, b: &NveLayoutRect) -> bool {
+    [a.x, a.y, a.width, a.height].map(f32::to_bits) == [b.x, b.y, b.width, b.height].map(f32::to_bits)
 }
