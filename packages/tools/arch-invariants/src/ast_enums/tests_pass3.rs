@@ -73,8 +73,8 @@ fn guarded_split_matches_if_else_and_tuple_or_string_variant_heads_stay_intact()
     assert_eq!(scan_sources(&[("b.rs", unguarded_b), ("a.rs", guarded_a)]).len(), 1);
 
     // 2. Non-vacuous string-literal `variant_head` test: 4 matching + 2 distinct `"a (...)"` arms
-    //    per side. Old `split(['(', '{'])` collapsed 5 arms into `"a "` -> 3/5 = 60% < 75%
-    //    (`MIN_ARM_INTERNAL_MATCH_PCT`) / 4/6 < 70% (`MIN_SHARED_PAT_AGREEMENT_PCT`).
+    //    per side. Old `split(['(', '{'])` collapsed into 2 heads (`"a "` ×5 with 3/5 = 60% < 75%
+    //    `MIN_ARM_INTERNAL_MATCH_PCT`, and `"a"` ×1), failing `matched_syn = 1/2 = 50% < 65%`.
     let lit_a = r#"
         fn parse_a(s: &str) -> Option<Tok> {
             match s {
@@ -381,10 +381,8 @@ fn self_imports_local_globs_reverse_globs_inline_mod_and_sdk_shadowing() {
         pub fn disc_nested_in_overflow(x: (E, E), v: u8) -> Option<E> {
             match x {
                 (E::A | E::B | E::C | E::D | E::E | E::F | E::G | E::H | E::I,
-                 E::A | E::B | E::C | E::D | E::E | E::F | E::G | E::H | E::I) => {
-                    match v { 0 => Some(E::A), 1 => Some(E::B), 2 => Some(E::C), _ => None }
-                }
-                _ => None,
+                 E::A | E::B | E::C | E::D | E::E | E::F | E::G | E::H | E::I) => Some(E::A),
+                _ => match v { 0 => Some(E::A), 1 => Some(E::B), 2 => Some(E::C), _ => None },
             }
         }
     "#;

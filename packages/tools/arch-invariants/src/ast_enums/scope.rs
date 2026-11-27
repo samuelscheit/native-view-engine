@@ -408,18 +408,27 @@ impl ImportScope {
     }
 
     /// Canonicalizes an uppercase single-segment identifier (`resolve_unqualified_variant` ->
-    /// `type_aliases` -> verbatim `name`).
-    pub fn canonical_single_ident(&self, name: &str) -> String {
+    /// `type_aliases` -> verbatim `name`) and, when resolved as an unqualified enum variant,
+    /// returns `Some(qual)` (`Some(Some(q))` for a known enum, `Some(None)` for an ambiguous glob).
+    pub fn canonical_single_ident_with_qual(
+        &self,
+        name: &str,
+    ) -> (String, Option<Option<EnumQualifier>>) {
         if let Some((qual, variant)) = self.resolve_unqualified_variant(name) {
-            return match qual {
+            let key = match &qual {
                 Some(q) => format!("{}::{variant}", q.canonical_key()),
                 None => variant,
             };
+            return (key, Some(qual));
         }
         if let Some(q) = self.type_aliases.get(name) {
-            return q.canonical_key();
+            return (q.canonical_key(), None);
         }
-        name.to_string()
+        (name.to_string(), None)
+    }
+
+    pub fn canonical_single_ident(&self, name: &str) -> String {
+        self.canonical_single_ident_with_qual(name).0
     }
 
     pub fn is_external_sdk_path(&self, path: &syn::Path) -> bool {
