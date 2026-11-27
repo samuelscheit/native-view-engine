@@ -32,7 +32,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)attachInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId;
 - (BOOL)loadDylibAtPath:(NSString *)dylibPath surfaceId:(uint32_t)surfaceId error:(NSError *_Nullable *_Nullable)error;
 
+/// Forwards props to the app; `NO` when the runtime refused them. Called from a view callback
+/// during reconcile, it is deferred to the next main-queue turn and returns `YES` (queued).
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;
+/// Applies one NVP1 hot patch; `YES` when it changed the app (or was queued during reconcile).
 - (BOOL)applyHotPatch:(NSData *)patchNvp1;
 /// Ticks the runtime, reconciles a published frame, and forwards outbound app events.
 - (void)renderFrame;

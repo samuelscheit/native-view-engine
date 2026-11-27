@@ -76,7 +76,7 @@ NveValue nve_value_from_objc_object(id obj, ValueArena &arena, uint32_t depth) {
     v.tag = NVE_VAL_ARRAY;
     v.data.array_val = NveValueArray{items, a.count};
   } else if ([obj isKindOfClass:[NSDictionary class]]) {
-    const std::vector<NveMapEntry> entries = map_entries_from_dictionary(obj, arena, depth + 1u);
+    const std::vector<NveMapEntry> entries = map_entries_from_dictionary(obj, arena, depth);
     NveMapEntry *stored = arena.entries(entries.size());
     std::copy(entries.begin(), entries.end(), stored);
     v.tag = NVE_VAL_MAP;
@@ -86,11 +86,16 @@ NveValue nve_value_from_objc_object(id obj, ValueArena &arena, uint32_t depth) {
 }
 
 std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *props, ValueArena &arena, uint32_t depth) {
-  NSArray<NSString *> *keys = [props.allKeys sortedArrayUsingSelector:@selector(compare:)];
   std::vector<NveMapEntry> out;
+  if (depth > kMaxDepth) return out;
+  // Filter before sorting: `compare:` on a mixed-key dictionary (NSNumber vs NSString) throws.
+  NSMutableArray<NSString *> *keys = [NSMutableArray arrayWithCapacity:props.count];
+  for (id key in props) {
+    if ([key isKindOfClass:[NSString class]]) [keys addObject:key];
+  }
+  [keys sortUsingSelector:@selector(compare:)];
   out.reserve(keys.count);
   for (NSString *key in keys) {
-    if (![key isKindOfClass:[NSString class]]) continue;
     NveMapEntry e{};
     e.key = arena.str(key.UTF8String ?: "");
     e.value = nve_value_from_objc_object(props[key], arena, depth + 1u);

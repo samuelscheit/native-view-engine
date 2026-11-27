@@ -68,4 +68,7 @@ class AppleImageCache {
 /// Shared process-wide bounded-LRU image cache used by Apple host views.
 AppleImageCache &shared_image_cache();
 
+/// Decodes encoded image bytes (PNG, JPEG, …); `nil` for empty, undecodable, or 0x0 images.
+NvePlatformImage *_Nullable decode_image_data(NSData *_Nullable data);
+
 } // namespace nve::apple
