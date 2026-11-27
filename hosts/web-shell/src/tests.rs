@@ -532,7 +532,7 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
         use_hook(move || {
             spawn(async move {
                 // 24 render-chained steps exceed MAX_PUMPS (8) so the first `pump_async_work_with`
-                // MUST hit the pump cap and call `waker.wake_by_ref()` instead of stalling!
+                // MUST hit the pump cap and return `hit_cap = true` instead of stalling!
                 for step in 1..=24u32 {
                     core::future::poll_fn(|cx| {
                         if gate_for_task.ready.swap(false, Ordering::AcqRel) {

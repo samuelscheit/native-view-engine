@@ -470,5 +470,26 @@ mod tests {
         let evicted = client.read::<FetchA>(h);
         assert_eq!(evicted.completed_seq, 0);
         assert_eq!(evicted.completed_invalidation_version, 0);
+
+        // 7. Recycling the evicted slot into a new key must observe `QueryPayload::reset()` having
+        //    zeroed `completed_seq` and `completed_invalidation_version`, even after invalidations
+        //    advance the recycled slot to the prior slot's `(wildcard_epoch, fetch_gen)`.
+        let reused = client
+            .subscribe::<FetchA>(&2, QueryOptions::default())
+            .unwrap();
+        assert_eq!(reused.slot, h.slot);
+        assert_ne!(reused.generation, h.generation);
+        let reused_init = client.read::<FetchA>(reused);
+        assert_eq!(reused_init.completed_seq, 0);
+        assert_eq!(reused_init.completed_invalidation_version, 0);
+        client.invalidate_handles(&[reused]);
+        client.invalidate_handles(&[reused]);
+        let reused_inv = client.read::<FetchA>(reused);
+        assert_eq!(reused_inv.invalidation_version, after_set.invalidation_version);
+        assert_eq!(reused_inv.completed_invalidation_version, 0);
+        assert_ne!(
+            reused_inv.completed_invalidation_version,
+            reused_inv.invalidation_version
+        );
     }
 }

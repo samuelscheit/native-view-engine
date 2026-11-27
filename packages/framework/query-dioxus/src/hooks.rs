@@ -227,7 +227,7 @@ where
     }
 
     // Subscribe the calling component to this slot's reactive signal so invalidations wake it.
-    let (handle, slot_sig, mut fetched_for_key, mut last_inv_ver, external_wait_seq) = {
+    let (handle, slot_sig, mut fetched_for_key, last_inv_ver, external_wait_seq) = {
         let st = state.read();
         (
             st.handle,
@@ -247,15 +247,13 @@ where
         {
             let mut st = state.write();
             st.external_wait_seq = None;
-            // Latch `fetched_for_key` and the exact invalidation version answered by the settled
-            // commit (data or error). An error commit on the current invalidation does not trigger
-            // a duplicate refetch, while any subsequent invalidation advances `invalidation_version`
-            // beyond `completed_invalidation_version` and still triggers `should_refetch_invalidated`.
+            // Latch `fetched_for_key` when the awaited external commit settles (data or error).
+            // `should_refetch_invalidated` below guards against re-fetching an invalidation already
+            // answered by an error commit via `completed_invalidation_version != invalidation_version`,
+            // while any subsequent invalidation advances `invalidation_version` and still refetches.
             if snap.completed_seq != wait_seq {
                 st.fetched_for_key = true;
                 fetched_for_key = true;
-                st.last_invalidation_ver = snap.completed_invalidation_version;
-                last_inv_ver = snap.completed_invalidation_version;
             }
         }
         let should_initial = !fetched_for_key && !snap.is_fetching && snap.is_stale;
