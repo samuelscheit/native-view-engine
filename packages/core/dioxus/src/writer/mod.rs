@@ -3,8 +3,10 @@
 //! mirroring, zero `Box<NodeExtras>`, zero `ComponentKind`, and zero `set_raw_prop`.
 
 mod attributes;
+mod element_map;
 mod identity_attrs;
 mod mutations;
+mod standalone_style;
 #[cfg(test)]
 mod tests;
 
@@ -19,23 +21,18 @@ use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
 
 use crate::table_attr::TableAttr;
 use crate::typed_style::TypedStyle;
-
-/// Saved value of a standalone layout/visual/typography attribute so clearing `style="..."`
-/// restores standalone attributes instead of wiping them.
-#[derive(Debug, Clone)]
-pub(crate) enum StandaloneStyleVal {
-    Float(f64),
-    Int(i64),
-    Str(String),
-}
+use element_map::ElementMap;
+pub(crate) use standalone_style::{StandaloneStyleRef, StandaloneStyleVal};
+use standalone_style::{StandaloneStyleList, StylePool};
 
 /// Bridges Dioxus 0.7 `WriteMutations` straight into a single-owner [`NodeStore`].
 pub struct NveMutationWriter {
     pub(crate) surface_id: SurfaceId,
     pub(crate) store: NodeStore,
     pub(crate) changes: ChangeSet,
-    pub(crate) el_to_node: HashMap<ElementId, NodeId>,
-    pub(crate) node_to_el: HashMap<NodeId, ElementId>,
+    pub(crate) elements: ElementMap,
+    /// Dioxus mutation stack; also the scratch stack of `remove_subtree` and template
+    /// instantiation, which push above the live entries and truncate back (split-at-len).
     pub(crate) stack: Vec<NodeId>,
     pub(crate) child_scratch: Vec<NodeId>,
     pub(crate) incoming_scratch: Vec<NodeId>,
@@ -47,7 +44,9 @@ pub struct NveMutationWriter {
     /// Tracks active inline `style="..."` override strings and their accepted CSS property bitmask.
     pub(crate) inline_styles: HashMap<NodeId, (String, u64)>,
     /// Tracks standalone CSS/style attributes (`width`, `color`, `opacity`, etc.) per node.
-    pub(crate) standalone_style_attrs: HashMap<NodeId, Vec<(String, StandaloneStyleVal)>>,
+    pub(crate) standalone_style_attrs: HashMap<NodeId, StandaloneStyleList>,
+    /// Recycled style lists and strings of removed nodes.
+    pub(crate) style_pool: StylePool,
     #[cfg(test)]
     pub(crate) standalone_replay_count: usize,
     #[cfg(test)]
@@ -59,16 +58,11 @@ impl NveMutationWriter {
         tables::register_core_tables();
         let mut store = NodeStore::new();
         store.set_realization_order(tables::core_realization_order());
-        let mut el_to_node = HashMap::default();
-        let mut node_to_el = HashMap::default();
-        el_to_node.insert(ElementId(0), NodeId::ROOT);
-        node_to_el.insert(NodeId::ROOT, ElementId(0));
         Self {
             surface_id,
             store,
             changes: ChangeSet::default(),
-            el_to_node,
-            node_to_el,
+            elements: ElementMap::with_root(),
             stack: Vec::with_capacity(64),
             child_scratch: Vec::with_capacity(32),
             incoming_scratch: Vec::with_capacity(32),
@@ -76,6 +70,7 @@ impl NveMutationWriter {
             typed_styles: HashMap::default(),
             inline_styles: HashMap::default(),
             standalone_style_attrs: HashMap::default(),
+            style_pool: StylePool::default(),
             #[cfg(test)]
             standalone_replay_count: 0,
             #[cfg(test)]
@@ -105,12 +100,12 @@ impl NveMutationWriter {
 
     #[inline]
     pub fn resolve_el(&self, id: ElementId) -> Option<NodeId> {
-        self.el_to_node.get(&id).copied()
+        self.elements.node_of(id)
     }
 
     #[inline]
     pub fn element_id_of(&self, node_id: AbiNodeId) -> Option<ElementId> {
-        self.node_to_el.get(&NodeId(node_id)).copied()
+        self.elements.element_of(NodeId(node_id))
     }
 
     #[inline]
@@ -149,8 +144,7 @@ impl NveMutationWriter {
         let Self {
             store,
             changes,
-            el_to_node,
-            node_to_el,
+            elements,
             stack,
             child_scratch,
             incoming_scratch,
@@ -158,6 +152,7 @@ impl NveMutationWriter {
             typed_styles,
             inline_styles,
             standalone_style_attrs,
+            style_pool,
             #[cfg(test)]
             standalone_replay_count,
             #[cfg(test)]
@@ -169,8 +164,7 @@ impl NveMutationWriter {
         let out = {
             let mut mtx = StoreMutationTx {
                 tx: &mut tx,
-                el_to_node,
-                node_to_el,
+                elements,
                 stack,
                 child_scratch,
                 incoming_scratch,
@@ -178,6 +172,7 @@ impl NveMutationWriter {
                 typed_styles,
                 inline_styles,
                 standalone_style_attrs,
+                style_pool,
                 #[cfg(test)]
                 standalone_replay_count,
                 #[cfg(test)]
@@ -193,15 +188,15 @@ impl NveMutationWriter {
 /// Ephemeral per-frame Dioxus `WriteMutations` adapter borrowing [`Transaction`] directly.
 pub struct StoreMutationTx<'s, 'a> {
     pub(crate) tx: &'a mut Transaction<'s>,
-    pub(crate) el_to_node: &'a mut HashMap<ElementId, NodeId>,
-    pub(crate) node_to_el: &'a mut HashMap<NodeId, ElementId>,
+    pub(crate) elements: &'a mut ElementMap,
     pub(crate) stack: &'a mut Vec<NodeId>,
     pub(crate) child_scratch: &'a mut Vec<NodeId>,
     pub(crate) incoming_scratch: &'a mut Vec<NodeId>,
     pub(crate) attached_tables: &'a mut HashMap<NodeId, Vec<(&'static str, TableAttr)>>,
     pub(crate) typed_styles: &'a mut HashMap<NodeId, TypedStyle>,
     pub(crate) inline_styles: &'a mut HashMap<NodeId, (String, u64)>,
-    pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, Vec<(String, StandaloneStyleVal)>>,
+    pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, StandaloneStyleList>,
+    pub(crate) style_pool: &'a mut StylePool,
     #[cfg(test)]
     pub(crate) standalone_replay_count: &'a mut usize,
     #[cfg(test)]
@@ -211,13 +206,12 @@ pub struct StoreMutationTx<'s, 'a> {
 impl StoreMutationTx<'_, '_> {
     #[inline]
     pub(crate) fn bind_element(&mut self, el: ElementId, node: NodeId) {
-        self.el_to_node.insert(el, node);
-        self.node_to_el.insert(node, el);
+        self.elements.bind(el, node);
     }
 
     #[inline]
     pub(crate) fn resolve_el(&self, id: ElementId) -> Option<NodeId> {
-        self.el_to_node.get(&id).copied()
+        self.elements.node_of(id)
     }
 
     #[inline]
@@ -225,11 +219,15 @@ impl StoreMutationTx<'_, '_> {
         &mut self,
         node: NodeId,
         name: &str,
-        val: StandaloneStyleVal,
+        val: StandaloneStyleRef<'_>,
     ) -> usize {
-        let list = self.standalone_style_attrs.entry(node).or_default();
+        let pool = &mut *self.style_pool;
+        let list = self
+            .standalone_style_attrs
+            .entry(node)
+            .or_insert_with(|| pool.list());
         if let Some(pos) = list.iter().position(|(k, _)| k == name) {
-            list[pos].1 = val;
+            pool.assign(&mut list[pos].1, val);
             return pos;
         }
         let rank = nve_components::css_key_rank(name);
@@ -237,7 +235,7 @@ impl StoreMutationTx<'_, '_> {
             .iter()
             .rposition(|(k, _)| nve_components::css_key_rank(k) <= rank)
             .map_or(0, |i| i + 1);
-        list.insert(pos, (name.to_owned(), val));
+        list.insert(pos, (pool.string(name), pool.value(val)));
         pos
     }
 
@@ -246,13 +244,16 @@ impl StoreMutationTx<'_, '_> {
         let Some(list) = self.standalone_style_attrs.get_mut(&node) else {
             return false;
         };
-        let before = list.len();
-        list.retain(|(k, _)| k != name);
-        let removed = list.len() != before;
-        if list.is_empty() {
-            self.standalone_style_attrs.remove(&node);
+        let Some(pos) = list.iter().position(|(k, _)| k == name) else {
+            return false;
+        };
+        self.style_pool.recycle_entry(list.remove(pos));
+        if list.is_empty()
+            && let Some(list) = self.standalone_style_attrs.remove(&node)
+        {
+            self.style_pool.recycle_list(list);
         }
-        removed
+        true
     }
 
     #[inline]
@@ -321,7 +322,7 @@ impl StoreMutationTx<'_, '_> {
         &mut self,
         node: NodeId,
         name: &str,
-        val: StandaloneStyleVal,
+        val: StandaloneStyleRef<'_>,
     ) {
         let pos = self.record_standalone_style(node, name, val);
         let bits = nve_components::css_key_bits(name);
@@ -381,7 +382,17 @@ impl StoreMutationTx<'_, '_> {
             value,
             nve_components::STYLE_LAYER_ALL,
         );
-        self.inline_styles.insert(node, (value.to_owned(), next_mask));
+        match self.inline_styles.get_mut(&node) {
+            Some((inline, mask)) => {
+                inline.clear();
+                inline.push_str(value);
+                *mask = next_mask;
+            }
+            None => {
+                let inline = self.style_pool.string(value);
+                self.inline_styles.insert(node, (inline, next_mask));
+            }
+        }
         let dropped = nve_components::prop_bits_to_layers(prev_mask & !next_mask);
         if dropped != 0 {
             self.rebuild_style_layers_mask(node, dropped);
@@ -463,11 +474,14 @@ impl StoreMutationTx<'_, '_> {
                     }
                 }
                 if !children.is_empty() {
-                    let mut child_ids = Vec::with_capacity(children.len());
+                    // Split-at-len: nested instantiations push and truncate above `base`.
+                    let base = self.stack.len();
                     for child in *children {
-                        child_ids.push(self.instantiate_template_node(child));
+                        let child_id = self.instantiate_template_node(child);
+                        self.stack.push(child_id);
                     }
-                    self.tx.set_children(node, &child_ids);
+                    self.tx.set_children(node, &self.stack[base..]);
+                    self.stack.truncate(base);
                 }
                 node
             }
@@ -497,21 +511,24 @@ impl StoreMutationTx<'_, '_> {
 
     /// Removes `node` and its entire descendant subtree from `NodeStore` and ID maps.
     pub(crate) fn remove_subtree(&mut self, root: NodeId) {
-        let mut to_visit = vec![root];
-        let mut order = Vec::new();
-        while let Some(nid) = to_visit.pop() {
-            order.push(nid);
-            to_visit.extend_from_slice(self.tx.store().children(nid));
-        }
-        for nid in order {
-            if let Some(el) = self.node_to_el.remove(&nid) {
-                self.el_to_node.remove(&el);
-            }
+        // Breadth-first over the scratch region above the live Dioxus stack (split-at-len).
+        let base = self.stack.len();
+        self.stack.push(root);
+        let mut next = base;
+        while let Some(&nid) = self.stack.get(next) {
+            next += 1;
+            self.stack.extend_from_slice(self.tx.store().children(nid));
+            self.elements.unbind_node(nid);
             self.attached_tables.remove(&nid);
             self.typed_styles.remove(&nid);
-            self.inline_styles.remove(&nid);
-            self.standalone_style_attrs.remove(&nid);
+            if let Some((inline, _)) = self.inline_styles.remove(&nid) {
+                self.style_pool.recycle_string(inline);
+            }
+            if let Some(list) = self.standalone_style_attrs.remove(&nid) {
+                self.style_pool.recycle_list(list);
+            }
         }
+        self.stack.truncate(base);
         self.tx.remove(root);
     }
 

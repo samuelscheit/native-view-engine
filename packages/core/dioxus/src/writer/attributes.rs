@@ -18,7 +18,7 @@ use nve_store::{Length, NodeId};
 use crate::table_attr::TableAttr;
 use crate::typed_style::{pack_media_query, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
-use super::{StandaloneStyleVal, StoreMutationTx};
+use super::{StandaloneStyleRef, StoreMutationTx};
 
 const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
 
@@ -96,7 +96,7 @@ impl StoreMutationTx<'_, '_> {
     #[inline]
     fn apply_numeric_attr(&mut self, node: NodeId, name: &str, v: f64) {
         if self.apply_numeric_attr_untracked(node, name, v) {
-            self.finish_standalone_style(node, name, StandaloneStyleVal::Float(v));
+            self.finish_standalone_style(node, name, StandaloneStyleRef::Float(v));
         }
     }
 
@@ -230,7 +230,7 @@ impl StoreMutationTx<'_, '_> {
                 self.tx
                     .edit::<Visual>(node)
                     .z_index(v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-                self.finish_standalone_style(node, name, StandaloneStyleVal::Int(v));
+                self.finish_standalone_style(node, name, StandaloneStyleRef::Int(v));
             }
             "minlength" => {
                 self.tx
@@ -309,7 +309,7 @@ impl StoreMutationTx<'_, '_> {
             nve_components::STYLE_LAYER_ALL,
         ) {
             nve_components::CssAttrResult::Applied(_) => {
-                self.finish_standalone_style(node, name, StandaloneStyleVal::Str(value.to_owned()));
+                self.finish_standalone_style(node, name, StandaloneStyleRef::Str(value));
                 return;
             }
             nve_components::CssAttrResult::Invalid(layer) => {
@@ -522,7 +522,8 @@ impl StoreMutationTx<'_, '_> {
         }
         match name {
             "style" => {
-                if let Some((_, prev_mask)) = self.inline_styles.remove(&node) {
+                if let Some((inline, prev_mask)) = self.inline_styles.remove(&node) {
+                    self.style_pool.recycle_string(inline);
                     let layers = nve_components::prop_bits_to_layers(prev_mask);
                     if layers != 0 {
                         self.rebuild_style_layers_mask(node, layers);

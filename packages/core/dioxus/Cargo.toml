@@ -21,5 +21,9 @@ criterion = { workspace = true }
 name = "dioxus_bench"
 harness = false
 
+[[bench]]
+name = "writer_bench"
+harness = false
+
 [lints]
 workspace = true
