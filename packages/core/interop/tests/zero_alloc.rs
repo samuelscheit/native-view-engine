@@ -6,8 +6,9 @@ use std::hint::black_box;
 
 use nve_abi::{SurfaceId, TimestampUs};
 use nve_interop::{
-    FrameworkKind, GestureCapabilities, InteropError, InteropRuntime, PointerPhase, PointerSample,
-    SurfaceEnvironment, SurfaceOrchestrator,
+    EnvironmentOverrides, FrameworkKind, GestureCapabilities, InteropError, InteropRuntime,
+    PointerPhase, PointerSample, SurfaceDescriptor, SurfaceEnvironment, SurfaceOrchestrator,
+    ThemeContext,
 };
 
 struct CountingAlloc;
@@ -352,4 +353,91 @@ fn inline_ancestor_cap_boundary_zero_alloc_at_32_and_heap_fallback_above_32() {
         )
         .unwrap();
     assert_eq!(mv_deep.winner, Some(beyond_cap));
+}
+
+#[test]
+fn environment_update_pruning_and_override_child_zero_alloc_steady_state() {
+    let mut rich_theme = ThemeContext::dark();
+    for i in 0..16 {
+        rich_theme
+            .tokens
+            .insert(format!("token.{i}"), format!("#{:06x}", i * 0x1111));
+    }
+
+    let mut orch = SurfaceOrchestrator::new();
+    let root_env = SurfaceEnvironment {
+        locale: String::new(),
+        scale_factor: 1.0,
+        ..Default::default()
+    };
+    let root = orch
+        .register_root(FrameworkKind::Nve, "root", root_env.clone())
+        .unwrap();
+    let ov_child = orch
+        .register_surface(
+            SurfaceDescriptor::new(FrameworkKind::Nve, "ov_child")
+                .with_parent(root)
+                .with_overrides(EnvironmentOverrides {
+                    theme: Some(rich_theme.clone()),
+                    scale_factor: Some(2.0),
+                    locale: Some("ja-JP".into()),
+                    ..Default::default()
+                }),
+        )
+        .unwrap();
+    let _grandchild = orch
+        .register_child(ov_child, FrameworkKind::Nve, "gc")
+        .unwrap();
+    let ov_child_env = orch.get(ov_child).unwrap().environment.clone();
+
+    // Warm event/stack capacity once before measuring steady-state allocations.
+    let _ = orch.set_scale_factor(root, 1.5).unwrap();
+    let _ = orch.set_scale_factor(root, 1.0).unwrap();
+    let _ = orch.drain_events();
+
+    // Positive probe ensures CountingAlloc actively detects heap allocations.
+    let (probe_allocs, _) = measure_allocs(|| black_box(vec![1u8; 64]));
+    assert!(probe_allocs >= 1, "CountingAlloc positive probe must detect allocation");
+
+    // 1. Unchanged-root update_environment performs 0 heap allocations.
+    let unchanged_root_env = root_env.clone();
+    let (root_noop_allocs, root_upd) = measure_allocs(|| {
+        orch.update_environment(black_box(root), unchanged_root_env)
+            .unwrap()
+    });
+    assert!(root_upd.is_empty());
+    assert_eq!(
+        root_noop_allocs, 0,
+        "unchanged-root update_environment must perform 0 allocations (saw {root_noop_allocs})"
+    );
+
+    // 2. Unchanged override-child update_environment performs 0 heap allocations (no parent or BTreeMap clone!).
+    let (child_noop_allocs, child_upd) =
+        measure_allocs(|| orch.update_environment(black_box(ov_child), ov_child_env).unwrap());
+    assert!(child_upd.is_empty());
+    assert_eq!(
+        child_noop_allocs, 0,
+        "unchanged override-child update_environment must perform 0 allocations (saw {child_noop_allocs})"
+    );
+
+    // 3. Root scale change blocked by override child: compare against a standalone root with no
+    //    children so pruned override-child + rich BTreeMap theme + grandchild do 0 extra allocations.
+    let mut solo = SurfaceOrchestrator::new();
+    let solo_root = solo
+        .register_root(FrameworkKind::Nve, "solo", root_env)
+        .unwrap();
+    let _ = solo.set_scale_factor(solo_root, 1.5).unwrap();
+    let _ = solo.set_scale_factor(solo_root, 1.0).unwrap();
+    let _ = solo.drain_events();
+
+    let (solo_allocs, solo_upd) =
+        measure_allocs(|| solo.set_scale_factor(black_box(solo_root), 2.5).unwrap());
+    let (pruned_allocs, pruned_upd) =
+        measure_allocs(|| orch.set_scale_factor(black_box(root), 2.5).unwrap());
+    assert_eq!(solo_upd, vec![solo_root]);
+    assert_eq!(pruned_upd, vec![root]);
+    assert_eq!(
+        pruned_allocs, solo_allocs,
+        "pruned override child + rich BTreeMap theme + grandchild must perform 0 extra allocations (pruned={pruned_allocs}, solo={solo_allocs})"
+    );
 }

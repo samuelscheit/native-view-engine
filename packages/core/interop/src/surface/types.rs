@@ -184,6 +184,21 @@ impl SafeAreaInsets {
             left,
         }
     }
+
+    #[inline]
+    pub(crate) fn validate(self) -> Result<(), crate::error::InteropError> {
+        if self.top.is_finite()
+            && self.right.is_finite()
+            && self.bottom.is_finite()
+            && self.left.is_finite()
+        {
+            Ok(())
+        } else {
+            Err(crate::error::InteropError::InvalidConstraints(
+                "safe_area insets must be finite".into(),
+            ))
+        }
+    }
 }
 
 /// Inherited environment context propagated across framework boundaries.
@@ -207,6 +222,24 @@ impl Default for SurfaceEnvironment {
             locale: "en-US".to_owned(),
             reduced_motion: false,
         }
+    }
+}
+
+impl SurfaceEnvironment {
+    /// Rejects non-finite numeric fields (`NaN`/`±Inf`) at ingress so equality pruning stays sound.
+    #[inline]
+    pub(crate) fn validate(&self) -> Result<(), crate::error::InteropError> {
+        if !self.scale_factor.is_finite() {
+            return Err(crate::error::InteropError::InvalidConstraints(
+                "scale_factor must be finite".into(),
+            ));
+        }
+        if !self.text_scale_factor.is_finite() {
+            return Err(crate::error::InteropError::InvalidConstraints(
+                "text_scale_factor must be finite".into(),
+            ));
+        }
+        self.safe_area.validate()
     }
 }
 
@@ -294,6 +327,29 @@ pub struct EnvironmentOverrides {
 }
 
 impl EnvironmentOverrides {
+    /// Rejects non-finite override values (`NaN`/`±Inf`) at ingress.
+    #[inline]
+    pub(crate) fn validate(&self) -> Result<(), crate::error::InteropError> {
+        if let Some(scale) = self.scale_factor
+            && !scale.is_finite()
+        {
+            return Err(crate::error::InteropError::InvalidConstraints(
+                "override scale_factor must be finite".into(),
+            ));
+        }
+        if let Some(ts) = self.text_scale_factor
+            && !ts.is_finite()
+        {
+            return Err(crate::error::InteropError::InvalidConstraints(
+                "override text_scale_factor must be finite".into(),
+            ));
+        }
+        if let Some(sa) = self.safe_area {
+            sa.validate()?;
+        }
+        Ok(())
+    }
+
     /// Applies any explicitly set override fields onto `env`.
     pub(crate) fn apply_to(&self, env: &mut SurfaceEnvironment) {
         if let Some(theme) = &self.theme {
@@ -338,13 +394,16 @@ impl EnvironmentOverrides {
     }
 
     /// Seals `self.apply(parent_env) == target_env` by recording overrides for any field that
-    /// differs from `parent_env` (while keeping already-pinned fields updated to `target_env`).
+    /// differs from `parent_env` (while keeping already-pinned fields updated to `target_env`
+    /// without cloning equal `ThemeContext`/`String` values).
     pub(crate) fn seal_against_parent(
         &mut self,
         target_env: &SurfaceEnvironment,
         parent_env: &SurfaceEnvironment,
     ) {
-        if self.theme.is_some() || target_env.theme != parent_env.theme {
+        if self.theme.as_ref() != Some(&target_env.theme)
+            && (self.theme.is_some() || target_env.theme != parent_env.theme)
+        {
             self.theme = Some(target_env.theme.clone());
         }
         if self.safe_area.is_some() || target_env.safe_area != parent_env.safe_area {
@@ -358,7 +417,9 @@ impl EnvironmentOverrides {
         {
             self.text_scale_factor = Some(target_env.text_scale_factor);
         }
-        if self.locale.is_some() || target_env.locale != parent_env.locale {
+        if self.locale.as_deref() != Some(target_env.locale.as_str())
+            && (self.locale.is_some() || target_env.locale != parent_env.locale)
+        {
             self.locale = Some(target_env.locale.clone());
         }
         if self.reduced_motion.is_some()

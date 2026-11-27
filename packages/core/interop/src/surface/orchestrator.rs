@@ -4,8 +4,8 @@ use nve_abi::hash::HashMap;
 use nve_abi::SurfaceId;
 
 use super::types::{
-    FrameworkKind, LifecycleState, SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent,
-    SurfaceRecord, TeardownRecord,
+    EnvironmentOverrides, FrameworkKind, LifecycleState, SurfaceDescriptor, SurfaceEnvironment,
+    SurfaceEvent, SurfaceRecord, TeardownRecord,
 };
 use crate::error::InteropError;
 #[cfg(feature = "layout")]
@@ -52,6 +52,7 @@ pub struct SurfaceOrchestrator {
     teardown_hooks: HashMap<SurfaceId, TeardownHook>,
     roots: Vec<SurfaceId>,
     pub(super) events: Vec<SurfaceEvent>,
+    pub(super) env_stack: Vec<(SurfaceId, usize)>,
     active_count: usize,
 }
 
@@ -73,6 +74,7 @@ impl SurfaceOrchestrator {
             teardown_hooks: HashMap::default(),
             roots: Vec::new(),
             events: Vec::new(),
+            env_stack: Vec::new(),
             active_count: 0,
         }
     }
@@ -122,6 +124,10 @@ impl SurfaceOrchestrator {
     /// Registers a surface (root or child), inheriting environment from its parent when present
     /// and sealing the invariant `child.environment == child.overrides.apply(parent.environment)`.
     pub fn register_surface(&mut self, mut desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
+        desc.overrides.validate()?;
+        if let Some(ref env) = desc.environment {
+            env.validate()?;
+        }
         let resolved_env = match (desc.parent, desc.environment) {
             (Some(parent_id), Some(mut explicit_env)) => {
                 let parent_env = &self
@@ -143,11 +149,15 @@ impl SurfaceOrchestrator {
             }
             (None, Some(mut explicit_env)) => {
                 desc.overrides.apply_to(&mut explicit_env);
+                // Roots have no parent to block cascades from; keep overrides empty so direct root
+                // environment updates are never silently frozen.
+                desc.overrides = EnvironmentOverrides::default();
                 explicit_env
             }
             (None, None) => {
                 let mut env = SurfaceEnvironment::default();
                 desc.overrides.apply_to(&mut env);
+                desc.overrides = EnvironmentOverrides::default();
                 env
             }
         };
@@ -467,6 +477,9 @@ impl SurfaceOrchestrator {
 
         if let Some(rec) = self.get_mut(surface_id) {
             rec.parent = new_parent;
+            if new_parent.is_none() {
+                rec.overrides = EnvironmentOverrides::default();
+            }
         }
 
         self.events.push(SurfaceEvent::Reparented {

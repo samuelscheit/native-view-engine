@@ -200,7 +200,7 @@ impl NvePluginSlot {
     }
 
     /// Renders one frame, borrowing the plugin's binary `CommandBuffer` slice zero-copy.
-    pub fn render(&mut self, frame_id: FrameId) -> Result<&[u8], PluginError> {
+    pub(super) fn render(&mut self, frame_id: FrameId) -> Result<&[u8], PluginError> {
         nve_engine::clear_last_ffi_panic();
         let slice = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: `self.handle` is live and belongs to this plugin slot.
@@ -215,7 +215,7 @@ impl NvePluginSlot {
     }
 
     /// Dispatches direct typed FFI events (`NveEventBatch`) into the plugin.
-    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
+    pub(super) fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
         nve_engine::clear_last_ffi_panic();
         let handled = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: `self.handle` is live and `events` remains valid for the synchronous FFI call.
@@ -229,7 +229,7 @@ impl NvePluginSlot {
     }
 
     /// Queries intrinsic size via `NVE_IFACE_LAYOUT` if exported.
-    pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
+    pub(super) fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
         let api = self.layout?;
         nve_engine::clear_last_ffi_panic();
         let res = catch_unwind(AssertUnwindSafe(|| {
@@ -244,7 +244,7 @@ impl NvePluginSlot {
     }
 
     /// Queries gesture disposition via `NVE_IFACE_LAYOUT` if exported.
-    pub fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
+    pub(super) fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
         let Some(api) = self.layout else {
             return NveGestureDisposition::PassThrough;
         };
@@ -264,7 +264,7 @@ impl NvePluginSlot {
     }
 
     /// Updates plugin props via direct structured `NveMapEntry` slice (`NVE_IFACE_COMPONENT`).
-    pub fn set_props(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
+    pub(super) fn set_props(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
         let Some(api) = self.component else {
             return Err(PluginError::UnsupportedCapability("NVE_IFACE_COMPONENT"));
         };
@@ -289,7 +289,7 @@ impl NvePluginSlot {
     /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported,
     /// returning a zero-copy borrowed [`NveEventBatchRef`] whose accessors canonicalize
     /// `SurfaceId`/`NodeId` handles at FFI ingress.
-    pub fn drain_emitted_events(&mut self) -> NveEventBatchRef<'_> {
+    pub(super) fn drain_emitted_events(&mut self) -> NveEventBatchRef<'_> {
         let Some(api) = self.component else {
             return NveEventBatchRef::EMPTY;
         };
@@ -310,7 +310,7 @@ impl NvePluginSlot {
     }
 
     /// Forwards one binary `NVP1` Tier-1 hot-patch frame via `NVE_IFACE_DEV` if exported.
-    pub fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
+    pub(super) fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
         let Some(api) = self.dev else {
             return false;
         };
@@ -329,7 +329,7 @@ impl NvePluginSlot {
     }
 
     /// Snapshots plugin state via `NVE_IFACE_DEV` if exported.
-    pub fn snapshot_state(&mut self) -> Vec<u8> {
+    pub(super) fn snapshot_state(&mut self) -> Vec<u8> {
         let Some(api) = self.dev else {
             return Vec::new();
         };
@@ -350,7 +350,7 @@ impl NvePluginSlot {
     }
 
     /// Restores plugin state via `NVE_IFACE_DEV` if exported.
-    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+    pub(super) fn restore_state(&mut self, state: &[u8]) -> bool {
         let Some(api) = self.dev else {
             return false;
         };

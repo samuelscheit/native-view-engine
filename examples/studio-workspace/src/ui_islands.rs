@@ -253,7 +253,11 @@ impl IslandSandboxRuntime {
         for card in &snap.cards {
             if let Some(sid) = rt.surface_id_for_slug(&card.slug) {
                 let target = parse_lifecycle(&card.lifecycle);
-                if rt
+                if target == LifecycleState::Destroyed {
+                    let _ = rt.orchestrator.destroy_surface(sid);
+                    rt.bus.unsubscribe_surface(sid);
+                    rt.arbitrator.unregister_surface(sid);
+                } else if rt
                     .orchestrator
                     .get(sid)
                     .is_some_and(|rec| rec.state != target)

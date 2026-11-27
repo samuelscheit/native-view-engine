@@ -436,9 +436,18 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
 fn generated_c_and_cpp_abi_headers_pass_syntax_checks_on_64bit_and_i686() {
     use std::process::Command;
 
-    let has_clang = Command::new("clang").arg("--version").output().is_ok();
-    let has_clangxx = Command::new("clang++").arg("--version").output().is_ok();
+    let has_clang = common::tool_available("clang");
+    let has_clangxx = common::tool_available("clang++");
     if !has_clang || !has_clangxx {
+        let required = std::env::var_os("CI").is_some()
+            || std::env::var_os("NVE_REQUIRE_CLANG").is_some();
+        assert!(
+            !required,
+            "clang and clang++ are required when CI or NVE_REQUIRE_CLANG is set (clang={has_clang}, clang++={has_clangxx})"
+        );
+        eprintln!(
+            "skipping 64-bit/i686/armv7 C11/C++20 ABI header syntax check: clang={has_clang}, clang++={has_clangxx}"
+        );
         return;
     }
 
