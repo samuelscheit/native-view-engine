@@ -23,7 +23,7 @@ final class NveCanvasSemanticsAssembler {
     final live = <int>{};
     final root = tree.root;
     if (root >= 0) {
-      _Collector(tree, _nodes, live, out, onTap).visit(root, Offset.zero, surface, false);
+      _Collector(tree, _nodes, live, out, onTap).visit(root, Offset.zero, surface);
     }
     _nodes.removeWhere((id, _) => !live.contains(id));
     return out;
@@ -46,15 +46,29 @@ final class _Collector {
 
   RuntimeSceneReader get s => t.s;
 
-  void visit(int index, Offset shift, Rect clip, bool hiddenSubtree) {
+  /// `aria-hidden` prunes the subtree; [invisible] is inherited `visibility: hidden`, which a
+  /// descendant's `visibility: visible` overrides (as painted).
+  void visit(int index, Offset shift, Rect clip, [bool invisible = false]) {
     if (t.isDisplayNone(index)) {
       return;
     }
+    final vr = s.rowOf(t.visual, index);
+    if (vr >= 0 && t.visual!.f32(vr, NveVisualTable.opacity) <= 0.001) {
+      return; // fully transparent subtree: not painted, not exposed
+    }
+    final hidden = vr < 0
+        ? invisible
+        : switch (t.visual!.enumValue(vr, NveVisualTable.visibility)) {
+            NveVisibility.visible => false,
+            NveVisibility.hidden => true,
+            _ => invisible,
+          };
     final rect = t.rectOf(index).shift(-shift);
     final ar = s.rowOf(a11y, index);
-    final hidden = hiddenSubtree || (ar >= 0 && a11y!.boolean(ar, NveAccessibilityTable.hidden));
-    final visible = rect.intersect(clip);
-    if (!hidden && !visible.isEmpty) {
+    if (ar >= 0 && a11y!.boolean(ar, NveAccessibilityTable.hidden)) {
+      return;
+    }
+    if (!hidden && !rect.intersect(clip).isEmpty) {
       _emit(index, rect, ar);
     }
     final childClip = t.clipsChildren(index) ? clip.intersect(rect) : clip;

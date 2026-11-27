@@ -156,10 +156,22 @@ class RenderNveCanvas extends RenderBox {
     final ts = event.timeStamp.inMicroseconds;
     switch (event) {
       case PointerScrollEvent(:final scrollDelta):
+        // Through the signal resolver: only the innermost scrollable (this canvas or an
+        // enclosing Flutter scroll view) consumes one wheel event.
         final scroller = c.scrollableAt(p);
         if (scroller != null) {
-          c.scrollBy(scroller, scrollDelta);
+          GestureBinding.instance.pointerSignalResolver
+              .register(event, (_) => c.isDisposed ? null : c.scrollBy(scroller, scrollDelta));
         }
+      case PointerPanZoomStartEvent(:final pointer):
+        // Trackpad two-finger scroll (desktop): pan deltas scroll the container under the start.
+        _gestures[pointer] = _Gesture(null, c.scrollableAt(p), p)..dragging = true;
+      case PointerPanZoomUpdateEvent(:final pointer, :final localPanDelta):
+        if (_gestures[pointer]?.scroller case final scroller?) {
+          c.scrollBy(scroller, -localPanDelta);
+        }
+      case PointerPanZoomEndEvent(:final pointer):
+        _gestures.remove(pointer);
       case PointerDownEvent(:final pointer, :final buttons):
         final g = _gestures[pointer] = _Gesture(c.hitTest(p), c.scrollableAt(p), p);
         if (g.target case final target?) {
@@ -209,16 +221,19 @@ class RenderNveCanvas extends RenderBox {
     canvas
       ..save()
       ..clipRect(bounds);
-    if (_background case final bg?) {
-      canvas.drawRect(bounds, Paint()..color = bg);
+    try {
+      if (_background case final bg?) {
+        canvas.drawRect(bounds, Paint()..color = bg);
+      }
+      if (!_controller.isDisposed) {
+        _controller.withTree((tree) => _painter.paint(canvas, tree, offset,
+            resources: _controller.resources,
+            defaultFontFamily: _controller.defaultFontFamily,
+            onImageLoaded: () => attached ? markNeedsPaint() : null));
+      }
+    } finally {
+      canvas.restore();
     }
-    if (!_controller.isDisposed) {
-      _controller.withTree((tree) => _painter.paint(canvas, tree, offset,
-          resources: _controller.resources,
-          defaultFontFamily: _controller.defaultFontFamily,
-          onImageLoaded: () => attached ? markNeedsPaint() : null));
-    }
-    canvas.restore();
   }
 
   @override

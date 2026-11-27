@@ -148,25 +148,18 @@ class NveSceneImageCache {
     return existing;
   }
 
-  /// Synchronously fetches a cached [ui.Image] or kicks off a deduplicated async decode
-  /// that invokes [onDecoded] once the image is ready so the host can schedule a repaint.
-  ui.Image? resolveOrRequest(String uri, {VoidCallback? onDecoded}) {
-    if (_disposed || uri.isEmpty) return null;
-    final cached = getCached(uri);
+  /// Synchronously fetches the cached [ui.Image] for [key] or starts one deduplicated async
+  /// decode (default: [key] is an image URI; [decode] supplies other sources, e.g. inline encoded
+  /// bytes). [onDecoded] fires once, when the decode that this call started succeeds, so a
+  /// per-paint caller never piles up callbacks while a decode is in flight.
+  ui.Image? resolveOrRequest(String key, {VoidCallback? onDecoded, Future<ui.Image?> Function()? decode}) {
+    if (_disposed || key.isEmpty) return null;
+    final cached = getCached(key);
     if (cached != null) return cached;
-    if (_failedUris.contains(uri)) return null;
-
-    if (!_inFlight.containsKey(uri)) {
-      final future = load(uri);
-      if (onDecoded != null) {
-        future.then((ui.Image? img) {
-          if (img != null && !_disposed) {
-            onDecoded();
-          }
-        });
-      }
-    } else if (onDecoded != null) {
-      _inFlight[uri]!.then((ui.Image? img) {
+    if (_failedUris.contains(key) || _inFlight.containsKey(key)) return null;
+    final future = load(key, decode: decode);
+    if (onDecoded != null) {
+      future.then((ui.Image? img) {
         if (img != null && !_disposed) {
           onDecoded();
         }
@@ -175,22 +168,22 @@ class NveSceneImageCache {
     return null;
   }
 
-  /// Asynchronously decodes and caches [uri], deduplicating concurrent requests.
-  Future<ui.Image?> load(String uri) {
-    if (_disposed || uri.isEmpty) return Future<ui.Image?>.value(null);
-    final cached = getCached(uri);
+  /// Asynchronously decodes and caches [key] (see [resolveOrRequest]), deduplicating requests.
+  Future<ui.Image?> load(String key, {Future<ui.Image?> Function()? decode}) {
+    if (_disposed || key.isEmpty) return Future<ui.Image?>.value(null);
+    final cached = getCached(key);
     if (cached != null) return Future<ui.Image?>.value(cached);
-    final inflight = _inFlight[uri];
+    final inflight = _inFlight[key];
     if (inflight != null) return inflight;
 
-    final future = _decodeAndStore(uri);
-    _inFlight[uri] = future;
+    final future = _decodeAndStore(key, decode ?? () => decodeImageUri(key));
+    _inFlight[key] = future;
     return future;
   }
 
-  Future<ui.Image?> _decodeAndStore(String uri) async {
+  Future<ui.Image?> _decodeAndStore(String uri, Future<ui.Image?> Function() decode) async {
     try {
-      final image = await decodeImageUri(uri);
+      final image = await decode();
       if (_disposed) {
         image?.dispose();
         return null;
@@ -314,7 +307,7 @@ class NveSceneImageCache {
       }
 
       if (mime.startsWith('image/')) {
-        return _decodeEncodedImageBytes(decodedBytes);
+        return decodeEncodedBytes(decodedBytes);
       }
       return null;
     }
@@ -333,13 +326,14 @@ class NveSceneImageCache {
       if (!await file.exists()) return null;
       final bytes = await file.readAsBytes();
       if (bytes.isEmpty) return null;
-      return _decodeEncodedImageBytes(bytes);
+      return decodeEncodedBytes(bytes);
     }
 
     return null;
   }
 
-  static Future<ui.Image?> _decodeEncodedImageBytes(Uint8List bytes) async {
+  /// Decodes one encoded image (PNG, JPEG, WebP, GIF first frame, … as the engine supports).
+  static Future<ui.Image?> decodeEncodedBytes(Uint8List bytes) async {
     if (bytes.isEmpty) return null;
     ui.Codec? codec;
     try {

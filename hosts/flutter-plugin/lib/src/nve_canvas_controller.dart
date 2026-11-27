@@ -3,6 +3,8 @@
 library;
 
 import 'dart:ffi' as ffi;
+import 'dart:io' show Platform;
+import 'dart:math' as math;
 import 'dart:ui' show Offset, Size;
 
 import 'package:flutter/foundation.dart';
@@ -40,11 +42,16 @@ class NveCanvasController extends ChangeNotifier {
   }) {
     final api = runtimeLibrary != null
         ? RuntimeApi.open(runtimeLibrary)
-        : (defaultTargetPlatform == TargetPlatform.iOS ? RuntimeApi.process() : RuntimeApi.open());
+        : (Platform.isIOS ? RuntimeApi.process() : RuntimeApi.open());
     final controller = NveCanvasController(RuntimeSession(api, width: 1, height: 1, scaleFactor: 1),
         defaultFontFamily: defaultFontFamily, onEvent: onEvent);
     if (app != null) {
-      controller.attachApp(app, symbol: appSymbol);
+      try {
+        controller.attachApp(app, symbol: appSymbol);
+      } on Object {
+        controller.dispose();
+        rethrow;
+      }
     }
     return controller;
   }
@@ -66,10 +73,18 @@ class NveCanvasController extends ChangeNotifier {
   NveSceneResources? get resources => null;
 
   /// Last tick / dispatch failure (also reported through [FlutterError.reportError]).
-  RuntimeException? lastError;
+  Exception? lastError;
 
   bool _tickScheduled = false;
   Duration? _lastFrame;
+  double _lastDelta = 0;
+
+  /// Longest frame step fed to the runtime: the first frame after an idle period (or a long
+  /// stall) advances animations by at most this, never by the wall-clock gap.
+  static const double maxFrameDelta = 0.1;
+
+  /// `dt` (seconds) of the most recent scheduled tick.
+  double get lastFrameDelta => _lastDelta;
   int _frames = 0;
   Size _viewport = Size.zero;
   double _scale = 0;
@@ -136,7 +151,9 @@ class NveCanvasController extends ChangeNotifier {
     }
     try {
       session.dispatchEvents(events);
-    } on RuntimeException catch (e, st) {
+    } on Exception catch (e, st) {
+      // RuntimeException, or a value the ABI cannot carry (BinCodecException); ArgumentError
+      // (unsupported value type, lone surrogate) is a caller bug and propagates.
       _report(e, st);
       return;
     }
@@ -209,11 +226,12 @@ class NveCanvasController extends ChangeNotifier {
   void _onFrame(Duration timestamp) {
     _tickScheduled = false;
     final last = _lastFrame;
-    _lastFrame = timestamp;
-    tick(last == null ? 0 : (timestamp - last).inMicroseconds / 1e6);
+    _lastDelta = last == null ? 0 : math.min((timestamp - last).inMicroseconds / 1e6, maxFrameDelta);
+    // A tick that publishes nothing ends the frame chain: the next one starts from dt = 0.
+    _lastFrame = tick(_lastDelta) ? timestamp : null;
   }
 
-  void _report(RuntimeException e, StackTrace st) {
+  void _report(Exception e, StackTrace st) {
     lastError = e;
     FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st, library: 'nve_flutter'));
   }

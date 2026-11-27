@@ -9,60 +9,6 @@ import 'package:nve_flutter/nve_flutter.dart';
 
 import 'src/test_support.dart';
 
-/// Builds a valid uncompressed RFC 2083 2x2 RGBA PNG data URI with distinct corner colors:
-/// (0,0)=red, (1,0)=green, (0,1)=blue, (1,1)=yellow.
-Uint8List _makeSolidPngBytes(int r, int g, int b, {int width = 2, int height = 2}) {
-  final raw = BytesBuilder(copy: false);
-  for (var y = 0; y < height; y++) {
-    raw.addByte(0); // filter type None
-    for (var x = 0; x < width; x++) {
-      raw.addByte(r & 0xFF);
-      raw.addByte(g & 0xFF);
-      raw.addByte(b & 0xFF);
-      raw.addByte(255);
-    }
-  }
-  final idatPayload = Uint8List.fromList(zlib.encode(raw.toBytes()));
-
-  int crc32(List<int> tag, List<int> data) {
-    var crc = 0xFFFFFFFF;
-    for (final byte in <int>[...tag, ...data]) {
-      crc ^= byte & 0xFF;
-      for (var k = 0; k < 8; k++) {
-        crc = (crc & 1) != 0 ? (0xEDB88320 ^ (crc >>> 1)) : (crc >>> 1);
-      }
-    }
-    return (~crc) & 0xFFFFFFFF;
-  }
-
-  final out = BytesBuilder(copy: false);
-  out.add(<int>[137, 80, 78, 71, 13, 10, 26, 10]);
-
-  void writeChunk(String name, Uint8List payload) {
-    final tag = ascii.encode(name);
-    final lenBd = ByteData(4)..setUint32(0, payload.length, Endian.big);
-    out.add(lenBd.buffer.asUint8List());
-    out.add(tag);
-    out.add(payload);
-    final crcBd = ByteData(4)..setUint32(0, crc32(tag, payload), Endian.big);
-    out.add(crcBd.buffer.asUint8List());
-  }
-
-  final ihdr = ByteData(13)
-    ..setUint32(0, width, Endian.big)
-    ..setUint32(4, height, Endian.big)
-    ..setUint8(8, 8) // 8-bit depth
-    ..setUint8(9, 6) // RGBA
-    ..setUint8(10, 0)
-    ..setUint8(11, 0)
-    ..setUint8(12, 0);
-  writeChunk('IHDR', ihdr.buffer.asUint8List());
-  writeChunk('IDAT', idatPayload);
-  writeChunk('IEND', Uint8List(0));
-  return out.toBytes();
-}
-
-
 void main() {
   group('NveDrawListPainter (NVE_DRAW1 binary decoder + Canvas renderer)', () {
     test('paints all 8 opcodes accurately onto Flutter Canvas and handles b64 fallback', () async {
@@ -241,7 +187,7 @@ void main() {
       addTearDown(cache.dispose);
 
       // 1. data:image/png;base64,...
-      final pngRed = _makeSolidPngBytes(255, 0, 0, width: 4, height: 2);
+      final pngRed = makeSolidPngBytes(255, 0, 0, width: 4, height: 2);
       final pngRedUri = 'data:image/png;base64,${base64.encode(pngRed)}';
       final img1 = await cache.load(pngRedUri);
       expect(img1, isNotNull);
@@ -268,7 +214,7 @@ void main() {
       final tempDir = await Directory.systemTemp.createTemp('nve_flutter_img_test_');
       addTearDown(() => tempDir.delete(recursive: true));
       final pngFile = File('${tempDir.path}/blue.png');
-      await pngFile.writeAsBytes(_makeSolidPngBytes(0, 0, 255, width: 3, height: 3));
+      await pngFile.writeAsBytes(makeSolidPngBytes(0, 0, 255, width: 3, height: 3));
       final fileUri = pngFile.uri.toString();
 
       final img3 = await cache.load(fileUri);

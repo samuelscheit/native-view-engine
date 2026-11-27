@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'dart:ui' show Tristate;
 
 import 'package:flutter/rendering.dart';
@@ -126,19 +127,70 @@ void main() {
       expect(pixelAt(none, 100, 30, 30).$4, 0, reason: 'no resource view: nothing painted');
     });
 
-    test('image source payloads decode to URIs', () {
+    testWidgets('inline encoded image bytes (ImageSrc::EncodedBytes) decode and paint', (tester) async {
+      final b = SceneBuilder();
+      final root = b.node(const Rect.fromLTWH(0, 0, 100, 100));
+      final img = b.node(const Rect.fromLTWH(0, 0, 40, 40), parent: root);
+      final imageShape = TableShape(NveImageTable.key, NveImageTable.words, NveImageTable.sparse, NveImageTable.defaults);
+      b
+        ..bits(imageShape, img, NveImageTable.src, 9)
+        ..bits(imageShape, img, NveImageTable.fit, NveImageFit.fill);
+      final png = makeSolidPngBytes(0, 0, 255, width: 4, height: 4);
+      final payload = Uint8List.fromList([
+        1,
+        ...(ByteData(4)..setUint32(0, png.length, Endian.little)).buffer.asUint8List(),
+        ...png,
+      ]);
+      final resources = _Resources({9: payload});
+      final painter = NveScenePainter();
+      var decoded = 0;
+      await tester.runAsync(() async {
+        final first = await rasterize(100, 100,
+            (canvas) => painter.paint(canvas, b.tree(), Offset.zero, resources: resources, onImageLoaded: () => decoded++));
+        expect(pixelAt(first, 100, 20, 20).$4, 0, reason: 'decode pending on the first paint');
+        for (var i = 0; i < 50 && decoded == 0; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(decoded, 1);
+        final second = await rasterize(100, 100,
+            (canvas) => painter.paint(canvas, b.tree(), Offset.zero, resources: resources, onImageLoaded: () => decoded++));
+        expect(pixelAt(second, 100, 20, 20), _blue);
+        expect(painter.imageCache.length, 1);
+      });
+      expect(decoded, 1, reason: 'one decode, one callback across paints');
+      painter.dispose();
+    });
+
+    test('a throwing table painter leaves the canvas balanced', () {
+      final b = SceneBuilder();
+      final root = b.node(const Rect.fromLTWH(0, 0, 10, 10));
+      final kid = b.node(const Rect.fromLTWH(0, 0, 10, 10), parent: root);
+      b
+        ..f32(visualShape, root, NveVisualTable.opacity, 0.5)
+        ..bits(visualShape, root, NveVisualTable.overflowX, NveOverflow.hidden)
+        ..bits(TableShape(_Throwing.key, 1, true, const [0]), kid, FieldSpec(0, FieldKind.u32), 1);
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final painter = NveScenePainter(tablePainters: [_Throwing()]);
+      expect(() => painter.paint(canvas, b.tree(), Offset.zero), throwsStateError);
+      expect(canvas.getSaveCount(), 1);
+      recorder.endRecording().dispose();
+    });
+
+    test('image source payloads decode', () {
       Uint8List payload(int tag, List<int> bytes) => Uint8List.fromList([
             tag,
             ...(ByteData(4)..setUint32(0, bytes.length, Endian.little)).buffer.asUint8List(),
             ...bytes,
           ]);
-      expect(decodeImageSourceUri(payload(0, 'https://x/a.png'.codeUnits)), 'https://x/a.png');
-      expect(decodeImageSourceUri(payload(1, [1, 2, 3])), 'data:application/octet-stream;base64,AQID');
-      expect(decodeImageSourceUri(payload(2, [1])), isNull, reason: 'unknown tag');
-      expect(decodeImageSourceUri(payload(0, [0xC3])), isNull, reason: 'invalid UTF-8');
-      expect(decodeImageSourceUri(Uint8List.fromList([0, 9, 0, 0, 0, 1])), isNull, reason: 'truncated');
-      expect(decodeImageSourceUri(Uint8List.fromList([...payload(0, [0x61]), 0])), isNull, reason: 'trailing bytes');
-      expect(decodeImageSourceUri(Uint8List(0)), isNull);
+      expect((decodeImageSource(payload(0, 'https://x/a.png'.codeUnits)) as NveImageUrl).uri, 'https://x/a.png');
+      expect((decodeImageSource(payload(1, [1, 2, 3])) as NveImageBytes).bytes, [1, 2, 3]);
+      expect(decodeImageSource(payload(1, [])), isNull, reason: 'empty encoded bytes');
+      expect(decodeImageSource(payload(2, [1])), isNull, reason: 'unknown tag');
+      expect(decodeImageSource(payload(0, [0xC3])), isNull, reason: 'invalid UTF-8');
+      expect(decodeImageSource(Uint8List.fromList([0, 9, 0, 0, 0, 1])), isNull, reason: 'truncated');
+      expect(decodeImageSource(Uint8List.fromList([...payload(0, [0x61]), 0])), isNull, reason: 'trailing bytes');
+      expect(decodeImageSource(Uint8List(0)), isNull);
     });
   });
 
@@ -155,6 +207,9 @@ void main() {
       final outside = b.node(const Rect.fromLTWH(100, 160, 50, 20), parent: clipper);
       final toggle = b.node(const Rect.fromLTWH(100, 40, 50, 20), parent: root);
       final decorative = b.node(const Rect.fromLTWH(150, 40, 50, 20), parent: root);
+      final transparent = b.node(const Rect.fromLTWH(0, 120, 50, 20), parent: root);
+      final invisibleParent = b.node(const Rect.fromLTWH(0, 140, 100, 40), parent: root);
+      final shown = b.node(const Rect.fromLTWH(0, 160, 50, 20), parent: invisibleParent);
       b
         ..bits(interactionShape, button, NveInteractionTable.eventMask, nveEventMaskPress)
         ..str(textShape, button, NveTextTable.text, 'Save')
@@ -171,12 +226,19 @@ void main() {
         ..bits(a11yShape, toggle, NveAccessibilityTable.checked, NveAriaTriState.trueValue)
         ..str(a11yShape, toggle, NveAccessibilityTable.label, 'Wi-Fi')
         ..bits(a11yShape, decorative, NveAccessibilityTable.role, NveAriaRole.presentation)
-        ..str(textShape, decorative, NveTextTable.text, 'ornament');
+        ..str(textShape, decorative, NveTextTable.text, 'ornament')
+        ..f32(visualShape, transparent, NveVisualTable.opacity, 0)
+        ..str(textShape, transparent, NveTextTable.text, 'faded out')
+        ..bits(visualShape, invisibleParent, NveVisualTable.visibility, NveVisibility.hidden)
+        ..str(textShape, invisibleParent, NveTextTable.text, 'invisible')
+        ..bits(visualShape, shown, NveVisualTable.visibility, NveVisibility.visible)
+        ..str(textShape, shown, NveTextTable.text, 'visible again');
       final taps = <(int, Offset)>[];
       final asm = NveCanvasSemanticsAssembler();
       final nodes = asm.build(b.tree(), const Rect.fromLTWH(0, 0, 200, 200), (id, c) => taps.add((id, c)));
       final data = {for (final n in nodes) n.getSemanticsData().label: n.getSemanticsData()};
-      expect(data.keys, ['Save', 'Settings', 'Password', 'Wi-Fi']);
+      expect(data.keys, ['Save', 'Settings', 'Password', 'Wi-Fi', 'visible again'],
+          reason: 'aria-hidden, presentation, clipped, opacity 0, and visibility:hidden are not exposed');
       expect(data['Save']!.flagsCollection.isButton, isTrue);
       expect(data['Save']!.rect, const Rect.fromLTWH(0, 0, 100, 40));
       expect(data['Settings']!.flagsCollection.isHeader, isTrue);
@@ -193,6 +255,17 @@ void main() {
       expect(asm.build(NveSceneTree(SceneBuilder().build()), Rect.zero, (_, __) {}), isEmpty);
     });
   });
+}
+
+final class _Throwing implements NveTablePainter {
+  static final Key64 key = constId('test.throwing');
+
+  @override
+  Key64 get tableKey => key;
+
+  @override
+  void paint(NvePaintContext ctx, TableReader table, int row, int index, Rect rect, double radius) =>
+      throw StateError('table painter failure');
 }
 
 final class _Resources implements NveSceneResources {

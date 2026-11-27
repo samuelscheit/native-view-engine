@@ -41,6 +41,15 @@ Future<void> _settle(WidgetTester tester, NveCanvasController c) async {
   expect(c.lastError, isNull);
 }
 
+/// Every text of the published scene in slot order.
+String _texts(NveSceneTree t) {
+  final table = t.s.findTable(NveTextTable.key);
+  return [
+    for (var i = 1; i < t.s.nodeCapacity; i++)
+      if (t.s.rowOf(table, i) case final r when r >= 0) t.s.str(table!, r, NveTextTable.text),
+  ].join('\u0000');
+}
+
 void main() {
   late NveCanvasController c;
 
@@ -105,26 +114,34 @@ void main() {
     await tester.pumpWidget(_host(c));
     await _settle(tester, c);
 
-    final target = c.withTree((t) {
-      for (var i = 1; i < t.s.nodeCapacity; i++) {
-        if (t.s.isLive(i) && t.eventMask(i) & nveEventMaskPress != 0) {
-          final center = t.visualRect(i).center;
-          if ((Offset.zero & _surface).contains(center) && t.deepestAt(center, (j) => j == i) == i) {
-            return center;
-          }
-        }
+    final targets = c.withTree((t) => [
+          for (var i = 1; i < t.s.nodeCapacity; i++)
+            if (t.s.isLive(i) && t.eventMask(i) & nveEventMaskPress != 0)
+              if (t.visualRect(i).center case final center
+                  when (Offset.zero & _surface).contains(center) && t.deepestAt(center, (j) => j == i) == i)
+                center,
+        ]);
+    expect(targets, isNotEmpty, reason: 'kitchen sink exposes visible press targets');
+    expect(c.hitTest(targets.first), isNotNull, reason: 'runtime hit-test agrees');
+    // Idle for 2 s: the first tick after it must not advance animations by the wall-clock gap.
+    await tester.pump(const Duration(seconds: 2));
+    final before = c.withTree(_texts);
+    final framesBefore = c.frameCount;
+    var changed = false;
+    for (final target in targets.take(30)) {
+      await tester.tapAt(target);
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(c.lastFrameDelta, lessThanOrEqualTo(NveCanvasController.maxFrameDelta));
+      await _settle(tester, c);
+      if (c.withTree(_texts) != before) {
+        changed = true;
+        break;
       }
-      return null;
-    });
-    expect(target, isNotNull, reason: 'kitchen sink exposes a visible press target');
-    expect(c.hitTest(target!), isNotNull, reason: 'runtime hit-test agrees');
-    await tester.tapAt(target);
-    await _settle(tester, c);
+    }
     expect(seen, containsAllInOrder([NveEventKind.pointerDown, NveEventKind.pointerUp, NveEventKind.press]));
-    c.sendCommand('refresh', {'n': 1, 'tags': ['a', null]});
-    expect(seen.last, NveEventKind.custom);
+    expect(changed, isTrue, reason: 'a tap reaches the app and changes the painted text');
+    expect(c.frameCount, greaterThan(framesBefore));
     expect(() => c.sendCommand('bad', {'v': Object()}), throwsArgumentError);
-    await _settle(tester, c);
 
     final (scroller, at) = c.withTree((t) {
       for (var i = 1; i < t.s.nodeCapacity; i++) {
@@ -162,6 +179,14 @@ void main() {
     await tester.sendEventToBinding(pointer.scroll(const Offset(0, -1e6)));
     await _settle(tester, c);
     expect(shiftY(), 0, reason: 'clamped back to the top');
+
+    final trackpad = TestPointer(2, PointerDeviceKind.trackpad);
+    await tester.sendEventToBinding(trackpad.panZoomStart(at));
+    await tester.sendEventToBinding(trackpad.panZoomUpdate(at, pan: const Offset(0, -40)));
+    await tester.sendEventToBinding(trackpad.panZoomUpdate(at, pan: const Offset(0, -90)));
+    await tester.sendEventToBinding(trackpad.panZoomEnd());
+    await _settle(tester, c);
+    expect(shiftY(), closeTo(90, 0.5), reason: 'two-finger trackpad pan scrolls by the pan distance');
   });
 
   testWidgets('controller swap and disposal tear down cleanly', (tester) async {

@@ -5,7 +5,7 @@
 /// module payloads (canvas draw lists) through [NveSceneResources] with no other change.
 library;
 
-import 'dart:convert' show base64, utf8;
+import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'package:nve_host/nve_host.dart';
@@ -17,9 +17,27 @@ abstract interface class NveSceneResources {
   Uint8List? payload(int resourceId);
 }
 
-/// Image URI of an `nve.res.image_src` payload: the URL itself (`tag 0, u32 len, utf8`) or a
-/// `data:` URI for inline encoded bytes (`tag 1, u32 len, bytes`); `null` when malformed.
-String? decodeImageSourceUri(Uint8List payload) {
+/// Decoded `nve.res.image_src` payload (Rust `ImageSrc`).
+sealed class NveImageSource {
+  const NveImageSource();
+}
+
+/// `ImageSrc::Url` (tag 0): fetched / decoded through `NveSceneImageCache.decodeImageUri`.
+final class NveImageUrl extends NveImageSource {
+  const NveImageUrl(this.uri);
+  final String uri;
+}
+
+/// `ImageSrc::EncodedBytes` (tag 1): an encoded image decoded directly. [bytes] borrows the
+/// scene's resource memory: copy before it outlives the scene read.
+final class NveImageBytes extends NveImageSource {
+  const NveImageBytes(this.bytes);
+  final Uint8List bytes;
+}
+
+/// Decodes `tag u8, len u32, bytes`; `null` for an unknown tag, invalid UTF-8 URL, truncation,
+/// or trailing bytes.
+NveImageSource? decodeImageSource(Uint8List payload) {
   if (payload.length < 5) {
     return null;
   }
@@ -31,8 +49,8 @@ String? decodeImageSourceUri(Uint8List payload) {
       return null;
     }
     return switch (tag) {
-      0 => isValidUtf8(bytes) ? utf8.decode(bytes) : null,
-      1 => 'data:application/octet-stream;base64,${base64.encode(bytes)}',
+      0 => isValidUtf8(bytes) ? NveImageUrl(utf8.decode(bytes)) : null,
+      1 => bytes.isEmpty ? null : NveImageBytes(bytes),
       _ => null,
     };
   } on BinCodecException {

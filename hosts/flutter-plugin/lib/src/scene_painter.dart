@@ -65,10 +65,12 @@ final class NveScenePainter {
   final Map<_TextKey, TextPainter> _text = <_TextKey, TextPainter>{};
   final Set<_TextKey> _usedText = <_TextKey>{};
 
+  // Borrowed for one [paint] call only (the tree's reader is valid inside `withScene`).
   late Canvas _canvas;
   late NveSceneTree _tree;
   late Offset _origin;
   late NvePaintContext _ctx;
+  bool _painting = false;
   NveSceneResources? _resources;
   VoidCallback? _onImage;
   TableReader? _typo, _textTable, _input, _image, _transform;
@@ -78,9 +80,26 @@ final class NveScenePainter {
   void paint(Canvas canvas, NveSceneTree tree, Offset origin,
       {NveSceneResources? resources, String? defaultFontFamily, VoidCallback? onImageLoaded}) {
     final root = tree.root;
-    if (root < 0) {
+    if (root < 0 || _painting) {
       return;
     }
+    final saveCount = canvas.getSaveCount();
+    _painting = true;
+    try {
+      _paintScene(canvas, tree, root, origin, resources, defaultFontFamily, onImageLoaded);
+    } finally {
+      // Balanced canvas even when a malformed scene throws mid-tree; no borrowed reader escapes.
+      canvas.restoreToCount(saveCount);
+      _modules.clear();
+      _typo = _textTable = _input = _image = _transform = null;
+      _resources = null;
+      _onImage = null;
+      _painting = false;
+    }
+  }
+
+  void _paintScene(Canvas canvas, NveSceneTree tree, int root, Offset origin, NveSceneResources? resources,
+      String? defaultFontFamily, VoidCallback? onImageLoaded) {
     final s = tree.s;
     _canvas = canvas;
     _tree = tree;
@@ -108,8 +127,6 @@ final class NveScenePainter {
       }
       return stale;
     });
-    _resources = null;
-    _onImage = null;
   }
 
   void _node(int index, Offset shift, bool parentHidden, NveTextStyle inherited) {
@@ -276,9 +293,16 @@ final class NveScenePainter {
   }
 
   void _paintImage(TableReader t, int row, Rect rect, RRect rrect) {
-    final payload = _resources?.payload(t.resource(row, NveImageTable.src));
-    final uri = payload == null ? null : decodeImageSourceUri(payload);
-    final img = uri == null ? null : imageCache.resolveOrRequest(uri, onDecoded: _onImage);
+    final id = t.resource(row, NveImageTable.src);
+    final payload = _resources?.payload(id);
+    final img = switch (payload == null ? null : decodeImageSource(payload)) {
+      NveImageUrl(:final uri) => imageCache.resolveOrRequest(uri, onDecoded: _onImage),
+      // Resource ids are generation-tagged, so `(id, length)` names one payload; the bytes are
+      // copied only when a decode actually starts.
+      NveImageBytes(:final bytes) => imageCache.resolveOrRequest('nve-res:$id:${bytes.length}',
+          onDecoded: _onImage, decode: () => NveSceneImageCache.decodeEncodedBytes(Uint8List.fromList(bytes))),
+      null => null,
+    };
     if (img == null) {
       return;
     }
