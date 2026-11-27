@@ -570,30 +570,52 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
 
 #[test]
 fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
-    // 1. Privacy lock in id.rs: catches pub, pub(crate), pub(super), and missing structs.
+    // 1. Privacy, struct-shape, repr(transparent), and cfg(test) shadowing locks in id.rs.
     let bad_id_rs = r#"
-        pub struct NodeId(pub(crate) u32);
-        pub struct SurfaceId(pub(super) u32);
+        #[repr(transparent)] pub struct NodeId(pub u32);
+        #[repr(transparent)] pub struct SurfaceId(pub(crate) u32);
     "#;
     let ast = syn::parse_file(bad_id_rs).unwrap();
     let mut v = Vec::new();
     ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", bad_id_rs, &ast, &mut v);
-    assert_eq!(v.len(), 2, "must catch pub(crate) and pub(super) tuple fields: {v:?}");
+    assert_eq!(v.len(), 2, "must catch pub and pub(crate) tuple fields: {v:?}");
 
-    let missing_id_rs = "pub struct NodeId(u32);";
-    let ast_miss = syn::parse_file(missing_id_rs).unwrap();
+    let bad_shape_id_rs = r#"
+        pub struct NodeId { pub raw: u32 }
+        #[repr(C)] pub struct SurfaceId(u32, u8);
+    "#;
+    let ast_shape = syn::parse_file(bad_shape_id_rs).unwrap();
+    let mut v_shape = Vec::new();
+    ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", bad_shape_id_rs, &ast_shape, &mut v_shape);
+    assert_eq!(
+        v_shape.len(),
+        4,
+        "must catch missing repr(transparent) + named/multi-field shapes for both handles: {v_shape:?}"
+    );
+
+    let cfg_test_shadow_id_rs = r#"
+        #[repr(transparent)] pub struct NodeId(u32);
+        #[cfg(test)] mod tests { #[repr(transparent)] pub struct SurfaceId(u32); }
+    "#;
+    let ast_miss = syn::parse_file(cfg_test_shadow_id_rs).unwrap();
     let mut v_miss = Vec::new();
-    ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", missing_id_rs, &ast_miss, &mut v_miss);
-    assert_eq!(v_miss.len(), 1, "must fail if SurfaceId struct is missing: {v_miss:?}");
+    ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", cfg_test_shadow_id_rs, &ast_miss, &mut v_miss);
+    assert_eq!(
+        v_miss.len(),
+        1,
+        "cfg(test) shadow module must not satisfy non-test SurfaceId presence check: {v_miss:?}"
+    );
 
-    let good_id_rs = "pub struct NodeId(u32); pub struct SurfaceId(u32);";
+    let good_id_rs = "#[repr(transparent)] pub struct NodeId(u32); #[repr(transparent)] pub struct SurfaceId(u32);";
     let ast_ok = syn::parse_file(good_id_rs).unwrap();
     let mut v_ok = Vec::new();
     ast_layout::scan_handle_hygiene("packages/core/abi/src/id.rs", good_id_rs, &ast_ok, &mut v_ok);
-    assert!(v_ok.is_empty(), "valid private handles in id.rs must pass: {v_ok:?}");
+    assert!(v_ok.is_empty(), "valid repr(transparent) private handles in id.rs must pass: {v_ok:?}");
 
-    // 2. StoreNodeId anywhere (including inside fn) + raw tuple/struct ctors (ignoring enum variants).
+    // 2. StoreNodeId anywhere (including direct import, rename from/to, inside fn) + raw ctors.
     let bad_user = r#"
+        use foo::StoreNodeId;
+        use foo::StoreNodeId as LegacyId;
         type StoreNodeId = u32;
         enum LocalEnum { NodeId(u32), SurfaceId(u32) }
         fn f() {
@@ -611,18 +633,31 @@ fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
     ast_layout::scan_handle_hygiene("packages/core/engine/src/foo.rs", bad_user, &ast_u, &mut vu);
     assert_eq!(
         vu.len(),
-        6,
-        "expected type StoreNodeId + nested use StoreNodeId + 2 tuple ctors + 2 struct ctors (and 0 enum-variant FPs): {vu:?}"
+        8,
+        "expected use StoreNodeId + rename from StoreNodeId + type StoreNodeId + nested rename to StoreNodeId + 4 raw ctors (0 enum FPs): {vu:?}"
     );
 
-    // 3. Bare & wrapped primitive handle params across fn, nested fn, extern "C", and bare fn types.
+    // 3. Bare & wrapped primitive handle params across fn, impl/trait, extern, bare fn, tuples, closures,
+    //    wrong integer widths, qualified primitives, NonZero*, and extended containers.
     let bad_params = r#"
         extern "C" {
             fn c_entry(surface_id: u32, node_id: *const u32);
         }
         type Callback = fn(frame_id: u64, interface_id: Option<u32>);
-        fn outer(surface_id: Option<u32>, node_id: &u32, frame_id: &mut u64) {
+        trait Host {
+            fn on_surface(&self, parent_surface_id: u64);
+        }
+        impl Host for () {
+            fn on_surface(&self, parent_surface_id: core::primitive::u32) {}
+        }
+        fn outer(
+            surface_id: Option<u32>,
+            node_id: Box<u32>,
+            frame_id: Arc<core::num::NonZeroU64>,
+            (child_node_id, _ok): (VecDeque<u32>, bool),
+        ) {
             fn inner(node_id: &[u32], surface_id: Vec<u32>, interface_id: *mut u32) {}
+            let _cl = |target_surface_id: u32| { let _ = target_surface_id; };
         }
         #[wasm_bindgen]
         pub fn js_boundary(surface_id: u32, node_id: u32) {}
@@ -633,7 +668,7 @@ fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
     ast_layout::scan_bare_handle_params("packages/core/engine/src/p.rs", bad_params, &ast_p, &mut vp);
     assert_eq!(
         vp.len(),
-        10,
-        "expected 2 extern + 2 bare fn + 3 outer + 3 nested inner violations (0 for wasm_bindgen/typed): {vp:?}"
+        14,
+        "expected 2 extern + 2 bare fn + 1 trait + 1 impl + 4 outer/tuple + 3 inner + 1 closure violations (0 for wasm_bindgen/typed): {vp:?}"
     );
 }

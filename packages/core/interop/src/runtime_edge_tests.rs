@@ -696,6 +696,8 @@ fn surface_orchestrator_seeded_model_property_test() {
 #[test]
 fn destroy_surface_is_panic_safe_when_teardown_hook_panics() {
     use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     let mut orch = SurfaceOrchestrator::new();
     let root = orch
@@ -708,17 +710,25 @@ fn destroy_surface_is_panic_safe_when_teardown_hook_panics() {
         .register_child(mid, FrameworkKind::SwiftUI, "Leaf")
         .unwrap();
 
+    let root_hook_ran = Arc::new(AtomicBool::new(false));
+    let root_hook_flag = Arc::clone(&root_hook_ran);
     orch.register_teardown_hook(leaf, |_| {
         panic!("simulated teardown hook failure on leaf");
     })
     .unwrap();
-    orch.register_teardown_hook(root, |_| {})
-        .unwrap();
+    orch.register_teardown_hook(root, move |_| {
+        root_hook_flag.store(true, Ordering::SeqCst);
+    })
+    .unwrap();
 
     let res = catch_unwind(AssertUnwindSafe(|| {
         let _ = orch.destroy_surface(root);
     }));
     assert!(res.is_err(), "panicking hook should unwind");
+    assert!(
+        root_hook_ran.load(Ordering::SeqCst),
+        "root teardown hook must execute even when leaf teardown hook panicked"
+    );
 
     // All state mutations committed BEFORE hooks ran: zero leaked slots, roots, or active_count!
     assert_eq!(orch.active_count(), 0);

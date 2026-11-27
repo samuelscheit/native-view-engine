@@ -136,10 +136,41 @@ impl InteropRuntime {
             .load_dynamic(&mut self.surfaces, name, dylib_path, req)
     }
 
-    /// Unloads a plugin and destroys its surface in `self.surfaces`.
+    /// Transactionally hot-swaps an existing plugin to a new in-process `nve_get_interface`
+    /// implementation after verifying its surface is still live in `self.surfaces`.
+    #[cfg(feature = "plugin-host")]
+    pub fn hot_swap_plugin_in_process(
+        &mut self,
+        plugin_id: PluginId,
+        new_get_interface: nve_abi::NveGetInterfaceFn,
+        req: PluginRequirement,
+    ) -> Result<u64, PluginError> {
+        self.plugins
+            .hot_swap_in_process(&self.surfaces, plugin_id, new_get_interface, req)
+    }
+
+    /// Transactionally hot-swaps an existing plugin to a freshly built `cdylib` after verifying
+    /// its surface is still live in `self.surfaces`.
+    #[cfg(all(feature = "plugin-host", not(target_arch = "wasm32")))]
+    pub fn hot_swap_plugin_dynamic(
+        &mut self,
+        plugin_id: PluginId,
+        new_dylib_path: &std::path::Path,
+        req: PluginRequirement,
+    ) -> Result<u64, PluginError> {
+        self.plugins
+            .hot_swap_dynamic(&self.surfaces, plugin_id, new_dylib_path, req)
+    }
+
+    /// Unloads a plugin and cascades teardown of its surface (and any reparented child surfaces,
+    /// gesture capabilities, layout caches, channel subscriptions, windows, and child plugins).
     #[cfg(feature = "plugin-host")]
     pub fn unload_plugin(&mut self, plugin_id: PluginId) -> Result<PluginMetadata, PluginError> {
-        self.plugins.unload(&mut self.surfaces, plugin_id)
+        let meta = self.plugins.take_for_unload(plugin_id)?;
+        match self.destroy_surface_cascade(meta.surface_id) {
+            Ok(_) | Err(InteropError::SurfaceNotFound(_)) => Ok(meta),
+            Err(err) => Err(PluginError::SurfaceAllocationFailed(err.to_string())),
+        }
     }
 
     /// Arbitrates a pointer event starting at `innermost_surface` by resolving its live
@@ -187,12 +218,14 @@ impl InteropRuntime {
     }
 
     /// Destroys `surface_id` and its entire subtree in bottom-up order, automatically cleaning up
-    /// gesture capabilities/locks, cached layouts, and channel subscriptions for every torn-down surface.
+    /// gesture capabilities/locks, cached layouts, channel subscriptions, managed windows, and
+    /// mounted plugins BEFORE firing user teardown hooks (so even a panicking hook leaves every
+    /// subsystem 100% consistent and every subsequent teardown hook still runs).
     pub fn destroy_surface_cascade(
         &mut self,
         surface_id: SurfaceId,
     ) -> Result<Vec<TeardownRecord>, InteropError> {
-        let torn_down = self.surfaces.destroy_surface(surface_id)?;
+        let (torn_down, pending_hooks) = self.surfaces.destroy_surface_parts(surface_id)?;
         #[cfg(any(
             feature = "gesture",
             feature = "layout",
@@ -214,6 +247,7 @@ impl InteropRuntime {
             #[cfg(feature = "plugin-host")]
             self.plugins.detach_destroyed_surface(rec.surface_id);
         }
+        SurfaceOrchestrator::fire_teardown_hooks(&torn_down, pending_hooks);
         Ok(torn_down)
     }
 }

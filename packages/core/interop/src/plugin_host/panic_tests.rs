@@ -342,6 +342,7 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     set_host_panic_mode(HostPanicMode::PanicRestore);
     let swap_err = host
         .hot_swap_in_process(
+            &surfaces,
             flaky_id,
             nve_test_flaky_plugin_iface,
             PluginRequirement::EMBEDDED_COMPONENT,

@@ -4,8 +4,8 @@ use std::path::Path;
 
 use nve_abi::{
     FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
-    NveEventBatch, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi,
-    NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId,
+    NveEventBatch, NveEventBatchRef, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize,
+    NveLayoutApi, NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use nve_engine::loader::{LoaderError, StagedDylib};
@@ -281,10 +281,12 @@ impl NvePluginSlot {
         Ok(changed != 0)
     }
 
-    /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported.
-    pub fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported,
+    /// returning a zero-copy borrowed [`NveEventBatchRef`] whose accessors canonicalize
+    /// `SurfaceId`/`NodeId` handles at FFI ingress.
+    pub fn drain_emitted_events(&mut self) -> NveEventBatchRef<'_> {
         let Some(api) = self.component else {
-            return &[];
+            return NveEventBatchRef::EMPTY;
         };
         nve_engine::clear_last_ffi_panic();
         match catch_unwind(AssertUnwindSafe(|| {
@@ -293,11 +295,11 @@ impl NvePluginSlot {
         })) {
             Ok(batch) if nve_engine::take_last_ffi_panic().is_none() => {
                 // SAFETY: Borrowed batch remains valid until the next `&mut self` call on this slot.
-                unsafe { batch.as_slice() }
+                unsafe { NveEventBatchRef::from_raw(batch) }
             }
             _ => {
                 nve_engine::clear_last_ffi_panic();
-                &[]
+                NveEventBatchRef::EMPTY
             }
         }
     }

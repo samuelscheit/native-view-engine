@@ -329,7 +329,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     // 5. Failed hot-swap (broken plugin returning null handle or missing surface)
     // must NOT crash or destroy v1!
     assert_eq!(
-        runtime.plugins.hot_swap_in_process(
+        runtime.hot_swap_plugin_in_process(
             p_full,
             broken_null_handle_get_interface,
             PluginRequirement::SURFACE_ONLY
@@ -337,7 +337,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
         Err(PluginError::NullHandleReturned)
     );
     assert_eq!(
-        runtime.plugins.hot_swap_in_process(
+        runtime.hot_swap_plugin_in_process(
             p_full,
             broken_missing_surface_get_interface,
             PluginRequirement::SURFACE_ONLY
@@ -352,8 +352,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
 
     // 6. Valid hot-swap v1 -> v2 preserves isolated surface_id and counter=43!
     let gen2 = runtime
-        .plugins
-        .hot_swap_in_process(
+        .hot_swap_plugin_in_process(
             p_full,
             plugin_v2_get_interface,
             PluginRequirement::EMBEDDED_COMPONENT,
@@ -471,4 +470,147 @@ fn failed_pre_create_plugin_loads_burn_zero_generations_and_emit_zero_events() {
     );
     assert!(surfaces.drain_events().is_empty());
     assert_eq!(surfaces.active_count(), 1);
+}
+
+#[test]
+fn unload_plugin_cascades_subsystems_and_child_plugins_and_rejects_dead_hotswap() {
+    let mut runtime = crate::InteropRuntime::new();
+
+    let parent_pid = runtime
+        .register_plugin_in_process(
+            "parent-plugin",
+            plugin_v1_get_interface,
+            PluginRequirement::EMBEDDED_COMPONENT,
+        )
+        .unwrap();
+    let child_pid = runtime
+        .register_plugin_in_process(
+            "child-plugin",
+            surface_only_get_interface,
+            PluginRequirement::SURFACE_ONLY,
+        )
+        .unwrap();
+    let parent_sid = runtime.plugins.get(parent_pid).unwrap().surface_id();
+    let child_sid = runtime.plugins.get(child_pid).unwrap().surface_id();
+
+    // Reparent child plugin under parent plugin and attach gesture/layout/channel state.
+    runtime.surfaces.reparent(child_sid, Some(parent_sid)).unwrap();
+    #[cfg(feature = "gesture")]
+    {
+        runtime.gestures.set_capabilities(
+            parent_sid,
+            crate::GestureCapabilities::vertical_scroll(crate::FrameworkKind::Nve),
+        );
+        runtime.gestures.set_capabilities(
+            child_sid,
+            crate::GestureCapabilities::vertical_scroll(crate::FrameworkKind::Nve),
+        );
+        let down = crate::PointerSample {
+            pointer_id: 7,
+            phase: crate::PointerPhase::Down,
+            x: 10.0,
+            y: 10.0,
+            delta_x: 0.0,
+            delta_y: 0.0,
+            timestamp_us: nve_abi::TimestampUs(100),
+        };
+        let _ = runtime.arbitrate_pointer(child_sid, down).unwrap();
+        assert_eq!(runtime.gestures.active_pointer_count(), 1);
+    }
+    #[cfg(feature = "channel")]
+    {
+        let _ = runtime
+            .channels
+            .subscribe("plugin.topic", Some(parent_sid), false, |_| {})
+            .unwrap();
+        let _ = runtime
+            .channels
+            .subscribe("plugin.topic", Some(child_sid), false, |_| {})
+            .unwrap();
+        assert_eq!(runtime.channels.subscriber_count("plugin.topic"), 2);
+    }
+
+    // Unloading parent cascades to child plugin, child surface, gestures, and channels!
+    let meta = runtime.unload_plugin(parent_pid).unwrap();
+    assert_eq!(meta.surface_id, parent_sid);
+    assert_eq!(runtime.plugins.active_count(), 0);
+    assert_eq!(runtime.surfaces.active_count(), 0);
+    assert!(runtime.plugins.find_by_surface(parent_sid).is_none());
+    assert!(runtime.plugins.find_by_surface(child_sid).is_none());
+    #[cfg(feature = "gesture")]
+    {
+        assert_eq!(runtime.gestures.active_pointer_count(), 0);
+        assert!(!runtime.gestures.has_surface_state(parent_sid));
+        assert!(!runtime.gestures.has_surface_state(child_sid));
+    }
+    #[cfg(feature = "channel")]
+    assert_eq!(runtime.channels.subscriber_count("plugin.topic"), 0);
+
+    // If a plugin's surface is destroyed directly on `surfaces`, hot-swap must refuse it cleanly
+    // and `unload_plugin` must still succeed without panicking.
+    let orphan_pid = runtime
+        .register_plugin_in_process(
+            "orphan-plugin",
+            plugin_v1_get_interface,
+            PluginRequirement::EMBEDDED_COMPONENT,
+        )
+        .unwrap();
+    let orphan_sid = runtime.plugins.get(orphan_pid).unwrap().surface_id();
+    runtime.surfaces.destroy_surface(orphan_sid).unwrap();
+    assert_eq!(
+        runtime.hot_swap_plugin_in_process(
+            orphan_pid,
+            plugin_v2_get_interface,
+            PluginRequirement::EMBEDDED_COMPONENT,
+        ),
+        Err(PluginError::SurfaceNotLive(orphan_sid))
+    );
+    let unloaded = runtime.unload_plugin(orphan_pid).unwrap();
+    assert_eq!(unloaded.surface_id, orphan_sid);
+    assert_eq!(runtime.plugins.active_count(), 0);
+
+    // `destroy_surface_cascade` detaches a mounted plugin AND still cleans up + runs remaining
+    // teardown hooks even if a child teardown hook panics!
+    let p_cas = runtime
+        .register_plugin_in_process(
+            "cascade-plugin",
+            plugin_v1_get_interface,
+            PluginRequirement::EMBEDDED_COMPONENT,
+        )
+        .unwrap();
+    let p_cas_sid = runtime.plugins.get(p_cas).unwrap().surface_id();
+    let leaf_sid = runtime
+        .surfaces
+        .register_child(p_cas_sid, crate::FrameworkKind::SwiftUI, "Leaf")
+        .unwrap();
+    #[cfg(feature = "channel")]
+    let _ = runtime
+        .channels
+        .subscribe("cascade.topic", Some(p_cas_sid), false, |_| {})
+        .unwrap();
+    let root_hook_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let root_hook_flag = std::sync::Arc::clone(&root_hook_ran);
+    runtime
+        .surfaces
+        .register_teardown_hook(leaf_sid, |_| panic!("leaf cascade hook boom"))
+        .unwrap();
+    runtime
+        .surfaces
+        .register_teardown_hook(p_cas_sid, move |_| {
+            root_hook_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .unwrap();
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = runtime.destroy_surface_cascade(p_cas_sid);
+    }));
+    assert!(res.is_err(), "panicking leaf hook must resume unwind");
+    assert!(
+        root_hook_ran.load(std::sync::atomic::Ordering::SeqCst),
+        "parent teardown hook must still execute after leaf hook panic"
+    );
+    assert_eq!(runtime.plugins.active_count(), 0);
+    assert_eq!(runtime.surfaces.active_count(), 0);
+    #[cfg(feature = "channel")]
+    assert_eq!(runtime.channels.subscriber_count("cascade.topic"), 0);
 }

@@ -1,30 +1,63 @@
 //! Typed handle hygiene & bare-handle-parameter AST scanners (`[INV:typed-domain-handles]`).
 //!
-//! - Enforces private tuple fields (`Visibility::Inherited`) on `NodeId` and `SurfaceId` in
-//!   `packages/core/abi/src/id.rs` and verifies both struct definitions are present.
+//! - Enforces `#[repr(transparent)]` single-field private tuple structs (`Visibility::Inherited`)
+//!   on `NodeId` and `SurfaceId` in `packages/core/abi/src/id.rs` outside `#[cfg(test)]` modules.
 //! - Bans leftover `StoreNodeId` aliases (`use ... as StoreNodeId`, `use ...::StoreNodeId`,
-//!   `type StoreNodeId = ...`) anywhere in the AST, including inside function bodies.
+//!   `use ...::StoreNodeId as ...`, `type StoreNodeId = ...`) anywhere in the AST.
 //! - Bans raw `NodeId(...)`/`SurfaceId(...)` tuple-call and `NodeId { 0: ... }` struct-literal
 //!   construction outside `id.rs` while ignoring enum variants like `MyEnum::NodeId(...)`.
-//! - Bans bare primitive `surface_id`/`node_id`/`frame_id`/`interface_id` parameters (including
-//!   wrapped `Option`/`&`/`&mut`/`[]`/`Vec`/`*const`/`*mut`, `extern "C"`, `fn(...)`, and nested
-//!   functions) across all `packages/core/*` crates (skipping `#[wasm_bindgen]` JS boundaries).
+//! - Bans bare or wrapped primitive (`u8..usize`, `i8..isize`, `f32`, `f64`, `NonZero*`,
+//!   including qualified `core::primitive::*` / `core::num::*` and `Option`/`Vec`/`Box`/`Arc`/
+//!   `Rc`/`Cell`/`RefCell`/`VecDeque`/`HashSet`/`BTreeSet`/`SmallVec`/refs/ptrs/slices/arrays)
+//!   `*surface_id`/`*node_id`/`*frame_id`/`*interface_id` parameters across `packages/core/*`
+//!   functions, impl/trait methods, `extern` blocks, bare `fn(...)` types, tuple patterns, and
+//!   closures (skipping `#[wasm_bindgen]` JS boundaries).
 
 use syn::visit::{self, Visit};
-use syn::{Attribute, Expr, Fields, ForeignItem, Item, Type, Visibility};
+use syn::{Attribute, Expr, Fields, ForeignItem, Item, Pat, Type, Visibility};
 
 use crate::{is_cfg_test_attr, line_at, Violation};
 
 const BARE_PRIMITIVES: &[&str] = &[
-    "u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize", "f32", "f64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "usize",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "isize",
+    "f32",
+    "f64",
+    "NonZeroU8",
+    "NonZeroU16",
+    "NonZeroU32",
+    "NonZeroU64",
+    "NonZeroUsize",
+    "NonZeroI8",
+    "NonZeroI16",
+    "NonZeroI32",
+    "NonZeroI64",
+    "NonZeroIsize",
 ];
 
-const BANNED_HANDLE_PARAMS: &[(&str, &str)] = &[
-    ("surface_id", "u32"),
-    ("node_id", "u32"),
-    ("frame_id", "u64"),
-    ("interface_id", "u32"),
+const HANDLE_WRAPPERS: &[&str] = &[
+    "Option",
+    "Vec",
+    "Box",
+    "Arc",
+    "Rc",
+    "Cell",
+    "RefCell",
+    "VecDeque",
+    "HashSet",
+    "BTreeSet",
+    "SmallVec",
 ];
+
+const BANNED_HANDLE_NAMES: &[&str] = &["surface_id", "node_id", "frame_id", "interface_id"];
 
 const ABI_ID_PATH: &str = "packages/core/abi/src/id.rs";
 
@@ -35,6 +68,7 @@ pub fn scan_handle_hygiene(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<
         rel,
         raw,
         is_id_rs,
+        in_cfg_test: is_cfg_test_attr(&ast.attrs),
         saw_node_id: false,
         saw_surface_id: false,
         out,
@@ -46,25 +80,42 @@ pub fn scan_handle_hygiene(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<
             visitor.out.push(Violation::new(
                 rel,
                 1,
-                "missing `pub struct NodeId(...)`",
-                "`packages/core/abi/src/id.rs` must directly declare `struct NodeId` so field privacy is auditable",
+                "missing `#[repr(transparent)] pub struct NodeId(u32)`",
+                "`packages/core/abi/src/id.rs` must directly declare non-test `struct NodeId` so field privacy and repr are auditable",
             ));
         }
         if !visitor.saw_surface_id {
             visitor.out.push(Violation::new(
                 rel,
                 1,
-                "missing `pub struct SurfaceId(...)`",
-                "`packages/core/abi/src/id.rs` must directly declare `struct SurfaceId` so field privacy is auditable",
+                "missing `#[repr(transparent)] pub struct SurfaceId(u32)`",
+                "`packages/core/abi/src/id.rs` must directly declare non-test `struct SurfaceId` so field privacy and repr are auditable",
             ));
         }
     }
+}
+
+fn has_repr_transparent(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("repr") {
+            return false;
+        }
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("transparent") {
+                found = true;
+            }
+            Ok(())
+        });
+        found
+    })
 }
 
 struct HandleHygieneVisitor<'a> {
     rel: &'a str,
     raw: &'a str,
     is_id_rs: bool,
+    in_cfg_test: bool,
     saw_node_id: bool,
     saw_surface_id: bool,
     out: &'a mut Vec<Violation>,
@@ -79,13 +130,17 @@ impl HandleHygieneVisitor<'_> {
                     self.check_use_tree(item);
                 }
             }
-            syn::UseTree::Rename(r) if r.rename == "StoreNodeId" => {
-                let ln = r.rename.span().start().line;
+            syn::UseTree::Rename(r) if r.rename == "StoreNodeId" || r.ident == "StoreNodeId" => {
+                let ln = if r.rename == "StoreNodeId" {
+                    r.rename.span().start().line
+                } else {
+                    r.ident.span().start().line
+                };
                 self.out.push(Violation::new(
                     self.rel,
                     ln,
                     line_at(self.raw, ln),
-                    "Leftover `StoreNodeId` alias is banned; import unified `NodeId` directly",
+                    "Leftover `StoreNodeId` alias/import is banned; import unified `NodeId` directly",
                 ));
             }
             syn::UseTree::Name(n) if n.ident == "StoreNodeId" => {
@@ -103,6 +158,15 @@ impl HandleHygieneVisitor<'_> {
 }
 
 impl<'ast> Visit<'ast> for HandleHygieneVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        let prev = self.in_cfg_test;
+        if is_cfg_test_attr(&node.attrs) {
+            self.in_cfg_test = true;
+        }
+        visit::visit_item_mod(self, node);
+        self.in_cfg_test = prev;
+    }
+
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         self.check_use_tree(&node.tree);
         visit::visit_item_use(self, node);
@@ -122,29 +186,39 @@ impl<'ast> Visit<'ast> for HandleHygieneVisitor<'_> {
     }
 
     fn visit_item_struct(&mut self, st: &'ast syn::ItemStruct) {
-        if self.is_id_rs && !is_cfg_test_attr(&st.attrs) {
+        if self.is_id_rs && !self.in_cfg_test && !is_cfg_test_attr(&st.attrs) {
             let name = st.ident.to_string();
             if name == "NodeId" {
                 self.saw_node_id = true;
             } else if name == "SurfaceId" {
                 self.saw_surface_id = true;
             }
-            if matches!(name.as_str(), "NodeId" | "SurfaceId")
-                && let Fields::Unnamed(unnamed) = &st.fields
-                && unnamed
-                    .unnamed
-                    .iter()
-                    .any(|f| !matches!(f.vis, Visibility::Inherited))
-            {
+            if matches!(name.as_str(), "NodeId" | "SurfaceId") {
                 let ln = st.ident.span().start().line;
-                self.out.push(Violation::new(
-                    self.rel,
-                    ln,
-                    line_at(self.raw, ln),
-                    format!(
-                        "`{name}` tuple field must remain private (`Visibility::Inherited`) so handles can only be minted via validated constructors"
-                    ),
-                ));
+                if !has_repr_transparent(&st.attrs) {
+                    self.out.push(Violation::new(
+                        self.rel,
+                        ln,
+                        line_at(self.raw, ln),
+                        format!("`{name}` must carry `#[repr(transparent)]` for C ABI parity"),
+                    ));
+                }
+                let valid_private_tuple = matches!(
+                    &st.fields,
+                    Fields::Unnamed(u)
+                        if u.unnamed.len() == 1
+                            && matches!(u.unnamed[0].vis, Visibility::Inherited)
+                );
+                if !valid_private_tuple {
+                    self.out.push(Violation::new(
+                        self.rel,
+                        ln,
+                        line_at(self.raw, ln),
+                        format!(
+                            "`{name}` must be a single-field tuple struct with a private (`Visibility::Inherited`) field so handles can only be minted via validated constructors"
+                        ),
+                    ));
+                }
             }
         }
         visit::visit_item_struct(self, st);
@@ -204,8 +278,9 @@ fn direct_handle_ctor_ident(path: &syn::Path) -> Option<&syn::Ident> {
 }
 
 /// Scans core Rust API function signatures (skipping `#[wasm_bindgen]` JS boundaries) for bare
-/// or wrapped primitive `surface_id`/`node_id`/`frame_id`/`interface_id` parameters across
-/// top-level/nested fns, impl methods, trait methods, `extern` blocks, and bare `fn(...)` types.
+/// or wrapped primitive `*surface_id`/`*node_id`/`*frame_id`/`*interface_id` parameters across
+/// top-level/nested fns, impl methods, trait methods, `extern` blocks, bare `fn(...)` types,
+/// tuple patterns, and closures.
 pub fn scan_bare_handle_params(
     rel: &str,
     raw: &str,
@@ -224,8 +299,19 @@ fn has_wasm_bindgen_attr(attrs: &[Attribute]) -> bool {
         .any(|a| a.path().segments.last().is_some_and(|s| s.ident == "wasm_bindgen"))
 }
 
-/// Recursively unwraps `Option<T>`, `Vec<T>`, `&T`, `&mut T`, `[T]`, `[T; N]`, `*const T`,
-/// `*mut T`, parentheses, and groups to check whether the inner type is a bare primitive.
+fn is_banned_handle_param_name(name: &str) -> bool {
+    if BANNED_HANDLE_NAMES.contains(&name) {
+        return true;
+    }
+    BANNED_HANDLE_NAMES
+        .iter()
+        .any(|&base| name.ends_with(&format!("_{base}")))
+}
+
+/// Recursively unwraps references, pointers, slices, arrays, parentheses, groups, and standard
+/// container wrappers (`Option`, `Vec`, `Box`, `Arc`, `Rc`, `Cell`, `RefCell`, `VecDeque`,
+/// `HashSet`, `BTreeSet`, `SmallVec`) to detect bare integer/float/`NonZero*` primitives (including
+/// qualified `core::primitive::u32` / `core::num::NonZeroU32` paths).
 fn unwrap_bare_primitive(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::Reference(r) => unwrap_bare_primitive(&r.elem),
@@ -235,14 +321,14 @@ fn unwrap_bare_primitive(ty: &Type) -> Option<&'static str> {
         Type::Paren(p) => unwrap_bare_primitive(&p.elem),
         Type::Group(g) => unwrap_bare_primitive(&g.elem),
         Type::Path(tp) if tp.qself.is_none() => {
-            if tp.path.segments.len() == 1 {
-                let s = tp.path.segments[0].ident.to_string();
-                if let Some(&prim) = BARE_PRIMITIVES.iter().find(|&&p| p == s) {
-                    return Some(prim);
-                }
-            }
             let last = tp.path.segments.last()?;
-            if matches!(last.ident.to_string().as_str(), "Option" | "Vec")
+            let last_name = last.ident.to_string();
+            if last.arguments.is_empty()
+                && let Some(&prim) = BARE_PRIMITIVES.iter().find(|&&p| p == last_name)
+            {
+                return Some(prim);
+            }
+            if HANDLE_WRAPPERS.contains(&last_name.as_str())
                 && let syn::PathArguments::AngleBracketed(args) = &last.arguments
                 && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
             {
@@ -251,6 +337,16 @@ fn unwrap_bare_primitive(ty: &Type) -> Option<&'static str> {
             None
         }
         _ => None,
+    }
+}
+
+fn peel_parens(mut ty: &Type) -> &Type {
+    loop {
+        match ty {
+            Type::Paren(p) => ty = &p.elem,
+            Type::Group(g) => ty = &g.elem,
+            _ => return ty,
+        }
     }
 }
 
@@ -263,8 +359,8 @@ struct BareHandleParamVisitor<'a> {
 impl BareHandleParamVisitor<'_> {
     fn check_param(&mut self, fn_label: &str, ident: &syn::Ident, ty: &Type) {
         let pname = ident.to_string();
-        if let Some((_, banned_ty)) = BANNED_HANDLE_PARAMS.iter().find(|&&(n, _)| n == pname)
-            && unwrap_bare_primitive(ty) == Some(*banned_ty)
+        if is_banned_handle_param_name(&pname)
+            && let Some(prim) = unwrap_bare_primitive(ty)
         {
             let ln = ident.span().start().line;
             self.out.push(Violation::new(
@@ -272,19 +368,40 @@ impl BareHandleParamVisitor<'_> {
                 ln,
                 line_at(self.raw, ln),
                 format!(
-                    "{fn_label} parameter `{pname}` wraps bare `{banned_ty}` instead of the typed `nve_abi` handle newtype"
+                    "{fn_label} parameter `{pname}` wraps bare `{prim}` instead of the typed `nve_abi` handle newtype"
                 ),
             ));
+        }
+    }
+
+    fn check_pat_with_ty(&mut self, fn_label: &str, pat: &Pat, ty: &Type) {
+        match pat {
+            Pat::Ident(pi) => self.check_param(fn_label, &pi.ident, ty),
+            Pat::Reference(pr) => {
+                let inner_ty = match peel_parens(ty) {
+                    Type::Reference(tr) => &tr.elem,
+                    other => other,
+                };
+                self.check_pat_with_ty(fn_label, &pr.pat, inner_ty);
+            }
+            Pat::Type(pt) => self.check_pat_with_ty(fn_label, &pt.pat, &pt.ty),
+            Pat::Paren(pp) => self.check_pat_with_ty(fn_label, &pp.pat, ty),
+            Pat::Tuple(pt) => {
+                if let Type::Tuple(tt) = peel_parens(ty) {
+                    for (sub_pat, sub_ty) in pt.elems.iter().zip(tt.elems.iter()) {
+                        self.check_pat_with_ty(fn_label, sub_pat, sub_ty);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
     fn check_sig(&mut self, sig: &syn::Signature) {
         let label = format!("fn `{}`", sig.ident);
         for input in &sig.inputs {
-            if let syn::FnArg::Typed(pat_ty) = input
-                && let syn::Pat::Ident(pat_ident) = &*pat_ty.pat
-            {
-                self.check_param(&label, &pat_ident.ident, &pat_ty.ty);
+            if let syn::FnArg::Typed(pat_ty) = input {
+                self.check_pat_with_ty(&label, &pat_ty.pat, &pat_ty.ty);
             }
         }
     }
@@ -362,5 +479,14 @@ impl<'ast> Visit<'ast> for BareHandleParamVisitor<'_> {
             }
         }
         visit::visit_type_bare_fn(self, bare);
+    }
+
+    fn visit_expr_closure(&mut self, cl: &'ast syn::ExprClosure) {
+        for input in &cl.inputs {
+            if let Pat::Type(pt) = input {
+                self.check_pat_with_ty("closure", &pt.pat, &pt.ty);
+            }
+        }
+        visit::visit_expr_closure(self, cl);
     }
 }

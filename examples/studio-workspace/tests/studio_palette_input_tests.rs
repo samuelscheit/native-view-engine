@@ -234,8 +234,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     assert!(pf1.len() > 24);
 
     let gen2 = runtime
-        .plugins
-        .hot_swap_dynamic(pid, &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
+        .hot_swap_plugin_dynamic(pid, &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("hot-swap studio plugin");
     assert_eq!(gen2, 2);
     let slot2 = runtime.plugins.get_mut(pid).unwrap();

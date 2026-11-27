@@ -32,11 +32,17 @@ pub(super) fn c_core_type(ty: &HybridType) -> String {
 }
 
 pub(super) fn emit_guarded_c_typedef(out: &mut CodeWriter, target: &HybridType, name: &str) {
-    let guard = format!("NVE_TYPEDEF_{}_DEFINED", to_snake_case(name).to_ascii_uppercase());
+    let stem = name.strip_prefix("Nve").unwrap_or(name);
+    let guard = format!("NVE_TYPEDEF_{}_DEFINED", to_snake_case(stem).to_ascii_uppercase());
+    let c_ty = c_core_type(target);
     writeln!(out, "#ifndef {guard}");
     writeln!(out, "#define {guard}");
-    writeln!(out, "typedef {} {name};", c_core_type(target));
+    writeln!(out, "typedef {c_ty} {name};");
     writeln!(out, "#endif");
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(sizeof({name}) == sizeof({c_ty}), \"{name} typedef size mismatch\");"
+    );
 }
 
 // ============================================================================
@@ -68,6 +74,22 @@ pub fn generate_c_core_abi_h() -> String {
     writeln!(out);
     writeln!(out, "#ifdef __cplusplus");
     writeln!(out, "extern \"C\" {{");
+    writeln!(out, "#endif");
+    writeln!(out);
+    writeln!(out, "#ifndef NVE_STATIC_ASSERT");
+    writeln!(out, "#if defined(__cplusplus)");
+    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)");
+    writeln!(
+        out,
+        "#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L"
+    );
+    writeln!(
+        out,
+        "#define NVE_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)"
+    );
+    writeln!(out, "#else");
+    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg)");
+    writeln!(out, "#endif");
     writeln!(out, "#endif");
     writeln!(out);
     writeln!(out, "#ifndef NVE_API");
@@ -184,23 +206,6 @@ pub fn generate_c_core_abi_h() -> String {
     }
 
     // Compile-time layout & offset assertions
-    writeln!(out, "#ifndef NVE_STATIC_ASSERT");
-    writeln!(out, "#if defined(__cplusplus)");
-    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)");
-    writeln!(
-        out,
-        "#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L"
-    );
-    writeln!(
-        out,
-        "#define NVE_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)"
-    );
-    writeln!(out, "#else");
-    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg)");
-    writeln!(out, "#endif");
-    writeln!(out, "#endif");
-    writeln!(out);
-
     for s in &spec.structs {
         if let Some(sz) = s.expected_size {
             writeln!(

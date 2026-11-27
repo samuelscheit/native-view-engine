@@ -96,19 +96,27 @@ mod native {
             });
         });
 
-        let mut churn_orch = SurfaceOrchestrator::new();
         let env = SurfaceEnvironment::default();
         c.bench_function("interop_surface_orchestrator_register_destroy_churn", |b| {
-            b.iter(|| {
-                let id = churn_orch
-                    .register_root(FrameworkKind::Nve, "Churn", black_box(env.clone()))
-                    .expect("register churn surface");
-                let torn = churn_orch
-                    .destroy_surface(black_box(id))
-                    .expect("destroy churn surface");
-                let drained = churn_orch.drain_events().len();
-                black_box((torn.len(), drained))
-            });
+            b.iter_batched(
+                SurfaceOrchestrator::new,
+                |mut churn_orch| {
+                    let mut total = 0usize;
+                    // Stay strictly below the 255-generation slot retirement ceiling so the
+                    // benchmark measures steady-state O(1) recycle without Vec growth skew.
+                    for _ in 0..64 {
+                        let id = churn_orch
+                            .register_root(FrameworkKind::Nve, "Churn", black_box(env.clone()))
+                            .expect("register churn surface");
+                        let torn = churn_orch
+                            .destroy_surface(black_box(id))
+                            .expect("destroy churn surface");
+                        total += torn.len() + churn_orch.drain_events().len();
+                    }
+                    black_box(total)
+                },
+                criterion::BatchSize::SmallInput,
+            );
         });
 
         let mut runtime = InteropRuntime::new();

@@ -159,26 +159,36 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
 
     let mut v_handle_hygiene = Vec::new();
     let mut v_handle_params = Vec::new();
+    let mut saw_abi_id_file = false;
     for root in ["packages", "hosts", "examples"] {
         for rel in idx.rs_files_under(root) {
             if is_self_invariant_file(&rel) {
                 continue;
+            }
+            if rel == "packages/core/abi/src/id.rs" {
+                saw_abi_id_file = true;
             }
             if let Some(parsed) = idx.parse_rust(&rel) {
                 ast_layout::scan_handle_hygiene(&rel, &parsed.raw, &parsed.ast, &mut v_handle_hygiene);
             }
         }
     }
+    assert!(
+        saw_abi_id_file,
+        "handle hygiene scan must visit `packages/core/abi/src/id.rs` so it cannot pass vacuously"
+    );
     assert_no_violations(
         "Unified NodeId/SurfaceId privacy, zero raw tuple constructors outside id.rs, and zero StoreNodeId aliases",
         &v_handle_hygiene,
     );
 
+    let mut core_crates_scanned = 0usize;
     for pkg in idx.graph.workspace().iter() {
         let Some(dir) = pkg.source().workspace_path().map(|p| p.as_str().replace('\\', "/")) else {
             continue;
         };
         if dir.starts_with("packages/core/") {
+            core_crates_scanned += 1;
             for rel in idx.rs_files_under(&format!("{dir}/src")) {
                 if is_test_or_bench_rs(&rel) {
                     continue;
@@ -207,6 +217,10 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
             }
         }
     }
+    assert!(
+        core_crates_scanned > 0,
+        "bare handle parameter scan must visit packages/core/* crates so it cannot pass vacuously"
+    );
     assert_no_violations(
         "Zero bare primitive surface_id/node_id/frame_id/interface_id parameters in core Rust APIs",
         &v_handle_params,

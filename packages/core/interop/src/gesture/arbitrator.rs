@@ -77,6 +77,12 @@ impl GestureArbitrator {
         self.active_pointers.len()
     }
 
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn has_surface_state(&self, surface_id: SurfaceId) -> bool {
+        self.capabilities.get(surface_id).is_some() || self.overrides.get(surface_id).is_some()
+    }
+
     /// Arbitrates a pointer sample along `hit_chain` (ordered **innermost -> outermost**).
     #[inline]
     pub fn arbitrate(

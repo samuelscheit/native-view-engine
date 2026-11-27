@@ -186,8 +186,8 @@ impl<'a> NveDirectEventRef<'a> {
     /// All pointers inside `raw` must remain valid and immutable for `'a`.
     #[inline] pub const unsafe fn from_raw(raw: &'a NveDirectEvent) -> Self { Self { raw } }
     #[inline] pub const fn raw(&self) -> &'a NveDirectEvent { self.raw }
-    #[inline] pub const fn surface_id(&self) -> SurfaceId { self.raw.surface_id }
-    #[inline] pub const fn node_id(&self) -> NodeId { self.raw.node_id }
+    #[inline] pub const fn surface_id(&self) -> SurfaceId { SurfaceId::from_raw_or_null(self.raw.surface_id.raw()) }
+    #[inline] pub const fn node_id(&self) -> NodeId { NodeId::from_raw_or_null(self.raw.node_id.raw()) }
     #[inline] pub const fn timestamp_us(&self) -> u64 { self.raw.timestamp_us }
     #[inline] pub const fn kind(&self) -> Option<NativeEventKind> { NativeEventKind::from_u8_opt(self.raw.kind) }
     #[inline] pub const fn payload_tag(&self) -> u8 { self.raw.payload_tag }

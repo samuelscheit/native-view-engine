@@ -290,6 +290,15 @@ pub struct EnvironmentOverrides {
 }
 
 impl EnvironmentOverrides {
+    /// Returns `true` when no field override is configured.
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.theme.is_none()
+            && self.safe_area.is_none()
+            && self.scale_factor.is_none()
+            && self.locale.is_none()
+    }
+
     /// Applies any explicitly set override fields onto `env`.
     pub(crate) fn apply_to(&self, env: &mut SurfaceEnvironment) {
         if let Some(theme) = &self.theme {

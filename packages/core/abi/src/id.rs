@@ -55,20 +55,20 @@ macro_rules! impl_generational_handle {
 
             /// Constructs a handle from a 24-bit slot index and 8-bit generation.
             ///
-            /// Any index-`0` input canonicalizes to [`Self::NULL`] so `x.is_null() <=> x == Self::NULL`.
-            /// Debug-asserts `index <= MAX_INDEX`; for untrusted inputs use [`Self::try_new`] or
-            /// [`Self::from_raw`].
+            /// Debug-asserts `index <= MAX_INDEX`. Both index `0` and out-of-range indices
+            /// (`> MAX_INDEX`) canonicalize to [`Self::NULL`] in release builds (never wrapping
+            /// to a live slot such as [`Self::ROOT`]); for explicit validation use
+            /// [`Self::try_new`] or [`Self::from_raw`].
             #[inline(always)]
             pub const fn new(index: u32, generation: u8) -> Self {
                 debug_assert!(
                     index <= Self::MAX_INDEX,
                     concat!(stringify!($name), " index exceeds 24-bit MAX_INDEX")
                 );
-                let masked = index & Self::MAX_INDEX;
-                if masked == 0 {
+                if index == 0 || index > Self::MAX_INDEX {
                     Self::NULL
                 } else {
-                    Self(((generation as u32) << Self::INDEX_BITS) | masked)
+                    Self(((generation as u32) << Self::INDEX_BITS) | index)
                 }
             }
 
@@ -207,9 +207,9 @@ pub const ROOT_NODE_ID: NodeId = NodeId::ROOT;
 
 /// Generational surface identity: `index: 24 | generation: 8`. Raw `0` is [`SurfaceId::NULL`].
 ///
-/// Raw FFI structs keep `SurfaceId` as a plain `u32` (never `NonZeroU32` inside `extern "C"` POD
-/// so zero-initialized C buffers never trigger UB); ingress validation rejects/canonicalizes any
-/// index-`0` value.
+/// `SurfaceId` is `#[repr(transparent)]` over a plain `u32` (never `NonZeroU32`), so zero-initialized
+/// `extern "C"` POD structs never trigger UB; FFI/wire ingress reads canonicalize any index-`0`
+/// bit pattern to [`SurfaceId::NULL`] via [`Self::from_raw_or_null`].
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct SurfaceId(u32);

@@ -176,7 +176,8 @@ macro_rules! export_nve_app {
                     "NveSurfaceApi::create",
                     ::std::ptr::null_mut(),
                     || {
-                        let boxed = Box::new(<$app_ty as NveApp>::create(surface_id));
+                        let canonical = SurfaceId::from_raw_or_null(surface_id.raw());
+                        let boxed = Box::new(<$app_ty as NveApp>::create(canonical));
                         Box::into_raw(boxed) as NveAppHandle
                     },
                 )

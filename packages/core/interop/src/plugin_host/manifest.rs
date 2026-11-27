@@ -75,7 +75,10 @@ pub enum PluginError {
     },
     NullHandleReturned,
     SurfaceSlotsExhausted,
+    SurfaceNotLive(SurfaceId),
+    SurfaceAllocationFailed(String),
     PluginIdsExhausted,
+    GenerationExhausted(PluginId),
     PluginNotFound(PluginId),
     DuplicatePluginName(String),
     InvalidPluginName(String),
@@ -106,7 +109,16 @@ impl fmt::Display for PluginError {
             Self::SurfaceSlotsExhausted => {
                 f.write_str("plugin host exhausted all generational surface slots")
             }
+            Self::SurfaceNotLive(id) => {
+                write!(f, "plugin surface {id} is no longer live in SurfaceOrchestrator")
+            }
+            Self::SurfaceAllocationFailed(msg) => {
+                write!(f, "plugin surface operation failed: {msg}")
+            }
             Self::PluginIdsExhausted => f.write_str("plugin host exhausted 32-bit plugin IDs"),
+            Self::GenerationExhausted(id) => {
+                write!(f, "plugin {id} exhausted 64-bit hot-swap generations")
+            }
             Self::PluginNotFound(id) => write!(f, "plugin {id} not found"),
             Self::DuplicatePluginName(name) => write!(f, "plugin '{name}' is already registered"),
             Self::InvalidPluginName(name) => write!(f, "invalid plugin name: '{name}'"),

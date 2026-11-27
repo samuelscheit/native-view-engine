@@ -11,7 +11,8 @@ use crate::error::InteropError;
 #[cfg(feature = "layout")]
 use crate::layout::IntrinsicSize;
 
-type TeardownHook = Box<dyn FnOnce(&TeardownRecord) + Send + 'static>;
+pub(crate) type TeardownHook = Box<dyn FnOnce(&TeardownRecord) + Send + 'static>;
+pub(crate) type PendingTeardownHooks = Vec<(usize, TeardownHook)>;
 
 /// Strongly typed dense slot index inside [`SurfaceOrchestrator::free`].
 #[repr(transparent)]
@@ -120,19 +121,23 @@ impl SurfaceOrchestrator {
 
     /// Registers a surface (root or child), inheriting environment from its parent when present.
     pub fn register_surface(&mut self, desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
-        let inherited_env = match desc.parent {
-            Some(parent_id) => {
-                let parent = self
-                    .get(parent_id)
-                    .ok_or(InteropError::ParentNotFound(parent_id))?;
-                parent.environment.clone()
+        let mut resolved_env = match (desc.parent, desc.environment) {
+            (Some(parent_id), Some(explicit_env)) => {
+                if self.get(parent_id).is_none() {
+                    return Err(InteropError::ParentNotFound(parent_id));
+                }
+                explicit_env
             }
-            None => SurfaceEnvironment::default(),
+            (Some(parent_id), None) => self
+                .get(parent_id)
+                .ok_or(InteropError::ParentNotFound(parent_id))?
+                .environment
+                .clone(),
+            (None, Some(explicit_env)) => explicit_env,
+            (None, None) => SurfaceEnvironment::default(),
         };
 
         let id = self.allocate_slot_with_limit(SurfaceId::MAX_INDEX)?;
-
-        let mut resolved_env = desc.environment.unwrap_or(inherited_env);
         desc.overrides.apply_to(&mut resolved_env);
 
         let record = Box::new(SurfaceRecord {
@@ -457,8 +462,7 @@ impl SurfaceOrchestrator {
         });
 
         if let Some(env) = new_parent_env {
-            let mut updated = Vec::new();
-            self.propagate_env_iterative(surface_id, env, &mut updated);
+            self.propagate_env_iterative(surface_id, env, None);
         }
 
         Ok(())
@@ -467,12 +471,25 @@ impl SurfaceOrchestrator {
     /// Destroys `surface_id` and its entire subtree in strict bottom-up (post-order) sequence.
     ///
     /// All state mutations (parent/root detachment, slot retirement/recycling, `active_count`,
-    /// hook extraction, and `Destroyed` events) finish before any user teardown hook runs, so
-    /// a panicking hook leaves the orchestrator 100% consistent.
+    /// hook extraction, and `Destroyed` events) finish before any user teardown hook runs. Every
+    /// registered teardown hook in the destroyed subtree executes even if an earlier hook panics;
+    /// the first panic (if any) is resumed only after all hooks have completed.
     pub fn destroy_surface(
         &mut self,
         surface_id: SurfaceId,
     ) -> Result<Vec<TeardownRecord>, InteropError> {
+        let (records, pending_hooks) = self.destroy_surface_parts(surface_id)?;
+        Self::fire_teardown_hooks(&records, pending_hooks);
+        Ok(records)
+    }
+
+    /// Commits all orchestrator teardown mutations and returns the torn-down records plus deferred
+    /// user teardown hooks so callers (such as [`crate::InteropRuntime::destroy_surface_cascade`])
+    /// can clean up sibling subsystems before any user hook runs.
+    pub(crate) fn destroy_surface_parts(
+        &mut self,
+        surface_id: SurfaceId,
+    ) -> Result<(Vec<TeardownRecord>, PendingTeardownHooks), InteropError> {
         let parent_of_root = self
             .get(surface_id)
             .ok_or(InteropError::SurfaceNotFound(surface_id))?
@@ -538,12 +555,27 @@ impl SurfaceOrchestrator {
             }
         }
 
-        // Fire user teardown hooks strictly AFTER all orchestrator state mutations are committed.
-        for (rec_idx, hook) in pending_hooks {
-            hook(&records[rec_idx]);
-        }
+        Ok((records, pending_hooks))
+    }
 
-        Ok(records)
+    /// Executes every deferred teardown hook in bottom-up order, isolating panics so subsequent
+    /// hooks always run, then resumes the first caught panic (if any) once all hooks have run.
+    pub(crate) fn fire_teardown_hooks(
+        records: &[TeardownRecord],
+        pending_hooks: PendingTeardownHooks,
+    ) {
+        let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
+        for (rec_idx, hook) in pending_hooks {
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hook(&records[rec_idx]);
+            })) && first_panic.is_none()
+            {
+                first_panic = Some(payload);
+            }
+        }
+        if let Some(payload) = first_panic {
+            std::panic::resume_unwind(payload);
+        }
     }
 
     fn collect_post_order_iterative(&self, root: SurfaceId) -> Vec<SurfaceId> {

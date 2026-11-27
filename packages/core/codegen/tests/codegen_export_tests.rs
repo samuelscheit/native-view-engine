@@ -363,6 +363,23 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
 
     assert!(core_files[0].content.contains("typedef uint64_t NveDurationUs;"));
     assert!(core_files[0].content.contains("typedef uint32_t NveInterfaceId;"));
+    assert!(core_files[0].content.contains("#ifndef NVE_TYPEDEF_SURFACE_ID_DEFINED"));
+    assert!(!core_files[0].content.contains("NVE_TYPEDEF_NVE_"));
+    assert!(!scene_files[0].content.contains("NVE_TYPEDEF_NVE_"));
+    assert!(core_files[0].content.contains("NVE_STATIC_ASSERT(sizeof(NveSurfaceId) == sizeof(uint32_t)"));
+
+    // Every typedef alias shared between core ABI and scene ABI must point to the exact same target.
+    let core_spec = nve_codegen::core_abi_spec();
+    let scene_spec = scene_abi_spec();
+    for sa in &scene_spec.aliases {
+        if let Some(ca) = core_spec.aliases.iter().find(|a| a.name == sa.name) {
+            assert_eq!(
+                ca.target, sa.target,
+                "shared C typedef `{}` target diverged between core ABI and scene ABI",
+                sa.name
+            );
+        }
+    }
     assert!(core_files[0].content.contains("NveDurationUs decode_us;"));
     assert!(core_files[0].content.contains("NveSurfaceId surface_id;"));
     assert!(!core_files[0].content.contains("uint64_t decode_us;"));

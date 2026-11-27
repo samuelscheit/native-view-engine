@@ -4,6 +4,7 @@ use std::path::Path;
 
 use nve_abi::{NveGetInterfaceFn, SurfaceId};
 
+use crate::error::InteropError;
 use crate::surface::{FrameworkKind, SurfaceEnvironment, SurfaceOrchestrator};
 
 use super::manifest::{
@@ -13,11 +14,16 @@ use super::manifest::{
 use super::sandbox::NvePluginSlot;
 
 /// Safe, typed registry hosting isolated `nve_get_interface` plugin slots with transactional
-/// zero-downtime hot-swapping over a shared [`SurfaceOrchestrator`].
+/// zero-downtime hot-swapping over [`crate::InteropRuntime`]'s shared [`SurfaceOrchestrator`].
+///
+/// Mutating lifecycle operations (`register`, `load`, `hot_swap`, `unload`) are intentionally
+/// routed exclusively through [`crate::InteropRuntime`] so plugins always share a single
+/// [`SurfaceOrchestrator`] and cascade teardown stays strictly synchronized.
 pub struct NvePluginHost {
     next_plugin_id: PluginId,
     slots: HashMap<PluginId, NvePluginSlot>,
     name_index: HashMap<String, PluginId>,
+    surface_index: HashMap<SurfaceId, PluginId>,
 }
 
 impl Default for NvePluginHost {
@@ -32,6 +38,7 @@ impl NvePluginHost {
             next_plugin_id: 1,
             slots: HashMap::default(),
             name_index: HashMap::default(),
+            surface_index: HashMap::default(),
         }
     }
 
@@ -51,14 +58,17 @@ impl NvePluginHost {
     ) -> Result<SurfaceId, PluginError> {
         surfaces
             .register_root(FrameworkKind::Nve, name, SurfaceEnvironment::default())
-            .map_err(|_| PluginError::SurfaceSlotsExhausted)
+            .map_err(|err| match err {
+                InteropError::SurfaceSlotsExhausted => PluginError::SurfaceSlotsExhausted,
+                other => PluginError::SurfaceAllocationFailed(other.to_string()),
+            })
     }
 
     /// Registers an in-process `nve_get_interface` plugin onto the shared `surfaces` orchestrator.
     ///
     /// Interface resolution and capability checks run BEFORE allocating a surface slot, so
     /// pre-create failures burn 0 surface slots/generations and emit 0 orchestrator events.
-    pub fn register_in_process(
+    pub(crate) fn register_in_process(
         &mut self,
         surfaces: &mut SurfaceOrchestrator,
         name: impl Into<String>,
@@ -99,6 +109,7 @@ impl NvePluginHost {
         };
         self.next_plugin_id = next_id;
         self.name_index.insert(name, plugin_id);
+        self.surface_index.insert(surface_id, plugin_id);
         self.slots.insert(plugin_id, slot);
         Ok(plugin_id)
     }
@@ -109,7 +120,7 @@ impl NvePluginHost {
     /// Library loading, symbol lookup, and capability checks run BEFORE allocating a surface slot,
     /// so pre-create failures burn 0 surface slots/generations and emit 0 orchestrator events.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_dynamic(
+    pub(crate) fn load_dynamic(
         &mut self,
         surfaces: &mut SurfaceOrchestrator,
         name: impl Into<String>,
@@ -150,14 +161,16 @@ impl NvePluginHost {
         };
         self.next_plugin_id = next_id;
         self.name_index.insert(name, plugin_id);
+        self.surface_index.insert(surface_id, plugin_id);
         self.slots.insert(plugin_id, slot);
         Ok(plugin_id)
     }
 
     /// Transactionally hot-swaps an existing plugin slot to a new in-process `nve_get_interface`
-    /// implementation while preserving its isolated `SurfaceId` and snapshotted state.
-    pub fn hot_swap_in_process(
+    /// implementation while verifying its surface is still live and preserving snapshotted state.
+    pub(crate) fn hot_swap_in_process(
         &mut self,
+        surfaces: &SurfaceOrchestrator,
         plugin_id: PluginId,
         new_get_interface: NveGetInterfaceFn,
         req: PluginRequirement,
@@ -167,9 +180,16 @@ impl NvePluginHost {
                 .slots
                 .get_mut(&plugin_id)
                 .ok_or(PluginError::PluginNotFound(plugin_id))?;
-            let state = existing.snapshot_state();
             let meta = existing.metadata().clone();
-            (meta.name, meta.surface_id, meta.generation + 1, state)
+            if surfaces.get(meta.surface_id).is_none() {
+                return Err(PluginError::SurfaceNotLive(meta.surface_id));
+            }
+            let next_gen = meta
+                .generation
+                .checked_add(1)
+                .ok_or(PluginError::GenerationExhausted(plugin_id))?;
+            let state = existing.snapshot_state();
+            (meta.name, meta.surface_id, next_gen, state)
         };
 
         let replacement = NvePluginSlot::from_in_process(
@@ -188,10 +208,11 @@ impl NvePluginHost {
     }
 
     /// Transactionally hot-swaps an existing plugin slot to a freshly built `cdylib` while
-    /// preserving its isolated `SurfaceId` and snapshotted state.
+    /// verifying its surface is still live and preserving snapshotted state.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn hot_swap_dynamic(
+    pub(crate) fn hot_swap_dynamic(
         &mut self,
+        surfaces: &SurfaceOrchestrator,
         plugin_id: PluginId,
         new_dylib_path: &Path,
         req: PluginRequirement,
@@ -201,9 +222,16 @@ impl NvePluginHost {
                 .slots
                 .get_mut(&plugin_id)
                 .ok_or(PluginError::PluginNotFound(plugin_id))?;
-            let state = existing.snapshot_state();
             let meta = existing.metadata().clone();
-            (meta.name, meta.surface_id, meta.generation + 1, state)
+            if surfaces.get(meta.surface_id).is_none() {
+                return Err(PluginError::SurfaceNotLive(meta.surface_id));
+            }
+            let next_gen = meta
+                .generation
+                .checked_add(1)
+                .ok_or(PluginError::GenerationExhausted(plugin_id))?;
+            let state = existing.snapshot_state();
+            (meta.name, meta.surface_id, next_gen, state)
         };
 
         let replacement = NvePluginSlot::from_dylib(
@@ -221,37 +249,39 @@ impl NvePluginHost {
         Ok(next_gen)
     }
 
-    /// Unloads and destroys a mounted plugin slot cleanly, destroying its surface in the shared
-    /// orchestrator so its generation advances or retires.
-    pub fn unload(
-        &mut self,
-        surfaces: &mut SurfaceOrchestrator,
-        plugin_id: PluginId,
-    ) -> Result<PluginMetadata, PluginError> {
+    /// Removes and drops a mounted plugin slot and clears its indices, returning its metadata
+    /// so the caller (`InteropRuntime::unload_plugin`) can run full surface cascade teardown.
+    pub(crate) fn take_for_unload(&mut self, plugin_id: PluginId) -> Result<PluginMetadata, PluginError> {
         let slot = self
             .slots
             .remove(&plugin_id)
             .ok_or(PluginError::PluginNotFound(plugin_id))?;
         let meta = slot.metadata().clone();
         self.name_index.remove(&meta.name);
+        self.surface_index.remove(&meta.surface_id);
         drop(slot);
-        let destroy_res = surfaces.destroy_surface(meta.surface_id);
-        debug_assert!(
-            destroy_res.is_ok(),
-            "unload destroy_surface({}) failed: {destroy_res:?}",
-            meta.surface_id
-        );
         Ok(meta)
     }
 
-    /// Removes any plugin slot bound to an already-destroyed surface (called by
+    /// Unloads and destroys a mounted plugin slot and its surface in `surfaces` (tolerating an
+    /// already-destroyed surface cleanly).
+    #[cfg(test)]
+    pub(crate) fn unload(
+        &mut self,
+        surfaces: &mut SurfaceOrchestrator,
+        plugin_id: PluginId,
+    ) -> Result<PluginMetadata, PluginError> {
+        let meta = self.take_for_unload(plugin_id)?;
+        match surfaces.destroy_surface(meta.surface_id) {
+            Ok(_) | Err(InteropError::SurfaceNotFound(_)) => Ok(meta),
+            Err(err) => Err(PluginError::SurfaceAllocationFailed(err.to_string())),
+        }
+    }
+
+    /// Removes any plugin slot bound to an already-destroyed surface in O(1) time (called by
     /// `InteropRuntime::destroy_surface_cascade`).
     pub(crate) fn detach_destroyed_surface(&mut self, surface_id: SurfaceId) {
-        let target = self
-            .slots
-            .iter()
-            .find_map(|(&pid, slot)| (slot.surface_id() == surface_id).then_some(pid));
-        if let Some(pid) = target
+        if let Some(pid) = self.surface_index.remove(&surface_id)
             && let Some(slot) = self.slots.remove(&pid)
         {
             self.name_index.remove(&slot.metadata().name);
@@ -269,6 +299,10 @@ impl NvePluginHost {
 
     pub fn find_by_name(&self, name: &str) -> Option<PluginId> {
         self.name_index.get(name).copied()
+    }
+
+    pub fn find_by_surface(&self, surface_id: SurfaceId) -> Option<PluginId> {
+        self.surface_index.get(&surface_id).copied()
     }
 
     pub fn active_count(&self) -> usize {
