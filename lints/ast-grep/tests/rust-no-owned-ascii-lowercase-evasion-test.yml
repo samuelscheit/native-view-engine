@@ -1,0 +1,36 @@
+id: rust-no-owned-ascii-lowercase-evasion
+valid:
+  - |
+    fn eq(a: &str, b: &str) -> bool {
+        a.eq_ignore_ascii_case(b)
+    }
+  - |
+    fn lower(s: &str) -> String {
+        #[expect(clippy::disallowed_methods, reason = "owned boundary")]
+        let out = s.to_ascii_lowercase();
+        out
+    }
+  - |
+    fn in_place(buf: &mut String) {
+        buf.make_ascii_lowercase();
+    }
+invalid:
+  - |
+    fn lower_owned(s: &str) -> String {
+        let mut out = s.to_owned();
+        out.make_ascii_lowercase();
+        out
+    }
+  - |
+    fn lower_string(s: &str) -> String {
+        let mut out = s.to_string();
+        out.make_ascii_lowercase();
+        out
+    }
+  - |
+    fn lower_from(s: &str) -> String {
+        let mut out = String::from(s);
+        let _len = out.len();
+        out.make_ascii_lowercase();
+        out
+    }

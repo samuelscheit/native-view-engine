@@ -1,0 +1,29 @@
+id: rust-no-owned-ascii-lowercase-evasion
+language: rust
+severity: error
+message: "`.to_owned()`/`.to_string()` + `.make_ascii_lowercase()` re-implements the disallowed `str::to_ascii_lowercase`."
+note: "Compare with zero-alloc `eq_ignore_ascii_case`; for a genuine owned boundary call `str::to_ascii_lowercase` under `#[expect(clippy::disallowed_methods, reason = \"...\")]` so Clippy keeps auditing it."
+files:
+  - "packages/**/*.rs"
+  - "hosts/**/*.rs"
+  - "examples/**/*.rs"
+ignores:
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
+rule:
+  kind: expression_statement
+  has:
+    pattern: $V.make_ascii_lowercase()
+  follows:
+    stopBy: end
+    any:
+      - pattern: let mut $V = $E.to_owned();
+      - pattern: let mut $V = $E.to_string();
+      - pattern: let mut $V = String::from($E);
+      - pattern: "let mut $V: String = $E.to_owned();"
+  not:
+    matches: rust-in-test-code

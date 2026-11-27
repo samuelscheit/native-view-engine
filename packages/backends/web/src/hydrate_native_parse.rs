@@ -9,13 +9,6 @@ fn is_form_control_tag(tag: &str) -> bool {
     matches!(tag, "input" | "textarea" | "select")
 }
 
-/// Owned ASCII-lowercase copy of a parsed tag/attribute name (cold test-simulation boundary).
-fn lower_owned(s: &str) -> String {
-    let mut out = s.to_owned();
-    out.make_ascii_lowercase();
-    out
-}
-
 /// One parsed HTML element inside [`NativeSsrTree`].
 #[derive(Debug, Clone)]
 pub(crate) struct NativeHtmlNode {
@@ -150,7 +143,11 @@ fn parse_html_attrs(attrs: &str) -> Vec<(String, Option<String>)> {
         {
             i += 1;
         }
-        let name = lower_owned(&attrs[name_start..i]);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "owned arena attribute name, normalized once at parse (cold headless simulator)"
+        )]
+        let name = attrs[name_start..i].to_ascii_lowercase();
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
@@ -288,14 +285,14 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
             if end >= bytes.len() {
                 break;
             }
-            let close_name = lower_owned(html[start..end].trim());
+            let close_name = html[start..end].trim();
             if let Some(pos) = open_stack
                 .iter()
-                .rposition(|&idx| tree.arena[idx].tag == close_name)
+                .rposition(|&idx| tree.arena[idx].tag.eq_ignore_ascii_case(close_name))
             {
                 let closed_idx = open_stack[pos];
                 tree.arena[closed_idx].closed = true;
-                if close_name == "option" {
+                if close_name.eq_ignore_ascii_case("option") {
                     selected_option.retain(|(idx, _, _)| *idx != closed_idx);
                 }
                 open_stack.truncate(pos);
@@ -332,7 +329,11 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
             raw_inner
         };
         let mut parts = inner.splitn(2, char::is_whitespace);
-        let tag = lower_owned(parts.next().unwrap_or(""));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "owned arena tag, normalized once at parse (cold headless simulator)"
+        )]
+        let tag = parts.next().unwrap_or("").to_ascii_lowercase();
         let attrs = parse_html_attrs(parts.next().unwrap_or(""));
         i = end + 1;
 

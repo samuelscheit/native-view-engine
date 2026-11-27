@@ -1,0 +1,44 @@
+id: rust-no-owned-ascii-lowercase-evasion
+snapshots:
+  "fn lower_from(s: &str) -> String {\n    let mut out = String::from(s);\n    let _len = out.len();\n    out.make_ascii_lowercase();\n    out\n}\n":
+    labels:
+    - source: out.make_ascii_lowercase();
+      style: primary
+      start: 100
+      end: 127
+    - source: out.make_ascii_lowercase()
+      style: secondary
+      start: 100
+      end: 126
+    - source: let mut out = String::from(s);
+      style: secondary
+      start: 39
+      end: 69
+  "fn lower_owned(s: &str) -> String {\n    let mut out = s.to_owned();\n    out.make_ascii_lowercase();\n    out\n}\n":
+    labels:
+    - source: out.make_ascii_lowercase();
+      style: primary
+      start: 72
+      end: 99
+    - source: out.make_ascii_lowercase()
+      style: secondary
+      start: 72
+      end: 98
+    - source: let mut out = s.to_owned();
+      style: secondary
+      start: 40
+      end: 67
+  "fn lower_string(s: &str) -> String {\n    let mut out = s.to_string();\n    out.make_ascii_lowercase();\n    out\n}\n":
+    labels:
+    - source: out.make_ascii_lowercase();
+      style: primary
+      start: 74
+      end: 101
+    - source: out.make_ascii_lowercase()
+      style: secondary
+      start: 74
+      end: 100
+    - source: let mut out = s.to_string();
+      style: secondary
+      start: 41
+      end: 69

@@ -522,3 +522,25 @@ fn queued_pre_hydration_events_without_ssr_pairing_are_discarded() {
     });
     assert!(client.drain_events().is_empty());
 }
+
+#[test]
+fn uppercase_ssr_tags_and_close_tags_hydrate_with_zero_mismatches() {
+    let mut server = web();
+    let mut store = NodeStore::new();
+    commit(&mut server, &mut store, |tx| button_with_label(tx, 0, false));
+    let mut ssr = server.render_ssr(&store);
+    let lower = ssr.html.clone();
+    ssr.html = lower
+        .replace("<div", "<DIV")
+        .replace("</div>", "</Div>")
+        .replace("<button", "<BUTTON")
+        .replace("</button>", "</BUTTON>");
+    assert_ne!(ssr.html, lower, "fixture must exercise mixed-case tags");
+
+    let mut client = WebBackend::hydrate_from_ssr(&ssr);
+    let mut client_store = NodeStore::new();
+    commit(&mut client, &mut client_store, |tx| button_with_label(tx, 0, false));
+    let report = client.hydration_report();
+    assert!(report.is_clean(), "{report:?}");
+    assert!(report.adopted_nodes >= 2, "{report:?}");
+}
