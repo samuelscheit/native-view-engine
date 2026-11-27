@@ -11,6 +11,16 @@ void runBinDynamic(Check c) {
   c.eq(_hex(encodeDynamic(true)), '0101', 'bool');
   c.eq(_hex(encodeDynamic(-2)), '02feffffffffffffff', 'i64 -2');
   c.eq(_hex(encodeDynamic(1.5)), '03000000000000f83f', 'f64 1.5');
+  // Web numbers: integral doubles are `int`s there; -0.0 and |v| >= 2^53 must stay exact f64.
+  c.eq(_hex(encodeDynamic(-0.0)), '030000000000000080', 'f64 -0.0 on every platform');
+  c.eq(_hex(encodeDynamic(9007199254740992.0)), '030000000000004043', 'f64 2^53 on every platform');
+  c.eq(_hex(encodeDynamic(1e300)), '03${_hex(Uint8List.sublistView(ByteData(8)..setFloat64(0, 1e300, Endian.little)))}',
+      'f64 1e300 on every platform');
+  final negZero = decodeDynamic(encodeDynamic(-0.0));
+  c.that(negZero is double && negZero == 0 && negZero.isNegative, '-0.0 round-trips with its sign');
+  c.eq(decodeDynamic(encodeDynamic(9007199254740993.0)), 9007199254740992.0, 'large double round-trips exactly');
+  c.eq(decodeDynamic(encodeDynamic(2.0)), 2.0, 'integral double round-trips numerically');
+  c.eq(decodeDynamic(encodeDynamic(9007199254740991)), 9007199254740991, 'max safe integer stays exact');
   c.eq(_hex(encodeDynamic('é')), '0402000000c3a9', 'str');
   c.eq(_hex(encodeDynamic(Uint8List.fromList([7, 8]))), '05020000000708', 'bytes');
   c.eq(_hex(encodeDynamic(const <Object?>[])), '060400000000000000', 'empty array: payload counts only the count');

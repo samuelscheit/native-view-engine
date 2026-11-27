@@ -20,10 +20,10 @@ void _writeDynamic(BinWriter w, Object? value, int depth) {
       w.writeNull();
     case final bool v:
       w.writeBool(v);
-    case final int v:
-      w.writeI64(v);
-    case final double v:
-      w.writeF64(v);
+    case final num v when encodesAsI64(v):
+      w.writeI64(v as int);
+    case final num v:
+      w.writeF64(v.toDouble());
     case final String v:
       w.writeStr(v);
     case final Uint8List v:

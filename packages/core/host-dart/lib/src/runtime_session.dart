@@ -143,9 +143,14 @@ final class _NativeBlock {
 
   ffi.Pointer<ffi.Uint8> reserve(int bytes) {
     if (bytes > capacity) {
+      // Drop the old block first so a failed allocation never leaves a freed pointer behind
+      // (a later `reserve` / `free` would free it twice).
       NativeHeap.free(ptr);
-      capacity = bytes < 256 ? 256 : bytes * 2;
-      ptr = NativeHeap.zeroed<ffi.Uint8>(capacity);
+      ptr = ffi.nullptr;
+      capacity = 0;
+      final size = bytes < 256 ? 256 : bytes * 2;
+      ptr = NativeHeap.zeroed<ffi.Uint8>(size);
+      capacity = size;
     }
     return ptr;
   }

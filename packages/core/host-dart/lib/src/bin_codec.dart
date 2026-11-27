@@ -21,6 +21,19 @@ enum BinTag { nullValue, boolValue, i64, f64, str, bytes, array, map }
 /// Maximum container nesting depth (Rust `NVE_BIN_VALUE_MAX_DEPTH`).
 const int binValueMaxDepth = 64;
 
+/// `true` when number [v] is written as `i64`. Native `int`s always are; on the web every
+/// integral `double` is also an `int` (`1.0 is int`), so only exact integers in ±(2^53 − 1)
+/// that are not `-0.0` qualify there and everything else stays an `f64` (lossless round-trip).
+bool encodesAsI64(num v) {
+  if (v is! int) {
+    return false;
+  }
+  if (!identical(1, 1.0)) {
+    return true; // native VM: distinct int type
+  }
+  return v.abs() <= 9007199254740991 && !(v == 0 && v.isNegative);
+}
+
 /// Throws [BinErrorKind.maxDepth] when opening a container at [depth] would exceed
 /// [binValueMaxDepth] (shared by every encoder / decoder walk).
 void checkBinValueDepth(int depth) {
