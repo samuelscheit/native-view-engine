@@ -53,6 +53,10 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
         out,
         "// Typed Custom Element wrapping a `wasm-bindgen` NVE surface."
     );
+    writeln!(
+        out,
+        "// Imports `@nve/host` (erasable TS; consume via a workspace or TS-aware bundler)."
+    );
     writeln!(out);
     writeln!(out, "import {{");
     writeln!(out, "  decodeJsValue as decodeNveBinValue,");
@@ -180,7 +184,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     for prop in &spec.props {
         let attr = to_kebab_case(&prop.name);
         let key = escape_ts_single_quoted(&prop.name);
-        let parse_expr = js_parse_attr_expr(&prop.prop_type);
+        let parse_expr = js_parse_attr_expr(prop);
         writeln!(out, "      case '{}':", escape_ts_single_quoted(&attr));
         writeln!(out, "        this._props['{key}'] = {parse_expr};");
         writeln!(out, "        this._syncProps();");
@@ -337,15 +341,20 @@ fn emit_web_component_dts(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out, "export interface {name}Props {{");
     for prop in &spec.props {
         let camel = to_camel_case(&prop.name);
-        let opt = if prop.optional || prop.default_value.is_some() {
-            "?"
-        } else {
-            ""
-        };
-        let null_s = if prop.nullable { " | null" } else { "" };
+        let has_default = prop.default_value.is_some();
+        let opt = if prop.optional || has_default { "?" } else { "" };
+        let is_nullable =
+            prop.nullable || matches!(prop.default_value, Some(DefaultValue::Null));
+        let mut suffix = String::new();
+        if is_nullable {
+            suffix.push_str(" | null");
+        }
+        if prop.optional && !has_default {
+            suffix.push_str(" | undefined");
+        }
         writeln!(
             out,
-            "  {camel}{opt}: {}{null_s};",
+            "  {camel}{opt}: {}{suffix};",
             dts_type(&prop.prop_type)
         );
     }
@@ -361,14 +370,22 @@ fn emit_web_component_dts(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out, "  static readonly observedAttributes: readonly string[];");
     for prop in &spec.props {
         let camel = to_camel_case(&prop.name);
+        let has_default = prop.default_value.is_some();
+        let is_nullable =
+            prop.nullable || matches!(prop.default_value, Some(DefaultValue::Null));
+        let opt = if prop.optional && !has_default { "?" } else { "" };
         let mut suffix = String::new();
-        if prop.nullable {
+        if is_nullable {
             suffix.push_str(" | null");
         }
-        if prop.optional && prop.default_value.is_none() {
+        if prop.optional && !has_default {
             suffix.push_str(" | undefined");
         }
-        writeln!(out, "  {camel}: {}{suffix};", dts_type(&prop.prop_type));
+        writeln!(
+            out,
+            "  {camel}{opt}: {}{suffix};",
+            dts_type(&prop.prop_type)
+        );
     }
     for cmd in &spec.commands {
         let mname = to_camel_case(&cmd.name);
@@ -415,10 +432,11 @@ fn dom_event_name(ev: &EventSpec) -> String {
 
 fn js_default_literal(prop: &PropSpec) -> Option<String> {
     let def = prop.default_value.as_ref()?;
-    match def {
-        DefaultValue::Null => Some("null".to_owned()),
-        DefaultValue::Bool(b) => Some(if *b { "true" } else { "false" }.to_owned()),
-        DefaultValue::Int(i) => {
+    match (&prop.prop_type, def) {
+        (_, DefaultValue::Null) => Some("null".to_owned()),
+        (_, DefaultValue::Bool(b)) => Some(if *b { "true" } else { "false" }.to_owned()),
+        (PropType::Float | PropType::Double, DefaultValue::Int(i)) => Some(format!("{i}.0")),
+        (_, DefaultValue::Int(i)) => {
             const MAX_SAFE_INT: i64 = (1i64 << 53) - 1;
             if (-MAX_SAFE_INT..=MAX_SAFE_INT).contains(i) {
                 Some(i.to_string())
@@ -426,18 +444,31 @@ fn js_default_literal(prop: &PropSpec) -> Option<String> {
                 Some(format!("{i}n"))
             }
         }
-        DefaultValue::Float(f) => Some(format_float_literal(*f)),
-        DefaultValue::String(s) => Some(format!("'{}'", escape_ts_single_quoted(s))),
+        (_, DefaultValue::Float(f)) => Some(format_float_literal(*f)),
+        (_, DefaultValue::String(s)) => Some(format!("'{}'", escape_ts_single_quoted(s))),
     }
 }
 
-fn js_parse_attr_expr(ty: &PropType) -> &'static str {
-    match ty {
-        PropType::Bool => "newValue !== null && newValue !== 'false'",
-        PropType::Int32 | PropType::IntEnum { .. } => "newValue === null ? undefined : Number.parseInt(newValue, 10)",
-        PropType::Float | PropType::Double => "newValue === null ? undefined : Number.parseFloat(newValue)",
-        PropType::Array { .. } => "newValue === null ? undefined : newValue.split(',').map((s) => s.trim()).filter(Boolean)",
-        _ => "newValue ?? undefined",
+fn js_parse_attr_expr(prop: &PropSpec) -> String {
+    let fallback = js_default_literal(prop).unwrap_or_else(|| "undefined".to_owned());
+    match &prop.prop_type {
+        PropType::Bool => {
+            if prop.default_value.is_some() {
+                format!("newValue === null ? {fallback} : newValue !== 'false'")
+            } else {
+                "newValue !== null && newValue !== 'false'".to_owned()
+            }
+        }
+        PropType::Int32 | PropType::IntEnum { .. } => {
+            format!("newValue === null ? {fallback} : Number.parseInt(newValue, 10)")
+        }
+        PropType::Float | PropType::Double => {
+            format!("newValue === null ? {fallback} : Number.parseFloat(newValue)")
+        }
+        PropType::Array { .. } => format!(
+            "newValue === null ? {fallback} : newValue.split(',').map((s) => s.trim()).filter(Boolean)"
+        ),
+        _ => format!("newValue === null ? {fallback} : newValue"),
     }
 }
 
@@ -468,7 +499,8 @@ fn dts_type(ty: &PropType) -> String {
                 .iter()
                 .map(|f| {
                     let opt = if f.optional { "?" } else { "" };
-                    format!("{}{opt}: {}", f.name, dts_type(&f.field_type))
+                    let null_s = if f.nullable { " | null" } else { "" };
+                    format!("{}{opt}: {}{null_s}", f.name, dts_type(&f.field_type))
                 })
                 .collect();
             format!("Readonly<{{ {} }}>", parts.join("; "))

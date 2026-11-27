@@ -1,5 +1,5 @@
 /** Hybrid FFI prelude shared by every generated TypeScript / WASM hybrid client. */
-import { BinReader, BinTag, BinWriter } from './bin_codec.ts';
+import { BIN_VALUE_MAX_DEPTH, BinCodecError, BinReader, BinTag, BinWriter } from './bin_codec.ts';
 import { Key64 } from './key64.ts';
 
 /** Status of a fallible hybrid FFI trampoline (Rust `NveHybridStatus`, `#[repr(i32)]`). */
@@ -39,23 +39,29 @@ export class HybridError extends Error {
 
 /** Owned dynamic value in the compact `NveBinValue` encoding; always exactly one valid value. */
 export class DynamicValue {
-  static readonly NULL = new DynamicValue(Uint8Array.of(BinTag.Null));
+  static readonly NULL = new DynamicValue(Uint8Array.of(BinTag.Null), 0);
 
   private readonly data: Uint8Array;
+  private readonly maxDepth: number;
 
-  private constructor(data: Uint8Array) {
+  private constructor(data: Uint8Array, maxDepth: number) {
     this.data = data;
+    this.maxDepth = maxDepth;
   }
 
   /** Validated copy of `bytes`; throws `BinCodecError` when invalid. */
   static of(bytes: Uint8Array): DynamicValue {
-    BinReader.validate(bytes);
-    return new DynamicValue(bytes.slice());
+    const r = new BinReader(bytes);
+    r.checkValue();
+    r.requireEnd();
+    return new DynamicValue(bytes.slice(), r.lastCheckedDepth);
   }
 
   /** Reads, validates, and copies the next value from `r`. */
   static read(r: BinReader): DynamicValue {
-    return new DynamicValue(r.readCheckedValue().slice());
+    const baseDepth = r.currentDepth;
+    const raw = r.readCheckedValue().slice();
+    return new DynamicValue(raw, r.lastCheckedDepth - baseDepth);
   }
 
   /** Copy of the encoded bytes. */
@@ -71,12 +77,23 @@ export class DynamicValue {
     return this.tag === BinTag.Null;
   }
 
+  /** Maximum container nesting depth contained inside this value (`0` for scalars). */
+  get containerDepth(): number {
+    return this.maxDepth;
+  }
+
   reader(): BinReader {
     return new BinReader(this.data);
   }
 
-  /** Writes this already-validated `NveBinValue` directly into `w` without copying. */
+  /**
+   * Writes this already-validated `NveBinValue` directly into `w` without copying.
+   * Rejects writes whose combined nesting depth would exceed `BIN_VALUE_MAX_DEPTH`.
+   */
   writeTo(w: BinWriter): void {
+    if (this.maxDepth > 0 && w.containerDepth + this.maxDepth > BIN_VALUE_MAX_DEPTH) {
+      throw new BinCodecError('maxDepth', `depth ${w.containerDepth + this.maxDepth}`);
+    }
     w.raw(this.data);
   }
 
@@ -119,16 +136,17 @@ export function writeU64Checked(w: BinWriter, value: bigint): void {
   w.writeI64(value);
 }
 
-/** Reads an `i64` tag and narrows to a JS `number` only within safe bounds `[min, max]`. */
+/** Reads an `i64` tag and narrows to a JS `number` only within safe bounds `[min, max]` (zero `BigInt` on fast path). */
 export function readIntInRange(r: BinReader, min: number, max: number): number {
   if (!(Number.isSafeInteger(min) && Number.isSafeInteger(max) && min <= max)) {
     throw new RangeError(`invalid safe-integer bounds [${min}, ${max}]`);
   }
-  const v = r.readI64();
-  if (v < BigInt(min) || v > BigInt(max)) {
-    throw new RangeError(`i64 ${v} outside [${min}, ${max}]`);
+  const bits = r.readI64Bits();
+  const v = bits.toSignedSafeInteger();
+  if (v === null || v < min || v > max) {
+    throw new RangeError(`i64 ${v ?? bits.toSignedBigInt()} outside [${min}, ${max}]`);
   }
-  return Number(v);
+  return v;
 }
 
 /** Reads the leading `Bool` tag of a `Result` payload; throws `HybridError(Err, msg)` on `false`. */
@@ -166,18 +184,28 @@ export function wasmCreateHandle(
   return handle;
 }
 
-/** Allocates `bytes.byteLength` bytes in WASM linear memory and copies `bytes` into it (`0` when empty). */
+/**
+ * Allocates `bytes.byteLength` bytes in WASM linear memory and copies `bytes` into it (`0` when empty).
+ * Validates `u32` length before allocation, snapshots views aliasing `wasm.memory.buffer` so
+ * `memory.grow()` cannot detach the source, and never passes corrupt/out-of-bounds pointers to `free`.
+ */
 export function wasmCopyIn(wasm: HybridWasmExports, bytes: Uint8Array): number {
   const len = bytes.byteLength;
   if (len === 0) return 0;
+  if (len > 0xffff_ffff) throw new RangeError(`wasm payload length ${len} exceeds u32`);
+  const src = bytes.buffer === wasm.memory.buffer ? bytes.slice() : bytes;
   const ptr = wasm.nve_hybrid_alloc(len) >>> 0;
   if (ptr === 0) throw new HybridError(HybridStatus.Err, `wasm alloc(${len}) returned null`);
   const mem = wasm.memory.buffer;
   if (ptr + len > mem.byteLength) {
-    wasm.nve_hybrid_free(ptr, len);
     throw new HybridError(HybridStatus.Err, `wasm alloc(${len}) at ${ptr} outside memory (${mem.byteLength})`);
   }
-  new Uint8Array(mem, ptr, len).set(bytes);
+  try {
+    new Uint8Array(mem, ptr, len).set(src);
+  } catch (e) {
+    wasm.nve_hybrid_free(ptr, len);
+    throw e;
+  }
   return ptr;
 }
 
@@ -213,10 +241,15 @@ export function wasmCallBin(
   const reqPtr = wasmCopyIn(wasm, req);
   let outLenPtr = 0;
   try {
-    outLenPtr = wasm.nve_hybrid_alloc(4) >>> 0;
-    if (outLenPtr === 0 || outLenPtr + 4 > wasm.memory.buffer.byteLength) {
-      throw new HybridError(HybridStatus.Err, `wasm alloc(4) for outLen failed on ${name}`);
+    const rawOutLenPtr = wasm.nve_hybrid_alloc(4) >>> 0;
+    if (rawOutLenPtr === 0 || rawOutLenPtr + 4 > wasm.memory.buffer.byteLength) {
+      throw new HybridError(
+        HybridStatus.Err,
+        `wasm alloc(4) for outLen returned invalid ptr ${rawOutLenPtr} (memory ${wasm.memory.buffer.byteLength}) on ${name}`,
+      );
     }
+    // Register for `finally` cleanup only after verifying `rawOutLenPtr` is in linear-memory bounds.
+    outLenPtr = rawOutLenPtr;
     new DataView(wasm.memory.buffer).setUint32(outLenPtr, 0, true);
     const respPtr = callFn(handle, reqPtr, req.byteLength, outLenPtr) >>> 0;
     // Re-read `wasm.memory.buffer` after the call in case WASM grew linear memory.
@@ -228,14 +261,24 @@ export function wasmCallBin(
       }
       return new Uint8Array(0);
     }
-    if (respLen === 0) return new Uint8Array(0);
-    try {
-      if (respPtr + respLen > mem.byteLength) {
+    if (respLen === 0) {
+      // Zero-length allocations must never be passed to Rust's `dealloc` (size 0 is UB); still guard bounds.
+      if (respPtr > mem.byteLength) {
         throw new HybridError(
           HybridStatus.Err,
-          `wasm response [${respPtr}, +${respLen}) outside memory (${mem.byteLength})`,
+          `wasm response ptr ${respPtr} (+0) outside memory (${mem.byteLength}) on ${name}`,
         );
       }
+      return new Uint8Array(0);
+    }
+    // Validate bounds BEFORE entering `finally` so corrupt pointers are never passed to `nve_hybrid_free`.
+    if (respPtr + respLen > mem.byteLength) {
+      throw new HybridError(
+        HybridStatus.Err,
+        `wasm response [${respPtr}, +${respLen}) outside memory (${mem.byteLength})`,
+      );
+    }
+    try {
       return new Uint8Array(mem, respPtr, respLen).slice();
     } finally {
       wasm.nve_hybrid_free(respPtr, respLen);

@@ -63,6 +63,8 @@ export class BinReader {
   private limit: number;
   /** Active container nesting depth across `readArray` / `readMap` scopes. */
   private depth = 0;
+  /** Maximum container depth reached during the most recent `checkValue()` call. */
+  private maxDepthSeen = 0;
 
   constructor(bytes: Uint8Array) {
     this.bytes = bytes;
@@ -80,6 +82,16 @@ export class BinReader {
 
   get atEnd(): boolean {
     return this.pos === this.limit;
+  }
+
+  /** Current container nesting depth inside `readArray` / `readMap` scopes. */
+  get currentDepth(): number {
+    return this.depth;
+  }
+
+  /** Deepest container level observed by the last `checkValue()` call. */
+  get lastCheckedDepth(): number {
+    return this.maxDepthSeen;
   }
 
   // ---- raw little-endian primitives ---------------------------------------------------------
@@ -251,6 +263,7 @@ export class BinReader {
 
   /** Fully validates and consumes the next value (Rust `BinValueView::parse` rules). */
   checkValue(): void {
+    this.maxDepthSeen = this.depth;
     this.checkAt(this.depth);
   }
 
@@ -262,8 +275,9 @@ export class BinReader {
   }
 
   private inContainer<T>(tag: BinTag, minEntryBytes: number, body: (count: number) => T): T {
-    if (this.depth >= BIN_VALUE_MAX_DEPTH) throw new BinCodecError('maxDepth', `depth ${this.depth}`);
+    // Check tag/EOF/header before depth so truncated or mismatched inputs report their true error.
     const [count, end] = this.openContainer(tag, minEntryBytes);
+    if (this.depth >= BIN_VALUE_MAX_DEPTH) throw new BinCodecError('maxDepth', `depth ${this.depth}`);
     const outer = this.limit;
     this.limit = end;
     this.depth += 1;
@@ -338,6 +352,7 @@ export class BinReader {
         return;
       default: {
         if (depth >= BIN_VALUE_MAX_DEPTH) throw new BinCodecError('maxDepth', `depth ${depth}`);
+        if (depth + 1 > this.maxDepthSeen) this.maxDepthSeen = depth + 1;
         const isMap = tag === BinTag.Map;
         const [count, end] = this.openContainer(tag, isMap ? 5 : 1);
         // Like Rust's `&bytes[..container_end]`: no child read may escape its container.
@@ -364,6 +379,8 @@ export class BinWriter {
   private len = 0;
   /** Bumped by `clear()`; marks carry it so stale ones are rejected even after a refill. */
   private generation = 1;
+  /** Currently open `beginArray` / `beginMap` container nesting depth. */
+  private openDepth = 0;
 
   /** `capacity` must be a non-negative integer (NaN would make growth loop forever). */
   constructor(capacity = 64) {
@@ -374,6 +391,11 @@ export class BinWriter {
 
   get length(): number {
     return this.len;
+  }
+
+  /** Number of currently open containers (`beginArray` / `beginMap` not yet closed by `end`). */
+  get containerDepth(): number {
+    return this.openDepth;
   }
 
   /** View of the written bytes (valid until the next write). */
@@ -389,6 +411,7 @@ export class BinWriter {
   /** Empties the buffer (keeping capacity) and invalidates every outstanding `BinMark`. */
   clear(): void {
     this.len = 0;
+    this.openDepth = 0;
     // Wraps to 1, never 0: a raw small number cast to `BinMark` (generation bits 0) must not match.
     this.generation = this.generation + 1 >= MARK_GENERATIONS ? 1 : this.generation + 1;
   }
@@ -527,6 +550,7 @@ export class BinWriter {
       this.view.getUint32(pos, true) === 0;
     if (!valid) throw new BinCodecError('invalidMark', `mark ${mark} of ${this.len}`);
     this.view.setUint32(pos, this.len - pos - 4, true);
+    if (this.openDepth > 0) this.openDepth -= 1;
   }
 
   private begin(tag: BinTag, count: number): BinMark {
@@ -534,6 +558,7 @@ export class BinWriter {
     const mark = (this.generation * TWO32 + this.len) as BinMark;
     this.u32(0);
     this.u32(count);
+    this.openDepth += 1;
     return mark;
   }
 

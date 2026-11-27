@@ -24,53 +24,36 @@ use crate::schema::hybrid::{
 use crate::writer::CodeWriter;
 use client_emitter::{emit_ts_enum, emit_ts_module, emit_ts_struct, emit_ts_view};
 
+/// Collects `@nve/host` type-only imports; all runtime helpers are accessed through the
+/// `import * as _nve from '@nve/host'` namespace so user parameter names never shadow them.
 #[derive(Default)]
 pub(super) struct TsImports {
-    values: BTreeSet<&'static str>,
     types: BTreeSet<&'static str>,
 }
 
 impl TsImports {
-    pub(super) fn value(&mut self, name: &'static str) {
-        self.values.insert(name);
-    }
-
     pub(super) fn ty(&mut self, name: &'static str) {
         self.types.insert(name);
     }
 
     fn emit(&self, out: &mut CodeWriter) {
-        if !self.values.is_empty() {
-            let vals: Vec<&str> = self.values.iter().copied().collect();
-            writeln!(out, "import {{");
-            for v in vals {
-                writeln!(out, "  {v},");
-            }
-            writeln!(out, "}} from '@nve/host';");
-        }
-        let type_only: Vec<&str> = self
-            .types
-            .iter()
-            .copied()
-            .filter(|t| !self.values.contains(t))
-            .collect();
-        if !type_only.is_empty() {
+        writeln!(out, "import * as _nve from '@nve/host';");
+        if !self.types.is_empty() {
+            let type_names: Vec<&str> = self.types.iter().copied().collect();
             writeln!(
                 out,
                 "import type {{ {} }} from '@nve/host';",
-                type_only.join(", ")
+                type_names.join(", ")
             );
         }
-        if !self.values.is_empty() || !type_only.is_empty() {
-            writeln!(out);
-        }
+        writeln!(out);
     }
 }
 
-/// Formats a 64-bit hash as a 53-bit-safe `new Key64(0xLO, 0xHI)` expression.
+/// Formats a 64-bit hash as a 53-bit-safe `new _nve.Key64(0xLO, 0xHI)` expression.
 pub(super) fn format_key64(hash: u64) -> String {
     let k = nve_abi::Key64(hash);
-    format!("new Key64(0x{:08X}, 0x{:08X})", k.lo(), k.hi())
+    format!("new _nve.Key64(0x{:08X}, 0x{:08X})", k.lo(), k.hi())
 }
 
 /// Emits `<stem>_hybrid.generated.ts` with typed interfaces and direct WASM linear-memory clients
@@ -81,7 +64,6 @@ pub fn generate_hybrid_ts(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, C
     let mut imports = TsImports::default();
     let mut body = CodeWriter::with_capacity(8 * 1024);
 
-    imports.value("Key64");
     writeln!(
         body,
         "export const NVE_HYBRID_ABI_VERSION = {NVE_HYBRID_ABI_VERSION} as const;"

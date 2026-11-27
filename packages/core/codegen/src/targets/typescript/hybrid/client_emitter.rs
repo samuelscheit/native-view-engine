@@ -7,9 +7,6 @@ use super::*;
 
 pub(super) fn emit_ts_enum(out: &mut CodeWriter, imports: &mut TsImports, e: &HybridEnumSpec) {
     imports.ty("BinReader");
-    imports.value("HybridError");
-    imports.value("HybridStatus");
-    imports.value("readIntInRange");
 
     writeln!(out, "export const {} = {{", e.name);
     for v in &e.variants {
@@ -24,7 +21,7 @@ pub(super) fn emit_ts_enum(out: &mut CodeWriter, imports: &mut TsImports, e: &Hy
     writeln!(out);
 
     writeln!(out, "export function decode{}(r: BinReader): {} {{", e.name, e.name);
-    writeln!(out, "  const raw = readIntInRange(r, 0, 0xffff_ffff);");
+    writeln!(out, "  const raw = _nve.readIntInRange(r, 0, 0xffff_ffff);");
     writeln!(out, "  switch (raw) {{");
     for v in &e.variants {
         writeln!(out, "    case {}:", v.value);
@@ -33,7 +30,7 @@ pub(super) fn emit_ts_enum(out: &mut CodeWriter, imports: &mut TsImports, e: &Hy
     writeln!(out, "    default:");
     writeln!(
         out,
-        "      throw new HybridError(HybridStatus.InvalidArg, `invalid {} discriminant ${{raw}}`);",
+        "      throw new _nve.HybridError(_nve.HybridStatus.InvalidArg, `invalid {} discriminant ${{raw}}`);",
         e.name
     );
     writeln!(out, "  }}");
@@ -63,7 +60,7 @@ pub(super) fn emit_ts_struct(out: &mut CodeWriter, imports: &mut TsImports, s: &
         let fname = to_camel_case(&f.name);
         let key_lit = escape_ts_single_quoted(&f.name);
         writeln!(out, "  w.writeMapKey('{key_lit}');");
-        emit_ts_bin_write(out, imports, "  ", "w", &format!("value.{fname}"), &f.ty);
+        emit_ts_bin_write(out, "  ", "w", &format!("value.{fname}"), &f.ty);
     }
     writeln!(out, "  w.end(_mark);");
     writeln!(out, "}}");
@@ -76,7 +73,6 @@ pub(super) fn emit_ts_struct(out: &mut CodeWriter, imports: &mut TsImports, s: &
         if matches!(f.ty, HybridType::Optional(_)) {
             writeln!(out, "  let _f_{fname}: {ty} = null;");
         } else {
-            imports.value("BinCodecError");
             writeln!(out, "  let _f_{fname}: {ty} | undefined;");
         }
     }
@@ -101,7 +97,7 @@ pub(super) fn emit_ts_struct(out: &mut CodeWriter, imports: &mut TsImports, s: &
             let key_lit = escape_ts_single_quoted(&f.name);
             writeln!(
                 out,
-                "  if (_f_{fname} === undefined) throw new BinCodecError('truncated', 'missing {}.{key_lit}');",
+                "  if (_f_{fname} === undefined) throw new _nve.BinCodecError('truncated', 'missing {}.{key_lit}');",
                 s.name
             );
         }
@@ -126,7 +122,6 @@ pub(super) fn emit_ts_module(
     let upper = to_snake_case(&m.name).to_ascii_uppercase();
     let snake = to_snake_case(&m.name);
 
-    imports.value("Key64");
     writeln!(
         out,
         "export const NVE_HYBRID_{upper}_INTERFACE_ID = 0x{:08X} as const;",
@@ -159,7 +154,6 @@ pub(super) fn emit_ts_view(
     let upper = to_snake_case(&v.name).to_ascii_uppercase();
     let snake = to_snake_case(&v.name);
 
-    imports.value("Key64");
     writeln!(
         out,
         "export const NVE_HYBRID_{upper}_INTERFACE_ID = 0x{:08X} as const;",
@@ -217,7 +211,6 @@ fn emit_ts_wasm_client(
     view: Option<&HybridViewSpec>,
 ) {
     imports.ty("HybridWasmExports");
-    imports.value("wasmCreateHandle");
 
     writeln!(
         out,
@@ -259,7 +252,7 @@ fn emit_ts_wasm_client(
     writeln!(out);
     writeln!(out, "  constructor(wasm: {pascal}WasmExports) {{");
     writeln!(out, "    this.wasm = wasm;");
-    writeln!(out, "    this.handle = wasmCreateHandle(");
+    writeln!(out, "    this.handle = _nve.wasmCreateHandle(");
     writeln!(out, "      '{pascal}',");
     writeln!(out, "      {pascal}HybridClient.SCHEMA_HASH,");
     writeln!(out, "      wasm.nve_hybrid_{snake}_schema_hash(),");
@@ -268,19 +261,18 @@ fn emit_ts_wasm_client(
     writeln!(out, "  }}");
     writeln!(out);
     writeln!(out, "  dispose(): void {{");
-    writeln!(out, "    if (this.handle !== 0) {{");
-    writeln!(out, "      this.wasm.nve_hybrid_{snake}_destroy(this.handle);");
-    writeln!(out, "      this.handle = 0;");
+    writeln!(out, "    const h = this.handle;");
+    writeln!(out, "    this.handle = 0;");
+    writeln!(out, "    if (h !== 0) {{");
+    writeln!(out, "      this.wasm.nve_hybrid_{snake}_destroy(h);");
     writeln!(out, "    }}");
     writeln!(out, "  }}");
     writeln!(out);
 
     if let Some(v) = view {
-        imports.value("BinWriter");
-        imports.value("wasmSetPropsBin");
         if v.props.is_empty() {
             writeln!(out, "  setProps(_props: {pascal}Props): void {{");
-            writeln!(out, "    const _nve_w = new BinWriter();");
+            writeln!(out, "    const _nve_w = new _nve.BinWriter();");
             writeln!(out, "    const _nve_mark = _nve_w.beginMap(0);");
             writeln!(out, "    _nve_w.end(_nve_mark);");
         } else {
@@ -290,7 +282,7 @@ fn emit_ts_wasm_client(
                 let pname = to_camel_case(&p.name);
                 writeln!(out, "    if (props.{pname} !== undefined) _nve_count += 1;");
             }
-            writeln!(out, "    const _nve_w = new BinWriter();");
+            writeln!(out, "    const _nve_w = new _nve.BinWriter();");
             writeln!(out, "    const _nve_mark = _nve_w.beginMap(_nve_count);");
             for p in &v.props {
                 let pname = to_camel_case(&p.name);
@@ -299,7 +291,6 @@ fn emit_ts_wasm_client(
                 writeln!(out, "      _nve_w.writeMapKey('{key_lit}');");
                 emit_ts_bin_write(
                     out,
-                    imports,
                     "      ",
                     "_nve_w",
                     &format!("props.{pname}"),
@@ -309,7 +300,7 @@ fn emit_ts_wasm_client(
             }
             writeln!(out, "    _nve_w.end(_nve_mark);");
         }
-        writeln!(out, "    wasmSetPropsBin(");
+        writeln!(out, "    _nve.wasmSetPropsBin(");
         writeln!(out, "      this.wasm,");
         writeln!(out, "      '{pascal}',");
         writeln!(out, "      this.handle,");
@@ -324,23 +315,21 @@ fn emit_ts_wasm_client(
     }
 
     for m in methods {
-        imports.value("BinWriter");
-        imports.value("wasmCallBin");
         let msnake = to_snake_case(&m.name);
         writeln!(out, "  {} {{", ts_method_sig(m, imports));
-        writeln!(out, "    const _nve_w = new BinWriter();");
+        writeln!(out, "    const _nve_w = new _nve.BinWriter();");
         writeln!(out, "    const _nve_mark = _nve_w.beginArray({});", m.params.len());
         for p in &m.params {
             let pname = ts_param_ident(&p.name);
-            emit_ts_bin_write(out, imports, "    ", "_nve_w", &pname, &p.ty);
+            emit_ts_bin_write(out, "    ", "_nve_w", &pname, &p.ty);
         }
         writeln!(out, "    _nve_w.end(_nve_mark);");
 
         let has_resp = !matches!(m.return_type, HybridType::Void);
         if has_resp {
-            writeln!(out, "    const _nve_resp = wasmCallBin(");
+            writeln!(out, "    const _nve_resp = _nve.wasmCallBin(");
         } else {
-            writeln!(out, "    wasmCallBin(");
+            writeln!(out, "    _nve.wasmCallBin(");
         }
         writeln!(out, "      this.wasm,");
         writeln!(out, "      '{pascal}',");
@@ -355,10 +344,8 @@ fn emit_ts_wasm_client(
         match &m.return_type {
             HybridType::Void => {}
             HybridType::Result { ok, .. } => {
-                imports.value("BinReader");
-                imports.value("readResultOk");
-                writeln!(out, "    const _nve_r = new BinReader(_nve_resp);");
-                writeln!(out, "    readResultOk(_nve_r);");
+                writeln!(out, "    const _nve_r = new _nve.BinReader(_nve_resp);");
+                writeln!(out, "    _nve.readResultOk(_nve_r);");
                 if matches!(ok.as_ref(), HybridType::Void) {
                     writeln!(out, "    _nve_r.requireEnd();");
                 } else {
@@ -369,8 +356,7 @@ fn emit_ts_wasm_client(
                 }
             }
             other => {
-                imports.value("BinReader");
-                writeln!(out, "    const _nve_r = new BinReader(_nve_resp);");
+                writeln!(out, "    const _nve_r = new _nve.BinReader(_nve_resp);");
                 writeln!(out, "    let _nve_out!: {};", ts_type(other, imports));
                 emit_ts_bin_read(out, imports, "    ", "_nve_r", "_nve_out", other);
                 writeln!(out, "    _nve_r.requireEnd();");

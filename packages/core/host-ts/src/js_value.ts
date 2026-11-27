@@ -6,6 +6,7 @@
  * integer (`-(2^53 - 1) ..= 2^53 - 1`), otherwise as a `bigint`. Any other number is an `f64`.
  */
 import { BIN_VALUE_MAX_DEPTH, BinCodecError, BinReader, BinTag, BinWriter } from './bin_codec.ts';
+import { writeI64Checked } from './hybrid_runtime.ts';
 import { Key64 } from './key64.ts';
 
 /** A value `writeJsValue` accepts and `readJsValue` returns. */
@@ -18,11 +19,6 @@ export type JsBinValue =
   | Uint8Array
   | readonly JsBinValue[]
   | { readonly [key: string]: JsBinValue };
-
-const I64_MIN = -(2n ** 63n);
-const I64_MAX = 2n ** 63n - 1n;
-const SAFE_MIN = BigInt(Number.MIN_SAFE_INTEGER);
-const SAFE_MAX = BigInt(Number.MAX_SAFE_INTEGER);
 
 /**
  * Writes `value` (`undefined` as null; object entries whose value is `undefined` are skipped).
@@ -43,8 +39,7 @@ function writeAt(w: BinWriter, value: unknown, depth: number): void {
         ? w.writeI64Bits(Key64.fromSafeInteger(value))
         : w.writeF64(value);
     case 'bigint':
-      if (value < I64_MIN || value > I64_MAX) throw new RangeError(`${value} is outside i64`);
-      return w.writeI64(value);
+      return writeI64Checked(w, value);
     case 'string':
       return w.writeStr(value);
     case 'object':
@@ -81,8 +76,8 @@ export function readJsValue(r: BinReader): JsBinValue {
     case BinTag.Bool:
       return r.readBool();
     case BinTag.I64: {
-      const v = r.readI64();
-      return v >= SAFE_MIN && v <= SAFE_MAX ? Number(v) : v;
+      const bits = r.readI64Bits();
+      return bits.toSignedSafeInteger() ?? bits.toSignedBigInt();
     }
     case BinTag.F64:
       return r.readF64();
@@ -102,12 +97,16 @@ export function readJsValue(r: BinReader): JsBinValue {
         for (let i = 0; i < count; i += 1) {
           const key = r.readMapKey();
           const val = readJsValue(r);
-          Object.defineProperty(out, key, {
-            value: val,
-            enumerable: true,
-            writable: true,
-            configurable: true,
-          });
+          if (key === '__proto__') {
+            Object.defineProperty(out, key, {
+              value: val,
+              enumerable: true,
+              writable: true,
+              configurable: true,
+            });
+          } else {
+            out[key] = val;
+          }
         }
         return out;
       });

@@ -8,10 +8,10 @@ use super::*;
 pub(super) fn ts_param_ident(raw: &str) -> String {
     let ident = to_camel_case(raw);
     match ident.as_str() {
-        "await" | "break" | "case" | "catch" | "class" | "const" | "continue" | "debugger"
-        | "default" | "delete" | "do" | "else" | "enum" | "export" | "extends" | "false"
-        | "finally" | "for" | "function" | "if" | "implements" | "import" | "in"
-        | "instanceof" | "interface" | "let" | "new" | "null" | "package" | "private"
+        "arguments" | "await" | "break" | "case" | "catch" | "class" | "const" | "continue"
+        | "debugger" | "default" | "delete" | "do" | "else" | "enum" | "eval" | "export"
+        | "extends" | "false" | "finally" | "for" | "function" | "if" | "implements" | "import"
+        | "in" | "instanceof" | "interface" | "let" | "new" | "null" | "package" | "private"
         | "protected" | "public" | "return" | "static" | "super" | "switch" | "this" | "throw"
         | "true" | "try" | "typeof" | "var" | "void" | "while" | "with" | "yield" => {
             format!("{ident}_")
@@ -66,7 +66,6 @@ pub(super) fn ts_type(ty: &HybridType, imports: &mut TsImports) -> String {
 
 pub(super) fn emit_ts_bin_write(
     out: &mut CodeWriter,
-    imports: &mut TsImports,
     indent: &str,
     w: &str,
     expr: &str,
@@ -75,17 +74,13 @@ pub(super) fn emit_ts_bin_write(
     let d = indent.len();
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr});"),
-        HybridType::U8 => {
-            imports.value("writeIntInRange");
-            writeln!(out, "{indent}writeIntInRange({w}, {expr}, 0, 255);");
-        }
-        HybridType::U16 => {
-            imports.value("writeIntInRange");
-            writeln!(out, "{indent}writeIntInRange({w}, {expr}, 0, 65535);");
-        }
+        HybridType::U8 => writeln!(out, "{indent}_nve.writeIntInRange({w}, {expr}, 0, 255);"),
+        HybridType::U16 => writeln!(out, "{indent}_nve.writeIntInRange({w}, {expr}, 0, 65535);"),
         HybridType::I32 => {
-            imports.value("writeIntInRange");
-            writeln!(out, "{indent}writeIntInRange({w}, {expr}, -2147483648, 2147483647);");
+            writeln!(
+                out,
+                "{indent}_nve.writeIntInRange({w}, {expr}, -2147483648, 2147483647);"
+            );
         }
         HybridType::U32
         | HybridType::Usize
@@ -93,17 +88,13 @@ pub(super) fn emit_ts_bin_write(
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
         | HybridType::Handle(_) => {
-            imports.value("writeIntInRange");
-            writeln!(out, "{indent}writeIntInRange({w}, {expr}, 0, 0xffff_ffff);");
+            writeln!(
+                out,
+                "{indent}_nve.writeIntInRange({w}, {expr}, 0, 0xffff_ffff);"
+            );
         }
-        HybridType::I64 => {
-            imports.value("writeI64Checked");
-            writeln!(out, "{indent}writeI64Checked({w}, {expr});");
-        }
-        HybridType::U64 => {
-            imports.value("writeU64Checked");
-            writeln!(out, "{indent}writeU64Checked({w}, {expr});");
-        }
+        HybridType::I64 => writeln!(out, "{indent}_nve.writeI64Checked({w}, {expr});"),
+        HybridType::U64 => writeln!(out, "{indent}_nve.writeU64Checked({w}, {expr});"),
         HybridType::F32 | HybridType::F64 => writeln!(out, "{indent}{w}.writeF64({expr});"),
         HybridType::String => writeln!(out, "{indent}{w}.writeStr({expr});"),
         HybridType::Bytes => writeln!(out, "{indent}{w}.writeBytes({expr});"),
@@ -112,42 +103,44 @@ pub(super) fn emit_ts_bin_write(
         HybridType::Value => writeln!(out, "{indent}{expr}.writeTo({w});"),
         HybridType::Optional(inner) => {
             writeln!(out, "{indent}if ({expr} !== null && {expr} !== undefined) {{");
-            emit_ts_bin_write(out, imports, &format!("{indent}  "), w, expr, inner);
+            emit_ts_bin_write(out, &format!("{indent}  "), w, expr, inner);
             writeln!(out, "{indent}}} else {{");
             writeln!(out, "{indent}  {w}.writeNull();");
             writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}const _mark{d} = {w}.beginArray({expr}.length);");
-            writeln!(out, "{indent}for (const _el{d} of {expr}) {{");
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  const _mark{d} = {w}.beginArray({expr}.length);");
+            writeln!(out, "{indent}  for (const _el{d} of {expr}) {{");
             emit_ts_bin_write(
                 out,
-                imports,
-                &format!("{indent}  "),
+                &format!("{indent}    "),
                 w,
                 &format!("_el{d}"),
                 inner,
             );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  {w}.end(_mark{d});");
             writeln!(out, "{indent}}}");
-            writeln!(out, "{indent}{w}.end(_mark{d});");
         }
         HybridType::FixedArray { elem: inner, len } => {
+            writeln!(out, "{indent}{{");
             writeln!(
                 out,
-                "{indent}if ({expr}.length !== {len}) throw new RangeError(`expected fixed array of length {len}, got ${{{expr}.length}}`);"
+                "{indent}  if ({expr}.length !== {len}) throw new RangeError(`expected fixed array of length {len}, got ${{{expr}.length}}`);"
             );
-            writeln!(out, "{indent}const _mark{d} = {w}.beginArray({len});");
-            writeln!(out, "{indent}for (const _el{d} of {expr}) {{");
+            writeln!(out, "{indent}  const _mark{d} = {w}.beginArray({len});");
+            writeln!(out, "{indent}  for (const _el{d} of {expr}) {{");
             emit_ts_bin_write(
                 out,
-                imports,
-                &format!("{indent}  "),
+                &format!("{indent}    "),
                 w,
                 &format!("_el{d}"),
                 inner,
             );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  {w}.end(_mark{d});");
             writeln!(out, "{indent}}}");
-            writeln!(out, "{indent}{w}.end(_mark{d});");
         }
         HybridType::Void | HybridType::Result { .. } => {
             writeln!(out, "{indent}{w}.writeNull();");
@@ -166,25 +159,23 @@ pub(super) fn emit_ts_bin_read(
     let d = indent.len();
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool();"),
-        HybridType::U8 => {
-            imports.value("readIntInRange");
-            writeln!(out, "{indent}{dst} = readIntInRange({r}, 0, 255);");
-        }
-        HybridType::U16 => {
-            imports.value("readIntInRange");
-            writeln!(out, "{indent}{dst} = readIntInRange({r}, 0, 65535);");
-        }
+        HybridType::U8 => writeln!(out, "{indent}{dst} = _nve.readIntInRange({r}, 0, 255);"),
+        HybridType::U16 => writeln!(out, "{indent}{dst} = _nve.readIntInRange({r}, 0, 65535);"),
         HybridType::I32 => {
-            imports.value("readIntInRange");
-            writeln!(out, "{indent}{dst} = readIntInRange({r}, -2147483648, 2147483647);");
+            writeln!(
+                out,
+                "{indent}{dst} = _nve.readIntInRange({r}, -2147483648, 2147483647);"
+            );
         }
         HybridType::U32
         | HybridType::Usize
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
         | HybridType::Handle(_) => {
-            imports.value("readIntInRange");
-            writeln!(out, "{indent}{dst} = readIntInRange({r}, 0, 0xffff_ffff);");
+            writeln!(
+                out,
+                "{indent}{dst} = _nve.readIntInRange({r}, 0, 0xffff_ffff);"
+            );
         }
         HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.readI64();"),
         HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readI64Bits().toBigInt();"),
@@ -194,10 +185,7 @@ pub(super) fn emit_ts_bin_read(
         HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.readBytes().slice();"),
         HybridType::Struct(s) => writeln!(out, "{indent}{dst} = decode{s}({r});"),
         // Validates and preserves the true `NveValue` tag directly (never unwrapping `Bytes`).
-        HybridType::Value => {
-            imports.value("DynamicValue");
-            writeln!(out, "{indent}{dst} = DynamicValue.read({r});");
-        }
+        HybridType::Value => writeln!(out, "{indent}{dst} = _nve.DynamicValue.read({r});"),
         HybridType::Optional(inner) => {
             writeln!(out, "{indent}if ({r}.readNull()) {{");
             writeln!(out, "{indent}  {dst} = null;");
@@ -234,12 +222,11 @@ pub(super) fn emit_ts_bin_read(
             writeln!(out, "{indent}}});");
         }
         HybridType::FixedArray { elem: inner, len } => {
-            imports.value("BinCodecError");
             let elem_ty = ts_type(inner, imports);
             writeln!(out, "{indent}{dst} = {r}.readArray((_n{d}) => {{");
             writeln!(
                 out,
-                "{indent}  if (_n{d} !== {len}) throw new BinCodecError('truncated', `expected fixed array of length {len}, got ${{_n{d}}}`);"
+                "{indent}  if (_n{d} !== {len}) throw new _nve.BinCodecError('truncated', `expected fixed array of length {len}, got ${{_n{d}}}`);"
             );
             writeln!(out, "{indent}  const _arr{d}: Array<{elem_ty}> = [];");
             writeln!(out, "{indent}  for (let _i{d} = 0; _i{d} < _n{d}; _i{d} += 1) {{");

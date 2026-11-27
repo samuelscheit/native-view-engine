@@ -82,12 +82,17 @@ fn run_tsc_no_emit(tsconfig: &Path) {
         let mut c = Command::new("tsc");
         c.args(["--noEmit", "-p"]).arg(tsconfig);
         c
-    } else if common::require_tool("npx") {
+    } else if common::tool_available("npx") {
         let mut c = Command::new("npx");
         c.args(["-y", "-p", "typescript@5.9", "tsc", "--noEmit", "-p"])
             .arg(tsconfig);
         c
     } else {
+        assert!(
+            std::env::var_os("NVE_REQUIRE_TSC").is_none() && std::env::var_os("CI").is_none(),
+            "`tsc` (or `npx`) is required (NVE_REQUIRE_TSC / CI) but neither was found"
+        );
+        eprintln!("SKIP: neither `tsc` nor `npx` found");
         return;
     };
     let out = cmd.output().expect("run tsc --noEmit");
@@ -106,12 +111,12 @@ fn generated_ts_hybrid_reuses_host_ts_with_erasable_syntax_and_zero_duplication(
     assert_eq!(ts_out.files.len(), 1);
     let src = &ts_out.files[0].content;
 
-    assert!(src.contains("from '@nve/host';"));
-    assert!(src.contains("new Key64("));
+    assert!(src.contains("import * as _nve from '@nve/host';"));
+    assert!(src.contains("new _nve.Key64("));
     assert!(src.contains("DynamicValue"));
-    assert!(src.contains("wasmCallBin"));
-    assert!(src.contains("wasmSetPropsBin"));
-    assert!(src.contains("wasmCreateHandle"));
+    assert!(src.contains("_nve.wasmCallBin("));
+    assert!(src.contains("_nve.wasmSetPropsBin("));
+    assert!(src.contains("_nve.wasmCreateHandle("));
 
     // Must never duplicate static runtime codecs or emit non-erasable TypeScript syntax.
     for banned in [
@@ -140,11 +145,19 @@ fn generated_ts_hybrid_reuses_host_ts_with_erasable_syntax_and_zero_duplication(
 }
 
 #[test]
-fn generated_web_component_reuses_host_ts_and_preserves_64_bit_defaults() {
+fn generated_web_component_reuses_host_ts_and_emits_typed_defaults() {
     let mut spec = counter_card_export_spec(ExportBackend::Skia);
     spec.props.push(PropSpec {
-        name: "hugeMax".to_owned(),
+        name: "scale".to_owned(),
         prop_type: PropType::Double,
+        optional: true,
+        nullable: false,
+        default_value: Some(DefaultValue::Int(1)),
+        doc: None,
+    });
+    spec.props.push(PropSpec {
+        name: "hugeMax".to_owned(),
+        prop_type: PropType::Mixed,
         optional: true,
         nullable: false,
         default_value: Some(DefaultValue::Int(i64::MAX)),
@@ -152,7 +165,7 @@ fn generated_web_component_reuses_host_ts_and_preserves_64_bit_defaults() {
     });
     spec.props.push(PropSpec {
         name: "hugeMin".to_owned(),
-        prop_type: PropType::Double,
+        prop_type: PropType::Mixed,
         optional: true,
         nullable: false,
         default_value: Some(DefaultValue::Int(i64::MIN)),
@@ -165,6 +178,9 @@ fn generated_web_component_reuses_host_ts_and_preserves_64_bit_defaults() {
     assert!(js.contains("decodeJsValue as decodeNveBinValue"));
     assert!(js.contains("encodeJsValue as encodeNveBinValue"));
     assert!(js.contains("from '@nve/host';"));
+    // `Double` with `DefaultValue::Int` emits a JS float number literal, never a BigInt `...n`.
+    assert!(js.contains("'scale': 1.0,"));
+    // `Mixed` with `DefaultValue::Int` outside ±(2^53 - 1) emits an exact BigInt literal.
     assert!(js.contains("'hugeMax': 9223372036854775807n,"));
     assert!(js.contains("'hugeMin': -9223372036854775808n,"));
 
@@ -192,7 +208,8 @@ fn real_tsc_and_node_verify_generated_ts_hybrid_runtime_end_to_end() {
     let hook = prepare_offline_host_ts_pkg(&dir);
     std::fs::write(dir.join("package.json"), r#"{"type": "module"}"#).expect("write package.json");
 
-    // 1. Generate realistic spec + edge-case specs (enum-only, struct-only, empty-props view, keyword params).
+    // 1. Generate realistic spec + edge-case specs (enum-only, struct-only, empty-props view with
+    //    strict-mode reserved & helper-shadowing params, sibling Vec + FixedArray struct & method).
     let realistic = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("parse realistic spec");
     generate_hybrid_target(&realistic, HybridTarget::TypeScript)
         .expect("generate realistic TS")
@@ -220,7 +237,35 @@ pub struct OnlyStruct {
 #[nve_hybrid_view(name = "EmptyView")]
 pub trait EmptyViewSpec {
     #[method]
-    fn ping(&self, default: i32, class: bool, in_val: u32) -> Result<(), String>;
+    fn ping(
+        &self,
+        default: i32,
+        class: bool,
+        arguments: u32,
+        eval: String,
+        wasm_call_bin: i32,
+        read_int_in_range: u16,
+    ) -> Result<i32, String>;
+}
+"#,
+        r#"
+#[nve_hybrid_struct]
+pub struct SiblingArrays {
+    pub nums: Vec<i32>,
+    pub tags: Vec<String>,
+    pub coords: [u32; 3],
+    pub flags: [bool; 2],
+}
+
+#[nve_hybrid_module(name = "Batcher")]
+pub trait BatcherSpec {
+    fn combine(
+        &self,
+        left: Vec<i32>,
+        right: Vec<String>,
+        coords: [u32; 3],
+        flags: [bool; 2],
+    ) -> SiblingArrays;
 }
 "#,
     ];
@@ -232,9 +277,10 @@ pub trait EmptyViewSpec {
             .expect("write edge TS");
     }
 
-    // 2. Write an end-to-end TypeScript driver exercising every codec path, WASM memory grow,
-    //    `HybridType::Value` raw tag preservation in both methods and `setProps`, u64 unsignedness,
-    //    nested `Vec<Vec<i32>>` (`Cursor`), error propagation, and zero WASM memory leaks.
+    // 2. End-to-end TypeScript driver exercising every codec path, sibling Vec/FixedArray block
+    //    scoping, strict-mode reserved params (`arguments`, `eval`) + helper-shadowing params
+    //    (`wasm_call_bin`, `read_int_in_range`), WASM memory grow, `HybridType::Value` tag
+    //    preservation, `Option<Struct>`, `dispose()` idempotence, and zero WASM memory leaks.
     let driver = dir.join("e2e_driver.ts");
     std::fs::write(
         &driver,
@@ -272,8 +318,13 @@ import type {
 import { OnlyEnum, decodeOnlyEnum } from './only_enum_hybrid.generated.ts';
 import { decodeOnlyStruct, encodeOnlyStruct } from './only_struct_hybrid.generated.ts';
 import { EmptyViewHybridClient } from './empty_view_hybrid.generated.ts';
+import {
+  BatcherHybridClient,
+  decodeSiblingArrays,
+  encodeSiblingArrays,
+} from './batcher_hybrid.generated.ts';
 
-// --- Direct struct & enum codec checks ---
+// --- Direct struct, enum, and sibling Vec/FixedArray codec checks ---
 {
   const w = new BinWriter();
   w.writeI64(BigInt(OnlyEnum.Beta));
@@ -284,6 +335,52 @@ import { EmptyViewHybridClient } from './empty_view_hybrid.generated.ts';
   assert.throws(
     () => decodeHashAlgorithm(new BinReader(badEnum.bytes)),
     (e: unknown) => e instanceof HybridError && e.status === HybridStatus.InvalidArg,
+  );
+}
+
+// Sibling Vec + FixedArray struct round-trip and FixedArray length validation on encode & decode
+{
+  const sample = {
+    nums: [1, -2, 3],
+    tags: ['a', 'b'],
+    coords: [10, 20, 30],
+    flags: [true, false],
+  };
+  const w = new BinWriter();
+  encodeSiblingArrays(w, sample);
+  const r = new BinReader(w.bytes);
+  assert.deepEqual(decodeSiblingArrays(r), sample);
+  r.requireEnd();
+
+  // Wrong FixedArray length throws RangeError on encode
+  assert.throws(
+    () => encodeSiblingArrays(new BinWriter(), { ...sample, coords: [1, 2] }),
+    RangeError,
+  );
+
+  // Wrong FixedArray wire length throws BinCodecError('truncated') on decode
+  const badW = new BinWriter();
+  const m = badW.beginMap(4);
+  badW.writeMapKey('nums');
+  const a1 = badW.beginArray(0);
+  badW.end(a1);
+  badW.writeMapKey('tags');
+  const a2 = badW.beginArray(0);
+  badW.end(a2);
+  badW.writeMapKey('coords');
+  const a3 = badW.beginArray(2); // expected 3!
+  badW.writeI64(1n);
+  badW.writeI64(2n);
+  badW.end(a3);
+  badW.writeMapKey('flags');
+  const a4 = badW.beginArray(2);
+  badW.writeBool(true);
+  badW.writeBool(false);
+  badW.end(a4);
+  badW.end(m);
+  assert.throws(
+    () => decodeSiblingArrays(new BinReader(badW.bytes)),
+    (e: unknown) => e instanceof BinCodecError && e.kind === 'truncated',
   );
 }
 
@@ -299,7 +396,6 @@ import { EmptyViewHybridClient } from './empty_view_hybrid.generated.ts';
     bigI: -(2n ** 63n),
     payload: dyn,
   });
-  // Inspect wire bytes directly: `payload` field must have BinTag.Map (7), NOT BinTag.Bytes (5).
   const inspect = new BinReader(w.bytes);
   let sawPayloadTag: BinTag | null = null;
   inspect.readMap((count) => {
@@ -382,14 +478,17 @@ function writeWasmResp(outLenPtr: number, bytes: Uint8Array, growFirst = false):
   return ptr;
 }
 
+let cryptoDestroyCalls = 0;
 const cryptoWasm: CryptoWasmExports = {
   memory,
   nve_hybrid_alloc: wasmAlloc,
   nve_hybrid_free: wasmFree,
-  // Return signed i64 just like WASM JS-BigInt integration does when bit 63 may be set.
   nve_hybrid_crypto_schema_hash: () => CryptoHybridClient.SCHEMA_HASH.toSignedBigInt(),
   nve_hybrid_crypto_create: () => 11,
-  nve_hybrid_crypto_destroy: (h) => assert.equal(h, 11),
+  nve_hybrid_crypto_destroy: (h) => {
+    assert.equal(h, 11);
+    cryptoDestroyCalls += 1;
+  },
   nve_hybrid_crypto_version_bin: (_h, reqPtr, reqLen, outLenPtr) => {
     const r = new BinReader(readWasmReq(reqPtr, reqLen));
     r.readArray((n) => assert.equal(n, 0));
@@ -419,6 +518,7 @@ const cryptoWasm: CryptoWasmExports = {
   nve_hybrid_crypto_hash_with_bin: (_h, reqPtr, reqLen, outLenPtr) => {
     const r = new BinReader(readWasmReq(reqPtr, reqLen));
     const [algo, data] = r.readArray(() => [decodeHashAlgorithm(r), r.readBytes().slice()] as const);
+    r.requireEnd();
     const w = new BinWriter();
     const m = w.beginMap(4);
     w.writeMapKey('algorithm');
@@ -503,7 +603,6 @@ const cryptoWasm: CryptoWasmExports = {
     const r = new BinReader(readWasmReq(reqPtr, reqLen));
     const raw = r.readArray((n) => {
       assert.equal(n, 1);
-      // CRITICAL AUDIT: `meta` must arrive as its true NveValue tag (Map=7), NOT Bytes(5)!
       assert.equal(r.peekTag(), BinTag.Map, 'inspectDynamic param must not be double-wrapped in Bytes');
       return r.readCheckedValue().slice();
     });
@@ -538,6 +637,12 @@ assert.equal(crypto.version(), '1.0.0-ts');
 assert.equal(growCounter, 1, 'memory.grow happened cleanly inside WASM call');
 assert.equal(crypto.add(2n ** 53n, 5n), 2n ** 53n + 5n);
 assert.deepEqual(crypto.blake3(Uint8Array.of(0x10, 0x20)), Uint8Array.of(0x4a, 0x7a));
+assert.deepEqual(crypto.hashWith(HashAlgorithm.Sha256, Uint8Array.of(1, 2, 3)), {
+  algorithm: HashAlgorithm.Sha256,
+  byteLen: 3,
+  verified: true,
+  anchor: { x: 1.5, y: -2.5 },
+});
 assert.equal(crypto.findNonce('abc', 0xffff_ffff_ffff_fff0n), 0xffff_ffff_ffff_fff3n);
 assert.equal(crypto.findNonce('abc', null), null);
 
@@ -586,15 +691,18 @@ assert.deepEqual(transposed, {
 });
 
 crypto.dispose();
+crypto.dispose(); // idempotent: never double-destroys
+assert.equal(cryptoDestroyCalls, 1);
 assert.throws(
   () => crypto.version(),
   (e: unknown) => e instanceof HybridError && e.status === HybridStatus.NullHandle,
 );
 assert.equal(live.size, 0, 'zero WASM memory leaks across all Crypto calls');
 
-// --- VideoSurface view: audit `setProps` `HybridType::Value` tag preservation ---
+// --- VideoSurface view: audit `setProps` `HybridType::Value` tag preservation & Option<Struct> ---
 let storedMeta: DynamicValue = DynamicValue.NULL;
 let lastPropTags = new Map<string, BinTag>();
+let lastFocusPoint: { x: number; y: number } | null | undefined;
 const videoWasm: VideoSurfaceWasmExports = {
   memory,
   nve_hybrid_alloc: wasmAlloc,
@@ -605,12 +713,15 @@ const videoWasm: VideoSurfaceWasmExports = {
   nve_hybrid_video_surface_set_props_bin: (_h, ptr, len) => {
     const r = new BinReader(readWasmReq(ptr, len));
     lastPropTags = new Map<string, BinTag>();
+    lastFocusPoint = undefined;
     r.readMap((count) => {
       for (let i = 0; i < count; i += 1) {
         const key = r.readMapKey();
         lastPropTags.set(key, r.peekTag());
         if (key === 'metadata') {
           storedMeta = DynamicValue.read(r);
+        } else if (key === 'focus_point') {
+          lastFocusPoint = r.readNull() ? null : decodeFramePoint(r);
         } else {
           r.skipValue();
         }
@@ -641,18 +752,29 @@ video.setProps({
   muted: true,
   quality: VideoQuality.Uhd4k,
   posterUrl: null,
+  focusPoint: { x: 7.5, y: -3.25 },
   drmKey: Uint8Array.of(0xaa, 0xbb),
   chapters: [10, 20],
   metadata: meta,
 });
-// CRITICAL AUDIT: `metadata` prop must arrive with tag BinTag.Map (7), NOT BinTag.Bytes (5)!
 assert.equal(lastPropTags.get('metadata'), BinTag.Map, 'setProps metadata must preserve true NveValue Map tag');
 assert.equal(lastPropTags.get('poster_url'), BinTag.Null, 'explicit null optional prop must emit Null');
-assert.equal(lastPropTags.has('focus_point'), false, 'omitted optional prop must not be emitted');
+assert.equal(lastPropTags.get('focus_point'), BinTag.Map, 'Some(FramePoint) prop encodes as Map');
+assert.deepEqual(lastFocusPoint, { x: 7.5, y: -3.25 });
 assert.equal(lastPropTags.get('drm_key'), BinTag.Bytes);
 assert.ok(video.currentMetadata().equals(meta));
 
-// Also verify scalar DynamicValue tags (I64, Str, Null) stay true tags in setProps (never Bytes)
+// Explicit null clears Option<FramePoint>; omitting it skips the map key
+video.setProps({
+  sourceUrl: 'https://nve.dev/v.mp4',
+  focusPoint: null,
+  drmKey: new Uint8Array(0),
+  chapters: [],
+  metadata: DynamicValue.NULL,
+});
+assert.equal(lastPropTags.get('focus_point'), BinTag.Null);
+assert.equal(lastFocusPoint, null);
+
 for (const [sample, expectedTag] of [
   [DynamicValue.of(encodeJsValue(42)), BinTag.I64],
   [DynamicValue.of(encodeJsValue('raw-str')), BinTag.Str],
@@ -664,6 +786,7 @@ for (const [sample, expectedTag] of [
     chapters: [],
     metadata: sample,
   });
+  assert.equal(lastPropTags.has('focus_point'), false, 'omitted optional prop must not be emitted');
   assert.equal(lastPropTags.get('metadata'), expectedTag);
   assert.ok(video.currentMetadata().equals(sample));
 }
@@ -673,7 +796,7 @@ assert.deepEqual(video.captureFrame({ x: 1, y: 2 }), Uint8Array.of(0xca, 0xfe));
 video.dispose();
 assert.equal(live.size, 0, 'zero WASM memory leaks after VideoSurface calls');
 
-// --- EmptyView with reserved-keyword parameter names ---
+// --- EmptyView with strict-mode reserved (`arguments`, `eval`) & helper-shadowing params ---
 const emptyClient = new EmptyViewHybridClient({
   memory,
   nve_hybrid_alloc: wasmAlloc,
@@ -682,21 +805,66 @@ const emptyClient = new EmptyViewHybridClient({
   nve_hybrid_empty_view_create: () => 33,
   nve_hybrid_empty_view_destroy: () => {},
   nve_hybrid_empty_view_set_props_bin: () => HybridStatus.Ok,
-  nve_hybrid_empty_view_ping_bin: (_h, _rp, _rl, olp) => {
+  nve_hybrid_empty_view_ping_bin: (_h, reqPtr, reqLen, olp) => {
+    const r = new BinReader(readWasmReq(reqPtr, reqLen));
+    const sum = r.readArray((n) => {
+      assert.equal(n, 6);
+      const a = Number(r.readI64());
+      const b = r.readBool();
+      const c = Number(r.readI64());
+      const d = r.readStr();
+      const e = Number(r.readI64());
+      const f = Number(r.readI64());
+      return a + (b ? 1 : 0) + c + d.length + e + f;
+    });
+    r.requireEnd();
     const w = new BinWriter();
     w.writeBool(true);
+    w.writeI64(BigInt(sum));
     return writeWasmResp(olp, w.bytes);
   },
 });
 emptyClient.setProps({});
-emptyClient.ping(1, true, 2);
+assert.equal(emptyClient.ping(1, true, 2, 'ok', 10, 20), 36);
 emptyClient.dispose();
-assert.equal(live.size, 0, 'zero WASM memory leaks after EmptyView calls');
+
+// --- Batcher module with sibling Vec + FixedArray parameters ---
+const batcher = new BatcherHybridClient({
+  memory,
+  nve_hybrid_alloc: wasmAlloc,
+  nve_hybrid_free: wasmFree,
+  nve_hybrid_batcher_schema_hash: () => BatcherHybridClient.SCHEMA_HASH.toSignedBigInt(),
+  nve_hybrid_batcher_create: () => 44,
+  nve_hybrid_batcher_destroy: () => {},
+  nve_hybrid_batcher_combine_bin: (_h, reqPtr, reqLen, olp) => {
+    const r = new BinReader(readWasmReq(reqPtr, reqLen));
+    const out = r.readArray((n) => {
+      assert.equal(n, 4);
+      const nums = r.readArray((c) => Array.from({ length: c }, () => Number(r.readI64())));
+      const tags = r.readArray((c) => Array.from({ length: c }, () => r.readStr()));
+      const coords = r.readArray((c) => Array.from({ length: c }, () => Number(r.readI64())));
+      const flags = r.readArray((c) => Array.from({ length: c }, () => r.readBool()));
+      return { nums, tags, coords, flags };
+    });
+    r.requireEnd();
+    const w = new BinWriter();
+    encodeSiblingArrays(w, out);
+    return writeWasmResp(olp, w.bytes);
+  },
+});
+assert.deepEqual(batcher.combine([4, 5], ['hi'], [1, 2, 3], [false, true]), {
+  nums: [4, 5],
+  tags: ['hi'],
+  coords: [1, 2, 3],
+  flags: [false, true],
+});
+batcher.dispose();
+assert.equal(live.size, 0, 'zero WASM memory leaks after all calls');
 "#,
     )
     .expect("write e2e_driver.ts");
 
-    // 3. Copy host-ts's strict `tsconfig.json` settings + `node_test.d.ts` ambient decls and run `tsc --noEmit`!
+    // 3. Strict `tsconfig.json` matching `host-ts` + run `tsc --noEmit`!
     std::fs::write(
         dir.join("node_ambient.d.ts"),
         r#"
@@ -784,11 +952,58 @@ fn real_node_and_tsc_verify_web_component_53_bit_safe_codec() {
             doc: None,
         },
         PropSpec {
-            name: "maxTxId".to_owned(),
+            name: "scale".to_owned(),
             prop_type: PropType::Double,
             optional: true,
             nullable: false,
+            default_value: Some(DefaultValue::Int(1)),
+            doc: None,
+        },
+        PropSpec {
+            name: "maxTxId".to_owned(),
+            prop_type: PropType::Mixed,
+            optional: true,
+            nullable: false,
             default_value: Some(DefaultValue::Int(i64::MAX)),
+            doc: None,
+        },
+        PropSpec {
+            name: "note".to_owned(),
+            prop_type: PropType::String,
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Null),
+            doc: None,
+        },
+        PropSpec {
+            name: "subtitle".to_owned(),
+            prop_type: PropType::String,
+            optional: true,
+            nullable: false,
+            default_value: None,
+            doc: None,
+        },
+        PropSpec {
+            name: "badge".to_owned(),
+            prop_type: PropType::String,
+            optional: true,
+            nullable: true,
+            default_value: None,
+            doc: None,
+        },
+        PropSpec {
+            name: "meta".to_owned(),
+            prop_type: PropType::Object {
+                fields: vec![ObjectField {
+                    name: "tag".to_owned(),
+                    field_type: PropType::String,
+                    optional: false,
+                    nullable: true,
+                }],
+            },
+            optional: false,
+            nullable: false,
+            default_value: None,
             doc: None,
         },
     ];
@@ -813,13 +1028,31 @@ fn real_node_and_tsc_verify_web_component_53_bit_safe_codec() {
     std::fs::write(dir.join(&out.types_dts.relative_path), &out.types_dts.content)
         .expect("write web component dts");
 
-    // Verify generated `.d.ts` type-checks cleanly.
+    // Verify generated `.d.ts` type-checks cleanly under exactOptionalPropertyTypes +
+    // verbatimModuleSyntax + erasableSyntaxOnly across optional, defaulted, null-defaulted,
+    // nullable, and Object-with-nullable-field props!
     std::fs::write(
         dir.join("check_dts.ts"),
         r#"
-import type { LedgerWidgetElement, LedgerWidgetEventMap } from './nve-ledger-widget.generated.d.ts';
+import type {
+  LedgerWidgetElement,
+  LedgerWidgetEventMap,
+  LedgerWidgetProps,
+} from './nve-ledger-widget.generated.d.ts';
+
 export type TickDetail = LedgerWidgetEventMap['ledger-tick'];
-export type Elem = LedgerWidgetElement;
+export function checkProps(el: LedgerWidgetElement): LedgerWidgetProps {
+  const s: string = el.title;
+  const sc: number = el.scale;
+  const n: string | null = el.note;
+  const sub: string | undefined = el.subtitle;
+  const b: string | null | undefined = el.badge;
+  const tag: string | null = el.meta.tag;
+  el.subtitle = undefined;
+  el.badge = null;
+  el.note = null;
+  return { title: s, scale: sc, note: n, subtitle: sub, badge: b, meta: { tag } };
+}
 "#,
     )
     .expect("write check_dts.ts");
@@ -835,6 +1068,9 @@ export type Elem = LedgerWidgetElement;
     "types": [],
     "strict": true,
     "noEmit": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
     "skipLibCheck": false
   },
   "include": ["./check_dts.ts", "./nve-ledger-widget.generated.d.ts"]
@@ -886,7 +1122,6 @@ const { LedgerWidgetElement } = await import('./nve-ledger-widget.generated.js')
 assert.equal(registry.get('nve-ledger-widget'), LedgerWidgetElement);
 
 const el = new LedgerWidgetElement();
-// Verify 64-bit default literal survived as exact bigint and encodes losslessly through `@nve/host`!
 let lastPropsBin = null;
 el._surface = {
   set_props_binary(bytes) {
@@ -897,7 +1132,25 @@ el._syncProps();
 assert.ok(lastPropsBin instanceof Uint8Array);
 const decodedProps = decodeJsValue(lastPropsBin);
 assert.equal(decodedProps.title, 'Ledger');
+assert.equal(typeof decodedProps.scale, 'number');
+assert.equal(decodedProps.scale, 1);
 assert.equal(decodedProps.maxTxId, 9223372036854775807n);
+assert.equal(decodedProps.note, null);
+
+// Removing a defaulted attribute restores its default instead of `undefined`
+el.attributeChangedCallback('title', 'Ledger', 'Custom');
+assert.equal(el.title, 'Custom');
+el.attributeChangedCallback('title', 'Custom', null);
+assert.equal(el.title, 'Ledger');
+el.attributeChangedCallback('scale', '1', '2.5');
+assert.equal(el.scale, 2.5);
+el.attributeChangedCallback('scale', '2.5', null);
+assert.equal(el.scale, 1.0);
+// Removing a non-defaulted optional attribute sets `undefined`
+el.attributeChangedCallback('subtitle', null, 'sub');
+assert.equal(el.subtitle, 'sub');
+el.attributeChangedCallback('subtitle', 'sub', null);
+assert.equal(el.subtitle, undefined);
 
 // Verify native event decoding preserves 64-bit integers beyond ±(2^53 - 1) without truncation!
 const payload = {
