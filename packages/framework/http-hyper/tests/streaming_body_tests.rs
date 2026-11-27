@@ -16,6 +16,13 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 #[tokio::test]
 async fn channel_body_and_http_body_unit_semantics() {
     // 1. `HttpBody::Full` preserves exact size_hint & zero-overhead `From` conversions.
@@ -80,7 +87,7 @@ impl hyper::service::Service<Request<Incoming>> for StreamingTestService {
                         .status(StatusCode::OK)
                         .header("content-type", "text/plain")
                         .body(HttpBody::full(Bytes::from_static(b"buffered-ok")))
-                        .unwrap();
+                        .expect("valid HTTP response");
                     Ok(resp)
                 }
                 "/stream" => {
@@ -100,7 +107,7 @@ impl hyper::service::Service<Request<Incoming>> for StreamingTestService {
                         .header("cache-control", "private, no-store, no-transform")
                         .header("x-accel-buffering", "no")
                         .body(HttpBody::stream(rx))
-                        .unwrap();
+                        .expect("valid HTTP response");
                     Ok(resp)
                 }
                 "/keepalive" => {
@@ -133,13 +140,13 @@ impl hyper::service::Service<Request<Incoming>> for StreamingTestService {
                         .status(StatusCode::OK)
                         .header("content-type", "text/html; charset=utf-8")
                         .body(HttpBody::stream(rx))
-                        .unwrap();
+                        .expect("valid HTTP response");
                     Ok(resp)
                 }
                 _ => Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(HttpBody::default())
-                    .unwrap()),
+                    .expect("valid HTTP response")),
             }
         })
     }
@@ -198,8 +205,8 @@ async fn hyper_http1_streams_incrementally_and_cancels_producer_on_client_drop()
         tcp.read_to_end(&mut resp).await.unwrap();
         let text = String::from_utf8(resp).unwrap();
         assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
-        assert!(text.to_ascii_lowercase().contains("content-length: 11"), "{text}");
-        assert!(!text.to_ascii_lowercase().contains("transfer-encoding: chunked"), "{text}");
+        assert!(contains_ignore_ascii_case(&text, "content-length: 11"), "{text}");
+        assert!(!contains_ignore_ascii_case(&text, "transfer-encoding: chunked"), "{text}");
         assert!(text.ends_with("\r\n\r\nbuffered-ok"), "{text}");
     }
 
@@ -214,7 +221,7 @@ async fn hyper_http1_streams_incrementally_and_cancels_producer_on_client_drop()
         read_until_contains(&mut tcp, &mut received, b"SHELL-CHUNK-1\n", Duration::from_secs(2)).await;
         let partial = String::from_utf8_lossy(&received);
         assert!(
-            partial.to_ascii_lowercase().contains("transfer-encoding: chunked"),
+            contains_ignore_ascii_case(&partial, "transfer-encoding: chunked"),
             "Hyper must frame HttpBody::Stream as chunked over HTTP/1.1: {partial}"
         );
         assert!(

@@ -1,4 +1,4 @@
-//! `Interaction`, `Accessibility`, and `DebugId` sparse tables.
+//! `Interaction`, `Accessibility`, `DebugId`, and `StreamBoundary` sparse tables.
 
 use nve_store::{word_enum, FieldKind, NveTable, Res, Str, WordValue};
 
@@ -337,5 +337,24 @@ pub struct DebugId {
     pub id: Str,
     #[effect(semantics)]
     pub slot: Str,
+}
+
+/// DOM attribute marking a pending Declarative Shadow DOM streaming slot root
+/// (`<slot name="nve-slot-{id}">` in the streaming SSR shell).
+pub const NVE_STREAM_SLOT_ATTR: &str = "data-nve-stream-slot";
+
+/// DOM attribute marking a `<QuerySuspense>` boundary container whose direct children swap from
+/// the pending stream slot to resolved content.
+pub const NVE_SUSPENSE_ATTR: &str = "data-nve-suspense";
+
+/// Streaming SSR boundary markers ([`NVE_STREAM_SLOT_ATTR`], [`NVE_SUSPENSE_ATTR`]) consumed by
+/// web streaming shell rendering, slot resolution checks, and structural hydration.
+#[derive(NveTable)]
+#[nve_table(name = "nve.stream_boundary", storage = "sparse", flags = "publish")]
+pub struct StreamBoundary {
+    #[effect(semantics)]
+    pub stream_slot: Str,
+    #[effect(semantics)]
+    pub suspense: Str,
 }
 

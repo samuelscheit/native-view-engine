@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = ["ssr", "hydrate"]
 ssr = []
-hydrate = []
+hydrate = ["ssr"]
 
 [dependencies]
 nve-abi = { workspace = true }

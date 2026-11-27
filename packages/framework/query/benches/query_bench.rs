@@ -118,9 +118,9 @@ mod native_bench {
             for i in 0..count as u64 {
                 let h = src
                     .subscribe::<BenchItem>(&i, QueryOptions::default().stale_time_ms(60_000))
-                    .unwrap();
+                    .expect("subscribe stream");
                 if i % 10 == 9 {
-                    let (ticket, _) = src.begin_fetch(h).unwrap();
+                    let (ticket, _) = src.begin_fetch(h).expect("begin fetch");
                     src.complete_fetch::<BenchItem>(
                         ticket,
                         Err(nve_rpc::RpcError::Protocol {
@@ -129,13 +129,13 @@ mod native_bench {
                         }),
                     );
                 } else {
-                    src.set_query_data::<BenchItem>(&i, i * 2).unwrap();
+                    src.set_query_data::<BenchItem>(&i, i * 2).expect("seed cache");
                 }
             }
-            let blob = src.dehydrate_bytes().unwrap();
+            let blob = src.dehydrate_bytes().expect("dehydrate");
 
             c.bench_function(&format!("nveq_v2_encode_{count}_entries"), |b| {
-                b.iter(|| black_box(src.dehydrate_bytes().unwrap().len()));
+                b.iter(|| black_box(src.dehydrate_bytes().expect("dehydrate").len()));
             });
 
             c.bench_function(&format!("nveq_v2_decode_{count}_entries"), |b| {
@@ -151,7 +151,7 @@ mod native_bench {
                             },
                         )
                     },
-                    |dst| black_box(dst.hydrate_bytes(black_box(&blob)).unwrap()),
+                    |dst| black_box(dst.hydrate_bytes(black_box(&blob)).expect("hydrate")),
                     criterion::BatchSize::SmallInput,
                 );
             });

@@ -5,8 +5,7 @@ use dioxus_core_macro::Props;
 
 use crate::prelude::*;
 
-/// Raw DOM attribute identifying a Declarative Shadow DOM streaming slot boundary.
-pub const NVE_STREAM_SLOT_ATTR: &str = "data-nve-stream-slot";
+pub use nve_components::tables::{NVE_STREAM_SLOT_ATTR, NVE_SUSPENSE_ATTR};
 
 /// Raw DOM attribute distinguishing mutable output slots from stable input slots.
 pub const NVE_STREAM_SLOT_ROLE_ATTR: &str = "data-nve-slot-role";

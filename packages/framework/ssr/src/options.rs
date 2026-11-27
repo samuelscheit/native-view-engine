@@ -5,6 +5,7 @@ use core::fmt::Write as _;
 use core::time::Duration;
 
 use http::StatusCode;
+use nve_backend_web::WebBackend;
 
 /// Default hard ceiling for the entire streaming SSR response (5 seconds).
 pub const DEFAULT_TOTAL_DEADLINE: Duration = Duration::from_secs(5);
@@ -116,8 +117,12 @@ impl StreamPlan {
 
 /// Per-request HTML document, CSP nonce, asset preloading, and status options for
 /// [`crate::SsrLocalPool::render_streaming`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SsrPageOptions {
+    /// Builds the per-request [`WebBackend`] on the `LocalSet` worker (where `!Send` backends
+    /// live). Register the app's `WebTableSystem` plugins here (e.g. semantic HTML, canvas) so
+    /// streaming SSR emits the same tags as the client. Defaults to [`WebBackend::new`].
+    pub web_backend: fn() -> WebBackend,
     pub title: String,
     pub lang: Option<String>,
     pub description: Option<String>,
@@ -140,6 +145,7 @@ pub struct SsrPageOptions {
 impl Default for SsrPageOptions {
     fn default() -> Self {
         Self {
+            web_backend: WebBackend::new,
             title: String::new(),
             lang: None,
             description: None,
@@ -168,6 +174,12 @@ impl SsrPageOptions {
             title: title.into(),
             ..Self::default()
         }
+    }
+
+    #[inline]
+    pub fn with_web_backend(mut self, web_backend: fn() -> WebBackend) -> Self {
+        self.web_backend = web_backend;
+        self
     }
 
     #[inline]

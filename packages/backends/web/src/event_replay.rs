@@ -99,6 +99,17 @@ impl CapturedPreHydrationEvent {
         }
     }
 
+    /// Returns this event retargeted at `node_id` (SSR -> client `NodeId` remapping).
+    #[inline]
+    pub fn with_node_id(mut self, node_id: NodeId) -> Self {
+        match &mut self {
+            Self::Press { node_id: n, .. }
+            | Self::KeyDown { node_id: n, .. }
+            | Self::Submit { node_id: n, .. } => *n = node_id,
+        }
+        self
+    }
+
     #[inline]
     pub fn age_ms(&self) -> u64 {
         match self {

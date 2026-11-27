@@ -68,6 +68,7 @@ pub use signal_archive::{
 pub use stream_slot::{
     NveStreamSlot, NveStreamSlotProps, StreamSlotRole, SuspenseSlot, SuspenseSlotProps,
     NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_NAME_PREFIX, NVE_STREAM_SLOT_ROLE_ATTR,
+    NVE_SUSPENSE_ATTR,
 };
 pub use surface::DioxusSurface;
 pub use table_attr::{table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR};

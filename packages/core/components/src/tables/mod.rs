@@ -20,7 +20,8 @@ pub use box_shadow::{parse_box_shadow, write_box_shadows_css, BoxShadow};
 pub use interaction::{
     Accessibility, AccessibilityMut, AccessibilityRef, AriaAutoComplete, AriaLive, AriaOrientation,
     AriaRole, AriaTriState, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
-    InteractionRef,
+    InteractionRef, StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, NVE_STREAM_SLOT_ATTR,
+    NVE_SUSPENSE_ATTR,
 };
 pub use layout::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, Direction, Display, FlexDirection, FlexWrap,
@@ -60,6 +61,7 @@ pub fn register_core_tables() {
     let _ = Interaction::slot();
     let _ = Accessibility::slot();
     let _ = DebugId::slot();
+    let _ = StreamBoundary::slot();
     let _ = Link::slot();
     let _ = Scroll::slot();
     let _ = Image::slot();

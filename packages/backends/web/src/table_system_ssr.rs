@@ -4,7 +4,8 @@ use core::fmt::Write as _;
 
 use nve_components::tables::{
     Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkTarget, Scroll,
-    TextContent, TextInput, Transform, Visibility, Visual,
+    StreamBoundary, TextContent, TextInput, Transform, Visibility, Visual, NVE_STREAM_SLOT_ATTR,
+    NVE_SUSPENSE_ATTR,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -13,9 +14,9 @@ use crate::html::{
     close_html_element, is_void_html_tag, push_text_escaped, write_attr,
 };
 
-/// Emits shared core HTML attributes (`DebugId`, `Link`, `Image`, `TextInput`, `Interaction`,
-/// `Accessibility`) for a single `NodeStore` node, used by both [`crate::WebBackend::render_ssr`]
-/// and [`WebStoreRenderer::render_ssr`].
+/// Emits shared core HTML attributes (`DebugId`, `StreamBoundary`, `Link`, `Image`, `TextInput`,
+/// `Interaction`, `Accessibility`) for a single `NodeStore` node, used by both
+/// [`crate::WebBackend::render_ssr`] and [`WebStoreRenderer::render_ssr`].
 pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut String) {
     if let Some(dbg) = store.try_row::<DebugId>(id) {
         let id_s = dbg.id();
@@ -29,6 +30,16 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         let slot_s = dbg.slot();
         if !slot_s.is_empty() {
             write_attr("slot", slot_s, out);
+        }
+    }
+    if let Some(boundary) = store.try_row::<StreamBoundary>(id) {
+        for (name, val) in [
+            (NVE_STREAM_SLOT_ATTR, boundary.stream_slot()),
+            (NVE_SUSPENSE_ATTR, boundary.suspense()),
+        ] {
+            if !val.is_empty() {
+                write_attr(name, val, out);
+            }
         }
     }
     if let Some(link) = store.try_row::<Link>(id) {

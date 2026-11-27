@@ -36,13 +36,13 @@ struct SuspenseTransportState {
 impl SuspenseTransport {
     fn new(defer: bool) -> Self {
         let t = Self::default();
-        t.state.lock().unwrap().defer = defer;
+        t.state.lock().expect("lock not poisoned").defer = defer;
         t
     }
 
     fn release(&self) {
         let wakers = {
-            let mut g = self.state.lock().unwrap();
+            let mut g = self.state.lock().expect("lock not poisoned");
             g.defer = false;
             core::mem::take(&mut g.wakers)
         };
@@ -52,7 +52,7 @@ impl SuspenseTransport {
     }
 
     fn call_count(&self) -> usize {
-        self.state.lock().unwrap().calls
+        self.state.lock().expect("lock not poisoned").calls
     }
 }
 
@@ -61,9 +61,9 @@ impl Transport for SuspenseTransport {
         let state = Arc::clone(&self.state);
         Box::pin(async move {
             assert_eq!(req.name, GetItem::NAME);
-            let id: u64 = CborCodec::default().decode_bounded(&req.body).unwrap();
+            let id: u64 = CborCodec::default().decode_bounded(&req.body).expect("decode RPC args");
             core::future::poll_fn(|cx| {
-                let mut g = state.lock().unwrap();
+                let mut g = state.lock().expect("lock not poisoned");
                 if g.defer {
                     g.wakers.push(cx.waker().clone());
                     Poll::Pending
@@ -74,7 +74,7 @@ impl Transport for SuspenseTransport {
             .await;
 
             let (is_dom, is_500) = {
-                let mut g = state.lock().unwrap();
+                let mut g = state.lock().expect("lock not poisoned");
                 g.calls += 1;
                 (
                     g.domain_err_ids.contains(&id),
@@ -86,7 +86,7 @@ impl Transport for SuspenseTransport {
                 let mut body = Vec::new();
                 CborCodec::default()
                     .encode_into(&ItemErr::Denied, &mut body)
-                    .unwrap();
+                    .expect("encode CBOR");
                 return Ok(RawReply {
                     http_status: 403,
                     kind: ReplyKind::Domain,
@@ -116,7 +116,7 @@ impl Transport for SuspenseTransport {
                     },
                     &mut body,
                 )
-                .unwrap();
+                .expect("encode CBOR");
             Ok(RawReply {
                 http_status: 200,
                 kind: ReplyKind::Ok,
@@ -189,7 +189,7 @@ fn two_sibling_query_suspense_boundaries_sharing_one_key_both_resolve_with_one_r
 
         let html1 = render_once(&mut surface, &mut web, &mut frame);
         let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-        let html_pending = web.render_html();
+        let html_pending = web.render_html(surface.store());
         assert!(
             html1.contains("LOADING_LEFT") && html1.contains("LOADING_RIGHT"),
             "both sibling boundaries must render fallback while deferred ({mode:?}): {html1}"
@@ -211,7 +211,7 @@ fn two_sibling_query_suspense_boundaries_sharing_one_key_both_resolve_with_one_r
         // Release transport -> BOTH sibling boundaries resolve with EXACTLY ONE RPC call!
         transport.release();
         let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-        let html_done = web.render_html();
+        let html_done = web.render_html(surface.store());
         assert!(
             html_done.contains("LEFT:Resolved#7") && html_done.contains("RIGHT:Resolved#7"),
             "BOTH sibling boundaries must resolve cleanly ({mode:?}): {html_done}"
@@ -313,7 +313,7 @@ fn domain_and_protocol_errors_render_error_boundary_and_hydrate_with_zero_refetc
     let _ = pump_settled(&mut ssr_surface, &mut web, &waker, &mut frame);
     ssr_transport.release();
     let _ = pump_settled(&mut ssr_surface, &mut web, &waker, &mut frame);
-    let ssr_html = web.render_html();
+    let ssr_html = web.render_html(ssr_surface.store());
     assert!(
         ssr_html.contains("CAUGHT_DOM:") && ssr_html.contains("Denied"),
         "DomainErr must trigger ErrorBoundary fallback: {ssr_html}"
@@ -350,7 +350,7 @@ fn domain_and_protocol_errors_render_error_boundary_and_hydrate_with_zero_refetc
     let mut cli_surface = DioxusSurface::new(2, ErrApp).with_context(cli_client);
     let cli_html = render_once(&mut cli_surface, &mut cli_web, &mut cli_frame);
     let _ = pump_settled(&mut cli_surface, &mut cli_web, &waker, &mut cli_frame);
-    let cli_settled = cli_web.render_html();
+    let cli_settled = cli_web.render_html(cli_surface.store());
 
     assert!(cli_html.contains("CAUGHT_DOM:") && cli_settled.contains("Denied"));
     assert!(
@@ -419,7 +419,7 @@ fn keep_previous_data_does_not_re_suspend_on_key_switch() {
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("ITEM:Resolved#1"));
+    assert!(web.render_html(surface.store()).contains("ITEM:Resolved#1"));
 
     // Defer network and switch key 1 -> 2: MUST keep showing Resolved#1, NEVER re-suspend!
     transport.state.lock().unwrap().defer = true;
@@ -427,7 +427,7 @@ fn keep_previous_data_does_not_re_suspend_on_key_switch() {
     surface.in_root_scope(|| id_sig.set(2));
     let html_switching = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    let html_still_pending = web.render_html();
+    let html_still_pending = web.render_html(surface.store());
     assert!(
         html_switching.contains("ITEM:Resolved#1")
             && !html_switching.contains("SUSPENDED_FALLBACK")
@@ -439,7 +439,7 @@ fn keep_previous_data_does_not_re_suspend_on_key_switch() {
     // Release network -> updates smoothly to Resolved#2!
     transport.release();
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("ITEM:Resolved#2"));
+    assert!(web.render_html(surface.store()).contains("ITEM:Resolved#2"));
 }
 
 #[test]
@@ -519,7 +519,7 @@ fn ssr_plain_use_query_never_fetches_while_suspend_attributes_handles_and_flatte
 
     transport.release();
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    let html_done = web.render_html();
+    let html_done = web.render_html(surface.store());
     assert!(
         html_done.contains("OUTER:Resolved#1")
             && html_done.contains("INNER:Resolved#2")
@@ -615,7 +615,7 @@ fn stream_pending_suspends_without_rpc_then_resolves_via_chunk_or_finish_ssr_str
     // 1. Streaming chunk for item 50 arrives -> resolves boundary 50 with ZERO client RPCs!
     assert_eq!(cli_client.hydrate_stream_chunk_bytes(&chunk_50).unwrap(), 1);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    let html_mid = web.render_html();
+    let html_mid = web.render_html(surface.store());
     assert!(
         html_mid.contains("S50:StreamedChunk#50") && html_mid.contains("WAIT_TRUNC_51"),
         "chunk 50 must resolve while slot 51 stays suspended: {html_mid}"
@@ -626,7 +626,7 @@ fn stream_pending_suspends_without_rpc_then_resolves_via_chunk_or_finish_ssr_str
     //    Transport fallback for ONLY item 51!
     assert_eq!(cli_client.finish_ssr_stream(), 1);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    let html_final = web.render_html();
+    let html_final = web.render_html(surface.store());
     assert!(
         html_final.contains("S50:StreamedChunk#50") && html_final.contains("S51:Resolved#51"),
         "finish_ssr_stream must trigger automatic client fetch fallback: {html_final}"

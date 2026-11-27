@@ -3091,6 +3091,9 @@ dependencies = [
  "nve-query-dioxus",
  "nve-rpc",
  "nve-server",
+ "nve-store",
+ "nve-web-html",
+ "nve-web-html-web",
  "tokio",
 ]
 

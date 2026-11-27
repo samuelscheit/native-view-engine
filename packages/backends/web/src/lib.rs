@@ -15,6 +15,12 @@ mod hot_patch;
 pub mod html;
 #[cfg(feature = "hydrate")]
 pub mod hydrate;
+#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
+mod hydrate_native;
+#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
+mod hydrate_native_parse;
+#[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+mod hydrate_wasm;
 pub mod input_attrs;
 pub mod layout_ext_css;
 pub mod media_css;
@@ -25,6 +31,8 @@ pub mod snapshot;
 pub mod ssg;
 #[cfg(feature = "ssr")]
 pub mod ssr;
+#[cfg(feature = "ssr")]
+pub mod ssr_stream;
 pub mod state_css;
 #[cfg(feature = "ssr")]
 pub mod streaming;
@@ -49,11 +57,11 @@ use std::rc::Rc;
 pub type RenderCallback = Rc<dyn Fn()>;
 
 use nve_abi::hash::HashMap;
-use nve_abi::{EventMask, NativeEvent, NodeId, SurfaceId};
+use nve_abi::{NativeEvent, NodeId, SurfaceId};
 use nve_components::keyboard::KeyboardInsets;
 use nve_components::tables::{Interaction, Link, TextInput};
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend, Viewport};
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, TableEventBus};
+use nve_store::{ChangeSet, NodeStore, TableEventBus};
 
 pub use css::{canonical_f32_bits, write_compositor_css, write_store_node_css, NVE_BASE_RESET_CSS};
 pub use event_replay::{
@@ -85,10 +93,14 @@ pub use ssg::{
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
 #[cfg(feature = "ssr")]
+pub use ssr_stream::{PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamingShellOutput};
+#[cfg(feature = "ssr")]
 pub use streaming::{
-    encode_http_chunk, sanitize_stream_slot_id, scoped_slot_hiding_css, slot_placeholder_html,
-    stream_slot_name, streaming_http_headers, StreamingDocumentOptions, StreamingError,
-    StreamingMode, StreamingSsrSession,
+    decode_form_urlencoded, sanitize_stream_slot_id, scoped_slot_hiding_css,
+    slot_placeholder_html, stream_slot_name, streaming_http_headers, FormActionResponse,
+    LiveUpdateChunk, StreamingDocumentOptions, StreamingError, StreamingMode, StreamingSsrSession,
+    ZeroJsLiveConfig, ZeroJsLiveSession, DEFAULT_MAX_LIVE_UPDATES, NVE_LIVE_SINK_IFRAME_HTML,
+    NVE_LIVE_SINK_IFRAME_NAME, NVE_STREAM_KEEPALIVE_COMMENT, NVE_STREAM_SLOT_PREFIX,
 };
 pub use stylesheet::{ResolvedNodeStyle, StyleSheetCache, MAX_DYNAMIC_RULES};
 pub use table_system::{
@@ -117,25 +129,25 @@ pub struct WebBackend {
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_report: HydrationReport,
     #[cfg(feature = "hydrate")]
-    pub(crate) hydrated_control_values: HashMap<NodeId, String>,
-    #[cfg(feature = "hydrate")]
     pub(crate) pre_hydration_events: Vec<CapturedPreHydrationEvent>,
-    #[cfg(feature = "hydrate")]
-    pub(crate) pending_ssr_nodes: HashMap<NodeId, String>,
+    #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
+    pub(crate) native_dom: Option<hydrate_native::NativeDom>,
+    #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+    pub(crate) hydrate_root: Option<web_sys::Element>,
+    #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+    pub(crate) deferred_controls: nve_abi::hash::HashSet<NodeId>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) mount_root: Option<web_sys::Element>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) live_elements: HashMap<NodeId, web_sys::Element>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) unverified_ssr_ids: nve_abi::hash::HashSet<NodeId>,
-    #[cfg(target_arch = "wasm32")]
     pub(crate) delegated_events: Option<events::RootEventDelegator>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) visual_viewport_tracker: Option<visual_viewport::VisualViewportTracker>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) created_scratch: nve_abi::hash::HashSet<StoreNodeId>,
+    pub(crate) created_scratch: nve_abi::hash::HashSet<nve_store::NodeId>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) retagged_scratch: Vec<StoreNodeId>,
+    pub(crate) retagged_scratch: Vec<nve_store::NodeId>,
 }
 
 impl Default for WebBackend {
@@ -162,17 +174,17 @@ impl WebBackend {
             #[cfg(feature = "hydrate")]
             hydration_report: HydrationReport::default(),
             #[cfg(feature = "hydrate")]
-            hydrated_control_values: HashMap::default(),
-            #[cfg(feature = "hydrate")]
             pre_hydration_events: Vec::new(),
-            #[cfg(feature = "hydrate")]
-            pending_ssr_nodes: HashMap::default(),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
+            native_dom: None,
+            #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+            hydrate_root: None,
+            #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+            deferred_controls: nve_abi::hash::HashSet::default(),
             #[cfg(target_arch = "wasm32")]
             mount_root: None,
             #[cfg(target_arch = "wasm32")]
             live_elements: HashMap::default(),
-            #[cfg(target_arch = "wasm32")]
-            unverified_ssr_ids: nve_abi::hash::HashSet::default(),
             #[cfg(target_arch = "wasm32")]
             delegated_events: None,
             #[cfg(target_arch = "wasm32")]
@@ -324,6 +336,8 @@ impl StoreBackend for WebBackend {
         for &removed in &changes.removed {
             self.patch_css.remove(&removed.raw());
         }
+        #[cfg(feature = "hydrate")]
+        let hydration = self.pair_pending_hydration(store);
 
         #[cfg(not(target_arch = "wasm32"))]
         let stats = self.renderer.commit(store, changes)?;
@@ -338,47 +352,6 @@ impl StoreBackend for WebBackend {
         };
 
         self.sync_event_meta(store, changes);
-
-        #[cfg(feature = "hydrate")]
-        if !self.pre_hydration_events.is_empty() {
-            let drained = std::mem::take(&mut self.pre_hydration_events);
-            let valid =
-                drain_valid_pre_hydration_events(drained, |id| store.is_live(StoreNodeId(id)));
-            let meta = self.node_event_meta.borrow();
-            let mut evs = self.pending_events.borrow_mut();
-            let sid = self.surface_id.get();
-            for captured in valid {
-                let target_id = resolve_replay_target(store, &meta, &captured);
-                evs.push(pre_hydration_event_to_native(captured, sid, 0, target_id));
-                self.hydration_report.replayed_events += 1;
-            }
-        }
-
-        #[cfg(feature = "hydrate")]
-        if !self.pending_ssr_nodes.is_empty() {
-            let ssr_nodes = std::mem::take(&mut self.pending_ssr_nodes);
-            for (raw_id, expected_tag) in ssr_nodes {
-                let sid = StoreNodeId(raw_id);
-                if !store.is_live(sid) {
-                    self.hydration_report.replaced_nodes += 1;
-                    self.hydration_report.mismatches.push(HydrationMismatch {
-                        node_id: raw_id,
-                        reason: format!("SSR <{expected_tag}> missing from live NodeStore"),
-                    });
-                    continue;
-                }
-                let (actual_tag, _) = self.renderer.registry().resolve_tag(store, sid);
-                if actual_tag.eq_ignore_ascii_case(&expected_tag) {
-                    self.hydration_report.adopted_nodes += 1;
-                } else {
-                    self.hydration_report.replaced_nodes += 1;
-                    self.hydration_report.mismatches.push(HydrationMismatch {
-                        node_id: raw_id,
-                        reason: format!("SSR <{expected_tag}> != live <{actual_tag}>"),
-                    });
-                }
-            }
-        }
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -398,9 +371,12 @@ impl StoreBackend for WebBackend {
         {
             // Keep stylesheet rules warm for newly created / non-composite-touched nodes.
             self.warm_stylesheet(store, changes);
+            #[cfg(feature = "hydrate")]
+            self.sync_native_dom(store, changes, hydration.as_ref());
         }
 
-        let _ = StoreNodeId::ROOT;
+        #[cfg(feature = "hydrate")]
+        self.finish_hydration(store, hydration);
         Ok(stats)
     }
 
@@ -417,29 +393,4 @@ impl StoreBackend for WebBackend {
         #[cfg(target_arch = "wasm32")]
         self.clear_live_dom();
     }
-}
-
-#[cfg(feature = "hydrate")]
-fn resolve_replay_target(
-    store: &NodeStore,
-    meta: &HashMap<NodeId, NodeEventMeta>,
-    ev: &CapturedPreHydrationEvent,
-) -> NodeId {
-    let mut cur = Some(StoreNodeId(ev.node_id()));
-    while let Some(nid) = cur {
-        if let Some(m) = meta.get(&nid.raw()) {
-            let matched = match ev {
-                CapturedPreHydrationEvent::Press { .. } => (m.mask & EventMask::PRESS) != 0,
-                CapturedPreHydrationEvent::KeyDown { .. } => (m.mask & EventMask::KEY_DOWN) != 0,
-                CapturedPreHydrationEvent::Submit { .. } => {
-                    m.is_input || (m.mask & EventMask::SUBMIT) != 0
-                }
-            };
-            if matched {
-                return nid.raw();
-            }
-        }
-        cur = store.parent(nid);
-    }
-    ev.node_id()
 }

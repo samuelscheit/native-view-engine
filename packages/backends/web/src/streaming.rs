@@ -21,6 +21,7 @@ use crate::html::{
     push_attr_escaped, push_script_data_escaped, push_style_css_escaped, push_text_escaped,
     write_style_nonce_attr,
 };
+use crate::ssr::push_hashes_csv;
 use crate::ssr_stream::{SsrDeltaChunk, StreamingShellOutput};
 use crate::WebBackend;
 
@@ -242,12 +243,7 @@ pub(crate) fn write_shared_styles(opts: &StreamingDocumentOptions, out: &mut Str
     out.push_str("</style>\n<style data-nve-ssr");
     write_style_nonce_attr(nonce, out);
     out.push_str(" data-nve-hashes=\"");
-    for (idx, h) in opts.rule_hashes.iter().enumerate() {
-        if idx > 0 {
-            out.push(',');
-        }
-        push_attr_escaped(h, out);
-    }
+    push_hashes_csv(&opts.rule_hashes, out);
     out.push_str("\">");
     push_style_css_escaped(&opts.style_css, out);
     out.push_str("</style>\n");
@@ -330,12 +326,7 @@ pub(crate) fn format_light_dom_slot_chunk(
         out.push('"');
         write_style_nonce_attr(style_nonce, &mut out);
         out.push_str(" data-nve-hashes=\"");
-        for (idx, h) in rule_hashes.iter().enumerate() {
-            if idx > 0 {
-                out.push(',');
-            }
-            push_attr_escaped(h, &mut out);
-        }
+        push_hashes_csv(rule_hashes, &mut out);
         out.push_str("\">");
         push_style_css_escaped(css, &mut out);
         out.push_str("</style>");

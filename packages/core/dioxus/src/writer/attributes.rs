@@ -10,7 +10,7 @@ use nve_components::input_hints::{AutofillHint, InputMode};
 use nve_components::media::MediaQuery;
 use nve_components::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
-    AriaTriState, DebugId, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link,
+    AriaTriState, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link,
     LinkTarget, OptAutofillHint, Responsive, TextInput, Typography, Visual,
 };
 use nve_store::{Length, NodeId};
@@ -321,16 +321,10 @@ impl StoreMutationTx<'_, '_> {
             }
             nve_components::CssAttrResult::Unknown => {}
         }
+        if self.apply_identity_attr(node, name, Some(value)) {
+            return;
+        }
         match name {
-            "testID" | "data-testid" | "test_id" => {
-                self.tx.edit::<DebugId>(node).test_id(value);
-            }
-            "id" => {
-                self.tx.edit::<DebugId>(node).id(value);
-            }
-            "slot" => {
-                self.tx.edit::<DebugId>(node).slot(value);
-            }
             "src" => {
                 self.tx
                     .edit::<Image>(node)
@@ -523,6 +517,9 @@ impl StoreMutationTx<'_, '_> {
             }
             return;
         }
+        if self.apply_identity_attr(node, name, None) {
+            return;
+        }
         match name {
             "style" => {
                 if let Some((_, prev_mask)) = self.inline_styles.remove(&node) {
@@ -545,15 +542,6 @@ impl StoreMutationTx<'_, '_> {
                         .show_on_widths(0)
                         .show_on_env(0);
                 }
-            }
-            "testID" | "data-testid" | "test_id" if self.tx.store().has::<DebugId>(node) => {
-                self.tx.edit::<DebugId>(node).test_id("");
-            }
-            "id" if self.tx.store().has::<DebugId>(node) => {
-                self.tx.edit::<DebugId>(node).id("");
-            }
-            "slot" if self.tx.store().has::<DebugId>(node) => {
-                self.tx.edit::<DebugId>(node).slot("");
             }
             "href" if self.tx.store().has::<Link>(node) => {
                 self.tx.edit::<Link>(node).href("");

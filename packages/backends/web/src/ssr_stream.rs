@@ -1,15 +1,15 @@
-//! Streaming SSR shell rendering (`data-nve-stream-slot` -> `<slot name="nve-slot-{id}">`),
+//! Streaming SSR shell rendering (`StreamBoundary::stream_slot` -> `<slot name="nve-slot-{id}">`),
 //! Declarative Shadow DOM parser hygiene validation, and stateful delta subtree extraction
-//! ([`SsrStyleTracker`], [`StreamingShellOutput`], [`SsrDeltaChunk`]).
+//! ([`SsrStyleTracker`], [`StreamingShellOutput`], [`SsrDeltaChunk`]) over `NodeStore`.
 
 use nve_abi::hash::HashSet;
-use nve_abi::{ComponentKind, NodeId, RawPropValue, ROOT_NODE_ID};
+use nve_components::tables::StreamBoundary;
+use nve_store::{NodeId, NodeStore};
 
-use crate::css::{resolve_semantic_tag, NVE_BASE_RESET_CSS};
-use crate::html::close_html_element;
-use crate::ssr::{SsrOutput, SsrStyleCollector};
+use crate::css::NVE_BASE_RESET_CSS;
+use crate::ssr::SsrOutput;
 use crate::streaming::{sanitize_stream_slot_id, StreamingError, NVE_STREAM_SLOT_PREFIX};
-use crate::tree::Visit;
+use crate::stylesheet::StyleSheetCache;
 use crate::WebBackend;
 
 /// Tracks already-emitted Option 5 Hybrid CSS class hashes across a streaming SSR response so
@@ -39,10 +39,18 @@ impl SsrStyleTracker {
     pub fn is_empty(&self) -> bool {
         self.sent_hashes.is_empty()
     }
+
+    /// Fresh per-chunk stylesheet pre-seeded with every already-sent hash so serialization
+    /// yields only newly introduced rules.
+    fn delta_sheet(&self) -> StyleSheetCache {
+        let mut sheet = StyleSheetCache::new();
+        sheet.seed_ssr_hashes(self.sent_hashes.iter().map(String::as_str));
+        sheet
+    }
 }
 
 /// One pending `<slot name="nve-slot-{slot_id}">` discovered during
-/// [`WebBackend::render_ssr_streaming_shell`], paired with its `<div data-nve-suspense>` parent.
+/// [`WebBackend::render_ssr_streaming_shell`], paired with its `data-nve-suspense` parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingStreamSlot {
     pub slot_id: String,
@@ -71,151 +79,102 @@ fn is_foster_parent_trap_tag(tag: &str) -> bool {
     matches!(tag, "table" | "tbody" | "thead" | "tfoot" | "tr" | "select")
 }
 
-struct OpenStreamingFrame<'a> {
-    tag: &'a str,
-    wrap_code: bool,
-    wrapped_in_slot: bool,
+/// Mutable streaming-shell walk state threaded through `WebBackend::emit_ssr_node`.
+#[derive(Default)]
+pub(crate) struct StreamShellState<'s> {
+    pub(crate) ancestor_tags: Vec<&'s str>,
+    pending_slots: Vec<PendingStreamSlot>,
+    seen_slot_ids: HashSet<String>,
+    slot_depth: usize,
+}
+
+impl StreamShellState<'_> {
+    /// Validates and opens `<slot name="nve-slot-{id}">` when `id` carries a non-empty
+    /// `StreamBoundary::stream_slot`. Returns whether a slot was opened.
+    pub(crate) fn open_slot(
+        &mut self,
+        store: &NodeStore,
+        id: NodeId,
+        out: &mut String,
+    ) -> Result<bool, StreamingError> {
+        let Some(raw) = store
+            .try_row::<StreamBoundary>(id)
+            .map(|b| b.stream_slot())
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(false);
+        };
+        let placement = |msg: String| Err(StreamingError::InvalidSlotPlacement(msg));
+        let Some(clean_id) = sanitize_stream_slot_id(raw) else {
+            return Err(StreamingError::InvalidSlotId(raw.to_owned()));
+        };
+        let parent = store.parent(id).filter(|_| id != NodeId::ROOT);
+        let Some(parent_node_id) = parent else {
+            return placement(format!(
+                "streaming slot {clean_id:?} cannot be placed on the root node"
+            ));
+        };
+        if self.slot_depth > 0 {
+            return placement(format!(
+                "nested streaming slot {clean_id:?} inside another data-nve-stream-slot is invalid"
+            ));
+        }
+        if self.ancestor_tags.contains(&"form") {
+            return placement(format!("streaming slot {clean_id:?} cannot be placed inside <form>"));
+        }
+        if let Some(&direct_parent) = self.ancestor_tags.last()
+            && is_foster_parent_trap_tag(direct_parent)
+        {
+            return placement(format!(
+                "streaming slot {clean_id:?} cannot be a direct child of <{direct_parent}> (HTML5 foster-parenting trap)"
+            ));
+        }
+        if !self.seen_slot_ids.insert(clean_id.clone()) {
+            return placement(format!("duplicate streaming slot id {clean_id:?} in shell"));
+        }
+        out.push_str("<slot name=\"");
+        out.push_str(NVE_STREAM_SLOT_PREFIX);
+        out.push_str(&clean_id);
+        out.push_str("\">");
+        self.pending_slots.push(PendingStreamSlot {
+            slot_id: clean_id,
+            parent_node_id,
+        });
+        self.slot_depth += 1;
+        Ok(true)
+    }
+
+    pub(crate) fn close_slot(&mut self, out: &mut String) {
+        self.slot_depth = self.slot_depth.saturating_sub(1);
+        out.push_str("</slot>");
+    }
 }
 
 impl WebBackend {
-    /// Emits the Stage-1 Declarative Shadow DOM streaming shell starting at `ROOT_NODE_ID`,
-    /// wrapping every pending `data-nve-stream-slot="{id}"` node in
-    /// `<slot name="nve-slot-{id}">...</slot>` while keeping the slot node itself inside `<slot>`
-    /// so mid-stream WASM hydration sees the exact same tree depth as Client Frame 0.
+    /// Emits the Stage-1 Declarative Shadow DOM streaming shell for `store`, wrapping every pending
+    /// `data-nve-stream-slot="{id}"` node in `<slot name="nve-slot-{id}">...</slot>` while keeping
+    /// the slot node itself inside `<slot>` so mid-stream hydration sees the exact same tree depth
+    /// as Client Frame 0.
     ///
     /// Enforces DSD parser hygiene and returns [`StreamingError::InvalidSlotPlacement`] when:
     /// 1. Any ancestor of `data-nve-stream-slot` is `<form>` (Shadow DOM breaks form association).
-    /// 2. The direct parent tag is `table`/`tbody`/`thead`/`tfoot`/`tr`/`select` (HTML5 foster-parenting trap).
+    /// 2. The direct parent tag is `table`/`tbody`/`thead`/`tfoot`/`tr`/`select` (foster-parenting trap).
     /// 3. A `data-nve-stream-slot` is nested inside another `data-nve-stream-slot`.
-    /// 4. `data-nve-stream-slot` is placed on `ROOT_NODE_ID` or duplicates an existing slot ID.
-    pub fn render_ssr_streaming_shell(&self) -> Result<StreamingShellOutput, StreamingError> {
-        let root_hash = self.compute_ssr_tree_hash();
-        let mut styles = SsrStyleCollector::new(None);
-        let mut html = String::with_capacity(self.nodes.len().saturating_mul(104).max(64));
-        let mut open: Vec<OpenStreamingFrame<'_>> = Vec::new();
-        let mut ancestor_tags: Vec<&str> = Vec::new();
-        let mut pending_slots: Vec<PendingStreamSlot> = Vec::new();
-        let mut seen_slot_ids: HashSet<String> = HashSet::default();
-        let mut slot_depth = 0usize;
-        let mut error: Option<StreamingError> = None;
+    /// 4. `data-nve-stream-slot` is placed on the root node or duplicates an existing slot ID.
+    pub fn render_ssr_streaming_shell(
+        &self,
+        store: &NodeStore,
+    ) -> Result<StreamingShellOutput, StreamingError> {
+        let root_hash = self.compute_ssr_tree_hash(store);
+        let mut sheet = StyleSheetCache::new();
+        let mut html = String::with_capacity(1024);
+        let mut state = StreamShellState::default();
+        self.emit_ssr_node(store, NodeId::ROOT, root_hash, &mut sheet, &mut html, Some(&mut state))?;
 
-        self.walk(ROOT_NODE_ID, |id, parent, step| {
-            if error.is_some() {
-                return false;
-            }
-            match step {
-                Visit::Enter => {
-                    let Some(el) = self.nodes.get(&id) else {
-                        return false;
-                    };
-                    let sem = resolve_semantic_tag(el.kind, &el.raw_props);
-                    let tag = if el.kind == ComponentKind::Custom {
-                        self.effective_html_tag(id, el)
-                    } else {
-                        sem.tag
-                    };
-
-                    let mut wrapped_in_slot = false;
-                    if let Some(RawPropValue::String(raw_slot_id)) =
-                        el.raw_props.get("data-nve-stream-slot")
-                    {
-                        let Some(clean_id) = sanitize_stream_slot_id(raw_slot_id) else {
-                            error = Some(StreamingError::InvalidSlotId(raw_slot_id.clone()));
-                            return false;
-                        };
-                        let Some(parent_node_id) = parent else {
-                            error = Some(StreamingError::InvalidSlotPlacement(format!(
-                                "streaming slot {clean_id:?} cannot be placed on ROOT_NODE_ID"
-                            )));
-                            return false;
-                        };
-                        if slot_depth > 0 {
-                            error = Some(StreamingError::InvalidSlotPlacement(format!(
-                                "nested streaming slot {clean_id:?} inside another data-nve-stream-slot is invalid"
-                            )));
-                            return false;
-                        }
-                        if ancestor_tags.contains(&"form") {
-                            error = Some(StreamingError::InvalidSlotPlacement(format!(
-                                "streaming slot {clean_id:?} cannot be placed inside <form>"
-                            )));
-                            return false;
-                        }
-                        if let Some(&direct_parent) = ancestor_tags.last()
-                            && is_foster_parent_trap_tag(direct_parent)
-                        {
-                            error = Some(StreamingError::InvalidSlotPlacement(format!(
-                                "streaming slot {clean_id:?} cannot be a direct child of <{direct_parent}> (HTML5 foster-parenting trap)"
-                            )));
-                            return false;
-                        }
-                        if !seen_slot_ids.insert(clean_id.clone()) {
-                            error = Some(StreamingError::InvalidSlotPlacement(format!(
-                                "duplicate streaming slot id {clean_id:?} in shell"
-                            )));
-                            return false;
-                        }
-
-                        html.push_str("<slot name=\"");
-                        html.push_str(NVE_STREAM_SLOT_PREFIX);
-                        html.push_str(&clean_id);
-                        html.push_str("\">");
-                        pending_slots.push(PendingStreamSlot {
-                            slot_id: clean_id,
-                            parent_node_id,
-                        });
-                        wrapped_in_slot = true;
-                    }
-
-                    match self.open_ssr_element(id, parent, Some(root_hash), &mut styles, &mut html)
-                    {
-                        Some((opened_tag, wrap_code)) => {
-                            ancestor_tags.push(tag);
-                            if wrapped_in_slot {
-                                slot_depth += 1;
-                            }
-                            open.push(OpenStreamingFrame {
-                                tag: opened_tag,
-                                wrap_code,
-                                wrapped_in_slot,
-                            });
-                            true
-                        }
-                        None => {
-                            if wrapped_in_slot {
-                                html.push_str("</slot>");
-                            }
-                            false
-                        }
-                    }
-                }
-                Visit::Exit => {
-                    let _ = ancestor_tags.pop();
-                    if let Some(frame) = open.pop() {
-                        if frame.wrap_code {
-                            html.push_str("</code>");
-                        }
-                        close_html_element(frame.tag, &mut html);
-                        if frame.wrapped_in_slot {
-                            slot_depth = slot_depth.saturating_sub(1);
-                            html.push_str("</slot>");
-                        }
-                    }
-                    false
-                }
-            }
-        });
-
-        if let Some(err) = error {
-            return Err(err);
-        }
-
-        let (style_css, rule_hashes) = styles.finish();
-        let mut style_tracker = SsrStyleTracker::new();
-        for hash in &rule_hashes {
-            style_tracker.sent_hashes.insert(hash.clone());
-        }
-
+        let (style_css, rule_hashes) = sheet.serialize_css();
+        let style_tracker = SsrStyleTracker {
+            sent_hashes: rule_hashes.iter().cloned().collect(),
+        };
         Ok(StreamingShellOutput {
             ssr: SsrOutput {
                 base_css: NVE_BASE_RESET_CSS,
@@ -225,86 +184,52 @@ impl WebBackend {
                 root_hash,
             },
             style_tracker,
-            pending_slots,
+            pending_slots: state.pending_slots,
         })
     }
 
-    /// Returns `true` iff `parent_node_id` exists in `self.nodes` and NONE of its direct children
-    /// carry `data-nve-stream-slot == slot_id` (matching the `<QuerySuspense>` DOM contract where
-    /// pending state renders `<div data-nve-stream-slot="{id}">` and resolved state swaps in the
-    /// resolved children directly inside `<div data-nve-suspense="{id}">`).
-    pub fn is_stream_slot_resolved(&self, parent_node_id: NodeId, slot_id: &str) -> bool {
-        let Some(parent) = self.nodes.get(&parent_node_id) else {
+    /// Returns `true` iff `parent_node_id` is live and NONE of its direct children carry
+    /// `data-nve-stream-slot == slot_id` (the `<QuerySuspense>` contract: pending state renders a
+    /// stream-slot child, resolved state swaps resolved children directly into the boundary).
+    pub fn is_stream_slot_resolved(
+        &self,
+        store: &NodeStore,
+        parent_node_id: NodeId,
+        slot_id: &str,
+    ) -> bool {
+        if !store.is_live(parent_node_id) {
             return false;
-        };
+        }
         let target_clean = sanitize_stream_slot_id(slot_id);
-        !parent.children.iter().any(|cid| {
-            self.nodes.get(cid).is_some_and(|child| {
-                matches!(
-                    child.raw_props.get("data-nve-stream-slot"),
-                    Some(RawPropValue::String(raw))
-                        if raw == slot_id
-                            || (target_clean.is_some()
-                                && sanitize_stream_slot_id(raw) == target_clean)
-                )
+        !store.children(parent_node_id).iter().any(|&cid| {
+            store.try_row::<StreamBoundary>(cid).is_some_and(|b| {
+                let raw = b.stream_slot();
+                !raw.is_empty()
+                    && (raw == slot_id
+                        || (target_clean.is_some() && sanitize_stream_slot_id(raw) == target_clean))
             })
         })
     }
 
-    /// Walks ONLY `parent_node_id`'s direct children and emits their HTML plus ONLY newly
-    /// introduced Option 5 Hybrid CSS rules not yet recorded in `style_tracker.sent_hashes`.
+    /// Emits ONLY `parent_node_id`'s direct children subtrees plus ONLY newly introduced Option 5
+    /// Hybrid CSS rules not yet recorded in `style_tracker`, recording them as sent.
     pub fn render_ssr_subtree_delta(
         &self,
+        store: &NodeStore,
         parent_node_id: NodeId,
         style_tracker: &mut SsrStyleTracker,
     ) -> SsrDeltaChunk {
-        let Some(parent) = self.nodes.get(&parent_node_id) else {
+        if !store.is_live(parent_node_id) {
             return SsrDeltaChunk::default();
-        };
-
-        let mut styles = SsrStyleCollector::new(Some(&style_tracker.sent_hashes));
-        let mut html = String::with_capacity(parent.children.len().saturating_mul(96).max(64));
-        let mut open: Vec<(&str, bool)> = Vec::new();
-        let mut stack: Vec<(NodeId, Option<NodeId>, Visit)> = Vec::new();
-
-        for &child_id in parent.children.iter().rev() {
-            stack.push((child_id, Some(parent_node_id), Visit::Enter));
         }
-
-        while let Some((id, p_id, step)) = stack.pop() {
-            match step {
-                Visit::Enter => {
-                    let Some(el) = self.nodes.get(&id) else {
-                        continue;
-                    };
-                    if let Some(closing) =
-                        self.open_ssr_element(id, p_id, None, &mut styles, &mut html)
-                    {
-                        open.push(closing);
-                        stack.push((id, p_id, Visit::Exit));
-                        stack.extend(
-                            el.children
-                                .iter()
-                                .rev()
-                                .map(|&cid| (cid, Some(id), Visit::Enter)),
-                        );
-                    }
-                }
-                Visit::Exit => {
-                    let (tag, wrap_code) = open.pop().unwrap_or(("div", false));
-                    if wrap_code {
-                        html.push_str("</code>");
-                    }
-                    close_html_element(tag, &mut html);
-                }
-            }
+        let mut sheet = style_tracker.delta_sheet();
+        let mut html = String::with_capacity(256);
+        for &cid in store.children(parent_node_id) {
+            // Infallible without a `StreamShellState` (no slot validation).
+            let _ = self.emit_ssr_node(store, cid, 0, &mut sheet, &mut html, None);
         }
-
-        let (style_css, rule_hashes) = styles.finish();
-        for hash in &rule_hashes {
-            style_tracker.sent_hashes.insert(hash.clone());
-        }
-
+        let (style_css, rule_hashes) = sheet.serialize_css();
+        style_tracker.sent_hashes.extend(rule_hashes.iter().cloned());
         SsrDeltaChunk {
             html,
             style_css,

@@ -1,10 +1,20 @@
 //! Arena-backed iterative HTML & Declarative Shadow DOM tree parser + slot promotion for
-//! headless native hydration tests ([`NativeSsrTree`]).
+//! headless native hydration simulation ([`NativeSsrTree`]).
 
 use nve_abi::hash::HashMap;
 use nve_abi::{NodeId, ROOT_NODE_ID};
 
-use crate::hydrate::is_form_control_tag;
+#[inline]
+fn is_form_control_tag(tag: &str) -> bool {
+    matches!(tag, "input" | "textarea" | "select")
+}
+
+/// Owned ASCII-lowercase copy of a parsed tag/attribute name (cold test-simulation boundary).
+fn lower_owned(s: &str) -> String {
+    let mut out = s.to_owned();
+    out.make_ascii_lowercase();
+    out
+}
 
 /// One parsed HTML element inside [`NativeSsrTree`].
 #[derive(Debug, Clone)]
@@ -57,52 +67,16 @@ impl NativeSsrTree {
         None
     }
 
-    /// Returns the ordered UI element children of `dom_idx`, descending through `<pre><code>`
-    /// (`wrap_code`) and skipping non-UI siblings (`<style>`, `<script>`, `<template>`,
-    /// `[data-nve-dsd-host]`) and backend-owned leaf `<svg>` graphics.
-    pub(crate) fn ui_children_of(
-        &self,
-        dom_idx: usize,
-        wrap_code: bool,
-        mirror_tag: &str,
-        mirror_has_children: bool,
-    ) -> Vec<usize> {
-        let Some(node) = self.arena.get(dom_idx) else {
-            return Vec::new();
-        };
-        let target_idx = if wrap_code {
+    /// Returns the ordered UI element children of `dom_idx`, skipping non-UI siblings
+    /// (`<style>`, `<script>`, `<template>`, `[data-nve-dsd-host]`).
+    pub(crate) fn ui_children_of(&self, dom_idx: usize) -> Vec<usize> {
+        self.arena.get(dom_idx).map_or_else(Vec::new, |node| {
             node.children
-                .first()
+                .iter()
                 .copied()
-                .filter(|&cid| {
-                    self.arena
-                        .get(cid)
-                        .is_some_and(|c| c.tag == "code" && c.ssr_id.is_none())
-                })
-                .unwrap_or(dom_idx)
-        } else {
-            dom_idx
-        };
-        if mirror_tag.eq_ignore_ascii_case("svg") && !mirror_has_children {
-            return Vec::new();
-        }
-        let Some(target) = self.arena.get(target_idx) else {
-            return Vec::new();
-        };
-        let mut out = Vec::with_capacity(target.children.len());
-        for &cid in &target.children {
-            let Some(child) = self.arena.get(cid) else {
-                continue;
-            };
-            if Self::is_ignored_node(child) {
-                continue;
-            }
-            if !mirror_has_children && child.tag == "svg" && child.ssr_id.is_none() {
-                continue;
-            }
-            out.push(cid);
-        }
-        out
+                .filter(|&cid| self.arena.get(cid).is_some_and(|c| !Self::is_ignored_node(c)))
+                .collect()
+        })
     }
 }
 
@@ -176,7 +150,7 @@ fn parse_html_attrs(attrs: &str) -> Vec<(String, Option<String>)> {
         {
             i += 1;
         }
-        let name = attrs[name_start..i].to_ascii_lowercase();
+        let name = lower_owned(&attrs[name_start..i]);
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
@@ -314,7 +288,7 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
             if end >= bytes.len() {
                 break;
             }
-            let close_name = html[start..end].trim().to_ascii_lowercase();
+            let close_name = lower_owned(html[start..end].trim());
             if let Some(pos) = open_stack
                 .iter()
                 .rposition(|&idx| tree.arena[idx].tag == close_name)
@@ -358,7 +332,7 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
             raw_inner
         };
         let mut parts = inner.splitn(2, char::is_whitespace);
-        let tag = parts.next().unwrap_or("").to_ascii_lowercase();
+        let tag = lower_owned(parts.next().unwrap_or(""));
         let attrs = parse_html_attrs(parts.next().unwrap_or(""));
         i = end + 1;
 

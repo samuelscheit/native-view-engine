@@ -17,6 +17,7 @@ use nve_dioxus::DioxusSurface;
 use nve_http_hyper::{ChannelBody, HttpBody};
 use nve_query::{nveq_entry_count, DehydrateCursor};
 use nve_query_dioxus::{ErasedQueryClient, SsrBoundaryRegistry};
+use nve_store::NodeStore;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::options::{
@@ -38,7 +39,7 @@ fn flush_ssr_until_quiescent(
     frame_id: &mut u64,
 ) -> Result<(), SsrError> {
     surface
-        .flush_into(*frame_id, backend)
+        .commit_to(*frame_id, backend)
         .map_err(|err| SsrError::Render(err.to_string()))?;
     let noop = core::task::Waker::noop();
     for _ in 0..MAX_SSR_SYNC_FOLLOWUP_PASSES {
@@ -47,7 +48,7 @@ fn flush_ssr_until_quiescent(
         }
         *frame_id = frame_id.saturating_add(1);
         surface
-            .flush_into(*frame_id, backend)
+            .commit_to(*frame_id, backend)
             .map_err(|err| SsrError::Render(err.to_string()))?;
     }
     Ok(())
@@ -70,6 +71,7 @@ fn build_http_response(
 fn render_fast_path_response(
     page: &SsrPageOptions,
     backend: &WebBackend,
+    store: &NodeStore,
     client: &ErasedQueryClient,
 ) -> Result<Response<HttpBody>, SsrError> {
     let dehydrated = client.dehydrate_bytes()?;
@@ -109,7 +111,7 @@ fn render_fast_path_response(
         ..SsrDocumentOptions::default()
     };
 
-    let html = backend.render_ssr_document(&doc_opts);
+    let html = backend.render_ssr_document(store, &doc_opts);
     build_http_response(
         page.status,
         &FAST_PATH_HTTP_HEADERS,
@@ -189,7 +191,7 @@ pub(crate) async fn execute_render_streaming<F>(
 {
     let registry = SsrBoundaryRegistry::new();
     let mut surface = build_surface(client.clone()).with_context(registry.clone());
-    let mut backend = WebBackend::new();
+    let mut backend = (page.web_backend)();
     let mut frame_id: u64 = 1;
 
     if let Err(err) = flush_ssr_until_quiescent(&mut surface, &mut backend, &mut frame_id) {
@@ -197,7 +199,7 @@ pub(crate) async fn execute_render_streaming<F>(
         return;
     }
 
-    let mut shell_out = match backend.render_ssr_streaming_shell() {
+    let mut shell_out = match backend.render_ssr_streaming_shell(surface.store()) {
         Ok(out) => out,
         Err(err) => {
             let _ = headers_tx.send(Err(SsrError::Streaming(err)));
@@ -209,7 +211,7 @@ pub(crate) async fn execute_render_streaming<F>(
     // plain Light-DOM `HttpBody::Full` response.
     let has_unresolved_boundary = registry.boundaries().iter().any(|e| e.is_pending());
     if shell_out.pending_slots.is_empty() && !has_unresolved_boundary {
-        let resp = render_fast_path_response(&page, &backend, &client);
+        let resp = render_fast_path_response(&page, &backend, surface.store(), &client);
         let _ = headers_tx.send(resp);
         return;
     }
@@ -304,8 +306,11 @@ pub(crate) async fn execute_render_streaming<F>(
                         still_pending.push(slot);
                         continue;
                     }
-                    let dom_ready =
-                        backend.is_stream_slot_resolved(slot.parent_node_id, &slot.slot_id);
+                    let dom_ready = backend.is_stream_slot_resolved(
+                        surface.store(),
+                        slot.parent_node_id,
+                        &slot.slot_id,
+                    );
                     let reg_ready = registry
                         .entry(&slot.slot_id)
                         .is_none_or(|entry| entry.is_ready_to_flush());
@@ -327,6 +332,7 @@ pub(crate) async fn execute_render_streaming<F>(
                         }
                     };
                     let delta_dom = backend.render_ssr_subtree_delta(
+                        surface.store(),
                         slot.parent_node_id,
                         &mut shell_out.style_tracker,
                     );

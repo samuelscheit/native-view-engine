@@ -1,10 +1,11 @@
-//! Live `wasm32` DOM mounting, zero-flicker hydration adoption, deferred element creation,
-//! `COMPOSITE`-only 120 Hz fast lane, and `WebTableRegistry` plugin DOM synchronization.
+//! Live `wasm32` DOM mounting, deferred element creation (adopting SSR elements staged by
+//! positional hydration), `COMPOSITE`-only 120 Hz fast lane, and `WebTableRegistry` plugin DOM
+//! synchronization.
 
 use nve_abi::table::effect;
 use nve_components::tables::{
-    Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkTarget, TextContent,
-    TextInput, Transform, Visual,
+    Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkTarget, StreamBoundary,
+    TextContent, TextInput, Transform, Visual, NVE_STREAM_SLOT_ATTR, NVE_SUSPENSE_ATTR,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore};
 use wasm_bindgen::JsCast;
@@ -41,43 +42,11 @@ impl WebBackend {
         backend
     }
 
-    /// Scans an SSR-rendered `container` for existing `[data-nve-id]` elements and stages them
-    /// into `live_elements` for tag-verified adoption during the first hydrated commit.
-    pub(crate) fn adopt_existing_dom(&mut self, container: &web_sys::Element) {
-        if let Ok(list) = container.query_selector_all("[data-nve-id]") {
-            let len = list.length();
-            for i in 0..len {
-                if let Some(node) = list.item(i)
-                    && let Ok(el) = node.dyn_into::<web_sys::Element>()
-                    && let Some(raw) = el.get_attribute("data-nve-id")
-                    && let Ok(id) = raw.parse::<u32>()
-                {
-                    self.live_elements.insert(id, el);
-                    self.unverified_ssr_ids.insert(id);
-                }
-            }
-        }
-        if let Some(doc) = web_sys::window().and_then(|w| w.document())
-            && let Ok(Some(style_el)) = doc.query_selector("style[data-nve-ssr]")
-            && let Some(hashes) = style_el.get_attribute("data-nve-hashes")
-        {
-            let before = self.stylesheet.rule_count();
-            self.stylesheet.seed_ssr_hashes(hashes.split(','));
-            #[cfg(feature = "hydrate")]
-            {
-                self.hydration_report.reused_css_rules =
-                    self.stylesheet.rule_count().saturating_sub(before) as u32;
-            }
-            let _ = before;
-        }
-    }
-
     pub(crate) fn clear_live_dom(&mut self) {
         if let Some(ref root) = self.mount_root {
             root.set_inner_html("");
         }
         self.live_elements.clear();
-        self.unverified_ssr_ids.clear();
     }
 
     pub(crate) fn commit_live_dom(&mut self, store: &NodeStore, changes: &ChangeSet) -> u32 {
@@ -92,7 +61,6 @@ impl WebBackend {
         self.renderer
             .remove_plugins(changes, Some(&self.live_elements));
         for &id in &changes.removed {
-            self.unverified_ssr_ids.remove(&id.raw());
             if let Some(el) = self.live_elements.remove(&id.raw()) {
                 el.remove();
             }
@@ -109,13 +77,8 @@ impl WebBackend {
             }
             created_set.insert(id);
             let (tag, ns) = self.renderer.registry().resolve_tag(store, id);
-            let was_ssr_candidate = self.unverified_ssr_ids.remove(&id.raw());
             let el = if let Some(adopted) = self.live_elements.get(&id.raw()).cloned() {
                 if adopted.tag_name().eq_ignore_ascii_case(tag) {
-                    #[cfg(feature = "hydrate")]
-                    if was_ssr_candidate {
-                        self.hydration_report.adopted_nodes += 1;
-                    }
                     adopted
                 } else {
                     let fresh = create_dom_element(&doc, id, tag, ns);
@@ -123,16 +86,6 @@ impl WebBackend {
                     let _ = adopted.replace_with_with_node_1(&fresh);
                     self.live_elements.insert(id.raw(), fresh.clone());
                     retagged.push(id);
-                    #[cfg(feature = "hydrate")]
-                    if was_ssr_candidate {
-                        self.hydration_report.replaced_nodes += 1;
-                        let mut ssr_tag = adopted.tag_name();
-                        ssr_tag.make_ascii_lowercase();
-                        self.hydration_report.mismatches.push(crate::HydrationMismatch {
-                            node_id: id.raw(),
-                            reason: format!("SSR <{ssr_tag}> != live <{tag}>"),
-                        });
-                    }
                     fresh
                 }
             } else {
@@ -143,17 +96,7 @@ impl WebBackend {
             self.sync_full_element(store, id, &el);
         }
 
-        // Ensure ROOT is mounted into `mount_root` and verify ROOT hydration if present.
-        if self.unverified_ssr_ids.remove(&NodeId::ROOT.raw()) {
-            #[cfg(feature = "hydrate")]
-            if let Some(root_el) = self.live_elements.get(&NodeId::ROOT.raw()) {
-                if root_el.tag_name().eq_ignore_ascii_case("div") {
-                    self.hydration_report.adopted_nodes += 1;
-                } else {
-                    self.hydration_report.replaced_nodes += 1;
-                }
-            }
-        }
+        // Ensure ROOT is mounted into `mount_root`.
         if let Some(root_el) = self.live_elements.get(&NodeId::ROOT.raw())
             && root_el.parent_element().as_ref() != Some(&mount_root)
         {
@@ -196,33 +139,6 @@ impl WebBackend {
                 fresh
             };
             self.sync_full_element(store, id, &el);
-        }
-
-        // 3b. Prune any dead SSR DOM nodes left unvisited after the first hydrated commit.
-        if !self.unverified_ssr_ids.is_empty() {
-            let dead_ids: Vec<u32> = self.unverified_ssr_ids.drain().collect();
-            for raw_id in dead_ids {
-                if !store.is_live(NodeId(raw_id)) {
-                    if let Some(stale_el) = self.live_elements.remove(&raw_id) {
-                        stale_el.remove();
-                        #[cfg(feature = "hydrate")]
-                        {
-                            self.hydration_report.replaced_nodes += 1;
-                            let mut ssr_tag = stale_el.tag_name();
-                            ssr_tag.make_ascii_lowercase();
-                            self.hydration_report.mismatches.push(crate::HydrationMismatch {
-                                node_id: raw_id,
-                                reason: format!("SSR <{ssr_tag}> missing from live NodeStore"),
-                            });
-                        }
-                    }
-                } else {
-                    #[cfg(feature = "hydrate")]
-                    {
-                        self.hydration_report.adopted_nodes += 1;
-                    }
-                }
-            }
         }
 
         // 4. Sync plugin live elements (`WebTableRegistry`), commands, and retagged nodes ONCE.
@@ -319,6 +235,9 @@ impl WebBackend {
             let _ = el.remove_attribute("data-testid");
             let _ = el.remove_attribute("slot");
         }
+        let boundary = store.try_row::<StreamBoundary>(id);
+        set_or_remove_attr(el, NVE_STREAM_SLOT_ATTR, boundary.map_or("", |b| b.stream_slot()));
+        set_or_remove_attr(el, NVE_SUSPENSE_ATTR, boundary.map_or("", |b| b.suspense()));
 
         if let Some(link) = store.try_row::<Link>(id) {
             let href = link.href();
@@ -380,9 +299,14 @@ impl WebBackend {
 
         if let Some(ti) = store.try_row::<TextInput>(id) {
             let val = ti.value();
+            // Adopted SSR controls keep their pre-hydration `.value` until 3-way reconciliation.
+            #[cfg(feature = "hydrate")]
+            let defer_value = self.deferred_controls.contains(&id.raw());
+            #[cfg(not(feature = "hydrate"))]
+            let defer_value = false;
             self.input_sync.borrow_mut().on_backend_value_sync(id.raw(), val);
             if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-                if inp.value() != val {
+                if !defer_value && inp.value() != val {
                     inp.set_value(val);
                 }
                 if ti.secure() {
@@ -393,6 +317,7 @@ impl WebBackend {
                     inp.set_type(ti.input_kind().as_html_type());
                 }
             } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>()
+                && !defer_value
                 && ta.value() != val
             {
                 ta.set_value(val);

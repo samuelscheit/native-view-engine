@@ -26,7 +26,7 @@ struct ErrorMatrixTransport;
 impl Transport for ErrorMatrixTransport {
     fn call_raw<'a>(&'a self, req: RawCall) -> BoxFuture<'a, Result<RawReply, TransportError>> {
         Box::pin(async move {
-            let id: u64 = CborCodec::default().decode_bounded(&req.body).unwrap();
+            let id: u64 = CborCodec::default().decode_bounded(&req.body).expect("decode RPC args");
             match id {
                 1 => {
                     let mut body = Vec::new();
@@ -39,7 +39,7 @@ impl Transport for ErrorMatrixTransport {
                             },
                             &mut body,
                         )
-                        .unwrap();
+                        .expect("encode CBOR");
                     Ok(RawReply {
                         http_status: 200,
                         kind: ReplyKind::Ok,
@@ -52,7 +52,7 @@ impl Transport for ErrorMatrixTransport {
                     let mut body = Vec::new();
                     CborCodec::default()
                         .encode_into(&DemoErr::Rejected, &mut body)
-                        .unwrap();
+                        .expect("encode CBOR");
                     Ok(RawReply {
                         http_status: 403,
                         kind: ReplyKind::Domain,

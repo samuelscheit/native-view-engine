@@ -248,6 +248,7 @@ fn emit_ssr_page(
             head_extra: Some(DOCS_HEAD_CHROME.to_string()),
             body_scripts: body_scripts.map(str::to_string),
             enable_event_replay: body_scripts.is_some(),
+            style_nonce: None,
         },
     );
 
@@ -404,6 +405,7 @@ fn render_404_page(
             head_extra: Some(DOCS_HEAD_CHROME.to_string()),
             body_scripts: body_scripts.map(str::to_string),
             enable_event_replay: body_scripts.is_some(),
+            style_nonce: None,
         },
     ))
 }

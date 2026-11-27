@@ -10,13 +10,11 @@ use dioxus_core::{
 };
 use dioxus_core_macro::{component, rsx, Props};
 use nve_dioxus::prelude::dioxus_elements;
+pub use nve_dioxus::NVE_SUSPENSE_ATTR;
 use nve_dioxus::{ErrorBoundary, ErrorFallback, NveStreamSlot, UiErrorReport};
 use nve_query::{QueryHandle, QueryMode};
 
 use crate::bridge::DioxusQueryBridge;
-
-/// Raw DOM attribute identifying a `<QuerySuspense>` container on both SSR and Client renders.
-pub const NVE_SUSPENSE_ATTR: &str = "data-nve-suspense";
 
 /// Sanitizes an explicit boundary `id` to safe ASCII `[A-Za-z0-9_-]` characters matching
 /// `nve-backend-web`'s Declarative Shadow DOM `<slot>` naming contract.

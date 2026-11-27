@@ -7,6 +7,7 @@ description = "Dedicated LocalSet streaming SSR orchestrator uniting DioxusSurfa
 
 [dependencies]
 nve-dioxus = { workspace = true }
+nve-store = { workspace = true }
 nve-backend-web = { workspace = true, features = ["ssr"] }
 nve-query = { workspace = true }
 nve-query-dioxus = { workspace = true }
@@ -27,6 +28,8 @@ minicbor = { workspace = true }
 nve-abi = { workspace = true }
 nve-rpc = { workspace = true }
 nve-server = { workspace = true }
+nve-web-html = { workspace = true }
+nve-web-html-web = { workspace = true }
 
 [[bench]]
 name = "ssr_bench"

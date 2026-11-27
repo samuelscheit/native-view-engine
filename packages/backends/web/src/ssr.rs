@@ -1,5 +1,6 @@
 //! Semantic HTML5 + deduplicated XXH64 structural/`@media`/state CSS Server-Side Rendering
-//! (`render_ssr`, `render_ssr_document`, `render_html`) directly over `NodeStore` + `WebTableRegistry`.
+//! (`render_ssr`, `render_ssr_document`, `render_html`) directly over `NodeStore` + `WebTableRegistry`,
+//! sharing one recursive emitter with streaming shells and slot deltas (`crate::ssr_stream`).
 
 use core::fmt::Write as _;
 
@@ -10,8 +11,11 @@ use nve_store::{NodeId, NodeStore};
 use crate::css::{write_compositor_css, NVE_BASE_RESET_CSS};
 use crate::event_replay::PRE_HYDRATION_REPLAY_SCRIPT_TAG;
 use crate::html::{
-    close_html_element, is_void_html_tag, push_attr_escaped, push_text_escaped, write_attr,
+    close_html_element, is_void_html_tag, push_attr_escaped, push_style_css_escaped,
+    push_text_escaped, write_attr, write_style_nonce_attr,
 };
+use crate::ssr_stream::StreamShellState;
+use crate::streaming::StreamingError;
 use crate::stylesheet::StyleSheetCache;
 use crate::table_system::write_core_ssr_attrs;
 use crate::WebBackend;
@@ -37,6 +41,27 @@ pub struct SsrDocumentOptions {
     pub head_extra: Option<String>,
     pub body_scripts: Option<String>,
     pub enable_event_replay: bool,
+    /// Optional per-request CSP `nonce` stamped onto emitted `<style>` tags.
+    pub style_nonce: Option<String>,
+}
+
+impl SsrDocumentOptions {
+    /// Sets an opt-in per-request CSP `nonce` stamped onto emitted `<style>` elements.
+    pub fn with_style_nonce(mut self, nonce: impl Into<String>) -> Self {
+        let n = nonce.into();
+        self.style_nonce = (!n.is_empty()).then_some(n);
+        self
+    }
+}
+
+/// Appends `hashes` comma-joined and attribute-escaped (`data-nve-hashes="..."` payload).
+pub(crate) fn push_hashes_csv(hashes: &[String], out: &mut String) {
+    for (i, h) in hashes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_attr_escaped(h, out);
+    }
 }
 
 impl WebBackend {
@@ -77,7 +102,8 @@ impl WebBackend {
         let root_hash = self.compute_ssr_tree_hash(store);
         let mut sheet = StyleSheetCache::new();
         let mut html = String::with_capacity(1024);
-        self.emit_ssr_node(store, NodeId::ROOT, root_hash, &mut sheet, &mut html);
+        // Infallible: streaming-slot validation only runs with a `StreamShellState`.
+        let _ = self.emit_ssr_node(store, NodeId::ROOT, root_hash, &mut sheet, &mut html, None);
         let (style_css, rule_hashes) = sheet.serialize_css();
         SsrOutput {
             base_css: NVE_BASE_RESET_CSS,
@@ -88,7 +114,8 @@ impl WebBackend {
         }
     }
 
-    /// Emits a complete standalone HTML5 document (`<!doctype html>`) for `store`.
+    /// Emits a complete standalone HTML5 document (`<!doctype html>`) for `store` with opt-in
+    /// CSP `nonce="..."` on every `<style>` tag and `</style` breakout escaping.
     pub fn render_ssr_document(&self, store: &NodeStore, opts: &SsrDocumentOptions) -> String {
         let ssr = self.render_ssr(store);
         let lang = opts
@@ -96,6 +123,7 @@ impl WebBackend {
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("en");
+        let nonce = opts.style_nonce.as_deref();
         let mut doc = String::with_capacity(ssr.html.len() + ssr.style_css.len() + 1024);
         doc.push_str("<!doctype html><html lang=\"");
         push_attr_escaped(lang, &mut doc);
@@ -119,21 +147,18 @@ impl WebBackend {
             push_attr_escaped(og, &mut doc);
             doc.push_str("\">");
         }
-        doc.push_str("<style data-nve-base>");
-        doc.push_str(ssr.base_css);
+        doc.push_str("<style data-nve-base");
+        write_style_nonce_attr(nonce, &mut doc);
+        doc.push('>');
+        push_style_css_escaped(ssr.base_css, &mut doc);
+        // Always emitted (even empty) so every SSR document exposes one stable hydration anchor.
+        doc.push_str("</style><style data-nve-ssr");
+        write_style_nonce_attr(nonce, &mut doc);
+        doc.push_str(" data-nve-hashes=\"");
+        push_hashes_csv(&ssr.rule_hashes, &mut doc);
+        doc.push_str("\">");
+        push_style_css_escaped(&ssr.style_css, &mut doc);
         doc.push_str("</style>");
-        if !ssr.style_css.is_empty() {
-            doc.push_str("<style data-nve-ssr data-nve-hashes=\"");
-            for (i, h) in ssr.rule_hashes.iter().enumerate() {
-                if i > 0 {
-                    doc.push(',');
-                }
-                doc.push_str(h);
-            }
-            doc.push_str("\">");
-            push_style_content_escaped(&ssr.style_css, &mut doc);
-            doc.push_str("</style>");
-        }
         if let Some(ref extra) = opts.head_extra {
             doc.push_str(extra);
         }
@@ -150,18 +175,25 @@ impl WebBackend {
         doc
     }
 
-    fn emit_ssr_node(
+    /// Emits `id`'s element subtree. With `stream`, every `data-nve-stream-slot` root is wrapped in
+    /// `<slot name="nve-slot-{id}">` after Declarative Shadow DOM placement validation.
+    pub(crate) fn emit_ssr_node<'s>(
         &self,
-        store: &NodeStore,
+        store: &'s NodeStore,
         id: NodeId,
         root_hash: u64,
         sheet: &mut StyleSheetCache,
         out: &mut String,
-    ) {
+        mut stream: Option<&mut StreamShellState<'s>>,
+    ) -> Result<(), StreamingError> {
         if !store.is_live(id) {
-            return;
+            return Ok(());
         }
         let (tag, _ns) = self.renderer.registry().resolve_tag(store, id);
+        let wrapped_in_slot = match stream.as_deref_mut() {
+            Some(state) => state.open_slot(store, id, out)?,
+            None => false,
+        };
         let resolved = sheet.resolve_node(store, id);
 
         out.push('<');
@@ -192,7 +224,7 @@ impl WebBackend {
             write_attr("style", &inline, out);
         }
 
-        // Core table attributes: DebugId, Link, Image, TextInput, Accessibility, Interaction
+        // Core table attributes: DebugId, StreamBoundary, Link, Image, TextInput, Accessibility, Interaction
         write_core_ssr_attrs(store, id, out);
 
         // Plugin attributes (`WebTableRegistry`)
@@ -203,62 +235,47 @@ impl WebBackend {
         }
 
         out.push('>');
-        if is_void_html_tag(tag) {
-            return;
-        }
-
-        // Plugin inner HTML (e.g. `<svg>` shapes) may override child traversal
-        let mut suppressed_children = false;
-        for sys in self.renderer.registry().iter() {
-            if store.has_slot(id, sys.slot()) && sys.write_ssr_inner(store, id, out) {
-                suppressed_children = true;
+        if !is_void_html_tag(tag) {
+            if let Some(state) = stream.as_deref_mut() {
+                state.ancestor_tags.push(tag);
             }
-        }
-
-        if !suppressed_children {
-            if let Some(ti) = store.try_row::<TextInput>(id)
-                && ti.multiline()
-            {
-                let v = ti.value();
-                if !v.is_empty() {
-                    push_text_escaped(v, out);
-                }
-            } else if store.children(id).is_empty()
-                && let Some(tc) = store.try_row::<TextContent>(id)
-            {
-                let txt = tc.text();
-                if !txt.is_empty() {
-                    push_text_escaped(txt, out);
-                }
-            } else {
-                for &cid in store.children(id) {
-                    self.emit_ssr_node(store, cid, root_hash, sheet, out);
+            // Plugin inner HTML (e.g. `<svg>` shapes) may override child traversal
+            let mut suppressed_children = false;
+            for sys in self.renderer.registry().iter() {
+                if store.has_slot(id, sys.slot()) && sys.write_ssr_inner(store, id, out) {
+                    suppressed_children = true;
                 }
             }
-        }
 
-        close_html_element(tag, out);
-    }
-}
-
-/// Escapes any case-insensitive `</style` sequence inside `<style>...</style>` so CSS content can
-/// never break out of the raw-text `<style>` element.
-pub(crate) fn push_style_content_escaped(css: &str, out: &mut String) {
-    let bytes = css.as_bytes();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i + 7 <= bytes.len() {
-        if bytes[i] == b'<'
-            && bytes[i + 1] == b'/'
-            && bytes[i + 2..i + 7].eq_ignore_ascii_case(b"style")
-        {
-            out.push_str(&css[start..i]);
-            out.push_str("<\\/");
-            start = i + 2;
-            i += 7;
-        } else {
-            i += 1;
+            if !suppressed_children {
+                if let Some(ti) = store.try_row::<TextInput>(id)
+                    && ti.multiline()
+                {
+                    let v = ti.value();
+                    if !v.is_empty() {
+                        push_text_escaped(v, out);
+                    }
+                } else if store.children(id).is_empty()
+                    && let Some(tc) = store.try_row::<TextContent>(id)
+                {
+                    let txt = tc.text();
+                    if !txt.is_empty() {
+                        push_text_escaped(txt, out);
+                    }
+                } else {
+                    for &cid in store.children(id) {
+                        self.emit_ssr_node(store, cid, root_hash, sheet, out, stream.as_deref_mut())?;
+                    }
+                }
+            }
+            close_html_element(tag, out);
+            if let Some(state) = stream.as_deref_mut() {
+                state.ancestor_tags.pop();
+            }
         }
+        if wrapped_in_slot && let Some(state) = stream {
+            state.close_slot(out);
+        }
+        Ok(())
     }
-    out.push_str(&css[start..]);
 }

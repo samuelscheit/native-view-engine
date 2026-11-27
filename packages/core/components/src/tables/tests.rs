@@ -28,6 +28,7 @@ fn all_core_tables_fit_32_words_and_register_cleanly() {
         Interaction::DESC,
         Accessibility::DESC,
         DebugId::DESC,
+        StreamBoundary::DESC,
         Link::DESC,
         Scroll::DESC,
         Image::DESC,

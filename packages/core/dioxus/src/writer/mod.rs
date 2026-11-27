@@ -3,6 +3,7 @@
 //! mirroring, zero `Box<NodeExtras>`, zero `ComponentKind`, and zero `set_raw_prop`.
 
 mod attributes;
+mod identity_attrs;
 mod mutations;
 #[cfg(test)]
 mod tests;

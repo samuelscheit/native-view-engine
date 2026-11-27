@@ -20,7 +20,7 @@ use nve_rpc::{
     TransportError,
 };
 
-use crate::{pump_settled, render_once, GetItem, Item, ItemErr, NoopFlagWaker};
+use crate::{find_by_test_id, pump_settled, render_once, GetItem, Item, ItemErr, NoopFlagWaker};
 
 #[derive(Clone, Default)]
 struct FlakyTransport {
@@ -34,13 +34,13 @@ impl Transport for FlakyTransport {
         let calls = Arc::clone(&self.calls);
         Box::pin(async move {
             assert_eq!(req.name, GetItem::NAME);
-            let id: u64 = CborCodec::default().decode_bounded(&req.body).unwrap();
-            *calls.lock().unwrap() += 1;
+            let id: u64 = CborCodec::default().decode_bounded(&req.body).expect("decode RPC args");
+            *calls.lock().expect("lock not poisoned") += 1;
             if fail_next.swap(false, Ordering::SeqCst) {
                 let mut body = Vec::new();
                 CborCodec::default()
                     .encode_into(&ItemErr::Denied, &mut body)
-                    .unwrap();
+                    .expect("encode CBOR");
                 return Ok(RawReply {
                     http_status: 403,
                     kind: ReplyKind::Domain,
@@ -58,7 +58,7 @@ impl Transport for FlakyTransport {
                     },
                     &mut body,
                 )
-                .unwrap();
+                .expect("encode CBOR");
             Ok(RawReply {
                 http_status: 200,
                 kind: ReplyKind::Ok,
@@ -214,7 +214,7 @@ fn query_suspense_error_boundary_retry_invalidates_and_recovers() {
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    let err_html = web.render_html();
+    let err_html = web.render_html(surface.store());
     assert!(
         err_html.contains("ERR:") && err_html.contains("Denied"),
         "initial domain error must render error_fallback: {err_html}"
@@ -223,16 +223,7 @@ fn query_suspense_error_boundary_retry_invalidates_and_recovers() {
 
     // Press Retry -> QuerySuspense's ErrorBoundary on_reset invalidates boundary handles and
     // triggers a clean retry that recovers!
-    let retry_node = web
-        .iter_nodes()
-        .find_map(|(id, el)| {
-            matches!(
-                el.raw_props.get("testID"),
-                Some(nve_abi::RawPropValue::String(s)) if s == "retry-btn"
-            )
-            .then_some(id)
-        })
-        .expect("retry-btn present");
+    let retry_node = find_by_test_id(surface.store(), "retry-btn");
     let press_ev = nve_abi::NativeEvent {
         surface_id: 1,
         node_id: retry_node,
@@ -244,7 +235,7 @@ fn query_suspense_error_boundary_retry_invalidates_and_recovers() {
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
 
-    let recovered_html = web.render_html();
+    let recovered_html = web.render_html(surface.store());
     assert!(
         recovered_html.contains("OK:Recovered#77"),
         "pressing Retry must invalidate failed query and recover cleanly: {recovered_html}"
