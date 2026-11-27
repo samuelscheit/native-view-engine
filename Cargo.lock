@@ -3203,6 +3203,10 @@ dependencies = [
 [[package]]
 name = "nve-tv"
 version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-store",
+]
 
 [[package]]
 name = "nve-ui"

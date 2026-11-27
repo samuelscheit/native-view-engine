@@ -3,12 +3,20 @@ name = "nve-tv"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Standalone opt-in TV spatial focus engine, remote action mapper, and title-safe overscan calculator for Native View Engine"
+description = "Standalone opt-in TV spatial focus engine, remote/web key normalizer, and title-safe overscan calculator for Native View Engine"
 
 [features]
 default = []
 
 [dependencies]
+nve-store = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "tv_bench"
+harness = false
 
 [lints]
 workspace = true
