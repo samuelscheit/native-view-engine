@@ -1,8 +1,9 @@
 //! Live `wasm32` DOM mounting, zero-flicker hydration adoption, deferred element creation,
 //! `COMPOSITE`-only 120 Hz fast lane, and `WebTableRegistry` plugin DOM synchronization.
 
+use crate::css::Keyword;
 use nve_abi::table::effect;
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkRel, LinkTarget, TextContent,
     TextInput, Transform, Visual,
 };
@@ -371,7 +372,7 @@ impl WebBackend {
 
         if let Some(img) = store.try_row::<Image>(id) {
             if !img.src().is_none()
-                && let Some(nve_components::tables::ImageSrcView::Url(url)) =
+                && let Some(nve_tables::tables::ImageSrcView::Url(url)) =
                     store.resource::<ImageSrc>(img.src())
                 && is_safe_web_url(url)
             {
@@ -393,10 +394,10 @@ impl WebBackend {
                 }
                 if ti.secure() {
                     inp.set_type("password");
-                } else if ti.input_kind() == nve_components::tables::InputKind::Text {
+                } else if ti.input_kind() == nve_tables::tables::InputKind::Text {
                     let _ = el.remove_attribute("type");
                 } else {
-                    inp.set_type(ti.input_kind().as_html_type());
+                    inp.set_type(ti.input_kind().keyword());
                 }
             } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>()
                 && ta.value() != val
@@ -405,12 +406,12 @@ impl WebBackend {
             }
             set_or_remove_attr(el, "placeholder", ti.placeholder());
             if let Some(ac) = ti.autofill() {
-                let _ = el.set_attribute("autocomplete", ac.as_html_autocomplete());
+                let _ = el.set_attribute("autocomplete", ac.whatwg_token());
             } else {
                 let _ = el.remove_attribute("autocomplete");
             }
-            if ti.input_mode() != nve_components::InputMode::Text {
-                let _ = el.set_attribute("inputmode", ti.input_mode().as_html_inputmode());
+            if ti.input_mode() != nve_tables::InputMode::Text {
+                let _ = el.set_attribute("inputmode", ti.input_mode().whatwg_token());
             } else {
                 let _ = el.remove_attribute("inputmode");
             }

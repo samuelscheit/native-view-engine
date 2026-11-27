@@ -27,7 +27,7 @@ reconcile = []
 [dependencies]
 nve-abi = { workspace = true }
 nve-codec = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-engine = { workspace = true }
 serde = { workspace = true }
 

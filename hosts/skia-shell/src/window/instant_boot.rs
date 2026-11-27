@@ -259,7 +259,7 @@ mod tests {
     use super::*;
     use crate::window::{DesktopApp, DesktopSession, DesktopWindowHost};
     use nve_abi::FrameId;
-    use nve_components::tables::{register_core_tables, Layout, Visual};
+    use nve_tables::tables::{register_core_tables, Layout, Visual};
     use nve_store::wire::WireEncoder;
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 

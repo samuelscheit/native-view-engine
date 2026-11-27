@@ -1,8 +1,9 @@
 //! Interactive pseudo-state tracking (`:hover`, `:focus`, `:focus-visible`, `:active`,
 //! `:disabled`) and live [`CursorKind`] resolution for [`crate::SkiaBackend`] over `&NodeStore`.
 
+use nve_engine::InteractionTracker;
 use nve_abi::NodeId;
-use nve_components::interaction::{CursorKind, FocusModality, InteractionState, InteractionTracker};
+use nve_tables::interaction::{CursorKind, FocusModality, InteractionState};
 use nve_engine::StoreLayoutEngine;
 use nve_store::NodeStore;
 

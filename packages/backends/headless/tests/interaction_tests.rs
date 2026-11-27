@@ -6,7 +6,7 @@ use nve_backend_headless::{
     CursorKind, FocusModality, HeadlessBackend, InteractionState, RowPatch, StateStyleRule,
     StylePatchExt,
 };
-use nve_components::tables::{Interaction, Layout, StateRules, TextInput, Visual};
+use nve_tables::tables::{Interaction, Layout, StateRules, TextInput, Visual};
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 

@@ -9,7 +9,7 @@
 
 use nve_abi::{InteractionEvent, NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
-use nve_components::tables::{DebugId, Interaction};
+use nve_tables::tables::{DebugId, Interaction};
 use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
 use nve_store::{NodeStore};
 use nve_web_shell::{HotReloadAction, WebAppSession};

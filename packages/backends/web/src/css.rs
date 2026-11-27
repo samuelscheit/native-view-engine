@@ -5,16 +5,22 @@ use core::fmt::Write as _;
 
 use nve_abi::num::{write_f32, write_i64, write_u64};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets};
-use nve_components::tables::{
+use nve_tables::tables::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, Direction, Display, FlexDirection, FlexWrap,
     GridItem, GridLayout, GridLine, GridTracks, JustifyContent, Layout, Position,
 };
 use nve_store::{Length, NodeId, NodeStore};
 
-#[path = "css_paint.rs"]
 mod paint;
+mod values;
+#[cfg(test)]
+mod values_tests;
 
 pub use paint::{write_compositor_css, write_transform_css};
+pub use values::{
+    write_background_decl, write_box_shadows, write_grid_tracks, write_px, write_transform_decls,
+    BackgroundValue, Keyword, WriteCss,
+};
 
 /// Compact CSS reset injected once into `<style data-nve-base>`.
 ///
@@ -418,7 +424,7 @@ pub fn write_store_node_css(
             && !tracks.is_empty()
         {
             out.push_str("grid-template-columns:");
-            tracks.write_css_into(out);
+            tracks.write_css(out);
             out.push(';');
         }
         if !gl.template_rows().is_none()
@@ -426,7 +432,7 @@ pub fn write_store_node_css(
             && !tracks.is_empty()
         {
             out.push_str("grid-template-rows:");
-            tracks.write_css_into(out);
+            tracks.write_css(out);
             out.push(';');
         }
     }

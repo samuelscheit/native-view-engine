@@ -1,6 +1,6 @@
 //! Standalone HTML5 / Web-specific tables (`packages/modules/web-html`).
 //!
-//! Pure-spec root crate owning strictly HTML5/Web tables so `packages/core/components` stays 100%
+//! Pure-spec root crate owning strictly HTML5/Web tables so `packages/core/tables` stays 100%
 //! cross-platform:
 //! - [`WebHtml`] (`nve.web_html`): raw/sanitized HTML fragments
 //! - [`HtmlSemantics`] (`nve.html.semantics`): HTML5 tag overrides (`<dialog>`, `<details>`, `<nav>`,

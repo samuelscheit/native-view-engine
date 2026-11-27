@@ -7,9 +7,9 @@ use std::sync::Arc;
 use nve_abi::{
     ColorRgba, EventBatchBuf, FrameId, SurfaceId, TimestampUs, ROOT_NODE_ID,
 };
-use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
-use nve_components::tables::{
-    core_realization_order, BoxShadows, Image, ImageFit, ImageSrc, ImageSrcView, Interaction,
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::tables::{
+    core_realization_order, Image, ImageFit, ImageSrc, ImageSrcView, Interaction,
     Overflow, TextAlign, TextContent, Typography, Visual,
 };
 use nve_engine::{
@@ -130,23 +130,8 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 .try_row::<TextContent>(id)
                 .map(|t| t.text().to_owned())
                 .unwrap_or_default();
-            let box_shadow = store
-                .try_row::<Visual>(id)
-                .map(|v| v.box_shadows())
-                .filter(|r| !r.is_none())
-                .and_then(|r| store.resource::<BoxShadows>(r))
-                .filter(|bs| !bs.is_empty())
-                .map(|bs| {
-                    let mut css = String::new();
-                    for (i, s) in bs.iter().enumerate() {
-                        if i > 0 {
-                            css.push_str(", ");
-                        }
-                        s.write_css_into(&mut css);
-                    }
-                    css
-                })
-                .unwrap_or_default();
+            // Frame-0 reloc carries no shadows (no CSS strings outside nve-backend-web).
+            let box_shadow = String::new();
             let children: Vec<u32> = store
                 .children(id)
                 .iter()

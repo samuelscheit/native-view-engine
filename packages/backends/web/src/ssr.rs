@@ -4,7 +4,7 @@
 use core::fmt::Write as _;
 
 use nve_abi::Xxh64Hasher;
-use nve_components::tables::{TextContent, TextInput};
+use nve_tables::tables::{TextContent, TextInput};
 use nve_store::{NodeId, NodeStore};
 
 use crate::css::{write_compositor_css, NVE_BASE_RESET_CSS};

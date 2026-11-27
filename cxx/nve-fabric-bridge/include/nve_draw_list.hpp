@@ -33,7 +33,7 @@ inline constexpr size_t kMaxPolylinePoints = 16384u;
 /// Compact ASCII prefix used when transporting `NVE_DRAW1` bytes via UTF-8 string props.
 inline constexpr std::string_view kDrawListAttrPrefix = "nve-draw1;b64,";
 
-/// Wire opcodes matching `packages/core/components/src/canvas_ir.rs` byte-for-byte.
+/// Wire opcodes matching `packages/core/tables/src/canvas_ir.rs` byte-for-byte.
 enum class DrawOpcode : uint8_t {
   Clear = 1,
   FillRect = 2,
@@ -651,7 +651,7 @@ inline std::string encode_draw_list_attr_base64(std::span<const uint8_t> bytes) 
   return out;
 }
 
-/// Compact C++20 `NVE_DRAW1` binary encoder mirroring Rust `nve_components::DrawListBuilder`.
+/// Compact C++20 `NVE_DRAW1` binary encoder mirroring Rust `nve_tables::DrawListBuilder`.
 class DrawListEncoder {
  public:
   explicit DrawListEncoder(size_t capacity_bytes = 256u) {

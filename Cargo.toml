@@ -6,7 +6,7 @@ members = [
     "packages/core/abi",
     "packages/core/store",
     "packages/core/abi-macros",
-    "packages/core/components",
+    "packages/core/tables",
     "packages/core/engine",
     "packages/core/layout-yoga",
     "packages/core/dioxus",
@@ -93,7 +93,7 @@ nve-codec = { version = "0.1.0", path = "packages/core/codec" }
 nve-abi = { version = "0.1.0", path = "packages/core/abi" }
 nve-store = { version = "0.1.0", path = "packages/core/store" }
 nve-abi-macros = { version = "0.1.0", path = "packages/core/abi-macros" }
-nve-components = { version = "0.1.0", path = "packages/core/components" }
+nve-tables = { version = "0.1.0", path = "packages/core/tables" }
 nve-engine = { version = "0.1.0", path = "packages/core/engine" }
 nve-layout-yoga = { version = "0.1.0", path = "packages/core/layout-yoga" }
 nve-dioxus = { version = "0.1.0", path = "packages/core/dioxus" }

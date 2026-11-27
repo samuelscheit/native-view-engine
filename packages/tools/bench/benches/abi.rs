@@ -8,7 +8,7 @@ use nve_abi::{
     NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
-use nve_components::tables::{register_core_tables, TextContent};
+use nve_tables::tables::{register_core_tables, TextContent};
 use nve_store::wire::WireDecoder;
 use nve_store::{ChangeSet, NodeStore, NveTable};
 

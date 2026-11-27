@@ -93,7 +93,12 @@ fn style_buf_into_typed_matches_typed_style_builder_identically() {
             border_color: ColorRgba::rgb(0x60, 0xa5, 0xfa),
             border_radius: 10.0,
             opacity: 0.75,
-            box_shadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
+            box_shadow: Some(nve_tables::tables::BoxShadow::new(
+                0.0,
+                4.0,
+                12.0,
+                nve_store::Rgba::new(0, 0, 0, 89),
+            )),
         })
         .text_style(TypedTextStyle {
             color: ColorRgba::rgb(0xf8, 0xfa, 0xfc),

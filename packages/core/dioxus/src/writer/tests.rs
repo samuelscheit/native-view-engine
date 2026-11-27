@@ -3,7 +3,7 @@
 
 use dioxus_core::{AttributeValue, ElementId, WriteMutations};
 use nve_abi::SurfaceId;
-use nve_components::tables::{Interaction, Layout, Link, TextContent, TextInput, Visual};
+use nve_tables::tables::{Interaction, Layout, Link, TextContent, TextInput, Visual};
 use nve_store::{Length, NodeId, NveTable};
 
 use super::NveMutationWriter;
@@ -416,7 +416,7 @@ fn canonical_style_precedence_standalone_clear_composite_fast_lane_and_invalid_k
 
     use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
     use nve_abi::table::effect;
-    use nve_components::tables::Typography;
+    use nve_tables::tables::Typography;
     use nve_store::NveTable as _;
 
     let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
@@ -608,7 +608,7 @@ fn standalone_invalid_reset_empty_style_clear_noop_and_shorthand_order_preservat
     use std::rc::Rc;
 
     use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
-    use nve_components::tables::Typography;
+    use nve_tables::tables::Typography;
     use nve_store::NveTable as _;
 
     let mut writer = NveMutationWriter::new(SurfaceId::ROOT);

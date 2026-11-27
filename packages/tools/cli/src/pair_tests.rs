@@ -1,6 +1,6 @@
 use nve_abi::{EventBatchBuf, TimestampUs, ValidatedEvents};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{core_realization_order, register_core_tables, TextContent};
+use nve_tables::tables::{core_realization_order, register_core_tables, TextContent};
 use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, NodeId, NodeStore};

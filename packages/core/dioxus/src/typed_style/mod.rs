@@ -16,12 +16,13 @@ use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::CursorKind;
-use nve_components::layout_ext::LayoutExt;
-use nve_components::media::MediaQuery;
-use nve_components::paint::BackgroundFill;
-use nve_components::transform::Transform2D;
-use nve_components::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::interaction::CursorKind;
+use nve_tables::layout_ext::LayoutExt;
+use nve_tables::media::MediaQuery;
+use nve_tables::paint::BackgroundFill;
+use nve_tables::tables::BoxShadow;
+use nve_tables::transform::Transform2D;
+use nve_tables::{LayoutSnapshot, VisualSnapshot};
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
 pub const NVE_TYPED_STYLE_ATTR: &str = "nve_style";
@@ -61,7 +62,8 @@ pub struct TypedStyle {
     pub has_style: bool,
     pub font_weight: Option<Cow<'static, str>>,
     pub text_align: Option<Cow<'static, str>>,
-    pub box_shadow: Option<Cow<'static, str>>,
+    /// `Some(empty)` explicitly clears shadows; `None` leaves them untouched.
+    pub box_shadows: Option<Vec<BoxShadow>>,
     pub overflow: Option<Cow<'static, str>>,
     pub object_fit: Option<Cow<'static, str>>,
     pub layout_ext: Option<Box<LayoutExt>>,
@@ -90,7 +92,7 @@ impl TypedStyle {
             has_style: false,
             font_weight: None,
             text_align: None,
-            box_shadow: None,
+            box_shadows: None,
             overflow: None,
             object_fit: None,
             layout_ext: None,

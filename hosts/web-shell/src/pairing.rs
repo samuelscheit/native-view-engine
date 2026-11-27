@@ -196,11 +196,11 @@ impl PairedWebSession {
     ) -> Self {
         crate::register_shell_web_systems(&mut backend);
         backend.set_viewport(surface_id, viewport);
-        nve_components::tables::register_core_tables();
+        nve_tables::tables::register_core_tables();
         nve_web_html::register_web_html_tables();
         let replica = StoreWireReplica::new(
             backend,
-            nve_components::tables::core_realization_order(),
+            nve_tables::tables::core_realization_order(),
         );
         Self {
             surface_id,

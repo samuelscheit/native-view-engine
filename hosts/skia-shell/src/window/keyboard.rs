@@ -6,7 +6,7 @@ use nve_abi::{
     EventBatchBuf, EventFlags, InteractionEvent, NodeId, TextInputEvent, TimestampUs, ROOT_NODE_ID,
 };
 use nve_backend_skia::SkiaBackend;
-use nve_components::tables::Interaction;
+use nve_tables::tables::Interaction;
 use nve_store::NodeStore;
 use winit::keyboard::{Key, ModifiersState};
 

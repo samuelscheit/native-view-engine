@@ -6,7 +6,7 @@ use nve_abi::{
     NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, TimestampUs, ValidatedEvents,
     NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
-use nve_components::tables::TextContent;
+use nve_tables::tables::TextContent;
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{ChangeSet, NodeId, NodeStore};
 

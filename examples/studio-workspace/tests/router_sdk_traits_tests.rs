@@ -18,7 +18,7 @@ use nve_abi::{
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_dioxus::prelude::*;
 use nve_dioxus::traits::{ReactiveTraitStore, TraitProvider, TraitScope};
 use nve_dioxus::DioxusSurface;
@@ -359,7 +359,7 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
             scale_factor: 1.0,
         },
     );
-    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(host, nve_tables::tables::core_realization_order());
     rep.submit_nve2_frame(&frame).unwrap();
     let root_id = find_in_store(rep.store(), "workspace-root").expect("workspace-root");
     assert_eq!(
@@ -563,7 +563,7 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
             scale_factor: 1.0,
         },
     );
-    let mut rep = StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(headless, nve_tables::tables::core_realization_order());
     rep.submit_nve2_frame(&frame_bytes).unwrap();
     let tree = rep.backend().render_ascii_tree(rep.store());
     assert!(

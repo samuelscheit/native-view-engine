@@ -2,13 +2,13 @@
 //!
 //! - Matches `AttributeValue::Float`/`Int`/`Bool` directly without string formatting/reparsing.
 //! - Matches `TypedStyle`, `MediaQuery`, and extensible [`TableAttr`] directly via `AttributeValue::Any`.
-//! - Routes inline `style` and CSS shorthands straight into `nve_components::apply_css_attr_to_tx`.
+//! - Routes inline `style` and CSS shorthands straight into `nve_tables::apply_css_attr_to_tx`.
 //! - Zero `set_raw_prop`, zero `ComponentKind`, zero module-specific downcasts.
 
 use dioxus_core::{AttributeValue, ElementId};
-use nve_components::input_hints::{AutofillHint, InputMode};
-use nve_components::media::MediaQuery;
-use nve_components::tables::{
+use nve_tables::input_hints::{AutofillHint, InputMode};
+use nve_tables::media::MediaQuery;
+use nve_tables::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
     AriaTriState, DebugId, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link,
     LinkRel, LinkTarget, Responsive, TextInput, Typography, Visual,
@@ -47,7 +47,7 @@ impl StoreMutationTx<'_, '_> {
                     }
                     ts.apply_to_tx(self.tx, node);
                     self.typed_styles.insert(node, ts.clone());
-                    self.replay_standalone_and_inline(node, nve_components::STYLE_LAYER_ALL);
+                    self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
                     return;
                 }
                 if (name == NVE_SHOW_ON_ATTR || name == NVE_SHOW_ON_KEBAB_ATTR)
@@ -291,25 +291,25 @@ impl StoreMutationTx<'_, '_> {
             self.apply_inline_style_attr(node, value);
             return;
         }
-        match nve_components::apply_css_attr_layers_status_to_tx(
+        match nve_tables::apply_css_attr_layers_status_to_tx(
             self.tx,
             node,
             name,
             value,
-            nve_components::STYLE_LAYER_ALL,
+            nve_tables::STYLE_LAYER_ALL,
         ) {
-            nve_components::CssAttrResult::Applied(_) => {
+            nve_tables::CssAttrResult::Applied(_) => {
                 self.finish_standalone_style(node, name, StandaloneStyleVal::Str(value.to_owned()));
                 return;
             }
-            nve_components::CssAttrResult::Invalid(layer) => {
+            nve_tables::CssAttrResult::Invalid(layer) => {
                 debug_assert!(layer != 0, "invalid CSS attr `{name}` must carry a non-zero layer");
                 if self.remove_standalone_style(node, name) {
                     self.rebuild_style_layers_mask(node, layer);
                 }
                 return;
             }
-            nve_components::CssAttrResult::Unknown => {}
+            nve_tables::CssAttrResult::Unknown => {}
         }
         match name {
             "testID" | "data-testid" | "test_id" => {
@@ -371,11 +371,11 @@ impl StoreMutationTx<'_, '_> {
                 }
             }
             "autocomplete" | "autoComplete" | "auto_complete" => {
-                let hint = AutofillHint::parse_html_autocomplete(value);
+                let hint = AutofillHint::from_whatwg_token(value);
                 self.tx.edit::<TextInput>(node).autofill(hint);
             }
             "inputmode" | "inputMode" | "input_mode" => {
-                let mode = InputMode::parse_html_inputmode(value).unwrap_or(InputMode::Text);
+                let mode = InputMode::from_whatwg_token(value).unwrap_or(InputMode::Text);
                 self.tx.edit::<TextInput>(node).input_mode(mode);
             }
             "pattern" => {
@@ -499,7 +499,7 @@ impl StoreMutationTx<'_, '_> {
 
     fn clear_attr(&mut self, node: NodeId, name: &str) {
         if self.remove_standalone_style(node, name) {
-            let layer = nve_components::css_attr_layer(name);
+            let layer = nve_tables::css_attr_layer(name);
             debug_assert!(layer != 0, "removed standalone style `{name}` must have a non-zero layer");
             self.rebuild_style_layers_mask(node, layer);
             return;
@@ -517,7 +517,7 @@ impl StoreMutationTx<'_, '_> {
         match name {
             "style" => {
                 if let Some((_, prev_mask)) = self.inline_styles.remove(&node) {
-                    let layers = nve_components::prop_bits_to_layers(prev_mask);
+                    let layers = nve_tables::prop_bits_to_layers(prev_mask);
                     if layers != 0 {
                         self.rebuild_style_layers_mask(node, layers);
                     }
@@ -527,7 +527,7 @@ impl StoreMutationTx<'_, '_> {
                 if let Some(prev) = self.typed_styles.remove(&node) {
                     prev.clear_diff_from(None, self.tx, node);
                 }
-                self.replay_standalone_and_inline(node, nve_components::STYLE_LAYER_ALL);
+                self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
             }
             NVE_SHOW_ON_ATTR | NVE_SHOW_ON_KEBAB_ATTR => {
                 if self.tx.store().has::<Responsive>(node) {

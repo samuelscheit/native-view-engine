@@ -7,7 +7,7 @@ use nve_abi::{
     TextInputEvent, TimestampUs, ROOT_NODE_ID,
 };
 use nve_canvas::{Canvas, CanvasOpRef, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
-use nve_components::tables::{Image, ImageFit, ImageSrc, ImageSrcView, TextInput};
+use nve_tables::tables::{Image, ImageFit, ImageSrc, ImageSrcView, TextInput};
 use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_engine::NveApp;
 use nve_store::wire::WireDecoder;

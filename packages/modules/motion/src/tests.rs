@@ -2,8 +2,8 @@
 //! interpolation, and `MotionClock` unit tests.
 
 use nve_abi::{ColorRgba, NodeId};
-use nve_components::media::MediaEnv;
-use nve_components::snapshots::VisualSnapshot as StyleProps;
+use nve_tables::media::MediaEnv;
+use nve_tables::snapshots::VisualSnapshot as StyleProps;
 use nve_store::{FlatResource, ValidatedWords};
 
 use crate::{

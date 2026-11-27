@@ -5,7 +5,7 @@ use nve_abi::{
     ValidatedEvents,
 };
 use nve_backend_skia::{grapheme_count, is_grapheme_boundary};
-use nve_components::tables::{
+use nve_tables::tables::{
     register_core_tables, FlexDirection, Interaction, Layout, TextInput, Typography, Visual,
 };
 use nve_engine::Viewport;

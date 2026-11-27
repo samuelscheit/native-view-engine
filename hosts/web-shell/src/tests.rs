@@ -23,14 +23,14 @@ use nve_abi::{NodeId, SurfaceId};
     feature = "scene-view"
 ))]
 use nve_canvas::Canvas;
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
     feature = "dev",
     feature = "scene-view"
 ))]
-use nve_components::tables::{Image, ImageFit, Interaction, Overflow, TextContent, Typography, Visual};
+use nve_tables::tables::{Image, ImageFit, Interaction, Overflow, TextContent, Typography, Visual};
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
@@ -489,11 +489,11 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert_eq!(avatar.fit(), ImageFit::Cover);
     let src = session
         .store()
-        .resource::<nve_components::tables::ImageSrc>(avatar.src())
+        .resource::<nve_tables::tables::ImageSrc>(avatar.src())
         .expect("image src resource");
     assert!(matches!(
         src,
-        nve_components::tables::ImageSrcView::Url(u) if u.starts_with("data:image/png;base64,")
+        nve_tables::tables::ImageSrcView::Url(u) if u.starts_with("data:image/png;base64,")
     ));
     assert!(!avatar.alt().is_empty());
 

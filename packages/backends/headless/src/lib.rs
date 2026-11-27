@@ -15,6 +15,7 @@ pub mod reloc_scene;
 mod snapshot;
 pub mod taffy_store;
 
+pub use nve_engine::InteractionTracker;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -25,28 +26,28 @@ use nve_abi::{
     PrimarySlot, SceneNodeInput, ShortLen, SurfaceId, ZIndex, NVE_NODE_CLIP_BOUNDS,
     NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
-use nve_components::layout_ext::compute_sticky_offset;
-use nve_components::tables::{
+use nve_tables::layout_ext::compute_sticky_offset;
+use nve_tables::tables::{
     Interaction, Layout as NveLayout, Overflow, Position, TextContent,
     Transform as TransformTable, Typography, Visual,
 };
-use nve_components::transform::Transform2D;
+use nve_tables::transform::Transform2D;
 use nve_engine::{
     HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport,
 };
 use nve_store::{ChangeSet, NodeStore, NveTable, TableSlot};
 
-pub use nve_components::interaction::{
-    CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+pub use nve_tables::interaction::{
+    CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
-pub use nve_components::layout_ext::{
+pub use nve_tables::layout_ext::{
     GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack, GridTrackPlacement,
     GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges, PositionInsets, PositionMode,
 };
-pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-pub use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
-pub use nve_components::tables::Display;
-pub use nve_components::{RowPatch, StylePatchExt};
+pub use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
+pub use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+pub use nve_tables::tables::Display;
+pub use nve_tables::{RowPatch, StylePatchExt};
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
 pub(crate) use snapshot::{is_display_none, length_to_dim, node_clips_overflow};
 pub use snapshot::{layout_snapshot_of, visual_snapshot_of};
@@ -239,19 +240,19 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 r.width,
                 r.height
             );
-            if let Some(dbg) = store.try_row::<nve_components::tables::DebugId>(id) {
+            if let Some(dbg) = store.try_row::<nve_tables::tables::DebugId>(id) {
                 let tid = dbg.test_id();
                 if !tid.is_empty() {
                     let _ = write!(out, " [{tid}]");
                 }
             }
-            if let Some(tc) = store.try_row::<nve_components::tables::TextContent>(id) {
+            if let Some(tc) = store.try_row::<nve_tables::tables::TextContent>(id) {
                 let t = tc.text();
                 if !t.is_empty() {
                     let _ = write!(out, " \"{t}\"");
                 }
             }
-            if let Some(ti) = store.try_row::<nve_components::tables::TextInput>(id) {
+            if let Some(ti) = store.try_row::<nve_tables::tables::TextInput>(id) {
                 let v = ti.value();
                 if !v.is_empty() {
                     let _ = write!(out, " value=\"{v}\"");
@@ -334,7 +335,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             width: self.viewport.width,
             height: self.viewport.height,
         });
-        let insets = nve_components::layout_ext::PositionInsets {
+        let insets = nve_tables::layout_ext::PositionInsets {
             top: length_to_dim(l.inset_top()),
             right: length_to_dim(l.inset_right()),
             bottom: length_to_dim(l.inset_bottom()),

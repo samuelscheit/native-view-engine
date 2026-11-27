@@ -7,7 +7,7 @@ use nve_abi::{
     SceneNodeInput, ShortLen, ZIndex, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE,
     NVE_NODE_LEAF_TEXT,
 };
-use nve_components::tables::{Interaction, Layout, Overflow, TextContent, Typography, Visual};
+use nve_tables::tables::{Interaction, Layout, Overflow, TextContent, Typography, Visual};
 use nve_store::{ChangeSet, NodeStore, NveTable};
 
 fn store_node_to_scene_input<'a>(

@@ -8,7 +8,7 @@ use nve_abi::{
     NveSizeConstraints, NveValue, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::Visual;
+use nve_tables::tables::Visual;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_studio_workspace::{
@@ -293,7 +293,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
             scale_factor: 1.0,
         },
     );
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
     host.submit_nve2_frame(frame).unwrap();
     let tree = host.backend().render_ascii_tree(host.store());
     assert!(tree.contains("Live Metrics"));
@@ -339,7 +339,7 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     register_studio_tables();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(SurfaceId::ROOT, vp);
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
 
     let mut inst = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).expect("load gen 1");
     let f1 = inst.render(FrameId(1));
@@ -382,7 +382,7 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     let mut backend2 = HeadlessBackend::new();
     backend2.set_viewport(SurfaceId::ROOT, vp);
     let mut host2 =
-        StoreWireReplica::new(backend2, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(backend2, nve_tables::tables::core_realization_order());
     let f5 = inst.render(FrameId(5));
     host2.submit_nve2_frame(f5).unwrap();
     let tree2 = host2.backend().render_ascii_tree(host2.store());

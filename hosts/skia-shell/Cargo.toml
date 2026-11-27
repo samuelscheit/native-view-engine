@@ -24,7 +24,7 @@ yoga = ["nve-backend-skia/yoga"]
 [dependencies]
 nve-abi = { workspace = true }
 nve-store = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-canvas = { workspace = true }
 nve-canvas-skia = { workspace = true }
 nve-motion-skia = { workspace = true }

@@ -41,7 +41,7 @@ class _NativeSlabAlloc {
 int _packRgba(int r, int g, int b, [int a = 255]) =>
     (r & 0xFF) | ((g & 0xFF) << 8) | ((b & 0xFF) << 16) | ((a & 0xFF) << 24);
 
-/// Minimal binary `NVE_DRAW1` encoder matching `packages/core/components/src/canvas_ir.rs`.
+/// Minimal binary `NVE_DRAW1` encoder matching `packages/core/tables/src/canvas_ir.rs`.
 class _DrawListEncoder {
   _DrawListEncoder() {
     _bytes.add(nveDrawMagic);

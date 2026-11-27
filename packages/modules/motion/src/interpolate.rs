@@ -1,8 +1,8 @@
 //! Safe scalar, premultiplied-color, [`VisualSnapshot`], and [`Transform2D`] interpolation.
 
 use nve_abi::ColorRgba;
-use nve_components::snapshots::VisualSnapshot;
-use nve_components::transform::Transform2D;
+use nve_tables::snapshots::VisualSnapshot;
+use nve_tables::transform::Transform2D;
 
 use crate::table::TransitionProperty;
 

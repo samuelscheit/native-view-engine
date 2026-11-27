@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 
-use nve_components::tables::{
+use nve_tables::tables::{
     AlignItems, Display, FlexDirection, JustifyContent, LayoutDirection, LayoutRef, Position,
 };
 use nve_store::{Length, LengthKind};

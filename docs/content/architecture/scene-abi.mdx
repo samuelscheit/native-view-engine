@@ -70,7 +70,7 @@ Instead of re-walking the entire tree every frame, hosts iterate only `dirty_ind
 
 All UTF-8 node strings live packed inside `text_slab`. A host slices `&text_slab[node.text_offset .. node.text_offset + node.text_len]` directly with zero string allocation.
 
-For `NVE_NODE_KIND_SKIA_CANVAS` (`kind == 7`) nodes, vector drawing operations use the **`NVE_DRAW1`** binary draw-list IR (`packages/core/components/src/canvas_ir/`):
+For `NVE_NODE_KIND_SKIA_CANVAS` (`kind == 7`) nodes, vector drawing operations use the **`NVE_DRAW1`** binary draw-list IR (`packages/core/tables/src/canvas_ir/`):
 
 - 15-byte header: `b"NVE_DRAW1"` (9 B) + `version: u16 (1)` + `op_count: u32` (capped at `65,536`)
 - 8 compact opcodes: `Clear`, `FillRect`, `FillRoundedRect`, `FillCircle`, `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`

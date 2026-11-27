@@ -21,7 +21,7 @@ fn find_counter_increment_button(store: &nve_store::NodeStore) -> NodeId {
         .live_nodes()
         .find_map(|id| {
             store
-                .try_row::<nve_components::tables::DebugId>(id)
+                .try_row::<nve_tables::tables::DebugId>(id)
                 .filter(|d| d.test_id() == "ks-counter-inc")
                 .map(|_| id)
         })

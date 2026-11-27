@@ -6,11 +6,11 @@ order: 7
 
 # Vector Canvas (`NVE_DRAW1`)
 
-For telemetry sparklines, charts, custom gauges, and bespoke vector chrome that should render at native refresh rate on **every** host — even hosts without Skia linked — `nve-components` provides **`NVE_DRAW1`**: a compact, binary vector draw-list IR carried by `ComponentKind::SkiaCanvas` (`skia_canvas` / `canvas`).
+For telemetry sparklines, charts, custom gauges, and bespoke vector chrome that should render at native refresh rate on **every** host — even hosts without Skia linked — `nve-tables` provides **`NVE_DRAW1`**: a compact, binary vector draw-list IR carried by `ComponentKind::SkiaCanvas` (`skia_canvas` / `canvas`).
 
 ## Wire Layout
 
-Defined in `packages/core/components/src/canvas_ir/` (`NVE_DRAW_HEADER_SIZE = 15`):
+Defined in `packages/core/tables/src/canvas_ir/` (`NVE_DRAW_HEADER_SIZE = 15`):
 
 | Offset | Size | Field | Value / Bounds |
 | :--- | :--- | :--- | :--- |
@@ -44,7 +44,7 @@ Toggle vector primitives, sparkline samples, clip bounds, and inspect the exact 
 
 ```rust title="Encoding a telemetry sparkline into NVE_DRAW1" highlight="4-17"
 use nve_abi::ColorRgba;
-use nve_components::{CanvasOp, DrawListBuilder};
+use nve_tables::{CanvasOp, DrawListBuilder};
 use nve_dioxus::prelude::*;
 
 #[component]

@@ -13,8 +13,8 @@ use nve_abi::table::TableKey;
 use nve_abi::{
     EventEnum, EventId, InteractionEvent, LayoutEvent, ScrollEvent, SurfaceId, TextInputEvent,
 };
-use nve_components::interaction::CursorKind;
-use nve_components::tables::{
+use nve_tables::interaction::CursorKind;
+use nve_tables::tables::{
     self, AriaRole, Image, Interaction, Layout, Link, Scroll, TextContent, TextInput,
 };
 use nve_store::{ChangeSet, HasEvents, NodeId, NodeStore, Transaction};
@@ -264,10 +264,10 @@ impl StoreMutationTx<'_, '_> {
             list[pos].1 = val;
             return pos;
         }
-        let rank = nve_components::css_key_rank(name);
+        let rank = nve_tables::css_key_rank(name);
         let pos = list
             .iter()
-            .rposition(|(k, _)| nve_components::css_key_rank(k) <= rank)
+            .rposition(|(k, _)| nve_tables::css_key_rank(k) <= rank)
             .map_or(0, |i| i + 1);
         list.insert(pos, (name.to_owned(), val));
         pos
@@ -309,7 +309,7 @@ impl StoreMutationTx<'_, '_> {
                     .z_index((*i).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
             }
             StandaloneStyleVal::Str(s) => {
-                nve_components::apply_css_attr_layers_to_tx(self.tx, node, k, s, layers);
+                nve_tables::apply_css_attr_layers_to_tx(self.tx, node, k, s, layers);
             }
         }
     }
@@ -322,7 +322,7 @@ impl StoreMutationTx<'_, '_> {
         }
         if let Some(saved) = self.standalone_style_attrs.remove(&node) {
             for (k, val) in &saved {
-                let entry_layer = nve_components::css_attr_layer(k);
+                let entry_layer = nve_tables::css_attr_layer(k);
                 debug_assert!(entry_layer != 0, "standalone style key `{k}` must have a non-zero layer");
                 if (entry_layer & layers) == 0 {
                     continue;
@@ -338,13 +338,13 @@ impl StoreMutationTx<'_, '_> {
     pub(crate) fn reapply_inline_style(&mut self, node: NodeId, layers: u8) {
         if layers != 0
             && let Some((inline, mask)) = self.inline_styles.get(&node)
-            && (nve_components::prop_bits_to_layers(*mask) & layers) != 0
+            && (nve_tables::prop_bits_to_layers(*mask) & layers) != 0
         {
             #[cfg(test)]
             {
                 *self.inline_reapply_count += 1;
             }
-            nve_components::apply_css_attr_layers_to_tx(self.tx, node, "style", inline, layers);
+            nve_tables::apply_css_attr_layers_to_tx(self.tx, node, "style", inline, layers);
         }
     }
 
@@ -356,7 +356,7 @@ impl StoreMutationTx<'_, '_> {
         val: StandaloneStyleVal,
     ) {
         let pos = self.record_standalone_style(node, name, val);
-        let bits = nve_components::css_key_bits(name);
+        let bits = nve_tables::css_key_bits(name);
         debug_assert!(bits.is_some(), "standalone style key `{name}` must have css_key_bits");
         let bits = bits.unwrap_or(0);
         let mut affected_bits = bits;
@@ -367,7 +367,7 @@ impl StoreMutationTx<'_, '_> {
             let mut scan_bits = bits;
             let mut overlapped = false;
             for (k, _) in list.get(pos + 1..).unwrap_or(&[]) {
-                let entry_bits = nve_components::css_key_bits(k).unwrap_or(0);
+                let entry_bits = nve_tables::css_key_bits(k).unwrap_or(0);
                 if (entry_bits & scan_bits) != 0 {
                     overlapped = true;
                     scan_bits |= entry_bits;
@@ -380,19 +380,19 @@ impl StoreMutationTx<'_, '_> {
             && let Some(saved) = self.standalone_style_attrs.remove(&node)
         {
             for (k, val) in saved.get(pos + 1..).unwrap_or(&[]) {
-                let entry_bits = nve_components::css_key_bits(k).unwrap_or(0);
+                let entry_bits = nve_tables::css_key_bits(k).unwrap_or(0);
                 if (entry_bits & affected_bits) == 0 {
                     continue;
                 }
                 affected_bits |= entry_bits;
-                let entry_layer = nve_components::prop_bits_to_layers(entry_bits);
+                let entry_layer = nve_tables::prop_bits_to_layers(entry_bits);
                 self.replay_one_standalone_entry(node, k, val, entry_layer);
             }
             self.standalone_style_attrs.insert(node, saved);
         }
 
         let inline_layers = self.inline_styles.get(&node).map_or(0, |&(_, mask)| {
-            nve_components::prop_bits_to_layers(mask & affected_bits)
+            nve_tables::prop_bits_to_layers(mask & affected_bits)
         });
         if inline_layers != 0 {
             self.reapply_inline_style(node, inline_layers);
@@ -407,14 +407,14 @@ impl StoreMutationTx<'_, '_> {
             Some(&(_, mask)) => mask,
             None => 0,
         };
-        let next_mask = nve_components::apply_inline_style_layers_to_tx(
+        let next_mask = nve_tables::apply_inline_style_layers_to_tx(
             self.tx,
             node,
             value,
-            nve_components::STYLE_LAYER_ALL,
+            nve_tables::STYLE_LAYER_ALL,
         );
         self.inline_styles.insert(node, (value.to_owned(), next_mask));
-        let dropped = nve_components::prop_bits_to_layers(prev_mask & !next_mask);
+        let dropped = nve_tables::prop_bits_to_layers(prev_mask & !next_mask);
         if dropped != 0 {
             self.rebuild_style_layers_mask(node, dropped);
         }
@@ -426,13 +426,13 @@ impl StoreMutationTx<'_, '_> {
         if layers == 0 {
             return;
         }
-        if layers & nve_components::STYLE_LAYER_LAYOUT != 0 {
+        if layers & nve_tables::STYLE_LAYER_LAYOUT != 0 {
             self.tx.detach::<tables::Layout>(node);
         }
-        if layers & nve_components::STYLE_LAYER_VISUAL != 0 {
+        if layers & nve_tables::STYLE_LAYER_VISUAL != 0 {
             self.tx.detach::<tables::Visual>(node);
         }
-        if layers & nve_components::STYLE_LAYER_TYPOGRAPHY != 0 {
+        if layers & nve_tables::STYLE_LAYER_TYPOGRAPHY != 0 {
             self.tx.detach::<tables::Typography>(node);
         }
         if let Some(ts) = self.typed_styles.get(&node) {

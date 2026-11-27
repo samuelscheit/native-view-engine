@@ -91,7 +91,7 @@ pub(crate) fn render_calendar_dialog(
             border_color: colors.border,
             border_radius: theme.radii.sm,
             opacity: if disabled { 0.45 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
     let nav_text_style = TypedStyleBuilder::new()
@@ -203,7 +203,7 @@ pub(crate) fn render_calendar_dialog(
                             } else {
                                 1.0
                             },
-                            box_shadow: "none",
+                            box_shadow: None,
                         })
                         .finish();
                     let cell_text_style = TypedStyleBuilder::new()
@@ -388,7 +388,7 @@ pub(crate) fn build_trigger_styles(
             border_color: if focused && !disabled { colors.border_focus } else { colors.border },
             border_radius: theme.radii.md,
             opacity: if disabled { 0.55 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
     let trigger_text_style = TypedStyleBuilder::new()

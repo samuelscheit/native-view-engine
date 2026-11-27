@@ -3,7 +3,7 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use nve_abi::{EventBatchBuf, FrameId, InteractionEvent, NodeId, SurfaceId, TimestampUs};
 use nve_bench::create_bench_dioxus_surface;
-use nve_components::tables::Interaction;
+use nve_tables::tables::Interaction;
 use nve_engine::HotPatchMsg;
 use nve_store::NodeStore;
 

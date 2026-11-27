@@ -38,7 +38,7 @@ pub use signal_codec::{BinValueSlot, SignalCodec};
 use std::fmt;
 
 use nve_abi::{encode_bin_value_to_vec, BinValueView, DecodeError, NveValueRef};
-use nve_components::reconcile::{
+use nve_interop::reconcile::{
     reconcile_three_way, ConflictPolicy, ReconcileDecision, ThreeWayEntry,
 };
 use nve_abi::Xxh64Hasher;

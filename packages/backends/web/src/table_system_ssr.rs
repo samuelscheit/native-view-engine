@@ -1,8 +1,9 @@
 //! Deterministic SSR rendering for [`WebStoreRenderer`] and shared core SSR attribute emission.
 
+use crate::css::Keyword;
 use core::fmt::Write as _;
 
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkRel, LinkTarget,
     Scroll, TextContent, TextInput, Transform, Visibility, Visual,
 };
@@ -68,7 +69,7 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
     }
     if let Some(img) = store.try_row::<Image>(id) {
         if !img.src().is_none()
-            && let Some(nve_components::tables::ImageSrcView::Url(url)) =
+            && let Some(nve_tables::tables::ImageSrcView::Url(url)) =
                 store.resource::<ImageSrc>(img.src())
             && is_safe_web_url(url)
         {
@@ -84,7 +85,7 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
             if ti.secure() {
                 write_attr("type", "password", out);
             } else {
-                let html_type = ti.input_kind().as_html_type();
+                let html_type = ti.input_kind().keyword();
                 if html_type != "text" {
                     write_attr("type", html_type, out);
                 }
@@ -99,10 +100,10 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
             write_attr("placeholder", ph, out);
         }
         if let Some(ac) = ti.autofill() {
-            write_attr("autocomplete", ac.as_html_autocomplete(), out);
+            write_attr("autocomplete", ac.whatwg_token(), out);
         }
-        if ti.input_mode() != nve_components::InputMode::Text {
-            write_attr("inputmode", ti.input_mode().as_html_inputmode(), out);
+        if ti.input_mode() != nve_tables::InputMode::Text {
+            write_attr("inputmode", ti.input_mode().whatwg_token(), out);
         }
         if ti.required() {
             out.push_str(" required");
@@ -177,7 +178,7 @@ impl WebStoreRenderer {
             style.push_str("overflow:auto;");
         }
         if let Some(l) = store.try_row::<Layout>(node)
-            && l.display() == nve_components::tables::Display::None
+            && l.display() == nve_tables::tables::Display::None
         {
             style.push_str("display:none;");
         }

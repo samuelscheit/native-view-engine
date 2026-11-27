@@ -10,7 +10,7 @@ mod native {
 
     use criterion::{criterion_group, Criterion};
     use nve_backend_headless::HeadlessBackend;
-    use nve_components::tables::{Layout, TextContent, Visual};
+    use nve_tables::tables::{Layout, TextContent, Visual};
     use nve_engine::{StoreBackend, Viewport};
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 

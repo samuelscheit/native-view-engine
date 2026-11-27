@@ -6,7 +6,7 @@ use nve_abi::{
     ColorRgba, EventBatchBuf, EventFlags, FrameId, NodeId, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{Accessibility, DebugId, Link, TextContent, Visual};
+use nve_tables::tables::{Accessibility, DebugId, Link, TextContent, Visual};
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::dioxus_elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::*;

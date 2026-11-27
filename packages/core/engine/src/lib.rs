@@ -15,6 +15,7 @@ pub mod mmap_arena;
 pub mod profiler;
 pub mod reloc;
 pub mod store_backend;
+pub mod tracker;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NodeId, SurfaceId};
@@ -23,6 +24,7 @@ use nve_store::{ChangeSet, NodeStore};
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
 pub use frame_arena::{FrameArena, FRAME_ARENA_BASE_ALIGN};
 pub use store_backend::{StoreBackend, StoreWireReplica};
+pub use tracker::InteractionTracker;
 
 pub use hotreload::HotPatchMsg;
 pub use instant_boot::{

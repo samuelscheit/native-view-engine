@@ -15,7 +15,7 @@ use nve_abi::{
     ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, FrameId, NodeId,
     SurfaceId,
 };
-use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
 
 use crate::mmap_arena::ArenaPod;
 use crate::{LayoutRect, Viewport};

@@ -5,7 +5,7 @@
 use std::fmt;
 
 pub use crate::surface::SafeAreaInsets;
-pub use nve_components::keyboard::{
+pub use nve_tables::keyboard::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
     VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };

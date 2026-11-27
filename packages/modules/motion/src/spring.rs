@@ -8,7 +8,7 @@
 
 use std::f64::consts::TAU;
 
-use nve_components::media::MediaEnv;
+use nve_tables::media::MediaEnv;
 
 /// Default positional threshold below which a spring is considered settled.
 pub const DEFAULT_REST_DISPLACEMENT: f32 = 1e-3;

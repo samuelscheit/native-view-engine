@@ -20,7 +20,7 @@ assert_eq!(backend.viewport().width, 1024.0);
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `nve-store`, `base64`, and `wasm32`-gated `wasm-bindgen`/`web-sys`.
+- **Depends on**: `nve-abi`, `nve-tables`, `nve-engine`, `nve-store`, `base64`, and `wasm32`-gated `wasm-bindgen`/`web-sys`.
 - **Must NOT depend on**: `dioxus*`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

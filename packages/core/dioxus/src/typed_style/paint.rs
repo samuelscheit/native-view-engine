@@ -1,6 +1,6 @@
 //! Typed zero-serialization background gradient builders on [`TypedStyle`].
 
-use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
+use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 
 use super::TypedStyle;
 

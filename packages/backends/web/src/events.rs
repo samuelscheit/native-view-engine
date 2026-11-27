@@ -2,7 +2,7 @@
 //! refcounted lazy single-root `wasm32` DOM event delegation backed by [`SurfaceEventTracker`].
 
 use nve_abi::{EventId, NodeId};
-use nve_components::tables::{Interaction, Layout, Link, Scroll, TextInput};
+use nve_tables::tables::{Interaction, Layout, Link, Scroll, TextInput};
 use nve_store::{ChangeSet, HasEvents, NodeStore, SurfaceEventTracker, TableSlot};
 
 pub use crate::input_attrs::{

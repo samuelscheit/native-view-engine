@@ -1,6 +1,6 @@
 //! Taffy tree adapter (`LayoutView`) over disjoint borrows of `NodeStore` and `TaffyStoreLayout`.
 
-use nve_components::tables::{Display as NveDisplay, Layout as NveLayout, TextContent};
+use nve_tables::tables::{Display as NveDisplay, Layout as NveLayout, TextContent};
 use nve_engine::TextMeasurer;
 use nve_store::{NodeId, NodeStore};
 

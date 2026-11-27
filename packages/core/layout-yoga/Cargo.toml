@@ -7,7 +7,7 @@ description = "Real React Native Yoga C++20 LayoutEngine implementation for nati
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-engine = { workspace = true }
 nve-store = { workspace = true }
 

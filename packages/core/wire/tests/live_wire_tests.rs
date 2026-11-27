@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use nve_abi::{
     ColorRgba, EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs, NVE_PRIMARY_SLOT_NONE,
 };
-use nve_components::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::{LayoutSnapshot, VisualSnapshot};
 use nve_engine::{
     encode_scene_reloc, LayoutRect, SceneRelocInput, SceneRelocNodeInput, SceneRelocView,
     VerifyMode, Viewport,

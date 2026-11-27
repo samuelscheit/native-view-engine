@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use nve_abi::{
     ColorRgba, EventBatchBuf, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId,
 };
-use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
+use nve_tables::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, Length, NodeStore, Rgba};

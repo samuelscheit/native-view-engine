@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 nve-abi = { workspace = true }
 nve-backend-skia = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-motion = { workspace = true }
 nve-store = { workspace = true }
 

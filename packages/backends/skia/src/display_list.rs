@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use nve_abi::{ColorRgba, NodeId};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     BackgroundFillRes, BoxShadows, Display, Image, ImageSrc, ImageSrcView, Layout, Overflow,
     Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
 };
@@ -180,7 +180,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     ops: &mut Vec<PaintOp>,
     id: NodeId,
 ) {
-    if !store.is_live(id) || nve_components::tables::is_hidden_text_input(store, id) {
+    if !store.is_live(id) || nve_tables::tables::is_hidden_text_input(store, id) {
         return;
     }
     let mut patched_display: Option<Display> = None;

@@ -8,7 +8,7 @@ use nve_backend_skia::{
     CursorKind, FocusModality, InteractionState, PixelBuffer, RowPatch, SkiaBackend,
     StateStyleRule, StylePatchExt,
 };
-use nve_components::tables::{
+use nve_tables::tables::{
     Display, InputKind, Interaction, Layout, StateRules, TextContent, TextInput, Transform,
     Typography, Visual,
 };
@@ -222,8 +222,8 @@ fn ancestor_display_none_clears_and_rejects_child_text_input_focus() {
 #[test]
 fn skia_hover_solid_bg_and_explicit_none_clear_base_gradient_and_hostile_40_table_wire_rules_do_not_panic() {
     use nve_backend_skia::PaintOp;
-    use nve_components::paint::{BackgroundFill, GradientStop};
-    use nve_components::tables::BackgroundFillRes;
+    use nve_tables::paint::{BackgroundFill, GradientStop};
+    use nve_tables::tables::BackgroundFillRes;
     use nve_store::wire::{WireDecoder, WireEncoder};
     use nve_store::{FlatResource, ResourceId};
 

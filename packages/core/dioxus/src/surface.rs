@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use dioxus_core::{ComponentFunction, Element, ScopeId, VirtualDom};
 use nve_abi::{FrameId, SurfaceId};
-use nve_components::media::MediaQuery;
-use nve_components::tables::{Responsive, ResponsiveRules, ResponsiveRulesView};
+use nve_tables::media::MediaQuery;
+use nve_tables::tables::{Responsive, ResponsiveRules, ResponsiveRulesView};
 use nve_engine::{BackendApplyStats, BackendError, HotPatchMsg, StoreBackend};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, NodeId, NodeStore};

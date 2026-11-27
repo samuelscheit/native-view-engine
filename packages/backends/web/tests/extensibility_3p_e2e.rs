@@ -9,11 +9,11 @@
 //! - uniform `WebTableSystem` live DOM + SSR plugin integration
 //! - deferred DOM creation & `COMPOSITE`-only fast lane on `WebStoreRenderer`
 //!
-//! Zero edits to `nve-abi`, `nve-store`, `nve-components`, `nve-engine`, or `nve-backend-web`.
+//! Zero edits to `nve-abi`, `nve-store`, `nve-tables`, `nve-engine`, or `nve-backend-web`.
 
 use nve_abi::{EventBatchBuf, EventEnum, EventFlags, SurfaceId, TimestampUs, ValidatedEvents};
 use nve_backend_web::{WebStoreRenderer, WebSystemCommitCtx, WebTableSystem};
-use nve_components::tables::{Layout, Transform, Visual};
+use nve_tables::tables::{Layout, Transform, Visual};
 use nve_engine::StoreBackend;
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Str, TableSlot};

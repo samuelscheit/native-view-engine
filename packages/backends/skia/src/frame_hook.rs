@@ -3,8 +3,8 @@
 //! depending on them.
 
 use nve_backend_headless::HeadlessBackend;
-use nve_components::snapshots::VisualSnapshot;
-use nve_components::transform::Transform2D;
+use nve_tables::snapshots::VisualSnapshot;
+use nve_tables::transform::Transform2D;
 use nve_engine::StoreLayoutEngine;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 

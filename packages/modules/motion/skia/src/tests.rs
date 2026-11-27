@@ -4,7 +4,7 @@ use nve_abi::{ColorRgba, InteractionEvent, SurfaceId};
 use nve_backend_skia::{
     CursorKind, InteractionState, RowPatch, SkiaBackend, StateStyleRule, StylePatchExt,
 };
-use nve_components::tables::{Interaction, Layout, StateRules, Transform, Visual};
+use nve_tables::tables::{Interaction, Layout, StateRules, Transform, Visual};
 use nve_engine::{StoreBackend, Viewport};
 use nve_motion::{EasingCurve, Motion, TransitionProperty, TransitionSpec, Transitions};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
@@ -85,8 +85,8 @@ fn transform_change_animates_from_painted_value() {
 #[test]
 fn driver_interpolates_transform_from_previous_target() {
     use nve_backend_skia::{NodeTargets, SkiaFrameHook};
-    use nve_components::snapshots::VisualSnapshot;
-    use nve_components::transform::Transform2D;
+    use nve_tables::snapshots::VisualSnapshot;
+    use nve_tables::transform::Transform2D;
 
     let mut store = NodeStore::new();
     let (btn, changes) = hover_button(&mut store, true);

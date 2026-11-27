@@ -5,8 +5,8 @@
 //! Hover rules are wrapped in `@media (hover:hover)` by default so touch taps on mobile/hybrid
 //! devices never suffer sticky `:hover` states.
 
-use nve_components::interaction::{CursorKind, InteractionState};
-use nve_components::tables::StateRulesView;
+use nve_tables::interaction::{CursorKind, InteractionState};
+use nve_tables::tables::StateRulesView;
 use nve_store::NodeStore;
 
 use crate::css::format_content_class;

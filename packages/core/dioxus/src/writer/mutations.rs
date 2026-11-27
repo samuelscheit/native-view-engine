@@ -1,7 +1,7 @@
 //! `dioxus_core::WriteMutations` implementation over [`StoreMutationTx`].
 
 use dioxus_core::{AttributeValue, ElementId, Template, WriteMutations};
-use nve_components::tables::TextContent;
+use nve_tables::tables::TextContent;
 
 use super::StoreMutationTx;
 

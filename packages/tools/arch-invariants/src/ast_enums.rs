@@ -349,7 +349,7 @@ pub fn scan_match_tables(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<Vi
         }
     }
 
-    if rel.starts_with("packages/core/tables/") || rel.starts_with("packages/core/components/") {
+    if rel.starts_with("packages/core/tables/") || rel.starts_with("packages/core/tables/") {
         for f in &fns {
             let v2s = f
                 .pairs

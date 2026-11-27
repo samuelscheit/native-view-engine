@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_web::{InputSyncTracker, WebBackend};
-use nve_components::tables::{DebugId, TextContent, TextInput};
+use nve_tables::tables::{DebugId, TextContent, TextInput};
 use nve_dioxus::elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -374,14 +374,14 @@ fn AutofillFormApp() -> Element {
                 textinput {
                     test_id: "raw-tel",
                     value: "{raw_tel}",
-                    autocomplete: AutofillHint::Tel.as_html_autocomplete(),
-                    input_mode: InputMode::Tel.as_html_inputmode(),
+                    autocomplete: AutofillHint::Tel.whatwg_token(),
+                    input_mode: InputMode::Tel.whatwg_token(),
                     onchange: move |ev: TextEvent| raw_tel.set(ev.data().value.clone()),
                 }
                 input {
                     test_id: "raw-cc",
-                    autocomplete: AutofillHint::CcNumber.as_html_autocomplete(),
-                    input_mode: InputMode::Numeric.as_html_inputmode(),
+                    autocomplete: AutofillHint::CcNumber.whatwg_token(),
+                    input_mode: InputMode::Numeric.whatwg_token(),
                 }
                 text { test_id: "state-summary", "{email}|{password}|{otp}|{raw_tel}" }
             }
@@ -401,14 +401,14 @@ fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keyd
             .store()
             .try_row::<TextInput>(id)
             .unwrap_or_else(|| panic!("expected TextInput row on {tid}"));
-        let actual_ac = ti.autofill().map(AutofillHint::as_html_autocomplete);
+        let actual_ac = ti.autofill().map(AutofillHint::whatwg_token);
         assert_eq!(
             actual_ac,
             Some(expected_ac),
             "autocomplete mismatch on {tid}"
         );
         let actual_im =
-            (ti.input_mode() != InputMode::Text).then(|| ti.input_mode().as_html_inputmode());
+            (ti.input_mode() != InputMode::Text).then(|| ti.input_mode().whatwg_token());
         assert_eq!(actual_im, expected_im, "inputmode mismatch on {tid}");
     };
     check_raw("field-email", "email", Some("email"));

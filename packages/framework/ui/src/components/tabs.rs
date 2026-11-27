@@ -142,7 +142,7 @@ pub fn TabList(
             border_color: colors.border,
             border_radius: theme.radii.md,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -225,7 +225,7 @@ pub fn TabTrigger(
             border_color: bc,
             border_radius: theme.radii.sm,
             opacity: if disabled { 0.45 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -320,7 +320,7 @@ pub fn TabPanel(
             border_color: colors.border,
             border_radius: theme.radii.md,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

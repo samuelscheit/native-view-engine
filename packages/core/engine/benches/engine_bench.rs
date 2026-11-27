@@ -10,7 +10,7 @@ mod native {
 
     use criterion::{criterion_group, Criterion};
     use nve_abi::{ColorRgba, FrameId, NodeId, SurfaceId};
-    use nve_components::{LayoutSnapshot, VisualSnapshot};
+    use nve_tables::{LayoutSnapshot, VisualSnapshot};
     use nve_engine::{
         encode_scene_reloc, FrameArena, LayoutRect, SceneRelocInput, SceneRelocNodeInput,
         SceneRelocView, VerifyMode, Viewport,

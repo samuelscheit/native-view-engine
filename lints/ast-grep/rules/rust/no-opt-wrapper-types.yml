@@ -4,7 +4,7 @@ severity: error
 message: "Manual `Opt*` wrapper struct/enum in core components/tables/store/modules is banned; use `Option<T>` directly."
 note: "Synced with `enum_and_macro_hygiene.rs` scope (`components`, `tables`, `store`, `modules`). Enforced since Track 1B-1d C2."
 files:
-  - "packages/core/components/**/*.rs"
+  - "packages/core/tables/**/*.rs"
   - "packages/core/tables/**/*.rs"
   - "packages/core/store/**/*.rs"
   - "packages/modules/**/*.rs"

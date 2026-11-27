@@ -7,7 +7,7 @@ use nve_abi::{
     ColorRgba, EdgeInsets, EventBatchBuf, EventFlags, FrameId, NodeId, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaTriState,
     BoxShadows, DebugId, Interaction, Layout, TextContent, TextInput, Visual,
 };

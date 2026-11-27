@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nve_abi::{
     ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, NVE_PRIMARY_SLOT_NONE,
 };
-use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
 
 use crate::{LayoutRect, Viewport};
 

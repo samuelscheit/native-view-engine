@@ -5,6 +5,7 @@ use std::borrow::Cow;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+use nve_tables::tables::BoxShadow;
 use nve_dioxus::{parse_flex_align, parse_flex_direction, parse_flex_justify, TypedStyle};
 
 /// Zero-allocation parser for `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, and CSS named colors.
@@ -82,7 +83,7 @@ pub struct TypedSurfaceStyle {
     pub border_color: ColorRgba,
     pub border_radius: f32,
     pub opacity: f32,
-    pub box_shadow: &'static str,
+    pub box_shadow: Option<BoxShadow>,
 }
 
 impl Default for TypedSurfaceStyle {
@@ -93,7 +94,7 @@ impl Default for TypedSurfaceStyle {
             border_color: ColorRgba::TRANSPARENT,
             border_radius: 0.0,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         }
     }
 }
@@ -299,7 +300,7 @@ impl TypedStyleBuilder {
             .border(s.border_width, s.border_color)
             .radius(s.border_radius)
             .opacity(s.opacity)
-            .box_shadow(s.box_shadow);
+            .box_shadows(s.box_shadow);
         self
     }
 
@@ -461,7 +462,7 @@ pub(super) fn parse_inline_css_to_typed(css: &str) -> TypedStyle {
             }
             "font-weight" | "fontWeight" => ts = ts.font_weight(v.to_owned()),
             "text-align" | "textAlign" => ts = ts.text_align(v.to_owned()),
-            "box-shadow" | "boxShadow" => ts = ts.box_shadow(v.to_owned()),
+            "box-shadow" | "boxShadow" => ts = ts.box_shadows(super::shadow::parse_box_shadow(v)),
             "overflow" => ts = ts.overflow(v.to_owned()),
             "object-fit" | "objectFit" => ts = ts.object_fit(v.to_owned()),
             _ => {}

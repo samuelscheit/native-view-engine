@@ -2,11 +2,11 @@
 //! and 2D [`Transform2D`] builders on [`TypedStyle`].
 
 use nve_abi::Dimension;
-use nve_components::layout_ext::{
+use nve_tables::layout_ext::{
     GridTrack, GridTrackPlacement, LayoutDirection, PositionMode,
 };
-use nve_components::tables::Display;
-use nve_components::transform::Transform2D;
+use nve_tables::tables::Display;
+use nve_tables::transform::Transform2D;
 
 use super::TypedStyle;
 

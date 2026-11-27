@@ -8,6 +8,8 @@ use dioxus_core_macro::{component, rsx, Props};
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use nve_abi::ColorRgba;
 use nve_interop::{ColorScheme, ContrastLevel, ThemeContext};
+use nve_tables::tables::BoxShadow;
+use nve_store::Rgba;
 
 use crate::style_buf::parse_color_rgba;
 
@@ -448,14 +450,14 @@ impl UiTheme {
         self.contrast.is_high()
     }
 
-    /// Elevation box shadow matching the active theme polarity.
-    pub fn elevation_shadow(&self) -> &'static str {
+    /// Elevation shadow matching the active theme polarity (`None` in high contrast).
+    pub fn elevation_shadow(&self) -> Option<BoxShadow> {
         if self.is_high_contrast() {
-            "none"
+            None
         } else if self.is_dark() {
-            "0 4px 16px rgba(0, 0, 0, 0.45)"
+            Some(BoxShadow::new(0.0, 4.0, 16.0, Rgba::new(0, 0, 0, 115)))
         } else {
-            "0 4px 12px rgba(15, 23, 42, 0.10)"
+            Some(BoxShadow::new(0.0, 4.0, 12.0, Rgba::new(15, 23, 42, 26)))
         }
     }
 

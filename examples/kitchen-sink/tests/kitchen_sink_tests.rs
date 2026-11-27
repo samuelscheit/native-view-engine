@@ -6,7 +6,7 @@ use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
 use nve_canvas_skia::CanvasSkiaSystem;
 use nve_canvas_web::CanvasWebSystem;
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_example_kitchen_sink::{
@@ -233,7 +233,7 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(SurfaceId::ROOT, Viewport::default());
     let mut rep1 =
-        StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(headless, nve_tables::tables::core_realization_order());
     let f1 = m1.render(FrameId(1)).to_vec();
     rep1.submit_nve2_frame(&f1).unwrap();
 
@@ -250,7 +250,7 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
     assert_eq!(m2.count(), 1);
     let mut h2 = HeadlessBackend::new();
     h2.set_viewport(SurfaceId::new(2, 0), Viewport::default());
-    let mut rep2 = StoreWireReplica::new(h2, nve_components::tables::core_realization_order());
+    let mut rep2 = StoreWireReplica::new(h2, nve_tables::tables::core_realization_order());
     rep2.submit_nve2_frame(m2.render(FrameId(1))).unwrap();
     assert!(rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 1"));
 }
@@ -282,7 +282,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
             scale_factor: 1.0,
         },
     );
-    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(host, nve_tables::tables::core_realization_order());
 
     let mut inst = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).expect("load gen 1");
     let frame1 = inst.render(FrameId(1));
@@ -317,7 +317,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
         },
     );
     let mut rep2 =
-        StoreWireReplica::new(host2, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(host2, nve_tables::tables::core_realization_order());
     let f4 = inst.render(FrameId(4));
     rep2.submit_nve2_frame(f4).unwrap();
     assert!(

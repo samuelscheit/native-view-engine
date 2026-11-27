@@ -203,7 +203,7 @@ fn real_hardware_metal_swapchain_offscreen_renders_with_cpu_parity_and_hidpi_res
 }
 
 fn sample_image_canvas_clip_display_list() -> DisplayList {
-    use nve_components::tables::ImageFit;
+    use nve_tables::tables::ImageFit;
 
     const AVATAR_MAYA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
 

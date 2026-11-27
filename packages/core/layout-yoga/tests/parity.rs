@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use nve_abi::{EventSet, FrameId, InteractionEvent, SurfaceId};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
-use nve_components::tables::{
+use nve_tables::tables::{
     AlignItems, FlexDirection, Interaction, JustifyContent, Layout, TextContent, Typography,
 };
 use nve_engine::{

@@ -12,7 +12,7 @@ use std::rc::Rc;
 use nve_abi::{EventBatchBuf, FrameId, InteractionEvent, NodeId, ROOT_NODE_ID, SurfaceId};
 use nve_backend_web::{HydrationReport, WebBackend};
 use nve_canvas_web::CanvasWebSystem;
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_dioxus::DioxusSurface;
 use nve_docs::{DocsRoute, DocsViewport};
 use nve_engine::{StoreBackend, Viewport};

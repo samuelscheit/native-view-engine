@@ -3,7 +3,7 @@
 
 use nve_abi::{InteractionEvent, SurfaceId};
 use nve_backend_headless::{GridTrack, HeadlessBackend};
-use nve_components::tables::{
+use nve_tables::tables::{
     Direction, Display, FlexDirection, GridLayout, GridTracks, Interaction, Layout, Overflow,
     Position, Transform, Visual,
 };

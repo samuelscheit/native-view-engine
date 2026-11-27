@@ -1,13 +1,14 @@
 //! CSS declaration emission for zero-copy table-generic [`RowPatchView`]s.
 
+use crate::css::{Keyword, WriteCss};
 use nve_abi::num::{write_i64, write_u64};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets};
-use nve_components::tables::{
+use nve_tables::tables::{
     AlignItems, BackgroundFillRes, Direction, Display, FlexDirection, FlexWrap, GridItem,
     GridLayout, GridTracks, Interaction, JustifyContent, Layout, Overflow, Position, TextAlign,
     Transform, Typography, Visual,
 };
-use nve_components::transform::Transform2D;
+use nve_tables::transform::Transform2D;
 use nve_store::{
     prop_written, GridLine, Length, NodeStore, NveTable, ResourceId, RowPatchView, Word,
 };
@@ -415,7 +416,7 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
         && !bg_id.is_none()
         && let Some(fill) = store.resource::<BackgroundFillRes>(bg_id)
     {
-        fill.write_css_decl_into(true, out);
+        crate::css::write_background_decl(&fill, true, out);
     }
 
     if t.has_t {
@@ -454,7 +455,7 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
         && !tracks.is_empty()
     {
         out.push_str("grid-template-columns:");
-        tracks.write_css_into(out);
+        tracks.write_css(out);
         out.push(';');
     }
     if let (Some(store), Some(rid)) = (store, t.rows_id)
@@ -463,7 +464,7 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
         && !tracks.is_empty()
     {
         out.push_str("grid-template-rows:");
-        tracks.write_css_into(out);
+        tracks.write_css(out);
         out.push(';');
     }
 
@@ -502,12 +503,12 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
             origin_x: Transform::ORIGIN_X.get(t.tfw),
             origin_y: Transform::ORIGIN_Y.get(t.tfw),
         };
-        tf.write_css_decls_into(true, out);
+        crate::css::write_transform_decls(&tf, true, out);
     }
 
     if t.has_i && prop_written(t.im, Interaction::CURSOR) {
         out.push_str("cursor:");
-        out.push_str(Interaction::CURSOR.get(t.iw).to_css_keyword());
+        out.push_str(Interaction::CURSOR.get(t.iw).keyword());
         out.push(';');
     }
 }

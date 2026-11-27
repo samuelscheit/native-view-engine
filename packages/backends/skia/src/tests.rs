@@ -1,12 +1,12 @@
 use nve_abi::{ColorRgba, SurfaceId};
-use nve_components::paint::{BackgroundFill, GradientStop};
-use nve_components::tables::{
+use nve_tables::paint::{BackgroundFill, GradientStop};
+use nve_tables::tables::{
     BackgroundFillRes, BoxShadows, Layout, Scroll, TextContent, Typography, Visual,
 };
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
-use nve_components::tables::parse_box_shadow;
+use nve_tables::tables::BoxShadow;
 
 use crate::{PaintOp, PixelBuffer, SkiaBackend};
 
@@ -42,9 +42,12 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
         .border_radius(10.0)
         .border_width(2.0)
         .border_color(Rgba::rgb(56, 189, 248))
-        .box_shadows(Some(BoxShadows::new(parse_box_shadow(
-            "0 4px 12px rgba(0,0,0,0.4)",
-        ))))
+        .box_shadows(Some(BoxShadows::new(vec![BoxShadow::new(
+            0.0,
+            4.0,
+            12.0,
+            Rgba::new(0, 0, 0, 102),
+        )])))
         .background_fill(Some(BackgroundFillRes(BackgroundFill::linear(
             90.0,
             vec![
@@ -61,7 +64,7 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
     tx.edit::<Layout>(scroller)
         .width(Length::points(280.0))
         .height(Length::points(90.0));
-    tx.edit::<Scroll>(scroller).axes(nve_components::tables::ScrollAxes::Vertical);
+    tx.edit::<Scroll>(scroller).axes(nve_tables::tables::ScrollAxes::Vertical);
     tx.edit::<Layout>(tall)
         .flex_shrink(0.0)
         .height(Length::points(300.0));
@@ -94,7 +97,7 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
 #[test]
 fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
     use nve_abi::InteractionEvent;
-    use nve_components::tables::{Interaction, ScrollAxes, Visibility};
+    use nve_tables::tables::{Interaction, ScrollAxes, Visibility};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
@@ -178,7 +181,7 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
 #[test]
 fn skia_inherited_typography_explicit_defaults_and_no_inherit_fields() {
     use core::num::NonZeroU16;
-    use nve_components::tables::VerticalAlign;
+    use nve_tables::tables::VerticalAlign;
     use nve_store::ResolvedRow;
 
     let mut store = NodeStore::new();

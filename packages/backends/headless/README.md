@@ -19,7 +19,7 @@ assert_eq!(backend.viewport().width, 800.0);
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `taffy`.
+- **Depends on**: `nve-abi`, `nve-tables`, `nve-engine`, `taffy`.
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

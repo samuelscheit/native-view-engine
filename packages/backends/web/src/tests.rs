@@ -1,11 +1,11 @@
 use nve_abi::ColorRgba;
-use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
-use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::tables::{
+use nve_tables::interaction::{CursorKind, InteractionState, StateStyleRule};
+use nve_tables::media::{MediaQuery, ResponsiveRule};
+use nve_tables::tables::{
     Accessibility, AriaRole, DebugId, FlexDirection, Interaction, Layout, Link, Responsive,
     ResponsiveRules, StateRules, TextContent, Transform, Typography, Visual,
 };
-use nve_components::{RowPatch, StylePatchExt};
+use nve_tables::{RowPatch, StylePatchExt};
 use nve_engine::{HotPatchMsg, StoreBackend};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
@@ -185,7 +185,7 @@ fn base_reset_css_keeps_element_defaults_zero_specificity() {
 
 #[test]
 fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
-    use nve_components::tables::{LinkTarget, TextInput};
+    use nve_tables::tables::{LinkTarget, TextInput};
     use crate::{is_safe_custom_tag, is_safe_web_attr, is_safe_web_url};
 
     // URL scheme & control-char smuggling vectors
@@ -444,7 +444,7 @@ fn plugin_table_detach_automatically_clears_owned_attrs_inner_html_and_inline_cs
 
 #[test]
 fn css_visibility_emits_visible_hidden_and_omits_inherit() {
-    use nve_components::tables::{Visibility, Visual};
+    use nve_tables::tables::{Visibility, Visual};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
@@ -496,19 +496,19 @@ fn css_visibility_emits_visible_hidden_and_omits_inherit() {
     // CSS visibility keywords: collapse -> Hidden, initial -> Visible, inherit/unset/revert/revert-layer -> Inherit, invalid ignored.
     {
         let mut tx = store.tx();
-        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "collapse"));
+        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "collapse"));
         tx.commit_into(&mut changes);
     }
     assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden);
     {
         let mut tx = store.tx();
-        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "bogus"));
+        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "bogus"));
         tx.commit_into(&mut changes);
     }
     assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden, "invalid visibility value must not overwrite");
     {
         let mut tx = store.tx();
-        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "initial"));
+        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "initial"));
         tx.commit_into(&mut changes);
     }
     assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Visible);
@@ -520,7 +520,7 @@ fn css_visibility_emits_visible_hidden_and_omits_inherit() {
         }
         {
             let mut tx = store.tx();
-            assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", kw));
+            assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", kw));
             tx.commit_into(&mut changes);
         }
         assert_eq!(
@@ -1161,7 +1161,7 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
 
 #[test]
 fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
-    use nve_components::tables::{Accessibility, AriaLive, AriaRole};
+    use nve_tables::tables::{Accessibility, AriaLive, AriaRole};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
@@ -1204,11 +1204,11 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
 
 #[test]
 fn patch_css_emits_single_side_padding_margin_logical_combo_overflow_axes_and_nested_wire_resources() {
-    use nve_components::interaction::{InteractionState, StateStyleRule};
-    use nve_components::layout_ext::GridTrack;
-    use nve_components::media::{MediaQuery, ResponsiveRule};
-    use nve_components::paint::{BackgroundFill, GradientStop};
-    use nve_components::tables::{
+    use nve_tables::interaction::{InteractionState, StateStyleRule};
+    use nve_tables::layout_ext::GridTrack;
+    use nve_tables::media::{MediaQuery, ResponsiveRule};
+    use nve_tables::paint::{BackgroundFill, GradientStop};
+    use nve_tables::tables::{
         BackgroundFillRes, GridLayout, GridTracks, Interaction, Layout, Overflow, Responsive,
         ResponsiveRules, StateRules, Visual,
     };
@@ -1329,7 +1329,7 @@ fn synchronous_reentrant_commit_during_event_callback_has_no_refcell_borrow_conf
     use std::rc::Rc;
 
     use nve_abi::{EventBatchBuf, InteractionEvent, SurfaceId, TimestampUs};
-    use nve_components::tables::{Interaction, TextInput};
+    use nve_tables::tables::{Interaction, TextInput};
     use nve_store::{ChangeSet, NodeId, NodeStore};
 
     use crate::events::WebEventState;

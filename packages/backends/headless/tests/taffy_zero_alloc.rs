@@ -5,7 +5,7 @@ use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
-use nve_components::tables::{
+use nve_tables::tables::{
     core_realization_order, FlexDirection, Layout, TextContent, Transform, Typography, Visual,
 };
 use nve_engine::{StoreBackend, Viewport};

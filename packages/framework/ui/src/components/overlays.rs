@@ -129,7 +129,7 @@ pub fn Dialog(
             border_color: colors.border,
             border_radius: theme.radii.md,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
     let trigger_text_style = TypedStyleBuilder::new()
@@ -155,7 +155,7 @@ pub fn Dialog(
             border_color: ColorRgba::TRANSPARENT,
             border_radius: 0.0,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -419,7 +419,7 @@ pub fn Popover(
             },
             border_radius: theme.radii.md,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

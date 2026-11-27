@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nve_abi::{EventBatchBuf, EventFlags, FrameId, SurfaceId, TimestampUs};
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_dioxus::prelude::*;
 use nve_store::{NodeId, NodeStore};
 

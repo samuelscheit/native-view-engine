@@ -64,10 +64,10 @@ pub fn scan_table_and_codec_hygiene(
     }
 
     let check_unset = rel.starts_with("packages/core/tables/")
-        || rel.starts_with("packages/core/components/")
+        || rel.starts_with("packages/core/tables/")
         || (rel.starts_with("packages/modules/") && rel.matches('/').count() >= 4);
     let check_set_masks =
-        rel.starts_with("packages/core/tables/") || rel.starts_with("packages/core/components/");
+        rel.starts_with("packages/core/tables/") || rel.starts_with("packages/core/tables/");
     let in_core = rel.starts_with("packages/core/");
     let in_dioxus = rel.starts_with("packages/core/dioxus/src/");
     let has_repr_c = file_has_repr_c_struct(&ast.items);
@@ -263,7 +263,7 @@ pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec
         return;
     }
     let in_no_motion_core = rel.starts_with("packages/core/tables/")
-        || rel.starts_with("packages/core/components/")
+        || rel.starts_with("packages/core/tables/")
         || rel.starts_with("packages/core/engine/")
         || rel.starts_with("packages/core/runtime/");
     if in_no_motion_core && rel.contains("motion") {

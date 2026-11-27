@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use nve_abi::{TimestampUs, ROOT_NODE_ID};
 use nve_codec::NveEncode;
-pub use nve_components::keyboard::{
+pub use nve_tables::keyboard::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
     VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };

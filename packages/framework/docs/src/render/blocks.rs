@@ -344,7 +344,7 @@ mod tests {
 
     use nve_backend_headless::HeadlessBackend;
     use nve_backend_web::WebBackend;
-    use nve_components::tables::{DebugId, Layout};
+    use nve_tables::tables::{DebugId, Layout};
     use nve_dioxus::dioxus_elements::backend::{StoreBackend, Viewport};
     use nve_store::{Length, NodeId};
     use nve_abi::{FrameId, SurfaceId};

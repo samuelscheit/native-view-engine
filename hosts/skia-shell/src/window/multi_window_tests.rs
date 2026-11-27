@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use nve_abi::{ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId, ValidatedEvents};
-use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
+use nve_tables::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::Viewport;
 use nve_interop::{SurfacePresentation, WindowDescriptor, WindowError, WindowRect};
 use nve_store::wire::WireEncoder;

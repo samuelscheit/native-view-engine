@@ -7,7 +7,7 @@ use nve_backend_web::{
     PRE_HYDRATION_REPLAY_SCRIPT_TAG, SNAPSHOT_BOOTSTRAP_MAX_BYTES,
     WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG,
 };
-use nve_components::tables::{register_core_tables, DebugId};
+use nve_tables::tables::{register_core_tables, DebugId};
 use nve_engine::Viewport;
 use nve_example_kitchen_sink::{KITCHEN_SINK_STATE_MAGIC, KITCHEN_SINK_STATE_VERSION};
 use nve_store::{ChangeSet, NodeStore};

@@ -19,7 +19,7 @@ fn Counter() -> Element {
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `nve-interop`, `dioxus-core`, `dioxus-signals`, `dioxus-core-macro`.
+- **Depends on**: `nve-abi`, `nve-tables`, `nve-engine`, `nve-interop`, `dioxus-core`, `dioxus-signals`, `dioxus-core-macro`.
 - **Must NOT depend on**: `web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

@@ -1,6 +1,6 @@
 use super::*;
-use nve_components::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
-use nve_components::tables::{
+use nve_tables::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
+use nve_tables::tables::{
     AlignItems as NveAlignItems, Direction as NveDirection, Display as NveDisplay,
     FlexDirection as NveFlexDirection, GridItem, GridLayout, GridLine as NveGridLine, GridTracks,
     JustifyContent as NveJustifyContent, Layout as NveLayout, Position as NvePosition,

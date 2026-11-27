@@ -3,7 +3,7 @@
 
 use nve_abi::ColorRgba;
 use nve_canvas::DrawList;
-use nve_components::parse_color;
+use nve_tables::parse_color;
 
 /// Valid 8x8 RGBA PNG data-URI avatar for `@maya` (cyan ring/core).
 pub const AVATAR_MAYA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";

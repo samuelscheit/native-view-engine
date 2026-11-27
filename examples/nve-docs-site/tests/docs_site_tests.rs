@@ -7,7 +7,7 @@ use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
 use nve_canvas::{Canvas, DrawList};
 use nve_canvas_web::CanvasWebSystem;
-use nve_components::tables::{DebugId, TextContent};
+use nve_tables::tables::{DebugId, TextContent};
 use nve_docs::{DocsViewport, default_component_registry};
 use nve_engine::{StoreBackend, StoreWireReplica};
 use nve_mdx::validate_site;
@@ -451,7 +451,7 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     let frame_bytes = module.render(FrameId(1)).to_vec();
     assert!(!frame_bytes.is_empty(), "native NveApp Frame 1 must be non-empty");
 
-    nve_components::tables::register_core_tables();
+    nve_tables::tables::register_core_tables();
     let _ = <nve_canvas::Canvas as nve_store::NveTable>::slot();
     nve_web_html::register_web_html_tables();
     let mut skia = SkiaBackend::new();
@@ -465,7 +465,7 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
         },
     );
     let mut replica =
-        StoreWireReplica::new(skia, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(skia, nve_tables::tables::core_realization_order());
     replica
         .submit_nve2_frame(&frame_bytes)
         .expect("SkiaBackend submit_nve2_frame for native DocsSiteModule");

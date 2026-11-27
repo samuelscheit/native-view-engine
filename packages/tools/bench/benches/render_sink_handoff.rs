@@ -14,7 +14,7 @@ use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
 use nve_bench::DEFAULT_VIEWPORT;
-use nve_components::tables::{core_realization_order, Interaction};
+use nve_tables::tables::{core_realization_order, Interaction};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, StoreWireReplica};

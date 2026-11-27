@@ -10,7 +10,7 @@ use nve_abi::{
     InteractionEvent, LayoutEvent, ScrollEvent, TextInputEvent, ValidatedEvents, NVE_TABLE_CUSTOM,
     NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT, NVE_TABLE_SCROLL, NVE_TABLE_TEXT_INPUT,
 };
-use nve_components::tables::{Interaction, Layout, Scroll, TextInput};
+use nve_tables::tables::{Interaction, Layout, Scroll, TextInput};
 
 use crate::elements::{
     CompositionEventData, FocusEventData, KeyEventData, NveEventData, PressEventData,

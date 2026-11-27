@@ -2,7 +2,7 @@
 //! [`crate::SkiaBackend`] directly over `&NodeStore`.
 
 use nve_abi::NodeId;
-use nve_components::tables::{is_node_display_none, Interaction, Scroll, Visual};
+use nve_tables::tables::{is_node_display_none, Interaction, Scroll, Visual};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::NodeStore;
 

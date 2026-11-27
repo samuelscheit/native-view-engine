@@ -2497,9 +2497,9 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
- "nve-components",
  "nve-engine",
  "nve-store",
+ "nve-tables",
  "taffy",
 ]
 
@@ -2514,10 +2514,10 @@ dependencies = [
  "flate2",
  "nve-abi",
  "nve-backend-headless",
- "nve-components",
  "nve-engine",
  "nve-layout-yoga",
  "nve-store",
+ "nve-tables",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -2538,9 +2538,9 @@ dependencies = [
  "criterion",
  "nve-abi",
  "nve-codec",
- "nve-components",
  "nve-engine",
  "nve-store",
+ "nve-tables",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2557,7 +2557,6 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-skia",
  "nve-backend-web",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-hash",
@@ -2565,6 +2564,7 @@ dependencies = [
  "nve-layout-yoga",
  "nve-motion",
  "nve-store",
+ "nve-tables",
  "rkyv",
  "serde",
  "serde_json",
@@ -2635,8 +2635,8 @@ dependencies = [
  "nve-abi",
  "nve-backend-web",
  "nve-canvas",
- "nve-components",
  "nve-store",
+ "nve-tables",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2656,7 +2656,6 @@ dependencies = [
  "nve-backend-web",
  "nve-canvas-web",
  "nve-codegen",
- "nve-components",
  "nve-dioxus",
  "nve-docs",
  "nve-docs-site",
@@ -2666,6 +2665,7 @@ dependencies = [
  "nve-mdx",
  "nve-store",
  "nve-studio-workspace",
+ "nve-tables",
  "nve-web-html-web",
  "nve-wire",
  "serde_json",
@@ -2700,17 +2700,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nve-components"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "nve-abi",
- "nve-codec",
- "nve-hash",
- "nve-store",
-]
-
-[[package]]
 name = "nve-dioxus"
 version = "0.1.0"
 dependencies = [
@@ -2720,10 +2709,10 @@ dependencies = [
  "dioxus-signals",
  "nve-abi",
  "nve-codec",
- "nve-components",
  "nve-engine",
  "nve-interop",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -2737,7 +2726,6 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-web",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-host-services",
  "nve-interop",
@@ -2745,6 +2733,7 @@ dependencies = [
  "nve-router",
  "nve-store",
  "nve-system-env",
+ "nve-tables",
  "nve-ui",
  "nve-web-html",
  "nve-web-html-web",
@@ -2765,7 +2754,6 @@ dependencies = [
  "nve-canvas-skia",
  "nve-canvas-web",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-docs",
  "nve-engine",
@@ -2775,6 +2763,7 @@ dependencies = [
  "nve-router",
  "nve-store",
  "nve-system-env",
+ "nve-tables",
  "nve-ui",
  "nve-web-html",
  "nve-web-html-web",
@@ -2790,8 +2779,8 @@ dependencies = [
  "libloading 0.9.1",
  "nve-abi",
  "nve-codec",
- "nve-components",
  "nve-store",
+ "nve-tables",
  "serde",
  "serde_json",
 ]
@@ -2852,13 +2841,13 @@ dependencies = [
  "nve-canvas",
  "nve-canvas-skia",
  "nve-canvas-web",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-i18n",
  "nve-interop",
  "nve-motion",
  "nve-store",
+ "nve-tables",
  "nve-ui",
  "nve-web-html-web",
 ]
@@ -2939,9 +2928,9 @@ dependencies = [
  "criterion",
  "nve-abi",
  "nve-codec",
- "nve-components",
  "nve-engine",
  "nve-store",
+ "nve-tables",
  "serde",
 ]
 
@@ -2953,10 +2942,10 @@ dependencies = [
  "criterion",
  "nve-abi",
  "nve-backend-headless",
- "nve-components",
  "nve-engine",
  "nve-example-kitchen-sink",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -2981,8 +2970,8 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
- "nve-components",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -2991,10 +2980,10 @@ version = "0.1.0"
 dependencies = [
  "nve-abi",
  "nve-backend-skia",
- "nve-components",
  "nve-engine",
  "nve-motion",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -3030,11 +3019,11 @@ dependencies = [
  "minicbor",
  "nve-abi",
  "nve-backend-web",
- "nve-components",
  "nve-dioxus",
  "nve-query",
  "nve-rpc",
  "nve-store",
+ "nve-tables",
  "nve-ui",
  "nve-web-html-web",
 ]
@@ -3049,10 +3038,10 @@ dependencies = [
  "nve-abi",
  "nve-backend-headless",
  "nve-codec",
- "nve-components",
  "nve-dioxus",
  "nve-interop",
  "nve-store",
+ "nve-tables",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -3098,7 +3087,6 @@ dependencies = [
  "nve-canvas",
  "nve-canvas-skia",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-filesystem",
@@ -3111,6 +3099,7 @@ dependencies = [
  "nve-store",
  "nve-svg-skia",
  "nve-system-env",
+ "nve-tables",
  "nve-wire",
  "softbuffer",
  "tungstenite",
@@ -3152,7 +3141,6 @@ dependencies = [
  "nve-canvas-skia",
  "nve-canvas-web",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-host-services",
@@ -3161,6 +3149,7 @@ dependencies = [
  "nve-router",
  "nve-store",
  "nve-system-env",
+ "nve-tables",
  "nve-ui",
  "nve-web-html",
  "nve-web-html-web",
@@ -3207,6 +3196,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-tables"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-codec",
+ "nve-hash",
+ "nve-store",
+]
+
+[[package]]
 name = "nve-tv"
 version = "0.1.0"
 
@@ -3223,13 +3223,13 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-web",
  "nve-codec",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-i18n",
  "nve-interop",
  "nve-motion",
  "nve-store",
+ "nve-tables",
  "nve-tv",
  "nve-web-html",
  "nve-web-html-web",
@@ -3301,7 +3301,6 @@ dependencies = [
  "nve-backend-web",
  "nve-canvas",
  "nve-canvas-web",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-example-issues-api",
@@ -3315,6 +3314,7 @@ dependencies = [
  "nve-rpc",
  "nve-store",
  "nve-studio-workspace",
+ "nve-tables",
  "nve-web-html",
  "nve-web-html-web",
  "nve-wire",
@@ -3354,8 +3354,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "nve-abi",
- "nve-components",
  "nve-engine",
+ "nve-tables",
  "nve-wire-core",
  "quinn",
  "rcgen",

@@ -21,7 +21,7 @@ use nve_abi::{
     NodeId, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId, TimestampUs,
     ValidatedEvents, ROOT_NODE_ID,
 };
-use nve_components::tables::{
+use nve_tables::tables::{
     register_core_tables, AlignItems, FlexDirection, Interaction, JustifyContent, Layout,
     TextContent, Typography, Visual,
 };

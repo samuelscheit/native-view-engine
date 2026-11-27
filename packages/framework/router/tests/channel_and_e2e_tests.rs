@@ -2,7 +2,7 @@
 //! wire scene E2E tests for `nve-router`.
 
 use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};
-use nve_components::tables::{Accessibility, AriaRole, DebugId, Interaction, TextContent};
+use nve_tables::tables::{Accessibility, AriaRole, DebugId, Interaction, TextContent};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_store::wire::WireDecoder;

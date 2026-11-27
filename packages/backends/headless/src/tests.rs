@@ -1,5 +1,5 @@
 use nve_abi::{ColorRgba, FrameId, InteractionEvent, PrimarySlot, SurfaceId};
-use nve_components::tables::{
+use nve_tables::tables::{
     core_realization_order, FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
 };
 use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
@@ -148,7 +148,7 @@ fn publish_scene_view_unifies_text_slab_across_render_nodes_and_table_views() {
 
 #[test]
 fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fixed_uses_viewport() {
-    use nve_components::tables::{BoxShadow, BoxShadows, Position, Visibility};
+    use nve_tables::tables::{BoxShadow, BoxShadows, Position, Visibility};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
@@ -221,14 +221,13 @@ fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fix
     let fr = backend.layout_of(fixed_box).unwrap();
     assert_eq!((fr.x, fr.y, fr.width, fr.height), (20.0, 10.0, 60.0, 30.0));
 
-    // NVERELOC export emits real CSS box-shadow string (not empty "").
+    // NVERELOC Frame-0 export carries no CSS shadow strings (CSS formatting is web-only).
     let reloc = backend
         .export_scene_reloc(&store, 1, FrameId(1), "shadow-test", ColorRgba::BLACK)
         .unwrap();
     let parsed = SceneRelocView::from_bytes(&reloc, VerifyMode::Full).unwrap();
     let reloc_p = parsed.find_node_by_id(parent).unwrap().1;
-    let shadow_css = parsed.box_shadow_of(reloc_p).unwrap();
-    assert!(shadow_css.contains("2px 4px 8px"), "unexpected box_shadow: {shadow_css}");
+    assert_eq!(parsed.box_shadow_of(reloc_p).unwrap(), "");
 
     // Stale generation query after removal returns None (no cross-generation rect aliasing).
     let mut tx = store.tx();
@@ -295,7 +294,7 @@ fn publish_scene_view_marks_in_place_text_edits_dirty_and_skips_external_slab_co
 
 #[test]
 fn hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
-    use nve_components::tables::Visibility;
+    use nve_tables::tables::Visibility;
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
@@ -344,8 +343,8 @@ fn hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
 
 #[test]
 fn hidden_text_input_collapses_to_zero_layout_no_hit_and_auto_cursor() {
-    use nve_components::interaction::CursorKind;
-    use nve_components::tables::{InputKind, TextInput};
+    use nve_tables::interaction::CursorKind;
+    use nve_tables::tables::{InputKind, TextInput};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();

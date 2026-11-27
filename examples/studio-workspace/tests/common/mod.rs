@@ -8,7 +8,7 @@ use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
 use nve_canvas_skia::CanvasSkiaSystem;
 use nve_canvas_web::CanvasWebSystem;
-use nve_components::tables::{DebugId, TextContent};
+use nve_tables::tables::{DebugId, TextContent};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{NodeStore};
@@ -17,7 +17,7 @@ use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_web_html_web::register_web_html_systems;
 
 pub fn register_studio_tables() {
-    nve_components::tables::register_core_tables();
+    nve_tables::tables::register_core_tables();
     let _ = <nve_canvas::Canvas as nve_store::NveTable>::slot();
     nve_web_html::register_web_html_tables();
 }

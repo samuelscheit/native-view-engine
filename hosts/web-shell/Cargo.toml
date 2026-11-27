@@ -39,7 +39,7 @@ scene-view = []
 [dependencies]
 nve-abi = { workspace = true }
 nve-store = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-canvas = { workspace = true }
 nve-canvas-web = { workspace = true }
 nve-motion-web = { workspace = true }

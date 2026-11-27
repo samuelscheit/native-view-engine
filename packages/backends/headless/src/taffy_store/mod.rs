@@ -10,7 +10,7 @@ mod style_view;
 use std::sync::Arc;
 
 use nve_abi::table::effect;
-use nve_components::tables::{
+use nve_tables::tables::{
     Direction as NveDirection, Layout as NveLayout, Position as NvePosition, TextContent,
     Typography,
 };

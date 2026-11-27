@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use nve_abi::{EventBatchBuf, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     core_realization_order, register_core_tables, Interaction, TextContent,
 };
 use nve_engine::{StoreBackend, StoreWireReplica, Viewport};

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use nve_abi::table::effect;
 use nve_abi::{EventBatchBuf, NodeId, NveSceneTable, SurfaceId};
-use nve_components::tables::{Interaction, TextContent};
+use nve_tables::tables::{Interaction, TextContent};
 use nve_engine::{
     BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, Viewport,
 };

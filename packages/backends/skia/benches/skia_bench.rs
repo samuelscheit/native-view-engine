@@ -12,7 +12,7 @@ mod native {
     use nve_abi::{ColorRgba, SurfaceId};
     use nve_backend_skia::raster::{rasterize_display_list, PixelBuffer};
     use nve_backend_skia::{decode_image_uri, SkiaBackend};
-    use nve_components::tables::{Layout, TextContent, Visual};
+    use nve_tables::tables::{Layout, TextContent, Visual};
     use nve_engine::{StoreBackend, Viewport};
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 

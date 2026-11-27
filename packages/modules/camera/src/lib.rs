@@ -1,6 +1,6 @@
 //! Optional NVE camera module (`packages/modules/camera`).
 //!
-//! Pure-spec root crate with zero dependency on `nve-components`, `nve-interop`, or any backend:
+//! Pure-spec root crate with zero dependency on `nve-tables`, `nve-interop`, or any backend:
 //! - [`table::CameraPreviewTable`] (`#[derive(NveTable)]`, `"nve.camera.preview"`),
 //! - [`CameraFacing`] enum shared across camera adapters,
 //! - 40-byte `#[repr(C)]` [`CameraFrameDescriptor`] / [`CameraFrameWireLayout`] (`NVCF`),

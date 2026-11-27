@@ -8,7 +8,7 @@ use nve_backend_web::WebBackend;
 use nve_bench::{
     build_card_scene_cmd, build_row_tree_cmd, RowFeedFixture, DEFAULT_VIEWPORT,
 };
-use nve_components::tables::core_realization_order;
+use nve_tables::tables::core_realization_order;
 use nve_engine::{StoreBackend, StoreLayoutEngine, StoreWireReplica};
 use nve_layout_yoga::YogaLayoutEngine;
 

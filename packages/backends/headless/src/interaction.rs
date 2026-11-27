@@ -2,13 +2,14 @@
 //! `:disabled`) and [`CursorKind`] resolution integrated directly into [`crate::HeadlessBackend`],
 //! reading `Interaction`, `Events`, and `StateRules` tables directly from `&NodeStore`.
 
+use nve_engine::InteractionTracker;
 use nve_abi::NodeId;
-use nve_components::interaction::{
+use nve_tables::interaction::{
     resolve_cursor_from_view, resolve_layout_and_style_from_view, resolve_style_from_view,
-    visit_state_rules_in_cascade, CursorKind, FocusModality, InteractionState, InteractionTracker,
+    visit_state_rules_in_cascade, CursorKind, FocusModality, InteractionState,
 };
-use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
-use nve_components::tables::{InputKind, Interaction, StateRules, StateRulesView, TextInput, Visual};
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::tables::{InputKind, Interaction, StateRules, StateRulesView, TextInput, Visual};
 use nve_engine::StoreLayoutEngine;
 use nve_store::{NodeStore, RowPatchView};
 

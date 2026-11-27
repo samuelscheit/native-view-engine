@@ -355,8 +355,7 @@ fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
         "NveTable field hygiene (#[bits], sentinels, split bools), Unset variants, SET_* masks, Tier-1 encode/decode_bytes, dioxus numeric->String",
         &v_table,
     );
-    assert_staged_violations(
-        Stage::Post1B1D,
+    assert_no_violations(
         "Platform purity: zero CSS/HTML formatters in packages/core/* and zero motion/MotionClock in core",
         &v_purity,
     );

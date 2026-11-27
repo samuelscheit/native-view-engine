@@ -1,6 +1,6 @@
 //! BiDi text shaping, grapheme-safe cursor hit-testing, and IME cursor rect tests over `NodeStore`.
 
-use nve_components::tables::{Layout, TextInput, Typography};
+use nve_tables::tables::{Layout, TextInput, Typography};
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 

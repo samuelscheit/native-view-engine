@@ -4,8 +4,8 @@
 use std::fmt::Write as _;
 
 use nve_abi::ColorScheme;
-use nve_components::media::{MediaPointer, MediaQuery};
-use nve_components::tables::ResponsiveRulesView;
+use nve_tables::media::{MediaPointer, MediaQuery};
+use nve_tables::tables::ResponsiveRulesView;
 use nve_store::NodeStore;
 
 use crate::css::format_content_class;

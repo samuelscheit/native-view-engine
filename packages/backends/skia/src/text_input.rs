@@ -3,7 +3,7 @@
 //! grapheme-safe hit-testing, and exact live caret/preedit screen-rect computation over `&NodeStore`.
 
 use nve_abi::ColorRgba;
-use nve_components::tables::{Layout, TextContent, TextInput};
+use nve_tables::tables::{Layout, TextContent, TextInput};
 use nve_engine::LayoutRect;
 use nve_store::{NodeId, NodeStore};
 

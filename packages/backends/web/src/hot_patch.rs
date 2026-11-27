@@ -2,7 +2,7 @@
 
 use core::fmt::Write as _;
 
-use nve_components::tables::{DebugId, TextContent};
+use nve_tables::tables::{DebugId, TextContent};
 use nve_engine::HotPatchMsg;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 

@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use nve_abi::{EventSet, InteractionEvent};
 use nve_backend_web::WebBackend;
 use nve_canvas::Canvas;
-use nve_components::tables::{
+use nve_tables::tables::{
     register_core_tables, Accessibility, AriaRole, BoxShadow, BoxShadows, DebugId, FlexWrap,
     Interaction, Layout, Link, TextAlign, TextContent, TextInput, Typography, Visual,
 };

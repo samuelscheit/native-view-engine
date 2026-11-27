@@ -54,9 +54,9 @@ use nve_abi::hash::HashMap;
 use nve_abi::{EventBatchBuf, NodeId, SurfaceId};
 #[cfg(feature = "hydrate")]
 use nve_abi::{InteractionEvent, TextInputEvent, TimestampUs};
-use nve_components::keyboard::KeyboardInsets;
+use nve_tables::keyboard::KeyboardInsets;
 #[cfg(feature = "hydrate")]
-use nve_components::tables::{Interaction, TextInput};
+use nve_tables::tables::{Interaction, TextInput};
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend, Viewport};
 use nve_store::{ChangeSet, NodeStore};
 

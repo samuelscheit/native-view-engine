@@ -15,7 +15,7 @@ dioxus-signals = { workspace = true }
 [dev-dependencies]
 nve-abi = { workspace = true }
 nve-backend-headless = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-store = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

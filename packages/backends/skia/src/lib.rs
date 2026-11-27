@@ -34,13 +34,14 @@ mod text_bidi_tests;
 #[cfg(test)]
 mod text_tests;
 
+pub use nve_engine::InteractionTracker;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{ColorRgba, EventBatchBuf, NodeId, SurfaceId};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
-use nve_components::tables::{ImageFit, Typography};
+use nve_tables::tables::{ImageFit, Typography};
 use nve_engine::{
     BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer,
     Viewport,
@@ -73,22 +74,22 @@ pub use image_cache::{
     ImageCache, ImageDecodeError, ImageDrawPlacement,
 };
 pub use frame_hook::{NodeTargets, SkiaFrameHook, SkiaFrameHooks, TargetsOf};
-pub use nve_components::interaction::{
-    CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+pub use nve_tables::interaction::{
+    CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
-pub use nve_components::layout_ext::{
+pub use nve_tables::layout_ext::{
     compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
     GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
     PositionInsets, PositionMode,
 };
-pub use nve_components::paint::{
-    lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
-    LinearGradient, RadialGradient,
+pub use nve_tables::paint::{
+    lerp_color_premul, sample_gradient_stops, BackgroundFill, GradientStop, LinearGradient,
+    RadialGradient,
 };
-pub use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
-pub use nve_components::tables::{parse_box_shadow, BoxShadow, Display};
-pub use nve_components::transform::Transform2D;
-pub use nve_components::{RowPatch, StylePatchExt};
+pub use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+pub use nve_tables::tables::{BoxShadow, Display};
+pub use nve_tables::transform::Transform2D;
+pub use nve_tables::{RowPatch, StylePatchExt};
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{

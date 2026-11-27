@@ -16,7 +16,7 @@ use nve_backend_skia::gpu::GpuSurfaceConfig;
 use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use nve_backend_skia::{CursorKind, SkiaBackend};
 use nve_canvas_skia::CanvasSkiaSystem;
-use nve_components::tables::{core_realization_order, register_core_tables};
+use nve_tables::tables::{core_realization_order, register_core_tables};
 use nve_engine::{
     encode_reloc_bundle, write_reloc_atomic, HotPatchMsg, LayoutRect, NativeInstantBootStore,
     RelocHeader, StateSaveOutcome, StateStoreConfig, StoreBackend, StoreWireReplica, VerifyMode,

@@ -2,10 +2,11 @@
 //! [`LayoutExt`] (CSS Grid, `flex-basis`, `aspect-ratio`, `position` + insets, RTL logical
 //! spacing) and [`Transform2D`] in [`crate::WebBackend`].
 
+use crate::css::{Keyword, WriteCss};
 use nve_abi::Dimension;
-use nve_components::layout_ext::{GridTrack, LayoutExt, PositionMode};
-use nve_components::tables::Display;
-use nve_components::transform::Transform2D;
+use nve_tables::layout_ext::{LayoutExt, PositionMode};
+use nve_tables::tables::Display;
+use nve_tables::transform::Transform2D;
 
 use crate::css::{canonical_f32, write_compact_dim, write_compact_num, write_compact_px};
 
@@ -39,7 +40,7 @@ pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) 
     }
     if ext.position != PositionMode::Relative || !ext.insets.is_auto() {
         out.push_str("position:");
-        out.push_str(ext.position.as_css());
+        out.push_str(ext.position.keyword());
         out.push(';');
     }
     for (prop, dim) in [
@@ -57,12 +58,12 @@ pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) 
     if let Some(ref grid) = ext.grid {
         if !grid.template_columns.is_empty() {
             out.push_str("grid-template-columns:");
-            GridTrack::write_css_list_into(&grid.template_columns, out);
+            crate::css::write_grid_tracks(grid.template_columns.iter().copied(), out);
             out.push(';');
         }
         if !grid.template_rows.is_empty() {
             out.push_str("grid-template-rows:");
-            GridTrack::write_css_list_into(&grid.template_rows, out);
+            crate::css::write_grid_tracks(grid.template_rows.iter().copied(), out);
             out.push(';');
         }
         if let Some(cg) = grid.column_gap {
@@ -78,12 +79,12 @@ pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) 
     }
     if !ext.grid_item.column.is_auto() {
         out.push_str("grid-column:");
-        ext.grid_item.column.write_css_into(out);
+        ext.grid_item.column.write_css(out);
         out.push(';');
     }
     if !ext.grid_item.row.is_auto() {
         out.push_str("grid-row:");
-        ext.grid_item.row.write_css_into(out);
+        ext.grid_item.row.write_css(out);
         out.push(';');
     }
     if let Some(v) = ext.padding_inline.start {
@@ -111,7 +112,7 @@ pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) 
 /// Emits compact native CSS `transform:` (and optional `transform-origin:`) declarations into `out`.
 pub fn write_compact_transform_into(tf: Option<Transform2D>, out: &mut String) {
     if let Some(tf) = tf {
-        tf.write_css_decls_into(false, out);
+        crate::css::write_transform_decls(&tf, false, out);
     }
 }
 

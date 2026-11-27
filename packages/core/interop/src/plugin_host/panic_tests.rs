@@ -4,7 +4,7 @@ use nve_abi::{
     EventBatchBuf, FrameId, InterfaceId, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
     NveSizeConstraints, SurfaceId, TimestampUs, ValidatedEvents,
 };
-use nve_components::tables::TextContent;
+use nve_tables::tables::TextContent;
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{ChangeSet, NodeId, NodeStore};
 

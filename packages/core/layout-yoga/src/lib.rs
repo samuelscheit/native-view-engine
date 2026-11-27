@@ -56,7 +56,7 @@ mod real_impl {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Arc;
 
-    use nve_components::tables::{Layout, TextContent, Typography};
+    use nve_tables::tables::{Layout, TextContent, Typography};
     use nve_engine::{HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
     use nve_store::{ChangeSet, NodeId, NodeStore};
 
@@ -226,7 +226,7 @@ mod real_impl {
             let Some(entry) = self.nodes.get_mut(&id) else {
                 return;
             };
-            let hidden_input = nve_components::tables::is_hidden_text_input(store, id);
+            let hidden_input = nve_tables::tables::is_hidden_text_input(store, id);
             let (props, ext_storage) = if let Some(layout) = store.try_row::<Layout>(id) {
                 let props = NveYogaLayoutProps::from_store_layout(&layout);
                 let mut ext = NveYogaLayoutExt::from_store_layout(&layout);

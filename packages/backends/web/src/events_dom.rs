@@ -6,7 +6,7 @@ use std::rc::Rc;
 use nve_abi::{
     EventBatchBuf, EventFlags, InteractionEvent, ScrollEvent, SurfaceId, TextInputEvent,
 };
-use nve_components::tables::{Interaction, Scroll, TextInput};
+use nve_tables::tables::{Interaction, Scroll, TextInput};
 use nve_store::NveTable;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;

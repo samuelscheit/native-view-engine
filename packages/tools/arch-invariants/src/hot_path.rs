@@ -296,7 +296,7 @@ pub fn line_has_fnv1a(line: &str) -> bool {
 fn is_per_node_downcast_scope(rel: &str) -> bool {
     rel.starts_with("packages/backends/")
         || rel.starts_with("packages/core/abi/")
-        || rel.starts_with("packages/core/components/")
+        || rel.starts_with("packages/core/tables/")
         || rel.starts_with("packages/core/tables/")
         || rel == "packages/core/engine/src/layout.rs"
         || matches!(

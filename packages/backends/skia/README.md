@@ -20,7 +20,7 @@ assert_eq!(backend.viewport().scale_factor, 2.0);
 
 ## Dependency Invariants
 
-- **Key dependencies**: `nve-abi`, `nve-components`, `nve-engine`, `nve-backend-headless`, `cosmic-text`, `unicode-segmentation`, `flate2`, `raw-window-handle`, plus optional `skia-safe`, `nve-layout-yoga`, and platform GPU crates (`ash`, `objc2-*`, `windows`).
+- **Key dependencies**: `nve-abi`, `nve-tables`, `nve-engine`, `nve-backend-headless`, `cosmic-text`, `unicode-segmentation`, `flate2`, `raw-window-handle`, plus optional `skia-safe`, `nve-layout-yoga`, and platform GPU crates (`ash`, `objc2-*`, `windows`).
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

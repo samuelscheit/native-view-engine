@@ -11,7 +11,7 @@ mod native {
     use criterion::{criterion_group, Criterion};
     use nve_backend_web::snapshot::{decode_state_envelope, encode_state_envelope};
     use nve_backend_web::WebBackend;
-    use nve_components::tables::{Layout, TextContent, Visual};
+    use nve_tables::tables::{Layout, TextContent, Visual};
     use nve_engine::{StoreBackend, Viewport};
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, SurfaceId};
 

@@ -4,11 +4,12 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use nve_abi::{ColorRgba, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::{CursorKind, InteractionState};
-use nve_components::layout_ext::GridTrack;
-use nve_components::media::MediaQuery;
-use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-use nve_components::StylePatchExt;
+use nve_tables::interaction::{CursorKind, InteractionState};
+use nve_tables::layout_ext::GridTrack;
+use nve_tables::media::MediaQuery;
+use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
+use nve_tables::tables::BoxShadow;
+use nve_tables::StylePatchExt;
 use nve_store::RowPatch;
 
 use super::TypedStyle;
@@ -228,9 +229,10 @@ impl TypedStyle {
         self
     }
 
+    /// Sets the node's shadows (`[]` / `None` explicitly clears any previous shadows).
     #[inline]
-    pub fn box_shadow(mut self, shadow: impl Into<Cow<'static, str>>) -> Self {
-        self.box_shadow = Some(shadow.into());
+    pub fn box_shadows(mut self, shadows: impl IntoIterator<Item = BoxShadow>) -> Self {
+        self.box_shadows = Some(shadows.into_iter().collect());
         self
     }
 

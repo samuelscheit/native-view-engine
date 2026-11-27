@@ -10,7 +10,7 @@ use nve_backend_skia::gpu::{
     GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSwapchain,
 };
 use nve_backend_skia::raster::PixelBuffer;
-use nve_components::tables::{
+use nve_tables::tables::{
     register_core_tables, FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
 };
 use nve_engine::loader::LoaderError;

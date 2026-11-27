@@ -122,7 +122,7 @@ fn paint_canvas_dom(
     dl: nve_canvas::DrawListView<'_>,
 ) {
     use nve_canvas::CanvasOpRef;
-    use nve_components::tables::Layout;
+    use nve_tables::tables::Layout;
     use wasm_bindgen::JsCast;
 
     let Some(canvas) = el.dyn_ref::<web_sys::HtmlCanvasElement>() else {

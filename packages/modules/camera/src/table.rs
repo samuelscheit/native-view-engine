@@ -1,5 +1,5 @@
 //! `#[derive(NveTable)]` schema for [`CameraPreviewTable`] (`nve.camera.preview`) — zero
-//! dependency on `nve-components` or backends.
+//! dependency on `nve-tables` or backends.
 
 use nve_store::{NveTable, Str, WordEnum};
 

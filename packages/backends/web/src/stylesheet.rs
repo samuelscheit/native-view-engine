@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use nve_abi::hash::HashSet;
-use nve_components::interaction::CursorKind;
-use nve_components::tables::{
+use nve_tables::interaction::CursorKind;
+use nve_tables::tables::{
     Interaction, Responsive, ResponsiveRules, ResponsiveRulesView, StateRules,
 };
 use nve_store::{NodeId, NodeStore};

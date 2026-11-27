@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use nve_abi::{EventBatchBuf, InteractionEvent, NodeId, TextInputEvent, TimestampUs};
 use nve_backend_skia::SkiaBackend;
-use nve_components::tables::{is_subtree_display_none, Interaction, TextInput};
+use nve_tables::tables::{is_subtree_display_none, Interaction, TextInput};
 use nve_store::NodeStore;
 
 use super::session::{now_us, DesktopSession};

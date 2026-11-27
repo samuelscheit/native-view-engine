@@ -4,7 +4,7 @@
 use nve_abi::{
     ColorRgba, EventBatchBuf, FrameId, InteractionEvent, SurfaceId, TimestampUs,
 };
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, AriaRole, DebugId, Interaction, Layout, TextContent, TextInput, Typography,
     Visual,
 };

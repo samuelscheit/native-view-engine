@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use nve_abi::hash::HashMap;
 use nve_abi::table::effect;
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, AriaRole, Image, Link, TextContent, TextInput, Transform, Typography, Visual,
 };
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend};
@@ -265,7 +265,7 @@ impl WebStoreRenderer {
     }
 }
 
-pub(crate) fn write_transform_css(tf: nve_components::tables::TransformRef<'_>, out: &mut String) {
+pub(crate) fn write_transform_css(tf: nve_tables::tables::TransformRef<'_>, out: &mut String) {
     use core::fmt::Write as _;
     let (tx, ty) = (tf.translate_x(), tf.translate_y());
     let (sx, sy) = (tf.scale_x(), tf.scale_y());

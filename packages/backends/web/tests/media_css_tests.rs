@@ -5,7 +5,7 @@ use nve_backend_web::media_css::{
     color_scheme_as_css, color_scheme_negated_css, write_media_css_condition,
     write_negated_media_css_conditions,
 };
-use nve_components::media::{MediaEnv, MediaPointer, MediaQuery};
+use nve_tables::media::{MediaEnv, MediaPointer, MediaQuery};
 
 struct XorShift64(u64);
 impl XorShift64 {

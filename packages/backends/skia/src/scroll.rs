@@ -3,7 +3,7 @@
 
 use nve_abi::NodeId;
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::Scroll;
+use nve_tables::tables::Scroll;
 use nve_engine::StoreLayoutEngine;
 use nve_store::{NodeStore, NveTable};
 

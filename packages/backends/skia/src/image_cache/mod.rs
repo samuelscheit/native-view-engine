@@ -19,7 +19,7 @@ mod tests;
 use std::fmt;
 
 use nve_abi::ColorRgba;
-use nve_components::tables::ImageFit;
+use nve_tables::tables::ImageFit;
 use nve_engine::LayoutRect;
 
 pub use data_uri::{decode_base64, decode_image_uri};

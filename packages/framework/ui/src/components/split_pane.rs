@@ -488,7 +488,7 @@ pub fn SplitPane(
             border_color: colors.border,
             border_radius: 0.0,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

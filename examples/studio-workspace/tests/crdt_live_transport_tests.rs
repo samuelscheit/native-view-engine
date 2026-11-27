@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::NodeId;
 use nve_interop::crdt::{

@@ -1,8 +1,8 @@
 //! Zero-copy Taffy `StyleView` implementing `CoreStyle`, Flexbox, Grid, and OOF style traits
 //! directly over `NodeStore` word columns.
 
-use nve_components::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
-use nve_components::tables::{
+use nve_tables::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
+use nve_tables::tables::{
     AlignContent as NveAlignContent, AlignItems as NveAlignItems, AlignSelf as NveAlignSelf,
     BoxSizing as NveBoxSizing, Display as NveDisplay, FlexDirection as NveFlexDirection,
     FlexWrap as NveFlexWrap, GridItem, GridLayout, GridLine as NveGridLine, GridTracks,
@@ -32,12 +32,12 @@ pub(super) struct StyleView<'a> {
 
 impl<'a> StyleView<'a> {
     #[inline(always)]
-    fn layout(&self) -> nve_components::tables::LayoutRef<'a> {
+    fn layout(&self) -> nve_tables::tables::LayoutRef<'a> {
         self.store.row::<NveLayout>(self.id)
     }
 
     #[inline(always)]
-    fn visual(&self) -> nve_components::tables::VisualRef<'a> {
+    fn visual(&self) -> nve_tables::tables::VisualRef<'a> {
         self.store.row::<Visual>(self.id)
     }
 
@@ -226,7 +226,7 @@ impl CoreStyle for StyleView<'_> {
     #[inline]
     fn box_generation_mode(&self) -> BoxGenerationMode {
         if self.layout().display() == NveDisplay::None
-            || nve_components::tables::is_hidden_text_input(self.store, self.id)
+            || nve_tables::tables::is_hidden_text_input(self.store, self.id)
         {
             BoxGenerationMode::None
         } else {

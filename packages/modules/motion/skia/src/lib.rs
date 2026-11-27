@@ -5,8 +5,8 @@
 
 use nve_abi::hash::{HashMap, HashSet};
 use nve_backend_skia::{SkiaFrameHook, TargetsOf};
-use nve_components::snapshots::VisualSnapshot;
-use nve_components::transform::Transform2D;
+use nve_tables::snapshots::VisualSnapshot;
+use nve_tables::transform::Transform2D;
 use nve_motion::{
     lerp_style_property, lerp_transform_2d, resolve_transition_for, Motion, MotionPreference,
     TimedTransition, TransitionProperty, Transitions,

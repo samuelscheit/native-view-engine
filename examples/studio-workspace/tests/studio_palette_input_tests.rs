@@ -114,7 +114,7 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
             scale_factor: 3.0,
         },
     );
-    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(host, nve_tables::tables::core_realization_order());
     rep.submit_nve2_frame(&mobile_frame).unwrap();
     assert!(rep.backend().render_ascii_tree(rep.store()).contains("Studio OFF"));
 
@@ -251,7 +251,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         },
     );
     let mut verify_rep =
-        StoreWireReplica::new(verify_host, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(verify_host, nve_tables::tables::core_realization_order());
     verify_rep.submit_nve2_frame(&pf2).unwrap();
     let tree = verify_rep.backend().render_ascii_tree(verify_rep.store());
     assert!(tree.contains("100k Stream"));
@@ -278,7 +278,7 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
     let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(SurfaceId::ROOT, vp);
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
     let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1).unwrap();
     assert!(!app.state_snapshot().palette.open);
@@ -415,7 +415,7 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
             scale_factor: 1.0,
         },
     );
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
     let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1).unwrap();
 

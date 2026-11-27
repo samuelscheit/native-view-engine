@@ -1,8 +1,8 @@
 //! Value-type layout/visual snapshots and visibility/overflow helpers over `NodeStore`.
 
 use nve_abi::ColorRgba;
-use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
-use nve_components::tables::{
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::tables::{
     is_node_display_none, Layout as NveLayout, Overflow, Typography, Visual,
 };
 use nve_store::{Length, NodeId, NodeStore};
@@ -50,33 +50,33 @@ pub fn layout_snapshot_of(store: &NodeStore, id: NodeId) -> LayoutSnapshot {
         max_width: length_to_dim(l.max_width()),
         max_height: length_to_dim(l.max_height()),
         flex_direction: match l.flex_direction() {
-            nve_components::tables::FlexDirection::Column => nve_abi::FlexDirection::Column,
-            nve_components::tables::FlexDirection::Row => nve_abi::FlexDirection::Row,
-            nve_components::tables::FlexDirection::ColumnReverse => {
+            nve_tables::tables::FlexDirection::Column => nve_abi::FlexDirection::Column,
+            nve_tables::tables::FlexDirection::Row => nve_abi::FlexDirection::Row,
+            nve_tables::tables::FlexDirection::ColumnReverse => {
                 nve_abi::FlexDirection::ColumnReverse
             }
-            nve_components::tables::FlexDirection::RowReverse => nve_abi::FlexDirection::RowReverse,
+            nve_tables::tables::FlexDirection::RowReverse => nve_abi::FlexDirection::RowReverse,
         },
         justify_content: match l.justify_content() {
-            nve_components::tables::JustifyContent::FlexStart => nve_abi::FlexJustify::FlexStart,
-            nve_components::tables::JustifyContent::Center => nve_abi::FlexJustify::Center,
-            nve_components::tables::JustifyContent::FlexEnd => nve_abi::FlexJustify::FlexEnd,
-            nve_components::tables::JustifyContent::SpaceBetween => {
+            nve_tables::tables::JustifyContent::FlexStart => nve_abi::FlexJustify::FlexStart,
+            nve_tables::tables::JustifyContent::Center => nve_abi::FlexJustify::Center,
+            nve_tables::tables::JustifyContent::FlexEnd => nve_abi::FlexJustify::FlexEnd,
+            nve_tables::tables::JustifyContent::SpaceBetween => {
                 nve_abi::FlexJustify::SpaceBetween
             }
-            nve_components::tables::JustifyContent::SpaceAround => {
+            nve_tables::tables::JustifyContent::SpaceAround => {
                 nve_abi::FlexJustify::SpaceAround
             }
-            nve_components::tables::JustifyContent::SpaceEvenly => {
+            nve_tables::tables::JustifyContent::SpaceEvenly => {
                 nve_abi::FlexJustify::SpaceEvenly
             }
         },
         align_items: match l.align_items() {
-            nve_components::tables::AlignItems::Stretch => nve_abi::FlexAlign::Stretch,
-            nve_components::tables::AlignItems::FlexStart => nve_abi::FlexAlign::FlexStart,
-            nve_components::tables::AlignItems::Center => nve_abi::FlexAlign::Center,
-            nve_components::tables::AlignItems::FlexEnd => nve_abi::FlexAlign::FlexEnd,
-            nve_components::tables::AlignItems::Baseline => nve_abi::FlexAlign::Baseline,
+            nve_tables::tables::AlignItems::Stretch => nve_abi::FlexAlign::Stretch,
+            nve_tables::tables::AlignItems::FlexStart => nve_abi::FlexAlign::FlexStart,
+            nve_tables::tables::AlignItems::Center => nve_abi::FlexAlign::Center,
+            nve_tables::tables::AlignItems::FlexEnd => nve_abi::FlexAlign::FlexEnd,
+            nve_tables::tables::AlignItems::Baseline => nve_abi::FlexAlign::Baseline,
         },
         flex_grow: l.flex_grow(),
         flex_shrink: l.flex_shrink(),

@@ -42,7 +42,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(SurfaceId::ROOT, vp);
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
     let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1)
         .expect("submit initial studio frame");
@@ -102,7 +102,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     let mut cold_backend = HeadlessBackend::new();
     cold_backend.set_viewport(SurfaceId::ROOT, vp);
     let mut cold_host =
-        StoreWireReplica::new(cold_backend, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(cold_backend, nve_tables::tables::core_realization_order());
 
     let t0 = Instant::now();
     let mapped =
@@ -158,7 +158,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         verify_backend.set_viewport(SurfaceId::ROOT, vp);
         let mut verify_host = StoreWireReplica::new(
             verify_backend,
-            nve_components::tables::core_realization_order(),
+            nve_tables::tables::core_realization_order(),
         );
         verify_host
             .submit_nve2_frame(cpp_snap.frame0())
@@ -396,7 +396,7 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         HeadlessBackend::with_layout(Box::new(TaffyStoreLayout::new()));
     dyn_backend.set_viewport(SurfaceId::ROOT, vp);
     let mut replica =
-        StoreWireReplica::new(dyn_backend, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(dyn_backend, nve_tables::tables::core_realization_order());
 
     let f1 = app.render(FrameId(1)).to_vec();
     replica.submit_nve2_frame(&f1).unwrap();

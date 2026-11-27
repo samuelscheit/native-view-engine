@@ -1,5 +1,5 @@
 use nve_abi::{ColorRgba, DurationMs, FrameId, NodeId, SurfaceId, TimestampMs, NVE_PRIMARY_SLOT_NONE};
-use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
 
 use crate::reloc::{
     compute_reloc_checksum, encode_scene_reloc, NveTimelineArchive, NveTimelineArchiveView,

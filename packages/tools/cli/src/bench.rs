@@ -10,7 +10,7 @@ use nve_abi::{EventSet, FrameId, InteractionEvent, SurfaceId, ROOT_NODE_ID};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     core_realization_order, register_core_tables, FlexDirection, Interaction, Layout, TextContent,
     Visual,
 };

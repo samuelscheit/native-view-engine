@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use nve_abi::{FrameId, NodeId};
 use nve_backend_web::WebBackend;
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_dioxus::DioxusSurface;
 use nve_store::NodeStore;
 use nve_rpc::{

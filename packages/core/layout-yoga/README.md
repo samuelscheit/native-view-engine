@@ -16,7 +16,7 @@ assert!(engine.is_ok() || engine.is_err());
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine` (plus C++ Yoga via `build.rs` when `RN_REACT_COMMON_DIR` is set).
+- **Depends on**: `nve-abi`, `nve-tables`, `nve-engine` (plus C++ Yoga via `build.rs` when `RN_REACT_COMMON_DIR` is set).
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

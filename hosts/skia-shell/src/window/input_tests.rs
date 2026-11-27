@@ -4,7 +4,7 @@ use nve_abi::{
     ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId, TextInputEvent,
     ValidatedEvents,
 };
-use nve_components::tables::{
+use nve_tables::tables::{
     register_core_tables, Display, FlexDirection, InputKind, Interaction, Layout, TextInput,
     Typography, Visual,
 };

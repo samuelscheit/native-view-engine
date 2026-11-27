@@ -2,7 +2,7 @@
 //! composition/cursor-rect state for [`crate::SkiaBackend`] over `&NodeStore`.
 
 use nve_abi::NodeId;
-use nve_components::tables::{is_subtree_display_none, InputKind, TextInput, Typography};
+use nve_tables::tables::{is_subtree_display_none, InputKind, TextInput, Typography};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::NodeStore;
 

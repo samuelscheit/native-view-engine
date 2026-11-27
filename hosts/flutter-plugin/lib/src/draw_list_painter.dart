@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/rendering.dart';
 
-/// 9-byte ASCII magic header (`b"NVE_DRAW1"`) matching `packages/core/components/src/canvas_ir.rs`.
+/// 9-byte ASCII magic header (`b"NVE_DRAW1"`) matching `packages/core/tables/src/canvas_ir.rs`.
 const List<int> nveDrawMagic = <int>[78, 86, 69, 95, 68, 82, 65, 87, 49];
 
 /// Supported binary format version (`NVE_DRAW_VERSION == 1`).

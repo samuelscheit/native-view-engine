@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use nve_abi::{Dimension, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::{CursorKind, StateStyleRule};
-use nve_components::layout_ext::{LayoutDirection, PositionMode};
-use nve_components::media::ResponsiveRule;
-use nve_components::tables::{
-    self, AlignItems, BackgroundFillRes, BoxShadows, Direction, Display,
+use nve_tables::interaction::{CursorKind, StateStyleRule};
+use nve_tables::layout_ext::{LayoutDirection, PositionMode};
+use nve_tables::media::ResponsiveRule;
+use nve_tables::tables::{
+    AlignItems, BackgroundFillRes, BoxShadows, Direction, Display,
     FlexDirection as TableFlexDir, GridItem, GridLayout, GridLine as TableGridLine, GridTracks,
     Image, ImageFit, Interaction, JustifyContent, Layout, Overflow, Position, Responsive,
     ResponsiveRules, StateRules, TextAlign, Transform, Typography, Visual,
@@ -20,7 +20,7 @@ impl TypedStyle {
     /// Writes only the `{Layout, Visual, Typography}` tables selected by `layers` into `node`
     /// without touching unselected style tables or unrelated tables (`Transform`, `Motion`, etc.).
     pub fn apply_style_layers_to_tx(&self, tx: &mut Transaction<'_>, node: NodeId, layers: u8) {
-        if layers & nve_components::STYLE_LAYER_LAYOUT != 0 {
+        if layers & nve_tables::STYLE_LAYER_LAYOUT != 0 {
             if self.has_layout {
                 let l = &self.layout;
                 tx.edit::<Layout>(node)
@@ -117,7 +117,7 @@ impl TypedStyle {
             }
         }
 
-        if layers & nve_components::STYLE_LAYER_VISUAL != 0 {
+        if layers & nve_tables::STYLE_LAYER_VISUAL != 0 {
             if self.has_style {
                 let s = &self.style;
                 tx.edit::<Visual>(node)
@@ -128,14 +128,10 @@ impl TypedStyle {
                     .opacity(s.opacity)
                     .z_index(s.z_index);
             }
-            if let Some(ref bs) = self.box_shadow {
-                let parsed = tables::parse_box_shadow(bs);
-                if parsed.is_empty() {
-                    tx.edit::<Visual>(node).box_shadows(None);
-                } else {
-                    tx.edit::<Visual>(node)
-                        .box_shadows(Some(BoxShadows(parsed.into())));
-                }
+            if let Some(ref shadows) = self.box_shadows {
+                tx.edit::<Visual>(node).box_shadows(
+                    (!shadows.is_empty()).then(|| BoxShadows(shadows.as_slice().into())),
+                );
             }
             if let Some(ref ov) = self.overflow {
                 let mode = match ov.trim() {
@@ -152,7 +148,7 @@ impl TypedStyle {
             }
         }
 
-        if layers & nve_components::STYLE_LAYER_TYPOGRAPHY != 0 {
+        if layers & nve_tables::STYLE_LAYER_TYPOGRAPHY != 0 {
             if self.has_style {
                 let s = &self.style;
                 if s.text_color.a > 0 || s.font_size > 0.0 {
@@ -166,7 +162,7 @@ impl TypedStyle {
                 }
             }
             if let Some(ref fw) = self.font_weight {
-                let w = nve_components::parse_font_weight(fw);
+                let w = nve_tables::parse_font_weight(fw);
                 tx.edit::<Typography>(node).font_weight(w);
             }
             if let Some(ref ta) = self.text_align {
@@ -184,7 +180,7 @@ impl TypedStyle {
     /// Writes this [`TypedStyle`] directly into `node`'s `NodeStore` word tables with zero CSS
     /// string parsing.
     pub fn apply_to_tx(&self, tx: &mut Transaction<'_>, node: NodeId) {
-        self.apply_style_layers_to_tx(tx, node, nve_components::STYLE_LAYER_ALL);
+        self.apply_style_layers_to_tx(tx, node, nve_tables::STYLE_LAYER_ALL);
 
         if let Some(ref ext) = self.layout_ext {
             if let Some(ref g) = ext.grid {
@@ -351,8 +347,8 @@ impl TypedStyle {
         {
             tx.edit::<Typography>(node).clear_text_align();
         }
-        if self.box_shadow.is_some()
-            && next.is_none_or(|n| n.box_shadow.is_none())
+        if self.box_shadows.is_some()
+            && next.is_none_or(|n| n.box_shadows.is_none())
             && tx.store().has::<Visual>(node)
         {
             tx.edit::<Visual>(node).box_shadows(None);
@@ -430,10 +426,10 @@ fn dim_to_length(dim: Dimension) -> Length {
 }
 
 #[inline]
-fn to_table_grid_line(line: nve_components::layout_ext::GridLine) -> TableGridLine {
+fn to_table_grid_line(line: nve_tables::layout_ext::GridLine) -> TableGridLine {
     match line {
-        nve_components::layout_ext::GridLine::Auto => TableGridLine::Auto,
-        nve_components::layout_ext::GridLine::Line(n) => TableGridLine::Line(n),
-        nve_components::layout_ext::GridLine::Span(s) => TableGridLine::Span(s),
+        nve_tables::layout_ext::GridLine::Auto => TableGridLine::Auto,
+        nve_tables::layout_ext::GridLine::Line(n) => TableGridLine::Line(n),
+        nve_tables::layout_ext::GridLine::Span(s) => TableGridLine::Span(s),
     }
 }

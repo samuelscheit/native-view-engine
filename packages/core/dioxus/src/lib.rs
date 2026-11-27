@@ -32,27 +32,28 @@ pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
     ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
 };
-pub use nve_components::input_hints::{AutofillHint, InputMode};
-pub use nve_components::interaction::{
-    CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+pub use nve_tables::input_hints::{AutofillHint, InputMode};
+pub use nve_tables::interaction::{
+    CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
-pub use nve_components::layout_ext::{
+pub use nve_tables::layout_ext::{
     compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
     GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
     PositionInsets, PositionMode,
 };
-pub use nve_components::media::{
+pub use nve_tables::media::{
     MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, MEDIA_FLAG_HAS_MAX_WIDTH,
     MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
-pub use nve_components::tables::{Display, FlexWrap, Overflow, TextAlign};
-pub use nve_components::{LayoutSnapshot, StylePatchExt, VisualSnapshot};
+pub use nve_tables::tables::{Display, FlexWrap, Overflow, TextAlign};
+pub use nve_tables::{LayoutSnapshot, StylePatchExt, VisualSnapshot};
 pub use nve_store::RowPatch;
-pub use nve_components::paint::{
-    lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
-    LinearGradient, RadialGradient,
+pub use nve_engine::InteractionTracker;
+pub use nve_tables::paint::{
+    lerp_color_premul, sample_gradient_stops, BackgroundFill, GradientStop, LinearGradient,
+    RadialGradient,
 };
-pub use nve_components::transform::{
+pub use nve_tables::transform::{
     affine_concat, affine_inverse_map_point, affine_map_point, Transform2D,
 };
 pub use signal_archive::{
@@ -141,16 +142,16 @@ pub mod prelude {
     pub use dioxus_signals;
     pub use dioxus_signals::{ReadableExt, Signal, WritableExt};
     pub use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-    pub use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
-    pub use nve_components::layout_ext::{
+    pub use nve_tables::interaction::{CursorKind, InteractionState, StateStyleRule};
+    pub use nve_tables::layout_ext::{
         GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit, LayoutDirection,
         PositionMode,
     };
-    pub use nve_components::media::{MediaQuery, ResponsiveRule};
-    pub use nve_components::tables::Display;
-    pub use nve_components::StylePatchExt;
+    pub use nve_tables::media::{MediaQuery, ResponsiveRule};
+    pub use nve_tables::tables::Display;
+    pub use nve_tables::StylePatchExt;
     pub use nve_store::RowPatch;
-    pub use nve_components::input_hints::{AutofillHint, InputMode};
-    pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-    pub use nve_components::transform::Transform2D;
+    pub use nve_tables::input_hints::{AutofillHint, InputMode};
+    pub use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
+    pub use nve_tables::transform::Transform2D;
 }

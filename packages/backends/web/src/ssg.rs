@@ -1,7 +1,7 @@
 //! Generic, app-agnostic Web SSG + 0ms Instant-Restore document builder & shell injector.
 
 use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs, ROOT_NODE_ID};
-use nve_components::tables::core_realization_order;
+use nve_tables::tables::core_realization_order;
 use nve_engine::{BackendError, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::NodeStore;
 

@@ -10,7 +10,7 @@ use nve_abi::{
     ColorRgba, FrameId, NveHostStatus, SurfaceId, METHOD_WINDOW_REQUEST_FRAME, SERVICE_SYSTEM_ENV,
     SERVICE_WINDOW,
 };
-use nve_components::tables::register_core_tables;
+use nve_tables::tables::register_core_tables;
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
