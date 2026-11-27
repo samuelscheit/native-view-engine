@@ -7,7 +7,7 @@ files:
   - "packages/**/*.rs"
 ignores:
   - "packages/core/store/**"
-  - "packages/tools/cli/tests/arch_invariants/**"
+  - "packages/tools/arch-invariants/**"
   - "**/tests/**"
   - "**/benches/**"
   - "**/*_tests.rs"

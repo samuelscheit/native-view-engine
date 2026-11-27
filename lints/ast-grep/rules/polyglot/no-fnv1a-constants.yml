@@ -11,7 +11,7 @@ severity: error
 message: "FNV-1a magic constant is banned; standardize on `const fn xxh64` (`nve-hash` / `nve-abi`)."
 note: "Matches 32-bit and 64-bit hex/decimal FNV-1a constants in Rust sources."
 ignores:
-  - "packages/tools/cli/tests/arch_invariants/**"
+  - "packages/tools/arch-invariants/**"
   - "**/tests/**"
   - "**/benches/**"
   - "**/*_tests.rs"

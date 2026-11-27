@@ -369,7 +369,7 @@ detect_java_home() {
 
 suite_arch_invariants() {
   cd "$REPO_ROOT"
-  cargo test --locked -p nve-cli --test arch_invariants
+  cargo test --locked -p nve-arch-invariants
 }
 
 suite_ast_grep() {
@@ -394,7 +394,7 @@ suite_rust_clippy() {
 suite_rust_workspace() {
   cd "$REPO_ROOT"
   cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
-  cargo test --workspace -- --skip arch_inv::
+  cargo test --workspace --exclude nve-arch-invariants
   cargo bench --no-run
   if [ "$QUICK_MODE" -eq 0 ]; then
     cargo bench --workspace
@@ -646,7 +646,7 @@ fi
 
 # 0. Mechanical architectural invariants (runs in both --quick and full modes)
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "Arch invariants" suite_arch_invariants "cargo test --locked -p nve-cli --test arch_invariants"
+  run_suite "Arch invariants" suite_arch_invariants "cargo test --locked -p nve-arch-invariants"
 else
   skip_suite "Arch invariants" "cargo not found"
 fi

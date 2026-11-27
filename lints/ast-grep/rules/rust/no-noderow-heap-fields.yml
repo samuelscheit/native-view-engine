@@ -6,7 +6,7 @@ note: "Bans `Vec`, `String`, `Box`, `HashMap`, `BTreeMap`, `Arc`, `Rc`, `HashSet
 files:
   - "packages/**/*.rs"
 ignores:
-  - "packages/tools/cli/tests/arch_invariants/**"
+  - "packages/tools/arch-invariants/**"
   - "**/tests/**"
   - "**/benches/**"
   - "**/*_tests.rs"

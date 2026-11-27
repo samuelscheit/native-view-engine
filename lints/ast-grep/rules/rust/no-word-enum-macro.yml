@@ -6,7 +6,7 @@ note: "[stage: Post1B1D] Staged as `warning` until Track 1B-1d replaces `word_en
 files:
   - "packages/**/*.rs"
 ignores:
-  - "packages/tools/cli/tests/arch_invariants/**"
+  - "packages/tools/arch-invariants/**"
   - "**/tests/**"
   - "**/benches/**"
   - "**/*_tests.rs"
