@@ -28,9 +28,8 @@ public final class NveCanvasView extends View implements DrawList.Sink {
     private final Path polyPath = new Path();
     private final RectF scratchRect = new RectF();
 
-    /** Validated draw list ({@code drawLength} bytes from 0), or {@code null}. */
+    /** Validated draw list (bytes from 0), or {@code null}. */
     private ByteBuffer drawList;
-    private int drawLength;
     private ByteBuffer retainedBuffer;
     private float density = 1.0f;
 
@@ -73,14 +72,12 @@ public final class NveCanvasView extends View implements DrawList.Sink {
             return;
         }
         drawList = retainedBuffer;
-        drawLength = length;
         invalidate();
     }
 
     public void clearDrawList() {
         final boolean had = drawList != null;
         drawList = null;
-        drawLength = 0;
         if (had) invalidate();
     }
 

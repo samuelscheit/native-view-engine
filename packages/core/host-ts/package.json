@@ -6,7 +6,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./draw-list": "./src/generated/nve_draw_list.generated.ts"
   },
   "files": [
     "src"

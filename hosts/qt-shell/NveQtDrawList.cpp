@@ -79,6 +79,14 @@ struct PainterVisitor {
   }
 };
 
+struct PainterSaveGuard {
+  QPainter& painter;
+  explicit PainterSaveGuard(QPainter& target) : painter(target) { painter.save(); }
+  ~PainterSaveGuard() { painter.restore(); }
+  PainterSaveGuard(const PainterSaveGuard&) = delete;
+  PainterSaveGuard& operator=(const PainterSaveGuard&) = delete;
+};
+
 }  // namespace
 
 DrawListDecodeResult paint_draw_list(QPainter& p, const QRectF& bounds, std::span<const uint8_t> bytes) {
@@ -89,7 +97,7 @@ DrawListDecodeResult paint_draw_list(QPainter& p, const QRectF& bounds, std::spa
   const qreal h = std::max<qreal>(0.0, bounds.height());
   if (w <= 0.0 || h <= 0.0) return DrawListDecodeResult{DrawListError::Ok, 0u, bytes.size()};
 
-  p.save();
+  PainterSaveGuard save_guard(p);
   p.setRenderHint(QPainter::Antialiasing, true);
   p.translate(bounds.topLeft());
   const QRectF local(0.0, 0.0, w, h);
@@ -97,7 +105,6 @@ DrawListDecodeResult paint_draw_list(QPainter& p, const QRectF& bounds, std::spa
   const bool image_device = p.device() != nullptr && p.device()->devType() == QInternal::Image;
   PainterVisitor visitor{p, local, image_device};
   (void)stream_validated_draw_list(bytes, visitor);
-  p.restore();
   return check;
 }
 

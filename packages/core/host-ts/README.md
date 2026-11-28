@@ -33,7 +33,7 @@ leading BOM.
 
 ## Generated data & consumption
 
-`nve codegen abi` writes `src/generated/nve_abi.generated.ts` and `nve_tables.generated.ts` (exported from `index.ts`) and `test/hash_vectors.generated.ts` (all gitignored).
+`nve codegen abi` writes `src/generated/nve_abi.generated.ts` and `nve_tables.generated.ts` (exported from `@nve/host`), `src/generated/nve_draw_list.generated.ts` (exported from `@nve/host/draw-list`), and `test/hash_vectors.generated.ts` (all gitignored).
 
 Generated `<stem>_hybrid.generated.ts` clients and `<nve-*>.generated.js` Web Components import `'@nve/host'`. Because this package exports `./src/index.ts` directly (erasable TypeScript, no committed `dist/` build artifacts), browsers and apps consume generated files through a TS-aware bundler (Vite, esbuild, Rollup, webpack) or workspace package resolver; Node runs them directly with native type-stripping when resolved outside `node_modules/`.
 

@@ -61,7 +61,7 @@ pub fn record_sparkline(samples: &[f32]) -> DrawList {
 
 ## Native Host Renderer Mapping
 
-Every platform host decodes the exact same `nve.res.draw_list` word stream via Rust `DrawListView` or decoders generated from `DRAW_LIST_CODEC_DESC` (`nve-cli codegen abi`) for C++ (`packages/modules/canvas/cxx/include/nve/canvas/draw_list.hpp`), JVM (`dev.nve.host.DrawList`), Swift (`NveHost.NveDrawList`), Dart (`package:nve_host/nve_draw_list.generated.dart`), and TypeScript (`@nve/host`):
+Every platform host decodes the exact same `nve.res.draw_list` word stream via Rust `DrawListView` or decoders generated from `DRAW_LIST_CODEC_DESC` (`nve-cli codegen abi`) for C++ (`packages/modules/canvas/cxx/include/nve/canvas/draw_list.hpp`), JVM (`dev.nve.host.DrawList`), Swift (`NveHost.NveDrawList`), Dart (`package:nve_host/nve_draw_list.generated.dart`), and TypeScript (`@nve/host/draw-list`):
 
 | Host Target | Native Graphics API | Implementation |
 | :--- | :--- | :--- |

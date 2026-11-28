@@ -69,13 +69,17 @@ class NveDrawListPainter {
   final _FlutterDrawListSink _sink = _FlutterDrawListSink();
 
   /// Strictly validates a flat `nve.res.draw_list` (`u32`-word) buffer zero-copy via the
-  /// generated [NveDrawList.validate] decoder without allocating per-op objects.
+  /// generated [NveDrawList.validateView] decoder without allocating per-op objects.
   static NveDrawListResult validate(Uint8List bytes) {
-    final NveDrawListError? err = NveDrawList.validate(bytes);
+    if (bytes.lengthInBytes < nveDrawHeaderSize) {
+      return _mapError(NveDrawListError.truncated);
+    }
+    final ByteData view = ByteData.sublistView(bytes);
+    final NveDrawListError? err = NveDrawList.validateView(view);
     if (err != null) {
       return _mapError(err);
     }
-    return NveDrawListResult.ok(opCount: NveDrawList.opCount(bytes));
+    return NveDrawListResult.ok(opCount: view.getUint32(0, Endian.little));
   }
 
   /// Validates and paints raw flat `nve.res.draw_list` word bytes onto [canvas] within [bounds]
@@ -86,10 +90,17 @@ class NveDrawListPainter {
     Uint8List rawBytes, {
     double borderRadius = 0.0,
   }) {
-    final NveDrawListResult check = validate(rawBytes);
-    if (!check.isOk) {
-      return check;
+    if (rawBytes.lengthInBytes < nveDrawHeaderSize) {
+      return _mapError(NveDrawListError.truncated);
     }
+    final ByteData view = ByteData.sublistView(rawBytes);
+    final NveDrawListError? err = NveDrawList.validateView(view);
+    if (err != null) {
+      return _mapError(err);
+    }
+    final NveDrawListResult check = NveDrawListResult.ok(
+      opCount: view.getUint32(0, Endian.little),
+    );
     if (bounds.width <= 0.0 || bounds.height <= 0.0) {
       return check;
     }
@@ -104,7 +115,7 @@ class NveDrawListPainter {
       canvas.translate(bounds.left, bounds.top);
       _sink.bind(canvas, Rect.fromLTWH(0.0, 0.0, bounds.width, bounds.height));
       try {
-        NveDrawList.streamValidated(rawBytes, _sink);
+        NveDrawList.streamValidatedView(view, _sink);
       } finally {
         _sink.unbind();
       }
