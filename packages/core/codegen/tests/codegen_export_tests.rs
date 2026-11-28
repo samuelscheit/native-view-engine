@@ -74,9 +74,10 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     assert!(!compose.contains("NveRenderBackend"));
     assert!(!compose.contains("NveNativeBridge"));
     assert!(compose.contains("object NveCounterCardDirectPropsWriter"));
-    assert!(compose.contains("activeController.inner.setProps(encodedPropsBin)"));
+    assert!(compose.contains("LaunchedEffect(_activeController, source,"));
+    assert!(compose.contains("_activeController.inner.setProps { _w ->"));
     assert!(compose.contains("@Composable\nfun NveCounterCard("));
-    assert!(compose.contains("if (event.isCustom)"));
+    assert!(compose.contains("if (_event.isCustom)"));
     assert!(!compose.contains("JSONObject"));
     assert!(!compose.contains("org.json"));
     assert!(!compose.contains("buildMap<String, Any?>"));
@@ -174,6 +175,15 @@ fn minimal_and_complex_specs_export_cleanly_across_all_five_targets() {
             assert_balanced_delimiters(&file.relative_path, &file.content);
         }
     }
+    let empty_compose = export_compose(&empty).expect("empty compose");
+    assert!(
+        !empty_compose.compose_kt.content.contains("DirectPropsWriter"),
+        "prop-less Compose wrapper must omit DirectPropsWriter"
+    );
+    assert!(
+        !empty_compose.compose_kt.content.contains(".setProps"),
+        "prop-less Compose wrapper must not call setProps"
+    );
 
     let mut complex = NveExportSpec::new("DataGrid", ExportBackend::Fabric);
     complex.props = vec![
@@ -239,6 +249,138 @@ fn minimal_and_complex_specs_export_cleanly_across_all_five_targets() {
             assert_balanced_delimiters(&file.relative_path, &file.content);
         }
     }
+}
+
+#[test]
+fn kotlin_compose_and_rn_android_edge_cases_shadowing_nullable_defaults_and_colors() {
+    use nve_codegen::{CommandSpec, ParamSpec};
+
+    let mut spec = NveExportSpec::new("ShadowWidget", ExportBackend::Fabric);
+    spec.props = vec![
+        PropSpec {
+            name: "count".to_owned(),
+            prop_type: PropType::Int32,
+            optional: true,
+            nullable: true,
+            default_value: Some(DefaultValue::Int(7)),
+            doc: None,
+        },
+        PropSpec {
+            name: "overflowEnum".to_owned(),
+            prop_type: PropType::IntEnum { variants: vec![0, 1] },
+            optional: true,
+            nullable: false,
+            // 1 << 32 must NOT truncate via `as i32` to match variant 0!
+            default_value: Some(DefaultValue::Int(1i64 << 32)),
+            doc: None,
+        },
+        PropSpec {
+            name: "view".to_owned(),
+            prop_type: PropType::Color,
+            optional: true,
+            nullable: true,
+            default_value: None,
+            doc: None,
+        },
+        PropSpec {
+            name: "w".to_owned(),
+            prop_type: PropType::String,
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::String("$price \"quoted\"".to_owned())),
+            doc: None,
+        },
+        PropSpec {
+            name: "list".to_owned(),
+            prop_type: PropType::Array {
+                item: Box::new(PropType::Array {
+                    item: Box::new(PropType::Int32),
+                }),
+            },
+            optional: false,
+            nullable: false,
+            default_value: None,
+            doc: None,
+        },
+        PropSpec {
+            name: "meta".to_owned(),
+            prop_type: PropType::Object { fields: vec![] },
+            optional: true,
+            nullable: true,
+            default_value: None,
+            doc: None,
+        },
+    ];
+    spec.events = vec![EventSpec {
+        name: "onUpdate".to_owned(),
+        bubbling: EventBubbling::Direct,
+        optional: true,
+        paper_top_level_name: Some("topUpdate".to_owned()),
+        payload: vec![
+            ObjectField {
+                name: "reader".to_owned(),
+                field_type: PropType::String,
+                optional: false,
+                nullable: false,
+            },
+            ObjectField {
+                name: "list".to_owned(),
+                field_type: PropType::Array {
+                    item: Box::new(PropType::Array {
+                        item: Box::new(PropType::Int32),
+                    }),
+                },
+                optional: false,
+                nullable: false,
+            },
+            ObjectField {
+                name: "extra".to_owned(),
+                field_type: PropType::Object { fields: vec![] },
+                optional: true,
+                nullable: true,
+            },
+        ],
+        payload_type_name: None,
+        doc: None,
+    }];
+    spec.commands = vec![CommandSpec {
+        name: "resetAll".to_owned(),
+        params: vec![
+            ParamSpec {
+                name: "count".to_owned(),
+                param_type: PropType::Int32,
+                optional: false,
+            },
+            ParamSpec {
+                name: "w".to_owned(),
+                param_type: PropType::String,
+                optional: true,
+            },
+        ],
+    }];
+
+    let cmp = export_compose(&spec).expect("export_compose shadow spec");
+    let ckt = &cmp.compose_kt.content;
+    assert_balanced_delimiters(&cmp.compose_kt.relative_path, ckt);
+    assert!(ckt.contains("count: Int? = 7,"), "nullable: true must keep `?` with default");
+    assert!(
+        ckt.contains("overflowEnum: ShadowWidgetOverflowEnum? = null,"),
+        "out-of-range i64 IntEnum default must not truncate to variant 0"
+    );
+    assert!(ckt.contains("\\$price \\\"quoted\\\""));
+    assert!(ckt.contains("val _am1 = _r.beginArray()"), "nested Array<Array<Int>> decoded recursively");
+    assert!(ckt.contains("_r.readNull()\n                                extra = null"));
+    assert!(ckt.contains("extra = HybridRuntime.DynamicValue.read(_r)"));
+
+    let rn = export_rn_spec(&spec).expect("export_rn shadow spec");
+    let rkt = &rn.android_view_manager_kt.content;
+    assert_balanced_delimiters(&rn.android_view_manager_kt.relative_path, rkt);
+    assert!(rkt.contains("fun setView(_view: ShadowWidgetHostView, view: Int?)"));
+    assert!(rkt.contains("view.toLong() and 0xFFFF_FFFFL"));
+    assert!(rkt.contains("fun setMeta(_view: ShadowWidgetHostView, meta: ReadableMap?)"));
+    assert!(rkt.contains("override fun receiveCommand(_root: ShadowWidgetHostView, _commandId: String, _args: ReadableArray?)"));
+    assert!(rkt.contains("composeView.disposeComposition()"));
+    assert!(rkt.contains("} catch (_: BinCodecException) {\n                return\n            }"));
 }
 
 #[test]

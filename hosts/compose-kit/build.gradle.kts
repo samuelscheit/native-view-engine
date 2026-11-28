@@ -92,6 +92,8 @@ val generateExportKotlinFixtures by tasks.registering {
     description = "Emit real `export_rn` (Android) and `export_compose` .generated.kt test sources via nve-cli."
     inputs.dir(nveExportSpecDir)
     inputs.dir(nveRepoRoot.resolve("packages/core/codegen/src"))
+    inputs.dir(nveRepoRoot.resolve("packages/core/codegen/templates"))
+    inputs.file(nveRepoRoot.resolve("Cargo.lock"))
     outputs.dir(nveExportKotlinOutDir)
     doLast {
         val outRoot = nveExportKotlinOutDir.get().asFile
@@ -99,10 +101,26 @@ val generateExportKotlinFixtures by tasks.registering {
         outRoot.mkdirs()
         val specs = nveExportSpecDir.listFiles { f -> f.isFile && f.extension == "json" }?.sortedBy { it.name }.orEmpty()
         check(specs.isNotEmpty()) { "No export spec JSON fixtures found in $nveExportSpecDir" }
+
+        // Build `nve` once and invoke the compiled binary directly for each spec fixture.
+        val buildProc = ProcessBuilder("cargo", "build", "--locked", "-q", "-p", "nve-cli", "--bin", "nve")
+            .directory(nveRepoRoot)
+            .redirectErrorStream(true)
+            .start()
+        val buildOut = buildProc.inputStream.bufferedReader().readText()
+        val buildRc = buildProc.waitFor()
+        check(buildRc == 0) { "cargo build -p nve-cli failed ($buildRc):\n$buildOut" }
+
+        val targetDir = System.getenv("CARGO_TARGET_DIR")?.takeIf { it.isNotBlank() }?.let(::File)
+            ?: nveRepoRoot.resolve("target")
+        val exeName = if (System.getProperty("os.name").lowercase().contains("win")) "nve.exe" else "nve"
+        val nveBin = targetDir.resolve("debug").resolve(exeName)
+        check(nveBin.isFile) { "Built nve-cli binary not found at $nveBin" }
+
         for (spec in specs) {
             val outDir = outRoot.resolve(spec.nameWithoutExtension)
             val proc = ProcessBuilder(
-                "cargo", "run", "--locked", "-q", "-p", "nve-cli", "--",
+                nveBin.absolutePath,
                 "codegen", "export", spec.absolutePath, "--target", "rn,compose", "--out", outDir.absolutePath,
             )
                 .directory(nveRepoRoot)
@@ -110,7 +128,7 @@ val generateExportKotlinFixtures by tasks.registering {
                 .start()
             val output = proc.inputStream.bufferedReader().readText()
             val rc = proc.waitFor()
-            check(rc == 0) { "nve-cli codegen export failed ($rc) for ${spec.name}:\n$output" }
+            check(rc == 0) { "nve codegen export failed ($rc) for ${spec.name}:\n$output" }
         }
     }
 }

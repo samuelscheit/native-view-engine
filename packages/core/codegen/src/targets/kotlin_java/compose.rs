@@ -8,10 +8,14 @@ use crate::naming::{
     sanitize_block_comment, strip_on_prefix, to_pascal_case, to_snake_case,
 };
 use crate::schema::export::{
-    DefaultValue, EventSpec, ExportComposeOutput, GeneratedFile, NveExportSpec, ObjectField,
-    PropSpec, PropType,
+    DefaultValue, EventSpec, ExportComposeOutput, GeneratedFile, NveExportSpec, PropSpec, PropType,
 };
 use crate::writer::CodeWriter;
+
+use super::kotlin_bin_codec::{
+    emit_compose_bin_read_value, emit_compose_bin_write_value, kotlin_simple_type,
+    kotlin_zero_default, spec_uses_dynamic_value,
+};
 
 /// Generates a typed binary Jetpack Compose `@Composable` wrapper targeting `dev.nve.compose.NveSurface`.
 pub fn generate_export_compose(spec: &NveExportSpec) -> Result<ExportComposeOutput, CodegenError> {
@@ -27,33 +31,15 @@ pub fn generate_export_compose(spec: &NveExportSpec) -> Result<ExportComposeOutp
     })
 }
 
-fn uses_dynamic_value(ty: &PropType) -> bool {
-    match ty {
-        PropType::Object { .. } => true,
-        PropType::Array { item } => uses_dynamic_value(item),
-        _ => false,
-    }
-}
-
-fn spec_uses_dynamic_value(spec: &NveExportSpec) -> bool {
-    spec.props.iter().any(|p| uses_dynamic_value(&p.prop_type))
-        || spec
-            .events
-            .iter()
-            .any(|e| e.payload.iter().any(|f| uses_dynamic_value(&f.field_type)))
-        || spec
-            .commands
-            .iter()
-            .any(|c| c.params.iter().any(|p| uses_dynamic_value(&p.param_type)))
-}
-
 fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     let name = &spec.name;
     let snake = to_snake_case(name);
     let pkg = spec.android_package_name();
+    let has_props = !spec.props.is_empty();
     let has_events = !spec.events.is_empty();
     let has_event_payloads = spec.events.iter().any(|e| !e.payload.is_empty());
     let has_dynamic = spec_uses_dynamic_value(spec);
+    let needs_bin_writer = has_props || spec.commands.iter().any(|c| !c.params.is_empty());
 
     let mut out = CodeWriter::with_capacity(4096);
     writeln!(
@@ -72,7 +58,9 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
     if has_event_payloads {
         writeln!(out, "import androidx.compose.runtime.Immutable");
     }
-    writeln!(out, "import androidx.compose.runtime.LaunchedEffect");
+    if has_props {
+        writeln!(out, "import androidx.compose.runtime.LaunchedEffect");
+    }
     writeln!(out, "import androidx.compose.runtime.remember");
     writeln!(out, "import androidx.compose.ui.Modifier");
     writeln!(out, "import androidx.compose.ui.platform.LocalContext");
@@ -80,6 +68,7 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
         writeln!(out, "import dev.nve.compose.NveEmittedEvent");
     }
     writeln!(out, "import dev.nve.compose.NveHostBridge");
+    writeln!(out, "import dev.nve.compose.NveRuntimeHost");
     writeln!(out, "import dev.nve.compose.NveSource");
     writeln!(out, "import dev.nve.compose.NveSurface");
     writeln!(out, "import dev.nve.compose.NveSurfaceController");
@@ -88,13 +77,15 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
         writeln!(out, "import dev.nve.host.BinReader");
         writeln!(out, "import dev.nve.host.BinTag");
     }
-    writeln!(out, "import dev.nve.host.BinWriter");
+    if needs_bin_writer {
+        writeln!(out, "import dev.nve.host.BinWriter");
+    }
     if has_dynamic {
         writeln!(out, "import dev.nve.host.HybridRuntime");
     }
     writeln!(out, "import dev.nve.host.RuntimeSurface");
     writeln!(out, "import dev.nve.host.generated.NveRuntimeAbi");
-    writeln!(out, "import java.nio.ByteBuffer");
+    writeln!(out, "import java.util.concurrent.Executor");
     writeln!(out);
 
     // 1. Typed Kotlin enums
@@ -107,8 +98,10 @@ fn emit_compose_kotlin(spec: &NveExportSpec) -> String {
         emit_kotlin_event_data_class(&mut out, name, ev);
     }
 
-    // 3. Zero-boxing binary direct props writer (`BinWriter`)
-    emit_kotlin_direct_props_writer(&mut out, spec);
+    // 3. Zero-boxing binary direct props writer (`BinWriter`), omitted for prop-less specs
+    if has_props {
+        emit_kotlin_direct_props_writer(&mut out, spec);
+    }
 
     // 4. Typed imperative controller + remember helper
     emit_kotlin_controller(&mut out, spec, &snake);
@@ -166,36 +159,50 @@ fn emit_kotlin_controller(out: &mut CodeWriter, spec: &NveExportSpec, snake: &st
         } else {
             writeln!(
                 out,
-                "        inner.dispatchCustom(\"{}\") {{ w ->",
+                "        inner.dispatchCustom(\"{}\") {{ _w ->",
                 escape_kotlin_string(&cmd.name)
             );
             let fixed = cmd.params.iter().filter(|p| !p.optional).count();
             let has_opt = fixed < cmd.params.len();
             if has_opt {
-                writeln!(out, "            var count = {fixed}");
+                writeln!(out, "            var _count = {fixed}");
                 for p in &cmd.params {
                     if p.optional {
-                        writeln!(out, "            if ({} != null) count++", kotlin_ident(&p.name));
+                        writeln!(out, "            if ({} != null) _count++", kotlin_ident(&p.name));
                     }
                 }
-                writeln!(out, "            val mark = w.beginMap(count)");
+                writeln!(out, "            val _mark = _w.beginMap(_count)");
             } else {
-                writeln!(out, "            val mark = w.beginMap({fixed})");
+                writeln!(out, "            val _mark = _w.beginMap({fixed})");
             }
             for p in &cmd.params {
                 let pname = kotlin_ident(&p.name);
                 let key = escape_kotlin_string(&p.name);
                 if p.optional {
                     writeln!(out, "            if ({pname} != null) {{");
-                    writeln!(out, "                w.writeMapKey(\"{key}\")");
-                    emit_bin_write_value(out, "                ", "w", &pname, &p.param_type, 0);
+                    writeln!(out, "                _w.writeMapKey(\"{key}\")");
+                    emit_compose_bin_write_value(
+                        out,
+                        "                ",
+                        "_w",
+                        &pname,
+                        &p.param_type,
+                        0,
+                    );
                     writeln!(out, "            }}");
                 } else {
-                    writeln!(out, "            w.writeMapKey(\"{key}\")");
-                    emit_bin_write_value(out, "            ", "w", &pname, &p.param_type, 0);
+                    writeln!(out, "            _w.writeMapKey(\"{key}\")");
+                    emit_compose_bin_write_value(
+                        out,
+                        "            ",
+                        "_w",
+                        &pname,
+                        &p.param_type,
+                        0,
+                    );
                 }
             }
-            writeln!(out, "            w.end(mark)");
+            writeln!(out, "            _w.end(_mark)");
             writeln!(out, "        }}");
         }
         writeln!(out, "    }}");
@@ -204,19 +211,26 @@ fn emit_kotlin_controller(out: &mut CodeWriter, spec: &NveExportSpec, snake: &st
     writeln!(out);
 
     writeln!(out, "@Composable");
+    writeln!(out, "fun remember{name}Controller(");
+    writeln!(out, "    source: NveSource? = null,");
+    writeln!(out, "    surfaceId: Int = 1,");
     writeln!(
         out,
-        "fun remember{name}Controller(source: NveSource? = null): {name}Controller {{"
+        "    hostFactory: ((surfaceId: Int, widthDp: Float, heightDp: Float, density: Float, ownerThread: Executor) -> NveRuntimeHost)? = null,"
     );
-    writeln!(out, "    val context = LocalContext.current");
-    writeln!(out, "    val resolvedSource = remember(source, context) {{");
+    writeln!(out, "): {name}Controller {{");
+    writeln!(out, "    val _context = LocalContext.current");
+    writeln!(out, "    val _resolvedSource = remember(source, _context) {{");
     writeln!(
         out,
-        "        source ?: NveSource.App(context.applicationInfo.nativeLibraryDir + \"/lib{snake}.so\")"
+        "        source ?: NveSource.App(_context.applicationInfo.nativeLibraryDir + \"/lib{snake}.so\")"
     );
     writeln!(out, "    }}");
-    writeln!(out, "    val inner = rememberNveSurfaceController(resolvedSource)");
-    writeln!(out, "    return remember(inner) {{ {name}Controller(inner) }}");
+    writeln!(
+        out,
+        "    val _inner = rememberNveSurfaceController(_resolvedSource, surfaceId, hostFactory)"
+    );
+    writeln!(out, "    return remember(_inner) {{ {name}Controller(_inner) }}");
     writeln!(out, "}}");
     writeln!(out);
 }
@@ -256,37 +270,42 @@ fn emit_kotlin_composable(out: &mut CodeWriter, spec: &NveExportSpec) {
 
     writeln!(
         out,
-        "    val activeController = controller ?: remember{name}Controller(source)"
+        "    val _activeController = controller ?: remember{name}Controller(source)"
     );
-    let prop_args: Vec<String> = spec.props.iter().map(|p| kotlin_ident(&p.name)).collect();
-    writeln!(
-        out,
-        "    val encodedPropsBin = {name}DirectPropsWriter.encode({})",
-        prop_args.join(", ")
-    );
-    writeln!(
-        out,
-        "    LaunchedEffect(activeController, ByteBuffer.wrap(encodedPropsBin)) {{"
-    );
-    writeln!(
-        out,
-        "        activeController.inner.setProps(encodedPropsBin)"
-    );
-    writeln!(out, "    }}");
+    if !spec.props.is_empty() {
+        let prop_args: Vec<String> = spec.props.iter().map(|p| kotlin_ident(&p.name)).collect();
+        let mut keys = Vec::with_capacity(prop_args.len() + 2);
+        keys.push("_activeController".to_owned());
+        keys.push("source".to_owned());
+        keys.extend(prop_args.iter().cloned());
+        writeln!(out, "    LaunchedEffect({}) {{", keys.join(", "));
+        writeln!(out, "        _activeController.inner.setProps {{ _w ->");
+        writeln!(
+            out,
+            "            {name}DirectPropsWriter.encodeTo(_w, {})",
+            prop_args.join(", ")
+        );
+        writeln!(out, "        }}");
+        writeln!(out, "    }}");
+    }
     writeln!(out);
 
     writeln!(out, "    NveSurface(");
-    writeln!(out, "        controller = activeController.inner,");
+    writeln!(out, "        controller = _activeController.inner,");
     writeln!(out, "        modifier = modifier,");
     if !spec.events.is_empty() {
-        writeln!(out, "        onEvent = {{ event: NveEmittedEvent ->");
-        writeln!(out, "            if (event.isCustom) {{");
-        writeln!(out, "                when (event.name) {{");
+        writeln!(out, "        onEvent = {{ _event: NveEmittedEvent ->");
+        writeln!(out, "            if (_event.isCustom) {{");
+        writeln!(out, "                when (_event.name) {{");
         for ev in &spec.events {
             let cb = kotlin_ident(&ev.name);
             let short = strip_on_prefix(&ev.name);
             if short == ev.name {
-                writeln!(out, "                    \"{}\" -> {{", escape_kotlin_string(&ev.name));
+                writeln!(
+                    out,
+                    "                    \"{}\" -> {{",
+                    escape_kotlin_string(&ev.name)
+                );
             } else {
                 writeln!(
                     out,
@@ -301,7 +320,7 @@ fn emit_kotlin_composable(out: &mut CodeWriter, spec: &NveExportSpec) {
                 let ev_cls = compose_event_class_name(name, ev);
                 writeln!(
                     out,
-                    "                        {ev_cls}.fromBinBytes(event.payloadBytes)?.let {{ {cb}?.invoke(it) }}"
+                    "                        {ev_cls}.fromBinBytes(_event.payloadBytes)?.let {{ {cb}?.invoke(it) }}"
                 );
             }
             writeln!(out, "                    }}");
@@ -328,36 +347,45 @@ fn emit_kotlin_direct_props_writer(out: &mut CodeWriter, spec: &NveExportSpec) {
         .iter()
         .map(|p| format!("{}: {}", kotlin_ident(&p.name), compose_prop_type(name, p)))
         .collect();
-    writeln!(out, "    fun encode({}): ByteArray {{", params.join(", "));
-    writeln!(out, "        val w = BinWriter()");
-    let fixed = spec.props.iter().filter(|p| !compose_prop_is_nullable(p)).count();
+    let args: Vec<String> = spec.props.iter().map(|p| kotlin_ident(&p.name)).collect();
+    writeln!(out, "    fun encodeTo(_w: BinWriter, {}) {{", params.join(", "));
+    let fixed = spec
+        .props
+        .iter()
+        .filter(|p| !compose_prop_is_nullable(p))
+        .count();
     let has_nullable = fixed < spec.props.len();
     if has_nullable {
-        writeln!(out, "        var count = {fixed}");
+        writeln!(out, "        var _count = {fixed}");
         for prop in &spec.props {
             if compose_prop_is_nullable(prop) {
-                writeln!(out, "        if ({} != null) count++", kotlin_ident(&prop.name));
+                writeln!(out, "        if ({} != null) _count++", kotlin_ident(&prop.name));
             }
         }
-        writeln!(out, "        val mark = w.beginMap(count)");
+        writeln!(out, "        val _mark = _w.beginMap(_count)");
     } else {
-        writeln!(out, "        val mark = w.beginMap({fixed})");
+        writeln!(out, "        val _mark = _w.beginMap({fixed})");
     }
     for prop in &spec.props {
         let key = escape_kotlin_string(&prop.name);
         let param = kotlin_ident(&prop.name);
         if compose_prop_is_nullable(prop) {
             writeln!(out, "        if ({param} != null) {{");
-            writeln!(out, "            w.writeMapKey(\"{key}\")");
-            emit_bin_write_prop(out, "            ", "w", &param, prop);
+            writeln!(out, "            _w.writeMapKey(\"{key}\")");
+            emit_bin_write_prop(out, "            ", "_w", &param, prop);
             writeln!(out, "        }}");
         } else {
-            writeln!(out, "        w.writeMapKey(\"{key}\")");
-            emit_bin_write_prop(out, "        ", "w", &param, prop);
+            writeln!(out, "        _w.writeMapKey(\"{key}\")");
+            emit_bin_write_prop(out, "        ", "_w", &param, prop);
         }
     }
-    writeln!(out, "        w.end(mark)");
-    writeln!(out, "        return w.toByteArray()");
+    writeln!(out, "        _w.end(_mark)");
+    writeln!(out, "    }}");
+    writeln!(out);
+    writeln!(out, "    fun encode({}): ByteArray {{", params.join(", "));
+    writeln!(out, "        val _w = BinWriter()");
+    writeln!(out, "        encodeTo(_w, {})", args.join(", "));
+    writeln!(out, "        return _w.toByteArray()");
     writeln!(out, "    }}");
     writeln!(out, "}}");
     writeln!(out);
@@ -367,37 +395,7 @@ fn emit_bin_write_prop(out: &mut CodeWriter, indent: &str, w: &str, var: &str, p
     match &prop.prop_type {
         PropType::StringEnum { .. } => writeln!(out, "{indent}{w}.writeStr({var}.wireValue)"),
         PropType::IntEnum { .. } => writeln!(out, "{indent}{w}.writeI64({var}.wireValue.toLong())"),
-        other => emit_bin_write_value(out, indent, w, var, other, 0),
-    }
-}
-
-fn emit_bin_write_value(
-    out: &mut CodeWriter,
-    indent: &str,
-    w: &str,
-    var: &str,
-    ty: &PropType,
-    depth: usize,
-) {
-    match ty {
-        PropType::Bool => writeln!(out, "{indent}{w}.writeBool({var})"),
-        PropType::Int32 | PropType::IntEnum { .. } => {
-            writeln!(out, "{indent}{w}.writeI64({var}.toLong())")
-        }
-        PropType::Float => writeln!(out, "{indent}{w}.writeF64({var}.toDouble())"),
-        PropType::Double => writeln!(out, "{indent}{w}.writeF64({var})"),
-        PropType::Array { item } => {
-            let mark = format!("arrMark{depth}");
-            let elem = format!("item{depth}");
-            let inner = format!("{indent}    ");
-            writeln!(out, "{indent}val {mark} = {w}.beginArray({var}.size)");
-            writeln!(out, "{indent}for ({elem} in {var}) {{");
-            emit_bin_write_value(out, &inner, w, &elem, item, depth + 1);
-            writeln!(out, "{indent}}}");
-            writeln!(out, "{indent}{w}.end({mark})");
-        }
-        PropType::Object { .. } => writeln!(out, "{indent}{var}.writeTo({w})"),
-        _ => writeln!(out, "{indent}{w}.writeStr({var})"),
+        other => emit_compose_bin_write_value(out, indent, w, var, other, 0),
     }
 }
 
@@ -452,7 +450,7 @@ fn emit_kotlin_event_data_class(out: &mut CodeWriter, comp_name: &str, ev: &Even
     }
     writeln!(out, ") {{");
     writeln!(out, "    companion object {{");
-    writeln!(out, "        fun fromBinReader(reader: BinReader): {cls} {{");
+    writeln!(out, "        fun fromBinReader(_r: BinReader): {cls} {{");
     for f in &ev.payload {
         let fname = kotlin_ident(&f.name);
         let fty = kotlin_simple_type(&f.field_type);
@@ -463,19 +461,31 @@ fn emit_kotlin_event_data_class(out: &mut CodeWriter, comp_name: &str, ev: &Even
         };
         writeln!(out, "            var {fname}: {fty}{q} = {init}");
     }
-    writeln!(out, "            if (reader.peekTag() == BinTag.MAP) {{");
-    writeln!(out, "                val mark = reader.beginMap()");
-    writeln!(out, "                for (i in 0 until mark.count) {{");
-    writeln!(out, "                    when (reader.readMapKey()) {{");
+    writeln!(out, "            if (_r.peekTag() == BinTag.MAP) {{");
+    writeln!(out, "                val _mark = _r.beginMap()");
+    writeln!(out, "                for (_i in 0 until _mark.count) {{");
+    writeln!(out, "                    when (_r.readMapKey()) {{");
     for f in &ev.payload {
         let fname = kotlin_ident(&f.name);
         let key = escape_kotlin_string(&f.name);
-        emit_bin_read_field(out, &key, &fname, f);
+        let is_nullable = f.optional || f.nullable;
+        writeln!(out, "                        \"{key}\" -> {{");
+        emit_compose_bin_read_value(
+            out,
+            "                            ",
+            "_r",
+            &fname,
+            false,
+            &f.field_type,
+            is_nullable,
+            0,
+        );
+        writeln!(out, "                        }}");
     }
-    writeln!(out, "                        else -> reader.skipValue()");
+    writeln!(out, "                        else -> _r.skipValue()");
     writeln!(out, "                    }}");
     writeln!(out, "                }}");
-    writeln!(out, "                reader.end(mark)");
+    writeln!(out, "                _r.end(_mark)");
     writeln!(out, "            }}");
     writeln!(out, "            return {cls}(");
     for f in &ev.payload {
@@ -485,86 +495,18 @@ fn emit_kotlin_event_data_class(out: &mut CodeWriter, comp_name: &str, ev: &Even
     writeln!(out, "            )");
     writeln!(out, "        }}");
     writeln!(out);
-    writeln!(out, "        fun fromBinBytes(bytes: ByteArray): {cls}? {{");
-    writeln!(out, "            if (bytes.isEmpty()) return null");
+    writeln!(out, "        fun fromBinBytes(_bytes: ByteArray): {cls}? {{");
+    writeln!(out, "            if (_bytes.isEmpty()) return null");
     writeln!(out, "            return runCatching {{");
-    writeln!(out, "                val reader = BinReader(bytes)");
-    writeln!(out, "                val result = fromBinReader(reader)");
-    writeln!(out, "                reader.expectEnd()");
-    writeln!(out, "                result");
+    writeln!(out, "                val _r = BinReader(_bytes)");
+    writeln!(out, "                val _result = fromBinReader(_r)");
+    writeln!(out, "                _r.expectEnd()");
+    writeln!(out, "                _result");
     writeln!(out, "            }}.getOrNull()");
     writeln!(out, "        }}");
     writeln!(out, "    }}");
     writeln!(out, "}}");
     writeln!(out);
-}
-
-fn emit_bin_read_field(out: &mut CodeWriter, key: &str, fname: &str, f: &ObjectField) {
-    match &f.field_type {
-        PropType::Bool => {
-            writeln!(
-                out,
-                "                        \"{key}\" -> if (reader.peekTag() == BinTag.BOOL) {fname} = reader.readBool() else reader.skipValue()"
-            );
-        }
-        PropType::Int32 | PropType::IntEnum { .. } => {
-            writeln!(
-                out,
-                "                        \"{key}\" -> when (reader.peekTag()) {{ BinTag.I64 -> {fname} = reader.readI64().toInt(); BinTag.F64 -> {fname} = reader.readF64().toInt(); else -> reader.skipValue() }}"
-            );
-        }
-        PropType::Float => {
-            writeln!(
-                out,
-                "                        \"{key}\" -> if (reader.peekTag() == BinTag.F64 || reader.peekTag() == BinTag.I64) {fname} = reader.readF64().toFloat() else reader.skipValue()"
-            );
-        }
-        PropType::Double => {
-            writeln!(
-                out,
-                "                        \"{key}\" -> if (reader.peekTag() == BinTag.F64 || reader.peekTag() == BinTag.I64) {fname} = reader.readF64() else reader.skipValue()"
-            );
-        }
-        PropType::Array { item } => {
-            let elem_read = match item.as_ref() {
-                PropType::Bool => "if (reader.peekTag() == BinTag.BOOL) list.add(reader.readBool()) else reader.skipValue()",
-                PropType::Int32 | PropType::IntEnum { .. } => "when (reader.peekTag()) { BinTag.I64 -> list.add(reader.readI64().toInt()); BinTag.F64 -> list.add(reader.readF64().toInt()); else -> reader.skipValue() }",
-                PropType::Float => "if (reader.peekTag() == BinTag.F64 || reader.peekTag() == BinTag.I64) list.add(reader.readF64().toFloat()) else reader.skipValue()",
-                PropType::Double => "if (reader.peekTag() == BinTag.F64 || reader.peekTag() == BinTag.I64) list.add(reader.readF64()) else reader.skipValue()",
-                PropType::Object { .. } => "list.add(HybridRuntime.DynamicValue.read(reader))",
-                _ => "if (reader.peekTag() == BinTag.STR) list.add(reader.readStr()) else reader.skipValue()",
-            };
-            writeln!(
-                out,
-                "                        \"{key}\" -> if (reader.peekTag() == BinTag.ARRAY) {{ val am = reader.beginArray(); val list = ArrayList<{}>(am.count); for (j in 0 until am.count) {{ {elem_read} }}; reader.end(am); {fname} = list }} else reader.skipValue()",
-                kotlin_simple_type(item)
-            );
-        }
-        PropType::Object { .. } => {
-            writeln!(
-                out,
-                "                        \"{key}\" -> {fname} = HybridRuntime.DynamicValue.read(reader)"
-            );
-        }
-        _ => {
-            writeln!(
-                out,
-                "                        \"{key}\" -> if (reader.peekTag() == BinTag.STR) {fname} = reader.readStr() else reader.skipValue()"
-            );
-        }
-    }
-}
-
-fn kotlin_zero_default(ty: &PropType) -> String {
-    match ty {
-        PropType::Bool => "false".to_owned(),
-        PropType::Int32 | PropType::IntEnum { .. } => "0".to_owned(),
-        PropType::Float => "0.0f".to_owned(),
-        PropType::Double => "0.0".to_owned(),
-        PropType::Array { .. } => "emptyList()".to_owned(),
-        PropType::Object { .. } => "HybridRuntime.DynamicValue.NULL".to_owned(),
-        _ => "\"\"".to_owned(),
-    }
 }
 
 fn compose_event_lambda_type(comp_name: &str, ev: &EventSpec) -> String {
@@ -576,7 +518,7 @@ fn compose_event_lambda_type(comp_name: &str, ev: &EventSpec) -> String {
 }
 
 fn compose_prop_is_nullable(prop: &PropSpec) -> bool {
-    (prop.optional || prop.nullable) && compose_default_expr("_", prop).is_none()
+    prop.nullable || (prop.optional && compose_default_expr("_", prop).is_none())
 }
 
 fn compose_prop_type(comp_name: &str, prop: &PropSpec) -> String {
@@ -593,23 +535,14 @@ fn compose_prop_type(comp_name: &str, prop: &PropSpec) -> String {
     }
 }
 
-fn kotlin_simple_type(ty: &PropType) -> String {
-    match ty {
-        PropType::Bool => "Boolean".to_owned(),
-        PropType::Int32 | PropType::IntEnum { .. } => "Int".to_owned(),
-        PropType::Float => "Float".to_owned(),
-        PropType::Double => "Double".to_owned(),
-        PropType::Array { item } => format!("List<{}>", kotlin_simple_type(item)),
-        PropType::Object { .. } => "HybridRuntime.DynamicValue".to_owned(),
-        _ => "String".to_owned(),
-    }
-}
-
 fn compose_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
     let def = prop.default_value.as_ref()?;
     match (&prop.prop_type, def) {
         (PropType::Bool, DefaultValue::Bool(b)) => Some(if *b { "true" } else { "false" }.into()),
-        (PropType::Int32, DefaultValue::Int(i)) => Some(i.to_string()),
+        (PropType::Int32, DefaultValue::Int(i)) => {
+            let v = i32::try_from(*i).ok()?;
+            Some(v.to_string())
+        }
         (PropType::Float, DefaultValue::Int(i)) => Some(format!("{i}.0f")),
         (PropType::Float, DefaultValue::Float(f)) => {
             Some(format!("{}f", format_float_literal(*f)))
@@ -626,11 +559,12 @@ fn compose_default_expr(comp_name: &str, prop: &PropSpec) -> Option<String> {
                 to_pascal_case(s)
             ))
         }
-        (PropType::IntEnum { variants }, DefaultValue::Int(i))
-            if variants.contains(&(*i as i32)) =>
-        {
-            let vname = int_enum_variant_pascal(*i as i32);
-            Some(format!("{comp_name}{}.{vname}", to_pascal_case(&prop.name)))
+        (PropType::IntEnum { variants }, DefaultValue::Int(i)) => {
+            let v = i32::try_from(*i).ok()?;
+            variants.contains(&v).then(|| {
+                let vname = int_enum_variant_pascal(v);
+                format!("{comp_name}{}.{vname}", to_pascal_case(&prop.name))
+            })
         }
         _ => None,
     }

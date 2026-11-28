@@ -319,7 +319,11 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_restoreState(JNIEnv* env,
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_saveStateFile(JNIEnv* env, jclass, jlong handle, jstring path,
                                                                      jint schema_version) {
   AndroidSurface* s = owned_surface(handle);
-  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (path == nullptr) {
+    s->last_error = "saveStateFile needs a non-null path";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   release_scene(*s);
   return status_of(*s, s->session.save_state_file(utf8_of(env, path), static_cast<uint32_t>(schema_version)));
 }
@@ -327,14 +331,22 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_saveStateFile(JNIEnv* env
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_restoreStateFile(JNIEnv* env, jclass, jlong handle, jstring path,
                                                                         jint schema_version) {
   AndroidSurface* s = owned_surface(handle);
-  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (path == nullptr) {
+    s->last_error = "restoreStateFile needs a non-null path";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   release_scene(*s);
   return status_of(*s, s->session.restore_state_file(utf8_of(env, path), static_cast<uint32_t>(schema_version)));
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_clearStateFile(JNIEnv* env, jclass, jlong handle, jstring path) {
   AndroidSurface* s = owned_surface(handle);
-  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (path == nullptr) {
+    s->last_error = "clearStateFile needs a non-null path";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   release_scene(*s);
   return status_of(*s, s->session.clear_state_file(utf8_of(env, path)));
 }
@@ -342,7 +354,11 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_clearStateFile(JNIEnv* en
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_saveFrame0File(JNIEnv* env, jclass, jlong handle, jstring path,
                                                                       jlong app_build_id, jlong env_hash) {
   AndroidSurface* s = owned_surface(handle);
-  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (path == nullptr) {
+    s->last_error = "saveFrame0File needs a non-null path";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   release_scene(*s);
   return status_of(*s, s->session.save_frame0_file(utf8_of(env, path), static_cast<uint64_t>(app_build_id),
                                                    static_cast<uint64_t>(env_hash)));
@@ -351,7 +367,11 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_saveFrame0File(JNIEnv* en
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_bootFrame0File(JNIEnv* env, jclass, jlong handle, jstring path,
                                                                       jlong app_build_id, jlong env_hash) {
   AndroidSurface* s = owned_surface(handle);
-  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (path == nullptr) {
+    s->last_error = "bootFrame0File needs a non-null path";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   release_buffers(*s, env);
   return status_of(*s, s->session.boot_frame0_file(utf8_of(env, path), static_cast<uint64_t>(app_build_id),
                                                    static_cast<uint64_t>(env_hash)));
@@ -392,7 +412,11 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_measureSurface(JNIEnv* en
                                                                       jfloat min_h, jfloat max_w, jfloat max_h,
                                                                       jint flags, jfloatArray out_measure) {
   AndroidSurface* s = owned_surface(handle);
-  if (s == nullptr || out_measure == nullptr || env->GetArrayLength(out_measure) < 4) return NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  if (out_measure == nullptr || env->GetArrayLength(out_measure) < 4) {
+    s->last_error = "measureSurface needs a float[4] outMeasure array";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   release_scene(*s);
   const NveSizeConstraints constraints{min_w, min_h, max_w, max_h};
   NveSurfaceMeasure measured{};
