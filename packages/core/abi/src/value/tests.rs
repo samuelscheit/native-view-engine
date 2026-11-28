@@ -324,6 +324,8 @@ fn prop_slice_and_command_slice_zero_copy_roundtrip_and_guards() {
 
 #[test]
 fn debug_nve_value_ref_caps_recursion_depth_and_byte_preview() {
+    use std::mem::MaybeUninit;
+
     // 1. Byte preview: <= 64 bytes print in full; > 64 bytes truncate to 64 + total count.
     let small: Vec<u8> = (0..64u8).collect();
     let large: Vec<u8> = (0..200u8).collect();
@@ -341,63 +343,160 @@ fn debug_nve_value_ref_caps_recursion_depth_and_byte_preview() {
         assert!(!s_large.contains("199"), "does not dump tail bytes: {s_large}");
     }
 
-    // 2. Deeply nested Array (20 levels) caps at depth 16 and prints `[...]`.
-    let mut arr_nodes = [NveValue::i64(999); 21];
-    for i in (0..20).rev() {
-        arr_nodes[i] = NveValue {
-            tag: NveValueTag::Array as u32,
-            data: NveValueData {
-                array_val: NveValueArray {
-                    ptr: &arr_nodes[i + 1] as *const NveValue,
-                    len: 1,
-                },
-            },
-        };
+    // 1b. String preview: <= 64 bytes print in full; > 64 bytes truncate on a UTF-8 char boundary.
+    let small_str = "a".repeat(64);
+    let mut utf8_boundary = "a".repeat(62);
+    utf8_boundary.push('🚀'); // 4-byte UTF-8 sequence straddling byte 64 (bytes 62..66)
+    utf8_boundary.push_str("tail-marker");
+    let v_small_str = NveValue::from_str(&small_str);
+    let v_utf8_str = NveValue::from_str(&utf8_boundary);
+    // SAFETY: Stack strings outlive the borrowed refs.
+    unsafe {
+        let f_small = format!("{:?}", v_small_str.as_ref());
+        assert!(!f_small.contains(".. ("), "64-byte string prints in full: {f_small}");
+        let f_utf8 = format!("{:?}", v_utf8_str.as_ref());
+        assert!(
+            f_utf8.contains(&format!(".. ({} bytes)", utf8_boundary.len())),
+            "large string truncates with byte count: {f_utf8}"
+        );
+        assert!(f_utf8.contains(&"a".repeat(62)), "keeps complete prefix before boundary: {f_utf8}");
+        assert!(!f_utf8.contains('🚀'), "backs off multi-byte char crossing cap: {f_utf8}");
+        assert!(!f_utf8.contains("tail-marker"), "omits tail past cap: {f_utf8}");
     }
-    // SAFETY: `arr_nodes` is stationary on the stack for the duration of formatting.
-    let s_arr = unsafe { format!("{:?}", arr_nodes[0].as_ref()) };
+
+    // 2. Deeply nested Array (20 levels) caps at depth 16 and prints `[...]`.
+    // Construct through raw pointers derived from `MaybeUninit::as_mut_ptr` (no `&` before writes finish).
+    let mut arr_nodes = MaybeUninit::<[NveValue; 21]>::uninit();
+    let arr_base = arr_nodes.as_mut_ptr().cast::<NveValue>();
+    // SAFETY: Every pointer stays within `arr_nodes` (stationary on the stack during formatting)
+    // and all elements are initialized before any shared reference is formed.
+    let s_arr = unsafe {
+        arr_base.add(20).write(NveValue::i64(999));
+        for i in (0..20).rev() {
+            arr_base.add(i).write(NveValue {
+                tag: NveValueTag::Array as u32,
+                data: NveValueData {
+                    array_val: NveValueArray {
+                        ptr: arr_base.add(i + 1).cast_const(),
+                        len: 1,
+                    },
+                },
+            });
+        }
+        format!("{:?}", NveValueRef::from_raw(&*arr_base))
+    };
     assert!(s_arr.contains("[...]"), "array depth capped at 16: {s_arr}");
     assert!(!s_arr.contains("999"), "leaf beyond depth 16 is omitted: {s_arr}");
 
     // 3. Deeply nested Map (20 levels) caps at depth 16 and prints `{...}`.
-    let mut map_entries = [NveMapEntry::new("k", NveValue::i64(777)); 20];
-    for i in (0..19).rev() {
-        map_entries[i].value = NveValue {
+    let mut map_entries = MaybeUninit::<[NveMapEntry; 20]>::uninit();
+    let map_base = map_entries.as_mut_ptr().cast::<NveMapEntry>();
+    // SAFETY: Every pointer stays within `map_entries` (stationary on the stack during formatting)
+    // and all entries are initialized before any shared reference is formed.
+    let s_map = unsafe {
+        map_base.add(19).write(NveMapEntry::new("k", NveValue::i64(777)));
+        for i in (0..19).rev() {
+            map_base.add(i).write(NveMapEntry::new(
+                "k",
+                NveValue {
+                    tag: NveValueTag::Map as u32,
+                    data: NveValueData {
+                        map_val: NveValueMap {
+                            ptr: map_base.add(i + 1).cast_const(),
+                            len: 1,
+                        },
+                    },
+                },
+            ));
+        }
+        let root_map = NveValue {
             tag: NveValueTag::Map as u32,
             data: NveValueData {
                 map_val: NveValueMap {
-                    ptr: &map_entries[i + 1] as *const NveMapEntry,
+                    ptr: map_base.cast_const(),
                     len: 1,
                 },
             },
         };
-    }
-    let root_map = NveValue {
-        tag: NveValueTag::Map as u32,
-        data: NveValueData {
-            map_val: NveValueMap {
-                ptr: &map_entries[0] as *const NveMapEntry,
-                len: 1,
-            },
-        },
+        format!("{:?}", root_map.as_ref())
     };
-    // SAFETY: `map_entries` and `root_map` are stationary on the stack during formatting.
-    let s_map = unsafe { format!("{:?}", root_map.as_ref()) };
     assert!(s_map.contains("{...}"), "map depth capped at 16: {s_map}");
     assert!(!s_map.contains("777"), "leaf beyond depth 16 is omitted: {s_map}");
 
-    // 4. Cyclic self-referential Array terminates cleanly without stack overflow.
-    let mut cyclic = NveValue::null();
-    cyclic = NveValue {
+    // 4. Cyclic self-referential Array terminates cleanly without stack overflow or Stacked Borrows UB.
+    let mut cyclic = MaybeUninit::<NveValue>::uninit();
+    let cyclic_ptr = cyclic.as_mut_ptr();
+    // SAFETY: Self-pointer uses the raw `as_mut_ptr()` provenance; shared reference is created only after write.
+    let s_cyc = unsafe {
+        cyclic_ptr.write(NveValue {
+            tag: NveValueTag::Array as u32,
+            data: NveValueData {
+                array_val: NveValueArray {
+                    ptr: cyclic_ptr.cast_const(),
+                    len: 1,
+                },
+            },
+        });
+        format!("{:?}", NveValueRef::from_raw(&*cyclic_ptr))
+    };
+    assert!(s_cyc.contains("[...]"), "cyclic value terminates at depth cap: {s_cyc}");
+
+    // 5. 4-element branching cycle `[&c, &c, &c, &c]` (4^16 = 4.29B without a global item budget)
+    //    finishes instantaneously with strictly bounded output.
+    let mut branch_cycle = MaybeUninit::<[NveValue; 4]>::uninit();
+    let branch_base = branch_cycle.as_mut_ptr().cast::<NveValue>();
+    // SAFETY: All 4 elements point to the stationary `branch_cycle` slice via raw pointer provenance.
+    let s_branch = unsafe {
+        for i in 0..4 {
+            branch_base.add(i).write(NveValue {
+                tag: NveValueTag::Array as u32,
+                data: NveValueData {
+                    array_val: NveValueArray {
+                        ptr: branch_base.cast_const(),
+                        len: 4,
+                    },
+                },
+            });
+        }
+        format!("{:?}", NveValueRef::from_raw(&*branch_base))
+    };
+    assert!(s_branch.contains("(+") && s_branch.contains("more)"), "budget truncates branching cycle: {s_branch}");
+    assert!(s_branch.len() < 8192, "branching cycle output stays bounded (got {} bytes)", s_branch.len());
+
+    // 6. Wide Array and wide Map cap printed entries per container with `.. (+N more)`.
+    let wide_elems: Vec<NveValue> = (0..50i64).map(NveValue::i64).collect();
+    let wide_arr = NveValue {
         tag: NveValueTag::Array as u32,
         data: NveValueData {
             array_val: NveValueArray {
-                ptr: &cyclic as *const NveValue,
-                len: 1,
+                ptr: wide_elems.as_ptr(),
+                len: wide_elems.len(),
             },
         },
     };
-    // SAFETY: `cyclic` is a live initialized `NveValue` on the stack during formatting.
-    let s_cyc = unsafe { format!("{:?}", cyclic.as_ref()) };
-    assert!(s_cyc.contains("[...]"), "cyclic value terminates at depth cap: {s_cyc}");
+    let map_keys: Vec<String> = (0..50).map(|i| format!("k{i}")).collect();
+    let wide_entries: Vec<NveMapEntry> = map_keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| NveMapEntry::new(k, NveValue::i64(i as i64)))
+        .collect();
+    let wide_map = NveValue {
+        tag: NveValueTag::Map as u32,
+        data: NveValueData {
+            map_val: NveValueMap {
+                ptr: wide_entries.as_ptr(),
+                len: wide_entries.len(),
+            },
+        },
+    };
+    // SAFETY: Backing vectors outlive formatting.
+    unsafe {
+        let f_wide_arr = format!("{:?}", wide_arr.as_ref());
+        assert!(f_wide_arr.contains(".. (+18 more)"), "wide array shows omitted count: {f_wide_arr}");
+        assert!(f_wide_arr.contains("I64(Some(31))") && !f_wide_arr.contains("I64(Some(32))"));
+
+        let f_wide_map = format!("{:?}", wide_map.as_ref());
+        assert!(f_wide_map.contains(".. (+18 more)"), "wide map shows omitted count: {f_wide_map}");
+        assert!(f_wide_map.contains("\"k31\"") && !f_wide_map.contains("\"k32\""));
+    }
 }

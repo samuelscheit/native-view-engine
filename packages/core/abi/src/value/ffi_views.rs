@@ -108,28 +108,69 @@ impl<'a> NveValueRef<'a> {
 
 const MAX_DEBUG_DEPTH: usize = 16;
 const MAX_DEBUG_BYTES_PREVIEW: usize = 64;
+const MAX_DEBUG_STR_PREVIEW: usize = 64;
+const MAX_DEBUG_CONTAINER_ITEMS: usize = 32;
+const MAX_DEBUG_TOTAL_ITEMS: usize = 256;
 
-/// Formats the value for diagnostics, capping container recursion at 16 levels and byte previews
-/// at 64 bytes so deeply nested / cyclic FFI trees or multi-megabyte buffers never overflow the
-/// stack or flood logs; an invalid pointer or key prints as `Invalid`.
+/// Formats the value for diagnostics, capping recursion depth (16), total visited items (256),
+/// per-container entries (32), and string/byte previews (64 bytes) so deeply nested, cyclic, or
+/// wide FFI trees and huge buffers never overflow the stack, blow up exponentially, or flood logs;
+/// an invalid pointer or key prints as `Invalid`.
 impl std::fmt::Debug for NveValueRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.fmt_bounded(f, 0)
+        let mut budget = MAX_DEBUG_TOTAL_ITEMS;
+        self.fmt_bounded(f, 0, &mut budget)
     }
 }
 
 impl NveValueRef<'_> {
-    fn fmt_bounded(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+    fn fmt_bounded(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        depth: usize,
+        budget: &mut usize,
+    ) -> std::fmt::Result {
         struct Invalid;
         impl std::fmt::Debug for Invalid {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str("Invalid")
             }
         }
-        struct Bounded<'a>(NveValueRef<'a>, usize);
+        struct More(usize);
+        impl std::fmt::Debug for More {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, ".. (+{} more)", self.0)
+            }
+        }
+        struct KvEntry<K, V>(K, V);
+        impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for KvEntry<K, V> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)?;
+                f.write_str(": ")?;
+                self.1.fmt(f)
+            }
+        }
+        struct Bounded<'a>(NveValueRef<'a>, usize, &'a std::cell::Cell<usize>);
         impl std::fmt::Debug for Bounded<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.0.fmt_bounded(f, self.1)
+                let mut rem = self.2.get();
+                let res = self.0.fmt_bounded(f, self.1, &mut rem);
+                self.2.set(rem);
+                res
+            }
+        }
+        struct StrPreview<'a>(&'a str);
+        impl std::fmt::Debug for StrPreview<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                if self.0.len() <= MAX_DEBUG_STR_PREVIEW {
+                    self.0.fmt(f)
+                } else {
+                    let mut end = MAX_DEBUG_STR_PREVIEW;
+                    while !self.0.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    write!(f, "{:?}.. ({} bytes)", &self.0[..end], self.0.len())
+                }
             }
         }
         struct BytesPreview<'a>(&'a [u8]);
@@ -142,12 +183,18 @@ impl NveValueRef<'_> {
                 }
             }
         }
+        if *budget == 0 {
+            return f.write_str("...");
+        }
+        *budget -= 1;
         match self.tag() {
             Some(NveValueTag::Null) => f.write_str("Null"),
             Some(NveValueTag::Bool) => f.debug_tuple("Bool").field(&self.as_bool()).finish(),
             Some(NveValueTag::I64) => f.debug_tuple("I64").field(&self.as_i64()).finish(),
             Some(NveValueTag::F64) => f.debug_tuple("F64").field(&self.as_f64()).finish(),
-            Some(NveValueTag::Str) => f.debug_tuple("Str").field(&self.try_as_str()).finish(),
+            Some(NveValueTag::Str) => {
+                f.debug_tuple("Str").field(&self.try_as_str().map(StrPreview)).finish()
+            }
             Some(NveValueTag::Bytes) => {
                 f.debug_tuple("Bytes").field(&self.as_bytes().map(BytesPreview)).finish()
             }
@@ -156,7 +203,24 @@ impl NveValueRef<'_> {
                     return f.write_str("[...]");
                 }
                 match self.as_array() {
-                    Some(a) => f.debug_list().entries(a.iter().map(|v| Bounded(v, depth + 1))).finish(),
+                    Some(a) => {
+                        let cell = std::cell::Cell::new(*budget);
+                        let mut list = f.debug_list();
+                        let mut shown = 0usize;
+                        for v in a.iter() {
+                            if shown >= MAX_DEBUG_CONTAINER_ITEMS || cell.get() == 0 {
+                                break;
+                            }
+                            list.entry(&Bounded(v, depth + 1, &cell));
+                            shown += 1;
+                        }
+                        if let Some(omitted) = a.len().checked_sub(shown).filter(|&n| n > 0) {
+                            list.entry(&More(omitted));
+                        }
+                        let res = list.finish();
+                        *budget = cell.get();
+                        res
+                    }
                     None => f.write_str("Invalid"),
                 }
             }
@@ -165,13 +229,38 @@ impl NveValueRef<'_> {
                     return f.write_str("{...}");
                 }
                 match self.as_map() {
-                    Some(m) => f
-                        .debug_map()
-                        .entries(m.try_iter().map(|e| match e {
-                            Ok((k, v)) => (Ok(k), Some(Bounded(v, depth + 1))),
-                            Err(_) => (Err(Invalid), None),
-                        }))
-                        .finish(),
+                    Some(m) => {
+                        let cell = std::cell::Cell::new(*budget);
+                        let mut set = f.debug_set();
+                        let mut shown = 0usize;
+                        for e in m.try_iter() {
+                            if shown >= MAX_DEBUG_CONTAINER_ITEMS || cell.get() == 0 {
+                                break;
+                            }
+                            match e {
+                                Ok((k, v)) => {
+                                    set.entry(&KvEntry(
+                                        Ok::<_, Invalid>(StrPreview(k)),
+                                        Some(Bounded(v, depth + 1, &cell)),
+                                    ));
+                                }
+                                Err(_) => {
+                                    cell.set(cell.get().saturating_sub(1));
+                                    set.entry(&KvEntry(
+                                        Err::<StrPreview<'_>, _>(Invalid),
+                                        Option::<Bounded<'_>>::None,
+                                    ));
+                                }
+                            }
+                            shown += 1;
+                        }
+                        if let Some(omitted) = m.len().checked_sub(shown).filter(|&n| n > 0) {
+                            set.entry(&More(omitted));
+                        }
+                        let res = set.finish();
+                        *budget = cell.get();
+                        res
+                    }
                     None => f.write_str("Invalid"),
                 }
             }
