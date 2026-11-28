@@ -150,7 +150,7 @@ void NveQtShadowWidget::set_shadow(const BoxVisual& visual, const QRectF& box) {
 
 void NveQtShadowWidget::paintEvent(QPaintEvent*) {
   QPainter p(this);
-  paint_outer_shadows(p, box_.translated(-QPointF(pos())), visual_.radius, visual_.shadows);
+  cache_.paint(p, box_.translated(-QPointF(pos())), visual_.radius, visual_.shadows, false);
 }
 
 // --- Text inputs -------------------------------------------------------------------------------

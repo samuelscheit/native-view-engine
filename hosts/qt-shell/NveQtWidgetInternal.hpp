@@ -29,6 +29,8 @@ struct QtNodeView;
 enum class NativeKind : uint32_t { Node, LineEdit, TextEdit, Scroll };
 
 inline constexpr const char* kNodeIdProperty = "nveNodeId";
+/// On a scroll view's content widget: its `QtNodeView*` (as `quintptr`).
+inline constexpr const char* kScrollOwnerProperty = "nveScrollOwner";
 
 // --- Hooks the node widgets call (NveQtWidgetReconciler.cpp) -----------------------------------
 void view_hover(QtNodeView* view, NveEventKind kind, QPointF pos);
@@ -96,6 +98,7 @@ class NveQtShadowWidget final : public QWidget {
  private:
   BoxVisual visual_;
   QRectF box_;  // in parent coordinates
+  ShadowCache cache_;  // the blurred shadows, re-rasterized only when they change
 };
 
 /// Single-line text input (IME-aware: composition is never clobbered or dispatched mid-preedit).
@@ -210,7 +213,9 @@ class NveQtWidget::Impl final : public QtHost {
   canvas::CanvasTable canvas_;
   host::RetainedTree<Adapter> tree_;
   Adapter adapter_{this};
-  std::unordered_set<QtNodeView*> scroll_views_;
+  /// Scroll views whose content extent (or programmatic target) may have changed this sync:
+  /// their children, a child's box, their own size, or their scroll settings.
+  std::unordered_set<QtNodeView*> scroll_dirty_;
   std::unordered_set<QWidget*> restack_;
   NodeSemantics root_sem_;
   QColor root_background_{Qt::transparent};
@@ -239,7 +244,9 @@ class NveQtWidget::Impl final : public QtHost {
   void update_interaction(QtNodeView& v, const host::NodeData& node);
   void apply_semantics(QtNodeView& v, const host::NodeData& node);
   void restack(QWidget* container);
-  void update_scroll_extents();
+  /// `container` (a node's content widget) is a scroll view's content: recompute its extent.
+  void mark_scroll_extent(QWidget* container);
+  void update_scroll_extents(QtNodeView& v);
 };
 
 }  // namespace nve::qt

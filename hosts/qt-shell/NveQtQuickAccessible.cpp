@@ -121,10 +121,11 @@ class ItemAccessible final : public RecordAccessible {
   QObject* object() const override { return item_; }
   QAccessibleInterface* parent() const override {
     if (item_ == nullptr) return nullptr;
-    if (QQuickItem* p = item_->parentItem(); p != nullptr && p != item_->window()->contentItem()) {
+    QQuickWindow* window = item_->window();  // null while the item is off-window
+    if (QQuickItem* p = item_->parentItem(); p != nullptr && (window == nullptr || p != window->contentItem())) {
       return QAccessible::queryAccessibleInterface(p);
     }
-    return item_->window() != nullptr ? QAccessible::queryAccessibleInterface(item_->window()) : nullptr;
+    return window != nullptr ? QAccessible::queryAccessibleInterface(window) : nullptr;
   }
   QRect rect() const override {
     if (item_ == nullptr || item_->window() == nullptr) return {};

@@ -271,6 +271,35 @@ void test_a11y_images_and_visuals() {
   widget.hide();
 }
 
+/// Local image and link policy (`host::local_image_path` / `openable_link`): a readable local file
+/// decodes by path or `file:` URL (percent-encoded too); remote, UNC, and percent-encoded UNC
+/// `file:` URLs never reach the filesystem; links open only for http(s) / mailto.
+void test_url_policy() {
+  const nve::host::testing::ScratchDir scratch("nve-qt-url");
+  const std::string tmp = scratch.file("a b.png");
+  const std::vector<uint8_t> red = png(2, 2, QColor(255, 0, 0));
+  {
+    std::ofstream out(tmp, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(red.data()), static_cast<std::streamsize>(red.size()));
+  }
+  const auto decodes = [](const std::string& url) { return !decode_image(h::ImageSource{url, {}}).isNull(); };
+  std::string encoded = tmp;
+  encoded.replace(encoded.find(' '), 1u, "%20");
+  NVE_CHECK(decodes(tmp) && decodes("file://" + encoded) && decodes("FILE://localhost" + encoded));
+  for (const char* url : {"file://host/share/a.png", "file:////host/share/a.png", "file:///%5c%5chost/share/a.png",
+                          "file:///%2F%2Fhost/share/a.png", "//host/share/a.png", "\\\\host\\share\\a.png",
+                          "https://example.com/a.png", "file:///tmp/%00a.png"}) {
+    NVE_CHECK(!decodes(url));
+  }
+  NveQtWidget widget(QtHostConfig{.width = 100.0f, .height = 100.0f});
+  for (const char* href : {"file:///etc/passwd", "javascript:alert(1)", "/etc/passwd", "nve-custom://x", ""}) {
+    NVE_CHECK(!widget.host().activate(1u, false, href, 0.0f, 0.0f));
+  }
+}
+
 }  // namespace
 
-void nve_test_qt_a11y_and_media() { test_a11y_images_and_visuals(); }
+void nve_test_qt_a11y_and_media() {
+  test_a11y_images_and_visuals();
+  test_url_policy();
+}

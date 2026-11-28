@@ -121,9 +121,15 @@ void NveQtWidget::Impl::on_text_edited(QtNodeView& v) {
       v.text_edit->moveCursor(QTextCursor::End);
     }
   }
-  if (!v.text.user_edited(current)) return;  // a host write, or no change since the last dispatch
   // May destroy `v` (the app can remove the input in response): touch nothing afterwards.
-  (void)dispatch_text_change(v.id, current);
+  edit_text<QtNodeView>(
+      v.text, current, v.id,
+      [this](uint32_t id) -> host::ControlledAnswer<QtNodeView> {
+        QtNodeView* field = find(id);
+        if (field == nullptr || (field->line == nullptr && field->text_edit == nullptr)) return {};
+        return {field, &field->text, field->text.app_value()};
+      },
+      set_editable_text);
 }
 
 void NveQtWidget::Impl::on_submit(QtNodeView& v) { (void)dispatch_submit(v.id, editable_text(v)); }
@@ -169,7 +175,8 @@ QtNodeView* NveQtWidget::Impl::Adapter::create(const host::NodeData& node) {
       for (QScrollBar* bar : {v->scroll->horizontalScrollBar(), v->scroll->verticalScrollBar()}) {
         QObject::connect(bar, &QScrollBar::valueChanged, v->scroll, [h = host, v](int) { h->on_native_scroll(*v); });
       }
-      host->scroll_views_.insert(v);
+      v->content->setProperty(kScrollOwnerProperty, QVariant::fromValue(reinterpret_cast<quintptr>(v)));
+      host->scroll_dirty_.insert(v);
       break;
     }
     case NativeKind::LineEdit:
@@ -216,10 +223,13 @@ void NveQtWidget::Impl::Adapter::update_root(const host::NodeData& node) {
 
 void NveQtWidget::Impl::Adapter::destroy(uint32_t, QtNodeView*& v) {
   if (v == nullptr) return;
-  host->scroll_views_.erase(v);
+  host->scroll_dirty_.erase(v);
   host->restack_.erase(v->content);
+  v->content->setProperty(kScrollOwnerProperty, QVariant());  // the widget outlives `v` (`deleteLater`)
   // Child views may survive (moved to another parent): hand them back before this widget dies.
-  for (QObject* child : v->content->children()) {
+  // A snapshot: `setParent(nullptr)` removes the child from the list being walked.
+  const QObjectList children = v->content->children();
+  for (QObject* child : children) {
     auto* w = qobject_cast<QWidget*>(child);
     if (w != nullptr && (w->property(kNodeIdProperty).isValid() || dynamic_cast<NveQtShadowWidget*>(w) != nullptr)) {
       w->hide();
@@ -267,8 +277,10 @@ void NveQtWidget::Impl::Adapter::set_children(const host::NodeGeometry&, QtNodeV
     k->widget->setVisible(k->visible);
     if (k->shadow != nullptr) k->shadow->setVisible(k->visible);
   }
-  // Node widgets no longer in this parent's scene children are stale here.
-  for (QObject* child : container->children()) {
+  // Node widgets no longer in this parent's scene children are stale here (walked over a
+  // snapshot: `setParent(nullptr)` removes them from the live list).
+  const QObjectList children = container->children();
+  for (QObject* child : children) {
     auto* w = qobject_cast<QWidget*>(child);
     if (w == nullptr || !w->property(kNodeIdProperty).isValid() || wanted.contains(w)) continue;
     if (QtNodeView* stale = host->find(static_cast<uint32_t>(w->property(kNodeIdProperty).toULongLong()))) {
@@ -281,11 +293,21 @@ void NveQtWidget::Impl::Adapter::set_children(const host::NodeGeometry&, QtNodeV
     w->setParent(nullptr);
   }
   host->restack_.insert(container);
+  host->mark_scroll_extent(container);
 }
 
 // --- Per-kind bindings -------------------------------------------------------------------------
 
+void NveQtWidget::Impl::mark_scroll_extent(QWidget* container) {
+  if (container == nullptr) return;
+  if (const QVariant owner = container->property(kScrollOwnerProperty); owner.isValid()) {
+    scroll_dirty_.insert(reinterpret_cast<QtNodeView*>(owner.value<quintptr>()));
+  }
+}
+
 void NveQtWidget::Impl::place(QtNodeView& v, const host::NodeGeometry& node) {
+  mark_scroll_extent(v.widget->parentWidget());  // a child's box moves its parent's extent
+  if (v.scroll != nullptr) scroll_dirty_.insert(&v);  // the viewport may have resized
   v.local = node.local;
   v.widget->setGeometry(pixel_rect(node.local));
   if (v.scroll != nullptr) v.scroll->setGeometry(0, 0, v.widget->width(), v.widget->height());
@@ -409,6 +431,7 @@ void NveQtWidget::Impl::update_scroll(QtNodeView& v, const host::NodeData& node)
   const bool vert = v.axes == NVE_SCROLL_AXES_VERTICAL || v.axes == NVE_SCROLL_AXES_BOTH;
   v.scroll->setHorizontalScrollBarPolicy(h ? shown : Qt::ScrollBarAlwaysOff);
   v.scroll->setVerticalScrollBarPolicy(vert ? shown : Qt::ScrollBarAlwaysOff);
+  scroll_dirty_.insert(&v);
   // Programmatic scroll (`requested_scroll_*`): each new target applies once, after extents.
   const auto take = [&](float target, float& last) {
     if (std::isnan(target) || target == last) return;
@@ -466,28 +489,26 @@ void NveQtWidget::Impl::restack(QWidget* container) {
   }
 }
 
-void NveQtWidget::Impl::update_scroll_extents() {
+void NveQtWidget::Impl::update_scroll_extents(QtNodeView& v) {
   // Content extent = union of the children's layout rects, at least the viewport.
-  for (QtNodeView* v : scroll_views_) {
-    const QSize viewport = v->scroll->maximumViewportSize();
-    float w = 0.0f;
-    float h = 0.0f;
-    for (QObject* child : v->content->children()) {
-      auto* cw = qobject_cast<QWidget*>(child);
-      if (cw == nullptr || !cw->property(kNodeIdProperty).isValid()) continue;
-      if (const QtNodeView* c = find(static_cast<uint32_t>(cw->property(kNodeIdProperty).toULongLong()))) {
-        w = std::max(w, c->local.x + c->local.width);
-        h = std::max(h, c->local.y + c->local.height);
-      }
+  const QSize viewport = v.scroll->maximumViewportSize();
+  float w = 0.0f;
+  float h = 0.0f;
+  for (QObject* child : v.content->children()) {
+    auto* cw = qobject_cast<QWidget*>(child);
+    if (cw == nullptr || !cw->property(kNodeIdProperty).isValid()) continue;
+    if (const QtNodeView* c = find(static_cast<uint32_t>(cw->property(kNodeIdProperty).toULongLong()))) {
+      w = std::max(w, c->local.x + c->local.width);
+      h = std::max(h, c->local.y + c->local.height);
     }
-    const bool horizontal = v->axes == NVE_SCROLL_AXES_HORIZONTAL || v->axes == NVE_SCROLL_AXES_BOTH;
-    const bool vertical = v->axes == NVE_SCROLL_AXES_VERTICAL || v->axes == NVE_SCROLL_AXES_BOTH;
-    const int cw = horizontal ? std::max(viewport.width(), static_cast<int>(std::ceil(w))) : viewport.width();
-    const int ch = vertical ? std::max(viewport.height(), static_cast<int>(std::ceil(h))) : viewport.height();
-    v->scrolling_programmatically = true;  // a shrinking extent clamps the bars
-    v->content->resize(cw, ch);
-    v->scrolling_programmatically = false;
   }
+  const bool horizontal = v.axes == NVE_SCROLL_AXES_HORIZONTAL || v.axes == NVE_SCROLL_AXES_BOTH;
+  const bool vertical = v.axes == NVE_SCROLL_AXES_VERTICAL || v.axes == NVE_SCROLL_AXES_BOTH;
+  const int cw = horizontal ? std::max(viewport.width(), static_cast<int>(std::ceil(w))) : viewport.width();
+  const int ch = vertical ? std::max(viewport.height(), static_cast<int>(std::ceil(h))) : viewport.height();
+  v.scrolling_programmatically = true;  // a shrinking extent clamps the bars
+  v.content->resize(cw, ch);
+  v.scrolling_programmatically = false;
 }
 
 }  // namespace nve::qt

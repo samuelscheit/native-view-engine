@@ -20,7 +20,7 @@ namespace {
 /// Children in reverse paint order (topmost first).
 std::vector<QuickNodeView*> topmost_first(const QuickNodeView& v) {
   std::vector<QuickNodeView*> kids = v.children;
-  std::stable_sort(kids.begin(), kids.end(), [](const QuickNodeView* a, const QuickNodeView* b) { return a->z < b->z; });
+  std::sort(kids.begin(), kids.end(), paints_before);
   std::reverse(kids.begin(), kids.end());
   return kids;
 }
@@ -207,7 +207,21 @@ void NveQtQuickItem::Impl::edit_input(QuickNodeView& v, const QString& text, int
   QGuiApplication::inputMethod()->update(Qt::ImSurroundingText | Qt::ImCursorPosition);
   const std::string utf8 = next.toStdString();
   // May destroy `v`: touch nothing afterwards.
-  if (v.input.control.user_edited(utf8)) (void)dispatch_text_change(v.id, utf8);
+  edit_text<QuickNodeView>(
+      v.input.control, utf8, v.id,
+      [this](uint32_t id) -> host::ControlledAnswer<QuickNodeView> {
+        QuickNodeView* field = find(id);
+        if (field == nullptr || !field->is_input) return {};
+        return {field, &field->input.control, field->input.control.app_value()};
+      },
+      [this](QuickNodeView& field, std::string_view value) {
+        // A transformed or rejected edit: show the app's value (caret kept where it fits).
+        QuickInput& in = field.input;
+        in.edit = scene_string(value, in.multiline);
+        in.caret = std::min(in.caret, static_cast<int>(in.edit.size()));
+        bump_paint(field);
+        QGuiApplication::inputMethod()->update(Qt::ImSurroundingText | Qt::ImCursorPosition);
+      });
 }
 
 bool NveQtQuickItem::Impl::key(QKeyEvent& event) {

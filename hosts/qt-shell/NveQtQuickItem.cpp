@@ -37,10 +37,55 @@ const QuickNodeView* NveQtQuickItem::Impl::find(uint32_t id) const noexcept {
   return const_cast<Impl*>(this)->find(id);
 }
 
+namespace {
+
+/// Queues `v` for the scene-graph builder once (O(1); `destroy` tombstones its slot).
+void queue_sg(std::vector<QuickNodeView*>& queue, QuickNodeView& v) {
+  if (v.sg_dirty_slot >= 0) return;
+  v.sg_dirty_slot = static_cast<int32_t>(queue.size());
+  queue.push_back(&v);
+}
+
+/// Removes `k` from its parent's child list: O(1) at its scene slot (paint order sorts by
+/// `order`, so the swap is harmless until the parent's own `set_children` rebuilds the list).
+void unlink_from_parent(QuickNodeView& k) {
+  std::vector<QuickNodeView*>& siblings = k.parent->children;
+  if (k.order < siblings.size() && siblings[k.order] == &k) {
+    siblings[k.order] = siblings.back();
+    siblings.pop_back();
+  } else {
+    std::erase(siblings, &k);
+  }
+  k.parent = nullptr;
+}
+
+}  // namespace
+
 void NveQtQuickItem::Impl::mark_dirty(QuickNodeView& v) {
-  if (std::find(sg_dirty_.begin(), sg_dirty_.end(), &v) == sg_dirty_.end()) sg_dirty_.push_back(&v);
+  queue_sg(sg_dirty_, v);
   scene_changed_ = true;
-  if (!tearing_down_) owner_->update();
+  if (!tearing_down_) {
+    owner_->polish();  // rasterize on the GUI thread before the render thread syncs
+    owner_->update();
+  }
+}
+
+void NveQtQuickItem::Impl::reset_scene_graph() {
+  sg_dead_.clear();  // deleted with the tree they belonged to
+  for (QuickNodeView* v : sg_dirty_) {
+    if (v != nullptr) v->sg_dirty_slot = -1;
+  }
+  sg_dirty_.clear();
+  const auto requeue = [this](QuickNodeView& v) {
+    v.sg = nullptr;
+    v.children_dirty = true;
+    queue_sg(sg_dirty_, v);
+  };
+  requeue(root_);
+  // Every record, also those detached right now (their wrappers belonged to the dropped tree).
+  tree_.for_each_view([&](QuickNodeView*& v) {
+    if (v != nullptr) requeue(*v);
+  });
 }
 
 void NveQtQuickItem::Impl::bump_paint(QuickNodeView& v) {
@@ -146,15 +191,15 @@ void NveQtQuickItem::Impl::Adapter::destroy(uint32_t id, QuickNodeView*& v) {
   if (v == nullptr) return;
   host->a11y_node_destroyed(id);
   host->scrollers_.erase(v);
-  std::erase(host->sg_dirty_, v);
+  if (v->sg_dirty_slot >= 0) host->sg_dirty_[static_cast<size_t>(v->sg_dirty_slot)] = nullptr;
   if (v->sg != nullptr) host->sg_dead_.push_back(v->sg);
   for (QuickNodeView* c : v->children) {
     if (c->parent == v) c->parent = nullptr;  // survivors are relinked by their new parent
   }
-  if (v->parent != nullptr) {
-    std::erase(v->parent->children, v);
-    v->parent->children_dirty = true;
-    host->mark_dirty(*v->parent);
+  if (QuickNodeView* parent = v->parent; parent != nullptr) {
+    unlink_from_parent(*v);
+    parent->children_dirty = true;
+    host->mark_dirty(*parent);
   }
   if (host->focused_ == id) host->focused_ = 0u;
   if (host->pressed_ == id) host->pressed_ = 0u;
@@ -167,13 +212,18 @@ void NveQtQuickItem::Impl::Adapter::destroy(uint32_t id, QuickNodeView*& v) {
 void NveQtQuickItem::Impl::Adapter::set_children(const host::NodeGeometry&, QuickNodeView** parent_view,
                                                  std::span<QuickNodeView** const> kids) {
   QuickNodeView& parent = parent_view != nullptr ? **parent_view : host->root_;
+  // Children dropped here are orphans until another parent claims them (or they die): never
+  // leave them pointing at a list that no longer holds them.
+  for (QuickNodeView* old : parent.children) {
+    if (old->parent == &parent) old->parent = nullptr;
+  }
   parent.children.clear();
   for (uint32_t i = 0; i < kids.size(); ++i) {
     QuickNodeView* k = *kids[i];
-    if (k->parent != nullptr && k->parent != &parent) {
-      std::erase(k->parent->children, k);
-      k->parent->children_dirty = true;
-      host->mark_dirty(*k->parent);
+    if (QuickNodeView* previous = k->parent; previous != nullptr && previous != &parent) {
+      unlink_from_parent(*k);
+      previous->children_dirty = true;
+      host->mark_dirty(*previous);
     }
     k->parent = &parent;
     k->order = i;
@@ -385,9 +435,18 @@ const QSGNode* NveQtQuickItem::retainedSGNodeForNodeId(const QSGNode* root, uint
   return find_node_sg(root, node_id);
 }
 
+void NveQtQuickItem::updatePolish() {
+  if (window() != nullptr) impl_->rasterize_dirty(window()->effectiveDevicePixelRatio());
+}
+
 QSGNode* NveQtQuickItem::updatePaintNode(QSGNode* old_node, UpdatePaintNodeData*) {
   if (window() == nullptr) return old_node;
   return sync_scene_graph(old_node, *impl_, *window());
+}
+
+void NveQtQuickItem::releaseResources() {
+  // Qt deletes the item's node tree (and with it every wrapper and texture) on the render thread.
+  impl_->reset_scene_graph();
 }
 
 void NveQtQuickItem::geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) {

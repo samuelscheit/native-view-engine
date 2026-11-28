@@ -36,6 +36,17 @@ struct QuickInput {
   host::ControlledText control;
 };
 
+/// What a record's `NodeSG` shows, rasterized on the GUI thread (`updatePolish`): text shaping,
+/// fonts, and blurs never run on the render thread, which only uploads these images.
+struct QuickRaster {
+  QImage painted;  // the node's box (null: nothing, or a `solid` background)
+  QImage shadow;   // outer box shadows reaching past the box (null: none)
+  QRectF shadow_rect;
+  bool solid = false;        // a plain `paint.visual.background` rect
+  uint64_t generation = 0u;  // the `paint_generation` rasterized (0: never)
+  qreal dpr = 0.0;
+};
+
 /// GUI-thread record of one node: everything `updatePaintNode` and input handling need. Built by
 /// the `RetainedTree` adapter; read by the scene-graph builder while the GUI thread is blocked.
 struct QuickNodeView {
@@ -74,14 +85,21 @@ struct QuickNodeView {
 
   // Scene-graph bookkeeping (render side reads; GUI side bumps).
   uint64_t paint_generation = 1u;  // bumped when anything painted changes
+  QuickRaster raster;              // `paint_generation` rasterized (GUI thread)
   bool children_dirty = true;      // child list / paint order changed
-  NodeSG* sg = nullptr;            // owned by the SG tree
+  int32_t sg_dirty_slot = -1;      // index in `Impl::sg_dirty_`, -1 when not queued
+  NodeSG* sg = nullptr;            // owned by the SG tree's index
 
   [[nodiscard]] bool wants(NveEventKind kind) const noexcept {
     return !disabled && (event_mask & host::event_bit(kind)) != 0u;
   }
   [[nodiscard]] bool activatable() const noexcept { return !disabled && (wants_press || !href.empty()); }
 };
+
+/// Paint order of siblings: z-index, then scene order.
+[[nodiscard]] inline bool paints_before(const QuickNodeView* a, const QuickNodeView* b) noexcept {
+  return a->z != b->z ? a->z < b->z : a->order < b->order;
+}
 
 class NveQtQuickItem::Impl final : public QtHost {
  public:
@@ -105,9 +123,13 @@ class NveQtQuickItem::Impl final : public QtHost {
 
   [[nodiscard]] QuickNodeView* find(uint32_t id) noexcept;
   [[nodiscard]] const QuickNodeView* find(uint32_t id) const noexcept;
-  /// Marks `v` for the next `updatePaintNode` and schedules it.
+  /// Marks `v` for the next `updatePaintNode` and schedules it (polish first: O(1), queued once).
   void mark_dirty(QuickNodeView& v);
   void bump_paint(QuickNodeView& v);
+  /// GUI thread (`updatePolish`): rasterizes every queued record whose paint is stale at `dpr`.
+  void rasterize_dirty(qreal dpr);
+  /// Qt dropped (or will drop) the scene graph: no record keeps a wrapper pointer, all are queued.
+  void reset_scene_graph();
   /// Item-local origin of `v`'s box (ancestors' positions and scroll offsets applied).
   [[nodiscard]] QPointF origin_of(const QuickNodeView& v) const;
   /// Deepest visible record under an item-local point, in reverse paint order.
@@ -139,7 +161,7 @@ class NveQtQuickItem::Impl final : public QtHost {
   Adapter adapter_{this};
   QuickNodeView root_;  // the ROOT node: background, semantics, top-level children
   std::unordered_set<QuickNodeView*> scrollers_;
-  std::vector<QuickNodeView*> sg_dirty_;  // records to update in the next `updatePaintNode`
+  std::vector<QuickNodeView*> sg_dirty_;  // records to update next (null: destroyed since queued)
   std::vector<NodeSG*> sg_dead_;          // wrappers of destroyed records (deleted render-side)
   std::unordered_map<uint32_t, QAccessible::Id> a11y_ids_;
   SceneGraphStats stats_;
@@ -166,6 +188,7 @@ class NveQtQuickItem::Impl final : public QtHost {
   void update_record(QuickNodeView& v, const host::NodeData& node);
   void update_content(QuickNodeView& v, const host::NodeData& node);
   void update_input(QuickNodeView& v, const host::NodeData& node);
+  void rasterize(QuickNodeView& v, qreal dpr);
 };
 
 /// Installs (once) the factory exposing `NveQtQuickItem` and its nodes to accessibility.
@@ -180,7 +203,7 @@ QSGNode* sync_scene_graph(QSGNode* old_root, NveQtQuickItem::Impl& impl, QQuickW
 [[nodiscard]] const QSGNode* find_node_sg(const QSGNode* root, uint32_t node_id) noexcept;
 
 /// Paints a text input's content (edited text or placeholder, secure bullets, IME preedit,
-/// caret when focused) into its content box.
+/// caret when focused) into its content box (GUI thread).
 void paint_input(QPainter& p, const QRectF& box, const QuickNodeView& v, bool focused);
 
 }  // namespace nve::qt

@@ -1,37 +1,33 @@
 #include "NveQtImageCache.hpp"
 
-#include <nve/host/xxh64.hpp>
+#include <nve/host/ascii.hpp>
+#include <nve/host/urls.hpp>
 
 #include <QByteArray>
 #include <QString>
-#include <QUrl>
 
 #include <algorithm>
-#include <cctype>
-#include <cstdio>
 
 namespace nve::qt {
 
 namespace {
 
-bool starts_with_ci(std::string_view s, std::string_view prefix) noexcept {
-  return s.size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), s.begin(), [](char p, char c) {
-           return p == static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-         });
-}
-
 QImage decode_url(std::string_view url) {
   QImage img;
-  if (starts_with_ci(url, "data:image/")) {
+  if (url.size() >= 11u && host::ascii_iequals(url.substr(0u, 11u), "data:image/")) {
     const size_t marker = url.find(";base64,");
     if (marker == std::string_view::npos || marker + 8u >= url.size()) return {};
     const std::string_view b64 = url.substr(marker + 8u);
     const QByteArray raw = QByteArray::fromBase64(QByteArray(b64.data(), static_cast<qsizetype>(b64.size())));
     if (raw.isEmpty() || !img.loadFromData(raw)) return {};
-  } else if (starts_with_ci(url, "file://") || (!url.empty() && url.front() == '/')) {
-    const QString qurl = QString::fromUtf8(url.data(), static_cast<qsizetype>(url.size()));
-    const QString path = url.front() == '/' ? qurl : QUrl(qurl).toLocalFile();
-    if (path.isEmpty() || !img.load(path)) return {};
+  } else if (const auto local = host::local_image_path(url)) {  // never a remote / UNC file
+    // A bare path is `url` itself, used verbatim; a `file:` URL's path (host already checked
+    // empty / `localhost`) is percent-decoded here, and the decoded path must still be local.
+    // Not `QUrl::toLocalFile`: it turns any host, `localhost` included, into a `//host/` path.
+    const QByteArray raw(local->data(), static_cast<qsizetype>(local->size()));
+    const QByteArray decoded = local->data() == url.data() ? raw : QByteArray::fromPercentEncoding(raw);
+    const std::string_view path(decoded.constData(), static_cast<size_t>(decoded.size()));
+    if (!host::local_decoded_path(path) || !img.load(QString::fromUtf8(decoded))) return {};
   } else {
     return {};  // remote URLs are not fetched by the desktop host
   }
@@ -52,17 +48,9 @@ QImage decode_image(const host::ImageSource& src) {
 
 NveQtImageCache::NveQtImageCache(size_t max_entries) : max_entries_(std::max<size_t>(1u, max_entries)) {}
 
-std::string NveQtImageCache::key_of(const host::ImageSource& src) {
-  if (src.is_url()) return std::string(src.url);
-  char key[48];
-  std::snprintf(key, sizeof(key), "bytes:%016llx:%zu", static_cast<unsigned long long>(host::xxh64(src.encoded)),
-                src.encoded.size());
-  return key;
-}
-
 QImage NveQtImageCache::get(const host::ImageSource& src) {
   if (src.url.empty() && src.encoded.empty()) return {};
-  std::string key = key_of(src);
+  std::string key = host::image_cache_key(src);
   if (const auto it = entries_.find(key); it != entries_.end()) {
     lru_.splice(lru_.begin(), lru_, it->second.lru);
     ++hits_;

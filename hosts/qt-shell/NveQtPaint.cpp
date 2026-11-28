@@ -10,7 +10,24 @@ namespace nve::qt {
 
 namespace {
 
-qreal finite_or_zero(float v) noexcept { return std::isfinite(v) ? static_cast<qreal>(v) : 0.0; }
+/// Bounds of a painted box shadow: a blur's raster grows with its radius and every pixel is
+/// blurred, so an authored `blur(1e6)` must not allocate a gigantic image (Chromium caps too).
+constexpr qreal kMaxShadowBlur = 256.0;
+constexpr qreal kMaxShadowReach = 4096.0;  // spread / offset
+
+/// One shadow's geometry, finite and bounded.
+struct ShadowShape {
+  qreal blur, spread, dx, dy;
+};
+
+ShadowShape shadow_shape(const host::BoxShadow& s) noexcept {
+  const auto reach = [](float v) {
+    return std::isfinite(v) ? std::clamp(static_cast<qreal>(v), -kMaxShadowReach, kMaxShadowReach) : 0.0;
+  };
+  const qreal blur = std::isfinite(s.blur_radius) ? std::clamp(static_cast<qreal>(s.blur_radius), 0.0, kMaxShadowBlur)
+                                                  : 0.0;
+  return {blur, reach(s.spread_radius), reach(s.offset_x), reach(s.offset_y)};
+}
 
 /// One box-blur pass of half-width `r` along rows (`horizontal`) or columns of a premultiplied
 /// ARGB32 image; pixels outside the image count as transparent.
@@ -82,12 +99,10 @@ void paint_inset_shadows(QPainter& p, const QRectF& box, qreal radius, std::span
     const host::BoxShadow& s = *it;
     const QColor color = qcolor(s.color);
     if (!s.inset || color.alpha() == 0) continue;
-    const qreal blur = std::max(0.0, finite_or_zero(s.blur_radius));
-    const qreal spread = finite_or_zero(s.spread_radius);
-    const QRectF hole = box.translated(finite_or_zero(s.offset_x), finite_or_zero(s.offset_y))
-                            .adjusted(spread, spread, -spread, -spread);
+    const auto [blur, spread, dx, dy] = shadow_shape(s);
+    const QRectF hole = box.translated(dx, dy).adjusted(spread, spread, -spread, -spread);
     const qreal hole_radius = radius > 0.0 ? std::max(0.0, radius - spread) : 0.0;
-    const qreal pad = blur + std::abs(finite_or_zero(s.offset_x)) + std::abs(finite_or_zero(s.offset_y)) + 1.0;
+    const qreal pad = blur + std::abs(dx) + std::abs(dy) + 1.0;
     const QRectF area = box.adjusted(-pad, -pad, pad, pad);
     const QImage img = blurred(area, blur, device_ratio(p), [&](QPainter& ip) {
       ip.fillRect(area, color);
@@ -140,7 +155,7 @@ QPainterPath rounded_path(const QRectF& r, qreal radius) {
   return path;
 }
 
-void paint_box_background(QPainter& p, const QRectF& box, const BoxVisual& v) {
+void paint_box_background(QPainter& p, const QRectF& box, const BoxVisual& v, ShadowCache* inset_cache) {
   if (box.width() <= 0.0 || box.height() <= 0.0) return;
   if (v.background.alpha() > 0) {
     p.save();
@@ -153,8 +168,42 @@ void paint_box_background(QPainter& p, const QRectF& box, const BoxVisual& v) {
   const qreal bw = v.has_border() ? std::min(v.border_width, std::min(box.width(), box.height()) * 0.5) : 0.0;
   const QRectF padding_box = box.adjusted(bw, bw, -bw, -bw);
   if (padding_box.width() > 0.0 && padding_box.height() > 0.0) {
-    paint_inset_shadows(p, padding_box, std::max(0.0, v.radius - bw), v.shadows);
+    const qreal radius = std::max(0.0, v.radius - bw);
+    if (inset_cache != nullptr) {
+      inset_cache->paint(p, padding_box, radius, v.shadows, true);
+    } else {
+      paint_inset_shadows(p, padding_box, radius, v.shadows);
+    }
   }
+}
+
+void ShadowCache::paint(QPainter& p, const QRectF& box, qreal radius, std::span<const host::BoxShadow> shadows,
+                        bool inset) {
+  if (box.width() <= 0.0 || box.height() <= 0.0) return;
+  const qreal dpr = device_ratio(p);
+  if (image_.isNull() || size_ != box.size() || radius_ != radius || dpr_ != dpr || inset_ != inset ||
+      !std::ranges::equal(shadows_, shadows)) {
+    size_ = box.size();
+    radius_ = radius;
+    dpr_ = dpr;
+    inset_ = inset;
+    shadows_.assign(shadows.begin(), shadows.end());
+    const QRectF local(QPointF(), size_);
+    const QRectF area = inset ? local : local.marginsAdded(outer_shadow_margins(shadows));
+    image_ = QImage(std::max(1, static_cast<int>(std::ceil(area.width() * dpr))),
+                    std::max(1, static_cast<int>(std::ceil(area.height() * dpr))), QImage::Format_ARGB32_Premultiplied);
+    image_.setDevicePixelRatio(dpr);
+    image_.fill(Qt::transparent);
+    QPainter ip(&image_);
+    ip.translate(-area.topLeft());
+    if (inset) {
+      paint_inset_shadows(ip, local, radius, shadows);
+    } else {
+      paint_outer_shadows(ip, local, radius, shadows);
+    }
+    offset_ = area.topLeft();
+  }
+  p.drawImage(box.topLeft() + offset_, image_);
 }
 
 void paint_box_border(QPainter& p, const QRectF& box, const BoxVisual& v) {
@@ -175,9 +224,8 @@ QMarginsF outer_shadow_margins(std::span<const host::BoxShadow> shadows) noexcep
   QMarginsF m;
   for (const host::BoxShadow& s : shadows) {
     if (s.inset) continue;
-    const qreal reach = std::max(0.0, finite_or_zero(s.blur_radius)) + finite_or_zero(s.spread_radius);
-    const qreal ox = finite_or_zero(s.offset_x);
-    const qreal oy = finite_or_zero(s.offset_y);
+    const auto [blur, spread, ox, oy] = shadow_shape(s);
+    const qreal reach = blur + spread;
     m.setLeft(std::max(m.left(), reach - ox));
     m.setRight(std::max(m.right(), reach + ox));
     m.setTop(std::max(m.top(), reach - oy));
@@ -192,9 +240,8 @@ void paint_outer_shadows(QPainter& p, const QRectF& box, qreal radius, std::span
     const host::BoxShadow& s = *it;
     const QColor color = qcolor(s.color);
     if (s.inset || color.alpha() == 0) continue;
-    const qreal blur = std::max(0.0, finite_or_zero(s.blur_radius));
-    const qreal spread = finite_or_zero(s.spread_radius);
-    const QRectF shape = box.translated(finite_or_zero(s.offset_x), finite_or_zero(s.offset_y))
+    const auto [blur, spread, dx, dy] = shadow_shape(s);
+    const QRectF shape = box.translated(dx, dy)
                              .adjusted(-spread, -spread, spread, spread);
     if (shape.width() <= 0.0 || shape.height() <= 0.0) continue;
     const qreal shape_radius = radius > 0.0 ? std::max(0.0, radius + spread) : 0.0;
@@ -278,13 +325,13 @@ void paint_image(QPainter& p, const QRectF& box, qreal radius, const QImage& ima
 
 void paint_node(QPainter& p, const QRectF& box, const NodePaint& n) {
   p.setRenderHint(QPainter::Antialiasing, true);
-  paint_box_background(p, box, n.visual);
+  paint_box_background(p, box, n.visual, &n.inset_shadows);
   const QRectF content = n.content_box.translated(box.topLeft());
   switch (n.content) {
     case NodeContent::Text:
       p.save();
       p.setClipPath(rounded_path(box, n.visual.radius), Qt::IntersectClip);
-      (void)layout_text(n.text, n.style, content.width(), &p, content.topLeft());
+      (void)n.text_layout.paint(n.text, n.style, content.width(), &p, content.topLeft());
       p.restore();
       break;
     case NodeContent::Image: paint_image(p, content, n.visual.radius, n.image, n.fit); break;

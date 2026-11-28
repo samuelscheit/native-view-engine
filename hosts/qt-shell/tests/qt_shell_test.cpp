@@ -47,7 +47,17 @@ void test_counter_widgets_measurement_and_events() {
   NVE_CHECK(small.width > 0.0f && small.height > 0.0f);
   NVE_CHECK(big.width > small.width * 1.5f && big.height > small.height);
   NVE_CHECK(bold.width >= small.width);
-  NVE_CHECK(wrapped.width <= 41.0f && wrapped.height > small.height * 1.5f);
+  // Wraps at words; "wrapping" alone is wider than 40px and overflows rather than splitting, so
+  // min-content (width 0) is the longest word.
+  const float wrapping = measure_text("wrapping", host::text_style(16.0f), kInf).width;
+  NVE_CHECK(wrapping > 41.0f && wrapped.width == wrapping && wrapped.height > small.height * 1.5f);
+  NVE_CHECK(measure_text("Hello NVE wrapping text", host::text_style(16.0f), 0.0f).width == wrapping);
+  NveRuntimeTextStyle anywhere = host::text_style(16.0f);
+  anywhere.overflow_wrap = NVE_OVERFLOW_WRAP_ANYWHERE;
+  NVE_CHECK(measure_text("Hello NVE wrapping text", anywhere, 0.0f).width < wrapping);
+  NveRuntimeTextStyle break_all = host::text_style(16.0f);
+  break_all.word_break = NVE_WORD_BREAK_BREAK_ALL;
+  NVE_CHECK(measure_text("Hello NVE wrapping text", break_all, 40.0f).width <= 41.0f);
   NVE_CHECK(measure_text("", host::text_style(16.0f), kInf).width == 0.0f);
   NVE_CHECK(measure_text("a\nb", host::text_style(16.0f), kInf).height > small.height * 1.5f);  // hard breaks
   NVE_CHECK(measure_text("Hello", host::text_style(16.0f), std::nanf("")).width ==
@@ -206,7 +216,7 @@ void test_measurer_typography_matches_paint() {
   measured.max_lines = 3u;
   const QtTextStyle p = text_style(painted);
   const QtTextStyle m = text_style(measured);
-  NVE_CHECK(p.font == m.font && p.wrap == m.wrap && !m.wrap && p.max_lines == m.max_lines);
+  NVE_CHECK(p.font == m.font && p.wrap == m.wrap && m.wrap == nve::host::TextWrap::None && p.max_lines == m.max_lines);
   NVE_CHECK(approx(p.line_height, 27.0, 0.01) && p.line_height == m.line_height);
 }
 
@@ -431,6 +441,60 @@ void nve_test_qt_a11y_and_media();
 void nve_test_qt_canvas_and_pair();
 void nve_test_qt_window_manager();
 
+/// `QObject::children()` is a live list: every walk that unparents children (a container's stale
+/// children, a destroyed container handing its children back) works on a snapshot. Frame 2 drops
+/// all of P's children (alive, detached) and removes Q while its children move to the root; a
+/// skipped child would stay inside P, or die with Q's deferred-deleted widget while its view
+/// lives on (use-after-free under ASan in frame 3).
+void test_containers_release_every_child() {
+  namespace h = nve::host;
+  constexpr uint32_t kP = 2u, kQ = 3u;
+  const uint32_t p_kids[] = {4u, 5u, 6u};
+  const uint32_t q_kids[] = {7u, 8u, 9u};
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  for (uint32_t id = kP; id <= 9u; ++id) {
+    w.create(id);
+    w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(20.0f));
+    w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(20.0f));
+    w.set(id, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(0, 0, 255));
+  }
+  w.set_children(kP, p_kids);
+  w.set_children(kQ, q_kids);
+  const uint32_t top[] = {kP, kQ};
+  w.set_children(1u, top);
+  NveQtWidget widget(QtHostConfig{.width = 300.0f, .height = 200.0f});
+  NVE_CHECK(widget.host().attach_interface(&ScriptedApp::get_interface));
+  widget.show();
+  spin();
+  QWidget* const p_widget = widget.nativeWidgetForNodeId(kP);
+  for (const uint32_t id : p_kids) NVE_CHECK(widget.nativeWidgetForNodeId(id)->parentWidget() == p_widget);
+
+  w.set_children(kP, std::span<const uint32_t>());
+  w.remove(kQ);
+  const uint32_t moved[] = {kP, 7u, 8u, 9u};
+  w.set_children(1u, moved);
+  flush(widget.host());
+  spin();  // Q's widget is deleted (`deleteLater`)
+  for (const uint32_t id : p_kids) {
+    const QWidget* kid = widget.nativeWidgetForNodeId(id);
+    NVE_CHECK(kid == nullptr || (kid->parentWidget() != p_widget && !kid->isVisible()));
+  }
+  for (const uint32_t id : q_kids) {
+    const QWidget* kid = widget.nativeWidgetForNodeId(id);
+    NVE_CHECK(kid != nullptr && kid->parentWidget() == &widget && kid->isVisible());
+  }
+
+  // Frame 3: every child is touched again (a widget deleted under a live view would fault here).
+  w.set_children(kP, p_kids);
+  for (uint32_t id = 4u; id <= 9u; ++id) w.set(id, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 0, 0));
+  flush(widget.host());
+  spin();
+  for (const uint32_t id : p_kids) NVE_CHECK(widget.nativeWidgetForNodeId(id)->parentWidget() == p_widget);
+  for (const uint32_t id : q_kids) NVE_CHECK(widget.nativeWidgetForNodeId(id)->isVisible());
+}
+
 int main(int argc, char** argv) {
   QApplication qapp(argc, argv);
   test_counter_widgets_measurement_and_events();
@@ -439,6 +503,7 @@ int main(int argc, char** argv) {
   test_modules_hot_reload_and_state();
   test_queued_wakes_never_outlive_the_host();
   test_live_kitchen_sink_if_configured();
+  test_containers_release_every_child();
   nve_test_qt_input_and_scroll();
   nve_test_qt_a11y_and_media();
   nve_test_qt_canvas_and_pair();

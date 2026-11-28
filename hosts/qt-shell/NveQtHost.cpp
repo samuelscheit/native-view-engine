@@ -2,6 +2,8 @@
 
 #include "NveQtText.hpp"
 
+#include <nve/host/urls.hpp>
+
 #include <QDesktopServices>
 #include <QMetaObject>
 #include <QObject>
@@ -149,8 +151,9 @@ void QtHost::set_text_measurer(TextMeasurer measurer) {
 
 size_t QtHost::pump() {
   if (syncing_) return 0u;  // re-entrant wake from a widget signal raised during sync
+  const auto alive = alive_;  // the event sink may destroy this host during the pump
   (void)session_->pump();
-  return sync();
+  return alive->load(std::memory_order_acquire) ? sync() : 0u;
 }
 
 size_t QtHost::sync() {
@@ -174,8 +177,9 @@ size_t QtHost::sync() {
 
 bool QtHost::dispatch(const NveDirectEvent& ev) {
   if (syncing_) return false;
+  const auto alive = alive_;  // the event sink may destroy this host during the dispatch
   const bool changed = session_->dispatch(ev);
-  (void)sync();
+  if (alive->load(std::memory_order_acquire)) (void)sync();
   return changed;
 }
 
@@ -210,8 +214,10 @@ bool QtHost::dispatch_pointer(uint32_t node_id, NveEventKind kind, float x, floa
 
 bool QtHost::activate(uint32_t node_id, bool wants_press, std::string_view href, float x, float y) {
   if (wants_press) return simulate_press(node_id, x, y);
-  if (href.empty()) return false;
-  const QUrl url = QUrl::fromUserInput(QString::fromUtf8(href.data(), static_cast<qsizetype>(href.size())));
+  // Only `http(s):` / `mailto:` (never `file:`, custom schemes, or bare paths `fromUserInput`
+  // would turn into local files).
+  if (!host::openable_link(href)) return false;
+  const QUrl url(QString::fromUtf8(href.data(), static_cast<qsizetype>(href.size())), QUrl::StrictMode);
   return url.isValid() && QDesktopServices::openUrl(url);
 }
 

@@ -42,9 +42,34 @@ struct BoxVisual {
 /// `node`'s visuals; `shadows` is its decoded `nve.res.box_shadows` resource (empty when none).
 [[nodiscard]] BoxVisual box_visual(const host::NodeData& node, std::vector<host::BoxShadow> shadows);
 
-/// Paints the background (rounded) and inset shadows clipped to `box`; the border is separate so
-/// content can sit between them.
-void paint_box_background(QPainter& p, const QRectF& box, const BoxVisual& v);
+/// Box shadows of one box rasterized once (blur included) and redrawn as an image until the box
+/// size, radius, shadows, or device pixel ratio change. Copies start empty.
+class ShadowCache {
+ public:
+  ShadowCache() = default;
+  ShadowCache(const ShadowCache&) noexcept {}
+  ShadowCache& operator=(const ShadowCache&) noexcept {
+    image_ = QImage();
+    return *this;
+  }
+
+  /// Paints the outer (or `inset`) shadows of `box` as `paint_outer_shadows` (or the inset
+  /// shadows `paint_box_background` casts into a padding box) would.
+  void paint(QPainter& p, const QRectF& box, qreal radius, std::span<const host::BoxShadow> shadows, bool inset);
+
+ private:
+  QImage image_;
+  QPointF offset_;  // of the image from the box's top-left
+  QSizeF size_;
+  qreal radius_ = 0.0;
+  qreal dpr_ = 0.0;
+  bool inset_ = false;
+  std::vector<host::BoxShadow> shadows_;
+};
+
+/// Paints the background (rounded) and inset shadows clipped to `box` (through `inset_cache`
+/// when given); the border is separate so content can sit between them.
+void paint_box_background(QPainter& p, const QRectF& box, const BoxVisual& v, ShadowCache* inset_cache = nullptr);
 void paint_box_border(QPainter& p, const QRectF& box, const BoxVisual& v);
 
 /// How far the outer shadows reach beyond the box on each side.
@@ -89,6 +114,9 @@ struct NodePaint {
   QImage image;
   uint8_t fit = NVE_IMAGE_FIT_COVER;
   std::vector<uint8_t> draw_list;  // owned: painted after the scene is released
+  // Repaint caches (a widget repaints its unchanged node often: hover, expose, scrolling).
+  mutable TextLayoutCache text_layout;
+  mutable ShadowCache inset_shadows;
 
   [[nodiscard]] bool paints_only_background() const noexcept {
     return content == NodeContent::None && !visual.has_border() && visual.shadows.empty() && visual.radius <= 0.0;

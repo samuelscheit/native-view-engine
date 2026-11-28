@@ -11,8 +11,10 @@
 #include <QPointF>
 #include <QSizeF>
 #include <QString>
+#include <QTextLayout>
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace nve::qt {
@@ -23,7 +25,7 @@ struct QtTextStyle {
   QColor color{Qt::black};
   Qt::Alignment align = Qt::AlignLeft;
   bool justify = false;
-  bool wrap = true;
+  host::TextWrap wrap = host::TextWrap::Word;
   int max_lines = 0;         // 0 = unlimited; overflow is elided with "…"
   qreal line_height = 0.0;   // line box height in px, 0 = the font's natural line height
 
@@ -56,6 +58,30 @@ struct QtTextStyle {
 /// aligned within `width`, in `style.color`.
 QSizeF layout_text(const QString& text, const QtTextStyle& style, qreal width, QPainter* painter = nullptr,
                    QPointF origin = {});
+
+/// `layout_text` keeping the shaped lines: repaints of the same text, style and width (a node's
+/// widget repainting) reuse them. Copies start empty.
+class TextLayoutCache {
+ public:
+  TextLayoutCache() = default;
+  TextLayoutCache(const TextLayoutCache&) noexcept {}
+  TextLayoutCache& operator=(const TextLayoutCache&) noexcept {
+    layout_.reset();
+    return *this;
+  }
+
+  QSizeF paint(const QString& text, const QtTextStyle& style, qreal width, QPainter* painter = nullptr,
+               QPointF origin = {});
+
+ private:
+  QString text_;
+  QtTextStyle style_;
+  qreal width_ = 0.0;
+  std::optional<QTextLayout> layout_;
+  QSizeF size_;
+  int visible_ = 0;
+  bool truncated_ = false;
+};
 
 /// Runtime text measurer (`NveRuntimeMeasureTextFn` semantics): `text` laid out exactly as it is
 /// painted with the node's resolved `style`, wrapped at `max_width` (`INFINITY` = unconstrained);

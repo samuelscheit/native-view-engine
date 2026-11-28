@@ -20,9 +20,6 @@ class NveQtImageCache {
  public:
   explicit NveQtImageCache(size_t max_entries = 64u);
 
-  /// Stable identity of `src`: the URL, or `bytes:<xxh64>:<len>` for inline bytes.
-  [[nodiscard]] static std::string key_of(const host::ImageSource& src);
-
   /// Cached decode of `src` (implicitly shared; null when undecodable, which is not cached).
   [[nodiscard]] QImage get(const host::ImageSource& src);
 

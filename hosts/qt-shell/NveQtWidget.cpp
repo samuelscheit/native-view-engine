@@ -29,7 +29,7 @@ QtNodeView* NveQtWidget::Impl::find(uint32_t id) noexcept {
 void NveQtWidget::Impl::clear_views() {
   tree_.clear(adapter_);
   restack_.clear();
-  scroll_views_.clear();
+  scroll_dirty_.clear();
 }
 
 size_t NveQtWidget::Impl::sync_views(const host::RuntimeSceneGuard& scene) {
@@ -40,11 +40,14 @@ size_t NveQtWidget::Impl::sync_views(const host::RuntimeSceneGuard& scene) {
 void NveQtWidget::Impl::after_sync() {
   for (QWidget* container : restack_) restack(container);
   restack_.clear();
-  update_scroll_extents();
-  // Programmatic scroll targets, once each, now that the content extents are known. The runtime
-  // offset follows (hit testing, clamping); this is not a user scroll, so no Scroll event.
+  // Only scroll views something touched: extents, then programmatic scroll targets (once each,
+  // now that the extents are known). The runtime offset follows (hit testing, clamping); this is
+  // not a user scroll, so no Scroll event.
+  const std::vector<QtNodeView*> dirty(scroll_dirty_.begin(), scroll_dirty_.end());
+  scroll_dirty_.clear();
+  for (QtNodeView* v : dirty) update_scroll_extents(*v);
   std::vector<std::pair<uint32_t, QPointF>> moved;
-  for (QtNodeView* v : scroll_views_) {
+  for (QtNodeView* v : dirty) {
     if (!v->request_pending) continue;
     v->request_pending = false;
     QScrollBar* h = v->scroll->horizontalScrollBar();
