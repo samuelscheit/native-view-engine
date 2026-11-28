@@ -1,7 +1,10 @@
 #pragma once
 
-#include <nve/generated/nve_abi.generated.h>
-#include "nve_rn_component.hpp"
+// Host-agnostic `NVNP` (props) / `NVNC` (command) codecs and the `NativeViewRegistry` that mounts
+// platform views (`<NativeView>`, camera, web view, video, blur) by kind. Pure C++20 + std: every
+// C++ host and capability module (`packages/modules/camera`) shares it.
+
+#include <nve/host/utf8.h>
 
 #include <algorithm>
 #include <array>
@@ -29,11 +32,6 @@ inline constexpr std::array<uint8_t, 4> kNativeCmdMagic = {'N', 'V', 'N', 'C'};
 inline constexpr uint8_t kNativeCmdVersion = 1u;
 inline constexpr size_t kNativeCmdHeaderSize = 8u;
 inline constexpr size_t kMaxNativeCmdArgs = 64u;
-
-inline constexpr std::string_view kNativeViewKindPropKey = "nve.native_kind";
-inline constexpr std::string_view kNativeViewKindPropKeyAlias = "nve.native.kind";
-inline constexpr std::string_view kNativeViewPropsPropKey = "nve.native_props";
-inline constexpr std::string_view kNativeViewPropsPropKeyAlias = "nve.native.props";
 
 inline constexpr std::string_view kNativeKindBlurSurface = "nve.blur_surface";
 inline constexpr std::string_view kNativeKindBlurAlias = "nve.blur";
@@ -146,7 +144,7 @@ inline NativeViewCodecError decode_value(std::span<const uint8_t> buf, size_t& p
       if (buf.size() - pos < 4u) return NativeViewCodecError::Truncated;
       const size_t n = static_cast<size_t>(read_u32_le(buf.data() + pos)); pos += 4u;
       if (buf.size() - pos < n) return NativeViewCodecError::Truncated;
-      if (raw_tag == 7u && !is_valid_utf8(buf.data() + pos, n)) return NativeViewCodecError::InvalidUtf8;
+      if (raw_tag == 7u && !nve_utf8_valid(buf.data() + pos, n)) return NativeViewCodecError::InvalidUtf8;
       out.tag = raw_tag == 7u ? NativeValueTag::Str : NativeValueTag::Bytes;
       out.ptr = buf.data() + pos; out.len = n; pos += n;
       return NativeViewCodecError::Ok;
@@ -159,7 +157,7 @@ inline NativeViewCodecError read_len_utf8(std::span<const uint8_t> raw, size_t& 
   if (raw.size() - pos < 4u) return NativeViewCodecError::Truncated;
   const size_t n = static_cast<size_t>(read_u32_le(raw.data() + pos)); pos += 4u;
   if (raw.size() - pos < n) return NativeViewCodecError::Truncated;
-  if (!is_valid_utf8(raw.data() + pos, n)) return NativeViewCodecError::InvalidUtf8;
+  if (!nve_utf8_valid(raw.data() + pos, n)) return NativeViewCodecError::InvalidUtf8;
   out = std::string_view(reinterpret_cast<const char*>(raw.data() + pos), n); pos += n;
   return NativeViewCodecError::Ok;
 }
@@ -516,34 +514,6 @@ class NativeViewRegistry {
     auto it = mounted_.find(node_id); return it != mounted_.end() ? std::string_view(it->second.kind) : std::string_view{};
   }
   size_t mounted_count() const noexcept { return mounted_.size(); }
-
-  /// Registers a `CustomComponentDescriptor` on `host` forwarding `NVNP` raw props and `NVNC` commands.
-  void bind_to_fabric_host(NveFabricHostHandle host, std::string_view kind) {
-    if (host == nullptr || kind.empty()) return;
-    const std::string kind_owned(kind);
-    CustomComponentDescriptor desc{};
-    desc.component_name = kind_owned;
-    desc.on_update_props = [this, kind_owned](uint32_t node_id, const RawPropMap& props) {
-      std::string_view resolved_kind = kind_owned;
-      for (std::string_view k : {kNativeViewKindPropKey, kNativeViewKindPropKeyAlias}) {
-        if (auto it = props.find(std::string(k)); it != props.end() && std::holds_alternative<std::string>(it->second)) {
-          resolved_kind = std::get<std::string>(it->second); break;
-        }
-      }
-      std::span<const uint8_t> prop_bytes{};
-      for (std::string_view k : {kNativeViewPropsPropKey, kNativeViewPropsPropKeyAlias}) {
-        if (auto it = props.find(std::string(k)); it != props.end() && std::holds_alternative<std::vector<uint8_t>>(it->second)) {
-          const auto& v = std::get<std::vector<uint8_t>>(it->second);
-          prop_bytes = std::span<const uint8_t>(v.data(), v.size()); break;
-        }
-      }
-      (void)this->mount_or_update(node_id, resolved_kind, prop_bytes);
-    };
-    desc.on_dispatch_command = [this](uint32_t node_id, std::string_view cmd_name, NveBufferSlice payload) {
-      (void)this->dispatch_command(node_id, cmd_name, std::span<const uint8_t>(payload.ptr, payload.len));
-    };
-    fabric_host_register_custom_component(host, std::move(desc));
-  }
 
  private:
   struct MountedEntry { std::string kind; void* instance{nullptr}; const NativeViewAdapter* adapter{nullptr}; };

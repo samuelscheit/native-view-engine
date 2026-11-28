@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use nve_abi::{
-    NveBufferSlice, NveRuntimeApi, NveRuntimeHandle, NveRuntimeSceneView, NveRuntimeStatus,
+    NveBufferSlice, NveRuntimeApi, NveRuntimeHandle, NveSceneView, NveRuntimeStatus,
     NVE_RUNTIME_ABI_VERSION,
 };
 use nve_components::tables::{Layout, TextContent};
@@ -49,8 +49,8 @@ impl Surface {
         assert_eq!(unsafe { (self.api.tick)(self.h, 0.0, std::ptr::null_mut()) }, OK);
     }
 
-    pub fn acquire(&self) -> NveRuntimeSceneView {
-        let mut view = NveRuntimeSceneView::default();
+    pub fn acquire(&self) -> NveSceneView {
+        let mut view = NveSceneView::default();
         // SAFETY: Live handle and valid out slot.
         assert_eq!(unsafe { (self.api.scene_acquire)(self.h, &mut view) }, OK);
         view

@@ -1,4 +1,4 @@
-//! `NveRuntimeSceneView::scene_epoch`: hosts detect every scene reset (keyframe, detach) even when the new scene reuses the same node ids.
+//! `NveSceneView::scene_epoch`: hosts detect every scene reset (keyframe, detach) even when the new scene reuses the same node ids.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;

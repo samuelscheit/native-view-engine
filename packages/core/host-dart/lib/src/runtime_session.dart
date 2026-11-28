@@ -17,8 +17,7 @@ import 'hybrid_ffi.dart' show HybridArena, checkedNativeBytes;
 import 'key64.dart';
 import 'native_heap.dart';
 import 'runtime_api.dart';
-import 'runtime_scene_reader.dart';
-import 'scene_reader.dart' show SceneErrorKind, SceneException;
+import 'scene_reader.dart';
 import 'table_reader.dart';
 import 'utf8.dart' show encodeUtf8CodePointAt, utf16UnitsAt, utf8EncodedLength;
 import 'value_tree.dart' show NveValueTree;
@@ -205,7 +204,7 @@ final class RuntimeSession {
   // One zeroed scratch block holds every fixed-size out-parameter / argument record (8-byte
   // aligned sub-blocks): one allocation per session, one free in [dispose].
   static int _align8(int n) => (n + 7) & ~7;
-  static final int _atMetrics = _align8(ffi.sizeOf<NveRuntimeSceneView>());
+  static final int _atMetrics = _align8(ffi.sizeOf<NveSceneView>());
   static final int _atStrs = _atMetrics + _align8(ffi.sizeOf<NveRuntimeMetrics>());
   static final int _atBuffer = _atStrs + _align8(2 * ffi.sizeOf<NveStrSlice>());
   static final int _atBatch = _atBuffer + _align8(ffi.sizeOf<NveBufferSlice>());
@@ -215,7 +214,7 @@ final class RuntimeSession {
   static final int _scratchBytes = _atU32 + 8;
 
   final ffi.Pointer<ffi.Uint8> _scratch = NativeHeap.zeroed<ffi.Uint8>(_scratchBytes);
-  late final ffi.Pointer<NveRuntimeSceneView> _view = _scratch.cast();
+  late final ffi.Pointer<NveSceneView> _view = _scratch.cast();
   late final ffi.Pointer<NveRuntimeMetrics> _metrics = (_scratch + _atMetrics).cast();
   late final ffi.Pointer<NveStrSlice> _strs = (_scratch + _atStrs).cast();
   late final ffi.Pointer<NveBufferSlice> _buffer = (_scratch + _atBuffer).cast();
@@ -230,8 +229,8 @@ final class RuntimeSession {
   /// Validated reader of the last acquired view and the view bytes it was built from: an
   /// unchanged publication (same frame id, slab pointers, and counts) reuses it, so repeated
   /// paints / hit tests of one frame validate and allocate nothing.
-  RuntimeSceneReader? _reader;
-  final Uint8List _readerView = Uint8List(ffi.sizeOf<NveRuntimeSceneView>());
+  SceneReader? _reader;
+  final Uint8List _readerView = Uint8List(ffi.sizeOf<NveSceneView>());
 
   bool get isDisposed => _handle.address == 0;
 
@@ -558,7 +557,7 @@ final class RuntimeSession {
   ///
   /// The reader borrows runtime memory: it (and every list it returns) MUST NOT escape [read].
   /// Not re-entrant: runtime writes (`tick`, events, viewport) inside [read] fail with `busy`.
-  T withScene<T>(T Function(RuntimeSceneReader scene) read) {
+  T withScene<T>(T Function(SceneReader scene) read) {
     final handle = _live;
     if (_inScene) {
       throw StateError('withScene is not re-entrant');
@@ -573,7 +572,7 @@ final class RuntimeSession {
     }
   }
 
-  RuntimeSceneReader _currentReader() {
+  SceneReader _currentReader() {
     final bytes = _view.cast<ffi.Uint8>().asTypedList(_readerView.length);
     final cached = _reader;
     if (cached != null && _sameBytes(bytes, _readerView)) {
@@ -625,11 +624,11 @@ int _encodeUtf8(String s, Uint8List out, int o) {
   return o;
 }
 
-/// Wraps a borrowed `NveRuntimeSceneView` as a validated [RuntimeSceneReader] (zero copy).
+/// Wraps a borrowed `NveSceneView` as a validated [SceneReader] (zero copy).
 ///
 /// Throws [SceneException] for null slabs with non-zero counts, invalid table word counts, or
-/// any [RuntimeSceneReader] validation failure.
-RuntimeSceneReader readRuntimeScene(NveRuntimeSceneView v) {
+/// any [SceneReader] validation failure.
+SceneReader readRuntimeScene(NveSceneView v) {
   ffi.Pointer<T> require<T extends ffi.NativeType>(ffi.Pointer<T> p, int count, String what) {
     if (count > 0 && p.address == 0) {
       throw SceneException(SceneErrorKind.missingSlab, '$what is NULL with count $count');
@@ -668,7 +667,7 @@ RuntimeSceneReader readRuntimeScene(NveRuntimeSceneView v) {
     }
   }, growable: false);
 
-  return RuntimeSceneReader(
+  return SceneReader(
     expectedSchema: nveRuntimeSchemaHash,
     schemaHash: key64FromBits(v.schemaHash),
     frameId: key64FromBits(v.frameId),

@@ -57,16 +57,9 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
     assert_eq!(backend.hit_test(&store, 100.0, 80.0), Some(btn.raw()));
     assert_eq!(backend.hit_test(&store, 100.0, 20.0), None);
 
-    // Live NveSceneView publishes primary_slot + NveTableView slices.
-    let view = backend.publish_scene_view(&store, &changes, 1);
-    assert_eq!(view.node_count, 4);
-    assert!(view.table_count >= 2);
-    // SAFETY: `view` borrows `backend`'s published scene table with `node_count` valid nodes.
-    let nodes = unsafe { std::slice::from_raw_parts(view.nodes, view.node_count as usize) };
-    let root_node = nodes.iter().find(|n| n.node_id == NodeId::ROOT.raw()).unwrap();
-    assert_eq!(root_node.primary_slot, NVE_PRIMARY_SLOT_NONE);
-    let title_node = nodes.iter().find(|n| n.node_id == title.raw()).unwrap();
-    assert_eq!(title_node.primary_slot, TextContent::slot().0);
+    // The plain root realizes no table; the title's realizing table is `TextContent`.
+    assert_eq!(store.primary_slot(NodeId::ROOT).0, NVE_PRIMARY_SLOT_NONE);
+    assert_eq!(store.primary_slot(title), TextContent::slot());
 
     // Frame-0 NVE2 export round-trips cleanly into a cold replica with live layout.
     let meta = Frame0Meta {
@@ -88,70 +81,6 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
 
     let dump = backend.dump_tree(&store);
     assert!(dump.contains("Dashboard"));
-}
-
-#[test]
-fn publish_scene_view_unifies_text_slab_across_render_nodes_and_table_views() {
-    let mut store = NodeStore::new();
-    store.set_realization_order(core_realization_order());
-    let mut changes = ChangeSet::default();
-    let mut backend = HeadlessBackend::new();
-    backend.set_viewport(
-        1,
-        Viewport {
-            width: 400.0,
-            height: 300.0,
-            scale_factor: 1.0,
-        },
-    );
-
-    let child = {
-        let mut tx = store.tx();
-        let c = tx.create();
-        tx.set_children(NodeId::ROOT, &[c]);
-        tx.edit::<TextContent>(c).text("Unified Slab ✓");
-        tx.commit_into(&mut changes);
-        c
-    };
-    backend.commit(&store, &changes).unwrap();
-    let view = backend.publish_scene_view(&store, &changes, 1);
-
-    // SAFETY: `view` borrows `backend`'s live scene table for the lifetime of `scene`.
-    let scene = unsafe { nve_abi::NveSceneRef::from_raw(view) }.expect("valid NveSceneRef");
-    let rn = scene
-        .nodes()
-        .iter()
-        .find(|n| n.node_id == child.raw())
-        .expect("child render node");
-    let rn_text = std::str::from_utf8(
-        &scene.text_slab()[rn.text_offset as usize..(rn.text_offset as usize + rn.text_len as usize)],
-    )
-    .expect("render node text");
-    assert_eq!(rn_text, "Unified Slab ✓");
-
-    // Verify `TextContent` NveTableView's raw StrSpan words decode identically against `scene.text_slab()`!
-    let tv = scene
-        .tables()
-        .iter()
-        .find(|t| t.key_lo == TextContent::KEY.lo() && t.key_hi == TextContent::KEY.hi())
-        .expect("TextContent table view");
-    // SAFETY: `tv` points into `store`'s live dense table buffers while `store` is immutably borrowed.
-    let (rows, owners) = unsafe {
-        (
-            std::slice::from_raw_parts(tv.rows, (tv.row_count * tv.words) as usize),
-            std::slice::from_raw_parts(tv.owners, tv.row_count as usize),
-        )
-    };
-    let row_idx = owners
-        .iter()
-        .position(|&o| o == child.raw())
-        .expect("child owner in TextContent");
-    let off = rows[row_idx * tv.words as usize] as usize;
-    let len = rows[row_idx * tv.words as usize + 1] as usize;
-    let tv_text = std::str::from_utf8(&scene.text_slab()[off..off + len]).unwrap();
-    assert_eq!(tv_text, "Unified Slab ✓");
-    assert_eq!(rn.text_offset as usize, off);
-    assert_eq!(rn.text_len as usize, len);
 }
 
 #[test]
@@ -236,58 +165,6 @@ fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fix
     tx.commit_into(&mut changes);
     backend.commit(&store, &changes).unwrap();
     assert_eq!(backend.layout_of(zero_op.raw()), None);
-}
-
-#[test]
-fn publish_scene_view_marks_in_place_text_edits_dirty_and_skips_external_slab_compaction() {
-    let mut store = NodeStore::new();
-    let mut changes = ChangeSet::default();
-    let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, Viewport { width: 320.0, height: 240.0, scale_factor: 1.0 });
-
-    let label = {
-        let mut tx = store.tx();
-        let n = tx.create();
-        tx.set_children(NodeId::ROOT, &[n]);
-        tx.edit::<Layout>(n).width(Length::points(120.0)).height(Length::points(30.0));
-        tx.edit::<TextContent>(n).text("10");
-        tx.commit_into(&mut changes);
-        n
-    };
-    backend.commit(&store, &changes).unwrap();
-    let view1 = backend.publish_scene_view(&store, &changes, 1);
-    // SAFETY: `view1` borrows live `backend` and `store` slabs for this test assertion.
-    let ref1 = unsafe { nve_abi::NveSceneRef::from_raw(view1) }.unwrap();
-    let idx1 = backend.scene_table.index_of(label.raw()).unwrap();
-    assert_eq!(ref1.node_text(&ref1.nodes()[idx1]).unwrap(), "10");
-    let off1 = ref1.nodes()[idx1].text_offset;
-    let len1 = ref1.nodes()[idx1].text_len;
-
-    // Overwrite "10" -> "11" in the same StrArena size class (identical offset & length).
-    {
-        let mut tx = store.tx();
-        tx.edit::<TextContent>(label).text("11");
-        tx.commit_into(&mut changes);
-    }
-    backend.commit(&store, &changes).unwrap();
-    let view2 = backend.publish_scene_view(&store, &changes, 2);
-    // SAFETY: `view2` borrows live `backend` and `store` slabs for this test assertion.
-    let ref2 = unsafe { nve_abi::NveSceneRef::from_raw(view2) }.unwrap();
-    let idx2 = backend.scene_table.index_of(label.raw()).unwrap();
-    assert_eq!(ref2.nodes()[idx2].text_offset, off1);
-    assert_eq!(ref2.nodes()[idx2].text_len, len1);
-    assert!(
-        ref2.dirty_indices().contains(&(idx2 as u32)),
-        "in-place same-class text edit must mark node dirty in NveSceneView"
-    );
-    assert_eq!(ref2.node_text(&ref2.nodes()[idx2]).unwrap(), "11");
-
-    // Calling compact_text_slab() on an external-text NveSceneTable must be a safe no-op.
-    backend.scene_table.compact_text_slab();
-    let view3 = backend.publish_scene_view(&store, &ChangeSet::default(), 3);
-    // SAFETY: `view3` borrows live `backend` and `store` slabs for this test assertion.
-    let ref3 = unsafe { nve_abi::NveSceneRef::from_raw(view3) }.unwrap();
-    assert_eq!(ref3.node_text(&ref3.nodes()[idx2]).unwrap(), "11");
 }
 
 #[test]

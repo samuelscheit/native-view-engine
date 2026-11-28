@@ -123,29 +123,15 @@ fn events_on_descendant_boxes_bubble_to_a_contents_node() {
 }
 
 #[test]
-fn contents_nodes_publish_no_box_paint_or_clip() {
-    let mut f = fixture();
-    let view = f.backend.publish_scene_view(&f.store, &f.changes, 1);
-    // SAFETY: `view` borrows `backend`'s published scene table with `node_count` valid nodes.
-    let nodes = unsafe { std::slice::from_raw_parts(view.nodes, view.node_count as usize) };
-    let wrapper = nodes
-        .iter()
-        .find(|n| n.node_id == f.wrapper.raw())
-        .expect("wrapper published");
-    assert_eq!(
-        (wrapper.bg_rgba, wrapper.border_width, wrapper.opacity_u8),
-        (0, 0.0, 255)
-    );
-    assert_eq!(wrapper.flags & nve_abi::NVE_NODE_CLIP_BOUNDS, 0);
-    assert_eq!(
-        (wrapper.x, wrapper.y, wrapper.width, wrapper.height),
-        (20.0, 10.0, 0.0, 0.0)
-    );
-    let row = nodes
-        .iter()
-        .find(|n| n.node_id == f.row.raw())
-        .expect("row published");
-    assert_eq!(row.flags & nve_abi::NVE_NODE_CLIP_BOUNDS, 0);
+fn contents_nodes_have_no_box_paint_or_clip() {
+    let f = fixture();
+    // `display: contents` boxes paint nothing and never clip, so hosts realize no view for them.
+    for id in [f.wrapper, f.row] {
+        assert!(nve_components::tables::box_visual(&f.store, id).is_none(), "{id:?} paints a box");
+        assert!(!nve_components::tables::node_clips_overflow(&f.store, id), "{id:?} clips");
+    }
+    let wrapper = f.backend.layout_of(f.wrapper.raw()).expect("wrapper laid out");
+    assert_eq!((wrapper.x, wrapper.y, wrapper.width, wrapper.height), (20.0, 10.0, 0.0, 0.0));
 }
 
 #[test]

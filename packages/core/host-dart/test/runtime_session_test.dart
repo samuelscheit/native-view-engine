@@ -43,7 +43,7 @@ void _expectStatus(Check c, NveRuntimeStatus status, void Function() body, Strin
 
 /// `(liveNodes, textNodes, firstText, maxRight, maxBottom, interactive index)` of the scene; the
 /// interactive node is the first event target whose center lies inside [viewportHeight].
-(int, int, String, double, double, int) _summarize(RuntimeSceneReader s, {double viewportHeight = 600}) {
+(int, int, String, double, double, int) _summarize(SceneReader s, {double viewportHeight = 600}) {
   final text = s.findTable(TextTable.key);
   final interaction = s.findTable(InteractionTable.key);
   var live = 0, texts = 0, interactive = -1;
@@ -83,7 +83,7 @@ void _expectStatus(Check c, NveRuntimeStatus status, void Function() body, Strin
 }
 
 /// Every text of the scene in tree order: a press that re-renders visibly changes it.
-String _textDigest(RuntimeSceneReader s) {
+String _textDigest(SceneReader s) {
   final text = s.findTable(TextTable.key);
   final out = StringBuffer();
   void walk(int i) {
@@ -108,7 +108,7 @@ String _textDigest(RuntimeSceneReader s) {
 }
 
 /// Visible press targets `(raw NodeId, center x, center y)`.
-List<(int, double, double)> _pressTargets(RuntimeSceneReader s, double viewportHeight) {
+List<(int, double, double)> _pressTargets(SceneReader s, double viewportHeight) {
   final interaction = s.findTable(InteractionTable.key);
   return [
     for (var i = 1; i < s.nodeCapacity; i++)

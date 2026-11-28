@@ -41,7 +41,7 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Check local toolchain, mobile SDKs, compilation caches, and RN Fabric sources.
+    /// Check local toolchain, mobile SDKs, compilation caches, and React Native sources.
     Doctor,
     /// Render a Dioxus rsx! surface headlessly, simulate native taps, and print the layout tree.
     Inspect,

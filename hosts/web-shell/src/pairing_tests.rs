@@ -77,8 +77,6 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     assert_ne!(web_session.session_id(), 0);
     assert_eq!(web_session.frames_received(), 1);
     assert!(web_session.render_html().contains("Count: 0"));
-    #[cfg(feature = "scene-view")]
-    assert!(web_session.scene().view().node_count > 0);
 
     // Server receives initial Layout EventBatch automatically on handshake.
     let layout_msg = server

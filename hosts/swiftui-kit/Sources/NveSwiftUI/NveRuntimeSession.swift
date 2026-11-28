@@ -9,10 +9,10 @@ extension NveTableView: @retroactive TableViewABI {}
 extension NveNodeRow: @retroactive NodeRowABI {}
 extension NveLayoutRect: @retroactive LayoutRectABI {}
 extension NveScrollOffset: @retroactive ScrollOffsetABI {}
-extension NveRuntimeSceneView: @retroactive RuntimeSceneViewABI {}
+extension NveSceneView: @retroactive RuntimeSceneViewABI {}
 
 /// Validated zero-copy reader over the scene borrowed from `scene_acquire`.
-public typealias NveRuntimeScene = RuntimeSceneReader<NveRuntimeSceneView>
+public typealias NveRuntimeScene = SceneReader<NveSceneView>
 
 public enum NveRuntimeError: Error, Equatable {
     /// `nve_runtime_get_interface` is not linked into this process.
@@ -158,12 +158,12 @@ public final class NveRuntimeSession {
 
     /// Runs `body` over the validated published scene; the borrow ends when `body` returns.
     public func withScene<R>(_ body: (NveRuntimeScene) throws -> R) throws -> R {
-        var view = NveRuntimeSceneView()
+        var view = NveSceneView()
         try check(api.pointee.scene_acquire(handle, &view))
         defer { _ = api.pointee.scene_release(handle) }
         let scene: NveRuntimeScene
         do {
-            scene = try RuntimeSceneReader.open(view, expectedSchema: Key64(NVE_RUNTIME_SCHEMA_HASH))
+            scene = try SceneReader.open(view, expectedSchema: Key64(NVE_RUNTIME_SCHEMA_HASH))
         } catch {
             throw NveRuntimeError.scene(error)
         }

@@ -1,4 +1,4 @@
-// NVE host runtime: O(changed) retained native-view reconciler over `NveRuntimeSceneView`.
+// NVE host runtime: O(changed) retained native-view reconciler over `NveSceneView`.
 //
 // Mirrors the published scene into one native view per live node through an `Adapter`:
 //
@@ -73,7 +73,7 @@ class RetainedTree {
 
   /// Reconciles `scene` (bound into `tables`); returns the number of views created or updated
   /// (`moved()` counts the geometry-only `move`s).
-  size_t sync(const RuntimeSceneReader& scene, SceneTables& tables, Adapter& adapter) {
+  size_t sync(const SceneReader& scene, SceneTables& tables, Adapter& adapter) {
     const bool same_epoch = initialized_ && scene.scene_epoch() == scene_epoch_;
     if (same_epoch && scene.frame_id() == last_frame_) {
       moved_ = 0u;
@@ -171,7 +171,7 @@ class RetainedTree {
 
   /// During (or after) `sync` of `scene`: whether a view may keep what it decoded from resource
   /// `applied_id` now that its node reads `id` (same id, incremental sync, bytes not redefined).
-  [[nodiscard]] bool resource_unchanged(const RuntimeSceneReader& scene, uint32_t id,
+  [[nodiscard]] bool resource_unchanged(const SceneReader& scene, uint32_t id,
                                         uint32_t applied_id) const noexcept {
     return incremental_ && id == applied_id && !scene.resource_dirty(id);
   }
@@ -220,7 +220,7 @@ class RetainedTree {
   }
 
   /// Resolved inherited style of live node `i`, memoized per epoch (iterative: deep trees safe).
-  const TextStyle& resolve_style(const RuntimeSceneReader& scene, const SceneTables& tables, uint32_t i) {
+  const TextStyle& resolve_style(const SceneReader& scene, const SceneTables& tables, uint32_t i) {
     chain_.clear();
     uint32_t cur = i;
     while (cur < entries_.size() && entries_[cur].resolved != epoch_ && scene.is_live(cur)) {
@@ -238,7 +238,7 @@ class RetainedTree {
     return entries_[i].style;
   }
 
-  void visit(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
+  void visit(const SceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
     Entry& e = entries_[i];
     e.stamp = epoch_;
     const TextStyle style = resolve_style(scene, tables, i);
@@ -271,7 +271,7 @@ class RetainedTree {
   }
 
   /// A node whose geometry alone changed: `move` when its view is current, else a full visit.
-  void move(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
+  void move(const SceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
     Entry& e = entries_[i];
     if constexpr (MovingAdapter<Adapter>) {
       const std::optional<NodeGeometry> g = read_geometry(scene, tables, i);
@@ -286,7 +286,7 @@ class RetainedTree {
   }
 
   /// Hands live node `i`'s child views to the adapter (`relink_` may name dead or recycled slots).
-  void sync_children(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
+  void sync_children(const SceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
     Entry& e = entries_[i];
     if (!e.live || !scene.is_live(i)) return;
     const std::optional<NodeGeometry> g = read_geometry(scene, tables, i);

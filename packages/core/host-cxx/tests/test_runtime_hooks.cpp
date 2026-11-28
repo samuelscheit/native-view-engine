@@ -31,7 +31,7 @@ using nve::host::text_style;
 using nve::host::white_space_wraps;
 using nve::host::RuntimeResource;
 using nve::host::RuntimeSceneGuard;
-using nve::host::RuntimeSceneReader;
+using nve::host::SceneReader;
 using nve::host::RuntimeSession;
 using nve::host::SceneError;
 using nve::host::Nve2FrameBuilder;
@@ -241,11 +241,11 @@ void test_scroll_offsets() {
   // Synthetic view: sorted lookup, absent containers are zero, NULL slab with a count is rejected.
   const std::array<NveScrollOffset, 2> offsets{NveScrollOffset{2u, 0.0f, 40.0f},
                                                NveScrollOffset{5u, 3.0f, 0.0f}};
-  NveRuntimeSceneView view{};
+  NveSceneView view{};
   view.schema_hash = NVE_RUNTIME_SCHEMA_HASH;
   view.scroll_count = static_cast<uint32_t>(offsets.size());
   view.scroll_offsets = offsets.data();
-  const std::optional<RuntimeSceneReader> reader = RuntimeSceneReader::open(&view);
+  const std::optional<SceneReader> reader = SceneReader::open(&view);
   CHECK(reader.has_value());
   if (reader) {
     CHECK(reader->scroll_offsets().size() == 2u);
@@ -260,20 +260,20 @@ void test_scroll_offsets() {
   const std::array<NveScrollOffset, 2> unsorted{NveScrollOffset{5u, 0.0f, 1.0f},
                                                 NveScrollOffset{2u, 0.0f, 2.0f}};
   view.scroll_offsets = unsorted.data();
-  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(!SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::UnsortedScrollOffsets);
   const std::array<NveScrollOffset, 2> duplicate{NveScrollOffset{3u, 0.0f, 1.0f},
                                                  NveScrollOffset{3u, 0.0f, 2.0f}};
   view.scroll_offsets = duplicate.data();
   err = SceneError::None;
-  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(!SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::UnsortedScrollOffsets);
   // `dirty_resources` are binary-searched by `resource_dirty`: strictly ascending or rejected.
   view.scroll_offsets = offsets.data();
   const std::array<uint32_t, 3> dirty{2u, 9u, 40u};
   view.dirty_resources = dirty.data();
   view.dirty_resource_count = 3u;
-  const std::optional<RuntimeSceneReader> searchable = RuntimeSceneReader::open(&view);
+  const std::optional<SceneReader> searchable = SceneReader::open(&view);
   CHECK(searchable.has_value());
   if (searchable) {
     CHECK(searchable->resource_dirty(2u) && searchable->resource_dirty(9u) && searchable->resource_dirty(40u));
@@ -282,7 +282,7 @@ void test_scroll_offsets() {
   for (const std::array<uint32_t, 3> bad : {std::array<uint32_t, 3>{2u, 40u, 9u}, std::array<uint32_t, 3>{2u, 9u, 9u}}) {
     view.dirty_resources = bad.data();
     err = SceneError::None;
-    CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+    CHECK(!SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
     CHECK(err == SceneError::UnsortedDirtyResources);
   }
   view.dirty_resources = nullptr;
@@ -290,12 +290,12 @@ void test_scroll_offsets() {
   const NveScrollOffset single{7u, 1.0f, 0.0f};
   view.scroll_offsets = &single;
   view.scroll_count = 1u;
-  CHECK(RuntimeSceneReader::open(&view).has_value());
+  CHECK(SceneReader::open(&view).has_value());
   view.scroll_count = 2u;
 
   view.scroll_offsets = nullptr;
   err = SceneError::None;
-  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(!SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::NullSlab);
 }
 
@@ -335,28 +335,28 @@ void test_scene_epoch_and_dirty_resources() {
   CHECK(e3 == e2);
 
   // Synthetic views: unsorted / duplicate ids are rejected, ascending ones are served.
-  NveRuntimeSceneView view{};
+  NveSceneView view{};
   view.schema_hash = NVE_RUNTIME_SCHEMA_HASH;
   view.scene_epoch = 42u;
   const std::array<uint32_t, 3> sorted{2u, 5u, 9u};
   view.dirty_resources = sorted.data();
   view.dirty_resource_count = static_cast<uint32_t>(sorted.size());
-  const std::optional<RuntimeSceneReader> reader = RuntimeSceneReader::open(&view);
+  const std::optional<SceneReader> reader = SceneReader::open(&view);
   CHECK(reader.has_value() && reader->scene_epoch() == 42u && reader->dirty_resources().size() == 3u);
   SceneError err = SceneError::None;
   const std::array<uint32_t, 2> unsorted{5u, 2u};
   view.dirty_resources = unsorted.data();
   view.dirty_resource_count = 2u;
-  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(!SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::UnsortedDirtyResources);
   const std::array<uint32_t, 2> duplicate{3u, 3u};
   view.dirty_resources = duplicate.data();
   err = SceneError::None;
-  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(!SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::UnsortedDirtyResources);
   view.dirty_resources = nullptr;
   err = SceneError::None;
-  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(!SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::NullSlab);
 }
 

@@ -142,11 +142,7 @@ pub(super) fn abi(
                 .iter()
                 .map(move |f| (m.name, f.name, f.params, f.return_type))
         });
-        let c_functions = file
-            .c_functions
-            .iter()
-            .map(|f| ("C", f.name, f.params, f.return_type));
-        for (owner, name, params, ret) in module_methods.chain(c_functions) {
+        for (owner, name, params, ret) in module_methods {
             for p in params {
                 check_type(p.ty, Position::Param, &known, owner, name)?;
             }

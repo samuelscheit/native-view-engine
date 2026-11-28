@@ -5,24 +5,19 @@ Zero-copy `#[repr(C)]` C ABI and binary wire definitions (`packages/core/abi`, *
 ## Key Public API
 
 - `ffi::{NveAppHandle, NveComponentApi, NveDevApi, NveBufferSlice}`, `host::{NveHostApi, NveHostCallbacks, NveHostStatus}`
-- `scene::{NveRenderNode, NveSceneView, NveSceneTable, NveNodeMeta, NVE_PRIMARY_SLOT_NONE}`
-- `table::{NveTableView, TableDesc, FieldDesc, FieldKind, compute_table_schema_hash}`
+- `runtime::{NveRuntimeApi, NveSceneView, NveNodeRow, NveLayoutRect, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH}`: the one scene ABI every host reads (`scene_acquire` / `scene_release`)
+- `table::{NveTableView, NVE_PRIMARY_SLOT_NONE, TableDesc, FieldDesc, FieldKind, compute_table_schema_hash}`
 - `value::{NveValue, NveValueRef, NveDirectEvent, BinValueView}`, `events`, `schema`, `NveAbi`
 
 ```rust
-use nve_abi::{NveSceneTable, SceneNodeInput, NVE_PRIMARY_SLOT_NONE};
+use core::mem::{offset_of, size_of};
+use nve_abi::{NveNodeRow, NveSceneView, NVE_NODE_ROW_SIZE, NVE_RUNTIME_SCHEMA_HASH};
 
-let mut table = NveSceneTable::new();
-table.begin_frame(1);
-table
-    .upsert_node(SceneNodeInput {
-        node_id: 1,
-        primary_slot: NVE_PRIMARY_SLOT_NONE,
-        ..SceneNodeInput::default()
-    })
-    .expect("valid scene node");
-let view = table.as_view();
-assert_eq!(view.node_count, 1);
+// `libnve_runtime` publishes `NodeStore`'s 32-byte rows straight into the scene view.
+assert_eq!(size_of::<NveNodeRow>(), NVE_NODE_ROW_SIZE);
+assert_eq!(offset_of!(NveSceneView, rows), 56);
+let empty = NveSceneView { schema_hash: NVE_RUNTIME_SCHEMA_HASH, ..NveSceneView::default() };
+assert_eq!(empty.node_capacity, 0);
 ```
 
 ## Dependency Invariants

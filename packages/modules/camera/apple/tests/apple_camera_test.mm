@@ -1,9 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "NveAppleCamera.h"
 
-#include "command_encoder.hpp"
-#include "nve_rn_component.hpp"
-
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -221,51 +218,44 @@ int main() {
     NVE_CHECK(registry.mount_or_update(30u, nve::apple::kNativeKindCameraPreview, vcProps) == nullptr);
     NVE_CHECK(view_for_node(registry, 30u) == nil);
 
-    NveSurfaceConfig cfg{.surface_id = 1u, .width = 480.0f, .height = 320.0f, .scale_factor = 2.0f};
-    NveFabricHostHandle host = nve_fabric_host_create(cfg);
-    NVE_CHECK(host != nullptr);
-    nve::apple::bind_apple_camera_native_view_to_fabric_host(host, registry);
-
     // 3. Pluggable VisionCamera v5 bridge delegates create, update_props, dispatch_command, unmount.
     MockVisionCameraBridge *mockBridge = [[MockVisionCameraBridge alloc] init];
     nve::apple::set_vision_camera_apple_bridge(mockBridge);
     NVE_CHECK(nve::apple::get_vision_camera_apple_bridge() == mockBridge);
 
-    nve::CommandBufferEncoder enc3(1u, 3u);
-    enc3.create_node(40u, NVE_COMP_CUSTOM, nve::apple::kNativeKindCameraPreview);
-    enc3.set_raw_prop_string(40u, nve::kNativeViewKindPropKey, nve::apple::kNativeKindCameraPreview);
-    enc3.set_raw_prop_bytes(40u, nve::kNativeViewPropsPropKey, vcProps);
-    enc3.set_children(NVE_ROOT_NODE_ID, {40u});
-    enc3.commit(true);
-    NVE_CHECK(nve_fabric_host_submit_frame(host, enc3.finish(), nullptr) == 0);
+    NVE_CHECK(registry.mount_or_update(40u, nve::apple::kNativeKindCameraPreview, vcProps) != nullptr);
+    // The alias kind resolves to the same adapter.
+    NVE_CHECK(registry.mount_or_update(42u, nve::apple::kNativeKindCameraAlias, vcProps) != nullptr);
+    NVE_CHECK(registry.unmount(42u));
 
-    nve::CommandBufferEncoder enc4(1u, 4u);
-    enc4.dispatch_command(40u, "switch_facing", encode_cmd_u32(1u, 3u));
-    enc4.dispatch_command(40u, "set_torch", encode_cmd_u32(2u, 1u));
-    enc4.dispatch_command(40u, "set_zoom", encode_cmd_f32(3u, 3.25f));
-    enc4.dispatch_command(40u, "set_zoom", encode_cmd_f32(3u, -2.0f));
-    enc4.dispatch_command(40u, "focus_point", encode_cmd_f32_f32(4u, 0.25f, 0.75f));
-    enc4.dispatch_command(40u, "capture_photo", encode_cmd_u32_u32(5u, 85u, 2u));
-    enc4.dispatch_command(40u, "start_recording", encode_cmd_str(6u, "/tmp/vc.mp4"));
-    enc4.dispatch_command(40u, "stop_recording", encode_cmd_empty(7u));
-    enc4.commit(true);
-    NVE_CHECK(nve_fabric_host_submit_frame(host, enc4.finish(), nullptr) == 0);
+    const std::vector<uint8_t> cmds[] = {
+        encode_cmd_u32(1u, 3u), encode_cmd_u32(2u, 1u), encode_cmd_f32(3u, 3.25f), encode_cmd_f32(3u, -2.0f),
+        encode_cmd_f32_f32(4u, 0.25f, 0.75f), encode_cmd_u32_u32(5u, 85u, 2u),
+        encode_cmd_str(6u, "/tmp/vc.mp4"), encode_cmd_empty(7u),
+    };
+    const char *names[] = {"switch_facing", "set_torch", "set_zoom", "set_zoom",
+                           "focus_point", "capture_photo", "start_recording", "stop_recording"};
+    for (size_t i = 0; i < std::size(cmds); ++i) {
+      nve::NativeViewCodecError err = nve::NativeViewCodecError::TrailingBytes;
+      (void)registry.dispatch_command(40u, names[i], cmds[i], &err);
+      NVE_CHECK(err == nve::NativeViewCodecError::Ok);
+    }
 
     NSView *vcRaw = view_for_node(registry, 40u);
     NVE_CHECK(vcRaw != nil);
-    NVE_CHECK(mockBridge.createCount == 1u && mockBridge.updateCount == 1u && mockBridge.commandCount == 7u);
+    // Two mounts (preview + alias), seven accepted commands (the negative zoom is rejected).
+    NVE_CHECK(mockBridge.createCount == 2u && mockBridge.updateCount == 2u && mockBridge.commandCount == 7u);
     NVE_CHECK(mockBridge.lastFacing == nve::apple::CameraPreviewFacing::External);
     NVE_CHECK(mockBridge.lastTorch == nve::apple::TorchMode::On);
     NVE_CHECK(std::fabs(mockBridge.lastZoom - 1.75f) < 1e-4f);
     NVE_CHECK([mockBridge.lastRecordingPath isEqualToString:@"/tmp/vc.mp4"]);
     NVE_CHECK(registry.unmount(40u));
-    NVE_CHECK(mockBridge.unmountCount == 1u);
+    NVE_CHECK(mockBridge.unmountCount == 2u);
 
     // Clear bridge -> mounting returns nullptr again.
     nve::apple::set_vision_camera_apple_bridge(nil);
     NVE_CHECK(registry.mount_or_update(41u, nve::apple::kNativeKindCameraPreview, vcProps) == nullptr);
     NVE_CHECK(registry.mounted_count() == 0u);
-    nve_fabric_host_destroy(host);
 
     std::puts("nve_apple_camera_test: ALL PASSED");
   }

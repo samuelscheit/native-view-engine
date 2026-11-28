@@ -120,10 +120,10 @@ class CriterionParsingTests(unittest.TestCase):
 
 
 class CxxJsonParsingTests(unittest.TestCase):
-    def test_parses_bridge_bench_json_with_p50_and_median(self) -> None:
+    def test_parses_host_bench_json_with_p50_and_median(self) -> None:
         raw = json.dumps(
             {
-                "suite": "nve_fabric_bridge_bench",
+                "suite": "nve_host_cxx_bench",
                 "mode": "Standalone",
                 "has_yoga": False,
                 "has_jsi": False,
@@ -213,9 +213,9 @@ class ComparisonAndReportingTests(unittest.TestCase):
                     "tolerance_pct": 15.0,
                 },
                 # Within noise (+3%) -> OK
-                "cxx::rn_bridge_roundtrip": {
+                "cxx::scene_reader_open_1000": {
                     "suite": "cxx",
-                    "name": "rn_bridge_roundtrip",
+                    "name": "scene_reader_open_1000",
                     "median_ns": 700.0,
                     "tolerance_pct": 15.0,
                 },
@@ -251,9 +251,9 @@ class ComparisonAndReportingTests(unittest.TestCase):
                     "name": "decode_mount_100_nodes",
                     "median_ns": 16000.0,
                 },
-                "cxx::rn_bridge_roundtrip": {
+                "cxx::scene_reader_open_1000": {
                     "suite": "cxx",
-                    "name": "rn_bridge_roundtrip",
+                    "name": "scene_reader_open_1000",
                     "median_ns": 721.0,
                 },
                 "rust::abi/brand_new": {
@@ -284,7 +284,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
         self.assertEqual(by_key["cxx::decode_mount_100_nodes"]["status"], "improved")
         self.assertAlmostEqual(by_key["cxx::decode_mount_100_nodes"]["delta_pct"], -20.0)
 
-        self.assertEqual(by_key["cxx::rn_bridge_roundtrip"]["status"], "ok")
+        self.assertEqual(by_key["cxx::scene_reader_open_1000"]["status"], "ok")
         self.assertEqual(by_key["cxx::removed_bench"]["status"], "missing")
         self.assertEqual(by_key["rust::abi/brand_new"]["status"], "new")
 
@@ -347,15 +347,15 @@ class ComparisonAndReportingTests(unittest.TestCase):
             )
             _write_criterion_bench(
                 cdir,
-                "abi_scene/scene_view_read_all_1000",
+                "abi_nve2_wire_decode/1000",
                 4200.0,
-                full_id="abi/scene/scene_view_read_all_1000",
+                full_id="abi/nve2_wire_decode/1000",
             )
             cxx_json_path = tmp_path / "cxx.json"
             cxx_json_path.write_text(
                 json.dumps(
                     {
-                        "suite": "nve_fabric_bridge_bench",
+                        "suite": "nve_host_cxx_bench",
                         "benchmarks": [
                             {"name": "decode_mount_100_nodes", "p50_ns": 19000.0, "p95_ns": 19500.0, "ops_per_sec": 52631.0}
                         ],
@@ -383,7 +383,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
                 list(baseline_data["benchmarks"].keys()),
                 [
                     "cxx::decode_mount_100_nodes",
-                    "rust::abi/scene/scene_view_read_all_1000",
+                    "rust::abi/nve2_wire_decode/1000",
                     "rust::abi/value/value_direct_ffi_read",
                 ],
             )
@@ -393,7 +393,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
                 25.0,
             )
             self.assertEqual(
-                baseline_data["benchmarks"]["rust::abi/scene/scene_view_read_all_1000"]["tolerance_pct"],
+                baseline_data["benchmarks"]["rust::abi/nve2_wire_decode/1000"]["tolerance_pct"],
                 15.0,
             )
 
@@ -471,9 +471,9 @@ class ComparisonAndReportingTests(unittest.TestCase):
             cxx_json_path.write_text(
                 json.dumps(
                     {
-                        "suite": "nve_fabric_bridge_bench",
+                        "suite": "nve_host_cxx_bench",
                         "benchmarks": [
-                            {"name": "rn_bridge_render_press_roundtrip", "p50_ns": 700.0, "p95_ns": 800.0, "ops_per_sec": 1428571.0}
+                            {"name": "scene_read_all_1000", "p50_ns": 700.0, "p95_ns": 800.0, "ops_per_sec": 1428571.0}
                         ],
                     }
                 ),
@@ -484,9 +484,9 @@ class ComparisonAndReportingTests(unittest.TestCase):
                 json.dumps(
                     self._make_snapshot(
                         {
-                            "cxx::rn_bridge_render_press_roundtrip": {
+                            "cxx::scene_read_all_1000": {
                                 "suite": "cxx",
-                                "name": "rn_bridge_render_press_roundtrip",
+                                "name": "scene_read_all_1000",
                                 "median_ns": 690.0,
                                 "tolerance_pct": 7.5,
                             }
@@ -508,7 +508,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             updated = json.loads(baseline_path.read_text(encoding="utf-8"))
             self.assertEqual(
-                updated["benchmarks"]["cxx::rn_bridge_render_press_roundtrip"]["tolerance_pct"],
+                updated["benchmarks"]["cxx::scene_read_all_1000"]["tolerance_pct"],
                 7.5,
             )
 

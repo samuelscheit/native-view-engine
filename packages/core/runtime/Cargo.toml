@@ -3,7 +3,7 @@ name = "nve-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Framework-agnostic host runtime for NVE: zero-copy NveRuntimeSceneView publication, LaidOutScene orchestration, WakeBridge, FrameTickHook, and single-entry C ABI"
+description = "Framework-agnostic host runtime for NVE: zero-copy NveSceneView publication, LaidOutScene orchestration, WakeBridge, FrameTickHook, and single-entry C ABI"
 
 [lib]
 name = "nve_runtime"

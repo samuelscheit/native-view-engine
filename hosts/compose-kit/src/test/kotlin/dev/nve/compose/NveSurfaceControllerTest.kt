@@ -2,7 +2,7 @@ package dev.nve.compose
 
 import dev.nve.host.EventRingWriter
 import dev.nve.host.NativeRuntime
-import dev.nve.host.RuntimeSceneReader
+import dev.nve.host.SceneReader
 import dev.nve.host.FrameHost
 import dev.nve.host.RuntimeSurface
 import dev.nve.host.generated.NveAbi
@@ -25,9 +25,9 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     val scrolls = ArrayList<Triple<Int, Float, Float>>()
     var measurer: NativeRuntime.TextMeasurer? = null
     var closed = false
-    private var listener: ((RuntimeSceneReader, NveResourceLookup) -> Unit)? = null
+    private var listener: ((SceneReader, NveResourceLookup) -> Unit)? = null
 
-    override fun setFrameListener(listener: (RuntimeSceneReader, NveResourceLookup) -> Unit) {
+    override fun setFrameListener(listener: (SceneReader, NveResourceLookup) -> Unit) {
         this.listener = listener
     }
 

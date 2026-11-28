@@ -1,8 +1,8 @@
-//! Zero-copy [`NveRuntimeSceneView`] publication from the active `NodeStore`: invalidation,
+//! Zero-copy [`NveSceneView`] publication from the active `NodeStore`: invalidation,
 //! pointer-drift validation, and per-frame publish of rows, rects, slabs, tables, and resources.
 
 use nve_abi::table::NVE_ROW_INDEX_PAGE_LEN;
-use nve_abi::{slab_ptr, NveNodeRow, NveRuntimeSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH};
+use nve_abi::{slab_ptr, NveNodeRow, NveSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH};
 use nve_layout::ScrollOffsets;
 use nve_store::{ChangeSet, NodeId, NodeStore, TableSlot};
 
@@ -13,11 +13,11 @@ impl SurfaceState {
     /// Clears all borrowed pointers in `published_view` and `published_tables` so an early error,
     /// app detach/swap, or unwind can never expose dangling pointers to `scene_acquire`.
     pub(crate) fn invalidate_published_view(&mut self) {
-        self.published_view = NveRuntimeSceneView {
+        self.published_view = NveSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
             frame_id: self.frame_id,
             scene_epoch: self.scene_epoch,
-            ..NveRuntimeSceneView::default()
+            ..NveSceneView::default()
         };
         self.published_resources = PublishedResources::None;
         self.published_tables.clear();
@@ -136,7 +136,7 @@ impl SurfaceState {
         let text_slab = store.text_slab();
         let children_slab = store.children_slab();
 
-        self.published_view = NveRuntimeSceneView {
+        self.published_view = NveSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
             frame_id: self.frame_id,
             node_capacity: rows_slice.len() as u32,

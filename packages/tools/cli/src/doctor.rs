@@ -69,17 +69,17 @@ pub(crate) fn cmd_doctor() {
         Ok(raw) if !raw.trim().is_empty() => {
             let rn_path = PathBuf::from(raw.trim());
             if rn_path.exists() {
-                println!("  [OK]   RN Fabric      {}", rn_path.display());
+                println!("  [OK]   RN Common      {} (layout-yoga RN Yoga, camera JSI)", rn_path.display());
             } else {
                 println!(
-                    "  [WARN] RN Fabric      RN_REACT_COMMON_DIR does not exist: {}",
+                    "  [WARN] RN Common      RN_REACT_COMMON_DIR does not exist: {}",
                     rn_path.display()
                 );
             }
         }
         _ => {
             println!(
-                "  [WARN] RN Fabric      RN_REACT_COMMON_DIR not set (optional for standalone builds)"
+                "  [WARN] RN Common      RN_REACT_COMMON_DIR not set (optional: layout-yoga RN Yoga, camera JSI)"
             );
         }
     }

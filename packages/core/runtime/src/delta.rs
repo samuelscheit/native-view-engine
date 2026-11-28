@@ -1,4 +1,4 @@
-//! `SceneDelta`: the per-frame node change sets published in `NveRuntimeSceneView` — content-dirty
+//! `SceneDelta`: the per-frame node change sets published in `NveSceneView` — content-dirty
 //! (`dirty_indices`), geometry-only (`moved_indices`), and `removed_ids` — plus the published rects.
 //!
 //! The two index sets are exact and disjoint: a node is in `dirty` when it was created or its row,

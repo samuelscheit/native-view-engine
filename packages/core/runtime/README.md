@@ -7,7 +7,7 @@ Framework-agnostic host runtime for `native-view-engine`.
 - Owns the per-surface lifecycle (`SurfaceRuntime` / `RuntimeBuilder`) over `NodeStore` and
   `nve_layout::LaidOutScene<DynLayoutEngine>`, with zero dependency on `dioxus-core` or any
   optional capability module.
-- Publishes zero-copy `NveRuntimeSceneView` snapshots (`rows: *const NveNodeRow`,
+- Publishes zero-copy `NveSceneView` snapshots (`rows: *const NveNodeRow`,
   `rects: *const NveLayoutRect` (absolute, pre-scroll), `text_slab`, `children_slab`,
   `dirty_indices`, `removed_ids`, `NveTableView` descriptors, and node-sorted `NveScrollOffset`
   visual shifts (scroll offset minus `virtual_top_spacer`, republished on the tick after

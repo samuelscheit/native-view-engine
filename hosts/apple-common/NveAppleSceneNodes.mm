@@ -13,7 +13,7 @@ using nve::host::TableReader;
 /// Packed RGBA of an optional color field (transparent when the read failed).
 static uint32_t packed(std::optional<nve::host::Rgba> c) noexcept { return c.value_or(nve::host::Rgba{}).packed; }
 
-SceneTables::SceneTables(const nve::host::RuntimeSceneReader &scene)
+SceneTables::SceneTables(const nve::host::SceneReader &scene)
     : scene_(scene),
       visual_(scene.find_table(Key64{NVE_TABLE_VISUAL_KEY})),
       typography_(scene.find_table(Key64{NVE_TABLE_TYPOGRAPHY_KEY})),

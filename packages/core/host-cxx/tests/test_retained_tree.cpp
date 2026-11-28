@@ -353,7 +353,7 @@ void test_dirty_resource_updates_its_clean_users() {
     const auto guard = h.host->runtime().acquire_scene();
     CHECK(guard.has_value());
     if (!guard) return;
-    const RuntimeSceneReader& r = guard->reader();
+    const SceneReader& r = guard->reader();
     CHECK(r.resource_dirty(7u) && !r.resource_dirty(8u) && !r.resource_dirty(0u) && !r.resource_dirty(UINT32_MAX));
     CHECK(!h.tree.resource_unchanged(r, 7u, 7u));  // redefined
     CHECK(h.tree.resource_unchanged(r, 8u, 8u));   // kept its bytes

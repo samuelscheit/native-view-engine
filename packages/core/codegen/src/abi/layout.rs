@@ -439,7 +439,7 @@ fn layout_record<'a>(
             } else if natural_size.try_zip(over, round_up, name)? == natural_size
                 && !embedded.contains(name)
             {
-                // Larger alignments only align Rust-owned slabs (`NveRenderNode`'s 64-byte rows):
+                // Larger alignments only align Rust-owned slabs (e.g. a 64-byte cache-line row type):
                 // allowed when they change no size and no containing layout.
                 slab_align = Some(explicit);
             } else {

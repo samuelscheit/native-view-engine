@@ -28,15 +28,10 @@ void runFfi(Check c) {
     'NvePropEntry': ffi.sizeOf<NvePropEntry>(),
     'NvePropSlice': ffi.sizeOf<NvePropSlice>(),
     'NveCommandSlice': ffi.sizeOf<NveCommandSlice>(),
-    'NveSurfaceConfig': ffi.sizeOf<NveSurfaceConfig>(),
-    'NveFrameStats': ffi.sizeOf<NveFrameStats>(),
     'NveSizeConstraints': ffi.sizeOf<NveSizeConstraints>(),
     'NveIntrinsicSize': ffi.sizeOf<NveIntrinsicSize>(),
     'NveHostCallbacks': ffi.sizeOf<NveHostCallbacks>(),
-    'NveRenderNode': ffi.sizeOf<NveRenderNode>(),
     'NveTableView': ffi.sizeOf<NveTableView>(),
-    'NveSceneView': ffi.sizeOf<NveSceneView>(),
-    'NveNodeMeta': ffi.sizeOf<NveNodeMeta>(),
   };
   // A record added to the ABI must be measured here too.
   c.eq(measured.length, nveAbiRecordSizes.length, 'every ABI record is measured');

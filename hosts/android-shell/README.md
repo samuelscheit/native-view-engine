@@ -1,7 +1,7 @@
 # Android Host Shell (`hosts/android-shell`)
 
 `libnve_android_shell` is the JNI half of `dev.nve.host.NativeRuntime`: it binds Java/Kotlin hosts
-to `libnve_runtime` through `nve::host::RuntimeSession` — no `nve-fabric-bridge`.
+to `libnve_runtime` through `nve::host::RuntimeSession`.
 The standalone zero-Gradle APK (`android-app/`) renders the runtime scene on native Android Views.
 
 | File | Contents |

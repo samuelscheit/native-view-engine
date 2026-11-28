@@ -221,10 +221,4 @@ void register_apple_camera_native_view(nve::NativeViewRegistry &registry) {
   registry.register_adapter(kNativeKindCameraAlias, make_camera_adapter());
 }
 
-void bind_apple_camera_native_view_to_fabric_host(NveFabricHostHandle _Nullable host, nve::NativeViewRegistry &registry) {
-  if (host == nullptr) return;
-  registry.bind_to_fabric_host(host, kNativeKindCameraPreview);
-  registry.bind_to_fabric_host(host, kNativeKindCameraAlias);
-}
-
 } // namespace nve::apple

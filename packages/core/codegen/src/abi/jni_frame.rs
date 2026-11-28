@@ -1,5 +1,5 @@
 //! The packed JNI scene frame: one `long[]` header + one `ByteBuffer[]` of slabs that
-//! `libnve_android_shell` fills per `acquireScene` and `dev.nve.host.RuntimeSceneReader` reads
+//! `libnve_android_shell` fills per `acquireScene` and `dev.nve.host.SceneReader` reads
 //! (one JNI crossing per frame). Both sides are generated from this one layout
 //! (`NveJniFrame.java`, `nve_jni_frame.generated.hpp`), so their indices cannot drift; the
 //! `LAYOUT_HASH` both carry lets the JNI build reject a stale Java half.

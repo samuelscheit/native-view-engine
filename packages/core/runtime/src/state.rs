@@ -3,7 +3,7 @@
 
 use nve_abi::table::NveTableView;
 use nve_abi::{
-    FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView, NveScrollOffset,
+    FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveSceneView, NveScrollOffset,
 };
 use nve_engine::LayoutRect;
 use nve_layout::{DynLayoutEngine, LaidOutScene};
@@ -34,7 +34,7 @@ const MAX_PAIR_FRAMES_PER_TICK: usize = 64;
 /// simultaneously with zero `unsafe` pointer gymnastics or `Box` moves.
 pub(crate) struct SurfaceState {
     pub(crate) frame_id: FrameId,
-    /// `NveRuntimeSceneView::scene_epoch`: bumped by every scene reset.
+    /// `NveSceneView::scene_epoch`: bumped by every scene reset.
     pub(crate) scene_epoch: u32,
     /// Cached engine name so `layout_engine_name()` never touches `&StoreLayoutEngine` cross-thread.
     pub(crate) layout_engine_name: &'static str,
@@ -51,11 +51,11 @@ pub(crate) struct SurfaceState {
     pub(crate) delta: SceneDelta,
     pub(crate) published_tables: Vec<NveTableView>,
     pub(crate) published_dirty_buf: Vec<u32>,
-    /// Visual scroll shifts published through `NveRuntimeSceneView::scroll_offsets`.
+    /// Visual scroll shifts published through `NveSceneView::scroll_offsets`.
     pub(crate) published_scroll: Vec<NveScrollOffset>,
     /// Sorted, deduplicated live resource ids (re)defined on the published frame.
     pub(crate) dirty_resources: Vec<u32>,
-    pub(crate) published_view: NveRuntimeSceneView,
+    pub(crate) published_view: NveSceneView,
     /// `ResourceStore` of the store `published_view` borrows; lets `resource_payload` serve any
     /// `scene_acquire` thread without touching `!Sync` apps.
     pub(crate) published_resources: PublishedResources,

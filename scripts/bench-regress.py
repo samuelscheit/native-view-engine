@@ -2,15 +2,15 @@
 """Continuous benchmark regression tracker for native-view-engine.
 
 Covers both Rust Criterion benchmarks (`packages/tools/bench`) and the C++20
-Fabric/Yoga/JSI bridge benchmark (`nve_fabric_bridge_bench --json`) using
+host read-path benchmark (`packages/core/host-cxx` `nve_host_cxx_bench --json`) using
 pure Python 3 standard library modules with zero external dependencies.
 
 Usage examples:
-  # Capture a baseline from both Rust Criterion and C++ bridge benchmarks
+  # Capture a baseline from both Rust Criterion and C++ host benchmarks
   python3 scripts/bench-regress.py capture \\
     --baseline benchmarks/baseline.json \\
     --rust \\
-    --cxx-bin /tmp/nve-bench-cxx/nve_fabric_bridge_bench
+    --cxx-bin /tmp/nve-bench-cxx/nve_host_cxx_bench
 
   # Compare an already-captured JSON file against baseline
   python3 scripts/bench-regress.py compare \\
@@ -24,7 +24,7 @@ Usage examples:
     --baseline benchmarks/baseline.json \\
     --current run \\
     --rust \\
-    --cxx-bin /tmp/nve-bench-cxx/nve_fabric_bridge_bench \\
+    --cxx-bin /tmp/nve-bench-cxx/nve_host_cxx_bench \\
     --markdown "$GITHUB_STEP_SUMMARY" \\
     --report-json benchmark-report.json
 """
@@ -203,7 +203,7 @@ def parse_criterion_dir(
 
 
 def parse_cxx_json(raw_json: str) -> Dict[str, Dict[str, Any]]:
-    """Parse structured JSON output from `nve_fabric_bridge_bench --json`."""
+    """Parse structured JSON output from `nve_host_cxx_bench --json`."""
     try:
         payload = json.loads(raw_json)
     except json.JSONDecodeError as exc:
@@ -692,7 +692,7 @@ def run_cxx_benchmarks(
     warmup: Optional[int] = None,
     bench_filter: Optional[str] = None,
 ) -> str:
-    """Execute `nve_fabric_bridge_bench --json` and return raw JSON stdout."""
+    """Execute `nve_host_cxx_bench --json` and return raw JSON stdout."""
     cxx_bin = Path(cxx_bin)
     if not cxx_bin.is_file():
         raise FileNotFoundError(f"C++ benchmark binary not found: {cxx_bin}")
@@ -793,13 +793,13 @@ def _add_runner_args(parser: argparse.ArgumentParser) -> None:
         "--cxx-bin",
         type=Path,
         default=None,
-        help="Path to compiled `nve_fabric_bridge_bench` binary.",
+        help="Path to compiled `nve_host_cxx_bench` binary.",
     )
     parser.add_argument(
         "--cxx-json",
         type=Path,
         default=None,
-        help="Path to pre-captured `nve_fabric_bridge_bench --json` output file.",
+        help="Path to pre-captured `nve_host_cxx_bench --json` output file.",
     )
     parser.add_argument(
         "--package",
@@ -828,13 +828,13 @@ def _add_runner_args(parser: argparse.ArgumentParser) -> None:
         "--cxx-iters",
         type=int,
         default=None,
-        help="Optional --iters override passed to `nve_fabric_bridge_bench`.",
+        help="Optional --iters override passed to `nve_host_cxx_bench`.",
     )
     parser.add_argument(
         "--cxx-warmup",
         type=int,
         default=None,
-        help="Optional --warmup override passed to `nve_fabric_bridge_bench`.",
+        help="Optional --warmup override passed to `nve_host_cxx_bench`.",
     )
     parser.add_argument(
         "--filter",
@@ -847,7 +847,7 @@ def _add_runner_args(parser: argparse.ArgumentParser) -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bench-regress.py",
-        description="Zero-dependency benchmark regression tracker for Rust Criterion + C++20 Fabric bridge.",
+        description="Zero-dependency benchmark regression tracker for Rust Criterion + C++20 host benchmarks.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

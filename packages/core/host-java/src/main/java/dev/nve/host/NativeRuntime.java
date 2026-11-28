@@ -17,7 +17,7 @@ import java.nio.ByteBuffer;
  * {@code u32} bits). {@link #lastError} explains failures.
  *
  * <p>Scene lifetime: {@link #acquireScene} fills a packed frame for
- * {@link RuntimeSceneReader#attach(long[], ByteBuffer[])}; its direct buffers (and those of
+ * {@link SceneReader#attach(long[], ByteBuffer[])}; its direct buffers (and those of
  * {@link #resource}) stay valid only until {@link #releaseScene} or any other call on the handle,
  * which releases the scene first so the runtime can write again.
  */

@@ -1,5 +1,5 @@
 /* Test-only C mirror of the generated `NveTableView` / `NveNodeRow` / `NveLayoutRect` /
- * `NveRuntimeSceneView` shapes (Rust `offset_of!` layout), proving the C-imported structs satisfy
+ * `NveSceneView` shapes (Rust `offset_of!` layout), proving the C-imported structs satisfy
  * `TableViewABI` / `NodeRowABI` / `LayoutRectABI` / `RuntimeSceneViewABI` unchanged. */
 #ifndef NVE_HOST_TEST_ABI_H
 #define NVE_HOST_TEST_ABI_H
@@ -76,16 +76,16 @@ _Static_assert(sizeof(NveTestNodeRow) == 32, "NveNodeRow is 32 bytes");
 _Static_assert(offsetof(NveTestNodeRow, parent) == 16, "NveNodeRow.parent @16");
 _Static_assert(offsetof(NveTestNodeRow, flags) == 31, "NveNodeRow.flags @31");
 _Static_assert(sizeof(NveTestLayoutRect) == 16, "NveLayoutRect is 16 bytes");
-_Static_assert(offsetof(NveTestRuntimeSceneView, table_count) == 36, "NveRuntimeSceneView.table_count @36");
-_Static_assert(offsetof(NveTestRuntimeSceneView, scene_epoch) == 44, "NveRuntimeSceneView.scene_epoch @44");
-_Static_assert(offsetof(NveTestRuntimeSceneView, dirty_resource_count) == 48, "NveRuntimeSceneView.dirty_resource_count @48");
-_Static_assert(offsetof(NveTestRuntimeSceneView, moved_count) == 52, "NveRuntimeSceneView.moved_count @52");
-_Static_assert(offsetof(NveTestRuntimeSceneView, rows) == 56, "NveRuntimeSceneView.rows @56");
-_Static_assert(offsetof(NveTestRuntimeSceneView, tables) == 104, "NveRuntimeSceneView.tables @104");
-_Static_assert(offsetof(NveTestRuntimeSceneView, scroll_offsets) == 112, "NveRuntimeSceneView.scroll_offsets @112");
-_Static_assert(offsetof(NveTestRuntimeSceneView, dirty_resources) == 120, "NveRuntimeSceneView.dirty_resources @120");
-_Static_assert(offsetof(NveTestRuntimeSceneView, moved_indices) == 128, "NveRuntimeSceneView.moved_indices @128");
-_Static_assert(sizeof(NveTestRuntimeSceneView) == 136, "NveRuntimeSceneView is 136 bytes");
+_Static_assert(offsetof(NveTestRuntimeSceneView, table_count) == 36, "NveSceneView.table_count @36");
+_Static_assert(offsetof(NveTestRuntimeSceneView, scene_epoch) == 44, "NveSceneView.scene_epoch @44");
+_Static_assert(offsetof(NveTestRuntimeSceneView, dirty_resource_count) == 48, "NveSceneView.dirty_resource_count @48");
+_Static_assert(offsetof(NveTestRuntimeSceneView, moved_count) == 52, "NveSceneView.moved_count @52");
+_Static_assert(offsetof(NveTestRuntimeSceneView, rows) == 56, "NveSceneView.rows @56");
+_Static_assert(offsetof(NveTestRuntimeSceneView, tables) == 104, "NveSceneView.tables @104");
+_Static_assert(offsetof(NveTestRuntimeSceneView, scroll_offsets) == 112, "NveSceneView.scroll_offsets @112");
+_Static_assert(offsetof(NveTestRuntimeSceneView, dirty_resources) == 120, "NveSceneView.dirty_resources @120");
+_Static_assert(offsetof(NveTestRuntimeSceneView, moved_indices) == 128, "NveSceneView.moved_indices @128");
+_Static_assert(sizeof(NveTestRuntimeSceneView) == 136, "NveSceneView is 136 bytes");
 _Static_assert(offsetof(NveTestTableView, row_index_dir_len) == 24, "NveTableView.row_index_dir_len @24");
 _Static_assert(offsetof(NveTestTableView, rows) == 32, "NveTableView.rows @32");
 _Static_assert(offsetof(NveTestTableView, row_index_pages) == 64, "NveTableView.row_index_pages @64");

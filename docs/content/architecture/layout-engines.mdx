@@ -35,8 +35,7 @@ All coordinates returned by `layout_of(id)` are normalized to **surface-space (r
 | Engine | Crate | Implementation | 100 Rows | 1,000 Rows | Best For |
 | :--- | :--- | :--- | ---: | ---: | :--- |
 | **Taffy** (`TaffyStoreLayout`, default) | `nve-layout` | Pure Rust (`taffy 0.16.0`) | **168.5 µs** | **1.77 ms** | Default Skia, WASM, headless CI, zero-C++ builds |
-| **React Native Yoga** (`YogaLayoutEngine`, opt-in module) | `nve-layout-yoga` | Real C++20 `yogacore` via FFI | **76.2 µs** (custom measurer) | **801.6 µs** (custom measurer) | Bit-exact React Native Fabric parity |
-| **C++ Standalone Flexbox** | `cxx/nve-fabric-bridge` | Zero-dep C++20 Flexbox solver | **44.7 µs** | **450.7 µs** | Native C++ hosts built without `RN_REACT_COMMON_DIR` |
+| **React Native Yoga** (`YogaLayoutEngine`, opt-in module) | `nve-layout-yoga` | Real C++20 `yogacore` via FFI | not tracked in `baseline.json` | not tracked in `baseline.json` | Bit-exact React Native layout parity |
 
 ### Dynamic Dispatch Overhead: Effectively Zero
 
@@ -56,7 +55,7 @@ Because layout traversal dominates execution time, boxing the engine for runtime
 - **CSS Flexbox §4.5 nuance** — Yoga (`YGErrataNone`) omits CSS Flexbox §4.5 automatic `min-width: auto = min-content` clamping on overflowing flex-row items (yielding ~1–2 px shrink-ratio differences on tight overflowing rows vs. Taffy). Inside scroll containers, `preserve_scroll_child_intrinsic_size` sets `flex_shrink = 0.0` on auto-sized children along the scrolling main axis to match CSS §4.5 and React Native `<ScrollView>` content sizing.
 - **Graceful fallback without RN checkout** — When `RN_REACT_COMMON_DIR` is omitted, `nve-layout-yoga` still compiles cleanly on every machine; `YogaLayoutEngine::is_available()` returns `false` and `YogaLayoutEngine::new()` returns `Err(YogaUnavailableError)`. Set `NVE_REQUIRE_YOGA=1` in CI to fail instead of skipping parity tests when RN Yoga is absent.
 
-```bash title="Enable real React Native Yoga in Rust and C++ builds"
+```bash title="Enable real React Native Yoga in Rust builds"
 export RN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon
 cargo test -p nve-layout-yoga
 ```
@@ -78,7 +77,7 @@ Applications and tools like **NVE Studio** can swap between Taffy and Yoga on a 
 
 1. Construct `LaidOutScene<DynLayoutEngine>` / `SurfaceRuntime` with `Box::new(TaffyStoreLayout::new())`.
 2. When the user toggles the layout engine, call `replace_layout_engine` / `swap_layout_engine`, which installs the active `Arc<dyn TextMeasurer>` on the new engine and seeds the live `NodeStore` tree on the next `compute_layout(store, root, viewport)` pass.
-3. Publish a fresh `NveRuntimeSceneView` or display list — the diffing pipeline updates only nodes whose computed rectangles actually shifted.
+3. Publish a fresh `NveSceneView` or display list — the diffing pipeline updates only nodes whose computed rectangles actually shifted.
 
 <Callout kind="tip" title="Debugging layout divergence">
 Because `HeadlessBackend<TaffyStoreLayout>` and `HeadlessBackend<YogaLayoutEngine>` consume the exact same `NodeStore` and `HeuristicTextMeasurer`, you can assert sub-pixel parity between Taffy and Yoga in `< 5 ms` unit tests without booting any GUI.

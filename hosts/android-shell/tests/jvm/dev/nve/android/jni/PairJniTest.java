@@ -3,7 +3,7 @@ package dev.nve.android.jni;
 import dev.nve.host.NativeRuntime;
 import dev.nve.host.generated.NveRuntimeAbi;
 import dev.nve.host.generated.NveTables;
-import dev.nve.host.RuntimeSceneReader;
+import dev.nve.host.SceneReader;
 import dev.nve.host.TableReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -64,7 +64,7 @@ public final class PairJniTest {
             final int[] changed = new int[1];
             while (title == null && System.nanoTime() < deadline) {
                 if (NativeRuntime.tick(h, 0.016f, changed) == 0 && changed[0] != 0) {
-                    final RuntimeSceneReader s = scene.acquire();
+                    final SceneReader s = scene.acquire();
                     final TableReader text = s.findTable(NveTables.Text.KEY);
                     final int r = text == null ? -1 : s.rowOf(text, s.resolve(fx.id("title")));
                     title = r < 0 ? null : s.text(text, r, NveTables.Text.TEXT);

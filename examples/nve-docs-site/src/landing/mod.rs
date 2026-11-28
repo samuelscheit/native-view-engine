@@ -132,7 +132,7 @@ pub(crate) fn SiteFooter() -> Element {
                     "/docs/architecture/command-buffer-and-events",
                     false,
                 ),
-                ("64-Byte Scene ABI", "/docs/architecture/scene-abi", false),
+                ("Scene ABI", "/docs/architecture/scene-abi", false),
                 ("Hot Reload & Pairing", "/docs/architecture/hot-reload", false),
             ],
         ),

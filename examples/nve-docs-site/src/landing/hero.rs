@@ -114,7 +114,7 @@ pub fn LandingHero() -> Element {
                     test_id: "landing-hero-subtitle",
                     nve_style: sub_resp,
                     style: "font-size: 17px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
-                    "Write declarative UI once with Rust rsx! and fine-grained signals. Every frame crosses the host boundary as one flat binary CommandBuffer and 64-byte cache-line NveSceneView — zero JS VM, direct binary bridge, sub-second hot reload."
+                    "Write declarative UI once with Rust rsx! and fine-grained signals. Every frame crosses the host boundary as one flat binary CommandBuffer and one zero-copy NveSceneView of 32-byte NveNodeRow rows — zero JS VM, direct binary bridge, sub-second hot reload."
                 }
 
                 // Primary + Secondary CTAs (row on desktop, stacked on mobile for zero overflow)
@@ -393,7 +393,7 @@ fn HeroInteractiveCard() -> Element {
                             }
                             text {
                                 style: "font-size: 12px; font-family: monospace; color: {theme.status.info.text.hex()};",
-                                "OP_04 SCENE_NODE    size=64B align=64 dirty=1"
+                                "OP_04 SCENE_ROW     size=32B dirty=1"
                             }
                             text {
                                 style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()};",
@@ -527,7 +527,7 @@ fn HeroInteractiveCard() -> Element {
                             text {
                                 test_id: "hero-live-frame",
                                 style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
-                                "Frame #{seq_val} · {frame_bytes} B NVE1 · 64B NveRenderNode"
+                                "Frame #{seq_val} · {frame_bytes} B NVE1 · 32B NveNodeRow"
                             }
                             text {
                                 style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.status.success.text.hex()};",

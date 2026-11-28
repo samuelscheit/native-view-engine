@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * One runtime surface for a Java / Kotlin host: owns the {@link NativeRuntime} handle, the packed
- * scene arrays + {@link RuntimeSceneReader}, a growable {@link EventRingWriter}, and wake
+ * scene arrays + {@link SceneReader}, a growable {@link EventRingWriter}, and wake
  * coalescing onto the owner thread.
  *
  * <p>Use it on its owner thread only (the thread that constructs it; Android: the main thread),
@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Frames: each new frame reaches the {@link FrameConsumer} while the scene is acquired. Inside
  * {@code onFrame} the reader and {@link #resource} bytes are valid; nothing may touch the native
- * scene afterwards (the reader and every pooled table reader are {@link RuntimeSceneReader#detach
+ * scene afterwards (the reader and every pooled table reader are {@link SceneReader#detach
  * detached} before release). Calls that would write the runtime are re-entrancy safe: {@link #send}
  * and {@link #scrollBy} made inside {@code onFrame} (e.g. by listeners that fire while the consumer
  * mutates its UI) run right after the scene is released, and the frames they cause are delivered
@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class RuntimeSurface implements AutoCloseable, FrameHost {
     /** Receives each new frame while the scene is acquired. */
     public interface FrameConsumer {
-        void onFrame(RuntimeSceneReader scene, RuntimeSurface surface);
+        void onFrame(SceneReader scene, RuntimeSurface surface);
     }
 
     static final int INITIAL_RING_BYTES = 64 * 1024;
@@ -42,7 +42,7 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
 
     private final long[] header = new long[NveJniFrame.HEADER_LEN];
     private final ByteBuffer[] slabs = new ByteBuffer[NveJniFrame.SLABS_LEN];
-    private final RuntimeSceneReader reader = new RuntimeSceneReader();
+    private final SceneReader reader = new SceneReader();
     private final int surfaceId;
     private final Executor ownerThread;
     private final AtomicBoolean renderPosted = new AtomicBoolean();

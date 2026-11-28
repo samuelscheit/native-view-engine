@@ -12,12 +12,12 @@ Every upstream bug, platform SDK quirk, or toolchain footgun discovered during d
 
 ### React Native Yoga (`yogacore`)
 
-- **`StyleValuePool` float-to-int UB on large scalars (`|v| > 1e7f`)** — Passing finite floats with magnitude `> 1e7f` triggers signed integer overflow UB under UBSan inside Yoga's `StyleValuePool`. **Mitigation:** `cxx/nve-fabric-bridge/src/command_decoder.hpp` (`is_valid_scalar`) rejects non-finite values and `|v| > 1e7f` before calling Yoga.
-- **Detached `YGNodeRef` returns `NaN` layout metrics** — Reading layout geometry on detached/unlaid-out nodes yields `NaN`, triggering AppKit's `_NSViewValidateGeometry` `SIGTRAP`. **Mitigation:** `fabric_adapter.cpp` sanitizes non-finite layout outputs to `0.0f` and `hosts/apple-common/NveAppleComponentHost.mm` guards `NSView.frame`.
+- **`StyleValuePool` float-to-int UB on large scalars (`|v| > 1e7f`)** — Passing finite floats with magnitude `> 1e7f` triggers signed integer overflow UB under UBSan inside Yoga's `StyleValuePool`. **Mitigation:** `packages/modules/layout-yoga/c_api/yoga_shim.cpp` only forwards finite, non-negative size values into Yoga; large style scalars are not range-clamped yet, and the default Taffy engine is unaffected.
+- **Detached `YGNodeRef` returns `NaN` layout metrics** — Reading layout geometry on detached/unlaid-out nodes yields `NaN`, triggering AppKit's `_NSViewValidateGeometry` `SIGTRAP`. **Mitigation:** `yoga_shim.cpp` (`sanitize_finite`) maps non-finite layout outputs to `0.0f` before they are published as `NveLayoutRect`s.
 
 ### Dioxus (`dioxus-core 0.7.10`) & `wasm32`
 
-- **Nested `Text` wrapper/leaf split** — Inline literals inside styled `text { style: "...", "hello" }` emit a styled parent `Text` wrapping an unstyled leaf `Text`. **Mitigation:** `nve-dioxus` and `fabric_adapter.cpp` propagate `text_color` and `font_size` downward; native hosts mount wrapper `Text` nodes as containers and leaf `Text` nodes as native text labels.
+- **Nested `Text` wrapper/leaf split** — Inline literals inside styled `text { style: "...", "hello" }` emit a styled parent `Text` wrapping an unstyled leaf `Text`. **Mitigation:** `nve-dioxus` propagates `text_color` and `font_size` downward and the `host-*` readers resolve inherited typography; native hosts mount wrapper `Text` nodes as containers and leaf `Text` nodes as native text labels.
 - **Event attribute `"on"` prefix mismatch** — `WriteMutations` emits `"onclick"` while `VirtualDom::runtime().handle_event` expects `"click"`. **Mitigation:** `nve-dioxus` strips the leading `"on"`.
 - **`std::time::Instant::now()` panics on `wasm32-unknown-unknown`** — **Mitigation:** Target-gated `FrameTimer` in `packages/core/dioxus/src/lib.rs`.
 

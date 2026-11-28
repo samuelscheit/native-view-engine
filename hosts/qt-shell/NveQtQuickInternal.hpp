@@ -155,7 +155,7 @@ class NveQtQuickItem::Impl final : public QtHost {
  protected:
   void clear_views() override;
   size_t sync_views(const host::RuntimeSceneGuard& scene) override;
-  bool tree_resource_unchanged(const host::RuntimeSceneReader& scene, uint32_t id,
+  bool tree_resource_unchanged(const host::SceneReader& scene, uint32_t id,
                                uint32_t applied) const noexcept override {
     return tree_.resource_unchanged(scene, id, applied);
   }

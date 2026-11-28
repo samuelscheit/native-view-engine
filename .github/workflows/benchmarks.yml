@@ -25,7 +25,7 @@ env:
 
 jobs:
   benchmark-regression:
-    name: Rust Criterion + C++20 Fabric Bridge Benchmarks
+    name: Rust Criterion + C++20 Host Read-Path Benchmarks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,12 +48,13 @@ jobs:
       - name: Generate NVE ABI bindings
         run: cargo run --locked -p nve-cli -- codegen abi
 
-      - name: Build C++20 Fabric bridge benchmark (Release)
+      - name: Build C++20 host read-path benchmark (Release)
         run: |
-          cmake -S cxx/nve-fabric-bridge -B build/fabric-bench -G Ninja \
+          cmake -S packages/core/host-cxx -B build/host-bench -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DNVE_BUILD_BENCHMARKS=ON
-          cmake --build build/fabric-bench --target nve_fabric_bridge_bench
+            -DNVE_HOST_CXX_BUILD_TESTS=OFF \
+            -DNVE_HOST_CXX_BUILD_BENCH=ON
+          cmake --build build/host-bench --target nve_host_cxx_bench
 
       - name: Run benchmarks and compare against baseline
         id: compare
@@ -63,7 +64,7 @@ jobs:
             --baseline benchmarks/baseline.json \
             --current run \
             --rust \
-            --cxx-bin build/fabric-bench/nve_fabric_bridge_bench \
+            --cxx-bin build/host-bench/nve_host_cxx_bench \
             --threshold "${{ inputs.threshold || '15.0' }}" \
             --markdown "$GITHUB_STEP_SUMMARY" \
             --report-json build/benchmark-report.json \

@@ -8,7 +8,7 @@ use nve_hash::Xxh64Hasher;
 
 use super::{
     NveRuntimeConfig, NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics,
-    NveRuntimeSceneView, NveRuntimeWakeFn,
+    NveSceneView, NveRuntimeWakeFn,
 };
 use crate::ffi::{NveBufferSlice, NveGetInterfaceFn};
 use crate::value::{NveEventBatch, NveMapEntry, NveStrSlice};
@@ -76,7 +76,7 @@ pub const RUNTIME_API_SLOTS: &[RuntimeFnSignature] = &[
     sig("dispatch_events", "int32_t", "NveRuntimeHandle handle, NveEventBatch batch, uint32_t* out_changed", "Owner thread."),
     sig("hit_test", "int32_t", "NveRuntimeHandle handle, float x, float y, uint32_t* out_node_id", "Owner thread; 0 = no hit."),
     sig("scroll_by", "int32_t", "NveRuntimeHandle handle, uint32_t node_id, float dx, float dy, float* out_x, float* out_y", "Owner thread."),
-    sig("scene_acquire", "int32_t", "NveRuntimeHandle handle, NveRuntimeSceneView* out_view", "Any thread; BUSY while a write is in progress."),
+    sig("scene_acquire", "int32_t", "NveRuntimeHandle handle, NveSceneView* out_view", "Any thread; BUSY while a write is in progress."),
     sig("scene_release", "int32_t", "NveRuntimeHandle handle", "Any thread."),
     sig("resource_payload", "int32_t", "NveRuntimeHandle handle, uint32_t resource_id, uint64_t* out_kind, NveBufferSlice* out_payload", "Any thread holding scene_acquire; canonical payload bytes + kind Key64 of a published ResourceId, borrowed until scene_release; NOT_FOUND when stale."),
     sig("get_metrics", "int32_t", "NveRuntimeHandle handle, NveRuntimeMetrics* out_metrics", "Any thread."),
@@ -174,7 +174,7 @@ pub struct NveRuntimeApi {
         out_y: *mut f32,
     ) -> i32,
     pub scene_acquire:
-        unsafe extern "C" fn(handle: NveRuntimeHandle, out_view: *mut NveRuntimeSceneView) -> i32,
+        unsafe extern "C" fn(handle: NveRuntimeHandle, out_view: *mut NveSceneView) -> i32,
     pub scene_release: unsafe extern "C" fn(handle: NveRuntimeHandle) -> i32,
     pub resource_payload: unsafe extern "C" fn(
         handle: NveRuntimeHandle,

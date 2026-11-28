@@ -49,7 +49,8 @@ Pod::Spec.new do |s|
       "\"$(PODS_TARGET_SRCROOT)/../../nitro-bridge/include\"",
       "\"$(PODS_TARGET_SRCROOT)/cxx/include\"",
       "\"$(PODS_TARGET_SRCROOT)/../../../../hosts/apple-common\"",
-      "\"$(PODS_TARGET_SRCROOT)/../../../../cxx/nve-fabric-bridge/include\"",
+      "\"$(PODS_TARGET_SRCROOT)/../../native-views/cxx/include\"",
+      "\"$(PODS_TARGET_SRCROOT)/../../../core/host-cxx/include\"",
     ].join(" "),
   }
 

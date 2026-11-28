@@ -1,4 +1,4 @@
-//! Criterion micro-benchmarks for `nve-abi` (`NveSceneTable`, fixed-point number codec, and
+//! Criterion micro-benchmarks for `nve-abi` (fixed-point number codec and
 //! `native_events_to_direct` conversion).
 
 #[cfg(target_arch = "wasm32")]
@@ -11,34 +11,8 @@ mod native {
     use criterion::{criterion_group, Criterion};
     use nve_abi::num::{parse_f32, write_f32};
     use nve_abi::{
-        native_events_to_direct, EventPayload, NativeEvent, NativeEventKind, NveSceneTable,
-        SceneNodeInput, NVE_PRIMARY_SLOT_NONE,
+        native_events_to_direct, EventPayload, NativeEvent, NativeEventKind,
     };
-
-    fn bench_scene_table(c: &mut Criterion) {
-        let mut table = NveSceneTable::new();
-        let mut frame = 0u64;
-        c.bench_function("scene_table_upsert_256_nodes", |b| {
-            b.iter(|| {
-                frame = frame.wrapping_add(1);
-                table.begin_frame(frame);
-                for id in 1..=256u32 {
-                    table
-                        .upsert_node(SceneNodeInput {
-                            node_id: id,
-                            primary_slot: NVE_PRIMARY_SLOT_NONE,
-                            x: (id as f32) * 4.0,
-                            y: (id as f32) * 2.0,
-                            width: 120.0,
-                            height: 36.0,
-                            ..SceneNodeInput::default()
-                        })
-                        .expect("valid bench scene node upsert");
-                }
-                black_box(table.as_view().node_count)
-            });
-        });
-    }
 
     fn bench_num_codec(c: &mut Criterion) {
         let values = [0.0f32, 12.0, 0.5, -3.125, 1920.5, 0.333, 99.999, 42.25];
@@ -93,7 +67,6 @@ mod native {
 
     criterion_group!(
         benches,
-        bench_scene_table,
         bench_num_codec,
         bench_direct_event_conversion
     );

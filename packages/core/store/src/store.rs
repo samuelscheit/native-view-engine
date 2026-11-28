@@ -410,7 +410,7 @@ impl NodeStore {
     }
 
     /// Dense contiguous slice of all [`NodeRow`] slots (slot 0 is reserved null; live nodes live
-    /// in `1..capacity()` with `flags & LIVE != 0`). Published zero-copy in `NveRuntimeSceneView`.
+    /// in `1..capacity()` with `flags & LIVE != 0`). Published zero-copy in `NveSceneView`.
     #[inline]
     pub fn node_rows(&self) -> &[NodeRow] {
         self.nodes.as_slice()

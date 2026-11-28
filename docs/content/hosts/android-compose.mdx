@@ -1,23 +1,24 @@
 ---
 title: "Android & Jetpack Compose"
-description: "Zero-GC Android JNI DirectByteBuffer slabs, NveCanvasView, 64-byte NveNodeMeta TalkBack metadata, zero-Gradle APK launcher, and Jetpack Compose NveSceneCanvas."
+description: "Zero-GC Android JNI DirectByteBuffer slabs over libnve_runtime, SceneReader, NveSceneRenderer Views with TalkBack semantics, zero-Gradle APK launcher, and Jetpack Compose NveSurface."
 order: 6
 ---
 
 # Android & Jetpack Compose (`hosts/android-shell` + `hosts/compose-kit`)
 
-Android hosts read NVE's 64-byte `NveRenderNode` slabs straight from native C++ memory into Java/Kotlin via persistent **`DirectByteBuffer`** views — binary, zero per-frame JNI object allocations, and zero GC pressure at 120fps.
+Android hosts read the `NveSceneView` that `libnve_runtime` publishes (32-byte `NveNodeRow` rows, 16-byte `NveLayoutRect` rects, text/children slabs, delta indices, tables) straight from native memory into Java/Kotlin via persistent **`DirectByteBuffer`** views — binary, zero per-frame JNI object allocations, and zero GC pressure at 120fps.
 
 ## Zero-GC JNI Slab Transport (`hosts/android-shell`)
 
-`hosts/android-shell/NveAndroidSurfaceJni.cpp` exposes `nve::NativeHostSession` to Android using `CachedDirectBuffer`:
+`libnve_android_shell` (`hosts/android-shell`) is the JNI half of `dev.nve.host.NativeRuntime`: it binds Java/Kotlin hosts to `libnve_runtime` through `nve::host::RuntimeSession`.
 
-- Each scene slab (`nodes`, `text_slab`, `children_slab`, `dirty_indices`, `removed_ids`) plus the fixed-stride 64-byte `NveNodeMeta` record slab and companion `meta_blob` slab is wrapped in a `GlobalRef` `java.nio.ByteBuffer` via `NewDirectByteBuffer`.
-- `CachedDirectBuffer::sync` re-allocates the `DirectByteBuffer` **only** when a native slab pointer or capacity grows; empty slabs bind to a non-null sentinel with capacity `0` to avoid ART null-address quirks.
-- Generated bindings live in package **`dev.nve.host.generated`** (`packages/core/host-java`): `NveAbi` (constants, `NVE_SCENE_SCHEMA_HASH` / `NVE_CORE_ABI_SCHEMA_HASH` as `Key64`, record layouts) and `NveTables` (word-table keys and field specs), read through the static `dev.nve.host` runtime.
-- **`NveCanvasView.java`** paints layout rects, rounded borders, images, text, and `NVE_DRAW1` vector draw lists directly onto `android.graphics.Canvas`, while dispatching native touches and `TextInput` IME changes back via `NveEventBatch` / `DirectByteBuffer`.
-- **TalkBack accessibility (`NveNodeMeta`)** — `NveAndroidMetadataPacker.cpp` packs sparse accessibility metadata (`accessibilityLabel`, `accessibilityRole`, `accessibilityHint`, ARIA states) exclusively for dirty nodes into fixed-stride 64-byte `NveNodeMeta` records plus a companion `meta_blob` slab, consumed directly by Android's `AccessibilityNodeProvider`.
-- **Live pairing (`NveAndroidPairJni.cpp`)** — Connects the Android shell to `cargo nve pair` over UDP/TCP/WS without re-pushing `.so` binaries.
+- `NveAndroidSceneJni.cpp` packs each acquired frame in the generated `NveJniFrame` layout: a `long[]` header plus cached `DirectByteBuffer` slabs (rows, rects, `text_slab`, `children_slab`, `dirty_indices`, `moved_indices`, `removed_ids`, `dirty_resources`, `scroll_offsets`, tables), each wrapped in a `GlobalRef` `java.nio.ByteBuffer` via `NewDirectByteBuffer`.
+- The cached buffer is re-created **only** when a native slab pointer or capacity grows; empty slabs bind to a non-null sentinel with capacity `0` to avoid ART null-address quirks.
+- Generated bindings live in package **`dev.nve.host.generated`** (`packages/core/host-java`): `NveAbi` (constants, `NVE_RUNTIME_SCHEMA_HASH` / `NVE_CORE_ABI_SCHEMA_HASH` as `Key64`, record layouts) and `NveTables` (word-table keys and field specs), read through `dev.nve.host.SceneReader` and the static `dev.nve.host` runtime.
+- `NveAndroidEventsJni.cpp` encodes `EventRing` events into `NveDirectEvent` batches and calls the host text measurer back into Java (`NveTextMeasurer`, `StaticLayout`).
+- **`NveCanvasView.java`** paints `NVE_DRAW1` vector draw lists directly onto `android.graphics.Canvas`; **`NveSceneRenderer`** turns scene frames into native Android Views in O(changed).
+- **TalkBack accessibility** — `NveViewStyle` maps the accessibility tables of each node (label, role, hint, states) onto View semantics for Android's `AccessibilityNodeProvider`; there is no separate metadata slab.
+- **Live pairing** — `NveAndroidRuntimeJni.cpp` connects the runtime to `cargo nve pair` without re-pushing `.so` binaries.
 
 ### Standalone Zero-Gradle APK & Emulator Launcher
 
@@ -30,7 +31,7 @@ Android hosts read NVE's 64-byte `NveRenderNode` slabs straight from native C++ 
 # Build and launch NVE Studio on Pixel_10 (or first available AVD)
 ./hosts/android-shell/run-emulator.sh nve-studio-workspace --screenshot /tmp/nve-android.png
 
-# Host-side JNI bridge CTest (runs natively without an emulator)
+# Host-side JNI CTest (runs natively without an emulator)
 cmake -S hosts/android-shell -B hosts/android-shell/build -G Ninja \
   && cmake --build hosts/android-shell/build \
   && ctest --test-dir hosts/android-shell/build --output-on-failure
@@ -44,29 +45,30 @@ On macOS arm64, running Android `build-tools/36.0.0/d8` under Eclipse OpenJ9 tri
 
 `dev.nve.compose` is a drop-in Android Library Gradle module for embedding NVE Rust surfaces directly inside Jetpack Compose apps:
 
-- **`NveSceneBuffer.kt` & `NveBinValue.kt`** — Zero-GC `DirectByteBuffer` reader over 64-byte `NveRenderNode` slabs and compact little-endian binary `NveBinValue` prop/command codec (tags `0..7`, O(1) container skipping).
-- **`NveSurfaceComposable.kt` (`@Composable fun NveSurface` & `NveSceneCanvas`)** — Renders `NveSceneView`, `NVE_DRAW1` vector ops, `Image`, and `TextInput` inside Compose `Canvas`, maps 64-byte `NveNodeMeta` records onto `Modifier.semantics` (`Role.Button`, `Role.Image`, content descriptions), and wires `requestDisallowInterceptTouchEvent` gesture arbitration.
+- **`NveSurfaceController.kt`** — `NveSurfaceController` over `NativeRuntimeHost` (JVM fakes in tests): app `.so` loading with hot reload, `nve pair` pairing, and input → `EventRing` events (press, text change, submit, focus / blur, scroll).
+- **`NveScene.kt`** — `NveSceneCapture` turns each acquired frame (`dev.nve.host.SceneReader` over the generated `NveTables` specs) into an immutable snapshot in O(changed), driven by `dirty_indices`, `moved_indices`, `removed_ids`, and `dirty_resources`; a new `scene_epoch` rebuilds everything.
+- **`NveSurface.kt` (`@Composable fun NveSurface`)** — Draws the snapshot (`BasicText`, `BasicTextField`, `Image`, `Canvas` + `NveDrawListRenderer` for `NVE_DRAW1`, scroll containers) with Compose semantics (roles, content descriptions) and `requestDisallowInterceptTouchEvent` gesture arbitration.
 - **`NveHostActivity.kt`** — Reusable `ComponentActivity` preserving `surfaceId` across lifecycle transitions and supporting Tier-2 `.so` hot-reload.
 
-```kotlin title="Embedding an NVE component in Jetpack Compose" highlight="6-18"
-@Composable
-fun CounterScreen() {
-    var count by remember { mutableIntStateOf(0) }
-    val controller = rememberNveSurfaceController(
-        componentName = "NveCounterCard",
-        vtableSymbol = "nve_get_interface",
-        backend = NveRenderBackend.FABRIC,
-    )
+```kotlin title="Embedding an NVE app in Jetpack Compose"
+class MainActivity : ComponentActivity() {
+    private lateinit var controller: NveSurfaceController
 
-    NveSurface(
-        componentName = "NveCounterCard",
-        modifier = Modifier.fillMaxWidth().height(180.dp),
-        vtableSymbol = "nve_get_interface",
-        backend = NveRenderBackend.FABRIC,
-        props = mapOf("title" to "Compose + NVE", "count" to count),
-        controller = controller,
-        onEvent = { event -> if (event.name == "onIncrement") count += 1 },
-    )
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val density = resources.displayMetrics.density
+        val main = Handler(Looper.getMainLooper())
+        controller = NveSurfaceController(
+            NativeRuntimeHost(1, 360f, 800f, density, Executor { main.post(it) }),
+        )
+        controller.start(NveSource.App(applicationInfo.nativeLibraryDir + "/libnve_app.so"))
+        setContent { NveSurface(controller, Modifier.fillMaxSize()) }
+    }
+
+    override fun onDestroy() {
+        controller.close()
+        super.onDestroy()
+    }
 }
 ```
 

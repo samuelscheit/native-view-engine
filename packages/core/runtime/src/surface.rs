@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use nve_abi::{
-    Key64, NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveRuntimeSceneView,
+    Key64, NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveSceneView,
     SurfaceId,
 };
 use nve_components::tables::{Overflow, Scroll, Visual};
@@ -23,16 +23,16 @@ use crate::wake::{WakeBridge, WakeCallback};
 
 /// RAII read guard returned by [`SurfaceRuntime::acquire_scene`].
 ///
-/// Guarantees that the zero-copy [`NveRuntimeSceneView`] pointers stay valid and immutable until
+/// Guarantees that the zero-copy [`NveSceneView`] pointers stay valid and immutable until
 /// this guard is dropped.
 pub struct SceneReadGuard<'a> {
     runtime: &'a SurfaceRuntime,
-    view: NveRuntimeSceneView,
+    view: NveSceneView,
 }
 
 impl<'a> SceneReadGuard<'a> {
     #[inline]
-    pub fn view(&self) -> &NveRuntimeSceneView {
+    pub fn view(&self) -> &NveSceneView {
         &self.view
     }
 
@@ -536,7 +536,7 @@ impl SurfaceRuntime {
         })
     }
 
-    /// Acquires a zero-copy [`NveRuntimeSceneView`] guarded by the surface's reader lock.
+    /// Acquires a zero-copy [`NveSceneView`] guarded by the surface's reader lock.
     pub fn acquire_scene(&self) -> Result<SceneReadGuard<'_>, RuntimeError> {
         self.check_not_poisoned()?;
         if !self.lock.try_acquire_read() {

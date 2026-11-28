@@ -23,7 +23,6 @@ pub(crate) fn emit_ios_component_view_mm(spec: &NveExportSpec) -> String {
     );
     writeln!(out);
     writeln!(out, "#import \"RCTNveComponentView.h\"");
-    writeln!(out, "#include \"{name}NveBridge.generated.hpp\"");
     writeln!(out);
     writeln!(out, "#if defined(NVE_WITH_RN_FABRIC) && NVE_WITH_RN_FABRIC");
     writeln!(out, "#import <React/RCTConversions.h>");

@@ -1,15 +1,40 @@
 /**
- * Validated zero-copy reader over one published `NveSceneView` frame.
+ * Validated zero-copy reader over one published `NveSceneView` — the one scene ABI every host
+ * reads, published by `libnve_runtime` straight from `NodeStore` slabs (32-byte `NveNodeRow`s,
+ * 16-byte `NveLayoutRect`s, text / children slabs, change sets, `NveTableView`s, scroll offsets).
  *
- * Node records are read by byte offset: the generated ABI supplies the node stride, field
- * offsets, and (for wasm32 linear memory) the `SceneLayout`, so this static runtime never
- * hard-codes a layout. Construction validates the schema hash, every slab against its count, and
- * the text slab's UTF-8 once; later reads are O(1) bounds checks (out of range throws `RangeError`).
+ * Mirrors the C++ `nve::host::SceneReader` and the Dart `SceneReader`: construction validates the
+ * schema hash, every slab against its count, the text slab's UTF-8, every live node's child range,
+ * every dirty / moved index, every table slot, and the scroll-offset order once; later reads are
+ * O(1) bounds checks (out of range throws `RangeError`). `fromLinearMemory` reads a view out of
+ * wasm32 linear memory through the generated `NVE_SCENE_LAYOUT_WASM32` offsets, so this static
+ * runtime never hard-codes a layout.
  */
 import { NVE_ROW_INDEX_PAGE_LEN } from './generated/nve_abi.generated.ts';
 import { Key64 } from './key64.ts';
-import { MAX_TABLE_WORDS, TableReader, isIntIn } from './table_reader.ts';
+import { MAX_TABLE_WORDS, NODE_INDEX_MASK, TableReader, isIntIn } from './table_reader.ts';
+import type { FieldSpec } from './table_reader.ts';
 import { UTF8_DECODER, isValidUtf8 } from './utf8.ts';
+
+/** Bytes per `NveNodeRow`. */
+export const NODE_ROW_BYTES = 32;
+/** Bytes per `NveLayoutRect` (`x`, `y`, `width`, `height` as f32). */
+export const LAYOUT_RECT_BYTES = 16;
+/** Bytes per `NveScrollOffset` (`node_id` u32, `x` f32, `y` f32). */
+export const SCROLL_OFFSET_BYTES = 12;
+/** `NveNodeRow.primary_slot` of a plain container. */
+export const PRIMARY_SLOT_NONE = 0xff;
+/** Highest table slot a 128-bit `table_set` can address. */
+export const MAX_TABLE_SLOTS = 128;
+
+const PARENT = 16; // `NveNodeRow` byte offsets
+const CHILD_OFF = 20;
+const CHILD_LEN = 24;
+const GENERATION = 28;
+const PRIMARY_SLOT = 29;
+const EFFECTS = 30;
+const FLAGS = 31;
+const FLAG_LIVE = 1;
 
 /** Byte offsets of `NveTableView` fields inside wasm32 linear memory (pointers are u32). */
 export interface TableViewLayout {
@@ -20,32 +45,39 @@ export interface TableViewLayout {
   readonly words: number;
   readonly rowCount: number;
   readonly dirtyCount: number;
+  readonly rowIndexDirLen: number;
+  readonly rowIndexPageCount: number;
   readonly rows: number;
   readonly owners: number;
   readonly dirtyRows: number;
-  readonly rowIndexDirLen: number;
-  readonly rowIndexPageCount: number;
   readonly rowIndexDir: number;
   readonly rowIndexPages: number;
 }
 
-/** Byte offsets of `NveSceneView` fields inside wasm32 linear memory, plus the node stride. */
+/** Byte offsets of `NveSceneView` fields inside wasm32 linear memory. */
 export interface SceneLayout {
   readonly schemaHash: number;
   readonly frameId: number;
-  readonly nodeCount: number;
+  readonly nodeCapacity: number;
   readonly dirtyCount: number;
   readonly removedCount: number;
   readonly textSlabLen: number;
   readonly childrenSlabLen: number;
   readonly tableCount: number;
-  readonly nodes: number;
+  readonly scrollCount: number;
+  readonly sceneEpoch: number;
+  readonly dirtyResourceCount: number;
+  readonly movedCount: number;
+  readonly rows: number;
+  readonly rects: number;
   readonly textSlab: number;
   readonly childrenSlab: number;
   readonly dirtyIndices: number;
   readonly removedIds: number;
   readonly tables: number;
-  readonly nodeStride: number;
+  readonly scrollOffsets: number;
+  readonly dirtyResources: number;
+  readonly movedIndices: number;
   readonly tableView: TableViewLayout;
 }
 
@@ -61,21 +93,23 @@ export class SceneError extends Error {
   }
 }
 
+/** Borrowed slabs of one frame; every `DataView` is little-endian and sized to at least its count. */
 export interface SceneSlabs {
   readonly expectedSchema: Key64;
   readonly schemaHash: Key64;
   readonly frameId: Key64;
-  readonly nodes: DataView;
-  readonly nodeCount: number;
-  readonly nodeStride: number;
+  readonly nodeCapacity: number;
+  readonly rows: DataView;
+  readonly rects: DataView;
   readonly textSlab: Uint8Array;
   readonly childrenSlab: DataView;
-  readonly childrenSlabLen: number;
   readonly dirtyIndices: DataView;
-  readonly dirtyCount: number;
   readonly removedIds: DataView;
-  readonly removedCount: number;
   readonly tables?: readonly TableReader[];
+  readonly scrollOffsets?: DataView;
+  readonly sceneEpoch?: number;
+  readonly dirtyResources?: DataView;
+  readonly movedIndices?: DataView;
 }
 
 const EMPTY = new DataView(new ArrayBuffer(0));
@@ -83,41 +117,81 @@ const EMPTY = new DataView(new ArrayBuffer(0));
 export class SceneReader {
   /** Exact 64-bit frame counter. */
   readonly frameId: Key64;
-  readonly nodeCount: number;
-  readonly nodeStride: number;
-  readonly childrenSlabLen: number;
+  /** Slot capacity of rows / rects (slot 0 is the reserved null node). */
+  readonly nodeCapacity: number;
+  /** Bumped on every runtime scene reset: ids and caches of an earlier epoch are stale. */
+  readonly sceneEpoch: number;
   readonly dirtyCount: number;
+  readonly movedCount: number;
   readonly removedCount: number;
+  readonly dirtyResourceCount: number;
+  readonly scrollCount: number;
   readonly tables: readonly TableReader[];
   readonly textSlab: Uint8Array;
-  private readonly nodes: DataView;
+  private readonly rows: DataView;
+  private readonly rects: DataView;
   private readonly children: DataView;
   private readonly dirty: DataView;
+  private readonly moved: DataView;
   private readonly removed: DataView;
+  private readonly resources: DataView;
+  private readonly scroll: DataView;
+  private readonly bySlot: (TableReader | undefined)[];
 
-  /** Wraps per-slab views; throws `SceneError` when the schema, a slab, or the text UTF-8 is invalid. */
+  /** Wraps per-slab views; throws `SceneError` when the schema, a slab, a range, or a table is invalid. */
   constructor(s: SceneSlabs) {
     if (!s.schemaHash.equals(s.expectedSchema)) {
       throw new SceneError('schemaMismatch', `expected ${s.expectedSchema}, got ${s.schemaHash}`);
     }
-    if (!isIntIn(s.nodeStride, 1, 0xffff_ffff)) throw new SceneError('missingSlab', `nodeStride ${s.nodeStride}`);
-    requireRecords(s.nodes, s.nodeCount, s.nodeStride, 'nodes');
-    requireRecords(s.childrenSlab, s.childrenSlabLen, 4, 'childrenSlab');
-    requireRecords(s.dirtyIndices, s.dirtyCount, 4, 'dirtyIndices');
-    requireRecords(s.removedIds, s.removedCount, 4, 'removedIds');
+    const cap = s.nodeCapacity;
+    requireRecords(s.rows, cap, NODE_ROW_BYTES, 'rows');
+    requireRecords(s.rects, cap, LAYOUT_RECT_BYTES, 'rects');
     if (!isValidUtf8(s.textSlab)) throw new SceneError('invalidUtf8', 'textSlab');
     this.frameId = s.frameId;
-    this.nodeCount = s.nodeCount;
-    this.nodeStride = s.nodeStride;
-    this.childrenSlabLen = s.childrenSlabLen;
-    this.dirtyCount = s.dirtyCount;
-    this.removedCount = s.removedCount;
-    this.tables = s.tables ?? [];
+    this.nodeCapacity = cap;
+    this.sceneEpoch = s.sceneEpoch ?? 0;
+    this.rows = s.rows;
+    this.rects = s.rects;
     this.textSlab = s.textSlab;
-    this.nodes = s.nodes;
     this.children = s.childrenSlab;
     this.dirty = s.dirtyIndices;
+    this.moved = s.movedIndices ?? EMPTY;
     this.removed = s.removedIds;
+    this.resources = s.dirtyResources ?? EMPTY;
+    this.scroll = s.scrollOffsets ?? EMPTY;
+    this.dirtyCount = recordCount(this.dirty, 4, 'dirtyIndices');
+    this.movedCount = recordCount(this.moved, 4, 'movedIndices');
+    this.removedCount = recordCount(this.removed, 4, 'removedIds');
+    this.dirtyResourceCount = recordCount(this.resources, 4, 'dirtyResources');
+    this.scrollCount = recordCount(this.scroll, SCROLL_OFFSET_BYTES, 'scrollOffsets');
+    const childLen = recordCount(this.children, 4, 'childrenSlab');
+    for (let i = 1; i < cap; i++) {
+      if (!this.isLive(i)) continue;
+      const off = this.rows.getUint32(i * NODE_ROW_BYTES + CHILD_OFF, true);
+      const len = this.rows.getUint32(i * NODE_ROW_BYTES + CHILD_LEN, true);
+      if (off > childLen || len > childLen - off) {
+        throw new SceneError('missingSlab', `node ${i} children [${off}, +${len}) outside slab (${childLen})`);
+      }
+    }
+    for (const [what, view, count] of [
+      ['dirty', this.dirty, this.dirtyCount],
+      ['moved', this.moved, this.movedCount],
+    ] as const) {
+      for (let i = 0; i < count; i++) {
+        const index = view.getUint32(i * 4, true);
+        if (index >= cap) throw new SceneError('missingSlab', `${what} index ${index} >= capacity ${cap}`);
+      }
+    }
+    this.tables = s.tables ?? [];
+    this.bySlot = new Array<TableReader | undefined>(MAX_TABLE_SLOTS);
+    for (const t of this.tables) {
+      if (!isIntIn(t.slot, 0, MAX_TABLE_SLOTS - 1) || this.bySlot[t.slot] !== undefined) {
+        throw new SceneError('invalidTable', `table ${t.key} slot ${t.slot} invalid or duplicated`);
+      }
+      this.bySlot[t.slot] = t;
+    }
+    ascending(this.scroll, this.scrollCount, SCROLL_OFFSET_BYTES, 'scroll offset node ids');
+    ascending(this.resources, this.dirtyResourceCount, 4, 'dirty resource ids');
   }
 
   /** Reads the `NveSceneView` at `viewPtr` inside wasm32 linear memory (zero copy). */
@@ -129,7 +203,10 @@ export class SceneReader {
       }
       return mem.getUint32(at, true);
     };
-    const slab = (ptr: number, bytes: number, what: string): DataView => {
+    // `count` is a u32 and `size <= 32`: the product is an exact double, and any value past the
+    // memory end fails the bounds check.
+    const slab = (ptr: number, count: number, size: number, what: string): DataView => {
+      const bytes = count * size;
       if (bytes === 0) return EMPTY;
       if (ptr === 0 || ptr + bytes > mem.byteLength) throw new SceneError('missingSlab', `${what} [${ptr}, +${bytes}) outside memory`);
       return new DataView(memory, ptr, bytes);
@@ -138,17 +215,11 @@ export class SceneReader {
     const key = (at: number): Key64 => new Key64(u32(h + at), u32(h + at + 4));
     const schema = key(layout.schemaHash);
     if (!schema.equals(expectedSchema)) throw new SceneError('schemaMismatch', `expected ${expectedSchema}, got ${schema}`);
-    const nodeCount = u32(h + layout.nodeCount);
-    const textLen = u32(h + layout.textSlabLen);
-    const childrenLen = u32(h + layout.childrenSlabLen);
-    const dirtyCount = u32(h + layout.dirtyCount);
-    const removedCount = u32(h + layout.removedCount);
-    const tableCount = u32(h + layout.tableCount);
+    const field = (at: number): number => u32(h + at);
     const tl = layout.tableView;
-    if (!isIntIn(layout.nodeStride, 1, 0xffff_ffff) || !isIntIn(tl.stride, 1, 0xffff_ffff)) {
-      throw new SceneError('missingSlab', `layout strides must be >= 1 (node ${layout.nodeStride}, table ${tl.stride})`);
-    }
-    const tablesBase = u32(h + layout.tables);
+    if (!isIntIn(tl.stride, 1, 0xffff_ffff)) throw new SceneError('missingSlab', `table view stride ${tl.stride}`);
+    const tableCount = field(layout.tableCount);
+    const tablesBase = field(layout.tables);
     if (tableCount > 0 && (tablesBase === 0 || tablesBase + tableCount * tl.stride > mem.byteLength)) {
       throw new SceneError('invalidTable', `tables [${tablesBase}, x${tableCount}) outside memory`);
     }
@@ -167,71 +238,149 @@ export class SceneReader {
             slot: u32(t + tl.slot),
             words,
             rowCount,
-            rows: slab(u32(t + tl.rows), rowCount * words * 4, `table ${i} rows`),
-            owners: ownersPtr === 0 ? null : slab(ownersPtr, rowCount * 4, `table ${i} owners`),
-            dirtyRows: slab(u32(t + tl.dirtyRows), tableDirty * 4, `table ${i} dirtyRows`),
+            rows: slab(u32(t + tl.rows), rowCount * words, 4, `table ${i} rows`),
+            owners: ownersPtr === 0 ? null : slab(ownersPtr, rowCount, 4, `table ${i} owners`),
+            dirtyRows: slab(u32(t + tl.dirtyRows), tableDirty, 4, `table ${i} dirtyRows`),
             dirtyCount: tableDirty,
-            rowIndexDir: slab(u32(t + tl.rowIndexDir), u32(t + tl.rowIndexDirLen) * 4, `table ${i} rowIndexDir`),
-            rowIndexPages: slab(
-              u32(t + tl.rowIndexPages),
-              u32(t + tl.rowIndexPageCount) * NVE_ROW_INDEX_PAGE_LEN * 4,
-              `table ${i} rowIndexPages`,
-            ),
+            rowIndexDir: slab(u32(t + tl.rowIndexDir), u32(t + tl.rowIndexDirLen), 4, `table ${i} rowIndexDir`),
+            rowIndexPages: slab(u32(t + tl.rowIndexPages), u32(t + tl.rowIndexPageCount) * NVE_ROW_INDEX_PAGE_LEN, 4, `table ${i} rowIndexPages`),
           }),
         );
       } catch (e) {
+        if (e instanceof SceneError) throw e;
         throw new SceneError('invalidTable', `table ${i}: ${(e as Error).message}`);
       }
     }
-    const text = slab(u32(h + layout.textSlab), textLen, 'textSlab');
+    const cap = field(layout.nodeCapacity);
+    const text = slab(field(layout.textSlab), field(layout.textSlabLen), 1, 'textSlab');
     return new SceneReader({
       expectedSchema,
       schemaHash: schema,
       frameId: key(layout.frameId),
-      nodes: slab(u32(h + layout.nodes), nodeCount * layout.nodeStride, 'nodes'),
-      nodeCount,
-      nodeStride: layout.nodeStride,
+      nodeCapacity: cap,
+      rows: slab(field(layout.rows), cap, NODE_ROW_BYTES, 'rows'),
+      rects: slab(field(layout.rects), cap, LAYOUT_RECT_BYTES, 'rects'),
       textSlab: new Uint8Array(text.buffer, text.byteOffset, text.byteLength),
-      childrenSlab: slab(u32(h + layout.childrenSlab), childrenLen * 4, 'childrenSlab'),
-      childrenSlabLen: childrenLen,
-      dirtyIndices: slab(u32(h + layout.dirtyIndices), dirtyCount * 4, 'dirtyIndices'),
-      dirtyCount,
-      removedIds: slab(u32(h + layout.removedIds), removedCount * 4, 'removedIds'),
-      removedCount,
+      childrenSlab: slab(field(layout.childrenSlab), field(layout.childrenSlabLen), 4, 'childrenSlab'),
+      dirtyIndices: slab(field(layout.dirtyIndices), field(layout.dirtyCount), 4, 'dirtyIndices'),
+      removedIds: slab(field(layout.removedIds), field(layout.removedCount), 4, 'removedIds'),
+      movedIndices: slab(field(layout.movedIndices), field(layout.movedCount), 4, 'movedIndices'),
+      dirtyResources: slab(field(layout.dirtyResources), field(layout.dirtyResourceCount), 4, 'dirtyResources'),
+      scrollOffsets: slab(field(layout.scrollOffsets), field(layout.scrollCount), SCROLL_OFFSET_BYTES, 'scrollOffsets'),
+      sceneEpoch: field(layout.sceneEpoch),
       tables,
     });
   }
 
-  // ---- node records (offsets from the generated ABI) -------------------------------------
+  // ---- node rows -----------------------------------------------------------------------------
 
-  nodeU8(index: number, offset: number): number {
-    return this.nodes.getUint8(this.nodeAt(index, offset, 1));
+  isLive(index: number): boolean {
+    return isIntIn(index, 1, this.nodeCapacity - 1) && (this.rows.getUint8(index * NODE_ROW_BYTES + FLAGS) & FLAG_LIVE) !== 0;
   }
 
-  nodeU16(index: number, offset: number): number {
-    return this.nodes.getUint16(this.nodeAt(index, offset, 2), true);
+  generation(index: number): number {
+    return this.rows.getUint8(this.rowAt(index) + GENERATION);
   }
 
-  nodeU32(index: number, offset: number): number {
-    return this.nodes.getUint32(this.nodeAt(index, offset, 4), true);
+  primarySlot(index: number): number {
+    return this.rows.getUint8(this.rowAt(index) + PRIMARY_SLOT);
   }
 
-  nodeI32(index: number, offset: number): number {
-    return this.nodes.getInt32(this.nodeAt(index, offset, 4), true);
+  effects(index: number): number {
+    return this.rows.getUint8(this.rowAt(index) + EFFECTS);
   }
 
-  nodeF32(index: number, offset: number): number {
-    return this.nodes.getFloat32(this.nodeAt(index, offset, 4), true);
+  flags(index: number): number {
+    return this.rows.getUint8(this.rowAt(index) + FLAGS);
   }
 
-  private nodeAt(index: number, offset: number, size: number): number {
-    if (!(isIntIn(index, 0, this.nodeCount - 1) && isIntIn(offset, 0, this.nodeStride - size))) {
-      throw new RangeError(`node ${index} offset ${offset} (+${size}) outside ${this.nodeCount}x${this.nodeStride}`);
+  /** Raw parent `NodeId` (`0` = root / detached). */
+  parentId(index: number): number {
+    return this.rows.getUint32(this.rowAt(index) + PARENT, true);
+  }
+
+  /** `true` when table `slot` is attached to node `index`. */
+  hasTable(index: number, slot: number): boolean {
+    if (!isIntIn(slot, 0, MAX_TABLE_SLOTS - 1) || !isIntIn(index, 1, this.nodeCapacity - 1)) return false;
+    return ((this.rows.getUint32(index * NODE_ROW_BYTES + (slot >>> 5) * 4, true) >>> (slot & 31)) & 1) !== 0;
+  }
+
+  /** Raw `NodeId` of live slot `index`. */
+  nodeId(index: number): number {
+    return ((this.generation(index) << 24) | index) >>> 0;
+  }
+
+  /** Slot index of raw `nodeId`, or `-1` when it is null, stale, or dead. */
+  indexOf(nodeId: number): number {
+    const index = nodeId & NODE_INDEX_MASK;
+    return this.isLive(index) && this.generation(index) === (nodeId >>> 24) ? index : -1;
+  }
+
+  private rowAt(index: number): number {
+    if (!isIntIn(index, 0, this.nodeCapacity - 1)) throw new RangeError(`node ${index} outside capacity ${this.nodeCapacity}`);
+    return index * NODE_ROW_BYTES;
+  }
+
+  // ---- layout rects --------------------------------------------------------------------------
+
+  /** Absolute pre-scroll rect `[x, y, width, height]` of node `index`. */
+  rect(index: number): [number, number, number, number] {
+    const at = this.rowAt(index) / 2; // 32-byte rows, 16-byte rects
+    const r = this.rects;
+    return [r.getFloat32(at, true), r.getFloat32(at + 4, true), r.getFloat32(at + 8, true), r.getFloat32(at + 12, true)];
+  }
+
+  // ---- scroll offsets ------------------------------------------------------------------------
+
+  /** Visual child shift `[x, y]` of live node `index`; `[0, 0]` when not scrolled. O(log scrollCount). */
+  scrollShift(index: number): [number, number] {
+    if (!this.isLive(index)) return [0, 0];
+    const id = this.nodeId(index);
+    let lo = 0;
+    let hi = this.scrollCount;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const at = mid * SCROLL_OFFSET_BYTES;
+      const node = this.scroll.getUint32(at, true);
+      if (node === id) return [this.scroll.getFloat32(at + 4, true), this.scroll.getFloat32(at + 8, true)];
+      if (node < id) lo = mid + 1;
+      else hi = mid;
     }
-    return index * this.nodeStride + offset;
+    return [0, 0];
   }
 
-  // ---- slabs ---------------------------------------------------------------------------------
+  // ---- children ------------------------------------------------------------------------------
+
+  childCount(index: number): number {
+    return this.isLive(index) ? this.rows.getUint32(index * NODE_ROW_BYTES + CHILD_LEN, true) : 0;
+  }
+
+  /** Raw child `NodeId` `i` of node `index` in paint order. */
+  childId(index: number, i: number): number {
+    const count = this.childCount(index);
+    if (!isIntIn(i, 0, count - 1)) throw new RangeError(`child ${i} outside ${count}`);
+    return this.children.getUint32((this.rows.getUint32(index * NODE_ROW_BYTES + CHILD_OFF, true) + i) * 4, true);
+  }
+
+  // ---- change sets ---------------------------------------------------------------------------
+
+  dirtyIndex(i: number): number {
+    return u32At(this.dirty, i, this.dirtyCount, 'dirty');
+  }
+
+  movedIndex(i: number): number {
+    return u32At(this.moved, i, this.movedCount, 'moved');
+  }
+
+  removedId(i: number): number {
+    return u32At(this.removed, i, this.removedCount, 'removed');
+  }
+
+  dirtyResource(i: number): number {
+    return u32At(this.resources, i, this.dirtyResourceCount, 'dirty resource');
+  }
+
+  // ---- text ----------------------------------------------------------------------------------
 
   /** View of `textSlab[offset .. offset + len)`; throws when out of range or not on UTF-8 boundaries. */
   textBytes(offset: number, len: number): Uint8Array {
@@ -242,6 +391,7 @@ export class SceneReader {
     return this.textSlab.subarray(offset, offset + len);
   }
 
+  /** Text at `[offset, offset + len)`; a leading U+FEFF is kept (never stripped). */
   text(offset: number, len: number): string {
     return UTF8_DECODER.decode(this.textBytes(offset, len));
   }
@@ -250,36 +400,50 @@ export class SceneReader {
     return at === this.textSlab.length || (this.textSlab[at]! & 0xc0) !== 0x80;
   }
 
-  childId(slabIndex: number): number {
-    return u32At(this.children, slabIndex, this.childrenSlabLen, 'child');
-  }
-
-  dirtyIndex(i: number): number {
-    return u32At(this.dirty, i, this.dirtyCount, 'dirty');
-  }
-
-  removedId(i: number): number {
-    return u32At(this.removed, i, this.removedCount, 'removed');
-  }
-
-  /** Visits every in-range dirty node index in O(dirty). */
-  forEachDirty(visit: (index: number) => void): void {
-    for (let i = 0; i < this.dirtyCount; i++) {
-      const index = this.dirtyIndex(i);
-      if (index < this.nodeCount) visit(index);
-    }
-  }
+  // ---- tables --------------------------------------------------------------------------------
 
   /** Published table with `key`, or `null` (O(tables)). */
   findTable(key: Key64): TableReader | null {
     return this.tables.find((t) => t.key.equals(key)) ?? null;
   }
+
+  /** Published table bound to `slot`, or `null`. */
+  tableAtSlot(slot: number): TableReader | null {
+    return isIntIn(slot, 0, MAX_TABLE_SLOTS - 1) ? (this.bySlot[slot] ?? null) : null;
+  }
+
+  /** Row of node `index` in `table`, or `-1` when the table is absent or not attached to it (O(1)). */
+  rowOf(table: TableReader | null, index: number): number {
+    return table === null || !this.hasTable(index, table.slot) ? -1 : (table.rowOfNode(index) ?? -1);
+  }
+
+  /** Text of `str` field `f` in `row` of `table`. */
+  str(table: TableReader, row: number, f: FieldSpec): string {
+    const { offset, len } = table.str(row, f);
+    return this.text(offset, len);
+  }
 }
 
-/** `count` integer records of `size` bytes fit `view` (division: no product to overflow or NaN). */
+/** `count` records of `size` bytes fit `view` (division: no product to overflow or NaN). */
 function requireRecords(view: DataView, count: number, size: number, what: string): void {
   if (!(isIntIn(count, 0, 0xffff_ffff) && Math.floor(view.byteLength / size) >= count)) {
     throw new SceneError('missingSlab', `${what} holds ${view.byteLength} bytes, need ${count} x ${size}`);
+  }
+}
+
+/** Whole records of `size` bytes in `view`; a ragged tail is a malformed slab. */
+function recordCount(view: DataView, size: number, what: string): number {
+  if (view.byteLength % size !== 0) throw new SceneError('missingSlab', `${what} holds ${view.byteLength} bytes, not a multiple of ${size}`);
+  return view.byteLength / size;
+}
+
+/** The leading `u32` of each of `count` `size`-byte records is strictly ascending. */
+function ascending(view: DataView, count: number, size: number, what: string): void {
+  let previous = -1;
+  for (let i = 0; i < count; i++) {
+    const v = view.getUint32(i * size, true);
+    if (v <= previous) throw new SceneError('missingSlab', `${what} not strictly ascending at ${v}`);
+    previous = v;
   }
 }
 

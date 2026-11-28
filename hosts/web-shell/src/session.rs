@@ -1,6 +1,5 @@
 //! Cross-target Web shell session (`WebAppSession`), hot-reload dispatch (`HotReloadAction`,
-//! feature `dev`), canonical 0ms snapshot capture, and zero-copy `NveSceneTable` mirroring
-//! (feature `scene-view`).
+//! feature `dev`), and canonical 0ms snapshot capture.
 
 #[cfg(feature = "app-studio")]
 use nve_abi::NveDirectEvent;
@@ -10,8 +9,6 @@ use nve_abi::{
     pack_key_modifiers, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId,
     ROOT_NODE_ID,
 };
-#[cfg(feature = "scene-view")]
-use crate::scene::SceneMirror;
 use nve_abi::xxh64;
 use nve_backend_web::{SsrDocumentOptions, SsrOutput, WebBackend, WebSnapshotPayload};
 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
@@ -23,8 +20,6 @@ use nve_engine::NveApp;
 use nve_engine::{BackendApplyStats, BackendError, FrameTiming, StoreBackend, Viewport};
 #[cfg(feature = "app-kitchen-sink")]
 use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
-#[cfg(feature = "scene-view")]
-use nve_store::ChangeSet;
 use nve_store::NodeStore;
 #[cfg(feature = "app-studio")]
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
@@ -149,18 +144,6 @@ impl SessionApp {
         }
     }
 
-    #[cfg(feature = "scene-view")]
-    fn last_changes(&self) -> &ChangeSet {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface, _) => surface.last_changes(),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.surface().last_changes(),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.surface().last_changes(),
-        }
-    }
-
     #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     fn poll_work(&mut self, waker: &core::task::Waker) -> bool {
         match self {
@@ -231,8 +214,7 @@ impl SessionApp {
 }
 
 /// Cross-target session binding an NVE app (`DioxusSurface`, `StudioWorkspaceModule`, or
-/// `KitchenSinkModule`) directly to a [`WebBackend`] (plus, with `scene-view`, a zero-copy
-/// [`SceneMirror`]).
+/// `KitchenSinkModule`) directly to a [`WebBackend`].
 ///
 /// Runs identically in browser WASM (`web-dom-wasm`) and in host unit tests (`web-dom-mirror`).
 pub struct WebAppSession {
@@ -240,8 +222,6 @@ pub struct WebAppSession {
     frame_id: FrameId,
     app: SessionApp,
     backend: WebBackend,
-    #[cfg(feature = "scene-view")]
-    scene: SceneMirror,
 }
 
 impl WebAppSession {
@@ -272,8 +252,6 @@ impl WebAppSession {
             frame_id: 0,
             app,
             backend,
-            #[cfg(feature = "scene-view")]
-            scene: SceneMirror::new(),
         }
     }
 
@@ -487,18 +465,6 @@ impl WebAppSession {
         }
     }
 
-    /// The zero-copy scene mirror of this session's `NodeStore` tree.
-    #[cfg(feature = "scene-view")]
-    pub fn scene(&self) -> &SceneMirror {
-        &self.scene
-    }
-
-    /// Safe zero-copy [`nve_abi::NveSceneRef`] over the current scene mirror and `NodeStore` text slab.
-    #[cfg(feature = "scene-view")]
-    pub fn scene_ref(&self) -> nve_abi::NveSceneRef<'_> {
-        self.scene.as_ref_with_store(self.app.store())
-    }
-
     /// Renders and mounts the initial frame.
     pub fn render_initial(&mut self) -> Result<FrameTiming, BackendError> {
         self.render_and_submit()
@@ -605,18 +571,10 @@ impl WebAppSession {
         })
     }
 
-    #[cfg_attr(not(feature = "scene-view"), allow(unused_variables))]
-    fn sync_scene(&mut self, frame_id: FrameId) {
-        #[cfg(feature = "scene-view")]
-        self.scene
-            .sync(self.app.store(), self.app.last_changes(), frame_id);
-    }
-
     fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
         self.frame_id = self.frame_id.wrapping_add(1).max(1);
         let frame_id = self.frame_id;
         let (reconcile_us, stats) = self.app.commit_to_timed(frame_id, &mut self.backend)?;
-        self.sync_scene(frame_id);
         Ok(FrameTiming {
             frame_id,
             op_count: stats.op_count,

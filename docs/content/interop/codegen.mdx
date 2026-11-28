@@ -10,12 +10,12 @@ order: 1
 
 1. **Host ABI data (`cargo nve codegen abi`)** — Renders the colocated `#[derive(NveAbi)]` descriptors and the core `TableDesc`s through Askama templates into 15 gitignored files across C, Swift, Java, Dart, and TypeScript, next to the static `packages/core/host-*` runtimes.
 2. **Nitro-style 6-target Hybrid FFI (`cargo nve codegen hybrid`)** — Parses declarative Rust `#[nve_hybrid_*]` specs and emits direct binary FFI bindings for `rust`, `cpp`, `swift`, `kotlin`, `dart`, and `ts`.
-3. **React Native Import (`cargo nve codegen import-rn`)** — Parses RN Fabric `*NativeComponent.{ts,js}` and TurboModule `Native*.{ts,js}` specs (TypeScript or Flow) into zero-JS Rust `nve-dioxus` + C++20 Fabric adapters.
+3. **React Native Import (`cargo nve codegen import-rn`)** — Parses RN Fabric `*NativeComponent.{ts,js}` and TurboModule `Native*.{ts,js}` specs (TypeScript or Flow) into zero-JS Rust `nve-dioxus` bindings, plus a std-only C++20 TurboModule host interface for TurboModules.
 4. **5-Target Component Export (`cargo nve codegen export`)** — Exports one `NveExportSpec` into drop-in wrappers for React Native Fabric, Flutter, SwiftUI, Jetpack Compose, and Web Components.
 
 ## Single-Source Core & Scene ABI (`--check` Lock)
 
-Every language binding for `nve_get_interface(1..=5)` and the 64-byte `NveRenderNode` / `NveSceneView` / `NveNodeMeta` slabs is generated from colocated Rust `#[derive(NveAbi)]` descriptors and locked by deterministic 64-bit XXH64 schema hashes (`NVE_CORE_ABI_SCHEMA_HASH`, `NVE_SCENE_SCHEMA_HASH`).
+Every language binding for `nve_get_interface(1..=5)` and the runtime ABI records (`NveSceneView`, 32-byte `NveNodeRow`, 16-byte `NveLayoutRect`, `NveTableView`) is generated from colocated Rust `#[derive(NveAbi)]` descriptors and locked by deterministic 64-bit XXH64 schema hashes (`NVE_CORE_ABI_SCHEMA_HASH`, `NVE_RUNTIME_SCHEMA_HASH`).
 
 Generated files follow the `.generated.<ext>` convention (and the Java `dev.nve.host.generated` package). Rendered from Askama templates, they land next to the static host runtime they plug into (`packages/core/host-*`): codegen emits only data (ABI structs and constants, word-table keys and field specs, golden XXH64 vectors), never runtime code.
 
@@ -41,14 +41,14 @@ cargo nve codegen abi --check
 
 Consume existing third-party React Native Fabric components (`*NativeComponent.{ts,js}`) or TurboModules (`Native*.{ts,js}`) from Rust with **zero Hermes**:
 
-```bash title="Generate zero-JS Rust + C++20 adapters from an RN Fabric spec"
+```bash title="Generate zero-JS Rust bindings (and a C++20 TurboModule host interface) from an RN spec"
 cargo nve codegen import-rn path/to/MapViewNativeComponent.ts --out generated/import-rn
 ```
 
 The parser handles both TypeScript and Flow syntax, resolves re-export wrapper files automatically, and emits:
 
 - A typed Rust `nve-dioxus` component writing `nve_abi::RawPropValue` directly into `CommandBuffer`s.
-- A thin C++20 Fabric prop/event adapter compatible with `cxx/nve-fabric-bridge`.
+- For TurboModules, a std-only C++20 pure-virtual host interface (`<module>_turbomodule_host.generated.hpp`) that a native host implements. Components get Rust bindings only: there is no Fabric adapter.
 
 ## 5-Target Export (`export`)
 
@@ -56,7 +56,7 @@ Take a single `NveExportSpec` JSON file and emit ready-to-drop wrappers for all 
 
 | Target (`--target`) | Emitted Artifacts | Host Runtime Integration |
 | :--- | :--- | :--- |
-| `rn` | `<Name>NativeComponent.ts`, `<Name>NveBridge.{hpp,cpp}`, `<Name>ComponentView.mm`, `<Name>ViewManager.kt` | `RCTNveComponentView` (iOS/macOS) & `NveNativeBridge` (Android) |
+| `rn` | `<Name>NativeComponent.generated.ts`, `<Name>ComponentView.generated.mm`, `<Name>ViewManager.generated.kt`, `<Name>RnwComponentView.generated.hpp` | `RCTNveComponentView` over the `apple-common` runtime host (iOS/macOS), Android `libnve_android_shell`, and `hosts/windows-shell` (RNW) |
 | `flutter` | Typed Dart `StatefulWidget` + `dart:ffi` wrapper (`NveDirectEncodable`) | `package:nve_flutter/nve_flutter.dart` (`NveCanvasView` + `NveCanvasController`) |
 | `swiftui` | Typed SwiftUI `View` + `NveDirectEncodable` props struct | `NveSwiftUI.NveSurfaceRepresentable` |
 | `compose` | Typed Kotlin `@Composable` wrapper | `dev.nve.compose.NveSurface` |

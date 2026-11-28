@@ -167,7 +167,7 @@ final class MockRuntime: @unchecked Sendable {
     var measurer: (NveRuntimeMeasureTextFn?, UnsafeMutableRawPointer?) = (nil, nil)
 
     private var pinned: [UnsafeMutableRawPointer] = []
-    private var view = NveRuntimeSceneView()
+    private var view = NveSceneView()
     private var tableViews: [NveTableView] = []
 
     func reset() {
@@ -189,7 +189,7 @@ final class MockRuntime: @unchecked Sendable {
         return UnsafePointer(p)
     }
 
-    fileprivate func publish() -> NveRuntimeSceneView {
+    fileprivate func publish() -> NveSceneView {
         tableViews = scene.tables.map { t in
             let (dir, pages) = scene.rowIndex(t)
             return NveTableView(
@@ -201,7 +201,7 @@ final class MockRuntime: @unchecked Sendable {
         }
         // Like the runtime: every scroll container's offset, sorted by node id.
         let scrollOffsets = scroll.keys.sorted().map { NveScrollOffset(node_id: $0, x: scroll[$0]!.0, y: scroll[$0]!.1) }
-        view = NveRuntimeSceneView(
+        view = NveSceneView(
             schema_hash: schema, frame_id: frameId, node_capacity: UInt32(scene.rows.count),
             dirty_count: UInt32(dirty.count), removed_count: UInt32(removed.count),
             text_slab_len: UInt32(scene.text.count), children_slab_len: UInt32(scene.children.count),

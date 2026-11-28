@@ -12,38 +12,19 @@ Usage: scripts/check-all.sh [OPTIONS]
 Options:
   --quick            Skip Criterion runtime benchmarks (still runs cargo bench --no-run)
                      and skip building the Web WASM bundle when pkg/ is absent
-  --rn-dir <path>    Path to react-native/packages/react-native/ReactCommon
-                     (overrides $RN_REACT_COMMON_DIR)
   -h, --help         Show this help message
 
 Environment:
-  RN_REACT_COMMON_DIR  Optional path to ReactCommon for Yoga + JSI C++ bridge builds
   NVE_CHROME_BIN       Optional Chrome/Chromium binary path for Web WASM E2E (CDP)
 EOF
 }
 
 QUICK_MODE=0
-RN_DIR="${RN_REACT_COMMON_DIR:-}"
-RN_DIR_EXPLICIT=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --quick)
       QUICK_MODE=1
-      shift
-      ;;
-    --rn-dir)
-      if [ $# -lt 2 ]; then
-        echo "error: --rn-dir requires a path argument" >&2
-        exit 2
-      fi
-      RN_DIR="$2"
-      RN_DIR_EXPLICIT=1
-      shift 2
-      ;;
-    --rn-dir=*)
-      RN_DIR="${1#--rn-dir=}"
-      RN_DIR_EXPLICIT=1
       shift
       ;;
     -h|--help)
@@ -58,19 +39,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -n "$RN_DIR" ]; then
-  if [ ! -d "$RN_DIR" ]; then
-    if [ "$RN_DIR_EXPLICIT" -eq 1 ]; then
-      echo "error: --rn-dir path does not exist: $RN_DIR" >&2
-      exit 2
-    else
-      echo "warning: RN_REACT_COMMON_DIR does not exist, ignoring: $RN_DIR" >&2
-      RN_DIR=""
-    fi
-  else
-    RN_DIR="$(cd "$RN_DIR" && pwd)"
-  fi
-fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OS_NAME="$(uname -s)"
@@ -111,11 +79,6 @@ esac
 CMAKE_GEN_ARGS=()
 if command -v ninja >/dev/null 2>&1; then
   CMAKE_GEN_ARGS=(-G Ninja)
-fi
-
-CMAKE_RN_ARGS=()
-if [ -n "$RN_DIR" ]; then
-  CMAKE_RN_ARGS=("-DRN_REACT_COMMON_DIR=$RN_DIR")
 fi
 
 # Parallel indexed arrays for Bash 3.2 compatibility (macOS default /bin/bash).
@@ -179,417 +142,8 @@ skip_suite() {
   record_result "$name" "SKIP" "-" "$reason"
 }
 
-has_cmake() {
-  command -v cmake >/dev/null 2>&1
-}
-
-has_wasm_target() {
-  command -v rustup >/dev/null 2>&1 \
-    && rustup target list --installed | grep -qx 'wasm32-unknown-unknown'
-}
-
-has_wasm_bindgen() {
-  command -v "${WASM_BINDGEN:-wasm-bindgen}" >/dev/null 2>&1
-}
-
-has_node_websocket() {
-  command -v node >/dev/null 2>&1 \
-    && node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' >/dev/null 2>&1
-}
-
-native_host_path() {
-  local p="$1"
-  case "$OS_NAME" in
-    MINGW*|MSYS*|CYGWIN*)
-      if command -v cygpath >/dev/null 2>&1; then
-        cygpath -w "$p"
-        return 0
-      fi
-      ;;
-  esac
-  printf '%s\n' "$p"
-}
-
-detect_chrome_bin() {
-  local candidate
-  for candidate in \
-    "${NVE_CHROME_BIN:-}" \
-    "${CHROME_BIN:-}" \
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-    "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary" \
-    "/usr/bin/google-chrome" \
-    "/usr/bin/google-chrome-stable" \
-    "/usr/bin/chromium" \
-    "/usr/bin/chromium-browser"; do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  local cmd
-  for cmd in google-chrome google-chrome-stable chromium chromium-browser; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-      command -v "$cmd"
-      return 0
-    fi
-  done
-  return 1
-}
-
-has_qt6() {
-  if command -v qmake6 >/dev/null 2>&1; then
-    return 0
-  fi
-  if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Widgets 2>/dev/null; then
-    return 0
-  fi
-  if [ -n "${Qt6_DIR:-}" ] && [ -f "${Qt6_DIR}/Qt6Config.cmake" ]; then
-    return 0
-  fi
-  local candidate
-  for candidate in \
-    /opt/homebrew/opt/qt/lib/cmake/Qt6/Qt6Config.cmake \
-    /opt/homebrew/opt/qtbase/lib/cmake/Qt6/Qt6Config.cmake \
-    /usr/local/opt/qt/lib/cmake/Qt6/Qt6Config.cmake \
-    /usr/local/opt/qtbase/lib/cmake/Qt6/Qt6Config.cmake \
-    /usr/lib/x86_64-linux-gnu/cmake/Qt6/Qt6Config.cmake \
-    /usr/lib/aarch64-linux-gnu/cmake/Qt6/Qt6Config.cmake \
-    /usr/lib64/cmake/Qt6/Qt6Config.cmake; do
-    if [ -f "$candidate" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-is_openj9_java() {
-  local java_bin="$1"
-  "$java_bin" -version 2>&1 | grep -qi "OpenJ9"
-}
-
-detect_hotspot_java_home() {
-  if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ] && ! is_openj9_java "${JAVA_HOME}/bin/java"; then
-    printf '%s\n' "$JAVA_HOME"
-    return 0
-  fi
-  local candidate
-  for candidate in \
-    "/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
-    "/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home" \
-    "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home" \
-    "/usr/lib/jvm/temurin-21-jdk-amd64" \
-    "/usr/lib/jvm/temurin-21-jdk-arm64" \
-    "/usr/lib/jvm/java-21-openjdk-amd64" \
-    "/usr/lib/jvm/java-21-openjdk-arm64" \
-    "/usr/lib/jvm/java-17-openjdk-amd64" \
-    "/usr/lib/jvm/java-17-openjdk-arm64" \
-    "/usr/lib/jvm/default-java"; do
-    if [ -x "$candidate/bin/java" ] && ! is_openj9_java "$candidate/bin/java"; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  if [ "$OS_NAME" = "Darwin" ] && [ -x /usr/libexec/java_home ]; then
-    local mac_java=""
-    mac_java="$(/usr/libexec/java_home 2>/dev/null || true)"
-    if [ -n "$mac_java" ] && [ -x "$mac_java/bin/java" ] && ! is_openj9_java "$mac_java/bin/java"; then
-      printf '%s\n' "$mac_java"
-      return 0
-    fi
-  fi
-  if command -v java >/dev/null 2>&1; then
-    local java_path=""
-    java_path="$(command -v java)"
-    local resolved=""
-    if command -v python3 >/dev/null 2>&1; then
-      resolved="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))' "$java_path" 2>/dev/null || true)"
-    elif command -v readlink >/dev/null 2>&1; then
-      resolved="$(dirname "$(dirname "$(readlink -f "$java_path" 2>/dev/null || printf '%s' "$java_path")")")"
-    fi
-    if [ -n "$resolved" ] && [ -x "$resolved/bin/java" ] && ! is_openj9_java "$resolved/bin/java"; then
-      printf '%s\n' "$resolved"
-      return 0
-    fi
-  fi
-  return 1
-}
-
-detect_android_sdk() {
-  local candidate
-  for candidate in \
-    "${ANDROID_HOME:-}" \
-    "${ANDROID_SDK_ROOT:-}" \
-    "$HOME/Library/Android/sdk" \
-    "$HOME/Android/Sdk" \
-    "/usr/local/lib/android/sdk"; do
-    if [ -n "$candidate" ] && [ -d "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  return 1
-}
-
-detect_java_home() {
-  if [ -n "${JAVA_HOME:-}" ] && [ -f "${JAVA_HOME}/include/jni.h" ]; then
-    printf '%s\n' "$JAVA_HOME"
-    return 0
-  fi
-  if [ "$OS_NAME" = "Darwin" ] && [ -x /usr/libexec/java_home ]; then
-    local mac_java=""
-    mac_java="$(/usr/libexec/java_home 2>/dev/null || true)"
-    if [ -n "$mac_java" ] && [ -f "$mac_java/include/jni.h" ]; then
-      printf '%s\n' "$mac_java"
-      return 0
-    fi
-  fi
-  if command -v javac >/dev/null 2>&1; then
-    local javac_path=""
-    javac_path="$(command -v javac)"
-    local resolved=""
-    if command -v python3 >/dev/null 2>&1; then
-      resolved="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))' "$javac_path" 2>/dev/null || true)"
-    elif command -v readlink >/dev/null 2>&1; then
-      resolved="$(dirname "$(dirname "$(readlink -f "$javac_path" 2>/dev/null || printf '%s' "$javac_path")")")"
-    fi
-    if [ -n "$resolved" ] && [ -f "$resolved/include/jni.h" ]; then
-      printf '%s\n' "$resolved"
-      return 0
-    fi
-  fi
-  if [ -f /usr/lib/jvm/default-java/include/jni.h ]; then
-    printf '%s\n' "/usr/lib/jvm/default-java"
-    return 0
-  fi
-  return 1
-}
-
-# --- Suite definitions ------------------------------------------------------
-
-suite_arch_invariants() {
-  cd "$REPO_ROOT"
-  cargo test --locked -p nve-arch-invariants
-}
-
-suite_ast_grep() {
-  cd "$REPO_ROOT"
-  ast-grep test && ast-grep scan
-}
-
-suite_cargo_deny() {
-  cd "$REPO_ROOT"
-  cargo deny check
-}
-
-suite_rust_clippy() {
-  cd "$REPO_ROOT"
-  cargo clippy --locked --workspace --all-targets -- -D warnings
-  cargo clippy --locked -p nve-ui --features spatial-focus --all-targets -- -D warnings
-  if has_wasm_target; then
-    cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
-  fi
-}
-
-suite_rust_workspace() {
-  cd "$REPO_ROOT"
-  cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
-  cargo test --workspace --exclude nve-arch-invariants
-  cargo test --locked -p nve-ui --features spatial-focus --test spatial_focus_tests
-  cargo bench --no-run
-  if [ "$QUICK_MODE" -eq 0 ]; then
-    cargo bench --workspace
-  fi
-}
-
-suite_skia_desktop_shell() {
-  cd "$REPO_ROOT"
-  cargo test -p nve-backend-skia -p nve-skia-shell
-  cargo run -p nve-skia-shell -- --help >/dev/null
-}
-
-suite_skia_gpu_check() {
-  cd "$REPO_ROOT"
-  cargo clippy --locked -p nve-backend-skia --features skia -- -D warnings
-  cargo clippy --locked -p nve-backend-skia --features "$SKIA_GPU_FEATURE" -- -D warnings
-  cargo clippy --locked -p nve-skia-shell --features "$SKIA_GPU_FEATURE" -- -D warnings
-}
-
-suite_abi_codegen_parity() {
-  cd "$REPO_ROOT"
-  cargo run --locked -p nve-cli -- codegen abi
-  cargo run --locked -p nve-cli -- codegen abi --check
-}
-
-suite_rust_rpc_hyper_matrix() {
-  cd "$REPO_ROOT"
-  cargo check --locked -p nve-http-hyper --no-default-features --all-targets
-  cargo check --locked -p nve-http-hyper --no-default-features --features server --all-targets
-  cargo check --locked -p nve-http-hyper --no-default-features --features client --all-targets
-  cargo test --locked -p nve-http-hyper --no-default-features --doc
-  cargo test --locked -p nve-http-hyper --no-default-features --features server --doc
-  cargo test --locked -p nve-http-hyper --no-default-features --features client --doc
-  # Web backend feature-gate matrix: `ssr`-only (server) and `hydrate`-only (client) builds.
-  cargo check --locked -p nve-backend-web --no-default-features --features ssr --all-targets
-  cargo check --locked -p nve-backend-web --no-default-features --features hydrate --all-targets
-  RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --document-private-items \
-    -p nve-hash -p nve-rpc -p nve-server -p nve-http-hyper \
-    -p nve-query -p nve-http-web -p nve-query-dioxus \
-    -p nve-example-issues-api -p nve-example-issues-client -p nve-example-issues-server
-}
-
-suite_rust_wasm() {
-  cd "$REPO_ROOT"
-  cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
-  cargo check --locked -p nve-web-shell --no-default-features --features app-issues --target wasm32-unknown-unknown
-  cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-http-web -p nve-query-dioxus -p nve-example-issues-api -p nve-example-issues-client --target wasm32-unknown-unknown
-}
-
-suite_rust_wasip2() {
-  cd "$REPO_ROOT"
-  cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-example-issues-api --target wasm32-wasip2
-}
-
-suite_web_wasm_e2e() {
-  cd "$REPO_ROOT"
-  if [ "$WEB_E2E_BUILD_BUNDLE" -eq 1 ]; then
-    "$REPO_ROOT/hosts/web-shell/build.sh" --dev
-  fi
-  NVE_CHROME_BIN="$DETECTED_CHROME_BIN" \
-    node "$REPO_ROOT/hosts/web-shell/e2e/run_e2e.mjs" --no-screenshot
-}
-
-suite_python_tests() {
-  cd "$REPO_ROOT"
-  python3 -B -m unittest discover -s scripts/tests -v
-}
-
-suite_cpp_fabric_bridge() {
-  local build_dir="$BUILD_ROOT/fabric-bridge"
-  cmake -S "$REPO_ROOT/cxx/nve-fabric-bridge" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DNVE_BUILD_BENCHMARKS=ON \
-    ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
-  cmake --build "$build_dir"
-  ctest --test-dir "$build_dir" --output-on-failure
-  if [ -x "$build_dir/nve_fabric_bridge_bench" ]; then
-    "$build_dir/nve_fabric_bridge_bench" --iters 10
-  elif [ -x "$build_dir/nve_fabric_bridge_bench.exe" ]; then
-    "$build_dir/nve_fabric_bridge_bench.exe" --iters 10
-  else
-    echo "error: nve_fabric_bridge_bench binary not found in $build_dir" >&2
-    return 1
-  fi
-}
-
-suite_macos_appkit() {
-  local build_dir="$BUILD_ROOT/macos-shell"
-  cmake -S "$REPO_ROOT/hosts/macos-shell" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
-    ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
-  cmake --build "$build_dir"
-  ctest --test-dir "$build_dir" --output-on-failure
-  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
-    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
-    return 1
-  fi
-  if [ ! -f "$STUDIO_DYLIB" ]; then
-    echo "error: expected studio dylib at $STUDIO_DYLIB" >&2
-    return 1
-  fi
-  NVE_TEST_KITCHEN_SINK_DYLIB="$KITCHEN_SINK_DYLIB" \
-    NVE_TEST_STUDIO_DYLIB="$STUDIO_DYLIB" \
-    "$build_dir/nve_macos_shell_test"
-}
-
-suite_ios_simulator_sdk() {
-  cd "$REPO_ROOT"
-  xcrun --sdk iphonesimulator clang++ \
-    -std=c++20 -fobjc-arc -Wall -Wextra -Werror -fsyntax-only \
-    -Ipackages/core/host-cxx/include \
-    -Ihosts/apple-common \
-    -Ihosts/ios-shell \
-    hosts/apple-common/*.mm \
-    hosts/ios-shell/*.mm
-}
-
-# Configures + builds a desktop C++ host (`hosts/<name>`) and runs its CTest with the live
-# kitchen-sink `cdylib` test required (built here; never skipped silently). Extra args prefix
-# ctest (e.g. `xvfb-run -a`).
-run_desktop_host_ctest() {
-  local name="$1"
-  shift
-  local build_dir="$BUILD_ROOT/$name"
-  cmake -S "$REPO_ROOT/hosts/$name" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
-    ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
-  cmake --build "$build_dir"
-  (cd "$REPO_ROOT" && cargo build --locked -p nve-example-kitchen-sink)
-  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
-    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
-    return 1
-  fi
-  NVE_TEST_KITCHEN_SINK_DYLIB="$(native_host_path "$KITCHEN_SINK_DYLIB")" \
-    "$@" ctest --test-dir "$build_dir" --output-on-failure
-}
-
-suite_windows_host() {
-  run_desktop_host_ctest windows-shell
-}
-
-suite_qt6_host() {
-  # `qt_shell_test` / `qt_quick_test` set their own offscreen platform.
-  run_desktop_host_ctest qt-shell
-}
-
-suite_gtk4_host() {
-  if [ "$OS_NAME" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xvfb-run >/dev/null 2>&1; then
-    run_desktop_host_ctest gtk-shell xvfb-run -a
-  else
-    run_desktop_host_ctest gtk-shell
-  fi
-}
-
-suite_android_jni_host() {
-  local build_dir="$BUILD_ROOT/android-shell"
-  JAVA_HOME="$DETECTED_JAVA_HOME" cmake -S "$REPO_ROOT/hosts/android-shell" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"}
-  cmake --build "$build_dir"
-  JAVA_HOME="$DETECTED_JAVA_HOME" ctest --test-dir "$build_dir" --output-on-failure
-}
-
-suite_android_compose_kit() {
-  JAVA_HOME="$DETECTED_HOTSPOT_JAVA_HOME" \
-    ANDROID_HOME="$DETECTED_ANDROID_SDK" \
-    "$REPO_ROOT/hosts/compose-kit/run-tests.sh" testDebugUnitTest --console=plain
-}
-
-suite_swiftui_kit() {
-  swift test \
-    --package-path "$REPO_ROOT/hosts/swiftui-kit" \
-    --scratch-path "$BUILD_ROOT/swiftui-kit"
-}
-
-# Live runtime widget tests need libnve_runtime + the kitchen sink; the export fixture's generated
-# widget (gitignored `test/generated/`) is analyzed against the plugin API, then removed.
-suite_flutter_plugin() {
-  local generated="$REPO_ROOT/hosts/flutter-plugin/test/generated"
-  host_runtime_ffi_libs || return 1
-  rm -rf "$BUILD_ROOT/flutter-export" "$generated"
-  cargo run --locked -q -p nve-cli -- codegen export "$REPO_ROOT/hosts/flutter-plugin/test/fixtures/export_spec.json" \
-    --target flutter --out "$BUILD_ROOT/flutter-export" || return 1
-  mkdir -p "$generated"
-  cp "$BUILD_ROOT"/flutter-export/flutter/*.generated.dart "$generated/"
-  local status=0
-  # `&&`, not `set -e`: errexit is ignored inside a subshell that is the left side of `||`.
-  (cd "$REPO_ROOT/hosts/flutter-plugin" && flutter pub get && flutter analyze --fatal-infos && flutter test) || status=1
-  rm -rf "$generated"
-  if [ "$FLUTTER_BUILD_EXISTED" -eq 0 ] && [ -d "$FLUTTER_BUILD_DIR" ]; then
-    rm -rf "$FLUTTER_BUILD_DIR"
-  fi
-  return "$status"
-}
+# shellcheck source=scripts/check-suites.sh
+source "$REPO_ROOT/scripts/check-suites.sh"
 
 # --- Execution --------------------------------------------------------------
 
@@ -598,11 +152,6 @@ printf '  Repo root  : %s\n' "$REPO_ROOT"
 printf '  Build root : %s\n' "$BUILD_ROOT"
 printf '  OS         : %s\n' "$OS_NAME"
 printf '  Quick mode : %s\n' "$([ "$QUICK_MODE" -eq 1 ] && printf 'yes (--quick)' || printf 'no (full benches)')"
-if [ -n "$RN_DIR" ]; then
-  printf '  RN Common  : %s\n' "$RN_DIR"
-else
-  printf '  RN Common  : standalone (RN_REACT_COMMON_DIR not set)\n'
-fi
 
 # 0. Mechanical architectural invariants (runs in both --quick and full modes)
 if command -v cargo >/dev/null 2>&1; then
@@ -621,7 +170,7 @@ fi
 # 0b1. ABI codegen generate + parity check: the host runtimes and every native host build against
 # the generated (gitignored) host ABI / table / XXH64 vector files.
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (15 host files)"
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (24 host files)"
 else
   skip_suite "ABI codegen parity" "cargo not found"
 fi
@@ -745,11 +294,7 @@ else
   skip_suite "Python script tests" "scripts/tests directory not found"
 fi
 
-# Legacy C++ Fabric bridge & native host shells are temporarily gated until
-# Track 1B-2 rebinds all native hosts once against `libnve_runtime`.
-LEGACY_NATIVE_REASON="temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime"
-
-# Desktop C++ hosts (Track 1B-2 Slice 2B-4): on `host-cxx` + `libnve_runtime`, always run.
+# Native hosts: every one is on `host-cxx` / `packages/core/host-*` + `libnve_runtime`.
 # Windows: the retained model / controller / window-manager suite runs everywhere; on Windows
 # (MINGW / MSYS / Git Bash) it adds the Direct2D, DirectWrite, WIC and live-window suite.
 if has_cmake; then
@@ -772,81 +317,66 @@ else
   skip_suite "GTK4 host" "gtk4 not found via pkg-config"
 fi
 
-if [ "${NVE_RUN_LEGACY_NATIVE_HOSTS:-0}" != "1" ]; then
-  skip_suite "C++20 Fabric bridge" "$LEGACY_NATIVE_REASON"
-  skip_suite "macOS AppKit host" "$LEGACY_NATIVE_REASON"
-  skip_suite "iOS Simulator SDK" "$LEGACY_NATIVE_REASON"
-  skip_suite "Android JNI host" "$LEGACY_NATIVE_REASON"
-  skip_suite "Android Compose kit" "$LEGACY_NATIVE_REASON"
-  skip_suite "SwiftUI host kit" "$LEGACY_NATIVE_REASON"
-  skip_suite "Flutter host plugin" "$LEGACY_NATIVE_REASON"
+if has_cmake; then
+  run_suite "Native modules C++" suite_native_modules "native-views + camera CTest (ASan + UBSan)"
 else
-  # 2. C++20 Fabric bridge
-  if has_cmake; then
-    fabric_note="standalone + bench --iters 10"
-    if [ -n "$RN_DIR" ]; then
-      fabric_note="RN Yoga/JSI + bench --iters 10"
-    fi
-    run_suite "C++20 Fabric bridge" suite_cpp_fabric_bridge "$fabric_note"
-  else
-    skip_suite "C++20 Fabric bridge" "cmake not found"
-  fi
+  skip_suite "Native modules C++" "cmake not found"
+fi
 
-  # 3a. macOS AppKit host
-  if [ "$OS_NAME" = "Darwin" ] && has_cmake; then
-    run_suite "macOS AppKit host" suite_macos_appkit "CTest + counter & studio dylibs"
-  elif [ "$OS_NAME" != "Darwin" ]; then
-    skip_suite "macOS AppKit host" "requires macOS (Darwin)"
-  else
-    skip_suite "macOS AppKit host" "cmake not found"
-  fi
+# 3a. macOS AppKit host
+if [ "$OS_NAME" = "Darwin" ] && has_cmake; then
+  run_suite "macOS AppKit host" suite_macos_appkit "CTest + counter & studio dylibs"
+elif [ "$OS_NAME" != "Darwin" ]; then
+  skip_suite "macOS AppKit host" "requires macOS (Darwin)"
+else
+  skip_suite "macOS AppKit host" "cmake not found"
+fi
 
-  # 3b. iOS Simulator SDK ObjC++ syntax check
-  if [ "$OS_NAME" = "Darwin" ] && command -v xcrun >/dev/null 2>&1 \
-    && xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
-    run_suite "iOS Simulator SDK" suite_ios_simulator_sdk "ObjC++ -Wall -Wextra -Werror"
-  elif [ "$OS_NAME" != "Darwin" ]; then
-    skip_suite "iOS Simulator SDK" "requires macOS (Darwin)"
-  else
-    skip_suite "iOS Simulator SDK" "iphonesimulator SDK not installed"
-  fi
+# 3b. iOS Simulator SDK ObjC++ syntax check
+if [ "$OS_NAME" = "Darwin" ] && command -v xcrun >/dev/null 2>&1 \
+  && xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
+  run_suite "iOS Simulator SDK" suite_ios_simulator_sdk "ObjC++ -Wall -Wextra -Werror"
+elif [ "$OS_NAME" != "Darwin" ]; then
+  skip_suite "iOS Simulator SDK" "requires macOS (Darwin)"
+else
+  skip_suite "iOS Simulator SDK" "iphonesimulator SDK not installed"
+fi
 
-  # 6. Android JNI host
-  DETECTED_JAVA_HOME=""
-  if has_cmake && DETECTED_JAVA_HOME="$(detect_java_home)"; then
-    run_suite "Android JNI host" suite_android_jni_host "android_{scene,events,pair}_jni_test (desktop JVM + libnve_runtime)"
-  elif ! has_cmake; then
-    skip_suite "Android JNI host" "cmake not found"
-  else
-    skip_suite "Android JNI host" "JDK / JNI headers not found"
-  fi
+# 6. Android JNI host
+DETECTED_JAVA_HOME=""
+if has_cmake && DETECTED_JAVA_HOME="$(detect_java_home)"; then
+  run_suite "Android JNI host" suite_android_jni_host "android_{scene,events,pair}_jni_test (desktop JVM + libnve_runtime)"
+elif ! has_cmake; then
+  skip_suite "Android JNI host" "cmake not found"
+else
+  skip_suite "Android JNI host" "JDK / JNI headers not found"
+fi
 
-  # 6b. Android Compose kit (Gradle unit tests)
-  DETECTED_ANDROID_SDK=""
-  DETECTED_HOTSPOT_JAVA_HOME=""
-  if [ ! -x "$REPO_ROOT/hosts/compose-kit/run-tests.sh" ]; then
-    skip_suite "Android Compose kit" "hosts/compose-kit/run-tests.sh not found"
-  elif ! DETECTED_ANDROID_SDK="$(detect_android_sdk)"; then
-    skip_suite "Android Compose kit" "Android SDK not found"
-  elif ! DETECTED_HOTSPOT_JAVA_HOME="$(detect_hotspot_java_home)"; then
-    skip_suite "Android Compose kit" "HotSpot/JBR JDK not found (OpenJ9 unsupported)"
-  else
-    run_suite "Android Compose kit" suite_android_compose_kit "Gradle testDebugUnitTest"
-  fi
+# 6b. Android Compose kit (Gradle unit tests)
+DETECTED_ANDROID_SDK=""
+DETECTED_HOTSPOT_JAVA_HOME=""
+if [ ! -x "$REPO_ROOT/hosts/compose-kit/run-tests.sh" ]; then
+  skip_suite "Android Compose kit" "hosts/compose-kit/run-tests.sh not found"
+elif ! DETECTED_ANDROID_SDK="$(detect_android_sdk)"; then
+  skip_suite "Android Compose kit" "Android SDK not found"
+elif ! DETECTED_HOTSPOT_JAVA_HOME="$(detect_hotspot_java_home)"; then
+  skip_suite "Android Compose kit" "HotSpot/JBR JDK not found (OpenJ9 unsupported)"
+else
+  run_suite "Android Compose kit" suite_android_compose_kit "Gradle testDebugUnitTest"
+fi
 
-  # 7. SwiftUI host kit
-  if command -v swift >/dev/null 2>&1; then
-    run_suite "SwiftUI host kit" suite_swiftui_kit "swift test"
-  else
-    skip_suite "SwiftUI host kit" "swift not found"
-  fi
+# 7. SwiftUI host kit
+if command -v swift >/dev/null 2>&1; then
+  run_suite "SwiftUI host kit" suite_swiftui_kit "swift test"
+else
+  skip_suite "SwiftUI host kit" "swift not found"
+fi
 
-  # 8. Flutter host plugin
-  if command -v flutter >/dev/null 2>&1; then
-    run_suite "Flutter host plugin" suite_flutter_plugin "flutter analyze + test"
-  else
-    skip_suite "Flutter host plugin" "flutter not found"
-  fi
+# 8. Flutter host plugin
+if command -v flutter >/dev/null 2>&1; then
+  run_suite "Flutter host plugin" suite_flutter_plugin "flutter analyze + test"
+else
+  skip_suite "Flutter host plugin" "flutter not found"
 fi
 
 # --- Summary table ----------------------------------------------------------

@@ -1,4 +1,4 @@
-//! Borrowed view-models the ABI templates render: the merged Core + Scene ABI, the word tables,
+//! Borrowed view-models the ABI templates render: the Core ABI, the runtime ABI, the word tables,
 //! and the golden XXH64 vectors. No owned intermediate spec: every name, type, and doc string
 //! is a `&'a str` into the `nve-abi` descriptors.
 
@@ -77,68 +77,43 @@ impl std::fmt::Display for HexLiteral {
 /// their function-pointer types by hand.
 pub const CALLBACK_ALIASES: [&str; 2] = ["NveHostInvokeFn", "NveHostChannelPublishFn"];
 
-/// The merged Core + Scene ABI.
+/// The Core ABI (`nve_abi.generated.h`): app-module vtables, values, events, and the word-table
+/// view every scene reader indexes.
 #[derive(Debug)]
 pub struct AbiModel<'a> {
     pub core: &'a AbiFileDescriptor,
-    pub scene: &'a AbiFileDescriptor,
     /// `NveHostStatus` (`invoke` / `channel_publish` result codes), not part of a file descriptor.
     pub host_status: &'a AbiEnumDescriptor,
     pub core_hash: U64Split,
-    pub scene_hash: U64Split,
-    /// Core records, then Scene records, with their 32-bit and 64-bit C layouts.
+    /// Core records with their 32-bit and 64-bit C layouts.
     pub records: Vec<RecordLayout<'a>>,
-    /// Indices into `records` of the records the scene readers are built around.
-    scene_view: usize,
+    /// Index into `records` of `NveTableView` (the scene readers' table descriptor).
     table_view: usize,
-    render_node: usize,
 }
 
 impl<'a> AbiModel<'a> {
     pub fn new(
         core: &'a AbiFileDescriptor,
-        scene: &'a AbiFileDescriptor,
         host_status: &'a AbiEnumDescriptor,
     ) -> Result<Self, CodegenError> {
-        let records = layout_records(&[core, scene])?;
-        super::validate::abi(&[core, scene], &records)?;
-        let find = |name: &str| {
-            records.iter().position(|r| r.name == name).ok_or_else(|| {
-                CodegenError::validation(format!("the ABI declares no record `{name}`"))
-            })
-        };
-        let (scene_view, table_view, render_node) = (
-            find("NveSceneView")?,
-            find("NveTableView")?,
-            find("NveRenderNode")?,
-        );
+        let records = layout_records(&[core])?;
+        super::validate::abi(&[core], &records)?;
+        let table_view = find_record(&records, "NveTableView")?;
         Ok(Self {
             core,
-            scene,
             host_status,
             core_hash: U64Split::new(nve_abi::NVE_CORE_ABI_SCHEMA_HASH),
-            scene_hash: U64Split::new(nve_abi::NVE_SCENE_SCHEMA_HASH),
             records,
-            scene_view,
             table_view,
-            render_node,
         })
-    }
-
-    pub fn scene_view(&self) -> &RecordLayout<'a> {
-        &self.records[self.scene_view]
     }
 
     pub fn table_view(&self) -> &RecordLayout<'a> {
         &self.records[self.table_view]
     }
 
-    pub fn render_node(&self) -> &RecordLayout<'a> {
-        &self.records[self.render_node]
-    }
-
     pub fn consts(&self) -> impl Iterator<Item = &'a AbiConstDescriptor> + use<'a> {
-        self.core.consts.iter().chain(self.scene.consts)
+        self.core.consts.iter()
     }
 
     pub fn enums(&self) -> impl Iterator<Item = &'a AbiEnumDescriptor> + use<'a> {
@@ -157,8 +132,8 @@ impl<'a> AbiModel<'a> {
     }
 }
 
-/// The embedding-host runtime ABI (`nve_runtime_abi.generated.h`), rendered on top of the Core +
-/// Scene header it includes: its records must not redeclare any record of `base`.
+/// The embedding-host runtime ABI (`nve_runtime_abi.generated.h`), rendered on top of the Core
+/// header it includes: its records must not redeclare any record of `base`.
 #[derive(Debug)]
 pub struct RuntimeAbiModel<'a> {
     pub file: &'a AbiFileDescriptor,
@@ -168,6 +143,8 @@ pub struct RuntimeAbiModel<'a> {
     pub callbacks: Vec<RuntimeFn>,
     /// `NveRuntimeApi` function-pointer slots, in vtable order.
     pub slots: Vec<RuntimeFn>,
+    /// Index into `records` of `NveSceneView` (the scene every host reads).
+    scene_view: usize,
 }
 
 /// One runtime C signature with its validated `dart:ffi` spellings.
@@ -232,13 +209,19 @@ impl<'a> RuntimeAbiModel<'a> {
                 })
                 .collect()
         };
+        let scene_view = find_record(&records, "NveSceneView")?;
         Ok(Self {
             file,
             hash: U64Split::new(nve_abi::NVE_RUNTIME_SCHEMA_HASH),
             records,
             callbacks: spell(callbacks)?,
             slots: spell(slots)?,
+            scene_view,
         })
+    }
+
+    pub fn scene_view(&self) -> &RecordLayout<'a> {
+        &self.records[self.scene_view]
     }
 }
 
@@ -555,4 +538,12 @@ pub fn hash_vectors() -> Vec<HashVector> {
             bytes,
         })
         .collect()
+}
+
+/// Index of the record called `name` (a codegen error when the ABI does not declare it).
+fn find_record(records: &[RecordLayout<'_>], name: &str) -> Result<usize, CodegenError> {
+    records
+        .iter()
+        .position(|r| r.name == name)
+        .ok_or_else(|| CodegenError::validation(format!("the ABI declares no record `{name}`")))
 }

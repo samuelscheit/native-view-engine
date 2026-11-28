@@ -41,34 +41,34 @@ NVE_TABLE_LIST(NVE_CHECK_TABLE_FIELDS)
 static_assert(0 NVE_TABLE_LIST(NVE_COUNT_TABLE) == NVE_TABLE_COUNT);
 #undef NVE_COUNT_TABLE
 
-void test_scene_over_generated_structs() {
+void test_scene_over_generated_runtime_view() {
   std::array<uint32_t, NVE_TABLE_LAYOUT_WORDS> row{};
   std::memcpy(row.data(), NVE_TABLE_LAYOUT_DEFAULTS, sizeof row);
   const NveTableView table{static_cast<uint32_t>(NVE_TABLE_LAYOUT_KEY & 0xFFFFFFFFu),
                            static_cast<uint32_t>(NVE_TABLE_LAYOUT_KEY >> 32), 0u, NVE_TABLE_LAYOUT_WORDS,
                            1u, 0u, 0u, 0u, row.data(), nullptr, nullptr, nullptr, nullptr};
-  NveRenderNode node{};
-  node.node_id = NVE_ROOT_NODE_ID;
-  node.primary_slot = NVE_PRIMARY_SLOT_NONE;
-  node.text_len = 2;
+  const std::array<NveNodeRow, 1> rows = {NveNodeRow{}};
+  const std::array<NveLayoutRect, 1> rects = {NveLayoutRect{}};
   const char text[] = "hi";
   NveSceneView view{};
-  view.schema_hash = NVE_SCENE_SCHEMA_HASH;
+  view.schema_hash = NVE_RUNTIME_SCHEMA_HASH;
   view.frame_id = 7;
-  view.node_count = 1;
+  view.node_capacity = 1;
+  view.rows = rows.data();
+  view.rects = rects.data();
   view.text_slab_len = 2;
   view.table_count = 1;
-  view.nodes = &node;
   view.text_slab = reinterpret_cast<const uint8_t*>(text);
   view.tables = &table;
 
   nve::host::SceneError err{};
-  const auto scene = SceneReader<NveSceneView>::open(&view, Key64{NVE_SCENE_SCHEMA_HASH}, &err);
+  const auto scene = SceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err);
   CHECK(scene.has_value());
-  CHECK(scene->table_count() == 1u);
-  CHECK(scene->node(0) != nullptr && scene->node(0)->node_id == NVE_ROOT_NODE_ID);
+  CHECK(scene->table_count() == 1u && scene->node_capacity() == 1u);
+  CHECK(scene->row(0) != nullptr);
   CHECK(scene->text(0, 2) == std::optional<std::string_view>("hi"));
-  CHECK(!SceneReader<NveSceneView>::open(&view, Key64{NVE_CORE_ABI_SCHEMA_HASH}, &err).has_value());
+  CHECK(!SceneReader::open(&view, Key64{NVE_CORE_ABI_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == nve::host::SceneError::SchemaMismatch);
 
   const std::optional<TableReader> layout = scene->find_table(Key64{NVE_TABLE_LAYOUT_KEY});
   CHECK(layout.has_value());
@@ -145,7 +145,7 @@ void test_value_tree_mirrors_the_dynamic_value() {
 
 int main() {
   test_value_tree_mirrors_the_dynamic_value();
-  test_scene_over_generated_structs();
+  test_scene_over_generated_runtime_view();
   test_generated_str_field();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_generated_test: %d failure(s)\n", g_failures);

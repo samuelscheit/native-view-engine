@@ -17,7 +17,7 @@ keys, and field specs.
 | `nve/host/scene_reader.hpp` | C++20 | `SceneReader<View>` over the generated `NveSceneView`. It validates once, then does O(1) bounds-checked reads. |
 | `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue` (`from_bytes` validates a buffer, `read` a reader's next value with sticky errors); with `bin_codec.hpp`, the runtime of every generated C++ hybrid client and JNI glue (`nve codegen hybrid`) |
 | `nve/host/value_tree.hpp` | C++20 (+ generated ABI header) | `NveValueTree`: the C `NveValue` view of a `DynamicValue`, for C signatures that take `NveValue` |
-| `nve/host/runtime_session.hpp` | C++20 | `RuntimeSession` / `RuntimeSceneGuard` (borrowed `resource(id)` payloads) / `RuntimeSceneReader` over `libnve_runtime`'s `NveRuntimeApi`, including the runtime's app files: `load_app_module` (staged `cdylib` copies, state-carrying hot reload) and `save_state_file` / `restore_state_file` / `clear_state_file` (the engine's checksummed, crash-atomic `StateFile`); `scroll_to` (absolute, runtime-clamped scroll) |
+| `nve/host/runtime_session.hpp` | C++20 | `RuntimeSession` / `RuntimeSceneGuard` (borrowed `resource(id)` payloads) / `SceneReader` over `libnve_runtime`'s `NveRuntimeApi`, including the runtime's app files: `load_app_module` (staged `cdylib` copies, state-carrying hot reload) and `save_state_file` / `restore_state_file` / `clear_state_file` (the engine's checksummed, crash-atomic `StateFile`); `scroll_to` (absolute, runtime-clamped scroll) |
 | `nve/host/bound_table.hpp` | C++20 | `BoundTable` (a generated `NveTableDesc` resolved in one scene, O(1) node → row; a dense table's row belongs to a node only when its `table_set` bit is set) and `RowRef` (row or defaults); packed `NodeId` helpers |
 | `nve/host/scene_nodes.hpp` | C++20 | `SceneTables` (every core table a view host renders) and `read_node` → `NodeData` (kind, absolute / local rects, visual, inherited typography, text, image, text input, scroll, interaction, accessibility, link); `aria_role` / `accessible_label` (explicit or kind-native semantics shared by every host) |
 | `nve/host/controlled_text.hpp` | C++20 | `ControlledText`: when a native text field must show the app's value and when a native edit is a `TextChange` (echo / IME safe; host writes are not edits); synchronous `app_answered` writes back rejected / transformed edits, paired (async) answers never overwrite newer typing |
@@ -46,7 +46,7 @@ between `begin_array()` / `begin_map()` (which return a `ReadMark` with the entr
 `end(mark)`, which also requires the payload to have been read exactly (`TrailingBytes`).
 
 The readers are templates over the generated structs, so the node record layout is never
-hard-coded here. A codegen change to `NveRenderNode` / `NveEvent` needs no edit in this package.
+hard-coded here. A codegen change to `NveNodeRow` / `NveEvent` needs no edit in this package.
 
 ## Use
 
@@ -58,12 +58,12 @@ target_link_libraries(my_target PRIVATE nve::host_cxx)
 ```cpp
 #include <nve/host/scene_reader.hpp>
 constexpr auto kVisual = nve::host::Key64::of("nve.visual");  // baked at compile time
-auto scene = nve::host::SceneReader<NveSceneView>::open(view, nve::host::Key64{NVE_SCENE_SCHEMA_HASH});
+auto scene = nve::host::SceneReader<NveSceneView>::open(view);  // checks NVE_RUNTIME_SCHEMA_HASH
 ```
 
 ## Generated data
 
-`nve codegen abi` writes `include/nve/generated/nve_abi.generated.h` (Core + Scene C ABI with layout `static_assert`s for LP64, ILP32 and i386 System V), `include/nve/generated/nve_tables.generated.h` (table keys, defaults, `NveFieldSpec`s, X-macro lists) and `tests/hash_vectors.generated.h`. All three are gitignored; the CMake helper `cxx/cmake/NveCodegen.cmake` regenerates them when stale. `tests/test_generated.cpp` checks every generated key and field spec at compile time.
+`nve codegen abi` writes `include/nve/generated/nve_abi.generated.h` (Core + runtime / scene C ABI with layout `static_assert`s for LP64, ILP32 and i386 System V), `include/nve/generated/nve_tables.generated.h` (table keys, defaults, `NveFieldSpec`s, X-macro lists) and `tests/hash_vectors.generated.h`. All three are gitignored; the CMake helper `cxx/cmake/NveCodegen.cmake` regenerates them when stale. `tests/test_generated.cpp` checks every generated key and field spec at compile time.
 
 ## Verify
 

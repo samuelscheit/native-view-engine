@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use nve_arch_invariants::{
     assert_no_violations, assert_staged_violations, ast_enums, ast_layout, bench, dag,
     find_files_named, host_runtimes, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, native_build, purity,
-    rel_path, repo_index, rpc_dag, spec_registry, theme_hygiene, inline_style_keys, Stage, Violation,
+    rel_path, repo_index, rpc_dag, scene_abi_guard, spec_registry, theme_hygiene, inline_style_keys, Stage, Violation,
 };
 
 // ============================================================================
@@ -280,6 +280,15 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
         }
     }
     assert_no_violations("Zero hardcoded *_SCHEMA_HASH hex literals", &v_hashes);
+}
+
+/// Enforces [INV:single-scene-abi].
+#[test]
+fn one_scene_abi_and_no_cxx_fabric_bridge() {
+    assert_no_violations(
+        "Zero retired legacy scene records / readers (NveRenderNode, NveSceneTable, NveSceneBuffer, NveRuntimeSceneView, RuntimeSceneReader, ...) and zero cxx/nve-fabric-bridge references",
+        &scene_abi_guard::check_single_scene_abi(repo_index()),
+    );
 }
 
 /// Enforces [INV:no-reloc-mmap-snapshot].

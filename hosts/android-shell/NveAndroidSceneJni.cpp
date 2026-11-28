@@ -1,5 +1,5 @@
-// Packs an acquired `NveRuntimeSceneView` into the generated `NveJniFrame` layout read by
-// `dev.nve.host.RuntimeSceneReader` (`long[]` header + `ByteBuffer[]` slabs) with cached zero-copy
+// Packs an acquired `NveSceneView` into the generated `NveJniFrame` layout read by
+// `dev.nve.host.SceneReader` (`long[]` header + `ByteBuffer[]` slabs) with cached zero-copy
 // `DirectByteBuffer`s, and serves published resource bytes.
 #include "NveAndroidSurface.hpp"
 
@@ -74,8 +74,8 @@ bool set_slab(JNIEnv* env, AndroidSurface& s, jobjectArray slabs, size_t slot, c
 
 /// Packs the acquired scene; `false` on a JNI failure (the caller reports it).
 bool pack(JNIEnv* env, AndroidSurface& s, jlongArray header, jobjectArray slabs) {
-  const nve::host::RuntimeSceneReader& r = s.scene->reader();
-  const NveRuntimeSceneView& v = s.scene->raw();
+  const nve::host::SceneReader& r = s.scene->reader();
+  const NveSceneView& v = s.scene->raw();
   jlong h[frame::HEADER_LEN];
   h[frame::H_SCHEMA] = static_cast<jlong>(v.schema_hash);
   h[frame::H_FRAME_ID] = static_cast<jlong>(v.frame_id);

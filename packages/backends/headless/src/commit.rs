@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use nve_abi::table::effect;
-use nve_abi::{NativeEvent, NodeId, NveSceneTable, SurfaceId};
+use nve_abi::{NativeEvent, NodeId, SurfaceId};
 use nve_components::tables::TextContent;
 use nve_engine::{BackendApplyStats, BackendError, LayoutRect, StoreBackend, Viewport};
 use nve_layout::StoreLayoutEngine;
@@ -18,9 +18,7 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
 
     fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
         self.surface_id = surface_id;
-        if self.scene.set_viewport(viewport) {
-            self.scene_table = NveSceneTable::new();
-        }
+        self.scene.set_viewport(viewport);
     }
 
     fn commit(
@@ -134,8 +132,5 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
         self.rect_gen = 0;
         self.last_mutations.clear();
         self.pending_events.clear();
-        self.scene_table.clear();
-        self.published_tables.clear();
-        self.published_dirty_buf.clear();
     }
 }

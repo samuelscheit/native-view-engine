@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use nve_abi::{
-    NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
+    NveRuntimeMetrics, NveSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_components::tables::{core_realization_order, register_core_tables};
 use nve_engine::Viewport;
@@ -226,9 +226,9 @@ impl RuntimeBuilder {
                     dirty_resources: Vec::new(),
                     published_resources: PublishedResources::None,
                     epoch_resources: PublishedResources::None,
-                    published_view: NveRuntimeSceneView {
+                    published_view: NveSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,
-                        ..NveRuntimeSceneView::default()
+                        ..NveSceneView::default()
                     },
                     metrics: NveRuntimeMetrics::default(),
                     needs_render: true,

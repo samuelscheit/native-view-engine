@@ -77,7 +77,7 @@ pub fn FrameSparkline(samples: Vec<f32>) -> Element {
 
 ## Native 10-Host Renderer Mapping
 
-Every platform host decodes the exact same `NVE_DRAW1` byte stream via either Rust `DrawListDecoder` or shared C++20 `cxx/nve-fabric-bridge/include/nve_draw_list.hpp`:
+Every platform host decodes the exact same `NVE_DRAW1` byte stream via either Rust `DrawListDecoder` or shared C++20 `packages/modules/canvas/cxx/include/nve/canvas/canvas.hpp`:
 
 | Host Target | Native Graphics API | Implementation |
 | :--- | :--- | :--- |

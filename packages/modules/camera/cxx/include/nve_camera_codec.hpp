@@ -261,7 +261,7 @@ inline NativeViewCodecError require_cmd_u32(const NvncDecoder& dec, size_t idx, 
 inline NativeViewCodecError validate_camera_props(const CameraPreviewProps& p) noexcept {
   if (!camera_detail::valid_zoom(p.zoom)) return NativeViewCodecError::TypeMismatch;
   if (p.fps == 0u || p.fps > kMaxCameraFps) return NativeViewCodecError::InvalidEnum;
-  if (p.device_id && !detail::is_valid_utf8(reinterpret_cast<const uint8_t*>(p.device_id->data()), p.device_id->size())) {
+  if (p.device_id && !nve_utf8_valid(reinterpret_cast<const uint8_t*>(p.device_id->data()), p.device_id->size())) {
     return NativeViewCodecError::InvalidUtf8;
   }
   return NativeViewCodecError::Ok;
@@ -374,7 +374,7 @@ inline NativeViewCodecError encode_camera_command(const CameraPreviewCommand& cm
       out.push_back(static_cast<uint8_t>(NativeValueTag::U32)); camera_detail::append_u32_le(out, cmd.flash);
       return NativeViewCodecError::Ok;
     case CameraCommandKind::StartRecording:
-      if (!detail::is_valid_utf8(reinterpret_cast<const uint8_t*>(cmd.output_path.data()), cmd.output_path.size())) {
+      if (!nve_utf8_valid(reinterpret_cast<const uint8_t*>(cmd.output_path.data()), cmd.output_path.size())) {
         return NativeViewCodecError::InvalidUtf8;
       }
       out.push_back(1u); out.push_back(static_cast<uint8_t>(NativeValueTag::Str));

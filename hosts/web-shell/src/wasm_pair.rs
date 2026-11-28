@@ -43,9 +43,8 @@ impl Drop for PairSocketHandle {
 
 struct ActivePairedHost {
     generation: u64,
-    /// Owns the session for the page lifetime (only read by the scene-view exports).
-    #[cfg_attr(not(feature = "scene-view"), allow(dead_code))]
-    session: Rc<RefCell<PairedWebSession>>,
+    /// Owns the session for the page lifetime.
+    _session: Rc<RefCell<PairedWebSession>>,
     _owned_socket: Option<PairSocketHandle>,
     _resize_listener: Option<WindowResizeListener>,
 }
@@ -53,15 +52,6 @@ struct ActivePairedHost {
 thread_local! {
     static ACTIVE_PAIRED_HOST: RefCell<Option<ActivePairedHost>> = const { RefCell::new(None) };
     static NEXT_PAIRED_GENERATION: Cell<u64> = const { Cell::new(1) };
-}
-
-#[cfg(feature = "scene-view")]
-pub(crate) fn active_paired_scene_view_ptr() -> Option<usize> {
-    ACTIVE_PAIRED_HOST.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|active| active.session.borrow().scene().view_ptr() as usize)
-    })
 }
 
 fn send_binary_if_open(socket: &web_sys::WebSocket, bytes: &[u8]) {
@@ -223,11 +213,6 @@ impl NveWebHost {
         self.session.borrow().render_html()
     }
 
-    #[cfg(feature = "scene-view")]
-    pub fn scene_view_ptr(&self) -> usize {
-        self.session.borrow().scene().view_ptr() as usize
-    }
-
     /// Sends a graceful `Bye` frame, closes any attached WebSocket, and unmounts the surface.
     pub fn disconnect(&self) {
         if let (Some(bye), Some(ws)) = (
@@ -358,7 +343,7 @@ impl NveWebHost {
         ACTIVE_PAIRED_HOST.with(|slot| {
             *slot.borrow_mut() = Some(ActivePairedHost {
                 generation,
-                session: Rc::clone(&session),
+                _session: Rc::clone(&session),
                 _owned_socket: owned_socket,
                 _resize_listener: resize_listener,
             });

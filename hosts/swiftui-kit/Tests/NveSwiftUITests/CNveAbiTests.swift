@@ -148,24 +148,6 @@ final class CNveAbiTests: XCTestCase {
     }
 
     func testAbiStructFieldLayout() {
-        let cfg = NveSurfaceConfig(surface_id: 9, width: 390, height: 844, scale_factor: 3)
-        XCTAssertEqual(cfg.surface_id, 9)
-        XCTAssertEqual(cfg.width, 390)
-        XCTAssertEqual(cfg.height, 844)
-        XCTAssertEqual(cfg.scale_factor, 3)
-
-        let stats = NveFrameStats(
-            op_count: 12,
-            mutation_count: 8,
-            decode_us: 10,
-            layout_us: 20,
-            diff_us: 30,
-            mount_us: 40
-        )
-        XCTAssertEqual(stats.op_count, 12)
-        XCTAssertEqual(stats.mutation_count, 8)
-        XCTAssertEqual(stats.mount_us, 40)
-
         #if arch(x86_64) || arch(arm64)
         XCTAssertEqual(MemoryLayout<NveStrSlice>.size, 16)
         XCTAssertEqual(MemoryLayout<NveValue>.size, 24)

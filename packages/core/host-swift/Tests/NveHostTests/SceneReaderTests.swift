@@ -2,15 +2,15 @@ import CNveHostTestABI
 import NveHost
 import XCTest
 
-final class RuntimeSceneReaderTests: XCTestCase {
+final class SceneReaderTests: XCTestCase {
     private let schema = Key64(0xF00D_FACE_C0FF_EE11)
 
-    private func scene() throws -> RuntimeSceneReader<NveTestRuntimeSceneView> {
-        try RuntimeSceneReader.open(nve_test_scene(), expectedSchema: schema)
+    private func scene() throws -> SceneReader<NveTestRuntimeSceneView> {
+        try SceneReader.open(nve_test_scene(), expectedSchema: schema)
     }
 
     private func assertRejects(_ v: NveTestRuntimeSceneView, _ expected: SceneError, line: UInt = #line) {
-        XCTAssertThrowsError(try RuntimeSceneReader.open(v, expectedSchema: schema), line: line) {
+        XCTAssertThrowsError(try SceneReader.open(v, expectedSchema: schema), line: line) {
             XCTAssertEqual($0 as? SceneError, expected, line: line)
         }
     }
@@ -113,10 +113,10 @@ final class RuntimeSceneReaderTests: XCTestCase {
     }
 
     func testRejectsHostileViews() throws {
-        XCTAssertThrowsError(try RuntimeSceneReader<NveTestRuntimeSceneView>.open(nil, expectedSchema: schema)) {
+        XCTAssertThrowsError(try SceneReader<NveTestRuntimeSceneView>.open(nil, expectedSchema: schema)) {
             XCTAssertEqual($0 as? SceneError, .nullView)
         }
-        XCTAssertThrowsError(try RuntimeSceneReader.open(nve_test_scene(), expectedSchema: Key64(1))) {
+        XCTAssertThrowsError(try SceneReader.open(nve_test_scene(), expectedSchema: Key64(1))) {
             XCTAssertEqual($0 as? SceneError, .schemaMismatch(expected: Key64(1), actual: schema))
         }
         let base = try XCTUnwrap(nve_test_scene()).pointee
@@ -156,7 +156,7 @@ final class RuntimeSceneReaderTests: XCTestCase {
         // Empty views are valid with null pointers.
         var empty = NveTestRuntimeSceneView()
         empty.schema_hash = schema.value
-        let e = try RuntimeSceneReader.open(empty, expectedSchema: schema)
+        let e = try SceneReader.open(empty, expectedSchema: schema)
         XCTAssertEqual(e.nodeCapacity, 0)
         XCTAssertNil(e.nodeId(at: 1))
         XCTAssertNil(e.children(of: 1))
@@ -226,6 +226,6 @@ final class RuntimeSceneReaderTests: XCTestCase {
         pass(64)
         let allocs = nve_test_alloc_count_end()
         XCTAssertGreaterThan(sum, 0)
-        XCTAssertEqual(allocs, 0, "RuntimeSceneReader reads allocated \(allocs) times in 64 passes")
+        XCTAssertEqual(allocs, 0, "SceneReader reads allocated \(allocs) times in 64 passes")
     }
 }

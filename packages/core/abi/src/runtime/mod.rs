@@ -1,9 +1,6 @@
 //! Zero-copy host runtime C ABI (`nve_runtime_get_interface`, `NveRuntimeApi`,
-//! `NveRuntimeSceneView`, `NveNodeRow`, `NveLayoutRect`, `NveRuntimeConfig`,
-//! `NveRuntimeMetrics`, `NveRuntimeStatus`).
-//!
-//! Coexists cleanly alongside legacy `NveSceneView`/`NveRenderNode` during Track 1B-2 Slice 2A
-//! until Slice 2B rebinds all hosts and deletes the legacy view.
+//! `NveSceneView`, `NveNodeRow`, `NveLayoutRect`, `NveRuntimeConfig`,
+//! `NveRuntimeMetrics`, `NveRuntimeStatus`): the one scene ABI every host reads.
 
 mod vtable;
 
@@ -185,10 +182,10 @@ pub struct NveNodeRow {
     /// Parent `NodeId` (`0` = root / detached).
     #[nve_abi(offset = 16)]
     pub parent: u32,
-    /// Element offset (in `u32` entries) into `NveRuntimeSceneView::children_slab`.
+    /// Element offset (in `u32` entries) into `NveSceneView::children_slab`.
     #[nve_abi(offset = 20)]
     pub child_off: u32,
-    /// Number of child `u32` `NodeId`s in `NveRuntimeSceneView::children_slab`.
+    /// Number of child `u32` `NodeId`s in `NveSceneView::children_slab`.
     #[nve_abi(offset = 24)]
     pub child_len: u32,
     /// Slot generation counter (`1..=255`).
@@ -281,15 +278,15 @@ pub struct NveRuntimeMetrics {
     pub _reserved: u32,
 }
 
-/// Zero-copy borrowed runtime scene view guarded by `scene_acquire` / `scene_release`.
+/// Zero-copy borrowed scene view guarded by `scene_acquire` / `scene_release`.
 ///
 /// Exposes `NodeStore`'s dense `NveNodeRow` array, dense absolute pre-scroll `NveLayoutRect`
 /// array, `text_slab`, `children_slab`, per-frame `dirty_indices` / `removed_ids`, published
-/// `NveTableView`s, and per-container `NveScrollOffset`s with zero intermediate `NveRenderNode`
-/// materialization.
+/// `NveTableView`s, and per-container `NveScrollOffset`s straight from the store's slabs (no
+/// per-node intermediate record).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, NveAbi)]
-pub struct NveRuntimeSceneView {
+pub struct NveSceneView {
     /// Must equal [`NVE_RUNTIME_SCHEMA_HASH`].
     #[nve_abi(offset = 0)]
     pub schema_hash: u64,
@@ -360,7 +357,7 @@ pub struct NveRuntimeSceneView {
     pub moved_indices: *const u32,
 }
 
-impl Default for NveRuntimeSceneView {
+impl Default for NveSceneView {
     fn default() -> Self {
         Self {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
@@ -500,19 +497,19 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "row_index_pages", "*const u32", b"#", 12);
     h.update_u64(crate::table::NVE_ROW_INDEX_PAGE_BITS as u64);
 
-    h.update(b";NveRuntimeSceneView");
-    hash_rt_field(&mut h, "schema_hash", "u64", b"@", offset_of!(NveRuntimeSceneView, schema_hash));
-    hash_rt_field(&mut h, "frame_id", "u64", b"@", offset_of!(NveRuntimeSceneView, frame_id));
-    hash_rt_field(&mut h, "node_capacity", "u32", b"@", offset_of!(NveRuntimeSceneView, node_capacity));
-    hash_rt_field(&mut h, "dirty_count", "u32", b"@", offset_of!(NveRuntimeSceneView, dirty_count));
-    hash_rt_field(&mut h, "removed_count", "u32", b"@", offset_of!(NveRuntimeSceneView, removed_count));
-    hash_rt_field(&mut h, "text_slab_len", "u32", b"@", offset_of!(NveRuntimeSceneView, text_slab_len));
-    hash_rt_field(&mut h, "children_slab_len", "u32", b"@", offset_of!(NveRuntimeSceneView, children_slab_len));
-    hash_rt_field(&mut h, "table_count", "u32", b"@", offset_of!(NveRuntimeSceneView, table_count));
-    hash_rt_field(&mut h, "scroll_count", "u32", b"@", offset_of!(NveRuntimeSceneView, scroll_count));
-    hash_rt_field(&mut h, "scene_epoch", "u32", b"@", offset_of!(NveRuntimeSceneView, scene_epoch));
-    hash_rt_field(&mut h, "dirty_resource_count", "u32", b"@", offset_of!(NveRuntimeSceneView, dirty_resource_count));
-    hash_rt_field(&mut h, "moved_count", "u32", b"@", offset_of!(NveRuntimeSceneView, moved_count));
+    h.update(b";NveSceneView");
+    hash_rt_field(&mut h, "schema_hash", "u64", b"@", offset_of!(NveSceneView, schema_hash));
+    hash_rt_field(&mut h, "frame_id", "u64", b"@", offset_of!(NveSceneView, frame_id));
+    hash_rt_field(&mut h, "node_capacity", "u32", b"@", offset_of!(NveSceneView, node_capacity));
+    hash_rt_field(&mut h, "dirty_count", "u32", b"@", offset_of!(NveSceneView, dirty_count));
+    hash_rt_field(&mut h, "removed_count", "u32", b"@", offset_of!(NveSceneView, removed_count));
+    hash_rt_field(&mut h, "text_slab_len", "u32", b"@", offset_of!(NveSceneView, text_slab_len));
+    hash_rt_field(&mut h, "children_slab_len", "u32", b"@", offset_of!(NveSceneView, children_slab_len));
+    hash_rt_field(&mut h, "table_count", "u32", b"@", offset_of!(NveSceneView, table_count));
+    hash_rt_field(&mut h, "scroll_count", "u32", b"@", offset_of!(NveSceneView, scroll_count));
+    hash_rt_field(&mut h, "scene_epoch", "u32", b"@", offset_of!(NveSceneView, scene_epoch));
+    hash_rt_field(&mut h, "dirty_resource_count", "u32", b"@", offset_of!(NveSceneView, dirty_resource_count));
+    hash_rt_field(&mut h, "moved_count", "u32", b"@", offset_of!(NveSceneView, moved_count));
     hash_rt_field(&mut h, "rows", "*const NveNodeRow", b"#", 10);
     hash_rt_field(&mut h, "rects", "*const NveLayoutRect", b"#", 11);
     hash_rt_field(&mut h, "text_slab", "*const u8", b"#", 12);
@@ -597,7 +594,7 @@ const RUNTIME_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveRuntimeConfig as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeMetrics as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeTextStyle as NveStructSchema>::SCHEMA),
-    AbiRecordDescriptor::Struct(<NveRuntimeSceneView as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveSceneView as NveStructSchema>::SCHEMA),
 ];
 
 /// Returns the single-source-of-truth Runtime ABI descriptor derived directly from the compiled
@@ -610,7 +607,6 @@ pub const fn runtime_abi_descriptor() -> AbiFileDescriptor {
         enums: RUNTIME_ENUMS,
         records: RUNTIME_RECORDS,
         modules: &[],
-        c_functions: &[],
     }
 }
 

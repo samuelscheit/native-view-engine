@@ -1,6 +1,6 @@
 package dev.nve.host;
 
-/** A published {@code NveRuntimeSceneView} frame failed validation at {@link RuntimeSceneReader#attach}. */
+/** A published {@code NveSceneView} frame failed validation at {@link SceneReader#attach}. */
 public final class SceneException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 

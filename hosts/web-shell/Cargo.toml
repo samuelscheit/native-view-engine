@@ -13,7 +13,7 @@ crate-type = ["rlib"]
 # Default = the `nve dev` / test shell: both demo apps and all dev infrastructure.
 # Production bundles (hosts/web-shell/build.sh): `--no-default-features --features app-studio`
 # (or `app-kitchen-sink`): exactly one app, no hot reload, pairing, popups or scene mirror.
-default = ["app-studio", "app-kitchen-sink", "dev", "multi-window", "scene-view"]
+default = ["app-studio", "app-kitchen-sink", "dev", "multi-window"]
 app-studio = ["dep:nve-studio-workspace", "nve-studio-workspace/web"]
 app-kitchen-sink = ["dep:nve-example-kitchen-sink", "nve-example-kitchen-sink/web"]
 app-issues = [
@@ -37,8 +37,6 @@ issues-probes = ["app-issues", "dep:nve-ui", "dep:dioxus-core-macro", "dep:nve-t
 dev = ["dep:nve-canvas", "dep:nve-canvas-web"]
 # Popup windows + `NVW1` `BroadcastChannel` window sync (`nve-interop` WindowManager).
 multi-window = []
-# Per-frame `NveSceneTable` mirror behind `nve_web_scene_view_ptr` (zero-copy JS inspection).
-scene-view = []
 
 [dependencies]
 nve-abi = { workspace = true }

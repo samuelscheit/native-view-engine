@@ -8,8 +8,8 @@ import {
   Key64,
   AccessibilityTable,
   LayoutTable,
-  NVE_NODE_META_LAYOUT,
-  NVE_RENDER_NODE_LAYOUT,
+  NVE_LAYOUT_RECT_LAYOUT,
+  NVE_NODE_ROW_LAYOUT,
   NVE_SCENE_LAYOUT_WASM32,
   NVE_SCENE_VIEW_LAYOUT,
   NVE_TABLE_VIEW_LAYOUT,
@@ -27,10 +27,15 @@ test('generated tables agree with the runtime', () => {
 });
 
 test('wasm32 scene layout matches the generated struct layouts', () => {
-  assert.equal(NVE_SCENE_LAYOUT_WASM32.nodeStride, NVE_RENDER_NODE_LAYOUT.size);
-  assert.equal(NVE_SCENE_LAYOUT_WASM32.tables, NVE_SCENE_VIEW_LAYOUT.tables);
-  assert.equal(NVE_SCENE_LAYOUT_WASM32.tableView.stride, NVE_TABLE_VIEW_LAYOUT.size);
-  assert.equal(NVE_NODE_META_LAYOUT.size, 64);
+  const { size: _viewSize, ...viewFields } = NVE_SCENE_VIEW_LAYOUT;
+  const { tableView, ...sceneFields } = NVE_SCENE_LAYOUT_WASM32;
+  assert.deepEqual(sceneFields, viewFields);
+  const { size: tableViewSize, ...tableFields } = NVE_TABLE_VIEW_LAYOUT;
+  const { stride, ...tableViewFields } = tableView;
+  assert.equal(stride, tableViewSize);
+  assert.deepEqual(tableViewFields, tableFields);
+  assert.equal(NVE_NODE_ROW_LAYOUT.size, 32);
+  assert.equal(NVE_LAYOUT_RECT_LAYOUT.size, 16);
 });
 
 test('a generated field spec reads a generated default row', () => {

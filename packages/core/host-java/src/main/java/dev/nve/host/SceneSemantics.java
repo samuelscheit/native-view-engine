@@ -30,7 +30,7 @@ public final class SceneSemantics {
         public TableReader accessibility;
         public TableReader debugId;
 
-        public Tables bind(RuntimeSceneReader s) {
+        public Tables bind(SceneReader s) {
             visual = s.findTable(NveTables.Visual.KEY);
             typography = s.findTable(NveTables.Typography.KEY);
             text = s.findTable(NveTables.Text.KEY);
@@ -45,7 +45,7 @@ public final class SceneSemantics {
         }
     }
 
-    public static Kind kindOf(RuntimeSceneReader s, Tables t, int index) {
+    public static Kind kindOf(SceneReader s, Tables t, int index) {
         if (s.rowOf(t.input, index) >= 0) return Kind.INPUT;
         if (s.rowOf(t.image, index) >= 0) return Kind.IMAGE;
         if (s.rowOf(t.canvas, index) >= 0) return Kind.CANVAS;
@@ -55,13 +55,13 @@ public final class SceneSemantics {
     }
 
     /** {@code nve.interaction.disabled}. */
-    public static boolean disabled(RuntimeSceneReader s, Tables t, int index) {
+    public static boolean disabled(SceneReader s, Tables t, int index) {
         final int r = s.rowOf(t.interaction, index);
         return r >= 0 && t.interaction.bool(r, NveTables.Interaction.DISABLED);
     }
 
     /** Subscribed to presses and not disabled. */
-    public static boolean pressable(RuntimeSceneReader s, Tables t, int index) {
+    public static boolean pressable(SceneReader s, Tables t, int index) {
         final int r = s.rowOf(t.interaction, index);
         return r >= 0 && !t.interaction.bool(r, NveTables.Interaction.DISABLED)
                 && (t.interaction.u32(r, NveTables.Interaction.EVENT_MASK) & NveTables.Values.EventMask.PRESS) != 0;
@@ -93,7 +93,7 @@ public final class SceneSemantics {
          * Resolves node {@code index}'s style by walking at most {@code nodeCapacity} ancestors (a
          * corrupt parent cycle cannot hang); returns {@code this}.
          */
-        public TextStyle resolve(RuntimeSceneReader s, Tables t, int index) {
+        public TextStyle resolve(SceneReader s, Tables t, int index) {
             color = DEFAULT_COLOR;
             fontSize = DEFAULT_FONT_SIZE;
             fontWeight = DEFAULT_FONT_WEIGHT;

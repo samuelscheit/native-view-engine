@@ -3,7 +3,7 @@ import NveHost
 import XCTest
 
 // The C-imported structs satisfy the runtime protocols with empty extensions — exactly what the
-// generated `NveTableView` / `NveNodeRow` / `NveLayoutRect` / `NveRuntimeSceneView` conformances look like.
+// generated `NveTableView` / `NveNodeRow` / `NveLayoutRect` / `NveSceneView` conformances look like.
 extension NveTestTableView: TableViewABI {}
 extension NveTestNodeRow: NodeRowABI {}
 extension NveTestLayoutRect: LayoutRectABI {}
@@ -21,8 +21,8 @@ final class TableSceneTests: XCTestCase {
     private let label = try! FieldSpec(word: 3, kind: .str)
     private let scale = try! FieldSpec(word: 5, kind: .f32)
 
-    private func scene() throws -> RuntimeSceneReader<NveTestRuntimeSceneView> {
-        try RuntimeSceneReader.open(nve_test_scene(), expectedSchema: schema)
+    private func scene() throws -> SceneReader<NveTestRuntimeSceneView> {
+        try SceneReader.open(nve_test_scene(), expectedSchema: schema)
     }
 
     func testFieldSpecExtraction() throws {
@@ -104,7 +104,7 @@ final class TableSceneTests: XCTestCase {
         try withUnsafePointer(to: bad) { tp in
             var v = base
             v.tables = tp
-            XCTAssertThrowsError(try RuntimeSceneReader.open(v, expectedSchema: schema)) {
+            XCTAssertThrowsError(try SceneReader.open(v, expectedSchema: schema)) {
                 XCTAssertEqual($0 as? SceneError, .invalidTable(index: 0))
             }
             _ = try XCTUnwrap(Optional(tp))
@@ -151,7 +151,7 @@ final class TableSceneTests: XCTestCase {
             var v = base
             v.text_slab = bp.baseAddress
             v.text_slab_len = 7
-            let s = try RuntimeSceneReader.open(v, expectedSchema: schema)
+            let s = try SceneReader.open(v, expectedSchema: schema)
             XCTAssertEqual(s.text(offset: 0, len: 7), "\u{FEFF}\u{FEFF}x")
             XCTAssertEqual(s.text(offset: 0, len: 3), "\u{FEFF}")
             _ = try XCTUnwrap(bp.baseAddress)

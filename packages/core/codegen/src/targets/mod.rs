@@ -91,7 +91,6 @@ pub fn generate_import_rn(spec: &ParsedRnSpec) -> Result<ImportRnOutput, Codegen
 fn generate_component_import(spec: &RnComponentSpec) -> Result<ImportRnOutput, CodegenError> {
     let mod_name = to_snake_case(&spec.component_name);
     let rust_source = rust::import_rn::emit_component_rust(spec, &mod_name);
-    let cpp_source = c_cpp::import_rn::emit_component_cpp(spec);
 
     Ok(ImportRnOutput {
         spec: ParsedRnSpec::Component(spec.clone()),
@@ -99,10 +98,7 @@ fn generate_component_import(spec: &RnComponentSpec) -> Result<ImportRnOutput, C
             relative_path: format!("{mod_name}.generated.rs"),
             content: rust_source,
         },
-        cpp_adapter: GeneratedFile {
-            relative_path: format!("{mod_name}_fabric_adapter.generated.hpp"),
-            content: cpp_source,
-        },
+        cpp_turbomodule_host: None,
     })
 }
 
@@ -117,10 +113,10 @@ fn generate_turbomodule_import(spec: &TurboModuleSpec) -> Result<ImportRnOutput,
             relative_path: format!("{mod_name}_module.generated.rs"),
             content: rust_source,
         },
-        cpp_adapter: GeneratedFile {
-            relative_path: format!("{mod_name}_turbomodule_adapter.generated.hpp"),
+        cpp_turbomodule_host: Some(GeneratedFile {
+            relative_path: format!("{mod_name}_turbomodule_host.generated.hpp"),
             content: cpp_source,
-        },
+        }),
     })
 }
 
@@ -132,14 +128,6 @@ pub fn generate_export_rn(spec: &NveExportSpec) -> Result<ExportRnOutput, Codege
     let native_component_ts = GeneratedFile {
         relative_path: format!("{name}NativeComponent.generated.ts"),
         content: typescript::export_rn_ts::emit_native_component_ts(spec),
-    };
-    let cpp_bridge_hpp = GeneratedFile {
-        relative_path: format!("{name}NveBridge.generated.hpp"),
-        content: c_cpp::export_rn_cpp::emit_cpp_bridge_hpp(spec),
-    };
-    let cpp_bridge_cpp = GeneratedFile {
-        relative_path: format!("{name}NveBridge.generated.cpp"),
-        content: c_cpp::export_rn_cpp::emit_cpp_bridge_cpp(spec),
     };
     let ios_component_view_mm = GeneratedFile {
         relative_path: format!("{name}ComponentView.generated.mm"),
@@ -157,8 +145,6 @@ pub fn generate_export_rn(spec: &NveExportSpec) -> Result<ExportRnOutput, Codege
     Ok(ExportRnOutput {
         spec: spec.clone(),
         native_component_ts,
-        cpp_bridge_hpp,
-        cpp_bridge_cpp,
         ios_component_view_mm,
         android_view_manager_kt,
         windows_component_view_hpp,

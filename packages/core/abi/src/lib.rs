@@ -1,4 +1,5 @@
-//! Zero-copy `#[repr(C)]` raw-memory ABI (`nve_get_interface`, `NveSceneView`, `NveTableView`,
+//! Zero-copy `#[repr(C)]` raw-memory ABI (`nve_get_interface`, `nve_runtime_get_interface`,
+//! `NveSceneView`, `NveTableView`,
 //! `NveValue`, `NvePropSlice`, `NveCommandSlice`, `NveEventBatch`), plus optional binary wire
 //! codecs (`EventRing`, `NveBinValue`) gated behind `feature = "wire"`.
 
@@ -18,7 +19,6 @@ pub mod hybrid;
 mod layout_asserts;
 pub mod num;
 pub mod runtime;
-pub mod scene;
 pub mod schema;
 pub mod style_types;
 pub mod table;
@@ -35,8 +35,8 @@ pub use events::{
 };
 pub use ffi::{
     DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
-    NveEventPayloadTag, NveFrameStats, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize,
-    slab_ptr, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH,
+    NveEventPayloadTag, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize,
+    slab_ptr, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NVE_CORE_ABI_SCHEMA_HASH,
     NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 pub use host::{
@@ -45,22 +45,15 @@ pub use host::{
     SERVICE_FILESYSTEM, SERVICE_HAPTICS, SERVICE_LINKING, SERVICE_NOTIFICATIONS,
     SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
+pub use table::NVE_PRIMARY_SLOT_NONE;
 pub use runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
-    NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics, NveRuntimeSceneView,
+    NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics, NveSceneView,
     NveRuntimeTextStyle, NveScrollOffset, NVE_LINE_HEIGHT_AUTO, NVE_LINE_HEIGHT_PERCENT,
     NVE_LINE_HEIGHT_POINTS,
     NveRuntimeStatus, NveRuntimeWakeFn, RuntimeFnSignature, NVE_LAYOUT_RECT_SIZE,
     NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
     RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,
-};
-pub use scene::{
-    NveNodeMeta, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneError,
-    SceneNodeInput, NVE_META_FLAG_ACCESSIBILITY_HIDDEN, NVE_META_FLAG_DISABLED,
-    NVE_META_FLAG_MULTILINE, NVE_META_FLAG_SECURE_TEXT_ENTRY, NVE_META_RESIZE_MODE_MASK,
-    NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
-    NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE, NVE_PRIMARY_SLOT_NONE, NVE_RENDER_NODE_ALIGN,
-    NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
 };
 pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]

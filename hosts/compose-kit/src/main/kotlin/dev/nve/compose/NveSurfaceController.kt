@@ -4,7 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.nve.host.NativeRuntime
-import dev.nve.host.RuntimeSceneReader
+import dev.nve.host.SceneReader
 import dev.nve.host.FrameHost
 import dev.nve.host.RuntimeSurface
 import dev.nve.host.generated.NveAbi
@@ -22,7 +22,7 @@ sealed interface NveSource {
 /** The runtime behind a [NveSurfaceController]: [NativeRuntimeHost] in apps, fakes in JVM tests. */
 interface NveRuntimeHost : AutoCloseable {
     /** Receives every new frame while it is acquired (resources readable only during the call). */
-    fun setFrameListener(listener: (RuntimeSceneReader, NveResourceLookup) -> Unit)
+    fun setFrameListener(listener: (SceneReader, NveResourceLookup) -> Unit)
 
     fun start(source: NveSource): Int
 
@@ -49,7 +49,7 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
     NveRuntimeHost {
     private val surface = RuntimeSurface(surfaceId, widthDp, heightDp, density, ownerThread)
 
-    override fun setFrameListener(listener: (RuntimeSceneReader, NveResourceLookup) -> Unit) {
+    override fun setFrameListener(listener: (SceneReader, NveResourceLookup) -> Unit) {
         surface.setFrameConsumer { scene, sf ->
             listener(scene) { id ->
                 sf.resource(id)?.let { NveResource(sf.resourceKind(), it) }

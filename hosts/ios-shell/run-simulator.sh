@@ -36,8 +36,6 @@ Options:
   -h, --help              Show this help message.
 
 Environment:
-  RN_REACT_COMMON_DIR     Optional path to react-native/packages/react-native/ReactCommon
-                          to compile and link React Native Yoga (NVE_WITH_RN_YOGA=1).
   NVE_ENABLE_CAMERA       Set to 1 to opt in to packages/modules/camera/apple and link
                           AVFoundation/CoreMedia/CoreVideo (default: 0).
   NVE_ENABLE_NATIVE_VIEWS Set to 1 to opt in to packages/modules/native-views/apple and link

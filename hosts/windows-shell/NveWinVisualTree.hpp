@@ -250,7 +250,7 @@ class NveWinVisualTree {
   [[nodiscard]] bool reread(const WinNodeVisual& v, uint32_t prev, uint32_t id) const noexcept {
     return !v.synced || !tree_.resource_unchanged(scene_->reader(), id, prev);
   }
-  void apply_scroll_offsets(const host::RuntimeSceneReader& scene);
+  void apply_scroll_offsets(const host::SceneReader& scene);
   void resort(std::vector<uint32_t>& paint_order, std::span<const uint32_t> children) const;
   void settle_damage();
 

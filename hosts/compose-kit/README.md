@@ -12,7 +12,7 @@ build of `packages/core/host-java`) and `libnve_android_shell` (JNI):
   with `carryState`, or `nve pair` pairing), the observable `NveSceneSnapshot`, and input →
   `EventRing` events (press, text change, submit, focus / blur, scroll — which also syncs the
   runtime's scroll offsets for hit testing).
-- **`NveScene.kt`**: `NveSceneCapture` turns each acquired frame (`RuntimeSceneReader` over the
+- **`NveScene.kt`**: `NveSceneCapture` turns each acquired frame (`SceneReader` over the
   generated `NveTables` specs) into an immutable snapshot in O(changed): on the frame right after
   the previous one it rebuilds only removed, content-dirty (incl. inherited typography), and moved
   (geometry only) nodes and reuses every other `NveNode`; a redelivered frame is a no-op; a gap or

@@ -26,32 +26,10 @@ struct TestTableView {
   const uint32_t* row_index_pages;
 };
 
-struct TestNode {  // stand-in for the generated 64-byte `NveRenderNode`
-  uint32_t node_id;
-  uint32_t text_offset;
-  uint16_t text_len;
-  uint16_t child_count;
-  uint32_t child_offset;
-};
-
-struct TestSceneView {
-  uint64_t schema_hash, frame_id;
-  uint32_t node_count, dirty_count, removed_count, text_slab_len, children_slab_len, table_count;
-  const TestNode* nodes;
-  const uint8_t* text_slab;
-  const uint32_t* children_slab;
-  const uint32_t* dirty_indices;
-  const uint32_t* removed_ids;
-  const TestTableView* tables;
-};
-
 NVE_STATIC_ASSERT(offsetof(TestTableView, dirty_count) == 20, "NveTableView.dirty_count @20");
 NVE_STATIC_ASSERT(offsetof(TestTableView, row_index_page_count) == 28, "NveTableView.row_index_page_count @28");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(TestTableView) == 72, "NveTableView is 72 bytes on 64-bit");
 NVE_STATIC_ASSERT(sizeof(TestTableView) == sizeof(NveTableView), "mirror matches the generated NveTableView");
-NVE_STATIC_ASSERT(offsetof(TestSceneView, frame_id) == 8, "NveSceneView.frame_id @8");
-NVE_STATIC_ASSERT(offsetof(TestSceneView, table_count) == 36, "NveSceneView.table_count @36");
-NVE_STATIC_ASSERT(offsetof(TestSceneView, nodes) == 40, "NveSceneView.nodes @40");
 
 using nve::host::field;
 using nve::host::Key64;
@@ -61,7 +39,7 @@ using nve::host::SceneReader;
 using nve::host::TableReader;
 
 constexpr Key64 kVisual = Key64::of("nve.visual");
-constexpr Key64 kSchema = Key64{0xF00DFACEC0FFEE11ULL};  // high bit set on purpose
+constexpr Key64 kSchema = Key64{NVE_RUNTIME_SCHEMA_HASH};
 
 constexpr auto kOpacity = field(0, 0, 8, NVE_FIELD_U32);
 constexpr auto kZ = field(0, 8, 12, NVE_FIELD_I32);
@@ -189,53 +167,70 @@ void test_hostile_specs_and_views() {
 
 
 struct SceneFixture {
-  std::vector<TestNode> nodes{{1u, 0u, 3u, 2u, 0u}, {2u, 3u, 4u, 0u, 2u}, {3u, 7u, 0u, 0u, 2u}};
+  std::vector<NveNodeRow> node_rows = make_node_rows();
+  std::vector<NveLayoutRect> rects{{0.f, 0.f, 1.f, 1.f}, {1.f, 1.f, 2.f, 2.f}, {2.f, 2.f, 3.f, 3.f}};
   std::string_view text = "h\xC3\xA9" "\xF0\x9F\x9A\x80";  // "hé" + rocket
   std::vector<uint32_t> children{2u, 3u};
   std::vector<uint32_t> dirty{0u, 2u, 99u};
   std::vector<uint32_t> removed{42u};
   std::vector<uint32_t> rows = make_rows();
-  std::vector<TestTableView> tables{{kVisual.lo(), kVisual.hi(), 0u, 6u, 2u, 0u, 0u, 0u, rows.data(), nullptr, nullptr, nullptr, nullptr}};
+  std::vector<NveTableView> tables{{kVisual.lo(), kVisual.hi(), 0u, 6u, 2u, 0u, 0u, 0u, rows.data(), nullptr, nullptr, nullptr, nullptr}};
 
-  TestSceneView view() const {
-    return TestSceneView{kSchema.value,
-                         7u,
-                         static_cast<uint32_t>(nodes.size()),
-                         static_cast<uint32_t>(dirty.size()),
-                         static_cast<uint32_t>(removed.size()),
-                         static_cast<uint32_t>(text.size()),
-                         static_cast<uint32_t>(children.size()),
-                         static_cast<uint32_t>(tables.size()),
-                         nodes.data(),
-                         reinterpret_cast<const uint8_t*>(text.data()),
-                         children.data(),
-                         dirty.data(),
-                         removed.data(),
-                         tables.data()};
+  static std::vector<NveNodeRow> make_node_rows() {
+    std::vector<NveNodeRow> out(3);
+    for (NveNodeRow& r : out) r = NveNodeRow{};
+    for (NveNodeRow& r : out) r.flags = static_cast<uint8_t>(NVE_NODE_ROW_FLAG_LIVE);
+    out[0].child_off = 0u;
+    out[0].child_len = 2u;
+    out[1].child_off = 2u;
+    out[2].child_off = 2u;
+    return out;
+  }
+
+  NveSceneView view() const {
+    NveSceneView v{};
+    v.schema_hash = kSchema.value;
+    v.frame_id = 7u;
+    v.node_capacity = static_cast<uint32_t>(node_rows.size());
+    v.rows = node_rows.data();
+    v.rects = rects.data();
+    v.text_slab = reinterpret_cast<const uint8_t*>(text.data());
+    v.text_slab_len = static_cast<uint32_t>(text.size());
+    v.children_slab = children.data();
+    v.children_slab_len = static_cast<uint32_t>(children.size());
+    v.dirty_indices = dirty.data();
+    v.dirty_count = static_cast<uint32_t>(dirty.size());
+    v.removed_ids = removed.data();
+    v.removed_count = static_cast<uint32_t>(removed.size());
+    v.tables = tables.data();
+    v.table_count = static_cast<uint32_t>(tables.size());
+    return v;
   }
 };
 
 void test_scene_reader() {
   const SceneFixture fx;
-  const TestSceneView view = fx.view();
+  const NveSceneView view = fx.view();
   SceneError err = SceneError::NullView;
-  const auto scene = SceneReader<TestSceneView>::open(&view, kSchema, &err);
+  const auto scene = SceneReader::open(&view, kSchema, &err);
   CHECK(scene.has_value() && err == SceneError::None);
-  CHECK(scene->frame_id() == 7u && scene->node_count() == 3u && scene->table_count() == 1u);
-  const TestNode* n0 = scene->node(0);
-  CHECK(n0 != nullptr && scene->text(n0->text_offset, n0->text_len) == "h\xC3\xA9");
+  CHECK(scene->frame_id() == 7u && scene->node_capacity() == 3u && scene->table_count() == 1u);
+  CHECK(scene->text(0, 3) == "h\xC3\xA9");
   CHECK(scene->text(3, 4) == "\xF0\x9F\x9A\x80");
   CHECK(!scene->text(2, 1).has_value());  // splits "é"
   CHECK(!scene->text(4, 3).has_value());  // starts mid-rocket
   CHECK(!scene->text(7, 1).has_value());  // out of range
   CHECK(scene->text(7, 0) == "");
   CHECK(!scene->text(0xFFFFFFFFu, 2).has_value());
-  CHECK(scene->children(n0->child_offset, n0->child_count)->size() == 2u);
+  CHECK(scene->node_children(0)->size() == 2u);
+  CHECK(scene->children(0, 2)->size() == 2u);
   CHECK(!scene->children(1, 2).has_value());
-  CHECK(scene->node(3) == nullptr);
+  CHECK(!scene->node_children(3).has_value());
+  CHECK(scene->row(3) == nullptr && scene->rect(3) == nullptr && scene->row(2) != nullptr);
   uint32_t visited = 0;
-  scene->for_each_dirty([&](uint32_t index, const TestNode& n) {
-    CHECK(n.node_id == index + 1u);
+  scene->for_each_dirty([&](uint32_t index, const NveNodeRow& n, const NveLayoutRect& r) {
+    CHECK(n.child_off == fx.node_rows[index].child_off);
+    CHECK(r.width == static_cast<float>(index + 1u));
     ++visited;
   });
   CHECK(visited == 2u);  // index 99 skipped
@@ -247,8 +242,8 @@ void test_scene_reader() {
   // A leading BOM is text, never stripped.
   SceneFixture bom;
   bom.text = "\xEF\xBB\xBF\xEF\xBB\xBFx";
-  const TestSceneView bom_view = bom.view();
-  const auto bom_scene = SceneReader<TestSceneView>::open(&bom_view, kSchema);
+  const NveSceneView bom_view = bom.view();
+  const auto bom_scene = SceneReader::open(&bom_view, kSchema);
   CHECK(bom_scene.has_value() && bom_scene->text(0, 7) == "\xEF\xBB\xBF\xEF\xBB\xBFx");
   CHECK(bom_scene->text(0, 3) == "\xEF\xBB\xBF");
 }
@@ -256,29 +251,30 @@ void test_scene_reader() {
 void test_scene_reader_rejects() {
   SceneFixture fx;
   SceneError err = SceneError::None;
-  CHECK(!SceneReader<TestSceneView>::open(nullptr, kSchema, &err) && err == SceneError::NullView);
+  CHECK(!SceneReader::open(nullptr, kSchema, &err) && err == SceneError::NullView);
 
-  TestSceneView v = fx.view();
-  CHECK(!SceneReader<TestSceneView>::open(&v, Key64{kSchema.value ^ 1u}, &err) && err == SceneError::SchemaMismatch);
+  NveSceneView v = fx.view();
+  CHECK(!SceneReader::open(&v, Key64{kSchema.value ^ 1u}, &err) && err == SceneError::SchemaMismatch);
 
   v = fx.view();
   v.children_slab = nullptr;
-  CHECK(!SceneReader<TestSceneView>::open(&v, kSchema, &err) && err == SceneError::NullSlab);
+  CHECK(!SceneReader::open(&v, kSchema, &err) && err == SceneError::NullSlab);
 
   v = fx.view();
-  v.node_count = 0;
-  v.nodes = nullptr;  // null with zero count is fine
-  CHECK(SceneReader<TestSceneView>::open(&v, kSchema, &err).has_value());
+  v.node_capacity = 0;
+  v.rows = nullptr;  // null with zero count is fine
+  v.rects = nullptr;
+  CHECK(SceneReader::open(&v, kSchema, &err).has_value());
 
   const std::array<uint8_t, 2> bad_utf8 = {0xC0, 0xAF};
   v = fx.view();
   v.text_slab = bad_utf8.data();
   v.text_slab_len = 2;
-  CHECK(!SceneReader<TestSceneView>::open(&v, kSchema, &err) && err == SceneError::InvalidUtf8);
+  CHECK(!SceneReader::open(&v, kSchema, &err) && err == SceneError::InvalidUtf8);
 
   fx.tables[0].words = 40u;
   v = fx.view();
-  CHECK(!SceneReader<TestSceneView>::open(&v, kSchema, &err) && err == SceneError::InvalidTable);
+  CHECK(!SceneReader::open(&v, kSchema, &err) && err == SceneError::InvalidTable);
 }
 
 void test_count_fits_with_32_bit_limits() {
@@ -300,10 +296,10 @@ void test_scene_slab_counts_fit_the_address_space() {
   // A node slab of u32::MAX 64-byte records exceeds PTRDIFF_MAX on 32-bit hosts and must be
   // rejected before a span is formed; on 64-bit hosts the same count is representable.
   SceneFixture fx;
-  TestSceneView v = fx.view();
+  NveSceneView v = fx.view();
   v.dirty_count = 0xFFFFFFFFu;
   SceneError err = SceneError::None;
-  const bool opened = SceneReader<TestSceneView>::open(&v, kSchema, &err).has_value();
+  const bool opened = SceneReader::open(&v, kSchema, &err).has_value();
   if constexpr (sizeof(void*) == 4) {
     CHECK(!opened && err == SceneError::NullSlab);
   } else {
@@ -318,7 +314,7 @@ void test_runtime_scene_reader_and_session_mock() {
     int destroys = 0;
     int wake_fires = 0;
     bool corrupt_view = false;
-    NveRuntimeSceneView view{};
+    NveSceneView view{};
   };
   static MockState* g_mock = nullptr;
   MockState state{};
@@ -332,7 +328,7 @@ void test_runtime_scene_reader_and_session_mock() {
       NveLayoutRect{0.0f, 0.0f, 0.0f, 0.0f},
       NveLayoutRect{10.0f, 20.0f, 120.0f, 40.0f},
   };
-  state.view = NveRuntimeSceneView{};
+  state.view = NveSceneView{};
   state.view.schema_hash = NVE_RUNTIME_SCHEMA_HASH;
   state.view.frame_id = 3u;
   state.view.node_capacity = 2u;
@@ -365,7 +361,7 @@ void test_runtime_scene_reader_and_session_mock() {
   mock_api.scroll_by = [](NveRuntimeHandle, uint32_t, float, float, float*, float*) -> int32_t {
     return NVE_RUNTIME_OK;
   };
-  mock_api.scene_acquire = [](NveRuntimeHandle, NveRuntimeSceneView* out) -> int32_t {
+  mock_api.scene_acquire = [](NveRuntimeHandle, NveSceneView* out) -> int32_t {
     ++g_mock->acquires;
     *out = g_mock->view;
     if (g_mock->corrupt_view) out->schema_hash ^= 1ULL;
@@ -456,28 +452,28 @@ void test_runtime_scene_reader_and_session_mock() {
     }
     CHECK(state.acquires == 2 && state.releases == 2);
 
-    // Misaligned slab pointer MUST be rejected by RuntimeSceneReader::open() with MisalignedSlab.
+    // Misaligned slab pointer MUST be rejected by SceneReader::open() with MisalignedSlab.
     alignas(NveNodeRow) uint8_t unaligned_buf[sizeof(NveNodeRow) * 2u + 4u]{};
-    NveRuntimeSceneView misaligned = state.view;
+    NveSceneView misaligned = state.view;
     misaligned.rows = reinterpret_cast<const NveNodeRow*>(unaligned_buf + 1u);
     SceneError align_err = SceneError::None;
-    CHECK(!nve::host::RuntimeSceneReader::open(&misaligned, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err)
+    CHECK(!nve::host::SceneReader::open(&misaligned, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err)
                .has_value());
     CHECK(align_err == SceneError::MisalignedSlab);
     // `moved_indices`: NULL with a count, or misaligned, is rejected the same way.
-    NveRuntimeSceneView moved = state.view;
+    NveSceneView moved = state.view;
     moved.moved_count = 2u;
     moved.moved_indices = nullptr;
     align_err = SceneError::None;
-    CHECK(!nve::host::RuntimeSceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err).has_value());
+    CHECK(!nve::host::SceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err).has_value());
     CHECK(align_err == SceneError::NullSlab);
     moved.moved_indices = reinterpret_cast<const uint32_t*>(unaligned_buf + 1u);
     align_err = SceneError::None;
-    CHECK(!nve::host::RuntimeSceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err).has_value());
+    CHECK(!nve::host::SceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err).has_value());
     CHECK(align_err == SceneError::MisalignedSlab);
     alignas(uint32_t) const std::array<uint32_t, 2> moved_ids = {1u, 1u};
     moved.moved_indices = moved_ids.data();
-    CHECK(nve::host::RuntimeSceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}).has_value());
+    CHECK(nve::host::SceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}).has_value());
 
     // Corrupted view MUST release reader lock immediately instead of leaking!
     state.corrupt_view = true;

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use nve_abi::{
     NveBufferSlice, NveEventBatch, NveEventBatchRef, NveGetInterfaceFn, NveRuntimeApi,
-    NveRuntimeConfig, NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus,
+    NveRuntimeConfig, NveRuntimeHandle, NveRuntimeMetrics, NveSceneView, NveRuntimeStatus,
     NveRuntimeWakeFn, NveStrSlice, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_engine::Viewport;
@@ -306,7 +306,7 @@ unsafe extern "C" fn rt_scroll_by(
 
 unsafe extern "C" fn rt_scene_acquire(
     handle: NveRuntimeHandle,
-    out_view: *mut NveRuntimeSceneView,
+    out_view: *mut NveSceneView,
 ) -> i32 {
     with_runtime("nve_runtime::scene_acquire", handle, |rt| {
         if out_view.is_null() {

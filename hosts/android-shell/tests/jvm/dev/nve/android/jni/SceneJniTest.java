@@ -5,7 +5,7 @@ import dev.nve.host.ImageSource;
 import dev.nve.host.Key64;
 import dev.nve.host.NativeRuntime;
 import dev.nve.host.Rgba;
-import dev.nve.host.RuntimeSceneReader;
+import dev.nve.host.SceneReader;
 import dev.nve.host.RuntimeSurface;
 import dev.nve.host.SceneSemantics;
 import dev.nve.host.TableReader;
@@ -42,17 +42,17 @@ public final class SceneJniTest {
         c.finish("android_scene_jni_test");
     }
 
-    static TableReader table(RuntimeSceneReader s, Key64 key) {
+    static TableReader table(SceneReader s, Key64 key) {
         final TableReader t = s.findTable(key);
         if (t == null) throw new IllegalStateException("table " + key + " not published");
         return t;
     }
 
-    static int row(RuntimeSceneReader s, Key64 key, int nodeId) {
+    static int row(SceneReader s, Key64 key, int nodeId) {
         return s.rowOf(table(s, key), s.resolve(nodeId));
     }
 
-    static String str(RuntimeSceneReader s, Key64 key, int nodeId, FieldSpec f) {
+    static String str(SceneReader s, Key64 key, int nodeId, FieldSpec f) {
         final int r = row(s, key, nodeId);
         return r < 0 ? null : s.text(table(s, key), r, f);
     }
@@ -62,7 +62,7 @@ public final class SceneJniTest {
         c.that(h != 0L, "create");
         final Fixtures.Scene scene = new Fixtures.Scene(h);
         c.eq(NativeRuntime.submitFrame(h, fx.frame("showcase_1.nve2"), fx.frame("showcase_1.nve2").remaining()), 0, "submit keyframe");
-        RuntimeSceneReader s = scene.acquire();
+        SceneReader s = scene.acquire();
         c.that(s.frameId() > 0, "frame id");
         for (String n : new String[] {"column", "title", "input", "image", "scroll", "row0", "row1", "row2", "canvas", "button"}) {
             c.that(s.resolve(fx.id(n)) > 0, n + " is live");
@@ -155,7 +155,7 @@ public final class SceneJniTest {
         c.eq(NativeRuntime.acquireScene(h, new long[3], new ByteBuffer[3]), NveRuntimeAbi.STATUS_INVALID_ARG, "short packed arrays");
         c.eq(NativeRuntime.acquireScene(h, new long[NveJniFrame.HEADER_LEN - 1], new ByteBuffer[NveJniFrame.SLABS_LEN]),
                 NveRuntimeAbi.STATUS_INVALID_ARG, "a header one word short of NveJniFrame.HEADER_LEN");
-        final RuntimeSceneReader repacked = scene.acquire();
+        final SceneReader repacked = scene.acquire();
         c.that(repacked.resolve(title) > 0, "a full frame follows a rejected acquire");
         scene.release();
         threadAffinity(c, h);
@@ -180,7 +180,7 @@ public final class SceneJniTest {
     static void recycledAndEphemeral(Expect c, Fixtures fx, long h, Fixtures.Scene scene, int epoch) throws Exception {
         final ByteBuffer f3 = fx.frame("showcase_3.nve2");
         c.eq(NativeRuntime.submitFrame(h, f3, f3.remaining()), 0, "submit recycle frame");
-        RuntimeSceneReader s = scene.acquire();
+        SceneReader s = scene.acquire();
         c.eq(s.sceneEpoch(), epoch, "recycling stays in the epoch");
         final int recycled = fx.id("recycled_res");
         final int eph = fx.id("canvas_eph_res");
@@ -210,7 +210,7 @@ public final class SceneJniTest {
     }
 
     /** {@link SceneSemantics} over real tables: kinds, pressability, and inherited typography. */
-    static void semantics(Expect c, Fixtures fx, RuntimeSceneReader s) {
+    static void semantics(Expect c, Fixtures fx, SceneReader s) {
         final SceneSemantics.Tables t = new SceneSemantics.Tables().bind(s);
         c.eq(SceneSemantics.kindOf(s, t, s.resolve(fx.id("title"))), SceneSemantics.Kind.TEXT, "title kind");
         c.eq(SceneSemantics.kindOf(s, t, s.resolve(fx.id("input"))), SceneSemantics.Kind.INPUT, "input kind");
@@ -239,7 +239,7 @@ public final class SceneJniTest {
         final ByteBuffer f1 = fx.frame("showcase_1.nve2");
         c.eq(NativeRuntime.submitFrame(h, f1, f1.remaining()), 0, "submit");
         final int title = fx.id("title");
-        RuntimeSceneReader s = scene.acquire();
+        SceneReader s = scene.acquire();
         final float heuristicW = s.width(s.resolve(title));
         scene.release();
 
@@ -306,7 +306,7 @@ public final class SceneJniTest {
     }
 
     static String onlyText(Fixtures.Scene scene) {
-        final RuntimeSceneReader s = scene.acquire();
+        final SceneReader s = scene.acquire();
         final TableReader text = s.findTable(NveTables.Text.KEY);
         final String out = text == null || text.rowCount() == 0 ? null : s.text(text, 0, NveTables.Text.TEXT);
         scene.release();
@@ -356,7 +356,7 @@ public final class SceneJniTest {
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick v1 again");
         c.eq(NativeRuntime.detachApp(h), 0, "detach");
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick detached");
-        final RuntimeSceneReader s = scene.acquire();
+        final SceneReader s = scene.acquire();
         c.eq(s.sceneEpoch(), e3 + 3, "detaching starts a new epoch");
         c.that(s.findTable(NveTables.Text.KEY) == null || s.findTable(NveTables.Text.KEY).rowCount() == 0, "detached scene is empty");
         scene.release();
@@ -369,7 +369,7 @@ public final class SceneJniTest {
      * calls throw, {@code close} is deferred, and the reader is detached afterwards.
      */
     static void reentrancy(Expect c, Fixtures fx, RuntimeSurface surface) throws Exception {
-        final RuntimeSceneReader[] seen = new RuntimeSceneReader[1];
+        final SceneReader[] seen = new SceneReader[1];
         final int[] statuses = new int[3];
         final boolean[] threw = new boolean[1];
         final int[] renders = new int[1];

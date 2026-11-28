@@ -4,7 +4,7 @@
 //!
 //! Backends keep only what is theirs: `HeadlessBackend` adds mutation tracking and legacy
 //! `NveSceneView` publication, `SkiaBackend` adds painting, text focus, and motion, and
-//! `nve-runtime` adds the zero-copy `NveRuntimeSceneView` publisher and C ABI.
+//! `nve-runtime` adds the zero-copy `NveSceneView` publisher and C ABI.
 
 mod hit_test;
 mod interaction;

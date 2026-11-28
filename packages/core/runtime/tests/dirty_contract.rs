@@ -1,4 +1,4 @@
-//! `NveRuntimeSceneView` change-set contract:
+//! `NveSceneView` change-set contract:
 //!
 //! - `dirty_indices`: every live node created this frame or whose row, table rows, or child list
 //!   changed — exactly once;

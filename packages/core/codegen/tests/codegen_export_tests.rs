@@ -108,7 +108,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
     let all = export_all_targets(&fabric_spec, ExportTarget::ALL).expect("export all targets");
     assert_eq!(all.len(), 5);
     let total_files: usize = all.iter().map(|o| o.files.len()).sum();
-    assert_eq!(total_files, 11);
+    assert_eq!(total_files, 9);
 
     let single = export_target(&fabric_spec, ExportTarget::from_name("swiftui").unwrap()).unwrap();
     assert_eq!(single.files.len(), 1);
@@ -138,7 +138,7 @@ fn validates_invalid_specs_cleanly() {
 #[test]
 fn all_generated_import_and_export_bindings_are_strictly_binary() {
     let imported = import_rn_source(EMBEDDED_SWITCH_SPEC).expect("import Switch");
-    for file in [&imported.rust_module, &imported.cpp_adapter] {
+    for file in imported.files() {
         assert!(!file.content.contains("serde_json"), "{} must not use serde_json", file.relative_path);
         assert!(!file.content.contains("payload_json"), "{} must not use payload_json", file.relative_path);
     }
@@ -254,7 +254,7 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     let c11_harness = tmp.join("check_abi.c");
     std::fs::write(
         &c11_harness,
-        "#include <nve/generated/nve_runtime_abi.generated.h>\n#include <nve/generated/nve_abi.generated.h>\nint check_abi_sizes(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveTableView) + sizeof(NveRuntimeApi) + sizeof(NveRuntimeSceneView)); }\n",
+        "#include <nve/generated/nve_runtime_abi.generated.h>\n#include <nve/generated/nve_abi.generated.h>\nint check_abi_sizes(void) { return (int)(sizeof(NveSceneView) + sizeof(NveTableView) + sizeof(NveRuntimeApi) + sizeof(NveNodeRow)); }\n",
     )
     .unwrap();
     let status_c11 = std::process::Command::new("clang")
@@ -274,7 +274,7 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     std::fs::write(
         &cpp_harness,
         format!(
-            "#include <nve/generated/nve_abi.generated.h>\n#include <nve/generated/nve_runtime_abi.generated.h>\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nstatic_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE);\nstatic_assert(sizeof(NveNodeRow) == NVE_NODE_ROW_SIZE);\nstatic_assert(NVE_RUNTIME_SCHEMA_HASH == 0x{:016X}ULL);\nint check_abi_cpp() {{ return static_cast<int>(NVE_PRIMARY_SLOT_NONE) + static_cast<int>(NVE_RUNTIME_OK); }}\n",
+            "#include <nve/generated/nve_abi.generated.h>\n#include <nve/generated/nve_runtime_abi.generated.h>\nstatic_assert(sizeof(NveLayoutRect) == NVE_LAYOUT_RECT_SIZE);\nstatic_assert(sizeof(NveNodeRow) == NVE_NODE_ROW_SIZE);\nstatic_assert(NVE_RUNTIME_SCHEMA_HASH == 0x{:016X}ULL);\nint check_abi_cpp() {{ return static_cast<int>(NVE_PRIMARY_SLOT_NONE) + static_cast<int>(NVE_RUNTIME_OK); }}\n",
             nve_abi::NVE_RUNTIME_SCHEMA_HASH
         ),
     )

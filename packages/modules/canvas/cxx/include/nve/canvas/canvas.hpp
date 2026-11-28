@@ -24,7 +24,7 @@ struct CanvasData {
 /// `nve.canvas` bound to one acquired scene (absent until an app publishes a canvas).
 class CanvasTable {
  public:
-  void bind(const host::RuntimeSceneReader& scene) { table_.bind(scene, NVE_TABLE_CANVAS_DESC); }
+  void bind(const host::SceneReader& scene) { table_.bind(scene, NVE_TABLE_CANVAS_DESC); }
   [[nodiscard]] bool has(uint32_t index) const noexcept { return table_.has(index); }
   [[nodiscard]] CanvasData at(uint32_t index) const noexcept {
     const host::RowRef r = table_.at(index);

@@ -6,7 +6,7 @@ order: 7
 
 # Qt 6 & GTK4 Desktop Shells (`hosts/qt-shell`, `hosts/gtk-shell`)
 
-Both desktop Linux / cross-platform C++ shells build directly on `cxx/nve-fabric-bridge/include/nve_host_runtime.hpp` (`nve::NativeHostSession` + `nve::RetainedViewReconciler`), sharing layout, hot-swap, `NVE_DRAW1`, and `nve::PairClient` live pairing.
+Both desktop Linux / cross-platform C++ shells run on `libnve_runtime` through `packages/core/host-cxx` (`nve::host::HostSession`, `SceneReader`, and the O(changed) `RetainedTree<Adapter>` reconciler), sharing layout, hot-swap, `NVE_DRAW1`, and live pairing.
 
 ## Qt 6 Shell (`hosts/qt-shell`)
 
@@ -16,13 +16,13 @@ Both desktop Linux / cross-platform C++ shells build directly on `cxx/nve-fabric
 
 Enabled automatically whenever `Qt6::Quick` is installed (`QML_ELEMENT` / `NveSurface` in QML module `Nve 1.0`):
 
-- Consumes NVE's flat 64-byte `NveSceneView` directly onto Qt 6's hardware-accelerated RHI Scene Graph (**Metal** on macOS, **Vulkan/OpenGL** on Linux, **D3D11/12** on Windows, Software for offscreen CI).
+- Consumes NVE's zero-copy `NveSceneView` (via `SceneReader`) directly onto Qt 6's hardware-accelerated RHI Scene Graph (**Metal** on macOS, **Vulkan/OpenGL** on Linux, **D3D11/12** on Windows, Software for offscreen CI).
 - Builds a retained `QSGNode` tree (`NveQtSGBuilder`) using `QSGTransformNode`, `QSGOpacityNode`, `QSGClipNode` (hardware scissor for rects, stencil geometry for rounded rects), `DrawTriangles` rounded-rect/border geometry nodes, and generation-tracked HiDPI `QSGTexture` text caching (`NveQtTextCache`) so unchanged text never re-rasterizes.
 - Dispatches press, wheel scroll, focus/blur, and text input via zero-copy `NveDirectEvent` and supports live `geometryChange`, `replaySnapshot` / `saveSnapshot`, and atomic `hotReload`.
 
 ### 2. Retained `QWidget` Adapter (`NveQtWidget`)
 
-- Embeds NVE inside any existing `QWidget` application via `RetainedViewReconciler<QWidget*, QtViewAdapter>`.
+- Embeds NVE inside any existing `QWidget` application via `nve::host::RetainedTree` with a Qt widget adapter.
 - Maps primitives to antialiased `NveQtBoxWidget`, `QLabel`, `QScrollArea`, `QLineEdit`, and `QPainter` `NVE_DRAW1` custom widgets (`NveQtCustomWidgets.cpp`) with Qt Accessibility (`NveQtTextInputA11y.cpp`).
 - Multi-window lifecycle handled by `NveQtWindowManager.{hpp,cpp}` (`Qt::WindowModal` + `QCloseEvent::ignore()` close veto).
 

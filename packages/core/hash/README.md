@@ -5,7 +5,7 @@ Pure `no_std` compile-time and streaming 64-bit XXH64 hashing crate for `native-
 ## Role & API
 
 - Provides `pub const fn xxh64(bytes: &[u8], seed: u64) -> u64`, `const_id`, `Key64`, and streaming `Xxh64Hasher`.
-- Single source of truth for compile-time `TableKey`, `ResourceKind`, `NVE_CORE_ABI_SCHEMA_HASH`, `NVE_SCENE_SCHEMA_HASH`, and `nve-rpc` (`ProcId`, `Tag64`) digests across Rust and generated foreign host bindings.
+- Single source of truth for compile-time `TableKey`, `ResourceKind`, `NVE_CORE_ABI_SCHEMA_HASH`, `NVE_RUNTIME_SCHEMA_HASH`, and `nve-rpc` (`ProcId`, `Tag64`) digests across Rust and generated foreign host bindings.
 
 ## Invariants
 

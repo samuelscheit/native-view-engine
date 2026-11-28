@@ -50,7 +50,7 @@ typedef NSData *_Nullable (^NveAppleResourceProvider)(uint32_t resourceId);
 
 #ifdef __cplusplus
 /// Reconciles the published scene held by `guard`.
-- (void)syncFromScene:(const nve::host::RuntimeSceneReader &)scene;
+- (void)syncFromScene:(const nve::host::SceneReader &)scene;
 #endif
 
 @end

@@ -1,7 +1,7 @@
-/// Validated zero-copy reader over a borrowed `NveRuntimeSceneView` (`scene_acquire` /
+/// Validated zero-copy reader over a borrowed `NveSceneView` (`scene_acquire` /
 /// `scene_release` of `libnve_runtime`).
 ///
-/// Generic over the generated C structs (`extension NveRuntimeSceneView: RuntimeSceneViewABI {}`,
+/// Generic over the generated C structs (`extension NveSceneView: RuntimeSceneViewABI {}`,
 /// `extension NveNodeRow: NodeRowABI {}`, `extension NveLayoutRect: LayoutRectABI {}`), so this
 /// zero-dependency package never hard-codes the record layouts. `open` validates the schema hash,
 /// every pointer/count pair (null, address-space fit, alignment), the text slab's UTF-8 and every
@@ -35,7 +35,7 @@ public protocol ScrollOffsetABI {
     var y: Float { get }
 }
 
-/// Shape of the generated C `NveRuntimeSceneView` (pointers implicitly unwrapped, as Swift imports C).
+/// Shape of the generated C `NveSceneView` (pointers implicitly unwrapped, as Swift imports C).
 public protocol RuntimeSceneViewABI {
     associatedtype Row: NodeRowABI
     associatedtype Rect: LayoutRectABI
@@ -121,7 +121,7 @@ public extension NodeRowABI {
     }
 }
 
-public struct RuntimeSceneReader<View: RuntimeSceneViewABI> {
+public struct SceneReader<View: RuntimeSceneViewABI> {
     public let frameId: UInt64
     /// Bumped on every runtime scene reset: node / resource ids and caches of an earlier epoch are stale.
     public let sceneEpoch: UInt32

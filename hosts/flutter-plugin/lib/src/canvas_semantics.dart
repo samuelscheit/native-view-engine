@@ -44,7 +44,7 @@ final class _Collector {
   final void Function(int nodeId, Offset center) onTap;
   final TableReader? a11y, text, input, image;
 
-  RuntimeSceneReader get s => t.s;
+  SceneReader get s => t.s;
 
   /// `aria-hidden` prunes the subtree; [invisible] is inherited `visibility: hidden`, which a
   /// descendant's `visibility: visible` overrides (as painted).

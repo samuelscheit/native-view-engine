@@ -31,7 +31,6 @@ const fn file(records: &'static [AbiRecordDescriptor]) -> AbiFileDescriptor {
         enums: &[],
         records,
         modules: &[],
-        c_functions: &[],
     }
 }
 
@@ -136,10 +135,10 @@ fn drift_from_rustc_or_a_contract_is_an_error() {
 #[test]
 fn type_spellings() {
     assert_eq!(
-        Ty::parse("*mut NveFrameStats").ok(),
+        Ty::parse("*mut NveIntrinsicSize").ok(),
         Some(Ty::Ptr {
             mutable: true,
-            pointee: "NveFrameStats"
+            pointee: "NveIntrinsicSize"
         })
     );
     assert_eq!(

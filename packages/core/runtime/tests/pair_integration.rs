@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use nve_abi::{
     decode_events, EventMask, NativeEventKind, NveBufferSlice, NveDirectEvent, NveEventBatch,
-    NveEventBatchRef, NveRuntimeApi, NveRuntimeConfig, NveRuntimeMetrics, NveRuntimeSceneView,
+    NveEventBatchRef, NveRuntimeApi, NveRuntimeConfig, NveRuntimeMetrics, NveSceneView,
     NveRuntimeStatus, NveStrSlice, NVE_RUNTIME_ABI_VERSION,
 };
 use nve_components::tables::{Interaction, Layout, TextContent, Visual};
@@ -93,7 +93,7 @@ fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) -> bool {
     pred()
 }
 
-fn read_text_slab(view: &NveRuntimeSceneView) -> String {
+fn read_text_slab(view: &NveSceneView) -> String {
     if view.text_slab.is_null() || view.text_slab_len == 0 {
         return String::new();
     }
@@ -217,7 +217,7 @@ fn c_abi_embedded_pair_live_frames_events_reconnect_keyframe_and_disconnect() {
 
     // Inspect zero-copy view, verify `submit_nve2` rejected while paired (preserving view!),
     // and check `get_metrics`.
-    let mut view = NveRuntimeSceneView::default();
+    let mut view = NveSceneView::default();
     let mut metrics = NveRuntimeMetrics::default();
     // SAFETY: Valid handle and stack outputs.
     unsafe {
@@ -918,7 +918,7 @@ fn pair_lifecycle_edge_cases_busy_rebind_detach_null_non_owner_and_destroy() {
     assert_eq!(bg_rc, NveRuntimeStatus::InvalidArg.as_i32());
 
     // 2. `pair_connect` while `scene_acquire` is held returns Busy.
-    let mut view = NveRuntimeSceneView::default();
+    let mut view = NveSceneView::default();
     // SAFETY: Valid handle.
     unsafe {
         assert_eq!((api.scene_acquire)(h, &mut view), NveRuntimeStatus::Ok.as_i32());

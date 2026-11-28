@@ -2,7 +2,7 @@
 
 Native Win32 + Direct2D / DirectWrite host for NVE apps, built on the shared C++ host stack
 (`cxx/cmake/NveHostStack.cmake`: `nve::host_cxx` + `libnve_runtime` + `nve::canvas_cxx`). It reads
-the runtime's zero-copy `NveRuntimeSceneView` through `RetainedTree` / `SceneTables`.
+the runtime's zero-copy `NveSceneView` through `RetainedTree` / `SceneTables`.
 
 ## Layers
 

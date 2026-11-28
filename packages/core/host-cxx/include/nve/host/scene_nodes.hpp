@@ -223,7 +223,7 @@ struct NodeData : NodeGeometry {
 struct SceneTables {
   BoundTable layout, visual, typography, text, image, text_input, scroll, accessibility, interaction, link;
 
-  void bind(const RuntimeSceneReader& scene) {
+  void bind(const SceneReader& scene) {
     layout.bind(scene, NVE_TABLE_LAYOUT_DESC);
     visual.bind(scene, NVE_TABLE_VISUAL_DESC);
     typography.bind(scene, NVE_TABLE_TYPOGRAPHY_DESC);
@@ -249,7 +249,7 @@ struct SceneTables {
 
 /// `parent` with node `index`'s explicit typography (bits in `nve.typography.set`) applied.
 [[nodiscard]] inline TextStyle inherit_text_style(const TextStyle& parent, const SceneTables& t,
-                                                  const RuntimeSceneReader& scene, uint32_t index) noexcept {
+                                                  const SceneReader& scene, uint32_t index) noexcept {
   if (!t.typography.has(index)) return parent;
   const RowRef r = t.typography.at(index);
   const uint32_t set = r.bits(NVE_TABLE_TYPOGRAPHY_SET);
@@ -292,7 +292,7 @@ struct SceneTables {
 
 namespace detail {
 /// Fills `g` from `row` of node `index` (`kind` before the text-wrapper rule).
-inline void read_geometry_row(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
+inline void read_geometry_row(const SceneReader& scene, const SceneTables& t, uint32_t index,
                               const NveNodeRow& row, NodeGeometry& g) noexcept {
   g.index = index;
   g.id = make_node_id(index, row.generation);
@@ -332,7 +332,7 @@ inline void read_geometry_row(const RuntimeSceneReader& scene, const SceneTables
 }  // namespace detail
 
 /// Identity and geometry of live node `index` (`std::nullopt` when it has no row).
-[[nodiscard]] inline std::optional<NodeGeometry> read_geometry(const RuntimeSceneReader& scene, const SceneTables& t,
+[[nodiscard]] inline std::optional<NodeGeometry> read_geometry(const SceneReader& scene, const SceneTables& t,
                                                                uint32_t index) noexcept {
   const NveNodeRow* row = scene.row(index);
   if (row == nullptr) return std::nullopt;
@@ -346,7 +346,7 @@ inline void read_geometry_row(const RuntimeSceneReader& scene, const SceneTables
 
 /// Decodes live node `index` (a default `NodeData` when it has no row). `text_style` is its
 /// resolved (inherited) style.
-[[nodiscard]] inline NodeData read_node(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
+[[nodiscard]] inline NodeData read_node(const SceneReader& scene, const SceneTables& t, uint32_t index,
                                         const TextStyle& text_style) noexcept {
   NodeData n;
   const NveNodeRow* row = scene.row(index);

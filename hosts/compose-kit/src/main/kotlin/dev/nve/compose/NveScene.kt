@@ -2,7 +2,7 @@ package dev.nve.compose
 
 import dev.nve.host.ImageSource
 import dev.nve.host.Key64
-import dev.nve.host.RuntimeSceneReader
+import dev.nve.host.SceneReader
 import dev.nve.host.SceneSemantics
 import dev.nve.host.generated.NveModuleTables
 import dev.nve.host.generated.NveTables
@@ -129,13 +129,13 @@ class NveResource(val kind: Key64, val bytes: ByteBuffer)
  * redelivered frame returns [previous]. Any gap or new epoch rebuilds everything.
  */
 object NveSceneCapture {
-    fun capture(s: RuntimeSceneReader, resources: NveResourceLookup, previous: NveSceneSnapshot): NveSceneSnapshot {
+    fun capture(s: SceneReader, resources: NveResourceLookup, previous: NveSceneSnapshot): NveSceneSnapshot {
         val relation = s.relationTo(previous.frameId, previous.sceneEpoch)
-        if (relation == RuntimeSceneReader.FRAME_SAME) return previous
+        if (relation == SceneReader.FRAME_SAME) return previous
         val t = SceneSemantics.Tables().bind(s)
         val style = SceneSemantics.TextStyle()
         val root = SceneSemantics.ROOT_INDEX
-        val chained = relation == RuntimeSceneReader.FRAME_NEXT
+        val chained = relation == SceneReader.FRAME_NEXT
         // Copied resources stay valid along an unbroken chain of one epoch, minus the ids this
         // frame (re)defined: a skipped frame's dirty list is lost, a new epoch reuses ids.
         val reusable = { id: Int -> chained && id != 0 && !s.isResourceDirty(id) }
@@ -172,7 +172,7 @@ object NveSceneCapture {
     }
 
     /** O(scrolled containers); the previous map is reused when nothing moved. */
-    private fun scrollOffsets(s: RuntimeSceneReader, previous: NveSceneSnapshot): Map<Int, NveScrollOffset> {
+    private fun scrollOffsets(s: SceneReader, previous: NveSceneSnapshot): Map<Int, NveScrollOffset> {
         if (s.scrollCount() == 0) return emptyMap()
         val out = HashMap<Int, NveScrollOffset>(s.scrollCount())
         for (k in 0 until s.scrollCount()) {
@@ -182,9 +182,9 @@ object NveSceneCapture {
         return if (out == previous.scrollOffsets) previous.scrollOffsets else out
     }
 
-    private fun children(s: RuntimeSceneReader, i: Int): List<Int> = List(s.childCount(i)) { s.childId(i, it) }
+    private fun children(s: SceneReader, i: Int): List<Int> = List(s.childCount(i)) { s.childId(i, it) }
 
-    private fun parentRelative(s: RuntimeSceneReader, i: Int): FloatArray {
+    private fun parentRelative(s: SceneReader, i: Int): FloatArray {
         val parentId = s.parent(i)
         val p = if (parentId == 0) -1 else s.resolve(parentId)
         val nested = p > SceneSemantics.ROOT_INDEX
@@ -197,13 +197,13 @@ object NveSceneCapture {
     }
 
     /** [prev] with node [i]'s new geometry (a moved node's content is unchanged). */
-    private fun geometry(s: RuntimeSceneReader, i: Int, prev: NveNode): NveNode {
+    private fun geometry(s: SceneReader, i: Int, prev: NveNode): NveNode {
         val g = parentRelative(s, i)
         return prev.copy(x = g[0], y = g[1], width = g[2], height = g[3])
     }
 
     private fun node(
-        s: RuntimeSceneReader,
+        s: SceneReader,
         t: Tables,
         i: Int,
         resources: NveResourceLookup,
@@ -283,7 +283,7 @@ object NveSceneCapture {
     }
 
     private fun copy(b: ByteBuffer): ByteArray = ByteArray(b.remaining()).also { b.duplicate().get(it) }
-    private fun box(s: RuntimeSceneReader, t: Tables, i: Int): NveBox {
+    private fun box(s: SceneReader, t: Tables, i: Int): NveBox {
         val r = s.rowOf(t.visual, i)
         if (r < 0) return NveBox()
         val v = t.visual!!
@@ -298,12 +298,12 @@ object NveSceneCapture {
         )
     }
 
-    private fun textStyle(s: RuntimeSceneReader, t: Tables, i: Int, st: SceneSemantics.TextStyle): NveTextStyle {
+    private fun textStyle(s: SceneReader, t: Tables, i: Int, st: SceneSemantics.TextStyle): NveTextStyle {
         st.resolve(s, t, i)
         return NveTextStyle(st.color, st.fontSize, st.fontWeight, st.italic, st.align)
     }
 
-    private fun semantics(s: RuntimeSceneReader, t: Tables, i: Int, disabled: Boolean): NveSemantics {
+    private fun semantics(s: SceneReader, t: Tables, i: Int, disabled: Boolean): NveSemantics {
         val testRow = s.rowOf(t.debugId, i)
         val testId = if (testRow >= 0) s.text(t.debugId, testRow, NveTables.DebugId.TEST_ID) else ""
         val r = s.rowOf(t.accessibility, i)

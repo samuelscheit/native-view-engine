@@ -9,6 +9,14 @@ target_compile_features(nve_host_cxx INTERFACE c_std_11 cxx_std_20)
 
 option(NVE_HOST_CXX_BUILD_TESTS "Build the nve_host_cxx test suite" ${PROJECT_IS_TOP_LEVEL})
 option(NVE_HOST_CXX_WITH_RUNTIME "Build and run live C++20 RuntimeSession tests linked against libnve_runtime" OFF)
+option(NVE_HOST_CXX_BUILD_BENCH "Build nve_host_cxx_bench (SceneReader / TableReader read path; JSON for scripts/bench-regress.py)" OFF)
+
+if(NVE_HOST_CXX_BUILD_BENCH)
+  add_executable(nve_host_cxx_bench bench/host_bench.cpp)
+  set_target_properties(nve_host_cxx_bench PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  target_link_libraries(nve_host_cxx_bench PRIVATE nve_host_cxx)
+  target_compile_options(nve_host_cxx_bench PRIVATE -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow)
+endif()
 
 if(NVE_HOST_CXX_BUILD_TESTS)
   enable_testing()

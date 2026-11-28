@@ -33,7 +33,7 @@ The `native-view-engine` monorepo enforces a strict, layered dependency DAG. Low
      ▼              ▼             ▼           ▼
 ┌──────────┐  ┌──────────┐  ┌──────────┐ ┌────────────────────────────┐
 │  nve-ui  │  │nve-router│  │ nve-mdx  │ │ Hosts & Shells             │
-│15 comps  │  │NVN1 + web│  │NVS2 index│ │ cxx/nve-fabric-bridge +    │
+│15 comps  │  │NVN1 + web│  │NVS2 index│ │ libnve_runtime + host-*    │
 └────┬─────┘  └────┬─────┘  └────┬─────┘ │ hosts/{apple,win,qt,gtk,   │
      └─────────────┴─────────────┘       │ android,compose,swiftui,   │
                    ▼                     │ flutter,skia,web}          │
@@ -52,7 +52,7 @@ The root `Cargo.toml` defines 33 workspace members split into core runtime (`pac
 
 | Crate | Path | Responsibility |
 | :--- | :--- | :--- |
-| `nve-abi` | `packages/core/abi` | `NVE1` binary `CommandBuffer` encoder/decoder, `NveDirectEvent` / `NveEventBatch`, `NveRenderNode` / `NveSceneView` / `NveNodeMeta`, `NveValue` bump-arena types, and `nve_get_interface(1..=5)`. |
+| `nve-abi` | `packages/core/abi` | `NVE1` binary `CommandBuffer` encoder/decoder, `NveDirectEvent` / `NveEventBatch`, the single `NveSceneView` (32-byte `NveNodeRow` + 16-byte `NveLayoutRect` slabs), `NveValue` bump-arena types, and `nve_get_interface(1..=5)`. |
 | `nve-components` | `packages/core/components` | HTML/RN tag resolver (`resolve_tag`), typed style/layout attribute parser (`apply_typed_attr_with_raw`), `ImageResizeMode`, and `NVE_DRAW1` vector canvas draw-list IR (`DrawListBuilder` / `DrawListDecoder`). |
 | `nve-engine` | `packages/core/engine` | `NveApp` trait + `export_nve_app!` panic-safe C ABI macro, `StoreBackend`, `StoreWireReplica`, `SurfaceRunner`, 6-stage `FrameProfiler`, zero-`unsafe` `Frame0File` (`frame0.nve2`) + atomic `StateFile` (`state.nve`), `HotPatchMsg` (`NVP1`), and `cdylib` loader. |
 | `nve-layout` | `packages/core/layout` | Shared `StoreLayoutEngine` + `TextMeasurer` traits and the default direct `TaffyStoreLayout` engine used by headless, Skia, and the host runtime. |
@@ -74,13 +74,13 @@ The root `Cargo.toml` defines 33 workspace members split into core runtime (`pac
 | `nve-camera` | `packages/modules/camera` | Optional VisionCamera v5 adapter and typed `CameraPreview` `NativeViewSpec` (`NVNP`/`NVNC`/`NVCF`, 40B `#[repr(C)]` `CameraFrameWireLayout`). |
 | `nve-tv` | `packages/modules/tv` | Opt-in TV spatial focus engine, remote action mapper onto direct `NativeEventKind::KeyDown`, and title-safe overscan calculator. |
 
-## C++20 Bridge & Platform Host Shells (`cxx/`, `hosts/`)
+## Runtime & Platform Host Shells (`packages/core/host-*`, `hosts/`)
 
-All C++ and Objective-C++ platform shells share a single DRY runtime in `cxx/nve-fabric-bridge`:
+Every native shell runs on one engine, `libnve_runtime` (`packages/core/runtime`), which decodes `NVE1` `CommandBuffer`s, runs layout, owns app loading / hot reload / live pairing, and publishes a single `NveSceneView` straight from its `NodeStore` slabs. Hosts read it through the static per-language packages `packages/core/host-{cxx,swift,java,dart,ts}` (each with one `SceneReader`) and only mount native views:
 
-- **`cxx/nve-fabric-bridge`** — Decodes `NVE1` `CommandBuffer`s, drives real React Native Yoga/Fabric or standalone Flexbox (`NVE_WITH_RN_YOGA`, `NVE_WITH_RN_JSI`, `NVE_WITH_RN_FABRIC`), exposes `nve::NativeHostSession`, `nve::RetainedViewReconciler<ViewT, Adapter>`, `nve::SceneTableBuilder`, `nve::DrawListDecoder`, and zero-dep `nve::PairClient` (POSIX + WinSock2).
+- **`packages/core/host-cxx`** — Header-only C++20 host library: `SceneReader`, `TableReader`, `RuntimeSession`, `HostSession`, `RetainedTree<Adapter>` (O(changed) native-view reconciler), and shared launch / URL / controlled-text policy.
 - **`hosts/apple-common/`** — Shared UIKit/AppKit ABI loader, hot-swap controller, `NveAppleSceneReconciler`, CoreGraphics `NveAppleCanvasView`, and `NveAppleImageCache` reused by `hosts/macos-shell` and `hosts/ios-shell`.
-- **Desktop shells** — `hosts/skia-shell` (`winit` + GPU/`softbuffer`), `hosts/macos-shell` (AppKit + RN-macOS), `hosts/windows-shell` (Win32/Direct2D/DirectWrite + RNW 0.88 Fabric), `hosts/qt-shell` (Qt 6 Widgets + Quick `QSGNode`), `hosts/gtk-shell` (GTK4/Pango/Cairo).
+- **Desktop shells** — `hosts/skia-shell` (`winit` + GPU/`softbuffer`), `hosts/macos-shell` (AppKit + RN-macOS), `hosts/windows-shell` (Win32/Direct2D/DirectWrite + RNW 0.88 components), `hosts/qt-shell` (Qt 6 Widgets + Quick `QSGNode`), `hosts/gtk-shell` (GTK4/Pango/Cairo).
 - **Mobile & embedder kits** — `hosts/ios-shell` (UIKit/iPadOS `UIScene`), `hosts/android-shell` (JNI DirectByteBuffers + zero-Gradle APK launcher), `hosts/compose-kit` (`dev.nve.compose`), `hosts/swiftui-kit` (`NveSwiftUI`), `hosts/flutter-plugin` (`nve_flutter`).
 - **Web shell** — `hosts/web-shell` (`wasm-bindgen`, one production bundle per app plus a `dev` bundle, `ACTIVE_SHELLS` multi-window, `?pair=ws://` live pairing).
 

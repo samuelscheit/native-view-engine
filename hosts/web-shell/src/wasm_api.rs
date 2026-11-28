@@ -1,5 +1,5 @@
 //! Browser `wasm32` bindings: multi-surface `ACTIVE_SHELLS`, `WebAppController`,
-//! `HotReloadSocket`, DOM bootstrap, and zero-copy `nve_web_scene_view_ptr()` exports.
+//! `HotReloadSocket`, and DOM bootstrap exports.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -18,8 +18,6 @@ use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
 use crate::wasm_appearance::{
     browser_theme_snapshot, dispatch_appearance, install_appearance_listener, AppearanceListener,
 };
-#[cfg(all(feature = "dev", feature = "scene-view"))]
-use crate::wasm_pair::active_paired_scene_view_ptr;
 #[cfg(feature = "multi-window")]
 use crate::wasm_popup::{
     popup_window_for_surface, register_mounted_surface_window, unregister_surface_window,
@@ -46,7 +44,7 @@ struct ActiveShell {
     generation: u64,
     #[cfg(feature = "multi-window")]
     window_handle: Option<WindowHandleId>,
-    #[cfg_attr(not(any(feature = "scene-view", feature = "app-issues")), allow(dead_code))]
+    #[cfg_attr(not(feature = "app-issues"), allow(dead_code))]
     session: Rc<RefCell<WebAppSession>>,
     #[cfg(feature = "app-issues")]
     snapshot_trigger: Option<SnapshotTrigger>,
@@ -151,35 +149,6 @@ pub(crate) fn remove_active_shell(surface_id: SurfaceId) {
     });
 }
 
-#[cfg(feature = "scene-view")]
-#[wasm_bindgen]
-pub fn nve_web_scene_view_ptr() -> usize {
-    #[cfg(feature = "dev")]
-    if let Some(ptr) = active_paired_scene_view_ptr() {
-        return ptr;
-    }
-    let primary = PRIMARY_SURFACE_ID.with(Cell::get);
-    ACTIVE_SHELLS.with(|shells| {
-        let map = shells.borrow();
-        map.get(&primary)
-            .or_else(|| map.values().next())
-            .map(|active| active.session.borrow().scene().view_ptr() as usize)
-            .unwrap_or(0)
-    })
-}
-
-#[cfg(feature = "scene-view")]
-#[wasm_bindgen]
-pub fn nve_web_scene_view_ptr_for_surface(surface_id: SurfaceId) -> usize {
-    ACTIVE_SHELLS.with(|shells| {
-        shells
-            .borrow()
-            .get(&surface_id)
-            .map(|active| active.session.borrow().scene().view_ptr() as usize)
-            .unwrap_or(0)
-    })
-}
-
 #[wasm_bindgen]
 pub fn active_surface_ids() -> Vec<SurfaceId> {
     ACTIVE_SHELLS.with(|shells| shells.borrow().keys().copied().collect())
@@ -279,9 +248,6 @@ impl WebAppController {
     pub fn keyboard_visible(&self) -> bool {
         self.session.borrow().backend().keyboard_insets().visible
     }
-
-    #[cfg(feature = "scene-view")]
-    pub fn scene_view_ptr(&self) -> usize { self.session.borrow().scene().view_ptr() as usize }
 
     pub fn dispatch_viewport_resize(&self, width: f32, height: f32) -> Result<bool, JsValue> {
         let scale_factor = web_sys::window()

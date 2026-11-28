@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use common::{check_c11_syntax, compile_and_run_cpp20};
 
@@ -15,15 +15,6 @@ use nve_codegen::{
     HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridStructSpec, HybridTarget,
     HybridType,
 };
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .expect("workspace root 3 levels above CARGO_MANIFEST_DIR")
-        .to_path_buf()
-}
 
 fn temp_test_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -718,7 +709,6 @@ fn option2_draw_ops_and_host_services_validate_and_hash_deterministically() {
 fn option2_draw_ops_and_host_services_compile_under_c11_and_cpp20() {
     let dir = temp_test_dir("compile");
     common::write_generated_c_abi_headers(&dir);
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
 
     let draw_spec = draw_ops_hybrid_spec();
     let host_spec = host_services_hybrid_spec();
@@ -753,7 +743,7 @@ uint64_t _check_hashes(void) {
     )
     .unwrap();
 
-    check_c11_syntax(&c_driver, &[&dir, &nve_inc], &dir);
+    check_c11_syntax(&c_driver, &[&dir], &dir);
 
     // 2. Compile AND execute a C++20 binary exercising both Hybrid C++20 headers
     let cpp_driver = dir.join("check_cpp20.cpp");
@@ -856,7 +846,7 @@ int main() {
     )
     .unwrap();
 
-    compile_and_run_cpp20(&cpp_driver, "check_cpp20", &[&dir, &nve_inc], &dir);
+    compile_and_run_cpp20(&cpp_driver, "check_cpp20", &[&dir], &dir);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

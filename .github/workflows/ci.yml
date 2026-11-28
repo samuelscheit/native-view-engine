@@ -21,7 +21,7 @@ env:
 
 jobs:
   linux:
-    name: Linux (Rust + Skia + WASM E2E + Python + C++/ASan + Qt6 Quick + GTK4 + Android JNI)
+    name: Linux (Rust + Skia + WASM E2E + Python + host runtimes + native modules + Qt6 + GTK4 + Android JNI)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -53,9 +53,7 @@ jobs:
           ast-grep test && ast-grep scan
           cargo deny check
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Install native dependencies
-        if: false
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -89,6 +87,23 @@ jobs:
 
       - name: Run Python benchmark-regression unit tests
         run: python3 -B -m unittest discover -s scripts/tests -v
+
+      - name: Setup Dart (host-dart runtime suite)
+        uses: dart-lang/setup-dart@v1
+
+      - name: Host runtimes (host-cxx CTest ASan + UBSan, Java, Dart VM/FFI/JS, TypeScript)
+        run: ./scripts/host-runtimes.sh cxx java dart ts
+
+      - name: Native modules C++ (native-views + camera, ASan + UBSan)
+        run: |
+          for mod in native-views/cxx camera/cxx; do
+            cmake -S "packages/modules/$mod" -B "build/modules/$mod" -G Ninja -DNVE_HOST_CXX_BUILD_TESTS=OFF \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+            cmake --build "build/modules/$mod"
+            ctest --test-dir "build/modules/$mod" --output-on-failure
+          done
 
       - name: Build Web WASM bundle and run headless Chrome CDP E2E
         run: |
@@ -137,73 +152,28 @@ jobs:
             --web-shell-dist hosts/web-shell
           node examples/nve-docs-site/e2e/run_docs_e2e.mjs dist/docs --base-path /native-view-engine --shots-dir /tmp/nve-landing-shots
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
-      - name: Build and test C++20 Fabric bridge (Release + bench)
-        if: false
-        run: |
-          cmake -S cxx/nve-fabric-bridge -B build/fabric-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DNVE_BUILD_BENCHMARKS=ON
-          cmake --build build/fabric-release
-          ctest --test-dir build/fabric-release --output-on-failure
-          ./build/fabric-release/nve_fabric_bridge_bench --iters 10
-
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
-      - name: Build and test C++20 Fabric bridge (ASan + UBSan)
-        if: false
-        run: |
-          cmake -S cxx/nve-fabric-bridge -B build/fabric-asan -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DNVE_BUILD_BENCHMARKS=OFF \
-            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
-          cmake --build build/fabric-asan
-          ASAN_OPTIONS=detect_leaks=1 \
-            UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
-            ctest --test-dir build/fabric-asan --output-on-failure
-
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
-      - name: Build and test Qt 6 host shell (Widgets + Quick Scene Graph offscreen)
-        if: false
+      - name: Build and test Qt 6 host shell (Widgets + Quick, offscreen)
         run: |
           cmake -S hosts/qt-shell -B build/qt-shell -G Ninja
           cmake --build build/qt-shell
-          test -x ./build/qt-shell/nve_qt_quick_test
-          QT_QPA_PLATFORM=offscreen ctest --test-dir build/qt-shell --output-on-failure
-          QT_QPA_PLATFORM=offscreen \
-            NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.so" \
-            NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
-            ./build/qt-shell/nve_qt_shell_test
-          QT_QPA_PLATFORM=offscreen \
-            QT_QUICK_BACKEND=software \
-            NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.so" \
-            NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
-            ./build/qt-shell/nve_qt_quick_test
+          NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.so" \
+            ctest --test-dir build/qt-shell --output-on-failure
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Build and test GTK4 host shell (Xvfb)
-        if: false
         run: |
           cmake -S hosts/gtk-shell -B build/gtk-shell -G Ninja
           cmake --build build/gtk-shell
           NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.so" \
-            NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.so" \
             xvfb-run -a ctest --test-dir build/gtk-shell --output-on-failure
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Build and test Android JNI host bridge
-        if: false
         run: |
           export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           cmake -S hosts/android-shell -B build/android-shell -G Ninja
           cmake --build build/android-shell
           ctest --test-dir build/android-shell --output-on-failure
 
-  # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
   android-compose:
-    if: false
     name: Android Compose Kit (Gradle Unit Tests)
     runs-on: ubuntu-latest
     steps:
@@ -230,20 +200,20 @@ jobs:
           cargo run --locked -p nve-cli -- codegen abi
           cargo run --locked -p nve-cli -- codegen abi --check
 
-      - name: Ensure Android SDK platform 35 is available
+      - name: Ensure Android SDK platform 36 is available
         run: |
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          if [ ! -d "$SDK_ROOT/platforms/android-35" ] && [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+          if [ ! -d "$SDK_ROOT/platforms/android-36" ] && [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
             yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
           fi
 
       - name: Run Android Compose Kit unit tests
         run: ./hosts/compose-kit/run-tests.sh testDebugUnitTest --console=plain
 
   macos:
-    name: macOS (Rust + Skia)
+    name: macOS (Rust + Skia + AppKit + iOS + SwiftUI + Flutter)
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -260,9 +230,7 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Install Ninja and CMake
-        if: false
         run: |
           command -v cmake >/dev/null 2>&1 || brew install cmake
           command -v ninja >/dev/null 2>&1 || brew install ninja
@@ -284,81 +252,54 @@ jobs:
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
-      - name: Build and test C++20 Fabric bridge
-        if: false
-        run: |
-          cmake -S cxx/nve-fabric-bridge -B build/fabric-bridge -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DNVE_BUILD_BENCHMARKS=ON
-          cmake --build build/fabric-bridge
-          ctest --test-dir build/fabric-bridge --output-on-failure
-          ./build/fabric-bridge/nve_fabric_bridge_bench --iters 10
-
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
-      - name: Build and test C++20 Fabric bridge (ASan + UBSan)
-        if: false
-        run: |
-          cmake -S cxx/nve-fabric-bridge -B build/fabric-asan -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DNVE_BUILD_BENCHMARKS=OFF \
-            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
-          cmake --build build/fabric-asan
-          ASAN_OPTIONS=detect_leaks=0 \
-            UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
-            ctest --test-dir build/fabric-asan --output-on-failure
-
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Build and test macOS AppKit host shell
-        if: false
         run: |
           cmake -S hosts/macos-shell -B build/macos-shell -G Ninja
           cmake --build build/macos-shell
-          ctest --test-dir build/macos-shell --output-on-failure
           NVE_TEST_KITCHEN_SINK_DYLIB="$PWD/target/debug/libnve_example_kitchen_sink.dylib" \
             NVE_TEST_STUDIO_DYLIB="$PWD/target/debug/libnve_studio_workspace.dylib" \
-            ./build/macos-shell/nve_macos_shell_test
+            ctest --test-dir build/macos-shell --output-on-failure
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: iOS Simulator SDK Objective-C++ syntax check
-        if: false
         run: |
           xcrun --sdk iphonesimulator clang++ \
             -std=c++20 -fobjc-arc -Wall -Wextra -Werror -fsyntax-only \
             -Ipackages/core/host-cxx/include \
-            -Icxx/nve-fabric-bridge/include \
             -Ihosts/apple-common \
             -Ihosts/ios-shell \
             hosts/apple-common/*.mm \
             hosts/ios-shell/*.mm
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
+      - name: Host runtime Swift (host-swift debug + release, arm64_32)
+        run: ./scripts/host-runtimes.sh swift
+
+      - name: Native modules (camera AppKit adapter, ASan + UBSan)
+        run: |
+          cmake -S packages/modules/camera/apple -B build/modules/camera-apple -G Ninja -DNVE_HOST_CXX_BUILD_TESTS=OFF \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_OBJCXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build/modules/camera-apple
+          ctest --test-dir build/modules/camera-apple --output-on-failure
+
       - name: Test SwiftUI host kit
-        if: false
         run: swift test --package-path hosts/swiftui-kit
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Setup Flutter
-        if: false
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Analyze and test Flutter host plugin
-        if: false
         working-directory: hosts/flutter-plugin
         run: |
           flutter pub get
-          flutter analyze
+          flutter analyze --fatal-infos
           flutter test
 
   windows:
-    name: Windows (Rust MSVC + Skia)
+    name: Windows (Rust MSVC + Skia + Windows host)
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -396,25 +337,10 @@ jobs:
           cargo run -p nve-skia-shell -- --help
           cargo bench --no-run
 
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
-      - name: Build and test C++20 Fabric bridge
-        if: false
-        shell: pwsh
-        run: |
-          cmake -S cxx/nve-fabric-bridge -B build/fabric-bridge -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DNVE_BUILD_BENCHMARKS=ON
-          cmake --build build/fabric-bridge
-          ctest --test-dir build/fabric-bridge --output-on-failure
-          .\build\fabric-bridge\nve_fabric_bridge_bench.exe --iters 10
-
-      # Temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime
       - name: Build and test Windows host shell
-        if: false
         shell: pwsh
         run: |
           cmake -S hosts/windows-shell -B build/windows-shell -G Ninja
           cmake --build build/windows-shell
           $env:NVE_TEST_KITCHEN_SINK_DYLIB = (Resolve-Path target\debug\nve_example_kitchen_sink.dll).Path
-          $env:NVE_TEST_STUDIO_DYLIB = (Resolve-Path target\debug\nve_studio_workspace.dll).Path
           ctest --test-dir build/windows-shell --output-on-failure

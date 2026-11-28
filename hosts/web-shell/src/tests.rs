@@ -1,48 +1,41 @@
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 use crate::session::*;
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 use nve_abi::{
-    EventMask, EventPayload, NativeEvent, NativeEventKind, NveRenderNode, NveSceneRef,
-    NVE_SCENE_SCHEMA_HASH, ROOT_NODE_ID,
+    EventMask, EventPayload, NativeEvent, NativeEventKind, ROOT_NODE_ID,
 };
 use nve_abi::NodeId;
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 use nve_canvas::Canvas;
 use nve_components::tables::DebugId;
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
-use nve_components::tables::{Image, ImageFit, Interaction, Overflow, TextContent, Typography, Visual};
+use nve_components::tables::{Image, ImageFit, Interaction, TextContent};
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 use nve_backend_web::WebBackend;
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
@@ -71,8 +64,7 @@ pub(crate) fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<No
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
     let node_id = find_node_by_test_id(session.store(), test_id)
@@ -102,8 +94,7 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 fn assert_valid_dom_html(html: &str) {
     assert!(
@@ -124,92 +115,7 @@ fn assert_valid_dom_html(html: &str) {
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
-))]
-fn assert_scene_view_matches_store(session: &WebAppSession) {
-    let view = session.scene().view();
-    // SAFETY: `session.scene().view_ptr()` stays valid while `session` is immutably borrowed.
-    let ptr_view = unsafe { *session.scene().view_ptr() };
-    assert_eq!(view.schema_hash, NVE_SCENE_SCHEMA_HASH);
-    assert_eq!(ptr_view.schema_hash, NVE_SCENE_SCHEMA_HASH);
-    assert_eq!(ptr_view.frame_id, view.frame_id);
-    assert_eq!(ptr_view.node_count, view.node_count);
-    assert_eq!(ptr_view.nodes, view.nodes);
-
-    // SAFETY: `ptr_view` borrows `session.scene()` which remains alive and unmutated for `scene`.
-    let scene = unsafe { NveSceneRef::from_raw(ptr_view) }
-        .expect("scene_view_ptr must yield a valid NveSceneRef");
-    let store = session.store();
-    assert_eq!(scene.nodes().len(), session.node_count());
-
-    for rnode in scene.nodes() {
-        let sid = StoreNodeId(rnode.node_id);
-        assert!(store.is_live(sid), "scene node {} missing in NodeStore", rnode.node_id);
-        assert_eq!(rnode.primary_slot, store.primary_slot(sid).0);
-        let children = store.children(sid);
-        assert_eq!(
-            rnode.is_leaf_text(),
-            store.has::<TextContent>(sid) && children.is_empty()
-        );
-        assert_eq!(
-            rnode.is_interactive(),
-            store
-                .try_row::<Interaction>(sid)
-                .is_some_and(|i| i.event_mask() != 0)
-        );
-        assert_eq!(
-            rnode.clips_bounds(),
-            store.try_row::<Visual>(sid).is_some_and(|v| {
-                matches!(v.overflow_x(), Overflow::Hidden | Overflow::Scroll)
-                    || matches!(v.overflow_y(), Overflow::Hidden | Overflow::Scroll)
-            })
-        );
-        let expected_opacity = store
-            .try_row::<Visual>(sid)
-            .map_or(255, |v| NveRenderNode::encode_opacity_u8(v.opacity()));
-        assert_eq!(rnode.opacity_u8, expected_opacity);
-        let expected_bg = store.try_row::<Visual>(sid).map_or(0, |v| v.background().0);
-        assert_eq!(rnode.bg_rgba, expected_bg);
-        let expected_text_color = store.try_row::<Typography>(sid).map_or(0, |t| t.color().0);
-        assert_eq!(rnode.text_rgba, expected_text_color);
-        let expected_border_color = store
-            .try_row::<Visual>(sid)
-            .map_or(0, |v| v.border_color().0);
-        assert_eq!(rnode.border_rgba, expected_border_color);
-        let expected_radius = store
-            .try_row::<Visual>(sid)
-            .map_or(0.0, |v| v.border_radius());
-        assert_eq!(rnode.border_radius.to_bits(), expected_radius.to_bits());
-        let expected_border_width = store
-            .try_row::<Visual>(sid)
-            .map_or(0.0, |v| v.border_width());
-        assert_eq!(rnode.border_width.to_bits(), expected_border_width.to_bits());
-        let expected_font_size = store
-            .try_row::<Typography>(sid)
-            .map_or(16.0, |t| t.font_size());
-        assert_eq!(rnode.font_size.to_bits(), expected_font_size.to_bits());
-        let expected_z = store.try_row::<Visual>(sid).map_or(0, |v| v.z_index());
-        assert_eq!(rnode.z_index, expected_z);
-        let expected_text = store
-            .try_row::<TextContent>(sid)
-            .map_or("", |t| t.text());
-        assert_eq!(scene.node_text(rnode).expect("valid scene node UTF-8"), expected_text);
-        let expected_children: Vec<NodeId> = children.iter().map(|c| c.raw()).collect();
-        assert_eq!(
-            scene
-                .node_children(rnode)
-                .expect("valid scene node children"),
-            expected_children.as_slice()
-        );
-    }
-}
-
-#[cfg(all(
-    feature = "app-studio",
-    feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 #[test]
 fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
@@ -223,7 +129,6 @@ fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
     assert!(html0.contains("Count: 0"));
     assert!(html0.contains("Increment +"));
     assert!(html0.contains("Reset"));
-    assert_scene_view_matches_store(&session);
 
     for expected in 1..=2 {
         let timing = press_test_id(&mut session, "ks-counter-inc", expected as u64 * 1000);
@@ -234,28 +139,21 @@ fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
         );
         let html = session.render_html();
         assert!(html.contains(&format!("Count: {expected}")));
-        assert_scene_view_matches_store(&session);
-        let view = session.scene().view();
-        assert!(view.dirty_count >= 1 && view.dirty_count < view.node_count);
-        assert_eq!(view.removed_count, 0);
     }
 
     press_test_id(&mut session, "ks-counter-reset", 3000);
     assert!(session.render_html().contains("Count: 0"));
-    assert_scene_view_matches_store(&session);
 }
 
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 #[test]
 fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
-    assert_scene_view_matches_store(&session);
 
     // Tier-1 TemplatePatch over binary NVP1 wire frame.
     let tpl = HotPatchMsg::TemplatePatch {
@@ -281,13 +179,10 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
         other => panic!("unexpected action: {other:?}"),
     }
     assert!(session.render_html().contains("NVE LIVE PATCHED"));
-    assert_scene_view_matches_store(&session);
-    let scene_ref = session.scene_ref();
-    let patched_in_scene = scene_ref
-        .nodes()
-        .iter()
-        .any(|node| scene_ref.node_text(node).ok() == Some("NVE LIVE PATCHED"));
-    assert!(patched_in_scene);
+    let store = session.store();
+    assert!(store.live_nodes().any(|id| store
+        .try_row::<TextContent>(id)
+        .is_some_and(|t| t.text() == "NVE LIVE PATCHED")));
 
     // Tier-2 DylibReload over a binary NVP1 frame.
     let reload = HotPatchMsg::DylibReload {
@@ -336,8 +231,7 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 #[test]
 fn studio_workspace_mounts_interacts_and_time_travels() {
@@ -352,7 +246,6 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert!(init.op_count > 0);
     assert!(init.mutation_count > 0);
     assert!(session.node_count() > 20);
-    assert_scene_view_matches_store(&session);
 
     let html0 = session.render_html();
     assert_valid_dom_html(&html0);
@@ -375,14 +268,14 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert!(html_after_status.contains("Status -&gt; Done"));
     assert!(html_after_status.contains("Done (2)"));
     assert!(html_after_status.contains("Snapshot 2 / 2"));
-    assert_scene_view_matches_store(&session);
 
+    let nodes_before_nav = session.node_count();
     press_test_id(&mut session, "nav-engineering", 2000);
-    assert!(
-        session.scene().view().removed_count > 0,
-        "switching views should report removed nodes in NveSceneView"
+    assert_ne!(
+        session.node_count(),
+        nodes_before_nav,
+        "switching views should add/remove nodes in the store"
     );
-    assert_scene_view_matches_store(&session);
     let html_eng = session.render_html();
     assert_valid_dom_html(&html_eng);
     assert!(html_eng.contains("# engineering"));
@@ -391,7 +284,6 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert!(html_eng.contains("Snapshot 3 / 3"));
 
     press_test_id(&mut session, "nav-metrics", 3000);
-    assert_scene_view_matches_store(&session);
     let html_metrics = session.render_html();
     assert_valid_dom_html(&html_metrics);
     assert!(html_metrics.contains("Live Metrics"));
@@ -399,7 +291,6 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert!(html_metrics.contains("Snapshot 4 / 4"));
 
     press_test_id(&mut session, "accent-violet", 4000);
-    assert_scene_view_matches_store(&session);
     let ssr_violet = session.render_ssr();
     assert_valid_dom_html(&ssr_violet.html);
     assert!(ssr_violet.html.contains("Accent -&gt; Violet"));
@@ -428,7 +319,6 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert!(html_first.contains("Done (1)"));
 
     press_test_id(&mut session, "tt-live", 7000);
-    assert_scene_view_matches_store(&session);
     let html_live = session.render_html();
     assert_valid_dom_html(&html_live);
     assert!(html_live.contains("Snapshot 5 / 5"));
@@ -439,35 +329,7 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
-))]
-#[test]
-fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
-    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
-    let ptr_before = session.scene().view_ptr();
-    // SAFETY: `ptr_before` points to the session's stable `NveSceneView`.
-    let empty_view = unsafe { *ptr_before };
-    assert_eq!(empty_view.schema_hash, NVE_SCENE_SCHEMA_HASH);
-    assert_eq!(empty_view.node_count, 0);
-    // SAFETY: `empty_view` borrows the unmutated empty scene table.
-    let empty_ref = unsafe { NveSceneRef::from_raw(empty_view) }.unwrap();
-    assert!(empty_ref.nodes().is_empty());
-
-    session.render_initial().unwrap();
-    assert_eq!(session.scene().view_ptr(), ptr_before);
-    // SAFETY: `ptr_before` remains valid across `render_initial()` (pointer stability invariant).
-    let mounted_view = unsafe { *ptr_before };
-    assert_eq!(mounted_view.frame_id, 1);
-    assert_eq!(mounted_view.node_count as usize, session.node_count());
-    assert_scene_view_matches_store(&session);
-}
-
-#[cfg(all(
-    feature = "app-studio",
-    feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
+    feature = "dev"
 ))]
 #[test]
 fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize() {
@@ -478,7 +340,6 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     };
     let mut session = WebAppSession::new_studio_workspace(1, WebBackend::new(), desktop_vp);
     session.render_initial().unwrap();
-    assert_scene_view_matches_store(&session);
 
     // 1. Image avatar `<img>` carries `ImageFit::Cover`, `alt`, and PNG data-URI `src`.
     let avatar_id = find_node_by_test_id(session.store(), "task-avatar-1")
@@ -541,7 +402,6 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     });
     session.pump_events().unwrap().expect("submit custom task");
     assert!(session.render_html().contains("Web Canvas Parity"));
-    assert_scene_view_matches_store(&session);
 
     // 3. Cmd+K palette open -> ARIA dialog/searchbox -> filter -> ArrowDown -> Enter -> Escape.
     assert!(session.dispatch_keydown("k", true, false).unwrap().is_some());
@@ -633,12 +493,10 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(find_node_by_test_id(session.store(), "mobile-top-bar").is_some());
     assert!(find_node_by_test_id(session.store(), "desktop-sidebar").is_none());
     assert!(find_node_by_test_id(session.store(), "center-workspace").is_some());
-    assert_scene_view_matches_store(&session);
 
     assert!(session.resize_viewport(desktop_vp).unwrap().is_some());
     assert!(find_node_by_test_id(session.store(), "desktop-sidebar").is_some());
     assert!(find_node_by_test_id(session.store(), "mobile-top-bar").is_none());
-    assert_scene_view_matches_store(&session);
 }
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]

@@ -5,8 +5,9 @@ import 'package:nve_host/nve_host.dart';
 import 'check.dart';
 
 /// `nve codegen abi` output against this package's static runtime: every generated table key is
-/// `xxh64(name)`, every field spec fits its row, the wasm32 `SceneLayout` matches the generated
-/// struct layouts, and a `TableReader` reads a generated default row with a generated field spec.
+/// `xxh64(name)`, every field spec fits its row, and a `TableReader` reads a generated default row
+/// with a generated field spec. (The generated record sizes the `SceneReader` hard-codes live in
+/// `dart:ffi` code and are locked by the VM-only runtime ingress suite.)
 void runGenerated(Check c) {
   for (final t in nveTables) {
     c.eq(t.key, Key64.of(t.name), '${t.name} key is xxh64(name)');
@@ -15,9 +16,6 @@ void runGenerated(Check c) {
       c.that(f.fits(t.words), '${t.name} field fits its row');
     }
   }
-  c.eq(nveSceneLayoutWasm32.nodeStride, NveRenderNodeLayout.size, 'node stride');
-  c.eq(nveSceneLayoutWasm32.tables, NveSceneViewLayout.tables, 'tables offset');
-  c.eq(nveSceneLayoutWasm32.tableView.stride, NveTableViewLayout.size, 'table view stride');
 
   final rows = ByteData(LayoutTable.words * 4);
   for (var i = 0; i < LayoutTable.words; i++) {

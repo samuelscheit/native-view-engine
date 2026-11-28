@@ -2,7 +2,7 @@ package dev.nve.android.jni;
 
 import dev.nve.host.EventRingWriter;
 import dev.nve.host.NativeRuntime;
-import dev.nve.host.RuntimeSceneReader;
+import dev.nve.host.SceneReader;
 import dev.nve.host.TableReader;
 import dev.nve.host.generated.NveAbi;
 import dev.nve.host.generated.NveRuntimeAbi;
@@ -106,7 +106,7 @@ public final class EventsJniTest {
     }
 
     static String title(Fixtures.Scene scene, Fixtures fx) {
-        final RuntimeSceneReader s = scene.acquire();
+        final SceneReader s = scene.acquire();
         final TableReader text = s.findTable(NveTables.Text.KEY);
         final int r = text == null ? -1 : s.rowOf(text, s.resolve(fx.id("title")));
         final String out = r < 0 ? null : s.text(text, r, NveTables.Text.TEXT);

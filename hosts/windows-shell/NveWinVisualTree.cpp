@@ -188,7 +188,7 @@ void NveWinVisualTree::resort(std::vector<uint32_t>& paint_order, std::span<cons
   }
 }
 
-void NveWinVisualTree::apply_scroll_offsets(const host::RuntimeSceneReader& scene) {
+void NveWinVisualTree::apply_scroll_offsets(const host::SceneReader& scene) {
   bool changed = false;
   const auto apply = [&](WinNodeVisual& v, const NveScrollOffset& s) {
     const float x = std::isfinite(s.x) ? s.x : 0.0f, y = std::isfinite(s.y) ? s.y : 0.0f;

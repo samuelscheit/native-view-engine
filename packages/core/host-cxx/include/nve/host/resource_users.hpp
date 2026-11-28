@@ -5,7 +5,7 @@
 // list per resource id; list heads live in an open-addressed (linear probing, backward-shift
 // delete) map holding only ids some view references, so memory is O(views + referenced ids) for
 // any id value. Re-pointing a slot and finding a list are O(1) expected; visiting every user of a
-// resource whose bytes changed (`NveRuntimeSceneView::dirty_resources`) is O(users). Storage grows
+// resource whose bytes changed (`NveSceneView::dirty_resources`) is O(users). Storage grows
 // only with node capacity and the number of referenced ids: steady state allocates nothing.
 #pragma once
 

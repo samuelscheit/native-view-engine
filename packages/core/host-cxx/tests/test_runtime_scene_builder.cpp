@@ -1,5 +1,5 @@
 // C++20 live suite (links `libnve_runtime`): `Nve2FrameBuilder` frames declaring the generated
-// core tables, decoded by the runtime and read back through `RuntimeSceneReader` + the generated
+// core tables, decoded by the runtime and read back through `SceneReader` + the generated
 // field specs; zero-copy `resource_payload`; and the same keyframe replayed into a cold surface.
 #include <algorithm>
 #include <array>

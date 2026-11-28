@@ -9,7 +9,7 @@ language mode, so strict concurrency is on.
 | `Key64.swift` | `Key64`: 64-bit identity key with `(lo, hi)` halves |
 | `BinCodec.swift` | `BinReader` / `BinWriter` (typed `throws(BinError)`), the `NveBinValue` format, `Utf8.isValid` |
 | `TableReader.swift` | `FieldKind`, `FieldSpec`, `LengthValue`, `Rgba`, `StrSpan`, `TableReader`, `TableViewABI` |
-| `RuntimeSceneReader.swift` | `RuntimeSceneReader<View: RuntimeSceneViewABI>` over `libnve_runtime`'s `NveRuntimeSceneView` (`NveNodeRow` / `NveLayoutRect` / slabs / tables), typed `NodeId`: validates once (null, address-space fit, alignment, UTF-8, tables), then O(1) bounds-checked, allocation-free reads |
+| `SceneReader.swift` | `SceneReader<View: RuntimeSceneViewABI>` over `libnve_runtime`'s `NveSceneView` (`NveNodeRow` / `NveLayoutRect` / slabs / tables), typed `NodeId`: validates once (null, address-space fit, alignment, UTF-8, tables), then O(1) bounds-checked, allocation-free reads |
 | `HybridRuntime.swift` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |
 
 The generated C structs conform with empty extensions, because Swift imports their fields with exactly
@@ -19,11 +19,11 @@ the protocol's names and types (implicitly unwrapped pointers):
 extension NveTableView: TableViewABI {}
 extension NveNodeRow: NodeRowABI {}
 extension NveLayoutRect: LayoutRectABI {}
-extension NveRuntimeSceneView: RuntimeSceneViewABI {}
-var raw = NveRuntimeSceneView()
+extension NveSceneView: RuntimeSceneViewABI {}
+var raw = NveSceneView()
 guard api.pointee.scene_acquire(handle, &raw) == 0 else { return }
 defer { _ = api.pointee.scene_release(handle) }
-let scene = try RuntimeSceneReader.open(raw, expectedSchema: Key64(NVE_RUNTIME_SCHEMA_HASH))
+let scene = try SceneReader.open(raw, expectedSchema: Key64(NVE_RUNTIME_SCHEMA_HASH))
 ```
 
 - `FieldSpec.init` throws for an invalid spec, so every `FieldSpec` is well-formed.

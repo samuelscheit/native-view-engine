@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use loader_common::{compile_test_cdylib, dylib_ext, SHARED_ABI_DEFS};
 use nve_abi::{
-    NveBufferSlice, NveRuntimeApi, NveRuntimeConfig, NveRuntimeHandle, NveRuntimeSceneView, NveRuntimeStatus,
+    NveBufferSlice, NveRuntimeApi, NveRuntimeConfig, NveRuntimeHandle, NveSceneView, NveRuntimeStatus,
     NveStrSlice, NVE_RUNTIME_ABI_VERSION,
 };
 use nve_engine::StateFile;
@@ -440,7 +440,7 @@ fn state_calls_that_cannot_complete_never_touch_the_disk() {
     for (bytes, schema) in cases {
         std::fs::write(&path, bytes).unwrap();
         let before = disk(&dir.0);
-        let mut view = NveRuntimeSceneView::default();
+        let mut view = NveSceneView::default();
         // SAFETY: `rt.h` is live; the scene is released below on this thread.
         assert_eq!(unsafe { (rt.api.scene_acquire)(rt.h, &mut view) }, OK);
         assert_eq!(rt.restore_file(&path, schema), BUSY, "restore while a scene is held");

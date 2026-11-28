@@ -9,7 +9,6 @@ export 'src/generated/nve_abi_const.generated.dart';
 export 'src/generated/nve_tables.generated.dart';
 export 'src/hybrid_runtime.dart';
 export 'src/key64.dart' show Key64;
-export 'src/runtime_scene_reader.dart';
 export 'src/scene_reader.dart';
 export 'src/table_reader.dart';
 export 'src/utf8.dart' show decodeUtf8PreserveBom, isValidUtf8, utf8EncodedLength;

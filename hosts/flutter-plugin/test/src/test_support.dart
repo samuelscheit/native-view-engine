@@ -1,4 +1,4 @@
-/// Shared test support: a synthetic [RuntimeSceneReader] builder (node rows, rects, dense/sparse
+/// Shared test support: a synthetic [SceneReader] builder (node rows, rects, dense/sparse
 /// tables seeded from generated defaults, string fields, scroll offsets) and raster helpers.
 library;
 
@@ -107,7 +107,7 @@ final class SceneBuilder {
   /// Corrupts the frame: [index]'s parent row points at [parent] (children slab untouched).
   void reparent(int index, int parent) => _parents[index] = parent;
 
-  RuntimeSceneReader build({Key64 frameId = const Key64(1, 0), int sceneEpoch = 0, List<int> dirtyResources = const []}) {
+  SceneReader build({Key64 frameId = const Key64(1, 0), int sceneEpoch = 0, List<int> dirtyResources = const []}) {
     final cap = _rects.length;
     final rows = Uint32List(cap * nodeRowWords);
     final rects = Float32List(cap * layoutRectFloats);
@@ -148,7 +148,7 @@ final class SceneBuilder {
       scrollF[i * 3 + 1] = sorted[i].$2;
       scrollF[i * 3 + 2] = sorted[i].$3;
     }
-    return RuntimeSceneReader(
+    return SceneReader(
       expectedSchema: _schema,
       schemaHash: _schema,
       frameId: frameId,

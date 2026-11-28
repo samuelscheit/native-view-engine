@@ -1,5 +1,5 @@
 //! Modular zero-cost C ABI (`nve_get_interface`) shared between Rust (`nve-engine`),
-//! C++ (`nve-fabric-bridge`), ObjC++ (`hosts/ios-shell`, `hosts/macos-shell`),
+//! `libnve_runtime` (which attaches app modules to its surfaces), ObjC++ (`hosts/apple-common`),
 //! Kotlin/JNI (`hosts/android-shell`, `hosts/compose-kit`), Dart FFI (`hosts/flutter-plugin`),
 //! Swift (`hosts/swiftui-kit`), and Tier-2 hot-swappable app `cdylib`s.
 //!
@@ -82,40 +82,6 @@ impl NveBufferSlice {
         // SAFETY: Forwarded caller contract.
         unsafe { self.try_as_slice() }.unwrap_or(&[])
     }
-}
-
-/// Surface viewport configuration passed to `nve_fabric_host_create`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, NveAbi)]
-#[nve_abi(size = 16)]
-pub struct NveSurfaceConfig {
-    #[nve_abi(offset = 0)]
-    pub surface_id: u32,
-    #[nve_abi(offset = 4)]
-    pub width: f32,
-    #[nve_abi(offset = 8)]
-    pub height: f32,
-    #[nve_abi(offset = 12)]
-    pub scale_factor: f32,
-}
-
-/// Per-frame timing and mutation counters populated by `nve_fabric_host_submit_frame`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, NveAbi)]
-#[nve_abi(size = 40)]
-pub struct NveFrameStats {
-    #[nve_abi(offset = 0)]
-    pub op_count: u32,
-    #[nve_abi(offset = 4)]
-    pub mutation_count: u32,
-    #[nve_abi(offset = 8)]
-    pub decode_us: u64,
-    #[nve_abi(offset = 16)]
-    pub layout_us: u64,
-    #[nve_abi(offset = 24)]
-    pub diff_us: u64,
-    #[nve_abi(offset = 32)]
-    pub mount_us: u64,
 }
 
 /// Box layout constraints passed to `NveLayoutApi::measure`.
@@ -349,12 +315,12 @@ mod tests {
     fn core_c_header_matches_compile_time_schema_hash_when_present() {
         assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
         let header_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../cxx/nve-fabric-bridge/include/nve_abi.generated.h");
+            .join("../host-cxx/include/nve/generated/nve_abi.generated.h");
         if !header_path.is_file() {
             return;
         }
         let content = std::fs::read_to_string(&header_path)
-            .expect("read generated cxx/nve-fabric-bridge/include/nve_abi.generated.h");
+            .expect("read generated host-cxx nve_abi.generated.h");
         let expected_macro = format!("0x{NVE_CORE_ABI_SCHEMA_HASH:016X}ULL");
         assert!(
             content.contains(&expected_macro),

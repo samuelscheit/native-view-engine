@@ -65,7 +65,7 @@ pub fn BentoArchitectureGrid() -> Element {
                     },
                     text {
                         style: "font-size: 13px; font-weight: 600; color: {theme.text.link.hex()};",
-                        "Full Criterion & C++20 Benchmarks →"
+                        "Full Criterion Benchmarks →"
                     }
                 }
             }
@@ -88,9 +88,9 @@ pub fn BentoArchitectureGrid() -> Element {
                     test_id: "bento-ir",
                     eyebrow: "BINARY IR & SCENE SLAB",
                     metric: "21.17 µs",
-                    title: "CommandBuffer + 64B NveRenderNode",
-                    body: "Stack-packed 1,000-node frame encode (18.05 µs streaming decode at ~4.7 GiB/s) paired with 64-byte cache-line NveRenderNode slabs (24.82 ns dirty read).",
-                    tags: vec!["NVE1 Frame", "64-byte aligned", "0 JSON"],
+                    title: "CommandBuffer + 32B NveNodeRow",
+                    body: "Stack-packed 1,000-node frame encode (18.05 µs streaming decode at ~4.7 GiB/s) paired with a zero-copy NveSceneView over 32-byte NveNodeRow slabs (17.09 ns direct FFI value read).",
+                    tags: vec!["NVE1 Frame", "32-byte rows", "0 JSON"],
                 }
 
                 BentoMetricCard {
@@ -98,7 +98,7 @@ pub fn BentoArchitectureGrid() -> Element {
                     eyebrow: "VIRTUALIZATION & SSR",
                     metric: "100,000 rows",
                     title: "O(log N) Fenwick VirtualList @ 60fps",
-                    body: "Instant prefix-sum jump & filter across 100k items, 451 µs C++20 1,000-row layout, 3.62 µs hit-test, and 12.45 µs semantic HTML5 SSR.",
+                    body: "Instant prefix-sum jump & filter across 100k items, 1.77 ms Taffy 1,000-row layout, 3.62 µs hit-test, and 12.45 µs semantic HTML5 SSR.",
                     tags: vec!["Fenwick Tree", "Taffy / Yoga", "12.45 µs SSR"],
                 }
             }

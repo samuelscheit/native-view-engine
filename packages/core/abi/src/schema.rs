@@ -7,18 +7,11 @@
 //! and TypeScript ABI bindings with zero duplicated spec files.
 
 use crate::ffi::{
-    NativeEventKind, NveBufferSlice, NveEventPayloadTag, NveFrameStats, NveGestureDisposition,
-    NveIntrinsicSize, NveSizeConstraints, NveSurfaceConfig, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NativeEventKind, NveBufferSlice, NveEventPayloadTag, NveGestureDisposition,
+    NveIntrinsicSize, NveSizeConstraints, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
     NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use crate::host::{NveHostCallbacks, NVE_CHANNEL_FLAG_RETAIN};
-use crate::scene::{
-    NveNodeMeta, NveRenderNode, NveSceneView, NVE_META_FLAG_ACCESSIBILITY_HIDDEN,
-    NVE_META_FLAG_DISABLED, NVE_META_FLAG_MULTILINE, NVE_META_FLAG_SECURE_TEXT_ENTRY,
-    NVE_META_RESIZE_MODE_MASK, NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS,
-    NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE,
-    NVE_PRIMARY_SLOT_NONE, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
-};
 use crate::value::{
     NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry, NvePropSlice,
     NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap, NveValueTag,
@@ -163,15 +156,6 @@ pub struct AbiModuleDescriptor {
     pub methods: &'static [AbiMethodDescriptor],
 }
 
-/// Direct `extern "C"` function declaration descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbiCFunctionDescriptor {
-    pub name: &'static str,
-    pub params: &'static [AbiParamDescriptor],
-    pub return_type: &'static str,
-    pub doc: Option<&'static str>,
-}
-
 /// Complete colocated ABI file descriptor consumed directly by `nve-codegen`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AbiFileDescriptor {
@@ -181,7 +165,6 @@ pub struct AbiFileDescriptor {
     pub enums: &'static [AbiEnumDescriptor],
     pub records: &'static [AbiRecordDescriptor],
     pub modules: &'static [AbiModuleDescriptor],
-    pub c_functions: &'static [AbiCFunctionDescriptor],
 }
 
 /// Unified schema trait implemented by `#[derive(NveAbi)]` on structs, unions, and enums.
@@ -243,11 +226,14 @@ const CORE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_EVENT_FLAG_BUTTON_MASK", NVE_EVENT_FLAG_BUTTON_MASK as u64, true, Some("Pointer button bitmask (bits 0..=2) in `NveDirectEvent::event_flags`.")),
     abi_const("NVE_EVENT_FLAG_CAPTURE", NVE_EVENT_FLAG_CAPTURE as u64, true, Some("Pointer capture active flag in `NveDirectEvent::event_flags`.")),
     abi_const("NVE_EVENT_FLAG_COMPOSING", NVE_EVENT_FLAG_COMPOSING as u64, true, Some("IME composition active flag in `NveDirectEvent::event_flags`.")),
+    abi_const("NVE_PRIMARY_SLOT_NONE", crate::table::NVE_PRIMARY_SLOT_NONE as u64, true, Some("`NveNodeRow::primary_slot` sentinel (`0xFF`): plain container with no realizing table.")),
+    abi_const("NVE_ROW_INDEX_PAGE_BITS", crate::table::NVE_ROW_INDEX_PAGE_BITS as u64, false, Some("`log2` of the node indices one `NveTableView::row_index_pages` page covers.")),
+    abi_const("NVE_ROW_INDEX_PAGE_LEN", crate::table::NVE_ROW_INDEX_PAGE_LEN as u64, false, Some("Entries per `NveTableView::row_index_pages` page.")),
+    abi_const("NVE_ROW_INDEX_NO_PAGE", crate::table::NVE_ROW_INDEX_NO_PAGE as u64, true, Some("`NveTableView::row_index_dir` entry of a node-index range without a page.")),
 ];
 
 const CORE_ALIASES: &[AbiAliasDescriptor] = &[
     AbiAliasDescriptor { name: "NveAppHandle", target: "*mut c_void", doc: Some("Opaque handle to an instantiated NVE app/component.") },
-    AbiAliasDescriptor { name: "NveFabricHostHandle", target: "*mut c_void", doc: Some("Opaque handle to a C++20 `nve-fabric-bridge` host instance.") },
     AbiAliasDescriptor { name: "NveHostInvokeFn", target: "*const c_void", doc: Some("Host capability invocation callback function pointer (`NveHostCallbacks::invoke`).") },
     AbiAliasDescriptor { name: "NveHostChannelPublishFn", target: "*const c_void", doc: Some("Host channel-bus publish callback function pointer (`NveHostCallbacks::channel_publish`).") },
 ];
@@ -272,11 +258,10 @@ const CORE_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NvePropEntry as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NvePropSlice as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveCommandSlice as NveStructSchema>::SCHEMA),
-    AbiRecordDescriptor::Struct(<NveSurfaceConfig as NveStructSchema>::SCHEMA),
-    AbiRecordDescriptor::Struct(<NveFrameStats as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveSizeConstraints as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveIntrinsicSize as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveHostCallbacks as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<crate::table::NveTableView as NveStructSchema>::SCHEMA),
 ];
 
 const CORE_MODULES: &[AbiModuleDescriptor] = &[
@@ -347,55 +332,6 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     },
 ];
 
-const CORE_C_FUNCTIONS: &[AbiCFunctionDescriptor] = &[
-    AbiCFunctionDescriptor {
-        name: "nve_fabric_host_create",
-        params: &[abi_param("config", "NveSurfaceConfig")],
-        return_type: "NveFabricHostHandle",
-        doc: Some("C API implemented by `cxx/nve-fabric-bridge` for iOS, macOS, Android, and headless Fabric tests."),
-    },
-    AbiCFunctionDescriptor { name: "nve_fabric_host_destroy", params: &[abi_param("host", "NveFabricHostHandle")], return_type: "()", doc: None },
-    AbiCFunctionDescriptor {
-        name: "nve_fabric_host_submit_frame",
-        params: &[
-            abi_param("host", "NveFabricHostHandle"),
-            abi_param("command_buffer", "NveBufferSlice"),
-            abi_param("out_stats", "*mut NveFrameStats"),
-        ],
-        return_type: "i32",
-        doc: None,
-    },
-    AbiCFunctionDescriptor { name: "nve_fabric_host_drain_events", params: &[abi_param("host", "NveFabricHostHandle")], return_type: "NveBufferSlice", doc: None },
-    AbiCFunctionDescriptor { name: "nve_fabric_host_node_count", params: &[abi_param("host", "NveFabricHostHandle")], return_type: "u32", doc: None },
-];
-
-const SCENE_CONSTS: &[AbiConstDescriptor] = &[
-    abi_const("NVE_RENDER_NODE_SIZE", NVE_RENDER_NODE_SIZE as u64, false, Some("Exact byte stride of one `NveRenderNode` record (one 64-byte cache line).")),
-    abi_const("NVE_RENDER_NODE_ALIGN", NVE_RENDER_NODE_ALIGN as u64, false, Some("Required cache-line alignment of `NveRenderNode` backing slabs in Rust.")),
-    abi_const("NVE_NODE_META_SIZE", NVE_NODE_META_SIZE as u64, false, Some("Exact byte stride of one `NveNodeMeta` record (64 bytes).")),
-    abi_const("NVE_NODE_META_ALIGN", NVE_NODE_META_ALIGN as u64, false, Some("Natural alignment of `NveNodeMeta` (4 bytes).")),
-    abi_const("NVE_NODE_LEAF_TEXT", NVE_NODE_LEAF_TEXT as u64, false, Some("Bit flags on `NveRenderNode::flags`.")),
-    abi_const("NVE_NODE_INTERACTIVE", NVE_NODE_INTERACTIVE as u64, false, None),
-    abi_const("NVE_NODE_CLIP_BOUNDS", NVE_NODE_CLIP_BOUNDS as u64, false, None),
-    abi_const("NVE_PRIMARY_SLOT_NONE", NVE_PRIMARY_SLOT_NONE as u64, true, Some("Sentinel `NveRenderNode::primary_slot` value (`0xFF`) meaning plain container with no realizing table.")),
-    abi_const("NVE_META_FLAG_DISABLED", NVE_META_FLAG_DISABLED as u64, true, Some("Bit flags on `NveNodeMeta::flags`.")),
-    abi_const("NVE_META_FLAG_SECURE_TEXT_ENTRY", NVE_META_FLAG_SECURE_TEXT_ENTRY as u64, true, None),
-    abi_const("NVE_META_FLAG_MULTILINE", NVE_META_FLAG_MULTILINE as u64, true, None),
-    abi_const("NVE_META_FLAG_ACCESSIBILITY_HIDDEN", NVE_META_FLAG_ACCESSIBILITY_HIDDEN as u64, true, None),
-    abi_const("NVE_META_RESIZE_MODE_SHIFT", NVE_META_RESIZE_MODE_SHIFT as u64, false, None),
-    abi_const("NVE_META_RESIZE_MODE_MASK", NVE_META_RESIZE_MODE_MASK as u64, true, None),
-    abi_const("NVE_ROW_INDEX_PAGE_BITS", crate::table::NVE_ROW_INDEX_PAGE_BITS as u64, false, Some("`log2` of the node indices one `NveTableView::row_index_pages` page covers.")),
-    abi_const("NVE_ROW_INDEX_PAGE_LEN", crate::table::NVE_ROW_INDEX_PAGE_LEN as u64, false, Some("Entries per `NveTableView::row_index_pages` page.")),
-    abi_const("NVE_ROW_INDEX_NO_PAGE", crate::table::NVE_ROW_INDEX_NO_PAGE as u64, true, Some("`NveTableView::row_index_dir` entry of a node-index range without a page.")),
-];
-
-const SCENE_RECORDS: &[AbiRecordDescriptor] = &[
-    AbiRecordDescriptor::Struct(<NveRenderNode as NveStructSchema>::SCHEMA),
-    AbiRecordDescriptor::Struct(<crate::table::NveTableView as NveStructSchema>::SCHEMA),
-    AbiRecordDescriptor::Struct(<NveSceneView as NveStructSchema>::SCHEMA),
-    AbiRecordDescriptor::Struct(<NveNodeMeta as NveStructSchema>::SCHEMA),
-];
-
 /// Returns the single-source-of-truth Core C ABI descriptor derived directly from the real
 /// compiled `#[repr(C)]` types in `packages/core/abi`.
 pub const fn core_abi_descriptor() -> AbiFileDescriptor {
@@ -406,21 +342,6 @@ pub const fn core_abi_descriptor() -> AbiFileDescriptor {
         enums: CORE_ENUMS,
         records: CORE_RECORDS,
         modules: CORE_MODULES,
-        c_functions: CORE_C_FUNCTIONS,
-    }
-}
-
-/// Returns the single-source-of-truth 64-byte Scene ABI descriptor derived directly from the real
-/// compiled `NveRenderNode` and `NveSceneView` structs in `packages/core/abi`.
-pub const fn scene_abi_descriptor() -> AbiFileDescriptor {
-    AbiFileDescriptor {
-        namespace: Some("NveSceneAbi"),
-        consts: SCENE_CONSTS,
-        aliases: &[],
-        enums: &[],
-        records: SCENE_RECORDS,
-        modules: &[],
-        c_functions: &[],
     }
 }
 
@@ -553,13 +474,6 @@ pub const fn compute_core_abi_schema_hash() -> u64 {
         i += 1;
     }
 
-    i = 0;
-    while i < desc.c_functions.len() {
-        let cf = &desc.c_functions[i];
-        hash_tag_str(&mut h, "cfn");
-        hash_sig(&mut h, cf.name, cf.params, cf.return_type, false, false);
-        i += 1;
-    }
 
     h.digest()
 }

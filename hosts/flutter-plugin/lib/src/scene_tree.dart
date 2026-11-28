@@ -1,5 +1,5 @@
 /// Tree queries shared by painting, hit-testing, scrolling, and semantics over one borrowed
-/// [RuntimeSceneReader] frame: paint order (`z_index`), clipping, `display: none`, visual rects
+/// [SceneReader] frame: paint order (`z_index`), clipping, `display: none`, visual rects
 /// (published rects are pre-scroll; ancestors' scroll shifts are subtracted here), and point
 /// queries. Valid only inside the `withScene` scope that produced the reader.
 library;
@@ -34,7 +34,7 @@ final class NveSceneTree {
         scroll = s.findTable(ScrollTable.key),
         interaction = s.findTable(InteractionTable.key);
 
-  final RuntimeSceneReader s;
+  final SceneReader s;
   final TableReader? visual;
   final TableReader? layout;
   final TableReader? scroll;

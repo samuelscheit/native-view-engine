@@ -89,7 +89,7 @@ pub fn scan_repr_c_abi_locks(
         }
     }
 
-    for (ty, expected) in [("NodeRow", 32usize), ("NveRenderNode", 64), ("NveEvent", 64)] {
+    for (ty, expected) in [("NodeRow", 32usize), ("NveNodeRow", 32), ("NveEvent", 64)] {
         let locked = abi_structs
             .iter()
             .chain(store_structs.iter())

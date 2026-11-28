@@ -10,7 +10,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Reusable validated zero-copy reader over one acquired {@code NveRuntimeSceneView} frame, packed
+ * Reusable validated zero-copy reader over one acquired {@code NveSceneView} frame, packed
  * by the JNI layer into the generated {@link dev.nve.host.generated.NveJniFrame} layout: a
  * {@code long[]} header and direct-buffer slabs over the runtime's own memory.
  *
@@ -26,10 +26,10 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>Node ids are raw {@code NodeId}s ({@code generation << 24 | index}); node indexes address
  * {@code rows} / {@code rects} / dense table rows. UTF-8 validity of the text slab is checked by
- * the native {@code nve::host::RuntimeSceneReader::open} before the frame is handed out; Java
+ * the native {@code nve::host::SceneReader::open} before the frame is handed out; Java
  * decoding is memory-safe regardless.
  */
-public final class RuntimeSceneReader {
+public final class SceneReader {
     /** {@code NVE_RUNTIME_SCHEMA_HASH}: fingerprint of the runtime scene + vtable layout read here. */
     public static final Key64 SCHEMA = Key64.of(NveRuntimeAbi.RUNTIME_SCHEMA_HASH);
     public static final int INDEX_BITS = 24;
@@ -93,7 +93,7 @@ public final class RuntimeSceneReader {
         }
     }
 
-    public RuntimeSceneReader() {
+    public SceneReader() {
         java.util.Arrays.fill(bySlot, -1);
     }
 
@@ -103,7 +103,7 @@ public final class RuntimeSceneReader {
      *
      * @throws SceneException when the header, a slab, a delta index, or a table is invalid
      */
-    public RuntimeSceneReader attach(long[] header, ByteBuffer[] slabs) {
+    public SceneReader attach(long[] header, ByteBuffer[] slabs) {
         try {
             return attachPacked(header, slabs);
         } catch (SceneException e) {
@@ -112,7 +112,7 @@ public final class RuntimeSceneReader {
         }
     }
 
-    private RuntimeSceneReader attachPacked(long[] h, ByteBuffer[] s) {
+    private SceneReader attachPacked(long[] h, ByteBuffer[] s) {
         if (h == null || s == null || h.length < HEADER_LEN || s.length < SLABS_LEN) {
             throw new SceneException(SceneException.Kind.MISSING_SLAB, "packed frame arrays shorter than NveJniFrame");
         }
@@ -278,7 +278,7 @@ public final class RuntimeSceneReader {
         return frameId;
     }
 
-    /** {@code NveRuntimeSceneView::scene_epoch}: changes on every runtime scene reset. */
+    /** {@code NveSceneView::scene_epoch}: changes on every runtime scene reset. */
     public int sceneEpoch() {
         return sceneEpoch;
     }

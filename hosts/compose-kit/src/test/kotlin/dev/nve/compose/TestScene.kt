@@ -3,7 +3,7 @@ package dev.nve.compose
 import dev.nve.host.FieldSpec
 import dev.nve.host.Key64
 import dev.nve.host.PackedSceneBuilder
-import dev.nve.host.RuntimeSceneReader
+import dev.nve.host.SceneReader
 import dev.nve.host.generated.NveModuleTables
 import dev.nve.host.generated.NveTables
 import java.nio.ByteBuffer
@@ -73,9 +73,9 @@ class TestScene(capacity: Int = 16, var frameId: Long = 1L, var epoch: Int = 0) 
         return builder.header() to (builder.slabs() as Array<ByteBuffer?>)
     }
 
-    fun reader(): RuntimeSceneReader {
+    fun reader(): SceneReader {
         val (h, s) = build()
-        return RuntimeSceneReader().attach(h, s)
+        return SceneReader().attach(h, s)
     }
 }
 

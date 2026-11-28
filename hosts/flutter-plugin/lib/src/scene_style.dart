@@ -48,7 +48,7 @@ final class NveTextStyle {
   final int decoration;
 
   /// This style overridden by node [index]'s `Typography` row in [table] (if any).
-  NveTextStyle resolve(RuntimeSceneReader s, TableReader? table, int index) {
+  NveTextStyle resolve(SceneReader s, TableReader? table, int index) {
     final row = s.rowOf(table, index);
     if (row < 0) {
       return this;

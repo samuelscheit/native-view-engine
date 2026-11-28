@@ -1,5 +1,5 @@
 /// `dart:ffi` layout locks of the runtime scene ABI (sizes and field offsets mirror the Rust
-/// `offset_of!` asserts) and untrusted `NveRuntimeSceneView` ingress: every malformed view a
+/// `offset_of!` asserts) and untrusted `NveSceneView` ingress: every malformed view a
 /// runtime could publish is rejected with a [SceneException] before any slab is viewed.
 library;
 
@@ -31,11 +31,14 @@ void runRuntimeIngress(Check c) {
   c.eq(nveNodeRowSize, nodeRowWords * 4, 'node row words');
   c.eq(ffi.sizeOf<NveLayoutRect>(), nveLayoutRectSize, 'NveLayoutRect size');
   c.eq(nveLayoutRectSize, layoutRectFloats * 4, 'layout rect floats');
+  c.eq(nveLayoutRectSize, 16, 'NveLayoutRect is 16 bytes');
+  c.eq(nveNodeRowSize, 32, 'NveNodeRow is 32 bytes');
+  c.eq(scrollOffsetWords * 4, 12, 'NveScrollOffset is 12 bytes');
   c.eq(ffi.sizeOf<NveScrollOffset>(), scrollOffsetWords * 4, 'NveScrollOffset size');
   c.eq(ffi.sizeOf<NveTableView>(), 32 + 5 * _ptr, 'NveTableView size (72 on 64-bit, 52 on 32-bit)');
-  final viewSize = ffi.sizeOf<NveRuntimeSceneView>();
+  final viewSize = ffi.sizeOf<NveSceneView>();
   // 56 + 10 pointers is a multiple of 8 on both data models: no tail padding after `moved_indices`.
-  c.eq(viewSize, 56 + 10 * _ptr, 'NveRuntimeSceneView size (136 on 64-bit, 96 on 32-bit)');
+  c.eq(viewSize, 56 + 10 * _ptr, 'NveSceneView size (136 on 64-bit, 96 on 32-bit)');
   // The measurer's style: fixed scalars, then the family slice at 24 on every data model.
   c.eq(ffi.sizeOf<NveRuntimeTextStyle>(), 24 + ffi.sizeOf<NveStrSlice>(), 'NveRuntimeTextStyle size');
   c.eq(
@@ -43,8 +46,8 @@ void runRuntimeIngress(Check c) {
           ffi.sizeOf<NveRuntimeTextStyle>(), (s) => s.ref.fontFamily.ptr = ffi.Pointer.fromAddress(0x10), _ptr),
       24,
       'NveRuntimeTextStyle.font_family @24');
-  int viewOffset(void Function(NveRuntimeSceneView v) write, [int width = 4]) =>
-      _offsetOf<NveRuntimeSceneView>(viewSize, (p) => write(p.ref), width);
+  int viewOffset(void Function(NveSceneView v) write, [int width = 4]) =>
+      _offsetOf<NveSceneView>(viewSize, (p) => write(p.ref), width);
   c.eq(viewOffset((v) => v.schemaHash = 1, 8), 0, 'schema_hash @0');
   c.eq(viewOffset((v) => v.frameId = 1, 8), 8, 'frame_id @8');
   c.eq(viewOffset((v) => v.nodeCapacity = 1), 16, 'node_capacity @16');
@@ -111,7 +114,7 @@ void runRuntimeIngress(Check c) {
   }
 
   // ---- untrusted ingress ----------------------------------------------------------------------
-  final view = NativeHeap.zeroed<NveRuntimeSceneView>(viewSize);
+  final view = NativeHeap.zeroed<NveSceneView>(viewSize);
   final table = NativeHeap.zeroed<NveTableView>(ffi.sizeOf<NveTableView>());
   final words = NativeHeap.zeroed<ffi.Uint32>(64 * 4);
   try {
@@ -121,7 +124,7 @@ void runRuntimeIngress(Check c) {
       view.ref.schemaHash = nveRuntimeSchemaHash.toBits();
     }
 
-    void rejects(SceneErrorKind kind, String what, void Function(NveRuntimeSceneView v) corrupt) {
+    void rejects(SceneErrorKind kind, String what, void Function(NveSceneView v) corrupt) {
       reset();
       corrupt(view.ref);
       final e = c.throwsA<SceneException>(() => readRuntimeScene(view.ref), what);
@@ -158,7 +161,7 @@ void runRuntimeIngress(Check c) {
         ..scrollCount = 1
         ..scrollOffsets = words.cast();
     });
-    void withTable(NveRuntimeSceneView v, void Function(NveTableView t) set) {
+    void withTable(NveSceneView v, void Function(NveTableView t) set) {
       v
         ..tableCount = 1
         ..tables = table;

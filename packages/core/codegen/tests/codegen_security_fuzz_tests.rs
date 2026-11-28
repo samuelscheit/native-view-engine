@@ -1,7 +1,5 @@
 mod common;
 
-use std::path::Path;
-
 use common::specs::{assert_balanced_delimiters, EMBEDDED_SWITCH_SPEC};
 use nve_codegen::{
     export_compose, export_flutter, export_rn_spec, export_swiftui, export_web_component,
@@ -108,8 +106,6 @@ fn export_and_import_neutralize_string_interpolation_and_comment_breakout() {
     assert!(!rn_kt.replace("\\$", "").contains("top$HOME"));
     assert!(!rn.native_component_ts.content.contains("*/ evil();"));
     assert_balanced_delimiters(&rn.native_component_ts.relative_path, &rn.native_component_ts.content);
-    assert_balanced_delimiters(&rn.cpp_bridge_hpp.relative_path, &rn.cpp_bridge_hpp.content);
-    assert_balanced_delimiters(&rn.cpp_bridge_cpp.relative_path, &rn.cpp_bridge_cpp.content);
     assert_balanced_delimiters(&rn.ios_component_view_mm.relative_path, &rn.ios_component_view_mm.content);
     assert_balanced_delimiters(&rn.android_view_manager_kt.relative_path, rn_kt);
     assert_balanced_delimiters(&rn.windows_component_view_hpp.relative_path, &rn.windows_component_view_hpp.content);
@@ -138,37 +134,6 @@ fn export_and_import_neutralize_string_interpolation_and_comment_breakout() {
     assert_balanced_delimiters(&web.element_js.relative_path, &web.element_js.content);
     assert_balanced_delimiters(&web.types_dts.relative_path, &web.types_dts.content);
 
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let include_dir = manifest_dir.join("../../../cxx/nve-fabric-bridge/include");
-    if include_dir.join("nve_rn_component.hpp").exists()
-        && std::process::Command::new("clang++")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    {
-        let tmp = std::env::temp_dir().join(format!(
-            "nve_codegen_adversarial_cpp_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        common::write_generated_c_abi_headers(&tmp);
-        rn.write_to_dir(&tmp).unwrap();
-        let out = std::process::Command::new("clang++")
-            .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
-            .arg("-I").arg(&tmp)
-            .arg("-I").arg(&include_dir)
-            .arg(tmp.join(&rn.cpp_bridge_cpp.relative_path))
-            .output()
-            .expect("clang++ adversarial export_rn");
-        assert!(
-            out.status.success(),
-            "adversarial export_rn C++20 failed:\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     let adversarial_rn_spec = r#"
     import type { ViewProps } from 'react-native';
     import type { WithDefault } from 'react-native/Libraries/Types/CodegenTypes';
@@ -184,11 +149,48 @@ fn export_and_import_neutralize_string_interpolation_and_comment_breakout() {
     for line in imported.rust_module.content.lines() {
         assert!(!line.trim_start().starts_with("fn injected()"), "comment breakout in import_rn Rust output: {line}");
     }
-    for line in imported.cpp_adapter.content.lines() {
+    assert_balanced_delimiters(&imported.rust_module.relative_path, &imported.rust_module.content);
+
+    // The TurboModule C++ host interface is std-only: it must compile standalone, even with a
+    // hostile module name and string-typed parameters.
+    let adversarial_tm_spec = r#"
+    import type { TurboModule } from 'react-native';
+    import { TurboModuleRegistry } from 'react-native';
+
+    export interface Spec extends TurboModule {
+      getValue(key: string, fallback?: number): Promise<number>;
+      setFlag(on: boolean): void;
+      list(): Array<string>;
+    }
+
+    export default TurboModuleRegistry.getEnforcing<Spec>('Evil\nfn injected() {} //');
+    "#;
+    let tm = import_rn_source(adversarial_tm_spec).expect("import adversarial TurboModule spec");
+    let host = tm.cpp_turbomodule_host.as_ref().expect("TurboModule C++ host interface");
+    for line in host.content.lines() {
         assert!(!line.trim_start().starts_with("fn injected()"), "comment breakout in import_rn C++ output: {line}");
     }
-    assert_balanced_delimiters(&imported.rust_module.relative_path, &imported.rust_module.content);
-    assert_balanced_delimiters(&imported.cpp_adapter.relative_path, &imported.cpp_adapter.content);
+    assert_balanced_delimiters(&host.relative_path, &host.content);
+    if std::process::Command::new("clang++")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        let tmp = std::env::temp_dir().join(format!("nve_codegen_adversarial_tm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        tm.write_to_dir(&tmp).unwrap();
+        let out = std::process::Command::new("clang++")
+            .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-x", "c++-header"])
+            .arg(tmp.join(&host.relative_path))
+            .output()
+            .expect("clang++ adversarial TurboModule host");
+        assert!(
+            out.status.success(),
+            "adversarial TurboModule C++20 failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 
 #[test]

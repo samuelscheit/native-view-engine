@@ -21,6 +21,7 @@ typedef UIFont NvePlatformFont;
 
 #include <nve/generated/nve_abi.generated.h>
 #include <nve/generated/nve_runtime_abi.generated.h>
+#include <nve/generated/nve_tables.generated.h>
 
 #include <cstdint>
 #include <string>

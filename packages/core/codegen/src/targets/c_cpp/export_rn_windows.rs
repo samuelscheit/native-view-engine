@@ -1,8 +1,8 @@
 //! `<Name>RnwComponentView.generated.hpp` (`react-native-windows` Fabric registration) emitter for `export_rn`.
 //!
 //! Targets `hosts/windows-shell`: `NveRnwComponentView.hpp` (registration) over `NveWinHost` (the
-//! runtime surface). Self-contained: it does not include the cross-platform `<Name>NveBridge`
-//! header, so a Windows build never pulls the RN Fabric C++ bridge in.
+//! runtime surface). Self-contained: it includes only the windows-shell headers, so a Windows
+//! build needs nothing beyond `NveWinHost`.
 
 use crate::writer::CodeWriter;
 

@@ -61,7 +61,7 @@ cargo run -p nve-skia-shell -- \
 http://127.0.0.1:8080/?pair=https://127.0.0.1:8091/nve-wire&ws=wss://127.0.0.1:8092/nve-wire&token=dev-secret&cert_hash=<base64-sha256>
 ```
 ::tab{label="macOS / Windows / Qt / GTK"}
-```bash title="C++20 nve::PairClient thin clients (POSIX + WinSock2)"
+```bash title="Native thin clients over the runtime pairing client (POSIX + WinSock2)"
 # macOS AppKit
 ./hosts/macos-shell/build/nve_macos_shell \
   --pair-connect 127.0.0.1:8092 --pair-transport ws --pair-token dev-secret

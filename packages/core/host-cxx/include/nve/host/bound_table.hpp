@@ -43,7 +43,7 @@ class RowRef {
   [[nodiscard]] LengthValue length(FieldSpec f) const noexcept { return LengthValue::decode(bits(f)); }
 
   /// `Str` field text (empty when absent or out of the slab).
-  [[nodiscard]] std::string_view str(FieldSpec f, const RuntimeSceneReader& scene) const noexcept {
+  [[nodiscard]] std::string_view str(FieldSpec f, const SceneReader& scene) const noexcept {
     if (reader_ == nullptr) return {};
     const std::optional<StrSpan> span = reader_->str(row_, f);
     if (!span || span->len == 0u) return {};
@@ -59,7 +59,7 @@ class RowRef {
 class BoundTable {
  public:
   /// Resolves `desc` in `scene`; afterwards `at()` / `row_of()` read this scene until rebound.
-  void bind(const RuntimeSceneReader& scene, const NveTableDesc& desc) noexcept {
+  void bind(const SceneReader& scene, const NveTableDesc& desc) noexcept {
     desc_ = &desc;
     reader_ = scene.find_table(Key64{desc.key});
     node_rows_ = scene.rows();

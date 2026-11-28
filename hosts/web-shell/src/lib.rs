@@ -1,8 +1,7 @@
 //! Web WASM shell mounting NVE apps onto browser DOM with live interactive events and SSR
 //! hydration. Cargo features select what a bundle contains (see `Cargo.toml`): one app per
 //! production bundle (`app-studio` / `app-kitchen-sink`), plus `dev` (binary `NVP1` hot reload,
-//! `NVT1`/`NVD1` pairing), `multi-window` (popups + `NVW1` window sync) and `scene-view`
-//! (zero-copy `NveSceneView` linear-memory export).
+//! `NVT1`/`NVD1` pairing) and `multi-window` (popups + `NVW1` window sync).
 
 #[cfg(not(any(feature = "app-studio", feature = "app-kitchen-sink", feature = "app-issues")))]
 compile_error!(
@@ -18,8 +17,6 @@ pub mod hydrate;
 pub mod multi_window;
 #[cfg(feature = "dev")]
 pub mod pairing;
-#[cfg(feature = "scene-view")]
-pub mod scene;
 pub mod session;
 /// The issues family's web plugin set, exactly as the browser shell boots it (its SSR server's
 /// `issues_web_backend` must register the same tables).
@@ -83,8 +80,6 @@ pub use multi_window::{
 pub use pairing::{
     PairClientMachine, PairClientState, PairInboundOutcome, PairedWebSession,
 };
-#[cfg(feature = "scene-view")]
-pub use scene::SceneMirror;
 #[cfg(feature = "dev")]
 pub use session::HotReloadAction;
 pub use session::{WebAppSession, DEFAULT_SURFACE_ID};
@@ -100,8 +95,6 @@ pub use wasm_issues::start_issues_app;
 pub use wasm_dom_probe::{nve_probe_container_root_hydration, nve_probe_native_overlays};
 #[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
 pub use wasm_issues::{nve_probe_cross_origin_cors, nve_probe_fetch_transport};
-#[cfg(all(target_arch = "wasm32", feature = "scene-view"))]
-pub use wasm_api::{nve_web_scene_view_ptr, nve_web_scene_view_ptr_for_surface};
 #[cfg(target_arch = "wasm32")]
 pub use wasm_hydrate::{ProgressiveIslandHost, SsrRenderResult};
 #[cfg(all(target_arch = "wasm32", feature = "app-kitchen-sink"))]

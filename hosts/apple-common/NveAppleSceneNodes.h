@@ -14,9 +14,9 @@ namespace nve::apple {
 /// table; sparse rows resolve in O(1) through the runtime's published row index.
 class SceneTables {
  public:
-  explicit SceneTables(const nve::host::RuntimeSceneReader &scene);
+  explicit SceneTables(const nve::host::SceneReader &scene);
 
-  const nve::host::RuntimeSceneReader &scene() const noexcept { return scene_; }
+  const nve::host::SceneReader &scene() const noexcept { return scene_; }
 
   /// Live slot of raw `NodeId` (generation-checked).
   std::optional<uint32_t> index_of(uint32_t node_id) const noexcept;
@@ -37,7 +37,7 @@ class SceneTables {
   int32_t z_index(uint32_t index) const noexcept;
   void resolve_typography(uint32_t index, NodeStyle &style) const noexcept;
 
-  const nve::host::RuntimeSceneReader &scene_;
+  const nve::host::SceneReader &scene_;
   std::optional<nve::host::TableReader> visual_, typography_, text_, image_, scroll_, accessibility_, text_input_, link_,
       interaction_;
 };

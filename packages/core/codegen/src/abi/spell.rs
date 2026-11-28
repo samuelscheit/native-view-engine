@@ -59,7 +59,7 @@ pub fn java_int(value: &u64, hex: &bool) -> String {
     uint(value, &(*hex || *value > 0x7FFF_FFFF))
 }
 
-/// `NveRenderNode` -> `RENDER_NODE` (Java / TS constant prefix of a record).
+/// `NveNodeRow` -> `NODE_ROW` (Java / TS constant prefix of a record).
 pub fn record_prefix(name: &str) -> String {
     screaming(name.strip_prefix("Nve").unwrap_or(name))
 }
@@ -182,9 +182,7 @@ pub mod dart {
             Ok(Ty::Named("NveHostChannelPublishFn")) => {
                 "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_owned()
             }
-            Ok(Ty::Named("NveAppHandle" | "NveFabricHostHandle")) => {
-                "ffi.Pointer<ffi.Void>".to_owned()
-            }
+            Ok(Ty::Named("NveAppHandle")) => "ffi.Pointer<ffi.Void>".to_owned(),
             Ok(Ty::Named(name)) => name.to_owned(),
             Err(_) => "/* unsupported */".to_owned(),
         }

@@ -9,16 +9,16 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **`StyleValuePool` float-to-int overflow UB on large scalars**
   - **Observed**: `StyleValuePool::isIntegerPackable` does `static_cast<int32_t>(f)` before its range check, so any setter value with `|v| >= 2^31` (or `±inf` on number setters such as `flexGrow`) is float-cast-overflow UB (`StyleValuePool.h:182` under UBSan).
   - **Upstream**: fixed by react/yoga#2075 (`3a201ff4`, 2026-11-26), not yet in a release (v3.2.2) nor in React Native's vendored copy.
-  - **Mitigation**: `cxx/nve-fabric-bridge/src/command_decoder.hpp` (`is_valid_scalar`) rejects non-finite values and scalars with `|v| > 1e7f` (conservative) before they reach Yoga.
+  - **Mitigation**: `packages/modules/layout-yoga/c_api/yoga_shim.cpp` only forwards finite, non-negative size values into Yoga setters. Style scalars with `|v| >= 2^31` are not range-clamped there yet: keep them out of Yoga-laid-out trees (the default Taffy engine is unaffected) until the upstream fix ships.
 - **Detached `YGNodeRef` returns `NaN` layout metrics**
   - **Observed**: Reading `YGNodeLayoutGet{Left,Top,Width,Height}` on a node that was never laid out or was detached returns `NaN`, which triggers AppKit's `_NSViewValidateGeometry` `SIGTRAP` if forwarded into `NSView.frame`.
-  - **Mitigation**: `cxx/nve-fabric-bridge/src/fabric_adapter.cpp` sanitizes non-finite layout outputs to `0.0f`, and `hosts/apple-common/NveAppleComponentHost.mm` guards `frame` geometry.
+  - **Mitigation**: `packages/modules/layout-yoga/c_api/yoga_shim.cpp` (`sanitize_finite`) maps non-finite `YGNodeLayoutGet*` results to `0.0f` before they become `NveLayoutRect`s, so hosts never see `NaN` frames.
 
 ### Dioxus (`dioxus-core 0.7.10`)
 
 - **Nested `Text` wrapper/leaf split for inline literals**
   - **Observed**: `text { style: "...", "literal" }` emits a styled parent `Text` element wrapping an unstyled child `Text` leaf node, so host shells that don't inherit text styles render invisible or unstyled leaves.
-  - **Mitigation**: `packages/core/dioxus/src/lib.rs` and `cxx/nve-fabric-bridge/src/fabric_adapter.cpp` propagate `text_color` and `font_size` from styled parent `Text` nodes down to unstyled child `Text` leaves; native hosts mount wrapper `Text` nodes with children as containers and leaf `Text` nodes as native text labels.
+  - **Mitigation**: `packages/core/dioxus/src/lib.rs` propagates `text_color` and `font_size` from styled parent `Text` nodes down to unstyled child `Text` leaves, and `nve::host::inherit_text_style` (`packages/core/host-cxx`) plus the other `host-*` readers resolve inherited typography; native hosts mount wrapper `Text` nodes with children as containers and leaf `Text` nodes as native text labels.
 - **`anyhow` `std` feature drags backtrace printing + `rustc-demangle` into wasm**
   - **Observed**: dioxus-core depends on `anyhow` (1.0.105) with default features; `std` makes every error capture a `std::backtrace::Backtrace` whose `Debug`/`Display` printer links `rustc-demangle` (~19 KB raw, −12 KB brotli on the counter wasm), reachable through a vtable so it survives fat LTO and `-Cpanic=immediate-abort`, although wasm32-unknown-unknown never captures frames.
   - **Mitigation**: fork `samuelscheit/dioxus@nve/v0.7.10-wasm-size` (commit `6f7e0d1`, pinned by rev `e617997` in the root `[patch.crates-io]`): the dioxus workspace dep is `anyhow = { default-features = false }` and every member that needs `std` opts back in (Cargo ignores a member's `default-features = false` when the workspace dep enables defaults). no_std anyhow uses `core::error::Error`, so no backtrace or demangler is linked and `build.sh` no longer snips anything. Drop the patch once upstream takes it.

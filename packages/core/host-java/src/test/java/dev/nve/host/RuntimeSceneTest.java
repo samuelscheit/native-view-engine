@@ -4,7 +4,7 @@ import static dev.nve.host.generated.NveJniFrame.*;
 
 import java.nio.ByteBuffer;
 
-/** {@link RuntimeSceneReader} over packed frames from {@link PackedSceneBuilder} (the JNI layout). */
+/** {@link SceneReader} over packed frames from {@link PackedSceneBuilder} (the JNI layout). */
 final class RuntimeSceneTest {
     private RuntimeSceneTest() {}
 
@@ -47,7 +47,7 @@ final class RuntimeSceneTest {
 
     static void nodes(Check c) {
         final PackedSceneBuilder b = builder();
-        final RuntimeSceneReader s = b.attach(new RuntimeSceneReader());
+        final SceneReader s = b.attach(new SceneReader());
         final int root = b.nodeId(1);
         final int child = child(b);
         c.eq(s.frameId(), 9, "frame id");
@@ -62,8 +62,8 @@ final class RuntimeSceneTest {
         c.eq(s.resolve(3), -1, "free slot");
         c.eq(s.resolve(0), -1, "null id");
         c.eq(s.resolve(CAP), -1, "past capacity");
-        c.eq(RuntimeSceneReader.indexOf(child), 2, "indexOf");
-        c.eq(RuntimeSceneReader.generationOf(0xFF000001), 255, "generationOf unsigned");
+        c.eq(SceneReader.indexOf(child), 2, "indexOf");
+        c.eq(SceneReader.generationOf(0xFF000001), 255, "generationOf unsigned");
         c.eq(s.parent(2), root, "parent");
         c.eq(s.parent(1), 0, "root parent");
         c.eq(s.childCount(1), 1, "child count");
@@ -82,16 +82,16 @@ final class RuntimeSceneTest {
         // A corrupt child span (off + len past the slab, or `u32` wrap) never reads out of range.
         final ByteBuffer[] slabs = b.slabs();
         slabs[S_ROWS].putInt(32 + 24, 2);
-        final RuntimeSceneReader bad = new RuntimeSceneReader().attach(b.header(), slabs);
+        final SceneReader bad = new SceneReader().attach(b.header(), slabs);
         c.throwsA(IndexOutOfBoundsException.class, () -> bad.childCount(1), "span past slab");
         slabs[S_ROWS].putInt(32 + 20, -1);
-        final RuntimeSceneReader wrap = new RuntimeSceneReader().attach(b.header(), slabs);
+        final SceneReader wrap = new SceneReader().attach(b.header(), slabs);
         c.throwsA(IndexOutOfBoundsException.class, () -> wrap.childId(1, 0), "span offset wrap");
     }
 
     static void tablesAndText(Check c) {
         final PackedSceneBuilder b = builder();
-        final RuntimeSceneReader s = b.attach(new RuntimeSceneReader());
+        final SceneReader s = b.attach(new SceneReader());
         final TableReader visual = s.findTable(VISUAL_KEY);
         final TableReader text = s.tableAtSlot(TEXT_SLOT);
         c.that(visual != null && visual == s.tableAtSlot(VISUAL_SLOT) && visual == s.table(0), "visual lookup");
@@ -119,7 +119,7 @@ final class RuntimeSceneTest {
         // An index entry whose row is owned by another generation of the slot is not the node's row.
         final ByteBuffer[] stale = b.slabs();
         stale[S_TABLES + TABLE_SLAB_STRIDE + TS_OWNERS].putInt(0, (1 << 24) | 2);
-        final RuntimeSceneReader st = new RuntimeSceneReader().attach(b.header(), stale);
+        final SceneReader st = new SceneReader().attach(b.header(), stale);
         c.eq(st.rowOf(st.tableAtSlot(TEXT_SLOT), 2), -1, "stale owner generation is no row");
 
         // Re-attach without the text table: the slot map is per frame, the old reader detached.
@@ -133,7 +133,7 @@ final class RuntimeSceneTest {
     static void deltasAndScroll(Check c) {
         final PackedSceneBuilder b = builder().moved(3, 1).dirty(2).dirtyResources(3, 9, 0x80000000)
                 .scroll(1, 0f, 30f).scroll((3 << 24) | 2, 4f, 0f);
-        final RuntimeSceneReader s = b.attach(new RuntimeSceneReader());
+        final SceneReader s = b.attach(new SceneReader());
         c.eq(s.dirtyCount(), 1, "dirty count");
         c.eq(s.dirtyIndex(0), 2, "dirty index");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.dirtyIndex(1), "dirty oob");
@@ -149,11 +149,11 @@ final class RuntimeSceneTest {
         c.that(s.scrollX((3 << 24) | 2) == 4f, "child scroll");
         c.that(s.scrollX(2) == 0f && s.scrollY(99) == 0f && s.scrollIndexOf(0) == -1, "unscrolled nodes are zero");
 
-        c.eq(s.relationTo(0L, 3), RuntimeSceneReader.FRAME_RESET, "no previous frame");
-        c.eq(s.relationTo(8L, 3), RuntimeSceneReader.FRAME_NEXT, "the next frame");
-        c.eq(s.relationTo(9L, 3), RuntimeSceneReader.FRAME_SAME, "a redelivered frame");
-        c.eq(s.relationTo(7L, 3), RuntimeSceneReader.FRAME_RESET, "a skipped frame");
-        c.eq(s.relationTo(8L, 2), RuntimeSceneReader.FRAME_RESET, "another epoch");
+        c.eq(s.relationTo(0L, 3), SceneReader.FRAME_RESET, "no previous frame");
+        c.eq(s.relationTo(8L, 3), SceneReader.FRAME_NEXT, "the next frame");
+        c.eq(s.relationTo(9L, 3), SceneReader.FRAME_SAME, "a redelivered frame");
+        c.eq(s.relationTo(7L, 3), SceneReader.FRAME_RESET, "a skipped frame");
+        c.eq(s.relationTo(8L, 2), SceneReader.FRAME_RESET, "another epoch");
     }
 
     static SceneException.Kind kindOf(Check c, Runnable body, String what) {
@@ -169,7 +169,7 @@ final class RuntimeSceneTest {
         final long[] h = b.header();
         final ByteBuffer[] s = b.slabs();
         corrupt.apply(h, s);
-        return kindOf(c, () -> new RuntimeSceneReader().attach(h, s), what);
+        return kindOf(c, () -> new SceneReader().attach(h, s), what);
     }
 
     static void rejects(Check c) {
@@ -204,17 +204,17 @@ final class RuntimeSceneTest {
         c.that(reject(c, b, (h, s) -> s[text + TS_ROWS] = null, "table rows missing") == SceneException.Kind.INVALID_TABLE, "table rows kind");
         reject(c, b, (h, s) -> s[text + TS_ROW_INDEX_PAGES] = null, "row index pages missing");
         reject(c, b, (h, s) -> h[textH + TH_ROW_INDEX_DIR_LEN] = 5, "row index dir past its slab");
-        kindOf(c, () -> new RuntimeSceneReader().attach(new long[3], b.slabs()), "short header");
-        kindOf(c, () -> new RuntimeSceneReader().attach(b.header(), new ByteBuffer[7]), "short slabs");
-        kindOf(c, () -> new RuntimeSceneReader().attach(null, null), "null arrays");
-        final RuntimeSceneReader empty = new PackedSceneBuilder(0, 1L, 0).dirty().attach(new RuntimeSceneReader());
+        kindOf(c, () -> new SceneReader().attach(new long[3], b.slabs()), "short header");
+        kindOf(c, () -> new SceneReader().attach(b.header(), new ByteBuffer[7]), "short slabs");
+        kindOf(c, () -> new SceneReader().attach(null, null), "null arrays");
+        final SceneReader empty = new PackedSceneBuilder(0, 1L, 0).dirty().attach(new SceneReader());
         c.that(empty.nodeCapacity() == 0 && !empty.isLive(0) && empty.resolve((1 << 24) | 1) == -1, "empty frame");
     }
 
     /** A rejected or released frame leaves nothing readable, through retained references too. */
     static void detach(Check c) {
         final PackedSceneBuilder b = builder();
-        final RuntimeSceneReader live = b.attach(new RuntimeSceneReader());
+        final SceneReader live = b.attach(new SceneReader());
         final TableReader retained = live.findTable(TEXT_KEY);
         final PackedSceneBuilder bad = builder().dirty(0);
         kindOf(c, () -> live.attach(bad.header(), bad.slabs()), "reject over a live frame");
@@ -235,7 +235,7 @@ final class RuntimeSceneTest {
 
     static void steadyState(Check c) {
         if (!Alloc.supported()) return;
-        final RuntimeSceneReader s = new RuntimeSceneReader();
+        final SceneReader s = new SceneReader();
         final PackedSceneBuilder b = builder().moved(3).scroll(1, 0f, 2f);
         final long[] h = b.header();
         final ByteBuffer[] slabs = b.slabs();

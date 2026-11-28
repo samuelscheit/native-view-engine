@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use nve_abi::{
     EventMask, NativeEventKind, NveBufferSlice, NveDirectEvent, NveEventBatch, NveEventBatchRef,
-    NveRuntimeApi, NveRuntimeConfig, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus,
+    NveRuntimeApi, NveRuntimeConfig, NveRuntimeMetrics, NveSceneView, NveRuntimeStatus,
     NveStrSlice, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_components::tables::{Interaction, Layout, Scroll, TextContent, Visual};
@@ -183,7 +183,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
     let mut frame1 = Vec::new();
     enc.encode(&src_store, &changes, &mut frame1);
 
-    let mut view1 = NveRuntimeSceneView::default();
+    let mut view1 = NveSceneView::default();
     // SAFETY: Valid handle, slice, and stack out pointer on owner thread.
     unsafe {
         assert_eq!(
@@ -210,7 +210,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
             (api.submit_nve2)(h, NveBufferSlice::from_slice(&bad_header)),
             NveRuntimeStatus::Io.as_i32()
         );
-        let mut preserved = NveRuntimeSceneView::default();
+        let mut preserved = NveSceneView::default();
         assert_eq!(
             (api.scene_acquire)(h, &mut preserved),
             NveRuntimeStatus::Ok.as_i32()
@@ -244,7 +244,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
     assert!(!read_last_error(&api).is_empty());
 
     // 3. `scene_acquire` MUST NOT return dangling pointers: `rows` must be NULL and capacity 0!
-    let mut view_after_err = NveRuntimeSceneView::default();
+    let mut view_after_err = NveSceneView::default();
     // SAFETY: Valid handle and out pointer.
     unsafe {
         assert_eq!(
@@ -282,7 +282,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
 
     let mut recovery_frame = Vec::new();
     WireEncoder::default().encode_full(&src_store, &mut recovery_frame);
-    let mut recovered = NveRuntimeSceneView::default();
+    let mut recovered = NveSceneView::default();
     // SAFETY: Valid handle, slice, and out pointer.
     unsafe {
         assert_eq!(
@@ -311,7 +311,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
     let ev = [NveDirectEvent::press(1, 2, 100, 10.0, 10.0)];
     let mut changed = 0u32;
     let mut ev_changed = 0u32;
-    let mut detached_view = NveRuntimeSceneView::default();
+    let mut detached_view = NveSceneView::default();
     // SAFETY: Valid handle, exported `nve_get_interface` symbol, and stack slices on owner thread.
     unsafe {
         assert_eq!(
@@ -335,7 +335,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
             NveRuntimeStatus::Unsupported.as_i32()
         );
         {
-            let mut intact = NveRuntimeSceneView::default();
+            let mut intact = NveSceneView::default();
             assert_eq!(
                 (api.scene_acquire)(h, &mut intact),
                 NveRuntimeStatus::Ok.as_i32()
@@ -359,7 +359,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
         );
         assert_eq!(changed, 1);
         {
-            let mut v = NveRuntimeSceneView::default();
+            let mut v = NveSceneView::default();
             assert_eq!(
                 (api.scene_acquire)(h, &mut v),
                 NveRuntimeStatus::Ok.as_i32()
@@ -430,7 +430,7 @@ fn submit_nve2_corrupt_header_preserves_scene_while_mid_frame_error_resets_store
     let mut frame1 = Vec::new();
     enc.encode(&src, &changes, &mut frame1);
 
-    let mut view = NveRuntimeSceneView::default();
+    let mut view = NveSceneView::default();
     // SAFETY: Valid handle, slice, and out pointers.
     unsafe {
         assert_eq!(
@@ -600,7 +600,7 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
     let null_h = std::ptr::null_mut();
     let mut u32_out = 0u32;
     let mut f32_out = 0.0f32;
-    let mut view = NveRuntimeSceneView::default();
+    let mut view = NveSceneView::default();
     let mut metrics = NveRuntimeMetrics::default();
     // SAFETY: Null handles are explicitly guarded by every C ABI entry point.
     unsafe {
@@ -768,7 +768,7 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
             NveRuntimeStatus::InvalidArg.as_i32()
         );
         // Non-mutating `scroll_by` errors (`NotFound`, `InvalidArg`) MUST preserve `published_view`!
-        let mut after_scroll_err = NveRuntimeSceneView::default();
+        let mut after_scroll_err = NveSceneView::default();
         assert_eq!(
             (api.scene_acquire)(h, &mut after_scroll_err),
             NveRuntimeStatus::Ok.as_i32()
@@ -872,7 +872,7 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
         let h_bg = h_addr as *mut c_void;
         let mut out_id = 0u32;
         let mut out_changed = 0u32;
-        let mut out_v = NveRuntimeSceneView::default();
+        let mut out_v = NveSceneView::default();
         let mut out_m = NveRuntimeMetrics::default();
         // SAFETY: Handle stays alive on main thread until this thread joins.
         unsafe {
@@ -970,7 +970,7 @@ fn c_abi_caught_panic_records_last_error_and_poisons_surface() {
     );
 
     // Subsequent `scene_acquire` on the poisoned runtime must fail cleanly rather than expose torn state.
-    let mut view = NveRuntimeSceneView::default();
+    let mut view = NveSceneView::default();
     // SAFETY: Valid handle.
     let acq_rc = unsafe { (api.scene_acquire)(h, &mut view) };
     assert_eq!(acq_rc, NveRuntimeStatus::Panic.as_i32());

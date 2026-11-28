@@ -6,10 +6,10 @@ Iteration speed is a hard architectural invariant of `native-view-engine`, not a
 
 | Tier | Trigger | Target Budget | Mechanism |
 | :--- | :--- | :--- | :--- |
-| **Tier 0: Headless Verification** | `cargo test` / `cargo nve inspect` | **< 300 ms** | Pure-Rust `nve-backend-headless` (`taffy` Flexbox + mutation log) + standalone C++20 `nve-fabric-bridge` tests via Ninja + `kache`/`ccache`. Zero Simulator/Xcode/Gradle. |
+| **Tier 0: Headless Verification** | `cargo test` / `cargo nve inspect` | **< 300 ms** | Pure-Rust `nve-backend-headless` (`taffy` Flexbox + mutation log) + the C++20 `host-cxx` header-only suites via Ninja + `kache`/`ccache`. Zero Simulator/Xcode/Gradle. |
 | **Tier 1: RSX / Style Hot Patch** | Edit text, style, or layout props while `nve dev` runs | **< 50 ms** | WebSocket `HotPatchMsg::TemplatePatch` applied in-place to the running `nve-engine` / `nve-dioxus` instance. Works on Desktop, Simulators, Emulators, and **physical iOS/Android devices**. |
 | **Tier 2: Rust Logic Hot Swap** | Edit Rust component logic / state / handlers while `nve dev` runs | **150–400 ms** | Native Host Shell (iOS Simulator / Android Emulator / macOS Skia) is compiled **once**. `nve dev` rebuilds only the thin app `cdylib` (`examples/<app>`) with `kache` + `split-debuginfo=unpacked`, stamps a versioned `.dylib`/`.so`, and pushes `HotPatchMsg::DylibReload`. Host snapshots app state, `dlopen`s the new generation via `nve_get_interface` (`NveSurfaceApi` + `NveDevApi`), and restores state. (Compatible with `subsecond` in-place jump-table patching.) |
-| **Tier 3: C++ Bridge / Native Views** | Edit `cxx/nve-fabric-bridge` | **1–3 s** | Heavy RN dependencies (`ReactCommon`, `Yoga`, `Folly`) are prebuilt once per RN version and cached; Ninja + `kache`/`ccache` compiles only our ~1–2k LOC bridge. |
+| **Tier 3: C++ Host Readers / Native Views** | Edit `packages/core/host-cxx` or `hosts/*` | **1–3 s** | `libnve_runtime` is built once; the C++ `host-cxx` readers are header-only, so Ninja + `kache`/`ccache` recompiles only the touched host sources. |
 
 ## Local Acceleration Configuration
 
@@ -31,23 +31,22 @@ cargo nve bench
 # Build nve-example-kitchen-sink cdylib (Tier-2 hot-swap & native host embedding)
 cargo build -p nve-example-kitchen-sink
 
-# C++20 Fabric/Yoga/JSI bridge CTest & benchmark
-# (omit -DRN_REACT_COMMON_DIR for standalone mode without RN Yoga/JSI)
-cmake -S cxx/nve-fabric-bridge -B cxx/build -G Ninja \
-  -DRN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon \
-  && cmake --build cxx/build \
-  && ctest --test-dir cxx/build --output-on-failure
-./cxx/build/nve_fabric_bridge_bench
+# C++20 host-cxx CTest & SceneReader benchmark (JSON for scripts/bench-regress.py)
+cmake -S packages/core/host-cxx -B packages/core/host-cxx/build -G Ninja \
+  -DNVE_HOST_CXX_BUILD_BENCH=ON -DCMAKE_BUILD_TYPE=Release \
+  && cmake --build packages/core/host-cxx/build \
+  && ctest --test-dir packages/core/host-cxx/build --output-on-failure
+./packages/core/host-cxx/build/nve_host_cxx_bench --json
 
-# macOS AppKit host CTest (optionally pass -DRN_REACT_COMMON_DIR=...)
+# macOS AppKit host CTest
 cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja \
   && cmake --build hosts/macos-shell/build \
   && ctest --test-dir hosts/macos-shell/build --output-on-failure
 
 # iOS Simulator SDK Objective-C++ syntax check
 xcrun --sdk iphonesimulator clang++ -std=c++20 -fobjc-arc -fsyntax-only \
-  -Icxx/nve-fabric-bridge/include -Ihosts/apple-common -Ihosts/ios-shell \
-  hosts/ios-shell/NveFabricHost.mm hosts/ios-shell/RCTNveComponentView.mm
+  -Ipackages/core/host-cxx/include -Ihosts/apple-common -Ihosts/ios-shell \
+  hosts/ios-shell/RCTNveComponentView.mm
 
 # SwiftUI host kit & Flutter plugin tests
 swift test --package-path hosts/swiftui-kit

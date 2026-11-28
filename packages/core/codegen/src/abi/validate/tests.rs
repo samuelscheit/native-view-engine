@@ -1,9 +1,9 @@
 //! ABI and table validation unit tests.
 
 use nve_abi::schema::{
-    AbiAliasDescriptor, AbiCFunctionDescriptor, AbiConstDescriptor, AbiEnumDescriptor,
-    AbiFieldDescriptor, AbiFileDescriptor, AbiParamDescriptor, AbiRecordDescriptor,
-    AbiStructDescriptor,
+    AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiFieldDescriptor,
+    AbiFileDescriptor, AbiMethodDescriptor, AbiModuleDescriptor, AbiParamDescriptor,
+    AbiRecordDescriptor, AbiStructDescriptor,
 };
 use nve_abi::table::{FieldDesc, FieldKind, Storage, TableDesc};
 
@@ -13,7 +13,7 @@ const fn file(
     consts: &'static [AbiConstDescriptor],
     enums: &'static [AbiEnumDescriptor],
     records: &'static [AbiRecordDescriptor],
-    c_functions: &'static [AbiCFunctionDescriptor],
+    modules: &'static [AbiModuleDescriptor],
 ) -> AbiFileDescriptor {
     AbiFileDescriptor {
         namespace: None,
@@ -21,8 +21,19 @@ const fn file(
         aliases: &[],
         enums,
         records,
-        modules: &[],
-        c_functions,
+        modules,
+    }
+}
+
+/// A one-method interface module: signature checks run over every module method.
+const fn module(methods: &'static [AbiMethodDescriptor]) -> AbiModuleDescriptor {
+    AbiModuleDescriptor {
+        name: "M",
+        trait_name: "MSpec",
+        interface_id: 1,
+        c_name: "MApi",
+        doc: None,
+        methods,
     }
 }
 
@@ -87,20 +98,7 @@ fn consts_signatures_and_arrays_are_validated() {
         error(&BIG)
     );
 
-    static UNKNOWN: AbiFileDescriptor = file(
-        &[],
-        &[],
-        &[],
-        &[AbiCFunctionDescriptor {
-            name: "f",
-            params: &[AbiParamDescriptor {
-                name: "a",
-                ty: "*const Missing",
-            }],
-            return_type: "()",
-            doc: None,
-        }],
-    );
+    static UNKNOWN: AbiFileDescriptor = file(&[], &[], &[], &[module(&[AbiMethodDescriptor { name: "f", params: &[AbiParamDescriptor { name: "a", ty: "*const Missing", }], return_type: "()", doc: None, has_self: false, optional: false, }])]);
     assert!(
         error(&UNKNOWN).contains("uses `Missing`"),
         "{}",
@@ -111,12 +109,14 @@ fn consts_signatures_and_arrays_are_validated() {
         &[],
         &[],
         &[],
-        &[AbiCFunctionDescriptor {
+        &[module(&[AbiMethodDescriptor {
             name: "f",
             params: &[],
             return_type: "[u8; 4]",
             doc: None,
-        }],
+            has_self: false,
+            optional: false,
+        }])],
     );
     assert!(
         error(&BY_VALUE_ARRAY).contains("arrays cannot cross"),
@@ -178,7 +178,7 @@ fn consts_signatures_and_arrays_are_validated() {
             64,
             Some(64),
         )],
-        &[AbiCFunctionDescriptor {
+        &[module(&[AbiMethodDescriptor {
             name: "f",
             params: &[AbiParamDescriptor {
                 name: "s",
@@ -186,7 +186,9 @@ fn consts_signatures_and_arrays_are_validated() {
             }],
             return_type: "*const Slab",
             doc: None,
-        }],
+            has_self: false,
+            optional: false,
+        }])],
     );
     assert!(
         error(&SLAB).contains("passes `Slab` by value"),
@@ -220,12 +222,14 @@ const E_U8: AbiEnumDescriptor = AbiEnumDescriptor {
 const fn function(
     params: &'static [AbiParamDescriptor],
     return_type: &'static str,
-) -> AbiCFunctionDescriptor {
-    AbiCFunctionDescriptor {
+) -> AbiMethodDescriptor {
+    AbiMethodDescriptor {
         name: "f",
         params,
         return_type,
         doc: None,
+        has_self: false,
+        optional: false,
     }
 }
 
@@ -265,26 +269,19 @@ fn enums_void_and_alignment_are_rejected_wherever_they_hide() {
     );
     assert_eq!(error(&ENUM_PTR), "<accepted>");
 
-    static UNIT_PARAM: AbiFileDescriptor = file(&[], &[], &[], &[function(&[param("()")], "()")]);
-    rejects(&UNIT_PARAM, "`C::f`: `()` is only valid as a return type");
-    static VOID_RETURN: AbiFileDescriptor = file(&[], &[], &[], &[function(&[], "c_void")]);
+    static UNIT_PARAM: AbiFileDescriptor = file(&[], &[], &[], &[module(&[function(&[param("()")], "()")])]);
+    rejects(&UNIT_PARAM, "`M::f`: `()` is only valid as a return type");
+    static VOID_RETURN: AbiFileDescriptor = file(&[], &[], &[], &[module(&[function(&[], "c_void")])]);
     rejects(&VOID_RETURN, "`c_void` is only valid behind a pointer");
-    static UNIT_POINTEE: AbiFileDescriptor =
-        file(&[], &[], &[], &[function(&[param("*const ()")], "()")]);
+    static UNIT_POINTEE: AbiFileDescriptor = file(&[], &[], &[], &[module(&[function(&[param("*const ()")], "()")])]);
     rejects(&UNIT_POINTEE, "`()` is only valid as a return type");
-    static VOID_PTR: AbiFileDescriptor = file(
-        &[],
-        &[],
-        &[],
-        &[function(&[param("*mut c_void")], "*const c_void")],
-    );
+    static VOID_PTR: AbiFileDescriptor = file(&[], &[], &[], &[module(&[function(&[param("*mut c_void")], "*const c_void")])]);
     assert_eq!(error(&VOID_PTR), "<accepted>");
 
     // Enums never cross a C signature: by value or behind a pointer.
-    static ENUM_PARAM: AbiFileDescriptor =
-        file(&[], &[E_U8], &[], &[function(&[param("E")], "()")]);
+    static ENUM_PARAM: AbiFileDescriptor = file(&[], &[E_U8], &[], &[module(&[function(&[param("E")], "()")])]);
     rejects(&ENUM_PARAM, "uses enum `E`");
-    static ENUM_PTR_RET: AbiFileDescriptor = file(&[], &[E_U8], &[], &[function(&[], "*const E")]);
+    static ENUM_PTR_RET: AbiFileDescriptor = file(&[], &[E_U8], &[], &[module(&[function(&[], "*const E")])]);
     rejects(&ENUM_PTR_RET, "uses enum `E`");
 
     static ALIGN_0: AbiFileDescriptor = file(

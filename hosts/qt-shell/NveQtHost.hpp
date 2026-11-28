@@ -119,7 +119,7 @@ class QtHost {
   /// created or updated.
   virtual size_t sync_views(const host::RuntimeSceneGuard& scene) = 0;
   /// The tree's `resource_unchanged(scene, id, applied)` for the scene being synced.
-  [[nodiscard]] virtual bool tree_resource_unchanged(const host::RuntimeSceneReader& scene, uint32_t id,
+  [[nodiscard]] virtual bool tree_resource_unchanged(const host::SceneReader& scene, uint32_t id,
                                                      uint32_t applied) const noexcept = 0;
   /// Runs after each sync with the scene released (may dispatch / pump again).
   virtual void after_sync() {}

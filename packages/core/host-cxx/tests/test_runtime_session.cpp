@@ -2,7 +2,7 @@
 //
 // Exercises header include-order safety (`api.h` before `runtime_session.hpp`), the single
 // exported `nve_runtime_get_interface` entry point, RAII `RuntimeSession`, real binary `NVE2`
-// dynamic table + text + hierarchy submission, zero-copy `RuntimeSceneGuard` / `RuntimeSceneReader`
+// dynamic table + text + hierarchy submission, zero-copy `RuntimeSceneGuard` / `SceneReader`
 // + `TableReader` + post-release/move/self-move empty-span safety, `NVE_RUNTIME_BUSY` exclusion,
 // owner-thread `hit_test` under active reader lock, `set_viewport` + `tick`, `get_metrics`, live
 // `set_wake_callback` firing (`g_wake_count > 0`), exact pairing URI/pin validation, live loopback
@@ -36,7 +36,7 @@ namespace {
 using nve::host::field;
 using nve::host::Key64;
 using nve::host::RuntimeSceneGuard;
-using nve::host::RuntimeSceneReader;
+using nve::host::SceneReader;
 using nve::host::RuntimeSession;
 using nve::host::SceneError;
 using nve::host::TableReader;
@@ -114,7 +114,7 @@ void test_live_runtime_session() {
     guard = std::move(*self_ptr);
     CHECK(guard.active());
 
-    const RuntimeSceneReader& scene = guard.reader();
+    const SceneReader& scene = guard.reader();
     CHECK(scene.frame_id() == 1u);
     CHECK(scene.node_capacity() >= 3u);
     CHECK(scene.is_live(1u));

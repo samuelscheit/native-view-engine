@@ -1,6 +1,7 @@
 package dev.nve.host;
 
 import dev.nve.host.generated.NveAbi;
+import dev.nve.host.generated.NveRuntimeAbi;
 import dev.nve.host.generated.NveTables;
 import java.nio.ByteBuffer;
 
@@ -18,7 +19,7 @@ final class GeneratedTest {
             c.that(t.words >= 1 && t.words <= TableReader.MAX_WORDS, t.name + " word count");
             for (FieldSpec f : t.fields()) c.that(f.fits(t.words), t.name + " field fits its row");
         }
-        c.eq(NveAbi.SIZEOF_RENDER_NODE, 64, "NveRenderNode stride");
+        c.eq(NveRuntimeAbi.SIZEOF_NODE_ROW, 32, "NveNodeRow stride");
         // ABI v4: 8 u32 header words (incl. the row-index lengths), then 5 pointers.
         c.eq(NveAbi.SIZEOF_TABLE_VIEW_64, 32 + 5 * 8, "NveTableView 64-bit size");
         c.eq(NveAbi.SIZEOF_TABLE_VIEW_32, 32 + 5 * 4, "NveTableView 32-bit size");

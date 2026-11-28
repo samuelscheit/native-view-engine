@@ -14,9 +14,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Builds a packed {@code NveRuntimeSceneView} frame ({@link dev.nve.host.generated.NveJniFrame}
+ * Builds a packed {@code NveSceneView} frame ({@link dev.nve.host.generated.NveJniFrame}
  * layout, direct little-endian buffers) without a native runtime: JVM tests, previews, and
- * renderer suites feed it to {@link RuntimeSceneReader#attach(long[], ByteBuffer[])} exactly like
+ * renderer suites feed it to {@link SceneReader#attach(long[], ByteBuffer[])} exactly like
  * a JNI-acquired frame. Sparse tables publish the same paged row index the runtime does.
  *
  * <p>Node index {@code i} has {@code NodeId = generation << 24 | i} (generation 1 unless set);
@@ -125,7 +125,7 @@ public final class PackedSceneBuilder {
     }
 
     public int nodeId(int index) {
-        return generation[index] << RuntimeSceneReader.INDEX_BITS | index;
+        return generation[index] << SceneReader.INDEX_BITS | index;
     }
 
     /** Makes {@code index} a live child of {@code parentIndex} (appended) with rect {@code (x, y, w, h)}. */
@@ -206,7 +206,7 @@ public final class PackedSceneBuilder {
 
     public long[] header() {
         final long[] h = new long[HEADER_LEN];
-        h[H_SCHEMA] = RuntimeSceneReader.SCHEMA.value();
+        h[H_SCHEMA] = SceneReader.SCHEMA.value();
         h[H_FRAME_ID] = frameId;
         h[H_NODE_CAPACITY] = capacity;
         h[H_DIRTY_COUNT] = dirtyIndexes().length;
@@ -305,7 +305,7 @@ public final class PackedSceneBuilder {
     }
 
     /** Attaches {@code reader} to a freshly built frame. */
-    public RuntimeSceneReader attach(RuntimeSceneReader reader) {
+    public SceneReader attach(SceneReader reader) {
         return reader.attach(header(), slabs());
     }
 

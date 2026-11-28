@@ -224,7 +224,7 @@ public final class TableReader {
     /** Row of {@code ownerId} (raw {@code NodeId} sparse, node index dense), or {@code -1}; O(1). */
     public int rowOf(int ownerId) {
         if (owners == null) return rowOfNode(ownerId);
-        final int r = rowOfNode(RuntimeSceneReader.indexOf(ownerId));
+        final int r = rowOfNode(SceneReader.indexOf(ownerId));
         return r >= 0 && owners.getInt(ownersBase + r * 4) == ownerId ? r : -1;
     }
 

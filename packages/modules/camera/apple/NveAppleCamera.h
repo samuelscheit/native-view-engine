@@ -96,7 +96,5 @@ namespace nve::apple {
 void set_vision_camera_apple_bridge(id<NveVisionCameraAppleBridge> _Nullable bridge);
 id<NveVisionCameraAppleBridge> _Nullable get_vision_camera_apple_bridge();
 void register_apple_camera_native_view(nve::NativeViewRegistry &registry);
-void bind_apple_camera_native_view_to_fabric_host(
-    NveFabricHostHandle _Nullable host, nve::NativeViewRegistry &registry);
 
 } // namespace nve::apple

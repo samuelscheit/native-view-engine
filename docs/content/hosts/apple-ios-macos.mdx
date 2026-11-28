@@ -1,28 +1,28 @@
 ---
 title: "Apple (macOS & iOS)"
-description: "Shared hosts/apple-common UIKit/AppKit layer, macOS AppKit & RN-macOS Fabric, iOS/iPadOS UIKit multi-scene, Xcode 27 / iOS 27 UIScene lifecycle, and zero-Xcode Simulator launcher."
+description: "Shared hosts/apple-common UIKit/AppKit layer, macOS AppKit & RN-macOS components, iOS/iPadOS UIKit multi-scene, Xcode 27 / iOS 27 UIScene lifecycle, and zero-Xcode Simulator launcher."
 order: 4
 ---
 
 # Apple Hosts (`hosts/apple-common`, `macos-shell`, `ios-shell`)
 
-Apple platforms share a single DRY Objective-C++ core in **`hosts/apple-common/`** backed by `cxx/nve-fabric-bridge`. Both **macOS AppKit** (`hosts/macos-shell`) and **iOS / iPadOS UIKit** (`hosts/ios-shell`) compile against real React Native Yoga/Fabric when `RN_REACT_COMMON_DIR` is provided, or standalone without any React Native checkout.
+Apple platforms share a single DRY Objective-C++ core in **`hosts/apple-common/`** running on `libnve_runtime` through `packages/core/host-cxx` (`nve::host::HostSession` + `SceneReader`). The runtime hosts the app, lays out text with native CoreText/`NSString` measurement, and pairs; both **macOS AppKit** (`hosts/macos-shell`) and **iOS / iPadOS UIKit** (`hosts/ios-shell`) realize its zero-copy `NveSceneView` as native views.
 
 ## Shared `hosts/apple-common/` Layer
 
 To enforce strict DRY between UIKit and AppKit, all cross-Apple plumbing lives once in `hosts/apple-common/`:
 
-- **`NveAppleFabricHost.{h,mm}`** — Modular `dlopen` / `nve_get_interface` loader, Tier-1 `NVP1` hot-patch ingestion, and Tier-2 state-preserving `.dylib` reload (`snapshot_state` → `restore_state`).
-- **`NveAppleComponentHost.{h,mm}`** — Native view controller glue, geometry sanitization (guarding against AppKit's `_NSViewValidateGeometry` `SIGTRAP` on detached Yoga `NaN` rects), and CoreText text measurement.
+- **`NveAppleComponentHost+Session.mm`** — Drives the `libnve_runtime` session: app `dlopen` / `nve_get_interface`, Tier-1 `NVP1` hot-patch ingestion, and Tier-2 state-preserving `.dylib` reload (`snapshot_state` → `restore_state`).
+- **`NveAppleComponentHost.{h,mm}`** — Native view controller glue, geometry sanitization (guarding against AppKit's `_NSViewValidateGeometry` `SIGTRAP` on non-finite rects), and CoreText text measurement.
 - **`NveAppleSceneReconciler.{h,mm}`** — Incremental view reconciliation driven directly by `NveSceneView` dirty indices, mapping `View`, `Text`, `ScrollView`, `Image`, `TextInput`, `Pressable`, and `SkiaCanvas` to `NSView`/`UIView` subclasses with full VoiceOver accessibility attributes.
 - **`NveAppleCanvasView.{h,mm}` & `NveAppleImageCache.{h,mm}`** — CoreGraphics (`CGContext`) renderer for `NVE_DRAW1` binary draw lists plus decoded image caching with `ImageResizeMode` parity.
 
 ## macOS AppKit (`hosts/macos-shell`)
 
-- **Flipped top-left coordinates** — `RCTNveMacComponentView` uses `isFlipped = YES` so AppKit frames match Yoga/Taffy coordinates 1:1.
-- **Standalone & `react-native-macos` Fabric** — Subclasses `RCTViewComponentView` under `-DNVE_WITH_RN_FABRIC=1` or `NSView` in standalone builds.
+- **Flipped top-left coordinates** — `RCTNveMacComponentView` uses `isFlipped = YES` so AppKit frames match the runtime's `NveLayoutRect` coordinates 1:1.
+- **Standalone & `react-native-macos` component** — Subclasses `RCTViewComponentView` under `-DNVE_WITH_RN_FABRIC=1` or `NSView` in standalone builds.
 - **Multi-window (`NveMacWindowManager.{h,mm}`)** — Manages `NSWindow`, `NSPanel`, native sheets (`beginSheet:completionHandler:`), `NSPopover`, and `NSWindowDelegate` close veto (`NVW1`).
-- **Live thin-client pairing** — Supports `--pair-connect <host:port> --pair-transport <udp|tcp|ws> --pair-token <secret>` via `nve::PairClient`.
+- **Live thin-client pairing** — Supports `--pair-connect <host:port> --pair-transport <udp|tcp|ws> --pair-token <secret>` via the runtime's pairing client.
 
 ```bash title="Build, test, and run the macOS AppKit host"
 cargo build -p nve-studio-workspace
@@ -38,7 +38,7 @@ ctest --test-dir hosts/macos-shell/build --output-on-failure
 ## iOS & iPadOS UIKit (`hosts/ios-shell`)
 
 - **Zero-Xcode-project Simulator launcher (`run-simulator.sh`)** — Cross-compiles the Rust crate for `aarch64-apple-ios-sim`, links `NveIosShell.app`, signs it, boots the Simulator, installs, and launches without `.xcodeproj` or `xcodebuild`.
-- **Embeddable RN Fabric View (`RCTNveComponentView.{h,mm}`)** — Subclasses `RCTViewComponentView` under `-DNVE_WITH_RN_FABRIC=1` to drop any NVE Rust surface inside an existing React Native iOS app.
+- **Embeddable RN component view (`RCTNveComponentView.{h,mm}`)** — Subclasses `RCTViewComponentView` under `-DNVE_WITH_RN_FABRIC=1` to drop any NVE Rust surface inside an existing React Native iOS app.
 - **iPadOS multi-scene & iOS 27 `UIScene` lifecycle** — `hosts/ios-shell/Info.plist` declares `UIApplicationSceneManifest` (`NveIosSceneDelegate`) and `main.mm` creates `UIWindow` via `initWithWindowScene:` inside `scene:willConnectToSession:options:`.
 
 <Callout kind="warning" title="Xcode 27 & iOS 27 Simulator SDK requirements">
@@ -55,6 +55,6 @@ Apps linked against `iPhoneSimulator27.0.sdk` that create a `UIWindow` inside `U
 
 # Fast iOS Simulator SDK Objective-C++ syntax check
 xcrun --sdk iphonesimulator clang++ -std=c++20 -fobjc-arc -fsyntax-only \
-  -Icxx/nve-fabric-bridge/include -Ihosts/apple-common -Ihosts/ios-shell \
-  hosts/ios-shell/NveFabricHost.mm hosts/ios-shell/RCTNveComponentView.mm
+  -Ipackages/core/host-cxx/include -Ihosts/apple-common -Ihosts/ios-shell \
+  hosts/ios-shell/RCTNveComponentView.mm
 ```

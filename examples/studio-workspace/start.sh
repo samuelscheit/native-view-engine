@@ -74,8 +74,7 @@ launch() {
 if [[ "$(uname -s)" == "Darwin" ]]; then
   if [[ ! -x "$ROOT_DIR/hosts/macos-shell/build/nve_macos_shell" ]]; then
     echo "==> Building hosts/macos-shell..."
-    cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja \
-      ${RN_REACT_COMMON_DIR:+-DRN_REACT_COMMON_DIR="$RN_REACT_COMMON_DIR"}
+    cmake -S hosts/macos-shell -B hosts/macos-shell/build -G Ninja
     cmake --build hosts/macos-shell/build --target nve_macos_shell
   fi
   launch "macOS AppKit" "$ROOT_DIR/hosts/macos-shell/build/nve_macos_shell" --dylib "$DYLIB_PATH"
@@ -85,8 +84,7 @@ fi
 if command -v qmake6 >/dev/null 2>&1 || pkg-config --exists Qt6Widgets 2>/dev/null; then
   if [[ ! -x "$ROOT_DIR/hosts/qt-shell/build/nve_qt_shell" ]]; then
     echo "==> Building hosts/qt-shell..."
-    cmake -S hosts/qt-shell -B hosts/qt-shell/build -G Ninja \
-      ${RN_REACT_COMMON_DIR:+-DRN_REACT_COMMON_DIR="$RN_REACT_COMMON_DIR"}
+    cmake -S hosts/qt-shell -B hosts/qt-shell/build -G Ninja
     cmake --build hosts/qt-shell/build --target nve_qt_shell
   fi
   launch "Qt 6" "$ROOT_DIR/hosts/qt-shell/build/nve_qt_shell" --dylib "$DYLIB_PATH" --width 960 --height 640
@@ -98,8 +96,7 @@ fi
 if pkg-config --exists gtk4 2>/dev/null; then
   if [[ ! -x "$ROOT_DIR/hosts/gtk-shell/build/nve_gtk_shell" ]]; then
     echo "==> Building hosts/gtk-shell..."
-    cmake -S hosts/gtk-shell -B hosts/gtk-shell/build -G Ninja \
-      ${RN_REACT_COMMON_DIR:+-DRN_REACT_COMMON_DIR="$RN_REACT_COMMON_DIR"}
+    cmake -S hosts/gtk-shell -B hosts/gtk-shell/build -G Ninja
     cmake --build hosts/gtk-shell/build --target nve_gtk_shell
   fi
   launch "GTK4" "$ROOT_DIR/hosts/gtk-shell/build/nve_gtk_shell" --dylib "$DYLIB_PATH" --width 960 --height 640

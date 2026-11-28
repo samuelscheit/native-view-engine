@@ -4,7 +4,7 @@ package dev.nve.host.generated;
 import dev.nve.host.Key64;
 
 /**
- * NVE Core + Scene ABI constants, interface IDs, enum codes, and record layouts. A layout constant
+ * NVE Core ABI constants, interface IDs, enum codes, and record layouts. A layout constant
  * that differs between data models has {@code _64} / {@code _32} (ILP32: armv7, arm64_32) variants,
  * plus {@code _I386} where i386 System V (Android x86) differs from ILP32.
  */
@@ -12,7 +12,6 @@ public final class NveAbi {
     private NveAbi() {}
 
     public static final Key64 CORE_ABI_SCHEMA_HASH = Key64.fromHalves({{ m.core_hash.lo_hex() }}, {{ m.core_hash.hi_hex() }});
-    public static final Key64 SCENE_SCHEMA_HASH = Key64.fromHalves({{ m.scene_hash.lo_hex() }}, {{ m.scene_hash.hi_hex() }});
 {%- for k in m.consts() %}
 {%- if let Some(doc) = k.doc %}
     /** {{ spell::one_line(doc) }} */

@@ -127,7 +127,7 @@ id image_from_source(NSData *bytes) {
 
 /// Drops decoded images whose resource bytes changed: the ids in `dirty_resources`, or all of
 /// them on a new `scene_epoch` or a skipped frame (its dirty list is gone).
-- (void)_invalidateImages:(const nve::host::RuntimeSceneReader &)scene {
+- (void)_invalidateImages:(const nve::host::SceneReader &)scene {
   if (scene.frame_id() == _imagesFrame && scene.scene_epoch() == _imagesEpoch) return;
   if (scene.scene_epoch() != _imagesEpoch || scene.frame_id() != _imagesFrame + 1u) {
     [_images removeAllObjects];
@@ -196,7 +196,7 @@ id image_from_source(NSData *bytes) {
   }
 }
 
-- (void)syncFromScene:(const nve::host::RuntimeSceneReader &)scene {
+- (void)syncFromScene:(const nve::host::SceneReader &)scene {
   id<NveAppleComponentViewAdapter> adapter = _adapter;
   if (adapter == nil) return;
   const SceneTables tables(scene);

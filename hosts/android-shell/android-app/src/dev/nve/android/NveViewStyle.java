@@ -16,7 +16,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 
 import dev.nve.host.Rgba;
-import dev.nve.host.RuntimeSceneReader;
+import dev.nve.host.SceneReader;
 import dev.nve.host.SceneSemantics;
 import dev.nve.host.SceneSemantics.Tables;
 import dev.nve.host.SceneSemantics.TextStyle;
@@ -41,7 +41,7 @@ final class NveViewStyle {
     }
 
     /** Background, border, radius, opacity, z order, and visibility from `nve.visual`. */
-    static void applyBox(View view, ViewState st, Tables t, RuntimeSceneReader s, int index, float density) {
+    static void applyBox(View view, ViewState st, Tables t, SceneReader s, int index, float density) {
         final int row = s.rowOf(t.visual, index);
         if (row < 0) {
             view.setBackground(null);
@@ -117,7 +117,7 @@ final class NveViewStyle {
      * matching transformation (password dots) and single-line mode, so nothing re-applies them out
      * of order; read-only drops the key listener (re-created by {@code setInputType}).
      */
-    static void applyInput(EditText edit, ViewState st, Tables t, RuntimeSceneReader s, int index) {
+    static void applyInput(EditText edit, ViewState st, Tables t, SceneReader s, int index) {
         final int row = s.rowOf(t.input, index);
         if (row < 0) return;
         final TableReader in = t.input;
@@ -183,7 +183,7 @@ final class NveViewStyle {
     }
 
     /** Label, hint, role, heading, hidden, checked / selected, disabled, and test id for TalkBack. */
-    static void applyAccessibility(View view, ViewState st, Tables t, RuntimeSceneReader s, int index, boolean interactive) {
+    static void applyAccessibility(View view, ViewState st, Tables t, SceneReader s, int index, boolean interactive) {
         final int row = s.rowOf(t.accessibility, index);
         final int idRow = s.rowOf(t.debugId, index);
         view.setTag(idRow < 0 ? null : s.text(t.debugId, idRow, NveTables.DebugId.TEST_ID));

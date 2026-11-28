@@ -79,7 +79,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
             Some(DefaultValue::String("small".into()))
         );
         assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
-        assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+        assert!(out.cpp_turbomodule_host.is_none(), "components are Rust-only");
     }
 
     if let Some(modal_path) = rn_spec("Modal/RCTModalHostViewNativeComponent.js") {
@@ -98,7 +98,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
         assert_eq!(orient_ev.payload.len(), 1);
         assert_eq!(orient_ev.payload[0].name, "orientation");
         assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
-        assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+        assert!(out.cpp_turbomodule_host.is_none(), "components are Rust-only");
     }
 
     if let Some(refresh_path) = rn_spec("Components/RefreshControl/PullToRefreshViewNativeComponent.js") {
@@ -133,10 +133,9 @@ fn parses_real_rn_turbomodule_specs_and_ts_turbomodules() {
         assert!(tm.methods.iter().any(|m| m.name == "getColorScheme"));
         assert!(tm.methods.iter().any(|m| m.name == "setColorScheme"));
         assert!(out.rust_module.content.contains("pub trait AppearanceModule"));
-        assert!(out
-            .cpp_adapter
-            .content
-            .contains("class AppearanceTurboModuleHost"));
+        let host = out.cpp_turbomodule_host.as_ref().expect("TurboModule C++ host interface");
+        assert!(host.content.contains("class AppearanceTurboModuleHost"));
+        assert!(!host.content.contains("#include \"nve"), "std headers only");
     }
 
     let ts_tm = r#"
@@ -168,7 +167,8 @@ fn parses_real_rn_turbomodule_specs_and_ts_turbomodules() {
     );
     assert!(tm.methods[0].params[1].optional);
     assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
-    assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+    let host = out.cpp_turbomodule_host.as_ref().expect("TurboModule C++ host interface");
+    assert_balanced_delimiters(&host.relative_path, &host.content);
 }
 
 #[test]
@@ -235,21 +235,7 @@ fn import_rn_handles_ts_edge_cases_comments_keywords_unions_and_negative_default
     assert!(out.rust_module.content.contains("pub fn decode_event"));
     assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
 
-    // C++20 adapter aligns with Slice 2's `nve_rn_component.hpp`
-    assert!(out
-        .cpp_adapter
-        .content
-        .contains("#include \"nve_rn_component.hpp\""));
-    assert!(out
-        .cpp_adapter
-        .content
-        .contains("nve::fabric_host_register_custom_component"));
-    assert!(out
-        .cpp_adapter
-        .content
-        .contains("nve::fabric_host_enqueue_custom_event"));
-    assert!(out.cpp_adapter.content.contains("default_"));
-    assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+    assert!(out.cpp_turbomodule_host.is_none(), "components are Rust-only");
 }
 
 #[test]
@@ -283,7 +269,7 @@ fn import_rn_array_of_objects_preencodes_buffers_and_propagates_decode_error() {
 }
 
 #[test]
-fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn() {
+fn export_rn_generates_valid_four_file_package_and_roundtrips_through_import_rn() {
     let spec = counter_card_export_spec(ExportBackend::Fabric);
     let json = serde_json::to_string_pretty(&spec).expect("serialize NveExportSpec");
     let parsed_spec: NveExportSpec = serde_json::from_str(&json).expect("deserialize NveExportSpec");
@@ -293,14 +279,6 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert_eq!(
         out.native_component_ts.relative_path,
         "NveCounterCardNativeComponent.generated.ts"
-    );
-    assert_eq!(
-        out.cpp_bridge_hpp.relative_path,
-        "NveCounterCardNveBridge.generated.hpp"
-    );
-    assert_eq!(
-        out.cpp_bridge_cpp.relative_path,
-        "NveCounterCardNveBridge.generated.cpp"
     );
     assert_eq!(
         out.ios_component_view_mm.relative_path,
@@ -314,7 +292,7 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
         out.windows_component_view_hpp.relative_path,
         "NveCounterCardRnwComponentView.generated.hpp"
     );
-    assert_eq!(out.files().len(), 6);
+    assert_eq!(out.files().len(), 4);
 
     // 1. TypeScript spec assertions
     let ts = &out.native_component_ts.content;
@@ -327,26 +305,10 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(ts.contains("export default codegenNativeComponent<NativeProps>('NveCounterCard');"));
     assert_balanced_delimiters("NveCounterCardNativeComponent.generated.ts", ts);
 
-    // 2. C++20 glue assertions (verbatim match with Slice 2 `nve_rn_component.hpp`, binary FFI)
-    let hpp = &out.cpp_bridge_hpp.content;
-    let cpp = &out.cpp_bridge_cpp.content;
-    assert!(hpp.contains("#include \"nve_rn_component.hpp\""));
-    assert!(hpp.contains("std::unique_ptr<nve::NveRnComponentBridge> bridge_;"));
-    assert!(hpp.contains("const void* nve_counter_card_vtable(uint32_t interface_id);"));
-    assert!(hpp.contains("const NveMapEntry* entries"));
-    assert!(!hpp.contains("to_prop_map"));
-    assert!(!hpp.contains("update_props_json"));
-    assert!(!hpp.contains("payload_json"));
-    assert!(cpp.contains("std::array<NveMapEntry, 5u> entries{};"));
-    assert!(cpp.contains("bridge_->update_props(entries, count, auto_render)"));
-    assert!(cpp.contains("bridge_->drain_emitted_events()"));
-    assert!(cpp.contains("ev.payload_bytes"));
-    assert_balanced_delimiters("NveCounterCardNveBridge.generated.hpp", hpp);
-    assert_balanced_delimiters("NveCounterCardNveBridge.generated.cpp", cpp);
-
     // 3. iOS ObjC++ assertions (verbatim match with Slice 2 `RCTNveComponentView.h`)
     let mm = &out.ios_component_view_mm.content;
     assert!(mm.contains("#import \"RCTNveComponentView.h\""));
+    assert!(!mm.contains("NveBridge.generated.hpp"));
     assert!(mm.contains("@interface NveCounterCardComponentView : RCTNveComponentView"));
     assert!(mm.contains("- (nullable NveGetInterfaceFn)defaultNveGetInterface"));
     assert!(mm.contains("[self applyPropsDictionary:dict];"));
@@ -376,7 +338,6 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     assert!(rnw.contains("std::shared_ptr<nve::win::NveWinHost> host_;"));
     assert!(rnw.contains("struct NveCounterCardRnwEventCallbacks"));
     assert!(!rnw.contains("NveRnwComponentHost"));
-    assert!(!rnw.contains("NveBridge.generated.hpp"));  // never pulls the RN Fabric C++ bridge in
     assert!(rnw.contains("register_nve_counter_card_rnw_component"));
     assert!(rnw.contains("nve::win::register_nve_rnw_component"));
     assert!(rnw.contains("L\"NveCounterCard\""));

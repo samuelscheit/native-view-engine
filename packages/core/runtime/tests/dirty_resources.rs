@@ -1,4 +1,4 @@
-//! `NveRuntimeSceneView::dirty_resources`: every frame lists exactly the live resource ids whose
+//! `NveSceneView::dirty_resources`: every frame lists exactly the live resource ids whose
 //! bytes changed (created, recycled from the free list), so hosts can key caches by resource id.
 
 use std::sync::atomic::{AtomicU32, Ordering};

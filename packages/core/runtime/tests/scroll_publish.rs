@@ -1,4 +1,4 @@
-//! `NveRuntimeSceneView::scroll_offsets`: per-container visual shifts (minus
+//! `NveSceneView::scroll_offsets`: per-container visual shifts (minus
 //! `Scroll::virtual_top_spacer`), sorted by node, republished on the tick after `scroll_by`.
 
 use nve_abi::NveScrollOffset;

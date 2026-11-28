@@ -7,7 +7,7 @@ Swift Package Manager library that embeds any **Native View Engine (NVE)** Rust 
 Every surface runs on **`libnve_runtime`** (`NveRuntimeApi`, linked into the app; resolved with
 `dlsym("nve_runtime_get_interface")`): the runtime owns the app, reconcile, layout (with native
 CoreText measurement), scroll state, hit testing, and pairing; Swift paints its zero-copy
-`NveRuntimeSceneView` through `NveHost.RuntimeSceneReader` and the generated `NveTables` specs.
+`NveSceneView` through `NveHost.SceneReader` and the generated `NveTables` specs.
 
 - **`NveSurfaceRepresentable`**: one SwiftUI `View` on iOS, macOS, tvOS, watchOS, and visionOS: paints the scene (`NveSceneCanvasView`), negotiates intrinsic size via the app's `NveLayoutApi::measure`, and pushes deduplicated props (`set_props`).
 - **`NveSurfaceController`**: attaches an app (`nve_get_interface`: explicit, `NveStaticInterfaceTable`, or `dlopen`), forwards props / input / hot patches (`apply_hot_patch`), Tier-2 reloads with `snapshot_state` / `restore_state`, drains outbound app events, and pairs with `nve dev` (`pair_connect`).

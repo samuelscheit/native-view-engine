@@ -28,11 +28,11 @@ pub(crate) enum CodegenAction {
         #[arg(long, default_value = "generated/hybrid")]
         out: PathBuf,
     },
-    /// Parse a React Native `*NativeComponent.{ts,js}` or `Native*.{ts,js}` spec and emit zero-JS Rust + C++20 bindings.
+    /// Parse a React Native `*NativeComponent.{ts,js}` or `Native*.{ts,js}` spec and emit zero-JS Rust bindings (plus a C++20 host interface for TurboModules).
     ImportRn {
         /// Path to the React Native TypeScript/Flow spec file.
         spec: PathBuf,
-        /// Output directory for generated Rust and C++20 files.
+        /// Output directory for the generated files.
         #[arg(long, default_value = "generated/import-rn")]
         out: PathBuf,
     },
@@ -187,11 +187,11 @@ pub(crate) fn cmd_codegen(action: CodegenAction) {
             Ok(paths) => {
                 let verb = if check { "Verified" } else { "Generated" };
                 println!(
-                    "{verb} {} host ABI / table / XXH64 vector file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}){}",
+                    "{verb} {} host ABI / table / XXH64 vector file(s) in {} (core_hash=0x{:016X}, runtime_hash=0x{:016X}){}",
                     paths.len(),
                     out.display(),
                     nve_abi::NVE_CORE_ABI_SCHEMA_HASH,
-                    nve_abi::NVE_SCENE_SCHEMA_HASH,
+                    nve_abi::NVE_RUNTIME_SCHEMA_HASH,
                     if check { "." } else { ":" }
                 );
                 if !check {
@@ -306,7 +306,7 @@ mod tests {
 
         assert!(run_codegen_abi(&tmp, true).is_err());
         let written = run_codegen_abi(&tmp, false).expect("write every host ABI file");
-        assert_eq!(written.len(), 21, "core + canvas module mirrors + Java host files");
+        assert_eq!(written.len(), 24, "core + runtime + JNI frame ABI, canvas module mirrors, Java host files, XXH64 vectors");
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("packages/core/host-ts/src/generated/nve_abi.generated.ts");

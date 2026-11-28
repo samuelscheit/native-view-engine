@@ -1,7 +1,7 @@
 //! Framework-agnostic host runtime for `native-view-engine`.
 //!
 //! Coordinates `NodeStore`, `LaidOutScene<DynLayoutEngine>`, `WakeBridge`, generic
-//! [`FrameTickHook`]s, zero-copy [`nve_abi::NveRuntimeSceneView`] publication, and the single
+//! [`FrameTickHook`]s, zero-copy [`nve_abi::NveSceneView`] publication, and the single
 //! versioned C ABI entry point [`nve_runtime_get_interface`].
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]

@@ -1,5 +1,5 @@
 command-buffer-and-events = "CommandBuffer & EventRing"
-scene-abi = "64-Byte Scene ABI"
+scene-abi = "Scene ABI"
 modular-c-abi = "Modular C ABI"
 layout-engines = "Pluggable Layout Engines"
 hot-reload = "2-Tier Hot Reload"

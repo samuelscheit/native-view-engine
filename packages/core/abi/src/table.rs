@@ -17,6 +17,10 @@ pub const MAX_TABLE_WORDS: usize = 32;
 /// Maximum number of table slots per process (`NodeRow::tables` is a `u128`).
 pub const MAX_TABLE_SLOTS: usize = 128;
 
+/// `NveNodeRow::primary_slot` sentinel: a plain container with no realizing table. Any value in
+/// `0..MAX_TABLE_SLOTS` is a `TableSlot` index into `NveSceneView::tables`.
+pub const NVE_PRIMARY_SLOT_NONE: u8 = 0xFF;
+
 /// `log2` of the node indices one [`NveTableView::row_index_pages`] page covers.
 pub const NVE_ROW_INDEX_PAGE_BITS: u32 = 8;
 /// Entries per [`NveTableView::row_index_pages`] page.

@@ -12,10 +12,10 @@ Iteration speed is an architectural invariant in `native-view-engine`. Native ho
 
 | Tier | Trigger | Budget | Mechanism |
 | :--- | :--- | :--- | :--- |
-| **Tier 0: Headless** | `cargo test` / `cargo nve inspect` | **< 300 ms** | Pure-Rust `nve-backend-headless` (`taffy`) + standalone C++20 `nve-fabric-bridge` tests via Ninja + `kache`/`ccache`. |
+| **Tier 0: Headless** | `cargo test` / `cargo nve inspect` | **< 300 ms** | Pure-Rust `nve-backend-headless` (`taffy`) + the C++20 `host-cxx` suites via Ninja + `kache`/`ccache`. |
 | **Tier 1: RSX / Style Patch** | Edit static text, inline `style`, or layout props | **< 50 ms** | `nve-cli` computes an AST diff of the edited `.rs` file and broadcasts a binary `NVP1` `HotPatchMsg::TemplatePatch` over WebSocket. Zero recompile; works on **physical iOS/Android devices and browsers**. |
 | **Tier 2: Rust Logic Swap** | Edit Rust logic, signals, event handlers, or types | **150–400 ms** | `nve dev` rebuilds only the app `cdylib` (`kache` + `-C split-debuginfo=unpacked`), stamps a versioned library filename, and broadcasts `HotPatchMsg::DylibReload`. Hosts snapshot state, `dlopen` the new generation, and restore state atomically. |
-| **Tier 3: C++ Bridge / Hosts** | Edit `cxx/nve-fabric-bridge` or `hosts/*` | **1–3 s** | Prebuilt RN deps cached; Ninja + `ccache` recompiles only the thin bridge. |
+| **Tier 3: C++ Hosts** | Edit `packages/core/host-cxx` or `hosts/*` | **1–3 s** | `libnve_runtime` is built once; `host-cxx` is header-only, so Ninja + `ccache` recompiles only the touched host sources. |
 
 ## Binary Wire Protocol (`NVP1`)
 

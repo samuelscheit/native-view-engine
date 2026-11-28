@@ -14,16 +14,14 @@ include!(concat!(
 pub(crate) enum BenchCategory {
     All,
     RustCore,
-    CxxBridge,
     WebWasm,
     SyncLayout,
 }
 
 impl BenchCategory {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::All,
         Self::RustCore,
-        Self::CxxBridge,
         Self::WebWasm,
         Self::SyncLayout,
     ];
@@ -32,7 +30,6 @@ impl BenchCategory {
         match self {
             Self::All => "all",
             Self::RustCore => "rust-core",
-            Self::CxxBridge => "cxx-bridge",
             Self::WebWasm => "web-wasm",
             Self::SyncLayout => "sync-layout",
         }
@@ -42,7 +39,6 @@ impl BenchCategory {
         match self {
             Self::All => "All",
             Self::RustCore => "Rust Core",
-            Self::CxxBridge => "C++20 Bridge",
             Self::WebWasm => "Web & WASM",
             Self::SyncLayout => "Sync & Layout",
         }
@@ -52,7 +48,6 @@ impl BenchCategory {
         match self {
             Self::All => None,
             Self::RustCore => Some(0),
-            Self::CxxBridge => Some(1),
             Self::WebWasm => Some(2),
             Self::SyncLayout => Some(3),
         }
@@ -108,8 +103,8 @@ pub(crate) const LATEST_BARS: [LatestBarSpec; 10] = [
         color_idx: 0,
     },
     LatestBarSpec {
-        short_label: "Scene dirty",
-        baseline_key: "rust::abi/scene/scene_view_read_dirty_3_of_1000",
+        short_label: "Value FFI read",
+        baseline_key: "rust::abi/value/value_direct_ffi_read",
         category: BenchCategory::RustCore,
         color_idx: 0,
     },
@@ -126,10 +121,10 @@ pub(crate) const LATEST_BARS: [LatestBarSpec; 10] = [
         color_idx: 0,
     },
     LatestBarSpec {
-        short_label: "C++ Roundtrip",
-        baseline_key: "cxx::rn_bridge_render_press_roundtrip",
-        category: BenchCategory::CxxBridge,
-        color_idx: 1,
+        short_label: "Hit-test 1k",
+        baseline_key: "rust::backend_headless/hit_test/rows/1000",
+        category: BenchCategory::SyncLayout,
+        color_idx: 3,
     },
     LatestBarSpec {
         short_label: "Dioxus diff",
@@ -144,10 +139,10 @@ pub(crate) const LATEST_BARS: [LatestBarSpec; 10] = [
         color_idx: 2,
     },
     LatestBarSpec {
-        short_label: "C++ Patch 10",
-        baseline_key: "cxx::incremental_patch_10_on_1000_nodes",
-        category: BenchCategory::CxxBridge,
-        color_idx: 1,
+        short_label: "EventRing 256",
+        baseline_key: "rust::abi/event_ring/decode/256",
+        category: BenchCategory::RustCore,
+        color_idx: 0,
     },
     LatestBarSpec {
         short_label: "SSR 100 rows",
@@ -181,7 +176,7 @@ pub(crate) struct ProgressionSeries {
     pub(crate) points: &'static [ProgressionPoint],
 }
 
-pub(crate) const PROGRESSION_SERIES: [ProgressionSeries; 6] = [
+pub(crate) const PROGRESSION_SERIES: [ProgressionSeries; 5] = [
     ProgressionSeries {
         id: "cmdbuf-encode",
         title: "CommandBufferBuilder Encode (1,000 nodes)",
@@ -247,25 +242,9 @@ pub(crate) const PROGRESSION_SERIES: [ProgressionSeries; 6] = [
         ],
     },
     ProgressionSeries {
-        id: "cxx-bridge-lat",
-        title: "C++20 Fabric Bridge Scaling (100 → 1,000 nodes)",
-        subtitle: "Verified baseline.json · direct NveSceneView & decode mount",
-        unit: "µs",
-        delta_badge: "1.50M ops/s",
-        category: BenchCategory::CxxBridge,
-        color_idx: 1,
-        points: &[
-            ProgressionPoint { label: "Press", value: 0.67 },
-            ProgressionPoint { label: "Patch10", value: 7.12 },
-            ProgressionPoint { label: "Pub10", value: 7.54 },
-            ProgressionPoint { label: "Mnt100", value: 18.33 },
-            ProgressionPoint { label: "Mnt1k", value: 171.48 },
-        ],
-    },
-    ProgressionSeries {
         id: "layout-sync",
         title: "Layout & Hit-Test Latency Spectrum",
-        subtitle: "Verified baseline.json · Taffy vs C++20 heuristic layout",
+        subtitle: "Verified baseline.json · Taffy layout vs hit-test",
         unit: "µs",
         delta_badge: "3.62 µs hit",
         category: BenchCategory::SyncLayout,
@@ -273,9 +252,8 @@ pub(crate) const PROGRESSION_SERIES: [ProgressionSeries; 6] = [
         points: &[
             ProgressionPoint { label: "Hit100", value: 0.34 },
             ProgressionPoint { label: "Hit1k", value: 3.62 },
-            ProgressionPoint { label: "C++100", value: 44.67 },
             ProgressionPoint { label: "Taf100", value: 168.51 },
-            ProgressionPoint { label: "C++1k", value: 450.69 },
+            ProgressionPoint { label: "Taf1k", value: 1768.96 },
         ],
     },
 ];

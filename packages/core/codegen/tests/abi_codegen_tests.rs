@@ -326,15 +326,11 @@ fn golden_hash_vectors_come_from_nve_hash() {
 }
 
 #[test]
-fn c_header_carries_both_schema_hashes_and_no_hand_written_layout_cases() {
+fn c_headers_carry_their_schema_hashes_and_no_hand_written_layout_cases() {
     let h = generate_c_abi_header().expect("C header");
     assert!(h.contains(&format!(
         "#define NVE_CORE_ABI_SCHEMA_HASH 0x{:016X}ULL",
         nve_abi::NVE_CORE_ABI_SCHEMA_HASH
-    )));
-    assert!(h.contains(&format!(
-        "#define NVE_SCENE_SCHEMA_HASH 0x{:016X}ULL",
-        nve_abi::NVE_SCENE_SCHEMA_HASH
     )));
     // Rust's `#[repr(C, align(8))]` keeps `NveDirectEvent` at 72 bytes on i386 System V (whose
     // 64-bit fields are only 4-byte aligned), so C must over-align it too.
@@ -343,12 +339,17 @@ fn c_header_carries_both_schema_hashes_and_no_hand_written_layout_cases() {
     assert!(h.contains("NVE_ALIGNOF(NveDirectEvent) == 8u"));
     // `NveValue` has no explicit alignment: i386 differs from other 32-bit targets.
     assert!(h.contains("sizeof(NveValue) == (sizeof(void*) == 8u ? 24u : (NVE_ABI_U64_FIELD_ALIGN == 8u ? 16u : 12u))"));
-    // `NveRenderNode`'s `align(64)` only aligns Rust slabs: C keeps natural alignment.
-    assert!(h.contains("Rust aligns `NveRenderNode` slabs to 64 bytes"));
-    assert!(h.contains("NVE_ALIGNOF(NveRenderNode) == 4u"));
-    assert!(h.contains("offsetof(NveSceneView, tables) == (sizeof(void*) == 8u ? 80u : 60u)"));
+    assert!(h.contains("offsetof(NveTableView, row_index_pages) == (sizeof(void*) == 8u ? 64u : 48u)"));
     assert!(h.contains("#include \"../host/api.h\""));
-    assert_eq!(generate_abi_files().expect("abi")[0].content, h);
+    let files = generate_abi_files().expect("abi");
+    assert_eq!(files[0].content, h);
+    let rt = &files[1].content;
+    assert!(rt.contains(&format!(
+        "#define NVE_RUNTIME_SCHEMA_HASH 0x{:016X}ULL",
+        nve_abi::NVE_RUNTIME_SCHEMA_HASH
+    )));
+    assert!(rt.contains("offsetof(NveSceneView, rows) == 56u"));
+    assert!(rt.contains("offsetof(NveSceneView, tables) == (sizeof(void*) == 8u ? 104u : 80u)"));
 }
 
 const fn field(name: &'static str, kind: FieldKind, word: u8, shift: u8, bits: u8) -> FieldDesc {

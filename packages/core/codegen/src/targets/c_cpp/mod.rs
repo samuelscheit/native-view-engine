@@ -1,7 +1,6 @@
-//! C11 / C++20 / Objective-C++ target emitters: Hybrid FFI, React Native import adapters, and
-//! React Native C++ / iOS / Windows exports.
+//! C11 / C++20 / Objective-C++ target emitters: Hybrid FFI, the React Native TurboModule host
+//! interface (`import_rn`), and the React Native iOS / Windows component exports.
 
-pub mod export_rn_cpp;
 pub mod export_rn_ios;
 pub mod export_rn_windows;
 pub mod hybrid;

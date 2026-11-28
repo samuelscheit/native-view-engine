@@ -1,4 +1,3 @@
-#include "command_encoder.hpp"
 #include "nve_native_view.hpp"
 
 #include <cmath>
@@ -310,7 +309,7 @@ struct MockInstance {
   bool unmounted{false};
 };
 
-void test_registry_wildcards_and_fabric_host_e2e() {
+void test_registry_wildcards_mount_and_commands() {
   nve::NativeViewRegistry reg;
   int wildcard_creates = 0;
   int exact_creates = 0;
@@ -370,42 +369,42 @@ void test_registry_wildcards_and_fabric_host_e2e() {
   NVE_CHECK(reg.supports(nve::kNativeKindWebView));
   NVE_CHECK(!reg.supports("android.map"));
 
-  // Bind to a live FabricHost and drive via binary CommandBuffer!
-  NveSurfaceConfig cfg{.surface_id = 1u, .width = 400.0f, .height = 300.0f, .scale_factor = 2.0f};
-  NveFabricHostHandle host = nve_fabric_host_create(cfg);
-  NVE_CHECK(host != nullptr);
-  reg.bind_to_fabric_host(host, nve::kNativeKindWebView);
-
   NvnpBuilder wv_props;
   wv_props.add_str(1u, "https://initial.nve.dev");
   wv_props.add_bool(2u, true);
   const auto wv_prop_bytes = wv_props.finish();
 
-  nve::CommandBufferEncoder enc(1u, 1u);
-  enc.create_node(10u, NVE_COMP_CUSTOM, nve::kNativeKindWebView);
-  enc.set_children(NVE_ROOT_NODE_ID, {10u});
-  enc.set_raw_prop_string(10u, nve::kNativeViewKindPropKey, nve::kNativeKindWebView);
-  enc.set_raw_prop_bytes(10u, nve::kNativeViewPropsPropKey, wv_prop_bytes);
-  enc.commit(true);
-  NVE_CHECK(nve_fabric_host_submit_frame(host, enc.finish(), nullptr) == 0);
-
+  // Exact match wins over the `web.*` wildcard; a mount with props runs create + update_props.
+  nve::NativeViewCodecError err = nve::NativeViewCodecError::TrailingBytes;
+  void* mounted = reg.mount_or_update(10u, nve::kNativeKindWebView, wv_prop_bytes, &err);
+  NVE_CHECK(err == nve::NativeViewCodecError::Ok);
   auto* wv_inst = static_cast<MockInstance*>(reg.instance_for(10u));
-  NVE_CHECK(wv_inst != nullptr && exact_creates == 1 && wv_inst->prop_updates == 1);
-  NVE_CHECK(wv_inst->last_url == "https://initial.nve.dev");
+  NVE_CHECK(mounted == wv_inst && wv_inst != nullptr && exact_creates == 1 && wildcard_creates == 0);
+  NVE_CHECK(wv_inst->prop_updates == 1 && wv_inst->last_url == "https://initial.nve.dev");
+  NVE_CHECK(reg.kind_for(10u) == nve::kNativeKindWebView);
 
-  // Dispatch NVNC Navigate + Reload commands in Frame 2.
+  // Re-mounting the same kind updates in place (no second create).
+  NVE_CHECK(reg.mount_or_update(10u, nve::kNativeKindWebView, wv_prop_bytes) == wv_inst);
+  NVE_CHECK(exact_creates == 1 && wv_inst->prop_updates == 2);
+
+  // Corrupt props are rejected with the codec error and never reach the adapter.
+  const std::vector<uint8_t> bad_magic = {'N', 'V', 'X', 'P', 1u, 0u, 0u};
+  NVE_CHECK(reg.mount_or_update(10u, nve::kNativeKindWebView, bad_magic, &err) == nullptr);
+  NVE_CHECK(err == nve::NativeViewCodecError::InvalidMagic && wv_inst->prop_updates == 2);
+
+  // NVNC Navigate + Reload commands reach the mounted instance.
   NvncBuilder nav(1u);
   nav.arg_str("https://navigated.nve.dev");
   const auto nav_bytes = nav.finish();
   NvncBuilder rel(2u);
   const auto rel_bytes = rel.finish();
-
-  nve::CommandBufferEncoder enc2(1u, 2u);
-  enc2.dispatch_command(10u, "navigate", nav_bytes);
-  enc2.dispatch_command(10u, "reload", rel_bytes);
-  enc2.commit(false);
-  NVE_CHECK(nve_fabric_host_submit_frame(host, enc2.finish(), nullptr) == 0);
+  NVE_CHECK(reg.dispatch_command(10u, "navigate", nav_bytes, &err) && err == nve::NativeViewCodecError::Ok);
+  NVE_CHECK(reg.dispatch_command(10u, "reload", rel_bytes));
   NVE_CHECK(wv_inst->last_url == "https://navigated.nve.dev" && wv_inst->reloads == 1);
+  // Unknown node: no dispatch; truncated command: codec error.
+  NVE_CHECK(!reg.dispatch_command(99u, "reload", rel_bytes));
+  NVE_CHECK(!reg.dispatch_command(10u, "reload", std::span<const uint8_t>(rel_bytes.data(), 3u), &err));
+  NVE_CHECK(err == nve::NativeViewCodecError::Truncated);
 
   // Wildcard mount + unmount check.
   void* winst = reg.mount_or_update(11u, "web.canvas", {});
@@ -418,7 +417,6 @@ void test_registry_wildcards_and_fabric_host_e2e() {
     NVE_CHECK(m->unmounted);
     delete m;
   }
-  nve_fabric_host_destroy(host);
 }
 
 } // namespace
@@ -426,7 +424,7 @@ void test_registry_wildcards_and_fabric_host_e2e() {
 int main() {
   test_nvnp_all_value_types_and_specs();
   test_corrupt_and_adversarial_wire_buffers();
-  test_registry_wildcards_and_fabric_host_e2e();
+  test_registry_wildcards_mount_and_commands();
   std::cout << "nve_native_view_test passed\n";
   return 0;
 }

@@ -42,8 +42,8 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         wave: "Wave 9",
         commit: "cf1f3a7",
         hosts: "10 hosts",
-        title: "64-Byte NveSceneView & Tier-1 RSX Hot-Patch",
-        summary: "O(changed) 64-byte cache-line NveRenderNode reconciliation across all platforms, < 10 ms NVP1 RSX live hot-patcher, and catch_unwind panic boundaries.",
+        title: "Zero-Copy Scene View & Tier-1 RSX Hot-Patch",
+        summary: "O(changed) dirty-index scene reconciliation across all platforms, < 10 ms NVP1 RSX live hot-patcher, and catch_unwind panic boundaries.",
     },
     WaveMilestone {
         wave: "Waves 10–11",
@@ -57,7 +57,7 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         commit: "b3ecf8f",
         hosts: "10 hosts",
         title: "Binary NVC1 CRDTs & Windows 11 Live Parity",
-        summary: "Local-first NVC1 binary CRDTs (HLC, LwwRegister, PnCounter, OrSet, RgaList), WinSock2 PairClient, and full live Windows 11 MSVC/D3D12/RNW verification.",
+        summary: "Local-first NVC1 binary CRDTs (HLC, LwwRegister, PnCounter, OrSet, RgaList), WinSock2 pairing client, and full live Windows 11 MSVC/D3D12/RNW verification.",
     },
     WaveMilestone {
         wave: "Wave 13",

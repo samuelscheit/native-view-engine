@@ -1,5 +1,5 @@
-//! Host ABI data generated with Askama templates (`packages/core/codegen/templates/`): the merged
-//! Core + Scene ABI, the word-table field specs, and the golden XXH64 vectors. Every file lands
+//! Host ABI data generated with Askama templates (`packages/core/codegen/templates/`): the Core
+//! and runtime scene ABIs, the word-table field specs, and the golden XXH64 vectors. Every file lands
 //! next to the static runtime it plugs into (`packages/core/host-{cxx,swift,java,dart,ts}`).
 //!
 //! Inputs are borrowed: `nve-abi`'s `const` [`AbiFileDescriptor`]s and the `&'static TableDesc`s of
@@ -17,7 +17,6 @@ use askama::Template;
 use nve_abi::NveHostStatus;
 use nve_abi::schema::{
     AbiEnumDescriptor, AbiFileDescriptor, NveEnumSchema, core_abi_descriptor, runtime_abi_descriptor,
-    scene_abi_descriptor,
 };
 use nve_abi::table::{TableDesc, ValueSetDesc};
 
@@ -30,7 +29,6 @@ use jni_frame::JniFrameModel;
 use spell::{c, dart, swift, ts};
 
 const CORE: AbiFileDescriptor = core_abi_descriptor();
-const SCENE: AbiFileDescriptor = scene_abi_descriptor();
 const RUNTIME: AbiFileDescriptor = runtime_abi_descriptor();
 const HOST_STATUS: AbiEnumDescriptor = <NveHostStatus as NveEnumSchema>::SCHEMA;
 
@@ -68,14 +66,22 @@ templates! {
     DartAbiFfi: "dart/nve_abi_ffi.dart" => m: AbiModel<'a>;
     DartRuntimeAbi: "dart/nve_runtime_abi.dart" => m: RuntimeAbiModel<'a>;
     DartVectors: "dart/hash_vectors.dart" => vectors: [HashVector];
-    TsAbi: "ts/nve_abi.ts" => m: AbiModel<'a>;
     TsTables: "ts/nve_tables.ts" => tables: [TableModel<'a>];
     TsVectors: "ts/hash_vectors.ts" => vectors: [HashVector];
 }
 
-/// The Core + Scene ABI model of the linked `nve-abi`.
+/// `nve_abi.generated.ts`: the Core constants and records plus the runtime scene layout
+/// (`NVE_SCENE_LAYOUT_WASM32`) the TypeScript `SceneReader` reads.
+#[derive(Template)]
+#[template(path = "ts/nve_abi.ts", escape = "none")]
+struct TsAbi<'a> {
+    m: &'a AbiModel<'a>,
+    rt: &'a RuntimeAbiModel<'a>,
+}
+
+/// The Core ABI model of the linked `nve-abi`.
 pub fn abi_model() -> Result<AbiModel<'static>, CodegenError> {
-    AbiModel::new(&CORE, &SCENE, &HOST_STATUS)
+    AbiModel::new(&CORE, &HOST_STATUS)
 }
 
 /// The runtime ABI model on top of `base` (`abi_model()`).
@@ -112,7 +118,7 @@ pub fn generate_c_abi_header() -> Result<String, CodegenError> {
     Ok(render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?.content)
 }
 
-/// Every Core + Scene ABI file (C, Swift constants, Java, Dart const + `dart:ffi`, TypeScript)
+/// Every Core ABI file (C, Swift constants, Java, Dart const + `dart:ffi`, TypeScript)
 /// plus the C runtime ABI header.
 pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
     let m = abi_model()?;
@@ -154,7 +160,7 @@ pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
             format!("{DART}/lib/src/generated/nve_runtime_abi.generated.dart"),
         )?,
         render(
-            &TsAbi { m: &m },
+            &TsAbi { m: &m, rt: &runtime },
             format!("{TS}/src/generated/nve_abi.generated.ts"),
         )?,
     ])

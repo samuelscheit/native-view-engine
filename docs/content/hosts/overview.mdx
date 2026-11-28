@@ -6,7 +6,7 @@ order: 1
 
 # Platform Hosts Overview
 
-Every platform host in `native-view-engine` consumes the exact same `NVE1` binary `CommandBuffer` and `nve_get_interface(1..=5)` C ABI. C++ and Objective-C++ shells share `cxx/nve-fabric-bridge/include/nve_host_runtime.hpp` (`nve::NativeHostSession` + `nve::RetainedViewReconciler`), while Apple hosts share `hosts/apple-common/` so zero layout, hot-swap, or image-cache logic is duplicated.
+Every platform host in `native-view-engine` consumes the exact same `NVE1` binary `CommandBuffer` and `nve_get_interface(1..=5)` C ABI. Every native host runs on `libnve_runtime` and reads its single `NveSceneView` through the per-language `SceneReader` in `packages/core/host-*` (C++ shells share `nve::host::HostSession` + `RetainedTree`), while Apple hosts share `hosts/apple-common/` so zero layout, hot-swap, or image-cache logic is duplicated.
 
 ## All 10 Host Targets at a Glance
 
@@ -14,13 +14,13 @@ Every platform host in `native-view-engine` consumes the exact same `NVE1` binar
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Desktop Skia** | `packages/backends/skia`, `hosts/skia-shell` | Skia Metal / Vulkan / D3D12 / CPU + `softbuffer` (`winit`) | `cosmic-text 0.19` | `TextInput` IME + selection + OS clipboard | Yes (`winit`) | Yes (UDP / TCP / WS) |
 | **Web WASM & SSR** | `packages/backends/web`, `hosts/web-shell` | Browser DOM + Option 5 CSS cache + `<canvas>` | Browser native | Full ARIA + native DOM IME + HTML5 SSR | Yes (`ACTIVE_SHELLS` + `BroadcastChannel`) | Yes (`?pair=ws://...`) |
-| **macOS AppKit** | `hosts/macos-shell`, `hosts/apple-common` | `NSView` / `NSTextField` / `NSScrollView` / `CGContext` (+ RN-macOS Fabric) | CoreText / AppKit | VoiceOver + macOS IME | Yes (`NveMacWindowManager`) | Yes (`nve::PairClient`) |
-| **iOS / iPadOS UIKit** | `hosts/ios-shell`, `hosts/apple-common` | `UIView` / `UILabel` / `UIScrollView` / `CGContext` (+ RN Fabric) | CoreText / UIKit | VoiceOver + iOS IME | Yes (`UIWindowScene` / iOS 27) | Yes (`nve::PairClient`) |
-| **Windows 11 / RNW** | `hosts/windows-shell` | Win32 Direct2D / WIC + RNW 0.88 Composition Fabric | DirectWrite (`IDWriteTextLayout`) | UI Automation + Win32 IME | Yes (`NveWinWindowManager`) | Yes (WinSock2 `PairClient`) |
-| **Android JNI** | `hosts/android-shell` | `DirectByteBuffer` slabs + `NveCanvasView` + RN Android Fabric | Android `StaticLayout` / `Paint` | TalkBack (`NveNodeMeta`) + Android IME | Single/Activity | Yes (`NveAndroidPairJni`) |
-| **Jetpack Compose** | `hosts/compose-kit` | `NveSceneBuffer` + `NveSceneCanvas` + `@Composable NveSurface` | Compose / Android text | `Modifier.semantics` (`NveNodeMeta`) | Activity / Dialog | Via `NveBridgeBackend` |
-| **Qt 6 (Widgets + Quick)** | `hosts/qt-shell` | `NveQtQuickItem` GPU RHI `QSGNode` + `NveQtWidget` | `QTextLayout` / `QFontMetricsF` | Qt Accessibility + Qt IME | Yes (`NveQtWindowManager`) | Yes (`nve::PairClient`) |
-| **Linux GTK4** | `hosts/gtk-shell` | `GtkFixed` / `GtkLabel` / `GtkScrolledWindow` / `GtkEntry` / Cairo | Pango (`PangoLayout`) | AT-SPI + GTK4 IME | Yes (`NveGtkWindowManager`) | Yes (`nve::PairClient`) |
+| **macOS AppKit** | `hosts/macos-shell`, `hosts/apple-common` | `NSView` / `NSTextField` / `NSScrollView` / `CGContext` (+ RN-macOS component) | CoreText / AppKit | VoiceOver + macOS IME | Yes (`NveMacWindowManager`) | Yes (runtime pairing) |
+| **iOS / iPadOS UIKit** | `hosts/ios-shell`, `hosts/apple-common` | `UIView` / `UILabel` / `UIScrollView` / `CGContext` (+ RN component) | CoreText / UIKit | VoiceOver + iOS IME | Yes (`UIWindowScene` / iOS 27) | Yes (runtime pairing) |
+| **Windows 11 / RNW** | `hosts/windows-shell` | Win32 Direct2D / WIC + RNW 0.88 Composition Fabric | DirectWrite (`IDWriteTextLayout`) | UI Automation + Win32 IME | Yes (`NveWinWindowManager`) | Yes (runtime pairing) |
+| **Android JNI** | `hosts/android-shell` | `DirectByteBuffer` slabs + `SceneReader` + `NveSceneRenderer` Views + `NveCanvasView` | Android `StaticLayout` / `Paint` | TalkBack (accessibility tables) + Android IME | Single/Activity | Yes (`NveAndroidPairJni`) |
+| **Jetpack Compose** | `hosts/compose-kit` | `SceneReader` snapshots + `@Composable NveSurface` + `NveDrawListRenderer` | Compose / Android text | `Modifier.semantics` (accessibility tables) | Activity / Dialog | Via `NveSource` pairing |
+| **Qt 6 (Widgets + Quick)** | `hosts/qt-shell` | `NveQtQuickItem` GPU RHI `QSGNode` + `NveQtWidget` | `QTextLayout` / `QFontMetricsF` | Qt Accessibility + Qt IME | Yes (`NveQtWindowManager`) | Yes (runtime pairing) |
+| **Linux GTK4** | `hosts/gtk-shell` | `GtkFixed` / `GtkLabel` / `GtkScrolledWindow` / `GtkEntry` / Cairo | Pango (`PangoLayout`) | AT-SPI + GTK4 IME | Yes (`NveGtkWindowManager`) | Yes (runtime pairing) |
 | **SwiftUI & Flutter** | `hosts/swiftui-kit`, `hosts/flutter-plugin` | `NveSurfaceRepresentable` / `NveSceneCanvasView` & `NveCanvasView` (Impeller) | CoreText / Flutter `TextPainter` | SwiftUI / Flutter Semantics | Host-managed | Roadmap (thin-client UI) |
 
 ## Shared Runtime Architecture
@@ -31,8 +31,8 @@ Every platform host in `native-view-engine` consumes the exact same `NVE1` binar
                 └────────────────────┬─────────────────────┘
          ┌───────────────────────────┼───────────────────────────┐
          ▼                           ▼                           ▼
-  Pure-Rust Hosts          Shared C++20 Bridge           Direct FFI Host Kits
-  ├─ hosts/skia-shell      cxx/nve-fabric-bridge         ├─ hosts/swiftui-kit (CNveAbi)
+  Pure-Rust Hosts          libnve_runtime + host-cxx     Direct FFI Host Kits
+  ├─ hosts/skia-shell      (NveSceneView → SceneReader)  ├─ hosts/swiftui-kit (CNveAbi)
   ├─ hosts/web-shell       ├─ hosts/apple-common         ├─ hosts/flutter-plugin (dart:ffi)
   └─ nve-backend-headless  │   ├─ hosts/macos-shell      └─ hosts/compose-kit (JNI slabs)
                            │   └─ hosts/ios-shell
@@ -47,9 +47,9 @@ Every platform host in `native-view-engine` consumes the exact same `NVE1` binar
 :::cards
 ::card{title="Desktop Skia & winit" href="/hosts/desktop-skia" description="Hardware Metal/Vulkan/D3D12 or zero-C++ softbuffer rendering, CosmicText shaping, IME, and headless PNG capture."}
 ::card{title="Web WASM, CSS & SSR" href="/hosts/web-wasm-ssr" description="Option 5 structural CSS cache, semantic HTML5 SSR, progressive island hydration, and per-app production bundles (studio and kitchen-sink)."}
-::card{title="Apple (macOS & iOS)" href="/hosts/apple-ios-macos" description="Shared apple-common layer, AppKit & UIKit Fabric hosts, iOS 27 UIScene lifecycle, and zero-Xcode Simulator launcher."}
+::card{title="Apple (macOS & iOS)" href="/hosts/apple-ios-macos" description="Shared apple-common layer, AppKit & UIKit hosts, iOS 27 UIScene lifecycle, and zero-Xcode Simulator launcher."}
 ::card{title="Windows & RNW 0.88" href="/hosts/windows-rnw" description="Win32 Direct2D/DirectWrite/WIC, react-native-windows 0.88 Composition Fabric, and WinSock2 live pairing."}
-::card{title="Android & Jetpack Compose" href="/hosts/android-compose" description="Zero-GC JNI DirectByteBuffer slabs, 64B NveNodeMeta TalkBack metadata, zero-Gradle APK launcher, and Compose NveSceneCanvas."}
+::card{title="Android & Jetpack Compose" href="/hosts/android-compose" description="Zero-GC JNI DirectByteBuffer slabs, SceneReader-driven Views with TalkBack semantics, zero-Gradle APK launcher, and Compose NveSurface."}
 ::card{title="Qt 6 & GTK4" href="/hosts/qt-gtk" description="Qt Quick RHI QSGNode + QWidget hosts, GTK4 Pango/Cairo/AT-SPI shell, and native multi-window managers."}
 ::card{title="SwiftUI & Flutter" href="/hosts/swiftui-flutter" description="Zero-alloc NveDirectArena & NveDirectEncodable in SwiftUI, and zero-PlatformView Impeller NveCanvasView via dart:ffi."}
 :::

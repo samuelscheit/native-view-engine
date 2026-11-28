@@ -59,7 +59,7 @@ final class _Frame {
         owners: [2 | (5 << 24)],
       );
 
-  RuntimeSceneReader open({
+  SceneReader open({
     Key64 schema = _schema,
     int? capacity,
     Uint32List? rows,
@@ -70,7 +70,7 @@ final class _Frame {
     List<TableReader>? tables,
     Uint32List? scroll,
   }) =>
-      RuntimeSceneReader(
+      SceneReader(
         expectedSchema: _schema,
         schemaHash: schema,
         frameId: const Key64(7, 0xFFFF0000),
@@ -188,6 +188,11 @@ void runRuntimeScene(Check c) {
   c.eq(s.rowOf(text, 1), -1, 'sparse table not attached');
   c.eq(s.str(text, 0, TextTable.text), 'héllo', 'str field decodes UTF-8');
   c.eq(s.text(0, 0), '', 'empty text');
+  // A leading BOM is scene text, not stripped (dart:convert would drop it).
+  final bom = f.open(text: Uint8List.fromList([0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 0x78]));
+  c.eq(bom.text(0, 7), '\uFEFF\uFEFFx', 'scene double BOM');
+  c.eq(bom.text(0, 3), '\uFEFF', 'scene lone BOM');
+  c.eq(bom.text(0, 7).length, 3, 'scene BOM length');
   c.throwsA<RangeError>(() => s.textBytes(2, 1), 'text inside a code point');
   c.throwsA<RangeError>(() => s.textBytes(4, 9), 'text past slab');
 

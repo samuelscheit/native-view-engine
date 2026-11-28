@@ -12,7 +12,7 @@
 ## Big Goals
 
 1. **Zero-Overhead Binary Architecture**: Cross the Rust ↔ host boundary via a single modular C ABI (`nve_get_interface(uint32_t)`), one batched binary `CommandBuffer` per frame, and a zero-copy `#[repr(C)]` `NveValue` bump-arena FFI sink — zero Hermes/JS VM, direct binary bridge, zero per-prop FFI chatter.
-2. **Real Native Views Everywhere, From One Core**: Ship first-class native hosts on **macOS (AppKit)**, **iOS (UIKit / RN Fabric)**, **Windows (Win32 / Direct2D / DirectWrite + `react-native-windows` Fabric)**, **Linux (GTK4 / Pango)**, **Cross-Platform Qt 6**, **Android (JNI / Jetpack Compose)**, **SwiftUI**, **Flutter (`dart:ffi`)**, **Desktop/Mobile Skia**, and **Web (WASM DOM)** — all sharing one DRY C++20 host runtime (`nve_host_runtime.hpp`) and one Apple host core (`hosts/apple-common/`).
+2. **Real Native Views Everywhere, From One Core**: Ship first-class native hosts on **macOS (AppKit)**, **iOS (UIKit / RN Fabric)**, **Windows (Win32 / Direct2D / DirectWrite + `react-native-windows` Fabric)**, **Linux (GTK4 / Pango)**, **Cross-Platform Qt 6**, **Android (JNI / Jetpack Compose)**, **SwiftUI**, **Flutter (`dart:ffi`)**, **Desktop/Mobile Skia**, and **Web (WASM DOM)** — all sharing one native `libnve_runtime` publishing a single `NveSceneView` that every host reads through its `SceneReader` (`packages/core/host-*`) and one Apple host core (`hosts/apple-common/`).
 3. **Composable, Switchable Layout Engines**: Zero-cost generic `LayoutEngine` + `TextMeasurer` traits so apps can choose pure-Rust **Taffy**, real **React Native Yoga** (`nve-layout-yoga`), or custom layout engines at compile time (zero vtable overhead) or runtime.
 4. **Instant Cold Start (`< 2 ms` 1k-node Frame-0 Boot) & Crash-Atomic State Save/Restore**: Persist Frame 0 as a schema- and `XXH64`-verified `NVE2` keyframe (`Frame0File` / `frame0.nve2`) replayed through live Taffy layout (zero viewport/DPI/theme staleness, 100% table parity) alongside crash-atomic `StateFile` (`state.nve`) binary state — zero `mmap`, zero `unsafe`.
 5. **Sub-Second 2-Tier Hot Reload & `NVE Studio`**: Live-patch styles/templates in `< 5 ms` (Tier-1) and hot-swap compiled native `.dylib`/`.dll`/`.so` logic in `< 300 ms` (Tier-2) without losing state, powering **NVE Studio** — a self-hosting live workbench with X-Ray layout/FFI inspection, side-by-side multi-host preview, deterministic `CommandBuffer` time-travel scrubbing, and ~10 KB/s binary delta live pairing.
@@ -21,18 +21,17 @@
 
 ## Measured Baselines
 
-Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Release `nve_fabric_bridge_bench` on Apple Silicon):
+Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` on Apple Silicon; C++ `SceneReader` reads: `nve_host_cxx_bench --json`):
 
 | Pipeline Stage | Measured Latency | Throughput / Notes |
 | :--- | ---: | :--- |
 | `nve_get_interface` FFI lookup / render slice | **0.98 – 1.33 ns** | Zero-cost C ABI dispatch (`catch_unwind` panic-safe) |
-| Direct `NveSceneView` dirty read (3 of 1,000 nodes) | **24.82 ns** | 64-byte cache-line `NveRenderNode`, zero decode |
+| `EventRing` decode (256 events) | **5.10 µs** | Direct typed-memory ring, zero JSON |
 | Rust `NveValueRef` zero-copy nested field read | **17.09 ns** | Borrowed straight from C++ bump arena |
 | `GestureArbitrator` nested scroll arbitration | **64.51 ns** | Zero-alloc inline `SurfaceChain` + `FastU32Map` |
 | `CommandBuffer` encode / streaming decode (1,000 nodes) | **21.17 µs** / **18.05 µs** | Stack-packed encode & zero-alloc `CommandRef` (~4.7 GiB/s) |
-| C++20 Fabric incremental patch (10 / 1,000 nodes) | **7.12 µs** | Direct `NveSceneView` publish: **7.54 µs** |
 | Dioxus incremental state diff / Tier-1 hot-patch | **931 ns** / **1.33 µs** | Real RSX AST hot-patch diff `< 2.5 ms` |
-| 1,000-row Flexbox layout (`Taffy` / C++ standalone) | **1.77 ms** / **451 µs** | 1,000-row hit-test: **3.62 µs** |
+| 1,000-row Flexbox layout (`Taffy`) | **1.77 ms** | 1,000-row hit-test: **3.62 µs** |
 | Web DOM HTML SSR (100 / 500 rows) | **12.45 µs** / **65.05 µs** | Studio WASM bundle: **285.8 KiB gzipped** (`wasm-release`) |
 | Skia display list (1,000 nodes) / card rasterize | **962 µs** / **136.6 µs** | Software + Apple Metal GPU swapchains |
 | Frame-0 `NVE2` boot + live Taffy layout (1,000 nodes) | **< 2 ms** | Cold replica + page-cached `frame0.nve2` read, O(1) allocs |
@@ -42,12 +41,12 @@ Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Relea
 ```text
 Rust App (Dioxus 0.7 rsx! via nve-dioxus, or any frontend implementing NveApp)
   │  Exposes nve_get_interface(uint32_t): Surface | Layout | Component | Dev
-  │  Binary CommandBuffer, 64B NveSceneView + NveNodeMeta, direct NveDirectEvent / NveMapEntry FFI, NVE_DRAW1 vectors
+  │  Binary CommandBuffer, one NveSceneView (32B NveNodeRow + 16B NveLayoutRect slabs), direct NveDirectEvent / NveMapEntry FFI, NVE_DRAW1 vectors
   ▼
 nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, Frame0File + StateFile, 2-Tier Hot Reload)
-  ├──► cxx/nve-fabric-bridge (C++20 Yoga/JSI/Fabric, nve_host_runtime.hpp, nve_draw_list.hpp)
+  ├──► libnve_runtime (NodeStore slabs → NveSceneView) + packages/core/host-{cxx,swift,java,dart,ts} SceneReader
   │     ├──► hosts/apple-common + hosts/{macos-shell,ios-shell}  (AppKit & UIKit / CoreGraphics / VoiceOver)
-  │     ├──► hosts/windows-shell                                 (Win32/Direct2D/WIC/DirectWrite & RNW Fabric)
+  │     ├──► hosts/windows-shell                                 (Win32/Direct2D/WIC/DirectWrite & RNW components)
   │     ├──► hosts/qt-shell                                      (Qt 6 QWidget + Retained Qt Quick QSG)
   │     ├──► hosts/gtk-shell                                     (GTK4 + Pango + Cairo + AT-SPI)
   │     └──► hosts/android-shell                                 (JNI DirectByteBuffer Slabs + TalkBack)

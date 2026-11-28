@@ -25,7 +25,7 @@ impl LockState {
     }
 }
 
-/// Non-reentrant-write / multi-reader lock guarding zero-copy `NveRuntimeSceneView` borrows across
+/// Non-reentrant-write / multi-reader lock guarding zero-copy `NveSceneView` borrows across
 /// Rust and C FFI boundaries, plus exclusive serialization for `hit_test`'s internal `Cell` scratch.
 pub struct SceneLock {
     state: Mutex<LockState>,

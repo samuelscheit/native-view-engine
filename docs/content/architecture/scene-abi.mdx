@@ -1,88 +1,106 @@
 ---
-title: "64-Byte Scene ABI"
-description: "Cache-line NveRenderNode, zero-copy NveSceneView slabs, deterministic XXH64 schema hashing, NVE_DRAW1 vector canvas IR, and 64-byte NveNodeMeta accessibility metadata."
+title: "Scene ABI"
+description: "One NveSceneView published by libnve_runtime straight from NodeStore slabs: 32-byte NveNodeRow rows, 16-byte NveLayoutRect rects, text/children slabs, dirty/moved/removed indices, table views, and per-language SceneReader."
 order: 2
 ---
 
-# 64-Byte Scene ABI
+# Scene ABI
 
-After a backend decodes a `CommandBuffer` and computes Flexbox layout, native hosts (Apple CoreGraphics/AppKit/UIKit, Win32/Direct2D, Qt Quick `QSGNode`, Android `DirectByteBuffer`, Jetpack Compose, SwiftUI, Flutter Impeller, and Web) read the resolved scene straight from shared memory with **zero decoding and zero per-node allocations**.
+Native hosts (Apple AppKit/UIKit, Win32/Direct2D, Qt, GTK, Android `DirectByteBuffer`, Jetpack Compose, SwiftUI, Flutter, React Native components) read the resolved scene straight from `libnve_runtime` memory with **zero decoding and zero per-node allocations**. There is exactly **one** scene ABI: `NveSceneView` (`packages/core/abi/src/runtime/mod.rs`). The runtime fills it from the live `NodeStore` slabs; nothing is copied or re-encoded for the host.
 
-## `NveRenderNode`: Exactly One CPU Cache Line
+## `NveSceneView`
 
-`NveRenderNode` (`packages/core/abi/src/scene/types.rs`) is `#[repr(C, align(64))]` and strictly verified at compile time to occupy **64 bytes** (`NVE_RENDER_NODE_SIZE == 64`, `NVE_RENDER_NODE_ALIGN == 64`). Every field offset is locked by `const` `offset_of!` assertions in Rust and `_Static_assert(offsetof(...))` in `nve_abi.generated.h` (`packages/core/host-cxx/include/nve/generated/`).
+`NveSceneView` bundles scalar counters and borrowed read-only pointers into `NodeStore` slabs. The runtime stamps `schema_hash` with `NVE_RUNTIME_SCHEMA_HASH`, the compile-time XXH64 over every field name, type, and byte offset of the runtime ABI records.
 
-| Offset | Size | Field | Type | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `0` | 4 B | `node_id` | `u32` | Stable engine `NodeId` |
-| `4` | 1 B | `kind` | `u8` | `0=Root, 1=View, 2=Text, 3=ScrollView, 4=Image, 5=TextInput, 6=Pressable, 7=SkiaCanvas, 255=Custom` |
-| `5` | 1 B | `flags` | `u8` | Bit 0: `NVE_NODE_LEAF_TEXT`, Bit 1: `NVE_NODE_INTERACTIVE`, Bit 2: `NVE_NODE_CLIP_BOUNDS` |
-| `6` | 1 B | `opacity_u8` | `u8` | Quantized opacity `0..=255` (`255` = `1.0`) |
-| `7` | 1 B | `_pad0` | `u8` | Explicit padding (`0`) |
-| `8..24` | 16 B | `x, y, width, height` | `4 × f32` | Resolved surface-space geometry in logical points |
-| `24` | 4 B | `bg_rgba` | `u32` | Packed RGBA background color |
-| `28` | 4 B | `text_rgba` | `u32` | Packed RGBA foreground text color |
-| `32` | 4 B | `border_rgba` | `u32` | Packed RGBA border color |
-| `36` | 4 B | `border_radius` | `f32` | Corner radius in logical points |
-| `40` | 4 B | `border_width` | `f32` | Stroke width in logical points |
-| `44` | 4 B | `font_size` | `f32` | Font size in logical points |
-| `48` | 4 B | `text_offset` | `u32` | Byte offset into `NveSceneView::text_slab` |
-| `52` | 2 B | `text_len` | `u16` | UTF-8 byte length inside `text_slab` |
-| `54` | 2 B | `child_count` | `u16` | Number of children in `children_slab` |
-| `56` | 4 B | `child_offset` | `u32` | Index offset into `NveSceneView::children_slab` |
-| `60` | 4 B | `z_index` | `i32` | Paint and hit-test stacking order |
-
-## `NveSceneView` & Incremental Dirty Diffing
-
-`NveSceneView` bundles flat read-only pointers to five contiguous slabs plus a compile-time schema hash:
-
-```c title="nve_abi.generated.h (excerpt)" highlight="2,5-6,10-14"
+```c title="nve_runtime_abi.generated.h (excerpt)"
 typedef struct NveSceneView {
-  uint64_t schema_hash;          // NVE_SCENE_SCHEMA_HASH (compile-time 64-bit XXH64)
-  uint64_t frame_id;
-  uint32_t node_count;
-  uint32_t dirty_count;          // indices into nodes[] that changed this frame
-  uint32_t removed_count;        // node_ids deleted since previous frame
-  uint32_t text_slab_len;
-  uint32_t children_slab_len;
-  uint32_t _pad;
-  const NveRenderNode* nodes;
-  const uint8_t*       text_slab;
-  const uint32_t*      children_slab;
-  const uint32_t*      dirty_indices;
-  const uint32_t*      removed_ids;
+  uint64_t schema_hash;            // NVE_RUNTIME_SCHEMA_HASH
+  uint64_t frame_id;               // monotonic frame counter
+  uint32_t node_capacity;          // slots in rows[] / rects[]; slot 0 is the reserved null
+  uint32_t dirty_count;
+  uint32_t removed_count;
+  uint32_t text_slab_len;          // bytes
+  uint32_t children_slab_len;      // u32 entries
+  uint32_t table_count;
+  uint32_t scroll_count;
+  uint32_t scene_epoch;            // bumped when the runtime discards its scene
+  uint32_t dirty_resource_count;
+  uint32_t moved_count;
+  const NveNodeRow*      rows;
+  const NveLayoutRect*   rects;
+  const uint8_t*         text_slab;
+  const uint32_t*        children_slab;
+  const uint32_t*        dirty_indices;
+  const uint32_t*        removed_ids;
+  const NveTableView*    tables;
+  const NveScrollOffset* scroll_offsets;
+  const uint32_t*        dirty_resources;
+  const uint32_t*        moved_indices;
 } NveSceneView;
 ```
 
-### Zero-Decode Host Reads
+### Acquire / release
 
-Instead of re-walking the entire tree every frame, hosts iterate only `dirty_indices[0..dirty_count]` and tear down `removed_ids[0..removed_count]`:
+Hosts obtain a view with `scene_acquire` from the `NveRuntimeApi` vtable (`nve_runtime_get_interface`) and must call `scene_release` when done. `scene_acquire` is callable from any thread and returns `BUSY` while a write is in progress; every pointer in the view (and `resource_payload` bytes) is borrowed until `scene_release`.
 
-- Reading 3 dirty nodes out of 1,000 takes **24.82 ns** (`rust::abi/scene/scene_view_read_dirty_3_of_1000`).
-- Publishing 10 dirty nodes on a 1,000-node C++20 scene takes **7.54 µs** (`cxx::scene_view_publish_10_on_1000`).
-- On Android JNI (`hosts/android-shell/NveAndroidSurfaceJni.cpp`), `CachedDirectBuffer` wraps each slab in a persistent `GlobalRef` `java.nio.ByteBuffer` (`NewDirectByteBuffer`), re-creating the JNI reference **only** when a slab pointer or capacity grows — achieving zero GC allocations per frame in Java (`dev.nve.host.SceneReader` with the generated `dev.nve.host.generated.NveAbi` offsets) and Jetpack Compose (`NveSceneBuffer.kt`).
+### `NveNodeRow`: 32 bytes per node
 
-### Compile-Time Schema Hash Lock
+`rows[i]` is a 32-byte `#[repr(C)]` header (`NVE_NODE_ROW_SIZE == 32`) indexed by `NodeIndex`; offsets are locked by `offset_of!` in Rust and `static_assert(offsetof(...))` in the generated headers.
 
-`NVE_SCENE_SCHEMA_HASH` is computed at compile time via XXH64 over every field name, type, and byte offset of `NveRenderNode`, `NveSceneView`, and `NveNodeMeta`. Every static host `SceneReader` (`packages/core/host-{cxx,swift,java,dart,ts}`) verifies `view.schema_hash` against the generated `NVE_SCENE_SCHEMA_HASH` before dereferencing a single node, making ABI drift fail fast and deterministically.
+| Offset | Size | Field | Description |
+| :--- | :--- | :--- | :--- |
+| `0` | 16 B | `table_set` | 128-bit attached-table bitset as four little-endian `u32` words |
+| `16` | 4 B | `parent` | Parent `NodeId` (`0` = root / detached) |
+| `20` | 4 B | `child_off` | Element offset into `children_slab` |
+| `24` | 4 B | `child_len` | Number of child `NodeId`s in `children_slab` |
+| `28` | 1 B | `generation` | Slot generation (`1..=255`) |
+| `29` | 1 B | `primary_slot` | Highest-priority realizing `TableSlot` (`0xFF` = plain container) |
+| `30` | 1 B | `effects` | `effect::*` bits dirtied during the latest frame |
+| `31` | 1 B | `flags` | `NVE_NODE_ROW_FLAG_LIVE` = bit 0 |
+
+Visual and semantic properties (colors, text, image, accessibility, ...) live in typed word tables attached to the node (`table_set`), exposed through `tables` and the generated foreign table getters, not in the row.
+
+### `NveLayoutRect`: 16 bytes per node
+
+`rects[i]` is `{ f32 x, y, width, height }` (`NVE_LAYOUT_RECT_SIZE == 16`) at the same index as `rows[i]`, in absolute surface-space logical points.
+
+### Incremental indices
+
+Instead of re-walking the tree, hosts consume four delta lists:
+
+- `dirty_indices[0..dirty_count]`: live node indices whose content changed this frame (created, row/parent/table/child list changed). A dirty node's rect may have changed too.
+- `moved_indices[0..moved_count]`: live nodes **not** in `dirty_indices` whose box relative to their parent changed; hosts re-apply only position and size.
+- `removed_ids[0..removed_count]`: raw `NodeId`s removed this frame.
+- `dirty_resources[0..dirty_resource_count]`: strictly ascending resource ids (images, draw lists) (re)defined this frame. Host caches keyed by resource id MUST drop these entries.
+
+`scene_epoch` is bumped whenever the runtime discards its scene (app attach / swap / detach, pairing connect / disconnect, keyframe or wire-error reset). All node ids, resource ids, and host caches from an earlier epoch are stale.
+
+`scroll_offsets[0..scroll_count]` (`NveScrollOffset { node_id, x, y }`, sorted by `node_id`) carries per-container scroll shifts; absent containers have zero shift.
+
+## Per-language `SceneReader`
+
+Every language has exactly one reader, named `SceneReader`, that validates `schema_hash` against the generated `NVE_RUNTIME_SCHEMA_HASH` before dereferencing any row, so ABI drift fails fast and deterministically:
+
+| Language | Reader |
+| :--- | :--- |
+| C++ | `nve::host::SceneReader` (`packages/core/host-cxx/include/nve/host/scene_reader.hpp`) |
+| Swift | `SceneReader` (`packages/core/host-swift`) |
+| Java / Kotlin | `dev.nve.host.SceneReader` (`packages/core/host-java`) over persistent `DirectByteBuffer` views |
+| Dart | `SceneReader` (`packages/core/host-dart`) |
+| TypeScript | `SceneReader` (`packages/core/host-ts`), reading wasm32 linear memory via the generated `NVE_SCENE_LAYOUT_WASM32` |
+
+All field offsets come from generated bindings (`cargo run --locked -p nve-cli -- codegen abi`); nothing is hard-coded in the readers. On Android, `NveAndroidSurfaceJni.cpp` wraps each slab in a persistent `GlobalRef` `java.nio.ByteBuffer` and re-creates it only when a slab pointer or capacity grows, giving zero GC allocations per frame.
 
 ## Zero-Copy `text_slab` & `NVE_DRAW1`
 
 All UTF-8 node strings live packed inside `text_slab`. A host slices `&text_slab[node.text_offset .. node.text_offset + node.text_len]` directly with zero string allocation.
 
-For `NVE_NODE_KIND_SKIA_CANVAS` (`kind == 7`) nodes, vector drawing operations use the **`NVE_DRAW1`** binary draw-list IR (`packages/core/components/src/canvas_ir/`):
+For `SkiaCanvas` nodes, vector drawing operations use the **`NVE_DRAW1`** binary draw-list IR (`packages/core/components/src/canvas_ir/`):
 
 - 15-byte header: `b"NVE_DRAW1"` (9 B) + `version: u16 (1)` + `op_count: u32` (capped at `65,536`)
 - 8 compact opcodes: `Clear`, `FillRect`, `FillRoundedRect`, `FillCircle`, `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`
 - Transported natively inside `RawPropValue::Bytes` (or `nve-draw1;b64,` when passed via RSX string attributes). See the [Vector Canvas (`NVE_DRAW1`) Guide](/guides/canvas-draw1).
 
-## Auxiliary Dirty Metadata Slab (`NveNodeMeta` + `meta_blob`)
-
-Keep `NveRenderNode` strictly at 64 bytes by moving sparse, variable-length per-node metadata (accessibility labels/roles/hints, ARIA states, image URIs/resize modes, `TextInput` placeholders/flags, and `NVE_DRAW1` draw lists) into fixed-stride 64-byte `NveNodeMeta` records (`#[repr(C)]`, locked by `NVE_NODE_META_SIZE == 64`) indexing into a flat companion `meta_blob` slab (`hosts/android-shell/NveAndroidMetadataPacker.cpp`, `hosts/compose-kit`).
-
-- Packed **only** for dirty nodes that actually carry metadata — typical frames touch only a handful of nodes.
-- Uses the same `CachedDirectBuffer` zero-copy `DirectByteBuffer` mechanism over JNI so Android TalkBack (`AccessibilityNodeProvider`) and Jetpack Compose `Modifier.semantics` stay synchronized at 120fps without allocating per-node Java/Kotlin objects or parsing custom TLV streams.
-
 <Callout kind="tip" title="Regenerating and verifying Scene ABI bindings">
-Run `cargo nve codegen abi --check` to verify the 15 generated host files across C, Swift, Dart, Java (`dev.nve.host.generated.*`), and TypeScript match `nve-abi` byte-for-byte.
+Run `cargo run --locked -p nve-cli -- codegen abi --check` to verify the generated host files across C, Swift, Dart, Java (`dev.nve.host.generated.*`), and TypeScript match `nve-abi` byte-for-byte.
 </Callout>

@@ -360,7 +360,7 @@ public enum NveDrawListRenderer {
         return Int(header.opCount)
     }
 
-    /// Convenience zero-copy overload for `UnsafeBufferPointer<UInt8>` (e.g. `NveSceneReader.textBytes`).
+    /// Convenience zero-copy overload for `UnsafeBufferPointer<UInt8>` (e.g. `SceneReader` text slices).
     @discardableResult
     public static func draw(
         _ bytes: UnsafeBufferPointer<UInt8>,

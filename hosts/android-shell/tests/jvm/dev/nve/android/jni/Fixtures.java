@@ -3,7 +3,7 @@ package dev.nve.android.jni;
 import dev.nve.host.NativeRuntime;
 import dev.nve.host.generated.NveJniFrame;
 import dev.nve.host.generated.NveRuntimeAbi;
-import dev.nve.host.RuntimeSceneReader;
+import dev.nve.host.SceneReader;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
@@ -44,14 +44,14 @@ final class Fixtures {
     static final class Scene {
         final long[] header = new long[NveJniFrame.HEADER_LEN];
         final java.nio.ByteBuffer[] slabs = new java.nio.ByteBuffer[NveJniFrame.SLABS_LEN];
-        final RuntimeSceneReader reader = new RuntimeSceneReader();
+        final SceneReader reader = new SceneReader();
         final long handle;
 
         Scene(long handle) {
             this.handle = handle;
         }
 
-        RuntimeSceneReader acquire() {
+        SceneReader acquire() {
             final int st = NativeRuntime.acquireScene(handle, header, slabs);
             if (st != NveRuntimeAbi.STATUS_OK) {
                 throw new IllegalStateException("acquireScene " + st + ": " + NativeRuntime.lastError(handle));

@@ -293,12 +293,15 @@ pub struct GeneratedFile {
 pub struct ImportRnOutput {
     pub spec: ParsedRnSpec,
     pub rust_module: GeneratedFile,
-    pub cpp_adapter: GeneratedFile,
+    /// C++20 host interface a native host implements (TurboModules only; components are Rust-only).
+    pub cpp_turbomodule_host: Option<GeneratedFile>,
 }
 
 impl ImportRnOutput {
-    pub fn files(&self) -> [&GeneratedFile; 2] {
-        [&self.rust_module, &self.cpp_adapter]
+    pub fn files(&self) -> Vec<&GeneratedFile> {
+        std::iter::once(&self.rust_module)
+            .chain(self.cpp_turbomodule_host.as_ref())
+            .collect()
     }
 
     pub fn write_to_dir(&self, out_dir: &Path) -> Result<Vec<PathBuf>, CodegenError> {
@@ -378,19 +381,15 @@ impl ExportTarget {
 pub struct ExportRnOutput {
     pub spec: NveExportSpec,
     pub native_component_ts: GeneratedFile,
-    pub cpp_bridge_hpp: GeneratedFile,
-    pub cpp_bridge_cpp: GeneratedFile,
     pub ios_component_view_mm: GeneratedFile,
     pub android_view_manager_kt: GeneratedFile,
     pub windows_component_view_hpp: GeneratedFile,
 }
 
 impl ExportRnOutput {
-    pub fn files(&self) -> [&GeneratedFile; 6] {
+    pub fn files(&self) -> [&GeneratedFile; 4] {
         [
             &self.native_component_ts,
-            &self.cpp_bridge_hpp,
-            &self.cpp_bridge_cpp,
             &self.ios_component_view_mm,
             &self.android_view_manager_kt,
             &self.windows_component_view_hpp,

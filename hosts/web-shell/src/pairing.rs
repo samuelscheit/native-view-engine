@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 
 use nve_abi::{
-    encode_events, pack_key_modifiers, EventPayload, FrameId, NativeEvent, NativeEventKind,
+    encode_events, pack_key_modifiers, EventPayload, NativeEvent, NativeEventKind,
     SurfaceId, ROOT_NODE_ID,
 };
 use nve_backend_web::WebBackend;
@@ -15,8 +15,6 @@ use nve_wire_core::{
     NveWireClientSession, NveWireClientState, NveWireIngestOutcome, DEFAULT_MAX_WIRE_FRAME_BYTES,
 };
 
-#[cfg(feature = "scene-view")]
-use crate::scene::SceneMirror;
 
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "app-kitchen-sink"))]
 #[path = "pairing_tests.rs"]
@@ -178,16 +176,13 @@ impl PairClientMachine {
 }
 
 /// Cross-target paired thin-client web session binding [`PairClientMachine`] directly to
-/// `StoreWireReplica<WebBackend>` (plus, with `scene-view`, a zero-copy [`SceneMirror`]; zero local
-/// app VDOM).
+/// `StoreWireReplica<WebBackend>` (zero local app VDOM).
 pub struct PairedWebSession {
     surface_id: SurfaceId,
     client: PairClientMachine,
     replica: StoreWireReplica<WebBackend>,
     viewport: Viewport,
     outbound_queue: VecDeque<Vec<u8>>,
-    #[cfg(feature = "scene-view")]
-    scene: SceneMirror,
 }
 
 impl PairedWebSession {
@@ -211,8 +206,6 @@ impl PairedWebSession {
             replica,
             viewport,
             outbound_queue: VecDeque::new(),
-            #[cfg(feature = "scene-view")]
-            scene: SceneMirror::new(),
         }
     }
 
@@ -256,11 +249,6 @@ impl PairedWebSession {
         self.client.last_applied_seq()
     }
 
-    #[cfg(feature = "scene-view")]
-    pub fn scene(&self) -> &SceneMirror {
-        &self.scene
-    }
-
     pub fn build_hello(&mut self) -> Vec<u8> {
         self.client.build_hello()
     }
@@ -268,7 +256,7 @@ impl PairedWebSession {
     pub fn on_pair_binary_message(&mut self, raw: &[u8]) -> Result<Vec<u8>, String> {
         let outcome = self.client.on_binary_message(raw)?;
         for (seq, cmd_bytes) in outcome.frames {
-            self.apply_remote_frame(u64::from(seq), &cmd_bytes)
+            self.apply_remote_frame(&cmd_bytes)
                 .map_err(|e| format!("WebBackend submit_nve2_frame failed for seq {seq}: {e}"))?;
         }
         for msg in outcome.outbound {
@@ -366,20 +354,11 @@ impl PairedWebSession {
         self.client.build_bye()
     }
 
-    fn apply_remote_frame(
-        &mut self,
-        frame_id: FrameId,
-        command_bytes: &[u8],
-    ) -> Result<(), BackendError> {
+    fn apply_remote_frame(&mut self, command_bytes: &[u8]) -> Result<(), BackendError> {
         if command_bytes.is_empty() {
             return Ok(());
         }
         let _ = self.replica.submit_nve2_frame(command_bytes)?;
-        #[cfg(feature = "scene-view")]
-        self.scene
-            .sync(self.replica.store(), self.replica.last_changes(), frame_id.max(1));
-        #[cfg(not(feature = "scene-view"))]
-        let _ = frame_id;
         Ok(())
     }
 }

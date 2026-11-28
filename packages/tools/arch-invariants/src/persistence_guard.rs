@@ -35,7 +35,7 @@ fn norm_path_byte(b: u8) -> u8 {
     }
 }
 
-fn path_contains_norm_token(rel: &str, token: &str) -> bool {
+pub(crate) fn path_contains_norm_token(rel: &str, token: &str) -> bool {
     let tb = token.as_bytes();
     let rb = rel.as_bytes();
     !tb.is_empty()
@@ -71,7 +71,7 @@ pub fn is_banned_legacy_persistence_path(rel: &str) -> Option<&'static str> {
     None
 }
 
-fn contains_ident_word(line: &str, ident: &str) -> bool {
+pub(crate) fn contains_ident_word(line: &str, ident: &str) -> bool {
     let bytes = line.as_bytes();
     let needle = ident.as_bytes();
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';

@@ -92,7 +92,7 @@ for cmd in decoder.iter_refs() {
 On Apple Silicon (`benchmarks/baseline.json`), encoding 1,000 nodes takes **21.17 µs** and streaming `CommandRef` decoding takes **18.05 µs** (~4.7 GiB/s).
 
 <Callout kind="warning" title="Yoga scalar sanitization invariant">
-In C++, `cxx/nve-fabric-bridge/src/command_decoder.hpp` validates every `f32` layout scalar (`is_valid_scalar`) to reject `NaN`, `Inf`, and magnitudes `|v| > 1e7f` before calling Yoga setters, preventing signed integer overflow UB inside Yoga's `StyleValuePool`.
+The Yoga layout engine (`packages/modules/layout-yoga`) maps non-finite layout results to `0.0f` (`sanitize_finite` in `yoga_shim.cpp`) and only forwards finite, non-negative sizes into Yoga setters. Huge style scalars (`|v| >= 2^31`) can still trigger float-cast-overflow UB inside Yoga's `StyleValuePool` until the upstream fix ships; see [Upstream Notes](/reference/upstream-notes).
 </Callout>
 
 ## Direct `NveEventBatch` FFI & `EventRing` Transport
