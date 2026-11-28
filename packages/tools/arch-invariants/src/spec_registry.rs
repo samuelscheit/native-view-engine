@@ -211,10 +211,82 @@ fn is_valid_inv_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Extracts `[INV:<id>]` tags attached to non-ignored `#[test]` functions (in contiguous
-/// leading comments/attributes or inside the test function body).
-pub fn extract_test_covered_invariant_ids(src: &str) -> BTreeSet<String> {
-    let mut covered = BTreeSet::new();
+/// Enforcement strength of a `#[test]` guard backing an `[INV:<id>]` tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GuardStrength {
+    /// Enforced via a shrink-only monotonic ratchet (`assert_staged_ratchet`; regressions fail by default).
+    Ratcheted,
+    /// Enforced at zero tolerance (`assert_no_violations`, `assert!`, `assert_eq!`, `assert_ne!`, `panic!`).
+    Enforced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyGuardKind {
+    Enforced,
+    Ratcheted,
+    Unenforced,
+}
+
+/// Parses a `#[test]` function body with `syn` so comments/strings cannot spoof assertions,
+/// rejecting empty tests and any test that invokes an unforced `assert_staged_violations(...)`.
+fn classify_test_body(body: &str) -> BodyGuardKind {
+    let Ok(block) = syn::parse_str::<syn::Block>(body) else {
+        return BodyGuardKind::Unenforced;
+    };
+    struct AssertScan {
+        has_strict: bool,
+        has_ratchet: bool,
+        has_unforced_staged: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for AssertScan {
+        fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(ep) = &*node.func
+                && let Some(seg) = ep.path.segments.last()
+            {
+                match seg.ident.to_string().as_str() {
+                    "assert_no_violations" => self.has_strict = true,
+                    "assert_staged_ratchet" => self.has_ratchet = true,
+                    "assert_staged_violations" => self.has_unforced_staged = true,
+                    _ => {}
+                }
+            }
+            syn::visit::visit_expr_call(self, node);
+        }
+
+        fn visit_macro(&mut self, node: &'ast syn::Macro) {
+            if let Some(seg) = node.path.segments.last()
+                && matches!(
+                    seg.ident.to_string().as_str(),
+                    "assert" | "assert_eq" | "assert_ne" | "panic"
+                )
+            {
+                self.has_strict = true;
+            }
+            syn::visit::visit_macro(self, node);
+        }
+    }
+    let mut scan = AssertScan {
+        has_strict: false,
+        has_ratchet: false,
+        has_unforced_staged: false,
+    };
+    syn::visit::visit_block(&mut scan, &block);
+    if scan.has_unforced_staged {
+        BodyGuardKind::Unenforced
+    } else if scan.has_strict {
+        BodyGuardKind::Enforced
+    } else if scan.has_ratchet {
+        BodyGuardKind::Ratcheted
+    } else {
+        BodyGuardKind::Unenforced
+    }
+}
+
+/// Extracts `[INV:<id>]` tags attached to non-ignored `#[test]` functions whose body contains
+/// a real enforcing assertion (either zero-tolerance or shrink-only ratcheted; never empty or
+/// unforced `assert_staged_violations`), recording the strongest backing guard per ID.
+pub fn extract_test_invariant_guards(src: &str) -> BTreeMap<String, GuardStrength> {
+    let mut guards: BTreeMap<String, GuardStrength> = BTreeMap::new();
     let lines: Vec<&str> = src.lines().collect();
     let mut line_offsets = Vec::with_capacity(lines.len() + 1);
     let mut offset = 0;
@@ -275,15 +347,29 @@ pub fn extract_test_covered_invariant_ids(src: &str) -> BTreeSet<String> {
             continue;
         }
 
-        for &hdr in &lines[header_start..fn_idx] {
-            collect_valid_inv_tags(hdr, &mut covered);
-        }
-
         let search_from = line_offsets.get(fn_idx).copied().unwrap_or(src.len());
         if let Some(brace_rel) = src[search_from..].find('{') {
             let brace_abs = search_from + brace_rel;
             let end_abs = scan_balanced_braces(bytes, brace_abs);
-            collect_valid_inv_tags(&src[brace_abs..end_abs], &mut covered);
+            let body = &src[brace_abs..end_abs];
+            let strength = match classify_test_body(body) {
+                BodyGuardKind::Enforced => Some(GuardStrength::Enforced),
+                BodyGuardKind::Ratcheted => Some(GuardStrength::Ratcheted),
+                BodyGuardKind::Unenforced => None,
+            };
+            if let Some(strength) = strength {
+                let mut tags = BTreeSet::new();
+                for &hdr in &lines[header_start..fn_idx] {
+                    collect_valid_inv_tags(hdr, &mut tags);
+                }
+                collect_valid_inv_tags(body, &mut tags);
+                for id in tags {
+                    guards
+                        .entry(id)
+                        .and_modify(|cur| *cur = (*cur).max(strength))
+                        .or_insert(strength);
+                }
+            }
             let next_line = line_offsets.partition_point(|&off| off < end_abs);
             i = next_line.max(fn_idx + 1);
         } else {
@@ -291,7 +377,12 @@ pub fn extract_test_covered_invariant_ids(src: &str) -> BTreeSet<String> {
         }
     }
 
-    covered
+    guards
+}
+
+/// Extracts `[INV:<id>]` tags backed by enforcing (strict or ratcheted) non-ignored `#[test]` fns.
+pub fn extract_test_covered_invariant_ids(src: &str) -> BTreeSet<String> {
+    extract_test_invariant_guards(src).into_keys().collect()
 }
 
 /// Scans from an opening `{` to its matching `}` while skipping Rust line/block comments,

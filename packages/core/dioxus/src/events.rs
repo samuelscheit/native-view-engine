@@ -296,8 +296,8 @@ impl DioxusSurface {
                         .has_table_event_listener_in_chain(node, table_key, ev.event())
                     {
                         let data = EventSlots::reuse(&mut self.event_slots.table, |d| {
-                            d.table_key = table_key.0;
-                            d.event_id = ev.event().raw();
+                            d.table_key = table_key;
+                            d.event_id = ev.event();
                             d.payload.clear();
                             d.payload.extend_from_slice(ev.bytes());
                         });

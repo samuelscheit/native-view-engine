@@ -3031,6 +3031,7 @@ dependencies = [
 name = "nve-motion-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-backend-web",
  "nve-engine",

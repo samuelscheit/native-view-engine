@@ -357,7 +357,7 @@ fn retained_event_clone_is_isolated_and_layout_and_table_events_dispatch() {
     struct Log {
         retained_presses: Shared<Event<PressEventData>>,
         layouts: Shared<(f32, f32, f32, f32)>,
-        table_events: Shared<(u64, u32, Vec<u8>)>,
+        table_events: Shared<(nve_abi::table::TableKey, EventId, Vec<u8>)>,
     }
 
     impl PartialEq for Log {
@@ -430,7 +430,7 @@ fn retained_event_clone_is_isolated_and_layout_and_table_events_dispatch() {
     let tevs = log.table_events.borrow();
     assert_eq!(
         tevs.as_slice(),
-        &[(mod_key.0, 5, vec![0xDE, 0xAD, 0xBE, 0xEF])]
+        &[(mod_key, EventId(5), vec![0xDE, 0xAD, 0xBE, 0xEF])]
     );
 }
 

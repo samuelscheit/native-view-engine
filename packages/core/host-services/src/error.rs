@@ -29,36 +29,51 @@ pub enum ServiceError {
     Codec(String),
 }
 
-impl ServiceError {
-    /// Converts a non-`Ok` [`NveHostStatus`] code into the corresponding [`ServiceError`].
-    pub fn from_status(status: NveHostStatus) -> Self {
-        match status {
-            NveHostStatus::Ok => Self::InternalError("unexpected Ok status in error path".into()),
-            NveHostStatus::Pending => Self::Pending { request_id: 0 },
-            NveHostStatus::BufferTooSmall => Self::BufferTooSmall { required: 0 },
-            NveHostStatus::Unsupported => Self::Unsupported,
-            NveHostStatus::PermissionDenied => Self::PermissionDenied,
-            NveHostStatus::InvalidArg => Self::InvalidArg("invalid argument".into()),
-            NveHostStatus::NotFound => Self::NotFound,
-            NveHostStatus::Cancelled => Self::Cancelled,
-            NveHostStatus::IoError => Self::IoError("host I/O error".into()),
-            NveHostStatus::InternalError => Self::InternalError("host internal error".into()),
+/// Single source of truth for bidirectional mapping between C-ABI [`NveHostStatus`] codes and
+/// [`ServiceError`].
+macro_rules! impl_host_status_mapping {
+    (
+        unit: { $($unit_status:ident <=> $unit_err:ident),* $(,)? }
+        payload: {
+            $($p_status:ident => $p_make:expr ; $p_pat:pat => $p_back:ident),* $(,)?
         }
-    }
+    ) => {
+        impl ServiceError {
+            /// Converts a non-`Ok` [`NveHostStatus`] code into the corresponding [`ServiceError`].
+            pub fn from_status(status: NveHostStatus) -> Self {
+                match status {
+                    NveHostStatus::Ok => {
+                        Self::InternalError("unexpected Ok status in error path".into())
+                    }
+                    $(NveHostStatus::$unit_status => Self::$unit_err,)*
+                    $(NveHostStatus::$p_status => $p_make,)*
+                }
+            }
 
-    /// Maps this error back to a signed C-ABI [`NveHostStatus`] code.
-    pub const fn to_status(&self) -> NveHostStatus {
-        match self {
-            Self::Pending { .. } => NveHostStatus::Pending,
-            Self::BufferTooSmall { .. } => NveHostStatus::BufferTooSmall,
-            Self::Unsupported => NveHostStatus::Unsupported,
-            Self::PermissionDenied => NveHostStatus::PermissionDenied,
-            Self::InvalidArg(_) | Self::Codec(_) => NveHostStatus::InvalidArg,
-            Self::NotFound => NveHostStatus::NotFound,
-            Self::Cancelled => NveHostStatus::Cancelled,
-            Self::IoError(_) => NveHostStatus::IoError,
-            Self::InternalError(_) => NveHostStatus::InternalError,
+            /// Maps this error back to a signed C-ABI [`NveHostStatus`] code.
+            pub const fn to_status(&self) -> NveHostStatus {
+                match self {
+                    $(Self::$unit_err => NveHostStatus::$unit_status,)*
+                    $($p_pat => NveHostStatus::$p_back,)*
+                }
+            }
         }
+    };
+}
+
+impl_host_status_mapping! {
+    unit: {
+        Unsupported <=> Unsupported,
+        PermissionDenied <=> PermissionDenied,
+        NotFound <=> NotFound,
+        Cancelled <=> Cancelled,
+    }
+    payload: {
+        Pending => Self::Pending { request_id: 0 }; Self::Pending { .. } => Pending,
+        BufferTooSmall => Self::BufferTooSmall { required: 0 }; Self::BufferTooSmall { .. } => BufferTooSmall,
+        InvalidArg => Self::InvalidArg("invalid argument".into()); Self::InvalidArg(_) | Self::Codec(_) => InvalidArg,
+        IoError => Self::IoError("host I/O error".into()); Self::IoError(_) => IoError,
+        InternalError => Self::InternalError("host internal error".into()); Self::InternalError(_) => InternalError,
     }
 }
 

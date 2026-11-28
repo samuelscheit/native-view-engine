@@ -315,7 +315,17 @@ pub fn assert_no_violations(invariant: &str, violations: &[Violation]) {
     }
 }
 
-pub fn assert_staged_violations(stage: Stage, invariant: &str, violations: &[Violation]) {
+/// Enforces a shrink-only monotonic ratchet on a staged architectural invariant:
+/// - Under `NVE_STRICT_INVARIANTS=1` (or the stage name), requires **0** violations.
+/// - By default, FAILS if `violations.len() > max_violations` (regression) AND FAILS if
+///   `violations.len() < max_violations` (stale ceiling: lower `max_violations` immediately so
+///   fixed debt can never silently regress back in).
+pub fn assert_staged_ratchet(
+    stage: Stage,
+    invariant: &str,
+    max_violations: usize,
+    violations: &[Violation],
+) {
     if stage.is_enforced() {
         assert_no_violations(&format!("{invariant} [{}]", stage.label()), violations);
         return;
@@ -323,10 +333,11 @@ pub fn assert_staged_violations(stage: Stage, invariant: &str, violations: &[Vio
     let report = std::env::var("NVE_REPORT_INVARIANTS").is_ok_and(|raw| is_truthy_env(raw.trim()));
     if report {
         eprintln!(
-            "\n[NVE_REPORT_INVARIANTS][{}] {} — {} violation(s):",
+            "\n[NVE_REPORT_INVARIANTS][{}] {} — {}/{} violation(s):",
             stage.label(),
             invariant,
-            violations.len()
+            violations.len(),
+            max_violations
         );
         for v in violations.iter().take(40) {
             if v.line > 0 {
@@ -334,6 +345,27 @@ pub fn assert_staged_violations(stage: Stage, invariant: &str, violations: &[Vio
             } else {
                 eprintln!("  - {}: {}", v.path, v.reason);
             }
+        }
+    }
+    if violations.len() > max_violations {
+        assert_no_violations(
+            &format!(
+                "{invariant} [{} ratchet regression: {} > ceiling {max_violations}]",
+                stage.label(),
+                violations.len()
+            ),
+            violations,
+        );
+    }
+    if violations.len() < max_violations {
+        #[expect(clippy::panic, reason = "architectural invariant ratchet ceiling must shrink")]
+        {
+            panic!(
+                "\nStale staged ratchet ceiling for `{invariant}` [{}]: actual violations dropped to {} (ceiling is {max_violations}). Lower the ceiling to {} in `arch_invariants.rs`.\n",
+                stage.label(),
+                violations.len(),
+                violations.len(),
+            );
         }
     }
 }
