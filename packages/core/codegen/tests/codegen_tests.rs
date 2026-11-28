@@ -333,8 +333,11 @@ fn export_rn_generates_valid_four_file_package_and_roundtrips_through_import_rn(
     assert!(!kt.contains("JSONObject"));
     assert!(!kt.contains("org.json"));
     assert!(kt.contains("ComposeView(context)"));
+    assert!(kt.contains("composeView.disposeComposition()"));
     assert!(kt.contains("override fun onAfterUpdateTransaction"));
-    assert!(kt.contains("view.flushProps()"));
+    assert!(kt.contains("_view.flushProps()"));
+    assert!(kt.contains("override fun receiveCommand"));
+    assert!(kt.contains("and 0xFFFF_FFFFL"));
     assert!(kt.contains("fun measureSurface("));
     assert!(kt.contains("@ReactProp(name = \"initialCount\", defaultInt = 0)"));
     assert!(kt.contains("@ReactProp(name = \"accentColor\", customType = \"Color\")"));

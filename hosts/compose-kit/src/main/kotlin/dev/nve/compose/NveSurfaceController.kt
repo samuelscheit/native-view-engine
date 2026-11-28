@@ -77,8 +77,11 @@ interface NveRuntimeHost : AutoCloseable {
 
     fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int
 
-    /** Forwards embedding-host props encoded as a single `BinWriter` `NveBinValue` map. */
-    fun setProps(binMap: ByteArray): Int
+    /**
+     * Forwards embedding-host props encoded as a single `BinWriter` `NveBinValue` map. When
+     * [outChanged] is non-null (length >= 1), `outChanged[0]` receives whether the app changed.
+     */
+    fun setProps(binMap: ByteArray, outChanged: BooleanArray? = null): Int
 
     /** Manually drains outbound app events as an `NVEV` v2 byte array (`null` when empty/unsupported). */
     fun drainEmittedEvents(): ByteArray?
@@ -101,7 +104,11 @@ interface NveRuntimeHost : AutoCloseable {
 
     fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long = 0L, envHash: Long = 0L): Int
 
-    fun applyHotPatch(patch: ByteArray): Int
+    /**
+     * Applies a Tier-1 binary hot patch. When [outChanged] is non-null (length >= 1),
+     * `outChanged[0]` receives whether the app changed.
+     */
+    fun applyHotPatch(patch: ByteArray, outChanged: BooleanArray? = null): Int
 
     fun measureSurface(
         minWidthDp: Float,
@@ -160,7 +167,7 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
 
     override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int = surface.scrollBy(nodeId, dxDp, dyDp)
 
-    override fun setProps(binMap: ByteArray): Int = surface.setProps(binMap)
+    override fun setProps(binMap: ByteArray, outChanged: BooleanArray?): Int = surface.setProps(binMap, outChanged)
 
     override fun drainEmittedEvents(): ByteArray? = surface.drainEmittedEvents()
 
@@ -184,7 +191,7 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
     override fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long, envHash: Long): Int =
         surface.bootFrame0Bytes(envelope, appBuildId, envHash)
 
-    override fun applyHotPatch(patch: ByteArray): Int = surface.applyHotPatch(patch)
+    override fun applyHotPatch(patch: ByteArray, outChanged: BooleanArray?): Int = surface.applyHotPatch(patch, outChanged)
 
     override fun measureSurface(
         minWidthDp: Float,
@@ -273,39 +280,62 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     var error: String? by mutableStateOf(null)
         private set
 
-    /** Listener receiving each outbound event drained from the attached app after renders and dispatches. */
+    private val emittedBatchCallback: (ByteArray) -> Unit = { batch -> dispatchEmittedBatch(batch) }
+    private val eventRingReader = EventRingReader()
+    private val changedOut = BooleanArray(1)
+    private var dispatchDepth = 0
+    private var closed = false
+
+    /**
+     * Listener receiving each outbound event drained from the attached app after renders and
+     * dispatches. Wired to [NveRuntimeHost.setEmittedEventListener] only while non-null so manual
+     * [drainEmittedEvents] receives queued events when [onEvent] is `null`.
+     */
     var onEvent: ((NveEmittedEvent) -> Unit)? = null
+        set(value) {
+            val hadListener = field != null
+            field = value
+            val hasListener = value != null
+            if (hadListener != hasListener && !closed) {
+                host.setEmittedEventListener(if (hasListener) emittedBatchCallback else null)
+            }
+        }
 
     private var lastViewport = FloatArray(3)
     private val scratchWriter = BinWriter()
 
     init {
         host.setFrameListener { reader, resources -> NveSceneCapture.capture(reader, resources, scene) }
-        host.setEmittedEventListener { batch -> dispatchEmittedBatch(batch) }
     }
 
     private fun dispatchEmittedBatch(batchBytes: ByteArray) {
         val listener = onEvent ?: return
         if (batchBytes.isEmpty()) return
-        val reader = try {
-            EventRingReader().attach(batchBytes)
-        } catch (_: BinCodecException) {
-            return
-        }
-        for (i in 0 until reader.count()) {
-            val tableBits = reader.tableBits(i)
-            val flags = reader.flags(i)
-            val custom = tableBits == NveAbi.TABLE_CUSTOM.value() && (flags and NveAbi.EVENT_FLAG_CUSTOM_NAMED) != 0
-            val ev = NveEmittedEvent(
-                tableBits = tableBits,
-                eventId = reader.event(i),
-                nodeId = reader.node(i),
-                timestampUs = reader.timestamp(i),
-                flags = flags,
-                name = if (custom) reader.customName(i) else "",
-                payloadBytes = if (custom) reader.customData(i) else reader.bytes(i),
-            )
-            listener(ev)
+        val reader = if (dispatchDepth == 0) eventRingReader else EventRingReader()
+        dispatchDepth++
+        try {
+            try {
+                reader.attach(batchBytes)
+            } catch (_: BinCodecException) {
+                return
+            }
+            for (i in 0 until reader.count()) {
+                val tableBits = reader.tableBits(i)
+                val flags = reader.flags(i)
+                val custom = tableBits == NveAbi.TABLE_CUSTOM.value() && (flags and NveAbi.EVENT_FLAG_CUSTOM_NAMED) != 0
+                val ev = NveEmittedEvent(
+                    tableBits = tableBits,
+                    eventId = reader.event(i),
+                    nodeId = reader.node(i),
+                    timestampUs = reader.timestamp(i),
+                    flags = flags,
+                    name = if (custom) reader.customName(i) else "",
+                    payloadBytes = if (custom) reader.customData(i) else reader.bytes(i),
+                )
+                listener(ev)
+            }
+        } finally {
+            dispatchDepth--
         }
     }
 
@@ -322,6 +352,7 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     }
 
     fun setTextMeasurer(measurer: NativeRuntime.TextMeasurer?) {
+        if (measurer == null && closed) return
         host.setTextMeasurer(measurer)
         host.render()
     }
@@ -334,15 +365,16 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
         host.render()
     }
 
-    /** Forwards embedding-host props encoded as a single `BinWriter` `NveBinValue` map and renders on success. */
+    /** Forwards embedding-host props encoded as a single `BinWriter` `NveBinValue` map and renders when changed. */
     fun setProps(binMap: ByteArray): Boolean {
-        val st = host.setProps(binMap)
+        changedOut[0] = false
+        val st = host.setProps(binMap, changedOut)
         if (st != NveRuntimeAbi.STATUS_OK) {
             error = "setProps failed ($st): ${host.lastError}"
             return false
         }
         error = null
-        host.render()
+        if (changedOut[0]) host.render()
         return true
     }
 
@@ -435,15 +467,16 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
         return true
     }
 
-    /** Applies one Tier-1 binary hot patch and renders on success. */
+    /** Applies one Tier-1 binary hot patch and renders when changed. */
     fun applyHotPatch(patch: ByteArray): Boolean {
-        val st = host.applyHotPatch(patch)
+        changedOut[0] = false
+        val st = host.applyHotPatch(patch, changedOut)
         if (st != NveRuntimeAbi.STATUS_OK) {
             error = "applyHotPatch failed ($st): ${host.lastError}"
             return false
         }
         error = null
-        host.render()
+        if (changedOut[0]) host.render()
         return true
     }
 
@@ -457,10 +490,15 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     ): RuntimeSurface.SurfaceMeasure? =
         host.measureSurface(minWidthDp, minHeightDp, maxWidthDp, maxHeightDp, flags)
 
-    fun setIntrinsicSizeInvalidatedListener(listener: Runnable?): Int =
-        host.setIntrinsicSizeInvalidatedListener(listener)
+    fun setIntrinsicSizeInvalidatedListener(listener: Runnable?): Int {
+        if (listener == null && closed) return NveRuntimeAbi.STATUS_OK
+        return host.setIntrinsicSizeInvalidatedListener(listener)
+    }
 
-    fun setHostBridge(bridge: NveHostBridge?): Int = host.setHostCallbackBridge(bridge)
+    fun setHostBridge(bridge: NveHostBridge?): Int {
+        if (bridge == null && closed) return NveRuntimeAbi.STATUS_OK
+        return host.setHostCallbackBridge(bridge)
+    }
 
     fun completeHostRequest(requestId: Long, hostStatus: Int, payload: ByteArray? = null): Int =
         host.completeHostRequest(requestId, hostStatus, payload)
@@ -474,7 +512,12 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     /** Wake-driven or explicit re-render (e.g. after resuming). */
     fun render(): Boolean = host.render()
 
-    override fun close() = host.close()
+    override fun close() {
+        if (closed) return
+        onEvent = null
+        closed = true
+        host.close()
+    }
 
     private fun now(): Long = System.nanoTime() / 1000L
 }

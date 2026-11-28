@@ -16,17 +16,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * coalescing onto the owner thread.
  *
  * <p>Use it on its owner thread only (the thread that constructs it; Android: the main thread),
- * except {@link #isPaired}, which any thread may call. The wake listener may fire on any thread;
- * it posts at most one pending {@link #render} to {@code ownerThread}.
+ * except {@link #isPaired}, {@link #completeHostRequest}, {@link #pushHostEvent}, and
+ * {@link #publishHostChannel}, which any thread may call without racing {@link #close}. The wake
+ * listener may fire on any thread; it posts at most one pending {@link #render} to
+ * {@code ownerThread}.
  *
- * <p>Frames: each new frame reaches the {@link FrameConsumer} while the scene is acquired. Inside
- * {@code onFrame} the reader and {@link #resource} bytes are valid; nothing may touch the native
- * scene afterwards (the reader and every pooled table reader are {@link SceneReader#detach
- * detached} before release). Calls that would write the runtime are re-entrancy safe: {@link #send}
- * and {@link #scrollBy} made inside {@code onFrame} (e.g. by listeners that fire while the consumer
- * mutates its UI) run right after the scene is released, and the frames they cause are delivered
- * by the same {@link #render} loop (bounded; the rest is posted), never by recursion. Structural
- * calls ({@link #attachApp}, {@link #setViewport}, ...) inside {@code onFrame} throw.
+ * <p>{@link ByteBuffer} overloads require direct buffers ({@link ByteBuffer#isDirect()}) and read
+ * slice {@code [0..length)} from byte offset {@code 0} (ignoring {@code position()}/{@code limit()},
+ * validating {@code 0 <= length <= capacity()}). Heap {@code byte[]} overloads handle staging
+ * automatically.
+ *
+ * <p>Frames &amp; re-entrancy: each new frame reaches the {@link FrameConsumer} while the scene is
+ * acquired. Inside {@code onFrame} the reader and {@link #resource} bytes are valid; nothing may
+ * touch the native scene afterwards (the reader and every pooled table reader are
+ * {@link SceneReader#detach detached} before release). {@link #send} and {@link #scrollBy} made
+ * inside {@code onFrame} (e.g. by listeners that fire while the consumer mutates its UI) are
+ * deferred until right after the scene is released, and the frames they cause are delivered by the
+ * same {@link #render} loop (bounded; the rest is posted), never by recursion. Structural calls
+ * ({@link #attachApp}, {@link #setViewport}, {@link #setProps}, {@link #applyHotPatch},
+ * {@link #measureSurface}, ...) are non-reentrant and throw {@link IllegalStateException} inside
+ * {@code onFrame} or after {@link #close}, except {@code null}-clearing teardown calls
+ * ({@link #setTextMeasurer}, {@link #setIntrinsicSizeInvalidatedListener},
+ * {@link #setHostCallbackBridge}), which are idempotent no-ops once closed.
  */
 public final class RuntimeSurface implements AutoCloseable, FrameHost {
     /** Receives each new frame while the scene is acquired. */
@@ -64,6 +75,8 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
 
     static final int INITIAL_RING_BYTES = 64 * 1024;
     static final int MAX_RING_BYTES = 16 * 1024 * 1024;
+    /** Largest direct scratch buffer retained on the surface across calls (oversized spikes are one-shot). */
+    static final int MAX_RETAINED_SCRATCH_BYTES = 64 * 1024;
     /** Frames one {@link #render} delivers back to back before posting the rest (UI fairness). */
     static final int MAX_FRAMES_PER_RENDER = 4;
     /** Upper bound of the {@code dt} passed to {@code tick} (a long pause is not one huge step). */
@@ -77,7 +90,7 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     /** The thread that created the native surface: the only one allowed to free it. */
     private final Thread owner = Thread.currentThread();
     private final AtomicBoolean renderPosted = new AtomicBoolean();
-    /** Guards {@link #handle} between {@link #close} and the cross-thread {@link #isPaired}. */
+    /** Guards {@link #handle} between {@link #close} and cross-thread safe runtime queries/ingress. */
     private final Object handleLock = new Object();
     private final int[] out = new int[1];
     private final long[] kind = new long[1];
@@ -88,6 +101,8 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     private volatile long handle;
     private FrameConsumer consumer;
     private EmittedEventConsumer emittedEventConsumer;
+    /** Cached per app attach: skips per-frame JNI drain when no attached app exports `NVE_IFACE_COMPONENT`. */
+    private boolean emittedUnsupported = true;
     private boolean needsFrame = true;
     private boolean inFrame;
     private boolean closeAfterFrame;
@@ -148,6 +163,10 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return status;
     }
 
+    private boolean isClosedClearing(Object nullableCallback) {
+        return nullableCallback == null && !inFrame && handle == 0L;
+    }
+
     /**
      * Loads the app {@code .so} through the runtime ({@code load_app_module}: a private staged copy
      * on desktop, in place on Android) and attaches it, replacing the running app (hot reload) or
@@ -156,28 +175,31 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
      */
     public int attachApp(String soPath, boolean carryState) {
         structural("attachApp");
-        return source(NativeRuntime.attachApp(handle, soPath, carryState), false);
+        return source(NativeRuntime.attachApp(handle, soPath, carryState), false, true);
     }
 
     public int detachApp() {
         structural("detachApp");
-        return source(NativeRuntime.detachApp(handle), false);
+        return source(NativeRuntime.detachApp(handle), false, false);
     }
 
     /** Streams the scene from an {@code nve pair} server, replacing any local app. */
     public int pair(String uri, String token) {
         structural("pair");
-        return source(NativeRuntime.pairConnect(handle, uri, token == null ? "" : token), true);
+        return source(NativeRuntime.pairConnect(handle, uri, token == null ? "" : token), true, false);
     }
 
     public int unpair() {
         structural("unpair");
-        return source(NativeRuntime.pairDisconnect(handle), false);
+        return source(NativeRuntime.pairDisconnect(handle), false, false);
     }
 
     /** A successful source switch: the next frame is due and dispatch follows the new source. */
-    private int source(int status, boolean remote) {
-        if (status == NveRuntimeAbi.STATUS_OK) paired = remote;
+    private int source(int status, boolean remote, boolean hasLocalApp) {
+        if (status == NveRuntimeAbi.STATUS_OK) {
+            paired = remote;
+            emittedUnsupported = !hasLocalApp;
+        }
         return afterStructuralChange(status);
     }
 
@@ -194,7 +216,7 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         }
     }
 
-    /** Applies a host-produced {@code NVE2} frame (direct buffer). */
+    /** Applies a host-produced {@code NVE2} frame (direct buffer {@code [0..length)}). */
     public int submitFrame(ByteBuffer nve2, int length) {
         structural("submitFrame");
         return afterStructuralChange(NativeRuntime.submitFrame(handle, nve2, length));
@@ -205,18 +227,35 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return afterStructuralChange(NativeRuntime.setViewport(handle, width, height, scaleFactor));
     }
 
-    /** Installs ({@code null} removes) the host text measurer; the next render relayouts. */
+    /** Installs ({@code null} removes; idempotent no-op when closed) the host text measurer; the next render relayouts. */
     public int setTextMeasurer(NativeRuntime.TextMeasurer measurer) {
+        if (isClosedClearing(measurer)) return NveRuntimeAbi.STATUS_OK;
         structural("setTextMeasurer");
         return afterStructuralChange(NativeRuntime.setTextMeasurer(handle, measurer));
     }
 
-    /** Copies {@code bytes} into the owner-thread reusable direct scratch buffer ({@code null} for empty). */
+    /**
+     * Copies {@code bytes} into the owner-thread reusable direct scratch buffer ({@code null} for
+     * empty). Oversized spikes ({@code > MAX_RETAINED_SCRATCH_BYTES}) use a one-shot direct buffer
+     * so the retained off-heap scratch stays bounded.
+     */
     private ByteBuffer toScratchDirect(byte[] bytes) {
-        if (bytes == null || bytes.length == 0) return null;
-        if (scratchDirect == null || scratchDirect.capacity() < bytes.length) {
-            int cap = scratchDirect == null ? 256 : scratchDirect.capacity();
-            while (cap < bytes.length && cap < (Integer.MAX_VALUE >>> 1)) cap *= 2;
+        if (bytes == null || bytes.length == 0) {
+            if (scratchDirect != null && scratchDirect.capacity() > MAX_RETAINED_SCRATCH_BYTES) {
+                scratchDirect = null;
+            }
+            return null;
+        }
+        if (bytes.length > MAX_RETAINED_SCRATCH_BYTES) {
+            if (scratchDirect != null && scratchDirect.capacity() > MAX_RETAINED_SCRATCH_BYTES) {
+                scratchDirect = null;
+            }
+            return HybridRuntime.directBuffer(bytes);
+        }
+        if (scratchDirect == null || scratchDirect.capacity() < bytes.length
+                || scratchDirect.capacity() > MAX_RETAINED_SCRATCH_BYTES) {
+            int cap = 256;
+            while (cap < bytes.length && cap < MAX_RETAINED_SCRATCH_BYTES) cap *= 2;
             if (cap < bytes.length) cap = bytes.length;
             scratchDirect = ByteBuffer.allocateDirect(cap).order(ByteOrder.LITTLE_ENDIAN);
         }
@@ -226,23 +265,39 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return scratchDirect;
     }
 
-    /** Forwards embedding-host props encoded as a single {@link BinWriter} {@code NveBinValue} map (direct buffer). */
-    public int setProps(ByteBuffer binMap, int length) {
+    /**
+     * Forwards embedding-host props encoded as a single {@link BinWriter} {@code NveBinValue} map
+     * (direct buffer {@code [0..length)}). When {@code outChanged} is non-null with length {@code >= 1},
+     * {@code outChanged[0]} receives whether the app reported a change.
+     */
+    public int setProps(ByteBuffer binMap, int length, boolean[] outChanged) {
         structural("setProps");
         out[0] = 0;
         final int st = NativeRuntime.setProps(handle, binMap, length, out);
+        final boolean changed = st == NveRuntimeAbi.STATUS_OK && out[0] != 0;
+        if (outChanged != null && outChanged.length >= 1) outChanged[0] = changed;
         if (st == NveRuntimeAbi.STATUS_OK) {
-            if (out[0] != 0) needsFrame = true;
+            if (changed) needsFrame = true;
             drainEmittedIfListening();
         }
         return st;
     }
 
+    /** Forwards embedding-host props encoded as a single {@link BinWriter} {@code NveBinValue} map (direct buffer {@code [0..length)}). */
+    public int setProps(ByteBuffer binMap, int length) {
+        return setProps(binMap, length, null);
+    }
+
     /** Forwards embedding-host props encoded as a single {@link BinWriter} {@code NveBinValue} map. */
-    public int setProps(byte[] binMap) {
+    public int setProps(byte[] binMap, boolean[] outChanged) {
         structural("setProps");
         final int len = binMap == null ? 0 : binMap.length;
-        return setProps(toScratchDirect(binMap), len);
+        return setProps(toScratchDirect(binMap), len, outChanged);
+    }
+
+    /** Forwards embedding-host props encoded as a single {@link BinWriter} {@code NveBinValue} map. */
+    public int setProps(byte[] binMap) {
+        return setProps(binMap, null);
     }
 
     /** Manually drains outbound app events as an {@code NVEV} v2 byte array ({@code null} when empty or unsupported). */
@@ -259,7 +314,7 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return NativeRuntime.snapshotState(handle, out);
     }
 
-    /** Restores a state snapshot (direct buffer) into the attached app. */
+    /** Restores a state snapshot (direct buffer {@code [0..length)}) into the attached app. */
     public int restoreState(ByteBuffer state, int length) {
         structural("restoreState");
         return afterStructuralChange(NativeRuntime.restoreState(handle, state, length));
@@ -294,12 +349,12 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
 
     public int bootFrame0File(String path, long appBuildId, long envHash) {
         structural("bootFrame0File");
-        return source(NativeRuntime.bootFrame0File(handle, path, appBuildId, envHash), false);
+        return source(NativeRuntime.bootFrame0File(handle, path, appBuildId, envHash), false, false);
     }
 
     public int bootFrame0Bytes(ByteBuffer envelope, int length, long appBuildId, long envHash) {
         structural("bootFrame0Bytes");
-        return source(NativeRuntime.bootFrame0Bytes(handle, envelope, length, appBuildId, envHash), false);
+        return source(NativeRuntime.bootFrame0Bytes(handle, envelope, length, appBuildId, envHash), false, false);
     }
 
     public int bootFrame0Bytes(byte[] envelope, long appBuildId, long envHash) {
@@ -308,23 +363,38 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return bootFrame0Bytes(toScratchDirect(envelope), len, appBuildId, envHash);
     }
 
-    /** Applies a binary hot patch (direct buffer); sets {@code needsFrame} when changed. */
-    public int applyHotPatch(ByteBuffer patch, int length) {
+    /**
+     * Applies a binary hot patch (direct buffer {@code [0..length)}); sets {@code needsFrame} when
+     * changed and writes {@code outChanged[0]} when non-null.
+     */
+    public int applyHotPatch(ByteBuffer patch, int length, boolean[] outChanged) {
         structural("applyHotPatch");
         out[0] = 0;
         final int st = NativeRuntime.applyHotPatch(handle, patch, length, out);
+        final boolean changed = st == NveRuntimeAbi.STATUS_OK && out[0] != 0;
+        if (outChanged != null && outChanged.length >= 1) outChanged[0] = changed;
         if (st == NveRuntimeAbi.STATUS_OK) {
-            if (out[0] != 0) needsFrame = true;
+            if (changed) needsFrame = true;
             drainEmittedIfListening();
         }
         return st;
     }
 
-    /** Applies a binary hot patch; sets {@code needsFrame} when changed. */
-    public int applyHotPatch(byte[] patch) {
+    /** Applies a binary hot patch (direct buffer {@code [0..length)}); sets {@code needsFrame} when changed. */
+    public int applyHotPatch(ByteBuffer patch, int length) {
+        return applyHotPatch(patch, length, null);
+    }
+
+    /** Applies a binary hot patch; sets {@code needsFrame} when changed and writes {@code outChanged[0]} when non-null. */
+    public int applyHotPatch(byte[] patch, boolean[] outChanged) {
         structural("applyHotPatch");
         final int len = patch == null ? 0 : patch.length;
-        return applyHotPatch(toScratchDirect(patch), len);
+        return applyHotPatch(toScratchDirect(patch), len, outChanged);
+    }
+
+    /** Applies a binary hot patch; sets {@code needsFrame} when changed. */
+    public int applyHotPatch(byte[] patch) {
+        return applyHotPatch(patch, null);
     }
 
     /** Measures the surface into caller-owned {@code outMeasure[0..4)} ({@code [w, h, firstBaseline, lastBaseline]}). */
@@ -343,17 +413,21 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return new SurfaceMeasure(measureOut[0], measureOut[1], measureOut[2], measureOut[3]);
     }
 
+    /** Installs ({@code null} removes; idempotent no-op when closed) the intrinsic-size invalidation callback. */
     public int setIntrinsicSizeInvalidatedListener(Runnable listener) {
+        if (isClosedClearing(listener)) return NveRuntimeAbi.STATUS_OK;
         structural("setIntrinsicSizeInvalidatedListener");
         return NativeRuntime.setIntrinsicSizeInvalidatedListener(handle, listener);
     }
 
+    /** Installs ({@code null} removes; idempotent no-op when closed) the {@code NVE_IFACE_HOST = 5} callback bridge. */
     public int setHostCallbackBridge(NativeRuntime.HostCallbackBridge bridge) {
+        if (isClosedClearing(bridge)) return NveRuntimeAbi.STATUS_OK;
         structural("setHostCallbackBridge");
         return NativeRuntime.setHostCallbackBridge(handle, bridge);
     }
 
-    /** Cross-thread safe: completes a {@code PENDING} host request without racing {@link #close}. */
+    /** Cross-thread safe: completes a {@code PENDING} host request (direct buffer {@code [0..length)}) without racing {@link #close}. */
     public int completeHostRequest(long requestId, int hostStatus, ByteBuffer payload, int length) {
         synchronized (handleLock) {
             final long h = handle;
@@ -362,13 +436,16 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         }
     }
 
-    /** Cross-thread safe: completes a {@code PENDING} host request without racing {@link #close}. */
+    /** Cross-thread safe: completes a {@code PENDING} host request without racing {@link #close} (zero off-heap allocation). */
     public int completeHostRequest(long requestId, int hostStatus, byte[] payload) {
-        final ByteBuffer direct = (payload == null || payload.length == 0) ? null : HybridRuntime.directBuffer(payload);
-        return completeHostRequest(requestId, hostStatus, direct, payload == null ? 0 : payload.length);
+        synchronized (handleLock) {
+            final long h = handle;
+            return h == 0L ? NveRuntimeAbi.STATUS_INVALID_ARG
+                    : NativeRuntime.completeHostRequest(h, requestId, hostStatus, payload);
+        }
     }
 
-    /** Cross-thread safe: pushes an unsolicited host event without racing {@link #close}. */
+    /** Cross-thread safe: pushes an unsolicited host event (direct buffer {@code [0..length)}) without racing {@link #close}. */
     public int pushHostEvent(int serviceId, int eventId, ByteBuffer payload, int length) {
         synchronized (handleLock) {
             final long h = handle;
@@ -377,13 +454,16 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         }
     }
 
-    /** Cross-thread safe: pushes an unsolicited host event without racing {@link #close}. */
+    /** Cross-thread safe: pushes an unsolicited host event without racing {@link #close} (zero off-heap allocation). */
     public int pushHostEvent(int serviceId, int eventId, byte[] payload) {
-        final ByteBuffer direct = (payload == null || payload.length == 0) ? null : HybridRuntime.directBuffer(payload);
-        return pushHostEvent(serviceId, eventId, direct, payload == null ? 0 : payload.length);
+        synchronized (handleLock) {
+            final long h = handle;
+            return h == 0L ? NveRuntimeAbi.STATUS_INVALID_ARG
+                    : NativeRuntime.pushHostEvent(h, serviceId, eventId, payload);
+        }
     }
 
-    /** Cross-thread safe: publishes an inbound host channel message without racing {@link #close}. */
+    /** Cross-thread safe: publishes an inbound host channel message (direct buffer {@code [0..length)}) without racing {@link #close}. */
     public int publishHostChannel(int channelId, int flags, ByteBuffer payload, int length) {
         synchronized (handleLock) {
             final long h = handle;
@@ -392,17 +472,24 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         }
     }
 
-    /** Cross-thread safe: publishes an inbound host channel message without racing {@link #close}. */
+    /** Cross-thread safe: publishes an inbound host channel message without racing {@link #close} (zero off-heap allocation). */
     public int publishHostChannel(int channelId, int flags, byte[] payload) {
-        final ByteBuffer direct = (payload == null || payload.length == 0) ? null : HybridRuntime.directBuffer(payload);
-        return publishHostChannel(channelId, flags, direct, payload == null ? 0 : payload.length);
+        synchronized (handleLock) {
+            final long h = handle;
+            return h == 0L ? NveRuntimeAbi.STATUS_INVALID_ARG
+                    : NativeRuntime.publishHostChannel(h, channelId, flags, payload);
+        }
     }
 
     private void drainEmittedIfListening() {
         final EmittedEventConsumer listener = emittedEventConsumer;
-        if (listener == null || handle == 0L || inFrame || closeAfterFrame) return;
+        if (listener == null || emittedUnsupported || handle == 0L || inFrame || closeAfterFrame) return;
         out[0] = NveRuntimeAbi.STATUS_OK;
         final byte[] batch = NativeRuntime.drainEmittedEvents(handle, out);
+        if (out[0] == NveRuntimeAbi.STATUS_UNSUPPORTED) {
+            emittedUnsupported = true;
+            return;
+        }
         if (batch != null && batch.length > 0) listener.onEmittedEvents(batch);
     }
 
@@ -532,7 +619,6 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
             return false;
         }
         if (NativeRuntime.acquireScene(handle, header, slabs) != NveRuntimeAbi.STATUS_OK) {
-            drainEmittedIfListening();
             return false;
         }
         inFrame = true;
@@ -633,6 +719,17 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
             return;
         }
         closeAfterFrame = false;
+        final long h = handle;
+        if (h == 0L) return;
+        // Clear and drain cross-thread callbacks BEFORE acquiring `handleLock`: in-flight
+        // callbacks may call `completeHostRequest`/`pushHostEvent`/`publishHostChannel`/`isPaired`
+        // (which synchronize on `handleLock`), so draining outside the lock prevents AB-BA
+        // deadlock against `NativeRuntime.destroy`. Only the owner thread can install callbacks
+        // or close, so no new callback can start once cleared here.
+        NativeRuntime.setWakeListener(h, null);
+        NativeRuntime.setIntrinsicSizeInvalidatedListener(h, null);
+        NativeRuntime.setHostCallbackBridge(h, null);
+        emittedUnsupported = true;
         synchronized (handleLock) {
             if (handle == 0L) return;
             final int st = NativeRuntime.destroy(handle);

@@ -20,6 +20,18 @@ import java.nio.ByteBuffer;
  * {@link SceneReader#attach(long[], ByteBuffer[])}; its direct buffers (and those of
  * {@link #resource}) stay valid only until {@link #releaseScene} or any other call on the handle,
  * which releases the scene first so the runtime can write again.
+ *
+ * <p>{@link ByteBuffer} arguments MUST be direct ({@link ByteBuffer#isDirect()}); heap buffers
+ * fail with {@code STATUS_INVALID_ARG}. Native JNI always reads byte slice {@code [0..length)}
+ * from the buffer's base address (ignoring {@code position()} and {@code limit()}, validating
+ * {@code 0 <= length <= capacity()}). Except for {@link #submitFrame}, {@code (null, 0)} or a
+ * 0-capacity direct buffer with {@code length == 0} is accepted as an empty slice.
+ *
+ * <p>Re-entrancy: owner-thread callbacks ({@link TextMeasurer}, {@link HostCallbackBridge}) run
+ * synchronously while the runtime holds internal state locks and MUST NOT re-enter owner-thread
+ * mutating JNI entry points on the same handle (cross-thread safe methods such as
+ * {@link #completeHostRequest}, {@link #pushHostEvent}, {@link #publishHostChannel}, and
+ * {@link #pairIsConnected} remain safe).
  */
 public final class NativeRuntime {
     private NativeRuntime() {}
@@ -188,13 +200,31 @@ public final class NativeRuntime {
     /** Installs ({@code null} removes and drains) the {@code NVE_IFACE_HOST = 5} callback bridge. */
     public static native int setHostCallbackBridge(long handle, HostCallbackBridge bridge);
 
-    /** Completes a {@code PENDING} host request from ANY thread and triggers wake. */
+    /**
+     * Completes a {@code PENDING} host request from ANY thread and triggers wake (direct buffer
+     * {@code [0..length)}).
+     */
     public static native int completeHostRequest(
             long handle, long requestId, int hostStatus, ByteBuffer payload, int length);
 
-    /** Enqueues an unsolicited host push event from ANY thread and triggers wake. */
+    /** Completes a {@code PENDING} host request from ANY thread using a heap {@code byte[]} ({@code null} = empty). */
+    public static native int completeHostRequest(long handle, long requestId, int hostStatus, byte[] payload);
+
+    /**
+     * Enqueues an unsolicited host push event from ANY thread and triggers wake (direct buffer
+     * {@code [0..length)}).
+     */
     public static native int pushHostEvent(long handle, int serviceId, int eventId, ByteBuffer payload, int length);
 
-    /** Enqueues an inbound host channel message from ANY thread and triggers wake. */
+    /** Enqueues an unsolicited host push event from ANY thread using a heap {@code byte[]} ({@code null} = empty). */
+    public static native int pushHostEvent(long handle, int serviceId, int eventId, byte[] payload);
+
+    /**
+     * Enqueues an inbound host channel message from ANY thread and triggers wake (direct buffer
+     * {@code [0..length)}).
+     */
     public static native int publishHostChannel(long handle, int channelId, int flags, ByteBuffer payload, int length);
+
+    /** Enqueues an inbound host channel message from ANY thread using a heap {@code byte[]} ({@code null} = empty). */
+    public static native int publishHostChannel(long handle, int channelId, int flags, byte[] payload);
 }

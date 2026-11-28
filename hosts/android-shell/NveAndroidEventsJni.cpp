@@ -95,14 +95,42 @@ JNIEnv* thread_env(JavaVM* jvm) {
   return env;
 }
 
-/// Calls `callback(env)` on the current thread. A Java exception the callback raises is reported
-/// (`ExceptionDescribe` logs and clears it) and never propagates into the runtime.
+/// Calls `callback(env)` on the current thread inside a bounded local reference frame (defense in
+/// depth for daemon threads that never return to Java). Any Java exception is logged and cleared.
 template <class Fn>
 void with_env(JavaVM* jvm, Fn&& callback) {
   JNIEnv* env = thread_env(jvm);
   if (env == nullptr) return;
+  if (env->PushLocalFrame(16) != JNI_OK) {
+    clear_exception(env);
+    return;
+  }
   callback(env);
-  if (env->ExceptionCheck()) env->ExceptionDescribe();
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+  env->PopLocalFrame(nullptr);
+}
+
+/// Copies a Java `byte[]` into a small stack buffer (or heap vector above 512 B) and passes its
+/// span to `fn`, avoiding off-heap `DirectByteBuffer` allocations on cross-thread host ingress.
+template <class Fn>
+jint with_byte_array_span(JNIEnv* env, jbyteArray arr, Fn&& fn) {
+  if (arr == nullptr) return static_cast<jint>(fn(std::span<const uint8_t>{}));
+  const jsize len = env->GetArrayLength(arr);
+  if (len <= 0) return static_cast<jint>(fn(std::span<const uint8_t>{}));
+  constexpr jsize kStackCap = 512;
+  if (len <= kStackCap) {
+    uint8_t stack[kStackCap];
+    env->GetByteArrayRegion(arr, 0, len, reinterpret_cast<jbyte*>(stack));
+    if (clear_exception(env)) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<jint>(fn(std::span<const uint8_t>(stack, static_cast<size_t>(len))));
+  }
+  std::vector<uint8_t> heap(static_cast<size_t>(len));
+  env->GetByteArrayRegion(arr, 0, len, reinterpret_cast<jbyte*>(heap.data()));
+  if (clear_exception(env)) return NVE_RUNTIME_INVALID_ARG;
+  return static_cast<jint>(fn(std::span<const uint8_t>(heap.data(), heap.size())));
 }
 
 void on_wake(void* ctx) {
@@ -124,17 +152,24 @@ int32_t on_host_invoke(void* host_ctx, uint32_t service_id, uint32_t method_id, 
   if (out_len != nullptr) *out_len = 0u;
   auto* s = static_cast<AndroidSurface*>(host_ctx);
   if (s == nullptr || s->jvm == nullptr || s->host_bridge.target == nullptr) return NVE_HOST_UNSUPPORTED;
-  if (request.len > static_cast<size_t>(std::numeric_limits<jsize>::max())) return NVE_HOST_INVALID_ARG;
+  if ((request.len > 0u && request.ptr == nullptr) ||
+      request.len > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+    return NVE_HOST_INVALID_ARG;
+  }
   int32_t rc = NVE_HOST_INTERNAL_ERROR;
   with_env(s->jvm, [&](JNIEnv* env) {
     jbyteArray jreq = env->NewByteArray(static_cast<jsize>(request.len));
-    if (jreq == nullptr) return;
-    if (request.len > 0u && request.ptr != nullptr) {
+    if (jreq == nullptr || env->ExceptionCheck()) return;
+    if (request.len > 0u) {
       env->SetByteArrayRegion(jreq, 0, static_cast<jsize>(request.len),
                               reinterpret_cast<const jbyte*>(request.ptr));
+      if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(jreq);
+        return;
+      }
     }
     jobjectArray out_holder = env->NewObjectArray(1, s->host_bridge.byte_array_cls, nullptr);
-    if (out_holder == nullptr) {
+    if (out_holder == nullptr || env->ExceptionCheck()) {
       env->DeleteLocalRef(jreq);
       return;
     }
@@ -187,14 +222,21 @@ int32_t on_host_invoke(void* host_ctx, uint32_t service_id, uint32_t method_id, 
 int32_t on_host_channel_publish(void* host_ctx, uint32_t channel_id, uint32_t flags, NveBufferSlice payload) {
   auto* s = static_cast<AndroidSurface*>(host_ctx);
   if (s == nullptr || s->jvm == nullptr || s->host_bridge.target == nullptr) return NVE_HOST_UNSUPPORTED;
-  if (payload.len > static_cast<size_t>(std::numeric_limits<jsize>::max())) return NVE_HOST_INVALID_ARG;
+  if ((payload.len > 0u && payload.ptr == nullptr) ||
+      payload.len > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+    return NVE_HOST_INVALID_ARG;
+  }
   int32_t rc = NVE_HOST_INTERNAL_ERROR;
   with_env(s->jvm, [&](JNIEnv* env) {
     jbyteArray jpay = env->NewByteArray(static_cast<jsize>(payload.len));
-    if (jpay == nullptr) return;
-    if (payload.len > 0u && payload.ptr != nullptr) {
+    if (jpay == nullptr || env->ExceptionCheck()) return;
+    if (payload.len > 0u) {
       env->SetByteArrayRegion(jpay, 0, static_cast<jsize>(payload.len),
                               reinterpret_cast<const jbyte*>(payload.ptr));
+      if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(jpay);
+        return;
+      }
     }
     const jint jrc = env->CallIntMethod(s->host_bridge.target, s->host_bridge.publish_method,
                                         static_cast<jint>(channel_id), static_cast<jint>(flags), jpay);
@@ -219,36 +261,56 @@ void on_measure(void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, f
     if (jtext == nullptr) return;
     const float nan_out[2] = {NAN, NAN};
     env->SetFloatArrayRegion(s->measure_out, 0, 2, nan_out);  // a measurer that writes nothing -> 0 x 0
+    if (env->ExceptionCheck()) {
+      env->DeleteLocalRef(jtext);
+      return;
+    }
     env->CallVoidMethod(s->measurer.target, s->measurer.method, jtext, font_size, static_cast<jint>(font_weight),
                         max_width, s->measure_out);
     env->DeleteLocalRef(jtext);
     if (env->ExceptionCheck()) return;  // reported and cleared by `with_env`
     float wh[2] = {NAN, NAN};
     env->GetFloatArrayRegion(s->measure_out, 0, 2, wh);
+    if (env->ExceptionCheck()) return;
     *out_w = wh[0];
     *out_h = wh[1];
   });
+}
+
+/// Resolves `target`'s `name` + `sig` method and creates a `GlobalRef` into `out` without
+/// modifying any existing slot; `false` on failure (with pending JNI exceptions cleared).
+bool prepare_callback(JNIEnv* env, nve::android::JavaCallback& out, jobject target, const char* name,
+                      const char* sig) {
+  out = {};
+  if (target == nullptr) return true;
+  jclass cls = env->GetObjectClass(target);
+  if (cls == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    if (cls != nullptr) env->DeleteLocalRef(cls);
+    return false;
+  }
+  jmethodID mid = env->GetMethodID(cls, name, sig);
+  env->DeleteLocalRef(cls);
+  if (mid == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    return false;
+  }
+  jobject ref = env->NewGlobalRef(target);
+  if (ref == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    if (ref != nullptr) env->DeleteGlobalRef(ref);
+    return false;
+  }
+  out.target = ref;
+  out.method = mid;
+  return true;
 }
 
 /// Replaces `slot` with `target`'s `name` + `sig` method; `false` (slot cleared) when it has none.
 bool bind_callback(JNIEnv* env, nve::android::JavaCallback& slot, jobject target, const char* name,
                    const char* sig) {
   slot.release(env);
-  if (target == nullptr) return true;
-  jclass cls = env->GetObjectClass(target);
-  jmethodID mid = cls != nullptr ? env->GetMethodID(cls, name, sig) : nullptr;
-  if (cls != nullptr) env->DeleteLocalRef(cls);
-  if (mid == nullptr) {
-    nve::android::clear_exception(env);
-    return false;
-  }
-  slot.target = env->NewGlobalRef(target);
-  if (slot.target == nullptr) {
-    nve::android::clear_exception(env);
-    return false;
-  }
-  slot.method = mid;
-  return true;
+  return prepare_callback(env, slot, target, name, sig);
 }
 
 }  // namespace
@@ -286,26 +348,48 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setTextMeasurer(JNIEnv* e
   AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
-  // Detach the runtime from the old target before dropping its global ref.
-  NveRuntimeStatus st = s->session.clear_text_measurer();
-  if (st != NVE_RUNTIME_OK) return status_of(*s, st);
-  if (!bind_callback(env, s->measurer, measurer, "measure", "(Ljava/lang/String;FIF[F)V")) {
+  if (measurer == nullptr) {
+    const NveRuntimeStatus st = s->session.clear_text_measurer();
+    if (st == NVE_RUNTIME_OK) s->measurer.release(env);
+    return status_of(*s, st);
+  }
+  // Prepare the new callback & out array before touching the runtime so replacing an active
+  // measurer triggers only ONE relayout/wake (never clear + set) and leaves the old one intact on error.
+  nve::android::JavaCallback next{};
+  if (!prepare_callback(env, next, measurer, "measure", "(Ljava/lang/String;FIF[F)V")) {
     s->last_error = "TextMeasurer has no measure(String, float, int, float, float[]) method";
     return NVE_RUNTIME_INVALID_ARG;
   }
-  if (measurer == nullptr) return status_of(*s, NVE_RUNTIME_OK);
   if (s->measure_out == nullptr) {
     jfloatArray local = env->NewFloatArray(2);
-    s->measure_out = local != nullptr ? static_cast<jfloatArray>(env->NewGlobalRef(local)) : nullptr;
-    if (local != nullptr) env->DeleteLocalRef(local);
-    if (s->measure_out == nullptr) {
-      nve::android::clear_exception(env);
-      s->measurer.release(env);
+    if (local == nullptr || env->ExceptionCheck()) {
+      clear_exception(env);
+      if (local != nullptr) env->DeleteLocalRef(local);
+      next.release(env);
       s->last_error = "out of memory allocating the measurer out array";
       return NVE_RUNTIME_ERROR;
     }
+    auto global_out = static_cast<jfloatArray>(env->NewGlobalRef(local));
+    env->DeleteLocalRef(local);
+    if (global_out == nullptr || env->ExceptionCheck()) {
+      clear_exception(env);
+      if (global_out != nullptr) env->DeleteGlobalRef(global_out);
+      next.release(env);
+      s->last_error = "out of memory allocating the measurer out array";
+      return NVE_RUNTIME_ERROR;
+    }
+    s->measure_out = global_out;
   }
-  return status_of(*s, s->session.set_text_measurer(&on_measure, s));
+  nve::android::JavaCallback prev = s->measurer;
+  s->measurer = next;
+  const NveRuntimeStatus st = s->session.set_text_measurer(&on_measure, s);
+  if (st != NVE_RUNTIME_OK) {
+    s->measurer = prev;
+    next.release(env);
+  } else {
+    prev.release(env);
+  }
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setWakeListener(JNIEnv* env, jclass, jlong handle,
@@ -320,7 +404,9 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setWakeListener(JNIEnv* e
     return NVE_RUNTIME_INVALID_ARG;
   }
   if (listener == nullptr) return status_of(*s, NVE_RUNTIME_OK);
-  return status_of(*s, s->session.set_wake_callback(&on_wake, s));
+  st = s->session.set_wake_callback(&on_wake, s);
+  if (st != NVE_RUNTIME_OK) s->wake.release(env);
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setProps(JNIEnv* env, jclass, jlong handle, jobject bin_map,
@@ -341,10 +427,11 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setProps(JNIEnv* env, jcl
     return status_of(*s, st);
   }
   nve::host::BinReader reader(bytes);
-  nve::host::NveValueTree tree;
-  const NveValue root = tree.read_value(reader);
+  s->props_tree.clear();
+  const NveValue root = s->props_tree.read_value(reader);
   if (!reader.ok() || !reader.at_end() || root.tag != NVE_VAL_MAP ||
       root.data.map_val.len > std::numeric_limits<uint32_t>::max()) {
+    s->props_tree.clear();
     s->last_error = "setProps expects a single valid NveBinValue Map in a direct buffer";
     return NVE_RUNTIME_INVALID_ARG;
   }
@@ -352,6 +439,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setProps(JNIEnv* env, jcl
   bool changed = false;
   const NveRuntimeStatus st =
       s->session.set_props(root.data.map_val.ptr, static_cast<uint32_t>(root.data.map_val.len), &changed);
+  s->props_tree.clear();
   write_out(env, out_changed, changed ? 1 : 0);
   return status_of(*s, st);
 }
@@ -366,6 +454,12 @@ JNIEXPORT jbyteArray JNICALL Java_dev_nve_host_NativeRuntime_drainEmittedEvents(
   release_scene(*s);
   NveEventBatch batch{nullptr, nullptr, 0u, 0u};
   const NveRuntimeStatus st = s->session.drain_emitted_events(&batch);
+  // Apps without `NVE_IFACE_COMPONENT` (or detached/Frame-0/paired surfaces) return UNSUPPORTED:
+  // never clobber `last_error` or allocate an error string for a benign capability check.
+  if (st == NVE_RUNTIME_UNSUPPORTED) {
+    write_out(env, out_status, static_cast<jint>(st));
+    return nullptr;
+  }
   const jint code = status_of(*s, st);
   write_out(env, out_status, code);
   if (st != NVE_RUNTIME_OK || batch.events == nullptr || batch.event_count == 0u) return nullptr;
@@ -381,24 +475,41 @@ JNIEXPORT jbyteArray JNICALL Java_dev_nve_host_NativeRuntime_drainEmittedEvents(
     write_out(env, out_status, NVE_RUNTIME_ERROR);
     return nullptr;
   }
-  s->emitted_wire.resize(static_cast<size_t>(total));
-  uint8_t* p = s->emitted_wire.data();
-  nve_store_u32_le(p + 0u, nve::host::kEventWireMagic);
-  nve_store_u16_le(p + 4u, nve::host::kEventWireVersion);
-  nve_store_u32_le(p + 6u, batch.event_count);
-  nve_store_u32_le(p + 10u, batch.bytes_len);
-  std::memcpy(p + nve::host::kEventWireHeaderSize, batch.events, static_cast<size_t>(ev_bytes));
-  if (batch.bytes_len > 0u) {
-    std::memcpy(p + nve::host::kEventWireHeaderSize + static_cast<size_t>(ev_bytes), batch.bytes, batch.bytes_len);
-  }
+  uint8_t hdr[nve::host::kEventWireHeaderSize];
+  nve_store_u32_le(hdr + 0u, nve::host::kEventWireMagic);
+  nve_store_u16_le(hdr + 4u, nve::host::kEventWireVersion);
+  nve_store_u32_le(hdr + 6u, batch.event_count);
+  nve_store_u32_le(hdr + 10u, batch.bytes_len);
   jbyteArray out = env->NewByteArray(static_cast<jsize>(total));
-  if (out == nullptr) {
+  if (out == nullptr || env->ExceptionCheck()) {
     clear_exception(env);
     s->last_error = "out of memory allocating emitted events byte array";
     write_out(env, out_status, NVE_RUNTIME_ERROR);
     return nullptr;
   }
-  env->SetByteArrayRegion(out, 0, static_cast<jsize>(total), reinterpret_cast<const jbyte*>(p));
+  env->SetByteArrayRegion(out, 0, static_cast<jsize>(nve::host::kEventWireHeaderSize),
+                          reinterpret_cast<const jbyte*>(hdr));
+  if (clear_exception(env)) {
+    s->last_error = "failed writing emitted events header";
+    write_out(env, out_status, NVE_RUNTIME_ERROR);
+    return nullptr;
+  }
+  env->SetByteArrayRegion(out, static_cast<jsize>(nve::host::kEventWireHeaderSize), static_cast<jsize>(ev_bytes),
+                          reinterpret_cast<const jbyte*>(batch.events));
+  if (clear_exception(env)) {
+    s->last_error = "failed writing emitted events records";
+    write_out(env, out_status, NVE_RUNTIME_ERROR);
+    return nullptr;
+  }
+  if (batch.bytes_len > 0u) {
+    env->SetByteArrayRegion(out, static_cast<jsize>(nve::host::kEventWireHeaderSize + ev_bytes),
+                            static_cast<jsize>(batch.bytes_len), reinterpret_cast<const jbyte*>(batch.bytes));
+    if (clear_exception(env)) {
+      s->last_error = "failed writing emitted events payload";
+      write_out(env, out_status, NVE_RUNTIME_ERROR);
+      return nullptr;
+    }
+  }
   return out;
 }
 
@@ -414,7 +525,9 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setIntrinsicSizeInvalidat
     return NVE_RUNTIME_INVALID_ARG;
   }
   if (listener == nullptr) return status_of(*s, NVE_RUNTIME_OK);
-  return status_of(*s, s->session.set_intrinsic_size_invalidated_callback(&on_intrinsic_size_invalidated, s));
+  st = s->session.set_intrinsic_size_invalidated_callback(&on_intrinsic_size_invalidated, s);
+  if (st != NVE_RUNTIME_OK) s->intrinsic_size_invalidated.release(env);
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setHostCallbackBridge(JNIEnv* env, jclass, jlong handle,
@@ -426,23 +539,47 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setHostCallbackBridge(JNI
   s->host_bridge.release(env);
   if (bridge == nullptr) return status_of(*s, NVE_RUNTIME_OK);
   jclass cls = env->GetObjectClass(bridge);
-  jmethodID invoke_mid = cls != nullptr ? env->GetMethodID(cls, "invoke", "(IIJ[B[[B)I") : nullptr;
-  if (cls != nullptr && invoke_mid == nullptr) clear_exception(env);
-  jmethodID publish_mid = cls != nullptr ? env->GetMethodID(cls, "publishChannel", "(II[B)I") : nullptr;
-  if (cls != nullptr && publish_mid == nullptr) clear_exception(env);
-  if (cls != nullptr) env->DeleteLocalRef(cls);
+  if (cls == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    if (cls != nullptr) env->DeleteLocalRef(cls);
+    s->last_error = "failed resolving HostCallbackBridge class";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
+  jmethodID invoke_mid = env->GetMethodID(cls, "invoke", "(IIJ[B[[B)I");
+  if (invoke_mid == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    invoke_mid = nullptr;
+  }
+  jmethodID publish_mid = invoke_mid != nullptr ? env->GetMethodID(cls, "publishChannel", "(II[B)I") : nullptr;
+  if (publish_mid == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    publish_mid = nullptr;
+  }
+  env->DeleteLocalRef(cls);
   if (invoke_mid == nullptr || publish_mid == nullptr) {
     s->last_error = "HostCallbackBridge missing invoke(int,int,long,byte[],byte[][]) or publishChannel(int,int,byte[])";
     return NVE_RUNTIME_INVALID_ARG;
   }
   jclass local_byte_arr = env->FindClass("[B");
+  if (local_byte_arr == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    if (local_byte_arr != nullptr) env->DeleteLocalRef(local_byte_arr);
+    s->last_error = "out of memory resolving byte[] class for HostCallbackBridge";
+    return NVE_RUNTIME_ERROR;
+  }
+  jobject global_cls = env->NewGlobalRef(local_byte_arr);
+  env->DeleteLocalRef(local_byte_arr);
+  if (global_cls == nullptr || env->ExceptionCheck()) {
+    clear_exception(env);
+    if (global_cls != nullptr) env->DeleteGlobalRef(global_cls);
+    s->last_error = "out of memory binding HostCallbackBridge class ref";
+    return NVE_RUNTIME_ERROR;
+  }
   jobject global_target = env->NewGlobalRef(bridge);
-  jobject global_cls = local_byte_arr != nullptr ? env->NewGlobalRef(local_byte_arr) : nullptr;
-  if (local_byte_arr != nullptr) env->DeleteLocalRef(local_byte_arr);
-  if (global_target == nullptr || global_cls == nullptr) {
+  if (global_target == nullptr || env->ExceptionCheck()) {
     clear_exception(env);
     if (global_target != nullptr) env->DeleteGlobalRef(global_target);
-    if (global_cls != nullptr) env->DeleteGlobalRef(global_cls);
+    env->DeleteGlobalRef(global_cls);
     s->last_error = "out of memory binding HostCallbackBridge";
     return NVE_RUNTIME_ERROR;
   }
@@ -456,9 +593,8 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setHostCallbackBridge(JNI
   return status_of(*s, st);
 }
 
-JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_completeHostRequest(JNIEnv* env, jclass, jlong handle,
-                                                                           jlong request_id, jint host_status,
-                                                                           jobject payload, jint len) {
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_completeHostRequest__JJILjava_nio_ByteBuffer_2I(
+    JNIEnv* env, jclass, jlong handle, jlong request_id, jint host_status, jobject payload, jint len) {
   // Any thread: must not touch owner-thread fields (`scene`, `last_error`).
   const AndroidSurface* s = surface_of(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
@@ -468,9 +604,20 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_completeHostRequest(JNIEn
       s->session.complete_host_request(static_cast<uint64_t>(request_id), static_cast<int32_t>(host_status), bytes));
 }
 
-JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pushHostEvent(JNIEnv* env, jclass, jlong handle,
-                                                                     jint service_id, jint event_id, jobject payload,
-                                                                     jint len) {
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_completeHostRequest__JJI_3B(JNIEnv* env, jclass, jlong handle,
+                                                                                   jlong request_id, jint host_status,
+                                                                                   jbyteArray payload) {
+  // Any thread: must not touch owner-thread fields (`scene`, `last_error`).
+  const AndroidSurface* s = surface_of(handle);
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  return with_byte_array_span(env, payload, [&](std::span<const uint8_t> bytes) {
+    return s->session.complete_host_request(static_cast<uint64_t>(request_id), static_cast<int32_t>(host_status),
+                                            bytes);
+  });
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pushHostEvent__JIILjava_nio_ByteBuffer_2I(
+    JNIEnv* env, jclass, jlong handle, jint service_id, jint event_id, jobject payload, jint len) {
   // Any thread: must not touch owner-thread fields (`scene`, `last_error`).
   const AndroidSurface* s = surface_of(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
@@ -480,9 +627,19 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pushHostEvent(JNIEnv* env
       s->session.push_host_event(static_cast<uint32_t>(service_id), static_cast<uint32_t>(event_id), bytes));
 }
 
-JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_publishHostChannel(JNIEnv* env, jclass, jlong handle,
-                                                                          jint channel_id, jint flags, jobject payload,
-                                                                          jint len) {
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pushHostEvent__JII_3B(JNIEnv* env, jclass, jlong handle,
+                                                                           jint service_id, jint event_id,
+                                                                           jbyteArray payload) {
+  // Any thread: must not touch owner-thread fields (`scene`, `last_error`).
+  const AndroidSurface* s = surface_of(handle);
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  return with_byte_array_span(env, payload, [&](std::span<const uint8_t> bytes) {
+    return s->session.push_host_event(static_cast<uint32_t>(service_id), static_cast<uint32_t>(event_id), bytes);
+  });
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_publishHostChannel__JIILjava_nio_ByteBuffer_2I(
+    JNIEnv* env, jclass, jlong handle, jint channel_id, jint flags, jobject payload, jint len) {
   // Any thread: must not touch owner-thread fields (`scene`, `last_error`).
   const AndroidSurface* s = surface_of(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
@@ -490,6 +647,17 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_publishHostChannel(JNIEnv
   if (!direct_buffer_span(env, payload, len, &bytes)) return NVE_RUNTIME_INVALID_ARG;
   return static_cast<jint>(
       s->session.publish_host_channel(static_cast<uint32_t>(channel_id), static_cast<uint32_t>(flags), bytes));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_publishHostChannel__JII_3B(JNIEnv* env, jclass, jlong handle,
+                                                                                jint channel_id, jint flags,
+                                                                                jbyteArray payload) {
+  // Any thread: must not touch owner-thread fields (`scene`, `last_error`).
+  const AndroidSurface* s = surface_of(handle);
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  return with_byte_array_span(env, payload, [&](std::span<const uint8_t> bytes) {
+    return s->session.publish_host_channel(static_cast<uint32_t>(channel_id), static_cast<uint32_t>(flags), bytes);
+  });
 }
 
 }  // extern "C"

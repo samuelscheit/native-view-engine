@@ -1,17 +1,20 @@
 //! Binary `<Name>ViewManager.generated.kt` (Android Kotlin Fabric ViewManager) emitter for `export_rn`.
 //!
-//! Targets `dev.nve.host.{BinWriter, BinReader, BinTag, EventRingReader}` and
+//! Targets `dev.nve.host.{BinWriter, BinReader, BinTag, BinCodecException, EventRingReader}` and
 //! `dev.nve.compose.{NveSurfaceController, NativeRuntimeHost, NveSource, NveSurface}` over
 //! Runtime ABI v6 (`setProps`, `drainEmittedEvents`, `measureSurface`).
 
 use crate::naming::{
-    escape_kotlin_string, format_float_literal, kotlin_ident, strip_on_prefix, to_pascal_case,
-    to_snake_case,
+    escape_kotlin_string, kotlin_ident, strip_on_prefix, to_pascal_case, to_snake_case,
 };
-use crate::schema::export::{
-    DefaultValue, EventBubbling, EventSpec, NveExportSpec, PropSpec, PropType,
-};
+use crate::schema::export::{CommandSpec, EventBubbling, EventSpec, NveExportSpec};
 use crate::writer::CodeWriter;
+
+use super::kotlin_bin_codec::{
+    emit_rn_dynamic_helpers, emit_rn_read_event_field, emit_rn_write_prop_value,
+    emit_rn_write_readable_array_elem, rn_prop_signature, spec_uses_rn_readable_array,
+    spec_uses_rn_readable_map, spec_uses_rn_writable_helpers,
+};
 
 pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     let name = &spec.name;
@@ -19,10 +22,11 @@ pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     let pkg = spec.android_package_name();
     let has_events = !spec.events.is_empty();
     let has_event_payloads = spec.events.iter().any(|e| !e.payload.is_empty());
-    let has_array_props = spec
-        .props
-        .iter()
-        .any(|p| matches!(p.prop_type, PropType::Array { .. }));
+    let has_readable_array = spec_uses_rn_readable_array(spec);
+    let has_readable_map = spec_uses_rn_readable_map(spec);
+    let has_writable_helpers = spec_uses_rn_writable_helpers(spec);
+    let needs_bin_codec_ex = has_event_payloads || has_readable_map || has_writable_helpers;
+    let needs_bin_tag = has_event_payloads || has_readable_map || has_writable_helpers;
 
     let mut out = CodeWriter::with_capacity(4096);
 
@@ -46,8 +50,15 @@ pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     if has_events {
         writeln!(out, "import com.facebook.react.bridge.Arguments");
     }
-    if has_array_props {
+    if has_readable_array {
         writeln!(out, "import com.facebook.react.bridge.ReadableArray");
+    }
+    if has_readable_map {
+        writeln!(out, "import com.facebook.react.bridge.ReadableMap");
+        writeln!(out, "import com.facebook.react.bridge.ReadableType");
+    }
+    if has_writable_helpers {
+        writeln!(out, "import com.facebook.react.bridge.WritableArray");
     }
     if has_events {
         writeln!(out, "import com.facebook.react.bridge.WritableMap");
@@ -67,8 +78,13 @@ pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     writeln!(out, "import dev.nve.compose.NveSource");
     writeln!(out, "import dev.nve.compose.NveSurface");
     writeln!(out, "import dev.nve.compose.NveSurfaceController");
+    if needs_bin_codec_ex {
+        writeln!(out, "import dev.nve.host.BinCodecException");
+    }
     if has_event_payloads {
         writeln!(out, "import dev.nve.host.BinReader");
+    }
+    if needs_bin_tag {
         writeln!(out, "import dev.nve.host.BinTag");
     }
     writeln!(out, "import dev.nve.host.BinWriter");
@@ -81,7 +97,7 @@ pub(crate) fn emit_android_view_manager_kt(spec: &NveExportSpec) -> String {
     writeln!(out);
 
     emit_host_view(&mut out, name, &snake);
-    emit_view_manager(&mut out, spec, &snake);
+    emit_view_manager(&mut out, spec, &snake, has_readable_map, has_writable_helpers);
 
     out.into_string()
 }
@@ -95,8 +111,9 @@ fn emit_host_view(out: &mut CodeWriter, name: &str, snake: &str) {
     writeln!(out, "    private val composeView = ComposeView(context)");
     writeln!(
         out,
-        "    private val pendingProps = LinkedHashMap<String, (BinWriter) -> Unit>()"
+        "    private val pendingProps = LinkedHashMap<String, ByteArray>()"
     );
+    writeln!(out, "    private val propValueWriter = BinWriter()");
     writeln!(out, "    private val propsWriter = BinWriter()");
     writeln!(out, "    private var propsDirty = false");
     writeln!(out, "    var controller: NveSurfaceController? = null");
@@ -111,18 +128,23 @@ fn emit_host_view(out: &mut CodeWriter, name: &str, snake: &str) {
     writeln!(out);
     writeln!(
         out,
-        "    fun attachController(surfaceController: NveSurfaceController, source: NveSource? = null, onEvent: ((NveEmittedEvent) -> Unit)? = null) {{"
+        "    fun attachController(_surfaceController: NveSurfaceController, _source: NveSource? = null, _onEvent: ((NveEmittedEvent) -> Unit)? = null) {{"
     );
-    writeln!(out, "        if (onEvent != null) {{");
-    writeln!(out, "            surfaceController.onEvent = onEvent");
-    writeln!(out, "        }}");
-    writeln!(out, "        if (controller !== surfaceController) {{");
+    writeln!(out, "        if (controller !== _surfaceController) {{");
+    writeln!(out, "            composeView.setContent {{}}");
+    writeln!(out, "            composeView.disposeComposition()");
+    writeln!(out, "            controller?.onEvent = null");
     writeln!(out, "            controller?.close()");
-    writeln!(out, "            controller = surfaceController");
-    writeln!(out, "            if (source != null) {{");
-    writeln!(out, "                surfaceController.start(source)");
+    writeln!(out, "            controller = _surfaceController");
+    writeln!(out, "            if (_onEvent != null) {{");
+    writeln!(out, "                _surfaceController.onEvent = _onEvent");
     writeln!(out, "            }}");
-    writeln!(out, "            composeView.setContent {{ NveSurface(surfaceController) }}");
+    writeln!(out, "            if (_source != null) {{");
+    writeln!(out, "                _surfaceController.start(_source)");
+    writeln!(out, "            }}");
+    writeln!(out, "            composeView.setContent {{ NveSurface(_surfaceController) }}");
+    writeln!(out, "        }} else if (_onEvent != null) {{");
+    writeln!(out, "            _surfaceController.onEvent = _onEvent");
     writeln!(out, "        }}");
     writeln!(out, "        if (propsDirty) {{");
     writeln!(out, "            flushProps()");
@@ -131,48 +153,55 @@ fn emit_host_view(out: &mut CodeWriter, name: &str, snake: &str) {
     writeln!(out);
     writeln!(
         out,
-        "    fun ensureInitialized(surfaceId: Int, widthDp: Float, heightDp: Float, density: Float, libraryPath: String? = null, onEvent: ((NveEmittedEvent) -> Unit)? = null) {{"
+        "    fun ensureInitialized(_surfaceId: Int, _widthDp: Float, _heightDp: Float, _density: Float, _libraryPath: String? = null, _onEvent: ((NveEmittedEvent) -> Unit)? = null) {{"
     );
     writeln!(out, "        if (controller != null) return");
-    writeln!(out, "        val d = if (density > 0f) density else 1f");
+    writeln!(out, "        val _d = if (_density > 0f) _density else 1f");
     writeln!(
         out,
-        "        val host = NativeRuntimeHost(surfaceId, widthDp, heightDp, d, Executor {{ mainHandler.post(it) }})"
+        "        val _host = NativeRuntimeHost(_surfaceId, _widthDp, _heightDp, _d, Executor {{ mainHandler.post(it) }})"
     );
     writeln!(
         out,
-        "        val resolvedLib = libraryPath ?: (context.applicationInfo.nativeLibraryDir + \"/lib{snake}.so\")"
+        "        val _resolvedLib = _libraryPath ?: (context.applicationInfo.nativeLibraryDir + \"/lib{snake}.so\")"
     );
     writeln!(
         out,
-        "        attachController(NveSurfaceController(host), NveSource.App(resolvedLib), onEvent)"
+        "        attachController(NveSurfaceController(_host), NveSource.App(_resolvedLib), _onEvent)"
     );
     writeln!(out, "    }}");
     writeln!(out);
-    writeln!(
-        out,
-        "    fun setProp(key: String, encode: (BinWriter) -> Unit) {{"
-    );
-    writeln!(out, "        pendingProps[key] = encode");
+    writeln!(out, "    internal fun beginPropValue(): BinWriter {{");
+    writeln!(out, "        propValueWriter.clear()");
+    writeln!(out, "        return propValueWriter");
+    writeln!(out, "    }}");
+    writeln!(out);
+    writeln!(out, "    internal fun commitPropValue(_key: String) {{");
+    writeln!(out, "        pendingProps[_key] = propValueWriter.toByteArray()");
+    writeln!(out, "        propsDirty = true");
+    writeln!(out, "    }}");
+    writeln!(out);
+    writeln!(out, "    fun setPropBytes(_key: String, _encodedValue: ByteArray) {{");
+    writeln!(out, "        pendingProps[_key] = _encodedValue");
     writeln!(out, "        propsDirty = true");
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(out, "    fun currentPropsBinary(): ByteArray {{");
     writeln!(out, "        propsWriter.clear()");
-    writeln!(out, "        val mark = propsWriter.beginMap(pendingProps.size)");
-    writeln!(out, "        for ((key, encode) in pendingProps) {{");
-    writeln!(out, "            propsWriter.writeMapKey(key)");
-    writeln!(out, "            encode(propsWriter)");
+    writeln!(out, "        val _mark = propsWriter.beginMap(pendingProps.size)");
+    writeln!(out, "        for ((_key, _valBytes) in pendingProps) {{");
+    writeln!(out, "            propsWriter.writeMapKey(_key)");
+    writeln!(out, "            propsWriter.raw(_valBytes, 0, _valBytes.size)");
     writeln!(out, "        }}");
-    writeln!(out, "        propsWriter.end(mark)");
+    writeln!(out, "        propsWriter.end(_mark)");
     writeln!(out, "        return propsWriter.toByteArray()");
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(out, "    fun flushProps(): Boolean {{");
     writeln!(out, "        if (!propsDirty) return false");
-    writeln!(out, "        val c = controller ?: return false");
+    writeln!(out, "        val _c = controller ?: return false");
     writeln!(out, "        propsDirty = false");
-    writeln!(out, "        return c.setProps(currentPropsBinary())");
+    writeln!(out, "        return _c.setProps(currentPropsBinary())");
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(out, "    fun measureSurface(");
@@ -190,6 +219,9 @@ fn emit_host_view(out: &mut CodeWriter, name: &str, snake: &str) {
     );
     writeln!(out);
     writeln!(out, "    fun dispose() {{");
+    writeln!(out, "        composeView.setContent {{}}");
+    writeln!(out, "        composeView.disposeComposition()");
+    writeln!(out, "        controller?.onEvent = null");
     writeln!(out, "        controller?.close()");
     writeln!(out, "        controller = null");
     writeln!(out, "    }}");
@@ -197,7 +229,13 @@ fn emit_host_view(out: &mut CodeWriter, name: &str, snake: &str) {
     writeln!(out);
 }
 
-fn emit_view_manager(out: &mut CodeWriter, spec: &NveExportSpec, snake: &str) {
+fn emit_view_manager(
+    out: &mut CodeWriter,
+    spec: &NveExportSpec,
+    snake: &str,
+    has_readable_map: bool,
+    has_writable_helpers: bool,
+) {
     let name = &spec.name;
     writeln!(out, "@ReactModule(name = {name}ViewManager.REACT_CLASS)");
     writeln!(
@@ -223,52 +261,52 @@ fn emit_view_manager(out: &mut CodeWriter, spec: &NveExportSpec, snake: &str) {
     writeln!(out);
     writeln!(
         out,
-        "    override fun createViewInstance(reactContext: ThemedReactContext): {name}HostView {{"
+        "    override fun createViewInstance(_reactContext: ThemedReactContext): {name}HostView {{"
     );
-    writeln!(out, "        val view = {name}HostView(reactContext)");
-    writeln!(out, "        val metrics = reactContext.resources.displayMetrics");
-    writeln!(out, "        val density = if (metrics.density > 0f) metrics.density else 1f");
+    writeln!(out, "        val _view = {name}HostView(_reactContext)");
+    writeln!(out, "        val _metrics = _reactContext.resources.displayMetrics");
+    writeln!(out, "        val _density = if (_metrics.density > 0f) _metrics.density else 1f");
     writeln!(
         out,
-        "        val surfaceId = if (view.id > 0) view.id else nextSurfaceId.getAndIncrement()"
+        "        val _surfaceId = if (_view.id > 0) _view.id else nextSurfaceId.getAndIncrement()"
     );
     writeln!(
         out,
-        "        view.ensureInitialized(surfaceId, metrics.widthPixels / density, metrics.heightPixels / density, density) {{ ev ->"
+        "        _view.ensureInitialized(_surfaceId, _metrics.widthPixels / _density, _metrics.heightPixels / _density, _density) {{ _ev ->"
     );
-    writeln!(out, "            dispatchEmittedEvent(reactContext, view, ev)");
+    writeln!(out, "            dispatchEmittedEvent(_reactContext, _view, _ev)");
     writeln!(out, "        }}");
-    writeln!(out, "        return view");
+    writeln!(out, "        return _view");
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(
         out,
-        "    fun bindController(reactContext: ThemedReactContext, view: {name}HostView, surfaceController: NveSurfaceController, source: NveSource? = null) {{"
+        "    fun bindController(_reactContext: ThemedReactContext, _view: {name}HostView, _surfaceController: NveSurfaceController, _source: NveSource? = null) {{"
     );
     writeln!(
         out,
-        "        view.attachController(surfaceController, source) {{ ev -> dispatchEmittedEvent(reactContext, view, ev) }}"
+        "        _view.attachController(_surfaceController, _source) {{ _ev -> dispatchEmittedEvent(_reactContext, _view, _ev) }}"
     );
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(
         out,
-        "    override fun onAfterUpdateTransaction(view: {name}HostView) {{"
+        "    override fun onAfterUpdateTransaction(_view: {name}HostView) {{"
     );
-    writeln!(out, "        super.onAfterUpdateTransaction(view)");
-    writeln!(out, "        view.flushProps()");
+    writeln!(out, "        super.onAfterUpdateTransaction(_view)");
+    writeln!(out, "        _view.flushProps()");
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(
         out,
-        "    override fun onDropViewInstance(view: {name}HostView) {{"
+        "    override fun onDropViewInstance(_view: {name}HostView) {{"
     );
-    writeln!(out, "        view.dispose()");
-    writeln!(out, "        super.onDropViewInstance(view)");
+    writeln!(out, "        _view.dispose()");
+    writeln!(out, "        super.onDropViewInstance(_view)");
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(out, "    fun measureSurface(");
-    writeln!(out, "        view: {name}HostView,");
+    writeln!(out, "        _view: {name}HostView,");
     writeln!(out, "        minWidthDp: Float,");
     writeln!(out, "        minHeightDp: Float,");
     writeln!(out, "        maxWidthDp: Float,");
@@ -279,29 +317,128 @@ fn emit_view_manager(out: &mut CodeWriter, spec: &NveExportSpec, snake: &str) {
     );
     writeln!(
         out,
-        "    ): RuntimeSurface.SurfaceMeasure? = view.measureSurface(minWidthDp, minHeightDp, maxWidthDp, maxHeightDp, flags)"
+        "    ): RuntimeSurface.SurfaceMeasure? = _view.measureSurface(minWidthDp, minHeightDp, maxWidthDp, maxHeightDp, flags)"
     );
 
-    // Typed @ReactProp setters encoding directly to `dev.nve.host.BinWriter`
+    // Typed @ReactProp setters eagerly encoding binary `NveBinValue` bytes (zero captured bridge refs, zero closures)
     for prop in &spec.props {
         let setter = format!("set{}", to_pascal_case(&prop.name));
         let param = kotlin_ident(&prop.name);
         let key = escape_kotlin_string(&prop.name);
-        let (kt_ty, annotation, write_body) = kotlin_prop_sig(prop, &param);
+        let (kt_ty, annotation) = rn_prop_signature(prop);
         writeln!(out);
         writeln!(out, "    {annotation}");
         writeln!(
             out,
-            "    fun {setter}(view: {name}HostView, {param}: {kt_ty}) {{"
+            "    fun {setter}(_view: {name}HostView, {param}: {kt_ty}) {{"
         );
-        writeln!(out, "        view.setProp(\"{key}\") {{ w -> {write_body} }}");
+        writeln!(out, "        val _w = _view.beginPropValue()");
+        emit_rn_write_prop_value(out, "        ", "_w", &param, &prop.prop_type, 0);
+        writeln!(out, "        _view.commitPropValue(\"{key}\")");
         writeln!(out, "    }}");
+    }
+
+    if !spec.commands.is_empty() {
+        emit_receive_command(out, name, &spec.commands);
     }
 
     emit_event_constants(out, &spec.events);
     emit_event_dispatchers(out, name, &spec.events);
+    emit_rn_dynamic_helpers(out, has_readable_map, has_writable_helpers);
 
     writeln!(out, "}}");
+}
+
+fn emit_receive_command(out: &mut CodeWriter, name: &str, commands: &[CommandSpec]) {
+    writeln!(out);
+    writeln!(
+        out,
+        "    override fun receiveCommand(_root: {name}HostView, _commandId: String, _args: ReadableArray?) {{"
+    );
+    writeln!(out, "        when (_commandId) {{");
+    for cmd in commands {
+        let cname = escape_kotlin_string(&cmd.name);
+        writeln!(out, "            \"{cname}\" -> {{");
+        if cmd.params.is_empty() {
+            writeln!(out, "                _root.controller?.dispatchCustom(\"{cname}\")");
+        } else {
+            let mut req_checks = Vec::new();
+            for (idx, p) in cmd.params.iter().enumerate() {
+                if !p.optional {
+                    req_checks.push(format!("_args.size() <= {idx} || _args.isNull({idx})"));
+                }
+            }
+            if !req_checks.is_empty() {
+                writeln!(
+                    out,
+                    "                if (_args == null || {}) return",
+                    req_checks.join(" || ")
+                );
+            }
+            let fixed = cmd.params.iter().filter(|p| !p.optional).count();
+            let has_opt = fixed < cmd.params.len();
+            for (idx, p) in cmd.params.iter().enumerate() {
+                if p.optional {
+                    let cond = if req_checks.is_empty() {
+                        format!("_args != null && _args.size() > {idx} && !_args.isNull({idx})")
+                    } else {
+                        format!("_args.size() > {idx} && !_args.isNull({idx})")
+                    };
+                    writeln!(out, "                val _has{idx} = {cond}");
+                }
+            }
+            writeln!(
+                out,
+                "                _root.controller?.dispatchCustom(\"{cname}\") {{ _w ->"
+            );
+            if has_opt {
+                writeln!(out, "                    var _count = {fixed}");
+                for (idx, p) in cmd.params.iter().enumerate() {
+                    if p.optional {
+                        writeln!(out, "                    if (_has{idx}) _count++");
+                    }
+                }
+                writeln!(out, "                    val _mark = _w.beginMap(_count)");
+            } else {
+                writeln!(out, "                    val _mark = _w.beginMap({fixed})");
+            }
+            let opt_args_expr = if req_checks.is_empty() { "_args!!" } else { "_args" };
+            for (idx, p) in cmd.params.iter().enumerate() {
+                let pkey = escape_kotlin_string(&p.name);
+                let idx_str = idx.to_string();
+                if p.optional {
+                    writeln!(out, "                    if (_has{idx}) {{");
+                    writeln!(out, "                        _w.writeMapKey(\"{pkey}\")");
+                    emit_rn_write_readable_array_elem(
+                        out,
+                        "                        ",
+                        "_w",
+                        opt_args_expr,
+                        &idx_str,
+                        &p.param_type,
+                        0,
+                    );
+                    writeln!(out, "                    }}");
+                } else {
+                    writeln!(out, "                    _w.writeMapKey(\"{pkey}\")");
+                    emit_rn_write_readable_array_elem(
+                        out,
+                        "                    ",
+                        "_w",
+                        "_args",
+                        &idx_str,
+                        &p.param_type,
+                        0,
+                    );
+                }
+            }
+            writeln!(out, "                    _w.end(_mark)");
+            writeln!(out, "                }}");
+        }
+        writeln!(out, "            }}");
+    }
+    writeln!(out, "        }}");
+    writeln!(out, "    }}");
 }
 
 fn emit_event_constants(out: &mut CodeWriter, events: &[EventSpec]) {
@@ -320,7 +457,7 @@ fn emit_event_constants(out: &mut CodeWriter, events: &[EventSpec]) {
             out,
             "    override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {{"
         );
-        writeln!(out, "        val builder = MapBuilder.builder<String, Any>()");
+        writeln!(out, "        val _builder = MapBuilder.builder<String, Any>()");
         for ev in &direct_events {
             let top = ev
                 .paper_top_level_name
@@ -328,12 +465,12 @@ fn emit_event_constants(out: &mut CodeWriter, events: &[EventSpec]) {
                 .unwrap_or_else(|| format!("top{}", to_pascal_case(&strip_on_prefix(&ev.name))));
             writeln!(
                 out,
-                "        builder.put(\"{}\", MapBuilder.of(\"registrationName\", \"{}\"))",
+                "        _builder.put(\"{}\", MapBuilder.of(\"registrationName\", \"{}\"))",
                 escape_kotlin_string(&top),
                 escape_kotlin_string(&ev.name)
             );
         }
-        writeln!(out, "        return builder.build()");
+        writeln!(out, "        return _builder.build()");
         writeln!(out, "    }}");
     }
 
@@ -343,7 +480,7 @@ fn emit_event_constants(out: &mut CodeWriter, events: &[EventSpec]) {
             out,
             "    override fun getExportedCustomBubblingEventTypeConstants(): MutableMap<String, Any> {{"
         );
-        writeln!(out, "        val builder = MapBuilder.builder<String, Any>()");
+        writeln!(out, "        val _builder = MapBuilder.builder<String, Any>()");
         for ev in &bubbling_events {
             let top = ev
                 .paper_top_level_name
@@ -351,12 +488,12 @@ fn emit_event_constants(out: &mut CodeWriter, events: &[EventSpec]) {
                 .unwrap_or_else(|| format!("top{}", to_pascal_case(&strip_on_prefix(&ev.name))));
             writeln!(
                 out,
-                "        builder.put(\"{}\", MapBuilder.of(\"phasedRegistrationNames\", MapBuilder.of(\"bubbled\", \"{}\")))",
+                "        _builder.put(\"{}\", MapBuilder.of(\"phasedRegistrationNames\", MapBuilder.of(\"bubbled\", \"{}\")))",
                 escape_kotlin_string(&top),
                 escape_kotlin_string(&ev.name)
             );
         }
-        writeln!(out, "        return builder.build()");
+        writeln!(out, "        return _builder.build()");
         writeln!(out, "    }}");
     }
 }
@@ -365,20 +502,18 @@ fn emit_event_dispatchers(out: &mut CodeWriter, name: &str, events: &[EventSpec]
     writeln!(out);
     writeln!(
         out,
-        "    fun dispatchEmittedEvent(reactContext: ThemedReactContext, view: {name}HostView, event: NveEmittedEvent) {{"
+        "    fun dispatchEmittedEvent(_reactContext: ThemedReactContext, _view: {name}HostView, _event: NveEmittedEvent) {{"
     );
-    if events.is_empty() {
-        writeln!(out, "        if (!event.isCustom) return");
-    } else {
-        writeln!(out, "        if (!event.isCustom) return");
-        writeln!(out, "        when (event.name) {{");
+    writeln!(out, "        if (!_event.isCustom) return");
+    if !events.is_empty() {
+        writeln!(out, "        when (_event.name) {{");
         for ev in events {
             let emit_fn = format!("emit{}", to_pascal_case(&strip_on_prefix(&ev.name)));
             let short = strip_on_prefix(&ev.name);
             let call = if ev.payload.is_empty() {
-                format!("{emit_fn}(reactContext, view)")
+                format!("{emit_fn}(_reactContext, _view)")
             } else {
-                format!("{emit_fn}(reactContext, view, event.payloadBytes)")
+                format!("{emit_fn}(_reactContext, _view, _event.payloadBytes)")
             };
             if short == ev.name {
                 writeln!(out, "            \"{}\" -> {call}", escape_kotlin_string(&ev.name));
@@ -398,31 +533,31 @@ fn emit_event_dispatchers(out: &mut CodeWriter, name: &str, events: &[EventSpec]
     writeln!(out);
     writeln!(
         out,
-        "    fun dispatchEmittedBatch(reactContext: ThemedReactContext, view: {name}HostView, nvevBytes: ByteArray) {{"
+        "    fun dispatchEmittedBatch(_reactContext: ThemedReactContext, _view: {name}HostView, _nvevBytes: ByteArray) {{"
     );
-    writeln!(out, "        if (nvevBytes.isEmpty()) return");
+    writeln!(out, "        if (_nvevBytes.isEmpty()) return");
     writeln!(
         out,
-        "        val reader = runCatching {{ EventRingReader().attach(nvevBytes) }}.getOrNull() ?: return"
+        "        val _reader = runCatching {{ EventRingReader().attach(_nvevBytes) }}.getOrNull() ?: return"
     );
-    writeln!(out, "        for (i in 0 until reader.count()) {{");
-    writeln!(out, "            val tableBits = reader.tableBits(i)");
-    writeln!(out, "            val flags = reader.flags(i)");
+    writeln!(out, "        for (_i in 0 until _reader.count()) {{");
+    writeln!(out, "            val _tableBits = _reader.tableBits(_i)");
+    writeln!(out, "            val _flags = _reader.flags(_i)");
     writeln!(
         out,
-        "            val isCustom = tableBits == NveAbi.TABLE_CUSTOM.value() && (flags and NveAbi.EVENT_FLAG_CUSTOM_NAMED) != 0"
+        "            val _isCustom = _tableBits == NveAbi.TABLE_CUSTOM.value() && (_flags and NveAbi.EVENT_FLAG_CUSTOM_NAMED) != 0"
     );
-    writeln!(out, "            if (!isCustom) continue");
-    writeln!(out, "            val ev = NveEmittedEvent(");
-    writeln!(out, "                tableBits = tableBits,");
-    writeln!(out, "                eventId = reader.event(i),");
-    writeln!(out, "                nodeId = reader.node(i),");
-    writeln!(out, "                timestampUs = reader.timestamp(i),");
-    writeln!(out, "                flags = flags,");
-    writeln!(out, "                name = reader.customName(i),");
-    writeln!(out, "                payloadBytes = reader.customData(i),");
+    writeln!(out, "            if (!_isCustom) continue");
+    writeln!(out, "            val _ev = NveEmittedEvent(");
+    writeln!(out, "                tableBits = _tableBits,");
+    writeln!(out, "                eventId = _reader.event(_i),");
+    writeln!(out, "                nodeId = _reader.node(_i),");
+    writeln!(out, "                timestampUs = _reader.timestamp(_i),");
+    writeln!(out, "                flags = _flags,");
+    writeln!(out, "                name = _reader.customName(_i),");
+    writeln!(out, "                payloadBytes = _reader.customData(_i),");
     writeln!(out, "            )");
-    writeln!(out, "            dispatchEmittedEvent(reactContext, view, ev)");
+    writeln!(out, "            dispatchEmittedEvent(_reactContext, _view, _ev)");
     writeln!(out, "        }}");
     writeln!(out, "    }}");
 
@@ -434,141 +569,41 @@ fn emit_event_dispatchers(out: &mut CodeWriter, name: &str, events: &[EventSpec]
             .unwrap_or_else(|| format!("top{}", to_pascal_case(&strip_on_prefix(&ev.name))));
         writeln!(out);
         let sig = if ev.payload.is_empty() {
-            format!("fun {emit_fn}(reactContext: ThemedReactContext, view: {name}HostView)")
+            format!("fun {emit_fn}(_reactContext: ThemedReactContext, _view: {name}HostView)")
         } else {
             format!(
-                "fun {emit_fn}(reactContext: ThemedReactContext, view: {name}HostView, payloadBin: ByteArray)"
+                "fun {emit_fn}(_reactContext: ThemedReactContext, _view: {name}HostView, _payloadBin: ByteArray)"
             )
         };
         writeln!(out, "    {sig} {{");
-        writeln!(out, "        val event: WritableMap = Arguments.createMap()");
+        writeln!(out, "        val _event: WritableMap = Arguments.createMap()");
         if !ev.payload.is_empty() {
-            writeln!(out, "        if (payloadBin.isNotEmpty()) {{");
-            writeln!(out, "            runCatching {{");
-            writeln!(out, "                val reader = BinReader(payloadBin)");
-            writeln!(out, "                if (reader.peekTag() == BinTag.MAP) {{");
-            writeln!(out, "                    val mark = reader.beginMap()");
-            writeln!(out, "                    for (i in 0 until mark.count) {{");
-            writeln!(out, "                        when (reader.readMapKey()) {{");
+            writeln!(out, "        if (_payloadBin.isNotEmpty()) {{");
+            writeln!(out, "            try {{");
+            writeln!(out, "                val _r = BinReader(_payloadBin)");
+            writeln!(out, "                if (_r.peekTag() != BinTag.MAP) return");
+            writeln!(out, "                val _mark = _r.beginMap()");
+            writeln!(out, "                for (_i in 0 until _mark.count) {{");
+            writeln!(out, "                    when (_r.readMapKey()) {{");
             for f in &ev.payload {
                 let fkey = escape_kotlin_string(&f.name);
-                match &f.field_type {
-                    PropType::Bool => {
-                        writeln!(
-                            out,
-                            "                            \"{fkey}\" -> if (reader.peekTag() == BinTag.BOOL) event.putBoolean(\"{fkey}\", reader.readBool()) else reader.skipValue()"
-                        );
-                    }
-                    PropType::Int32 | PropType::IntEnum { .. } => {
-                        writeln!(
-                            out,
-                            "                            \"{fkey}\" -> when (reader.peekTag()) {{ BinTag.I64 -> event.putInt(\"{fkey}\", reader.readI64().toInt()); BinTag.F64 -> event.putInt(\"{fkey}\", reader.readF64().toInt()); else -> reader.skipValue() }}"
-                        );
-                    }
-                    PropType::Float | PropType::Double => {
-                        writeln!(
-                            out,
-                            "                            \"{fkey}\" -> if (reader.peekTag() == BinTag.F64 || reader.peekTag() == BinTag.I64) event.putDouble(\"{fkey}\", reader.readF64()) else reader.skipValue()"
-                        );
-                    }
-                    _ => {
-                        writeln!(
-                            out,
-                            "                            \"{fkey}\" -> if (reader.peekTag() == BinTag.STR) event.putString(\"{fkey}\", reader.readStr()) else reader.skipValue()"
-                        );
-                    }
-                }
+                emit_rn_read_event_field(out, "                        ", "_r", "_event", &fkey, f);
             }
-            writeln!(out, "                            else -> reader.skipValue()");
-            writeln!(out, "                        }}");
+            writeln!(out, "                        else -> _r.skipValue()");
             writeln!(out, "                    }}");
-            writeln!(out, "                    reader.end(mark)");
             writeln!(out, "                }}");
+            writeln!(out, "                _r.end(_mark)");
+            writeln!(out, "                _r.expectEnd()");
+            writeln!(out, "            }} catch (_: BinCodecException) {{");
+            writeln!(out, "                return");
             writeln!(out, "            }}");
             writeln!(out, "        }}");
         }
         writeln!(
             out,
-            "        reactContext.getJSModule(RCTEventEmitter::class.java).receiveEvent(view.id, \"{}\", event)",
+            "        _reactContext.getJSModule(RCTEventEmitter::class.java).receiveEvent(_view.id, \"{}\", _event)",
             escape_kotlin_string(&top)
         );
         writeln!(out, "    }}");
-    }
-}
-
-fn kotlin_prop_sig(prop: &PropSpec, param: &str) -> (String, String, String) {
-    let key = escape_kotlin_string(&prop.name);
-    match &prop.prop_type {
-        PropType::Bool => {
-            let def = match prop.default_value {
-                Some(DefaultValue::Bool(true)) => "true",
-                _ => "false",
-            };
-            (
-                "Boolean".to_owned(),
-                format!("@ReactProp(name = \"{key}\", defaultBoolean = {def})"),
-                format!("w.writeBool({param})"),
-            )
-        }
-        PropType::Int32 | PropType::IntEnum { .. } => {
-            let def = match prop.default_value {
-                Some(DefaultValue::Int(i)) => i,
-                _ => 0,
-            };
-            (
-                "Int".to_owned(),
-                format!("@ReactProp(name = \"{key}\", defaultInt = {def})"),
-                format!("w.writeI64({param}.toLong())"),
-            )
-        }
-        PropType::Float => {
-            let def = match prop.default_value {
-                Some(DefaultValue::Float(f)) => format!("{}f", format_float_literal(f)),
-                Some(DefaultValue::Int(i)) => format!("{i}.0f"),
-                _ => "0.0f".to_owned(),
-            };
-            (
-                "Float".to_owned(),
-                format!("@ReactProp(name = \"{key}\", defaultFloat = {def})"),
-                format!("w.writeF64({param}.toDouble())"),
-            )
-        }
-        PropType::Double => {
-            let def = match prop.default_value {
-                Some(DefaultValue::Float(f)) => format_float_literal(f),
-                Some(DefaultValue::Int(i)) => format!("{i}.0"),
-                _ => "0.0".to_owned(),
-            };
-            (
-                "Double".to_owned(),
-                format!("@ReactProp(name = \"{key}\", defaultDouble = {def})"),
-                format!("w.writeF64({param})"),
-            )
-        }
-        PropType::Color => (
-            "Int?".to_owned(),
-            format!("@ReactProp(name = \"{key}\", customType = \"Color\")"),
-            format!("if ({param} != null) w.writeI64({param}.toLong()) else w.writeNull()"),
-        ),
-        PropType::Array { item } => {
-            let elem_write = match item.as_ref() {
-                PropType::Bool => "w.writeBool(arr.getBoolean(i))",
-                PropType::Int32 | PropType::IntEnum { .. } => "w.writeI64(arr.getInt(i).toLong())",
-                PropType::Float | PropType::Double => "w.writeF64(arr.getDouble(i))",
-                _ => "arr.getString(i)?.let { w.writeStr(it) } ?: w.writeNull()",
-            };
-            (
-                "ReadableArray?".to_owned(),
-                format!("@ReactProp(name = \"{key}\")"),
-                format!(
-                    "val arr = {param}; if (arr == null) w.writeNull() else {{ val m = w.beginArray(arr.size()); for (i in 0 until arr.size()) {{ {elem_write} }}; w.end(m) }}"
-                ),
-            )
-        }
-        _ => (
-            "String?".to_owned(),
-            format!("@ReactProp(name = \"{key}\")"),
-            format!("if ({param} != null) w.writeStr({param}) else w.writeNull()"),
-        ),
     }
 }

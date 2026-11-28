@@ -2,6 +2,7 @@
 
 pub mod compose;
 pub mod export_rn_android;
+mod kotlin_bin_codec;
 pub mod kotlin_hybrid;
 
 pub use compose::generate_export_compose;

@@ -1,0 +1,156 @@
+{
+  "name": "AdversarialShadow",
+  "backend": "fabric",
+  "android_package": "dev.nve.components",
+  "doc": "Adversarial spec exercising shadowing locals, nested arrays, nullable defaults, colors, and $/quote escaping.",
+  "props": [
+    {
+      "name": "count",
+      "prop_type": { "kind": "int32" },
+      "optional": true,
+      "nullable": true,
+      "default_value": { "kind": "int", "value": 3 }
+    },
+    {
+      "name": "w",
+      "prop_type": { "kind": "string" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "string", "value": "$price \"quoted\"" }
+    },
+    {
+      "name": "mark",
+      "prop_type": { "kind": "int_enum", "variants": [0, 1, 2] },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "int", "value": 1 }
+    },
+    {
+      "name": "reader",
+      "prop_type": { "kind": "string_enum", "variants": ["$a", "b\"c"] },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "string", "value": "$a" }
+    },
+    {
+      "name": "am",
+      "prop_type": { "kind": "bool" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "bool", "value": false }
+    },
+    {
+      "name": "list",
+      "prop_type": {
+        "kind": "array",
+        "item": { "kind": "array", "item": { "kind": "int32" } }
+      },
+      "optional": false,
+      "nullable": false
+    },
+    {
+      "name": "view",
+      "prop_type": { "kind": "color" },
+      "optional": true,
+      "nullable": true
+    },
+    {
+      "name": "arr",
+      "prop_type": { "kind": "array", "item": { "kind": "color" } },
+      "optional": true,
+      "nullable": true
+    },
+    {
+      "name": "m",
+      "prop_type": {
+        "kind": "array",
+        "item": { "kind": "object", "fields": [] }
+      },
+      "optional": true,
+      "nullable": true
+    },
+    {
+      "name": "i",
+      "prop_type": { "kind": "float" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "float", "value": 1.5 }
+    },
+    {
+      "name": "j",
+      "prop_type": { "kind": "double" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "float", "value": 2.25 }
+    },
+    {
+      "name": "obj",
+      "prop_type": { "kind": "object", "fields": [] },
+      "optional": true,
+      "nullable": true
+    }
+  ],
+  "events": [
+    {
+      "name": "onMatrix",
+      "bubbling": "direct",
+      "optional": true,
+      "paper_top_level_name": "topMatrix",
+      "payload": [
+        { "name": "count", "field_type": { "kind": "int32" }, "optional": false, "nullable": false },
+        { "name": "w", "field_type": { "kind": "string" }, "optional": false, "nullable": false },
+        { "name": "mark", "field_type": { "kind": "int32" }, "optional": false, "nullable": false },
+        { "name": "reader", "field_type": { "kind": "string" }, "optional": false, "nullable": false },
+        { "name": "am", "field_type": { "kind": "bool" }, "optional": false, "nullable": false },
+        {
+          "name": "list",
+          "field_type": {
+            "kind": "array",
+            "item": { "kind": "array", "item": { "kind": "int32" } }
+          },
+          "optional": false,
+          "nullable": false
+        },
+        { "name": "view", "field_type": { "kind": "color" }, "optional": true, "nullable": true },
+        {
+          "name": "arr",
+          "field_type": { "kind": "array", "item": { "kind": "string" } },
+          "optional": false,
+          "nullable": false
+        },
+        {
+          "name": "m",
+          "field_type": { "kind": "object", "fields": [] },
+          "optional": true,
+          "nullable": true
+        },
+        { "name": "i", "field_type": { "kind": "float" }, "optional": false, "nullable": false },
+        { "name": "j", "field_type": { "kind": "double" }, "optional": false, "nullable": false }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "applyAll",
+      "params": [
+        { "name": "count", "param_type": { "kind": "int32" }, "optional": false },
+        { "name": "w", "param_type": { "kind": "string" }, "optional": false },
+        { "name": "mark", "param_type": { "kind": "bool" }, "optional": true },
+        { "name": "view", "param_type": { "kind": "color" }, "optional": true },
+        {
+          "name": "list",
+          "param_type": {
+            "kind": "array",
+            "item": { "kind": "array", "item": { "kind": "int32" } }
+          },
+          "optional": true
+        },
+        {
+          "name": "obj",
+          "param_type": { "kind": "object", "fields": [] },
+          "optional": true
+        }
+      ]
+    }
+  ]
+}

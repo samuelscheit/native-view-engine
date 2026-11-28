@@ -3,6 +3,7 @@ package com.facebook.react.uimanager
 import android.content.Context
 import android.content.ContextWrapper
 import android.view.View
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.uimanager.events.RCTEventEmitter
 
@@ -29,6 +30,7 @@ abstract class SimpleViewManager<T : View> {
     abstract fun createViewInstance(reactContext: ThemedReactContext): T
     open fun onAfterUpdateTransaction(view: T) {}
     open fun onDropViewInstance(view: T) {}
+    open fun receiveCommand(root: T, commandId: String, args: ReadableArray?) {}
     open fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any>? = null
     open fun getExportedCustomBubblingEventTypeConstants(): MutableMap<String, Any>? = null
 }

@@ -46,6 +46,7 @@ struct MockApp {
   bool has_host_cb = false;
 };
 
+#if !defined(NVE_MOCK_NO_COMPONENT)
 void write_nve_value(nve::host::BinWriter& w, const NveValue& v) {
   switch (v.tag) {
     case NVE_VAL_NULL:
@@ -91,6 +92,7 @@ void write_nve_value(nve::host::BinWriter& w, const NveValue& v) {
   }
   w.write_null();
 }
+#endif
 
 /// Printable copy of borrowed bytes (`\xNN` for control bytes, so binary table payloads stay on one line).
 std::string slice(const uint8_t* p, size_t n) {
@@ -195,6 +197,76 @@ uint32_t dispatch(NveAppHandle h, NveEventBatch batch) {
         w.write_i64(rc);
         w.end(m);
         (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostPublish", w.bytes());
+      } else if (cname == "host_call_small_buf" && app->has_host_cb && app->host_cb.invoke != nullptr) {
+        uint8_t small_reply[4];
+        size_t out_len = 0u;
+        const NveBufferSlice req{cdata.empty() ? nullptr : cdata.data(), cdata.size()};
+        const int32_t rc = app->host_cb.invoke(app->host_cb.host_ctx, 0x0010u, 3u, 303u, req, small_reply,
+                                               sizeof small_reply, &out_len);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(2u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.write_map_key("outLen");
+        w.write_i64(static_cast<int64_t>(out_len));
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostSmallBuf", w.bytes());
+      } else if (cname == "host_call_null_reply" && app->has_host_cb && app->host_cb.invoke != nullptr) {
+        uint8_t reply[64];
+        size_t out_len = 999u;
+        const NveBufferSlice req{cdata.empty() ? nullptr : cdata.data(), cdata.size()};
+        const int32_t rc =
+            app->host_cb.invoke(app->host_cb.host_ctx, 0x0010u, 4u, 404u, req, reply, sizeof reply, &out_len);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(2u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.write_map_key("outLen");
+        w.write_i64(static_cast<int64_t>(out_len));
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostNullReply", w.bytes());
+      } else if (cname == "host_call_throw" && app->has_host_cb && app->host_cb.invoke != nullptr) {
+        uint8_t reply[64];
+        size_t out_len = 0u;
+        const NveBufferSlice req{cdata.empty() ? nullptr : cdata.data(), cdata.size()};
+        const int32_t rc =
+            app->host_cb.invoke(app->host_cb.host_ctx, 0x0010u, 5u, 505u, req, reply, sizeof reply, &out_len);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(1u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostThrow", w.bytes());
+      } else if (cname == "host_publish_throw" && app->has_host_cb && app->host_cb.channel_publish != nullptr) {
+        const NveBufferSlice pay{cdata.empty() ? nullptr : cdata.data(), cdata.size()};
+        const int32_t rc = app->host_cb.channel_publish(app->host_cb.host_ctx, 99u, 0u, pay);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(1u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostPublishThrow", w.bytes());
+      } else if (cname == "host_call_null_ptr" && app->has_host_cb && app->host_cb.invoke != nullptr) {
+        uint8_t reply[64];
+        size_t out_len = 0u;
+        const NveBufferSlice bad_req{nullptr, 8u};
+        const int32_t rc =
+            app->host_cb.invoke(app->host_cb.host_ctx, 0x0010u, 1u, 606u, bad_req, reply, sizeof reply, &out_len);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(1u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostNullPtr", w.bytes());
+      } else if (cname == "host_publish_null_ptr" && app->has_host_cb && app->host_cb.channel_publish != nullptr) {
+        const NveBufferSlice bad_pay{nullptr, 8u};
+        const int32_t rc = app->host_cb.channel_publish(app->host_cb.host_ctx, 42u, 0u, bad_pay);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(1u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostPublishNullPtr", w.bytes());
       }
     }
   }
@@ -203,6 +275,7 @@ uint32_t dispatch(NveAppHandle h, NveEventBatch batch) {
   return 1u;
 }
 
+#if !defined(NVE_MOCK_NO_COMPONENT)
 uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
   auto* app = static_cast<MockApp*>(h);
   nve::host::BinWriter w;
@@ -225,6 +298,7 @@ NveEventBatch drain_emitted_events(NveAppHandle h) {
   app->drained.swap(app->emitted);
   return app->drained.batch();
 }
+#endif
 
 uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_nvp1) {
   auto* app = static_cast<MockApp*>(h);
@@ -272,8 +346,22 @@ uint32_t dispatch_host_events(NveAppHandle h, NveBufferSlice batch) {
   return 1u;
 }
 
+#if defined(NVE_MOCK_WITH_LAYOUT)
+NveIntrinsicSize mock_measure(NveAppHandle, NveSizeConstraints c) {
+  const float w = c.max_w < 123.5f ? c.max_w : 123.5f;
+  const float h = c.max_h < 45.25f ? c.max_h : 45.25f;
+  return NveIntrinsicSize{w < c.min_w ? c.min_w : w, h < c.min_h ? c.min_h : h};
+}
+
+uint8_t mock_hit_test(NveAppHandle, float, float, uint8_t) { return NVE_GESTURE_PASS_THROUGH; }
+
+constexpr NveLayoutApi kLayout{&mock_measure, &mock_hit_test};
+#endif
+
 constexpr NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch};
+#if !defined(NVE_MOCK_NO_COMPONENT)
 constexpr NveComponentApi kComponent{&set_props, &drain_emitted_events};
+#endif
 constexpr NveDevApi kDev{&apply_hot_patch, &snapshot_state, &restore_state};
 constexpr NveHostApi kHost{&bind_host, &dispatch_host_events};
 
@@ -281,7 +369,12 @@ constexpr NveHostApi kHost{&bind_host, &dispatch_host_events};
 
 extern "C" __attribute__((visibility("default"))) const void* nve_get_interface(uint32_t id) {
   if (id == NVE_IFACE_SURFACE) return &kSurface;
+#if defined(NVE_MOCK_WITH_LAYOUT)
+  if (id == NVE_IFACE_LAYOUT) return &kLayout;
+#endif
+#if !defined(NVE_MOCK_NO_COMPONENT)
   if (id == NVE_IFACE_COMPONENT) return &kComponent;
+#endif
   if (id == NVE_IFACE_DEV) return &kDev;
   if (id == NVE_IFACE_HOST) return &kHost;
   return nullptr;

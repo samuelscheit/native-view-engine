@@ -26,7 +26,12 @@ import java.nio.ByteBuffer
 class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     var startStatus = NveRuntimeAbi.STATUS_OK
     var setPropsStatus = NveRuntimeAbi.STATUS_OK
+    var setPropsChanged = true
+    var restoreStateStatus = NveRuntimeAbi.STATUS_OK
     var hotPatchStatus = NveRuntimeAbi.STATUS_OK
+    var hotPatchChanged = true
+    var throwOnClosedStructural = false
+    var renderCount = 0
     val started = ArrayList<NveSource>()
     val viewports = ArrayList<List<Float>>()
     val rings = ArrayList<EventRingReader>()
@@ -48,6 +53,8 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     var measurer: NativeRuntime.TextMeasurer? = null
     var closed = false
     var synchronous = true
+    var emittedListenerInstalled = false
+        private set
     private var listener: ((SceneReader, NveResourceLookup) -> Unit)? = null
     private var emittedListener: ((ByteArray) -> Unit)? = null
     private val pendingEmitted = ArrayDeque<ByteArray>()
@@ -56,6 +63,10 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
         val ring = EventRingWriter(ByteBuffer.allocate(4096), 1)
         write(ring)
         pendingEmitted.addLast(ring.buffer().array().copyOf(ring.length()))
+    }
+
+    fun enqueueRawEmitted(raw: ByteArray) {
+        pendingEmitted.addLast(raw)
     }
 
     private fun flushEmitted() {
@@ -71,6 +82,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
 
     override fun setEmittedEventListener(listener: ((ByteArray) -> Unit)?) {
         this.emittedListener = listener
+        this.emittedListenerInstalled = listener != null
     }
 
     override fun start(source: NveSource): Int {
@@ -85,6 +97,9 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     }
 
     override fun setTextMeasurer(measurer: NativeRuntime.TextMeasurer?): Int {
+        if (closed && throwOnClosedStructural && measurer != null) {
+            throw IllegalStateException("setTextMeasurer on a closed surface")
+        }
         this.measurer = measurer
         return NveRuntimeAbi.STATUS_OK
     }
@@ -95,6 +110,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
 
     /** Delivers [scene] as the next frame (consecutive frame ids, so captures chain). */
     override fun render(): Boolean {
+        renderCount++
         scene.frameId = ++frames
         listener?.invoke(scene.reader()) { resources[it] }
         flushEmitted()
@@ -114,9 +130,10 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
         return NveRuntimeAbi.STATUS_OK
     }
 
-    override fun setProps(binMap: ByteArray): Int {
+    override fun setProps(binMap: ByteArray, outChanged: BooleanArray?): Int {
         if (setPropsStatus != NveRuntimeAbi.STATUS_OK) return setPropsStatus
         propsHistory.add(binMap.copyOf())
+        if (outChanged != null && outChanged.isNotEmpty()) outChanged[0] = setPropsChanged
         flushEmitted()
         return NveRuntimeAbi.STATUS_OK
     }
@@ -127,6 +144,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     override fun snapshotState(): ByteArray? = stateBytes?.copyOf()
 
     override fun restoreState(state: ByteArray): Int {
+        if (restoreStateStatus != NveRuntimeAbi.STATUS_OK) return restoreStateStatus
         stateBytes = state.copyOf()
         return NveRuntimeAbi.STATUS_OK
     }
@@ -163,9 +181,10 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
         return NveRuntimeAbi.STATUS_OK
     }
 
-    override fun applyHotPatch(patch: ByteArray): Int {
+    override fun applyHotPatch(patch: ByteArray, outChanged: BooleanArray?): Int {
         if (hotPatchStatus != NveRuntimeAbi.STATUS_OK) return hotPatchStatus
         hotPatches.add(patch.copyOf())
+        if (outChanged != null && outChanged.isNotEmpty()) outChanged[0] = hotPatchChanged
         flushEmitted()
         return NveRuntimeAbi.STATUS_OK
     }
@@ -183,11 +202,17 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     }
 
     override fun setIntrinsicSizeInvalidatedListener(listener: Runnable?): Int {
+        if (closed && throwOnClosedStructural) {
+            throw IllegalStateException("setIntrinsicSizeInvalidatedListener on a closed surface")
+        }
         intrinsicListener = listener
         return NveRuntimeAbi.STATUS_OK
     }
 
     override fun setHostCallbackBridge(bridge: NveHostBridge?): Int {
+        if (closed && throwOnClosedStructural) {
+            throw IllegalStateException("setHostCallbackBridge on a closed surface")
+        }
         hostBridge = bridge
         return NveRuntimeAbi.STATUS_OK
     }
@@ -415,5 +440,105 @@ class NveSurfaceControllerTest {
         assertEquals(1, host.hostCompletions.size)
         assertEquals(1, host.hostPushEvents.size)
         assertEquals(1, host.hostChannels.size)
+    }
+
+    @Test
+    fun manualDrainEmittedEventsWorksWhenOnEventIsNullAndTogglesDynamically() {
+        val host = FakeRuntimeHost(scene())
+        val c = NveSurfaceController(host)
+        assertFalse(host.emittedListenerInstalled, "no host emitted listener installed while onEvent == null")
+
+        host.enqueueEmitted { it.custom(0, 10L, "queuedWhileManual", byteArrayOf(1, 2)) }
+        c.render()
+        c.setProps(ByteArray(0))
+        c.press(0x1000002, 1f, 1f)
+
+        val drained = c.drainEmittedEvents()
+        assertNotNull(drained, "manual drainEmittedEvents returns batch when onEvent == null")
+        val reader = EventRingReader().attach(drained!!)
+        assertEquals(1, reader.count())
+        assertEquals("queuedWhileManual", reader.customName(0))
+        assertArrayEquals(byteArrayOf(1, 2), reader.customData(0))
+        assertNull(c.drainEmittedEvents())
+
+        // Installing onEvent wires the host listener dynamically
+        val seen = ArrayList<String>()
+        c.onEvent = { seen.add(it.name) }
+        assertTrue(host.emittedListenerInstalled)
+        host.enqueueEmitted { it.custom(0, 11L, "viaListener", null) }
+        c.render()
+        assertEquals(listOf("viaListener"), seen)
+
+        // Clearing onEvent detaches the host listener again so manual drain works again
+        c.onEvent = null
+        assertFalse(host.emittedListenerInstalled)
+        host.enqueueEmitted { it.custom(0, 12L, "manualAgain", null) }
+        c.render()
+        val drained2 = c.drainEmittedEvents()
+        assertNotNull(drained2)
+        assertEquals("manualAgain", EventRingReader().attach(drained2!!).customName(0))
+    }
+
+    @Test
+    fun errorPathsUnchangedMutationsMalformedBatchesAndClosedTeardownAreSafe() {
+        val host = FakeRuntimeHost(scene())
+        val c = NveSurfaceController(host)
+        val seen = ArrayList<NveEmittedEvent>()
+        c.onEvent = { seen.add(it) }
+
+        // Malformed NVEV batches (empty, bad magic, truncated) are silently dropped without throwing
+        host.enqueueRawEmitted(ByteArray(0))
+        host.enqueueRawEmitted(byteArrayOf(0x01, 0x02, 0x03, 0x04))
+        host.enqueueRawEmitted(byteArrayOf(0x4E, 0x56, 0x45, 0x56, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0))
+        c.render()
+        assertTrue(seen.isEmpty(), "malformed NVEV batches never deliver events")
+
+        // setProps / restoreState / applyHotPatch error paths report error and skip render()
+        val rendersBefore = host.renderCount
+        host.setPropsStatus = NveRuntimeAbi.STATUS_INVALID_ARG
+        assertFalse(c.setProps(ByteArray(0)))
+        assertTrue(c.error?.startsWith("setProps failed (") == true)
+        assertEquals(rendersBefore, host.renderCount)
+        host.setPropsStatus = NveRuntimeAbi.STATUS_OK
+
+        host.restoreStateStatus = NveRuntimeAbi.STATUS_IO
+        assertFalse(c.restoreState(byteArrayOf(1)))
+        assertTrue(c.error?.startsWith("restoreState failed (") == true)
+        assertEquals(rendersBefore, host.renderCount)
+        host.restoreStateStatus = NveRuntimeAbi.STATUS_OK
+
+        host.hotPatchStatus = NveRuntimeAbi.STATUS_UNSUPPORTED
+        assertFalse(c.applyHotPatch(byteArrayOf(1)))
+        assertTrue(c.error?.startsWith("applyHotPatch failed (") == true)
+        assertEquals(rendersBefore, host.renderCount)
+        host.hotPatchStatus = NveRuntimeAbi.STATUS_OK
+
+        // changed == false skips host.render() in setProps and applyHotPatch
+        host.setPropsChanged = false
+        assertTrue(c.setProps(ByteArray(0)))
+        assertNull(c.error)
+        assertEquals(rendersBefore, host.renderCount, "unchanged setProps skips render()")
+
+        host.hotPatchChanged = false
+        assertTrue(c.applyHotPatch(byteArrayOf(1, 2)))
+        assertNull(c.error)
+        assertEquals(rendersBefore, host.renderCount, "unchanged applyHotPatch skips render()")
+
+        // changed == true triggers host.render()
+        host.setPropsChanged = true
+        assertTrue(c.setProps(ByteArray(0)))
+        assertEquals(rendersBefore + 1, host.renderCount)
+        host.hotPatchChanged = true
+        assertTrue(c.applyHotPatch(byteArrayOf(1, 2)))
+        assertEquals(rendersBefore + 2, host.renderCount)
+
+        // Null-clearing teardown calls after close() are safe no-ops even when host throws on closed surfaces
+        host.throwOnClosedStructural = true
+        c.close()
+        assertTrue(host.closed)
+        assertFalse(host.emittedListenerInstalled)
+        c.setTextMeasurer(null)
+        assertEquals(NveRuntimeAbi.STATUS_OK, c.setHostBridge(null))
+        assertEquals(NveRuntimeAbi.STATUS_OK, c.setIntrinsicSizeInvalidatedListener(null))
     }
 }

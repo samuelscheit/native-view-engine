@@ -100,6 +100,8 @@ if(NOT ANDROID)
     endfunction()
     nve_mock_app(nve_mock_showcase
       NVE_MOCK_FRAME="${NVE_FIXTURES}/showcase_1.nve2" NVE_MOCK_NEXT_FRAME="${NVE_FIXTURES}/showcase_2.nve2")
+    nve_mock_app(nve_mock_layout_only
+      NVE_MOCK_FRAME="${NVE_FIXTURES}/showcase_1.nve2" NVE_MOCK_WITH_LAYOUT=1 NVE_MOCK_NO_COMPONENT=1)
     nve_mock_app(nve_mock_hot_v1 NVE_MOCK_FRAME="${NVE_FIXTURES}/hot_v1.nve2")
     nve_mock_app(nve_mock_hot_v2 NVE_MOCK_FRAME="${NVE_FIXTURES}/hot_v2.nve2")
     nve_mock_app(nve_mock_bad_iface NVE_MOCK_BAD_IFACE=1)
@@ -128,7 +130,7 @@ if(NOT ANDROID)
     set(_nve_event_log "${CMAKE_CURRENT_BINARY_DIR}/mock_events.log")
     add_test(NAME android_events_jni_test
       COMMAND "${Java_JAVA_EXECUTABLE}" ${_nve_java} dev.nve.android.jni.EventsJniTest "${NVE_FIXTURES}"
-        $<TARGET_FILE:nve_mock_showcase> "${_nve_event_log}")
+        $<TARGET_FILE:nve_mock_showcase> "${_nve_event_log}" $<TARGET_FILE:nve_mock_layout_only>)
     set_tests_properties(android_events_jni_test PROPERTIES ENVIRONMENT "NVE_MOCK_EVENT_LOG=${_nve_event_log}")
     add_test(NAME android_pair_jni_test
       COMMAND "${Java_JAVA_EXECUTABLE}" ${_nve_java} dev.nve.android.jni.PairJniTest "${NVE_FIXTURES}")
