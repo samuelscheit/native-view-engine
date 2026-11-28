@@ -349,6 +349,89 @@ fn schema_hash_and_static_desc_matches_discriminate_resource_kinds() {
         !static_desc_matches(&TableWithA::DESC, &spoofed_spec_b),
         "static_desc_matches must compare resource_kinds even if schema_hash were spoofed"
     );
+
+    // Order-independent `resource_kinds` matching in `static_desc_matches` for hand-built
+    // descriptors (matching `compute_table_schema_hash`).
+    const TWO_RES_DEFAULTS: &[nve_abi::table::Word] = &[0, 0];
+    const TWO_RES_EFFECTS: &[u8] = &[nve_abi::table::effect::PAINT, nve_abi::table::effect::PAINT];
+    const TWO_RES_KINDS_AB: &[(u8, nve_abi::Key64)] = &[(0, ResKindA::KIND), (1, ResKindB::KIND)];
+    const TWO_RES_KINDS_BA: &[(u8, nve_abi::Key64)] = &[(1, ResKindB::KIND), (0, ResKindA::KIND)];
+    const TWO_RES_KINDS_SWAPPED: &[(u8, nve_abi::Key64)] =
+        &[(0, ResKindB::KIND), (1, ResKindA::KIND)];
+    const TWO_RES_KINDS_DUP: &[(u8, nve_abi::Key64)] = &[(0, ResKindA::KIND), (0, ResKindA::KIND)];
+    let hash_ab = nve_abi::table::compute_table_schema_hash(
+        "test.schema.hand_two_res",
+        nve_abi::table::Storage::Sparse,
+        0,
+        TWO_RES_DEFAULTS,
+        TWO_RES_EFFECTS,
+        0,
+        0b11,
+        nve_abi::table::NO_VAL_WORD,
+        false,
+        &[],
+        TWO_RES_KINDS_AB,
+    );
+    let hash_ba = nve_abi::table::compute_table_schema_hash(
+        "test.schema.hand_two_res",
+        nve_abi::table::Storage::Sparse,
+        0,
+        TWO_RES_DEFAULTS,
+        TWO_RES_EFFECTS,
+        0,
+        0b11,
+        nve_abi::table::NO_VAL_WORD,
+        false,
+        &[],
+        TWO_RES_KINDS_BA,
+    );
+    assert_eq!(hash_ab, hash_ba);
+    let hand_desc = nve_abi::table::TableDesc {
+        key: nve_abi::Key64::of("test.schema.hand_two_res"),
+        name: "test.schema.hand_two_res",
+        schema_hash: hash_ab,
+        storage: nve_abi::table::Storage::Sparse,
+        flags: 0,
+        defaults: TWO_RES_DEFAULTS,
+        word_effects: TWO_RES_EFFECTS,
+        str_words: 0,
+        resource_words: 0b11,
+        events_word: nve_abi::table::NO_VAL_WORD,
+        events: None,
+        inherited: false,
+        fields: &[],
+        resource_kinds: TWO_RES_KINDS_AB,
+    };
+    let spec_reordered = TableDescSpec {
+        schema_hash: hash_ba,
+        storage: hand_desc.storage,
+        flags: hand_desc.flags,
+        defaults: hand_desc.defaults,
+        word_effects: hand_desc.word_effects,
+        str_words: hand_desc.str_words,
+        resource_words: hand_desc.resource_words,
+        resource_kinds: Some(TWO_RES_KINDS_BA),
+    };
+    assert!(
+        static_desc_matches(&hand_desc, &spec_reordered),
+        "static_desc_matches must accept out-of-order identical resource_kinds"
+    );
+    let spec_swapped = TableDescSpec {
+        resource_kinds: Some(TWO_RES_KINDS_SWAPPED),
+        ..spec_reordered
+    };
+    assert!(
+        !static_desc_matches(&hand_desc, &spec_swapped),
+        "static_desc_matches must reject swapped word->kind bindings"
+    );
+    let spec_dup = TableDescSpec {
+        resource_kinds: Some(TWO_RES_KINDS_DUP),
+        ..spec_reordered
+    };
+    assert!(
+        !static_desc_matches(&hand_desc, &spec_dup),
+        "static_desc_matches must reject duplicate-entry resource_kinds skew"
+    );
 }
 
 #[test]

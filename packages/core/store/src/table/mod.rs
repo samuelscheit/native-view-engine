@@ -279,10 +279,22 @@ pub enum RegistryError {
     SchemaMismatch { name: &'static str, key: TableKey },
 }
 
+fn resource_kinds_match(a: &[(u8, nve_abi::Key64)], b: &[(u8, nve_abi::Key64)]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    a.iter().all(|entry| {
+        a.iter().filter(|x| *x == entry).count() == b.iter().filter(|x| *x == entry).count()
+    })
+}
+
 pub(crate) fn static_desc_matches(existing: &TableDesc, spec: &TableDescSpec<'_>) -> bool {
     let resource_kinds_ok = spec
         .resource_kinds
-        .is_none_or(|rk| existing.resource_kinds == rk);
+        .is_none_or(|rk| resource_kinds_match(existing.resource_kinds, rk));
     existing.schema_hash == spec.schema_hash
         && existing.storage == spec.storage
         && (existing.flags & !table_flags::HOST_SLOT) == (spec.flags & !table_flags::HOST_SLOT)
