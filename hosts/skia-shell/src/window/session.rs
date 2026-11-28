@@ -343,6 +343,16 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.app.dispatch_host_event(event)
     }
 
+    /// Dispatches a canonical `NveHostEventBatch` (`NVHB` v1) drained from `CompletionSink`.
+    pub fn dispatch_host_batch(&mut self, batch: &[u8]) -> bool {
+        self.app.dispatch_host_batch(batch)
+    }
+
+    /// Returns this session's active host-services owner tag (0 when unbound).
+    pub fn host_owner_tag(&self) -> u64 {
+        self.app.host_owner_tag()
+    }
+
     /// Writes the current rasterized [`PixelBuffer`] to a binary `P6` PPM file.
     #[cfg(test)]
     pub fn write_screenshot_ppm(&self, path: &Path) -> Result<(), DesktopHostError> {

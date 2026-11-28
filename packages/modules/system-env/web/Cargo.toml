@@ -1,0 +1,24 @@
+[package]
+name = "nve-system-env-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Browser Web SystemEnv provider (SERVICE_SYSTEM_ENV) with matchMedia/Intl queries and live WebThemeWatcher push events"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }
+nve-system-env = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "system_env_web_bench"
+harness = false
+
+[lints]
+workspace = true

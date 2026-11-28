@@ -28,6 +28,8 @@ pub mod key_events;
 pub mod layout_ext_css;
 pub mod media_css;
 #[cfg(target_arch = "wasm32")]
+pub mod microtask;
+#[cfg(target_arch = "wasm32")]
 pub mod native_events;
 pub mod patch_css;
 pub mod sanitize;

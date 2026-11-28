@@ -2,7 +2,7 @@
 //! feature `dev`), and canonical 0ms snapshot capture.
 
 use nve_abi::{
-    EventBatchBuf, EventFlags, FrameId, SurfaceId, TimestampUs, ValidatedEvents, ROOT_NODE_ID,
+    EventBatchBuf, EventFlags, FrameId, SurfaceId, TimestampUs, ROOT_NODE_ID,
 };
 use nve_abi::xxh64;
 use nve_backend_web::{SsrDocumentOptions, SsrOutput, WebBackend, WebSnapshotPayload};
@@ -12,12 +12,12 @@ use nve_backend_web::WebTableRegistry;
 use nve_dioxus::DioxusSurface;
 #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_engine::NveApp;
-use nve_engine::{BackendApplyStats, BackendError, FrameTiming, StoreBackend, Viewport};
+use nve_engine::{BackendError, FrameTiming, StoreBackend, Viewport};
 #[cfg(feature = "app-kitchen-sink")]
-use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
+use nve_example_kitchen_sink::KitchenSinkModule;
 use nve_store::NodeStore;
 #[cfg(feature = "app-studio")]
-use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
+use nve_studio_workspace::StudioWorkspaceModule;
 
 /// Surface ID of the first (primary) app mounted into the page.
 pub const DEFAULT_SURFACE_ID: SurfaceId = SurfaceId::ROOT;
@@ -43,6 +43,11 @@ fn dispatch_studio_viewport_layout(
     }
 }
 
+#[path = "session_app.rs"]
+mod session_app;
+pub(crate) use session_app::SessionApp;
+#[path = "session_host.rs"]
+mod host_bridge;
 #[cfg(feature = "dev")]
 #[path = "session_hot_reload.rs"]
 mod hot_reload;
@@ -60,150 +65,6 @@ pub struct AsyncPumpOutcome {
     pub hit_cap: bool,
 }
 
-enum SessionApp {
-    /// A Dioxus surface plus its app family's web plugin registration.
-    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-    Dioxus(Box<DioxusSurface>, fn(&mut WebTableRegistry)),
-    #[cfg(feature = "app-studio")]
-    Studio(Box<StudioWorkspaceModule>),
-    #[cfg(feature = "app-kitchen-sink")]
-    KitchenSink(Box<KitchenSinkModule>),
-}
-
-impl SessionApp {
-    /// Registers the hosted app family's shared web plugin set (the same function its SSR server
-    /// or prerenderer calls), so client and server resolve identical tags.
-    fn register_web_systems(&self, backend: &mut WebBackend) {
-        let registry = backend.table_registry_mut();
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(_, register) => register(registry),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(_) => nve_studio_workspace::register_web_systems(registry),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(_) => nve_example_kitchen_sink::register_web_systems(registry),
-        }
-    }
-
-    fn app_slug(&self) -> Option<&'static str> {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(..) => None,
-            #[cfg(feature = "app-studio")]
-            Self::Studio(_) => Some("studio"),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(_) => Some("kitchen-sink"),
-        }
-    }
-
-    fn schema_version(&self) -> u32 {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(..) => 1,
-            #[cfg(feature = "app-studio")]
-            Self::Studio(_) => STUDIO_SNAPSHOT_SCHEMA_VERSION,
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(_) => KITCHEN_SINK_STATE_VERSION,
-        }
-    }
-
-    fn commit_to_timed<B: StoreBackend>(
-        &mut self,
-        frame_id: FrameId,
-        backend: &mut B,
-    ) -> Result<(u64, BackendApplyStats), BackendError> {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface, _) => surface.commit_to_timed(frame_id, backend),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.commit_to_timed(frame_id, backend),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.commit_to_timed(frame_id, backend),
-        }
-    }
-
-    fn store(&self) -> &NodeStore {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface, _) => surface.store(),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.surface().store(),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.surface().store(),
-        }
-    }
-
-    #[cfg(feature = "dev")]
-    fn store_mut(&mut self) -> &mut NodeStore {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface, _) => surface.store_mut(),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.surface_mut().store_mut(),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.surface_mut().store_mut(),
-        }
-    }
-
-    #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-    fn poll_work(&mut self, waker: &core::task::Waker) -> bool {
-        match self {
-            Self::Dioxus(surface, _) => surface.poll_work(waker),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(_) => false,
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(_) => false,
-        }
-    }
-
-    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface, _) => surface.dispatch_events(events),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.dispatch_events(events),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.dispatch_events(events),
-        }
-    }
-
-    /// Forwards an `NVE_IFACE_HOST` host-event batch (e.g. the OS `ThemeSnapshot`) to the app.
-    #[cfg_attr(not(any(feature = "app-studio", feature = "app-kitchen-sink")), allow(unused_variables))]
-    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(..) => false,
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.dispatch_host_events(batch),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.dispatch_host_events(batch),
-        }
-    }
-
-    fn snapshot_state(&mut self) -> Option<Vec<u8>> {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(..) => None,
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => Some(module.snapshot_state().to_vec()),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => Some(module.snapshot_state().to_vec()),
-        }
-    }
-
-    #[cfg_attr(not(any(feature = "app-studio", feature = "app-kitchen-sink")), allow(unused_variables))]
-    fn try_restore_state(&mut self, bytes: &[u8]) -> bool {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(..) => false,
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.try_restore_state(bytes),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.try_restore_state(bytes),
-        }
-    }
-}
-
 /// Cross-target session binding an NVE app (`DioxusSurface`, `StudioWorkspaceModule`, or
 /// `KitchenSinkModule`) directly to a [`WebBackend`].
 ///
@@ -211,8 +72,20 @@ impl SessionApp {
 pub struct WebAppSession {
     surface_id: SurfaceId,
     frame_id: FrameId,
-    app: SessionApp,
+    // Field order is load-bearing: `app` MUST drop before `host_bridge` (and `Drop` explicitly
+    // unbinds `app` first) so the app never observes a dangling `host_ctx` pointer.
+    pub(crate) app: SessionApp,
+    pub(crate) host_bridge: Option<Box<dyn host_bridge::OwnedHostBridge>>,
     backend: WebBackend,
+}
+
+impl Drop for WebAppSession {
+    fn drop(&mut self) {
+        self.app.bind_host(None);
+        if let Some(mut bridge) = self.host_bridge.take() {
+            bridge.cancel_before_drop();
+        }
+    }
 }
 
 impl WebAppSession {
@@ -242,6 +115,7 @@ impl WebAppSession {
             surface_id,
             frame_id: FrameId::ZERO,
             app,
+            host_bridge: None,
             backend,
         }
     }
@@ -519,14 +393,6 @@ impl WebAppSession {
         self.render_and_submit().map(Some)
     }
 
-    /// Forwards a host-event batch (e.g. the OS `ThemeSnapshot`); commits a frame on change.
-    pub fn dispatch_host_events(&mut self, batch: &[u8]) -> Result<Option<FrameTiming>, BackendError> {
-        if !self.app.dispatch_host_events(batch) {
-            return Ok(None);
-        }
-        self.render_and_submit().map(Some)
-    }
-
     /// Drains pending DOM events, dispatches them to the app, and commits an incremental frame if handled.
     pub fn pump_events(&mut self) -> Result<Option<FrameTiming>, BackendError> {
         let mut events = EventBatchBuf::new();
@@ -570,7 +436,7 @@ impl WebAppSession {
         })
     }
 
-    fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
+    pub(crate) fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
         self.frame_id = self.frame_id.next();
         let frame_id = self.frame_id;
         let (reconcile_us, stats) = self.app.commit_to_timed(frame_id, &mut self.backend)?;

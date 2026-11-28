@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_SECURE_STORE;
 use nve_host_services::{
-    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
-    ServiceError, MAX_PAYLOAD_BYTES,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, CompletionSink, HandlerReply,
+    HostServiceHandler, HostServiceProvider, ServiceError, MAX_PAYLOAD_BYTES,
 };
 
 pub use native::NativeSecureStore;
@@ -270,8 +270,14 @@ impl HostServiceHandler for MemorySecureStore {
         SERVICE_SECURE_STORE
     }
 
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_secure_store_wire(self, method_id, request)
+    fn handle(
+        &self,
+        method_id: u32,
+        _request_id: u64,
+        request: &[u8],
+        _done: &CompletionSink,
+    ) -> Result<HandlerReply, ServiceError> {
+        dispatch_secure_store_wire(self, method_id, request).map(HandlerReply::ready)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

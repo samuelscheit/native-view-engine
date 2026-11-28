@@ -5,7 +5,9 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use nve_abi::SERVICE_CLIPBOARD;
-use nve_host_services::{pack_typed, HostServiceHandler, ServiceError};
+use nve_host_services::{
+    pack_typed, CompletionSink, HandlerReply, HostServiceHandler, ServiceError,
+};
 
 use crate::{dispatch_clipboard_wire, ClipboardBackend};
 
@@ -42,8 +44,14 @@ impl HostServiceHandler for NativeClipboard {
         SERVICE_CLIPBOARD
     }
 
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_clipboard_wire(self, method_id, request)
+    fn handle(
+        &self,
+        method_id: u32,
+        _request_id: u64,
+        request: &[u8],
+        _done: &CompletionSink,
+    ) -> Result<HandlerReply, ServiceError> {
+        dispatch_clipboard_wire(self, method_id, request).map(HandlerReply::ready)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

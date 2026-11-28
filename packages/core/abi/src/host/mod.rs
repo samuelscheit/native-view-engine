@@ -9,8 +9,18 @@ use nve_abi_macros::NveAbi;
 use crate::ffi::{NveAppHandle, NveBufferSlice};
 use crate::InterfaceId;
 
+pub mod batch;
 #[cfg(test)]
 mod tests;
+
+pub use batch::{
+    align8_payload_len, encode_single_push_into, host_batch_padded_record_len,
+    single_record_batch_len, NveHostBatchError, NveHostEventBatchBuilder, NveHostEventBatchHeader,
+    NveHostEventBatchIter, NveHostEventBatchRef, NveHostEventKind, NveHostEventRecord,
+    NveHostEventRecordHeader, NVE_HOST_BATCH_ALIGN, NVE_HOST_BATCH_HEADER_LEN,
+    NVE_HOST_BATCH_MAGIC, NVE_HOST_BATCH_MAX_BYTES, NVE_HOST_BATCH_MAX_PAYLOAD,
+    NVE_HOST_BATCH_VERSION, NVE_HOST_RECORD_FLAG_RETAIN, NVE_HOST_RECORD_HEADER_LEN,
+};
 
 /// Modular interface ID for the optional host-capability & channel-bus interface (`const NveHostApi*`).
 pub const NVE_IFACE_HOST: InterfaceId = InterfaceId(5);

@@ -3,23 +3,33 @@
 //! through `NveApp::dispatch_host_events` at boot and on every OS change, so embedded apps follow
 //! the four OS polarities like native hosts do.
 
+#[cfg(not(feature = "web-host-services"))]
 use nve_abi::{ColorScheme, ContrastLevel};
-use nve_system_env::ThemeSnapshot;
+use nve_abi::{encode_single_push_into, SERVICE_SYSTEM_ENV};
+use nve_system_env::{ThemeSnapshot, EVENT_THEME_CHANGED};
+#[cfg(not(feature = "web-host-services"))]
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
+#[cfg(not(feature = "web-host-services"))]
+use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 
 use crate::session::WebAppSession;
 
+#[cfg(not(feature = "web-host-services"))]
 const DARK_QUERY: &str = "(prefers-color-scheme: dark)";
+#[cfg(not(feature = "web-host-services"))]
 const CONTRAST_QUERY: &str = "(prefers-contrast: more)";
+#[cfg(not(feature = "web-host-services"))]
 const REDUCED_MOTION_QUERY: &str = "(prefers-reduced-motion: reduce)";
 
+#[cfg(not(feature = "web-host-services"))]
 fn query_matches(window: &web_sys::Window, query: &str) -> bool {
     window.match_media(query).ok().flatten().is_some_and(|mql| mql.matches())
 }
 
 /// The browser's current appearance as a host [`ThemeSnapshot`] (accent and scale fields keep
 /// their defaults: the apps own their accents, and the viewport carries the scale factor).
+#[cfg(not(feature = "web-host-services"))]
 pub(crate) fn browser_theme_snapshot(window: &web_sys::Window) -> ThemeSnapshot {
     ThemeSnapshot {
         color_scheme: Some(if query_matches(window, DARK_QUERY) { ColorScheme::Dark } else { ColorScheme::Light }),
@@ -29,20 +39,28 @@ pub(crate) fn browser_theme_snapshot(window: &web_sys::Window) -> ThemeSnapshot 
     }
 }
 
-/// Delivers `theme` to the session's app (rendering when the UI changed); failures are logged.
-/// Appearance is host environment, not app state, so it schedules no snapshot.
+/// Delivers `theme` to the session's app as a canonical 56-byte `NveHostEventBatch` Push record
+/// (rendering when the UI changed); failures are logged. Appearance is host environment, not app
+/// state, so it schedules no snapshot.
 pub(crate) fn dispatch_appearance(session: &mut WebAppSession, theme: ThemeSnapshot) {
-    if let Err(err) = session.dispatch_host_events(&theme.to_repr_c_bytes()) {
+    let raw = theme.to_repr_c_bytes();
+    let mut batch = [0u8; 56];
+    let encoded =
+        encode_single_push_into(&mut batch, SERVICE_SYSTEM_ENV, EVENT_THEME_CHANGED, &raw)
+            .unwrap_or(&[]);
+    if let Err(err) = session.dispatch_host_events(encoded) {
         web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] appearance: {err}")));
     }
 }
 
 /// Keeps the `change` listeners of the appearance media queries alive; dropping it detaches them.
+#[cfg(not(feature = "web-host-services"))]
 pub(crate) struct AppearanceListener {
     queries: Vec<web_sys::MediaQueryList>,
     on_change: Closure<dyn FnMut(web_sys::Event)>,
 }
 
+#[cfg(not(feature = "web-host-services"))]
 impl Drop for AppearanceListener {
     fn drop(&mut self) {
         for mql in &self.queries {
@@ -52,6 +70,7 @@ impl Drop for AppearanceListener {
 }
 
 /// Calls `on_change` with the fresh [`browser_theme_snapshot`] whenever any appearance query flips.
+#[cfg(not(feature = "web-host-services"))]
 pub(crate) fn install_appearance_listener<F>(window: &web_sys::Window, on_change: F) -> Option<AppearanceListener>
 where
     F: Fn(ThemeSnapshot) + 'static,

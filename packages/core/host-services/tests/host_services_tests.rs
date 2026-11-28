@@ -12,10 +12,10 @@ use nve_abi::{
     NVE_CHANNEL_FLAG_RETAIN, NVE_IFACE_HOST,
 };
 use nve_host_services::{
-    pack_typed, resolve_typed, validate_url, ByteReader, ByteWriter, FfiHostServices,
-    HostCallbackBridge, HostServiceHandler, HostServiceProvider, HostServiceRegistry, InvokeResult,
-    MemoryHostServices, NveDecode, NveEncode, PermissionStatus, ServiceError, TypedEventBus,
-    FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE, MAX_PAYLOAD_BYTES,
+    pack_typed, resolve_typed, validate_url, ByteReader, ByteWriter, CompletionSink,
+    FfiHostServices, HandlerReply, HostCallbackBridge, HostServiceHandler, HostServiceProvider,
+    HostServiceRegistry, InvokeResult, MemoryHostServices, NveDecode, NveEncode, PermissionStatus,
+    ServiceError, TypedEventBus, FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE, MAX_PAYLOAD_BYTES,
 };
 use nve_interop::CHANNEL_ID_THEME;
 
@@ -32,10 +32,10 @@ impl HostServiceHandler for EchoHandler {
         TEST_SERVICE_ECHO
     }
 
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
+    fn handle(&self, method_id: u32, _: u64, request: &[u8], _: &CompletionSink) -> Result<HandlerReply, ServiceError> {
         match method_id {
-            TEST_METHOD_ECHO => Ok(request.to_vec()),
-            TEST_METHOD_BIG => Ok(self.big_payload.clone()),
+            TEST_METHOD_ECHO => Ok(HandlerReply::ready(request.to_vec())),
+            TEST_METHOD_BIG => Ok(HandlerReply::ready(self.big_payload.clone())),
             _ => Err(ServiceError::Unsupported),
         }
     }
@@ -531,10 +531,10 @@ impl HostServiceHandler for CountingGreetHandler {
         0x1099
     }
 
-    fn handle(&self, _method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
+    fn handle(&self, _: u32, _: u64, request: &[u8], _: &CompletionSink) -> Result<HandlerReply, ServiceError> {
         self.wire_calls.fetch_add(1, Ordering::SeqCst);
         let name = std::str::from_utf8(request).map_err(|e| ServiceError::Codec(e.to_string()))?;
-        Ok(self.greet(name).into_bytes())
+        Ok(HandlerReply::ready(self.greet(name).into_bytes()))
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

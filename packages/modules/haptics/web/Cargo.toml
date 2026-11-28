@@ -1,0 +1,24 @@
+[package]
+name = "nve-haptics-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Browser Web Haptics provider (SERVICE_HAPTICS) backed by navigator.vibrate"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-haptics = { workspace = true }
+nve-host-services = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "haptics_web_bench"
+harness = false
+
+[lints]
+workspace = true

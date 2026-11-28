@@ -630,4 +630,20 @@ fn native_skia_host_services_delivers_typed_system_env_without_wire_codecs() {
             .as_deref(),
         Some(&locale)
     );
+
+    // 1,000 live winit theme + scale updates MUST NOT accumulate in TypedEventBus's pull queue.
+    for i in 0..1_000usize {
+        let wt = if i % 2 == 0 {
+            WinitTheme::Dark
+        } else {
+            WinitTheme::Light
+        };
+        let _ = services.update_theme_from_winit(wt, 1.0 + (i % 3) as f32);
+        let _ = services.update_scale_factor(1.5 + (i % 2) as f32);
+    }
+    assert_eq!(
+        services.typed_events().queued_len(),
+        0,
+        "SkiaHostServices theme/scale updates must be notify-only with 0 pull-queue buildup"
+    );
 }

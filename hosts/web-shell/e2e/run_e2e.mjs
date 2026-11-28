@@ -2377,6 +2377,349 @@ async function main() {
       fs.rmSync(ssgTmpDir, { recursive: true, force: true });
     }
 
+    // 8g. Host Services (`NVE_IFACE_HOST = 5`) Browser E2E:
+    //     - 5 mount/unmount cycles assert 0 leaked Rust & JS closure/listener slab entries
+    //     - Live `prefers-color-scheme` dark <-> light transition flushes via `wasm_drain` microtask
+    //     - Live DPR change re-arms `(resolution: <dpr>dppx)` watcher
+    //     - Live `languagechange` pushes `EVENT_LOCALE_CHANGED` and re-renders Studio with `de-DE`
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "dark" }],
+    });
+    await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off&bundle=dev` });
+    await waitForCondition(
+      cdp,
+      "dev bundle mounted Studio in Dark mode with host_services_slab_counts probe",
+      () =>
+        window.__nveBundle === "dev" &&
+        typeof window.__nveWasmMod?.host_services_slab_counts === "function" &&
+        (document.getElementById("app")?.innerText || "").includes("Dark |")
+    );
+
+    // Capture baseline slab counts with 1 mounted primary surface, then mount/unmount a secondary
+    // Studio surface 5 times and verify every Rust + JS closure/listener count returns to baseline.
+    const baselineSlabs = await evalJs(
+      cdp,
+      `Array.from(window.__nveWasmMod.host_services_slab_counts())`
+    );
+    const cycleResult = await evalJs(
+      cdp,
+      `(() => {
+        const mod = window.__nveWasmMod;
+        let el = document.getElementById('nve-host-cycle-mount');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'nve-host-cycle-mount';
+          el.style.cssText = 'position:fixed;left:-9999px;top:0;width:800px;height:600px;';
+          document.body.appendChild(el);
+        }
+        const beforeShells = mod.active_shell_count();
+        let peakWatchers = 0;
+        for (let i = 0; i < 5; i++) {
+          const ctrl = mod.start_studio_workspace_app_on_surface(90 + i, 'nve-host-cycle-mount', null);
+          const mid = Array.from(mod.host_services_slab_counts());
+          peakWatchers = Math.max(peakWatchers, mid[7]);
+          ctrl.unmount();
+          ctrl.free();
+        }
+        el.remove();
+        const afterShells = mod.active_shell_count();
+        const afterSlabs = Array.from(mod.host_services_slab_counts());
+        return { beforeShells, afterShells, peakWatchers, afterSlabs };
+      })()`
+    );
+    if (
+      cycleResult.afterShells !== cycleResult.beforeShells ||
+      cycleResult.peakWatchers < baselineSlabs[7] + 1 ||
+      JSON.stringify(cycleResult.afterSlabs) !== JSON.stringify(baselineSlabs)
+    ) {
+      throw new Error(
+        `Host services closure/listener leak after 5 mount/unmount cycles: baseline=${JSON.stringify(
+          baselineSlabs
+        )}, got=${JSON.stringify(cycleResult)}`
+      );
+    }
+    console.log(
+      `    PASS Host Services 5x mount/unmount closure/listener cleanup (baseline=${JSON.stringify(
+        baselineSlabs
+      )}, after=${JSON.stringify(cycleResult.afterSlabs)})`
+    );
+
+    // Remounting on an existing surface_id while JS still holds ctrl1 (before ctrl1.free()) MUST
+    // unbind and drop old WebClipboard DOM listeners immediately via teardown_active_shell().
+    const remountResult = await evalJs(
+      cdp,
+      `(() => {
+        const mod = window.__nveWasmMod;
+        const el = document.createElement('div');
+        el.id = 'nve-host-remount-test';
+        el.style.cssText = 'position:fixed;left:-9999px;top:0;width:640px;height:480px;';
+        document.body.appendChild(el);
+        const ctrl1 = mod.start_studio_workspace_app_on_surface(95, 'nve-host-remount-test', null);
+        const afterFirst = Array.from(mod.host_services_slab_counts());
+        // Replace surface 95 BEFORE ctrl1.free()!
+        const ctrl2 = mod.start_studio_workspace_app_on_surface(95, 'nve-host-remount-test', null);
+        const afterReplace = Array.from(mod.host_services_slab_counts());
+        ctrl2.unmount();
+        ctrl2.free();
+        ctrl1.free();
+        el.remove();
+        const afterAll = Array.from(mod.host_services_slab_counts());
+        return { afterFirst, afterReplace, afterAll };
+      })()`
+    );
+    if (
+      remountResult.afterReplace[4] !== remountResult.afterFirst[4] ||
+      remountResult.afterReplace[6] !== remountResult.afterFirst[6] ||
+      JSON.stringify(remountResult.afterAll) !== JSON.stringify(baselineSlabs)
+    ) {
+      throw new Error(
+        `Remount on same surface_id leaked DOM listeners before ctrl1.free(): baseline=${JSON.stringify(
+          baselineSlabs
+        )}, got=${JSON.stringify(remountResult)}`
+      );
+    }
+    console.log("    PASS Host Services same-surface remount immediate DOM listener cleanup");
+
+    // Real WASM Pending navigator.clipboard.readText() UAF + automatic deferred-reap E2E:
+    //   (a) Start Pending read -> unmount BEFORE Promise settles -> settle Promise -> verify 0 errors & baseline slabs
+    //   (b) Start Pending read -> arm synchronous re-entrant unmount inside on_ready -> settle Promise
+    //       WHILE Rust Closure is on WASM call stack -> wait microtasks -> verify automatic reap & 0 UAF errors!
+    const asyncClipResult = await evalJs(
+      cdp,
+      `(async () => {
+        const mod = window.__nveWasmMod;
+        const origClip = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+        let pendingResolvers = [];
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            readText: () => new Promise((resolve) => { pendingResolvers.push(resolve); }),
+            writeText: () => Promise.resolve(),
+          },
+        });
+        try {
+          const el = document.createElement('div');
+          el.id = 'nve-host-clip-async';
+          el.style.cssText = 'position:fixed;left:-9999px;top:0;width:640px;height:480px;';
+          document.body.appendChild(el);
+
+          // (a) Unmount BEFORE Promise resolves
+          const c1 = mod.start_studio_workspace_app_on_surface(98, 'nve-host-clip-async', null);
+          const req1 = mod.host_services_start_clipboard_read(98);
+          const mid1 = Array.from(mod.host_services_slab_counts());
+          c1.unmount();
+          c1.free();
+          pendingResolvers.shift()('settled-after-unmount');
+          await Promise.resolve();
+          await Promise.resolve();
+          await new Promise((r) => setTimeout(r, 0));
+          const after1 = Array.from(mod.host_services_slab_counts());
+
+          // (b) Re-entrant unmount INSIDE live Promise settlement callback (WASM UAF + auto-reap guard!)
+          const c2 = mod.start_studio_workspace_app_on_surface(99, 'nve-host-clip-async', null);
+          const armed = mod.host_services_arm_reentrant_unmount(99);
+          const req2 = mod.host_services_start_clipboard_read(99);
+          const mid2 = Array.from(mod.host_services_slab_counts());
+          pendingResolvers.shift()('settled-with-reentrant-unmount');
+          // Wait microtasks + macrotask for automatic deferred reap (debug_slab_counts does NOT reap!)
+          await Promise.resolve();
+          await Promise.resolve();
+          await new Promise((r) => setTimeout(r, 0));
+          c2.free();
+          el.remove();
+          const after2 = Array.from(mod.host_services_slab_counts());
+          return { req1: Number(req1), mid1, after1, armed, req2: Number(req2), mid2, after2 };
+        } finally {
+          if (origClip) {
+            Object.defineProperty(navigator, 'clipboard', origClip);
+          } else {
+            delete navigator.clipboard;
+          }
+        }
+      })()`
+    );
+    if (
+      asyncClipResult.req1 === 0 ||
+      asyncClipResult.mid1[3] < 1 ||
+      asyncClipResult.mid1[5] < 1 ||
+      JSON.stringify(asyncClipResult.after1) !== JSON.stringify(baselineSlabs) ||
+      !asyncClipResult.armed ||
+      asyncClipResult.req2 === 0 ||
+      asyncClipResult.mid2[3] < 1 ||
+      asyncClipResult.mid2[5] < 1 ||
+      JSON.stringify(asyncClipResult.after2) !== JSON.stringify(baselineSlabs)
+    ) {
+      throw new Error(
+        `Async clipboard Pending / re-entrant WASM unmount failed: baseline=${JSON.stringify(
+          baselineSlabs
+        )}, got=${JSON.stringify(asyncClipResult)}`
+      );
+    }
+    console.log(
+      "    PASS Host Services real WASM Pending clipboard unmount & re-entrant callback auto-reap (0 UAF)"
+    );
+
+    // Live prefers-color-scheme Dark -> Light transition via CDP Emulation.setEmulatedMedia.
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "light" }],
+    });
+    await waitForCondition(
+      cdp,
+      "Studio re-rendered to Light mode via wasm_drain microtask on prefers-color-scheme change",
+      () => (document.getElementById("app")?.innerText || "").includes("Light |")
+    );
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "dark" }],
+    });
+    await waitForCondition(
+      cdp,
+      "Studio re-rendered back to Dark mode via wasm_drain microtask",
+      () => (document.getElementById("app")?.innerText || "").includes("Dark |")
+    );
+
+    // Live DPR matchMedia re-arming test WITHOUT any `resize` event:
+    // Wraps `window.matchMedia` to capture each `(resolution: <dpr>dppx)` MediaQueryList created
+    // by `WebThemeWatcher`, then dispatches real `MediaQueryListEvent('change')` across 1x -> 2x -> 3x
+    // while overriding `window.devicePixelRatio`. Proves:
+    //   1. `onDprMqlChange` fires with zero `resize` events (`dpr_mql_fires` increments +2),
+    //   2. `armDpr()` creates a fresh `(resolution: 2dppx)` then `(resolution: 3dppx)` query,
+    //   3. old MQL listeners are detached on re-arm (re-firing stale MQL does NOT increment),
+    //   4. unmount detaches the final MQL listener and leaves zero leaked slab entries.
+    const dprMqlResult = await evalJs(
+      cdp,
+      `(async () => {
+        const mod = window.__nveWasmMod;
+        const origMatchMedia = window.matchMedia.bind(window);
+        const origDprDesc = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+        const captured = [];
+        window.matchMedia = (q) => {
+          const mql = origMatchMedia(q);
+          if (typeof q === 'string' && q.includes('dppx')) {
+            captured.push({ query: q, mql });
+          }
+          return mql;
+        };
+        const setDpr = (v) => {
+          Object.defineProperty(window, 'devicePixelRatio', {
+            configurable: true,
+            get: () => v,
+          });
+        };
+        try {
+          setDpr(1);
+          const el = document.createElement('div');
+          el.id = 'nve-host-dpr-mql';
+          el.style.cssText = 'position:fixed;left:-9999px;top:0;width:640px;height:480px;';
+          document.body.appendChild(el);
+
+          const startFires = mod.host_services_dpr_mql_fires();
+          const ctrl = mod.start_studio_workspace_app_on_surface(97, 'nve-host-dpr-mql', null);
+          const dpr0 = mod.host_services_cached_dpr_x100(97);
+          const q0 = captured[0]?.query || null;
+
+          // 1x -> 2x via MediaQueryListEvent('change') with ZERO resize event.
+          setDpr(2);
+          captured[0].mql.dispatchEvent(new MediaQueryListEvent('change', { matches: false, media: q0 }));
+          const fires1 = mod.host_services_dpr_mql_fires() - startFires;
+          const dpr1 = mod.host_services_cached_dpr_x100(97);
+          const q1 = captured[1]?.query || null;
+
+          // Stale mql0 must already be detached by armDpr().
+          captured[0].mql.dispatchEvent(new MediaQueryListEvent('change', { matches: false, media: q0 }));
+          const firesAfterStale = mod.host_services_dpr_mql_fires() - startFires;
+
+          // 2x -> 3x via re-armed mql1 with ZERO resize event.
+          setDpr(3);
+          captured[1].mql.dispatchEvent(new MediaQueryListEvent('change', { matches: false, media: q1 }));
+          const fires2 = mod.host_services_dpr_mql_fires() - startFires;
+          const dpr2 = mod.host_services_cached_dpr_x100(97);
+          const q2 = captured[2]?.query || null;
+
+          ctrl.unmount();
+          ctrl.free();
+          el.remove();
+
+          // Post-unmount dispatch on mql2 must be detached (no fire, no error).
+          captured[2].mql.dispatchEvent(new MediaQueryListEvent('change', { matches: false, media: q2 }));
+          const firesAfterUnmount = mod.host_services_dpr_mql_fires() - startFires;
+          await Promise.resolve();
+          const afterSlabs = Array.from(mod.host_services_slab_counts());
+          return { dpr0, q0, fires1, dpr1, q1, firesAfterStale, fires2, dpr2, q2, firesAfterUnmount, afterSlabs };
+        } finally {
+          window.matchMedia = origMatchMedia;
+          if (origDprDesc) {
+            Object.defineProperty(window, 'devicePixelRatio', origDprDesc);
+          } else {
+            delete window.devicePixelRatio;
+          }
+        }
+      })()`
+    );
+    if (
+      dprMqlResult.dpr0 !== 100 ||
+      dprMqlResult.q0 !== "(resolution: 1dppx)" ||
+      dprMqlResult.fires1 !== 1 ||
+      dprMqlResult.dpr1 !== 200 ||
+      dprMqlResult.q1 !== "(resolution: 2dppx)" ||
+      dprMqlResult.firesAfterStale !== 1 ||
+      dprMqlResult.fires2 !== 2 ||
+      dprMqlResult.dpr2 !== 300 ||
+      dprMqlResult.q2 !== "(resolution: 3dppx)" ||
+      dprMqlResult.firesAfterUnmount !== 2 ||
+      JSON.stringify(dprMqlResult.afterSlabs) !== JSON.stringify(baselineSlabs)
+    ) {
+      throw new Error(
+        `DPR matchMedia re-arming / stale-listener detachment failed: baseline=${JSON.stringify(
+          baselineSlabs
+        )}, got=${JSON.stringify(dprMqlResult)}`
+      );
+    }
+
+    // Also verify real CDP Emulation.setDeviceMetricsOverride exercises the live `resize` DPR
+    // fallback on surface 1 (Blink CDP does not fire MediaQueryList.change when only
+    // deviceScaleFactor changes between identical-size overrides).
+    await waitForCondition(
+      cdp,
+      "WebSystemEnv cached scale_factor_x100 starts at 100 on 1x DPR",
+      () => window.__nveWasmMod.host_services_cached_dpr_x100(1) === 100
+    );
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280,
+      height: 801,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    await waitForCondition(
+      cdp,
+      "WebSystemEnv cached scale_factor_x100 updated to 200 on CDP DPR change (1x -> 2x)",
+      () => window.__nveWasmMod.host_services_cached_dpr_x100(1) === 200
+    );
+    await cdp.send("Emulation.clearDeviceMetricsOverride");
+
+    // Live languagechange dispatches EVENT_LOCALE_CHANGED and updates Studio DOM to de-DE.
+    await evalJs(
+      cdp,
+      `(() => {
+        Object.defineProperty(navigator, 'language', { value: 'de-DE', configurable: true });
+        window.dispatchEvent(new Event('languagechange'));
+        return navigator.language;
+      })()`
+    );
+    await waitForCondition(
+      cdp,
+      "Studio re-rendered with de-DE locale via EVENT_LOCALE_CHANGED push",
+      () => (document.getElementById("app")?.innerText || "").includes("Dark | de-DE")
+    );
+    console.log(
+      "    PASS Host Services live prefers-color-scheme, DPR re-arm, and languagechange E2E via wasm_drain"
+    );
+
     if (errors.length > 0) {
       throw new Error(
         `Browser console/runtime errors detected (${errors.length}):\n${errors.join("\n")}`

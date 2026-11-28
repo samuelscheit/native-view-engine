@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::{ColorScheme, ContrastLevel, SERVICE_SYSTEM_ENV};
 use nve_host_services::{
-    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
-    ServiceError, TypedEventBus, TypedEventSubscription, MAX_PAYLOAD_BYTES,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, CompletionSink, HandlerReply,
+    HostServiceHandler, HostServiceProvider, ServiceError, TypedEventBus, TypedEventSubscription,
+    MAX_PAYLOAD_BYTES,
 };
 
 pub use native::{parse_locale_tag, NativeSystemEnv};
@@ -196,7 +197,7 @@ pub enum SystemEnvEvent {
     LocaleChanged(LocaleSnapshot),
 }
 
-fn pack_locale_ffi(locale: &LocaleSnapshot) -> Result<Vec<u8>, ServiceError> {
+pub fn pack_locale_ffi(locale: &LocaleSnapshot) -> Result<Vec<u8>, ServiceError> {
     let mut w = ByteWriter::with_capacity(
         18 + locale.tag.len()
             + locale.language.len()
@@ -212,7 +213,7 @@ fn pack_locale_ffi(locale: &LocaleSnapshot) -> Result<Vec<u8>, ServiceError> {
     Ok(w.into_bytes())
 }
 
-fn unpack_locale_ffi(bytes: &[u8]) -> Result<LocaleSnapshot, ServiceError> {
+pub fn unpack_locale_ffi(bytes: &[u8]) -> Result<LocaleSnapshot, ServiceError> {
     let mut r = ByteReader::new(bytes);
     let dir_raw = r.read_u8()?;
     let text_direction = TextDirection::from_u8(dir_raw)
@@ -353,19 +354,36 @@ impl SystemEnvBridge {
         Self
     }
 
-    /// Publishes a retained [`ThemeSnapshot`] and [`SystemEnvEvent::ThemeChanged`] directly onto
-    /// `bus` with zero byte encoding.
+    /// Publishes a retained [`ThemeSnapshot`] (notify-only, zero pull-queue growth) and queues
+    /// [`SystemEnvEvent::ThemeChanged`] onto `bus` with zero byte encoding.
     pub fn publish_theme(bus: &TypedEventBus, theme: ThemeSnapshot) -> usize {
-        let notified_snap = bus.publish_retained(theme);
+        let notified_snap = bus.publish_retained_notify(theme);
         let notified_ev = bus.publish(SystemEnvEvent::ThemeChanged(theme));
         notified_snap + notified_ev
     }
 
-    /// Publishes a retained [`LocaleSnapshot`] and [`SystemEnvEvent::LocaleChanged`] directly onto
-    /// `bus` with zero byte encoding.
+    /// Publishes a retained [`LocaleSnapshot`] (notify-only, zero pull-queue growth) and queues
+    /// [`SystemEnvEvent::LocaleChanged`] onto `bus` with zero byte encoding.
     pub fn publish_locale(bus: &TypedEventBus, locale: LocaleSnapshot) -> usize {
-        let notified_snap = bus.publish_retained(locale.clone());
+        let notified_snap = bus.publish_retained_notify(locale.clone());
         let notified_ev = bus.publish(SystemEnvEvent::LocaleChanged(locale));
+        notified_snap + notified_ev
+    }
+
+    /// Updates retained [`ThemeSnapshot`] & [`SystemEnvEvent::ThemeChanged`] and notifies live
+    /// subscribers without appending to the pull queue (for host-side caches whose pull queue is
+    /// not drained).
+    pub fn publish_theme_snapshot(bus: &TypedEventBus, theme: ThemeSnapshot) -> usize {
+        let notified_snap = bus.publish_retained_notify(theme);
+        let notified_ev = bus.publish_retained_notify(SystemEnvEvent::ThemeChanged(theme));
+        notified_snap + notified_ev
+    }
+
+    /// Updates retained [`LocaleSnapshot`] & [`SystemEnvEvent::LocaleChanged`] and notifies live
+    /// subscribers without appending to the pull queue.
+    pub fn publish_locale_snapshot(bus: &TypedEventBus, locale: LocaleSnapshot) -> usize {
+        let notified_snap = bus.publish_retained_notify(locale.clone());
+        let notified_ev = bus.publish_retained_notify(SystemEnvEvent::LocaleChanged(locale));
         notified_snap + notified_ev
     }
 
@@ -533,8 +551,14 @@ impl HostServiceHandler for MemorySystemEnv {
         SERVICE_SYSTEM_ENV
     }
 
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_system_env_ffi(self, method_id, request)
+    fn handle(
+        &self,
+        method_id: u32,
+        _request_id: u64,
+        request: &[u8],
+        _done: &CompletionSink,
+    ) -> Result<HandlerReply, ServiceError> {
+        dispatch_system_env_ffi(self, method_id, request).map(HandlerReply::ready)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

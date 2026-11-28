@@ -591,13 +591,25 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
 #[test]
 fn host_appearance_events_reach_both_apps_and_rerender_only_on_change() {
     use crate::session::WebAppSession;
-    use nve_abi::{ColorScheme, ContrastLevel};
+    use nve_abi::{encode_single_push_into, ColorScheme, ContrastLevel, SERVICE_SYSTEM_ENV};
     use nve_backend_web::WebBackend;
     use nve_engine::Viewport;
-    use nve_system_env::ThemeSnapshot;
+    use nve_system_env::{ThemeSnapshot, EVENT_THEME_CHANGED};
 
-    let light = ThemeSnapshot { color_scheme: Some(ColorScheme::Light), contrast: ContrastLevel::Standard, ..ThemeSnapshot::default() }
-        .to_repr_c_bytes();
+    let light_raw = ThemeSnapshot {
+        color_scheme: Some(ColorScheme::Light),
+        contrast: ContrastLevel::Standard,
+        ..ThemeSnapshot::default()
+    }
+    .to_repr_c_bytes();
+    let mut light_buf = [0u8; 56];
+    let light = encode_single_push_into(
+        &mut light_buf,
+        SERVICE_SYSTEM_ENV,
+        EVENT_THEME_CHANGED,
+        &light_raw,
+    )
+    .expect("encode canonical theme push batch");
     let viewport = Viewport { width: 1280.0, height: 800.0, scale_factor: 1.0 };
     let mut sessions = [
         ("studio", WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::new(), viewport)),
@@ -606,11 +618,15 @@ fn host_appearance_events_reach_both_apps_and_rerender_only_on_change() {
     for (app, session) in &mut sessions {
         session.render_initial().expect("frame 0");
         let dark_html = session.render_html();
-        let frame = session.dispatch_host_events(&light).expect("dispatch light appearance");
+        assert!(
+            session.dispatch_host_events(&light_raw).expect("raw 12B ignored").is_none(),
+            "{app}: raw 12-byte slice must not be sniffed as ThemeSnapshot"
+        );
+        let frame = session.dispatch_host_events(light).expect("dispatch light appearance");
         assert!(frame.is_some(), "{app}: a new OS appearance must commit a frame");
         assert_ne!(session.render_html(), dark_html, "{app}: light appearance must re-theme the DOM");
     }
     // Kitchen Sink skips unchanged environments entirely.
     let (_, ks) = &mut sessions[1];
-    assert!(ks.dispatch_host_events(&light).expect("re-dispatch").is_none());
+    assert!(ks.dispatch_host_events(light).expect("re-dispatch").is_none());
 }

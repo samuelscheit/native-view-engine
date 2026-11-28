@@ -8,21 +8,27 @@
 
 use std::any::{Any, TypeId};
 use std::collections::{BTreeSet, VecDeque};
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use nve_abi::NveHostCallbacks;
 use nve_abi::{
-    NveBufferSlice, NveHostCallbacks, NveHostStatus, METHOD_WINDOW_REQUEST_FRAME,
-    NVE_CHANNEL_FLAG_RETAIN, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
+    NveHostEventBatchBuilder, METHOD_WINDOW_REQUEST_FRAME, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 use nve_clipboard::NativeClipboard;
 use nve_filesystem::NativeFilesystem;
 use nve_haptics::NativeHaptics;
+#[cfg(test)]
+use nve_host_services::OversizedRetryCache;
 use nve_host_services::{
-    pack_typed, HostEvent, HostServiceProvider, HostServiceRegistry, InvokeResult, ServiceError,
-    TypedEventBus,
+    pack_typed, CompletionSink, HostEvent, HostServiceProvider, HostServiceRegistry, InvokeResult,
+    ServiceError, TypedEventBus,
 };
+
+#[path = "host_services_ffi.rs"]
+mod ffi;
+pub use ffi::SkiaSlotHostBinding;
 use nve_interop::{WindowCommand, WindowHandleId, WindowLifecycleEvent};
 use nve_linking::NativeLinking;
 use nve_secure_store::NativeSecureStore;
@@ -161,6 +167,16 @@ pub struct SkiaHostServices {
     cached_env_typed: (TypeId, Arc<dyn Any + Send + Sync>),
     wake_sink: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     pending_app_wake: AtomicBool,
+    #[cfg(test)]
+    retry_cache: OversizedRetryCache,
+}
+
+impl Drop for SkiaHostServices {
+    fn drop(&mut self) {
+        if let Some(cs) = self.inner.host_completion_sink() {
+            cs.set_on_ready(None);
+        }
+    }
 }
 
 impl SkiaHostServices {
@@ -186,8 +202,8 @@ impl SkiaHostServices {
         let initial_locale = env_client.get_locale().unwrap_or_default();
 
         let typed_events = Arc::new(TypedEventBus::new());
-        SystemEnvBridge::publish_theme(&typed_events, initial_theme);
-        SystemEnvBridge::publish_locale(&typed_events, initial_locale.clone());
+        SystemEnvBridge::publish_theme_snapshot(&typed_events, initial_theme);
+        SystemEnvBridge::publish_locale_snapshot(&typed_events, initial_locale.clone());
 
         let cached_env = Arc::new(SkiaSystemEnvBackend {
             theme: Mutex::new(initial_theme),
@@ -207,18 +223,22 @@ impl SkiaHostServices {
             cached_env_typed,
             wake_sink: Mutex::new(None),
             pending_app_wake: AtomicBool::new(false),
+            #[cfg(test)]
+            retry_cache: OversizedRetryCache::new(),
         })
+    }
+
+    /// Allocates an owner-scoped C-ABI binding for one [`crate::window::HotAppSlot`] generation.
+    pub fn new_slot_binding(self: &Arc<Self>) -> Arc<SkiaSlotHostBinding> {
+        SkiaSlotHostBinding::new(Arc::clone(self))
     }
 
     /// Returns a C-ABI [`NveHostCallbacks`] table whose `host_ctx` points to this `Arc`'s
     /// immovable heap allocation. Valid for as long as at least one `Arc<SkiaHostServices>`
     /// clone remains alive.
+    #[cfg(test)]
     pub fn callbacks(self: &Arc<Self>) -> NveHostCallbacks {
-        NveHostCallbacks {
-            host_ctx: Arc::as_ptr(self) as *mut c_void,
-            invoke: Some(skia_host_invoke),
-            channel_publish: Some(skia_host_channel_publish),
-        }
+        ffi::direct_service_callbacks(self)
     }
 
     /// Attaches a `winit` [`EventLoopProxy`] as the live window command sink and async frame wake
@@ -234,16 +254,43 @@ impl SkiaHostServices {
     }
 
     /// Attaches an async frame wake callback invoked when an app calls
-    /// `NveHostCallbacks::invoke(SERVICE_WINDOW, METHOD_WINDOW_REQUEST_FRAME)`.
+    /// `NveHostCallbacks::invoke(SERVICE_WINDOW, METHOD_WINDOW_REQUEST_FRAME)` or when any
+    /// asynchronous host-service [`CompletionSink`] record becomes ready.
     pub fn attach_wake_sink(&self, sink: Arc<dyn Fn() + Send + Sync>) {
-        let fire_now = {
+        let mut fire_now = {
             let mut guard = self.wake_sink.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some(Arc::clone(&sink));
             self.pending_app_wake.load(Ordering::Acquire)
         };
+        if let Some(cs) = self.inner.host_completion_sink() {
+            let cb = Arc::clone(&sink);
+            cs.set_on_ready(Some(Arc::new(move || {
+                cb();
+            })));
+            if cs.queued_count() > 0 {
+                fire_now = true;
+            }
+        }
         if fire_now {
             sink();
         }
+    }
+
+    /// Drains queued async responses owned by `owner_tag` (plus unscoped push/channel events)
+    /// into a reusable `builder`, returning the number of encoded records.
+    pub fn drain_batch_for_owner_into(
+        &self,
+        owner_tag: u64,
+        builder: &mut NveHostEventBatchBuilder,
+    ) -> usize {
+        let Some(cs) = self.inner.host_completion_sink() else {
+            return 0;
+        };
+        if cs.queued_count() == 0 {
+            return 0;
+        }
+        cs.drain_batch_for_owner_into(owner_tag, builder)
+            .unwrap_or(0)
     }
 
     /// Marks an asynchronous frame wake pending and invokes the attached wake sink once per
@@ -372,12 +419,12 @@ impl SkiaHostServices {
             guard.scale_factor_x100 = scale_to_x100(scale_factor);
             *guard
         };
-        SystemEnvBridge::publish_theme(&self.typed_events, updated);
+        SystemEnvBridge::publish_theme_snapshot(&self.typed_events, updated);
         updated
     }
 
     /// Updates `scale_factor_x100` on the cached theme snapshot if it changed, publishing the
-    /// typed snapshot onto [`TypedEventBus`].
+    /// typed snapshot onto [`TypedEventBus`] (notify-only; zero pull-queue accumulation).
     pub fn update_scale_factor(&self, scale_factor: f32) -> Option<ThemeSnapshot> {
         let next_x100 = scale_to_x100(scale_factor);
         let updated = {
@@ -392,7 +439,7 @@ impl SkiaHostServices {
             guard.scale_factor_x100 = next_x100;
             *guard
         };
-        SystemEnvBridge::publish_theme(&self.typed_events, updated);
+        SystemEnvBridge::publish_theme_snapshot(&self.typed_events, updated);
         Some(updated)
     }
 
@@ -407,16 +454,34 @@ impl SkiaHostServices {
                 .unwrap_or_else(|e| e.into_inner());
             *guard = locale.clone();
         }
-        SystemEnvBridge::publish_locale(&self.typed_events, locale.clone());
+        SystemEnvBridge::publish_locale_snapshot(&self.typed_events, locale.clone());
         locale
+    }
+
+    /// Discards in-flight asynchronous requests and queued responses belonging ONLY to `owner_tag`
+    /// without queuing `Cancelled` records or touching sibling windows.
+    pub fn discard_pending_for_owner(&self, owner_tag: u64) -> usize {
+        self.inner.discard_pending_for_owner(owner_tag)
     }
 }
 
 impl HostServiceProvider for SkiaHostServices {
-    fn invoke_raw(
+    fn invoke_raw_with_id(
         &self,
         service_id: u32,
         method_id: u32,
+        request_id: u64,
+        request: &[u8],
+    ) -> Result<InvokeResult, ServiceError> {
+        self.invoke_raw_with_id_for_owner(0, service_id, method_id, request_id, request)
+    }
+
+    fn invoke_raw_with_id_for_owner(
+        &self,
+        owner_tag: u64,
+        service_id: u32,
+        method_id: u32,
+        request_id: u64,
         request: &[u8],
     ) -> Result<InvokeResult, ServiceError> {
         if service_id == SERVICE_WINDOW {
@@ -430,7 +495,8 @@ impl HostServiceProvider for SkiaHostServices {
             return dispatch_system_env_ffi(&*self.cached_env, method_id, request)
                 .map(|bytes| InvokeResult::Ready(bytes.into()));
         }
-        self.inner.invoke_raw(service_id, method_id, request)
+        self.inner
+            .invoke_raw_with_id_for_owner(owner_tag, service_id, method_id, request_id, request)
     }
 
     fn channel_publish(
@@ -450,6 +516,10 @@ impl HostServiceProvider for SkiaHostServices {
         Some(&self.typed_events)
     }
 
+    fn host_completion_sink(&self) -> Option<&CompletionSink> {
+        self.inner.host_completion_sink()
+    }
+
     fn typed_service(
         &self,
         service_id: u32,
@@ -466,70 +536,20 @@ impl HostServiceProvider for SkiaHostServices {
         }
         self.inner.typed_service(service_id, method_id, type_id)
     }
-}
 
-unsafe extern "C" fn skia_host_invoke(
-    host_ctx: *mut c_void,
-    service_id: u32,
-    method_id: u32,
-    _request_id: u64,
-    request: NveBufferSlice,
-    out_buf: *mut u8,
-    out_cap: usize,
-    out_len: *mut usize,
-) -> i32 {
-    if host_ctx.is_null() {
-        return NveHostStatus::InvalidArg.as_i32();
+    fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
+        self.inner.take_async_response(request_id)
     }
-    // SAFETY: `host_ctx` is a valid pinned `SkiaHostServices` pointer; `request` is valid for this callback.
-    let (services, req_bytes) =
-        unsafe { (&*(host_ctx as *const SkiaHostServices), request.as_slice()) };
-    match services.invoke_raw(service_id, method_id, req_bytes) {
-        Ok(InvokeResult::Ready(bytes)) => {
-            if !out_len.is_null() {
-                // SAFETY: Caller provided a valid writable `out_len` pointer.
-                unsafe { *out_len = bytes.len() };
-            }
-            if bytes.len() > out_cap {
-                return NveHostStatus::BufferTooSmall.as_i32();
-            }
-            if !bytes.is_empty() {
-                if out_buf.is_null() {
-                    return NveHostStatus::InvalidArg.as_i32();
-                }
-                // SAFETY: `out_buf` is non-null with capacity `out_cap >= bytes.len()` and non-overlapping.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, bytes.len());
-                }
-            }
-            NveHostStatus::Ok.as_i32()
-        }
-        Ok(InvokeResult::Pending { .. }) => {
-            if !out_len.is_null() {
-                // SAFETY: Caller provided a valid writable `out_len` pointer.
-                unsafe { *out_len = 0 };
-            }
-            NveHostStatus::Pending.as_i32()
-        }
-        Err(err) => err.to_status().as_i32(),
-    }
-}
 
-unsafe extern "C" fn skia_host_channel_publish(
-    host_ctx: *mut c_void,
-    channel_id: u32,
-    flags: u32,
-    payload: NveBufferSlice,
-) -> i32 {
-    if host_ctx.is_null() {
-        return NveHostStatus::InvalidArg.as_i32();
+    fn cancel_pending(&self) -> usize {
+        self.inner.cancel_pending()
     }
-    // SAFETY: `host_ctx` is a valid pinned `SkiaHostServices` pointer; `payload` is valid for this callback.
-    let (services, bytes) =
-        unsafe { (&*(host_ctx as *const SkiaHostServices), payload.as_slice()) };
-    let retain = (flags & NVE_CHANNEL_FLAG_RETAIN) != 0;
-    match services.channel_publish(channel_id, retain, bytes) {
-        Ok(()) => NveHostStatus::Ok.as_i32(),
-        Err(err) => err.to_status().as_i32(),
+
+    fn discard_pending(&self) -> usize {
+        self.inner.discard_pending()
+    }
+
+    fn discard_pending_for_owner(&self, owner_tag: u64) -> usize {
+        self.inner.discard_pending_for_owner(owner_tag)
     }
 }

@@ -47,7 +47,7 @@ use nve_abi::{
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
-use nve_system_env::{SystemEnvEvent, ThemeSnapshot};
+use nve_system_env::SystemEnvEvent;
 
 pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use persist::{
@@ -370,7 +370,15 @@ impl StudioWorkspaceModule {
                 }
                 state.apply_system_env(next)
             });
-        changed || report.processed_events > 0
+        changed || report.non_cancelled_responses > 0
+    }
+
+    /// Binds or unbinds `NVE_IFACE_HOST = 5` callbacks and returns `true` only when syncing the
+    /// live host environment actually mutated Studio's state (avoiding redundant re-renders).
+    pub fn bind_host_sync(&mut self, callbacks: Option<NveHostCallbacks>) -> bool {
+        self.host_services.bind_host(callbacks);
+        let services = Arc::clone(&self.host_services);
+        self.update_state(|state| state.sync_system_env(&services))
     }
 
     /// Restores workspace state from binary `NWS1` bytes; returns `false` if corrupt or
@@ -549,14 +557,15 @@ impl NveApp for StudioWorkspaceModule {
     }
 
     fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
-        self.host_services.bind_host(callbacks);
-        let services = Arc::clone(&self.host_services);
-        self.update_state(|state| state.sync_system_env(&services));
+        let _ = self.bind_host_sync(callbacks);
     }
 
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        if let Ok(theme) = ThemeSnapshot::from_repr_c_bytes(batch) {
-            return self.dispatch_system_env_events(&[SystemEnvEvent::ThemeChanged(theme)]);
+        if !batch.is_empty() {
+            let Ok(report) = self.host_services.ingest_host_batch(batch) else {
+                return false;
+            };
+            return self.apply_env_report(report);
         }
         let report = self.host_services.drain_system_env_events();
         self.apply_env_report(report)

@@ -2906,6 +2906,7 @@ dependencies = [
  "nve-abi",
  "nve-codec",
  "nve-engine",
+ "nve-host-services",
  "nve-interop",
  "nve-rpc",
  "nve-store",
@@ -3050,6 +3051,17 @@ version = "0.1.0"
 dependencies = [
  "nve-abi",
  "nve-host-services",
+]
+
+[[package]]
+name = "nve-clipboard-web"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-clipboard",
+ "nve-host-services",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3238,6 +3250,7 @@ dependencies = [
  "nve-canvas-web",
  "nve-dioxus",
  "nve-engine",
+ "nve-host-services",
  "nve-i18n",
  "nve-interop",
  "nve-motion",
@@ -3262,6 +3275,17 @@ version = "0.1.0"
 dependencies = [
  "nve-abi",
  "nve-host-services",
+]
+
+[[package]]
+name = "nve-haptics-web"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-haptics",
+ "nve-host-services",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3374,6 +3398,17 @@ version = "0.1.0"
 dependencies = [
  "nve-abi",
  "nve-host-services",
+]
+
+[[package]]
+name = "nve-linking-web"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-host-services",
+ "nve-linking",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3667,6 +3702,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-system-env-web"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-host-services",
+ "nve-system-env",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "nve-tables"
 version = "0.1.0"
 dependencies = [
@@ -3794,13 +3840,17 @@ dependencies = [
  "nve-backend-web",
  "nve-canvas",
  "nve-canvas-web",
+ "nve-clipboard-web",
  "nve-dioxus",
  "nve-engine",
  "nve-example-issues-api",
  "nve-example-issues-client",
  "nve-example-kitchen-sink",
+ "nve-haptics-web",
+ "nve-host-services",
  "nve-http-web",
  "nve-interop",
+ "nve-linking-web",
  "nve-motion-web",
  "nve-query",
  "nve-query-dioxus",
@@ -3808,6 +3858,7 @@ dependencies = [
  "nve-store",
  "nve-studio-workspace",
  "nve-system-env",
+ "nve-system-env-web",
  "nve-tables",
  "nve-tv-web",
  "nve-ui",

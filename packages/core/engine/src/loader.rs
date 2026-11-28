@@ -259,10 +259,21 @@ impl HotAppInstance {
     /// instantiates, and restores state on the candidate dylib BEFORE swapping out and unloading
     /// the existing instance. If any step fails, `self` stays 100% alive and untouched.
     pub fn reload(&mut self, new_dylib_path: &Path) -> Result<ReloadOutcome, LoaderError> {
+        let bound_host = self.bound_host;
+        self.reload_with_host(new_dylib_path, bound_host)
+    }
+
+    /// Transactional reload binding `next_host` onto the candidate dylib **once** before swapping
+    /// out the previous generation (so a failed reload leaves generation N untouched, and a
+    /// successful reload never double-binds generation N+1).
+    pub fn reload_with_host(
+        &mut self,
+        new_dylib_path: &Path,
+        next_host: Option<NveHostCallbacks>,
+    ) -> Result<ReloadOutcome, LoaderError> {
         let surface_id = self.surface_id;
         let previous_generation = self.generation;
         let next_gen = previous_generation + 1;
-        let bound_host = self.bound_host;
 
         let (mut candidate, preserved_state_bytes) = {
             let saved = self.snapshot_state();
@@ -270,7 +281,7 @@ impl HotAppInstance {
             let prior = (!saved.is_empty()).then_some(saved);
             (Self::load(new_dylib_path, surface_id, next_gen, prior)?, len)
         };
-        if let Some(cb) = bound_host {
+        if let Some(cb) = next_host {
             candidate.bind_host(Some(cb));
         }
         let old = std::mem::replace(self, candidate);

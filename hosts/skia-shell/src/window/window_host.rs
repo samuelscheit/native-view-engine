@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nve_abi::SurfaceId;
+use nve_abi::{NveHostEventBatchBuilder, SurfaceId};
 use nve_engine::{Frame0Meta, Viewport};
 use nve_interop::{
     SurfacePresentation, WindowDescriptor, WindowFlags, WindowHandleId, WindowManager,
@@ -40,6 +40,7 @@ pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) surface_to_window: BTreeMap<SurfaceId, WindowId>,
     pub(crate) window_manager: WindowManager,
     pub(crate) host_services: Arc<SkiaHostServices>,
+    host_batch_builder: NveHostEventBatchBuilder,
     exit_on_primary_close: bool,
     pub(crate) close_veto_handler: Option<CloseVetoHandler>,
     pub(crate) secondary_app_factory: Option<SecondaryAppFactory<A>>,
@@ -180,6 +181,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             surface_to_window: BTreeMap::new(),
             window_manager: WindowManager::new(),
             host_services,
+            host_batch_builder: NveHostEventBatchBuilder::with_capacity(4096),
             exit_on_primary_close: true,
             close_veto_handler: None,
             secondary_app_factory: None,
@@ -470,7 +472,46 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         }
     }
 
+    /// Drains queued async `CompletionSink` records per window owner tag using one reusable
+    /// [`NveHostEventBatchBuilder`] and dispatches them into each window's app.
+    pub(crate) fn drain_host_service_batches(&mut self) -> bool {
+        let mut any_handled = false;
+        for sw in self.windows.values_mut() {
+            let owner_tag = sw.session.host_owner_tag();
+            self.host_batch_builder.clear();
+            let written = self
+                .host_services
+                .drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder);
+            if written > 0
+                && sw
+                    .session
+                    .dispatch_host_batch(self.host_batch_builder.as_bytes())
+            {
+                any_handled = true;
+                if let Err(err) = sw.session.render_and_rasterize() {
+                    eprintln!("[nve-skia-shell] host batch render error: {err}");
+                }
+                sw.sync_title();
+                sw.sync_ime_state();
+                sw.window.request_redraw();
+            }
+        }
+        if let Some(primary) = self.primary_session.as_mut() {
+            let owner_tag = primary.host_owner_tag();
+            self.host_batch_builder.clear();
+            let written = self
+                .host_services
+                .drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder);
+            if written > 0 && primary.dispatch_host_batch(self.host_batch_builder.as_bytes()) {
+                any_handled = true;
+                let _ = primary.render_and_rasterize();
+            }
+        }
+        any_handled
+    }
+
     pub(crate) fn process_pending_remote_frames(&mut self) {
+        let _ = self.drain_host_service_batches();
         if self.windows.is_empty() {
             return;
         }
@@ -503,6 +544,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
     }
 
     pub(crate) fn process_app_wakes(&mut self) {
+        let _ = self.drain_host_service_batches();
         if self.windows.is_empty() {
             return;
         }
