@@ -37,6 +37,12 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **Upstream**: rust-lang/rust-analyzer#22482 (open); still on master `efc6ca7`. Contradicts `impl FromStr for TokenStream` ("All tokens in the parsed stream get `Span::call_site()` spans").
 - **Mitigation**: `packages/core/abi-macros/src/lib.rs` (`parse_at_call_site`) re-spans every parsed token to `Span::call_site()`. Any new proc-macro that emits via `str::parse::<TokenStream>()` must do the same.
 
+### kache (`0.28.1`, global `build.rustc-wrapper` in `~/.cargo/config.toml`): build-script runs replayed across checkouts
+
+- **Observed**: kache's build-script run cache (default on macOS/Linux) did not bind a run to the checkout when its `cargo:rerun-if-changed` inputs were absolute paths, so a run recorded in one worktree was replayed in another together with its `OUT_DIR` files. `nve-docs-site`'s `embedded_docs_content.generated.rs` then held `include_str!("<other worktree>/docs/content/…")`, and everything building it (`cargo run -p nve-cli -- codegen abi`) failed with 37 `couldn't read …/t3-<deleted worktree>/docs/content/*.mdx` once that worktree was removed; `cargo clean -p` did not help because the cache re-served the output.
+- **Upstream**: kunobi-ninja/kache#1420, fixed by PR #1425 (first released in v1.0.0, 2026-10-05). Related: #1853 (replayed paths outside `OUT_DIR` that no longer exist), #1688 (dep-info naming the storing worktree's target dir, cosmetic).
+- **Mitigation**: build scripts declare `rerun-if-changed` paths relative to the package and write no absolute path into `OUT_DIR` (`include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../…"))`); `examples/nve-docs-site/tests/build_script_outputs.rs` locks both. Upgrade kache to ≥ 1.0.0. Escape hatches for one build: `KACHE_BUILD_SCRIPT_CACHE=0` (build-script run cache only; it has no config-file key), `KACHE_DISABLED=1`, or bypass the wrapper with `RUSTC_WRAPPER= cargo …` / `CARGO_BUILD_RUSTC_WRAPPER= cargo …`.
+
 ### Rust `std` on `wasm32-unknown-unknown`
 
 - **`std::time::Instant::now()` panics at runtime**
