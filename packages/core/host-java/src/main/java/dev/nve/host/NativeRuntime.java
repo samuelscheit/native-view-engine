@@ -172,8 +172,8 @@ public final class NativeRuntime {
     /** Validates and boots the first {@code length} bytes of an in-memory Frame-0 envelope (direct buffer). */
     public static native int bootFrame0Bytes(long handle, ByteBuffer envelope, int length, long appBuildId, long envHash);
 
-    /** Applies the first {@code length} bytes of an {@code NVP1} hot patch (direct buffer); {@code outChanged[0]} is 1 when applied. */
-    public static native int applyHotPatch(long handle, ByteBuffer patchNvp1, int length, int[] outChanged);
+    /** Applies the first {@code length} bytes of a binary hot patch (direct buffer); {@code outChanged[0]} is 1 when applied. */
+    public static native int applyHotPatch(long handle, ByteBuffer patch, int length, int[] outChanged);
 
     /**
      * Measures the surface under constraints and {@code NveRuntimeAbi.MEASURE_FLAG_*} bits; writes

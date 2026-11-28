@@ -101,7 +101,7 @@ interface NveRuntimeHost : AutoCloseable {
 
     fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long = 0L, envHash: Long = 0L): Int
 
-    fun applyHotPatch(patchNvp1: ByteArray): Int
+    fun applyHotPatch(patch: ByteArray): Int
 
     fun measureSurface(
         minWidthDp: Float,
@@ -184,7 +184,7 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
     override fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long, envHash: Long): Int =
         surface.bootFrame0Bytes(envelope, appBuildId, envHash)
 
-    override fun applyHotPatch(patchNvp1: ByteArray): Int = surface.applyHotPatch(patchNvp1)
+    override fun applyHotPatch(patch: ByteArray): Int = surface.applyHotPatch(patch)
 
     override fun measureSurface(
         minWidthDp: Float,
@@ -435,9 +435,9 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
         return true
     }
 
-    /** Applies one `NVP1` Tier-1 hot patch and renders on success. */
-    fun applyHotPatch(patchNvp1: ByteArray): Boolean {
-        val st = host.applyHotPatch(patchNvp1)
+    /** Applies one Tier-1 binary hot patch and renders on success. */
+    fun applyHotPatch(patch: ByteArray): Boolean {
+        val st = host.applyHotPatch(patch)
         if (st != NveRuntimeAbi.STATUS_OK) {
             error = "applyHotPatch failed ($st): ${host.lastError}"
             return false

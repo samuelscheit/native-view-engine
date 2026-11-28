@@ -163,9 +163,9 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
         return NveRuntimeAbi.STATUS_OK
     }
 
-    override fun applyHotPatch(patchNvp1: ByteArray): Int {
+    override fun applyHotPatch(patch: ByteArray): Int {
         if (hotPatchStatus != NveRuntimeAbi.STATUS_OK) return hotPatchStatus
-        hotPatches.add(patchNvp1.copyOf())
+        hotPatches.add(patch.copyOf())
         flushEmitted()
         return NveRuntimeAbi.STATUS_OK
     }

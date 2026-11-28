@@ -308,11 +308,11 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return bootFrame0Bytes(toScratchDirect(envelope), len, appBuildId, envHash);
     }
 
-    /** Applies an {@code NVP1} hot patch (direct buffer); sets {@code needsFrame} when changed. */
-    public int applyHotPatch(ByteBuffer patchNvp1, int length) {
+    /** Applies a binary hot patch (direct buffer); sets {@code needsFrame} when changed. */
+    public int applyHotPatch(ByteBuffer patch, int length) {
         structural("applyHotPatch");
         out[0] = 0;
-        final int st = NativeRuntime.applyHotPatch(handle, patchNvp1, length, out);
+        final int st = NativeRuntime.applyHotPatch(handle, patch, length, out);
         if (st == NveRuntimeAbi.STATUS_OK) {
             if (out[0] != 0) needsFrame = true;
             drainEmittedIfListening();
@@ -320,11 +320,11 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return st;
     }
 
-    /** Applies an {@code NVP1} hot patch; sets {@code needsFrame} when changed. */
-    public int applyHotPatch(byte[] patchNvp1) {
+    /** Applies a binary hot patch; sets {@code needsFrame} when changed. */
+    public int applyHotPatch(byte[] patch) {
         structural("applyHotPatch");
-        final int len = patchNvp1 == null ? 0 : patchNvp1.length;
-        return applyHotPatch(toScratchDirect(patchNvp1), len);
+        final int len = patch == null ? 0 : patch.length;
+        return applyHotPatch(toScratchDirect(patch), len);
     }
 
     /** Measures the surface into caller-owned {@code outMeasure[0..4)} ({@code [w, h, firstBaseline, lastBaseline]}). */

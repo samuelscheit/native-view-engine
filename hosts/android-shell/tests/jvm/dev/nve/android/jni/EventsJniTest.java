@@ -259,18 +259,18 @@ public final class EventsJniTest {
                 c.eq(sf.clearStateFile(stateFile.toString()), NveRuntimeAbi.STATUS_OK, "clearStateFile");
                 c.eq(sf.restoreStateFile(stateFile.toString(), 3), NveRuntimeAbi.STATUS_NOT_FOUND, "cleared state file absent");
 
-                // 3. applyHotPatch (valid NVP1 DevStatus frame + malformed rejection)
-                final BinWriter nvp = new BinWriter();
-                nvp.raw("NVP1".getBytes(StandardCharsets.US_ASCII), 0, 4);
-                nvp.u8(3); // DevStatus variant
-                nvp.u32(2);
-                nvp.raw("ok".getBytes(StandardCharsets.US_ASCII), 0, 2);
-                nvp.u64(12L);
+                // 3. applyHotPatch (valid hot-patch DevStatus frame + malformed rejection)
+                final BinWriter hotPatch = new BinWriter();
+                hotPatch.raw(new byte[] {'N', 'V', 'P', '1'}, 0, 4);
+                hotPatch.u8(3); // DevStatus variant
+                hotPatch.u32(2);
+                hotPatch.raw("ok".getBytes(StandardCharsets.US_ASCII), 0, 2);
+                hotPatch.u64(12L);
                 final int beforePatch = seenCustom.size();
-                c.eq(sf.applyHotPatch(nvp.toByteArray()), NveRuntimeAbi.STATUS_OK, "applyHotPatch valid NVP1");
+                c.eq(sf.applyHotPatch(hotPatch.toByteArray()), NveRuntimeAbi.STATUS_OK, "applyHotPatch valid frame");
                 c.that(seenCustom.size() == beforePatch + 1 && "onHotPatch".equals(seenCustom.get(beforePatch)),
                         "hot patch reached app");
-                c.eq(sf.applyHotPatch(new byte[] {1, 2, 3}), NveRuntimeAbi.STATUS_INVALID_ARG, "bad NVP1 rejected");
+                c.eq(sf.applyHotPatch(new byte[] {1, 2, 3}), NveRuntimeAbi.STATUS_INVALID_ARG, "bad hot patch rejected");
 
                 // 4. measureSurface (DRY_RUN + IDEAL)
                 final RuntimeSurface.SurfaceMeasure dry = sf.measureSurface(
