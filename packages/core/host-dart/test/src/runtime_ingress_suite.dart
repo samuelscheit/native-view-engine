@@ -149,11 +149,15 @@ void runRuntimeIngress(Check c) {
         ..childrenSlabLen = 1
         ..childrenSlab = (words.cast<ffi.Uint8>() + 2).cast();
     });
-    rejects(SceneErrorKind.missingSlab, 'misaligned table views', (v) {
-      v
-        ..tableCount = 1
-        ..tables = (table.cast<ffi.Uint8>() + 4).cast();
-    });
+    reset();
+    view.ref
+      ..tableCount = 1
+      ..tables = (table.cast<ffi.Uint8>() + (_ptr ~/ 2)).cast();
+    final alignErr = c.throwsA<SceneException>(() => readScene(view.ref), 'misaligned table views');
+    if (alignErr != null) {
+      c.eq(alignErr.kind, SceneErrorKind.missingSlab, 'misaligned table views kind');
+      c.that(alignErr.message.contains('$_ptr-byte aligned'), 'tables alignment matches pointer size ($_ptr)');
+    }
     rejects(SceneErrorKind.missingSlab, 'rows byte size past 32 bits', (v) {
       v
         ..nodeCapacity = 0xFFFFFFFF

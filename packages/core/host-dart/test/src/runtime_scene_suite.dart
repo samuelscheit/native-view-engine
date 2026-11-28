@@ -181,6 +181,11 @@ void runRuntimeScene(Check c) {
   c.that(!s.hasTable(2, 128) && !s.hasTable(2, -1), 'slot outside 0..127 never attached');
   c.eq([s.x(2), s.y(2), s.width(2), s.height(2)].join(','), [8.0, 16.0, 100.5, 20.0].join(','), 'rect');
   c.eq(s.childCount(1), 2, 'child count');
+  c.eq(s.childCount(2), 0, 'leaf child count');
+  c.eq(s.childCount(3), 0, 'dead node child count');
+  c.eq(s.childCount(0), 0, 'null slot child count');
+  c.eq(s.childCount(-1), 0, 'negative index child count');
+  c.eq(s.childCount(4), 0, 'past-capacity index child count');
   c.eq(s.children(1).join(','), [2 | (5 << 24), 3 | (1 << 24)].join(','), 'children are raw ids');
   c.eq(s.children(3).length, 0, 'dead node has no children');
   c.eq(s.dirtyIndices.join(','), '1,2', 'dirty');
@@ -227,6 +232,12 @@ void runRuntimeScene(Check c) {
   expectScene(c, SceneErrorKind.invalidUtf8, () => f.open(text: Uint8List.fromList([0xC3])), 'truncated UTF-8');
   // Child ranges are checked on read, not at open (O(changed) open).
   expectScene(c, SceneErrorKind.missingSlab, () => f.open(children: Uint32List(1)).children(1), 'child range past slab');
+  expectScene(c, SceneErrorKind.missingSlab, () => f.open(children: Uint32List(1)).childCount(1), 'childCount past slab');
+  final badZeroLenOff = Uint32List.fromList(f.rows)
+    ..[2 * nodeRowWords + 5] = 3
+    ..[2 * nodeRowWords + 6] = 0;
+  expectScene(
+      c, SceneErrorKind.missingSlab, () => f.open(rows: badZeroLenOff).childCount(2), 'zero-len child range past slab');
   expectScene(c, SceneErrorKind.missingSlab, () => f.open(dirty: Uint32List.fromList([4])), 'dirty index >= capacity');
   expectScene(c, SceneErrorKind.invalidTable, () => f.open(tables: [f.visual(), f.visual()]), 'duplicate slot');
   final huge = Uint32List.fromList(f.rows)..[1 * nodeRowWords + 5] = 0xFFFFFFFF;
@@ -235,6 +246,7 @@ void runRuntimeScene(Check c) {
     ..[1 * nodeRowWords + 6] = 0
     ..[3 * nodeRowWords + 5] = 99; // dead node 3 keeps a stale out-of-slab range
   c.eq(f.open(children: Uint32List(0), rows: stale).childCount(1), 0, 'dead nodes with stale child ranges are not validated');
+  c.eq(f.open(children: Uint32List(0), rows: stale).childCount(3), 0, 'dead node childCount skips stale range');
 
   // ---- generated core table layouts ---------------------------------------------------------
   c.that(!TextTable.dense && VisualTable.dense, 'storage');

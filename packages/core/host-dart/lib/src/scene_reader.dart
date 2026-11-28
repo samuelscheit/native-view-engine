@@ -228,14 +228,12 @@ final class SceneReader {
 
   // ---- children ------------------------------------------------------------------------------
 
-  int childCount(int index) => children(index).length;
-
-  /// Raw child `NodeId`s of [index] in paint order (zero-copy view). Empty for dead nodes; a child
-  /// range outside the slab throws [SceneException] (checked here, on read, like C++
-  /// `node_children`, so opening a frame never walks every row).
-  Uint32List children(int index) {
+  /// Number of direct children of [index] (`0` for dead / out-of-range nodes; throws
+  /// [SceneException] when the row's child range lies outside the children slab). Reads the row
+  /// directly without allocating a `Uint32List.sublistView`.
+  int childCount(int index) {
     if (!isLive(index)) {
-      return Uint32List(0);
+      return 0;
     }
     final off = _rows[index * nodeRowWords + _childOffWord];
     final len = _rows[index * nodeRowWords + _childLenWord];
@@ -243,6 +241,18 @@ final class SceneReader {
       throw SceneException(
           SceneErrorKind.missingSlab, 'node $index children [$off, +$len) outside slab (${_children.length})');
     }
+    return len;
+  }
+
+  /// Raw child `NodeId`s of [index] in paint order (zero-copy view). Empty for dead nodes; a child
+  /// range outside the slab throws [SceneException] (checked here, on read, like C++
+  /// `node_children`, so opening a frame never walks every row).
+  Uint32List children(int index) {
+    final len = childCount(index);
+    if (len == 0) {
+      return Uint32List(0);
+    }
+    final off = _rows[index * nodeRowWords + _childOffWord];
     return Uint32List.sublistView(_children, off, off + len);
   }
 
