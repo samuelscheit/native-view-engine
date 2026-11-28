@@ -24,6 +24,10 @@
 #include <string_view>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 namespace {
 
 using nve::host::Key64;
@@ -85,7 +89,8 @@ struct Frame {
         sparse_pages[i] = static_cast<uint32_t>(sparse_owners.size());  // `row + 1`
       }
       if (i % 64u == 0u) scroll.push_back(NveScrollOffset{(1u << 24) | i, 0.0f, static_cast<float>(i)});
-      if (i % 16u == 0u) dirty_resources.push_back(i);
+      // Steady-state frame: only a small bounded set of resources change per frame (matches `dirty_count`).
+      if (i % 16u == 0u && dirty_resources.size() < dirty_count) dirty_resources.push_back(i);
     }
     rows[1].child_off = 0u;
     rows[1].child_len = nodes;
@@ -130,17 +135,36 @@ struct Result {
 
 volatile uint64_t g_sink = 0;  // written once per batch: keeps the results observable
 
+/// Compiler barrier: prevents hoisting pure `body()` loads or folding repeated batch iterations.
+template <class T>
+inline void do_not_optimize(T& value) noexcept {
+#if defined(_MSC_VER)
+  _ReadWriteBarrier();
+  (void)value;
+#else
+  asm volatile("" : "+r"(value) :: "memory");
+#endif
+}
+
 /// Per-call nanoseconds; each sample times `batch` calls so sub-timer-resolution work is
-/// measurable. `body` is inlined (no type-erased call inside the timed loop); results fold into a
-/// local and reach `g_sink` once per batch.
+/// measurable. `body` is inlined (no type-erased call inside the timed loop); `do_not_optimize`
+/// keeps each iteration live and results fold into `g_sink` once per batch.
 template <class Body>
 Result measure(std::string name, int warmup, int iters, int batch, Body&& body) {
   uint64_t acc = 0;
-  for (int i = 0; i < warmup * batch; ++i) acc += body();
+  for (int i = 0; i < warmup * batch; ++i) {
+    uint64_t r = body();
+    do_not_optimize(r);
+    acc += r;
+  }
   std::vector<double> samples(static_cast<size_t>(iters));
   for (double& s : samples) {
     const auto t0 = std::chrono::steady_clock::now();
-    for (int b = 0; b < batch; ++b) acc += body();
+    for (int b = 0; b < batch; ++b) {
+      uint64_t r = body();
+      do_not_optimize(r);
+      acc += r;
+    }
     s = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / batch;
     g_sink = acc;
   }

@@ -104,7 +104,11 @@ namespace url_detail {
       rest.remove_prefix(slash);
     }
     // `/C:/x` (Windows drive in URL form) or a rooted POSIX path; `//` would be UNC again.
-    const std::string_view path = rest.size() >= 4u && rest[0] == '/' && rest[2] == ':' ? rest.substr(1u) : rest;
+    // Tighten to an ASCII drive letter followed by `:` and end-of-path or slash so POSIX paths
+    // with colons (e.g. `file:///a:b/img.png`) keep their leading `/`.
+    const bool win_drive = rest.size() >= 3u && rest[0] == '/' && ascii_alpha(rest[1]) && rest[2] == ':' &&
+                           (rest.size() == 3u || url_detail::is_slash(rest[3]));
+    const std::string_view path = win_drive ? rest.substr(1u) : rest;
     return url_detail::rooted_local_path(path) && url_detail::decodes_local(path) ? std::optional(path)
                                                                                   : std::nullopt;
   }

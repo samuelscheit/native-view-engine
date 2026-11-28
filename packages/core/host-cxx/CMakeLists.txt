@@ -25,16 +25,21 @@ endif()
 if(NVE_HOST_CXX_BUILD_TESTS)
   enable_testing()
 
-  set(_nve_host_warnings -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow)
-  include(CheckCXXSourceCompiles)
-  set(CMAKE_REQUIRED_FLAGS "-fsanitize=address,undefined")
-  set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=address,undefined")
-  check_cxx_source_compiles("int main() { return 0; }" NVE_HOST_HAS_SANITIZERS)
-  unset(CMAKE_REQUIRED_FLAGS)
-  unset(CMAKE_REQUIRED_LINK_OPTIONS)
-  set(_nve_host_sanitize "")
-  if(NVE_HOST_HAS_SANITIZERS)
-    set(_nve_host_sanitize -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+  if(MSVC)
+    set(_nve_host_warnings /W4 /WX)
+    set(_nve_host_sanitize "")
+  else()
+    set(_nve_host_warnings -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=address,undefined")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=address,undefined")
+    check_cxx_source_compiles("int main() { return 0; }" NVE_HOST_HAS_SANITIZERS)
+    unset(CMAKE_REQUIRED_FLAGS)
+    unset(CMAKE_REQUIRED_LINK_OPTIONS)
+    set(_nve_host_sanitize "")
+    if(NVE_HOST_HAS_SANITIZERS)
+      set(_nve_host_sanitize -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    endif()
   endif()
 
   add_executable(nve_host_c11_test tests/test_c11.c)
@@ -53,11 +58,18 @@ if(NVE_HOST_CXX_BUILD_TESTS)
   endforeach()
 
   # Compile-time guards: invalid `field()` specs and non-UTF-8 `Key64::of` names must not compile.
-  set(_nve_host_syntax_only ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only
-      -I${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail.cpp)
+  if(MSVC)
+    set(_nve_host_syntax_only ${CMAKE_CXX_COMPILER} /nologo /std:c++20 /Zs
+        /I${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail.cpp)
+    set(_nve_host_def_flag /D)
+  else()
+    set(_nve_host_syntax_only ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only
+        -I${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail.cpp)
+    set(_nve_host_def_flag -D)
+  endif()
   add_test(NAME nve_host_compile_ok COMMAND ${_nve_host_syntax_only})
   foreach(_case BAD_FIELD_BITS BAD_FIELD_ZERO BAD_FIELD_WORD BAD_KEY)
-    add_test(NAME nve_host_compile_fail_${_case} COMMAND ${_nve_host_syntax_only} -DNVE_EXPECT_${_case})
+    add_test(NAME nve_host_compile_fail_${_case} COMMAND ${_nve_host_syntax_only} ${_nve_host_def_flag}NVE_EXPECT_${_case})
     set_tests_properties(nve_host_compile_fail_${_case} PROPERTIES WILL_FAIL TRUE)
   endforeach()
 
@@ -71,10 +83,16 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     string(MAKE_C_IDENTIFIER "${_header}" _header_id)
     set(_header_tu "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${_header_id}.cpp")
     file(WRITE "${_header_tu}" "#include <${_header}>\n")
-    add_test(NAME nve_host_header_${_header_id}
-             COMMAND ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only ${_nve_host_warnings}
-                     "-Dslots=" "-Dsignals=public" "-Demit=" "-Dforeach=qt_foreach"
-                     -I${CMAKE_CURRENT_SOURCE_DIR}/include ${_header_tu})
+    if(MSVC)
+      set(_header_cmd ${CMAKE_CXX_COMPILER} /nologo /std:c++20 /Zs ${_nve_host_warnings}
+          "/Dslots=" "/Dsignals=public" "/Demit=" "/Dforeach=qt_foreach"
+          /I${CMAKE_CURRENT_SOURCE_DIR}/include ${_header_tu})
+    else()
+      set(_header_cmd ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only ${_nve_host_warnings}
+          "-Dslots=" "-Dsignals=public" "-Demit=" "-Dforeach=qt_foreach"
+          -I${CMAKE_CURRENT_SOURCE_DIR}/include ${_header_tu})
+    endif()
+    add_test(NAME nve_host_header_${_header_id} COMMAND ${_header_cmd})
   endforeach()
 
   if(NVE_HOST_CXX_WITH_RUNTIME)

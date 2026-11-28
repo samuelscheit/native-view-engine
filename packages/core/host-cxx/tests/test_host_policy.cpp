@@ -48,6 +48,9 @@ void test_local_image_path() {
   CHECK(path("C:/img/a.png") == "C:/img/a.png");
   CHECK(path("file:///tmp/a%20b.png") == "/tmp/a%20b.png");  // still percent-encoded
   CHECK(path("file:///C:/img/a.png") == "C:/img/a.png");
+  CHECK(path("file:///a:b/img.png") == "/a:b/img.png");  // POSIX path with `:` is not a Windows drive
+  CHECK(path("file:///1:/img.png") == "/1:/img.png");    // non-alpha drive is POSIX
+  CHECK(path("file:///C:") == "<none>");                 // bare drive letter without slash is drive-relative
   CHECK(path("FILE://localhost/tmp/a.png") == "/tmp/a.png");
   CHECK(path("file:/tmp/a.png") == "/tmp/a.png");
   // Remote hosts and UNC paths would authenticate to the network (and block the UI thread).
