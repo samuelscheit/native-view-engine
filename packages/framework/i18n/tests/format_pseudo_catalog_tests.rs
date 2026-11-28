@@ -119,6 +119,98 @@ fn builtin_number_formatting_across_locales_styles_rounding_and_nu_extensions() 
 }
 
 #[test]
+fn builtin_number_percent_fraction_min_max_overflow_subnormal_and_scientific_carry() {
+    let b = BuiltinI18nBackend;
+    let us = loc("en-US");
+    let de = loc("de-DE");
+
+    // Percent with `min_fraction_digits = Some(2), max = None`: must NOT round to 0 then pad!
+    let pct_min2 = NumberFormatOptions::default()
+        .with_style(NumberStyle::Percent)
+        .with_fraction_digits(Some(2), None);
+    assert_eq!(b.format_number(&us, 0.2567, pct_min2), "25.67%");
+    assert_eq!(b.format_number(&us, 0.25, pct_min2), "25.00%");
+    assert_eq!(b.format_number(&de, 0.2567, pct_min2), "25,67\u{00A0}%");
+
+    // Contradictory `min > max` aligns by clamping `eff_max = max.max(min)` across all styles.
+    let dec_contradict = NumberFormatOptions::default().with_fraction_digits(Some(3), Some(1));
+    assert_eq!(b.format_number(&us, 1.2346, dec_contradict), "1.235");
+    assert_eq!(b.format_number(&us, 1.2, dec_contradict), "1.200");
+
+    let pct_contradict = NumberFormatOptions::default()
+        .with_style(NumberStyle::Percent)
+        .with_fraction_digits(Some(3), Some(1));
+    assert_eq!(b.format_number(&us, 0.25678, pct_contradict), "25.678%");
+
+    let sci_contradict = NumberFormatOptions::default()
+        .with_style(NumberStyle::Scientific)
+        .with_fraction_digits(Some(3), Some(1));
+    assert_eq!(b.format_number(&us, 9.999, sci_contradict), "9.999E0");
+    assert_eq!(b.format_number(&us, 1.2, sci_contradict), "1.200E0");
+
+    // Percent multiplication overflow (`1e307 * 100.0 == INFINITY`) + special floats
+    let pct_def = NumberFormatOptions::default().with_style(NumberStyle::Percent);
+    assert_eq!(b.format_number(&us, 1e307, pct_def), "∞%");
+    assert_eq!(b.format_number(&us, -1e307, pct_def), "-∞%");
+    assert_eq!(b.format_number(&de, 1e307, pct_def), "∞\u{00A0}%");
+    assert_eq!(b.format_number(&us, f64::INFINITY, pct_def), "∞%");
+    assert_eq!(b.format_number(&us, f64::NEG_INFINITY, pct_def), "-∞%");
+    assert_eq!(b.format_number(&us, f64::NAN, pct_def), "NaN");
+    assert_eq!(b.format_number(&us, -0.0, pct_def), "0%");
+
+    // Scientific subnormal (`5e-324` = smallest positive f64) & `f64::MIN_POSITIVE`
+    let sci_def = NumberFormatOptions::default().with_style(NumberStyle::Scientific);
+    let subnormal = f64::from_bits(1);
+    assert_eq!(b.format_number(&us, subnormal, sci_def), "5E-324");
+    assert_eq!(
+        b.format_number(&us, subnormal, sci_def.with_fraction_digits(Some(2), Some(2))),
+        "5.00E-324"
+    );
+    assert_eq!(
+        b.format_number(&us, f64::MIN_POSITIVE, sci_def.with_fraction_digits(None, Some(2))),
+        "2.23E-308"
+    );
+
+    // Scientific decade carry (`9.999` rounded to 2 fraction digits -> `1.00E1`, NOT `10.00E0`!)
+    assert_eq!(
+        b.format_number(&us, 9.999, sci_def.with_fraction_digits(Some(2), Some(2))),
+        "1.00E1"
+    );
+    assert_eq!(
+        b.format_number(&us, 9.999, sci_def.with_fraction_digits(None, Some(2))),
+        "1E1"
+    );
+    assert_eq!(
+        b.format_number(&us, -9.999, sci_def.with_fraction_digits(Some(2), Some(2))),
+        "-1.00E1"
+    );
+    assert_eq!(
+        b.format_number(&us, 0.9999, sci_def.with_fraction_digits(Some(2), Some(2))),
+        "1.00E0"
+    );
+    assert_eq!(
+        b.format_number(&us, 9.9, sci_def.with_fraction_digits(Some(0), Some(0))),
+        "1E1"
+    );
+    assert_eq!(
+        b.format_number(
+            &us,
+            9.999,
+            sci_def
+                .with_fraction_digits(Some(2), Some(2))
+                .with_rounding_mode(RoundingMode::Truncate)
+        ),
+        "9.99E0"
+    );
+
+    // Scientific special floats
+    assert_eq!(b.format_number(&us, -0.0, sci_def), "0E0");
+    assert_eq!(b.format_number(&us, f64::NAN, sci_def), "NaN");
+    assert_eq!(b.format_number(&us, f64::INFINITY, sci_def), "∞");
+    assert_eq!(b.format_number(&us, f64::NEG_INFINITY, sci_def), "-∞");
+}
+
+#[test]
 fn builtin_currency_formatting_precision_placement_and_minor_units() {
     let b = BuiltinI18nBackend;
     assert_eq!(b.format_currency(&loc("en-US"), 1234.5, "USD"), "$1,234.50");

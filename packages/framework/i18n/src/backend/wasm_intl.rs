@@ -19,11 +19,11 @@ const _cache = new Map();
 function _cached(key, create) {
   let v = _cache.get(key);
   if (v !== undefined) return v;
+  v = create();
   if (_cache.size >= 64) {
     const first = _cache.keys().next().value;
     _cache.delete(first);
   }
-  v = create();
   _cache.set(key, v);
   return v;
 }
@@ -59,6 +59,7 @@ export function nve_intl_plural(locale, isOrdinal, value, fracDigits) {
 export function nve_intl_format_number(locale, value, useGrouping, minFrac, maxFrac, styleCode, roundCode) {
   try {
     if (typeof Intl === "undefined" || typeof Intl.NumberFormat !== "function") return undefined;
+    if (minFrac >= 0 && maxFrac >= 0) maxFrac = Math.max(maxFrac, minFrac);
     const key = "n|" + locale + "|" + (useGrouping ? 1 : 0) + "|" + minFrac + "|" + maxFrac + "|" + styleCode + "|" + roundCode;
     const nf = _cached(key, () => {
       const opts = { useGrouping: !!useGrouping };
@@ -112,8 +113,8 @@ export function nve_intl_format_date(locale, year, month, day, styleCode) {
     const style = styleCode === 0 ? "short" : styleCode === 1 ? "medium" : "long";
     const key = "d|" + locale + "|" + style;
     const dtf = _cached(key, () => new Intl.DateTimeFormat(locale, { dateStyle: style, timeZone: "UTC" }));
-    const dt = new Date(Date.UTC(year, month - 1, day));
-    dt.setUTCFullYear(year);
+    const dt = new Date(0);
+    dt.setUTCFullYear(year, month - 1, day);
     return dtf.format(dt);
   } catch {
     return undefined;
@@ -215,7 +216,14 @@ pub fn format_number(locale: &LocaleId, value: f64, opts: NumberFormatOptions) -
         .unwrap_or(-1);
     let max_frac = opts
         .max_fraction_digits
-        .map(|v| i32::try_from(v.min(20)).unwrap_or(20))
+        .map(|v| {
+            let clamped = i32::try_from(v.min(20)).unwrap_or(20);
+            if min_frac >= 0 {
+                clamped.max(min_frac)
+            } else {
+                clamped
+            }
+        })
         .unwrap_or(-1);
     let style_code = opts.style as u8;
     let round_code = opts.rounding_mode as u8;
