@@ -332,6 +332,84 @@ void main() {
           expect(retryDecoded, 1);
         }
       }
+
+      // 4. Overlapping-generation stale null/throw completion while a newer generation is actively
+      //    in-flight (`_inFlight[key]?.gen != gen`): never clobbers the newer in-flight entry or
+      //    poisons `_failedUris`, and the newer decode succeeds.
+      for (final useClear in <bool>[false, true]) {
+        for (final failWithThrow in <bool>[false, true]) {
+          final key = 'res:overlap_${useClear ? "clear" : "evict"}_${failWithThrow ? "err" : "null"}';
+          final stale = Completer<ui.Image?>();
+          expect(cache.resolveOrRequest(key, decode: () => stale.future), isNull);
+          expect(cache.isInFlight(key), isTrue);
+          if (useClear) {
+            cache.clear();
+          } else {
+            cache.evict(key);
+          }
+          // Start a newer generation decode BEFORE the stale one completes.
+          final fresh = Completer<ui.Image?>();
+          var freshDecoded = 0;
+          expect(
+            cache.resolveOrRequest(key, onDecoded: () => freshDecoded++, decode: () => fresh.future),
+            isNull,
+          );
+          expect(cache.isInFlight(key), isTrue);
+
+          // Now finish the stale generation with null or throw while `fresh` is actively in-flight.
+          if (failWithThrow) {
+            stale.completeError(StateError('stale overlapping decode failed'));
+          } else {
+            stale.complete(null);
+          }
+          await Future<void>.delayed(Duration.zero);
+          expect(
+            cache.isInFlight(key),
+            isTrue,
+            reason: 'stale completion must not remove newer in-flight entry for $key',
+          );
+          expect(freshDecoded, 0);
+
+          final freshImg = await makeImage(32, 192, 96);
+          fresh.complete(freshImg);
+          await Future<void>.delayed(Duration.zero);
+          expect(freshImg.debugDisposed, isFalse);
+          expect(identical(cache.getCached(key), freshImg), isTrue);
+          expect(freshDecoded, 1);
+          expect(cache.isInFlight(key), isFalse);
+
+          // Also verify a stale failure finishing AFTER the newer generation succeeded does not
+          // poison `_failedUris` (checked by LRU-evicting without calling `evict()` / `clear()`).
+          final lruCache = NveSceneImageCache(maxEntries: 1);
+          final staleLate = Completer<ui.Image?>();
+          expect(lruCache.resolveOrRequest(key, decode: () => staleLate.future), isNull);
+          lruCache.evict(key);
+          final winner = Completer<ui.Image?>();
+          expect(lruCache.resolveOrRequest(key, decode: () => winner.future), isNull);
+          winner.complete(await makeImage(16, 64, 128));
+          await Future<void>.delayed(Duration.zero);
+          if (failWithThrow) {
+            staleLate.completeError(StateError('late stale failure'));
+          } else {
+            staleLate.complete(null);
+          }
+          await Future<void>.delayed(Duration.zero);
+          // LRU-evict `key` via an unrelated entry (does not touch `_failedUris`).
+          final other = Completer<ui.Image?>();
+          expect(lruCache.resolveOrRequest('res:other', decode: () => other.future), isNull);
+          other.complete(await makeImage(200, 100, 50));
+          await Future<void>.delayed(Duration.zero);
+          expect(lruCache.containsKey(key), isFalse);
+          // Re-requesting `key` must start a fresh decode (not short-circuited by `_failedUris`).
+          final afterLru = Completer<ui.Image?>();
+          expect(lruCache.resolveOrRequest(key, decode: () => afterLru.future), isNull);
+          expect(lruCache.isInFlight(key), isTrue, reason: '$key must not be poisoned in _failedUris');
+          afterLru.complete(await makeImage(90, 180, 200));
+          await Future<void>.delayed(Duration.zero);
+          expect(lruCache.containsKey(key), isTrue);
+          lruCache.dispose();
+        }
+      }
     });
 
     test('computes exact cover/contain/stretch/center placement geometry', () {

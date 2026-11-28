@@ -362,6 +362,26 @@ fn debug_nve_value_ref_caps_recursion_depth_and_byte_preview() {
         assert!(f_utf8.contains(&"a".repeat(62)), "keeps complete prefix before boundary: {f_utf8}");
         assert!(!f_utf8.contains('🚀'), "backs off multi-byte char crossing cap: {f_utf8}");
         assert!(!f_utf8.contains("tail-marker"), "omits tail past cap: {f_utf8}");
+
+        // 1c. Map key preview: > 64-byte UTF-8 keys also truncate on a UTF-8 char boundary.
+        let long_key_entries = [NveMapEntry::new(&utf8_boundary, NveValue::i64(1))];
+        let v_long_key_map = NveValue {
+            tag: NveValueTag::Map as u32,
+            data: NveValueData {
+                map_val: NveValueMap {
+                    ptr: long_key_entries.as_ptr(),
+                    len: long_key_entries.len(),
+                },
+            },
+        };
+        let f_map_key = format!("{:?}", v_long_key_map.as_ref());
+        assert!(
+            f_map_key.contains(&format!(".. ({} bytes)", utf8_boundary.len())),
+            "large map key truncates with byte count: {f_map_key}"
+        );
+        assert!(f_map_key.contains(&"a".repeat(62)), "keeps complete key prefix: {f_map_key}");
+        assert!(!f_map_key.contains('🚀'), "backs off multi-byte char crossing cap: {f_map_key}");
+        assert!(!f_map_key.contains("tail-marker"), "omits key tail past cap: {f_map_key}");
     }
 
     // 2. Deeply nested Array (20 levels) caps at depth 16 and prints `[...]`.
