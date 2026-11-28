@@ -405,6 +405,82 @@ class RuntimeSession {
     return valid() && api_->pair_is_connected(handle_) != 0u;
   }
 
+  /// Measures the surface under `constraints` and `NVE_MEASURE_FLAG_*` bits without mutating
+  /// committed viewport, rects, or published scene state.
+  [[nodiscard]] NveRuntimeStatus measure_surface(const NveSizeConstraints& constraints, uint32_t flags,
+                                                 NveSurfaceMeasure* out_measure) noexcept {
+    if (!valid() || out_measure == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->measure_surface(handle_, &constraints, flags, out_measure));
+  }
+
+  /// Registers a callback fired outside internal locks when layout-affecting dirties invalidate
+  /// cached intrinsic surface dimensions (`nullptr` clears and drains in-flight calls).
+  [[nodiscard]] NveRuntimeStatus set_intrinsic_size_invalidated_callback(
+      NveRuntimeIntrinsicSizeInvalidatedFn cb, void* ctx) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->set_intrinsic_size_invalidated_callback(handle_, cb, ctx));
+  }
+
+  [[nodiscard]] NveRuntimeStatus clear_intrinsic_size_invalidated_callback() noexcept {
+    return set_intrinsic_size_invalidated_callback(nullptr, nullptr);
+  }
+
+  /// Atomically persists the active store as a Frame-0 `frame0.nve2` keyframe on disk.
+  [[nodiscard]] NveRuntimeStatus save_frame0_file(std::string_view utf8_path, uint64_t app_build_id = 0u,
+                                                  uint64_t env_hash = 0u) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->save_frame0_file(handle_, str_slice(utf8_path), app_build_id, env_hash));
+  }
+
+  /// Validates and boots a persisted `frame0.nve2` file immediately (`NOT_FOUND` on miss/corrupt/mismatch).
+  [[nodiscard]] NveRuntimeStatus boot_frame0_file(std::string_view utf8_path, uint64_t app_build_id = 0u,
+                                                  uint64_t env_hash = 0u) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->boot_frame0_file(handle_, str_slice(utf8_path), app_build_id, env_hash));
+  }
+
+  /// Validates and boots an in-memory `frame0.nve2` envelope buffer immediately.
+  [[nodiscard]] NveRuntimeStatus boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id = 0u,
+                                                   uint64_t env_hash = 0u) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->boot_frame0_bytes(handle_, buffer_slice(envelope), app_build_id, env_hash));
+  }
+
+  /// Installs or clears (`nullptr`) the host's `NVE_IFACE_HOST = 5` callback table.
+  [[nodiscard]] NveRuntimeStatus set_host_callbacks(const NveHostCallbacks* callbacks) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->set_host_callbacks(handle_, callbacks));
+  }
+
+  [[nodiscard]] NveRuntimeStatus clear_host_callbacks() noexcept { return set_host_callbacks(nullptr); }
+
+  /// Completes an asynchronous `Pending` host request from ANY thread and wakes the runtime.
+  [[nodiscard]] NveRuntimeStatus complete_host_request(uint64_t request_id, int32_t status,
+                                                       std::span<const uint8_t> payload = {}) const noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->complete_host_request(handle_, request_id, status, buffer_slice(payload)));
+  }
+
+  /// Enqueues an unsolicited host push event from ANY thread and wakes the runtime.
+  [[nodiscard]] NveRuntimeStatus push_host_event(uint32_t service_id, uint32_t event_id,
+                                                 std::span<const uint8_t> payload = {}) const noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->push_host_event(handle_, service_id, event_id, buffer_slice(payload)));
+  }
+
+  /// Enqueues an inbound host channel message from ANY thread and wakes the runtime.
+  [[nodiscard]] NveRuntimeStatus publish_host_channel(uint32_t channel_id, uint32_t flags = 0u,
+                                                      std::span<const uint8_t> payload = {}) const noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->publish_host_channel(handle_, channel_id, flags, buffer_slice(payload)));
+  }
+
   [[nodiscard]] std::string last_error() const {
     if (api_ == nullptr) return {};
     const size_t needed = api_->last_error(nullptr, 0u);

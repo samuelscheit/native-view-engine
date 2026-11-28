@@ -43,6 +43,18 @@ final class RuntimeMetrics {
   final bool pairConnected;
 }
 
+/// Snapshot of `NveSurfaceMeasure` returned by `RuntimeSession.measureSurface`.
+final class SurfaceMeasure {
+  const SurfaceMeasure({
+    required this.width,
+    required this.height,
+    required this.firstBaseline,
+    required this.lastBaseline,
+  });
+
+  final double width, height, firstBaseline, lastBaseline;
+}
+
 
 final class RuntimeSession {
   /// Creates a surface; throws [RuntimeException] when `create` returns NULL.
@@ -78,6 +90,7 @@ final class RuntimeSession {
   final int surfaceId;
   NveRuntimeHandle _handle;
   ffi.NativeCallable<NveRuntimeWakeNative>? _wake;
+  ffi.NativeCallable<NveRuntimeIntrinsicSizeInvalidatedNative>? _intrinsicSize;
   ffi.DynamicLibrary? _appLibrary;
 
   // One zeroed scratch block holds every fixed-size out-parameter / argument record (8-byte
@@ -87,7 +100,9 @@ final class RuntimeSession {
   static final int _atStrs = _atMetrics + _align8(ffi.sizeOf<NveRuntimeMetrics>());
   static final int _atBuffer = _atStrs + _align8(2 * ffi.sizeOf<NveStrSlice>());
   static final int _atBatch = _atBuffer + _align8(ffi.sizeOf<NveBufferSlice>());
-  static final int _atU64 = _atBatch + _align8(ffi.sizeOf<NveEventBatch>());
+  static final int _atConstraints = _atBatch + _align8(ffi.sizeOf<NveEventBatch>());
+  static final int _atMeasure = _atConstraints + _align8(ffi.sizeOf<NveSizeConstraints>());
+  static final int _atU64 = _atMeasure + _align8(ffi.sizeOf<NveSurfaceMeasure>());
   static final int _atF32 = _atU64 + 8;
   static final int _atU32 = _atF32 + 8;
   static final int _scratchBytes = _atU32 + 8;
@@ -98,6 +113,8 @@ final class RuntimeSession {
   late final ffi.Pointer<NveStrSlice> _strs = (_scratch + _atStrs).cast();
   late final ffi.Pointer<NveBufferSlice> _buffer = (_scratch + _atBuffer).cast();
   late final ffi.Pointer<NveEventBatch> _batch = (_scratch + _atBatch).cast();
+  late final ffi.Pointer<NveSizeConstraints> _constraints = (_scratch + _atConstraints).cast();
+  late final ffi.Pointer<NveSurfaceMeasure> _measure = (_scratch + _atMeasure).cast();
   late final ffi.Pointer<ffi.Uint64> _outU64 = (_scratch + _atU64).cast();
   late final ffi.Pointer<ffi.Float> _outF32 = (_scratch + _atF32).cast();
   late final ffi.Pointer<ffi.Uint32> _outU32 = (_scratch + _atU32).cast();
@@ -255,6 +272,86 @@ final class RuntimeSession {
 
   /// Deletes a state file for a cold start (`clear_state_file`; already absent is fine).
   void clearStateFile(String path) => api.check(api.clearStateFile(_live, _utf8Args(path).$1), 'clear_state_file');
+
+  /// Measures the surface under `[minW..maxW] x [minH..maxH]` and `NVE_MEASURE_FLAG_*` bits
+  /// without mutating committed viewport, layout rects, or published scene state.
+  SurfaceMeasure measureSurface({
+    double minW = 0,
+    double minH = 0,
+    double maxW = double.infinity,
+    double maxH = double.infinity,
+    int flags = nveMeasureFlagDryRun,
+  }) {
+    _constraints.ref
+      ..minW = minW
+      ..minH = minH
+      ..maxW = maxW
+      ..maxH = maxH;
+    api.check(api.measureSurface(_live, _constraints, flags, _measure), 'measure_surface');
+    final m = _measure.ref;
+    return SurfaceMeasure(
+      width: m.width,
+      height: m.height,
+      firstBaseline: m.firstBaseline,
+      lastBaseline: m.lastBaseline,
+    );
+  }
+
+  /// Registers [onInvalidated] (delivered asynchronously on this isolate) when layout-affecting
+  /// changes invalidate cached intrinsic surface size, or clears it with `null`.
+  void setIntrinsicSizeInvalidatedListener(void Function()? onInvalidated) {
+    final handle = _live;
+    final next = onInvalidated == null
+        ? null
+        : ffi.NativeCallable<NveRuntimeIntrinsicSizeInvalidatedNative>.listener(
+            (ffi.Pointer<ffi.Void> _) => onInvalidated(),
+          );
+    try {
+      api.check(
+        api.setIntrinsicSizeInvalidatedCallback(handle, next?.nativeFunction ?? ffi.nullptr, ffi.nullptr),
+        'set_intrinsic_size_invalidated_callback',
+      );
+    } on Object {
+      next?.close();
+      rethrow;
+    }
+    _intrinsicSize?.close();
+    _intrinsicSize = next;
+  }
+
+  /// Atomically persists the active scene as a Frame-0 `frame0.nve2` file (`false` when empty).
+  bool saveFrame0File(String path, {int appBuildId = 0, int envHash = 0}) =>
+      _found(api.saveFrame0File(_live, _utf8Args(path).$1, appBuildId, envHash), 'save_frame0_file');
+
+  /// Validates and boots a persisted `frame0.nve2` file (`false` on missing, corrupt, or mismatch).
+  bool bootFrame0File(String path, {int appBuildId = 0, int envHash = 0}) =>
+      _found(api.bootFrame0File(_live, _utf8Args(path).$1, appBuildId, envHash), 'boot_frame0_file');
+
+  /// Validates and boots an in-memory `frame0.nve2` envelope buffer (`false` on corrupt/mismatch).
+  bool bootFrame0Bytes(Uint8List envelope, {int appBuildId = 0, int envHash = 0}) =>
+      _found(api.bootFrame0Bytes(_live, _borrow(envelope), appBuildId, envHash), 'boot_frame0_bytes');
+
+  /// Installs or clears (`ffi.nullptr`) the host's `NVE_IFACE_HOST = 5` callback table.
+  void setHostCallbacks(ffi.Pointer<NveHostCallbacks> callbacks) =>
+      api.check(api.setHostCallbacks(_live, callbacks), 'set_host_callbacks');
+
+  /// Completes an asynchronous `Pending` host request and triggers the runtime wake callback.
+  void completeHostRequest(int requestId, int status, [Uint8List? payload]) => api.check(
+        api.completeHostRequest(_live, requestId, status, _borrow(payload ?? Uint8List(0))),
+        'complete_host_request',
+      );
+
+  /// Enqueues an unsolicited host push event and triggers the runtime wake callback.
+  void pushHostEvent(int serviceId, int eventId, [Uint8List? payload]) => api.check(
+        api.pushHostEvent(_live, serviceId, eventId, _borrow(payload ?? Uint8List(0))),
+        'push_host_event',
+      );
+
+  /// Enqueues an inbound host channel message and triggers the runtime wake callback.
+  void publishHostChannel(int channelId, {int flags = 0, Uint8List? payload}) => api.check(
+        api.publishHostChannel(_live, channelId, flags, _borrow(payload ?? Uint8List(0))),
+        'publish_host_channel',
+      );
 
   bool _found(int status, String what) {
     if (status == NveRuntimeStatus.notFound.code) {
@@ -434,10 +531,16 @@ final class RuntimeSession {
     if (_wake != null) {
       api.setWakeCallback(_handle, ffi.nullptr, ffi.nullptr);
     }
+    if (_intrinsicSize != null) {
+      api.setIntrinsicSizeInvalidatedCallback(_handle, ffi.nullptr, ffi.nullptr);
+    }
+    api.setHostCallbacks(_handle, ffi.nullptr);
     api.destroy(_handle);
     _handle = ffi.nullptr;
     _wake?.close();
     _wake = null;
+    _intrinsicSize?.close();
+    _intrinsicSize = null;
     _appLibrary = null;
     NativeHeap.free(_scratch);
     _bytes.free();
