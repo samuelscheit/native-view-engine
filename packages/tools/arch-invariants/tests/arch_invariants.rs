@@ -463,14 +463,22 @@ fn benchmarks_and_counting_alloc_coverage() {
 #[test]
 fn spec_invariant_ids_have_mechanical_guards() {
     let idx = repo_index();
-    let (spec_count, violations) = spec_registry::check_repo_spec_invariants(idx);
+    let report = spec_registry::check_repo_spec_invariants(idx);
     assert!(
-        spec_count > 0,
-        "expected at least one `[INV:<id>]` tag in SPEC_DOCS so the registry guard cannot pass vacuously"
+        report.spec_count > 0 && report.enforced_count() > 0,
+        "expected enforced `[INV:<id>]` guards in SPEC_DOCS (found {} spec tags, {} enforced, {} ratcheted)",
+        report.spec_count,
+        report.enforced_count(),
+        report.ratcheted_count(),
     );
     assert_no_violations(
         "Every promised `[INV:<id>]` in AGENTS.md / docs/BACKLOG.md / docs/architecture.md has a backing mechanical guard",
-        &violations,
+        &report.violations,
+    );
+    assert_eq!(
+        report.enforced_count() + report.ratcheted_count(),
+        report.spec_count,
+        "every covered spec invariant must be classified honestly as Enforced or Ratcheted",
     );
 }
 

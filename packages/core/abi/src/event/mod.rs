@@ -173,12 +173,7 @@ impl EventFlags {
     /// `code`, split key `[key, code]`, or `CUSTOM_NAMED` `[name, data]`).
     #[inline(always)]
     pub const fn has_utf8_text(self) -> bool {
-        const NON_TEXT_FRAMING: EventFlags = EventFlags(
-            EventFlags::INLINE_KEY_UTF8.0
-                | EventFlags::KEY_SPLIT_BYTES.0
-                | EventFlags::CUSTOM_NAMED.0,
-        );
-        self.contains(Self::UTF8_BYTES) && !self.intersects(NON_TEXT_FRAMING)
+        (self.0 & Self::INTERNAL_FRAMING_MASK) == Self::UTF8_BYTES.0
     }
 }
 

@@ -870,3 +870,255 @@ fn apply_row_patch_inherited_rejected_resource_preserves_parent_and_explicit_mas
 
     store.resources.release(wrong_kind_id);
 }
+
+#[test]
+fn apply_row_patch_inherited_64bit_hi_word_skip_and_orphan_word0_preserve_inheritance() {
+    #[allow(dead_code)]
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.patch.inherited_wide64", storage = "sparse", flags = "publish", inherited)]
+    struct InheritedWide64 {
+        #[effect(paint)]
+        #[default(Rgba::BLACK)]
+        color: Rgba,
+        #[effect(paint)]
+        stamp: u64,
+        #[effect(paint)]
+        blob: Res<ChildBlob>,
+    }
+
+    let mut store = NodeStore::new();
+    let (parent, child_str_hi, child_wide64_hi, child_orphan_typo, child_orphan_res, parent_blob) = {
+        let mut tx = store.tx();
+        let parent = tx.create();
+        let child_str_hi = tx.create();
+        let child_wide64_hi = tx.create();
+        let child_orphan_typo = tx.create();
+        let child_orphan_res = tx.create();
+        tx.set_children(NodeId::ROOT, &[parent]);
+        tx.set_children(
+            parent,
+            &[child_str_hi, child_wide64_hi, child_orphan_typo, child_orphan_res],
+        );
+
+        tx.edit::<PatchTypo>(parent)
+            .color(Rgba::rgb(10, 20, 30))
+            .font_size(22.0)
+            .family("Inter");
+        tx.edit::<InheritedWide64>(parent)
+            .color(Rgba::rgb(40, 50, 60))
+            .stamp(0x1122_3344_5566_7788)
+            .blob(Some(ChildBlob(vec![7, 8, 9])));
+        let parent_blob = tx.store().row::<InheritedWide64>(parent).blob();
+        commit_tx(tx);
+        (
+            parent,
+            child_str_hi,
+            child_wide64_hi,
+            child_orphan_typo,
+            child_orphan_res,
+            parent_blob,
+        )
+    };
+
+    // Helper: construct a canonical single-table wire RowPatchView with ascending word ops.
+    let build_wire_patch = |key: nve_abi::table::TableKey, ops: &[(u8, u16, u32, u32)]| -> Vec<u32> {
+        let mut sorted = ops.to_vec();
+        sorted.sort_by_key(|o| o.0);
+        let mut w = vec![1u32, key.lo(), key.hi(), sorted.len() as u32];
+        for (word, flags, clear_mask, set_bits) in sorted {
+            w.push(u32::from(word) | (u32::from(flags) << 16));
+            w.push(clear_mask);
+            w.push(set_bits);
+        }
+        w
+    };
+
+    // Scenario A1: `Str` field (`PatchTypo::FAMILY`, `bits == 64`): valid scalar op on `color` +
+    // skipped scalar op on `family.word + 1` (high word of the 2-word Str) + word-0 explicit bits
+    // for BOTH `color` (bit 0) and `family` (bit 3). Must NOT flip `family`'s explicit bit!
+    {
+        let explicit_mask = (1u32 << PatchTypo::COLOR.explicit_bit)
+            | (1u32 << PatchTypo::FAMILY.explicit_bit);
+        let words = build_wire_patch(
+            PatchTypo::KEY,
+            &[
+                (0, crate::WORD_OP_SCALAR, explicit_mask, explicit_mask),
+                (PatchTypo::COLOR.word, crate::WORD_OP_SCALAR, u32::MAX, Rgba::WHITE.0),
+                (PatchTypo::FAMILY.word + 1, crate::WORD_OP_SCALAR, u32::MAX, 123),
+            ],
+        );
+        let view = RowPatchView::from_words(&words).expect("valid crafted Str hi-word patch");
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_str_hi, view);
+        commit_tx(tx);
+    }
+    let row_str = store.row::<PatchTypo>(child_str_hi);
+    assert!(row_str.is_color_explicit(), "valid scalar op must set its explicit bit");
+    assert!(
+        !row_str.is_family_explicit(),
+        "skipped op on Str f.word + 1 must NOT flip 64-bit Str explicit bit"
+    );
+    let root_typo = ResolvedRow::<PatchTypo>::root(&store);
+    let parent_typo = ResolvedRow::<PatchTypo>::resolve(&store, parent, &root_typo);
+    let resolved_str = ResolvedRow::<PatchTypo>::resolve(&store, child_str_hi, &parent_typo);
+    assert_eq!(resolved_str.get().color(), Rgba::WHITE);
+    assert_eq!(
+        resolved_str.get().family(),
+        "Inter",
+        "parent's inherited font family must not be wiped"
+    );
+
+    // Scenario A2: `Wide64` (`u64`) field (`InheritedWide64::STAMP`, `bits == 64`): valid scalar
+    // op on `color` + valid low word `stamp.word` + skipped mismatched `WORD_OP_RESOURCE` op on
+    // `stamp.word + 1` + word-0 explicit bits for `color` and `stamp`. Must NOT flip `stamp`'s
+    // explicit bit or wipe parent inheritance!
+    {
+        let explicit_mask = (1u32 << InheritedWide64::COLOR.explicit_bit)
+            | (1u32 << InheritedWide64::STAMP.explicit_bit);
+        let words = build_wire_patch(
+            InheritedWide64::KEY,
+            &[
+                (0, crate::WORD_OP_SCALAR, explicit_mask, explicit_mask),
+                (
+                    InheritedWide64::COLOR.word,
+                    crate::WORD_OP_SCALAR,
+                    u32::MAX,
+                    Rgba::rgb(1, 2, 3).0,
+                ),
+                (
+                    InheritedWide64::STAMP.word,
+                    crate::WORD_OP_SCALAR,
+                    u32::MAX,
+                    0xDEAD_BEEF,
+                ),
+                (
+                    InheritedWide64::STAMP.word + 1,
+                    crate::WORD_OP_RESOURCE,
+                    u32::MAX,
+                    1,
+                ),
+            ],
+        );
+        let view = RowPatchView::from_words(&words).expect("valid crafted Wide64 hi-word patch");
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_wide64_hi, view);
+        commit_tx(tx);
+    }
+    let row_w64 = store.row::<InheritedWide64>(child_wide64_hi);
+    assert!(row_w64.is_color_explicit());
+    assert!(
+        !row_w64.is_stamp_explicit(),
+        "skipped op on Wide64 f.word + 1 must NOT flip 64-bit stamp explicit bit"
+    );
+    let root_w64 = ResolvedRow::<InheritedWide64>::root(&store);
+    let parent_w64 = ResolvedRow::<InheritedWide64>::resolve(&store, parent, &root_w64);
+    let resolved_w64 = ResolvedRow::<InheritedWide64>::resolve(&store, child_wide64_hi, &parent_w64);
+    assert_eq!(resolved_w64.get().color(), Rgba::rgb(1, 2, 3));
+    assert_eq!(
+        resolved_w64.get().stamp(),
+        0x1122_3344_5566_7788,
+        "parent's inherited 64-bit stamp must remain intact"
+    );
+
+    // Control check: a complete valid 64-bit `RowPatch::set` on `STAMP` DOES apply and flip its bit.
+    {
+        let mut valid_p = RowPatch::new();
+        valid_p.set(InheritedWide64::STAMP, 0xAABB_CCDD_EEFF_0011);
+        let mut v_words = Vec::new();
+        assert!(valid_p.write_words(&mut v_words));
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_wide64_hi, RowPatchView::from_words(&v_words).unwrap());
+        commit_tx(tx);
+    }
+    let row_w64_after = store.row::<InheritedWide64>(child_wide64_hi);
+    assert!(row_w64_after.is_stamp_explicit());
+    assert_eq!(row_w64_after.stamp(), 0xAABB_CCDD_EEFF_0011);
+
+    // Scenario B1: Crafted wire `RowPatchView` setting `color` + forged/orphan word-0 explicit
+    // bits for unpatched `font_size` and `family` (with NO ops targeting their words at all).
+    {
+        let forged_mask = (1u32 << PatchTypo::COLOR.explicit_bit)
+            | (1u32 << PatchTypo::FONT_SIZE.explicit_bit)
+            | (1u32 << PatchTypo::FAMILY.explicit_bit)
+            | (1u32 << 31); // out-of-range undeclared bit
+        let words = build_wire_patch(
+            PatchTypo::KEY,
+            &[
+                (0, crate::WORD_OP_SCALAR, forged_mask, forged_mask),
+                (
+                    PatchTypo::COLOR.word,
+                    crate::WORD_OP_SCALAR,
+                    u32::MAX,
+                    Rgba::rgb(9, 8, 7).0,
+                ),
+            ],
+        );
+        let view = RowPatchView::from_words(&words).expect("valid crafted orphan word-0 patch");
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_orphan_typo, view);
+        commit_tx(tx);
+    }
+    let row_ot = store.row::<PatchTypo>(child_orphan_typo);
+    assert!(row_ot.is_color_explicit());
+    assert!(
+        !row_ot.is_font_size_explicit(),
+        "orphan word-0 explicit bit without data op must be rejected"
+    );
+    assert!(
+        !row_ot.is_family_explicit(),
+        "orphan word-0 explicit bit for Str must be rejected"
+    );
+    assert_eq!(
+        row_ot.explicit_mask(),
+        1u32 << PatchTypo::COLOR.explicit_bit,
+        "only genuinely patched fields may have explicit bits set (no undeclared high bits)"
+    );
+    let root_typo = ResolvedRow::<PatchTypo>::root(&store);
+    let parent_typo = ResolvedRow::<PatchTypo>::resolve(&store, parent, &root_typo);
+    let resolved_ot = ResolvedRow::<PatchTypo>::resolve(&store, child_orphan_typo, &parent_typo);
+    assert_eq!(resolved_ot.get().color(), Rgba::rgb(9, 8, 7));
+    assert_eq!(resolved_ot.get().font_size(), 22.0);
+    assert_eq!(resolved_ot.get().family(), "Inter");
+
+    // Scenario B2: Crafted wire `RowPatchView` setting `color` + forged/orphan word-0 explicit
+    // bit for unpatched `Res<ChildBlob>` (`blob`) and `stamp` with NO ops for them.
+    {
+        let forged_mask = (1u32 << InheritedWide64::COLOR.explicit_bit)
+            | (1u32 << InheritedWide64::STAMP.explicit_bit)
+            | (1u32 << InheritedWide64::BLOB.explicit_bit);
+        let words = build_wire_patch(
+            InheritedWide64::KEY,
+            &[
+                (0, crate::WORD_OP_SCALAR, forged_mask, forged_mask),
+                (
+                    InheritedWide64::COLOR.word,
+                    crate::WORD_OP_SCALAR,
+                    u32::MAX,
+                    Rgba::rgb(77, 88, 99).0,
+                ),
+            ],
+        );
+        let view = RowPatchView::from_words(&words).expect("valid crafted orphan res patch");
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_orphan_res, view);
+        commit_tx(tx);
+    }
+    let row_or = store.row::<InheritedWide64>(child_orphan_res);
+    assert!(row_or.is_color_explicit());
+    assert!(!row_or.is_stamp_explicit());
+    assert!(
+        !row_or.is_blob_explicit(),
+        "orphan word-0 explicit bit for unpatched Res<R> must be rejected"
+    );
+    let root_w64 = ResolvedRow::<InheritedWide64>::root(&store);
+    let parent_w64 = ResolvedRow::<InheritedWide64>::resolve(&store, parent, &root_w64);
+    let resolved_or =
+        ResolvedRow::<InheritedWide64>::resolve(&store, child_orphan_res, &parent_w64);
+    assert_eq!(resolved_or.get().color(), Rgba::rgb(77, 88, 99));
+    assert_eq!(resolved_or.get().stamp(), 0x1122_3344_5566_7788);
+    assert_eq!(
+        resolved_or.get().blob(),
+        parent_blob,
+        "parent's inherited resource must not be clobbered by orphan word-0 bit"
+    );
+}

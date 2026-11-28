@@ -10,8 +10,8 @@ use nve_abi::ColorRgba;
 use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore, Rgba, RowPatch, RowPatchView};
 use nve_tables::layout_ext::GridTrack;
 use nve_tables::tables::{
-    BackgroundFillRes, BoxShadow, BoxShadows, GridLayout, GridTracks, Layout as LayoutTable,
-    Visual,
+    BackgroundFillRes, BackgroundFillView, BoxShadow, BoxShadows, GridLayout, GridTracks,
+    Layout as LayoutTable, Visual,
 };
 use nve_tables::{
     affine_concat, affine_inverse_map_point, affine_map_point, apply_inline_style_layers_to_tx,
@@ -142,8 +142,9 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
         tx.commit_into(&mut changes);
     }
 
-    let (allocs, acc) = measure_allocs(|| {
+    let (allocs, (acc, bg_stops_seen)) = measure_allocs(|| {
         let mut sum = 0u64;
+        let mut bg_stops = 0usize;
         for _ in 0..32 {
             for &raw in black_box(&colors) {
                 if let Some(c) = parse_color(raw) {
@@ -185,6 +186,27 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
                     sum = sum.wrapping_add(u64::from(s.color.0));
                 }
             }
+            if let Some(bg) = store.resource::<BackgroundFillRes>(v.background_fill()) {
+                match bg {
+                    BackgroundFillView::Solid(c) => {
+                        sum = sum.wrapping_add(u64::from(c.to_u32()));
+                    }
+                    BackgroundFillView::Linear { angle_deg, stops } => {
+                        sum = sum.wrapping_add(u64::from(angle_deg.to_bits()));
+                        for stop in stops.iter() {
+                            bg_stops += 1;
+                            sum = sum.wrapping_add(u64::from(stop.color.to_u32()));
+                        }
+                    }
+                    BackgroundFillView::Radial { radius, stops, .. } => {
+                        sum = sum.wrapping_add(u64::from(radius.to_bits()));
+                        for stop in stops.iter() {
+                            bg_stops += 1;
+                            sum = sum.wrapping_add(u64::from(stop.color.to_u32()));
+                        }
+                    }
+                }
+            }
             if let Some(gl) = store.try_row::<GridLayout>(node)
                 && let Some(tracks) = store.resource::<GridTracks>(gl.template_columns())
             {
@@ -201,10 +223,11 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
             );
             tx.commit_into(&mut changes);
         }
-        sum
+        (sum, bg_stops)
     });
 
     black_box(acc);
+    assert_eq!(bg_stops_seen, 32 * stops.len(), "BackgroundFillRes stops must be iterated");
     assert_eq!(
         allocs, 0,
         "steady-state nve-tables hot paths (parsers, transforms, gradients, patch views, flat resources, inline style tx) must allocate 0 bytes"

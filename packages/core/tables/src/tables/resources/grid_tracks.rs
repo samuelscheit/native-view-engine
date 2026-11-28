@@ -37,14 +37,46 @@ fn unpack_unit(tag: u32, w: u32) -> GridTrackUnit {
 }
 
 #[inline]
+fn is_valid_breadth(v: f32) -> bool {
+    v.is_finite() && v >= 0.0
+}
+
+#[inline]
+fn is_valid_track_unit(u: GridTrackUnit) -> bool {
+    match u {
+        GridTrackUnit::Auto | GridTrackUnit::MinContent | GridTrackUnit::MaxContent => true,
+        GridTrackUnit::Px(v) | GridTrackUnit::Percent(v) | GridTrackUnit::Fr(v) => {
+            is_valid_breadth(v)
+        }
+    }
+}
+
+#[inline]
+fn is_valid_single_track(s: GridSingleTrack) -> bool {
+    match s {
+        GridSingleTrack::Auto => true,
+        GridSingleTrack::Px(v) | GridSingleTrack::Percent(v) | GridSingleTrack::Fr(v) => {
+            is_valid_breadth(v)
+        }
+        GridSingleTrack::MinMax(min, max) => is_valid_track_unit(min) && is_valid_track_unit(max),
+    }
+}
+
+#[inline]
+fn is_valid_track(t: GridTrack) -> bool {
+    match t {
+        GridTrack::Auto => true,
+        GridTrack::Px(v) | GridTrack::Percent(v) | GridTrack::Fr(v) => is_valid_breadth(v),
+        GridTrack::MinMax(min, max) => is_valid_track_unit(min) && is_valid_track_unit(max),
+        GridTrack::Repeat(count, single) => count >= 1 && is_valid_single_track(single),
+    }
+}
+
+#[inline]
 fn valid_unit(tag: u32, w: u32) -> bool {
     match tag {
         0 | 4 | 5 => w == 0,
-        1 | 2 => f32::from_bits(w).is_finite(),
-        3 => {
-            let v = f32::from_bits(w);
-            v.is_finite() && v >= 0.0
-        }
+        1..=3 => is_valid_breadth(f32::from_bits(w)),
         _ => false,
     }
 }
@@ -125,12 +157,15 @@ fn validate_track(hdr: u32, w1: u32, w2: u32) -> bool {
                 && valid_unit(tag, w1)
         }
         4 => single_tag == 0 && rep == 0 && valid_unit(u1, w1) && valid_unit(u2, w2),
-        5 => match single_tag {
-            0 => u1 == 0 && u2 == 0 && w1 == 0 && w2 == 0,
-            1..=3 => u1 == 0 && u2 == 0 && w2 == 0 && valid_unit(single_tag, w1),
-            4 => valid_unit(u1, w1) && valid_unit(u2, w2),
-            _ => false,
-        },
+        5 => {
+            rep >= 1
+                && match single_tag {
+                    0 => u1 == 0 && u2 == 0 && w1 == 0 && w2 == 0,
+                    1..=3 => u1 == 0 && u2 == 0 && w2 == 0 && valid_unit(single_tag, w1),
+                    4 => valid_unit(u1, w1) && valid_unit(u2, w2),
+                    _ => false,
+                }
+        }
         _ => false,
     }
 }
@@ -233,7 +268,7 @@ impl FlatResource for GridTracks {
     type View<'a> = GridTracksView<'a>;
 
     fn write_words(&self, out: &mut Vec<u32>) -> bool {
-        if self.0.len() > MAX_ITEMS {
+        if self.0.len() > MAX_ITEMS || !self.0.iter().copied().all(is_valid_track) {
             return false;
         }
         let start = out.len();
@@ -242,11 +277,7 @@ impl FlatResource for GridTracks {
         for &track in self.0.iter() {
             out.extend_from_slice(&pack_track(track));
         }
-        // Producers intern exactly what replicas accept.
-        if !Self::validate(&out[start..]) {
-            out.truncate(start);
-            return false;
-        }
+        debug_assert!(Self::validate(&out[start..]));
         true
     }
 

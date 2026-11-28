@@ -107,7 +107,15 @@ impl FlatResource for BoxShadows {
     type View<'a> = BoxShadowsView<'a>;
 
     fn write_words(&self, out: &mut Vec<u32>) -> bool {
-        if self.0.len() > MAX_ITEMS {
+        if self.0.len() > MAX_ITEMS
+            || !self.0.iter().all(|s| {
+                s.offset_x.is_finite()
+                    && s.offset_y.is_finite()
+                    && s.blur_radius.is_finite()
+                    && s.blur_radius >= 0.0
+                    && s.spread_radius.is_finite()
+            })
+        {
             return false;
         }
         let start = out.len();
@@ -121,11 +129,7 @@ impl FlatResource for BoxShadows {
             out.push(s.color.0);
             out.push(u32::from(s.inset));
         }
-        // Producers intern exactly what replicas accept.
-        if !Self::validate(&out[start..]) {
-            out.truncate(start);
-            return false;
-        }
+        debug_assert!(Self::validate(&out[start..]));
         true
     }
 
@@ -283,7 +287,10 @@ impl FlatResource for BackgroundFillRes {
                 out.extend_from_slice(&[0, c.to_u32()]);
             }
             BackgroundFill::Linear(lg) => {
-                if lg.stops.len() > MAX_ITEMS {
+                if lg.stops.len() > MAX_ITEMS
+                    || !lg.angle_deg.is_finite()
+                    || !lg.stops.iter().all(|s| s.offset.is_finite())
+                {
                     return false;
                 }
                 out.reserve(3 + lg.stops.len() * 2);
@@ -296,7 +303,12 @@ impl FlatResource for BackgroundFillRes {
                 }
             }
             BackgroundFill::Radial(rg) => {
-                if rg.stops.len() > MAX_ITEMS {
+                if rg.stops.len() > MAX_ITEMS
+                    || !rg.center_x.is_finite()
+                    || !rg.center_y.is_finite()
+                    || !(rg.radius.is_finite() && rg.radius >= 0.0)
+                    || !rg.stops.iter().all(|s| s.offset.is_finite())
+                {
                     return false;
                 }
                 out.reserve(5 + rg.stops.len() * 2);
@@ -311,11 +323,7 @@ impl FlatResource for BackgroundFillRes {
                 }
             }
         }
-        // Producers intern exactly what replicas accept.
-        if !Self::validate(&out[start..]) {
-            out.truncate(start);
-            return false;
-        }
+        debug_assert!(Self::validate(&out[start..]));
         true
     }
 

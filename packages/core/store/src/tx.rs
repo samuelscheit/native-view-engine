@@ -446,8 +446,9 @@ impl TxCore<'_> {
 
     /// Applies every valid table operation in `patch` onto live node `id`, attaching a touched
     /// table only when at least one non-metadata op passes word, liveness, and resource-kind
-    /// checks. On `#[nve_table(inherited)]` tables, explicit bits belonging to skipped ops are
-    /// masked out before updating word 0 so rejected resource ops never override inherited values.
+    /// checks. On `#[nve_table(inherited)]` tables, explicit bits belonging to skipped ops or
+    /// forged/orphan word-0 set bits lacking all accompanying data-word ops are masked out before
+    /// updating word 0 so rejected or unpatched fields never override inherited values.
     pub fn apply_row_patch(&mut self, id: NodeId, patch: RowPatchView<'_>) {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
         for table in patch.tables() {
@@ -483,6 +484,7 @@ impl TxCore<'_> {
             let mut w = writer_at(self.store, id.node_index(), slot);
             let mut explicit_op: Option<WordOp> = None;
             let mut skipped_words_mask = 0u32;
+            let mut applied_words_mask = 0u32;
             for op in table.ops() {
                 let wi = op.word() as usize;
                 let bit = 1u32 << (wi & 31);
@@ -502,29 +504,45 @@ impl TxCore<'_> {
                             .is_some_and(|k| w.resources.is_live_with_kind(rid, k))
                     {
                         w.put_resource_id_wire(wi, rid);
+                        applied_words_mask |= bit;
                     } else {
                         skipped_words_mask |= bit;
                     }
                 } else {
                     w.put(wi, 0, op.clear_mask().raw(), op.set_bits());
+                    applied_words_mask |= bit;
                 }
             }
             if let Some(op) = explicit_op {
-                let mut skipped_explicit_bits = 0u32;
-                if skipped_words_mask != 0 {
-                    for (b, f) in desc.fields.iter().enumerate() {
-                        if b < 32
-                            && ((skipped_words_mask & (1u32 << f.word)) != 0
-                                || (f.val_word != nve_abi::table::NO_VAL_WORD
-                                    && (skipped_words_mask & (1u32 << f.val_word)) != 0))
-                        {
-                            skipped_explicit_bits |= 1u32 << b;
-                        }
+                let mut masked_explicit_bits = 0u32;
+                let set_bits = op.set_bits();
+                let field_count = desc.fields.len().min(32);
+                let valid_field_bits = if field_count == 32 {
+                    u32::MAX
+                } else {
+                    (1u32 << field_count) - 1
+                };
+                for (b, f) in desc.fields.iter().take(32).enumerate() {
+                    let mut field_words = 1u32 << f.word;
+                    if f.val_word != nve_abi::table::NO_VAL_WORD {
+                        field_words |= 1u32 << f.val_word;
+                    }
+                    if f.bits == 64 && usize::from(f.word) + 1 < 32 {
+                        field_words |= 1u32 << (f.word + 1);
+                    }
+                    let explicit_bit = 1u32 << b;
+                    let any_skipped = (skipped_words_mask & field_words) != 0;
+                    let orphan_set = (set_bits & explicit_bit) != 0
+                        && (applied_words_mask & field_words) != field_words;
+                    if any_skipped || orphan_set {
+                        masked_explicit_bits |= explicit_bit;
                     }
                 }
-                let effective_clear = op.clear_mask().raw() & !skipped_explicit_bits;
+                let effective_clear =
+                    op.clear_mask().raw() & valid_field_bits & !masked_explicit_bits;
                 if effective_clear != 0 {
-                    let merged = WordMask(effective_clear).apply(w.words()[0], op.set_bits());
+                    let effective_set = set_bits & effective_clear;
+                    let merged = WordMask(effective_clear).apply(w.words()[0], effective_set);
                     w.put_explicit_word(merged);
                 }
             }
