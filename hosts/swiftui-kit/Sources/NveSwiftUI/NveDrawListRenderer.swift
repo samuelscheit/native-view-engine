@@ -58,7 +58,10 @@ public enum NveDrawListRenderer {
         cornerRadius: CGFloat = 0
     ) throws -> Int {
         let header = try validate(raw)
-        guard bounds.width > 0 && bounds.height > 0 else {
+        guard bounds.origin.x.isFinite, bounds.origin.y.isFinite,
+              bounds.width.isFinite, bounds.height.isFinite,
+              bounds.width > 0, bounds.height > 0
+        else {
             return Int(header.opCount)
         }
 
@@ -109,9 +112,17 @@ private struct SwiftUIDrawListSink: NveDrawListSink {
     var clipStack: [GraphicsContext] = []
 
     mutating func onClear(color: UInt32) {
-        if let c = NveSceneRenderer.color(NveColor(Rgba(packed: color))) {
-            activeCtx.fill(Path(localBounds), with: .color(c))
-        }
+        let rgba = Rgba(packed: color)
+        let c = Color(
+            .sRGB,
+            red: Double(rgba.r) / 255,
+            green: Double(rgba.g) / 255,
+            blue: Double(rgba.b) / 255,
+            opacity: Double(rgba.a) / 255
+        )
+        var clearCtx = activeCtx
+        clearCtx.blendMode = .copy
+        clearCtx.fill(Path(localBounds), with: .color(c))
     }
 
     mutating func onFillRect(x: Float, y: Float, w: Float, h: Float, color: UInt32) {
@@ -179,20 +190,28 @@ private struct SwiftUIDrawListSink: NveDrawListSink {
 
     mutating func onStrokePolyline(width: Float, color: UInt32, points: NveDrawListPointSlice) {
         let lw = CGFloat(width)
-        if points.count >= 2, lw > 0, let c = NveSceneRenderer.color(NveColor(Rgba(packed: color))) {
-            var path = Path()
-            let first = points[0]
-            path.move(to: CGPoint(x: CGFloat(first.x), y: CGFloat(first.y)))
-            for p in 1 ..< points.count {
-                let pt = points[p]
-                path.addLine(to: CGPoint(x: CGFloat(pt.x), y: CGFloat(pt.y)))
-            }
-            activeCtx.stroke(
-                path,
-                with: .color(c),
-                style: StrokeStyle(lineWidth: lw, lineCap: .round, lineJoin: .round)
+        guard !points.isEmpty, lw > 0, let c = NveSceneRenderer.color(NveColor(Rgba(packed: color))) else { return }
+        if points.count == 1 {
+            let p = points[0]
+            let r = lw * 0.5
+            activeCtx.fill(
+                Path(ellipseIn: CGRect(x: CGFloat(p.x) - r, y: CGFloat(p.y) - r, width: lw, height: lw)),
+                with: .color(c)
             )
+            return
         }
+        var path = Path()
+        let first = points[0]
+        path.move(to: CGPoint(x: CGFloat(first.x), y: CGFloat(first.y)))
+        for p in 1 ..< points.count {
+            let pt = points[p]
+            path.addLine(to: CGPoint(x: CGFloat(pt.x), y: CGFloat(pt.y)))
+        }
+        activeCtx.stroke(
+            path,
+            with: .color(c),
+            style: StrokeStyle(lineWidth: lw, lineCap: .round, lineJoin: .round)
+        )
     }
 
     mutating func onClipRect(x: Float, y: Float, w: Float, h: Float) {

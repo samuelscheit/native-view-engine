@@ -1,6 +1,7 @@
 #import "NveAppleSceneNodes.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace nve::apple {
 
@@ -34,19 +35,26 @@ static A11yRole role_for_aria(uint8_t aria) noexcept {
   }
 }
 
-NodeKind node_kind(const NodeData &n) noexcept {
+static uint8_t line_height_unit_from_length(uint8_t unit) noexcept {
+  if (unit == NVE_LENGTH_POINTS) return NVE_LINE_HEIGHT_POINTS;
+  if (unit == NVE_LENGTH_PERCENT) return NVE_LINE_HEIGHT_PERCENT;
+  return NVE_LINE_HEIGHT_AUTO;
+}
+
+NodeKind node_kind(const NodeData &n, bool has_canvas) noexcept {
   switch (n.kind) {
     case nve::host::NodeKind::TextInput: return NodeKind::TextInput;
     case nve::host::NodeKind::Image: return NodeKind::Image;
     case nve::host::NodeKind::Scroll: return NodeKind::Scroll;
     case nve::host::NodeKind::Text: return NodeKind::Text;
     case nve::host::NodeKind::View:
+      return has_canvas ? NodeKind::Canvas : NodeKind::Container;
     case nve::host::NodeKind::Link: return NodeKind::Container;
   }
   return NodeKind::Container;
 }
 
-NodeView node_view(const NodeData &n) {
+NodeView node_view(const NodeData &n, const nve::canvas::CanvasData *canvas) {
   NodeView v;
   v.node_id = n.id;
   v.frame = CGRectMake(n.rect.x, n.rect.y, n.rect.width, n.rect.height);
@@ -62,11 +70,19 @@ NodeView node_view(const NodeData &n) {
                      n.visual.overflow_y != NVE_OVERFLOW_VISIBLE;
   s.visible = n.visual.visibility != NVE_VISIBILITY_HIDDEN;
   s.text_rgba = n.text_style.color;
+  s.font_family.assign(n.text_style.font_family);
   if (std::isfinite(n.text_style.font_size) && n.text_style.font_size > 0.0f) s.font_size = n.text_style.font_size;
   s.font_weight = n.text_style.font_weight;
   s.italic = n.text_style.font_style != NVE_FONT_STYLE_NORMAL;
+  s.letter_spacing = std::isfinite(n.text_style.letter_spacing) ? n.text_style.letter_spacing : 0.0f;
+  s.line_height_unit = line_height_unit_from_length(n.text_style.line_height.unit);
+  s.line_height = std::isfinite(n.text_style.line_height.value) ? n.text_style.line_height.value : 0.0f;
   s.text_align = n.text_style.text_align;
   s.max_lines = n.text_style.max_lines;
+  s.text_decoration = n.text_style.text_decoration;
+  s.white_space = n.text_style.white_space;
+  s.word_break = n.text_style.word_break;
+  s.overflow_wrap = n.text_style.overflow_wrap;
 
   NodeSemantics &a = v.semantics;
   switch (n.kind) {
@@ -76,7 +92,8 @@ NodeView node_view(const NodeData &n) {
       a.placeholder = n.input.placeholder;
       a.secure_text_entry = n.input.secure;
       a.multiline = n.input.multiline;
-      a.disabled = n.input.read_only;
+      a.read_only = n.input.read_only;
+      a.max_length = n.input.max_length;
       a.role = A11yRole::TextBox;
       break;
     case nve::host::NodeKind::Image:
@@ -99,6 +116,12 @@ NodeView node_view(const NodeData &n) {
       a.label = v.text;
       break;
     case nve::host::NodeKind::View:
+      if (canvas != nullptr) {
+        v.kind = NodeKind::Canvas;
+        v.canvas_draw_list = canvas->draw_list;
+        v.canvas_generation = canvas->generation;
+      }
+      break;
     case nve::host::NodeKind::Link:
       break;
   }

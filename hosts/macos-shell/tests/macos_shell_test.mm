@@ -320,7 +320,7 @@ int main() {
 
     // 7. Core tables: secure text input, image with a11y, scroll document sizing.
     RCTNveMacComponentView *scene = make_view();
-    CHECK([scene.nveHost replayFrame0:core_table_scene()]);
+    CHECK([scene.nveHost submitNve2Frame:core_table_scene()]);
     NSView *input = [scene nativeViewForNodeId:2u];
     CHECK([input isKindOfClass:[NSSecureTextField class]]);
     CHECK([((NSTextField *)input).stringValue isEqualToString:@"hunter2"]);
@@ -338,7 +338,7 @@ int main() {
     // A clean image node whose resource bytes were rewritten re-decodes; nothing else updates.
     NSImage *before4 = ((NveAppleImageView *)image).image;
     CHECK(near(before4.size.width, 4.0));
-    CHECK([scene.nveHost replayFrame0:rewritten_image_scene()]);
+    CHECK([scene.nveHost submitNve2Frame:rewritten_image_scene()]);
     CHECK([scene nativeViewForNodeId:3u] == image && near(((NveAppleImageView *)image).image.size.width, 8.0));
     CHECK(scene.nveLastReconciledDirtyCount == 1u && scene.nveLastReconciledRemovedCount == 0u);
 
@@ -349,7 +349,7 @@ int main() {
       RCTNveMacComponentView *det = make_view();
       __weak NSImage *weakImg8 = nil;
       @autoreleasepool {
-        CHECK([det.nveHost replayFrame0:detach_scene(1u)]);
+        CHECK([det.nveHost submitNve2Frame:detach_scene(1u)]);
         NveAppleImageView *a = (NveAppleImageView *)[det nativeViewForNodeId:2u];
         NveAppleImageView *b = (NveAppleImageView *)[det nativeViewForNodeId:3u];
         CHECK([a isKindOfClass:[NveAppleImageView class]] && [b isKindOfClass:[NveAppleImageView class]]);
@@ -358,7 +358,7 @@ int main() {
         CHECK([sv isKindOfClass:[NSScrollView class]] && near(sv.documentView.frame.size.height, 600.0));
         NSView *parent = b.superview;
         CHECK(parent != nil && [parent.subviews containsObject:b]);
-        CHECK([det.nveHost replayFrame0:detach_scene(2u)]);
+        CHECK([det.nveHost submitNve2Frame:detach_scene(2u)]);
         CHECK([det nativeViewForNodeId:3u] == b);  // still live, so still realized ...
         CHECK(b.superview == nil && ![parent.subviews containsObject:b]);  // ... but detached
         CHECK(a.superview == parent && sv.superview == parent);
@@ -368,7 +368,7 @@ int main() {
         // Rewriting tag-1 inline image under the same resource id 9 evicts cache and re-decodes.
         NSImage *img4 = a.image;
         CHECK(near(img4.size.width, 4.0));
-        CHECK([det.nveHost replayFrame0:detach_scene(3u)]);
+        CHECK([det.nveHost submitNve2Frame:detach_scene(3u)]);
         CHECK([det nativeViewForNodeId:2u] == a);
         CHECK(a.image != nil && a.image != img4 && near(a.image.size.width, 8.0));
         weakImg8 = a.image;
@@ -382,15 +382,15 @@ int main() {
     //      `set_children` change on the parent.
     {
       RCTNveMacComponentView *zview = make_view();
-      CHECK([zview.nveHost replayFrame0:z_order_scene(1u)]);
+      CHECK([zview.nveHost submitNve2Frame:z_order_scene(1u)]);
       NSView *box = [zview nativeViewForNodeId:2u];
       NSView *n3 = [zview nativeViewForNodeId:3u];
       NSView *n4 = [zview nativeViewForNodeId:4u];
       NSView *n5 = [zview nativeViewForNodeId:5u];
       CHECK(box != nil && [box.subviews isEqualToArray:(@[ n3, n4, n5 ])]);
-      CHECK([zview.nveHost replayFrame0:z_order_scene(2u)]);
+      CHECK([zview.nveHost submitNve2Frame:z_order_scene(2u)]);
       CHECK([box.subviews isEqualToArray:(@[ n5, n4, n3 ])]);
-      CHECK([zview.nveHost replayFrame0:z_order_scene(3u)]);
+      CHECK([zview.nveHost submitNve2Frame:z_order_scene(3u)]);
       CHECK([box.subviews isEqualToArray:(@[ n5, n3, n4 ])]);
     }
 
@@ -459,12 +459,12 @@ int main() {
     // 7b. Inherited typography cascades through dirty non-typography children to a recycled
     //     (generation 1) child, and clearing an ancestor's Typography restyles the subtree.
     RCTNveMacComponentView *typo = make_view();
-    CHECK([typo.nveHost replayFrame0:typography_scene(1u)]);
+    CHECK([typo.nveHost submitNve2Frame:typography_scene(1u)]);
     CHECK(near(font_size(typo, 4u), 30.0) && near(font_size(typo, kRecycledLeaf), 30.0));
-    CHECK([typo.nveHost replayFrame0:typography_scene(2u)]);
+    CHECK([typo.nveHost submitNve2Frame:typography_scene(2u)]);
     CHECK(near(font_size(typo, 4u), 20.0));             // through the dirty `mid`
     CHECK(near(font_size(typo, kRecycledLeaf), 20.0));  // raw NodeId resolved to its slot
-    CHECK([typo.nveHost replayFrame0:typography_scene(3u)]);
+    CHECK([typo.nveHost submitNve2Frame:typography_scene(3u)]);
     CHECK(font_size(typo, 4u) > 0.0 && !near(font_size(typo, 4u), 20.0));
     CHECK(font_size(typo, kRecycledLeaf) > 0.0 && !near(font_size(typo, kRecycledLeaf), 20.0));
 
@@ -559,10 +559,10 @@ int main() {
       };
       // Rust `WireDecoder` rejects binding a `kDrawListKind` resource directly to `nve.image.src`.
       RCTNveMacComponentView *v_wire = make_view();
-      CHECK(![v_wire.nveHost replayFrame0:make_img_scene(kDrawListKind, colliding, false)]);
+      CHECK(![v_wire.nveHost submitNve2Frame:make_img_scene(kDrawListKind, colliding, false)]);
       // Host-side lookup enforces `expectedKind` on live runtime resources (colliding `[1, 1, 0]` and PNG bytes).
       RCTNveMacComponentView *v1 = make_view();
-      CHECK([v1.nveHost replayFrame0:make_img_scene(nve::host::kImageSrcKind, valid_png_src, true)]);
+      CHECK([v1.nveHost submitNve2Frame:make_img_scene(nve::host::kImageSrcKind, valid_png_src, true)]);
       CHECK(((NveAppleImageView *)[v1 nativeViewForNodeId:2u]).image != nil);
       CHECK([v1.nveHost resourceBytesForId:9u expectedKind:nve::host::kImageSrcKind.value] != nil);
       CHECK([v1.nveHost resourceBytesForId:9u expectedKind:kDrawListKind.value] == nil);
@@ -596,7 +596,7 @@ int main() {
       }
       // Empty `EncodedBytes` (`[1, 0]`) under `kImageSrcKind` yields nil and never hits URL cache.
       RCTNveMacComponentView *v4 = make_view();
-      CHECK([v4.nveHost replayFrame0:make_img_scene(nve::host::kImageSrcKind, nve::host::encode_image_bytes({}), false)]);
+      CHECK([v4.nveHost submitNve2Frame:make_img_scene(nve::host::kImageSrcKind, nve::host::encode_image_bytes({}), false)]);
       CHECK(((NveAppleImageView *)[v4 nativeViewForNodeId:2u]).image == nil);
     }
 

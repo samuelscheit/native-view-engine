@@ -71,6 +71,21 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
                     surfaceId:(uint32_t)surfaceId
                         error:(NSError *_Nullable *_Nullable)error;
 - (void)disconnectPaired;
+/// Atomically persists the active scene as an ABI v6 `frame0.nve2` file.
+- (BOOL)saveFrame0ToPath:(NSString *)path
+              appBuildId:(uint64_t)appBuildId
+                 envHash:(uint64_t)envHash
+                   error:(NSError *_Nullable *_Nullable)error;
+/// Boots a persisted ABI v6 `frame0.nve2` file immediately while no app is attached.
+- (BOOL)bootFrame0FromPath:(NSString *)path
+                appBuildId:(uint64_t)appBuildId
+                   envHash:(uint64_t)envHash
+                     error:(NSError *_Nullable *_Nullable)error;
+/// Boots an in-memory ABI v6 `frame0.nve2` envelope immediately while no app is attached.
+- (BOOL)bootFrame0FromBytes:(NSData *)envelope
+                 appBuildId:(uint64_t)appBuildId
+                    envHash:(uint64_t)envHash
+                      error:(NSError *_Nullable *_Nullable)error;
 /// Props from an `NSDictionary` (`set_props`).
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;
 /// Ticks, reconciles native views, and flushes outbound events.
