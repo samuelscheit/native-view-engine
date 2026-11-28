@@ -14,6 +14,11 @@ import 'package:nve_host/nve_host.dart';
 abstract interface class NveSceneResources {
   /// Payload of [resourceId], or `null` when unknown / not exposed.
   Uint8List? payload(int resourceId);
+
+  /// Content versions of this source's resources. Owned by the source (one per runtime
+  /// session), never by a painter: a painter shared across sessions, or a controller swap,
+  /// never answers one session's resource id with another's decoded image.
+  ResourceVersions get versions;
 }
 
 /// Decoded `nve.res.image_src` payload (Rust `ImageSrc`).

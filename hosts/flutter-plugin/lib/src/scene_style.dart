@@ -61,7 +61,6 @@ final class NveTextStyle {
     bool has(int bit) => set & bit != 0;
     final rawSize = has(NveTypographySet.fontSize) ? t.f32(row, TypographyTable.fontSize) : fontSize;
     final size = rawSize.isFinite && rawSize > 0 ? rawSize : fontSize;
-    final lh = t.length(row, TypographyTable.lineHeight);
     final family = has(NveTypographySet.fontFamily) ? s.str(t, row, TypographyTable.fontFamily) : fontFamily;
     return NveTextStyle(
       color: has(NveTypographySet.color) ? t.color(row, TypographyTable.color).packed : color,
@@ -72,18 +71,22 @@ final class NveTextStyle {
           : italic,
       textAlign: has(NveTypographySet.textAlign) ? t.enumValue(row, TypographyTable.textAlign) : textAlign,
       fontFamily: family == null || family.isEmpty ? null : family,
-      letterSpacing: has(NveTypographySet.letterSpacing) ? t.f32(row, TypographyTable.letterSpacing) : letterSpacing,
-      lineHeight: has(NveTypographySet.lineHeight)
-          ? switch (lh.unit) {
-              LengthUnit.points => lh.value.isFinite && lh.value > 0 ? lh.value : null,
-              LengthUnit.percent => lh.value.isFinite && lh.value > 0 ? size * lh.value / 100 : null,
-              LengthUnit.auto => null,
-            }
-          : lineHeight,
+      letterSpacing: has(NveTypographySet.letterSpacing) ? _finite(t.f32(row, TypographyTable.letterSpacing)) : letterSpacing,
+      // The `LengthValue` is decoded only when the row sets a line height.
+      lineHeight: has(NveTypographySet.lineHeight) ? _lineHeight(t.length(row, TypographyTable.lineHeight), size) : lineHeight,
       maxLines: has(NveTypographySet.maxLines) ? t.u32(row, TypographyTable.maxLines) : maxLines,
       decoration: has(NveTypographySet.textDecoration) ? t.u32(row, TypographyTable.textDecoration) : decoration,
     );
   }
+
+  /// `null` (inherit Flutter's default) for a NaN / infinite wire value.
+  static double? _finite(double v) => v.isFinite ? v : null;
+
+  static double? _lineHeight(LengthValue lh, double fontSize) => switch (lh.unit) {
+        LengthUnit.points => lh.value.isFinite && lh.value > 0 ? lh.value : null,
+        LengthUnit.percent => lh.value.isFinite && lh.value > 0 ? fontSize * lh.value / 100 : null,
+        LengthUnit.auto => null,
+      };
 
   /// Flutter text style (optionally with another [colorOverride]).
   TextStyle toTextStyle({int? colorOverride}) => TextStyle(

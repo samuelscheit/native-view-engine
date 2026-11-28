@@ -313,16 +313,25 @@ final class ResourceVersions {
   int _epoch = -1;
   Key64? _frame;
 
-  /// Folds in one published frame (repeat calls for the same frame are no-ops).
-  void observe(int sceneEpoch, Key64 frameId, Uint32List dirtyResources) {
+  /// Folds in one published frame (repeat calls for the same frame are no-ops). [onRetired]
+  /// receives every version this frame supersedes, so caches keyed by it evict at once.
+  void observe(int sceneEpoch, Key64 frameId, Uint32List dirtyResources, {void Function(int version)? onRetired}) {
     final last = _frame;
     if (last == frameId && sceneEpoch == _epoch) {
       return;
     }
     if (sceneEpoch != _epoch || last == null || !_follows(frameId, last)) {
+      if (onRetired != null) {
+        _versions.values.forEach(onRetired);
+      }
       _versions.clear();
     } else {
-      dirtyResources.forEach(_versions.remove);
+      for (final id in dirtyResources) {
+        final retired = _versions.remove(id);
+        if (retired != null) {
+          onRetired?.call(retired);
+        }
+      }
     }
     _epoch = sceneEpoch;
     _frame = frameId;

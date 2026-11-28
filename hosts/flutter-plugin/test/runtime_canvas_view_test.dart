@@ -273,6 +273,27 @@ void main() {
     expect(f.isDisposed, isTrue);
   });
 
+  testWidgets('a throwing onAppEvent listener never hides the published frame', (tester) async {
+    final f = NveCanvasController.open(
+      runtimeLibrary: _lib('NVE_RUNTIME_LIB', 'nve_runtime'),
+      app: ffi.DynamicLibrary.open(_lib('NVE_HOST_FIXTURE_APP_LIB', 'nve_host_fixture_app')),
+    );
+    var notified = 0;
+    f
+      ..setViewport(const Size(100, 100), 1)
+      ..addListener(() => notified++)
+      ..onAppEvent = (_) => throw StateError('listener bug');
+    final framesBefore = f.frameCount;
+    final frameIdBefore = f.session.metrics().frameId;
+    expect(f.setProps(const {'count': 3}), isTrue);
+    expect(f.tick, throwsStateError, reason: 'the listener error propagates');
+    final published = f.session.metrics().frameId != frameIdBefore;
+    expect(published, isTrue, reason: 'the viewport + props tick publishes a frame');
+    expect(f.frameCount, framesBefore + 1, reason: 'the frame is counted despite the throw');
+    expect(notified, 1, reason: 'painters are notified despite the throw');
+    f.dispose();
+  });
+
   testWidgets('controller swap and disposal tear down cleanly', (tester) async {
     await tester.pumpWidget(_host(c));
     await _settle(tester, c);

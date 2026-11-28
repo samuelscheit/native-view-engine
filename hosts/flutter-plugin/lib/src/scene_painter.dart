@@ -65,21 +65,21 @@ final class NveScenePainter {
   final Map<_TextKey, TextPainter> _text = <_TextKey, TextPainter>{};
   final Set<_TextKey> _usedText = <_TextKey>{};
 
-  /// Content versions of inline image resources (`scene_epoch` + `dirty_resources`): the image
-  /// cache key changes exactly when a resource id's bytes do, with no per-paint hashing.
-  final ResourceVersions _resourceVersions = ResourceVersions();
+  /// Visit marks reused by every paint walk (epoch-stamped, no per-paint allocation).
+  final NveTreeWalk _walk = NveTreeWalk();
 
   // Borrowed for one [paint] call only (the tree's reader is valid inside `withScene`).
   late Canvas _canvas;
   late NveSceneTree _tree;
   late Offset _origin;
   late NvePaintContext _ctx;
-  late NveTreeWalk _walk;
   bool _painting = false;
   NveSceneResources? _resources;
   VoidCallback? _onImage;
   TableReader? _typo, _textTable, _input, _image, _transform;
   final List<(NveTablePainter, TableReader)> _modules = <(NveTablePainter, TableReader)>[];
+
+  static String _inlineImageKey(int version) => 'nve-res:$version';
 
   /// Paints [tree] with the surface origin at [origin].
   void paint(Canvas canvas, NveSceneTree tree, Offset origin,
@@ -112,8 +112,12 @@ final class NveScenePainter {
     _resources = resources;
     _onImage = onImageLoaded;
     _ctx = NvePaintContext._(canvas, tree, resources);
-    _walk = tree.walk();
-    _resourceVersions.observe(s.sceneEpoch, s.frameId, s.dirtyResources);
+    tree.walk(_walk);
+    // Inline image keys are the source's content versions (`scene_epoch` + `dirty_resources`):
+    // they change exactly when a resource id's bytes do, and superseded decodes are evicted now
+    // instead of waiting for LRU pressure.
+    resources?.versions.observe(s.sceneEpoch, s.frameId, s.dirtyResources,
+        onRetired: (v) => imageCache.evict(_inlineImageKey(v)));
     _typo = s.findTable(TypographyTable.key);
     _textTable = s.findTable(TextTable.key);
     _input = s.findTable(TextInputTable.key);
@@ -307,7 +311,7 @@ final class NveScenePainter {
       // The key is the id's content version, so rewritten bytes (even of equal length) decode
       // anew and an old failure never sticks. `decode` runs synchronously inside this call, so
       // the borrowed bytes are copied before the scene read ends.
-      NveImageBytes(:final bytes) => imageCache.resolveOrRequest('nve-res:${_resourceVersions.versionOf(id)}',
+      NveImageBytes(:final bytes) => imageCache.resolveOrRequest(_inlineImageKey(_resources!.versions.versionOf(id)),
           onDecoded: _onImage, decode: () => NveSceneImageCache.decodeEncodedBytes(Uint8List.fromList(bytes))),
       null => null,
     };

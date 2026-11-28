@@ -146,6 +146,16 @@ void _runResourceVersions(Check c) {
   c.eq(v.versionOf(9), carried, 'consecutive across the lo -> hi carry');
   final other = ResourceVersions()..observe(0, const Key64(1, 0), ids([]));
   c.that(other.versionOf(7) > carried, 'versions are never reused across instances');
+  // `onRetired` reports exactly the superseded versions (dirty ids; everything on a reset).
+  final retired = <int>[];
+  final r = ResourceVersions()..observe(0, const Key64(1, 0), ids([]));
+  final r7 = r.versionOf(7), r9 = r.versionOf(9);
+  r.observe(0, const Key64(2, 0), ids([7, 8]), onRetired: retired.add);
+  c.eq(retired.join(','), '$r7', 'dirty id retires its version; unversioned id 8 retires nothing');
+  retired.clear();
+  final r7b = r.versionOf(7);
+  r.observe(1, const Key64(3, 0), ids([]), onRetired: retired.add);
+  c.eq((retired..sort()).join(','), ([r7b, r9]..sort()).join(','), 'new epoch retires every version');
 }
 
 void runRuntimeScene(Check c) {

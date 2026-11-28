@@ -224,6 +224,12 @@ class NveSceneImageCache {
     _failedUris.add(uri);
   }
 
+  /// Drops [key] (its image is disposed, a recorded failure forgotten); no-op when absent.
+  void evict(String key) {
+    _entries.remove(key)?.dispose();
+    _failedUris.remove(key);
+  }
+
   /// Clears all cached [ui.Image] entries and disposes their GPU/memory handles.
   void clear() {
     for (final img in _entries.values) {
