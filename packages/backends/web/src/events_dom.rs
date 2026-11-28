@@ -149,14 +149,15 @@ impl RootEventDelegator {
         toggle_slot!(self.submit, want_submit, self.attach_submit());
     }
 
-    /// Attaches `cb` on the mount root.
+    /// Attaches `cb` on the mount root. Uses `Fn` (not `FnMut`) so re-entry from a synchronous
+    /// synthetic event dispatched by app code never hits wasm-bindgen's recursive-borrow abort.
     fn on_root(
         &self,
         name: &'static str,
         capture: bool,
-        cb: impl FnMut(web_sys::Event) + 'static,
+        cb: impl Fn(web_sys::Event) + 'static,
     ) -> DomListenerGuard {
-        let cb = Closure::<dyn FnMut(web_sys::Event)>::new(cb);
+        let cb = Closure::<dyn Fn(web_sys::Event)>::new(cb);
         DomListenerGuard::attach(self.root.clone().into(), name, capture, cb)
     }
 

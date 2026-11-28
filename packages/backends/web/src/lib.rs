@@ -9,6 +9,8 @@
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 pub mod css;
+#[cfg(target_arch = "wasm32")]
+mod dom_move;
 pub mod event_replay;
 pub mod events;
 #[cfg(target_arch = "wasm32")]
@@ -27,6 +29,8 @@ pub mod input_attrs;
 pub mod key_events;
 pub mod layout_ext_css;
 pub mod media_css;
+#[cfg(all(feature = "hydrate", any(test, feature = "parity-fixtures")))]
+pub mod select_parity;
 #[cfg(target_arch = "wasm32")]
 pub mod native_events;
 pub mod patch_css;

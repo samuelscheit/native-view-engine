@@ -96,6 +96,9 @@ struct AlignedAllocator {
 [[nodiscard]] constexpr bool is_custom_event(const NveEvent& ev) noexcept {
   return ev.table == NVE_TABLE_CUSTOM && (ev.flags & NVE_EVENT_FLAG_CUSTOM_NAMED) != 0u;
 }
+[[nodiscard]] constexpr bool event_bubbles(const NveEvent& ev) noexcept {
+  return (ev.flags & NVE_EVENT_FLAG_NO_BUBBLE) == 0u;
+}
 
 [[nodiscard]] inline std::span<const NveEvent> batch_events(NveEventBatch batch) noexcept {
   return batch.events != nullptr && batch.event_count != 0u
@@ -390,13 +393,13 @@ class OwnedEvents {
 
   /// Appends an `nve.custom` named event (`name` + raw binary `data`), rejecting non-UTF-8 `name`.
   bool push_custom(uint32_t surface, uint32_t node, uint64_t ts, std::string_view name,
-                   std::span<const uint8_t> data = {}) {
+                   std::span<const uint8_t> data = {}, uint32_t flags = 0u) {
     if (!utf8_ok(name) || events_.size() >= std::numeric_limits<uint32_t>::max()) return false;
     if (name.size() > std::numeric_limits<uint32_t>::max()) return false;
     RawEventBytes span{0u, 0u};
     if (!append_pair(str_bytes(name), data, &span)) return false;
     NveEvent ev = make_base(NVE_TABLE_CUSTOM, surface, node, ts, 0u);
-    ev.flags = NVE_EVENT_FLAG_CUSTOM_NAMED;
+    ev.flags = (flags & ~kEventInternalFramingMask) | NVE_EVENT_FLAG_CUSTOM_NAMED;
     ev.payload[0] = static_cast<uint32_t>(name.size());
     ev.bytes = span;
     events_.push_back(ev);

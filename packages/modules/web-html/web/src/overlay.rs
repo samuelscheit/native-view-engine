@@ -39,10 +39,14 @@ pub fn should_close_dialog_on_backdrop_click(
 }
 
 #[cfg(target_arch = "wasm32")]
+pub use live::backdrop_fallback_close_count;
+#[cfg(target_arch = "wasm32")]
 pub(crate) use live::{CLOSE_BRIDGES, sync_overlay_state, try_dialog_backdrop_fallback};
 
 #[cfg(target_arch = "wasm32")]
 mod live {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use nve_backend_web::NativeEventBridge;
     use nve_tables::tables::Accessibility;
     use nve_store::{NodeId, NodeStore};
@@ -76,16 +80,19 @@ export function nve_toggle_event_closed(ev) {
     /// Name of the `Custom` event a user/browser-initiated overlay close reports.
     const CLOSE_EVENT: &str = "close";
 
-    /// Capture phase: neither `close` nor `toggle` bubbles.
+    /// Capture phase, delivered target-only: neither `close` nor `toggle` bubbles, so an
+    /// `onclose`-less nested overlay never closes the enclosing `Dialog` / `Popover`.
     pub(crate) static CLOSE_BRIDGES: [NativeEventBridge; 2] = [
         NativeEventBridge {
             event: "close",
             capture: true,
+            bubbles: false,
             map: dialog_closed,
         },
         NativeEventBridge {
             event: "toggle",
             capture: true,
+            bubbles: false,
             map: popover_closed,
         },
     ];
@@ -150,6 +157,14 @@ export function nve_toggle_event_closed(ev) {
         }
     }
 
+    static BACKDROP_FALLBACK_CLOSES: AtomicU32 = AtomicU32::new(0);
+
+    /// `<dialog>`s closed by the `closedby="any"` backdrop fallback so far: lets live probes
+    /// prove the fallback (not the browser's native light dismiss) closed a dialog.
+    pub fn backdrop_fallback_close_count() -> u32 {
+        BACKDROP_FALLBACK_CLOSES.load(Ordering::Relaxed)
+    }
+
     /// Root-delegator click hook: closes an open `<dialog closedby="any">` on a backdrop hit when
     /// the browser lacks native `closedBy`. Returns `true` when it consumed the click.
     pub(crate) fn try_dialog_backdrop_fallback(ev: &web_sys::MouseEvent) -> bool {
@@ -180,6 +195,7 @@ export function nve_toggle_event_closed(ev) {
         );
         if close {
             dialog.close();
+            BACKDROP_FALLBACK_CLOSES.fetch_add(1, Ordering::Relaxed);
         }
         close
     }

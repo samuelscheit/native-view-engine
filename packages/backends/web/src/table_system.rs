@@ -73,6 +73,9 @@ pub struct WebStoreRenderer {
     /// `(slot, node)` pairs queued by [`WebSystemCommitCtx::request_connected_sync`].
     #[cfg(target_arch = "wasm32")]
     connected_sync: Vec<(TableSlot, NodeId)>,
+    /// Reusable drain-time dedupe set for `connected_sync`.
+    #[cfg(target_arch = "wasm32")]
+    connected_seen: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
     pub events: EventBatchBuf,
     pub composite_fast_lane_hits: u64,
     pub full_style_rebuilds: u64,
@@ -316,14 +319,24 @@ impl WebStoreRenderer {
         let mut mutations = 0u32;
         for tc in changes.tables() {
             let owner = self.registry.get(tc.slot).cloned();
+            let has_watchers = self
+                .registry
+                .systems
+                .iter()
+                .any(|sys| sys.slot() != tc.slot && sys.watches_slot(tc.slot));
+            if owner.is_none() && !has_watchers {
+                continue;
+            }
             // Candidate 0 is the owner; candidates 1.. are plugins watching `tc.slot`, which
-            // re-commit their own rows (`dirty_words == 0`) on nodes whose watched table changed.
+            // re-commit their own rows (`dirty_words == 0`) on nodes whose watched table changed
+            // OR detached (dropping `Accessibility` from an open modal `<dialog>` exits `:modal`).
             for candidate in 0..=self.registry.systems.len() {
                 let sys = match candidate.checked_sub(1) {
                     None => match &owner {
                         Some(sys) => Arc::clone(sys),
                         None => continue,
                     },
+                    Some(_) if !has_watchers => break,
                     Some(i) => {
                         let sys = &self.registry.systems[i];
                         if sys.slot() == tc.slot || !sys.watches_slot(tc.slot) {
@@ -334,8 +347,9 @@ impl WebStoreRenderer {
                 };
                 let slot = sys.slot();
                 let own = slot == tc.slot;
-                for (nid, mask) in tc.iter() {
-                    if !own && !store.has_slot(nid, slot) {
+                let detached: &[NodeId] = if own { &[] } else { &tc.detached };
+                for (nid, mask) in tc.iter().chain(detached.iter().map(|&nid| (nid, 0))) {
+                    if !own && !(store.is_live(nid) && store.has_slot(nid, slot)) {
                         continue;
                     }
                     #[cfg(any(target_arch = "wasm32", test))]
@@ -380,7 +394,8 @@ impl WebStoreRenderer {
     /// Unified Step 1 -> 2 -> 2a -> 2b -> 3 plugin commit orchestrator shared by `wasm32` live DOM
     /// retag and native/wasm32 unit tests via [`ctx::RetagElementSink`]. Step 2a replays the
     /// FINAL mirrors onto retagged elements, so Step-2 retractions (`remove_attr`,
-    /// `forget_attr`) are never undone by a replay of the previous frame's state.
+    /// `forget_attr`) are never undone by a replay of the previous frame's state, and values
+    /// Steps 1-2 already wrote onto the fresh element are not written twice.
     #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn commit_plugins_active_with<E: ctx::RetagElementSink>(
         &mut self,
@@ -391,6 +406,7 @@ impl WebStoreRenderer {
         retagged: &[NodeId],
         on_sync: impl FnMut(&dyn WebTableSystem, NodeId, &E),
     ) -> u32 {
+        let written_after = self.write_seq;
         let mut mutations = self.detach_plugins_step1(
             changes,
             #[cfg(target_arch = "wasm32")] live_dom,
@@ -405,13 +421,7 @@ impl WebStoreRenderer {
         if let Some(live) = retag_live
             && !retagged.is_empty()
         {
-            ctx::replay_retagged_mirrors(
-                retagged,
-                live,
-                &self.plugin_attrs,
-                &self.plugin_inline_css,
-                &self.plugin_inner_html,
-            );
+            self.replay_retagged_mirrors(retagged, live, written_after);
             ctx::dispatch_retagged_sync(
                 &self.registry,
                 store,
@@ -513,6 +523,8 @@ impl StoreBackend for WebStoreRenderer {
         self.retag_committed_scratch.clear();
         #[cfg(target_arch = "wasm32")]
         self.connected_sync.clear();
+        #[cfg(target_arch = "wasm32")]
+        self.connected_seen.clear();
         self.events.clear();
     }
 }

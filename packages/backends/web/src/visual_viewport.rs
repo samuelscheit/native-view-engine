@@ -43,8 +43,8 @@ fn encode_keyboard_insets(insets: KeyboardInsets) -> Vec<u8> {
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct VisualViewportTracker {
     visual_viewport: web_sys::VisualViewport,
-    on_resize: Closure<dyn FnMut(web_sys::Event)>,
-    on_scroll: Closure<dyn FnMut(web_sys::Event)>,
+    on_resize: Closure<dyn Fn(web_sys::Event)>,
+    on_scroll: Closure<dyn Fn(web_sys::Event)>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -175,7 +175,7 @@ impl WebBackend {
             let events = Rc::clone(&self.pending_events);
             let on_event = Rc::clone(&self.on_event);
             let surface_id = Rc::clone(&self.surface_id);
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
+            Closure::<dyn Fn(web_sys::Event)>::new(move |_ev: web_sys::Event| {
                 let next = sample_browser_keyboard_insets(&window, &vv);
                 commit_keyboard_insets(next, &slot, &on_kb, &events, &on_event, &surface_id);
             })

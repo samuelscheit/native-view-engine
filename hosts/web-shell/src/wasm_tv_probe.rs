@@ -15,6 +15,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 
+use crate::wasm_dom_probe::report;
+
 /// Rows (two focus groups, one explicit `data-nve-next-down`, a disabled and an invisible
 /// button), an ARIA tablist, a native `<select>` beside a button, a modal `<dialog>` with
 /// `tabindex=-1` (never Select-clicked), and a hidden focus trap that must not shadow the page.
@@ -66,13 +68,6 @@ struct MountedTv {
 thread_local! {
     static TV: RefCell<Option<MountedTv>> = const { RefCell::new(None) };
     static REENTRY: Reentry = Reentry::default();
-}
-
-fn report(result: Result<String, String>) -> String {
-    match result {
-        Ok(detail) => format!("OK: {detail}"),
-        Err(err) => format!("FAIL: {err}"),
-    }
 }
 
 /// Mounts the fixture under `<body>` in a fresh `WebBackend` with a `WebTvController` installed.

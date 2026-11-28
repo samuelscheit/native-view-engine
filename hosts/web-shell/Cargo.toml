@@ -31,7 +31,7 @@ app-issues = [
 # Opt-in browser E2E probes for `FetchTransport`, cross-origin CORS, native overlays (a real
 # `nve-ui` `Dialog`), hydration parity, and a live `nve-tv-web` D-Pad controller (excluded from
 # production `app-issues`).
-issues-probes = ["app-issues", "dep:nve-ui", "dep:dioxus-core-macro", "dep:nve-tv-web"]
+issues-probes = ["app-issues", "dep:nve-ui", "dep:dioxus-core-macro", "dep:nve-tv-web", "nve-backend-web/parity-fixtures"]
 # `nve dev` Tier-1/2 hot-reload WebSocket (binary NVP1), the `NveWebHost` NVT1/NVD1 pairing client
 # and the semantic-style hydration probe used by the E2E suite.
 dev = ["dep:nve-canvas", "dep:nve-canvas-web"]

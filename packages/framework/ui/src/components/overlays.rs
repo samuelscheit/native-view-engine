@@ -11,6 +11,7 @@ pub use crate::components::tooltip::Tooltip;
 use crate::focus::{
     current_focused_id, notify_focus_scope, FocusTrap, FocusTrapAction, FocusableEntry,
 };
+use crate::components::overlay_close::use_close_latch;
 use crate::positioning::{
     compute_overlay_position, ComputedPosition, PositionOptions, Rect, Size, Viewport,
 };
@@ -250,11 +251,10 @@ pub fn Dialog(
             nve_style: panel_style,
             style: style,
             onpress: move |ev: PressEvent| ev.stop_propagation(),
-            // Browser-initiated close (native `closedby` backdrop/`Esc`, form `method=dialog`);
-            // app-driven closes already cleared `was_open`.
-            // Never bubbles into an enclosing overlay (`close` does not bubble natively).
-            onclose: move |ev: CustomEvent| {
-                ev.stop_propagation();
+            // Browser-initiated close (native `closedby` backdrop/`Esc`, form `method=dialog`),
+            // delivered target-only like the DOM `close`; app-driven closes already cleared
+            // `was_open`.
+            onclose: move |_: CustomEvent| {
                 if *was_open.peek() {
                     let restored = trap.write().deactivate();
                     finish_close(restored);
@@ -376,6 +376,7 @@ pub fn Popover(
 ) -> Element {
     let theme = use_theme();
     let mut focused = use_signal(|| false);
+    let latch = use_close_latch(open);
 
     let base_id = test_id.as_deref().unwrap_or("nve-popover");
     let trigger_id = format!("{base_id}-trigger");
@@ -504,20 +505,14 @@ pub fn Popover(
                 nve_style: trigger_style,
                 onfocus: move |_| focused.set(true),
                 onblur: move |_| focused.set(false),
-                onpress: move |_| {
-                    if let Some(handler) = on_open_change {
-                        handler.call(!open);
-                    }
-                },
+                onpress: move |_| latch.toggle(on_open_change),
                 onkeydown: move |ev: KeyEvent| {
-                    let data = ev.data();
-                    let key = data.key.as_str();
-                    if let Some(handler) = on_open_change {
-                        match key {
-                            "Escape" | "Esc" if open && close_on_escape => handler.call(false),
-                            "Enter" | " " | "Space" => handler.call(!open),
-                            _ => {}
+                    match ev.data().key.as_str() {
+                        "Escape" | "Esc" if close_on_escape => {
+                            latch.close_on_escape(&ev, on_open_change);
                         }
+                        "Enter" | " " | "Space" => latch.toggle(on_open_change),
+                        _ => {}
                     }
                 },
                 text {
@@ -533,20 +528,13 @@ pub fn Popover(
                     accessibility_role: "dialog",
                     tab_index: -1,
                     nve_style: panel_style,
-                    // Native light dismiss / `Esc` / `popovertargetaction=hide` while open.
-                    onclose: move |ev: CustomEvent| {
-                        ev.stop_propagation();
-                        if open && let Some(handler) = on_open_change {
-                            handler.call(false);
-                        }
+                    // Native light dismiss / `Esc` / `popovertargetaction=hide` (target-only).
+                    onclose: move |_: CustomEvent| {
+                        let _ = latch.close(on_open_change);
                     },
                     onkeydown: move |ev: KeyEvent| {
-                        let data = ev.data();
-                        let key = data.key.as_str();
-                        if close_on_escape && matches!(key, "Escape" | "Esc")
-                            && let Some(handler) = on_open_change
-                        {
-                            handler.call(false);
+                        if close_on_escape {
+                            latch.close_on_escape(&ev, on_open_change);
                         }
                     },
                     {children}

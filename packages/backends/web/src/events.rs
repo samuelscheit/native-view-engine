@@ -209,7 +209,7 @@ pub(crate) struct DomListenerGuard {
     target: web_sys::EventTarget,
     name: &'static str,
     capture: bool,
-    cb: Closure<dyn FnMut(web_sys::Event)>,
+    cb: Closure<dyn Fn(web_sys::Event)>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -218,7 +218,7 @@ impl DomListenerGuard {
         target: web_sys::EventTarget,
         name: &'static str,
         capture: bool,
-        cb: Closure<dyn FnMut(web_sys::Event)>,
+        cb: Closure<dyn Fn(web_sys::Event)>,
     ) -> Self {
         let _ = target.add_event_listener_with_callback_and_bool(
             name,

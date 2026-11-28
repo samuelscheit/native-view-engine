@@ -362,7 +362,7 @@ mod wasm {
         let surface = Rc::new(root.clone());
         body_keys_accept(&surface);
         let focus_surface = Rc::clone(&surface);
-        let on_focus = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+        let on_focus = Closure::<dyn Fn(web_sys::Event)>::new(move |_: web_sys::Event| {
             BODY_KEYS.with(|route| route.borrow_mut().focus_entered(&focus_surface));
         });
         let focus_guard = DomListenerGuard::attach(root.clone().into(), "focusin", false, on_focus);
@@ -372,7 +372,7 @@ mod wasm {
         let interceptors = Rc::clone(interceptors);
         let key_target: web_sys::EventTarget =
             web_sys::window().map_or_else(|| root.clone().into(), Into::into);
-        let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+        let cb = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
             let Some(ke) = ev.dyn_ref::<web_sys::KeyboardEvent>() else {
                 return;
             };

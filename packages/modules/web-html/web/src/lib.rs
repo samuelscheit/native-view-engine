@@ -10,6 +10,8 @@ mod overlay;
 mod semantics;
 
 pub use overlay::{should_close_dialog_on_backdrop_click, DialogRect};
+#[cfg(target_arch = "wasm32")]
+pub use overlay::backdrop_fallback_close_count;
 use nve_backend_web::html::write_attr as push_attr;
 use nve_backend_web::{
     is_safe_custom_tag, is_safe_web_attr, is_safe_web_url, WebSystemCommitCtx, WebTableRegistry,

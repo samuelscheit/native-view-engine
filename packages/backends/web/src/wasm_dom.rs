@@ -81,9 +81,7 @@ impl WebBackend {
                     adopted
                 } else {
                     let fresh = create_dom_element(&doc, id, tag, ns);
-                    move_dom_children(&adopted, &fresh);
-                    let _ = adopted.replace_with_with_node_1(&fresh);
-                    self.live_elements.insert(id, fresh.clone());
+                    self.retag_live(store, id, &adopted, &fresh);
                     retagged.push(id);
                     fresh
                 }
@@ -125,9 +123,7 @@ impl WebBackend {
                     && !existing.tag_name().eq_ignore_ascii_case(tag)
                 {
                     let fresh = create_dom_element(&doc, id, tag, ns);
-                    move_dom_children(&existing, &fresh);
-                    let _ = existing.replace_with_with_node_1(&fresh);
-                    self.live_elements.insert(id, fresh.clone());
+                    self.retag_live(store, id, &existing, &fresh);
                     retagged.push(id);
                     fresh
                 } else {
@@ -150,11 +146,10 @@ impl WebBackend {
         );
         // A retagged element is a fresh element: imperative plugin state must be re-applied.
         for &id in &retagged {
-            self.renderer.queue_connected_sync_all(store, id);
+            self.renderer.queue_connected_sync_node(store, id);
         }
         self.created_scratch = created_set;
         self.retagged_scratch = retagged;
-        let mut moved: Vec<NodeId> = Vec::new();
 
         // 5. Reconcile DOM children order (skipping plugin-owned inner HTML and removing stray Text nodes).
         for &parent in &changes.children {
@@ -183,12 +178,13 @@ impl WebBackend {
                 if cursor.as_ref() == Some(child_el) {
                     cursor = cursor.and_then(|c| c.next_element_sibling());
                 } else {
-                    // Moving a connected element removes and reinserts it (top layer exits).
-                    if child_el.is_connected() {
-                        moved.push(cid);
-                    }
+                    let was_connected = child_el.is_connected();
                     let ref_node: Option<&web_sys::Node> = cursor.as_deref().map(AsRef::as_ref);
-                    let _ = parent_el.insert_before(child_el, ref_node);
+                    // A fallback move of a connected element removes and reinserts its whole
+                    // subtree (top layer exits); queued syncs run in Step 6.
+                    if !crate::dom_move::place_child(&parent_el, child_el, ref_node) && was_connected {
+                        self.renderer.queue_connected_sync_subtree(store, cid);
+                    }
                 }
             }
             while let Some(extra) = cursor {
@@ -207,14 +203,23 @@ impl WebBackend {
         }
 
         // 6. Imperative plugin state that needs connected elements (`showModal()`, popovers).
-        for id in moved {
-            self.renderer.queue_connected_sync_all(store, id);
-        }
         self.renderer.sync_connected_plugins(store, &self.live_elements);
 
         // 7. Flush newly compiled CSS rules into adoptedStyleSheets / <style>.
         self.stylesheet.flush_to_dom(&doc);
         plugin_muts
+    }
+
+    /// Swaps `id`'s live element for `fresh` (a tag change). The retagged node itself is
+    /// re-synced after plugin commit; a fallback (non-`moveBefore`) child move also ran the
+    /// removing steps on every descendant, so their subtrees re-sync too.
+    fn retag_live(&mut self, store: &NodeStore, id: NodeId, old: &web_sys::Element, fresh: &web_sys::Element) {
+        if !crate::dom_move::retag_element(old, fresh) {
+            for &child in store.children(id) {
+                self.renderer.queue_connected_sync_subtree(store, child);
+            }
+        }
+        self.live_elements.insert(id, fresh.clone());
     }
 
     pub(crate) fn sync_full_element(&mut self, store: &NodeStore, id: NodeId, el: &web_sys::Element) {
@@ -532,10 +537,4 @@ fn create_dom_element(
     };
     let _ = el.set_attribute("data-nve-id", &id.raw().to_string());
     el
-}
-
-fn move_dom_children(from: &web_sys::Element, to: &web_sys::Element) {
-    while let Some(child) = from.first_child() {
-        let _ = to.append_child(&child);
-    }
 }

@@ -7,6 +7,7 @@ use dioxus_core_macro::Props;
 use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
+use crate::components::overlay_close::{use_close_latch, CloseLatch};
 use crate::components::overlays::resolve_anchored_position;
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
 use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
@@ -45,29 +46,24 @@ impl MenuItem {
 }
 
 fn dispatch_menu_key(
-    key: &str,
+    ev: &KeyEvent,
     mut roving: Signal<RovingFocus>,
+    latch: CloseLatch,
     on_select: Option<EventHandler<String>>,
     on_open_change: Option<EventHandler<bool>>,
 ) {
-    match key {
-        "Escape" | "Esc" => {
-            if let Some(handler) = on_open_change {
-                handler.call(false);
-            }
-        }
+    match ev.data().key.as_str() {
+        "Escape" | "Esc" => latch.close_on_escape(ev, on_open_change),
         "Enter" | " " | "Space" => {
             let selected = roving.read().active_id().map(str::to_owned);
             if let Some(id) = selected {
                 if let Some(handler) = on_select {
                     handler.call(id);
                 }
-                if let Some(handler) = on_open_change {
-                    handler.call(false);
-                }
+                let _ = latch.close(on_open_change);
             }
         }
-        _ => {
+        key => {
             let _ = roving.write().handle_key(key);
         }
     }
@@ -101,7 +97,7 @@ pub fn DropdownMenu(
         .collect();
 
     let mut roving = use_signal(|| RovingFocus::with_items(Orientation::Vertical, entries.clone()));
-    let mut was_open = use_signal(|| false);
+    let latch = use_close_latch(open);
 
     // Keep roving item list synchronized without triggering render loops.
     {
@@ -109,15 +105,11 @@ pub fn DropdownMenu(
         if rv.items() != entries.as_slice() {
             rv.set_items(entries);
         }
-        if open && !*was_open.peek() {
-            let first = rv.first_enabled();
-            if let Some(idx) = first {
-                let _ = rv.set_active_index(idx);
-            }
+        if latch.opened
+            && let Some(idx) = rv.first_enabled()
+        {
+            let _ = rv.set_active_index(idx);
         }
-    }
-    if open != *was_open.peek() {
-        was_open.set(open);
     }
 
     let base_id = test_id.as_deref().unwrap_or("nve-dropdown");
@@ -269,14 +261,11 @@ pub fn DropdownMenu(
                         if let Some(handler) = on_select {
                             handler.call(item_id.clone());
                         }
-                        if let Some(handler) = on_open_change {
-                            handler.call(false);
-                        }
+                        let _ = latch.close(on_open_change);
                     }
                 },
                 onkeydown: move |ev: KeyEvent| {
-                    let data = ev.data();
-                    dispatch_menu_key(data.key.as_str(), roving, on_select, on_open_change);
+                    dispatch_menu_key(&ev, roving, latch, on_select, on_open_change);
                 },
                 text {
                     nve_style: item_text_style,
@@ -335,21 +324,18 @@ pub fn DropdownMenu(
                 nve_style: trigger_style,
                 onfocus: move |_| trigger_focused.set(true),
                 onblur: move |_| trigger_focused.set(false),
-                onpress: move |_| {
-                    if let Some(handler) = on_open_change {
-                        handler.call(!open);
-                    }
-                },
+                onpress: move |_| latch.toggle(on_open_change),
                 onkeydown: move |ev: KeyEvent| {
-                    let data = ev.data();
-                    let key = data.key.as_str();
-                    if let Some(handler) = on_open_change {
-                        match key {
-                            "ArrowDown" | "Enter" | " " | "Space" if !open => handler.call(true),
-                            "Escape" | "Esc" if open => handler.call(false),
-                            _ if open => dispatch_menu_key(key, roving, on_select, on_open_change),
-                            _ => {}
+                    match ev.data().key.as_str() {
+                        "ArrowDown" | "Enter" | " " | "Space" if !open => {
+                            if let Some(handler) = on_open_change {
+                                handler.call(true);
+                            }
                         }
+                        _ if open => {
+                            dispatch_menu_key(&ev, roving, latch, on_select, on_open_change);
+                        }
+                        _ => {}
                     }
                 },
                 text {
@@ -365,9 +351,13 @@ pub fn DropdownMenu(
                     accessibility_role: "menu",
                     tab_index: -1,
                     nve_style: menu_style,
+                    // Native light dismiss / `Esc` (target-only `close`) syncs `open` and
+                    // `aria-expanded`, exactly like `Popover`.
+                    onclose: move |_: CustomEvent| {
+                        let _ = latch.close(on_open_change);
+                    },
                     onkeydown: move |ev: KeyEvent| {
-                        let data = ev.data();
-                        dispatch_menu_key(data.key.as_str(), roving, on_select, on_open_change);
+                        dispatch_menu_key(&ev, roving, latch, on_select, on_open_change);
                     },
                     {rendered_items.into_iter()}
                 }

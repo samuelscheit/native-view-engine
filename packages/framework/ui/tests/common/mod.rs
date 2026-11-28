@@ -321,9 +321,14 @@ impl UiHarness {
     }
 
     pub fn keydown(&mut self, tid: &str, key: &str, shift: bool) {
+        let mut batch = EventBatchBuf::new();
+        self.push_keydown(&mut batch, tid, key, shift);
+        self.dispatch(&batch);
+    }
+
+    pub fn push_keydown(&mut self, batch: &mut EventBatchBuf, tid: &str, key: &str, shift: bool) {
         let id = self.find(tid);
         let ts = TimestampUs(self.next_ts());
-        let mut batch = EventBatchBuf::new();
         batch.push_key_down(
             SurfaceId::ROOT,
             id,
@@ -333,16 +338,31 @@ impl UiHarness {
             EventFlags::from_modifiers(false, false, shift, false, false),
             0,
         );
-        assert!(self.surface.dispatch_events(batch.as_validated()));
-        self.render();
     }
 
-    /// Dispatches a host `Custom { name }` event (e.g. a bridged native `<dialog>` `close`).
-    pub fn custom(&mut self, tid: &str, name: &str) {
+    /// Dispatches a host `Custom { name }` event; bridged native `<dialog>` `close` /
+    /// `[popover]` `toggle` arrive with `bubbles: false` (target-only, like the DOM events).
+    pub fn custom(&mut self, tid: &str, name: &str, bubbles: bool) {
+        let mut batch = EventBatchBuf::new();
+        self.push_custom(&mut batch, tid, name, bubbles);
+        self.dispatch(&batch);
+    }
+
+    pub fn push_custom(&mut self, batch: &mut EventBatchBuf, tid: &str, name: &str, bubbles: bool) {
         let id = self.find(tid);
         let ts = TimestampUs(self.next_ts());
-        let mut batch = EventBatchBuf::new();
-        batch.push_custom(SurfaceId::ROOT, id, ts, name, &[]);
+        batch.push_custom_with_flags(
+            SurfaceId::ROOT,
+            id,
+            ts,
+            name,
+            &[],
+            EventFlags::EMPTY.with_bubbles(bubbles),
+        );
+    }
+
+    /// Dispatches `batch` as ONE host batch, then renders once.
+    pub fn dispatch(&mut self, batch: &EventBatchBuf) {
         assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }

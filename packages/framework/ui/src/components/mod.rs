@@ -18,6 +18,7 @@ pub mod forms;
 pub(crate) mod html_tables;
 pub mod keyboard_avoiding;
 pub mod layout;
+pub(crate) mod overlay_close;
 pub mod overlays;
 pub mod roles;
 pub mod split_pane;

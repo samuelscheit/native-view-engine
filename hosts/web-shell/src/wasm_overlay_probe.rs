@@ -1,8 +1,9 @@
 //! E2E-only (`issues-probes`) live probe of a real `nve-ui` [`Dialog`] mounted through Dioxus:
 //! a TRUSTED backdrop click (CDP `Input.dispatchMouseEvent`, driven by `run_e2e.mjs`) closes the
 //! native modal `<dialog>`, the bridged `close` event drives `on_open_change(false)` into app
-//! state, and reopening re-enters `:modal`. `run_e2e.mjs` repeats the round after deleting
-//! `HTMLDialogElement.prototype.closedBy` (the `closedby` fallback path).
+//! state, and reopening re-enters `:modal`. The `closedby="any"` fallback is proven with
+//! SYNTHETIC clicks (never a native light dismiss) after `run_e2e.mjs` deletes
+//! `HTMLDialogElement.prototype.closedBy`, observed through the fallback's close counter.
 
 use std::cell::RefCell;
 
@@ -15,14 +16,19 @@ use nve_ui::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::session::WebAppSession;
+use crate::wasm_dom_probe::{check, query, report};
 
 #[wasm_bindgen(inline_js = "
-export function nve_probe_overlay_click(el) {
-  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+export function nve_probe_overlay_click(el, x, y) {
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+}
+export function nve_probe_supports_closedby() {
+  return 'closedBy' in HTMLDialogElement.prototype;
 }
 ")]
 extern "C" {
-    fn nve_probe_overlay_click(el: &web_sys::Element);
+    fn nve_probe_overlay_click(el: &web_sys::Element, x: f64, y: f64);
+    fn nve_probe_supports_closedby() -> bool;
 }
 
 struct MountedProbe {
@@ -57,24 +63,6 @@ fn ProbeDialogApp() -> Element {
             }
         }
     }
-}
-
-fn check(ok: bool, what: &str) -> Result<(), String> {
-    if ok { Ok(()) } else { Err(what.to_owned()) }
-}
-
-fn report(result: Result<String, String>) -> String {
-    match result {
-        Ok(detail) => format!("OK: {detail}"),
-        Err(err) => format!("FAIL: {err}"),
-    }
-}
-
-fn query(root: &web_sys::Element, selector: &str) -> Result<web_sys::Element, String> {
-    root.query_selector(selector)
-        .ok()
-        .flatten()
-        .ok_or_else(|| format!("missing {selector}"))
 }
 
 fn with_probe<T>(f: impl FnOnce(&mut MountedProbe) -> Result<T, String>) -> Result<T, String> {
@@ -158,10 +146,11 @@ pub fn nve_probe_dialog_after_backdrop_click() -> String {
             &format!("app state must follow the native close, got {state:?}"),
         )?;
 
-        nve_probe_overlay_click(&query(
-            &probe.host,
-            "[data-testid=\"probe-dialog-reopen\"]",
-        )?);
+        nve_probe_overlay_click(
+            &query(&probe.host, "[data-testid=\"probe-dialog-reopen\"]")?,
+            0.0,
+            0.0,
+        );
         probe
             .session
             .pump_events()
@@ -172,6 +161,50 @@ pub fn nve_probe_dialog_after_backdrop_click() -> String {
             "reopened Dialog must match :modal",
         )?;
         Ok("backdrop close -> app closed -> reopen :modal".to_owned())
+    }))
+}
+
+/// Synthetic (untrusted) clicks on the open `<dialog>`: an in-box click never closes it; a
+/// backdrop-corner click closes it through the `closedby="any"` fallback exactly when native
+/// `closedBy` is unsupported (fallback counter +1), else the fallback stays passive.
+#[wasm_bindgen]
+pub fn nve_probe_dialog_synthetic_backdrop() -> String {
+    report(with_probe(|probe| {
+        let dialog = query(&probe.host, "dialog")?;
+        check(
+            dialog.matches(":modal").unwrap_or(false),
+            "Dialog must be open before the synthetic clicks",
+        )?;
+        check(
+            dialog.get_attribute("closedby").as_deref() == Some("any"),
+            "Dialog renders closedby=\"any\"",
+        )?;
+        let native = nve_probe_supports_closedby();
+        let before = nve_web_html_web::backdrop_fallback_close_count();
+        let r = dialog.get_bounding_client_rect();
+        let (cx, cy) = (r.left() + r.width() / 2.0, r.top() + r.height() / 2.0);
+        nve_probe_overlay_click(&dialog, cx, cy);
+        check(
+            dialog.has_attribute("open")
+                && nve_web_html_web::backdrop_fallback_close_count() == before,
+            "an in-box click must keep the dialog open",
+        )?;
+        nve_probe_overlay_click(&dialog, 4.0, 4.0);
+        let closes = nve_web_html_web::backdrop_fallback_close_count() - before;
+        if native {
+            check(
+                dialog.has_attribute("open") && closes == 0,
+                "native closedBy: the fallback must stay passive",
+            )?;
+        } else {
+            check(
+                !dialog.has_attribute("open") && closes == 1,
+                &format!("no native closedBy: the fallback must close once (closes={closes})"),
+            )?;
+        }
+        Ok(format!(
+            "synthetic backdrop: native={native}, fallback closes={closes}"
+        ))
     }))
 }
 

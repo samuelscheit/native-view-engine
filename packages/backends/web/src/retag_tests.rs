@@ -190,3 +190,168 @@ fn watched_table_changes_recommit_watchers_only_on_nodes_carrying_their_table() 
         "watcher re-commit must suppress the retag sync: {synced:?}"
     );
 }
+
+/// Detaching a watched table (e.g. `Accessibility` from an open modal `<dialog>`) re-commits the
+/// watcher on live nodes still carrying its table, so modality-derived state is re-applied;
+/// nodes without the watcher's table and removed nodes are skipped.
+#[test]
+fn detaching_a_watched_table_recommits_watchers_on_live_nodes_only() {
+    static WATCHED: AtomicU32 = AtomicU32::new(0);
+    let mut store = NodeStore::new();
+    let mut renderer = WebStoreRenderer::new().with_table_system(DisclosureSys {
+        watched_commits: &WATCHED,
+    });
+    let (mut dialog, mut plain, mut doomed) = (NodeId::ROOT, NodeId::ROOT, NodeId::ROOT);
+    let changes = frame(&mut store, |tx| {
+        dialog = tx.create();
+        plain = tx.create();
+        doomed = tx.create();
+        tx.set_children(NodeId::ROOT, &[dialog, plain, doomed]);
+        for n in [dialog, doomed] {
+            tx.edit::<Disclosure>(n).imperative(true).open(true);
+        }
+        for n in [dialog, plain, doomed] {
+            tx.edit::<Modality>(n).modal(true);
+        }
+    });
+    renderer.commit(&store, &changes).unwrap();
+    let base = WATCHED.load(Ordering::Relaxed);
+    assert_eq!(base, 2, "dialog + doomed carry the watcher's table");
+
+    let changes = frame(&mut store, |tx| {
+        tx.detach::<Modality>(dialog);
+        tx.detach::<Modality>(plain);
+    });
+    renderer.commit(&store, &changes).unwrap();
+    assert_eq!(
+        WATCHED.load(Ordering::Relaxed),
+        base + 1,
+        "only `dialog` re-commits on detach"
+    );
+
+    let changes = frame(&mut store, |tx| {
+        tx.detach::<Modality>(doomed);
+        tx.remove(doomed);
+    });
+    renderer.commit(&store, &changes).unwrap();
+    assert_eq!(
+        WATCHED.load(Ordering::Relaxed),
+        base + 1,
+        "a removed node is never re-committed"
+    );
+}
+
+#[allow(dead_code)]
+#[derive(NveTable)]
+#[nve_table(name = "web.test.open_hint", storage = "sparse")]
+struct OpenHint {
+    #[effect(paint)]
+    value: u32,
+}
+
+/// A second plugin that always mirrors `open="hint"`.
+struct OpenHintSys;
+impl WebTableSystem for OpenHintSys {
+    fn slot(&self) -> TableSlot {
+        OpenHint::slot()
+    }
+    fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, _: &NodeStore, node: NodeId, _: u32) {
+        ctx.set_attr(node, "open", "hint");
+    }
+}
+
+/// Multi-slot ownership: forgetting the NEWEST write falls the mirror back to the older slot's
+/// value instead of leaving the forgotten value for retag replay.
+#[test]
+fn forget_attr_falls_back_to_an_older_slot_write_in_the_mirror() {
+    static WATCHED: AtomicU32 = AtomicU32::new(0);
+    let mut store = NodeStore::new();
+    let mut renderer = WebStoreRenderer::new()
+        .with_table_system(DisclosureSys {
+            watched_commits: &WATCHED,
+        })
+        .with_table_system(OpenHintSys);
+    let mut n = NodeId::ROOT;
+    let changes = frame(&mut store, |tx| {
+        n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<OpenHint>(n).value(1);
+    });
+    renderer.commit(&store, &changes).unwrap();
+    assert_eq!(
+        renderer.plugin_attrs(n),
+        &[("open".to_owned(), "hint".to_owned())]
+    );
+
+    // Newer `<details open>` write wins the mirror.
+    let changes = frame(&mut store, |tx| {
+        tx.edit::<Disclosure>(n).open(true);
+    });
+    renderer.commit(&store, &changes).unwrap();
+    assert_eq!(
+        renderer.plugin_attrs(n),
+        &[("open".to_owned(), String::new())]
+    );
+
+    // Imperative: the disclosure plugin forgets `open`; the older hint resurfaces.
+    let changes = frame(&mut store, |tx| {
+        tx.edit::<Disclosure>(n).imperative(true);
+    });
+    renderer.commit(&store, &changes).unwrap();
+    assert_eq!(
+        renderer.plugin_attrs(n),
+        &[("open".to_owned(), "hint".to_owned())]
+    );
+}
+
+/// Retag replay writes only effective values NOT already written by this commit's Steps 1-2
+/// (those landed on the fresh live element directly); older mirrored values are replayed.
+#[test]
+fn retag_replay_skips_values_written_by_this_commit() {
+    static WATCHED: AtomicU32 = AtomicU32::new(0);
+    let mut store = NodeStore::new();
+    let mut renderer = WebStoreRenderer::new()
+        .with_table_system(DisclosureSys {
+            watched_commits: &WATCHED,
+        })
+        .with_table_system(OpenHintSys);
+    let (mut a, mut b) = (NodeId::ROOT, NodeId::ROOT);
+    let changes = frame(&mut store, |tx| {
+        a = tx.create();
+        b = tx.create();
+        tx.set_children(NodeId::ROOT, &[a, b]);
+        for n in [a, b] {
+            tx.edit::<OpenHint>(n).value(1);
+            tx.edit::<Disclosure>(n).open(false);
+        }
+    });
+    renderer.commit(&store, &changes).unwrap();
+
+    // Both retag to `<dialog>`; only `b`'s hint is re-committed (re-written) in this commit.
+    let changes = frame(&mut store, |tx| {
+        tx.edit::<Disclosure>(a).imperative(true);
+        tx.edit::<Disclosure>(b).imperative(true);
+        tx.edit::<OpenHint>(b).value(2);
+    });
+    let mut live: HashMap<NodeId, MockEl> = HashMap::default();
+    live.insert(a, MockEl::default());
+    live.insert(b, MockEl::default());
+    renderer.commit_plugins_active_with(
+        &store,
+        &changes,
+        #[cfg(target_arch = "wasm32")]
+        None,
+        Some(&live),
+        &[a, b],
+        |_, _, _| {},
+    );
+    assert_eq!(
+        *live[&a].attrs.borrow(),
+        [("open".to_owned(), "hint".to_owned())],
+        "an older mirrored value is replayed onto the fresh element"
+    );
+    assert!(
+        live[&b].attrs.borrow().is_empty(),
+        "a value written by this commit is not replayed twice"
+    );
+}

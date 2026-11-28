@@ -3,7 +3,7 @@
 //! moves, retags), hydration onto a mount container that IS the SSR root
 //! (`<div id="app" data-nve-id="1">`), and `<select>` SSR base-value parity.
 
-use nve_backend_web::hydrate::SELECT_BASE_CASES;
+use nve_backend_web::select_parity::SELECT_BASE_CASES;
 use nve_backend_web::{WebBackend, WebTableSystem};
 use nve_tables::tables::{Accessibility, TextContent, TextInput, register_core_tables};
 use nve_engine::StoreBackend;
@@ -23,36 +23,50 @@ export function nve_probe_click(el, x, y) {
 export function nve_probe_value(el) {
   return el.value;
 }
+export function nve_probe_set_move_before(enabled) {
+  const proto = Element.prototype;
+  if (!enabled && Object.prototype.hasOwnProperty.call(proto, 'moveBefore')) {
+    window.__nveMoveBefore = Object.getOwnPropertyDescriptor(proto, 'moveBefore');
+    delete proto.moveBefore;
+  } else if (enabled && window.__nveMoveBefore) {
+    Object.defineProperty(proto, 'moveBefore', window.__nveMoveBefore);
+    delete window.__nveMoveBefore;
+  }
+  return typeof proto.moveBefore === 'function';
+}
 ")]
 extern "C" {
     fn nve_probe_native_closedby() -> bool;
     fn nve_probe_click(el: &web_sys::Element, x: f64, y: f64);
     fn nve_probe_value(el: &web_sys::Element) -> String;
+    /// Hides (`false`) or restores (`true`) `Element.prototype.moveBefore`; returns whether it
+    /// is available afterwards.
+    fn nve_probe_set_move_before(enabled: bool) -> bool;
 }
 
-type ProbeResult = Result<String, String>;
+pub(crate) type ProbeResult = Result<String, String>;
 
-fn check(ok: bool, what: &str) -> Result<(), String> {
+pub(crate) fn check(ok: bool, what: &str) -> Result<(), String> {
     if ok { Ok(()) } else { Err(what.to_owned()) }
 }
 
-fn document() -> Result<web_sys::Document, String> {
+pub(crate) fn document() -> Result<web_sys::Document, String> {
     web_sys::window()
         .and_then(|w| w.document())
         .ok_or_else(|| "missing document".to_owned())
 }
 
-fn body() -> Result<web_sys::HtmlElement, String> {
+pub(crate) fn body() -> Result<web_sys::HtmlElement, String> {
     document()?.body().ok_or_else(|| "missing body".to_owned())
 }
 
-fn new_store() -> NodeStore {
+pub(crate) fn new_store() -> NodeStore {
     register_core_tables();
     register_web_html_tables();
     NodeStore::new()
 }
 
-fn commit(
+pub(crate) fn commit(
     web: &mut WebBackend,
     store: &mut NodeStore,
     build: impl FnOnce(&mut Transaction<'_>),
@@ -66,18 +80,18 @@ fn commit(
         .map_err(|e| format!("commit: {e:?}"))
 }
 
-fn query(root: &web_sys::Element, selector: &str) -> Result<web_sys::Element, String> {
+pub(crate) fn query(root: &web_sys::Element, selector: &str) -> Result<web_sys::Element, String> {
     root.query_selector(selector)
         .ok()
         .flatten()
         .ok_or_else(|| format!("missing {selector}"))
 }
 
-fn matches(el: &web_sys::Element, selector: &str) -> bool {
+pub(crate) fn matches(el: &web_sys::Element, selector: &str) -> bool {
     el.matches(selector).unwrap_or(false)
 }
 
-fn report(result: ProbeResult) -> String {
+pub(crate) fn report(result: ProbeResult) -> String {
     match result {
         Ok(detail) => format!("OK: {detail}"),
         Err(err) => format!("FAIL: {err}"),
@@ -118,7 +132,8 @@ fn drive_native_overlays(host: &web_sys::Element) -> ProbeResult {
         tx.edit::<Accessibility>(dialog_n).modal(true);
         tx.edit::<TextContent>(dialog_n).text("Settings");
         tx.edit::<HtmlSemantics>(popover_n)
-            .popover(Some(PopoverMode::Auto))
+            // Manual: the fallback-move `showModal()` re-sync hides auto popovers (docs/UPSTREAM.md).
+            .popover(Some(PopoverMode::Manual))
             .data_nve_open(true);
         tx.set_children(NodeId::ROOT, &[dialog_n, popover_n]);
     })?;
@@ -166,7 +181,18 @@ fn drive_native_overlays(host: &web_sys::Element) -> ProbeResult {
         matches(&dialog, ":modal"),
         "reopened modal must match :modal",
     )?;
-    drive_overlay_resync(&mut web, &mut store, host, &dialog, &popover)?;
+    let mut moves = String::new();
+    for state_preserving in [true, false] {
+        let available = nve_probe_set_move_before(state_preserving);
+        let result = drive_overlay_resync(&mut web, &mut store, host, &dialog, &popover);
+        nve_probe_set_move_before(true);
+        result.map_err(|e| format!("{e} (moveBefore={available})"))?;
+        moves.push_str(if available {
+            "moveBefore "
+        } else {
+            "fallback "
+        });
+    }
     // A synthetic click at the viewport corner targets the dialog itself (backdrop hit).
     nve_probe_click(&dialog, 1.0, 1.0);
     let native = nve_probe_native_closedby();
@@ -182,14 +208,17 @@ fn drive_native_overlays(host: &web_sys::Element) -> ProbeResult {
         )?;
     }
     Ok(format!(
-        "dialog :modal/close/show, modality flips, moves, retags, popover open/hide, closedby \
-         fallback (native={native})"
+        "dialog :modal/close/show, modality flips, moves + ancestor moves/retags ({}), retags, \
+         popover open/hide, closedby fallback (native={native})",
+        moves.trim_end()
     ))
 }
 
 /// Re-sync guards on the open modal `dialog` (node 2) and `popover` (node 3): (a) modal-only
-/// edits while open, (b) a same-commit sibling insert + reorder that moves both elements, and
-/// (c) `<details open>` retagged to `<dialog>` (stale `open` dropped; modal enters `:modal`).
+/// edits while open, (b) reorders that really move the `<dialog>` and then the `[popover]`,
+/// (d) moving and retagging an ancestor wrapper holding an open modal `<dialog>` + `[popover]`,
+/// and (c) `<details open>` retagged to `<dialog>` (stale `open` dropped; modal enters
+/// `:modal`). Runs with native `moveBefore()` and with it hidden (fallback subtree re-sync).
 fn drive_overlay_resync(
     web: &mut WebBackend,
     store: &mut NodeStore,
@@ -220,12 +249,27 @@ fn drive_overlay_resync(
     commit(web, store, |tx| {
         let _ = tx.create_at(sibling);
         tx.edit::<TextContent>(sibling).text("sibling");
-        tx.set_children(NodeId::ROOT, &[sibling, popover_n, dialog_n]);
+        tx.set_children(NodeId::ROOT, &[sibling, dialog_n, popover_n]);
     })?;
-    check(
-        matches(dialog, ":modal") && matches(popover, ":popover-open"),
-        "(b) a moved open modal <dialog> / [popover] must stay in the top layer",
-    )?;
+    // The child-order cursor never moves the element it stands on: `dialog` must come first.
+    for (order, label) in [
+        (
+            [dialog_n, sibling, popover_n],
+            "(b) moved open modal <dialog>",
+        ),
+        ([popover_n, dialog_n, sibling], "(b) moved open [popover]"),
+    ] {
+        commit(web, store, |tx| tx.set_children(NodeId::ROOT, &order))?;
+        check(
+            matches(dialog, ":modal") && matches(popover, ":popover-open"),
+            &format!("{label}: both must stay in the top layer"),
+        )?;
+    }
+    drive_ancestor_resync(web, store, host, &[popover_n, dialog_n, sibling])?;
+    commit(web, store, |tx| {
+        tx.remove(sibling);
+        tx.set_children(NodeId::ROOT, &[dialog_n, popover_n]);
+    })?;
 
     for (n, open, label) in [
         (NodeId::new(5, 0), false, "closed"),
@@ -269,8 +313,73 @@ fn drive_overlay_resync(
         commit(web, store, |tx| {
             tx.edit::<HtmlSemantics>(n).open(false);
         })?;
+        commit(web, store, |tx| tx.remove(n))?;
     }
     Ok(())
+}
+
+/// (d) A `<section>` wrapper holding an open modal `<dialog>` and an open `[popover]` (a
+/// `Dialog`'s scrim `view` around its `<dialog>`): moving the wrapper and retagging it to
+/// `<article>` keep both descendants in the top layer.
+fn drive_ancestor_resync(
+    web: &mut WebBackend,
+    store: &mut NodeStore,
+    host: &web_sys::Element,
+    roots: &[NodeId],
+) -> Result<(), String> {
+    let (wrapper, inner_dialog, inner_popover) =
+        (NodeId::new(7, 0), NodeId::new(8, 0), NodeId::new(9, 0));
+    commit(web, store, |tx| {
+        for n in [wrapper, inner_dialog, inner_popover] {
+            let _ = tx.create_at(n);
+        }
+        tx.edit::<HtmlSemantics>(wrapper)
+            .element(Some(SemanticElement::Section));
+        tx.edit::<HtmlSemantics>(inner_dialog)
+            .element(Some(SemanticElement::Dialog))
+            .open(true);
+        tx.edit::<Accessibility>(inner_dialog).modal(true);
+        tx.edit::<HtmlSemantics>(inner_popover)
+            .popover(Some(PopoverMode::Manual))
+            .data_nve_open(true);
+        tx.set_children(wrapper, &[inner_dialog, inner_popover]);
+        tx.append_child(NodeId::ROOT, wrapper);
+    })?;
+    let wrapper_sel = format!("[data-nve-id=\"{}\"]", wrapper.raw());
+    let dialog_sel = format!("[data-nve-id=\"{}\"]", inner_dialog.raw());
+    let popover_sel = format!("[data-nve-id=\"{}\"]", inner_popover.raw());
+    let in_top_layer = |what: &str| -> Result<(), String> {
+        let d = query(host, &dialog_sel)?;
+        let p = query(host, &popover_sel)?;
+        check(
+            matches(&d, ":modal") && matches(&p, ":popover-open"),
+            &format!("(d) {what}: nested <dialog> / [popover] must stay in the top layer"),
+        )
+    };
+    in_top_layer("mounted in a wrapper")?;
+    let mut moved = vec![wrapper];
+    moved.extend_from_slice(roots);
+    commit(web, store, |tx| tx.set_children(NodeId::ROOT, &moved))?;
+    in_top_layer("ancestor moved")?;
+    commit(web, store, |tx| {
+        tx.edit::<HtmlSemantics>(wrapper)
+            .element(Some(SemanticElement::Article));
+    })?;
+    check(
+        query(host, &wrapper_sel)?
+            .tag_name()
+            .eq_ignore_ascii_case("article"),
+        "(d) wrapper retagged to <article>",
+    )?;
+    in_top_layer("ancestor retagged")?;
+    commit(web, store, |tx| {
+        tx.edit::<HtmlSemantics>(inner_dialog).open(false);
+        tx.edit::<HtmlSemantics>(inner_popover).data_nve_open(false);
+    })?;
+    commit(web, store, |tx| {
+        tx.remove(wrapper);
+        tx.set_children(NodeId::ROOT, roots);
+    })
 }
 
 /// Test plugin rendering any `HtmlDataAttrs` node as `<select>` (`<select>` is plugin-only).
@@ -287,8 +396,9 @@ impl WebTableSystem for SelectProbeSystem {
 }
 
 /// Hydrates every shared `SELECT_BASE_CASES` `<select>` (with and without `selected`,
-/// `multiple`, `size`, disabled options / `<optgroup>`s) with the client value equal to the
-/// browser's own `select.value`: the SSR base must match it (0 dirty reconciliations).
+/// `multiple`, `size`, disabled options / `<optgroup>`s) with a client value DIFFERENT from the
+/// browser's own `select.value` (an equal one converges without consulting the base): 0 dirty
+/// reconciliations then proves the SSR base value equals `select.value`.
 #[wasm_bindgen]
 pub fn nve_probe_select_hydration() -> String {
     report(run_select_hydration())
@@ -326,11 +436,12 @@ fn hydrate_select_case(mount: &web_sys::Element, expected: &str) -> Result<(), S
     client.register_table_system(SelectProbeSystem);
     let mut store = new_store();
     let select_n = NodeId::new(2, 0);
+    let incoming = format!("{expected}__client");
     commit(&mut client, &mut store, |tx| {
         let _ = tx.create_at(NodeId::ROOT);
         let _ = tx.create_at(select_n);
         tx.edit::<HtmlDataAttrs>(select_n);
-        tx.edit::<TextInput>(select_n).value(expected);
+        tx.edit::<TextInput>(select_n).value(&incoming);
         tx.set_children(NodeId::ROOT, &[select_n]);
     })?;
     let report = client.hydration_report();

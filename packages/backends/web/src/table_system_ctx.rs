@@ -44,9 +44,8 @@ impl ClickInterceptors {
 #[cfg(target_arch = "wasm32")]
 impl WebStoreRenderer {
     /// Queues [`super::WebTableSystem::sync_connected`] for every plugin table on `node` (its
-    /// element was retagged or moved, dropping imperative state such as the top layer). No
-    /// dedupe scan: `sync_connected` is idempotent and a large reorder must stay linear.
-    pub(crate) fn queue_connected_sync_all(&mut self, store: &nve_store::NodeStore, node: NodeId) {
+    /// element was retagged, so imperative state such as the top layer must be re-applied).
+    pub(crate) fn queue_connected_sync_node(&mut self, store: &nve_store::NodeStore, node: NodeId) {
         for sys in self.registry.iter() {
             if store.has_slot(node, sys.slot()) {
                 self.connected_sync.push((sys.slot(), node));
@@ -54,15 +53,33 @@ impl WebStoreRenderer {
         }
     }
 
-    /// Drains [`WebSystemCommitCtx::request_connected_sync`] once the commit has connected every
-    /// element, calling [`super::WebTableSystem::sync_connected`] for still-live nodes.
+    /// [`Self::queue_connected_sync_node`] for `root` and every descendant: a fallback DOM move
+    /// of `root` ran the removing steps on its whole subtree (a `Dialog`'s scrim wrapper moving
+    /// evicts the `<dialog>` inside it from the top layer).
+    pub(crate) fn queue_connected_sync_subtree(&mut self, store: &nve_store::NodeStore, root: NodeId) {
+        if self.registry.iter().is_empty() {
+            return;
+        }
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            self.queue_connected_sync_node(store, node);
+            stack.extend(store.children(node).iter().rev());
+        }
+    }
+
+    /// Drains the queued connected syncs once the commit has connected and placed every element,
+    /// calling [`super::WebTableSystem::sync_connected`] once per `(slot, node)` (first-queued
+    /// order, so top-layer stacking follows request order) for still-live nodes. Pushes never
+    /// scan; duplicates coalesce here in O(1) each.
     pub(crate) fn sync_connected_plugins(
         &mut self,
         store: &nve_store::NodeStore,
         live: &HashMap<NodeId, web_sys::Element>,
     ) {
-        for (slot, node) in self.connected_sync.drain(..) {
-            if store.is_live(node)
+        self.connected_seen.clear();
+        for entry @ (slot, node) in self.connected_sync.drain(..) {
+            if self.connected_seen.insert(entry)
+                && store.is_live(node)
                 && let (Some(sys), Some(el)) = (self.registry.get(slot), live.get(&node))
             {
                 sys.sync_connected(store, node, el);
@@ -146,7 +163,8 @@ impl WebSystemCommitCtx<'_> {
     }
 
     #[inline]
-    fn write_effective_attr(&mut self, node: NodeId, name: &str, value: &str) {
+    /// Effective-value mirror write only (retag replay source); the live element is untouched.
+    fn write_mirror_attr(&mut self, node: NodeId, name: &str, value: &str) {
         let list = self.attrs.entry(node).or_default();
         if let Some((_, v)) = list.iter_mut().find(|(k, _)| k == name) {
             v.clear();
@@ -154,6 +172,10 @@ impl WebSystemCommitCtx<'_> {
         } else {
             list.push((name.to_owned(), value.to_owned()));
         }
+    }
+
+    fn write_effective_attr(&mut self, node: NodeId, name: &str, value: &str) {
+        self.write_mirror_attr(node, name, value);
         #[cfg(target_arch = "wasm32")]
         if let Some(el) = self.live_element {
             let _ = el.set_attribute(name, value);
@@ -306,32 +328,41 @@ impl WebSystemCommitCtx<'_> {
 
     /// Queues [`super::WebTableSystem::sync_connected`] for `node` (current slot), run in Step 6
     /// once child reconciliation has connected and placed every element (a Step-5 move would
-    /// otherwise evict state applied earlier, e.g. `:modal`). Duplicate requests coalesce.
+    /// otherwise evict state applied earlier, e.g. `:modal`). Duplicate requests coalesce at
+    /// drain time.
     #[cfg(target_arch = "wasm32")]
     pub fn request_connected_sync(&mut self, node: NodeId) {
-        let entry = (self.current_slot, node);
-        if !self.connected_sync.contains(&entry) {
-            self.connected_sync.push(entry);
-        }
+        self.connected_sync.push((self.current_slot, node));
     }
 
     /// Drops the current slot's mirrored `name` on `node` WITHOUT touching the live element, for
     /// state the plugin now owns imperatively (a `<dialog>`'s `open`), so retag mirror replay
-    /// never writes the stale value back.
+    /// never writes the stale value back. When an older write by another slot remains, the
+    /// mirror falls back to it (mirror only: the live element stays plugin-owned).
     pub fn forget_attr(&mut self, node: NodeId, name: &str) {
-        if let Some(owned) = self.slot_attrs.get_mut(&(node, self.current_slot)) {
-            owned.retain(|e| e.name != name);
+        let key = (node, self.current_slot);
+        let mut removed_seq = None;
+        if let Some(owned) = self.slot_attrs.get_mut(&key) {
+            if let Some(i) = owned.iter().position(|e| e.name == name) {
+                removed_seq = Some(owned.swap_remove(i).seq);
+            }
             if owned.is_empty() {
-                self.slot_attrs.remove(&(node, self.current_slot));
+                self.slot_attrs.remove(&key);
             }
         }
-        if self.find_latest_other_slot_attr(node, name).is_none()
-            && let Some(list) = self.attrs.get_mut(&node)
-        {
-            list.retain(|(k, _)| k != name);
-            if list.is_empty() {
-                self.attrs.remove(&node);
+        match self.find_latest_other_slot_attr(node, name) {
+            None => {
+                if let Some(list) = self.attrs.get_mut(&node) {
+                    list.retain(|(k, _)| k != name);
+                    if list.is_empty() {
+                        self.attrs.remove(&node);
+                    }
+                }
             }
+            Some((fallback, max_seq)) if removed_seq.is_some_and(|seq| max_seq < seq) => {
+                self.write_mirror_attr(node, name, &fallback);
+            }
+            Some(_) => {}
         }
     }
 
@@ -376,33 +407,60 @@ impl RetagElementSink for web_sys::Element {
     }
 }
 
-/// Replays authoritative resolved plugin mirrors (`attrs`, `inline_css`, `inner_html`) directly
-/// onto freshly retagged DOM elements without disturbing `write_seq` or per-slot ownership.
 #[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn replay_retagged_mirrors<E: RetagElementSink>(
-    retagged: &[NodeId],
-    live: &HashMap<NodeId, E>,
-    plugin_attrs: &HashMap<NodeId, Vec<(String, String)>>,
-    plugin_inline_css: &HashMap<NodeId, String>,
-    plugin_inner_html: &HashMap<NodeId, String>,
-) {
-    for &nid in retagged {
-        let Some(el) = live.get(&nid) else {
-            continue;
-        };
-        if let Some(attrs) = plugin_attrs.get(&nid) {
-            for (k, v) in attrs {
-                el.set_attr(k, v);
+impl crate::table_system::WebStoreRenderer {
+    /// Replays authoritative resolved plugin mirrors (`attrs`, `inline_css`, `inner_html`) onto
+    /// freshly retagged DOM elements without disturbing `write_seq` or per-slot ownership.
+    /// Effective values whose winning write has `seq > written_after` were written by this
+    /// commit's Steps 1-2 straight onto the (already fresh) live element and are skipped.
+    pub(crate) fn replay_retagged_mirrors<E: RetagElementSink>(
+        &self,
+        retagged: &[NodeId],
+        live: &HashMap<NodeId, E>,
+        written_after: u64,
+    ) {
+        for &nid in retagged {
+            let Some(el) = live.get(&nid) else {
+                continue;
+            };
+            if let Some(attrs) = self.plugin_attrs.get(&nid) {
+                for (k, v) in attrs {
+                    if self.latest_attr_seq(nid, k) <= written_after {
+                        el.set_attr(k, v);
+                    }
+                }
+            }
+            if let Some(css) = self.plugin_inline_css.get(&nid)
+                && !css.is_empty()
+                && self.latest_inline_css_seq(nid) <= written_after
+            {
+                el.set_attr("data-nve-mod-style", css);
+            }
+            if let Some(html) = self.plugin_inner_html.get(&nid) {
+                el.set_inner_html(html);
             }
         }
-        if let Some(css) = plugin_inline_css.get(&nid)
-            && !css.is_empty()
-        {
-            el.set_attr("data-nve-mod-style", css);
-        }
-        if let Some(html) = plugin_inner_html.get(&nid) {
-            el.set_inner_html(html);
-        }
+    }
+
+    fn latest_attr_seq(&self, node: NodeId, name: &str) -> u64 {
+        self.registry
+            .iter()
+            .iter()
+            .filter_map(|sys| self.slot_attrs.get(&(node, sys.slot())))
+            .flat_map(|owned| owned.iter().filter(|e| e.name == name))
+            .map(|e| e.seq)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn latest_inline_css_seq(&self, node: NodeId) -> u64 {
+        self.registry
+            .iter()
+            .iter()
+            .filter_map(|sys| self.slot_inline_css.get(&(node, sys.slot())))
+            .map(|e| e.seq)
+            .max()
+            .unwrap_or(0)
     }
 }
 

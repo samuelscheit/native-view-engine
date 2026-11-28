@@ -5,7 +5,7 @@ use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 
 use crate::WebBackend;
-use crate::hydrate::SELECT_BASE_CASES;
+use crate::select_parity::SELECT_BASE_CASES;
 use crate::hydrate_native_parse::parse_ssr_html_tree;
 
 /// The headless parser derives every shared [`SELECT_BASE_CASES`] base value exactly as browsers

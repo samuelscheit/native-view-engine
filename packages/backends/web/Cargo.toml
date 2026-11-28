@@ -8,6 +8,8 @@ license.workspace = true
 default = ["ssr", "hydrate"]
 ssr = []
 hydrate = ["ssr", "dep:nve-interop"]
+# `select_parity::SELECT_BASE_CASES`: shared test / live-probe fixture, not runtime API.
+parity-fixtures = ["hydrate"]
 
 [dependencies]
 nve-abi = { workspace = true }
@@ -26,6 +28,7 @@ web-sys = { workspace = true, features = [
     "DomRect",
     "FocusEvent",
     "HtmlInputElement",
+    "HtmlOptionElement",
     "HtmlSelectElement",
     "HtmlStyleElement",
     "HtmlTextAreaElement",

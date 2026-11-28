@@ -264,13 +264,14 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
                     if let Some(ref mut live) = tree.arena[top].live_control_value {
                         live.push_str(&decoded);
                     }
-                } else if tag == "option"
-                    && let Some(sel) = selects
-                        .iter_mut()
-                        .rev()
-                        .find(|s| s.open_option == Some(top))
+                } else if let Some(sel) = selects
+                    .iter_mut()
+                    .rev()
+                    .find(|s| s.open_option.is_some_and(|o| open_stack.contains(&o)))
                     && let Some(opt) = sel.options.last_mut()
                 {
+                    // Option text spans element descendants (`<option>A<b>B</b>`); `<script>`
+                    // bodies are skipped as raw text, matching `option.text`.
                     opt.text.push_str(&unescape_html_text(&html[text_start..i]));
                 }
             }

@@ -109,6 +109,16 @@ fn event_batch_buf_builders_inline_and_long_keys_custom_and_wire_roundtrip() {
     );
     buf.push_wheel(s, n, TimestampUs(100), -3.0, 12.0, EventFlags::MOD_ALT);
     buf.push_custom(s, n, TimestampUs(110), "analytics.click", &[1, 2, 3, 4]);
+    buf.push_custom_with_flags(
+        s,
+        n,
+        TimestampUs(115),
+        "close",
+        &[],
+        EventFlags::EMPTY
+            .with_bubbles(false)
+            .union(EventFlags::UTF8_BYTES), // internal framing bit must be stripped
+    );
     let mod_key = Key64::of("acme.map_view");
     buf.push_table_event(
         mod_key,
@@ -122,7 +132,7 @@ fn event_batch_buf_builders_inline_and_long_keys_custom_and_wire_roundtrip() {
     );
 
     let view = buf.as_validated();
-    assert_eq!(view.len(), 13);
+    assert_eq!(view.len(), 14);
 
     let e0 = view.get(0).unwrap();
     assert_eq!(e0.interaction(), Some(InteractionEvent::Press));
@@ -163,20 +173,33 @@ fn event_batch_buf_builders_inline_and_long_keys_custom_and_wire_roundtrip() {
 
     let e11 = view.get(11).unwrap();
     assert!(e11.is_custom());
+    assert!(e11.bubbles());
     assert_eq!(e11.custom_name(), "analytics.click");
     assert_eq!(e11.custom_data(), &[1, 2, 3, 4]);
 
     let e12 = view.get(12).unwrap();
-    assert_eq!(e12.table(), mod_key);
-    assert_eq!(e12.event(), EventId(3));
-    assert_eq!(e12.bytes(), &[0xFF, 0xFE]);
-    assert_eq!(e12.text(), ""); // invalid UTF-8 never exposed as &str!
+    assert!(e12.is_custom());
+    assert!(!e12.bubbles());
+    assert_eq!(
+        e12.flags(),
+        EventFlags::NO_BUBBLE.union(EventFlags::CUSTOM_NAMED)
+    );
+    assert_eq!(e12.custom_name(), "close");
+    assert!(e12.custom_data().is_empty());
+
+    let e13 = view.get(13).unwrap();
+    assert_eq!(e13.table(), mod_key);
+    assert_eq!(e13.event(), EventId(3));
+    assert_eq!(e13.bytes(), &[0xFF, 0xFE]);
+    assert_eq!(e13.text(), ""); // invalid UTF-8 never exposed as &str!
 
     // Wire roundtrip
     let wire = buf.to_wire_bytes();
     let decoded = EventBatchBuf::decode_wire(&wire).expect("decode_wire");
     assert_eq!(decoded, buf);
     assert_eq!(decoded.as_validated().get(8).unwrap().key(), long_key);
+    assert!(decoded.as_validated().get(11).unwrap().bubbles());
+    assert!(!decoded.as_validated().get(12).unwrap().bubbles());
 
     // Truncation / trailing / bad magic / bad version rejections
     assert_eq!(EventBatchBuf::decode_wire(&wire[..10]), Err(DecodeError::Truncated));

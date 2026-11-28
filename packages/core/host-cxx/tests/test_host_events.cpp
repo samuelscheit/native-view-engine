@@ -88,6 +88,7 @@ void test_owned_events_builders_and_copy() {
   CHECK(src.push_text_change(1u, 10u, 103u, "h\xC3\xA9llo"));
   const std::array<uint8_t, 4> payload{9u, 8u, 7u, 6u};
   CHECK(src.push_custom(1u, 11u, 104u, "analytics.click", payload));
+  CHECK(src.push_custom(1u, 12u, 105u, "close", {}, NVE_EVENT_FLAG_NO_BUBBLE | NVE_EVENT_FLAG_UTF8_BYTES));
   // Invalid UTF-8 is rejected before touching the slabs.
   CHECK(!src.push_text_change(1u, 10u, 105u, std::string_view("\xFF", 1u)));
   CHECK(!src.push_key(1u, 10u, 106u, NVE_INTERACTION_EVENT_KEY_DOWN, std::string_view("\xC0\xAF", 2u)));
@@ -103,7 +104,7 @@ void test_owned_events_builders_and_copy() {
 
   const auto check = [&](const OwnedEvents& o) {
     const NveEventBatch b = o.batch();
-    CHECK(o.size() == 5u && validate_event_batch(b));
+    CHECK(o.size() == 6u && validate_event_batch(b));
     CHECK(reinterpret_cast<uintptr_t>(b.events) % NVE_EVENT_ALIGN == 0u);
     CHECK(is_interaction_event(b.events[0], NVE_INTERACTION_EVENT_PRESS));
     CHECK(event_payload_f32(b.events[0], 0u) == 12.5f && event_payload_f32(b.events[0], 1u) == 24.0f);
@@ -115,9 +116,13 @@ void test_owned_events_builders_and_copy() {
     CHECK(event_key(b.events[2], b) == long_key && event_code(b.events[2], b) == "MediaTrackNext");
     CHECK(is_text_input_event(b.events[3], NVE_TEXT_INPUT_EVENT_CHANGE));
     CHECK(event_text(b.events[3], b) == "h\xC3\xA9llo");
-    CHECK(is_custom_event(b.events[4]) && event_custom_name(b.events[4], b) == "analytics.click");
+    CHECK(is_custom_event(b.events[4]) && event_bubbles(b.events[4]) &&
+          event_custom_name(b.events[4], b) == "analytics.click");
     const std::span<const uint8_t> d = event_custom_data(b.events[4], b);
     CHECK(d.size() == 4u && d[0] == 9u && d[3] == 6u);
+    CHECK(is_custom_event(b.events[5]) && !event_bubbles(b.events[5]) &&
+          b.events[5].flags == (NVE_EVENT_FLAG_NO_BUBBLE | NVE_EVENT_FLAG_CUSTOM_NAMED) &&
+          event_custom_name(b.events[5], b) == "close" && event_custom_data(b.events[5], b).empty());
   };
   check(owned);
 

@@ -580,6 +580,28 @@ impl EventBatchBuf {
         );
     }
 
+    pub fn try_push_custom_with_flags(
+        &mut self,
+        surface: SurfaceId,
+        node: NodeId,
+        timestamp: TimestampUs,
+        name: &str,
+        data: &[u8],
+        flags: EventFlags,
+    ) -> Result<(), EventValidationError> {
+        self.check_event_room()?;
+        let nlen = u32::try_from(name.len())
+            .map_err(|_| EventValidationError::BytesLengthOverflow)?;
+        let bytes = self.try_append_pair(name.as_bytes(), data)?;
+        self.events.push(
+            NveEvent::new(NVE_TABLE_CUSTOM, surface, node, timestamp, EventId(0))
+                .with_flags(flags.without_internal_framing().union(EventFlags::CUSTOM_NAMED))
+                .with_payload([nlen, 0, 0, 0, 0, 0])
+                .with_bytes(bytes),
+        );
+        Ok(())
+    }
+
     pub fn try_push_custom(
         &mut self,
         surface: SurfaceId,
@@ -588,17 +610,19 @@ impl EventBatchBuf {
         name: &str,
         data: &[u8],
     ) -> Result<(), EventValidationError> {
-        self.check_event_room()?;
-        let nlen = u32::try_from(name.len())
-            .map_err(|_| EventValidationError::BytesLengthOverflow)?;
-        let bytes = self.try_append_pair(name.as_bytes(), data)?;
-        self.events.push(
-            NveEvent::new(NVE_TABLE_CUSTOM, surface, node, timestamp, EventId(0))
-                .with_flags(EventFlags::CUSTOM_NAMED)
-                .with_payload([nlen, 0, 0, 0, 0, 0])
-                .with_bytes(bytes),
-        );
-        Ok(())
+        self.try_push_custom_with_flags(surface, node, timestamp, name, data, EventFlags::EMPTY)
+    }
+
+    pub fn push_custom_with_flags(
+        &mut self,
+        surface: SurfaceId,
+        node: NodeId,
+        timestamp: TimestampUs,
+        name: &str,
+        data: &[u8],
+        flags: EventFlags,
+    ) {
+        let _ = self.try_push_custom_with_flags(surface, node, timestamp, name, data, flags);
     }
 
     pub fn push_custom(

@@ -227,11 +227,17 @@ fn find_hydrate_root(container: &web_sys::Element) -> Option<web_sys::Element> {
 fn select_markup_value(select: &web_sys::Element) -> String {
     let mut options: Vec<SsrSelectOption> = Vec::new();
     let mut push = |opt: &web_sys::Element, group_disabled: bool| {
+        let value = opt.get_attribute("value");
+        // `option.text`: descendant text without `<script>`, only read as the value fallback.
+        let text = match (&value, opt.dyn_ref::<web_sys::HtmlOptionElement>()) {
+            (None, Some(o)) => o.text(),
+            _ => String::new(),
+        };
         options.push(SsrSelectOption {
             selected: opt.has_attribute("selected"),
             disabled: group_disabled || opt.has_attribute("disabled"),
-            value: opt.get_attribute("value"),
-            text: opt.text_content().unwrap_or_default(),
+            value,
+            text,
         });
     };
     let mut cur = select.first_element_child();
@@ -268,8 +274,8 @@ fn demote_mount_root(mount: &web_sys::Element) {
         let keep = node
             .dyn_ref::<web_sys::Element>()
             .is_some_and(is_ignored_dom_element);
-        if !keep && let Some(parent) = node.parent_node() {
-            let _ = parent.remove_child(&node);
+        if !keep {
+            let _ = mount.remove_child(&node);
         }
     }
     for attr in ["data-nve-id", "data-nve-ssr-hash", "class", "style"] {

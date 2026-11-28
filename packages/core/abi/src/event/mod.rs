@@ -65,6 +65,8 @@ impl EventFlags {
     pub const CAPTURE: Self = Self(1 << 11);
     /// IME composition active flag (bit 12).
     pub const COMPOSING: Self = Self(1 << 12);
+    /// Target-only (non-bubbling) dispatch flag (bit 13, e.g. DOM `close` / `toggle`).
+    pub const NO_BUBBLE: Self = Self(1 << 13);
     /// Ingress-validated flag: `NveEvent::bytes` slice is valid UTF-8 (bit 16).
     pub const UTF8_BYTES: Self = Self(1 << 16);
     /// Ingress-validated flag: `payload[1]` holds `0..=16` inline UTF-8 key length in `payload[2..6]` (bit 17).
@@ -144,6 +146,22 @@ impl EventFlags {
     #[inline(always)]
     pub const fn is_composing(self) -> bool {
         self.contains(Self::COMPOSING)
+    }
+
+    /// `false` when the event targets its node only ([`Self::NO_BUBBLE`]); unset events bubble.
+    #[inline(always)]
+    pub const fn bubbles(self) -> bool {
+        !self.contains(Self::NO_BUBBLE)
+    }
+
+    /// Sets or clears [`Self::NO_BUBBLE`].
+    #[inline(always)]
+    pub const fn with_bubbles(self, bubbles: bool) -> Self {
+        if bubbles {
+            Self(self.0 & !Self::NO_BUBBLE.0)
+        } else {
+            Self(self.0 | Self::NO_BUBBLE.0)
+        }
     }
 
     #[inline(always)]

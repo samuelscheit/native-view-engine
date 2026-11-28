@@ -191,16 +191,12 @@ fn known_cursor_class_registers_with_zero_allocations() {
     };
     assert!(cache.knows_structural(cls));
 
-    // A known twin costs exactly what building its class list costs: zero registration allocs.
-    let class_list = allocations(|| {
-        let mut classes = String::new();
-        classes.push(' ');
-        classes.push_str(cls);
-        drop(std::hint::black_box(classes));
-    });
+    // Baseline: re-resolving the already-registered cursor-only node. A never-seen twin with the
+    // same cursor must cost exactly that (zero registration allocations).
+    let baseline = allocations(|| drop(cache.resolve_node(&store, first, &systems)));
     let twin_cost = allocations(|| drop(cache.resolve_node(&store, twin, &systems)));
     assert_eq!(
-        twin_cost, class_list,
+        twin_cost, baseline,
         "known cursor hit must not allocate its declarations"
     );
     assert_eq!(cache.rule_count(), rules);

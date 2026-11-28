@@ -240,6 +240,7 @@ const CORE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_EVENT_FLAG_BUTTON_MASK", EventFlags::BUTTON_MASK.raw() as u64, true, Some("Pointer button bitmask (bits 8..=10) in `NveEvent::flags`.")),
     abi_const("NVE_EVENT_FLAG_CAPTURE", EventFlags::CAPTURE.raw() as u64, true, Some("Pointer capture active flag in `NveEvent::flags`.")),
     abi_const("NVE_EVENT_FLAG_COMPOSING", EventFlags::COMPOSING.raw() as u64, true, Some("IME composition active flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_NO_BUBBLE", EventFlags::NO_BUBBLE.raw() as u64, true, Some("Target-only (non-bubbling) dispatch flag in `NveEvent::flags`.")),
     abi_const("NVE_EVENT_FLAG_UTF8_BYTES", EventFlags::UTF8_BYTES.raw() as u64, true, Some("Ingress-validated UTF-8 byte-arena slice flag in `NveEvent::flags`.")),
     abi_const("NVE_EVENT_FLAG_INLINE_KEY_UTF8", EventFlags::INLINE_KEY_UTF8.raw() as u64, true, Some("Inline UTF-8 key (`<= 16 B` in `payload[2..6]`) flag in `NveEvent::flags`.")),
     abi_const("NVE_EVENT_FLAG_CUSTOM_NAMED", EventFlags::CUSTOM_NAMED.raw() as u64, true, Some("Custom named event prefix flag in `NveEvent::flags`.")),

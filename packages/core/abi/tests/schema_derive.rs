@@ -89,7 +89,7 @@ fn derive_nve_abi_handles_downstream_struct_union_and_signed_enum() {
 fn core_and_scene_view_descriptors_reflect_real_rustc_layouts() {
     let core = core_abi_descriptor();
     assert_eq!(core.namespace, Some("NveCoreAbi"));
-    assert_eq!(core.consts.len(), 30);
+    assert_eq!(core.consts.len(), 31);
     assert_eq!(core.aliases.len(), 14);
     assert_eq!(core.aliases[0].name, "NveNodeId");
     assert_eq!(core.aliases[1].name, "NveSurfaceId");

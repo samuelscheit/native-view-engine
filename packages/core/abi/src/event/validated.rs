@@ -460,6 +460,8 @@ impl<'a> ValidatedEvent<'a> {
     #[inline(always)] pub const fn pointer_button(&self) -> u8 { self.raw.flags.pointer_button() }
     #[inline(always)] pub const fn is_capture(&self) -> bool { self.raw.flags.is_capture() }
     #[inline(always)] pub const fn is_composing(&self) -> bool { self.raw.flags.is_composing() }
+    /// `false` when the event targets its node only ([`EventFlags::NO_BUBBLE`]).
+    #[inline(always)] pub const fn bubbles(&self) -> bool { self.raw.flags.bubbles() }
 
     /// Zero-alloc pre-validated UTF-8 text payload.
     #[inline(always)]

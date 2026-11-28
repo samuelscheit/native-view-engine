@@ -285,9 +285,10 @@ impl DioxusSurface {
                         d.data.clear();
                         d.data.extend_from_slice(ev.custom_data());
                     });
+                    // DOM `close` / `toggle` bridges arrive target-only (`bubbles() == false`).
                     self.vdom
                         .runtime()
-                        .handle_event(name, Event::new(data, true), el_id);
+                        .handle_event(name, Event::new(data, ev.bubbles()), el_id);
                     handled = true;
                 }
                 table_key => {

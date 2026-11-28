@@ -23,8 +23,10 @@
  *  6. Full interactive app flows (FormDecode, 422 FieldErrors, CreateIssue + Nve-Invalidate incl.
  *     live stats, CDP-paused optimistic CloseIssue, filters, RenameIssue, AddComment) + screenshots.
  *  7. Live `FetchTransport` 6-probe browser matrix + live-DOM probes: native `<dialog>` /
- *     `[popover]` top layer (modality flips, moves, retags), a real nve-ui `Dialog` closed by a
- *     TRUSTED backdrop click (native `closedBy` and the fallback path), container-root hydration,
+ *     `[popover]` top layer (modality flips, moves + ancestor moves/retags with and without
+ *     `moveBefore`), target-only `close` / `toggle` bridges (0 events for modality flips), a real
+ *     nve-ui `Dialog` closed by a TRUSTED backdrop click (native `closedBy`) and by SYNTHETIC
+ *     clicks through the counted `closedby` fallback (`closedBy` deleted), container-root hydration,
  *     `<select>` SSR base-value parity, and a live `nve-tv-web` `WebTvController` driven by
  *     TRUSTED key presses (explicit neighbors, arrow-owning widgets, modal trap, Select, re-entrancy).
  *  8. Real cross-origin CORS preflight.
@@ -504,18 +506,37 @@ async function main() {
       // `close` is dispatched from a queued task: let it run before pumping.
       await evalJs(cdp, "new Promise((r) => setTimeout(r, 50))");
     };
+    const runTask = () => evalJs(cdp, "new Promise((r) => setTimeout(r, 50))");
+    // Native close / toggle bridges: phases separated by a task so queued `close` events run.
+    for (const phase of ["arm", "check", "finish"]) {
+      await probeCall(`nve_probe_close_bridge_${phase}`);
+      await runTask();
+    }
     await probeCall("nve_probe_dialog_mount");
     await trustedClick(4, 4);
     await probeCall("nve_probe_dialog_after_backdrop_click");
+    // Synthetic clicks never trigger Blink's native light dismiss: with native `closedBy` the
+    // fallback stays passive; with `closedBy` deleted only the (counted) fallback can close.
+    await probeCall("nve_probe_dialog_synthetic_backdrop");
     const hadClosedBy = await evalJs(
       cdp,
-      "(() => { const had = 'closedBy' in HTMLDialogElement.prototype; delete HTMLDialogElement.prototype.closedBy; return had; })()"
+      `(() => { const d = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "closedBy");
+        window.__nveClosedBy = d; delete HTMLDialogElement.prototype.closedBy; return Boolean(d); })()`
     );
-    console.log(`  native closedBy before delete: ${hadClosedBy}; fallback round:`);
-    await trustedClick(4, 4);
-    await probeCall("nve_probe_dialog_after_backdrop_click");
+    assert(hadClosedBy === true, "Chrome must support native HTMLDialogElement.closedBy");
+    try {
+      await probeCall("nve_probe_dialog_synthetic_backdrop");
+      await runTask();
+      await probeCall("nve_probe_dialog_after_backdrop_click");
+    } finally {
+      await evalJs(
+        cdp,
+        `(() => { Object.defineProperty(HTMLDialogElement.prototype, "closedBy", window.__nveClosedBy);
+          delete window.__nveClosedBy; })()`
+      );
+    }
     await evalJs(cdp, "window.__nveProbeMod.nve_probe_dialog_unmount()");
-    console.log("  PASS: top layer (flips/moves/retags), trusted backdrop Dialog close (native + fallback), container-root + <select> hydration.");
+    console.log("  PASS: top layer (flips/moves/ancestor moves+retags), target-only close bridges, Dialog close (trusted native + counted synthetic fallback), container-root + <select> hydration.");
 
     await runTvControllerProbe(cdp, probeCall);
 

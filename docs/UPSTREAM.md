@@ -147,6 +147,12 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
   - **Observed**: a host that dispatches DOM events into Rust immediately gets re-entered while a frame is still being applied; with `RefCell` this is a `BorrowMutError` panic (`unreachable` under immediate-abort).
   - **Mitigation**: `hosts/web-shell` uses `try_borrow_mut` so the event waits for the next pump; a JS-side CommandBuffer interpreter must queue events raised during `apply` and flush them afterwards (prototype `nve_dom.js`, branch `t3/reduce-wasm-js-boundary`).
 
+### Browsers without `moveBefore()`: moving an open top-layer element
+
+- **A reorder / retag through `insertBefore()` runs the removing steps** on the moved subtree: a modal `<dialog>` leaves the top layer (keeps `open`, loses `:modal`) and an open `[popover]` is hidden. `moveBefore()` (Chrome 133+) preserves both.
+  - **Mitigation**: `nve-backend-web` (`dom_move.rs`) uses `moveBefore()` when available, else re-syncs every plugin node of the moved subtree in Step 6 (`queue_connected_sync_subtree`).
+  - **Residual (per HTML, Chrome-verified)**: that re-sync must call `showModal()` again, which runs "hide all popovers" and light-dismisses OPEN AUTO popovers elsewhere (manual popovers survive); apps observe it through the bridged target-only `toggle` close, exactly like a user light dismiss.
+
 ### Taffy (`taffy 0.16.0`)
 
 - **`compute_leaf_layout` drops `style.aspect_ratio` under `SizingMode::ContentSize`**

@@ -83,6 +83,28 @@ pub(crate) struct SsrSelectOption {
     pub(crate) text: String,
 }
 
+/// HTML "rules for parsing non-negative integers" as browsers apply them to `<select size>`:
+/// leading ASCII whitespace and one `+` / `-` sign are skipped, leading digits are read and
+/// trailing garbage (`3px`, `3 x`, `1.9`) is ignored. No digits, a negative value, or `u32`
+/// overflow is a parse error (Chrome: `size="4294967296"` renders a drop-down).
+fn parse_non_negative_u32(s: &str) -> Option<u32> {
+    let s = s.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (negative, rest) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 {
+        return None;
+    }
+    let mut n: u32 = 0;
+    for b in rest[..digits].bytes() {
+        n = n.checked_mul(10)?.checked_add(u32::from(b - b'0'))?;
+    }
+    (!negative || n == 0).then_some(n)
+}
+
 /// `select.value` implied by SSR markup alone (the HTML selectedness setting algorithm): the
 /// first `[selected]` option for `multiple`; otherwise the last `[selected]` one, else the first
 /// enabled option when the display size is 1 (`size` absent, invalid, `0`, or `1`).
@@ -92,7 +114,7 @@ pub(crate) fn ssr_select_base_value(
     size: Option<&str>,
 ) -> String {
     let display_size_one = size
-        .and_then(|s| s.trim().parse::<u32>().ok())
+        .and_then(parse_non_negative_u32)
         .is_none_or(|n| n <= 1);
     let chosen = if multiple {
         options.iter().find(|o| o.selected)
@@ -113,92 +135,6 @@ pub(crate) fn ssr_select_base_value(
             .join(" "),
     })
 }
-
-/// One `<select>` markup case with the `select.value` browsers derive from it.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy)]
-pub struct SelectBaseCase {
-    /// Attributes inside `<select …>`.
-    pub attrs: &'static str,
-    pub options: &'static str,
-    pub expected: &'static str,
-}
-
-/// Shared parity table: the headless parser (unit test) and live Chrome hydration (`issues-probes`
-/// E2E) must both derive `expected` as the SSR base value of each case.
-#[doc(hidden)]
-pub const SELECT_BASE_CASES: &[SelectBaseCase] = &[
-    SelectBaseCase {
-        attrs: "",
-        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
-        expected: "a",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<option value=\"a\">A</option><option value=\"b\" selected>B</option>",
-        expected: "b",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<option value=\"a\" selected>A</option><option value=\"b\" selected>B</option>",
-        expected: "b",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<option value=\"a\" disabled>A</option><option value=\"b\">B</option>",
-        expected: "b",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<optgroup label=\"g\" disabled><option value=\"a\">A</option></optgroup><option value=\"b\">B</option>",
-        expected: "b",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<optgroup label=\"g\"><option value=\"a\">A</option><option value=\"b\" selected>B</option></optgroup>",
-        expected: "b",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<option value=\"a\">A</option><option value=\"b\" selected disabled>B</option>",
-        expected: "b",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<option disabled value=\"a\">A</option><optgroup disabled label=\"g\"><option value=\"b\">B</option></optgroup>",
-        expected: "",
-    },
-    SelectBaseCase {
-        attrs: "",
-        options: "<option>  Hello \n  World </option><option>x</option>",
-        expected: "Hello World",
-    },
-    SelectBaseCase {
-        attrs: "multiple",
-        options: "<option value=\"a\" selected>A</option><option value=\"b\" selected>B</option>",
-        expected: "a",
-    },
-    SelectBaseCase {
-        attrs: "multiple",
-        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
-        expected: "",
-    },
-    SelectBaseCase {
-        attrs: "size=\"3\"",
-        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
-        expected: "",
-    },
-    SelectBaseCase {
-        attrs: "size=\"0\"",
-        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
-        expected: "a",
-    },
-    SelectBaseCase {
-        attrs: "size=\"1\"",
-        options: "<option value=\"a\" disabled>A</option><option value=\"b\">B</option>",
-        expected: "b",
-    },
-];
 
 /// Read-only view of an SSR-rendered element tree (live browser DOM or parsed native HTML).
 pub(crate) trait SsrDomTree {
