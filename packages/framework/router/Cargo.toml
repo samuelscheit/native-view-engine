@@ -22,5 +22,12 @@ nve-store = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = ["Document", "Element", "Event", "EventTarget", "History", "Location", "PopStateEvent", "Window"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "router_bench"
+harness = false
+
 [lints]
 workspace = true

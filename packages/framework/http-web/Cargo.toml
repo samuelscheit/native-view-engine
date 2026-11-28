@@ -14,5 +14,12 @@ bytes = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "http_web_bench"
+harness = false
+
 [lints]
 workspace = true

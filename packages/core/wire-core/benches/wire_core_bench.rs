@@ -11,8 +11,8 @@ mod native {
     use criterion::{criterion_group, Criterion};
     use nve_abi::{DurationMs, NodeId};
     use nve_wire_core::{
-        NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NveWireFrame, NveWireFrameRef,
-        NveWireKind, DEFAULT_MAX_WIRE_FRAME_BYTES,
+        parse_cert_hash_hex, NveNodePatch, NveNodePatchDeltaBuilder, NveNodePatchDeltaView,
+        NveWireFrame, NveWireFrameRef, NveWireKind, DEFAULT_MAX_WIRE_FRAME_BYTES,
     };
 
     fn bench_wire_core(c: &mut Criterion) {
@@ -27,6 +27,8 @@ mod native {
         let frame = NveWireFrame::new(NveWireKind::NodePatchDelta, 42, delta_bytes.clone());
         let wire_bytes = frame.encode().expect("valid bench wire frame");
         let mut scratch = Vec::with_capacity(wire_bytes.len());
+        let mut patch_scratch: Vec<NveNodePatch> = Vec::with_capacity(32);
+        let cert_hex = "ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89";
 
         c.bench_function("wire_core_node_patch_delta_encode_32", |b| {
             b.iter(|| {
@@ -42,6 +44,24 @@ mod native {
                 let view = NveNodePatchDeltaView::decode(black_box(&delta_bytes))
                     .expect("valid bench delta decode");
                 black_box(view.patches().len())
+            });
+        });
+
+        c.bench_function("wire_core_node_patch_delta_decode_into_32", |b| {
+            b.iter(|| {
+                let strs = NveNodePatchDeltaView::decode_into(
+                    black_box(&delta_bytes),
+                    &mut patch_scratch,
+                )
+                .expect("valid bench delta decode_into");
+                black_box((patch_scratch.len(), strs.len()))
+            });
+        });
+
+        c.bench_function("wire_core_parse_cert_hash_hex", |b| {
+            b.iter(|| {
+                let hash = parse_cert_hash_hex(black_box(cert_hex)).expect("valid cert hash");
+                black_box(hash[0])
             });
         });
 

@@ -8,5 +8,12 @@ license.workspace = true
 nve-codec = { workspace = true }
 nve-hash = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "mdx_bench"
+harness = false
+
 [lints]
 workspace = true

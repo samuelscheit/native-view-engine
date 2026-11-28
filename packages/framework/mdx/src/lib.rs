@@ -19,6 +19,7 @@ pub mod parser;
 mod parser_blocks;
 pub mod search;
 mod search_codec;
+mod search_query;
 pub mod validate;
 
 pub use ast::{
@@ -37,7 +38,8 @@ pub use nav::{
 };
 pub use parser::{ParsedBody, parse_markdown_body};
 pub use search::{
-    NVS2_MAGIC, NVS2_VERSION, Posting, SearchDoc, SearchHit, SearchIndex, SearchIndexError,
+    NVS2_MAGIC, NVS2_VERSION, Posting, SearchDoc, SearchHit, SearchHitRef, SearchIndex,
+    SearchIndexError, SearchQueryScratch,
 };
 pub use validate::{
     ComponentRegistry, ComponentSchema, Diagnostic, DiagnosticKind, DiagnosticSeverity, PropSchema,

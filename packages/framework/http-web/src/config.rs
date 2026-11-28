@@ -111,12 +111,19 @@ impl FetchConfig {
         Ok(self)
     }
 
+    /// Formats the target fetch URL for `proc_name` into `out` (clearing `out` first), performing
+    /// zero heap allocations once `out` has sufficient capacity.
+    pub fn build_url_into(&self, proc_name: &str, out: &mut String) {
+        out.clear();
+        out.push_str(&self.base_url);
+        format_rpc_path_into(&self.rpc_prefix, proc_name, out);
+    }
+
     /// Formats the target fetch URL for `proc_name`.
     pub fn build_url(&self, proc_name: &str) -> String {
         let mut out =
             String::with_capacity(self.base_url.len() + self.rpc_prefix.len() + proc_name.len() + 2);
-        out.push_str(&self.base_url);
-        format_rpc_path_into(&self.rpc_prefix, proc_name, &mut out);
+        self.build_url_into(proc_name, &mut out);
         out
     }
 
