@@ -4,8 +4,9 @@
 
 use nve_tables::layout_ext::compute_sticky_offset;
 use nve_tables::tables::{
-    Interaction, Layout as NveLayout, Overflow, Position, Scroll, Transform as TransformTable,
-    Visual, generates_box, is_node_display_none, visual_clips_overflow,
+    Interaction, Layout as NveLayout, Overflow, Overlay, Position, Scroll,
+    Transform as TransformTable, Visual, generates_box, is_node_display_none,
+    visual_clips_overflow,
 };
 use nve_tables::transform::Transform2D;
 use nve_engine::LayoutRect;
@@ -13,7 +14,7 @@ use nve_store::{NodeId, NodeStore};
 
 use crate::{MAX_TREE_DEPTH, StoreLayoutEngine};
 
-use super::{LaidOutScene, length_to_dim};
+use super::{LaidOutScene, ResolvedOverlay, is_overlay_closed, length_to_dim};
 
 /// Result of hit-testing one subtree.
 #[derive(Clone, Copy)]
@@ -194,9 +195,29 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             accepts,
             scratch: self.hit_scratch.take(),
         };
-        let target = walk
-            .walk(NodeId::ROOT, (x, y), (0.0, 0.0), false, 0)
-            .target;
+        let mut target = None;
+        let mut blocked_by_top_layer = false;
+        // 1. Test open top-layer overlays in reverse paint order (topmost first).
+        for ro in self.overlays.open_overlays().iter().rev() {
+            let base = self.layout.layout_of(ro.node).unwrap_or_default();
+            let overlay_offset = (ro.origin_x - base.x, ro.origin_y - base.y);
+            let hit = walk.walk_overlay_root(*ro, (x, y), overlay_offset);
+            if hit.target.is_some() {
+                target = hit.target;
+                blocked_by_top_layer = true;
+                break;
+            }
+            if hit.covered || ro.is_modal || ro.has_backdrop_scrim {
+                blocked_by_top_layer = true;
+                break;
+            }
+        }
+        // 2. Normal document tree (skipping `Overlay` roots).
+        if !blocked_by_top_layer {
+            target = walk
+                .walk(NodeId::ROOT, (x, y), (0.0, 0.0), false, 0, None)
+                .target;
+        }
         debug_assert!(walk.scratch.is_empty(), "every level truncates its keys");
         self.hit_scratch.set(walk.scratch);
         target
@@ -282,7 +303,7 @@ impl<
         hidden: bool,
         depth: usize,
     ) -> Option<Hit> {
-        let hit = self.walk(cid, point, offset, hidden, depth);
+        let hit = self.walk(cid, point, offset, hidden, depth, None);
         (hit.target.is_some() || hit.covered).then_some(hit)
     }
 
@@ -335,9 +356,18 @@ impl<
         point: (f32, f32),
         offset: (f32, f32),
         inherited_hidden: bool,
+        active_overlay: Option<ResolvedOverlay>,
     ) -> Option<EnteredNode> {
         let (store, scene) = (self.store, self.scene);
         if !store.is_live(id) || is_node_display_none(store, id) {
+            return None;
+        }
+        // Skip overlay roots during normal walk and nested overlay roots when walking an outer
+        // overlay (nested open overlays are already hit-tested above the outer overlay).
+        if active_overlay.is_none() && store.has::<Overlay>(id) {
+            return None;
+        }
+        if active_overlay.is_some() && is_overlay_closed(store, id) {
             return None;
         }
         let visual = store.try_row::<Visual>(id);
@@ -352,8 +382,14 @@ impl<
                 hidden,
             });
         }
-        let rect = scene.layout.layout_of(id)?;
-        let (stx, sty) = scene.sticky_delta_of_box(store, id);
+        let mut rect = scene.layout.layout_of(id)?;
+        let (stx, sty) = if let Some(ro) = active_overlay {
+            rect.width = ro.width;
+            rect.height = ro.height;
+            (0.0, 0.0)
+        } else {
+            scene.sticky_delta_of_box(store, id)
+        };
         let r_x = rect.x + offset.0 + stx;
         let r_y = rect.y + offset.1 + sty;
         let base_tf = LaidOutScene::<L>::transform_of_box(store, id);
@@ -389,6 +425,15 @@ impl<
         })
     }
 
+    fn walk_overlay_root(
+        &mut self,
+        ro: ResolvedOverlay,
+        point: (f32, f32),
+        overlay_offset: (f32, f32),
+    ) -> Hit {
+        self.walk(ro.node, point, overlay_offset, false, 0, Some(ro))
+    }
+
     fn walk(
         &mut self,
         id: NodeId,
@@ -396,11 +441,14 @@ impl<
         offset: (f32, f32),
         inherited_hidden: bool,
         depth: usize,
+        active_overlay: Option<ResolvedOverlay>,
     ) -> Hit {
         if depth > MAX_TREE_DEPTH {
             return MISS;
         }
-        let Some(entered) = self.enter_node(id, point, offset, inherited_hidden) else {
+        let Some(entered) =
+            self.enter_node(id, point, offset, inherited_hidden, active_overlay)
+        else {
             return MISS;
         };
 

@@ -21,6 +21,41 @@ pub struct PressEventData {
     pub y: f32,
 }
 
+/// Typed pointer identifier handle (`#[repr(transparent)]`) distinguishing active pointers.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PointerId(pub u32);
+
+impl PointerId {
+    #[inline]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for PointerId {
+    #[inline]
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+/// Full pointer event payload (`onpointerdown`, `onpointermove`, `onpointerup`, `onpointercancel`,
+/// `onpointerenter`, `onpointerleave`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PointerEventData {
+    pub x: f32,
+    pub y: f32,
+    pub pointer_id: PointerId,
+    pub button: u8,
+    pub buttons: u16,
+    pub captured: bool,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TextEventData {
     pub value: String,
@@ -144,6 +179,7 @@ impl<'a, T: HasEvents> ComponentView<'a, T> {
 }
 
 pub type PressEvent = Event<PressEventData>;
+pub type PointerEvent = Event<PointerEventData>;
 pub type TextEvent = Event<TextEventData>;
 pub type ScrollEvent = Event<ScrollEventData>;
 pub type FocusEvent = Event<FocusEventData>;
@@ -175,6 +211,10 @@ macro_rules! define_a11y_attrs {
             aria_checked => "ariaChecked",
             aria_selected => "ariaSelected",
             aria_expanded => "ariaExpanded",
+            aria_pressed => "ariaPressed",
+            aria_hidden => "ariaHidden",
+            aria_busy => "ariaBusy",
+            aria_level => "ariaLevel",
             aria_modal => "ariaModal",
             aria_live => "ariaLive",
             aria_controls => "ariaControls",
@@ -183,6 +223,7 @@ macro_rules! define_a11y_attrs {
             aria_valuenow => "ariaValueNow",
             aria_valuemin => "ariaValueMin",
             aria_valuemax => "ariaValueMax",
+            aria_valuetext => "ariaValueText",
             aria_activedescendant => "ariaActiveDescendant",
             aria_autocomplete => "ariaAutoComplete",
             aria_multiselectable => "ariaMultiSelectable",
@@ -264,7 +305,11 @@ pub mod elements {
         name => "name",
         value => "value",
     });
-    define_element!(scrollview, "scrollview");
+    define_element!(scrollview, "scrollview", {
+        requested_scroll_x => "requestedScrollX",
+        requested_scroll_y => "requestedScrollY",
+        requested_scroll_seq => "requestedScrollSeq",
+    });
     define_element!(image, "image", {
         src => "src",
         alt => "alt",
@@ -339,11 +384,12 @@ rsx_events! {
     onpress => ("onpress", PressEvent),
     onclick => ("onpress", PressEvent),
     onlongpress => ("onlongpress", PressEvent),
-    onpointerdown => ("onpointerdown", PressEvent),
-    onpointermove => ("onpointermove", PressEvent),
-    onpointerup => ("onpointerup", PressEvent),
-    onpointerenter => ("onpointerenter", PressEvent),
-    onpointerleave => ("onpointerleave", PressEvent),
+    onpointerdown => ("onpointerdown", PointerEvent),
+    onpointermove => ("onpointermove", PointerEvent),
+    onpointerup => ("onpointerup", PointerEvent),
+    onpointercancel => ("onpointercancel", PointerEvent),
+    onpointerenter => ("onpointerenter", PointerEvent),
+    onpointerleave => ("onpointerleave", PointerEvent),
     onwheel => ("onwheel", ScrollEvent),
     onchange => ("onchange", TextEvent),
     onscroll => ("onscroll", ScrollEvent),

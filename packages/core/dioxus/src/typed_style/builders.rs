@@ -8,7 +8,7 @@ use nve_tables::interaction::{CursorKind, InteractionState};
 use nve_tables::layout_ext::GridTrack;
 use nve_tables::media::MediaQuery;
 use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-use nve_tables::tables::BoxShadow;
+use nve_tables::tables::{BoxShadow, PointerCaptureMode};
 use nve_tables::StylePatchExt;
 use nve_store::RowPatch;
 
@@ -295,6 +295,17 @@ impl TypedStyle {
     pub fn cursor(mut self, cursor: CursorKind) -> Self {
         self.cursor = Some(cursor);
         self
+    }
+
+    #[inline]
+    pub fn capture_mode(mut self, mode: PointerCaptureMode) -> Self {
+        self.capture_mode = Some(mode);
+        self
+    }
+
+    #[inline]
+    pub fn capture_on_primary_down(self) -> Self {
+        self.capture_mode(PointerCaptureMode::OnPrimaryDown)
     }
 
     #[inline]

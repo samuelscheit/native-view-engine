@@ -62,6 +62,8 @@ impl ScrollPropIdx {
 
 pub(crate) const TF_HAS_TRANSFORM: u8 = 1 << 0;
 pub(crate) const TF_IS_STICKY: u8 = 1 << 1;
+pub(crate) const TF_IS_TOP_LAYER: u8 = 1 << 2;
+pub(crate) const TF_BACKDROP_SCRIM: u8 = 1 << 3;
 
 /// Hot transform, layout origin, and sticky-offset property node (strictly `Copy` POD, <= 64 B).
 #[derive(Debug, Clone, Copy)]
@@ -107,6 +109,16 @@ impl TransformNode {
     #[inline]
     pub const fn is_sticky(&self) -> bool {
         (self.flags & TF_IS_STICKY) != 0
+    }
+
+    #[inline]
+    pub const fn is_top_layer(&self) -> bool {
+        (self.flags & TF_IS_TOP_LAYER) != 0
+    }
+
+    #[inline]
+    pub const fn has_backdrop_scrim(&self) -> bool {
+        (self.flags & TF_BACKDROP_SCRIM) != 0
     }
 
     #[inline]
@@ -182,6 +194,8 @@ pub struct PropertyTrees {
     pub scrolls: Vec<ScrollPropertyNode>,
     /// Live nodes with `Position::Sticky`, refreshed in O(#sticky) when any scroll offset changes.
     pub sticky_chunks: Vec<(NodeId, ChunkIdx)>,
+    /// Live open top-layer [`Overlay`] chunk roots in document paint order (replayed after root).
+    pub top_layer_chunks: Vec<ChunkIdx>,
 }
 
 impl PropertyTrees {
@@ -191,6 +205,7 @@ impl PropertyTrees {
         self.effects.clear();
         self.scrolls.clear();
         self.sticky_chunks.clear();
+        self.top_layer_chunks.clear();
     }
 
     /// Appends one parallel slot across transform, clip, and effect trees (1:1 with `ChunkIdx`).

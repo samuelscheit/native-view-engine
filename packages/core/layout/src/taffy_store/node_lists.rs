@@ -46,7 +46,7 @@ const MAX_POOL_LEN: usize = u32::MAX as usize;
 #[inline(always)]
 fn narrow(v: usize) -> u32 {
     debug_assert!(
-        v <= MAX_POOL_LEN,
+        u32::try_from(v).is_ok(),
         "node list offset {v} escaped the pool bound"
     );
     v as u32
@@ -157,7 +157,7 @@ impl NodeLists {
         self.pool.push(first_overflow);
         self.pool.extend(ids);
         let new_len = self.pool.len() - new_start;
-        if self.pool.len() > MAX_POOL_LEN {
+        if u32::try_from(self.pool.len()).is_err() {
             // Beyond `u32` offsets (> 4 Gi node ids, unreachable before memory runs out): keep
             // the list as filled so far and drop the excess ids rather than corrupt offsets.
             debug_assert!(false, "node list pool exceeds u32 offsets");

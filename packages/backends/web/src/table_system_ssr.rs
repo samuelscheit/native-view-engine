@@ -4,9 +4,9 @@ use crate::css::Keyword;
 use core::fmt::Write as _;
 
 use nve_tables::tables::{
-    Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkRel, LinkTarget,
-    Scroll, StreamBoundary, TextContent, TextInput, Transform, Visibility, Visual,
-    NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
+    DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkRel, LinkTarget, Overlay,
+    OverlayFlags, PointerCaptureMode, Scroll, StreamBoundary, TextContent, TextInput, Transform,
+    Visibility, Visual, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -136,25 +136,19 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if let Some(ti_idx) = inter.tab_index() {
             let _ = write!(out, " tabindex=\"{ti_idx}\"");
         }
-    }
-    if let Some(a11y) = store.try_row::<Accessibility>(id) {
-        if let Some(role) = a11y.role() {
-            write_attr("role", role.as_aria_str(), out);
-        }
-        let label = a11y.label();
-        if !label.is_empty() {
-            write_attr("aria-label", label, out);
-        }
-        if let Some(live) = a11y.live() {
-            write_attr("aria-live", live.as_aria_str(), out);
-        }
-        if a11y.hidden() {
-            write_attr("aria-hidden", "true", out);
-        }
-        if a11y.modal() {
-            write_attr("aria-modal", "true", out);
+        if inter.capture_mode() == PointerCaptureMode::OnPrimaryDown {
+            write_attr("data-nve-capture", "primary", out);
         }
     }
+    if let Some(ov) = store.try_row::<Overlay>(id) {
+        let state = if ov.options().contains(OverlayFlags::OPEN) {
+            "open"
+        } else {
+            "closed"
+        };
+        write_attr("data-nve-overlay", state, out);
+    }
+    crate::aria::visit_accessibility_attrs(store, id, |name, val| write_attr(name, val, out));
 }
 
 impl WebStoreRenderer {

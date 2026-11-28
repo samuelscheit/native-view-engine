@@ -2,7 +2,7 @@
 //! refcounted lazy single-root `wasm32` DOM event delegation backed by [`SurfaceEventTracker`].
 
 use nve_abi::{EventId, NodeId};
-use nve_tables::tables::{Interaction, Layout, Link, Scroll, TextInput};
+use nve_tables::tables::{Interaction, Layout, Link, PointerCaptureMode, Scroll, TextInput};
 use nve_store::{ChangeSet, HasEvents, NodeStore, SurfaceEventTracker, TableSlot};
 
 pub use crate::input_attrs::{ImeCompositionGuard, InputSyncTracker, IME_PROCESS_KEY_CODE};
@@ -27,6 +27,8 @@ use crate::RenderCallback;
 pub const NODE_KIND_INPUT: u8 = 1 << 0;
 /// Dense node-kind flag: node carries a [`Link`] table.
 pub const NODE_KIND_LINK: u8 = 1 << 1;
+/// Dense node-kind flag: node carries `PointerCaptureMode::OnPrimaryDown`.
+pub const NODE_KIND_CAPTURE_PRIMARY: u8 = 1 << 2;
 
 /// Per-surface event subscription tracker + dense node-index kind flags (zero `HashMap`).
 #[derive(Debug, Clone)]
@@ -34,6 +36,7 @@ pub struct WebEventState {
     pub tracker: SurfaceEventTracker,
     pub node_kinds: Vec<u8>,
     pub input_count: u32,
+    pub capture_count: u32,
 }
 
 impl Default for WebEventState {
@@ -53,6 +56,7 @@ impl WebEventState {
             tracker,
             node_kinds: Vec::new(),
             input_count: 0,
+            capture_count: 0,
         }
     }
 
@@ -64,6 +68,11 @@ impl WebEventState {
     #[inline]
     pub fn is_link(&self, id: NodeId) -> bool {
         (self.node_kinds.get(id.index()).copied().unwrap_or(0) & NODE_KIND_LINK) != 0
+    }
+
+    #[inline]
+    pub fn has_capture_primary(&self, id: NodeId) -> bool {
+        (self.node_kinds.get(id.index()).copied().unwrap_or(0) & NODE_KIND_CAPTURE_PRIMARY) != 0
     }
 
     #[inline]
@@ -84,6 +93,9 @@ impl WebEventState {
                 if (prev & NODE_KIND_INPUT) != 0 {
                     self.input_count = self.input_count.saturating_sub(1);
                 }
+                if (prev & NODE_KIND_CAPTURE_PRIMARY) != 0 {
+                    self.capture_count = self.capture_count.saturating_sub(1);
+                }
                 self.node_kinds[idx] = 0;
             }
         }
@@ -97,6 +109,12 @@ impl WebEventState {
             }
             if store.has::<Link>(id) {
                 next |= NODE_KIND_LINK;
+            }
+            if store
+                .try_row::<Interaction>(id)
+                .is_some_and(|i| i.capture_mode() == PointerCaptureMode::OnPrimaryDown)
+            {
+                next |= NODE_KIND_CAPTURE_PRIMARY;
             }
             let idx = id.index();
             let prev = self.node_kinds.get(idx).copied().unwrap_or(0);
@@ -112,6 +130,14 @@ impl WebEventState {
                     (true, false) => self.input_count = self.input_count.saturating_sub(1),
                     _ => {}
                 }
+                match (
+                    (prev & NODE_KIND_CAPTURE_PRIMARY) != 0,
+                    (next & NODE_KIND_CAPTURE_PRIMARY) != 0,
+                ) {
+                    (false, true) => self.capture_count += 1,
+                    (true, false) => self.capture_count = self.capture_count.saturating_sub(1),
+                    _ => {}
+                }
             }
         }
         self.tracker.sync(store, changes, on_transition);
@@ -121,6 +147,7 @@ impl WebEventState {
         self.tracker.reset();
         self.node_kinds.fill(0);
         self.input_count = 0;
+        self.capture_count = 0;
     }
 }
 

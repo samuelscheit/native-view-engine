@@ -3,8 +3,8 @@ use core::mem::{align_of, offset_of, size_of};
 use crate::event::{
     EventBatchBuf, EventSet, EventValidationError, InteractionEvent, LayoutEvent, NveEvent,
     NveEventBatch, RawEventBytes, ScrollEvent, TextInputEvent, ValidatedEvents, NVE_EVENT_ALIGN,
-    NVE_EVENT_INLINE_KEY_CAP, NVE_EVENT_SIZE, NVE_TABLE_CUSTOM, NVE_TABLE_INTERACTION,
-    NVE_TABLE_LAYOUT, NVE_TABLE_SCROLL, NVE_TABLE_TEXT_INPUT,
+    NVE_EVENT_INLINE_KEY_CAP, NVE_EVENT_SIZE, NVE_POINTER_TYPE_PEN, NVE_TABLE_CUSTOM,
+    NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT, NVE_TABLE_SCROLL, NVE_TABLE_TEXT_INPUT,
 };
 use crate::ffi::DecodeError;
 use crate::id::{ArenaOffset, ByteLen, EventFlags, EventId, NodeId, SurfaceId, TimestampUs};
@@ -29,7 +29,7 @@ fn nve_event_and_batch_layout_contracts() {
 
 #[test]
 fn event_enum_and_event_set_operations_and_bitor() {
-    assert_eq!(InteractionEvent::COUNT, 12);
+    assert_eq!(InteractionEvent::COUNT, 13);
     assert_eq!(TextInputEvent::COUNT, 5);
     assert_eq!(ScrollEvent::COUNT, 1);
     assert_eq!(LayoutEvent::COUNT, 1);
@@ -577,4 +577,65 @@ fn empty_event_batch_slices_emit_null_pointers() {
     let val_bytes_only = ValidatedEvents::validate(&[], b"abc").unwrap().as_raw_batch();
     assert!(val_bytes_only.events.is_null());
     assert!(!val_bytes_only.bytes.is_null());
+}
+
+#[test]
+fn pointer_ex_and_pointer_cancel_roundtrip_payload_and_flags() {
+    let mut buf = EventBatchBuf::new();
+    let s = SurfaceId::ROOT;
+    let n = NodeId::new(7, 2);
+
+    let flags = EventFlags::MOD_SHIFT
+        .union(EventFlags::MOD_CTRL)
+        .union(EventFlags::CAPTURE)
+        .union(EventFlags::NO_BUBBLE)
+        .with_pointer_button(2);
+    buf.push_pointer_ex(
+        s,
+        n,
+        TimestampUs(42),
+        InteractionEvent::PointerMove,
+        12.5,
+        -34.25,
+        99,
+        0b101,
+        NVE_POINTER_TYPE_PEN,
+        flags,
+    );
+    buf.push_pointer_cancel(
+        s,
+        n,
+        TimestampUs(43),
+        12.5,
+        -34.25,
+        99,
+        EventFlags::CAPTURE.union(EventFlags::NO_BUBBLE),
+    );
+
+    let mut wire = Vec::new();
+    buf.encode_wire(&mut wire);
+    let decoded = EventBatchBuf::decode_wire(&wire).expect("pointer batch wire round-trip");
+    let view = decoded.as_validated();
+    assert_eq!(view.len(), 2);
+
+    let mv = view.get(0).unwrap();
+    assert_eq!(mv.interaction(), Some(InteractionEvent::PointerMove));
+    assert_eq!(mv.x(), 12.5);
+    assert_eq!(mv.y(), -34.25);
+    assert_eq!(mv.pointer_id(), 99);
+    assert_eq!(mv.pointer_button(), 2);
+    assert_eq!(mv.pointer_buttons(), 0b101);
+    assert_eq!(mv.pointer_type(), NVE_POINTER_TYPE_PEN);
+    assert!(mv.flags().contains(EventFlags::MOD_SHIFT));
+    assert!(mv.flags().contains(EventFlags::MOD_CTRL));
+    assert!(mv.flags().contains(EventFlags::CAPTURE));
+    assert!(mv.flags().contains(EventFlags::NO_BUBBLE));
+
+    let cancel = view.get(1).unwrap();
+    assert_eq!(cancel.interaction(), Some(InteractionEvent::PointerCancel));
+    assert_eq!(cancel.pointer_id(), 99);
+    assert_eq!(cancel.pointer_buttons(), 0);
+    assert_eq!(cancel.pointer_type(), 0);
+    assert!(cancel.flags().contains(EventFlags::CAPTURE));
+    assert!(cancel.flags().contains(EventFlags::NO_BUBBLE));
 }

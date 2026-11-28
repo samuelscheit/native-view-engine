@@ -141,6 +141,7 @@ final class EventBatch {
           case NveInteractionEvent.pointerUp:
           case NveInteractionEvent.pointerEnter:
           case NveInteractionEvent.pointerLeave:
+          case NveInteractionEvent.pointerCancel:
             p0 = f32ToBits(e.x);
             p1 = f32ToBits(e.y);
             p2 = e.pointerId & 0xFFFFFFFF;
@@ -386,6 +387,7 @@ final class EventBatch {
           case NveInteractionEvent.pointerUp:
           case NveInteractionEvent.pointerEnter:
           case NveInteractionEvent.pointerLeave:
+          case NveInteractionEvent.pointerCancel:
             x = f32FromBits(p0);
             y = f32FromBits(p1);
             pointerId = p2;

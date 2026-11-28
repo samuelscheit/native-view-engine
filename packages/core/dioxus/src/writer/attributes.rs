@@ -10,14 +10,15 @@ use nve_tables::input_hints::{AutofillHint, InputMode};
 use nve_tables::media::MediaQuery;
 use nve_tables::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
-    AriaTriState, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link, LinkRel,
-    LinkTarget, Responsive, TextInput, Typography, Visual,
+    AriaTriState, Image, ImageFit, ImageSrc, InputKind, Interaction, Link, LinkRel, LinkTarget,
+    Responsive, Scroll, TextInput, Visual,
 };
-use nve_store::{Length, NodeId, Transaction};
+use nve_store::NodeId;
 
 use crate::table_attr::TableAttr;
 use crate::typed_style::{pack_media_query, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
+use super::attributes_num::apply_numeric_attr_untracked;
 use super::{StandaloneStyleRef, StoreMutationTx};
 
 const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
@@ -129,6 +130,18 @@ impl StoreMutationTx<'_, '_> {
                 let len = (v >= 0).then(|| v.min(i64::from(u16::MAX)) as u16);
                 self.tx.edit::<TextInput>(node).max_length(len);
             }
+            "aria-level" | "ariaLevel" | "aria_level" => {
+                let lvl = (v > 0).then(|| v.min(i64::from(u8::MAX)) as u8);
+                self.tx.edit::<Accessibility>(node).level(lvl);
+            }
+            "requestedScrollSeq" | "requested-scroll-seq" | "requested_scroll_seq" => {
+                let seq = if v >= 0 {
+                    v.min(i64::from(u32::MAX)) as u32
+                } else {
+                    0
+                };
+                self.tx.edit::<Scroll>(node).requested_scroll_seq(seq);
+            }
             _ => self.apply_numeric_attr(node, name, v as f64),
         }
     }
@@ -159,6 +172,19 @@ impl StoreMutationTx<'_, '_> {
                 } else {
                     AriaTriState::False
                 }));
+            }
+            "ariaPressed" | "aria-pressed" | "aria_pressed" => {
+                self.tx.edit::<Accessibility>(node).pressed(Some(if b {
+                    AriaTriState::True
+                } else {
+                    AriaTriState::False
+                }));
+            }
+            "ariaHidden" | "aria-hidden" | "aria_hidden" => {
+                self.tx.edit::<Accessibility>(node).hidden(b);
+            }
+            "ariaBusy" | "aria-busy" | "aria_busy" => {
+                self.tx.edit::<Accessibility>(node).busy(b);
             }
             "ariaModal" | "aria-modal" | "aria_modal" => {
                 self.tx.edit::<Accessibility>(node).modal(b);
@@ -316,6 +342,14 @@ impl StoreMutationTx<'_, '_> {
                     .edit::<Accessibility>(node)
                     .expanded(parse_tri_state(value));
             }
+            "ariaPressed" | "aria-pressed" | "aria_pressed" => {
+                self.tx
+                    .edit::<Accessibility>(node)
+                    .pressed(parse_tri_state(value));
+            }
+            "ariaValueText" | "aria-valuetext" | "aria_valuetext" => {
+                self.tx.edit::<Accessibility>(node).value_text(value);
+            }
             "ariaLive" | "aria-live" | "aria_live" => {
                 let live = match value.trim() {
                     "polite" => Some(AriaLive::Polite),
@@ -375,7 +409,9 @@ impl StoreMutationTx<'_, '_> {
             }
             "ariaModal" | "aria-modal" | "aria_modal" | "ariaInvalid" | "aria-invalid"
             | "aria_invalid" | "ariaDisabled" | "aria-disabled" | "aria_disabled"
-            | "ariaMultiSelectable" | "aria-multiselectable" | "aria_multiselectable" => {
+            | "ariaMultiSelectable" | "aria-multiselectable" | "aria_multiselectable"
+            | "ariaHidden" | "aria-hidden" | "aria_hidden" | "ariaBusy" | "aria-busy"
+            | "aria_busy" => {
                 let b = matches!(value.trim(), "true" | "1");
                 self.apply_bool_attr(node, name, b);
             }
@@ -508,6 +544,46 @@ impl StoreMutationTx<'_, '_> {
             {
                 self.tx.edit::<Accessibility>(node).modal(false);
             }
+            "requestedScrollX" | "requested-scroll-x" | "requested_scroll_x"
+                if self.tx.store().has::<Scroll>(node) =>
+            {
+                self.tx.edit::<Scroll>(node).requested_scroll_x(None);
+            }
+            "requestedScrollY" | "requested-scroll-y" | "requested_scroll_y"
+                if self.tx.store().has::<Scroll>(node) =>
+            {
+                self.tx.edit::<Scroll>(node).requested_scroll_y(None);
+            }
+            "requestedScrollSeq" | "requested-scroll-seq" | "requested_scroll_seq"
+                if self.tx.store().has::<Scroll>(node) =>
+            {
+                self.tx.edit::<Scroll>(node).requested_scroll_seq(0);
+            }
+            "ariaPressed" | "aria-pressed" | "aria_pressed"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).pressed(None);
+            }
+            "ariaHidden" | "aria-hidden" | "aria_hidden"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).hidden(false);
+            }
+            "ariaBusy" | "aria-busy" | "aria_busy"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).busy(false);
+            }
+            "ariaValueText" | "aria-valuetext" | "aria_valuetext"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).value_text("");
+            }
+            "aria-level" | "ariaLevel" | "aria_level"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).level(None);
+            }
             "ariaInvalid" | "aria-invalid" | "aria_invalid"
                 if self.tx.store().has::<Accessibility>(node) =>
             {
@@ -516,111 +592,6 @@ impl StoreMutationTx<'_, '_> {
             _ => {}
         }
     }
-}
-
-/// Applies a numeric attribute directly to the store. Returns `true` iff `name` is a style
-/// attribute that should be preserved across `style`/`nve_style` clears/updates.
-#[inline]
-pub(crate) fn apply_numeric_attr_untracked(
-    tx: &mut Transaction<'_>,
-    node: NodeId,
-    name: &str,
-    v: f64,
-) -> bool {
-    let max = nve_abi::num::MAX_STYLE_SCALAR;
-    let f = if v.is_finite() { (v as f32).clamp(-max, max) } else { 0.0 };
-    match name {
-        "width" => {
-            tx.edit::<Layout>(node).width(Length::points(f.max(0.0)));
-        }
-        "height" => {
-            tx.edit::<Layout>(node).height(Length::points(f.max(0.0)));
-        }
-        "min-width" | "minWidth" => {
-            tx.edit::<Layout>(node).min_width(Length::points(f.max(0.0)));
-        }
-        "min-height" | "minHeight" => {
-            tx.edit::<Layout>(node).min_height(Length::points(f.max(0.0)));
-        }
-        "max-width" | "maxWidth" => {
-            tx.edit::<Layout>(node).max_width(Length::points(f.max(0.0)));
-        }
-        "max-height" | "maxHeight" => {
-            tx.edit::<Layout>(node).max_height(Length::points(f.max(0.0)));
-        }
-        "flex" | "flex-grow" | "flexGrow" => {
-            tx.edit::<Layout>(node).flex_grow(f.max(0.0));
-        }
-        "flex-shrink" | "flexShrink" => {
-            tx.edit::<Layout>(node).flex_shrink(f.max(0.0));
-        }
-        "flex-basis" | "flexBasis" => {
-            tx.edit::<Layout>(node).flex_basis(Length::points(f.max(0.0)));
-        }
-        "gap" => {
-            let l = Length::points(f.max(0.0));
-            tx.edit::<Layout>(node).row_gap(l).column_gap(l);
-        }
-        "row-gap" | "rowGap" => {
-            tx.edit::<Layout>(node).row_gap(Length::points(f.max(0.0)));
-        }
-        "column-gap" | "columnGap" => {
-            tx.edit::<Layout>(node).column_gap(Length::points(f.max(0.0)));
-        }
-        "padding" => {
-            let l = Length::points(f.max(0.0));
-            tx.edit::<Layout>(node)
-                .padding_top(l)
-                .padding_right(l)
-                .padding_bottom(l)
-                .padding_left(l);
-        }
-        "padding-horizontal" | "paddingHorizontal" => {
-            let l = Length::points(f.max(0.0));
-            tx.edit::<Layout>(node).padding_left(l).padding_right(l);
-        }
-        "padding-vertical" | "paddingVertical" => {
-            let l = Length::points(f.max(0.0));
-            tx.edit::<Layout>(node).padding_top(l).padding_bottom(l);
-        }
-        "margin" => {
-            let l = Length::points(f);
-            tx.edit::<Layout>(node)
-                .margin_top(l)
-                .margin_right(l)
-                .margin_bottom(l)
-                .margin_left(l);
-        }
-        "border-width" | "borderWidth" => {
-            tx.edit::<Visual>(node).border_width(f.max(0.0));
-        }
-        "border-radius" | "borderRadius" => {
-            tx.edit::<Visual>(node).border_radius(f.max(0.0));
-        }
-        "opacity" => {
-            tx.edit::<Visual>(node).opacity(f.clamp(0.0, 1.0));
-        }
-        "font-size" | "fontSize" => {
-            tx.edit::<Typography>(node).font_size(f.max(1.0));
-        }
-        "z-index" | "zIndex" => {
-            tx.edit::<Visual>(node).z_index(f as i32);
-        }
-        "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => {
-            tx.edit::<Accessibility>(node).value_now(Some(f));
-            return false;
-        }
-        "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => {
-            tx.edit::<Accessibility>(node).value_min(Some(f));
-            return false;
-        }
-        "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => {
-            tx.edit::<Accessibility>(node).value_max(Some(f));
-            return false;
-        }
-        _ => return false,
-    }
-    true
 }
 
 #[inline]

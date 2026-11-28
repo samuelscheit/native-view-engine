@@ -10,6 +10,7 @@
 
 mod engine;
 mod measure;
+pub mod overlay;
 pub mod scene;
 mod taffy_store;
 
@@ -19,8 +20,8 @@ pub use measure::{
     resolve_inherited_text,
 };
 pub use scene::{
-    LaidOutScene, ScrollOffsets, compute_scroll_content_size, layout_snapshot_of, length_to_dim,
-    visual_snapshot_of,
+    LaidOutScene, OverlayState, ResolvedOverlay, ScrollOffsets, compute_scroll_content_size,
+    is_overlay_closed, layout_snapshot_of, length_to_dim, visual_snapshot_of,
 };
 pub use taffy_store::TaffyStoreLayout;
 

@@ -249,73 +249,23 @@ impl EventBatchBuf {
     }
 
     #[inline]
-    pub fn push_press(
-        &mut self,
-        surface: SurfaceId,
-        node: NodeId,
-        timestamp: TimestampUs,
-        x: f32,
-        y: f32,
-    ) {
-        self.push_event(
-            NVE_TABLE_INTERACTION,
-            surface,
-            node,
-            timestamp,
-            InteractionEvent::Press,
-            EventFlags::EMPTY,
-            [x.to_bits(), y.to_bits(), 0, 0, 0, 0],
-            &[],
-        );
+    pub fn push_press(&mut self, surface: SurfaceId, node: NodeId, timestamp: TimestampUs, x: f32, y: f32) {
+        self.push_event(NVE_TABLE_INTERACTION, surface, node, timestamp, InteractionEvent::Press, EventFlags::EMPTY, [x.to_bits(), y.to_bits(), 0, 0, 0, 0], &[]);
     }
 
     #[inline]
-    pub fn push_long_press(
-        &mut self,
-        surface: SurfaceId,
-        node: NodeId,
-        timestamp: TimestampUs,
-        x: f32,
-        y: f32,
-    ) {
-        self.push_event(
-            NVE_TABLE_INTERACTION,
-            surface,
-            node,
-            timestamp,
-            InteractionEvent::LongPress,
-            EventFlags::EMPTY,
-            [x.to_bits(), y.to_bits(), 0, 0, 0, 0],
-            &[],
-        );
+    pub fn push_long_press(&mut self, surface: SurfaceId, node: NodeId, timestamp: TimestampUs, x: f32, y: f32) {
+        self.push_event(NVE_TABLE_INTERACTION, surface, node, timestamp, InteractionEvent::LongPress, EventFlags::EMPTY, [x.to_bits(), y.to_bits(), 0, 0, 0, 0], &[]);
     }
 
     #[inline]
     pub fn push_focus(&mut self, surface: SurfaceId, node: NodeId, timestamp: TimestampUs) {
-        self.push_event(
-            NVE_TABLE_INTERACTION,
-            surface,
-            node,
-            timestamp,
-            InteractionEvent::Focus,
-            EventFlags::EMPTY,
-            [0; 6],
-            &[],
-        );
+        self.push_event(NVE_TABLE_INTERACTION, surface, node, timestamp, InteractionEvent::Focus, EventFlags::EMPTY, [0; 6], &[]);
     }
 
     #[inline]
     pub fn push_blur(&mut self, surface: SurfaceId, node: NodeId, timestamp: TimestampUs) {
-        self.push_event(
-            NVE_TABLE_INTERACTION,
-            surface,
-            node,
-            timestamp,
-            InteractionEvent::Blur,
-            EventFlags::EMPTY,
-            [0; 6],
-            &[],
-        );
+        self.push_event(NVE_TABLE_INTERACTION, surface, node, timestamp, InteractionEvent::Blur, EventFlags::EMPTY, [0; 6], &[]);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -429,6 +379,27 @@ impl EventBatchBuf {
         pointer_id: u32,
         flags: EventFlags,
     ) {
+        self.push_pointer_ex(surface, node, timestamp, event, x, y, pointer_id, 0, 0, flags);
+    }
+
+    /// Pushes a pointer event with the standardized 6-word payload
+    /// `[x.to_bits(), y.to_bits(), pointer_id, buttons | ((pointer_type as u32) << 16), 0, 0]`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub fn push_pointer_ex(
+        &mut self,
+        surface: SurfaceId,
+        node: NodeId,
+        timestamp: TimestampUs,
+        event: InteractionEvent,
+        x: f32,
+        y: f32,
+        pointer_id: u32,
+        buttons: u16,
+        pointer_type: u8,
+        flags: EventFlags,
+    ) {
+        let packed = u32::from(buttons) | (u32::from(pointer_type) << 16);
         self.push_event(
             NVE_TABLE_INTERACTION,
             surface,
@@ -436,8 +407,34 @@ impl EventBatchBuf {
             timestamp,
             event,
             flags,
-            [x.to_bits(), y.to_bits(), pointer_id, 0, 0, 0],
+            [x.to_bits(), y.to_bits(), pointer_id, packed, 0, 0],
             &[],
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub fn push_pointer_cancel(
+        &mut self,
+        surface: SurfaceId,
+        node: NodeId,
+        timestamp: TimestampUs,
+        x: f32,
+        y: f32,
+        pointer_id: u32,
+        flags: EventFlags,
+    ) {
+        self.push_pointer_ex(
+            surface,
+            node,
+            timestamp,
+            InteractionEvent::PointerCancel,
+            x,
+            y,
+            pointer_id,
+            0,
+            0,
+            flags,
         );
     }
 

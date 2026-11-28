@@ -63,6 +63,9 @@ pub(crate) struct RootEventDelegator {
     ime: Rc<ImeCompositionGuard>,
     key_interceptors: Rc<RefCell<KeyInterceptors>>,
     click_interceptors: Rc<RefCell<ClickInterceptors>>,
+    programmatic_scroll_guard: Rc<RefCell<nve_abi::hash::HashMap<NodeId, (i32, i32)>>>,
+    active_capture: Rc<RefCell<Option<(i32, NodeId)>>>,
+    entered_chain: Rc<RefCell<Vec<NodeId>>>,
     click: Option<DomListenerGuard>,
     /// `input` + `compositionstart` / `compositionupdate` / `compositionend`.
     input: Option<[DomListenerGuard; 4]>,
@@ -72,6 +75,10 @@ pub(crate) struct RootEventDelegator {
     /// Window `keydown` + the root `focusin` that routes body-targeted keys to this surface.
     keydown: Option<[DomListenerGuard; 2]>,
     submit: Option<DomListenerGuard>,
+    /// `pointerdown`, `pointermove`, `pointerup`, `pointercancel`, `lostpointercapture`.
+    pointer_core: Option<[DomListenerGuard; 5]>,
+    /// `pointerover` + `pointerout` synthesizing non-bubbling `PointerLeave`/`PointerEnter`.
+    pointer_hover: Option<[DomListenerGuard; 2]>,
 }
 
 /// Attaches `$make` on `false -> true` of `$want`, drops (detaches) it on `true -> false`.
@@ -94,6 +101,9 @@ impl RootEventDelegator {
             ime: Rc::clone(&backend.ime_guard),
             key_interceptors: Rc::clone(&backend.key_interceptors),
             click_interceptors: Rc::clone(&backend.click_interceptors),
+            programmatic_scroll_guard: Rc::clone(&backend.programmatic_scroll_guard),
+            active_capture: Rc::new(RefCell::new(None)),
+            entered_chain: Rc::new(RefCell::new(Vec::new())),
             click: None,
             input: None,
             focusin: None,
@@ -101,7 +111,14 @@ impl RootEventDelegator {
             scroll: None,
             keydown: None,
             submit: None,
+            pointer_core: None,
+            pointer_hover: None,
         }
+    }
+
+    pub(crate) fn clear_pointer_state(&mut self) {
+        *self.active_capture.borrow_mut() = None;
+        self.entered_chain.borrow_mut().clear();
     }
 
     /// Synchronizes DOM listener attachment against the tracker's refcounts and the registered
@@ -121,6 +138,14 @@ impl RootEventDelegator {
         let want_keydown = st.tracker.has_active_of::<Interaction>(InteractionEvent::KeyDown)
             || want_submit
             || has_hooks(self.key_interceptors.try_borrow().map(|h| h.is_empty()));
+        let want_pointer_core = st.capture_count > 0
+            || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerDown)
+            || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerMove)
+            || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerUp)
+            || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerCancel);
+        let want_pointer_hover =
+            st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerEnter)
+                || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerLeave);
 
         toggle_slot!(self.click, want_click, self.attach_click());
         toggle_slot!(
@@ -147,6 +172,22 @@ impl RootEventDelegator {
             )
         );
         toggle_slot!(self.submit, want_submit, self.attach_submit());
+        if !want_pointer_core {
+            *self.active_capture.borrow_mut() = None;
+        }
+        toggle_slot!(
+            self.pointer_core,
+            want_pointer_core,
+            crate::pointer_dom::attach_pointer_core(&self.root, &self.sinks, &self.active_capture)
+        );
+        if !want_pointer_hover {
+            self.entered_chain.borrow_mut().clear();
+        }
+        toggle_slot!(
+            self.pointer_hover,
+            want_pointer_hover,
+            crate::pointer_dom::attach_pointer_hover(&self.root, &self.sinks, &self.entered_chain)
+        );
     }
 
     /// Attaches `cb` on the mount root. Uses `Fn` (not `FnMut`) so re-entry from a synchronous
@@ -313,17 +354,27 @@ impl RootEventDelegator {
         })
     }
 
-    /// Scroll (capture phase: `scroll` does not bubble in the DOM).
+    /// Scroll (capture phase: `scroll` does not bubble in the DOM), suppressing echo feedback
+    /// loops from programmatic `requested_scroll_seq` writes.
     fn attach_scroll(&self) -> DomListenerGuard {
         let r = self.root.clone();
         let sinks = self.sinks.clone();
+        let prog_scroll = Rc::clone(&self.programmatic_scroll_guard);
         self.on_root("scroll", true, move |ev| {
             let Some(el) = target_to_element(ev.target()) else { return };
             let chain = collect_ancestors(&el, &r);
             if let Some((id, t)) =
                 sinks.find(&chain, |st, id| st.listens::<Scroll>(id, ScrollEvent::Scroll))
             {
-                let (x, y) = (t.scroll_left() as f32, t.scroll_top() as f32);
+                let (lx, ly) = (t.scroll_left(), t.scroll_top());
+                if let Ok(mut guard) = prog_scroll.try_borrow_mut() {
+                    if guard.get(id).copied() == Some((lx, ly)) {
+                        guard.remove(id);
+                        return;
+                    }
+                    guard.remove(id);
+                }
+                let (x, y) = (lx as f32, ly as f32);
                 let (w, h) = (t.scroll_width() as f32, t.scroll_height() as f32);
                 sinks.emit(|q, sid, ts| q.push_scroll(sid, *id, ts, x, y, w, h));
             }

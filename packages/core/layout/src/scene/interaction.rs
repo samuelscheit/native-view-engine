@@ -1,5 +1,6 @@
 //! Interactive pseudo-state tracking (`:hover`, `:focus`, `:focus-visible`, `:active`,
-//! `:disabled`) and [`CursorKind`] resolution shared across [`LaidOutScene`] consumers.
+//! `:disabled`), pointer capture, and ancestor-inheriting [`CursorKind`] resolution shared across
+//! [`LaidOutScene`] consumers.
 
 use nve_engine::InteractionTracker;
 use nve_store::{NodeId, NodeStore, RowPatchView};
@@ -9,11 +10,11 @@ use nve_tables::interaction::{
 };
 use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
 use nve_tables::tables::{
-    InputKind, Interaction, StateRules, StateRulesView, TextInput, is_node_display_none,
-    paint_of_box,
+    InputKind, Interaction, PointerCaptureMode, StateRules, StateRulesView, TextInput,
+    is_node_display_none, paint_of_box,
 };
 
-use crate::StoreLayoutEngine;
+use crate::{MAX_TREE_DEPTH, StoreLayoutEngine};
 
 use super::{LaidOutScene, layout_snapshot_of, visual_snapshot_of};
 
@@ -21,6 +22,11 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     #[inline]
     pub fn interaction_tracker(&self) -> &InteractionTracker {
         &self.interaction
+    }
+
+    #[inline]
+    pub fn interaction_tracker_mut(&mut self) -> &mut InteractionTracker {
+        &mut self.interaction
     }
 
     #[inline]
@@ -43,6 +49,8 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             !i.listeners().is_empty()
                 || i.cursor() != CursorKind::Auto
                 || i.disabled()
+                || i.focusable()
+                || i.capture_mode() != PointerCaptureMode::None
                 || !i.state_rules().is_none()
                 || i.tab_index().is_some()
         });
@@ -102,11 +110,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         (layout, paint_of_box(store, id, visual))
     }
 
-    /// Resolves the effective [`CursorKind`] for `id` under its current [`InteractionState`].
-    pub fn effective_cursor(&self, store: &NodeStore, id: NodeId) -> CursorKind {
-        if is_node_display_none(store, id) {
-            return CursorKind::Auto;
-        }
+    fn local_cursor_of(&self, store: &NodeStore, id: NodeId) -> CursorKind {
         let base_cursor = store
             .try_row::<Interaction>(id)
             .map(|i| i.cursor())
@@ -123,12 +127,115 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         resolve_cursor_from_view(base, rules, self.interaction.state(id))
     }
 
-    /// Resolves the active cursor for the currently hovered/active node, or `CursorKind::Default`.
+    /// Resolves the effective [`CursorKind`] for `id` by walking `id` -> ancestors leaf-to-root
+    /// until the first non-`Auto` cursor is found (converting disabled `Pointer` -> `NotAllowed`).
+    pub fn effective_cursor(&self, store: &NodeStore, id: NodeId) -> CursorKind {
+        if !store.is_live(id) || is_node_display_none(store, id) {
+            return CursorKind::Auto;
+        }
+        let mut cur = Some(id);
+        let mut disabled_seen = false;
+        for _ in 0..MAX_TREE_DEPTH {
+            let Some(nid) = cur else {
+                break;
+            };
+            if self.interaction.is_disabled(nid)
+                || store.try_row::<Interaction>(nid).is_some_and(|i| i.disabled())
+            {
+                disabled_seen = true;
+            }
+            let resolved = self.local_cursor_of(store, nid);
+            if resolved != CursorKind::Auto {
+                return if disabled_seen && resolved == CursorKind::Pointer {
+                    CursorKind::NotAllowed
+                } else {
+                    resolved
+                };
+            }
+            cur = store.parent(nid).filter(|&p| p != nid);
+        }
+        CursorKind::Auto
+    }
+
+    /// Resolves the active cursor: checks captured node's ancestor chain first, then `hovered_chain`
+    /// leaf-to-root, then `active_chain`, falling back to `CursorKind::Default`.
     pub fn current_cursor(&self, store: &NodeStore) -> CursorKind {
+        if let Some(cap) = self.interaction.captured_node() {
+            let c = self.effective_cursor(store, cap);
+            return if c == CursorKind::Auto {
+                CursorKind::Default
+            } else {
+                c
+            };
+        }
+        for &id in self.interaction.hovered_chain() {
+            let c = self.effective_cursor(store, id);
+            if c != CursorKind::Auto {
+                return c;
+            }
+        }
+        for &id in self.interaction.active_chain() {
+            let c = self.effective_cursor(store, id);
+            if c != CursorKind::Auto {
+                return c;
+            }
+        }
+        CursorKind::Default
+    }
+
+    /// Zero-alloc ancestor-chain pointer move against `store`.
+    #[inline]
+    pub fn pointer_move_in_store(
+        &mut self,
+        store: &NodeStore,
+        target: Option<NodeId>,
+    ) -> &[NodeId] {
         self.interaction
-            .active_cursor_node()
-            .map(|id| self.effective_cursor(store, id))
-            .unwrap_or(CursorKind::Default)
+            .pointer_move_with(target, |id| store.parent(id))
+    }
+
+    /// Zero-alloc ancestor-chain pointer down against `store`.
+    #[inline]
+    pub fn pointer_down_in_store(
+        &mut self,
+        store: &NodeStore,
+        target: Option<NodeId>,
+    ) -> &[NodeId] {
+        self.interaction
+            .pointer_down_with(target, |id| store.parent(id))
+    }
+
+    /// Zero-alloc ancestor-chain pointer up against `store`, returning `(clicked_node, dirty)`.
+    #[inline]
+    pub fn pointer_up_in_store(
+        &mut self,
+        store: &NodeStore,
+        target: Option<NodeId>,
+    ) -> (Option<NodeId>, &[NodeId]) {
+        self.interaction
+            .pointer_up_with(target, |id| store.parent(id))
+    }
+
+    /// Zero-alloc pointer leave (preserves active capture).
+    #[inline]
+    pub fn pointer_leave_slice(&mut self) -> &[NodeId] {
+        self.interaction.pointer_leave_slice()
+    }
+
+    /// Zero-alloc pointer cancel (clears capture, active, and hover).
+    #[inline]
+    pub fn pointer_cancel_slice(&mut self) -> &[NodeId] {
+        self.interaction.pointer_cancel_slice()
+    }
+
+    /// Zero-alloc focus update with explicit modality (`Pointer` vs `Keyboard`).
+    #[inline]
+    pub fn set_focus_slice(
+        &mut self,
+        node_id: Option<NodeId>,
+        modality: FocusModality,
+    ) -> &[NodeId] {
+        self.interaction.set_focus(node_id, modality)
     }
 
     #[inline]
@@ -148,7 +255,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
     pub fn dispatch_pointer_move(&mut self, store: &NodeStore, x: f32, y: f32) -> Vec<NodeId> {
         let hit = self.hit_test_interaction(store, x, y);
-        self.interaction.pointer_move(hit)
+        self.pointer_move_in_store(store, hit).to_vec()
     }
 
     pub fn dispatch_pointer_leave(&mut self) -> Vec<NodeId> {
@@ -157,16 +264,16 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
     pub fn dispatch_pointer_down(&mut self, store: &NodeStore, x: f32, y: f32) -> Vec<NodeId> {
         let hit = self.hit_test_interaction(store, x, y);
-        self.interaction.pointer_down(hit)
+        self.pointer_down_in_store(store, hit).to_vec()
     }
 
     pub fn dispatch_pointer_up(&mut self, store: &NodeStore, x: f32, y: f32) -> Vec<NodeId> {
         let hit = self.hit_test_interaction(store, x, y);
-        self.interaction.pointer_up(hit)
+        self.pointer_up_in_store(store, hit).1.to_vec()
     }
 
     pub fn dispatch_pointer_cancel(&mut self) -> Vec<NodeId> {
-        self.interaction.touch_end()
+        self.interaction.pointer_cancel_slice().to_vec()
     }
 
     pub fn dispatch_focus(
@@ -174,10 +281,6 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         node_id: Option<NodeId>,
         modality: FocusModality,
     ) -> Vec<NodeId> {
-        match (node_id, modality) {
-            (None, _) => self.interaction.blur(),
-            (Some(id), FocusModality::Keyboard) => self.interaction.focus_keyboard(Some(id)),
-            (Some(id), FocusModality::Pointer) => self.interaction.focus_pointer(Some(id)),
-        }
+        self.interaction.set_focus(node_id, modality).to_vec()
     }
 }

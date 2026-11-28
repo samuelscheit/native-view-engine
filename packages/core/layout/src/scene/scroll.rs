@@ -1,22 +1,23 @@
-//! Per-surface scroll offsets, content bounds, clamping, and virtualized scroll reconciliation.
+//! Per-surface scroll offsets, content bounds, clamping, and exact sequence-driven controlled
+//! scroll reconciliation (`Scroll::requested_scroll_seq`).
 
 use std::collections::HashMap;
 
-use nve_tables::tables::Scroll;
 use nve_engine::LayoutRect;
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
+use nve_tables::tables::Scroll;
 
 use crate::StoreLayoutEngine;
 
 use super::LaidOutScene;
 
-/// Per-surface scroll offset map plus programmatic `requested_scroll_{x,y}` deduplication.
+/// Per-surface scroll offset map plus dense `requested_scroll_seq` deduplication (0-alloc steady state).
 #[derive(Debug, Default, Clone)]
 pub struct ScrollOffsets {
     offsets: HashMap<NodeId, (f32, f32)>,
-    last_requested_x: HashMap<NodeId, f32>,
-    last_requested_y: HashMap<NodeId, f32>,
+    last_requested_seq: Vec<u32>,
     reconcile_scratch: Vec<ScrollReconcileEntry>,
+    changed_scratch: Vec<NodeId>,
 }
 
 impl ScrollOffsets {
@@ -37,6 +38,32 @@ impl ScrollOffsets {
     }
 
     #[inline]
+    pub fn last_requested_seq(&self, id: NodeId) -> u32 {
+        self.last_requested_seq.get(id.index()).copied().unwrap_or(0)
+    }
+
+    #[inline]
+    fn set_last_requested_seq(&mut self, id: NodeId, seq: u32) {
+        let idx = id.index();
+        if seq == 0 {
+            if idx < self.last_requested_seq.len() {
+                self.last_requested_seq[idx] = 0;
+            }
+            return;
+        }
+        if idx >= self.last_requested_seq.len() {
+            self.last_requested_seq.resize(idx + 1, 0);
+        }
+        self.last_requested_seq[idx] = seq;
+    }
+
+    /// Nodes whose effective scroll offset changed during the most recent reconciliation pass.
+    #[inline]
+    pub fn last_changed(&self) -> &[NodeId] {
+        &self.changed_scratch
+    }
+
+    #[inline]
     pub fn set_raw(&mut self, id: NodeId, x: f32, y: f32) {
         self.offsets.insert(id, (x, y));
     }
@@ -44,15 +71,18 @@ impl ScrollOffsets {
     #[inline]
     pub fn remove(&mut self, id: NodeId) {
         self.offsets.remove(&id);
-        self.last_requested_x.remove(&id);
-        self.last_requested_y.remove(&id);
+        let idx = id.index();
+        if idx < self.last_requested_seq.len() {
+            self.last_requested_seq[idx] = 0;
+        }
     }
 
     #[inline]
     pub fn clear(&mut self) {
         self.offsets.clear();
-        self.last_requested_x.clear();
-        self.last_requested_y.clear();
+        self.last_requested_seq.fill(0);
+        self.reconcile_scratch.clear();
+        self.changed_scratch.clear();
     }
 
     /// Visual child shift for `id`, subtracting any virtualized `Scroll::virtual_top_spacer`.
@@ -109,14 +139,19 @@ struct ScrollReconcileEntry {
     id: NodeId,
     x: f32,
     y: f32,
-    req_x: Option<f32>,
-    req_y: Option<f32>,
+    seq: u32,
+    changed: bool,
 }
 
 impl<L: StoreLayoutEngine> LaidOutScene<L> {
     #[inline]
     pub fn scroll_offsets(&self) -> &ScrollOffsets {
         &self.scroll
+    }
+
+    #[inline]
+    pub fn last_reconciled_scroll_nodes(&self) -> &[NodeId] {
+        self.scroll.last_changed()
     }
 
     #[inline]
@@ -185,50 +220,60 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
     /// Fast-path guard around [`Self::reconcile_scroll_offsets`]: skips all work in `O(1)` when
     /// layout did not run, no `Scroll` table row changed, and no nodes were removed.
+    /// Returns the slice of nodes whose scroll offset changed.
     #[inline]
     pub fn reconcile_scroll_offsets_if_needed(
         &mut self,
         store: &NodeStore,
         changes: &ChangeSet,
         laid_out: bool,
-    ) {
+    ) -> &[NodeId] {
+        self.scroll.changed_scratch.clear();
+        if let Some(tc) = changes.table(Scroll::slot()) {
+            for &id in &tc.detached {
+                self.scroll.remove(id);
+            }
+        }
         if !laid_out
             && changes.removed.is_empty()
             && changes.table(Scroll::slot()).is_none()
         {
-            return;
+            return &self.scroll.changed_scratch;
         }
-        self.reconcile_scroll_offsets(store);
+        self.reconcile_scroll_offsets(store)
     }
 
-    /// Prunes removed scroll nodes, honors new `Scroll::requested_scroll_{x,y}`, and re-clamps
-    /// existing offsets against newly laid-out content bounds in `O(scroll_containers)` time with
-    /// zero steady-state heap allocations.
-    pub fn reconcile_scroll_offsets(&mut self, store: &NodeStore) {
+    /// Prunes removed/detached scroll nodes, honors exact `Scroll::requested_scroll_seq`
+    /// transitions (`seq != 0 && seq != prev_seq`), and re-clamps existing offsets against newly
+    /// laid-out content bounds in `O(scroll_containers)` time with zero steady-state allocations.
+    /// Returns the slice of nodes whose effective scroll offset changed.
+    pub fn reconcile_scroll_offsets(&mut self, store: &NodeStore) -> &[NodeId] {
+        self.scroll.changed_scratch.clear();
         if !self.scroll.offsets.is_empty() {
-            self.scroll
-                .offsets
-                .retain(|&id, _| store.is_live(id));
+            let last_seq = &mut self.scroll.last_requested_seq;
+            self.scroll.offsets.retain(|&id, _| {
+                let keep = store.is_live(id) && store.has::<Scroll>(id);
+                if !keep && id.index() < last_seq.len() {
+                    last_seq[id.index()] = 0;
+                }
+                keep
+            });
         }
-        if !self.scroll.last_requested_x.is_empty() {
-            self.scroll
-                .last_requested_x
-                .retain(|&id, _| store.is_live(id));
-        }
-        if !self.scroll.last_requested_y.is_empty() {
-            self.scroll
-                .last_requested_y
-                .retain(|&id, _| store.is_live(id));
+        // Clear any non-zero seq whose node died or had its `Scroll` row detached.
+        for (idx, slot) in self.scroll.last_requested_seq.iter_mut().enumerate() {
+            if *slot != 0 && store.id_at(idx).is_none_or(|id| !store.has::<Scroll>(id)) {
+                *slot = 0;
+            }
         }
 
         let Some(nve_store::TableStorage {
             owners, row_count, ..
         }) = store.table_storage(Scroll::slot())
         else {
-            return;
+            return &self.scroll.changed_scratch;
         };
         if row_count == 0 {
-            return;
+            return &self.scroll.changed_scratch;
         }
 
         let mut updates = std::mem::take(&mut self.scroll.reconcile_scratch);
@@ -245,17 +290,16 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             }
         }
         for entry in updates.drain(..) {
-            if let Some(vx) = entry.req_x {
-                self.scroll.last_requested_x.insert(entry.id, vx);
-            }
-            if let Some(vy) = entry.req_y {
-                self.scroll.last_requested_y.insert(entry.id, vy);
-            }
+            self.scroll.set_last_requested_seq(entry.id, entry.seq);
             if entry.x != 0.0 || entry.y != 0.0 || self.scroll.contains(entry.id) {
                 self.scroll.set_raw(entry.id, entry.x, entry.y);
             }
+            if entry.changed {
+                self.scroll.changed_scratch.push(entry.id);
+            }
         }
         self.scroll.reconcile_scratch = updates;
+        &self.scroll.changed_scratch
     }
 
     fn collect_scroll_node(
@@ -278,29 +322,30 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             .unwrap_or((rect.width, rect.height));
         let max_x = (cw - rect.width).max(0.0);
         let max_y = (ch - rect.height).max(0.0);
-        let (mut sx, mut sy) = self.scroll.get(id);
-        let mut recorded_req_y = None;
-        if let Some(req_y) = scroll.requested_scroll_y().filter(|v| v.is_finite()) {
-            let prev_req = self.scroll.last_requested_y.get(&id).copied();
-            if prev_req.is_none_or(|p| (p - req_y).abs() > 1e-4) {
-                sy = req_y;
-                recorded_req_y = Some(req_y);
-            }
-        }
-        let mut recorded_req_x = None;
-        if let Some(req_x) = scroll.requested_scroll_x().filter(|v| v.is_finite()) {
-            let prev_req = self.scroll.last_requested_x.get(&id).copied();
-            if prev_req.is_none_or(|p| (p - req_x).abs() > 1e-4) {
+
+        let (prev_x, prev_y) = self.scroll.get(id);
+        let (mut sx, mut sy) = (prev_x, prev_y);
+        let seq = scroll.requested_scroll_seq();
+        let prev_seq = self.scroll.last_requested_seq(id);
+
+        if seq != 0 && seq != prev_seq {
+            if let Some(req_x) = scroll.requested_scroll_x().filter(|v| v.is_finite()) {
                 sx = req_x;
-                recorded_req_x = Some(req_x);
+            }
+            if let Some(req_y) = scroll.requested_scroll_y().filter(|v| v.is_finite()) {
+                sy = req_y;
             }
         }
+
+        let nx = sx.clamp(0.0, max_x);
+        let ny = sy.clamp(0.0, max_y);
+        let changed = (nx - prev_x).abs() > 1e-4 || (ny - prev_y).abs() > 1e-4;
         out.push(ScrollReconcileEntry {
             id,
-            x: sx.clamp(0.0, max_x),
-            y: sy.clamp(0.0, max_y),
-            req_x: recorded_req_x,
-            req_y: recorded_req_y,
+            x: nx,
+            y: ny,
+            seq,
+            changed,
         });
     }
 }

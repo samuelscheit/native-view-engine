@@ -459,6 +459,8 @@ impl<'a> ValidatedEvent<'a> {
     #[inline(always)] pub const fn width(&self) -> f32 { self.raw.payload_f32(2) }
     #[inline(always)] pub const fn height(&self) -> f32 { self.raw.payload_f32(3) }
     #[inline(always)] pub const fn pointer_id(&self) -> u32 { self.raw.payload_u32(2) }
+    #[inline(always)] pub const fn pointer_buttons(&self) -> u16 { (self.raw.payload_u32(3) & 0xFFFF) as u16 }
+    #[inline(always)] pub const fn pointer_type(&self) -> u8 { ((self.raw.payload_u32(3) >> 16) & 0xFF) as u8 }
     #[inline(always)] pub const fn key_code(&self) -> u32 { self.raw.payload_u32(0) }
 
     #[inline(always)] pub const fn meta(&self) -> bool { self.raw.flags.meta() }

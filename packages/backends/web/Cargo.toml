@@ -15,6 +15,7 @@ parity-fixtures = ["hydrate"]
 nve-abi = { workspace = true }
 nve-codec = { workspace = true }
 nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false, features = ["reconcile"], optional = true }
+nve-layout = { workspace = true }
 nve-tables = { workspace = true }
 nve-engine = { workspace = true }
 nve-host-services = { workspace = true }
@@ -25,9 +26,11 @@ base64 = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = [
     "CompositionEvent",
+    "CssStyleDeclaration",
     "CssStyleSheet",
     "DomRect",
     "FocusEvent",
+    "HtmlElement",
     "HtmlInputElement",
     "HtmlOptionElement",
     "HtmlSelectElement",
@@ -37,8 +40,10 @@ web-sys = { workspace = true, features = [
     "IntersectionObserverEntry",
     "KeyboardEvent",
     "Location",
+    "MouseEvent",
     "NodeList",
     "Performance",
+    "PointerEvent",
     "ScrollIntoViewOptions",
     "ScrollLogicalPosition",
     "ShadowRoot",

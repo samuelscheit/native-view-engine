@@ -73,9 +73,10 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
         ColorRgba::rgb(15, 23, 42)
     );
 
-    // Hover btn -> hover rule activates.
+    // Hover btn -> hover rule activates on btn and propagates `:hover` up the ancestor chain.
     let dirty = backend.dispatch_pointer_move(&store, 50.0, 20.0);
-    assert_eq!(dirty, vec![btn]);
+    assert_eq!(dirty, vec![NodeId::ROOT, btn]);
+    assert!(backend.interaction_state(NodeId::ROOT).contains(InteractionState::HOVER));
     assert!(backend.interaction_state(btn).contains(InteractionState::HOVER));
     assert_eq!(
         backend.effective_visual(&store, btn).background,

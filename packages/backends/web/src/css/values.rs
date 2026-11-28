@@ -52,7 +52,7 @@ css_keywords! {
         Cover => "cover", Contain => "contain", Fill => "fill", None => "none",
         ScaleDown => "scale-down",
     }
-    PositionMode { Relative => "relative", Absolute => "absolute", Sticky => "sticky" }
+    PositionMode { Relative => "relative", Absolute => "absolute", Sticky => "sticky", Fixed => "fixed" }
     LayoutDirection { Ltr => "ltr", Rtl => "rtl" }
     InputKind {
         Text => "text", Email => "email", Password => "password", Tel => "tel", Url => "url",

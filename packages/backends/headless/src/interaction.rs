@@ -64,6 +64,16 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 
     #[inline]
+    pub fn current_cursor(&self, store: &NodeStore) -> CursorKind {
+        self.scene.current_cursor(store)
+    }
+
+    #[inline]
+    pub fn interaction_tracker_mut(&mut self) -> &mut InteractionTracker {
+        self.scene.interaction_tracker_mut()
+    }
+
+    #[inline]
     pub fn interaction_tracker_mut_move(&mut self, target: Option<NodeId>) -> Vec<NodeId> {
         self.scene.interaction_move(target)
     }

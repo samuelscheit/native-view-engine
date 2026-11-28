@@ -12,6 +12,8 @@ use crate::display_list::{for_each_scrollbar_thumb, intersect_rects, intersects_
 use crate::{DisplayList, PaintOp};
 
 const INLINE_REPLAY_DEPTH: usize = 64;
+/// Translucent viewport backdrop scrim painted behind modal / `BACKDROP_SCRIM` top-layer overlays.
+const OVERLAY_BACKDROP_SCRIM_COLOR: ColorRgba = ColorRgba::rgba(15, 23, 42, 140);
 
 #[inline]
 pub(super) fn translate_rect(local: LayoutRect, wx: f32, wy: f32) -> LayoutRect {
@@ -174,7 +176,40 @@ pub(super) fn replay_scene_into<S: ReplaySink>(scene: &CompositorScene, sink: &m
         height: scene.viewport_height.max(1.0),
     };
     let mut stack = ReplayStack::new();
-    enter_chunk(scene, root_idx, (0.0, 0.0), root_clip, false, sink, &mut stack);
+    replay_subtree(scene, root_idx, root_clip, false, sink, &mut stack);
+    // Replay deferred top-layer overlays after the document root pops all ancestor clips/transforms.
+    for &tl_idx in &scene.props.top_layer_chunks {
+        let Some(meta) = scene.chunks.get(tl_idx.index()) else {
+            continue;
+        };
+        if !meta.is_live() {
+            continue;
+        }
+        if scene.props.transforms[tl_idx.index()].has_backdrop_scrim() {
+            sink.paint_scrollbar_thumb(root_clip, 0.0, OVERLAY_BACKDROP_SCRIM_COLOR);
+        }
+        replay_subtree(scene, tl_idx, root_clip, true, sink, &mut stack);
+    }
+}
+
+fn replay_subtree<S: ReplaySink>(
+    scene: &CompositorScene,
+    start_idx: ChunkIdx,
+    root_clip: LayoutRect,
+    allow_start_top_layer: bool,
+    sink: &mut S,
+    stack: &mut ReplayStack,
+) {
+    enter_chunk(
+        scene,
+        start_idx,
+        (0.0, 0.0),
+        root_clip,
+        false,
+        allow_start_top_layer,
+        sink,
+        stack,
+    );
 
     while let Some(top) = stack.top_mut() {
         if top.child_cursor < top.child_end {
@@ -183,7 +218,7 @@ pub(super) fn replay_scene_into<S: ReplaySink>(scene: &CompositorScene, sink: &m
             let offset = top.child_offset;
             let clip = top.child_clip;
             let any_tf = top.any_tf;
-            enter_chunk(scene, child_idx, offset, clip, any_tf, sink, &mut stack);
+            enter_chunk(scene, child_idx, offset, clip, any_tf, false, sink, stack);
         } else if let Some(done) = stack.pop() {
             if done.pushed_clip {
                 sink.pop_clip();
@@ -215,12 +250,14 @@ pub(super) fn replay_scene_into<S: ReplaySink>(scene: &CompositorScene, sink: &m
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn enter_chunk<S: ReplaySink>(
     scene: &CompositorScene,
     chunk_idx: ChunkIdx,
     parent_offset: (f32, f32),
     parent_clip: LayoutRect,
     in_transform: bool,
+    allow_top_layer: bool,
     sink: &mut S,
     stack: &mut ReplayStack,
 ) {
@@ -236,6 +273,9 @@ fn enter_chunk<S: ReplaySink>(
         return;
     }
     let tf = scene.props.transforms[cidx];
+    if tf.is_top_layer() && !allow_top_layer {
+        return;
+    }
     let clip = scene.props.clips[cidx];
 
     let node_offset = (parent_offset.0 + tf.sticky_x, parent_offset.1 + tf.sticky_y);

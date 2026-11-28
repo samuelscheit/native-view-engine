@@ -5,7 +5,8 @@ use nve_abi::NodeId;
 use nve_engine::LayoutRect;
 use nve_layout::StoreLayoutEngine;
 use nve_store::NodeStore;
-use nve_tables::tables::{is_subtree_display_none, InputKind, TextInput, Typography};
+use nve_tables::interaction::FocusModality;
+use nve_tables::tables::{is_subtree_display_none, InputKind, Interaction, TextInput, Typography};
 
 use crate::text::DEFAULT_FONT_WEIGHT;
 use crate::text_grapheme::clamp_grapheme_boundary;
@@ -190,35 +191,68 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     pub fn set_focused_node(&mut self, store: &NodeStore, node_id: Option<NodeId>) {
-        let node_id = node_id
-            .filter(|&id| store.is_live(id) && !is_subtree_display_none(store, id));
+        self.set_focused_node_with_modality(store, node_id, FocusModality::Pointer);
+    }
+
+    /// Updates both text focus state and [`InteractionTracker`] focus (`:focus` vs
+    /// `:focus-visible`) with zero heap allocations, dirtying all changed nodes in `CompositorScene`.
+    pub fn set_focused_node_with_modality(
+        &mut self,
+        store: &NodeStore,
+        node_id: Option<NodeId>,
+        modality: FocusModality,
+    ) {
+        let node_id = node_id.filter(|&id| {
+            store.is_live(id)
+                && !is_subtree_display_none(store, id)
+                && !store.try_row::<Interaction>(id).is_some_and(|i| i.disabled())
+        });
         let prev = self.focus.focused_node;
-        if prev == node_id {
+        let prev_tracker = self.layout_tree.interaction_tracker().focused();
+        let prev_modality = self.layout_tree.interaction_tracker().focus_modality();
+        if prev == node_id
+            && prev_tracker == node_id
+            && (node_id.is_none() || prev_modality == modality)
+        {
             return;
         }
-        self.focus = TextFocusState {
-            focused_node: node_id,
-            caret_byte_index: node_id
-                .and_then(|id| self.text_input_value(store, id))
-                .map_or(0, |s| s.len()),
-            selection_anchor: node_id
-                .and_then(|id| self.text_input_value(store, id))
-                .map_or(0, |s| s.len()),
-            ime_preedit: None,
-            ime_preedit_cursor: None,
-            uncontrolled_value: None,
-        };
-        let mut dirty = [NodeId::ROOT; 2];
+        if prev != node_id {
+            self.focus = TextFocusState {
+                focused_node: node_id,
+                caret_byte_index: node_id
+                    .and_then(|id| self.text_input_value(store, id))
+                    .map_or(0, |s| s.len()),
+                selection_anchor: node_id
+                    .and_then(|id| self.text_input_value(store, id))
+                    .map_or(0, |s| s.len()),
+                ime_preedit: None,
+                ime_preedit_cursor: None,
+                uncontrolled_value: None,
+            };
+        }
+        let mut dirty = [NodeId::ROOT; 4];
         let mut n = 0usize;
-        if let Some(p) = prev {
-            dirty[n] = p;
-            n += 1;
+        let mut push_unique = |id: NodeId| {
+            if n < dirty.len() && !dirty[..n].contains(&id) {
+                dirty[n] = id;
+                n += 1;
+            }
+        };
+        if prev != node_id {
+            if let Some(p) = prev {
+                push_unique(p);
+            }
+            if let Some(cur) = node_id {
+                push_unique(cur);
+            }
         }
-        if let Some(cur) = node_id {
-            dirty[n] = cur;
-            n += 1;
+        for &id in self.layout_tree.scene_mut().set_focus_slice(node_id, modality) {
+            push_unique(id);
         }
-        self.update_scene_paint_nodes(store, &dirty[..n]);
+        if n > 0 {
+            self.sync_frame_hooks(store, &dirty[..n]);
+            self.update_scene_paint_nodes(store, &dirty[..n]);
+        }
     }
 
     pub fn set_caret_and_selection(
@@ -273,8 +307,15 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let Some(id) = self.focus.focused_node else {
             return;
         };
-        if !store.is_live(id) || is_subtree_display_none(store, id) {
+        if !store.is_live(id)
+            || is_subtree_display_none(store, id)
+            || store.try_row::<Interaction>(id).is_some_and(|i| i.disabled())
+        {
             self.focus = TextFocusState::default();
+            let _ = self
+                .layout_tree
+                .scene_mut()
+                .set_focus_slice(None, FocusModality::Pointer);
             return;
         }
         if self.is_text_input(store, id) {

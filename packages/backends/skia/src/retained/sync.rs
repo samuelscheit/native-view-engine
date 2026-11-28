@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use nve_layout::StoreLayoutEngine;
+use nve_layout::{is_overlay_closed, StoreLayoutEngine};
 use nve_store::{ChangeSet, NodeId, NveTable, ResourceId, TableStorage};
 use nve_tables::tables::{Image, Interaction, TextInput, Visual};
 
@@ -101,6 +101,7 @@ impl CompositorScene {
     ) -> bool {
         for &id in &self.dirty_nodes_scratch {
             let now_absent = is_subtree_display_none_effective(env.store, env.layout_tree, id)
+                || is_overlay_closed(env.store, id)
                 || env.layout_tree.layout_of(id).is_none();
             let prev_absent = self.live_chunk_idx(id).is_none();
             if now_absent != prev_absent {
@@ -143,6 +144,16 @@ impl CompositorScene {
             if let Some(pcidx) = self.live_chunk_idx(pid) {
                 sort_ordered_children_in_place(pcidx, &self.chunks, &mut self.arenas.ordered_children);
             }
+        }
+    }
+
+    /// Propagates every scroll node whose offset changed during `LaidOutScene::reconcile_scroll_offsets`
+    /// into [`PropertyTrees::scrolls`] on the zero-alloc `CompositeOnly` lane.
+    pub(super) fn sync_reconciled_scrolls<L: StoreLayoutEngine>(&mut self, env: &SceneSyncEnv<'_, L>) {
+        let changed = env.layout_tree.scene().last_reconciled_scroll_nodes();
+        for &sid in changed {
+            let (sx, sy) = env.layout_tree.scene().scroll_offset(sid);
+            let _ = self.update_scroll(env, sid, sx, sy);
         }
     }
 
@@ -391,6 +402,7 @@ impl CompositorScene {
         }
 
         self.props.sticky_chunks.clear();
+        self.props.top_layer_chunks.clear();
         self.props.scrolls.clear();
         self.walk_scratch.clear();
         self.z_parents_scratch.clear();
@@ -437,7 +449,9 @@ impl CompositorScene {
 
         while let Some((id, parent_chunk, inherited_hidden, parent_text)) = self.walk_scratch.pop()
         {
-            if is_node_display_none_effective(env.store, env.layout_tree, id) {
+            if is_node_display_none_effective(env.store, env.layout_tree, id)
+                || is_overlay_closed(env.store, id)
+            {
                 continue;
             }
             let Some(base_rect) = env.layout_tree.layout_of(id) else {
@@ -467,13 +481,13 @@ impl CompositorScene {
             meta.flags |= CHUNK_LIVE;
             meta.z_index = env.store.try_row::<Visual>(id).map_or(0, |v| v.z_index());
 
-            let prev_size_eq = was_live && self.props.transforms[cidx.index()].size_eq(base_rect);
+            let prev_tf = self.props.transforms[cidx.index()];
             let prev_hidden = self.props.effects[cidx.index()].effective_hidden;
 
             let mut style = env.layout_tree.effective_visual(env.store, id);
             env.frame_hooks.apply_visual(id, &mut style);
 
-            let mut tf_node = self.props.transforms[cidx.index()];
+            let mut tf_node = prev_tf;
             let mut clip_node = self.props.clips[cidx.index()];
             let mut effect_node = self.props.effects[cidx.index()];
             env.fill_property_nodes(
@@ -486,8 +500,14 @@ impl CompositorScene {
                 &mut effect_node,
                 &mut self.props.scrolls,
             );
+            let prev_size_eq = was_live
+                && prev_tf.width.to_bits() == tf_node.width.to_bits()
+                && prev_tf.height.to_bits() == tf_node.height.to_bits();
             if tf_node.is_sticky() {
                 self.props.sticky_chunks.push((id, cidx));
+            }
+            if tf_node.is_top_layer() {
+                self.props.top_layer_chunks.push(cidx);
             }
             self.props.transforms[cidx.index()] = tf_node;
             self.props.clips[cidx.index()] = clip_node;
@@ -529,8 +549,8 @@ impl CompositorScene {
             if node_needs_emit {
                 env.emit_chunk_local_ops(
                     id,
-                    base_rect.width,
-                    base_rect.height,
+                    tf_node.width,
+                    tf_node.height,
                     &style,
                     resolved_text,
                     effect_node.effective_hidden,

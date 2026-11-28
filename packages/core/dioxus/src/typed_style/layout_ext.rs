@@ -61,6 +61,11 @@ impl TypedStyle {
     }
 
     #[inline]
+    pub fn position_fixed(self) -> Self {
+        self.position(PositionMode::Fixed)
+    }
+
+    #[inline]
     pub fn inset_top(mut self, dim: Dimension) -> Self {
         self.ext_mut().insets.top = dim;
         self

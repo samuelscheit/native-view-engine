@@ -58,6 +58,10 @@ pub struct Scroll {
     /// Optional programmatic scroll-X target (`None` = unchanged).
     #[effect(composite)]
     pub requested_scroll_x: Option<f32>,
+    /// Monotonic sequence number for programmatic scroll sync (`0` = no request; incrementing
+    /// applies `(requested_scroll_x, requested_scroll_y)` exactly once, including repeat jumps).
+    #[effect(composite)]
+    pub requested_scroll_seq: u32,
 }
 
 #[repr(u8)]

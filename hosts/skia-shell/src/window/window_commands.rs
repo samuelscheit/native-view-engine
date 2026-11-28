@@ -6,11 +6,12 @@ use nve_backend_skia::gpu::GpuFramePresenter;
 use nve_engine::Viewport;
 use nve_interop::{WindowCommand, WindowError, WindowRect};
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowId, WindowLevel};
 
 use super::multi_window::{apply_window_state, HostWakeEvent, SurfaceWindow, WindowPresenter};
+use super::pointer::mouse_button_code;
 use super::session::DesktopSession;
 use super::window_host::DesktopWindowHost;
 use super::DesktopApp;
@@ -262,6 +263,17 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
             }
             WindowEvent::Focused(false) => {
+                if let Some(sw) = self.windows.get_mut(&window_id) {
+                    match sw.session.handle_window_blur() {
+                        Ok(true) => {
+                            let _ = Self::pump_window_async(sw, false);
+                            sw.sync_cursor_state();
+                            sw.window.request_redraw();
+                        }
+                        Ok(false) => sw.sync_cursor_state(),
+                        Err(err) => eprintln!("[nve-skia-shell] window blur error: {err}"),
+                    }
+                }
                 if self.primary_window_id == Some(window_id) {
                     self.save_frame0_if_configured();
                 }
@@ -340,12 +352,29 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 let _ = self.broadcast_host_event(&SkiaHostEvent::ThemeChanged(snap));
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let Some(sw) = self.windows.get_mut(&window_id) else { return };
-                let scale = sw.session.viewport().scale_factor.max(0.001);
-                match sw.session.handle_pointer_move_logical(position.x as f32 / scale, position.y as f32 / scale) {
-                    Ok(true) => { sw.sync_ime_state(); sw.sync_cursor_state(); sw.window.request_redraw(); }
-                    Ok(false) => sw.sync_cursor_state(),
-                    Err(err) => eprintln!("[nve-skia-shell] pointer move error: {err}"),
+                let mut reschedule = false;
+                {
+                    let Some(sw) = self.windows.get_mut(&window_id) else { return };
+                    let scale = sw.session.viewport().scale_factor.max(0.001);
+                    let mods = sw.modifiers;
+                    match sw.session.handle_pointer_move_logical_with_mods(
+                        position.x as f32 / scale,
+                        position.y as f32 / scale,
+                        mods,
+                    ) {
+                        Ok(true) => {
+                            let (_, exhausted) = Self::pump_window_async(sw, false);
+                            reschedule = exhausted;
+                            sw.sync_ime_state();
+                            sw.sync_cursor_state();
+                            sw.window.request_redraw();
+                        }
+                        Ok(false) => sw.sync_cursor_state(),
+                        Err(err) => eprintln!("[nve-skia-shell] pointer move error: {err}"),
+                    }
+                }
+                if reschedule {
+                    self.host_services.request_frame_wake();
                 }
             }
             WindowEvent::CursorLeft { .. } => {
@@ -356,13 +385,19 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     sw.window.request_redraw();
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
                 let mut reschedule = false;
                 {
                     let Some(sw) = self.windows.get_mut(&window_id) else { return };
                     if self.window_manager.active_modal_blocker(sw.handle_id).is_some() { return; }
                     let (x, y) = sw.session.cursor_logical();
-                    match sw.session.handle_click_logical(x, y) {
+                    let mods = sw.modifiers;
+                    match sw.session.handle_pointer_down_logical(
+                        x,
+                        y,
+                        mouse_button_code(button),
+                        mods,
+                    ) {
                         Ok(true) => {
                             let (_, exhausted) = Self::pump_window_async(sw, false);
                             reschedule = exhausted;
@@ -372,20 +407,39 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             sw.window.request_redraw();
                         }
                         Ok(false) => sw.sync_cursor_state(),
-                        Err(err) => eprintln!("[nve-skia-shell] click dispatch error: {err}"),
+                        Err(err) => eprintln!("[nve-skia-shell] pointer down error: {err}"),
                     }
                 }
                 if reschedule {
                     self.host_services.request_frame_wake();
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if let Some(sw) = self.windows.get_mut(&window_id) {
-                    let dirty = sw.session.handle_pointer_up_with_redraw();
-                    sw.sync_cursor_state();
-                    if dirty {
-                        sw.window.request_redraw();
+            WindowEvent::MouseInput { state: ElementState::Released, button, .. } => {
+                let mut reschedule = false;
+                {
+                    let Some(sw) = self.windows.get_mut(&window_id) else { return };
+                    let (x, y) = sw.session.cursor_logical();
+                    let mods = sw.modifiers;
+                    match sw.session.handle_pointer_up_logical_ex(
+                        x,
+                        y,
+                        mouse_button_code(button),
+                        mods,
+                    ) {
+                        Ok(true) => {
+                            let (_, exhausted) = Self::pump_window_async(sw, false);
+                            reschedule = exhausted;
+                            sw.sync_ime_state();
+                            sw.sync_cursor_state();
+                            sw.sync_a11y_state(true);
+                            sw.window.request_redraw();
+                        }
+                        Ok(false) => sw.sync_cursor_state(),
+                        Err(err) => eprintln!("[nve-skia-shell] pointer up error: {err}"),
                     }
+                }
+                if reschedule {
+                    self.host_services.request_frame_wake();
                 }
             }
             WindowEvent::ModifiersChanged(new_mods) => {

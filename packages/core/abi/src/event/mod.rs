@@ -182,6 +182,12 @@ impl EventFlags {
     }
 }
 
+/// Pointer device types packed into the high half of `NveEvent::payload[3]`
+/// (`payload[3] = (buttons as u32) | ((pointer_type as u32) << 16)`).
+pub const NVE_POINTER_TYPE_MOUSE: u8 = 0;
+pub const NVE_POINTER_TYPE_PEN: u8 = 1;
+pub const NVE_POINTER_TYPE_TOUCH: u8 = 2;
+
 /// Events emitted by the `Interaction` table (`nve.interaction`).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum, NveAbi)]
@@ -200,6 +206,7 @@ pub enum InteractionEvent {
     PointerEnter = 9,
     PointerLeave = 10,
     Wheel = 11,
+    PointerCancel = 12,
 }
 
 /// Events emitted by the `TextInput` table (`nve.text_input`).

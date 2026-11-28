@@ -119,6 +119,9 @@ impl StoreMutationTx<'_, '_> {
             "pointerdown" | "onpointerdown" => toggle!(Interaction, InteractionEvent::PointerDown),
             "pointermove" | "onpointermove" => toggle!(Interaction, InteractionEvent::PointerMove),
             "pointerup" | "onpointerup" => toggle!(Interaction, InteractionEvent::PointerUp),
+            "pointercancel" | "onpointercancel" => {
+                toggle!(Interaction, InteractionEvent::PointerCancel)
+            }
             "pointerenter" | "onpointerenter" => toggle!(Interaction, InteractionEvent::PointerEnter),
             "pointerleave" | "onpointerleave" => toggle!(Interaction, InteractionEvent::PointerLeave),
             "wheel" | "onwheel" => toggle!(Interaction, InteractionEvent::Wheel),

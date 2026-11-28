@@ -4,9 +4,9 @@
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_store::{prop_written, Length, NveTable, RowPatch, RowPatchView, Word};
 
-use crate::layout_ext::{LayoutDirection, LayoutExt, PositionMode};
+use crate::layout_ext::{LayoutDirection, LayoutExt};
 use crate::tables::{
-    AlignSelf, Direction, GridItem, Layout, Position, Transform, Typography, Visual,
+    AlignSelf, Direction, GridItem, Layout, Transform, Typography, Visual,
 };
 use crate::transform::Transform2D;
 
@@ -230,11 +230,7 @@ fn apply_layout_ext_words(
             ext.aspect_ratio = Some(ar);
         }
         if prop_written(l_mask, Layout::POSITION) {
-            ext.position = match Layout::POSITION.get(l_words) {
-                Position::Relative => PositionMode::Relative,
-                Position::Absolute | Position::Fixed => PositionMode::Absolute,
-                Position::Sticky => PositionMode::Sticky,
-            };
+            ext.position = Layout::POSITION.get(l_words);
         }
         if prop_written(l_mask, Layout::INSET_TOP) {
             ext.insets.top = length_to_dim(Layout::INSET_TOP.get(l_words));

@@ -5,15 +5,16 @@
 use crate::css::Keyword;
 use nve_abi::table::effect;
 use nve_tables::tables::{
-    Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkRel, LinkTarget,
-    StreamBoundary, TextContent, TextInput, Transform, Visual, NVE_STREAM_SLOT_ATTR,
+    DebugId, Image, ImageSrc, Interaction, Link, LinkRel, LinkTarget, Overlay, OverlayFlags,
+    PointerCaptureMode, Scroll, StreamBoundary, TextContent, TextInput, NVE_STREAM_SLOT_ATTR,
     NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
 };
-use nve_store::{ChangeSet, NodeId, NodeStore};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableStorage};
 use wasm_bindgen::JsCast;
 
 use crate::css::write_compositor_css;
 use crate::events::RootEventDelegator;
+use crate::scroll_dom::apply_compositor_properties_live;
 use crate::table_system::is_safe_web_url;
 use crate::WebBackend;
 
@@ -41,6 +42,13 @@ impl WebBackend {
             root.set_inner_html("");
         }
         self.live_elements.clear();
+        self.last_requested_scroll_seq.clear();
+        self.pending_scroll_sync.clear();
+        self.programmatic_scroll_guard.borrow_mut().clear();
+        self.overlay_anchors.clear();
+        if let Some(ref mut delegator) = self.delegated_events {
+            delegator.clear_pointer_state();
+        }
     }
 
     pub(crate) fn commit_live_dom(&mut self, store: &NodeStore, changes: &ChangeSet) -> u32 {
@@ -60,8 +68,20 @@ impl WebBackend {
         self.renderer
             .remove_plugins(changes, Some(&self.live_elements));
         for &id in &changes.removed {
+            self.clear_scroll_seq(id);
+            self.overlay_anchors.remove(id);
             if let Some(el) = self.live_elements.remove(&id) {
                 el.remove();
+            }
+        }
+        if let Some(tc) = changes.table(Scroll::slot()) {
+            for &id in &tc.detached {
+                self.clear_scroll_seq(id);
+            }
+        }
+        if let Some(tc) = changes.table(Overlay::slot()) {
+            for &id in &tc.detached {
+                self.overlay_anchors.remove(id);
             }
         }
 
@@ -107,8 +127,9 @@ impl WebBackend {
                 continue;
             }
             if fx == effect::COMPOSITE {
-                if let Some(el) = self.live_elements.get(&id) {
-                    apply_compositor_properties_live(store, id, el);
+                if let Some(el) = self.live_elements.get(&id).cloned() {
+                    apply_compositor_properties_live(store, id, &el);
+                    self.sync_requested_scroll(store, id, &el, false);
                 }
                 continue;
             }
@@ -204,8 +225,40 @@ impl WebBackend {
             }
         }
 
-        // 6. Imperative plugin state that needs connected elements (`showModal()`, popovers).
+        // 6. Imperative state needing connected elements (`showModal()`, popovers, anchored
+        //    overlays, and deferred `requested_scroll_seq` sync after children mount).
         self.renderer.sync_connected_plugins(store, &self.live_elements);
+        if let Some(tc) = changes.table(Overlay::slot()) {
+            // Ensure anchor elements whose `Overlay` attached on a later frame receive `anchor-name`.
+            if let Some(TableStorage { owners, row_count, .. }) = store.table_storage(DebugId::slot()) {
+                for &oid in &tc.nodes {
+                    if let Some(ov) = store.try_row::<Overlay>(oid) {
+                        let aid = ov.anchor_id();
+                        if !aid.is_empty() {
+                            for &did in owners.iter().take(row_count) {
+                                if !did.is_null()
+                                    && store.is_live(did)
+                                    && store.try_row::<DebugId>(did).is_some_and(|d| d.id() == aid)
+                                    && let Some(ael) = self.live_elements.get(&did).cloned()
+                                {
+                                    self.sync_full_element(store, did, &ael);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.overlay_anchors.reposition_all();
+        let pending_scroll = std::mem::take(&mut self.pending_scroll_sync);
+        for id in pending_scroll {
+            if store.is_live(id)
+                && let Some(el) = self.live_elements.get(&id).cloned()
+                && el.is_connected()
+            {
+                self.sync_requested_scroll(store, id, &el, false);
+            }
+        }
 
         // 7. Flush newly compiled CSS rules into adoptedStyleSheets / <style>.
         self.stylesheet.flush_to_dom(&doc);
@@ -391,29 +444,33 @@ impl WebBackend {
             } else {
                 let _ = el.remove_attribute("tabindex");
             }
+            if inter.capture_mode() == PointerCaptureMode::OnPrimaryDown {
+                let _ = el.set_attribute("data-nve-capture", "primary");
+            } else {
+                let _ = el.remove_attribute("data-nve-capture");
+            }
         } else {
             let _ = el.remove_attribute("disabled");
             let _ = el.remove_attribute("aria-disabled");
             let _ = el.remove_attribute("tabindex");
+            let _ = el.remove_attribute("data-nve-capture");
+        }
+        if let Some(ov) = store.try_row::<Overlay>(id) {
+            let state = if ov.options().contains(OverlayFlags::OPEN) {
+                "open"
+            } else {
+                "closed"
+            };
+            let _ = el.set_attribute("data-nve-overlay", state);
+            self.overlay_anchors.sync_node(store, id, el);
+        } else {
+            let _ = el.remove_attribute("data-nve-overlay");
+            self.overlay_anchors.remove(id);
         }
         if id != NodeId::ROOT {
-            if let Some(a11y) = store.try_row::<Accessibility>(id) {
-                set_or_remove_attr(el, "role", a11y.role().map_or("", |r| r.as_aria_str()));
-                set_or_remove_attr(el, "aria-label", a11y.label());
-                set_or_remove_attr(el, "aria-live", a11y.live().map_or("", |l| l.as_aria_str()));
-                for (attr, on) in [("aria-hidden", a11y.hidden()), ("aria-modal", a11y.modal())] {
-                    if on {
-                        let _ = el.set_attribute(attr, "true");
-                    } else {
-                        let _ = el.remove_attribute(attr);
-                    }
-                }
-            } else {
-                for attr in ["role", "aria-label", "aria-live", "aria-hidden", "aria-modal"] {
-                    let _ = el.remove_attribute(attr);
-                }
-            }
+            crate::aria::sync_accessibility_dom_attrs(store, id, el);
         }
+        self.sync_requested_scroll(store, id, el, true);
         if store.children(id).is_empty()
             && !store.has::<TextInput>(id)
             && self.renderer.plugin_inner_html(id).is_none()
@@ -433,94 +490,6 @@ fn set_or_remove_attr(el: &web_sys::Element, name: &str, value: &str) {
         let _ = el.remove_attribute(name);
     } else {
         let _ = el.set_attribute(name, value);
-    }
-}
-
-/// Applies `effect::COMPOSITE` properties (`opacity`, `z-index`, `transform`, `transform-origin`)
-/// directly via CSSOM `style.setProperty`/`removeProperty` so `inline_fallback`, plugin inline CSS
-/// (e.g. `backdrop-filter`), and `patch_css` are never clobbered on the 120 Hz fast lane.
-fn apply_compositor_properties_live(store: &NodeStore, id: NodeId, el: &web_sys::Element) {
-    let style = if let Some(html_el) = el.dyn_ref::<web_sys::HtmlElement>() {
-        html_el.style()
-    } else if let Some(svg_el) = el.dyn_ref::<web_sys::SvgElement>() {
-        svg_el.style()
-    } else {
-        return;
-    };
-    if let Some(v) = store.try_row::<Visual>(id) {
-        if (v.opacity() - 1.0).abs() > 1e-4 {
-            let mut buf = String::with_capacity(8);
-            crate::css::write_compact_num(v.opacity().clamp(0.0, 1.0), &mut buf);
-            let _ = style.set_property("opacity", &buf);
-        } else {
-            let _ = style.remove_property("opacity");
-        }
-        if v.z_index() != 0 {
-            let _ = style.set_property("z-index", &v.z_index().to_string());
-        } else {
-            let _ = style.remove_property("z-index");
-        }
-    } else {
-        let _ = style.remove_property("opacity");
-        let _ = style.remove_property("z-index");
-    }
-
-    if let Some(tf) = store.try_row::<Transform>(id) {
-        let (tx, ty) = (tf.translate_x(), tf.translate_y());
-        let (sx, sy) = (tf.scale_x(), tf.scale_y());
-        let rot = tf.rotate_deg();
-        if tx != 0.0
-            || ty != 0.0
-            || (sx - 1.0).abs() > 1e-4
-            || (sy - 1.0).abs() > 1e-4
-            || rot != 0.0
-        {
-            let mut val = String::with_capacity(48);
-            let mut first = true;
-            if tx != 0.0 || ty != 0.0 {
-                val.push_str("translate(");
-                crate::css::write_px(tx, &mut val);
-                val.push(',');
-                crate::css::write_px(ty, &mut val);
-                val.push(')');
-                first = false;
-            }
-            if (sx - 1.0).abs() > 1e-4 || (sy - 1.0).abs() > 1e-4 {
-                if !first {
-                    val.push(' ');
-                }
-                val.push_str("scale(");
-                crate::css::write_compact_num(sx, &mut val);
-                val.push(',');
-                crate::css::write_compact_num(sy, &mut val);
-                val.push(')');
-                first = false;
-            }
-            if rot != 0.0 {
-                if !first {
-                    val.push(' ');
-                }
-                val.push_str("rotate(");
-                crate::css::write_compact_num(rot, &mut val);
-                val.push_str("deg)");
-            }
-            let _ = style.set_property("transform", &val);
-        } else {
-            let _ = style.remove_property("transform");
-        }
-        if (tf.origin_x() - 0.5).abs() > 1e-4 || (tf.origin_y() - 0.5).abs() > 1e-4 {
-            let mut orig = String::with_capacity(20);
-            crate::css::write_compact_num(tf.origin_x() * 100.0, &mut orig);
-            orig.push_str("% ");
-            crate::css::write_compact_num(tf.origin_y() * 100.0, &mut orig);
-            orig.push('%');
-            let _ = style.set_property("transform-origin", &orig);
-        } else {
-            let _ = style.remove_property("transform-origin");
-        }
-    } else {
-        let _ = style.remove_property("transform");
-        let _ = style.remove_property("transform-origin");
     }
 }
 
