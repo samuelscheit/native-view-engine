@@ -452,12 +452,27 @@ fn schema_hash_is_sensitive_to_every_abi_category_mutation() {
         "vtable slot signature must affect hash"
     );
 
-    // 8. Core hash chained into Runtime hash
+    // 8. Core hash chained into Runtime hash (reconstructs exact `NVE_RUNTIME_SCHEMA_HASH`)
+    let rt_tag = "nve.runtime_abi.v2";
     let mut rt_hasher_actual = Xxh64Hasher::new(0);
+    rt_hasher_actual.update_u64(rt_tag.len() as u64);
+    rt_hasher_actual.update(rt_tag.as_bytes());
     rt_hasher_actual.update_u64(nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
     hash_abi_descriptor_into(&mut rt_hasher_actual, &rt);
+    assert_eq!(
+        rt_hasher_actual.digest(),
+        nve_abi::NVE_RUNTIME_SCHEMA_HASH,
+        "reconstructed runtime hash must match NVE_RUNTIME_SCHEMA_HASH"
+    );
+
     let mut rt_hasher_perturbed = Xxh64Hasher::new(0);
+    rt_hasher_perturbed.update_u64(rt_tag.len() as u64);
+    rt_hasher_perturbed.update(rt_tag.as_bytes());
     rt_hasher_perturbed.update_u64(nve_abi::NVE_CORE_ABI_SCHEMA_HASH ^ 1);
     hash_abi_descriptor_into(&mut rt_hasher_perturbed, &rt);
-    assert_ne!(rt_hasher_actual.digest(), rt_hasher_perturbed.digest());
+    assert_ne!(
+        rt_hasher_perturbed.digest(),
+        nve_abi::NVE_RUNTIME_SCHEMA_HASH,
+        "perturbing NVE_CORE_ABI_SCHEMA_HASH must change NVE_RUNTIME_SCHEMA_HASH"
+    );
 }

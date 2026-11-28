@@ -1,8 +1,15 @@
 nve_abi_macros::abi_consts! {
     const BAD_CONSTS;
 
-    #[cfg(unix)]
+    #[cfg(all())]
     pub const CFG_CONST: u32 = 1;
+}
+
+nve_abi_macros::abi_consts! {
+    const BAD_CFG_ATTR_CONSTS;
+
+    #[cfg_attr(any(), nve_abi(hex))]
+    pub const CFG_ATTR_CONST: u32 = 2;
 }
 
 nve_abi_macros::abi_aliases! {
@@ -10,6 +17,13 @@ nve_abi_macros::abi_aliases! {
 
     #[nve_abi(hex)]
     pub type BadAlias = u32;
+}
+
+nve_abi_macros::abi_aliases! {
+    const BAD_CFG_ATTR_ALIASES;
+
+    #[cfg_attr(any(), nve_abi(doc = "conditional"))]
+    pub type CfgAttrAlias = u32;
 }
 
 nve_abi_macros::abi_callbacks! {

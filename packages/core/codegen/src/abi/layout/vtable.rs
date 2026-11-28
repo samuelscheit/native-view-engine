@@ -33,6 +33,7 @@ pub fn layout_vtable_headers_on<'a>(
         .collect();
     let mut enums: BTreeSet<&'a str> = BTreeSet::new();
     let mut callbacks: BTreeSet<&'a str> = BTreeSet::new();
+    let mut alias_targets: BTreeMap<&'a str, &'a str> = BTreeMap::new();
 
     for e in base_files.iter().chain(files).flat_map(|f| f.enums) {
         enums.insert(e.name);
@@ -42,6 +43,10 @@ pub fn layout_vtable_headers_on<'a>(
         shapes.insert(cb.name, Shape::POINTER);
     }
     for alias in base_files.iter().chain(files).flat_map(|f| f.aliases) {
+        alias_targets.insert(alias.name, alias.target);
+        if let Some(rn) = alias.rust_name {
+            alias_targets.insert(rn, alias.target);
+        }
         let shape = shape_of(Ty::parse(alias.target)?, &shapes, &enums, &callbacks, alias.name)?;
         shapes.insert(alias.name, shape);
         if let Some(rn) = alias.rust_name {
@@ -51,9 +56,41 @@ pub fn layout_vtable_headers_on<'a>(
 
     let mut out = Vec::new();
     for v in files.iter().flat_map(|f| f.vtables) {
-        out.push(layout_one_vtable(v, &shapes, &enums, &callbacks)?);
+        out.push(layout_one_vtable(v, &shapes, &enums, &callbacks, &alias_targets)?);
     }
     Ok(out)
+}
+
+fn contains_callback_typedef<'a>(
+    ty: Ty<'a>,
+    callbacks: &BTreeSet<&str>,
+    alias_targets: &BTreeMap<&'a str, &'a str>,
+    depth: usize,
+) -> Result<Option<&'a str>, CodegenError> {
+    if depth > 16 {
+        return Ok(None);
+    }
+    match ty {
+        Ty::Nullable(cb) => Ok(Some(cb)),
+        Ty::Array { elem, .. } => {
+            contains_callback_typedef(Ty::parse(elem)?, callbacks, alias_targets, depth + 1)
+        }
+        Ty::Named(name) => {
+            if callbacks.contains(name) {
+                return Ok(Some(name));
+            }
+            if let Some(&target) = alias_targets.get(name) {
+                return contains_callback_typedef(
+                    Ty::parse(target)?,
+                    callbacks,
+                    alias_targets,
+                    depth + 1,
+                );
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn layout_one_vtable<'a>(
@@ -61,6 +98,7 @@ fn layout_one_vtable<'a>(
     shapes: &BTreeMap<&str, Shape>,
     enums: &BTreeSet<&str>,
     callbacks: &BTreeSet<&str>,
+    alias_targets: &BTreeMap<&'a str, &'a str>,
 ) -> Result<VtableHeaderLayout<'a>, CodegenError> {
     let host = Model::host();
     let fail = |what: String| {
@@ -74,17 +112,9 @@ fn layout_one_vtable<'a>(
     let (mut end, mut align) = (Width::same(0), Width::same(1));
     for desc in v.header_fields {
         let ty = Ty::parse(desc.abi_type())?;
-        if let Ty::Nullable(cb) = ty {
+        if let Some(cb) = contains_callback_typedef(ty, callbacks, alias_targets, 0)? {
             return Err(CodegenError::validation(format!(
-                "vtable `{}` header field `{}` uses callback typedef `Option<{cb}>`; vtable slots must be inline `extern \"C\" fn(...)` fields after header fields",
-                v.name, desc.name
-            )));
-        }
-        if let Ty::Named(name) = ty
-            && callbacks.contains(name)
-        {
-            return Err(CodegenError::validation(format!(
-                "vtable `{}` header field `{}` uses callback typedef `{name}`; vtable slots must be inline `extern \"C\" fn(...)` fields after header fields",
+                "vtable `{}` header field `{}` uses callback typedef `{cb}`; vtable slots must be inline `extern \"C\" fn(...)` fields after header fields",
                 v.name, desc.name
             )));
         }

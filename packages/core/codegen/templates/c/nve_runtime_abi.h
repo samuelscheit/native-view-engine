@@ -64,10 +64,9 @@ struct {{ m.vtable().name }} {
   {{ c::ty(m.all_aliases(), method.return_type) }} (*{{ method.name }})({{ c::fn_params(m.all_aliases(), method.params) }});
 {%- endfor %}
 };
-{%- for h in m.vtable().header_fields %}
-{%- if let Some(off) = h.expected_offset %}
-NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ h.name }}) == {{ off }}u, "{{ m.vtable().name }}.{{ h.name }} offset");
-{%- endif %}
+#define NVE_ABI_U64_FIELD_ALIGN offsetof(NveDetailU64AlignProbe, value)
+{%- for f in m.vtable_header_fields() %}
+NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ f.name() }}) == {{ c::width(f.offset) }}, "{{ m.vtable().name }}.{{ f.name() }} offset");
 {%- endfor %}
 {%- for method in m.slots() %}
 NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ method.name }}) == {{ c::width(m.vtable_slots_offset()) }} + {{ loop.index0 }}u * sizeof(void*), "{{ m.vtable().name }}.{{ method.name }} slot");
@@ -77,6 +76,7 @@ NVE_STATIC_ASSERT(
         (({{ c::width(m.vtable_slots_offset()) }} + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*) + NVE_ALIGNOF({{ m.vtable().name }}) - 1u) &
          ~(NVE_ALIGNOF({{ m.vtable().name }}) - 1u)),
     "{{ m.vtable().name }} size");
+#undef NVE_ABI_U64_FIELD_ALIGN
 
 /*
  * Threading, wake-callback, and borrowed-view lifetime contracts:
@@ -95,7 +95,7 @@ NVE_STATIC_ASSERT(
  * - `NveRuntimeMeasureTextFn(ctx, ..)` runs synchronously on the owner thread during layout and
  *   MUST NOT call back into the runtime; `ctx` must outlive its installation.
  */
-/* 1 when `api` is non-NULL and every slot is set (version / hash checked separately). */
+/* 1 when `api` is non-NULL and every required slot is set (version / hash checked separately). */
 static inline int nve_runtime_api_slots_complete(const NveRuntimeApi* api) {
   return api != NULL
 {%- for method in m.slots() %}{% if !method.optional %} &&

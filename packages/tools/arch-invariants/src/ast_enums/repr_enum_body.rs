@@ -3,13 +3,64 @@
 //! Recognizes `match` tables and `if`/`else if` discriminant chains mapping integer literals onto
 //! variants of a `#[repr(<int>)]` unit-only enum.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use syn::visit::{self, Visit};
 use syn::{BinOp, Expr, Lit, Pat, UnOp};
 
-use super::repr_enum_guard::ReprEnumInfo;
+use super::repr_enum_guard::{ReprEnumInfo, REPR_INT_TYPES};
 use super::scope::ImportScope;
+
+pub(super) fn extract_repr_unit_enum(en: &syn::ItemEnum) -> Option<ReprEnumInfo> {
+    let repr = find_int_repr(&en.attrs)?;
+    if en.variants.is_empty() || !en.variants.iter().all(|v| matches!(v.fields, syn::Fields::Unit)) {
+        return None;
+    }
+    let mut variants = BTreeSet::new();
+    let mut discs = BTreeSet::new();
+    let mut all_discs_known = true;
+    let mut next_disc: i128 = 0;
+
+    for v in &en.variants {
+        variants.insert(v.ident.to_string());
+        if let Some((_, expr)) = &v.discriminant {
+            if let Some(val) = eval_int_literal_expr(expr) {
+                discs.insert(val);
+                next_disc = val.saturating_add(1);
+            } else {
+                all_discs_known = false;
+            }
+        } else if all_discs_known {
+            discs.insert(next_disc);
+            next_disc = next_disc.saturating_add(1);
+        }
+    }
+
+    Some(ReprEnumInfo {
+        repr,
+        variants,
+        discriminants: all_discs_known.then_some(discs),
+    })
+}
+
+fn find_int_repr(attrs: &[syn::Attribute]) -> Option<String> {
+    let mut found = None;
+    for attr in attrs {
+        if !attr.path().is_ident("repr") {
+            continue;
+        }
+        let _ = attr.parse_nested_meta(|meta| {
+            if let Some(id) = meta.path.get_ident() {
+                let s = id.to_string();
+                if REPR_INT_TYPES.contains(&s.as_str()) {
+                    found = Some(s);
+                }
+            }
+            Ok(())
+        });
+    }
+    found
+}
 
 pub(super) fn body_matches_repr_discriminants(
     block: &syn::Block,
@@ -49,6 +100,41 @@ pub(super) fn body_matches_repr_discriminants(
     }
 
     impl<'ast> Visit<'ast> for Scan<'_> {
+        fn visit_block(&mut self, block: &'ast syn::Block) {
+            let mut early_returns: BTreeMap<String, Vec<i128>> = BTreeMap::new();
+            for stmt in &block.stmts {
+                if let syn::Stmt::Expr(Expr::If(expr_if), _) = stmt {
+                    let mut cur = expr_if;
+                    loop {
+                        if let Some((scrutinee, val)) =
+                            extract_eq_int_cond(&cur.cond, self.int_param)
+                            && block_early_returns_enum_variant(
+                                &cur.then_branch,
+                                self.target_enum,
+                                self.self_ty,
+                                self.scope,
+                                &self.info.variants,
+                            )
+                        {
+                            early_returns.entry(scrutinee).or_default().push(val);
+                        }
+                        if let Some((_, else_expr)) = &cur.else_branch
+                            && let Expr::If(next_if) = &**else_expr
+                        {
+                            cur = next_if;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+            if early_returns.values().any(|vals| self.check_int_set(vals)) {
+                self.found = true;
+                return;
+            }
+            visit::visit_block(self, block);
+        }
+
         fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
             let mut matched_vals = Vec::new();
             for arm in &m.arms {
@@ -71,10 +157,10 @@ pub(super) fn body_matches_repr_discriminants(
         }
 
         fn visit_expr_if(&mut self, expr_if: &'ast syn::ExprIf) {
-            let mut matched_vals = Vec::new();
+            let mut by_scrutinee: BTreeMap<String, Vec<i128>> = BTreeMap::new();
             let mut cur = expr_if;
             loop {
-                if let Some(val) = extract_eq_int_cond(&cur.cond, self.int_param)
+                if let Some((scrutinee, val)) = extract_eq_int_cond(&cur.cond, self.int_param)
                     && block_constructs_enum_variant(
                         &cur.then_branch,
                         self.target_enum,
@@ -83,7 +169,7 @@ pub(super) fn body_matches_repr_discriminants(
                         &self.info.variants,
                     )
                 {
-                    matched_vals.push(val);
+                    by_scrutinee.entry(scrutinee).or_default().push(val);
                 }
                 if let Some((_, else_expr)) = &cur.else_branch
                     && let Expr::If(next_if) = &**else_expr
@@ -93,7 +179,7 @@ pub(super) fn body_matches_repr_discriminants(
                 }
                 break;
             }
-            if self.check_int_set(&matched_vals) {
+            if by_scrutinee.values().any(|vals| self.check_int_set(vals)) {
                 self.found = true;
             }
             if !self.found {
@@ -115,7 +201,7 @@ pub(super) fn body_matches_repr_discriminants(
     scan.found
 }
 
-pub(super) fn eval_int_literal_expr(expr: &Expr) -> Option<i128> {
+fn eval_int_literal_expr(expr: &Expr) -> Option<i128> {
     match expr {
         Expr::Paren(p) => eval_int_literal_expr(&p.expr),
         Expr::Group(g) => eval_int_literal_expr(&g.expr),
@@ -130,26 +216,40 @@ pub(super) fn eval_int_literal_expr(expr: &Expr) -> Option<i128> {
     }
 }
 
-fn extract_eq_int_cond(cond: &Expr, int_param: Option<&str>) -> Option<i128> {
+fn extract_scrutinee_ident(mut expr: &Expr) -> Option<String> {
+    loop {
+        match expr {
+            Expr::Paren(p) => expr = &p.expr,
+            Expr::Group(g) => expr = &g.expr,
+            Expr::Path(ep) => return ep.path.get_ident().map(ToString::to_string),
+            _ => return None,
+        }
+    }
+}
+
+fn extract_eq_int_cond(cond: &Expr, int_param: Option<&str>) -> Option<(String, i128)> {
     let Expr::Binary(bin) = cond else {
         return None;
     };
     if !matches!(bin.op, BinOp::Eq(_)) {
         return None;
     }
-    let matches_param = |e: &Expr| -> bool {
-        let Some(p) = int_param else { return true };
-        matches!(e, Expr::Path(ep) if ep.path.is_ident(p))
+    let check = |e: &Expr| -> Option<String> {
+        let id = extract_scrutinee_ident(e)?;
+        if int_param.is_some_and(|p| p != id) {
+            return None;
+        }
+        Some(id)
     };
-    if matches_param(&bin.left)
+    if let Some(id) = check(&bin.left)
         && let Some(v) = eval_int_literal_expr(&bin.right)
     {
-        return Some(v);
+        return Some((id, v));
     }
-    if matches_param(&bin.right)
+    if let Some(id) = check(&bin.right)
         && let Some(v) = eval_int_literal_expr(&bin.left)
     {
-        return Some(v);
+        return Some((id, v));
     }
     None
 }
@@ -183,15 +283,29 @@ fn collect_pat_int_literals(pat: &Pat, out: &mut Vec<i128>) {
             }
         }
         Pat::Verbatim(ts) => {
-            let toks: Vec<String> = ts.clone().into_iter().map(|t| t.to_string()).collect();
-            if let [neg, lit] = toks.as_slice()
-                && neg == "-"
-                && let Ok(v) = lit.replace('_', "").parse::<i128>()
+            if let Some(v) = syn::parse2::<Expr>(ts.clone())
+                .ok()
+                .and_then(|e| eval_int_literal_expr(&e))
             {
-                out.push(-v);
+                out.push(v);
             }
         }
         _ => {}
+    }
+}
+
+fn block_early_returns_enum_variant(
+    block: &syn::Block,
+    target_enum: &str,
+    self_ty: Option<&str>,
+    scope: &ImportScope,
+    variants: &BTreeSet<String>,
+) -> bool {
+    match block.stmts.as_slice() {
+        [syn::Stmt::Expr(Expr::Return(r), _)] => r.expr.as_deref().is_some_and(|e| {
+            expr_constructs_enum_variant(e, target_enum, self_ty, scope, variants)
+        }),
+        _ => false,
     }
 }
 

@@ -13,10 +13,10 @@ use syn::{Item, Pat, Type, Visibility};
 use crate::ast_layout::last_type_ident;
 use crate::{is_cfg_test_attr, line_at, Violation};
 
-use super::repr_enum_body::{body_matches_repr_discriminants, eval_int_literal_expr};
-use super::scope::ImportScope;
+use super::repr_enum_body::{body_matches_repr_discriminants, extract_repr_unit_enum};
+use super::scope::{EnumQualifier, ImportScope};
 
-const REPR_INT_TYPES: &[&str] = &["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"];
+pub(super) const REPR_INT_TYPES: &[&str] = &["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"];
 
 #[derive(Clone)]
 pub(super) struct ReprEnumInfo {
@@ -33,11 +33,13 @@ struct PubEnumEntry {
 
 #[derive(Default)]
 struct EnumCatalog {
+    known_crates: BTreeSet<String>,
     pub_enums: BTreeMap<String, Vec<PubEnumEntry>>,
     crate_enums: BTreeMap<(String, String), ReprEnumInfo>,
+    crate_non_repr_types: BTreeSet<(String, String)>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct LocalOverlay {
     repr_enums: BTreeMap<String, ReprEnumInfo>,
     non_repr_types: BTreeSet<String>,
@@ -47,25 +49,50 @@ impl EnumCatalog {
     fn resolve<'a>(
         &'a self,
         ident: &str,
-        crate_key: &str,
+        origin_crate: Option<&str>,
+        current_crate: &str,
         local: &'a LocalOverlay,
     ) -> Option<&'a ReprEnumInfo> {
+        if let Some(orig) = origin_crate
+            && orig != current_crate
+        {
+            if self
+                .crate_non_repr_types
+                .contains(&(orig.to_owned(), ident.to_owned()))
+            {
+                return None;
+            }
+            if let Some(entries) = self.pub_enums.get(ident) {
+                if let Some(exact) = entries.iter().find(|e| e.crate_key == orig) {
+                    return Some(&exact.info);
+                }
+                if self.known_crates.contains(orig) && entries.len() == 1 {
+                    return Some(&entries[0].info);
+                }
+            }
+            return None;
+        }
         if let Some(info) = local.repr_enums.get(ident) {
             return Some(info);
         }
         if local.non_repr_types.contains(ident) {
             return None;
         }
-        if let Some(info) = self.crate_enums.get(&(crate_key.to_owned(), ident.to_owned())) {
+        let same_key = (current_crate.to_owned(), ident.to_owned());
+        if let Some(info) = self.crate_enums.get(&same_key) {
             return Some(info);
         }
-        if let Some(entries) = self.pub_enums.get(ident) {
-            if let Some(same) = entries.iter().find(|e| e.crate_key == crate_key) {
-                return Some(&same.info);
-            }
-            return entries.first().map(|e| &e.info);
+        if let Some(entries) = self.pub_enums.get(ident)
+            && let Some(same) = entries.iter().find(|e| e.crate_key == current_crate)
+        {
+            return Some(&same.info);
         }
-        None
+        if self.crate_non_repr_types.contains(&same_key) {
+            return None;
+        }
+        self.pub_enums
+            .get(ident)
+            .and_then(|entries| entries.first().map(|e| &e.info))
     }
 }
 
@@ -89,10 +116,11 @@ pub fn scan_manual_repr_enum_converters_with_crates(
 ) {
     let mut catalog = EnumCatalog::default();
     for (_, crate_key, _, ast) in files {
+        catalog.known_crates.insert(crate_key.clone());
         if is_cfg_test_attr(&ast.attrs) {
             continue;
         }
-        collect_catalog_enums(&ast.items, crate_key, &mut catalog);
+        collect_catalog_items(&ast.items, crate_key, &mut catalog);
     }
 
     for (rel, crate_key, raw, ast) in files {
@@ -101,50 +129,68 @@ pub fn scan_manual_repr_enum_converters_with_crates(
         }
         let mut local = LocalOverlay::default();
         collect_local_types(&ast.items, &mut local);
-        let mut scope = ImportScope::default();
+        let mut scope = ImportScope::with_crate(Some(crate_key));
         scope.ingest_items(&ast.items);
         scan_items(rel, crate_key, raw, &ast.items, &scope, &catalog, &local, out);
     }
 }
 
 fn infer_crate_key(rel: &str) -> String {
-    if let Some((prefix, _)) = rel.split_once("/src/") {
-        prefix.to_owned()
+    let base = if let Some((prefix, _)) = rel.split_once("/src/") {
+        prefix.rsplit('/').next().unwrap_or(prefix)
     } else {
-        rel.rsplit_once('/').map_or(rel, |(dir, _)| dir).to_owned()
-    }
+        rel.rsplit_once('/').map_or(rel, |(dir, _)| dir)
+    };
+    base.replace('-', "_")
 }
 
-fn collect_catalog_enums(items: &[Item], crate_key: &str, catalog: &mut EnumCatalog) {
+fn collect_catalog_items(items: &[Item], crate_key: &str, catalog: &mut EnumCatalog) {
     for item in items {
         match item {
             Item::Enum(en) if !is_cfg_test_attr(&en.attrs) => {
-                let Some(info) = extract_repr_unit_enum(en) else {
-                    continue;
-                };
                 let name = en.ident.to_string();
-                match &en.vis {
-                    Visibility::Public(_) => {
-                        catalog
-                            .pub_enums
-                            .entry(name)
-                            .or_default()
-                            .push(PubEnumEntry {
-                                crate_key: crate_key.to_owned(),
-                                info,
-                            });
+                if let Some(info) = extract_repr_unit_enum(en) {
+                    match &en.vis {
+                        Visibility::Public(_) => {
+                            catalog
+                                .pub_enums
+                                .entry(name)
+                                .or_default()
+                                .push(PubEnumEntry {
+                                    crate_key: crate_key.to_owned(),
+                                    info,
+                                });
+                        }
+                        Visibility::Restricted(_) => {
+                            catalog
+                                .crate_enums
+                                .insert((crate_key.to_owned(), name), info);
+                        }
+                        Visibility::Inherited => {}
                     }
-                    Visibility::Restricted(_) => {
-                        catalog
-                            .crate_enums
-                            .insert((crate_key.to_owned(), name), info);
-                    }
-                    Visibility::Inherited => {}
+                } else if !matches!(en.vis, Visibility::Inherited) {
+                    catalog
+                        .crate_non_repr_types
+                        .insert((crate_key.to_owned(), name));
                 }
+            }
+            Item::Struct(s)
+                if !is_cfg_test_attr(&s.attrs) && !matches!(s.vis, Visibility::Inherited) =>
+            {
+                catalog
+                    .crate_non_repr_types
+                    .insert((crate_key.to_owned(), s.ident.to_string()));
+            }
+            Item::Union(u)
+                if !is_cfg_test_attr(&u.attrs) && !matches!(u.vis, Visibility::Inherited) =>
+            {
+                catalog
+                    .crate_non_repr_types
+                    .insert((crate_key.to_owned(), u.ident.to_string()));
             }
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
-                    collect_catalog_enums(sub, crate_key, catalog);
+                    collect_catalog_items(sub, crate_key, catalog);
                 }
             }
             _ => {}
@@ -158,75 +204,33 @@ fn collect_local_types(items: &[Item], local: &mut LocalOverlay) {
             Item::Enum(en) if !is_cfg_test_attr(&en.attrs) => {
                 let name = en.ident.to_string();
                 if let Some(info) = extract_repr_unit_enum(en) {
+                    local.non_repr_types.remove(&name);
                     local.repr_enums.insert(name, info);
                 } else {
+                    local.repr_enums.remove(&name);
                     local.non_repr_types.insert(name);
                 }
             }
             Item::Struct(s) if !is_cfg_test_attr(&s.attrs) => {
-                local.non_repr_types.insert(s.ident.to_string());
+                let name = s.ident.to_string();
+                local.repr_enums.remove(&name);
+                local.non_repr_types.insert(name);
             }
             Item::Union(u) if !is_cfg_test_attr(&u.attrs) => {
-                local.non_repr_types.insert(u.ident.to_string());
+                let name = u.ident.to_string();
+                local.repr_enums.remove(&name);
+                local.non_repr_types.insert(name);
             }
             Item::Type(t) if !is_cfg_test_attr(&t.attrs) => {
-                local.non_repr_types.insert(t.ident.to_string());
+                let name = t.ident.to_string();
+                local.repr_enums.remove(&name);
+                local.non_repr_types.insert(name);
             }
             _ => {}
         }
     }
 }
 
-fn extract_repr_unit_enum(en: &syn::ItemEnum) -> Option<ReprEnumInfo> {
-    let repr = find_int_repr(&en.attrs)?;
-    if en.variants.is_empty() || !en.variants.iter().all(|v| matches!(v.fields, syn::Fields::Unit)) {
-        return None;
-    }
-    let mut variants = BTreeSet::new();
-    let mut discs = BTreeSet::new();
-    let mut all_discs_known = true;
-    let mut next_disc: i128 = 0;
-
-    for v in &en.variants {
-        variants.insert(v.ident.to_string());
-        if let Some((_, expr)) = &v.discriminant {
-            if let Some(val) = eval_int_literal_expr(expr) {
-                discs.insert(val);
-                next_disc = val.saturating_add(1);
-            } else {
-                all_discs_known = false;
-            }
-        } else if all_discs_known {
-            discs.insert(next_disc);
-            next_disc = next_disc.saturating_add(1);
-        }
-    }
-
-    Some(ReprEnumInfo {
-        repr,
-        variants,
-        discriminants: all_discs_known.then_some(discs),
-    })
-}
-
-fn find_int_repr(attrs: &[syn::Attribute]) -> Option<String> {
-    let mut found = None;
-    for attr in attrs {
-        if !attr.path().is_ident("repr") {
-            continue;
-        }
-        let _ = attr.parse_nested_meta(|meta| {
-            if let Some(id) = meta.path.get_ident() {
-                let s = id.to_string();
-                if REPR_INT_TYPES.contains(&s.as_str()) {
-                    found = Some(s);
-                }
-            }
-            Ok(())
-        });
-    }
-    found
-}
 
 #[allow(clippy::too_many_arguments)]
 fn scan_items(
@@ -244,14 +248,13 @@ fn scan_items(
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
                     let child_scope = ImportScope::child_for_inline_mod(scope, sub);
-                    let mut child_local = LocalOverlay::default();
+                    let mut child_local = local.clone();
                     collect_local_types(sub, &mut child_local);
                     scan_items(rel, crate_key, raw, sub, &child_scope, catalog, &child_local, out);
                 }
             }
             Item::Impl(imp) if !is_cfg_test_attr(&imp.attrs) => {
-                let self_ty = resolve_type_name(&imp.self_ty, scope)
-                    .or_else(|| last_type_ident(&imp.self_ty));
+                let self_qual = resolve_type_qual(&imp.self_ty, scope);
                 if let Some((_, trait_path, _)) = &imp.trait_ {
                     check_from_trait_impl(
                         rel,
@@ -259,7 +262,8 @@ fn scan_items(
                         raw,
                         imp,
                         trait_path,
-                        self_ty.as_deref(),
+                        self_qual.as_ref(),
+                        scope,
                         catalog,
                         local,
                         out,
@@ -276,7 +280,7 @@ fn scan_items(
                             raw,
                             &f.sig,
                             &f.block,
-                            self_ty.as_deref(),
+                            self_qual.as_ref(),
                             scope,
                             catalog,
                             local,
@@ -311,7 +315,8 @@ fn check_from_trait_impl(
     raw: &str,
     imp: &syn::ItemImpl,
     trait_path: &syn::Path,
-    self_ty: Option<&str>,
+    self_qual: Option<&EnumQualifier>,
+    scope: &ImportScope,
     catalog: &EnumCatalog,
     local: &LocalOverlay,
     out: &mut Vec<Violation>,
@@ -331,13 +336,14 @@ fn check_from_trait_impl(
     let Some(int_ty) = repr_int_type_name(src_ty) else {
         return;
     };
-    let Some(target_enum) = self_ty else {
+    let Some(self_q) = self_qual else {
         return;
     };
-    let Some(info) = catalog.resolve(target_enum, crate_key, local) else {
+    let target_enum = self_q.type_name.as_str();
+    let Some(info) = catalog.resolve(target_enum, self_q.origin_crate.as_deref(), crate_key, local)
+    else {
         return;
     };
-    // Only flag when the source integer matches or widens the enum's repr (or body matches discriminants).
     let fn_item = imp.items.iter().find_map(|ii| match ii {
         syn::ImplItem::Fn(f) if f.sig.ident == "from" || f.sig.ident == "try_from" => Some(f),
         _ => None,
@@ -349,12 +355,12 @@ fn check_from_trait_impl(
             param_name.as_deref(),
             target_enum,
             Some(target_enum),
-            &ImportScope::default(),
+            scope,
             info,
             int_ty,
         )
     });
-    if int_ty == info.repr || body_matches {
+    if body_matches {
         let ln = imp.impl_token.span.start().line;
         out.push(Violation::new(
             rel,
@@ -375,7 +381,7 @@ fn check_fn(
     raw: &str,
     sig: &syn::Signature,
     block: &syn::Block,
-    self_ty: Option<&str>,
+    self_qual: Option<&EnumQualifier>,
     scope: &ImportScope,
     catalog: &EnumCatalog,
     local: &LocalOverlay,
@@ -385,11 +391,12 @@ fn check_fn(
         return;
     };
     let Some((target_enum, info)) =
-        resolve_returned_repr_enum(ret_ty, self_ty, crate_key, scope, catalog, local)
+        resolve_returned_repr_enum(ret_ty, self_qual, crate_key, scope, catalog, local)
     else {
         return;
     };
 
+    let self_ty = self_qual.map(|q| q.type_name.as_str());
     // Accept either 1-arg `(int)` or 2-arg fallback `(int, TargetEnum)` / `(TargetEnum, int)`.
     let Some((int_ty, int_param_name)) = extract_int_converter_arg(sig, &target_enum, self_ty, scope) else {
         return;
@@ -538,14 +545,14 @@ fn is_manual_from_int_name(name: &str) -> bool {
     rest.is_some_and(|suffix| REPR_INT_TYPES.contains(&suffix))
 }
 
-fn resolve_type_name(ty: &Type, scope: &ImportScope) -> Option<String> {
-    let Type::Path(tp) = ty else {
-        return None;
-    };
-    if tp.qself.is_some() {
-        return None;
+fn resolve_type_qual(ty: &Type, scope: &ImportScope) -> Option<EnumQualifier> {
+    if let Type::Path(tp) = ty
+        && tp.qself.is_none()
+        && let Some(q) = scope.resolve_type_path(&tp.path, None)
+    {
+        return Some(q);
     }
-    scope.resolve_type_path(&tp.path, None).map(|q| q.type_name)
+    last_type_ident(ty).map(EnumQualifier::unresolved)
 }
 
 fn unwrap_option_result(mut ty: &Type) -> &Type {
@@ -565,7 +572,7 @@ fn unwrap_option_result(mut ty: &Type) -> &Type {
 
 fn resolve_returned_repr_enum<'a>(
     ret_ty: &Type,
-    self_ty: Option<&str>,
+    self_qual: Option<&EnumQualifier>,
     crate_key: &str,
     scope: &ImportScope,
     catalog: &'a EnumCatalog,
@@ -583,14 +590,14 @@ fn resolve_returned_repr_enum<'a>(
         return None;
     }
     let ident = last.ident.to_string();
-    let candidate = if ident == "Self" {
-        self_ty?.to_string()
+    let qual = if ident == "Self" {
+        self_qual?.clone()
     } else {
+        let self_ty = self_qual.map(|q| q.type_name.as_str());
         scope
             .resolve_type_path(&tp.path, self_ty)
-            .map(|q| q.type_name)
-            .unwrap_or(ident)
+            .unwrap_or_else(|| EnumQualifier::unresolved(ident))
     };
-    let info = catalog.resolve(&candidate, crate_key, local)?;
-    Some((candidate, info))
+    let info = catalog.resolve(&qual.type_name, qual.origin_crate.as_deref(), crate_key, local)?;
+    Some((qual.type_name, info))
 }

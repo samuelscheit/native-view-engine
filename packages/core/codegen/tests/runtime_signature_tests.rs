@@ -3,8 +3,8 @@
 //! ensuring every C and Dart binding resolves cleanly.
 
 use nve_abi::schema::{
-    AbiFieldDescriptor, AbiFileDescriptor, AbiMethodDescriptor, AbiParamDescriptor,
-    AbiVtableDescriptor, runtime_abi_descriptor,
+    AbiAliasDescriptor, AbiFieldDescriptor, AbiFileDescriptor, AbiMethodDescriptor,
+    AbiParamDescriptor, AbiVtableDescriptor, runtime_abi_descriptor,
 };
 use nve_codegen::CodegenError;
 use nve_codegen::abi::model::RuntimeAbiModel;
@@ -221,15 +221,123 @@ fn optional_vtable_slot_is_omitted_from_required_slots() {
     assert_eq!(m.slots().len(), 2);
     let required: Vec<&str> = m.required_slots().into_iter().map(|s| s.name).collect();
     assert_eq!(required, vec!["req"]);
+
+    let c_src = nve_codegen::abi::render_c_runtime_abi(&m).expect("render C mixed");
+    let c_fn = c_src
+        .split("nve_runtime_api_slots_complete(")
+        .nth(1)
+        .expect("C slots helper");
+    assert!(c_src.contains("every required slot is set"));
+    assert!(c_fn.contains("api->req != NULL"));
+    assert!(!c_fn.contains("api->opt != NULL"));
+
+    let dart_src = nve_codegen::abi::render_dart_runtime_abi(&m).expect("render Dart mixed");
+    let dart_fn = dart_src
+        .split("bool runtimeApiSlotsComplete(")
+        .nth(1)
+        .expect("Dart slots helper");
+    assert!(dart_fn.contains("final a = api.ref;"));
+    assert!(dart_fn.contains("a.req != ffi.nullptr"));
+    assert!(!dart_fn.contains("a.opt != ffi.nullptr"));
 }
 
 #[test]
-fn vtable_header_field_rejects_callback_typedef() {
+fn all_optional_vtable_renders_valid_c_and_dart_slots_complete() {
+    static ALL_OPT: [AbiMethodDescriptor; 2] = [
+        AbiMethodDescriptor {
+            optional: true,
+            ..method("opt_a", &[], "()")
+        },
+        AbiMethodDescriptor {
+            optional: true,
+            ..method("opt_b", &[], "()")
+        },
+    ];
+    let m = with_methods(&ALL_OPT).expect("valid all-optional vtable");
+    assert!(m.required_slots().is_empty());
+
+    let c_src = nve_codegen::abi::render_c_runtime_abi(&m).expect("render C all-optional");
+    let c_vtable_asserts = c_src
+        .split("struct NveRuntimeApi {")
+        .nth(1)
+        .expect("C vtable section");
+    assert!(
+        c_vtable_asserts.contains("#define NVE_ABI_U64_FIELD_ALIGN offsetof(NveDetailU64AlignProbe, value)")
+            && c_vtable_asserts.contains("#undef NVE_ABI_U64_FIELD_ALIGN"),
+        "vtable asserts must wrap NVE_ABI_U64_FIELD_ALIGN"
+    );
+    assert!(
+        c_vtable_asserts.contains("offsetof(NveRuntimeApi, abi_version)")
+            && c_vtable_asserts.contains("offsetof(NveRuntimeApi, schema_hash)"),
+        "every vtable header field must emit an offset assert"
+    );
+    let c_fn = c_src
+        .split("nve_runtime_api_slots_complete(")
+        .nth(1)
+        .expect("C slots helper");
+    assert!(c_fn.contains("return api != NULL;"), "C helper: {c_fn}");
+    assert!(!c_fn.contains("api->opt_a"));
+
+    let dart_src = nve_codegen::abi::render_dart_runtime_abi(&m).expect("render Dart all-optional");
+    let dart_fn = dart_src
+        .split("bool runtimeApiSlotsComplete(")
+        .nth(1)
+        .expect("Dart slots helper");
+    assert!(dart_fn.contains("return true;"), "Dart helper: {dart_fn}");
+    assert!(
+        !dart_fn.contains("final a = api.ref;"),
+        "all-optional Dart helper must not emit unused `final a`: {dart_fn}"
+    );
+}
+
+#[test]
+fn vtable_header_field_rejects_callback_typedef_array_and_alias() {
     let base = nve_codegen::abi::abi_model().expect("ABI model");
     let rt = runtime_abi_descriptor();
+
+    for ty in ["NveRuntimeWakeFn", "[NveRuntimeWakeFn; 2]"] {
+        let header_fields: &'static [AbiFieldDescriptor] =
+            Box::leak(Box::new([AbiFieldDescriptor {
+                ty,
+                c_type: None,
+                ..rt.vtables[0].header_fields[0]
+            }]));
+        let vtables: &'static [AbiVtableDescriptor] = Box::leak(Box::new([AbiVtableDescriptor {
+            header_fields,
+            ..rt.vtables[0]
+        }]));
+        let file: &'static AbiFileDescriptor = Box::leak(Box::new(AbiFileDescriptor {
+            vtables,
+            ..rt
+        }));
+        match RuntimeAbiModel::new(file, &base) {
+            Err(CodegenError::Validation(msg)) => {
+                assert!(
+                    msg.contains("callback typedef `NveRuntimeWakeFn`"),
+                    "for `{ty}`, unexpected message: {msg}"
+                );
+            }
+            other => panic!("for `{ty}`, expected callback typedef rejection, got {other:?}"),
+        }
+    }
+
+    // Also reject transitive alias -> array -> callback typedef chains.
+    let mut aliases = rt.aliases.to_vec();
+    aliases.push(AbiAliasDescriptor {
+        name: "WakeAlias",
+        rust_name: None,
+        target: "NveRuntimeWakeFn",
+        doc: None,
+    });
+    aliases.push(AbiAliasDescriptor {
+        name: "WakeAliasArr",
+        rust_name: None,
+        target: "[WakeAlias; 2]",
+        doc: None,
+    });
     let header_fields: &'static [AbiFieldDescriptor] =
         Box::leak(Box::new([AbiFieldDescriptor {
-            ty: "NveRuntimeWakeFn",
+            ty: "WakeAliasArr",
             c_type: None,
             ..rt.vtables[0].header_fields[0]
         }]));
@@ -238,6 +346,7 @@ fn vtable_header_field_rejects_callback_typedef() {
         ..rt.vtables[0]
     }]));
     let file: &'static AbiFileDescriptor = Box::leak(Box::new(AbiFileDescriptor {
+        aliases: Box::leak(aliases.into_boxed_slice()),
         vtables,
         ..rt
     }));
@@ -245,9 +354,9 @@ fn vtable_header_field_rejects_callback_typedef() {
         Err(CodegenError::Validation(msg)) => {
             assert!(
                 msg.contains("callback typedef `NveRuntimeWakeFn`"),
-                "unexpected message: {msg}"
+                "for alias chain, unexpected message: {msg}"
             );
         }
-        other => panic!("expected callback typedef header rejection, got {other:?}"),
+        other => panic!("for alias chain, expected callback typedef rejection, got {other:?}"),
     }
 }

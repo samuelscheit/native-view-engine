@@ -83,7 +83,8 @@ pub(crate) fn is_arrow(tokens: &[Tok], i: usize) -> bool {
 
 /// Resolves an attribute path to its trailing identifier and remaining tokens (zero allocation).
 pub(crate) fn attr_name(inner: &[Tok]) -> (&str, &[Tok]) {
-    let (mut i, mut name) = (0usize, "");
+    let mut i = if is_colon2(inner, 0) { 2 } else { 0 };
+    let mut name = "";
     while let Some(Tok::Ident(id)) = inner.get(i) {
         name = id.as_str();
         i += 1;

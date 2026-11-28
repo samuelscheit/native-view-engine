@@ -117,6 +117,20 @@ pub fn generate_c_abi_header() -> Result<String, CodegenError> {
     Ok(render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?.content)
 }
 
+/// Renders the C runtime ABI header for an arbitrary validated [`RuntimeAbiModel`].
+pub fn render_c_runtime_abi(m: &RuntimeAbiModel<'_>) -> Result<String, CodegenError> {
+    Ok(render(&CRuntimeAbi { m }, C_RUNTIME_ABI_HEADER.to_owned())?.content)
+}
+
+/// Renders the Dart runtime ABI bindings for an arbitrary validated [`RuntimeAbiModel`].
+pub fn render_dart_runtime_abi(m: &RuntimeAbiModel<'_>) -> Result<String, CodegenError> {
+    Ok(render(
+        &DartRuntimeAbi { m },
+        format!("{DART}/lib/src/generated/nve_runtime_abi.generated.dart"),
+    )?
+    .content)
+}
+
 /// Every Core ABI file (C, Swift constants, Java, Dart const + `dart:ffi`, TypeScript)
 /// plus the C runtime ABI header.
 pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {

@@ -1267,4 +1267,143 @@ fn unit_no_manual_repr_enum_converters_positive_and_negative() {
         !v_nfp.iter().any(|v| v.path == "packages/other/src/lib.rs"),
         "local struct collision and HTTP semantic match must not false-positive: {v_nfp:?}"
     );
+
+    // P1 #2: Clean delegating `From`/`TryFrom` allowed; aliased manual `From` caught.
+    let delegating_and_aliased = r#"
+        #[repr(u8)]
+        pub enum CleanMode { Off = 0, On = 1 }
+        impl TryFrom<u8> for CleanMode {
+            type Error = u8;
+            fn try_from(v: u8) -> Result<Self, u8> { Self::try_from_u8(v).ok_or(v) }
+        }
+        impl From<u8> for CleanMode {
+            fn from(v: u8) -> Self { Self::from_u8(v) }
+        }
+    "#;
+    let aliased_from_bad = r#"
+        use crate_clean::CleanMode as M;
+        impl From<u8> for M {
+            fn from(v: u8) -> Self {
+                match v { 0 => M::Off, 1 => M::On, _ => M::Off }
+            }
+        }
+    "#;
+    let ast_del = syn::parse_file(delegating_and_aliased).unwrap();
+    let ast_aliased = syn::parse_file(aliased_from_bad).unwrap();
+    let mut v_del = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(
+        &[
+            ("packages/crate_clean/src/lib.rs".into(), delegating_and_aliased, &ast_del),
+            ("packages/crate_user/src/lib.rs".into(), aliased_from_bad, &ast_aliased),
+        ],
+        &mut v_del,
+    );
+    assert!(
+        !v_del.iter().any(|v| v.path == "packages/crate_clean/src/lib.rs"),
+        "clean delegating From/TryFrom must NOT be flagged: {v_del:?}"
+    );
+    assert_eq!(
+        v_del.iter().filter(|v| v.path == "packages/crate_user/src/lib.rs").count(),
+        1,
+        "aliased `use crate_clean::CleanMode as M; impl From<u8> for M` must be caught: {v_del:?}"
+    );
+
+    // P1 #3: Negative suffixed/radix match literals + sequential early-return `if` blocks.
+    let neg_radix_and_seq_if = r#"
+        #[repr(i32)]
+        enum SignedCode { Min = -2147483648, NegHex = -16, NegBin = -2, Ok = 0 }
+        fn decode_signed(raw: i32) -> Option<SignedCode> {
+            match raw {
+                -2147483648i32 => Some(SignedCode::Min),
+                -0x10i32 => Some(SignedCode::NegHex),
+                -0b10 => Some(SignedCode::NegBin),
+                0 => Some(SignedCode::Ok),
+                _ => None,
+            }
+        }
+        fn decode_seq_if(raw: i32) -> Option<SignedCode> {
+            if raw == -0x10 { return Some(SignedCode::NegHex); }
+            if raw == -0b10 { return Some(SignedCode::NegBin); }
+            None
+        }
+    "#;
+    let ast_nr = syn::parse_file(neg_radix_and_seq_if).unwrap();
+    let mut v_nr = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(
+        &[("packages/signed/src/lib.rs".into(), neg_radix_and_seq_if, &ast_nr)],
+        &mut v_nr,
+    );
+    assert_eq!(
+        v_nr.len(),
+        2,
+        "negative suffixed/radix match AND sequential early-return `if` must both be caught: {v_nr:?}"
+    );
+
+    // P1 #4: Crate-origin resolution, cross-file non-repr struct shadowing, and inline `mod` `use super::`.
+    let crate_enum_status = r#"
+        #[repr(u8)]
+        pub enum Status { Ok = 0, Err = 1 }
+    "#;
+    let crate_struct_status_types = r#"
+        pub struct Status(pub u32);
+    "#;
+    let crate_struct_status_impls = r#"
+        use crate::types::Status;
+        impl Status {
+            pub const fn from_u32(v: u32) -> Self { Self(v) }
+        }
+    "#;
+    let crate_explicit_foreign = r#"
+        use crate_struct::Status;
+        fn wrap(v: u32) -> Status { Status(v) }
+        fn from_u32(v: u32) -> Status { Status(v) }
+    "#;
+    let inline_mod_super = r#"
+        #[repr(u8)]
+        enum PrivInnerMode { Off = 0, On = 1 }
+        struct Status(u32);
+        mod child {
+            use super::{PrivInnerMode, Status};
+            fn decode_priv(v: u8) -> Option<PrivInnerMode> {
+                match v { 0 => Some(PrivInnerMode::Off), 1 => Some(PrivInnerMode::On), _ => None }
+            }
+            impl Status {
+                pub const fn from_u32(v: u32) -> Self { Self(v) }
+            }
+        }
+    "#;
+    let ast_es = syn::parse_file(crate_enum_status).unwrap();
+    let ast_st = syn::parse_file(crate_struct_status_types).unwrap();
+    let ast_si = syn::parse_file(crate_struct_status_impls).unwrap();
+    let ast_ef = syn::parse_file(crate_explicit_foreign).unwrap();
+    let ast_im = syn::parse_file(inline_mod_super).unwrap();
+    let mut v_scope = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(
+        &[
+            ("packages/crate_enum/src/lib.rs".into(), crate_enum_status, &ast_es),
+            ("packages/crate_struct/src/types.rs".into(), crate_struct_status_types, &ast_st),
+            ("packages/crate_struct/src/impls.rs".into(), crate_struct_status_impls, &ast_si),
+            ("packages/crate_caller/src/lib.rs".into(), crate_explicit_foreign, &ast_ef),
+            ("packages/crate_mod/src/lib.rs".into(), inline_mod_super, &ast_im),
+        ],
+        &mut v_scope,
+    );
+    assert!(
+        !v_scope.iter().any(|v| v.path == "packages/crate_struct/src/impls.rs"),
+        "cross-file same-crate `pub struct Status` must not collide with foreign `pub enum Status`: {v_scope:?}"
+    );
+    assert!(
+        !v_scope.iter().any(|v| v.path == "packages/crate_caller/src/lib.rs"),
+        "explicit `use crate_struct::Status` must respect origin_crate and not collide: {v_scope:?}"
+    );
+    let mod_hits: Vec<_> = v_scope
+        .iter()
+        .filter(|v| v.path == "packages/crate_mod/src/lib.rs")
+        .collect();
+    assert_eq!(
+        mod_hits.len(),
+        1,
+        "inline mod `use super::PrivInnerMode` must be caught while `use super::Status` struct must not: {mod_hits:?}"
+    );
+    assert!(mod_hits[0].reason.contains("PrivInnerMode"), "{mod_hits:?}");
 }

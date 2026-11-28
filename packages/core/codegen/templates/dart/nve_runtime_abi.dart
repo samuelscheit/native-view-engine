@@ -102,10 +102,10 @@ final class {{ m.vtable().name }} extends ffi.Struct {
 /// mirrors C `nve_runtime_api_slots_complete`.
 bool runtimeApiSlotsComplete(ffi.Pointer<NveRuntimeApi> api) {
   if (api == ffi.nullptr) return false;
-  final a = api.ref;
 {%- if m.required_slots().is_empty() %}
   return true;
 {%- else %}
+  final a = api.ref;
   return {% for method in m.required_slots() %}a.{{ spell::camel(method.name) }} != ffi.nullptr{% if !loop.last %} &&
       {% endif %}{% endfor %};
 {%- endif %}

@@ -64,6 +64,11 @@ fn rejects_invalid_repr_enum_inputs() {
         ("#[repr(u8)] enum Overflow { A = 255, B }", "overflows `u8`"),
         ("#[repr(u8)] #[repr_enum(fallback = Missing)] enum BadFb { A = 0 }", "does not match any variant"),
         ("#[repr(u8)] enum ExprDisc { A = 1 << 0 }", "integer literal discriminant"),
+        ("#[repr(u8, packed)] enum PackedU8 { A = 0 }", "found `#[repr(packed)]`"),
+        ("#[repr(u8, align(4))] enum AlignedU8 { A = 0 }", "found `#[repr(align)]`"),
+        ("#[repr(align(4), u8)] enum AlignedFirstU8 { A = 0 }", "found `#[repr(align)]`"),
+        ("#[repr(u8, C)] enum MixedCU8 { A = 0 }", "found `#[repr(C)]`"),
+        ("#[::core::cfg_attr(all(), repr(C))] #[repr(u8)] enum CfgAttrRepr { A = 0 }", "cfg_attr"),
     ];
     for (src, needle) in cases {
         let err = derive_tokens(&lex(src)).expect_err(src);

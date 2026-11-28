@@ -127,7 +127,8 @@ fn parse_repr(inner: &[Tok], out: &mut Attrs) -> Result<(), String> {
                         let [Tok::Literal(lit)] = args.as_slice() else {
                             return Err("expected integer in `repr(align(...))`".to_owned());
                         };
-                        out.repr_align = Some(parse_usize_literal(lit)?);
+                        let n = parse_usize_literal(lit)?;
+                        out.repr_align = Some(out.repr_align.map_or(n, |prev| prev.max(n)));
                     }
                 }
                 other => {
@@ -182,4 +183,28 @@ fn parse_kvs(tokens: &[Tok]) -> Result<Vec<(String, Kv)>, String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_attrs;
+    use crate::tok::lex;
+
+    #[test]
+    fn duplicate_repr_align_uses_max_and_attr_name_skips_leading_colons() {
+        let toks = lex("#[repr(C, align(16), align(4))] #[::nve_abi(size = 32)]");
+        let mut pos = 0;
+        let a = collect_attrs(&toks, &mut pos, true).expect("valid attrs");
+        assert!(a.repr_c);
+        assert_eq!(a.repr_align, Some(16));
+        assert_eq!(a.kvs.len(), 1);
+        assert_eq!(a.kvs[0].0, "size");
+
+        let bad_cfg = lex("#[::core::cfg_attr(all(), repr(C))]");
+        let mut pos2 = 0;
+        let err = collect_attrs(&bad_cfg, &mut pos2, true)
+            .err()
+            .expect("leading :: cfg_attr must be rejected");
+        assert!(err.contains("cfg_attr"), "{err}");
+    }
 }
