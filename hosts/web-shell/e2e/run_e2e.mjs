@@ -754,7 +754,7 @@ async function main() {
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=studio&ws=off` });
     await waitForCondition(
       cdp,
-      "production studio bundle loaded (studio exports only: no counter, dev probe or scene view)",
+      "production studio bundle loaded (studio exports only: no counter or dev probes)",
       () => {
         const m = window.__nveWasmMod;
         return (
@@ -763,8 +763,7 @@ async function main() {
           m.start_kitchen_sink_app === undefined &&
           m.run_semantic_style_hydration_probe === undefined &&
           m.run_hostile_frame_probe === undefined &&
-          m.panic_probe === undefined &&
-          m.nve_web_scene_view_ptr === undefined
+          m.panic_probe === undefined
         );
       }
     );
@@ -1157,7 +1156,7 @@ async function main() {
     await cdp.send("Page.navigate", { url: `${baseUrl}/?app=kitchen-sink&ws=off&reset=1` });
     await waitForCondition(
       cdp,
-      "production kitchen-sink bundle loaded (kitchen-sink exports only: no studio, dev probe or scene view)",
+      "production kitchen-sink bundle loaded (kitchen-sink exports only: no studio or dev probes)",
       () => {
         const m = window.__nveWasmMod;
         return (
@@ -1166,8 +1165,7 @@ async function main() {
           m.start_studio_workspace_app === undefined &&
           m.run_semantic_style_hydration_probe === undefined &&
           m.run_hostile_frame_probe === undefined &&
-          m.panic_probe === undefined &&
-          m.nve_web_scene_view_ptr === undefined
+          m.panic_probe === undefined
         );
       }
     );

@@ -43,7 +43,7 @@ Centralized `.nve.rs` spec files (`packages/core/codegen/specs/`) have been **el
 - **Compile-time single source of truth (`packages/core/abi-macros` + `packages/core/abi/src/schema.rs`)**:
   - `#[derive(NveAbi)]` emits `impl NveStructSchema` / `NveUnionSchema` / `NveEnumSchema` + `NveSchema` with `const SCHEMA` carrying `rustc`-computed `core::mem::size_of::<Self>()`, `core::mem::align_of::<Self>()`, `core::mem::offset_of!(Self, field)`, and enum discriminants.
   - Optional layout contracts (`#[nve_abi(size = N, size_64 = N, align = N)]` and field `#[nve_abi(offset = N, offset64 = N, c_type = "...")]`) emit compile-time `const` assertions automatically.
-  - `nve-codegen`'s `abi` module renders the colocated `nve_abi::schema::AbiFileDescriptor` values (`core_abi_descriptor()`, `scene_abi_descriptor()`) straight into the host ABI templates: zero duplicated spec files and zero `wasm32` runtime bloat (dead-code-eliminated `const` metadata).
+  - `nve-codegen`'s `abi` module renders the colocated `nve_abi::schema::AbiFileDescriptor` values (`core_abi_descriptor()`) straight into the host ABI templates: zero duplicated spec files and zero `wasm32` runtime bloat (dead-code-eliminated `const` metadata).
 - **Direct in-process FFI (static `extern "C"` by default; optional vtables for `dlopen`/`cdylib`)**: derive `#[derive(NveAbi)]` on real `#[repr(C)]` types or construct a `nve_codegen::HybridFileSpec` (`HybridStructSpec`, `HybridEnumSpec`, `c_functions`, and optionally `HybridModuleSpec`/`HybridViewSpec`) directly in Rust and call `generate_hybrid_target(&spec, HybridTarget::Cpp)` (or `generate_hybrid_all`).
   - **Default for statically linked builds**: emit **direct static `extern "C"` C functions** via `HybridFileSpec::c_functions` (zero vtable, zero indirect call overhead, LTO-inlinable — e.g. `nve_clipboard_write_text(NveStrSlice text) -> int32_t`, `nve_system_env_get_theme(NveHybridNveThemeSnapshot* out_theme) -> int32_t`).
   - **Strictly optional for dynamic plugins**: emit `#[repr(C)]` function-pointer vtable structs (`HybridModuleSpec`) **only** for `dlopen` / `LoadLibrary` `cdylib` hot-reload boundaries where symbols cannot be statically linked.
@@ -57,6 +57,6 @@ cargo test --locked -p nve-codegen
 # Enforce zero Clippy warnings across library and tests
 cargo clippy --locked -p nve-codegen --all-targets -- -D warnings
 
-# Generate the 15 host files (ABI, tables, XXH64 vectors) into packages/core/host-* and verify parity
+# Generate the 24 host files (ABI, tables, XXH64 vectors) into packages/core/host-* and verify parity
 cargo run --locked -p nve-cli -- codegen abi && cargo run --locked -p nve-cli -- codegen abi --check
 ```

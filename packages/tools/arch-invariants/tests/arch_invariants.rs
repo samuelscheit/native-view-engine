@@ -163,7 +163,7 @@ fn cross_file_repr_c_abi_layout_asserts_and_cache_line_locks() {
 
     assert_staged_violations(
         Stage::Post1B1D,
-        "Cross-file #[repr(C)] ABI layout asserts & cache-line locks (NodeRow=32, NveRenderNode=64, NveEvent=64)",
+        "Cross-file #[repr(C)] ABI layout asserts & cache-line locks (NodeRow=32, NveNodeRow=32, NveEvent=64)",
         &violations,
     );
 }

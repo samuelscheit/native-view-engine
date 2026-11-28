@@ -419,12 +419,83 @@ void test_registry_wildcards_mount_and_commands() {
   }
 }
 
+void test_registry_adapter_lifetime_under_mutation() {
+  int orig_wild_cmds = 0;
+  int orig_wild_unmounts = 0;
+  int orig_exact_cmds = 0;
+  int orig_exact_unmounts = 0;
+  int other_wild_cmds = 0;
+  int other_wild_unmounts = 0;
+
+  {
+    nve::NativeViewRegistry reg;
+
+    nve::NativeViewAdapter orig_wild{};
+    orig_wild.create = [](uint32_t id, std::string_view, const nve::NvnpDecoder*) -> void* {
+      return reinterpret_cast<void*>(static_cast<uintptr_t>(id));
+    };
+    orig_wild.dispatch_command = [&](void*, uint32_t, std::string_view, const nve::NvncDecoder&) {
+      ++orig_wild_cmds;
+      return true;
+    };
+    orig_wild.unmount = [&](void*, uint32_t) { ++orig_wild_unmounts; };
+
+    nve::NativeViewAdapter orig_exact{};
+    orig_exact.create = [](uint32_t id, std::string_view, const nve::NvnpDecoder*) -> void* {
+      return reinterpret_cast<void*>(static_cast<uintptr_t>(id));
+    };
+    orig_exact.dispatch_command = [&](void*, uint32_t, std::string_view, const nve::NvncDecoder&) {
+      ++orig_exact_cmds;
+      return true;
+    };
+    orig_exact.unmount = [&](void*, uint32_t) { ++orig_exact_unmounts; };
+
+    reg.register_adapter("w.*", orig_wild);
+    reg.register_adapter("exact.view", orig_exact);
+    NVE_CHECK(reg.mount_or_update(1u, "w.alpha", {}) != nullptr);
+    NVE_CHECK(reg.mount_or_update(2u, "exact.view", {}) != nullptr);
+
+    // Force `wildcards_` vector reallocation and `std::sort` reordering while node 1 is mounted.
+    for (int i = 0; i < 32; ++i) {
+      nve::NativeViewAdapter other{};
+      other.create = [](uint32_t id, std::string_view, const nve::NvnpDecoder*) -> void* {
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(id));
+      };
+      other.dispatch_command = [&](void*, uint32_t, std::string_view, const nve::NvncDecoder&) {
+        ++other_wild_cmds;
+        return false;
+      };
+      other.unmount = [&](void*, uint32_t) { ++other_wild_unmounts; };
+      reg.register_adapter("long.prefix." + std::to_string(i) + ".*", std::move(other));
+    }
+
+    // Unregister both adapters while instances are still mounted — mounted entries must stay valid.
+    NVE_CHECK(reg.unregister_adapter("w.*"));
+    NVE_CHECK(reg.unregister_adapter("exact.view"));
+    NVE_CHECK(!reg.supports("w.alpha"));
+    NVE_CHECK(!reg.supports("exact.view"));
+
+    NvncBuilder ping(1u);
+    const auto ping_bytes = ping.finish();
+    NVE_CHECK(reg.dispatch_command(1u, "ping", ping_bytes));
+    NVE_CHECK(reg.dispatch_command(2u, "ping", ping_bytes));
+    NVE_CHECK(orig_wild_cmds == 1 && orig_exact_cmds == 1 && other_wild_cmds == 0);
+
+    // Explicit unmount of node 1; node 2 is unmounted by `~NativeViewRegistry()`.
+    NVE_CHECK(reg.unmount(1u));
+    NVE_CHECK(orig_wild_unmounts == 1 && other_wild_unmounts == 0);
+  }
+
+  NVE_CHECK(orig_exact_unmounts == 1 && other_wild_unmounts == 0);
+}
+
 } // namespace
 
 int main() {
   test_nvnp_all_value_types_and_specs();
   test_corrupt_and_adversarial_wire_buffers();
   test_registry_wildcards_mount_and_commands();
+  test_registry_adapter_lifetime_under_mutation();
   std::cout << "nve_native_view_test passed\n";
   return 0;
 }

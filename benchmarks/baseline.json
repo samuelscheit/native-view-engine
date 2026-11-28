@@ -8,6 +8,60 @@
   },
   "default_tolerance_pct": 15.0,
   "benchmarks": {
+    "cxx::scene_read_all_1000": {
+      "mean_ns": 1267.7,
+      "median_ns": 1250.0,
+      "name": "scene_read_all_1000",
+      "ops_per_sec": 800000.0,
+      "p95_ns": 1417.0,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::scene_read_all_10000": {
+      "mean_ns": 12640.0,
+      "median_ns": 12542.0,
+      "name": "scene_read_all_10000",
+      "ops_per_sec": 79732.1,
+      "p95_ns": 13125.0,
+      "suite": "cxx",
+      "tolerance_pct": 15.0
+    },
+    "cxx::scene_read_dirty_10_of_1000": {
+      "mean_ns": 23.4,
+      "median_ns": 16.9,
+      "name": "scene_read_dirty_10_of_1000",
+      "ops_per_sec": 59259259.3,
+      "p95_ns": 17.7,
+      "suite": "cxx",
+      "tolerance_pct": 25.0
+    },
+    "cxx::scene_read_dirty_10_of_10000": {
+      "mean_ns": 17.5,
+      "median_ns": 17.1,
+      "name": "scene_read_dirty_10_of_10000",
+      "ops_per_sec": 58548009.4,
+      "p95_ns": 17.7,
+      "suite": "cxx",
+      "tolerance_pct": 25.0
+    },
+    "cxx::scene_reader_open_1000": {
+      "mean_ns": 9.8,
+      "median_ns": 9.8,
+      "name": "scene_reader_open_1000",
+      "ops_per_sec": 102145046.0,
+      "p95_ns": 10.2,
+      "suite": "cxx",
+      "tolerance_pct": 25.0
+    },
+    "cxx::scene_reader_open_10000": {
+      "mean_ns": 9.8,
+      "median_ns": 9.8,
+      "name": "scene_reader_open_10000",
+      "ops_per_sec": 102145046.0,
+      "p95_ns": 10.2,
+      "suite": "cxx",
+      "tolerance_pct": 25.0
+    },
     "rust::abi/command_buffer_decode/100": {
       "mean_ns": 5129.636,
       "median_ns": 5127.164,

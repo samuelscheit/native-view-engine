@@ -32,6 +32,8 @@ if(APPLE AND NOT IOS)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL)
+  include("${NVE_REPO_ROOT}/cxx/cmake/NveCodegen.cmake")
+  nve_ensure_abi_codegen()
   enable_testing()
   add_executable(nve_apple_camera_test
     tests/apple_camera_test.mm

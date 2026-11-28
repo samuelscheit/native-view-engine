@@ -1045,6 +1045,12 @@ fn single_scene_abi_detects_retired_symbols_and_bridge_tokens() {
     assert_eq!(detect_retired_scene_reference("cmake -S cxx/nve-fabric-bridge -B b"), Some("nve_fabric_bridge"));
     assert_eq!(detect_retired_scene_reference("target_link_libraries(x NVE_FABRIC_BRIDGE)"), Some("nve_fabric_bridge"));
     assert_eq!(detect_retired_scene_reference("nve_fabric_host_create(cfg);"), Some("nve_fabric_host"));
+    assert_eq!(detect_retired_scene_reference("class NveFabricHost {};"), Some("nve_fabric_host"));
+    assert_eq!(detect_retired_scene_reference("struct NveFabricBridge {};"), Some("nve_fabric_bridge"));
+    assert_eq!(detect_retired_scene_reference("let x = nve_render_node_size;"), Some("nve_render_node"));
+    assert_eq!(detect_retired_scene_reference("const NveFrameStats* s;"), Some("NveFrameStats"));
+    assert_eq!(detect_retired_scene_reference("const m = new SceneMirror();"), Some("SceneMirror"));
+    assert_eq!(detect_retired_scene_reference("m.nve_web_scene_view_ptr"), Some("nve_web_scene_view_ptr"));
     // Identifier boundaries: the canonical names and look-alikes pass.
     assert_eq!(detect_retired_scene_reference("const NveSceneView* v; SceneReader r;"), None);
     assert_eq!(detect_retired_scene_reference("MyNveRenderNodeish x;"), None);

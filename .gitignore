@@ -2,7 +2,6 @@
 /target
 /build
 /cxx/build
-/cxx/build-fabric
 hosts/*/build/
 hosts/swiftui-kit/.build/
 hosts/flutter-plugin/.dart_tool/

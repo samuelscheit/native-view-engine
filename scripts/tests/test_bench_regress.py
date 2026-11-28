@@ -124,20 +124,14 @@ class CxxJsonParsingTests(unittest.TestCase):
         raw = json.dumps(
             {
                 "suite": "nve_host_cxx_bench",
-                "mode": "Standalone",
-                "has_yoga": False,
-                "has_jsi": False,
                 "benchmarks": [
                     {
-                        "name": "decode_mount_1000_nodes",
-                        "warmup": 15,
-                        "iterations": 100,
-                        "ops_per_iter": 1,
-                        "p50_ns": 190875.0,
-                        "p95_ns": 195000.5,
-                        "p99_ns": 201000.0,
-                        "mean_ns": 191200.25,
-                        "ops_per_sec": 5239.03,
+                        "name": "scene_read_all_10000",
+                        "p50_ns": 13200.0,
+                        "p95_ns": 13900.5,
+                        "mean_ns": 13350.25,
+                        "ops_per_sec": 75757.58,
+                        "iters": 200,
                     },
                     {
                         "name": "custom_median_entry",
@@ -151,13 +145,13 @@ class CxxJsonParsingTests(unittest.TestCase):
         parsed = br.parse_cxx_json(raw)
         self.assertEqual(
             list(parsed.keys()),
-            ["cxx::custom_median_entry", "cxx::decode_mount_1000_nodes"],
+            ["cxx::custom_median_entry", "cxx::scene_read_all_10000"],
         )
-        mount = parsed["cxx::decode_mount_1000_nodes"]
-        self.assertEqual(mount["suite"], "cxx")
-        self.assertAlmostEqual(mount["median_ns"], 190875.0)
-        self.assertAlmostEqual(mount["p95_ns"], 195000.5)
-        self.assertAlmostEqual(mount["ops_per_sec"], 5239.03)
+        read_all = parsed["cxx::scene_read_all_10000"]
+        self.assertEqual(read_all["suite"], "cxx")
+        self.assertAlmostEqual(read_all["median_ns"], 13200.0)
+        self.assertAlmostEqual(read_all["p95_ns"], 13900.5)
+        self.assertAlmostEqual(read_all["ops_per_sec"], 75757.58)
 
         custom = parsed["cxx::custom_median_entry"]
         self.assertAlmostEqual(custom["median_ns"], 420.5)
@@ -206,10 +200,10 @@ class ComparisonAndReportingTests(unittest.TestCase):
                     "tolerance_pct": 30.0,
                 },
                 # Improved (-20%)
-                "cxx::decode_mount_100_nodes": {
+                "cxx::scene_read_all_1000": {
                     "suite": "cxx",
-                    "name": "decode_mount_100_nodes",
-                    "median_ns": 20000.0,
+                    "name": "scene_read_all_1000",
+                    "median_ns": 2000.0,
                     "tolerance_pct": 15.0,
                 },
                 # Within noise (+3%) -> OK
@@ -246,10 +240,10 @@ class ComparisonAndReportingTests(unittest.TestCase):
                     "name": "abi/micro_lookup",
                     "median_ns": 12.2,
                 },
-                "cxx::decode_mount_100_nodes": {
+                "cxx::scene_read_all_1000": {
                     "suite": "cxx",
-                    "name": "decode_mount_100_nodes",
-                    "median_ns": 16000.0,
+                    "name": "scene_read_all_1000",
+                    "median_ns": 1600.0,
                 },
                 "cxx::scene_reader_open_1000": {
                     "suite": "cxx",
@@ -281,8 +275,8 @@ class ComparisonAndReportingTests(unittest.TestCase):
         self.assertAlmostEqual(by_key["rust::abi/micro_lookup"]["delta_pct"], 22.0)
         self.assertAlmostEqual(by_key["rust::abi/micro_lookup"]["tolerance_pct"], 30.0)
 
-        self.assertEqual(by_key["cxx::decode_mount_100_nodes"]["status"], "improved")
-        self.assertAlmostEqual(by_key["cxx::decode_mount_100_nodes"]["delta_pct"], -20.0)
+        self.assertEqual(by_key["cxx::scene_read_all_1000"]["status"], "improved")
+        self.assertAlmostEqual(by_key["cxx::scene_read_all_1000"]["delta_pct"], -20.0)
 
         self.assertEqual(by_key["cxx::scene_reader_open_1000"]["status"], "ok")
         self.assertEqual(by_key["cxx::removed_bench"]["status"], "missing")
@@ -357,7 +351,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
                     {
                         "suite": "nve_host_cxx_bench",
                         "benchmarks": [
-                            {"name": "decode_mount_100_nodes", "p50_ns": 19000.0, "p95_ns": 19500.0, "ops_per_sec": 52631.0}
+                            {"name": "scene_read_all_1000", "p50_ns": 1900.0, "p95_ns": 1950.0, "ops_per_sec": 526315.8}
                         ],
                     }
                 ),
@@ -382,7 +376,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
             self.assertEqual(
                 list(baseline_data["benchmarks"].keys()),
                 [
-                    "cxx::decode_mount_100_nodes",
+                    "cxx::scene_read_all_1000",
                     "rust::abi/nve2_wire_decode/1000",
                     "rust::abi/value/value_direct_ffi_read",
                 ],
@@ -420,7 +414,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
             # Failing compare when one benchmark regresses by 50%
             regressed_path = tmp_path / "regressed.json"
             regressed = json.loads(baseline_path.read_text(encoding="utf-8"))
-            regressed["benchmarks"]["cxx::decode_mount_100_nodes"]["median_ns"] = 28500.0
+            regressed["benchmarks"]["cxx::scene_read_all_1000"]["median_ns"] = 2850.0
             regressed_path.write_text(json.dumps(regressed), encoding="utf-8")
 
             rc_fail = br.main(
@@ -436,7 +430,7 @@ class ComparisonAndReportingTests(unittest.TestCase):
             )
             self.assertEqual(rc_fail, 1)
             self.assertIn("FAIL", md_path.read_text(encoding="utf-8"))
-            self.assertIn("cxx::decode_mount_100_nodes", md_path.read_text(encoding="utf-8"))
+            self.assertIn("cxx::scene_read_all_1000", md_path.read_text(encoding="utf-8"))
 
     def test_zero_baseline_and_exact_threshold_boundary(self) -> None:
         baseline = self._make_snapshot(
@@ -523,6 +517,33 @@ class ComparisonAndReportingTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(rc_cmp, 0)
+
+    def test_fails_when_suite_has_zero_baseline_overlap(self) -> None:
+        baseline = self._make_snapshot(
+            {
+                "rust::a": {"suite": "rust", "name": "a", "median_ns": 1000.0, "tolerance_pct": 15.0},
+            }
+        )
+        current = self._make_snapshot(
+            {
+                "rust::a": {"suite": "rust", "name": "a", "median_ns": 1000.0},
+                "cxx::scene_reader_open_1000": {
+                    "suite": "cxx",
+                    "name": "scene_reader_open_1000",
+                    "median_ns": 12.0,
+                },
+            }
+        )
+        report = br.compare_snapshots(baseline, current, threshold_pct=15.0)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["unbaselined_suites"], ["cxx"])
+        self.assertEqual(report["summary"]["unbaselined_suites"], 1)
+        md = br.render_markdown(report)
+        self.assertIn("## Benchmark Regression Report — FAIL", md)
+        self.assertIn("### Unbaselined Suites", md)
+        self.assertIn("`cxx`", md)
+        console = br.render_console_summary(report)
+        self.assertIn("unbaselined suites: cxx", console)
 
     def test_format_ns_units(self) -> None:
         self.assertEqual(br.format_ns(None), "—")

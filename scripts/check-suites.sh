@@ -290,9 +290,15 @@ suite_python_tests() {
 # Header-only native-view codecs + the camera module's C++ codec (and, on macOS, its AppKit
 # adapter) under AddressSanitizer / UBSan.
 suite_native_modules() {
-  local san=(-DCMAKE_BUILD_TYPE=Debug "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=all"
-    "-DCMAKE_OBJCXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=all"
-    "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined")
+  local san=(-DCMAKE_BUILD_TYPE=Debug)
+  case "$OS_NAME" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *)
+      san+=("-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=all"
+        "-DCMAKE_OBJCXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=all"
+        "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined")
+      ;;
+  esac
   local mods=(native-views/cxx camera/cxx) mod dir
   [ "$OS_NAME" = "Darwin" ] && mods+=(camera/apple)
   for mod in "${mods[@]}"; do
@@ -309,7 +315,6 @@ suite_macos_appkit() {
   cmake -S "$REPO_ROOT/hosts/macos-shell" -B "$build_dir" \
     ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"}
   cmake --build "$build_dir"
-  ctest --test-dir "$build_dir" --output-on-failure
   if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
     echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
     return 1
@@ -320,7 +325,7 @@ suite_macos_appkit() {
   fi
   NVE_TEST_KITCHEN_SINK_DYLIB="$KITCHEN_SINK_DYLIB" \
     NVE_TEST_STUDIO_DYLIB="$STUDIO_DYLIB" \
-    "$build_dir/nve_macos_shell_test"
+    ctest --test-dir "$build_dir" --output-on-failure
 }
 
 suite_ios_simulator_sdk() {

@@ -237,8 +237,10 @@ int main() {
                            "focus_point", "capture_photo", "start_recording", "stop_recording"};
     for (size_t i = 0; i < std::size(cmds); ++i) {
       nve::NativeViewCodecError err = nve::NativeViewCodecError::TrailingBytes;
-      (void)registry.dispatch_command(40u, names[i], cmds[i], &err);
+      const bool ok = registry.dispatch_command(40u, names[i], cmds[i], &err);
       NVE_CHECK(err == nve::NativeViewCodecError::Ok);
+      // Index 3 is the negative zoom command (-2.0f), which must be rejected.
+      NVE_CHECK(ok == (i != 3u));
     }
 
     NSView *vcRaw = view_for_node(registry, 40u);

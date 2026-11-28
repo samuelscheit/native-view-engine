@@ -468,6 +468,17 @@ def compare_snapshots(
             rows.append(row)
             new_benches.append(row)
 
+    current_suites = {
+        c.get("suite") or key.split("::", 1)[0]
+        for key, c in curr_benches.items()
+    }
+    compared_suites = {
+        row["suite"]
+        for row in rows
+        if row["status"] in ("ok", "improved", "regression")
+    }
+    unbaselined_suites = sorted(current_suites - compared_suites)
+
     base_machine = baseline.get("machine") or {}
     curr_machine = current.get("machine") or {}
     machine_mismatch = bool(
@@ -479,7 +490,11 @@ def compare_snapshots(
         )
     )
 
-    passed = len(regressions) == 0 and (not fail_on_missing or len(missing) == 0)
+    passed = (
+        len(regressions) == 0
+        and len(unbaselined_suites) == 0
+        and (not fail_on_missing or len(missing) == 0)
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -488,6 +503,7 @@ def compare_snapshots(
         "improvement_pct": _round_metric(float(improvement_pct)),
         "passed": passed,
         "machine_mismatch": machine_mismatch,
+        "unbaselined_suites": unbaselined_suites,
         "baseline": {
             "generated_at": baseline.get("generated_at", ""),
             "machine": base_machine,
@@ -504,6 +520,7 @@ def compare_snapshots(
             "ok": ok_count,
             "new": len(new_benches),
             "missing": len(missing),
+            "unbaselined_suites": len(unbaselined_suites),
         },
         "regressions": regressions,
         "improvements": improvements,
@@ -574,6 +591,20 @@ def render_markdown(report: Dict[str, Any]) -> str:
             ]
         )
 
+    if report.get("unbaselined_suites"):
+        suites_str = ", ".join(f"`{s}`" for s in report["unbaselined_suites"])
+        lines.extend(
+            [
+                "",
+                "### Unbaselined Suites",
+                "",
+                (
+                    f"- Suites with zero baseline matches: {suites_str}. "
+                    "Recapture `benchmarks/baseline.json` so these benchmarks are actually gated."
+                ),
+            ]
+        )
+
     if report.get("regressions"):
         lines.extend(["", "### Regressions", ""])
         for row in report["regressions"]:
@@ -618,10 +649,15 @@ def render_console_summary(report: Dict[str, Any]) -> str:
     """Compact terminal table for local developer runs."""
     s = report["summary"]
     verdict = "PASS" if report["passed"] else "FAIL"
+    unbaselined = report.get("unbaselined_suites") or []
+    unbaselined_note = (
+        f", unbaselined suites: {', '.join(unbaselined)}" if unbaselined else ""
+    )
     header = (
         f"Benchmark Comparison [{verdict}]: "
         f"{s['compared']} compared, {s['regressions']} regressions, "
         f"{s['improved']} improved, {s['ok']} ok, {s['new']} new, {s['missing']} missing"
+        f"{unbaselined_note}"
     )
     lines = [header, "-" * 108]
     lines.append(

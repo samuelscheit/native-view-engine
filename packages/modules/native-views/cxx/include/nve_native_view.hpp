@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -100,6 +101,7 @@ struct NativeValueView {
 
 namespace detail {
 
+template <bool ValidateUtf8 = true>
 inline NativeViewCodecError decode_value(std::span<const uint8_t> buf, size_t& pos, NativeValueView& out) noexcept {
   if (pos >= buf.size()) return NativeViewCodecError::Truncated;
   const uint8_t raw_tag = buf[pos++];
@@ -144,7 +146,9 @@ inline NativeViewCodecError decode_value(std::span<const uint8_t> buf, size_t& p
       if (buf.size() - pos < 4u) return NativeViewCodecError::Truncated;
       const size_t n = static_cast<size_t>(read_u32_le(buf.data() + pos)); pos += 4u;
       if (buf.size() - pos < n) return NativeViewCodecError::Truncated;
-      if (raw_tag == 7u && !nve_utf8_valid(buf.data() + pos, n)) return NativeViewCodecError::InvalidUtf8;
+      if constexpr (ValidateUtf8) {
+        if (raw_tag == 7u && !nve_utf8_valid(buf.data() + pos, n)) return NativeViewCodecError::InvalidUtf8;
+      }
       out.tag = raw_tag == 7u ? NativeValueTag::Str : NativeValueTag::Bytes;
       out.ptr = buf.data() + pos; out.len = n; pos += n;
       return NativeViewCodecError::Ok;
@@ -180,7 +184,7 @@ class NvnpDecoder {
       if (bytes.size() - pos < 2u) return NativeViewCodecError::Truncated;
       pos += 2u;
       NativeValueView val{};
-      if (auto err = detail::decode_value(bytes, pos, val); err != NativeViewCodecError::Ok) return err;
+      if (auto err = detail::decode_value<true>(bytes, pos, val); err != NativeViewCodecError::Ok) return err;
     }
     if (pos != bytes.size()) return NativeViewCodecError::TrailingBytes;
     out.buf_ = bytes; out.field_count_ = count;
@@ -196,7 +200,7 @@ class NvnpDecoder {
     for (uint16_t i = 0u; i < field_count_; ++i) {
       const uint16_t id = detail::read_u16_le(buf_.data() + pos); pos += 2u;
       NativeValueView val{};
-      (void)detail::decode_value(buf_, pos, val);
+      (void)detail::decode_value<false>(buf_, pos, val);
       fn(id, val);
     }
   }
@@ -206,7 +210,7 @@ class NvnpDecoder {
     for (uint16_t i = 0u; i < field_count_; ++i) {
       const uint16_t id = detail::read_u16_le(buf_.data() + pos); pos += 2u;
       NativeValueView val{};
-      (void)detail::decode_value(buf_, pos, val);
+      (void)detail::decode_value<false>(buf_, pos, val);
       if (id == field_id) return val;
     }
     return std::nullopt;
@@ -264,7 +268,7 @@ class NvncDecoder {
     if (static_cast<size_t>(count) > bytes.size() - pos) return NativeViewCodecError::Truncated;
     for (uint8_t i = 0u; i < count; ++i) {
       NativeValueView val{};
-      if (auto err = detail::decode_value(bytes, pos, val); err != NativeViewCodecError::Ok) return err;
+      if (auto err = detail::decode_value<true>(bytes, pos, val); err != NativeViewCodecError::Ok) return err;
     }
     if (pos != bytes.size()) return NativeViewCodecError::TrailingBytes;
     out.buf_ = bytes; out.opcode_ = op; out.arg_count_ = count;
@@ -281,7 +285,7 @@ class NvncDecoder {
     if (idx >= arg_count_) return std::nullopt;
     size_t pos = kNativeCmdHeaderSize;
     NativeValueView val{};
-    for (size_t i = 0u; i <= idx; ++i) (void)detail::decode_value(buf_, pos, val);
+    for (size_t i = 0u; i <= idx; ++i) (void)detail::decode_value<false>(buf_, pos, val);
     return val;
   }
 
@@ -414,17 +418,20 @@ class NativeViewRegistry {
   void register_adapter(std::string_view pattern, NativeViewAdapter adapter) {
     const std::string_view trimmed = detail::trim_ws(pattern);
     if (trimmed.empty()) return;
+    auto shared = std::make_shared<const NativeViewAdapter>(std::move(adapter));
     if (trimmed.back() == '*') {
-      const std::string prefix(trimmed.substr(0u, trimmed.size() - 1u));
+      const std::string_view prefix = trimmed.substr(0u, trimmed.size() - 1u);
       for (auto& e : wildcards_) {
-        if (e.first == prefix) { e.second = std::move(adapter); return; }
+        if (e.first == prefix) { e.second = std::move(shared); return; }
       }
-      wildcards_.emplace_back(prefix, std::move(adapter));
+      wildcards_.emplace_back(std::string(prefix), std::move(shared));
       std::sort(wildcards_.begin(), wildcards_.end(), [](const auto& a, const auto& b) {
         return a.first.size() != b.first.size() ? a.first.size() > b.first.size() : a.first < b.first;
       });
+    } else if (auto it = exact_.find(trimmed); it != exact_.end()) {
+      it->second = std::move(shared);
     } else {
-      exact_[std::string(trimmed)] = std::move(adapter);
+      exact_.emplace(std::string(trimmed), std::move(shared));
     }
   }
 
@@ -438,16 +445,20 @@ class NativeViewRegistry {
                                       [&](const auto& e) { return e.first == prefix; }), wildcards_.end());
       return wildcards_.size() != before;
     }
-    return exact_.erase(std::string(trimmed)) > 0u;
+    if (auto it = exact_.find(trimmed); it != exact_.end()) {
+      exact_.erase(it);
+      return true;
+    }
+    return false;
   }
 
   const NativeViewAdapter* find_adapter(std::string_view kind) const noexcept {
     const std::string_view trimmed = detail::trim_ws(kind);
     if (trimmed.empty()) return nullptr;
-    if (auto it = exact_.find(std::string(trimmed)); it != exact_.end()) return &it->second;
+    if (auto it = exact_.find(trimmed); it != exact_.end()) return it->second.get();
     for (const auto& [prefix, adapter] : wildcards_) {
       if (prefix.empty() || (trimmed.size() > prefix.size() && trimmed.substr(0u, prefix.size()) == prefix)) {
-        return &adapter;
+        return adapter.get();
       }
     }
     return nullptr;
@@ -457,8 +468,11 @@ class NativeViewRegistry {
 
   void* mount_or_update(uint32_t node_id, std::string_view kind, std::span<const uint8_t> nvnp_bytes,
                         NativeViewCodecError* out_err = nullptr) {
-    const NativeViewAdapter* adapter = find_adapter(kind);
-    if (adapter == nullptr) { if (out_err) *out_err = NativeViewCodecError::Ok; return nullptr; }
+    auto it = mounted_.find(node_id);
+    if (it != mounted_.end() && it->second.kind != kind) { unmount(node_id); it = mounted_.end(); }
+    std::shared_ptr<const NativeViewAdapter> adapter =
+        it != mounted_.end() ? it->second.adapter : find_adapter_shared(kind);
+    if (!adapter) { if (out_err) *out_err = NativeViewCodecError::Ok; return nullptr; }
     NvnpDecoder dec{};
     const bool has_props = !nvnp_bytes.empty();
     if (has_props) {
@@ -467,15 +481,16 @@ class NativeViewRegistry {
       if (err != NativeViewCodecError::Ok) return nullptr;
     } else if (out_err) { *out_err = NativeViewCodecError::Ok; }
 
-    auto it = mounted_.find(node_id);
-    if (it != mounted_.end() && it->second.kind != kind) { unmount(node_id); it = mounted_.end(); }
+    void* inst = nullptr;
     if (it == mounted_.end()) {
-      void* inst = adapter->create ? adapter->create(node_id, kind, has_props ? &dec : nullptr) : nullptr;
+      inst = adapter->create ? adapter->create(node_id, kind, has_props ? &dec : nullptr) : nullptr;
       if (inst == nullptr) return nullptr;
-      it = mounted_.emplace(node_id, MountedEntry{std::string(kind), inst, adapter}).first;
+      mounted_.emplace(node_id, MountedEntry{std::string(kind), inst, adapter});
+    } else {
+      inst = it->second.instance;
     }
-    if (has_props && adapter->update_props) adapter->update_props(it->second.instance, node_id, dec);
-    return it->second.instance;
+    if (has_props && adapter->update_props) adapter->update_props(inst, node_id, dec);
+    return inst;
   }
 
   bool dispatch_command(uint32_t node_id, std::string_view command_name, std::span<const uint8_t> nvnc_bytes,
@@ -489,22 +504,26 @@ class NativeViewRegistry {
     const auto err = NvncDecoder::parse(nvnc_bytes, dec);
     if (out_err) *out_err = err;
     if (err != NativeViewCodecError::Ok) return false;
-    return it->second.adapter->dispatch_command(it->second.instance, node_id, command_name, dec);
+    const auto adapter = it->second.adapter;
+    void* const inst = it->second.instance;
+    return adapter->dispatch_command(inst, node_id, command_name, dec);
   }
 
   bool unmount(uint32_t node_id) {
     auto it = mounted_.find(node_id);
     if (it == mounted_.end()) return false;
-    if (it->second.adapter && it->second.adapter->unmount) it->second.adapter->unmount(it->second.instance, node_id);
+    MountedEntry entry = std::move(it->second);
     mounted_.erase(it);
+    if (entry.adapter && entry.adapter->unmount) entry.adapter->unmount(entry.instance, node_id);
     return true;
   }
 
   void unmount_all() {
-    for (auto& [node_id, entry] : mounted_) {
+    auto entries = std::move(mounted_);
+    mounted_.clear();
+    for (auto& [node_id, entry] : entries) {
       if (entry.adapter && entry.adapter->unmount) entry.adapter->unmount(entry.instance, node_id);
     }
-    mounted_.clear();
   }
 
   void* instance_for(uint32_t node_id) const noexcept {
@@ -516,9 +535,32 @@ class NativeViewRegistry {
   size_t mounted_count() const noexcept { return mounted_.size(); }
 
  private:
-  struct MountedEntry { std::string kind; void* instance{nullptr}; const NativeViewAdapter* adapter{nullptr}; };
-  std::unordered_map<std::string, NativeViewAdapter> exact_;
-  std::vector<std::pair<std::string, NativeViewAdapter>> wildcards_;
+  struct TransparentStringHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const noexcept { return std::hash<std::string_view>{}(sv); }
+    size_t operator()(const std::string& s) const noexcept { return std::hash<std::string_view>{}(s); }
+  };
+  struct TransparentStringEq {
+    using is_transparent = void;
+    bool operator()(std::string_view a, std::string_view b) const noexcept { return a == b; }
+  };
+  using AdapterPtr = std::shared_ptr<const NativeViewAdapter>;
+  struct MountedEntry { std::string kind; void* instance{nullptr}; AdapterPtr adapter; };
+
+  AdapterPtr find_adapter_shared(std::string_view kind) const noexcept {
+    const std::string_view trimmed = detail::trim_ws(kind);
+    if (trimmed.empty()) return nullptr;
+    if (auto it = exact_.find(trimmed); it != exact_.end()) return it->second;
+    for (const auto& [prefix, adapter] : wildcards_) {
+      if (prefix.empty() || (trimmed.size() > prefix.size() && trimmed.substr(0u, prefix.size()) == prefix)) {
+        return adapter;
+      }
+    }
+    return nullptr;
+  }
+
+  std::unordered_map<std::string, AdapterPtr, TransparentStringHash, TransparentStringEq> exact_;
+  std::vector<std::pair<std::string, AdapterPtr>> wildcards_;
   std::unordered_map<uint32_t, MountedEntry> mounted_;
 };
 
