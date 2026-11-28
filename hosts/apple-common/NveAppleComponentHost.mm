@@ -6,6 +6,8 @@
 
 using nve::host::RuntimeSession;
 
+NSErrorUserInfoKey const NveAppleRuntimeStatusErrorKey = @"NveRuntimeStatus";
+
 static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry() {
   static NSMapTable *table = [NSMapTable weakToWeakObjectsMapTable];
   return table;
@@ -85,8 +87,25 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 
 - (NSError *)_runtimeError:(NSString *)what status:(NveRuntimeStatus)status {
   const std::string detail = _session.last_error();
-  return [self _errorWithCode:static_cast<NSInteger>(nve::host::module_error(status))
-                  description:[NSString stringWithFormat:@"%@: %s", what, detail.empty() ? "runtime error" : detail.c_str()]];
+  return [NSError errorWithDomain:_errorDomain
+                             code:static_cast<NSInteger>(nve::host::module_error(status))
+                         userInfo:@{
+                           NSLocalizedDescriptionKey :
+                               [NSString stringWithFormat:@"%@: %s", what, detail.empty() ? "runtime error" : detail.c_str()],
+                           NveAppleRuntimeStatusErrorKey : @(static_cast<NSInteger>(status)),
+                         }];
+}
+
+- (NSError *)_frame0Error:(NSString *)what status:(NveRuntimeStatus)status {
+  const std::string detail = _session.last_error();
+  const char *fallback = status == NVE_RUNTIME_NOT_FOUND ? "Frame-0 not found or mismatched" : "runtime error";
+  return [NSError errorWithDomain:_errorDomain
+                             code:static_cast<NSInteger>(status)
+                         userInfo:@{
+                           NSLocalizedDescriptionKey :
+                               [NSString stringWithFormat:@"%@: %s", what, detail.empty() ? fallback : detail.c_str()],
+                           NveAppleRuntimeStatusErrorKey : @(static_cast<NSInteger>(status)),
+                         }];
 }
 
 #pragma mark - Properties
@@ -226,6 +245,33 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
     return;
   }
   [self _dispatchTextEvent:NVE_TEXT_INPUT_EVENT_SUBMIT nodeId:nodeId text:text];
+}
+
+- (void)dispatchCompositionStartOnNodeId:(uint32_t)nodeId text:(NSString *)text {
+  if (_reconciling) {
+    NSString *copy = [text copy];
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchCompositionStartOnNodeId:nodeId text:copy]; }];
+    return;
+  }
+  [self _dispatchTextEvent:NVE_TEXT_INPUT_EVENT_COMPOSITION_START nodeId:nodeId text:text];
+}
+
+- (void)dispatchCompositionUpdateOnNodeId:(uint32_t)nodeId text:(NSString *)text {
+  if (_reconciling) {
+    NSString *copy = [text copy];
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchCompositionUpdateOnNodeId:nodeId text:copy]; }];
+    return;
+  }
+  [self _dispatchTextEvent:NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE nodeId:nodeId text:text];
+}
+
+- (void)dispatchCompositionEndOnNodeId:(uint32_t)nodeId text:(NSString *)text {
+  if (_reconciling) {
+    NSString *copy = [text copy];
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchCompositionEndOnNodeId:nodeId text:copy]; }];
+    return;
+  }
+  [self _dispatchTextEvent:NVE_TEXT_INPUT_EVENT_COMPOSITION_END nodeId:nodeId text:text];
 }
 
 - (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused {

@@ -67,6 +67,11 @@ add_dependencies(nve_macos_shell_test
   nve_test_dylib_no_entry nve_test_dylib_no_surface nve_test_dylib_stateful nve_test_dylib_create_fail)
 add_test(NAME macos_shell_test COMMAND nve_macos_shell_test)
 
+add_executable(nve_macos_parity_test tests/macos_parity_test.mm)
+target_compile_options(nve_macos_parity_test PRIVATE -fobjc-arc -Wall -Wextra -Werror)
+target_link_libraries(nve_macos_parity_test PRIVATE nve_macos_shell_lib)
+add_test(NAME macos_parity_test COMMAND nve_macos_parity_test)
+
 add_executable(nve_macos_window_manager_test tests/window_manager_test.mm)
 target_compile_options(nve_macos_window_manager_test PRIVATE -fobjc-arc -Wall -Wextra -Werror)
 target_link_libraries(nve_macos_window_manager_test PRIVATE nve_macos_shell_lib)

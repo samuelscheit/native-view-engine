@@ -133,11 +133,14 @@ const CANVAS_TABLES: &[&nve_store::TableDesc] = &[&<nve_canvas::Canvas as nve_st
 /// Capability-module table mirrors for C/C++ hosts. They are generated here (tools may link
 /// modules) because core `nve-codegen` stays module-free.
 fn module_table_headers() -> Result<Vec<nve_codegen::GeneratedFile>, nve_codegen::CodegenError> {
-    Ok(vec![nve_codegen::generate_module_table_header(
-        "canvas",
-        CANVAS_TABLES,
-        "packages/modules/canvas/cxx/include/nve/canvas/nve_canvas_tables.generated.h".to_owned(),
-    )?])
+    Ok(vec![
+        nve_codegen::generate_module_table_header(
+            "canvas",
+            CANVAS_TABLES,
+            "packages/modules/canvas/cxx/include/nve/canvas/nve_canvas_tables.generated.h".to_owned(),
+        )?,
+        nve_codegen::generate_swift_module_tables(CANVAS_TABLES)?,
+    ])
 }
 
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
@@ -310,7 +313,8 @@ mod tests {
 
         assert!(run_codegen_abi(&tmp, true).is_err());
         let written = run_codegen_abi(&tmp, false).expect("write every host ABI file");
-        assert_eq!(written.len(), 29, "core + runtime + JNI frame ABI, canvas module mirrors, Java host files, DrawList flat-op codecs, XXH64 vectors");
+        assert_eq!(written.len(), 30, "core + runtime + JNI frame ABI, canvas module mirrors, Swift/Java host files, DrawList flat-op codecs, XXH64 vectors");
+        assert!(tmp.join("packages/core/host-swift/Sources/NveHost/NveModuleTables.generated.swift").exists());
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("packages/core/host-ts/src/generated/nve_abi.generated.ts");

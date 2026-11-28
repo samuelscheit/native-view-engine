@@ -67,6 +67,7 @@ struct NodeSemantics {
   std::string value;
   bool has_explicit_value{false};
   bool disabled{false};
+  bool read_only{false};
   bool hidden{false};
   std::string placeholder;
   bool secure_text_entry{false};
@@ -168,13 +169,25 @@ NSAttributedString *_Nonnull attributed_text(std::string_view text, const TextSp
 void native_text_measure(void *_Nullable ctx, NveStrSlice text, const NveRuntimeTextStyle *_Nonnull style,
                          float max_width, float *_Nonnull out_width, float *_Nonnull out_height);
 
+/// Parsed components of an `nve://pair?...` deep link (preserving canonical TLS `cert_hash` and
+/// `quic`/`wss` query parameters intact in `endpoint`).
+struct PairUrlConfig {
+  std::string endpoint;
+  std::string token;
+  std::string transport;
+};
+
+/// Parses an `nve://pair?...` deep link. Preserves canonical `format_wire_uri()` URLs intact so
+/// `quic`, `wss`, `path`, and `cert_hash` reach `nve-wire`'s `parse_wire_uri`.
+std::optional<PairUrlConfig> parse_pair_url(std::string_view url);
+
 /// Canonicalizes `--pair-transport` values (`auto`, `quic`/`udp`, `wt`/`webtransport`/`h3`,
 /// `wss`/`tls`, `ws`/`tcp`/`websocket`) matching `nve-wire-core`'s `NveWireTransportKind::parse`.
 std::optional<std::string_view> canonical_pair_transport(std::string_view raw) noexcept;
 
 /// Applies an optional `--pair-transport` override onto `uri` (`nve://pair?...` query param or
 /// scheme rewrite for `host:port` / `ws(s)://` / `quic://` / `wt://`). Returns `std::nullopt`
-/// only when `transport` is non-empty and unrecognized.
+/// when `transport` is invalid or `uri` carries an unrecognized `scheme://`.
 std::optional<std::string> apply_pair_transport(std::string_view uri, std::string_view transport);
 
 /// `CALayer` background, border, corner radius, opacity, z-order, and clipping from `style`.
@@ -183,10 +196,14 @@ void apply_common_layer_style(CALayer *_Nullable layer, const NodeStyle &style);
 /// Native AppKit (`NSAccessibility`) / UIKit (`UIAccessibility`) semantics for a mounted view.
 void apply_node_accessibility(NvePlatformView *_Nullable view, NodeKind kind, const NodeSemantics &sem);
 
-/// `YES` while a native text input has active IME marked-text composition.
+/// `YES` while a native text input (`NSTextField`/`UITextField`/`UITextView`) has active IME composition.
 BOOL is_text_input_composing_ime(NvePlatformView *_Nullable view);
 
-/// Placeholder, secure entry, multiline, enabled state, and IME-safe text synchronization.
-void apply_text_input_props(NvePlatformView *_Nullable view, std::string_view text, const NodeSemantics &sem);
+/// Writes `text` into a native text input while preserving and clamping its caret/selection.
+void write_text_input_preserving_selection(NvePlatformView *_Nullable view, NSString *_Nonnull text);
+
+/// Placeholder, secure entry, multiline, read-only, enabled state, and optional IME-safe text write.
+void apply_text_input_props(NvePlatformView *_Nullable view, std::string_view text, const NodeSemantics &sem,
+                            bool apply_text = true);
 
 }  // namespace nve::apple

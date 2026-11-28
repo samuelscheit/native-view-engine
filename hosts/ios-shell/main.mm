@@ -37,37 +37,12 @@ struct NveIosPairConfig {
 
 NveIosPairConfig NveParsePairURL(NSURL * _Nullable url) {
   NveIosPairConfig cfg{};
-  if (url == nil) {
-    return cfg;
-  }
-  NSURLComponents *comps = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
-  if (!comps || ![comps.scheme.lowercaseString isEqualToString:@"nve"] ||
-      ![comps.host.lowercaseString isEqualToString:@"pair"]) {
-    return cfg;
-  }
-  NSString *hostParam = nil;
-  NSString *portParam = nil;
-  for (NSURLQueryItem *item in comps.queryItems) {
-    if (item.value.length == 0) {
-      continue;
-    }
-    NSString *key = item.name.lowercaseString;
-    if ([key isEqualToString:@"endpoint"] || [key isEqualToString:@"connect"] ||
-        [key isEqualToString:@"url"]) {
-      cfg.endpoint = item.value;
-    } else if ([key isEqualToString:@"token"]) {
-      cfg.token = item.value;
-    } else if ([key isEqualToString:@"transport"]) {
-      cfg.transport = item.value;
-    } else if ([key isEqualToString:@"host"]) {
-      hostParam = item.value;
-    } else if ([key isEqualToString:@"port"]) {
-      portParam = item.value;
-    }
-  }
-  if (cfg.endpoint.length == 0 && hostParam.length > 0 && portParam.length > 0) {
-    cfg.endpoint = [NSString stringWithFormat:@"%@:%@", hostParam, portParam];
-  }
+  if (url == nil) return cfg;
+  const auto parsed = nve::apple::parse_pair_url(url.absoluteString.UTF8String ?: "");
+  if (!parsed) return cfg;
+  cfg.endpoint = nve::apple::nsstring_or_nil_from_sv(parsed->endpoint);
+  cfg.token = nve::apple::nsstring_or_nil_from_sv(parsed->token);
+  cfg.transport = nve::apple::nsstring_or_nil_from_sv(parsed->transport);
   return cfg;
 }
 
@@ -179,9 +154,8 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   }
   self.pairEndpoint = parsed.endpoint;
   self.pairToken = parsed.token;
-  if (parsed.transport.length > 0) {
-    self.pairTransport = parsed.transport;
-  }
+  // Always replace (including nil) so a previous deep link's transport is never sticky.
+  self.pairTransport = parsed.transport;
   if (self.didAttemptLoad && self.componentView != nil) {
     [self _connectPairedHost];
   }

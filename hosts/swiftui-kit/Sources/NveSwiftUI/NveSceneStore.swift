@@ -43,6 +43,8 @@ public struct NveTextInputDescriptor: Identifiable, Equatable, Sendable {
 public final class NveSceneStore: ObservableObject {
     /// Font size from which an un-annotated leaf text is announced as a heading.
     public static let inferredHeadingFontSize: CGFloat = 20
+    /// Bounded cache ceiling for decoded `imageSources` and `drawLists` (matching `NveAppleSceneReconciler`).
+    internal static let maxCachedResources = 256
 
     @Published public private(set) var frameId: UInt64 = 0
     public private(set) var scrollOffsets: [NodeId: CGPoint] = [:]
@@ -55,6 +57,7 @@ public final class NveSceneStore: ObservableObject {
     private var imageSources: [UInt32: CachedImageSource] = [:]
     /// Cached flat `nve.res.draw_list` bytes per resource id, invalidated alongside `imageSources`.
     private var drawLists: [UInt32: [UInt8]] = [:]
+    internal var cachedDrawListCount: Int { drawLists.count }
     private var resourcesEpoch: UInt32 = 0
     /// Frame the resource caches are valid for (`nil`: none synced yet).
     private var resourcesFrame: UInt64?
@@ -160,6 +163,7 @@ public final class NveSceneStore: ObservableObject {
         else { return nil }
         let key: String? = if case let .encoded(data) = src { "nve.res.image_src#\(Xxh64.hash(data))" } else { nil }
         let cached = CachedImageSource(source: src, encodedKey: key)
+        if imageSources.count >= Self.maxCachedResources { imageSources.removeAll(keepingCapacity: true) }
         imageSources[id] = cached
         return cached
     }
@@ -179,6 +183,7 @@ public final class NveSceneStore: ObservableObject {
         guard let res = fetchResource(id, in: scene), res.kind == NveDrawList.kind, !res.bytes.isEmpty else {
             return nil
         }
+        if drawLists.count >= Self.maxCachedResources { drawLists.removeAll(keepingCapacity: true) }
         drawLists[id] = res.bytes
         return res.bytes
     }
@@ -191,6 +196,24 @@ public final class NveSceneStore: ObservableObject {
     }
 
     // MARK: Mounted Editable Text Inputs
+
+    /// Collects mounted text input overlays and VoiceOver accessibility elements in a single
+    /// `SceneReader.open()` pass so SwiftUI body updates avoid redundant scene borrows.
+    public func sceneOverlays(
+        includeTextInputs: Bool
+    ) -> (inputs: [NveTextInputDescriptor], accessibility: [NveSceneAccessibilityElement]) {
+        withTables { tables in
+            var inputs: [NveTextInputDescriptor] = []
+            var a11y: [NveSceneAccessibilityElement] = []
+            if let root = tables.scene.index(of: .root) {
+                if includeTextInputs {
+                    collectTextInputs(tables, root, inheritedVisible: true, opacity: 1, translate: .zero, clip: nil, into: &inputs)
+                }
+                collect(tables, root, translate: .zero, clip: nil, into: &a11y)
+            }
+            return (inputs, a11y)
+        } ?? ([], [])
+    }
 
     /// Returns every live visible `nve.text_input` node in paint order with surface-space bounds.
     public func textInputs() -> [NveTextInputDescriptor] {
@@ -232,19 +255,23 @@ public final class NveSceneStore: ObservableObject {
         let hasArea = !clipped.isNull && clipped.width > 0 && clipped.height > 0
 
         if visible && hasArea, let input = t.textInput(i) {
-            let a11y = t.accessibility(i)
-            let label = (a11y?.label?.isEmpty == false ? a11y?.label : nil) ?? input.placeholder
-            let hint = a11y?.hint?.isEmpty == true ? nil : a11y?.hint
-            out.append(NveTextInputDescriptor(
-                id: id,
-                frame: rect,
-                visibleClip: clip,
-                props: input,
-                style: t.textStyle(i),
-                opacity: opacity,
-                accessibilityLabel: label,
-                accessibilityHint: hint
-            ))
+            let contentFrame = t.contentRect(i, borderBox: rect)
+            let contentClipped = clip.map { contentFrame.intersection($0) } ?? contentFrame
+            if !contentClipped.isNull, contentClipped.width > 0, contentClipped.height > 0 {
+                let a11y = t.accessibility(i)
+                let label = (a11y?.label?.isEmpty == false ? a11y?.label : nil) ?? input.placeholder
+                let hint = a11y?.hint?.isEmpty == true ? nil : a11y?.hint
+                out.append(NveTextInputDescriptor(
+                    id: id,
+                    frame: contentFrame,
+                    visibleClip: clip,
+                    props: input,
+                    style: t.textStyle(i),
+                    opacity: opacity,
+                    accessibilityLabel: label,
+                    accessibilityHint: hint
+                ))
+            }
         }
 
         let clipsChildren = t.clipsChildren(i)

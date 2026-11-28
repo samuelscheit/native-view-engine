@@ -318,23 +318,44 @@ public final class NveTypographyEngine: @unchecked Sendable {
     }
 
     private func resolveNamedFont(_ name: String, size: CGFloat, weight: UInt16, italic: Bool) -> CTFont? {
-        let baseDesc = CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute: name] as CFDictionary)
+        var traits: [CFString: Any] = [kCTFontWeightTrait: Self.weightTrait(weight)]
+        var symbolic: CTFontSymbolicTraits = []
+        if weight >= 600 { symbolic.insert(.traitBold) }
+        if italic { symbolic.insert(.traitItalic) }
+        if !symbolic.isEmpty { traits[kCTFontSymbolicTrait] = symbolic.rawValue }
+        let query = CTFontDescriptorCreateWithAttributes([
+            kCTFontFamilyNameAttribute: name,
+            kCTFontTraitsAttribute: traits,
+        ] as CFDictionary)
         let mandatory = NSSet(object: kCTFontFamilyNameAttribute) as CFSet
-        guard let matched = CTFontDescriptorCreateMatchingFontDescriptor(baseDesc, mandatory) else {
+        guard let matched = CTFontDescriptorCreateMatchingFontDescriptor(query, mandatory) else {
             return nil
         }
-        let base = CTFontCreateWithFontDescriptor(matched, size, nil)
-        return applyTraits(to: base, size: size, weight: weight, italic: italic)
+        var font = CTFontCreateWithFontDescriptor(matched, size, nil)
+        if weight >= 600, !CTFontGetSymbolicTraits(font).contains(.traitBold),
+           let bold = CTFontCreateCopyWithSymbolicTraits(font, size, nil, .traitBold, .traitBold)
+        {
+            font = bold
+        }
+        return applyItalicIfNeeded(font, size: size, italic: italic)
     }
 
     private func applyTraits(to base: CTFont, size: CGFloat, weight: UInt16, italic: Bool) -> CTFont {
         var traits: [CFString: Any] = [kCTFontWeightTrait: Self.weightTrait(weight)]
-        if italic { traits[kCTFontSymbolicTrait] = CTFontSymbolicTraits.traitItalic.rawValue }
+        var symbolic: CTFontSymbolicTraits = []
+        if weight >= 600 { symbolic.insert(.traitBold) }
+        if italic { symbolic.insert(.traitItalic) }
+        if !symbolic.isEmpty { traits[kCTFontSymbolicTrait] = symbolic.rawValue }
         let desc = CTFontDescriptorCreateCopyWithAttributes(
             CTFontCopyFontDescriptor(base),
             [kCTFontTraitsAttribute: traits] as CFDictionary
         )
-        let font = CTFontCreateWithFontDescriptor(desc, size, nil)
+        var font = CTFontCreateWithFontDescriptor(desc, size, nil)
+        if weight >= 600, !CTFontGetSymbolicTraits(font).contains(.traitBold),
+           let bold = CTFontCreateCopyWithSymbolicTraits(font, size, nil, .traitBold, .traitBold)
+        {
+            font = bold
+        }
         return applyItalicIfNeeded(font, size: size, italic: italic)
     }
 

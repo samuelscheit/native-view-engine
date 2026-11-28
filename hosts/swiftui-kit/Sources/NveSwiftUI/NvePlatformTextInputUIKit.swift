@@ -42,6 +42,33 @@ private func uiKeyboardType(for kind: NveInputKind) -> UIKeyboardType {
     }
 }
 
+/// UIKit host container enforcing true visual AND hit-test clipping (`clipsToBounds`) to
+/// scroll/overflow viewports while positioning the full-size input control at its scrolled offset.
+internal final class NveUIKitClippedInputHostView: UIView {
+    let contentView: UIView
+    var contentRect: CGRect = .zero {
+        didSet {
+            if contentView.frame != contentRect { contentView.frame = contentRect }
+        }
+    }
+
+    init(contentView: UIView) {
+        self.contentView = contentView
+        super.init(frame: .zero)
+        clipsToBounds = true
+        backgroundColor = .clear
+        addSubview(contentView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if contentView.frame != contentRect { contentView.frame = contentRect }
+    }
+}
+
 internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
     let descriptor: NveTextInputDescriptor
     let controller: NveSurfaceController
@@ -50,7 +77,8 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
         Coordinator(descriptor: descriptor, controller: controller)
     }
 
-    func makeUIView(context: Context) -> UIView {
+    func makeUIView(context: Context) -> NveUIKitClippedInputHostView {
+        let content: UIView
         if descriptor.props.multiline {
             let tv = UITextView(frame: .zero)
             tv.backgroundColor = .clear
@@ -63,12 +91,12 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
             NSLayoutConstraint.activate([
                 placeholder.topAnchor.constraint(equalTo: tv.topAnchor, constant: 8),
                 placeholder.leadingAnchor.constraint(equalTo: tv.leadingAnchor, constant: 5),
-                placeholder.trailingAnchor.constraint(lessThanOrEqualTo: tv.trailingAnchor, constant: -5),
+                placeholder.trailingAnchor.constraint(lessThanOrEqualTo: tv.frameLayoutGuide.trailingAnchor, constant: -5),
             ])
             context.coordinator.textView = tv
             context.coordinator.placeholderLabel = placeholder
             applyMultilineProps(to: tv, coordinator: context.coordinator)
-            return tv
+            content = tv
         } else {
             let field = UITextField(frame: .zero)
             field.backgroundColor = .clear
@@ -81,17 +109,31 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
             )
             context.coordinator.textField = field
             applySingleLineProps(to: field, coordinator: context.coordinator)
-            return field
+            content = field
         }
+        let host = NveUIKitClippedInputHostView(contentView: content)
+        updateHostGeometry(host)
+        return host
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    func updateUIView(_ uiView: NveUIKitClippedInputHostView, context: Context) {
         context.coordinator.descriptor = descriptor
+        updateHostGeometry(uiView)
         if let tv = context.coordinator.textView {
             applyMultilineProps(to: tv, coordinator: context.coordinator)
         } else if let field = context.coordinator.textField {
             applySingleLineProps(to: field, coordinator: context.coordinator)
         }
+    }
+
+    static func dismantleUIView(_ uiView: NveUIKitClippedInputHostView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+
+    private func updateHostGeometry(_ host: NveUIKitClippedInputHostView) {
+        let outer = descriptor.visibleClip.map { descriptor.frame.intersection($0) } ?? descriptor.frame
+        let offset = CGPoint(x: descriptor.frame.minX - outer.minX, y: descriptor.frame.minY - outer.minY)
+        host.contentRect = CGRect(origin: offset, size: descriptor.frame.size)
     }
 
     private func applySingleLineProps(to field: UITextField, coordinator: Coordinator) {
@@ -108,17 +150,10 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
         field.accessibilityHint = descriptor.accessibilityHint
 
         let hasMarked = field.markedTextRange != nil
+        coordinator.reconcileEndedComposition(currentText: field.text ?? "", hasMarkedText: hasMarked)
         if coordinator.state.shouldApplyAppValue(props.value, currentShownText: field.text ?? "", hasMarkedText: hasMarked) {
             coordinator.state.withHostWrite {
-                let prev = field.selectedTextRange
-                field.text = props.value
-                if let prev {
-                    let utf16Len = (props.value as NSString).length
-                    let offset = min(field.offset(from: field.beginningOfDocument, to: prev.start), utf16Len)
-                    if let pos = field.position(from: field.beginningOfDocument, offset: offset) {
-                        field.selectedTextRange = field.textRange(from: pos, to: pos)
-                    }
-                }
+                Coordinator.writePreservingSelection(props.value, to: field)
             }
         }
     }
@@ -143,13 +178,10 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
         }
 
         let hasMarked = tv.markedTextRange != nil
+        coordinator.reconcileEndedComposition(currentText: tv.text ?? "", hasMarkedText: hasMarked)
         if coordinator.state.shouldApplyAppValue(props.value, currentShownText: tv.text ?? "", hasMarkedText: hasMarked) {
             coordinator.state.withHostWrite {
-                let prev = tv.selectedRange
-                tv.text = props.value
-                let utf16Len = (props.value as NSString).length
-                let clampedLoc = min(prev.location, utf16Len)
-                tv.selectedRange = NSRange(location: clampedLoc, length: min(prev.length, utf16Len - clampedLoc))
+                Coordinator.writePreservingSelection(props.value, to: tv)
             }
             coordinator.placeholderLabel?.isHidden = !props.value.isEmpty || props.placeholder.isEmpty
         }
@@ -168,12 +200,54 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
             self.controller = controller
         }
 
+        func teardown() {
+            textField?.removeTarget(self, action: #selector(onTextFieldEditingChanged(_:)), for: .editingChanged)
+            textField?.delegate = nil
+            textView?.delegate = nil
+            if state.isFocused {
+                emit(state.handleFocusChange(false))
+            } else if state.isComposing {
+                emit(state.reconcileEndedCompositionIfNeeded(currentText: state.dispatched, hasMarkedText: false))
+            }
+        }
+
+        func reconcileEndedComposition(currentText: String, hasMarkedText: Bool) {
+            emit(state.reconcileEndedCompositionIfNeeded(currentText: currentText, hasMarkedText: hasMarkedText))
+        }
+
+        static func writePreservingSelection(_ text: String, to field: UITextField) {
+            let prev = field.selectedTextRange
+            field.text = text
+            if let prev {
+                let utf16Len = (text as NSString).length
+                let startOff = min(field.offset(from: field.beginningOfDocument, to: prev.start), utf16Len)
+                let endOff = min(field.offset(from: field.beginningOfDocument, to: prev.end), utf16Len)
+                if let s = field.position(from: field.beginningOfDocument, offset: startOff),
+                   let e = field.position(from: field.beginningOfDocument, offset: max(startOff, endOff))
+                {
+                    field.selectedTextRange = field.textRange(from: s, to: e)
+                }
+            }
+        }
+
+        static func writePreservingSelection(_ text: String, to tv: UITextView) {
+            let prev = tv.selectedRange
+            tv.text = text
+            let utf16Len = (text as NSString).length
+            let clampedLoc = min(prev.location, utf16Len)
+            tv.selectedRange = NSRange(location: clampedLoc, length: min(prev.length, utf16Len - clampedLoc))
+        }
+
         private func emit(_ actions: [NveTextInputAction]) {
             guard !actions.isEmpty else { return }
             let sid = controller.surfaceId
             let nid = descriptor.id
             let ts = NveEvent.nowUs()
             controller.dispatchEvents(actions.map { $0.toEvent(surfaceId: sid, nodeId: nid, timestampUs: ts) })
+        }
+
+        func textFieldShouldBeginEditing(_ textField: UITextField) -> Bool {
+            !descriptor.props.readOnly && !descriptor.props.disabled
         }
 
         func textFieldDidBeginEditing(_ textField: UITextField) { emit(state.handleFocusChange(true)) }
@@ -187,26 +261,25 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
             let markedRange = field.markedTextRange
             let hasMarked = markedRange != nil
             let markedText = markedRange.flatMap { field.text(in: $0) }
-            var current = field.text ?? ""
-            if !hasMarked, descriptor.props.maxLength > 0, current.count > descriptor.props.maxLength {
-                current = String(current.prefix(descriptor.props.maxLength))
-                state.withHostWrite { field.text = current }
-            }
-            let actions = state.handleUserEdit(newText: current, hasMarkedText: hasMarked, markedText: markedText)
-            emit(actions)
-            if controller.dispatchesSynchronously, !hasMarked,
-               let answer = controller.store.textInputValue(for: descriptor.id),
-               let writeBack = state.reconcileSynchronousAnswer(appValue: answer, hasMarkedText: false)
-            {
-                state.withHostWrite { field.text = writeBack }
-            }
+            state.processNativeEdit(
+                currentText: field.text ?? "",
+                hasMarkedText: hasMarked,
+                markedText: markedText,
+                maxLength: descriptor.props.maxLength,
+                isSynchronous: controller.dispatchesSynchronously,
+                dispatch: emit,
+                readAppValue: { controller.store.textInputValue(for: descriptor.id) },
+                writeText: { Self.writePreservingSelection($0, to: field) }
+            )
         }
 
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-            guard let action = state.handleSubmit(
-                currentText: textField.text ?? "", hasMarkedText: textField.markedTextRange != nil)
-            else { return false }
-            emit([action])
+            guard !descriptor.props.readOnly, !descriptor.props.disabled else { return false }
+            let actions = state.handleSubmitActions(
+                currentText: textField.text ?? "", hasMarkedText: textField.markedTextRange != nil
+            )
+            guard !actions.isEmpty else { return false }
+            emit(actions)
             return true
         }
 
@@ -217,25 +290,29 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
             !descriptor.props.readOnly && !descriptor.props.disabled
         }
 
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard state.isComposing, textView.markedTextRange == nil else { return }
+            textViewDidChange(textView)
+        }
+
         func textViewDidChange(_ textView: UITextView) {
             let markedRange = textView.markedTextRange
             let hasMarked = markedRange != nil
             let markedText = markedRange.flatMap { textView.text(in: $0) }
-            var current = textView.text ?? ""
-            if !hasMarked, descriptor.props.maxLength > 0, current.count > descriptor.props.maxLength {
-                current = String(current.prefix(descriptor.props.maxLength))
-                state.withHostWrite { textView.text = current }
-            }
-            placeholderLabel?.isHidden = !current.isEmpty || descriptor.props.placeholder.isEmpty
-            let actions = state.handleUserEdit(newText: current, hasMarkedText: hasMarked, markedText: markedText)
-            emit(actions)
-            if controller.dispatchesSynchronously, !hasMarked,
-               let answer = controller.store.textInputValue(for: descriptor.id),
-               let writeBack = state.reconcileSynchronousAnswer(appValue: answer, hasMarkedText: false)
-            {
-                state.withHostWrite { textView.text = writeBack }
-                placeholderLabel?.isHidden = !writeBack.isEmpty || descriptor.props.placeholder.isEmpty
-            }
+            placeholderLabel?.isHidden = !(textView.text ?? "").isEmpty || descriptor.props.placeholder.isEmpty
+            state.processNativeEdit(
+                currentText: textView.text ?? "",
+                hasMarkedText: hasMarked,
+                markedText: markedText,
+                maxLength: descriptor.props.maxLength,
+                isSynchronous: controller.dispatchesSynchronously,
+                dispatch: emit,
+                readAppValue: { controller.store.textInputValue(for: descriptor.id) },
+                writeText: { [weak self] next in
+                    Self.writePreservingSelection(next, to: textView)
+                    self?.placeholderLabel?.isHidden = !next.isEmpty || (self?.descriptor.props.placeholder.isEmpty ?? true)
+                }
+            )
         }
     }
 }

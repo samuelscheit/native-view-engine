@@ -64,8 +64,9 @@ public extension NveTypographyEngine {
                 let lastRange = CTLineGetStringRange(lines[maxLines - 1])
                 var visibleLen = lastRange.location + lastRange.length
                 let ns = CFAttributedStringGetString(attributed) as NSString
-                if visibleLen > 0, ns.character(at: visibleLen - 1) == 0x000A {
-                    visibleLen -= 1
+                while visibleLen > 0 {
+                    let ch = ns.character(at: visibleLen - 1)
+                    if ch == 0x000A || ch == 0x000D { visibleLen -= 1 } else { break }
                 }
                 range = CFRange(location: 0, length: max(0, visibleLen))
             }
@@ -124,12 +125,13 @@ public extension NveTypographyEngine {
         for idx in 0..<visibleCount {
             var line = lines[idx]
             if idx == visibleCount - 1, spec.maxLines > 0, lines.count > spec.maxLines {
-                let tokenAttrs: [CFString: Any] = [kCTFontAttributeName: built.font, kCTForegroundColorAttributeName: cgCol]
-                let tokenStr = CFAttributedStringCreate(nil, "\u{2026}" as CFString, tokenAttrs as CFDictionary)!
-                let tokenLine = CTLineCreateWithAttributedString(tokenStr)
-                if let truncated = CTLineCreateTruncatedLine(line, Double(rect.width), .end, tokenLine) {
-                    line = truncated
-                }
+                line = truncatedLastLine(
+                    attributed: built.attributed,
+                    line: line,
+                    font: built.font,
+                    color: cgCol,
+                    maxWidth: rect.width
+                )
             }
             var ascent: CGFloat = 0
             var descent: CGFloat = 0
@@ -151,7 +153,8 @@ public extension NveTypographyEngine {
                     cg.strokePath()
                 }
                 if strokeOverline {
-                    let y = originY + ascent
+                    // Keep the entire stroke inside `rect` (avoid half-stroke clip at `rect.minY`).
+                    let y = min(rect.height - thickness * 0.5, originY + ascent - thickness * 0.5)
                     cg.move(to: CGPoint(x: originX, y: y))
                     cg.addLine(to: CGPoint(x: originX + lineWidth, y: y))
                     cg.strokePath()
@@ -159,6 +162,45 @@ public extension NveTypographyEngine {
                 cg.restoreGState()
             }
         }
+    }
+
+    /// Builds an unconstrained line from the remaining substring starting at `line` and truncates it
+    /// to `maxWidth` with an ellipsis (`…`), so wrapped multi-line overflow genuinely truncates
+    /// (instead of being a no-op on an already-wrapped `CTLine` whose width is `<= maxWidth`).
+    private func truncatedLastLine(
+        attributed: CFAttributedString,
+        line: CTLine,
+        font: CTFont,
+        color: CGColor,
+        maxWidth: CGFloat
+    ) -> CTLine {
+        let totalLen = CFAttributedStringGetLength(attributed)
+        let lineRange = CTLineGetStringRange(line)
+        let start = lineRange.location
+        guard start >= 0, start < totalLen else { return line }
+        let fullStr = CFAttributedStringGetString(attributed) as NSString
+        let tail = fullStr.substring(with: NSRange(location: start, length: totalLen - start))
+        let attrs = CFAttributedStringGetAttributes(attributed, start, nil)
+        let tokenAttrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: color]
+        let tokenStr = CFAttributedStringCreate(nil, "\u{2026}" as CFString, tokenAttrs as CFDictionary)!
+        let tokenLine = CTLineCreateWithAttributedString(tokenStr)
+
+        // If a hard newline caused the overflow on this line, append `…` at the break so even a
+        // short first line visibly truncates before clipping to `maxWidth`.
+        if let brk = tail.firstIndex(where: { $0 == "\n" || $0 == "\r" }) {
+            let prefix = String(tail[..<brk]) + "\u{2026}"
+            let attrPrefix = CFAttributedStringCreate(nil, prefix as CFString, attrs)!
+            let candidate = CTLineCreateWithAttributedString(attrPrefix)
+            return CTLineCreateTruncatedLine(candidate, Double(maxWidth), .end, tokenLine) ?? candidate
+        }
+        let attrTail = CFAttributedStringCreate(nil, tail as CFString, attrs)!
+        let unconstrained = CTLineCreateWithAttributedString(attrTail)
+        if let truncated = CTLineCreateTruncatedLine(unconstrained, Double(maxWidth), .end, tokenLine) {
+            return truncated
+        }
+        let forced = CFAttributedStringCreate(nil, (tail + "\u{2026}") as CFString, attrs)!
+        let forcedLine = CTLineCreateWithAttributedString(forced)
+        return CTLineCreateTruncatedLine(forcedLine, Double(maxWidth), .end, tokenLine) ?? forcedLine
     }
 }
 

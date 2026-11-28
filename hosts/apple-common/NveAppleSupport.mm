@@ -8,12 +8,36 @@
 #include <nve/host/scene_nodes.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <mutex>
+#include <unordered_map>
 
 namespace nve::apple {
 
 namespace {
+
+struct FontCacheKey {
+  std::string family;
+  uint32_t size_bits = 0u;
+  uint16_t weight = 400u;
+  bool italic = false;
+
+  bool operator==(const FontCacheKey &o) const noexcept = default;
+};
+
+struct FontCacheKeyHash {
+  size_t operator()(const FontCacheKey &k) const noexcept {
+    size_t h = std::hash<std::string>{}(k.family);
+    h ^= static_cast<size_t>(k.size_bits) + 0x9e3779b9u + (h << 6u) + (h >> 2u);
+    h ^= ((static_cast<size_t>(k.weight) << 1u) | static_cast<size_t>(k.italic)) + 0x9e3779b9u + (h << 6u) +
+         (h >> 2u);
+    return h;
+  }
+};
+
+constexpr size_t kMaxFontCacheEntries = 256u;
 
 CGFloat weight_trait_for(uint16_t weight) noexcept {
   if (weight < 150u) return -0.8;
@@ -33,7 +57,9 @@ NvePlatformFont *apply_italic(NvePlatformFont *font, CGFloat pt, bool italic) {
   (void)pt;
   return [[NSFontManager sharedFontManager] convertFont:font toHaveTrait:NSItalicFontMask] ?: font;
 #else
-  UIFontDescriptor *d = [font.fontDescriptor fontDescriptorWithSymbolicTraits:UIFontDescriptorTraitItalic];
+  const UIFontDescriptorSymbolicTraits existing = font.fontDescriptor.symbolicTraits;
+  UIFontDescriptor *d =
+      [font.fontDescriptor fontDescriptorWithSymbolicTraits:(existing | UIFontDescriptorTraitItalic)];
   return d != nil ? [UIFont fontWithDescriptor:d size:pt] : font;
 #endif
 }
@@ -46,10 +72,20 @@ NvePlatformFont *system_font_with_weight(CGFloat pt, CGFloat w, bool italic) {
 #endif
 }
 
-NvePlatformFont *named_family_font(std::string_view name, CGFloat pt, CGFloat w, bool italic) {
+NvePlatformFont *named_family_font(std::string_view name, CGFloat pt, uint16_t weight, CGFloat w, bool italic) {
   NSString *nsName = nsstring_from_sv(name);
   if (nsName.length == 0u) return nil;
-  NSDictionary *attrs = @{(__bridge NSString *)kCTFontFamilyNameAttribute : nsName};
+  NSMutableDictionary *traits =
+      [NSMutableDictionary dictionaryWithObject:@(w) forKey:(__bridge NSString *)kCTFontWeightTrait];
+  CTFontSymbolicTraits symbolic = 0;
+  if (weight >= 600u) symbolic |= kCTFontTraitBold;
+  if (italic) symbolic |= kCTFontTraitItalic;
+  if (symbolic != 0) traits[(__bridge NSString *)kCTFontSymbolicTrait] = @(symbolic);
+
+  NSDictionary *attrs = @{
+    (__bridge NSString *)kCTFontFamilyNameAttribute : nsName,
+    (__bridge NSString *)kCTFontTraitsAttribute : traits,
+  };
   CTFontDescriptorRef baseDesc = CTFontDescriptorCreateWithAttributes((__bridge CFDictionaryRef)attrs);
   if (baseDesc == nullptr) return nil;
   NSSet *mandatory = [NSSet setWithObject:(__bridge NSString *)kCTFontFamilyNameAttribute];
@@ -57,22 +93,22 @@ NvePlatformFont *named_family_font(std::string_view name, CGFloat pt, CGFloat w,
   CFRelease(baseDesc);
   if (matched == nullptr) return nil;
 
-  NSMutableDictionary *traits = [NSMutableDictionary dictionaryWithObject:@(w) forKey:(__bridge NSString *)kCTFontWeightTrait];
-  if (italic) {
-    traits[(__bridge NSString *)kCTFontSymbolicTrait] = @(kCTFontTraitItalic);
-  }
-  CTFontDescriptorRef styled = CTFontDescriptorCreateCopyWithAttributes(
-      matched, (__bridge CFDictionaryRef)@{(__bridge NSString *)kCTFontTraitsAttribute : traits});
+  CTFontRef ctFont = CTFontCreateWithFontDescriptor(matched, pt, nullptr);
   CFRelease(matched);
-  if (styled == nullptr) return nil;
-  CTFontRef ctFont = CTFontCreateWithFontDescriptor(styled, pt, nullptr);
-  CFRelease(styled);
   if (ctFont == nullptr) return nil;
+  if (weight >= 600u && (CTFontGetSymbolicTraits(ctFont) & kCTFontTraitBold) == 0) {
+    CTFontRef bold = CTFontCreateCopyWithSymbolicTraits(ctFont, pt, nullptr, kCTFontTraitBold, kCTFontTraitBold);
+    if (bold != nullptr) {
+      CFRelease(ctFont);
+      ctFont = bold;
+    }
+  }
   NvePlatformFont *out = (__bridge_transfer NvePlatformFont *)ctFont;
   return apply_italic(out, pt, italic);
 }
 
-NvePlatformFont *generic_family_font(host::GenericFamily generic, CGFloat pt, CGFloat w, bool italic) {
+NvePlatformFont *generic_family_font(
+    host::GenericFamily generic, CGFloat pt, uint16_t weight, CGFloat w, bool italic) {
   switch (generic) {
     case host::GenericFamily::SystemUi:
     case host::GenericFamily::SansSerif:
@@ -96,14 +132,15 @@ NvePlatformFont *generic_family_font(host::GenericFamily generic, CGFloat pt, CG
       UIFont *serif = desc != nil ? [UIFont fontWithDescriptor:desc size:pt] : nil;
 #endif
       if (serif != nil) return apply_italic(serif, pt, italic);
-      return named_family_font("Georgia", pt, w, italic) ?: named_family_font("Times New Roman", pt, w, italic);
+      return named_family_font("Georgia", pt, weight, w, italic)
+                 ?: named_family_font("Times New Roman", pt, weight, w, italic);
     }
     case host::GenericFamily::Cursive:
-      return named_family_font("Snell Roundhand", pt, w, italic)
-                 ?: named_family_font("Bradley Hand", pt, w, italic)
-                        ?: named_family_font("Apple Chancery", pt, w, italic);
+      return named_family_font("Snell Roundhand", pt, weight, w, italic)
+                 ?: named_family_font("Bradley Hand", pt, weight, w, italic)
+                        ?: named_family_font("Apple Chancery", pt, weight, w, italic);
     case host::GenericFamily::Fantasy:
-      return named_family_font("Papyrus", pt, w, italic);
+      return named_family_font("Papyrus", pt, weight, w, italic);
     case host::GenericFamily::None:
       return nil;
   }
@@ -148,16 +185,6 @@ CGSize text_bounds(NSString *str, NSDictionary<NSAttributedStringKey, id> *attrs
 #endif
 }
 
-std::string_view trim_ascii(std::string_view s) noexcept {
-  while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n')) s.remove_prefix(1u);
-  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) s.remove_suffix(1u);
-  return s;
-}
-
-bool starts_with_iequals(std::string_view s, std::string_view prefix) noexcept {
-  return s.size() >= prefix.size() && host::ascii_iequals(s.substr(0u, prefix.size()), prefix);
-}
-
 }  // namespace
 
 uint64_t current_timestamp_us() noexcept {
@@ -179,7 +206,16 @@ NvePlatformColor *color_from_rgba(uint32_t rgba) {
 }
 
 NvePlatformFont *platform_font(float size, uint16_t weight, bool italic, std::string_view font_family) {
-  const CGFloat pt = static_cast<CGFloat>(size > 0.0f && std::isfinite(size) ? size : 16.0f);
+  const float clean_size = (size > 0.0f && std::isfinite(size)) ? size : 16.0f;
+  const FontCacheKey key{std::string(font_family), std::bit_cast<uint32_t>(clean_size), weight, italic};
+  static std::mutex cache_mu;
+  static std::unordered_map<FontCacheKey, NvePlatformFont *, FontCacheKeyHash> font_cache;
+  {
+    std::lock_guard<std::mutex> lock(cache_mu);
+    if (const auto hit = font_cache.find(key); hit != font_cache.end()) return hit->second;
+  }
+
+  const CGFloat pt = static_cast<CGFloat>(clean_size);
   const CGFloat w = weight_trait_for(weight);
   NvePlatformFont *resolved = nil;
   if (!font_family.empty()) {
@@ -187,15 +223,21 @@ NvePlatformFont *platform_font(float size, uint16_t weight, bool italic, std::st
       if (!quoted) {
         const host::GenericFamily generic = host::generic_font_family(entry);
         if (generic != host::GenericFamily::None) {
-          resolved = generic_family_font(generic, pt, w, italic);
+          resolved = generic_family_font(generic, pt, weight, w, italic);
           return resolved == nil;
         }
       }
-      resolved = named_family_font(entry, pt, w, italic);
+      resolved = named_family_font(entry, pt, weight, w, italic);
       return resolved == nil;
     });
   }
-  return resolved != nil ? resolved : system_font_with_weight(pt, w, italic);
+  NvePlatformFont *result = resolved != nil ? resolved : system_font_with_weight(pt, w, italic);
+  if (result != nil) {
+    std::lock_guard<std::mutex> lock(cache_mu);
+    if (font_cache.size() >= kMaxFontCacheEntries) font_cache.clear();
+    font_cache.emplace(key, result);
+  }
+  return result;
 }
 
 TextSpec text_spec_from_style(const NodeStyle &style) noexcept {
@@ -336,72 +378,6 @@ void native_text_measure(void *ctx, NveStrSlice text, const NveRuntimeTextStyle 
   }
 }
 
-std::optional<std::string_view> canonical_pair_transport(std::string_view raw) noexcept {
-  const std::string_view s = trim_ascii(raw);
-  if (s.empty() || host::ascii_iequals(s, "auto") || host::ascii_iequals(s, "happy-eyeballs")) return "auto";
-  if (host::ascii_iequals(s, "quic") || host::ascii_iequals(s, "udp")) return "quic";
-  if (host::ascii_iequals(s, "wt") || host::ascii_iequals(s, "webtransport") || host::ascii_iequals(s, "h3")) {
-    return "webtransport";
-  }
-  if (host::ascii_iequals(s, "wss") || host::ascii_iequals(s, "tls")) return "wss";
-  if (host::ascii_iequals(s, "ws") || host::ascii_iequals(s, "tcp") || host::ascii_iequals(s, "websocket")) {
-    return "ws";
-  }
-  return std::nullopt;
-}
-
-std::optional<std::string> apply_pair_transport(std::string_view uri, std::string_view transport) {
-  const std::string_view trimmed_uri = trim_ascii(uri);
-  const std::string_view trimmed_transport = trim_ascii(transport);
-  if (trimmed_transport.empty()) return std::string(trimmed_uri);
-  const std::optional<std::string_view> canon = canonical_pair_transport(trimmed_transport);
-  if (!canon) return std::nullopt;
-  if (trimmed_uri.empty() || *canon == "auto") return std::string(trimmed_uri);
-
-  if (starts_with_iequals(trimmed_uri, "nve://")) {
-    const size_t qpos = trimmed_uri.find('?');
-    if (qpos == std::string_view::npos) {
-      return std::string(trimmed_uri) + "?transport=" + std::string(*canon);
-    }
-    std::string out(trimmed_uri.substr(0u, qpos + 1u));
-    std::string_view query = trimmed_uri.substr(qpos + 1u);
-    bool first = true;
-    while (!query.empty()) {
-      const size_t amp = query.find('&');
-      const std::string_view part = amp == std::string_view::npos ? query : query.substr(0u, amp);
-      query = amp == std::string_view::npos ? std::string_view{} : query.substr(amp + 1u);
-      if (part.empty()) continue;
-      const size_t eq = part.find('=');
-      const std::string_view key = eq == std::string_view::npos ? part : part.substr(0u, eq);
-      if (host::ascii_iequals(key, "transport")) continue;
-      if (!first) out.push_back('&');
-      out.append(part);
-      first = false;
-    }
-    if (!first) out.push_back('&');
-    out.append("transport=");
-    out.append(*canon);
-    return out;
-  }
-
-  std::string_view rest = trimmed_uri;
-  for (std::string_view prefix : {"quic://", "udp://", "wt://", "https://", "wss://", "ws://", "tcp://"}) {
-    if (starts_with_iequals(rest, prefix)) {
-      rest.remove_prefix(prefix.size());
-      break;
-    }
-  }
-  const std::string_view scheme = (*canon == "quic")           ? "quic://"
-                                  : (*canon == "webtransport") ? "wt://"
-                                  : (*canon == "wss")          ? "wss://"
-                                                               : "ws://";
-  std::string out;
-  out.reserve(scheme.size() + rest.size());
-  out.append(scheme);
-  out.append(rest);
-  return out;
-}
-
 void apply_common_layer_style(CALayer *layer, const NodeStyle &style) {
   if (layer == nil) return;
   layer.backgroundColor = (style.background_rgba >> 24u) != 0u ? color_from_rgba(style.background_rgba).CGColor : nil;
@@ -493,11 +469,52 @@ BOOL is_text_input_composing_ime(NvePlatformView *view) {
   }
   return NO;
 #else
-  return [view isKindOfClass:[UITextField class]] && ((UITextField *)view).markedTextRange != nil;
+  if ([view isKindOfClass:[UITextField class]]) return ((UITextField *)view).markedTextRange != nil;
+  if ([view isKindOfClass:[UITextView class]]) return ((UITextView *)view).markedTextRange != nil;
+  return NO;
 #endif
 }
 
-void apply_text_input_props(NvePlatformView *view, std::string_view text, const NodeSemantics &sem) {
+void write_text_input_preserving_selection(NvePlatformView *view, NSString *text) {
+  if (view == nil) return;
+  NSString *safe = text ?: @"";
+#if TARGET_OS_OSX
+  if ([view isKindOfClass:[NSTextField class]]) {
+    NSTextField *field = (NSTextField *)view;
+    NSTextView *editor = [field.currentEditor isKindOfClass:[NSTextView class]] ? (NSTextView *)field.currentEditor : nil;
+    const NSRange prev = editor != nil ? editor.selectedRange : NSMakeRange(0u, 0u);
+    field.stringValue = safe;
+    if (editor != nil) {
+      const NSUInteger len = safe.length;
+      const NSUInteger loc = std::min(prev.location, len);
+      editor.selectedRange = NSMakeRange(loc, std::min(prev.length, len - loc));
+    }
+  }
+#else
+  if ([view isKindOfClass:[UITextField class]]) {
+    UITextField *field = (UITextField *)view;
+    UITextRange *prev = field.selectedTextRange;
+    field.text = safe;
+    if (prev != nil) {
+      const NSInteger len = static_cast<NSInteger>(safe.length);
+      const NSInteger sOff = std::clamp([field offsetFromPosition:field.beginningOfDocument toPosition:prev.start], NSInteger{0}, len);
+      const NSInteger eOff = std::clamp([field offsetFromPosition:field.beginningOfDocument toPosition:prev.end], sOff, len);
+      UITextPosition *sPos = [field positionFromPosition:field.beginningOfDocument offset:sOff];
+      UITextPosition *ePos = [field positionFromPosition:field.beginningOfDocument offset:eOff];
+      if (sPos != nil && ePos != nil) field.selectedTextRange = [field textRangeFromPosition:sPos toPosition:ePos];
+    }
+  } else if ([view isKindOfClass:[UITextView class]]) {
+    UITextView *tv = (UITextView *)view;
+    const NSRange prev = tv.selectedRange;
+    tv.text = safe;
+    const NSUInteger len = safe.length;
+    const NSUInteger loc = std::min(prev.location, len);
+    tv.selectedRange = NSMakeRange(loc, std::min(prev.length, len - loc));
+  }
+#endif
+}
+
+void apply_text_input_props(NvePlatformView *view, std::string_view text, const NodeSemantics &sem, bool apply_text) {
   if (view == nil) return;
   NSString *nextText = nsstring_from_sv(text);
   NSString *placeholderStr = nsstring_or_nil_from_sv(sem.placeholder);
@@ -506,24 +523,33 @@ void apply_text_input_props(NvePlatformView *view, std::string_view text, const 
   NSTextField *field = (NSTextField *)view;
   field.placeholderString = placeholderStr;
   field.enabled = !sem.disabled;
+  field.editable = !sem.read_only && !sem.disabled;
+  field.selectable = !sem.disabled;
   field.usesSingleLineMode = sem.multiline ? NO : YES;
   field.lineBreakMode = sem.multiline ? NSLineBreakByWordWrapping : NSLineBreakByClipping;
   if (field.cell != nil) {
     field.cell.wraps = sem.multiline ? YES : NO;
     field.cell.scrollable = sem.multiline ? NO : YES;
   }
-  // Never clobber live IME composition (marked text) during a re-render.
-  if (!is_text_input_composing_ime(field) && ![field.stringValue isEqualToString:nextText]) {
-    field.stringValue = nextText;
+  if (apply_text && !is_text_input_composing_ime(field) && ![field.stringValue isEqualToString:nextText]) {
+    write_text_input_preserving_selection(field, nextText);
   }
 #else
-  if (![view isKindOfClass:[UITextField class]]) return;
-  UITextField *field = (UITextField *)view;
-  field.placeholder = placeholderStr;
-  field.secureTextEntry = sem.secure_text_entry ? YES : NO;
-  field.enabled = !sem.disabled;
-  if (field.markedTextRange == nil && ![(field.text ?: @"") isEqualToString:nextText]) {
-    field.text = nextText;
+  if ([view isKindOfClass:[UITextField class]]) {
+    UITextField *field = (UITextField *)view;
+    field.placeholder = placeholderStr;
+    field.secureTextEntry = sem.secure_text_entry ? YES : NO;
+    field.enabled = !sem.disabled;
+    if (apply_text && field.markedTextRange == nil && ![(field.text ?: @"") isEqualToString:nextText]) {
+      write_text_input_preserving_selection(field, nextText);
+    }
+  } else if ([view isKindOfClass:[UITextView class]]) {
+    UITextView *tv = (UITextView *)view;
+    tv.editable = !sem.read_only && !sem.disabled;
+    tv.selectable = !sem.disabled;
+    if (apply_text && tv.markedTextRange == nil && ![(tv.text ?: @"") isEqualToString:nextText]) {
+      write_text_input_preserving_selection(tv, nextText);
+    }
   }
 #endif
 }

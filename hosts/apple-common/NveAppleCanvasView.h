@@ -15,6 +15,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Number of redraws scheduled because a new draw-list byte buffer arrived.
 @property (nonatomic, readonly) uint64_t redrawCount;
+/// Zero-allocation check whether this canvas view currently holds draw-list bytes.
+@property (nonatomic, readonly) BOOL hasDrawList;
 /// Copy of the latest flat `nve.res.draw_list` bytes held by this canvas view (nil when empty).
 @property (nonatomic, copy, readonly, nullable) NSData *drawListData;
 

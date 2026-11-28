@@ -54,6 +54,7 @@ public final class NveSurfaceController: ObservableObject {
     private var inboundBatch = EventBatchBuilder()
     private var lastTick: CFTimeInterval = 0
     private var pumpScheduled = false
+    private let intrinsicLock = NSLock()
     private var intrinsicInvalidationScheduled = false
 
     /// Creates a runtime surface and attaches the app: `getInterface` when given, else the
@@ -100,16 +101,23 @@ public final class NveSurfaceController: ObservableObject {
     private func installIntrinsicSizeInvalidationCallback() throws {
         let weakSelf = WeakController(self)
         try session.setIntrinsicSizeInvalidatedHandler {
-            DispatchQueue.main.async { weakSelf.value?.noteIntrinsicSizeInvalidated() }
+            weakSelf.value?.scheduleIntrinsicSizeInvalidation()
         }
     }
 
-    private func noteIntrinsicSizeInvalidated() {
-        guard !intrinsicInvalidationScheduled else { return }
+    private func scheduleIntrinsicSizeInvalidation() {
+        intrinsicLock.lock()
+        if intrinsicInvalidationScheduled {
+            intrinsicLock.unlock()
+            return
+        }
         intrinsicInvalidationScheduled = true
+        intrinsicLock.unlock()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.intrinsicLock.lock()
             self.intrinsicInvalidationScheduled = false
+            self.intrinsicLock.unlock()
             self.intrinsicSizeRevision &+= 1
         }
     }
@@ -136,8 +144,8 @@ public final class NveSurfaceController: ObservableObject {
     }
 
     public func detach() throws {
-        _ = try? session.setIntrinsicSizeInvalidatedHandler(nil)
         try session.attachApp(nil)
+        _ = try? session.setIntrinsicSizeInvalidatedHandler(nil)
         releaseLocalApp()
     }
 
@@ -269,7 +277,7 @@ public final class NveSurfaceController: ObservableObject {
            m.width.isFinite, m.height.isFinite
         {
             let zeroRequested = maxW == 0 && maxH == 0
-            if m.width > 0 || m.height > 0 || zeroRequested {
+            if store.frameId > 0 || m.width > 0 || m.height > 0 || zeroRequested {
                 let first = m.first_baseline.isFinite ? CGFloat(m.first_baseline) : nil
                 let last = m.last_baseline.isFinite ? CGFloat(m.last_baseline) : nil
                 return NveSurfaceMeasurement(

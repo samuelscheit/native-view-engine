@@ -104,11 +104,15 @@ public final class NveRuntimeSession {
     }
 
     deinit {
-        // `destroy` drains in-flight wake / intrinsic-size / measure callbacks before the boxes are released.
+        // Clear callbacks via the ABI before destroying the handle: if `deinit` runs off the owner
+        // thread, clearing returns `WRONG_THREAD` and `destroy` returns early without stopping
+        // workers. `swapBox` releases each callback box ONLY when the runtime returned `OK`,
+        // leaking any un-cleared box rather than freeing it under a live background worker
+        // (matching `NveAppleComponentHost.mm`).
+        _ = try? setIntrinsicSizeInvalidatedHandler(nil)
+        _ = try? setWakeHandler(nil)
+        _ = try? setTextMeasurer(nil)
         api.pointee.destroy(handle)
-        wakeBox?.release()
-        intrinsicSizeBox?.release()
-        measurerBox?.release()
     }
 
     // MARK: Lifecycle & frames

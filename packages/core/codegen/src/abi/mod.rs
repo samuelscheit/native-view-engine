@@ -201,6 +201,8 @@ impl<'a> CTables<'a> {
 #[derive(Template)]
 #[template(path = "swift/NveTables.swift", escape = "none")]
 struct SwiftTables<'a> {
+    namespace: &'a str,
+    core: bool,
     tables: &'a [TableModel<'a>],
     value_sets: &'a [&'static ValueSetDesc],
 }
@@ -235,7 +237,7 @@ pub fn generate_table_files(tables: &[&TableDesc]) -> Result<Vec<GeneratedFile>,
             format!("{CXX}/include/nve/generated/nve_tables.generated.h"),
         )?,
         render(
-            &SwiftTables { tables, value_sets: &sets },
+            &SwiftTables { namespace: "NveTables", core: true, tables, value_sets: &sets },
             format!("{SWIFT}/Sources/NveHost/NveTables.generated.swift"),
         )?,
         render(
@@ -269,6 +271,21 @@ pub fn generate_module_table_header(
     let t = tables_model(tables)?;
     let sets = value_sets(&t)?;
     render(&CTables::new(&t, &sets, Some(module)), relative_path)
+}
+
+/// Swift mirror (`NveModuleTables.generated.swift`) of capability-module tables (`nve.canvas`, ...).
+pub fn generate_swift_module_tables(tables: &[&TableDesc]) -> Result<GeneratedFile, CodegenError> {
+    let t = tables_model(tables)?;
+    let sets = value_sets(&t)?;
+    render(
+        &SwiftTables {
+            namespace: "NveModuleTables",
+            core: false,
+            tables: &t,
+            value_sets: &sets,
+        },
+        format!("{SWIFT}/Sources/NveHost/NveModuleTables.generated.swift"),
+    )
 }
 
 /// The golden XXH64 vectors for every host runtime's test suite.

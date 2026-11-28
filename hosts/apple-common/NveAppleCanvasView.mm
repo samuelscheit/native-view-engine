@@ -1,6 +1,7 @@
 #import "NveAppleCanvasView.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -100,7 +101,14 @@ struct CGDrawListVisitor {
   }
 
   void on_stroke_polyline(const DrawStrokePolylineOp& op) noexcept {
-    if (op.points.size() < 2u || op.width <= 0.0f || op.color.a == 0u) return;
+    if (op.points.empty() || op.width <= 0.0f || op.color.a == 0u) return;
+    if (op.points.size() == 1u) {
+      set_fill_rgba(ctx, op.color);
+      const DrawPoint p0 = op.points[0u];
+      const CGFloat r = static_cast<CGFloat>(op.width) * 0.5;
+      CGContextFillEllipseInRect(ctx, CGRectMake(p0.x - r, p0.y - r, op.width, op.width));
+      return;
+    }
     set_stroke_rgba(ctx, op.color);
     CGContextSetLineWidth(ctx, op.width);
     CGContextSetLineCap(ctx, kCGLineCapRound);
@@ -135,7 +143,11 @@ DrawListDecodeResult render_draw_list_to_cgcontext(
   if (bytes.empty()) return DrawListDecodeResult{DrawListError::Ok, 0u, 0u};
   const DrawListDecodeResult check = validate_draw_list(bytes);
   if (!check.ok()) return check;
-  if (ctx == nullptr || !(bounds.size.width > 0.0) || !(bounds.size.height > 0.0)) return check;
+  if (ctx == nullptr || !std::isfinite(bounds.origin.x) || !std::isfinite(bounds.origin.y) ||
+      !std::isfinite(bounds.size.width) || !std::isfinite(bounds.size.height) ||
+      !(bounds.size.width > 0.0) || !(bounds.size.height > 0.0)) {
+    return check;
+  }
 
   CGStateGuard guard(ctx);
   CGContextSetAllowsAntialiasing(ctx, true);
@@ -173,6 +185,10 @@ DrawListDecodeResult render_draw_list_to_cgcontext(
 
 - (uint64_t)redrawCount {
   return _redrawCount;
+}
+
+- (BOOL)hasDrawList {
+  return !_drawList.empty();
 }
 
 - (nullable NSData *)drawListData {

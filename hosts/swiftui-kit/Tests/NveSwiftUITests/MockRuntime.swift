@@ -195,6 +195,9 @@ final class MockRuntime: @unchecked Sendable {
     var intrinsicInvalidatedClearCount = 0
     var measureCalls: [(constraints: NveSizeConstraints, flags: UInt32)] = []
     var measureHandler: ((NveSizeConstraints, UInt32) -> NveSurfaceMeasure)?
+    var failCallbackClearWith: Int32?
+    var onDispatchEvents: (([NveSwiftUI.NveEvent]) -> Void)?
+    var resourcePayloadCalls = 0
 
     private var pinned: [UnsafeMutableRawPointer] = []
     private var view = NveSceneView()
@@ -211,6 +214,7 @@ final class MockRuntime: @unchecked Sendable {
         wake = (nil, nil); measurer = (nil, nil)
         intrinsicInvalidated = (nil, nil); intrinsicInvalidatedSetCount = 0; intrinsicInvalidatedClearCount = 0
         measureCalls = []; measureHandler = nil
+        failCallbackClearWith = nil; onDispatchEvents = nil; resourcePayloadCalls = 0
     }
 
     fileprivate func pin<T>(_ values: [T]) -> UnsafePointer<T>? {
@@ -291,7 +295,7 @@ final class MockRuntime: @unchecked Sendable {
         a.destroy = { _ in MockRuntime.shared.destroys += 1 }
         a.set_wake_callback = { _, cb, ctx in
             let m = MockRuntime.shared
-            let st = m.status()
+            let st = (cb == nil ? m.failCallbackClearWith : nil) ?? m.status()
             if st == 0 { m.wake = (cb, ctx) }
             return st
         }
@@ -310,6 +314,7 @@ final class MockRuntime: @unchecked Sendable {
         a.dispatch_events = { _, batch, changed in
             let decoded = (try? EventBatchReader.validate(batch: batch).decodeEvents()) ?? []
             MockRuntime.shared.dispatched.append(decoded)
+            MockRuntime.shared.onDispatchEvents?(decoded)
             changed?.pointee = 1
             return 0
         }
@@ -366,12 +371,13 @@ final class MockRuntime: @unchecked Sendable {
         }
         a.set_text_measurer = { _, cb, ctx in
             let m = MockRuntime.shared
-            let st = m.status()
+            let st = (cb == nil ? m.failCallbackClearWith : nil) ?? m.status()
             if st == 0 { m.measurer = (cb, ctx) }
             return st
         }
         a.resource_payload = { _, id, kind, out in
             let m = MockRuntime.shared
+            m.resourcePayloadCalls += 1
             guard m.acquires > m.releases else { return Int32(NVE_RUNTIME_INVALID_ARG.rawValue) }
             guard let bytes = m.resources[id] else { return Int32(NveRuntimeError.notFound) }
             kind?.pointee = m.resourceKinds[id] ?? Key64.of("nve.res.image_src").value
@@ -414,7 +420,7 @@ final class MockRuntime: @unchecked Sendable {
         }
         a.set_intrinsic_size_invalidated_callback = { _, cb, ctx in
             let m = MockRuntime.shared
-            let st = m.status()
+            let st = (cb == nil ? m.failCallbackClearWith : nil) ?? m.status()
             if st == 0 {
                 m.intrinsicInvalidated = (cb, ctx)
                 if cb == nil {

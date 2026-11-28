@@ -4,14 +4,38 @@
 
 #include <nve/generated/nve_tables.generated.h>
 
+#include <unordered_set>
+
 using nve::apple::NodeKind;
 using nve::apple::NodeView;
 
-@interface RCTNveComponentView () <UITextFieldDelegate, UIScrollViewDelegate>
+@interface NveIosLabelView : UILabel
+@property (nonatomic, assign) BOOL nveOverline;
+@property (nonatomic, strong, nullable) UIColor *nveOverlineColor;
+@end
+
+@implementation NveIosLabelView
+- (void)drawTextInRect:(CGRect)rect {
+  [super drawTextInRect:rect];
+  if (self.nveOverline && self.text.length > 0 && rect.size.width > 0.0) {
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (ctx != nullptr) {
+      UIColor *col = self.nveOverlineColor ?: self.textColor ?: UIColor.labelColor;
+      CGContextSaveGState(ctx);
+      CGContextSetFillColorWithColor(ctx, col.CGColor);
+      CGContextFillRect(ctx, CGRectMake(rect.origin.x, rect.origin.y + 0.5, rect.size.width, 1.0));
+      CGContextRestoreGState(ctx);
+    }
+  }
+}
+@end
+
+@interface RCTNveComponentView () <UITextFieldDelegate, UITextViewDelegate, UIScrollViewDelegate>
 @end
 
 @implementation RCTNveComponentView {
   BOOL _updatingScrollFrame;
+  std::unordered_set<uint32_t> _readOnlyInputs;
 }
 
 - (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload {
@@ -33,7 +57,7 @@ using nve::apple::NodeView;
   UIView *view = nil;
   switch (node.kind) {
     case NodeKind::Text: {
-      UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
+      NveIosLabelView *label = [[NveIosLabelView alloc] initWithFrame:CGRectZero];
       label.numberOfLines = 0;
       view = label;
       break;
@@ -48,10 +72,17 @@ using nve::apple::NodeView;
       break;
     }
     case NodeKind::TextInput: {
-      UITextField *field = [[UITextField alloc] initWithFrame:CGRectZero];
-      field.delegate = self;
-      [field addTarget:self action:@selector(_handleTextFieldChanged:) forControlEvents:UIControlEventEditingChanged];
-      view = field;
+      if (node.semantics.multiline) {
+        UITextView *tv = [[UITextView alloc] initWithFrame:CGRectZero];
+        tv.backgroundColor = UIColor.clearColor;
+        tv.delegate = self;
+        view = tv;
+      } else {
+        UITextField *field = [[UITextField alloc] initWithFrame:CGRectZero];
+        field.delegate = self;
+        [field addTarget:self action:@selector(_handleTextFieldChanged:) forControlEvents:UIControlEventEditingChanged];
+        view = field;
+      }
       break;
     }
     case NodeKind::Canvas:
@@ -66,8 +97,16 @@ using nve::apple::NodeView;
 }
 
 - (void)nveWillDestroyNativeView:(UIView *)view forNodeId:(uint32_t)nodeId {
-  (void)nodeId;
+  _readOnlyInputs.erase(nodeId);
+  [self.nveHost clearTextInputStateForNodeId:nodeId];
   if ([view isKindOfClass:[UIScrollView class]]) ((UIScrollView *)view).delegate = nil;
+  if ([view isKindOfClass:[UITextField class]]) {
+    UITextField *f = (UITextField *)view;
+    [f removeTarget:self action:@selector(_handleTextFieldChanged:) forControlEvents:UIControlEventEditingChanged];
+    f.delegate = nil;
+  } else if ([view isKindOfClass:[UITextView class]]) {
+    ((UITextView *)view).delegate = nil;
+  }
 }
 
 - (void)nveUpdateNativeView:(UIView *)view forNode:(const NodeView &)node image:(id)image {
@@ -75,32 +114,58 @@ using nve::apple::NodeView;
   view.tag = static_cast<NSInteger>(node.node_id);
   UIFont *font = nve::apple::platform_font(
       node.style.font_size, node.style.font_weight, node.style.italic, node.style.font_family);
+  UIColor *color = nve::apple::color_from_rgba(node.style.text_rgba);
   if ([view isKindOfClass:[NveAppleImageView class]]) {
     nve::apple::update_image_view((NveAppleImageView *)view, image, node.image_fit, node.style.border_radius);
-    // A cleared tint must clear the view's tint too, not keep the last one.
     view.tintColor = (node.image_tint_rgba >> 24u) != 0u ? nve::apple::color_from_rgba(node.image_tint_rgba) : nil;
   } else if ([view isKindOfClass:[UILabel class]]) {
     UILabel *label = (UILabel *)view;
     const nve::apple::TextSpec spec = nve::apple::text_spec_from_style(node.style);
-    const bool noWrap = node.style.white_space == NVE_WHITE_SPACE_NO_WRAP ||
-                        node.style.white_space == NVE_WHITE_SPACE_PRE;
-    label.textColor = nve::apple::color_from_rgba(node.style.text_rgba);
+    const bool singleLineNoWrap = node.style.white_space == NVE_WHITE_SPACE_NO_WRAP;
+    label.textColor = color;
     label.font = font;
     label.lineBreakMode = nve::apple::line_break_mode_for(spec, false);
-    label.numberOfLines = noWrap ? 1 : static_cast<NSInteger>(node.style.max_lines);
+    label.numberOfLines = singleLineNoWrap ? 1 : static_cast<NSInteger>(node.style.max_lines);
     label.textAlignment = node.style.text_align == NVE_TEXT_ALIGN_CENTER ? NSTextAlignmentCenter
                           : (node.style.text_align == NVE_TEXT_ALIGN_RIGHT || node.style.text_align == NVE_TEXT_ALIGN_END)
                               ? NSTextAlignmentRight
                               : NSTextAlignmentNatural;
+    if ([label isKindOfClass:[NveIosLabelView class]]) {
+      NveIosLabelView *lbl = (NveIosLabelView *)label;
+      const BOOL overline = (node.style.text_decoration & NVE_TEXT_DECORATION_OVERLINE) != 0u;
+      if (lbl.nveOverline != overline || lbl.nveOverlineColor != color) {
+        lbl.nveOverline = overline;
+        lbl.nveOverlineColor = color;
+        [lbl setNeedsDisplay];
+      }
+    }
     NSAttributedString *attributed = nve::apple::attributed_text(node.text, spec);
     if (![label.attributedText isEqualToAttributedString:attributed]) {
       label.attributedText = attributed;
     }
-  } else if ([view isKindOfClass:[UITextField class]]) {
-    UITextField *field = (UITextField *)view;
-    nve::apple::apply_text_input_props(field, node.text, node.semantics);
-    field.textColor = nve::apple::color_from_rgba(node.style.text_rgba);
-    field.font = font;
+  } else if ([view isKindOfClass:[UITextField class]] || [view isKindOfClass:[UITextView class]]) {
+    if (node.semantics.read_only || node.semantics.disabled) {
+      _readOnlyInputs.insert(node.node_id);
+    } else {
+      _readOnlyInputs.erase(node.node_id);
+    }
+    NSString *nextVal = nve::apple::nsstring_from_sv(node.text);
+    NSString *shown = [view isKindOfClass:[UITextField class]] ? (((UITextField *)view).text ?: @"")
+                                                               : (((UITextView *)view).text ?: @"");
+    const BOOL shouldWrite = [self.nveHost shouldApplyAppText:nextVal
+                                                     toNodeId:node.node_id
+                                                    shownText:shown
+                                                hasMarkedText:nve::apple::is_text_input_composing_ime(view)];
+    nve::apple::apply_text_input_props(view, node.text, node.semantics, shouldWrite == YES);
+    if ([view isKindOfClass:[UITextField class]]) {
+      UITextField *field = (UITextField *)view;
+      field.textColor = color;
+      field.font = font;
+    } else {
+      UITextView *tv = (UITextView *)view;
+      tv.textColor = color;
+      tv.font = font;
+    }
   }
 
   view.userInteractionEnabled = node.interactive || node.kind == NodeKind::Scroll || node.kind == NodeKind::TextInput ||
@@ -120,8 +185,6 @@ using nve::apple::NodeView;
   if (![scrollView isKindOfClass:[UIScrollView class]]) return;
   UIScrollView *scroll = (UIScrollView *)scrollView;
   if (CGSizeEqualToSize(scroll.contentSize, contentSize)) return;
-  // A shrinking content size clamps the offset and fires `scrollViewDidScroll:`: that is the
-  // runtime's own layout, not a user scroll to report back.
   _updatingScrollFrame = YES;
   scroll.contentSize = contentSize;
   _updatingScrollFrame = NO;
@@ -130,7 +193,7 @@ using nve::apple::NodeView;
 #pragma mark - Input
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
-  if (_updatingScrollFrame) return;
+  if (_updatingScrollFrame || [scrollView isKindOfClass:[UITextView class]]) return;
   const auto nodeId = static_cast<uint32_t>(scrollView.tag);
   if (nodeId == 0u) return;
   [self.nveHost dispatchScrollOnNodeId:nodeId
@@ -140,23 +203,82 @@ using nve::apple::NodeView;
                          contentHeight:static_cast<float>(scrollView.contentSize.height)];
 }
 
+- (BOOL)textFieldShouldBeginEditing:(UITextField *)textField {
+  return _readOnlyInputs.count(static_cast<uint32_t>(textField.tag)) == 0u;
+}
+
+- (BOOL)textField:(UITextField *)textField shouldChangeCharactersInRange:(NSRange)range replacementString:(NSString *)string {
+  (void)range;
+  (void)string;
+  return _readOnlyInputs.count(static_cast<uint32_t>(textField.tag)) == 0u;
+}
+
 - (void)_handleTextFieldChanged:(UITextField *)field {
-  if (nve::apple::is_text_input_composing_ime(field)) return;  // never send half-composed IME text
-  if (const auto nodeId = static_cast<uint32_t>(field.tag)) [self.nveHost dispatchTextChangeOnNodeId:nodeId text:field.text ?: @""];
+  const auto nodeId = static_cast<uint32_t>(field.tag);
+  if (nodeId == 0u) return;
+  UITextRange *marked = field.markedTextRange;
+  NSString *markedText = marked != nil ? [field textInRange:marked] : nil;
+  __weak UITextField *weakField = field;
+  [self.nveHost handleTextInputEditOnNodeId:nodeId
+                                       text:(field.text ?: @"")
+                              hasMarkedText:(marked != nil)
+                                 markedText:markedText
+                                  writeBack:^(NSString *nextText) {
+                                    if (weakField != nil) nve::apple::write_text_input_preserving_selection(weakField, nextText);
+                                  }];
 }
 
 - (void)textFieldDidBeginEditing:(UITextField *)textField {
-  if (const auto nodeId = static_cast<uint32_t>(textField.tag)) [self.nveHost dispatchFocusOnNodeId:nodeId focused:YES];
+  if (const auto nodeId = static_cast<uint32_t>(textField.tag)) {
+    [self.nveHost handleTextInputFocusOnNodeId:nodeId focused:YES];
+  }
 }
 
 - (void)textFieldDidEndEditing:(UITextField *)textField {
-  if (const auto nodeId = static_cast<uint32_t>(textField.tag)) [self.nveHost dispatchFocusOnNodeId:nodeId focused:NO];
+  if (const auto nodeId = static_cast<uint32_t>(textField.tag)) {
+    [self.nveHost handleTextInputFocusOnNodeId:nodeId focused:NO];
+  }
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
-  if (nve::apple::is_text_input_composing_ime(textField)) return NO;
-  if (const auto nodeId = static_cast<uint32_t>(textField.tag)) [self.nveHost dispatchSubmitOnNodeId:nodeId text:textField.text ?: @""];
-  return YES;
+  const auto nodeId = static_cast<uint32_t>(textField.tag);
+  if (nodeId == 0u || _readOnlyInputs.count(nodeId) != 0u) return NO;
+  return [self.nveHost handleTextInputSubmitOnNodeId:nodeId
+                                                text:(textField.text ?: @"")
+                                       hasMarkedText:(textField.markedTextRange != nil)];
+}
+
+- (BOOL)textView:(UITextView *)textView shouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text {
+  (void)range;
+  (void)text;
+  return _readOnlyInputs.count(static_cast<uint32_t>(textView.tag)) == 0u;
+}
+
+- (void)textViewDidBeginEditing:(UITextView *)textView {
+  if (const auto nodeId = static_cast<uint32_t>(textView.tag)) {
+    [self.nveHost handleTextInputFocusOnNodeId:nodeId focused:YES];
+  }
+}
+
+- (void)textViewDidEndEditing:(UITextView *)textView {
+  if (const auto nodeId = static_cast<uint32_t>(textView.tag)) {
+    [self.nveHost handleTextInputFocusOnNodeId:nodeId focused:NO];
+  }
+}
+
+- (void)textViewDidChange:(UITextView *)textView {
+  const auto nodeId = static_cast<uint32_t>(textView.tag);
+  if (nodeId == 0u) return;
+  UITextRange *marked = textView.markedTextRange;
+  NSString *markedText = marked != nil ? [textView textInRange:marked] : nil;
+  __weak UITextView *weakTv = textView;
+  [self.nveHost handleTextInputEditOnNodeId:nodeId
+                                       text:(textView.text ?: @"")
+                              hasMarkedText:(marked != nil)
+                                 markedText:markedText
+                                  writeBack:^(NSString *nextText) {
+                                    if (weakTv != nil) nve::apple::write_text_input_preserving_selection(weakTv, nextText);
+                                  }];
 }
 
 - (void)_handleNodeTap:(UITapGestureRecognizer *)recognizer {

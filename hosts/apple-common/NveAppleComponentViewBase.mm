@@ -104,16 +104,37 @@ void update_image_view(NveAppleImageView *view, NvePlatformImage *image, ImageRe
 
 - (void)disconnectPaired { [_nveHost disconnectPaired]; }
 
+- (NSError *)_nveMissingRuntimeError {
+  return [NSError errorWithDomain:[self nveErrorDomain]
+                             code:static_cast<NSInteger>(NVE_RUNTIME_UNSUPPORTED)
+                         userInfo:@{
+                           NSLocalizedDescriptionKey : @"libnve_runtime is not linked",
+                           NveAppleRuntimeStatusErrorKey : @(static_cast<NSInteger>(NVE_RUNTIME_UNSUPPORTED)),
+                         }];
+}
+
 - (BOOL)saveFrame0ToPath:(NSString *)path appBuildId:(uint64_t)appBuildId envHash:(uint64_t)envHash error:(NSError **)error {
+  if (_nveHost == nil) {
+    if (error) *error = [self _nveMissingRuntimeError];
+    return NO;
+  }
   return [_nveHost saveFrame0ToPath:path appBuildId:appBuildId envHash:envHash error:error];
 }
 
 - (BOOL)bootFrame0FromPath:(NSString *)path appBuildId:(uint64_t)appBuildId envHash:(uint64_t)envHash error:(NSError **)error {
+  if (_nveHost == nil) {
+    if (error) *error = [self _nveMissingRuntimeError];
+    return NO;
+  }
   [self propagateBoundsToNveHost];
   return [_nveHost bootFrame0FromPath:path appBuildId:appBuildId envHash:envHash error:error];
 }
 
 - (BOOL)bootFrame0FromBytes:(NSData *)envelope appBuildId:(uint64_t)appBuildId envHash:(uint64_t)envHash error:(NSError **)error {
+  if (_nveHost == nil) {
+    if (error) *error = [self _nveMissingRuntimeError];
+    return NO;
+  }
   [self propagateBoundsToNveHost];
   return [_nveHost bootFrame0FromBytes:envelope appBuildId:appBuildId envHash:envHash error:error];
 }

@@ -4,6 +4,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// `NSError.userInfo` key carrying the exact `NveRuntimeStatus` integer (`NSNumber`).
+extern NSErrorUserInfoKey const NveAppleRuntimeStatusErrorKey;
+
 /// Shared Apple (iOS & macOS) surface controller over `libnve_runtime`.
 ///
 /// Owns one `nve::host::RuntimeSession` (the runtime hosts the app, reconcile, layout with the
@@ -45,6 +48,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y;
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text;
 - (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text;
+- (void)dispatchCompositionStartOnNodeId:(uint32_t)nodeId text:(NSString *)text;
+- (void)dispatchCompositionUpdateOnNodeId:(uint32_t)nodeId text:(NSString *)text;
+- (void)dispatchCompositionEndOnNodeId:(uint32_t)nodeId text:(NSString *)text;
 - (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused;
 - (void)dispatchScrollOnNodeId:(uint32_t)nodeId
                              x:(float)x
@@ -65,8 +71,23 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-/// Dev loop, pairing, and Frame-0 replay (`NveAppleComponentHost+Session.mm`).
+/// Dev loop, pairing, Frame-0 replay, and controlled-text IME state (`NveAppleComponentHost+Session.mm`).
 @interface NveAppleComponentHost (Session)
+
+/// Controlled-text + IME helpers backed by `nve::host::ControlledText` (shared by AppKit & UIKit).
+- (BOOL)shouldApplyAppText:(NSString *)value
+                  toNodeId:(uint32_t)nodeId
+                 shownText:(NSString *)shown
+             hasMarkedText:(BOOL)hasMarkedText;
+- (void)handleTextInputEditOnNodeId:(uint32_t)nodeId
+                               text:(NSString *)text
+                      hasMarkedText:(BOOL)hasMarkedText
+                         markedText:(nullable NSString *)markedText
+                          writeBack:(void (^)(NSString *nextText))writeBack;
+- (void)handleTextInputFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused;
+- (BOOL)handleTextInputSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text hasMarkedText:(BOOL)hasMarkedText;
+- (void)clearTextInputStateForNodeId:(uint32_t)nodeId;
+- (nullable NSString *)textInputValueForNodeId:(uint32_t)nodeId;
 
 /// Tier-2 hot swap: snapshots app state, attaches the rebuilt dylib, restores state. A failed
 /// reload keeps the running app.

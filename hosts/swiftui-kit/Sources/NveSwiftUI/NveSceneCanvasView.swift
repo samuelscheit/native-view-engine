@@ -187,14 +187,12 @@ private extension GraphicsContext.ResolvedImage {
 // MARK: - SwiftUI `NveSceneCanvasView`
 
 /// SwiftUI `Canvas` over a runtime surface: paints the zero-copy scene, mounts platform editable
-/// text inputs (unless owned by an enclosing `NveSurfaceRepresentable`), exposes VoiceOver
-/// elements, and routes press / scroll / remote input through the runtime (`hit_test`, `scroll_by`).
+/// text inputs inside `.accessibilityElement(children: .contain)`, exposes VoiceOver elements,
+/// and routes press / scroll / remote input through the runtime (`hit_test`, `scroll_by`).
 public struct NveSceneCanvasView: View {
     @ObservedObject public var controller: NveSurfaceController
     @ObservedObject private var store: NveSceneStore
     public let backgroundColor: Color?
-    /// When non-nil, an enclosing view (`NveSurfaceRepresentable`) owns mounting those input overlays.
-    private let externallyMountedTextInputIds: Set<NodeId>?
 
     @State private var activeScroll: NodeId?
     @State private var lastDrag: CGPoint?
@@ -203,29 +201,15 @@ public struct NveSceneCanvasView: View {
         self.controller = controller
         self.store = controller.store
         self.backgroundColor = backgroundColor
-        self.externallyMountedTextInputIds = nil
-    }
-
-    internal init(
-        controller: NveSurfaceController,
-        backgroundColor: Color? = nil,
-        mountedTextInputIds: Set<NodeId>
-    ) {
-        self.controller = controller
-        self.store = controller.store
-        self.backgroundColor = backgroundColor
-        self.externallyMountedTextInputIds = mountedTextInputIds
     }
 
     public var body: some View {
-        let localInputs: [NveTextInputDescriptor] =
-            externallyMountedTextInputIds == nil && NvePlatformTextInputSupport.usesNativeOverlays
-            ? store.textInputs() : []
-        let skipIds = externallyMountedTextInputIds ?? Set(localInputs.map(\.id))
+        let overlays = store.sceneOverlays(includeTextInputs: NvePlatformTextInputSupport.usesNativeOverlays)
+        let skipIds = Set(overlays.inputs.map(\.id))
 
         ZStack(alignment: .topLeading) {
             interactiveCanvas(skipTextInputIds: skipIds)
-            ForEach(store.accessibilityElements().filter { !skipIds.contains($0.id) }) { elem in
+            ForEach(overlays.accessibility.filter { !skipIds.contains($0.id) }) { elem in
                 Color.clear
                     .frame(width: elem.frame.width, height: elem.frame.height)
                     .position(x: elem.frame.midX, y: elem.frame.midY)
@@ -240,8 +224,8 @@ public struct NveSceneCanvasView: View {
                         if elem.isInteractive { press(elem.id, at: CGPoint(x: elem.frame.midX, y: elem.frame.midY)) }
                     }
             }
-            if !localInputs.isEmpty {
-                NveTextInputOverlayLayer(controller: controller, inputs: localInputs)
+            if !overlays.inputs.isEmpty {
+                NveTextInputOverlayLayer(controller: controller, inputs: overlays.inputs)
             }
         }
         .background(GeometryReader { geo in

@@ -95,8 +95,10 @@ struct NveAppleAdapter {
   }
 
   uint32_t tag(const NodeData &n) noexcept {
-    // AppKit realizes secure inputs as another class (`NSSecureTextField`): toggling recreates.
-    return static_cast<uint32_t>(nve::apple::node_kind(n, canvas.has(n.index))) | (n.input.secure ? 0x100u : 0u);
+    // AppKit realizes secure inputs as `NSSecureTextField`, and UIKit realizes multiline inputs
+    // as `UITextView` vs `UITextField`: toggling either recreates the native control cleanly.
+    return static_cast<uint32_t>(nve::apple::node_kind(n, canvas.has(n.index))) | (n.input.secure ? 0x100u : 0u) |
+           (n.input.multiline ? 0x200u : 0u);
   }
 
   Handle create(const NodeData &n) {
@@ -126,7 +128,7 @@ struct NveAppleAdapter {
         [canvasView setDrawListBytes:nil];
         h.canvas_draw_list = 0u;
       } else if (!tree->resource_unchanged(*scene, v.canvas_draw_list, h.canvas_draw_list) ||
-                 h.canvas_generation != v.canvas_generation || canvasView.drawListData == nil) {
+                 h.canvas_generation != v.canvas_generation || !canvasView.hasDrawList) {
         NSData *bytes = resources ? resources(v.canvas_draw_list, nve::canvas::kDrawListKind.value) : nil;
         [canvasView setDrawListBytes:bytes];
         h.canvas_draw_list = v.canvas_draw_list;

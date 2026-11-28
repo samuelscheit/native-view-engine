@@ -2,9 +2,28 @@
 
 #import "NveAppleComponentHost.h"
 
+#include <nve/host/controlled_text.hpp>
 #include <nve/host/host_session.hpp>
 
+#include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
+
+namespace nve::apple {
+
+struct AppleTextInputState {
+  nve::host::ControlledText controlled;
+  bool synced{false};
+  bool composing{false};
+  bool focused{false};
+  std::string last_committed;
+  std::string pre_comp;
+  std::string comp_text;
+  std::optional<std::string> pending_app;
+};
+
+}  // namespace nve::apple
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -25,6 +44,7 @@ NS_ASSUME_NONNULL_BEGIN
   /// The scene guard held during reconcile (`resource_payload` borrows from it).
   const nve::host::RuntimeSceneGuard *_Nullable _activeScene;
   nve::apple::ValueArena _arena;
+  std::unordered_map<uint32_t, nve::apple::AppleTextInputState> _textInputs;
 }
 
 /// Attaches `getInterface` (an in-process app; `NULL` detaches), replacing any app or pairing, and pumps.
@@ -34,6 +54,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)_loadAppModule:(NSString *)path carryState:(BOOL)carry error:(NSError *_Nullable *_Nullable)error;
 - (NSError *)_errorWithCode:(NSInteger)code description:(NSString *)description;
 - (NSError *)_runtimeError:(NSString *)what status:(NveRuntimeStatus)status;
+- (NSError *)_frame0Error:(NSString *)what status:(NveRuntimeStatus)status;
+- (void)_dispatchTextEvent:(NveTextInputEvent)kind nodeId:(uint32_t)nodeId text:(NSString *)text;
 /// Runs `block` with this host on the next main-queue turn, unless the host is gone by then (the
 /// block never retains it). For calls made during reconcile, which must not re-enter the runtime.
 - (void)_deferToNextTurn:(void (^)(NveAppleComponentHost *host))block;
