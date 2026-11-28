@@ -215,6 +215,40 @@ void main() {
       expect(inherited.resolve(s, typo, negSpacing).letterSpacing, -0.5, reason: 'finite negative letterSpacing applies');
     });
 
+    test('lineHeight handles LengthUnit.percent (valid, negative, NaN, zero) and explicit 0pt reset', () {
+      final b = SceneBuilder();
+      final parent = b.node(const Rect.fromLTWH(0, 0, 10, 10));
+      final pctValid = b.node(Rect.zero, parent: parent);
+      final pctWithSize = b.node(Rect.zero, parent: parent);
+      final pctNeg = b.node(Rect.zero, parent: parent);
+      final pctNan = b.node(Rect.zero, parent: parent);
+      final pctZero = b.node(Rect.zero, parent: parent);
+      final ptsZero = b.node(Rect.zero, parent: parent);
+      b
+        ..bits(typographyShape, pctValid, TypographyTable.set, NveTypographySet.lineHeight)
+        ..length(typographyShape, pctValid, TypographyTable.lineHeight, 150, percent: true)
+        ..bits(typographyShape, pctWithSize, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.lineHeight)
+        ..f32(typographyShape, pctWithSize, TypographyTable.fontSize, 10)
+        ..length(typographyShape, pctWithSize, TypographyTable.lineHeight, 120, percent: true)
+        ..bits(typographyShape, pctNeg, TypographyTable.set, NveTypographySet.lineHeight)
+        ..length(typographyShape, pctNeg, TypographyTable.lineHeight, -50, percent: true)
+        ..bits(typographyShape, pctNan, TypographyTable.set, NveTypographySet.lineHeight)
+        ..length(typographyShape, pctNan, TypographyTable.lineHeight, double.nan, percent: true)
+        ..bits(typographyShape, pctZero, TypographyTable.set, NveTypographySet.lineHeight)
+        ..length(typographyShape, pctZero, TypographyTable.lineHeight, 0, percent: true)
+        ..bits(typographyShape, ptsZero, TypographyTable.set, NveTypographySet.lineHeight)
+        ..length(typographyShape, ptsZero, TypographyTable.lineHeight, 0);
+      final s = b.build();
+      final typo = s.findTable(TypographyTable.key);
+      const inherited = NveTextStyle(fontSize: 20, lineHeight: 24);
+      expect(inherited.resolve(s, typo, pctValid).lineHeight, 30, reason: '150% of inherited 20pt');
+      expect(inherited.resolve(s, typo, pctWithSize).lineHeight, 12, reason: '120% of overridden 10pt');
+      expect(inherited.resolve(s, typo, pctNeg).lineHeight, 24, reason: 'negative percent inherits parent');
+      expect(inherited.resolve(s, typo, pctNan).lineHeight, 24, reason: 'NaN percent inherits parent');
+      expect(inherited.resolve(s, typo, pctZero).lineHeight, isNull, reason: 'explicit 0% resets to normal');
+      expect(inherited.resolve(s, typo, ptsZero).lineHeight, isNull, reason: 'explicit 0pt resets to normal');
+    });
+
     test('weight maps onto the nearest Flutter weight and colors unpack RGBA', () {
       expect(const NveTextStyle(fontWeight: 0).toTextStyle().fontWeight, FontWeight.w100);
       expect(const NveTextStyle(fontWeight: 449).toTextStyle().fontWeight, FontWeight.w400);

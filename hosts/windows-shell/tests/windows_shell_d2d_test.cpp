@@ -114,10 +114,14 @@ void test_directwrite_measurer() {
   constexpr std::string_view kPhrase = "considerably long";
   const float full_w = m.measure(kPhrase, base, kInf).width;
   const float word_w = m.measure("considerably", base, kInf).width;
+  const float word_h = m.measure("considerably", base, kInf).height;
   const NveIntrinsicSize mc_word = m.measure(kPhrase, base, 0.0f);
   NveRuntimeTextStyle break_word = base;
   break_word.overflow_wrap = NVE_OVERFLOW_WRAP_BREAK_WORD;
   const NveIntrinsicSize mc_break_word = m.measure(kPhrase, break_word, 0.0f);
+  NveRuntimeTextStyle word_break_word = base;
+  word_break_word.word_break = NVE_WORD_BREAK_BREAK_WORD;
+  const NveIntrinsicSize mc_wb_word = m.measure(kPhrase, word_break_word, 0.0f);
   NveRuntimeTextStyle anywhere = base;
   anywhere.overflow_wrap = NVE_OVERFLOW_WRAP_ANYWHERE;
   const NveIntrinsicSize mc_anywhere = m.measure(kPhrase, anywhere, 0.0f);
@@ -128,6 +132,13 @@ void test_directwrite_measurer() {
   pre.white_space = NVE_WHITE_SPACE_PRE;
   NVE_CHECK(std::fabs(mc_word.width - word_w) <= 1.0f);
   NVE_CHECK(std::fabs(mc_break_word.width - word_w) <= 1.0f);
+  // At a positive narrow width, `overflow-wrap: break-word` emergency-breaks onto multiple lines
+  // while `normal` (`Word`) keeps the single over-long word on one line.
+  const NveIntrinsicSize narrow_normal = m.measure("considerably", base, 30.0f);
+  const NveIntrinsicSize narrow_break_word = m.measure("considerably", break_word, 30.0f);
+  NVE_CHECK(narrow_normal.height <= word_h + 1.0f);
+  NVE_CHECK(narrow_break_word.width <= 30.0f && narrow_break_word.height > word_h * 1.5f);
+  NVE_CHECK(mc_wb_word.width > 0.0f && mc_wb_word.width < word_w);
   NVE_CHECK(mc_anywhere.width > 0.0f && mc_anywhere.width < word_w);
   NVE_CHECK(mc_break_all.width > 0.0f && mc_break_all.width < word_w);
   NVE_CHECK(std::fabs(m.measure(kPhrase, nowrap, 0.0f).width - full_w) <= 1.0f);
@@ -364,6 +375,90 @@ void test_window_manager_windows() {
   (void)::PeekMessageW(&quit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE);  // swallow the manager's WM_QUIT
 }
 
+/// Minimal C ABI app with one text input (node 2) that emits an outbound custom event on
+/// `NVE_EVENT_TEXT_CHANGE`, so the host's event sink can destroy the `NveWinHostWindow` mid-`EN_CHANGE`.
+struct CloseOnEditApp {
+  static constexpr uint32_t kInput = 2u;
+  h::Nve2Writer w;
+  std::vector<NveDirectEvent> queued;
+  std::vector<NveDirectEvent> drained;
+  uint32_t surface_id = 1u;
+
+  static NveAppHandle create(uint32_t sid) {
+    auto* app = new CloseOnEditApp();
+    app->surface_id = sid;
+    app->w.create(1u);
+    app->w.create(kInput);
+    (void)app->w.set_str(kInput, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "open");
+    events(app->w, kInput, {NVE_EVENT_TEXT_CHANGE});
+    sized(app->w, kInput, 160.0f, 24.0f);
+    const uint32_t kids[] = {kInput};
+    app->w.set_children(1u, kids);
+    return app;
+  }
+  static void destroy(NveAppHandle handle) { delete static_cast<CloseOnEditApp*>(handle); }
+  static NveBufferSlice render(NveAppHandle handle, uint64_t frame_id) {
+    auto* app = static_cast<CloseOnEditApp*>(handle);
+    if (!app->w.pending()) return NveBufferSlice{nullptr, 0u};
+    const std::span<const uint8_t> frame = app->w.finish(frame_id);
+    return NveBufferSlice{frame.data(), frame.size()};
+  }
+  static uint32_t dispatch_events(NveAppHandle handle, NveEventBatch batch) {
+    auto* app = static_cast<CloseOnEditApp*>(handle);
+    for (uint32_t i = 0u; batch.ptr != nullptr && i < batch.len; ++i) {
+      if (batch.ptr[i].kind == NVE_EVENT_TEXT_CHANGE && batch.ptr[i].node_id == kInput) {
+        NveDirectEvent ev{};
+        ev.surface_id = app->surface_id;
+        ev.node_id = kInput;
+        ev.kind = NVE_EVENT_CUSTOM;
+        ev.payload_tag = NVE_EVENT_PAYLOAD_EMPTY;
+        app->queued.push_back(ev);
+      }
+    }
+    return 0u;
+  }
+  static uint32_t set_props(NveAppHandle, const NveMapEntry*, uint32_t) { return 0u; }
+  static NveEventBatch drain_emitted_events(NveAppHandle handle) {
+    auto* app = static_cast<CloseOnEditApp*>(handle);
+    app->drained.swap(app->queued);
+    app->queued.clear();
+    return NveEventBatch{app->drained.empty() ? nullptr : app->drained.data(),
+                         static_cast<uint32_t>(app->drained.size()), 0u};
+  }
+  static const void* get_interface(uint32_t iface) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+    static const NveComponentApi kComp{&set_props, &drain_emitted_events};
+    if (iface == NVE_IFACE_SURFACE) return &kSurface;
+    if (iface == NVE_IFACE_COMPONENT) return &kComp;
+    return nullptr;
+  }
+};
+
+/// Destroying the owning `NveWinHostWindow` (and its `WinTextInputs`) synchronously inside an
+/// `EN_CHANGE` dispatch must not use-after-free `WinTextInputs` when `dispatch_controlled_edit`
+/// queries the post-dispatch answer.
+void test_destroy_window_during_en_change_dispatch() {
+  auto window = std::make_unique<NveWinHostWindow>(
+      WinHostWindowOptions{.title = "uaf-guard", .width = 320, .height = 200, .quit_on_destroy = false});
+  std::string error;
+  NVE_CHECK(window->create(::GetModuleHandleW(nullptr), &error));
+  bool destroyed_in_callback = false;
+  window->host().set_event_callback([&](std::span<const NveDirectEvent> evs) {
+    if (!evs.empty() && window != nullptr) {
+      destroyed_in_callback = true;
+      window.reset();
+    }
+  });
+  NVE_CHECK(window->host().attach_interface(&CloseOnEditApp::get_interface));
+  pump_messages();
+  HWND edit = window->text_inputs().control_for_node(CloseOnEditApp::kInput);
+  NVE_CHECK(edit != nullptr && ::IsWindow(edit));
+  // Raises EN_CHANGE synchronously -> event sink destroys `window` mid-dispatch.
+  ::SetWindowTextW(edit, L"close");
+  pump_messages();
+  NVE_CHECK(destroyed_in_callback && window == nullptr && !::IsWindow(edit));
+}
+
 }  // namespace
 
 void nve_test_win_direct2d() {
@@ -373,5 +468,6 @@ void nve_test_win_direct2d() {
   test_paint_cache_images();
   test_screenshot_bmp();
   test_window_inputs_and_wakes();
+  test_destroy_window_during_en_change_dispatch();
   test_window_manager_windows();
 }

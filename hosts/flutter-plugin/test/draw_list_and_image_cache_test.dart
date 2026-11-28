@@ -297,6 +297,41 @@ void main() {
       expect(clearedImg.debugDisposed, isTrue);
       expect(clearedDecoded, 0);
       expect(cache.containsKey('res:c'), isFalse);
+
+      // 3. Stale decode returning null or throwing after evict()/clear() must NOT poison _failedUris.
+      for (final useClear in <bool>[false, true]) {
+        for (final failWithThrow in <bool>[false, true]) {
+          final key = 'res:stale_${useClear ? "clear" : "evict"}_${failWithThrow ? "err" : "null"}';
+          final stale = Completer<ui.Image?>();
+          expect(cache.resolveOrRequest(key, decode: () => stale.future), isNull);
+          expect(cache.isInFlight(key), isTrue);
+          if (useClear) {
+            cache.clear();
+          } else {
+            cache.evict(key);
+          }
+          if (failWithThrow) {
+            stale.completeError(StateError('stale decode failed'));
+          } else {
+            stale.complete(null);
+          }
+          await Future<void>.delayed(Duration.zero);
+
+          // A fresh request for the same key must still start and succeed (not short-circuited by _failedUris).
+          final retry = Completer<ui.Image?>();
+          var retryDecoded = 0;
+          expect(
+            cache.resolveOrRequest(key, onDecoded: () => retryDecoded++, decode: () => retry.future),
+            isNull,
+          );
+          expect(cache.isInFlight(key), isTrue, reason: '$key must not be poisoned in _failedUris');
+          final img = await makeImage(64, 128, 255);
+          retry.complete(img);
+          await Future<void>.delayed(Duration.zero);
+          expect(identical(cache.getCached(key), img), isTrue);
+          expect(retryDecoded, 1);
+        }
+      }
     });
 
     test('computes exact cover/contain/stretch/center placement geometry', () {
