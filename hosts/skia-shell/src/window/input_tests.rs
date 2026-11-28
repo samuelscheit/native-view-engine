@@ -682,8 +682,9 @@ fn hidden_input_and_display_none_nodes_have_zero_layout_paint_hit_and_reject_foc
     );
     session.render_and_rasterize().unwrap();
 
-    assert!(
-        session.backend().display_list().ops.is_empty(),
+    assert_eq!(
+        session.backend().scene().live_op_count(),
+        0,
         "hidden/display:none inputs must produce 0 paint ops"
     );
     for id in [NodeId::new(10, 0), NodeId::new(11, 0), NodeId::new(13, 0)] {

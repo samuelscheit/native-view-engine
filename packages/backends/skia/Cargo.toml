@@ -99,5 +99,9 @@ criterion = { workspace = true }
 name = "skia_bench"
 harness = false
 
+[[bench]]
+name = "compositor_bench"
+harness = false
+
 [lints]
 workspace = true

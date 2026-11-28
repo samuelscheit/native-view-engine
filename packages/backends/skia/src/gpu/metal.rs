@@ -67,10 +67,11 @@ mod imp {
 
     enum MetalTarget {
         /// Attached to a native window's `CAMetalLayer` (zero-copy hardware presentation).
+        /// Drop order: Skia `active_surface` drops BEFORE `active_drawable` which drops BEFORE `layer`.
         WindowLayer {
-            layer: Retained<CAMetalLayer>,
-            active_drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
             active_surface: Option<Surface>,
+            active_drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+            layer: Retained<CAMetalLayer>,
         },
         /// GPU-resident offscreen `SkSurface` render target backed by a Metal texture in VRAM.
         Offscreen { surface: Surface },
@@ -78,11 +79,32 @@ mod imp {
 
     /// Platform-specific Apple Metal swapchain resources managed by [`GaneshPresenter`].
     pub struct MetalNativeSwapchain {
-        // Drop order matters: Skia surfaces & DirectContext must drop before device/queue/layer.
+        // Drop order matters: Skia surfaces & DirectContext must drop BEFORE queue & device.
         target: MetalTarget,
         direct_context: DirectContext,
         command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         _device: Retained<ProtocolObject<dyn MTLDevice>>,
+    }
+
+    impl Drop for MetalNativeSwapchain {
+        fn drop(&mut self) {
+            let _ = self.direct_context.flush_submit_and_sync_cpu();
+            if let MetalTarget::WindowLayer {
+                active_surface,
+                active_drawable,
+                ..
+            } = &mut self.target
+            {
+                // Window surfaces wrap a borrowed `CAMetalDrawable` texture and must drop BEFORE
+                // the drawable and `release_resources_and_abandon()`.
+                active_surface.take();
+                active_drawable.take();
+            }
+            // Note: `MetalTarget::Offscreen { surface }` owns a Skia-managed Metal texture;
+            // Rust drops `target` right after `Drop::drop` (before `direct_context`, `command_queue`,
+            // and `_device`), and Skia safely releases offscreen surfaces on an abandoned context.
+            self.direct_context.release_resources_and_abandon();
+        }
     }
 
     /// Real Apple Metal hardware GPU swapchain & offscreen render-target presenter.
@@ -95,10 +117,6 @@ mod imp {
 
         fn is_window_attached(&self) -> bool {
             matches!(self.target, MetalTarget::WindowLayer { .. })
-        }
-
-        fn direct_context_mut(&mut self) -> &mut DirectContext {
-            &mut self.direct_context
         }
 
         fn offscreen_surface_and_context_mut(
@@ -127,8 +145,11 @@ mod imp {
                 MetalTarget::Offscreen { surface } => {
                     if dims_changed {
                         let _ = self.direct_context.flush_submit_and_sync_cpu();
-                        *surface =
-                            create_ganesh_offscreen_surface(&mut self.direct_context, next, "Metal")?;
+                        *surface = create_ganesh_offscreen_surface(
+                            &mut self.direct_context,
+                            next,
+                            "Metal",
+                        )?;
                     }
                     Ok(dims_changed)
                 }
@@ -183,12 +204,15 @@ mod imp {
             Ok(())
         }
 
-        fn active_surface_mut(&mut self) -> Result<&mut Surface, GpuSurfaceError> {
+        fn active_surface_and_context_mut(
+            &mut self,
+        ) -> Result<(&mut Surface, &mut DirectContext), GpuSurfaceError> {
             match &mut self.target {
                 MetalTarget::WindowLayer { active_surface, .. } => active_surface
                     .as_mut()
+                    .map(|s| (s, &mut self.direct_context))
                     .ok_or(GpuSurfaceError::DrawableUnavailable),
-                MetalTarget::Offscreen { surface } => Ok(surface),
+                MetalTarget::Offscreen { surface } => Ok((surface, &mut self.direct_context)),
             }
         }
 
@@ -328,8 +352,13 @@ mod imp {
             })?;
             let canvas = surface.canvas();
             canvas.clear(to_skia_color(clear_color));
-            self.renderer
-                .paint_display_list(display_list, canvas, scale_factor);
+            self.renderer.paint_display_list_with_gpu_context(
+                display_list,
+                canvas,
+                scale_factor,
+                None,
+                Some(&mut self.inner.direct_context),
+            );
             if let Some(banner) = hud_banner {
                 self.renderer.paint_hud_banner(canvas, scale_factor, banner);
             }

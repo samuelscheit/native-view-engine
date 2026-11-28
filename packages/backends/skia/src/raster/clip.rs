@@ -17,17 +17,22 @@ pub(crate) fn rounded_rect_sdf(px: f32, py: f32, cx: f32, cy: f32, hx: f32, hy: 
     }
 }
 
+const INLINE_CLIP_DEPTH: usize = 16;
+
 /// Active physical-pixel clip stack supporting nested rectangular and rounded-rect clips.
+/// Uses an inline stack up to depth 16 for zero heap allocations on typical UI frames.
 #[derive(Debug, Clone)]
 pub(crate) struct ClipStack {
     buf_w: i32,
     buf_h: i32,
-    entries: Vec<ClipEntry>,
+    inline: [ClipEntry; INLINE_CLIP_DEPTH],
+    len: usize,
+    overflow: Vec<ClipEntry>,
     bounds: [i32; 4], // [x0, y0, x1, y1]
     rounded_count: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct ClipEntry {
     cx: f32,
     cy: f32,
@@ -47,9 +52,27 @@ impl ClipStack {
         Self {
             buf_w: w,
             buf_h: h,
-            entries: Vec::with_capacity(8),
+            inline: [ClipEntry::default(); INLINE_CLIP_DEPTH],
+            len: 0,
+            overflow: Vec::new(),
             bounds: [0, 0, w, h],
             rounded_count: 0,
+        }
+    }
+
+    #[inline]
+    fn inline_slice(&self) -> &[ClipEntry] {
+        &self.inline[..self.len.min(INLINE_CLIP_DEPTH)]
+    }
+
+    #[inline]
+    fn last_entry(&self) -> Option<&ClipEntry> {
+        if self.len == 0 {
+            None
+        } else if self.len <= INLINE_CLIP_DEPTH {
+            Some(&self.inline[self.len - 1])
+        } else {
+            self.overflow.last()
         }
     }
 
@@ -77,7 +100,7 @@ impl ClipStack {
         } else {
             [0, 0, 0, 0]
         };
-        self.entries.push(ClipEntry {
+        let entry = ClipEntry {
             cx: rect.x + hx,
             cy: rect.y + hy,
             hx,
@@ -86,18 +109,32 @@ impl ClipStack {
             inner_hx: hx - r,
             inner_hy: hy - r,
             bounds: next_bounds,
-        });
+        };
+        if self.len < INLINE_CLIP_DEPTH {
+            self.inline[self.len] = entry;
+        } else {
+            self.overflow.push(entry);
+        }
+        self.len += 1;
         self.bounds = next_bounds;
     }
 
     pub(crate) fn pop(&mut self) {
-        if let Some(popped) = self.entries.pop() {
+        if self.len == 0 {
+            return;
+        }
+        self.len -= 1;
+        let popped = if self.len < INLINE_CLIP_DEPTH {
+            Some(self.inline[self.len])
+        } else {
+            self.overflow.pop()
+        };
+        if let Some(popped) = popped {
             if popped.radius > 0.01 {
                 self.rounded_count = self.rounded_count.saturating_sub(1);
             }
             self.bounds = self
-                .entries
-                .last()
+                .last_entry()
                 .map_or([0, 0, self.buf_w, self.buf_h], |e| e.bounds);
         }
     }
@@ -127,7 +164,7 @@ impl ClipStack {
             return 1.0;
         }
         let mut cov = 1.0f32;
-        for entry in &self.entries {
+        for entry in self.inline_slice().iter().chain(self.overflow.iter()) {
             if entry.radius <= 0.01 {
                 continue;
             }
@@ -180,7 +217,7 @@ impl ClipStack {
         let fy = py as f32 + 0.5;
         let mut l = min_x;
         let mut r = max_x;
-        for entry in &self.entries {
+        for entry in self.inline_slice().iter().chain(self.overflow.iter()) {
             if entry.radius <= 0.01 {
                 continue;
             }

@@ -4,7 +4,7 @@
 use nve_abi::ColorRgba;
 use nve_engine::LayoutRect;
 
-use crate::font::{glyph_bitmap, GLYPH_HEIGHT, GLYPH_WIDTH};
+use crate::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
 use crate::text::TextAlign;
 
 use super::PixelBuffer;
@@ -208,8 +208,9 @@ pub(crate) fn blend_color_glyph(
     }
 }
 
-/// Embedded 5x7 bitmap fallback text rasterizer supporting `font_weight` (faux-bold at >= 600)
-/// and per-line `text_align` (`Left`, `Center`, `Right`).
+/// Embedded 5x7 bitmap fallback text rasterizer supporting `font_weight` (faux-bold at >= 600),
+/// per-line `text_align` (`Left`, `Center`, `Right`), and HiDPI `scale` (layout in logical coords,
+/// scaled to physical pixels at draw time to match `draw_bitmap_text_skia` identically).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_bitmap_text(
     buf: &mut PixelBuffer,
@@ -218,33 +219,33 @@ pub(crate) fn draw_bitmap_text(
     font_size: f32,
     font_weight: u16,
     text_align: TextAlign,
+    scale: f32,
     color: ColorRgba,
     opacity: f32,
     phys_clip: Option<[i32; 4]>,
 ) {
-    if text.is_empty() || font_size <= 0.0 || color.a == 0 || opacity <= 0.0 {
+    if text.is_empty()
+        || !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || !scale.is_finite()
+        || !opacity.is_finite()
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+        || scale <= 0.0
+        || color.a == 0
+        || opacity <= 0.0
+    {
         return;
     }
 
-    let metrics = crate::font::bitmap_font_metrics(font_size);
-    let glyph_h = metrics.glyph_h;
-    let glyph_w = metrics.glyph_w;
-    let advance_x = metrics.advance_x;
-    let line_height = metrics.line_height;
-    let faux_bold = font_weight >= 600;
-
-    let vertical_pad = if !text.contains('\n') && rect.height > glyph_h {
-        ((rect.height - glyph_h) * 0.5).min(font_size * 0.25)
-    } else {
-        0.0
-    };
-
     let buf_w = buf.width() as i32;
     let buf_h = buf.height() as i32;
-    let mut clip_x0 = (rect.x.floor() as i32).max(0);
-    let mut clip_y0 = (rect.y.floor() as i32).max(0);
-    let mut clip_x1 = ((rect.x + rect.width).ceil() as i32).min(buf_w);
-    let mut clip_y1 = ((rect.y + rect.height).ceil() as i32).min(buf_h);
+    let mut clip_x0 = ((rect.x * scale).floor() as i32).max(0);
+    let mut clip_y0 = ((rect.y * scale).floor() as i32).max(0);
+    let mut clip_x1 = (((rect.x + rect.width) * scale).ceil() as i32).min(buf_w);
+    let mut clip_y1 = (((rect.y + rect.height) * scale).ceil() as i32).min(buf_h);
     if let Some([px0, py0, px1, py1]) = phys_clip {
         clip_x0 = clip_x0.max(px0);
         clip_y0 = clip_y0.max(py0);
@@ -255,65 +256,49 @@ pub(crate) fn draw_bitmap_text(
         return;
     }
 
-    let mut cursor_y = rect.y + vertical_pad;
-
-    for line in text.split('\n') {
-        let char_count = line.chars().count();
-        let line_w = if char_count == 0 {
-            0.0
-        } else {
-            (char_count as f32) * advance_x - (advance_x - glyph_w).max(0.0)
-        };
-        let align_offset = match text_align {
-            TextAlign::Left => 0.0,
-            TextAlign::Center => ((rect.width - line_w) * 0.5).max(0.0),
-            TextAlign::Right => (rect.width - line_w).max(0.0),
-        };
-        let mut cursor_x = rect.x + align_offset;
-
-        for ch in line.chars() {
-            if ch == ' ' {
-                cursor_x += advance_x;
-                continue;
+    let safe_font_size = crate::text_cache::sanitize_font_size(font_size);
+    crate::font::for_each_bitmap_glyph_pass(
+        rect,
+        text,
+        safe_font_size,
+        font_weight,
+        text_align,
+        |gx, gy, glyph_w, glyph_h, bitmap| {
+            let pgx = gx * scale;
+            let pgy = gy * scale;
+            let pgw = glyph_w * scale;
+            let pgh = glyph_h * scale;
+            let x0 = (pgx.floor() as i32).max(clip_x0);
+            let x1 = ((pgx + pgw).ceil() as i32).min(clip_x1);
+            let y0 = (pgy.floor() as i32).max(clip_y0);
+            let y1 = ((pgy + pgh).ceil() as i32).min(clip_y1);
+            if x0 >= x1 || y0 >= y1 {
+                return;
             }
-            let bitmap = glyph_bitmap(ch);
-            let passes: &[f32] = if faux_bold { &[0.0, 1.0] } else { &[0.0] };
-            for &dx in passes {
-                let gx = cursor_x + dx;
-                let x0 = (gx.floor() as i32).max(clip_x0);
-                let x1 = ((gx + glyph_w).ceil() as i32).min(clip_x1);
-                let y0 = (cursor_y.floor() as i32).max(clip_y0);
-                let y1 = ((cursor_y + glyph_h).ceil() as i32).min(clip_y1);
-
-                if x0 < x1 && y0 < y1 {
-                    let inv_w = GLYPH_WIDTH as f32 / glyph_w;
-                    let inv_h = GLYPH_HEIGHT as f32 / glyph_h;
-                    for py in y0..y1 {
-                        let v = ((py as f32 + 0.5) - cursor_y) * inv_h;
-                        let row_idx = v.floor() as i32;
-                        if row_idx < 0 || row_idx >= GLYPH_HEIGHT as i32 {
-                            continue;
-                        }
-                        let row_bits = bitmap[row_idx as usize];
-                        if row_bits == 0 {
-                            continue;
-                        }
-                        for px in x0..x1 {
-                            let u = ((px as f32 + 0.5) - gx) * inv_w;
-                            let col_idx = u.floor() as i32;
-                            if col_idx < 0 || col_idx >= GLYPH_WIDTH as i32 {
-                                continue;
-                            }
-                            let bit = (row_bits >> (GLYPH_WIDTH as i32 - 1 - col_idx)) & 1;
-                            if bit != 0 {
-                                buf.blend_pixel(px, py, color, opacity);
-                            }
-                        }
+            let inv_w = GLYPH_WIDTH as f32 / pgw;
+            let inv_h = GLYPH_HEIGHT as f32 / pgh;
+            for py in y0..y1 {
+                let v = ((py as f32 + 0.5) - pgy) * inv_h;
+                let row_idx = v.floor() as i32;
+                if row_idx < 0 || row_idx >= GLYPH_HEIGHT as i32 {
+                    continue;
+                }
+                let row_bits = bitmap[row_idx as usize];
+                if row_bits == 0 {
+                    continue;
+                }
+                for px in x0..x1 {
+                    let u = ((px as f32 + 0.5) - pgx) * inv_w;
+                    let col_idx = u.floor() as i32;
+                    if col_idx < 0 || col_idx >= GLYPH_WIDTH as i32 {
+                        continue;
+                    }
+                    let bit = (row_bits >> (GLYPH_WIDTH as i32 - 1 - col_idx)) & 1;
+                    if bit != 0 {
+                        buf.blend_pixel(px, py, color, opacity);
                     }
                 }
             }
-            cursor_x += advance_x;
-        }
-        cursor_y += line_height;
-    }
+        },
+    );
 }

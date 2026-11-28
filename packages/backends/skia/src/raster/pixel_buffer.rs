@@ -49,6 +49,16 @@ impl PixelBuffer {
         self.alpha.resize(len, 0);
     }
 
+    /// Reclaims excess backing capacity after transient oversized draws (e.g. a 4Kx4K plugin).
+    pub fn shrink_if_capacity_exceeds(&mut self, max_pixels: usize) {
+        if self.pixels.capacity() > max_pixels {
+            self.width = 0;
+            self.height = 0;
+            self.pixels = Vec::new();
+            self.alpha = Vec::new();
+        }
+    }
+
     /// Writes contiguous unpremultiplied `RGBA8888` bytes into `out` (reusing `out`'s capacity).
     pub fn write_rgba8_into(&self, out: &mut Vec<u8>) {
         let len = self.pixels.len();
@@ -93,6 +103,11 @@ impl PixelBuffer {
     #[inline]
     pub fn pixels(&self) -> &[u32] {
         &self.pixels
+    }
+
+    #[inline]
+    pub fn pixel_capacity(&self) -> usize {
+        self.pixels.capacity()
     }
 
     #[inline]

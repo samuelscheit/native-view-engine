@@ -138,8 +138,7 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
 
     assert!(headless.render_ascii_tree(app.store()).contains("Count: 0"));
     assert!(web.render_html(app.store()).contains("Count: 0"));
-    skia.rebuild_display_list(app.store());
-    assert!(!skia.display_list().ops.is_empty());
+    assert!(skia.scene().live_op_count() > 0);
 
     // Press Increment + twice via testID lookup.
     for frame_id in 2..=3 {

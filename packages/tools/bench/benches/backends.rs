@@ -80,7 +80,7 @@ fn bench_skia_backend(c: &mut Criterion) {
                 let stats = replica
                     .submit_nve2_frame(black_box(&card_cmd))
                     .expect("submit skia card frame");
-                black_box((stats, replica.backend().display_list().ops.len()))
+                black_box((stats, replica.backend().scene().live_op_count()))
             },
             BatchSize::SmallInput,
         );
@@ -115,7 +115,7 @@ fn bench_skia_backend(c: &mut Criterion) {
                 let stats = replica
                     .submit_nve2_frame(black_box(&tree_cmd))
                     .expect("submit skia tree frame");
-                black_box((stats, replica.backend().display_list().ops.len()))
+                black_box((stats, replica.backend().scene().live_op_count()))
             },
             BatchSize::SmallInput,
         );

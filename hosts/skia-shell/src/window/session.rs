@@ -13,7 +13,7 @@ use nve_backend_skia::raster::{draw_hud_banner, PixelBuffer};
 #[cfg(feature = "skia")]
 use nve_backend_skia::gpu::GpuSurfaceConfig;
 #[cfg(feature = "skia")]
-use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
+use nve_backend_skia::{GpuSurface, GpuSurfaceBackend};
 use nve_backend_skia::{CursorKind, SkiaBackend};
 use nve_canvas_skia::CanvasSkiaSystem;
 use nve_tables::tables::{core_realization_order, register_core_tables};
@@ -111,8 +111,6 @@ pub struct DesktopSession<A: DesktopApp> {
     /// Wall-clock instant of the previous animation tick (`None` while idle).
     last_animation_tick: Option<Instant>,
     #[cfg(feature = "skia")]
-    skia_renderer: SkiaCanvasRenderer,
-    #[cfg(feature = "skia")]
     gpu_surface: Option<GpuSurface>,
 }
 
@@ -209,8 +207,6 @@ impl<A: DesktopApp> DesktopSession<A> {
             a11y_synced_wire_frame: 0,
             last_telemetry: None,
             last_animation_tick: None,
-            #[cfg(feature = "skia")]
-            skia_renderer: SkiaCanvasRenderer::new(),
             #[cfg(feature = "skia")]
             gpu_surface,
         }
@@ -382,7 +378,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.app.dispatch_events(batch.as_validated())
     }
 
-    /// Presents the current retained `DisplayList` directly through a hardware or offscreen
+    /// Presents the current retained `CompositorScene` directly through a hardware or offscreen
     /// [`GpuSwapchain`] without touching the CPU software `PixelBuffer`.
     pub fn present_to_swapchain(
         &mut self,
@@ -394,9 +390,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             None
         };
         let (store, backend) = self.replica.store_and_backend_mut();
-        let (dl, registry, events) = backend.paint_parts_mut();
-        let telemetry = swapchain.execute_frame_with_plugins(
-            dl,
+        let (scene, registry, events) = backend.scene_paint_parts_mut();
+        let telemetry = swapchain.execute_scene_with_plugins(
+            scene,
             self.viewport.scale_factor,
             self.clear_color,
             hud,
@@ -524,12 +520,11 @@ impl<A: DesktopApp> DesktopSession<A> {
                 let pw = self.pixel_buffer.width();
                 let ph = self.pixel_buffer.height();
                 let (store, backend) = self.replica.store_and_backend_mut();
-                let (dl, registry, events) = backend.paint_parts_mut();
+                let (scene, registry, events) = backend.scene_paint_parts_mut();
                 let ok = surface.resize(pw, ph).is_ok()
                     && surface
-                        .render_display_list_with_plugins(
-                            &self.skia_renderer,
-                            dl,
+                        .render_scene_cached_with_plugins(
+                            scene,
                             self.viewport.scale_factor,
                             self.clear_color,
                             Some((store, registry, events)),

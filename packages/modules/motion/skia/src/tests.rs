@@ -210,11 +210,115 @@ fn spring_transition_overshoots_into_the_display_list() {
     skia.commit(&store, &changes).expect("commit");
     let mut peak = f32::MIN;
     while skia.advance_animations(&store, 1.0 / 60.0) {
-        for op in &skia.display_list().ops {
+        for op in &skia.materialize_display_list().ops {
             if let PaintOp::PushTransform { matrix } = op {
                 peak = peak.max(matrix[4]);
             }
         }
     }
     assert!(peak > 110.5, "bouncy spring overshoots the 110px target in painted output (peak {peak})");
+}
+
+#[test]
+fn motion_driver_compositor_scene_composite_and_paint_oracle_parity() {
+    use nve_backend_skia::raster::{rasterize_display_list, PixelBuffer};
+    use nve_backend_skia::retained::SceneDirtyKind;
+    use nve_tables::tables::{TextContent, Typography};
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (comp_node, paint_node) = {
+        let mut tx = store.tx();
+        tx.edit::<Layout>(NodeId::ROOT)
+            .width(Length::points(240.0))
+            .height(Length::points(120.0));
+        let comp = tx.create();
+        tx.edit::<Layout>(comp)
+            .width(Length::points(100.0))
+            .height(Length::points(50.0));
+        tx.edit::<Visual>(comp)
+            .background(Rgba::rgb(59, 130, 246))
+            .opacity(1.0);
+        tx.edit::<Transform>(comp).translate_x(0.0);
+        tx.edit::<Motion>(comp).transitions(Some(Transitions::new([
+            TransitionSpec::new(TransitionProperty::Opacity, 200).easing(EasingCurve::Linear),
+            TransitionSpec::new(TransitionProperty::Transform, 200).easing(EasingCurve::Linear),
+        ])));
+
+        let paint = tx.create();
+        tx.edit::<Layout>(paint)
+            .width(Length::points(100.0))
+            .height(Length::points(50.0));
+        tx.edit::<Visual>(paint)
+            .background(Rgba::rgb(20, 40, 80))
+            .border_radius(2.0);
+        tx.edit::<Typography>(paint)
+            .color(Rgba::rgb(255, 255, 255))
+            .font_size(14.0);
+        tx.edit::<TextContent>(paint).text("Anim");
+        tx.edit::<Motion>(paint).transitions(Some(Transitions::new([
+            TransitionSpec::new(TransitionProperty::BackgroundColor, 200)
+                .easing(EasingCurve::Linear),
+            TransitionSpec::new(TransitionProperty::Color, 200).easing(EasingCurve::Linear),
+            TransitionSpec::new(TransitionProperty::BorderRadius, 200)
+                .easing(EasingCurve::Linear),
+        ])));
+
+        tx.set_children(NodeId::ROOT, &[comp, paint]);
+        tx.commit_into(&mut changes);
+        (comp, paint)
+    };
+
+    let mut skia = backend(&store, &changes, true);
+    let assert_oracle = |skia: &mut SkiaBackend, label: &str| {
+        let clear = ColorRgba::rgb(10, 15, 25);
+        let mut scene_buf = PixelBuffer::new(240, 120);
+        skia.rasterize(&mut scene_buf, clear);
+        let dl = skia.materialize_display_list().clone();
+        let mut dl_buf = PixelBuffer::new(240, 120);
+        rasterize_display_list(&dl, &mut dl_buf, 1.0, clear);
+        assert_eq!(scene_buf.pixels(), dl_buf.pixels(), "oracle mismatch at {label}");
+    };
+
+    // 1. Trigger composite-only (opacity + transform) transition: ticks MUST stay CompositeOnly
+    //    with 0 re-emitted paint chunks.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(comp_node).opacity(0.35);
+        tx.edit::<Transform>(comp_node).translate_x(40.0);
+        tx.commit_into(&mut changes);
+    }
+    skia.commit(&store, &changes).expect("trigger composite");
+    let emitted_before = skia.scene().stats().chunks_emitted;
+    assert!(skia.advance_animations(&store, 0.08));
+    assert_eq!(
+        skia.scene().stats().last_dirty_kind,
+        Some(SceneDirtyKind::CompositeOnly),
+        "opacity+transform tick must take CompositeOnly fast path"
+    );
+    assert_eq!(
+        skia.scene().stats().chunks_emitted,
+        emitted_before,
+        "composite-only motion tick must emit 0 paint chunks"
+    );
+    assert_oracle(&mut skia, "composite mid-flight");
+
+    // 2. Trigger paint-channel (bg + text color + border_radius) transition: ticks update via
+    //    incremental PaintOnly and match materialized oracle.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(paint_node)
+            .background(Rgba::rgb(220, 80, 30))
+            .border_radius(14.0);
+        tx.edit::<Typography>(paint_node).color(Rgba::rgb(30, 240, 180));
+        tx.commit_into(&mut changes);
+    }
+    skia.commit(&store, &changes).expect("trigger paint");
+    assert!(skia.advance_animations(&store, 0.08));
+    assert_oracle(&mut skia, "composite+paint mid-flight");
+
+    // 3. Reduced motion snaps both active composite & paint transitions in-place cleanly.
+    skia.set_reduced_motion(&store, true);
+    assert!(!skia.needs_next_frame());
+    assert_oracle(&mut skia, "reduced motion snap");
 }

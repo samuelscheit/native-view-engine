@@ -3,13 +3,9 @@
 //! system fonts are installed). Supports `font-weight` (`100..=900` / named weights) and
 //! `text-align` (`left | center | right`).
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use cosmic_text::{
-    Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
-    Weight, Wrap,
-};
+use cosmic_text::{Attrs, CacheKey, Family, FontSystem, SwashCache, SwashContent, Weight};
 use nve_abi::ColorRgba;
 use nve_engine::LayoutRect;
 use nve_layout::{TextMeasurer, TextStyle};
@@ -18,19 +14,25 @@ use crate::font::BitmapFontTextMeasurer;
 use crate::raster::{
     blend_color_glyph, blend_mask_glyph, blend_subpixel_glyph, draw_bitmap_text, PixelBuffer,
 };
+use crate::slab_lru::{FastBuildHasher, IdentityU64BuildHasher, SlabLru};
 use crate::text_cache::{
-    hash_measure_key, hash_shaped_key, line_height_for, sanitize_font_size, sanitize_font_weight,
-    sanitize_scale, CachedGlyphImage, MeasureCacheEntry, PositionedGlyph, ShapedCacheEntry,
-    ShapedText,
+    canonical_f32, hash_measure_key, hash_shaped_key, layout_text, line_align_offset_logical,
+    line_height_for, sanitize_font_size, sanitize_font_weight, sanitize_scale, wrap_width_from_rect,
+    CachedGlyphImage, MeasureCacheEntry, PositionedGlyph, ShapedCacheEntry, ShapedText,
+    TextLayoutParams,
 };
 
 pub use crate::text_cache::{
-    parse_font_weight, TextAlign, DEFAULT_FONT_SIZE, DEFAULT_FONT_WEIGHT, LINE_HEIGHT_MULTIPLIER,
+    parse_font_weight, SkiaShapedGlyph, SkiaShapedRuns, TextAlign, DEFAULT_FONT_SIZE,
+    DEFAULT_FONT_WEIGHT, LINE_HEIGHT_MULTIPLIER,
 };
 
 const MAX_MEASURE_CACHE_ENTRIES: usize = 4096;
+const MAX_MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SHAPED_CACHE_ENTRIES: usize = 2048;
+const MAX_SHAPED_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_GLYPH_IMAGE_CACHE_ENTRIES: usize = 4096;
+const MAX_GLYPH_IMAGE_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Thread-safe text shaping, measurement, and antialiased glyph rasterization engine
 /// backed by `cosmic-text` (HarfBuzz + `fontdb` + `swash`), with automatic fallback to the
@@ -38,11 +40,17 @@ const MAX_GLYPH_IMAGE_CACHE_ENTRIES: usize = 4096;
 pub struct CosmicTextEngine {
     font_system: Mutex<FontSystem>,
     swash_cache: Mutex<SwashCache>,
-    glyph_images: Mutex<HashMap<CacheKey, Option<CachedGlyphImage>>>,
-    measure_cache: Mutex<HashMap<u64, MeasureCacheEntry>>,
-    shaped_cache: Mutex<HashMap<u64, ShapedCacheEntry>>,
+    glyph_images: Mutex<SlabLru<CacheKey, Option<CachedGlyphImage>, FastBuildHasher>>,
+    measure_cache: Mutex<SlabLru<u64, MeasureCacheEntry, IdentityU64BuildHasher>>,
+    shaped_cache: Mutex<SlabLru<u64, ShapedCacheEntry, IdentityU64BuildHasher>>,
     has_system_fonts: bool,
     loaded_font_count: usize,
+    #[cfg(test)]
+    pub(crate) fail_face_load: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    pub(crate) fail_only_face_id: Mutex<Option<cosmic_text::fontdb::ID>>,
+    #[cfg(test)]
+    pub(crate) face_load_calls: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for CosmicTextEngine {
@@ -77,15 +85,43 @@ impl CosmicTextEngine {
     pub fn from_font_system(font_system: FontSystem) -> Self {
         let loaded_font_count = font_system.db().len();
         let has_system_fonts = loaded_font_count > 0;
-        Self {
+        let engine = Self {
             font_system: Mutex::new(font_system),
             swash_cache: Mutex::new(SwashCache::new()),
-            glyph_images: Mutex::new(HashMap::with_capacity(256)),
-            measure_cache: Mutex::new(HashMap::with_capacity(256)),
-            shaped_cache: Mutex::new(HashMap::with_capacity(256)),
+            glyph_images: Mutex::new(SlabLru::with_initial_capacity_and_hasher(
+                MAX_GLYPH_IMAGE_CACHE_ENTRIES,
+                MAX_GLYPH_IMAGE_CACHE_BYTES,
+                256,
+                FastBuildHasher,
+            )),
+            measure_cache: Mutex::new(SlabLru::with_initial_capacity_and_hasher(
+                MAX_MEASURE_CACHE_ENTRIES,
+                MAX_MEASURE_CACHE_BYTES,
+                256,
+                IdentityU64BuildHasher,
+            )),
+            shaped_cache: Mutex::new(SlabLru::with_initial_capacity_and_hasher(
+                MAX_SHAPED_CACHE_ENTRIES,
+                MAX_SHAPED_CACHE_BYTES,
+                256,
+                IdentityU64BuildHasher,
+            )),
             has_system_fonts,
             loaded_font_count,
-        }
+            #[cfg(test)]
+            fail_face_load: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_only_face_id: Mutex::new(None),
+            #[cfg(test)]
+            face_load_calls: std::sync::atomic::AtomicU64::new(0),
+        };
+        // Eagerly prime OS mutex storage so steady-state cache lookups allocate zero bytes.
+        drop(engine.font_system.lock());
+        drop(engine.swash_cache.lock());
+        drop(engine.glyph_images.lock());
+        drop(engine.measure_cache.lock());
+        drop(engine.shaped_cache.lock());
+        engine
     }
 
     /// Creates a `CosmicTextEngine` with an empty font database to exercise the graceful
@@ -119,6 +155,22 @@ impl CosmicTextEngine {
         if let Ok(mut guard) = self.swash_cache.lock() {
             guard.image_cache.clear();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_swash_image_cache_len(&self) -> usize {
+        self.swash_cache
+            .lock()
+            .map_or(0, |guard| guard.image_cache.len())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_glyph_image_cache_stats(&self) -> (usize, usize, usize) {
+        self.glyph_images
+            .lock()
+            .map_or((0, 0, MAX_GLYPH_IMAGE_CACHE_BYTES), |guard| {
+                (guard.len(), guard.live_bytes(), guard.max_bytes())
+            })
     }
 
     pub(crate) fn attrs_for_weight(weight: u16) -> Attrs<'static> {
@@ -163,39 +215,37 @@ impl CosmicTextEngine {
                 let explicit_lines = text.split('\n').count().max(1) as f32;
                 return (0.0, (explicit_lines * lh).ceil());
             }
-            Some(mw) => Some(mw),
+            Some(mw) => Some(canonical_f32(mw)),
             None => None,
         };
 
-        let fs_bits = fs.to_bits();
-        let mw_bits = normalized_max_w.map_or(u32::MAX, f32::to_bits);
+        let params = TextLayoutParams::new(fs, weight, TextAlign::Left, normalized_max_w, 0.0);
+        let fs_bits = params.font_size_bits();
+        let mw_bits = params.wrap_width_bits();
         let cache_hash = hash_measure_key(text, fs_bits, weight, mw_bits);
 
-        if let Ok(cache) = self.measure_cache.lock()
-            && let Some(entry) = cache.get(&cache_hash)
+        if let Ok(mut cache) = self.measure_cache.lock()
+            && let Some(entry) = cache.get_mut(&cache_hash)
             && entry.matches(text, fs_bits, weight, mw_bits)
         {
             return entry.size;
         }
 
         let size = {
-            let mut font_system = self
-                .font_system
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let mut buffer = Buffer::new_empty(Metrics::new(fs, lh));
-            buffer.set_wrap(Wrap::WordOrGlyph);
-            buffer.set_size(normalized_max_w, None);
-            let attrs = Self::attrs_for_weight(weight);
-            buffer.set_text(text, &attrs, Shaping::Advanced, None);
-            buffer.shape_until_scroll(&mut font_system, false);
+            let mut font_system = self.lock_font_system();
+            let buffer = layout_text(&mut font_system, text, params);
 
             let mut max_line_w = 0.0f32;
             let mut total_h = 0.0f32;
             let mut run_count = 0usize;
             for run in buffer.layout_runs() {
-                max_line_w = max_line_w.max(run.line_w);
-                total_h = total_h.max(run.line_top + run.line_height);
+                if run.line_w.is_finite() {
+                    max_line_w = max_line_w.max(run.line_w);
+                }
+                let bottom = run.line_top + run.line_height;
+                if bottom.is_finite() {
+                    total_h = total_h.max(bottom);
+                }
                 run_count += 1;
             }
 
@@ -206,7 +256,7 @@ impl CosmicTextEngine {
                 // Add a 1px subpixel/hinting margin so subsequent shaping against `rect.width`
                 // never wraps the final word or clips right-side glyph overhang.
                 let ceiled_w = (max_line_w + 1.0).ceil().max(1.0);
-                let final_w = match normalized_max_w {
+                let final_w = match params.wrap_width {
                     Some(mw) => ceiled_w.min(mw),
                     None => ceiled_w,
                 };
@@ -216,9 +266,7 @@ impl CosmicTextEngine {
         };
 
         if let Ok(mut cache) = self.measure_cache.lock() {
-            if cache.len() >= MAX_MEASURE_CACHE_ENTRIES {
-                cache.clear();
-            }
+            let entry_bytes = 64 + text.len();
             cache.insert(
                 cache_hash,
                 MeasureCacheEntry {
@@ -228,6 +276,7 @@ impl CosmicTextEngine {
                     max_width_bits: mw_bits,
                     size,
                 },
+                entry_bytes,
             );
         }
 
@@ -245,47 +294,19 @@ impl CosmicTextEngine {
         align_width: f32,
         scale: f32,
     ) -> Arc<ShapedText> {
-        let weight = sanitize_font_weight(font_weight);
-        let fs_bits = font_size.to_bits();
-        let ww_bits = wrap_width.map_or(u32::MAX, f32::to_bits);
-        let aw_quantized = if text_align == TextAlign::Left {
-            0.0f32
-        } else {
-            (align_width * 4.0).round() * 0.25
-        };
-        let aw_bits = aw_quantized.to_bits();
-        let scale_bits = scale.to_bits();
-        let cache_hash = hash_shaped_key(
-            text,
-            fs_bits,
-            weight,
-            text_align,
-            ww_bits,
-            aw_bits,
-            scale_bits,
-        );
+        let params = TextLayoutParams::new(font_size, font_weight, text_align, wrap_width, align_width);
+        let scale_bits = canonical_f32(scale).to_bits();
+        let cache_hash = hash_shaped_key(text, params, scale_bits);
 
-        if let Ok(cache) = self.shaped_cache.lock()
-            && let Some(entry) = cache.get(&cache_hash)
-            && entry.matches(
-                text,
-                fs_bits,
-                weight,
-                text_align,
-                ww_bits,
-                aw_bits,
-                scale_bits,
-            )
+        if let Ok(mut cache) = self.shaped_cache.lock()
+            && let Some(entry) = cache.get_mut(&cache_hash)
+            && entry.matches(text, params, scale_bits)
         {
             return Arc::clone(&entry.shaped);
         }
 
-        let lh = line_height_for(font_size);
         let shaped = {
-            let mut font_system = self
-                .font_system
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut font_system = self.lock_font_system();
             let mut swash_cache = self
                 .swash_cache
                 .lock()
@@ -295,46 +316,35 @@ impl CosmicTextEngine {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
 
-            if swash_cache.image_cache.len() > MAX_GLYPH_IMAGE_CACHE_ENTRIES {
-                swash_cache.image_cache.clear();
-            }
-            if glyph_images.len() > MAX_GLYPH_IMAGE_CACHE_ENTRIES {
-                glyph_images.clear();
-            }
-
-            let mut buffer = Buffer::new_empty(Metrics::new(font_size, lh));
-            buffer.set_wrap(Wrap::WordOrGlyph);
-            buffer.set_size(wrap_width, None);
-            let attrs = Self::attrs_for_weight(weight);
-            buffer.set_text(text, &attrs, Shaping::Advanced, None);
-            buffer.shape_until_scroll(&mut font_system, false);
+            let buffer = layout_text(&mut font_system, text, params);
 
             let mut glyphs = Vec::new();
             for run in buffer.layout_runs() {
-                let align_x_logical = match text_align {
-                    TextAlign::Left => 0.0,
-                    TextAlign::Center => ((aw_quantized - run.line_w) * 0.5).max(0.0),
-                    TextAlign::Right => (aw_quantized - run.line_w).max(0.0),
-                };
+                let align_x_logical =
+                    line_align_offset_logical(params.text_align, params.align_width, run.line_w);
                 let origin_px = (align_x_logical * scale, run.line_y * scale);
                 for glyph in run.glyphs {
                     let physical = glyph.physical(origin_px, scale);
-                    let cached_img = glyph_images
-                        .entry(physical.cache_key)
-                        .or_insert_with(|| {
-                            swash_cache
-                                .get_image(&mut font_system, physical.cache_key)
-                                .as_ref()
-                                .filter(|img| img.placement.width > 0 && img.placement.height > 0)
-                                .map(|img| CachedGlyphImage {
-                                    left: img.placement.left,
-                                    top: img.placement.top,
-                                    width: img.placement.width,
-                                    height: img.placement.height,
-                                    content: img.content,
-                                    data: Arc::from(img.data.as_slice()),
-                                })
-                        });
+                    let cached_img = if let Some(hit) = glyph_images.get_mut(&physical.cache_key) {
+                        hit.clone()
+                    } else {
+                        // Use `get_image_uncached` so `cosmic-text`'s unbounded internal
+                        // `SwashCache::image_cache` never duplicates our bounded `SlabLru`.
+                        let built = swash_cache
+                            .get_image_uncached(&mut font_system, physical.cache_key)
+                            .filter(|img| img.placement.width > 0 && img.placement.height > 0)
+                            .map(|img| CachedGlyphImage {
+                                left: img.placement.left,
+                                top: img.placement.top,
+                                width: img.placement.width,
+                                height: img.placement.height,
+                                content: img.content,
+                                data: Arc::from(img.data.as_slice()),
+                            });
+                        let bytes = 64 + built.as_ref().map_or(0, |b| b.data.len());
+                        glyph_images.insert(physical.cache_key, built.clone(), bytes);
+                        built
+                    };
 
                     if let Some(img) = cached_img {
                         glyphs.push(PositionedGlyph {
@@ -353,21 +363,21 @@ impl CosmicTextEngine {
         };
 
         if let Ok(mut cache) = self.shaped_cache.lock() {
-            if cache.len() >= MAX_SHAPED_CACHE_ENTRIES {
-                cache.clear();
-            }
+            let entry_bytes =
+                96 + text.len() + shaped.glyphs.len() * std::mem::size_of::<PositionedGlyph>();
             cache.insert(
                 cache_hash,
                 ShapedCacheEntry {
                     text: text.to_owned(),
-                    font_size_bits: fs_bits,
-                    font_weight: weight,
-                    text_align,
-                    wrap_width_bits: ww_bits,
-                    align_width_bits: aw_bits,
+                    font_size_bits: params.font_size_bits(),
+                    font_weight: params.font_weight,
+                    text_align: params.text_align,
+                    wrap_width_bits: params.wrap_width_bits(),
+                    align_width_bits: params.align_width_bits(),
                     scale_bits,
                     shaped: Arc::clone(&shaped),
                 },
+                entry_bytes,
             );
         }
 
@@ -414,6 +424,11 @@ impl CosmicTextEngine {
         phys_clip: Option<[i32; 4]>,
     ) {
         if text.is_empty()
+            || !rect.x.is_finite()
+            || !rect.y.is_finite()
+            || !rect.width.is_finite()
+            || !rect.height.is_finite()
+            || !opacity.is_finite()
             || rect.width <= 0.0
             || rect.height <= 0.0
             || color.a == 0
@@ -427,19 +442,14 @@ impl CosmicTextEngine {
         let weight = sanitize_font_weight(font_weight);
 
         if !self.has_system_fonts {
-            let scaled_rect = LayoutRect {
-                x: rect.x * scale,
-                y: rect.y * scale,
-                width: rect.width * scale,
-                height: rect.height * scale,
-            };
             draw_bitmap_text(
                 buf,
-                scaled_rect,
+                rect,
                 text,
-                fs * scale,
+                fs,
                 weight,
                 text_align,
+                scale,
                 color,
                 opacity,
                 phys_clip,
@@ -478,12 +488,7 @@ impl CosmicTextEngine {
             return;
         }
 
-        let wrap_width = if rect.width.is_finite() && rect.width > 0.0 {
-            Some((rect.width + 0.25).ceil())
-        } else {
-            None
-        };
-
+        let wrap_width = wrap_width_from_rect(rect.width);
         let shaped = self.get_or_shape(text, fs, weight, text_align, wrap_width, rect.width, scale);
 
         let opacity_clamped = opacity.clamp(0.0, 1.0);

@@ -1,4 +1,4 @@
-//! Cached PNG and raw RGBA image decoder with bounded O(log n) LRU eviction and cross-backend
+//! Cached PNG and raw RGBA image decoder with bounded O(1) `SlabLru` eviction and cross-backend
 //! `ImageResizeMode` placement math.
 //!
 //! Supports:
@@ -17,6 +17,7 @@ mod png_rows;
 mod tests;
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nve_abi::ColorRgba;
 use nve_tables::tables::ImageFit;
@@ -28,6 +29,9 @@ pub use png::{decode_png, encode_rgb_png};
 
 /// Default maximum number of decoded images retained in [`ImageCache`].
 pub const DEFAULT_MAX_CACHE_ENTRIES: usize = 256;
+/// Upper bound on `ImageCache::new(max_entries, ...)` slot count so the eager per-slot atomic
+/// liveness/CLOCK tables remain bounded even if a caller passes `usize::MAX`.
+pub const MAX_IMAGE_CACHE_SLOTS: usize = 65_536;
 /// Default maximum total RGBA byte footprint retained in [`ImageCache`] (64 MiB).
 pub const DEFAULT_MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -36,15 +40,106 @@ pub const MAX_IMAGE_DIMENSION: u32 = 16_384;
 /// Maximum decoded RGBA byte length for a single image (64 MiB).
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
+static NEXT_DECODED_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+#[inline]
+pub(crate) fn next_decoded_image_id() -> u64 {
+    NEXT_DECODED_IMAGE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Sealed dense slot index inside [`ImageCache`] (`[INV:typed-domain-handles]`).
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageSlot(u32);
+
+impl ImageSlot {
+    #[inline]
+    pub(self) const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub(crate) const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Compact `Copy` handle referencing a decoded image slot in [`ImageCache`] without pinning
+/// `Arc<DecodedImage>`. Fields and constructor are private to `image_cache` so external code
+/// cannot forge handles; warm frames validate liveness in one lock-free `Acquire` load on
+/// the per-slot atomic `decoded_id` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageSlotHandle {
+    slot: ImageSlot,
+    decoded_id: u64,
+}
+
+impl ImageSlotHandle {
+    #[inline]
+    pub(self) const fn new(slot: ImageSlot, decoded_id: u64) -> Self {
+        Self { slot, decoded_id }
+    }
+
+    /// Returns the sealed [`ImageSlot`] index for this handle.
+    #[inline]
+    pub const fn slot(self) -> ImageSlot {
+        self.slot
+    }
+
+    /// Returns the monotonic `DecodedImage` allocation identity bound to this handle.
+    #[inline]
+    pub const fn decoded_id(self) -> u64 {
+        self.decoded_id
+    }
+}
+
+#[cfg(test)]
+static SHARED_IMAGE_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn lock_shared_image_cache() -> std::sync::MutexGuard<'static, ()> {
+    SHARED_IMAGE_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Decoded straight-alpha (unpremultiplied) RGBA8888 image buffer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct DecodedImage {
+    /// Process-wide monotonic allocation identity used as an ABA-free, zero-hashing cache key
+    /// for GPU texture caches (`SkiaImageCache`). Private so external code cannot forge or alias
+    /// identities across distinct pixel buffers.
+    id: u64,
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
 }
 
+impl Clone for DecodedImage {
+    fn clone(&self) -> Self {
+        Self {
+            id: next_decoded_image_id(),
+            width: self.width,
+            height: self.height,
+            rgba: self.rgba.clone(),
+        }
+    }
+}
+
+impl PartialEq for DecodedImage {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width && self.height == other.height && self.rgba == other.rgba
+    }
+}
+
+impl Eq for DecodedImage {}
+
 impl DecodedImage {
+    /// Returns the process-wide unique monotonic allocation ID for this decoded buffer.
+    #[inline]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
     /// Creates a validated [`DecodedImage`] from raw straight-alpha RGBA8888 bytes.
     pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, ImageDecodeError> {
         let expected = checked_rgba_len(width, height)?;
@@ -55,6 +150,7 @@ impl DecodedImage {
             });
         }
         Ok(Self {
+            id: next_decoded_image_id(),
             width,
             height,
             rgba,

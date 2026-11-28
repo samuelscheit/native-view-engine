@@ -73,13 +73,12 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
 
     backend.commit(&store, &changes).unwrap();
 
-    assert!(backend
-        .display_list()
+    let dl = backend.materialize_display_list();
+    assert!(dl
         .ops
         .iter()
         .any(|op| matches!(op, PaintOp::DrawShadow { .. })));
-    assert!(backend
-        .display_list()
+    assert!(dl
         .ops
         .iter()
         .any(|op| matches!(op, PaintOp::FillRoundedRectGradient { .. })));
@@ -148,7 +147,7 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
 
     // DisplayList must NOT paint hidden_parent (red) or inherit_child (blue), and MUST paint visible_child (green).
     let painted_colors: Vec<ColorRgba> = backend
-        .display_list()
+        .materialize_display_list()
         .ops
         .iter()
         .filter_map(|op| match op {
@@ -228,7 +227,7 @@ fn skia_inherited_typography_and_explicit_default_resets() {
     backend.commit(&store, &changes).unwrap();
     let mut seen_inherits = None;
     let mut seen_resets = None;
-    for op in &backend.display_list().ops {
+    for op in &backend.materialize_display_list().ops {
         if let PaintOp::DrawText {
             text,
             font_size,

@@ -484,19 +484,18 @@ fn cpu_skia_surface_plugin_preserves_transparent_background() {
             node_id: n,
             rect: LayoutRect { x: 10.0, y: 10.0, width: 20.0, height: 20.0 },
             inherited_text_color: Rgba::WHITE,
+            plugin_epoch: 0,
         }],
     };
     let mut surface = CpuSkiaSurface::new(40, 40).unwrap();
-    let renderer = SkiaCanvasRenderer::new();
-    GpuSurfaceBackend::render_display_list_with_plugins(
-        &mut surface,
-        &renderer,
-        &dl,
-        1.0,
-        ColorRgba::rgb(0, 200, 100),
-        Some((&store, &registry, &mut events)),
-    )
-    .unwrap();
+    surface
+        .render_cached_with_plugins(
+            &dl,
+            1.0,
+            ColorRgba::rgb(0, 200, 100),
+            Some((&store, &registry, &mut events)),
+        )
+        .unwrap();
     let mut out = PixelBuffer::new(40, 40);
     surface.copy_to_pixel_buffer(&mut out).unwrap();
     // Inside the 4x4 painted square: red.
@@ -504,6 +503,26 @@ fn cpu_skia_surface_plugin_preserves_transparent_background() {
     // Inside the 20x20 plugin rect but outside the 4x4 icon: green clear color shows through (NOT black!).
     assert_eq!(out.get_rgb(12, 12), Some((0, 200, 100)));
 }
+
+#[cfg(feature = "skia")]
+#[path = "cache_invalidation_tests.rs"]
+mod cache_invalidation_tests;
+
+#[cfg(feature = "skia")]
+#[path = "cache_plugin_invalidation_tests.rs"]
+mod cache_plugin_invalidation_tests;
+
+#[cfg(feature = "skia")]
+#[path = "cache_pass2_tests.rs"]
+mod cache_pass2_tests;
+
+#[cfg(feature = "skia")]
+#[path = "cache_pass3_tests.rs"]
+mod cache_pass3_tests;
+
+#[cfg(feature = "skia")]
+#[path = "cache_parity_tests.rs"]
+mod cache_parity_tests;
 
 #[cfg(feature = "skia")]
 #[path = "parity_tests.rs"]
