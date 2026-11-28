@@ -30,21 +30,8 @@ const HEADER_LEN: usize = 4 + 2;
 const CHECKSUM_LEN: usize = 8;
 
 fn encode_snapshot(w: &mut BinWriter, s: &WorkspaceSnapshot) {
-    w.push_u8(match s.active_view {
-        ActiveView::Board => 0,
-        ActiveView::ChannelEngineering => 1,
-        ActiveView::ChannelDesign => 2,
-        ActiveView::Docs => 3,
-        ActiveView::Workbench => 4,
-        ActiveView::Stream100k => 5,
-        ActiveView::Islands => 6,
-        ActiveView::Metrics => 7,
-    });
-    w.push_u8(match s.board_filter {
-        BoardFilter::All => 0,
-        BoardFilter::Active => 1,
-        BoardFilter::Done => 2,
-    });
+    w.push_u8(s.active_view as u8);
+    w.push_u8(s.board_filter as u8);
     w.push_str(&s.board_search_query);
     w.push_str(&s.new_task_draft);
 
@@ -105,26 +92,11 @@ fn encode_snapshot(w: &mut BinWriter, s: &WorkspaceSnapshot) {
     encode_workbench(w, &s.workbench);
 
     w.push_bool(s.studio.panel_open);
-    w.push_u8(match s.studio.accent {
-        AccentTheme::Cyan => 0,
-        AccentTheme::Violet => 1,
-        AccentTheme::Green => 2,
-        AccentTheme::Amber => 3,
-    });
-    w.push_u8(match s.studio.radius {
-        CornerRadiusMode::Sharp => 0,
-        CornerRadiusMode::Soft => 1,
-        CornerRadiusMode::Pill => 2,
-    });
-    w.push_u8(match s.studio.density {
-        DensityMode::Normal => 0,
-        DensityMode::Compact => 1,
-    });
+    w.push_u8(s.studio.accent as u8);
+    w.push_u8(s.studio.radius as u8);
+    w.push_u8(s.studio.density as u8);
     w.push_bool(s.studio.xray);
-    w.push_u8(match s.studio.layout_engine {
-        LayoutEngineMode::Taffy => 0,
-        LayoutEngineMode::Yoga => 1,
-    });
+    w.push_u8(s.studio.layout_engine as u8);
 
     w.push_str(&s.action_label);
     w.push_u32(s.viewport_width);
@@ -134,23 +106,8 @@ fn encode_snapshot(w: &mut BinWriter, s: &WorkspaceSnapshot) {
 }
 
 fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
-    let active_view = match r.read_u8()? {
-        0 => ActiveView::Board,
-        1 => ActiveView::ChannelEngineering,
-        2 => ActiveView::ChannelDesign,
-        3 => ActiveView::Docs,
-        4 => ActiveView::Workbench,
-        5 => ActiveView::Stream100k,
-        6 => ActiveView::Islands,
-        7 => ActiveView::Metrics,
-        _ => return None,
-    };
-    let board_filter = match r.read_u8()? {
-        0 => BoardFilter::All,
-        1 => BoardFilter::Active,
-        2 => BoardFilter::Done,
-        _ => return None,
-    };
+    let active_view = ActiveView::try_from_u8(r.read_u8()?)?;
+    let board_filter = BoardFilter::try_from_u8(r.read_u8()?)?;
     let board_search_query = r.read_str()?;
     let new_task_draft = r.read_str()?;
 
@@ -222,30 +179,11 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
     let workbench = decode_workbench(r)?;
 
     let panel_open = r.read_bool()?;
-    let accent = match r.read_u8()? {
-        0 => AccentTheme::Cyan,
-        1 => AccentTheme::Violet,
-        2 => AccentTheme::Green,
-        3 => AccentTheme::Amber,
-        _ => return None,
-    };
-    let radius = match r.read_u8()? {
-        0 => CornerRadiusMode::Sharp,
-        1 => CornerRadiusMode::Soft,
-        2 => CornerRadiusMode::Pill,
-        _ => return None,
-    };
-    let density = match r.read_u8()? {
-        0 => DensityMode::Normal,
-        1 => DensityMode::Compact,
-        _ => return None,
-    };
+    let accent = AccentTheme::try_from_u8(r.read_u8()?)?;
+    let radius = CornerRadiusMode::try_from_u8(r.read_u8()?)?;
+    let density = DensityMode::try_from_u8(r.read_u8()?)?;
     let xray = r.read_bool()?;
-    let layout_engine = match r.read_u8()? {
-        0 => LayoutEngineMode::Taffy,
-        1 => LayoutEngineMode::Yoga,
-        _ => return None,
-    };
+    let layout_engine = LayoutEngineMode::try_from_u8(r.read_u8()?)?;
     let studio = StudioConfig {
         panel_open,
         accent,
@@ -317,12 +255,7 @@ impl WorkspaceState {
         w.push_str(&self.palette.query);
         w.push_u32(self.palette.selected as u32);
 
-        w.push_u8(match self.sync_telemetry.transport {
-            SyncTransportMode::LanQuic => 0,
-            SyncTransportMode::UsbMux => 1,
-            SyncTransportMode::RelayWss => 2,
-            SyncTransportMode::Offline => 3,
-        });
+        w.push_u8(self.sync_telemetry.transport as u8);
         w.push_u16(self.sync_telemetry.connected_peers);
         w.push_u32(self.sync_telemetry.kbps_tenths);
         w.push_u16(self.sync_telemetry.compression_tenths);
@@ -414,13 +347,7 @@ impl WorkspaceState {
             selected: r.read_u32()? as usize,
         };
 
-        let transport = match r.read_u8()? {
-            0 => SyncTransportMode::LanQuic,
-            1 => SyncTransportMode::UsbMux,
-            2 => SyncTransportMode::RelayWss,
-            3 => SyncTransportMode::Offline,
-            _ => return None,
-        };
+        let transport = SyncTransportMode::try_from_u8(r.read_u8()?)?;
         let sync_telemetry = SyncTelemetryState {
             transport,
             connected_peers: r.read_u16()?,

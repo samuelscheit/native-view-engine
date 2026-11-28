@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::guard::{guard_fn, GuardChain, GuardDecision, GuardOutcome, NavigationContext, NavigationGuard};
+use crate::guard::{guard_fn, GuardChain, GuardDecision, NavigationContext, NavigationGuard};
 use crate::route::Routable;
 use crate::stack::{NavigationAction, NavigationError, NavigationTransition, RouteEntry, RouterState};
 
@@ -275,18 +275,14 @@ impl<T: Copy + Eq + Ord + 'static, R: Routable> TabRouterState<T, R> {
         let from_route = self.current_route().clone();
         let target_route = self.tabs[target_idx].stack.current_route().clone();
 
-        let (resolved, hops) = match self.guards.evaluate(
-            Some(&from_route),
-            target_route.clone(),
-            NavigationAction::SwitchTab,
-        ) {
-            GuardOutcome::Allowed(r) => (r, 0),
-            GuardOutcome::Redirected { route, hops } => (route, hops),
-            GuardOutcome::Blocked => return Err(NavigationError::Blocked),
-            GuardOutcome::RedirectCycle { hops } => {
-                return Err(NavigationError::RedirectCycle { hops });
-            }
-        };
+        let (resolved, hops) = self
+            .guards
+            .evaluate(
+                Some(&from_route),
+                target_route.clone(),
+                NavigationAction::SwitchTab,
+            )
+            .into_result()?;
 
         self.active_index = target_idx;
         if hops > 0 && resolved != target_route {
@@ -378,18 +374,10 @@ impl<T: Copy + Eq + Ord + 'static, R: Routable> TabRouterState<T, R> {
     /// Opens a modal overlay shared across all tabs without mutating any tab's back-stack.
     pub fn open_modal(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
         let from = Some(self.top().route.clone());
-        let (resolved, hops) =
-            match self
-                .guards
-                .evaluate(from.as_ref(), route, NavigationAction::OpenModal)
-            {
-                GuardOutcome::Allowed(r) => (r, 0),
-                GuardOutcome::Redirected { route, hops } => (route, hops),
-                GuardOutcome::Blocked => return Err(NavigationError::Blocked),
-                GuardOutcome::RedirectCycle { hops } => {
-                    return Err(NavigationError::RedirectCycle { hops });
-                }
-            };
+        let (resolved, hops) = self
+            .guards
+            .evaluate(from.as_ref(), route, NavigationAction::OpenModal)
+            .into_result()?;
 
         let entry_id = self.next_entry_id;
         self.next_entry_id = self.next_entry_id.saturating_add(1);

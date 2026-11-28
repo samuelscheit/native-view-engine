@@ -17,12 +17,15 @@ use crate::traits::studio_density_to_trait;
 
 /// Dense index of a polarity into the per-polarity tables (order of [`Polarity::ALL`]).
 pub const fn polarity_index(polarity: Polarity) -> usize {
-    match polarity {
-        Polarity::Light => 0,
-        Polarity::Dark => 1,
-        Polarity::HighContrastLight => 2,
-        Polarity::HighContrastDark => 3,
+    let target = polarity as u8;
+    let mut i = 0;
+    while i < Polarity::ALL.len() {
+        if Polarity::ALL[i] as u8 == target {
+            return i;
+        }
+        i += 1;
     }
+    0
 }
 
 /// Studio base themes per workspace accent ([`AccentTheme::ALL`] order) × polarity.

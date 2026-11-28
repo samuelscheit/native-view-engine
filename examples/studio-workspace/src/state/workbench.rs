@@ -4,13 +4,14 @@
 use super::WorkspaceState;
 
 /// Synchronized live preview viewport preset for the Meta Workbench.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nve_abi::ReprEnum)]
 pub enum WorkbenchPreset {
     #[default]
-    All,
-    Desktop,
-    Tablet,
-    Mobile,
+    All = 0,
+    Desktop = 1,
+    Tablet = 2,
+    Mobile = 3,
 }
 
 impl WorkbenchPreset {

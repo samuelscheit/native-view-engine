@@ -74,8 +74,7 @@ const MIRR: DuplicateKind = DuplicateKind::Mirrored;
 /// audited on `integration` (`521f7f95`). Shrink or delete entries whenever duplicates are collapsed.
 #[rustfmt::skip]
 pub const ALLOWLISTED_DUPLICATES: &[AllowlistedDuplicate] = &[
-    // --- Same-direction duplicates (11 hits across 11 unique symbol pairs) ---
-    entry(SAME, ("examples/studio-workspace/src/theme.rs", "polarity_index"), ("packages/framework/ui/src/theme/presets.rs", "Theme::preset"), "Polarity", 1, "track-theme", "Duplicate Polarity->0..3 index match"),
+    // --- Same-direction duplicates (8 hits across 8 unique symbol pairs) ---
     entry(SAME, ("packages/core/codegen/src/frontend/rn_spec/calls.rs", "Parser::parse_component_options_object"), ("packages/core/codegen/src/frontend/rn_spec/mod.rs", "Parser::skip_to_statement_end"), "TokenKind", 1, "track-codegen", "Duplicate TokenKind balanced-delimiter skipper"),
     entry(SAME, ("packages/core/codegen/src/frontend/rn_spec/mod.rs", "Parser::parse_export_default"), ("packages/core/codegen/src/frontend/rn_spec/mod.rs", "Parser::parse_var_statement"), "TokenKind", 1, "track-codegen", "Duplicate TokenKind balanced-delimiter loop"),
     entry(SAME, ("packages/core/codegen/src/targets/dart/hybrid/client_emitter.rs", "emit_dart_direct_prop_write"), ("packages/core/codegen/src/targets/dart/hybrid/client_emitter.rs", "emit_dart_direct_prop_write"), "HybridType", 1, "track-codegen", "Duplicate Dart direct-prop dispatch in single function"),
@@ -84,17 +83,8 @@ pub const ALLOWLISTED_DUPLICATES: &[AllowlistedDuplicate] = &[
     entry(SAME, ("packages/core/codegen/src/targets/dart/hybrid/type_helpers.rs", "dart_ffi_call_return_type"), ("packages/core/codegen/src/targets/dart/hybrid/type_helpers.rs", "dart_type"), "HybridType", 1, "track-codegen", "Duplicate Dart scalar type table"),
     entry(SAME, ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "jni_cpp_param_type"), ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "jni_cpp_return_type"), "HybridType", 1, "track-codegen", "Duplicate JNI C++ param/return scalar type table"),
     entry(SAME, ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "kotlin_jni_param_type"), ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "kotlin_jni_return_type"), "HybridType", 1, "track-codegen", "Duplicate Kotlin JNI param/return scalar type table"),
-    entry(SAME, ("packages/framework/router/src/channel.rs", "apply_command_to_router"), ("packages/framework/router/src/channel.rs", "apply_command_to_tabs"), "NavigationAction", 1, "track-router", "Duplicate NavigationAction dispatch across router/tabs channel"),
-    entry(SAME, ("packages/framework/router/src/tabs.rs", "TabRouterState::open_modal"), ("packages/framework/router/src/tabs.rs", "TabRouterState::select_tab_index"), "GuardOutcome", 1, "track-router", "Duplicate GuardOutcome match in TabRouterState"),
 
-    // --- Mirrored / bidirectional duplicates (11 hits across 11 unique symbol pairs) ---
-    entry(MIRR, ("examples/studio-workspace/src/routes.rs", "StudioRoute::active_view"), ("examples/studio-workspace/src/routes.rs", "StudioRoute::from_view"), "StudioRoute", 1, "track-studio", "Bidirectional StudioRoute<->ActiveView table"),
-    entry(MIRR, ("examples/studio-workspace/src/state/codec.rs", "WorkspaceState::from_bytes"), ("examples/studio-workspace/src/state/codec.rs", "WorkspaceState::to_bytes"), "SyncTransportMode", 1, "track-studio", "Bidirectional SyncTransportMode<->u8 codec"),
-    entry(MIRR, ("examples/studio-workspace/src/state/codec.rs", "decode_snapshot"), ("examples/studio-workspace/src/state/codec.rs", "encode_snapshot"), "AccentTheme", 1, "track-studio", "Bidirectional AccentTheme<->u8 codec"),
-    entry(MIRR, ("examples/studio-workspace/src/state/codec.rs", "decode_snapshot"), ("examples/studio-workspace/src/state/codec.rs", "encode_snapshot"), "ActiveView", 1, "track-studio", "Bidirectional ActiveView<->u8 codec"),
-    entry(MIRR, ("examples/studio-workspace/src/state/codec_io.rs", "decode_islands"), ("examples/studio-workspace/src/state/codec_io.rs", "encode_islands"), "IslandHostKind", 1, "track-studio", "Bidirectional IslandHostKind<->u8 codec"),
-    entry(MIRR, ("examples/studio-workspace/src/state/codec_io.rs", "decode_workbench"), ("examples/studio-workspace/src/state/codec_io.rs", "encode_workbench"), "WorkbenchPreset", 1, "track-studio", "Bidirectional WorkbenchPreset<->u8 codec"),
-    entry(MIRR, ("packages/framework/i18n/src/plural.rs", "PluralCategory::as_str"), ("packages/framework/i18n/src/plural.rs", "PluralCategory::parse"), "PluralCategory", 1, "track-i18n", "Bidirectional PluralCategory<->CLDR str table"),
+    // --- Mirrored / bidirectional duplicates (2 hits across 2 unique symbol pairs) ---
     entry(MIRR, ("packages/modules/tv/src/action.rs", "RemoteAction::from_key_name"), ("packages/modules/tv/src/action.rs", "RemoteAction::key_name"), "RemoteAction", 1, "track-tv", "Bidirectional RemoteAction<->W3C key table (20 arms)"),
     entry(MIRR, ("packages/modules/tv/src/action.rs", "RemoteAction::key_name"), ("packages/modules/tv/src/web_keys.rs", "from_code_name"), "RemoteAction", 1, "track-tv", "Cross-file bidirectional RemoteAction<->W3C code table"),
 ];

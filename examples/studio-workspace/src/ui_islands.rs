@@ -20,12 +20,13 @@ use crate::state::AccentTheme;
 /// Custom zero-copy binary pub/sub topic shared across hosted islands.
 pub const TOPIC_WORKSPACE_SYNC: &str = "workspace.sync";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, nve_abi::ReprEnum)]
 pub enum IslandHostKind {
-    ReactNative,
-    Flutter,
-    SwiftUI,
-    JetpackCompose,
+    ReactNative = 0,
+    Flutter = 1,
+    SwiftUI = 2,
+    JetpackCompose = 3,
 }
 
 impl IslandHostKind {

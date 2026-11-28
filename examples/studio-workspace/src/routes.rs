@@ -41,20 +41,29 @@ define_routes! {
     }
 }
 
+/// Single source of truth pairing each non-parameterized [`ActiveView`] with its unit [`StudioRoute`].
+const UNIT_VIEW_ROUTES: [(ActiveView, StudioRoute); 6] = [
+    (ActiveView::Board, StudioRoute::Board),
+    (ActiveView::Docs, StudioRoute::Docs),
+    (ActiveView::Workbench, StudioRoute::Workbench),
+    (ActiveView::Stream100k, StudioRoute::Stream),
+    (ActiveView::Islands, StudioRoute::Islands),
+    (ActiveView::Metrics, StudioRoute::Metrics),
+];
+
 impl StudioRoute {
     /// Builds the default [`StudioRoute`] corresponding to an [`ActiveView`].
     pub fn from_view(view: ActiveView) -> Self {
         match view {
-            ActiveView::Board => Self::Board,
             ActiveView::ChannelEngineering => Self::Channels { channel: None },
             ActiveView::ChannelDesign => Self::Channels {
                 channel: Some("design".into()),
             },
-            ActiveView::Docs => Self::Docs,
-            ActiveView::Workbench => Self::Workbench,
-            ActiveView::Stream100k => Self::Stream,
-            ActiveView::Islands => Self::Islands,
-            ActiveView::Metrics => Self::Metrics,
+            unit => UNIT_VIEW_ROUTES
+                .iter()
+                .find(|(v, _)| *v == unit)
+                .map(|(_, r)| r.clone())
+                .unwrap_or(Self::Board),
         }
     }
 
@@ -71,16 +80,16 @@ impl StudioRoute {
     /// Resolves this route back to its workspace [`ActiveView`].
     pub fn active_view(&self) -> ActiveView {
         match self {
-            Self::Board | Self::Task { .. } => ActiveView::Board,
+            Self::Task { .. } => ActiveView::Board,
+            Self::Doc { .. } => ActiveView::Docs,
             Self::Channels { channel } => match channel.as_deref() {
                 Some(ch) if ch.eq_ignore_ascii_case("design") => ActiveView::ChannelDesign,
                 _ => ActiveView::ChannelEngineering,
             },
-            Self::Docs | Self::Doc { .. } => ActiveView::Docs,
-            Self::Workbench => ActiveView::Workbench,
-            Self::Stream => ActiveView::Stream100k,
-            Self::Islands => ActiveView::Islands,
-            Self::Metrics => ActiveView::Metrics,
+            unit => UNIT_VIEW_ROUTES
+                .iter()
+                .find(|(_, r)| r == unit)
+                .map_or(ActiveView::Board, |(v, _)| *v),
         }
     }
 

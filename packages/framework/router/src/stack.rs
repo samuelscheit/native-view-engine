@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::guard::{guard_fn, GuardChain, GuardDecision, GuardOutcome, NavigationContext, NavigationGuard};
+use crate::guard::{guard_fn, GuardChain, GuardDecision, NavigationContext, NavigationGuard};
 use crate::route::Routable;
 
 /// Wire-compatible navigation transition kind (matches `NVN1` byte `[5]`).
@@ -258,12 +258,7 @@ impl<R: Routable> RouterState<R> {
         target: R,
         action: NavigationAction,
     ) -> Result<(R, usize), NavigationError> {
-        match guards.evaluate(from, target, action) {
-            GuardOutcome::Allowed(r) => Ok((r, 0)),
-            GuardOutcome::Redirected { route, hops } => Ok((route, hops)),
-            GuardOutcome::Blocked => Err(NavigationError::Blocked),
-            GuardOutcome::RedirectCycle { hops } => Err(NavigationError::RedirectCycle { hops }),
-        }
+        guards.evaluate(from, target, action).into_result()
     }
 
     fn make_transition(

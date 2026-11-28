@@ -114,16 +114,8 @@ pub(super) fn encode_task(w: &mut BinWriter, t: &TaskItem) {
     w.push_str(&t.title);
     w.push_str(&t.assignee);
     w.push_str(&t.tag);
-    w.push_u8(match t.priority {
-        Priority::P0 => 0,
-        Priority::P1 => 1,
-        Priority::P2 => 2,
-    });
-    w.push_u8(match t.status {
-        TaskStatus::Todo => 0,
-        TaskStatus::InProgress => 1,
-        TaskStatus::Done => 2,
-    });
+    w.push_u8(t.priority as u8);
+    w.push_u8(t.status as u8);
 }
 
 pub(super) fn decode_task(r: &mut BinReader<'_>) -> Option<TaskItem> {
@@ -132,18 +124,8 @@ pub(super) fn decode_task(r: &mut BinReader<'_>) -> Option<TaskItem> {
     let title = r.read_str()?;
     let assignee = r.read_str()?;
     let tag = r.read_str()?;
-    let priority = match r.read_u8()? {
-        0 => Priority::P0,
-        1 => Priority::P1,
-        2 => Priority::P2,
-        _ => return None,
-    };
-    let status = match r.read_u8()? {
-        0 => TaskStatus::Todo,
-        1 => TaskStatus::InProgress,
-        2 => TaskStatus::Done,
-        _ => return None,
-    };
+    let priority = Priority::try_from_u8(r.read_u8()?)?;
+    let status = TaskStatus::try_from_u8(r.read_u8()?)?;
     Some(TaskItem {
         id,
         key,
@@ -180,12 +162,7 @@ pub(super) fn encode_islands(w: &mut BinWriter, isl: &IslandsSnapshot) {
     w.push_u32(isl.cards.len() as u32);
     for c in &isl.cards {
         w.push_str(&c.slug);
-        w.push_u8(match c.host {
-            IslandHostKind::ReactNative => 0,
-            IslandHostKind::Flutter => 1,
-            IslandHostKind::SwiftUI => 2,
-            IslandHostKind::JetpackCompose => 3,
-        });
+        w.push_u8(c.host as u8);
         w.push_u32(c.surface_id.raw());
         w.push_str(&c.component_name);
         w.push_str(&c.mount_policy);
@@ -215,13 +192,7 @@ pub(super) fn decode_islands(r: &mut BinReader<'_>) -> Option<IslandsSnapshot> {
     let mut cards = Vec::with_capacity(card_len.min(64));
     for _ in 0..card_len {
         let slug = r.read_str()?;
-        let host = match r.read_u8()? {
-            0 => IslandHostKind::ReactNative,
-            1 => IslandHostKind::Flutter,
-            2 => IslandHostKind::SwiftUI,
-            3 => IslandHostKind::JetpackCompose,
-            _ => return None,
-        };
+        let host = IslandHostKind::try_from_u8(r.read_u8()?)?;
         cards.push(IslandCardState {
             slug,
             host,
@@ -320,24 +291,13 @@ pub(super) fn decode_doc(r: &mut BinReader<'_>) -> Option<WorkspaceDoc> {
 }
 
 pub(super) fn encode_workbench(w: &mut BinWriter, wb: &WorkbenchState) {
-    w.push_u8(match wb.preset {
-        WorkbenchPreset::All => 0,
-        WorkbenchPreset::Desktop => 1,
-        WorkbenchPreset::Tablet => 2,
-        WorkbenchPreset::Mobile => 3,
-    });
+    w.push_u8(wb.preset as u8);
     w.push_bool(wb.show_device_chrome);
     w.push_str(&wb.selected_host_slug);
 }
 
 pub(super) fn decode_workbench(r: &mut BinReader<'_>) -> Option<WorkbenchState> {
-    let preset = match r.read_u8()? {
-        0 => WorkbenchPreset::All,
-        1 => WorkbenchPreset::Desktop,
-        2 => WorkbenchPreset::Tablet,
-        3 => WorkbenchPreset::Mobile,
-        _ => return None,
-    };
+    let preset = WorkbenchPreset::try_from_u8(r.read_u8()?)?;
     let show_device_chrome = r.read_bool()?;
     let selected_host_slug = r.read_str()?;
     Some(WorkbenchState {

@@ -258,78 +258,109 @@ fn resolve_packet_route<R: Routable>(uri: &str, deeplink: Option<&DeepLinkConfig
     }
 }
 
-fn apply_command_to_router<R: Routable>(
-    router: &mut RouterState<R>,
-    packet: &NavPacket,
-    deeplink: Option<&DeepLinkConfig>,
-) -> InboundApplyOutcome<R> {
-    match packet.action {
-        NavigationAction::Snapshot => InboundApplyOutcome::IgnoredSnapshot,
-        NavigationAction::Pop => match router.pop() {
-            Ok(tr) => InboundApplyOutcome::Applied(tr),
-            Err(e) => InboundApplyOutcome::Rejected(e),
-        },
-        NavigationAction::PopToRoot => match router.pop_to_root() {
-            Ok(tr) => InboundApplyOutcome::Applied(tr),
-            Err(e) => InboundApplyOutcome::Rejected(e),
-        },
-        NavigationAction::DismissModal => match router.dismiss_modal() {
-            Ok(tr) => InboundApplyOutcome::Applied(tr),
-            Err(e) => InboundApplyOutcome::Rejected(e),
-        },
-        NavigationAction::Push
-        | NavigationAction::Replace
-        | NavigationAction::DeepLink
-        | NavigationAction::OpenModal
-        | NavigationAction::SwitchTab => {
-            let Some(route) = resolve_packet_route::<R>(&packet.uri, deeplink) else {
-                return InboundApplyOutcome::UnmatchedUri(packet.uri.clone());
-            };
-            let res = match packet.action {
-                NavigationAction::Push | NavigationAction::SwitchTab => router.push(route),
-                NavigationAction::Replace => router.replace(route),
-                NavigationAction::DeepLink => router.apply_deep_link(route),
-                NavigationAction::OpenModal => router.open_modal(route),
-                _ => unreachable!(),
-            };
-            match res {
-                Ok(tr) => InboundApplyOutcome::Applied(tr),
-                Err(e) => InboundApplyOutcome::Rejected(e),
-            }
-        }
+trait NavCommandTarget<R: Routable> {
+    fn nav_pop(&mut self) -> Result<NavigationTransition<R>, NavigationError>;
+    fn nav_pop_to_root(&mut self) -> Result<NavigationTransition<R>, NavigationError>;
+    fn nav_dismiss_modal(&mut self) -> Result<NavigationTransition<R>, NavigationError>;
+    fn nav_push(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError>;
+    fn nav_replace(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError>;
+    fn nav_deep_link(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError>;
+    fn nav_open_modal(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError>;
+    fn nav_switch_tab(
+        &mut self,
+        packet: &NavPacket,
+        deeplink: Option<&DeepLinkConfig>,
+    ) -> InboundApplyOutcome<R>;
+}
+
+fn transition_outcome<R>(res: Result<NavigationTransition<R>, NavigationError>) -> InboundApplyOutcome<R> {
+    match res {
+        Ok(tr) => InboundApplyOutcome::Applied(tr),
+        Err(e) => InboundApplyOutcome::Rejected(e),
     }
 }
 
-fn apply_command_to_tabs<T: Copy + Eq + Ord + 'static, R: Routable>(
-    tabs: &mut TabRouterState<T, R>,
+impl<R: Routable> NavCommandTarget<R> for RouterState<R> {
+    fn nav_pop(&mut self) -> Result<NavigationTransition<R>, NavigationError> {
+        self.pop()
+    }
+    fn nav_pop_to_root(&mut self) -> Result<NavigationTransition<R>, NavigationError> {
+        self.pop_to_root()
+    }
+    fn nav_dismiss_modal(&mut self) -> Result<NavigationTransition<R>, NavigationError> {
+        self.dismiss_modal()
+    }
+    fn nav_push(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.push(route)
+    }
+    fn nav_replace(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.replace(route)
+    }
+    fn nav_deep_link(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.apply_deep_link(route)
+    }
+    fn nav_open_modal(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.open_modal(route)
+    }
+    fn nav_switch_tab(
+        &mut self,
+        packet: &NavPacket,
+        deeplink: Option<&DeepLinkConfig>,
+    ) -> InboundApplyOutcome<R> {
+        let Some(route) = resolve_packet_route::<R>(&packet.uri, deeplink) else {
+            return InboundApplyOutcome::UnmatchedUri(packet.uri.clone());
+        };
+        transition_outcome(self.push(route))
+    }
+}
+
+impl<T: Copy + Eq + Ord + 'static, R: Routable> NavCommandTarget<R> for TabRouterState<T, R> {
+    fn nav_pop(&mut self) -> Result<NavigationTransition<R>, NavigationError> {
+        self.pop()
+    }
+    fn nav_pop_to_root(&mut self) -> Result<NavigationTransition<R>, NavigationError> {
+        self.pop_to_root()
+    }
+    fn nav_dismiss_modal(&mut self) -> Result<NavigationTransition<R>, NavigationError> {
+        self.dismiss_modal()
+    }
+    fn nav_push(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.push(route)
+    }
+    fn nav_replace(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.replace(route)
+    }
+    fn nav_deep_link(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.apply_deep_link(route)
+    }
+    fn nav_open_modal(&mut self, route: R) -> Result<NavigationTransition<R>, NavigationError> {
+        self.open_modal(route)
+    }
+    fn nav_switch_tab(
+        &mut self,
+        packet: &NavPacket,
+        _deeplink: Option<&DeepLinkConfig>,
+    ) -> InboundApplyOutcome<R> {
+        let res = if !packet.tab_id.is_empty() {
+            self.switch_tab_by_id(&packet.tab_id)
+        } else {
+            self.switch_tab_by_index(packet.active_tab_index as usize)
+        };
+        transition_outcome(res)
+    }
+}
+
+fn apply_command<R: Routable>(
+    target: &mut impl NavCommandTarget<R>,
     packet: &NavPacket,
     deeplink: Option<&DeepLinkConfig>,
 ) -> InboundApplyOutcome<R> {
     match packet.action {
         NavigationAction::Snapshot => InboundApplyOutcome::IgnoredSnapshot,
-        NavigationAction::SwitchTab => {
-            let res = if !packet.tab_id.is_empty() {
-                tabs.switch_tab_by_id(&packet.tab_id)
-            } else {
-                tabs.switch_tab_by_index(packet.active_tab_index as usize)
-            };
-            match res {
-                Ok(tr) => InboundApplyOutcome::Applied(tr),
-                Err(e) => InboundApplyOutcome::Rejected(e),
-            }
-        }
-        NavigationAction::Pop => match tabs.pop() {
-            Ok(tr) => InboundApplyOutcome::Applied(tr),
-            Err(e) => InboundApplyOutcome::Rejected(e),
-        },
-        NavigationAction::PopToRoot => match tabs.pop_to_root() {
-            Ok(tr) => InboundApplyOutcome::Applied(tr),
-            Err(e) => InboundApplyOutcome::Rejected(e),
-        },
-        NavigationAction::DismissModal => match tabs.dismiss_modal() {
-            Ok(tr) => InboundApplyOutcome::Applied(tr),
-            Err(e) => InboundApplyOutcome::Rejected(e),
-        },
+        NavigationAction::SwitchTab => target.nav_switch_tab(packet, deeplink),
+        NavigationAction::Pop => transition_outcome(target.nav_pop()),
+        NavigationAction::PopToRoot => transition_outcome(target.nav_pop_to_root()),
+        NavigationAction::DismissModal => transition_outcome(target.nav_dismiss_modal()),
         NavigationAction::Push
         | NavigationAction::Replace
         | NavigationAction::DeepLink
@@ -338,16 +369,29 @@ fn apply_command_to_tabs<T: Copy + Eq + Ord + 'static, R: Routable>(
                 return InboundApplyOutcome::UnmatchedUri(packet.uri.clone());
             };
             let res = match packet.action {
-                NavigationAction::Push => tabs.push(route),
-                NavigationAction::Replace => tabs.replace(route),
-                NavigationAction::DeepLink => tabs.apply_deep_link(route),
-                NavigationAction::OpenModal => tabs.open_modal(route),
+                NavigationAction::Push => target.nav_push(route),
+                NavigationAction::Replace => target.nav_replace(route),
+                NavigationAction::DeepLink => target.nav_deep_link(route),
+                NavigationAction::OpenModal => target.nav_open_modal(route),
                 _ => unreachable!(),
             };
-            match res {
-                Ok(tr) => InboundApplyOutcome::Applied(tr),
-                Err(e) => InboundApplyOutcome::Rejected(e),
-            }
+            transition_outcome(res)
         }
     }
+}
+
+fn apply_command_to_router<R: Routable>(
+    router: &mut RouterState<R>,
+    packet: &NavPacket,
+    deeplink: Option<&DeepLinkConfig>,
+) -> InboundApplyOutcome<R> {
+    apply_command(router, packet, deeplink)
+}
+
+fn apply_command_to_tabs<T: Copy + Eq + Ord + 'static, R: Routable>(
+    tabs: &mut TabRouterState<T, R>,
+    packet: &NavPacket,
+    deeplink: Option<&DeepLinkConfig>,
+) -> InboundApplyOutcome<R> {
+    apply_command(tabs, packet, deeplink)
 }

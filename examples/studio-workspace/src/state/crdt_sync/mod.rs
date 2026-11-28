@@ -431,36 +431,26 @@ fn peer_bucket_u16(peer: PeerId) -> u16 {
 }
 
 pub(super) const fn encode_priority(p: Priority) -> u32 {
-    match p {
-        Priority::P0 => 0,
-        Priority::P1 => 1,
-        Priority::P2 => 2,
-    }
+    p as u32
 }
 
 pub(super) const fn decode_priority(v: u32) -> Option<Priority> {
-    match v {
-        0 => Some(Priority::P0),
-        1 => Some(Priority::P1),
-        2 => Some(Priority::P2),
-        _ => None,
+    if v <= u8::MAX as u32 {
+        Priority::try_from_u8(v as u8)
+    } else {
+        None
     }
 }
 
 pub(super) const fn encode_status(s: TaskStatus) -> u32 {
-    match s {
-        TaskStatus::Todo => 0,
-        TaskStatus::InProgress => 1,
-        TaskStatus::Done => 2,
-    }
+    s as u32
 }
 
 pub(super) const fn decode_status(v: u32) -> Option<TaskStatus> {
-    match v {
-        0 => Some(TaskStatus::Todo),
-        1 => Some(TaskStatus::InProgress),
-        2 => Some(TaskStatus::Done),
-        _ => None,
+    if v <= u8::MAX as u32 {
+        TaskStatus::try_from_u8(v as u8)
+    } else {
+        None
     }
 }
 

@@ -72,6 +72,18 @@ pub enum GuardOutcome<R> {
 }
 
 impl<R> GuardOutcome<R> {
+    #[inline]
+    pub(crate) fn into_result(self) -> Result<(R, usize), crate::stack::NavigationError> {
+        match self {
+            Self::Allowed(r) => Ok((r, 0)),
+            Self::Redirected { route, hops } => Ok((route, hops)),
+            Self::Blocked => Err(crate::stack::NavigationError::Blocked),
+            Self::RedirectCycle { hops } => Err(crate::stack::NavigationError::RedirectCycle { hops }),
+        }
+    }
+}
+
+impl<R> GuardOutcome<R> {
     /// Consumes the outcome and returns the resolved destination route if navigation is permitted.
     pub fn into_route(self) -> Option<R> {
         match self {

@@ -22,16 +22,17 @@ pub const MAX_TELEMETRY_SAMPLES: usize = 24;
 /// collapses into a single-column mobile portrait layout with collapsible drawers.
 pub const MOBILE_BREAKPOINT_PT: f32 = 620.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_abi::ReprEnum)]
 pub enum ActiveView {
-    Board,
-    ChannelEngineering,
-    ChannelDesign,
-    Docs,
-    Workbench,
-    Stream100k,
-    Islands,
-    Metrics,
+    Board = 0,
+    ChannelEngineering = 1,
+    ChannelDesign = 2,
+    Docs = 3,
+    Workbench = 4,
+    Stream100k = 5,
+    Islands = 6,
+    Metrics = 7,
 }
 
 impl ActiveView {
@@ -49,18 +50,20 @@ impl ActiveView {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_abi::ReprEnum)]
 pub enum BoardFilter {
-    All,
-    Active,
-    Done,
+    All = 0,
+    Active = 1,
+    Done = 2,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_abi::ReprEnum)]
 pub enum Priority {
-    P0,
-    P1,
-    P2,
+    P0 = 0,
+    P1 = 1,
+    P2 = 2,
 }
 
 impl Priority {
@@ -73,11 +76,12 @@ impl Priority {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_abi::ReprEnum)]
 pub enum TaskStatus {
-    Todo,
-    InProgress,
-    Done,
+    Todo = 0,
+    InProgress = 1,
+    Done = 2,
 }
 
 impl TaskStatus {
@@ -133,18 +137,16 @@ pub struct ChatMessage {
     pub reactions: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_abi::ReprEnum)]
 pub enum AccentTheme {
-    Cyan,
-    Violet,
-    Green,
-    Amber,
+    Cyan = 0,
+    Violet = 1,
+    Green = 2,
+    Amber = 3,
 }
 
 impl AccentTheme {
-    /// Every accent, in [`Self::index`] order.
-    pub const ALL: [Self; 4] = [Self::Cyan, Self::Violet, Self::Green, Self::Amber];
-
     pub const fn index(self) -> usize {
         self as usize
     }
@@ -169,11 +171,12 @@ impl AccentTheme {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_abi::ReprEnum)]
 pub enum CornerRadiusMode {
-    Sharp,
-    Soft,
-    Pill,
+    Sharp = 0,
+    Soft = 1,
+    Pill = 2,
 }
 
 impl CornerRadiusMode {
@@ -194,10 +197,11 @@ impl CornerRadiusMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_abi::ReprEnum)]
 pub enum DensityMode {
-    Normal,
-    Compact,
+    Normal = 0,
+    Compact = 1,
 }
 
 impl DensityMode {
@@ -209,11 +213,12 @@ impl DensityMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nve_abi::ReprEnum)]
 pub enum LayoutEngineMode {
     #[default]
-    Taffy,
-    Yoga,
+    Taffy = 0,
+    Yoga = 1,
 }
 
 impl LayoutEngineMode {
@@ -247,13 +252,14 @@ impl LayoutEngineMode {
 }
 
 /// Active transport backing NVE Live Sync / Pairing sessions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nve_abi::ReprEnum)]
 pub enum SyncTransportMode {
     #[default]
-    LanQuic,
-    UsbMux,
-    RelayWss,
-    Offline,
+    LanQuic = 0,
+    UsbMux = 1,
+    RelayWss = 2,
+    Offline = 3,
 }
 
 impl SyncTransportMode {

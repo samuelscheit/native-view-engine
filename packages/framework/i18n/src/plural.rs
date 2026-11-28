@@ -19,6 +19,16 @@ pub enum PluralCategory {
 }
 
 impl PluralCategory {
+    /// All CLDR plural categories in canonical order.
+    pub const ALL: [Self; 6] = [
+        Self::Zero,
+        Self::One,
+        Self::Two,
+        Self::Few,
+        Self::Many,
+        Self::Other,
+    ];
+
     /// Returns the canonical CLDR keyword (`"zero"`, `"one"`, `"two"`, `"few"`, `"many"`, `"other"`).
     #[inline]
     pub const fn as_str(self) -> &'static str {
@@ -33,16 +43,9 @@ impl PluralCategory {
     }
 
     /// Parses a CLDR plural category keyword.
+    #[inline]
     pub fn parse(keyword: &str) -> Option<Self> {
-        match keyword {
-            "zero" => Some(Self::Zero),
-            "one" => Some(Self::One),
-            "two" => Some(Self::Two),
-            "few" => Some(Self::Few),
-            "many" => Some(Self::Many),
-            "other" => Some(Self::Other),
-            _ => None,
-        }
+        Self::ALL.iter().copied().find(|c| c.as_str() == keyword)
     }
 }
 
