@@ -368,6 +368,34 @@ class NveSceneRendererTest {
         host.resourceKinds[12] = ImageSource.KIND
         apply(canvasScene(3).also { it.dirty = intArrayOf(); it.dirtyResources.add(12) })
         assertEquals("foreign resource kind clears canvas", 0, sample(canvasView))
+
+        // Android NveCanvasView caps nested clip depth at 64 with overflow tracking.
+        val deepOps = DrawList.MAX_CLIP_DEPTH + 2 + 2 + 1 + 1 + 1
+        val deepBuf = ByteBuffer.allocate(DrawList.HEADER_SIZE + (DrawList.MAX_CLIP_DEPTH + 2) * 20 + 3 * 4 + 2 * 24)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(deepOps)
+        repeat(DrawList.MAX_CLIP_DEPTH - 1) {
+            deepBuf.putInt(DrawList.OP_CLIP_RECT).putFloat(0f).putFloat(0f).putFloat(16f).putFloat(16f)
+        }
+        deepBuf.putInt(DrawList.OP_CLIP_RECT).putFloat(0f).putFloat(0f).putFloat(6f).putFloat(6f)
+            .putInt(DrawList.OP_CLIP_RECT).putFloat(0f).putFloat(0f).putFloat(2f).putFloat(2f)
+            .putInt(DrawList.OP_CLIP_RECT).putFloat(0f).putFloat(0f).putFloat(1f).putFloat(1f)
+            .putInt(DrawList.OP_RESTORE_CLIP)
+            .putInt(DrawList.OP_RESTORE_CLIP)
+            .putInt(DrawList.OP_FILL_RECT).putFloat(0f).putFloat(0f).putFloat(16f).putFloat(16f).putInt(0xFF0000FF.toInt())
+            .putInt(DrawList.OP_RESTORE_CLIP)
+            .putInt(DrawList.OP_FILL_RECT).putFloat(10f).putFloat(10f).putFloat(4f).putFloat(4f).putInt(0xFFFF0000.toInt())
+            .also { it.flip() }
+        canvasView.setDrawList(deepBuf)
+        val bmp = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val c = AndroidCanvas(bmp)
+        val beforeSaves = c.saveCount
+        layout(canvasView, 16, 16)
+        canvasView.draw(c)
+        assertEquals("canvas saveCount balanced after 66 nested clips", beforeSaves, c.saveCount)
+        assertEquals("inside clip #64", AndroidColor.RED, bmp.getPixel(3, 3))
+        assertEquals("clip #64 stays active after 2 overflow restores", 0, bmp.getPixel(8, 8))
+        assertEquals("3rd restore pops clip #64", AndroidColor.BLUE, bmp.getPixel(12, 12))
     }
 
     private fun layout(v: View, w: Int, h: Int) {

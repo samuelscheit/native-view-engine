@@ -55,6 +55,11 @@ final class TableSceneTest {
         c.throwsA(IllegalArgumentException.class, () -> FieldSpec.word(31, FieldKind.I64), "i64 past word 31");
         c.throwsA(IllegalArgumentException.class, () -> FieldSpec.word(31, FieldKind.F64), "f64 past word 31");
         c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(0, 1, 16, FieldKind.U64), "two-word sub-word");
+        for (FieldKind k : new FieldKind[] {FieldKind.STR, FieldKind.U64, FieldKind.I64, FieldKind.F64}) {
+            c.throwsA(IllegalArgumentException.class,
+                    () -> new FieldSpec(0, 0, 32, k, OptEncoding.ZERO_NICHE, 0xFF, 0xFF, false),
+                    "two-word rejects non-REQUIRED " + k);
+        }
         c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(0, 0, 8, null), "null kind");
         c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(0, 0, 8, FieldKind.U32, null, 0xFF, 0xFF, false), "null optEncoding");
         c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(0, 0, 2, FieldKind.F32, OptEncoding.WIDE_BIT, 1, 0xFF, false), "WIDE_BIT bits != 1");
@@ -161,6 +166,9 @@ final class TableSceneTest {
         c.that(r.f32Or(1, optWide, 2.5f) == 2.5f, "f32Or fallback");
         c.that(!r.isExplicit(1, optNz) && r.isExplicit(2, optNz) && r.isExplicit(2, optPlus) && r.isExplicit(2, optWide),
                 "inherited explicit bits");
+        c.that(r.isExplicit(1, optI16) && r.isExplicit(2, optI16), "non-inherited field isExplicit returns true");
+        c.throwsA(IndexOutOfBoundsException.class, () -> r.isExplicit(99, optI16), "isExplicit validates row bounds");
+        c.throwsA(IndexOutOfBoundsException.class, () -> r.isExplicit(1, FieldSpec.word(12, FieldKind.U32)), "isExplicit validates field fit");
         c.that(r.isPresent(2, optNz) && r.u32(2, optNz) == 42, "ZERO_NICHE");
         c.that(r.isPresent(2, optPlus) && r.u32(2, optPlus) == 0, "PLUS_ONE discriminant 0");
         c.that(r.isPresent(2, optWide) && r.f32(2, optWide) == 1.75f, "WIDE_BIT f32");
@@ -174,6 +182,22 @@ final class TableSceneTest {
         c.eq(r.u64(2, wideU64), 0xFEDC_BA98_7654_3210L, "u64");
         c.eq(r.i64(2, wideI64), -9_000_000_000_000L, "i64");
         c.that(r.f64(2, wideF64) == -3.25, "f64");
+
+        // Option<bool> under PLUS_ONE: raw 0b11 (3) is invalid -> behaves as None (both BOOL and 2-bit ENUM specs).
+        final FieldSpec optBool = new FieldSpec(0, 0, 2, FieldKind.BOOL, OptEncoding.PLUS_ONE, 0xFF, 0xFF, false);
+        final FieldSpec optBoolEnum = new FieldSpec(0, 2, 2, FieldKind.ENUM, OptEncoding.PLUS_ONE, 0xFF, 0xFF, false);
+        final TableReader bt = new TableReader().attach(
+                Key64.of("nve.test.optbool"), 0, 1, 4,
+                words(0 | (0 << 2), 1 | (1 << 2), 2 | (2 << 2), 3 | (3 << 2)),
+                null, null, 0, null, 0, null, 0);
+        c.that(!bt.isPresent(0, optBool) && !bt.bool(0, optBool) && bt.boolOr(0, optBool, true) && !bt.boolOr(0, optBool, false), "PLUS_ONE bool raw 0");
+        c.that(bt.isPresent(1, optBool) && !bt.bool(1, optBool) && !bt.boolOr(1, optBool, true) && !bt.boolOr(1, optBool, false), "PLUS_ONE bool raw 1 (false)");
+        c.that(bt.isPresent(2, optBool) && bt.bool(2, optBool) && bt.boolOr(2, optBool, true) && bt.boolOr(2, optBool, false), "PLUS_ONE bool raw 2 (true)");
+        c.that(!bt.isPresent(3, optBool) && !bt.bool(3, optBool) && bt.boolOr(3, optBool, true) && !bt.boolOr(3, optBool, false) && bt.u32(3, optBool) == 0,
+                "PLUS_ONE bool raw 0b11 is absent");
+        c.that(!bt.bool(3, optBoolEnum) && bt.boolOr(3, optBoolEnum, true) && !bt.boolOr(3, optBoolEnum, false),
+                "PLUS_ONE 2-bit ENUM boolOr raw 0b11 returns fallback");
+        c.that(bt.isPresent(3, optBoolEnum) && bt.u32(3, optBoolEnum) == 2, "3-variant PLUS_ONE ENUM raw 3 stays discriminant 2");
     }
 
     static void denseTable(Check c) {

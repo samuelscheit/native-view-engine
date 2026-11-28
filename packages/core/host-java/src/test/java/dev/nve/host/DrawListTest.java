@@ -127,6 +127,20 @@ final class DrawListTest {
         }
         c.eq(String.join("|", throwing.ops), "clip:1.0,2.0,3.0,4.0|clip:1.0,2.0,3.0,4.0|restore|restore",
                 "clips opened before a throwing sink callback are still closed");
+
+        // Clip depth is capped at DrawList.MAX_CLIP_DEPTH (64) with overflow tracking so matching
+        // restores unwind overflow before popping clip #64.
+        byte[] deep = header(DrawList.MAX_CLIP_DEPTH + 2 + 2 + 1 + 1);
+        for (int i = 0; i < DrawList.MAX_CLIP_DEPTH + 2; i++) deep = clip(deep);
+        deep = op(op(deep, DrawList.OP_RESTORE_CLIP), DrawList.OP_RESTORE_CLIP);
+        deep = op(deep, DrawList.OP_CLEAR);
+        deep = f(deep, rgba(1));
+        deep = op(deep, DrawList.OP_RESTORE_CLIP);
+        final Log deepLog = new Log();
+        c.that(DrawList.decode(ByteBuffer.wrap(deep), 0, deep.length, deepLog) == null, "66 clips + 2 restores valid");
+        final int clearAt = deepLog.ops.indexOf("clear:1");
+        c.eq(clearAt, DrawList.MAX_CLIP_DEPTH, "overflow restores do not pop clip #64 before clear");
+        c.eq(deepLog.ops.size(), DrawList.MAX_CLIP_DEPTH * 2 + 1, "64 clips + 1 clear + 64 balanced restores");
     }
 
     private static void allocatesNothing(Check c) {

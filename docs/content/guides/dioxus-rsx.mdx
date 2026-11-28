@@ -20,7 +20,7 @@ order: 1
 | `scrollview` | — | `ScrollView` | Native inertial scrolling + `onscroll` |
 | `image` | — | `Image` | `src`, `alt`, `resize_mode` (`cover`, `contain`, `stretch`, `center`) |
 | `textinput` | — | `TextInput` | `placeholder`, `value`, `multiline`, `secure_text_entry`, `read_only` |
-| `skia_canvas` | `canvas` | `SkiaCanvas` | `draw_list` (`NVE_DRAW1` binary or `nve-draw1;b64,` payload) |
+| `skia_canvas` | `canvas` | `SkiaCanvas` | `draw_list` (`nve.res.draw_list` `FlatResource` handle) |
 
 Every element accepts both inline CSS-like `style: "..."` strings and direct typed attributes (`width`, `height`, `min_width`, `max_width`, `flex_direction`, `justify_content`, `align_items`, `flex`, `flex_grow`, `flex_shrink`, `gap`, `padding`, `padding_horizontal`, `padding_vertical`, `margin`, `background_color`, `color`, `border_color`, `border_width`, `border_radius`, `opacity`, `font_size`, `z_index`). Non-ABI inline declarations (`font-weight`, `text-align`, `box-shadow`, `overflow`) are automatically forwarded through `RawPropValue` via `apply_typed_attr_with_raw`.
 

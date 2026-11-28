@@ -40,7 +40,8 @@ QImage decode_image(const host::ImageSource& src) {
   QImage img;
   if (src.is_url()) {
     img = decode_url(src.url);
-  } else if (!img.loadFromData(src.encoded.data(), static_cast<int>(std::min<size_t>(src.encoded.size(), INT32_MAX)))) {
+  } else if (src.encoded.empty() ||
+             !img.loadFromData(src.encoded.data(), static_cast<int>(std::min<size_t>(src.encoded.size(), INT32_MAX)))) {
     return {};
   }
   return img.isNull() ? QImage() : img.convertToFormat(QImage::Format_RGBA8888_Premultiplied);

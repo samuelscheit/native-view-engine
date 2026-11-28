@@ -119,6 +119,12 @@ final class SceneReader {
       }
       previous = id;
     }
+    for (var i = 1; i < this.dirtyResources.length; i++) {
+      if (this.dirtyResources[i] <= this.dirtyResources[i - 1]) {
+        throw SceneException(
+            SceneErrorKind.missingSlab, 'dirty resource ids not strictly ascending at ${this.dirtyResources[i]}');
+      }
+    }
   }
 
   /// Exact 64-bit frame counter.

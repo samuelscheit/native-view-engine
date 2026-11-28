@@ -152,12 +152,20 @@ public final class EventRingReader {
         return Key64.of(tableBits(i));
     }
 
+    private static final int NON_TEXT_FRAMING_MASK = NveAbi.EVENT_FLAG_INLINE_KEY_UTF8
+            | NveAbi.EVENT_FLAG_KEY_SPLIT_BYTES
+            | NveAbi.EVENT_FLAG_CUSTOM_NAMED;
+
+    private static int canonicalHandle(int raw) {
+        return (raw & SceneReader.INDEX_MASK) == 0 ? 0 : raw;
+    }
+
     public int surface(int i) {
-        return buf.getInt(eventAt(i) + NveAbi.EVENT_OFFSET_SURFACE);
+        return canonicalHandle(buf.getInt(eventAt(i) + NveAbi.EVENT_OFFSET_SURFACE));
     }
 
     public int node(int i) {
-        return buf.getInt(eventAt(i) + NveAbi.EVENT_OFFSET_NODE);
+        return canonicalHandle(buf.getInt(eventAt(i) + NveAbi.EVENT_OFFSET_NODE));
     }
 
     public int event(int i) {
@@ -191,7 +199,7 @@ public final class EventRingReader {
 
     public String text(int i) {
         final int f = flags(i);
-        if ((f & NveAbi.EVENT_FLAG_UTF8_BYTES) != 0 && (f & NveAbi.EVENT_FLAG_KEY_SPLIT_BYTES) == 0) {
+        if ((f & NveAbi.EVENT_FLAG_UTF8_BYTES) != 0 && (f & NON_TEXT_FRAMING_MASK) == 0) {
             return utf8(arenaBase + bytesOffset(i), bytesLen(i));
         }
         return "";

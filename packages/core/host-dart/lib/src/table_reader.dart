@@ -55,8 +55,8 @@ final class FieldSpec {
       }
     }
     if (opt == OptEncoding.wideBit) {
-      if (bits != 1 || valWord < 0 || valWord >= maxTableWords) {
-        throw ArgumentError('invalid wideBit field spec bits=$bits valWord=$valWord');
+      if (bits != 1 || valWord < 0 || valWord >= maxTableWords || valWord == word) {
+        throw ArgumentError('invalid wideBit field spec word=$word bits=$bits valWord=$valWord');
       }
     } else if (valWord != noFieldSlot) {
       throw ArgumentError('valWord=$valWord is only valid for OptEncoding.wideBit');
@@ -64,10 +64,17 @@ final class FieldSpec {
     if (opt == OptEncoding.bit0Present && bits < 2) {
       throw ArgumentError('bit0Present field requires bits >= 2, got $bits');
     }
-    if (explicitBit != noFieldSlot && (explicitBit < 0 || explicitBit >= 32)) {
-      throw ArgumentError('invalid explicitBit=$explicitBit');
+    if (opt == OptEncoding.tagXor) {
+      final ok = (kind == FieldKind.length && bits == 32) || (kind == FieldKind.gridLine && bits == 16);
+      if (!ok) {
+        throw ArgumentError('tagXor requires 32-bit length or 16-bit gridLine, got ${kind.name}($bits)');
+      }
     }
-    if (inherits && explicitBit == noFieldSlot) {
+    if (explicitBit != noFieldSlot) {
+      if (explicitBit < 0 || explicitBit >= 32 || word == 0 || valWord == 0) {
+        throw ArgumentError('invalid explicitBit=$explicitBit for word=$word valWord=$valWord');
+      }
+    } else if (inherits) {
       throw ArgumentError('inheriting field requires explicitBit in 0..31');
     }
     return FieldSpec._(word, kind, shift, bits, opt, valWord, explicitBit, inherits);
@@ -356,8 +363,14 @@ final class TableReader {
   int explicitMask(int r) => word(r, 0);
 
   /// `true` when [f]'s explicit-override bit is set in word 0 of row [r] (always `true` for
-  /// fields without an explicit bit).
-  bool isExplicit(int r, FieldSpec f) => !f.hasExplicitBit || f.isExplicitIn(word(r, 0));
+  /// fields without an explicit bit on a valid row).
+  bool isExplicit(int r, FieldSpec f) {
+    if (!f.fits(words)) {
+      throw RangeError('field word ${f.word} past $words-word row');
+    }
+    final mask = word(r, 0);
+    return !f.hasExplicitBit || f.isExplicitIn(mask);
+  }
 
   /// Listener bitmask (`EventSet<E>`) at [eventsWord] of row [r] (`0` when [eventsWord] is `0xFF`).
   int eventMask(int r, int eventsWord) {
@@ -384,7 +397,7 @@ final class TableReader {
       OptEncoding.required => raw,
       OptEncoding.zeroNiche => raw == 0 ? null : raw,
       OptEncoding.bit0Present => (raw & 1) == 0 ? null : raw >>> 1,
-      OptEncoding.plusOne => raw == 0 ? null : raw - 1,
+      OptEncoding.plusOne => raw == 0 || (f.kind == FieldKind.boolean && raw > 2) ? null : raw - 1,
       OptEncoding.tagXor => f.kind == FieldKind.gridLine
           ? ((raw & 0xC000) == 0 ? null : (raw & 0xFFFF) ^ 0xC000)
           : ((raw & 3) == 0 ? null : raw ^ 3),

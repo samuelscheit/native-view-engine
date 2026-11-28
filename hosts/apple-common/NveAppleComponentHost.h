@@ -60,6 +60,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (uint32_t)nodeIdForNativeView:(NvePlatformView *)view;
 - (void)clearNativeNodeViews;
 - (void)syncNativeViewsFromHost;
+/// Returns the canonical payload of resource `resourceId` matching `expectedKind`, or `nil`.
+- (nullable NSData *)resourceBytesForId:(uint32_t)resourceId expectedKind:(uint64_t)expectedKind;
 
 @end
 

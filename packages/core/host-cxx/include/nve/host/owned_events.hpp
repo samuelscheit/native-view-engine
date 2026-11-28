@@ -119,9 +119,16 @@ struct AlignedAllocator {
   return {batch.bytes + ev.bytes.offset, ev.bytes.len};
 }
 
+/// Canonicalizes a generational handle (`SurfaceId` / `NodeId`): index 0 with any generation -> 0.
+[[nodiscard]] constexpr uint32_t canonical_event_handle(uint32_t raw) noexcept {
+  return (raw & 0x00FFFFFFu) == 0u ? 0u : raw;
+}
+
 /// UTF-8 text payload (`TextInput` Change / Submit / Composition); mirrors `ValidatedEvent::text`.
 [[nodiscard]] inline std::string_view event_text(const NveEvent& ev, NveEventBatch batch) noexcept {
-  if ((ev.flags & NVE_EVENT_FLAG_UTF8_BYTES) == 0u || (ev.flags & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) != 0u) return {};
+  constexpr uint32_t kNonTextMask =
+      NVE_EVENT_FLAG_INLINE_KEY_UTF8 | NVE_EVENT_FLAG_KEY_SPLIT_BYTES | NVE_EVENT_FLAG_CUSTOM_NAMED;
+  if ((ev.flags & NVE_EVENT_FLAG_UTF8_BYTES) == 0u || (ev.flags & kNonTextMask) != 0u) return {};
   const std::span<const uint8_t> b = event_bytes(ev, batch);
   return b.empty() ? std::string_view() : std::string_view(reinterpret_cast<const char*>(b.data()), b.size());
 }
@@ -264,6 +271,8 @@ class OwnedEvents {
     events_.assign(batch.events, batch.events + batch.event_count);
     if (blen != 0u) bytes_.assign(batch.bytes, batch.bytes + blen);
     for (NveEvent& ev : events_) {
+      ev.surface = canonical_event_handle(ev.surface);
+      ev.node = canonical_event_handle(ev.node);
       if (ev.bytes.offset > blen || ev.bytes.len > blen - ev.bytes.offset) {
         ev.bytes = RawEventBytes{0u, 0u};
         ev.flags &= ~kEventInternalFramingMask;
@@ -302,6 +311,8 @@ class OwnedEvents {
     if (events_.size() >= std::numeric_limits<uint32_t>::max()) return false;
     RawEventBytes span{0u, 0u};
     if (!append_bytes(data, &span)) return false;
+    ev.surface = canonical_event_handle(ev.surface);
+    ev.node = canonical_event_handle(ev.node);
     ev.bytes = span;
     events_.push_back(ev);
     return true;
@@ -441,6 +452,8 @@ class OwnedEvents {
     out.events_.resize(count);
     for (uint32_t i = 0u; i < count; ++i) {
       std::memcpy(&out.events_[i], raw.data() + kEventWireHeaderSize + size_t{i} * NVE_EVENT_SIZE, NVE_EVENT_SIZE);
+      out.events_[i].surface = canonical_event_handle(out.events_[i].surface);
+      out.events_[i].node = canonical_event_handle(out.events_[i].node);
       if (!validate_event_record(out.events_[i], arena)) return std::nullopt;
     }
     if (blen != 0u) out.bytes_.assign(arena.begin(), arena.end());
@@ -462,8 +475,8 @@ class OwnedEvents {
     NveEvent ev{};
     ev.timestamp = ts;
     ev.table = table;
-    ev.surface = surface;
-    ev.node = node;
+    ev.surface = canonical_event_handle(surface);
+    ev.node = canonical_event_handle(node);
     ev.event = event_id;
     return ev;
   }

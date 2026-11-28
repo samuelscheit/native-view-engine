@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -15,9 +14,6 @@ const int nveDrawMaxPolylinePoints = 16384;
 
 /// Maximum nested `ClipRect` stack depth guarded during painting.
 const int nveDrawMaxClipDepth = 64;
-
-/// Compact prefix used when transporting flat `nve.res.draw_list` bytes through UTF-8 attributes.
-const String nveDrawListAttrPrefix = 'nve-draw1;b64,';
 
 /// Little-endian `u32` opcodes encoded inside a flat `nve.res.draw_list` word stream
 /// matching `packages/modules/canvas/src/flat.rs`.
@@ -40,7 +36,6 @@ enum NveDrawListErrorCode {
   unknownOpcode,
   nonFiniteFloat,
   trailingBytes,
-  invalidBase64,
 }
 
 /// Structured, non-throwing validation or paint result for a flat `nve.res.draw_list` buffer.
@@ -80,38 +75,6 @@ class NveDrawListPainter {
     ..isAntiAlias = true;
 
   final Path _polylinePath = Path();
-
-  static final List<int> _attrPrefixBytes = ascii.encode(nveDrawListAttrPrefix);
-
-  /// Resolves either raw flat `nve.res.draw_list` word bytes (returned zero-copy without copying)
-  /// or an ASCII `nve-draw1;b64,...` base64 attribute payload into raw flat word bytes.
-  /// Returns `null` if a prefixed base64 payload fails to decode.
-  static Uint8List? resolveDrawListBytes(Uint8List rawBytes) {
-    if (rawBytes.length >= _attrPrefixBytes.length && _startsWithAttrPrefix(rawBytes)) {
-      try {
-        final b64 = ascii.decode(
-          Uint8List.sublistView(rawBytes, _attrPrefixBytes.length),
-          allowInvalid: false,
-        );
-        return _decodeBase64Clean(b64);
-      } catch (_) {
-        return null;
-      }
-    }
-    return rawBytes;
-  }
-
-  /// Decodes a UTF-8 `nve-draw1;b64,...` or bare base64 attribute string into raw flat word bytes.
-  static Uint8List? decodeAttrString(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) {
-      return null;
-    }
-    final b64 = trimmed.startsWith(nveDrawListAttrPrefix)
-        ? trimmed.substring(nveDrawListAttrPrefix.length)
-        : trimmed;
-    return _decodeBase64Clean(b64);
-  }
 
   /// Strictly validates a flat `nve.res.draw_list` (`u32`-word) buffer zero-copy via
   /// [ByteData.sublistView] without allocating per-op objects.
@@ -298,22 +261,15 @@ class NveDrawListPainter {
     return NveDrawListResult.ok(opCount: opCount);
   }
 
-  /// Validates and paints raw flat `nve.res.draw_list` word bytes (or `nve-draw1;b64,...` bytes)
-  /// onto [canvas] within [bounds] (with local origin translated to `bounds.topLeft` and clipped).
+  /// Validates and paints raw flat `nve.res.draw_list` word bytes onto [canvas] within [bounds]
+  /// (with local origin translated to `bounds.topLeft` and clipped).
   NveDrawListResult paint(
     Canvas canvas,
     Rect bounds,
     Uint8List rawBytes, {
     double borderRadius = 0.0,
   }) {
-    final resolved = resolveDrawListBytes(rawBytes);
-    if (resolved == null) {
-      return const NveDrawListResult.err(
-        NveDrawListErrorCode.invalidBase64,
-        'Invalid base64 draw-list payload',
-      );
-    }
-    final check = validate(resolved);
+    final check = validate(rawBytes);
     if (!check.isOk) {
       return check;
     }
@@ -321,10 +277,11 @@ class NveDrawListPainter {
       return check;
     }
 
-    final view = ByteData.sublistView(resolved);
+    final view = ByteData.sublistView(rawBytes);
     final opCount = check.opCount;
     var pos = nveDrawHeaderSize;
     var clipDepth = 0;
+    var overflowClipDepth = 0;
 
     canvas.save();
     try {
@@ -446,11 +403,15 @@ class NveDrawListPainter {
               canvas.save();
               canvas.clipRect(Rect.fromLTWH(x, y, w, h));
               clipDepth += 1;
+            } else {
+              overflowClipDepth += 1;
             }
             break;
 
           case NveDrawOpcode.restoreClip:
-            if (clipDepth > 0) {
+            if (overflowClipDepth > 0) {
+              overflowClipDepth -= 1;
+            } else if (clipDepth > 0) {
               canvas.restore();
               clipDepth -= 1;
             }
@@ -468,15 +429,6 @@ class NveDrawListPainter {
     return check;
   }
 
-  static bool _startsWithAttrPrefix(Uint8List bytes) {
-    for (var i = 0; i < _attrPrefixBytes.length; i++) {
-      if (bytes[i] != _attrPrefixBytes[i]) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   static bool _areFinite4(ByteData view, int pos) {
     return view.getFloat32(pos, Endian.little).isFinite &&
         view.getFloat32(pos + 4, Endian.little).isFinite &&
@@ -491,18 +443,5 @@ class NveDrawListPainter {
       (rgba >> 8) & 0xFF,
       (rgba >> 16) & 0xFF,
     );
-  }
-
-  static Uint8List? _decodeBase64Clean(String b64) {
-    try {
-      final cleaned = b64.replaceAll(RegExp(r'\s+'), '');
-      if (cleaned.isEmpty) {
-        return null;
-      }
-      final normalized = base64.normalize(cleaned);
-      return base64.decode(normalized);
-    } catch (_) {
-      return null;
-    }
   }
 }

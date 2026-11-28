@@ -143,6 +143,7 @@ test('EventBatchBuilder + NVEV v2 wire round-trip (inline/split keys, custom, ra
     assert.ok((e9.flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) !== 0);
     assert.equal(e9.key(), 'Enter');
     assert.equal(e9.code(), 'Enter');
+    assert.equal(e9.text(), '', 'inline key physical code never leaks as text()');
     assert.ok(e9.meta && e9.shift && !e9.ctrl && e9.hasPrimaryModifier && e9.isComposing);
     assert.equal(e9.keyCode, 13);
 
@@ -150,6 +151,7 @@ test('EventBatchBuilder + NVEV v2 wire round-trip (inline/split keys, custom, ra
     assert.ok((e10.flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) !== 0);
     assert.equal(e10.key(), key16);
     assert.equal(e10.code(), 'KeyA');
+    assert.equal(e10.text(), '', '16-byte inline key physical code never leaks as text()');
 
     const e11 = view.get(11);
     assert.ok((e11.flags & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) !== 0);
@@ -300,6 +302,17 @@ test('adversarial NVEV v2 wire frames, validation errors, handle canonicalizatio
   const rCanon = EventBatchReader.decodeWire(buildRawWire(nonCanon, new Uint8Array(0)));
   assert.equal(rCanon.get(0).surface, 0);
   assert.equal(rCanon.get(0).node, 0);
+
+  // `CUSTOM_NAMED | UTF8_BYTES` never leaks name+payload through `text()`
+  const customUtf8 = new Uint8Array(NVE_EVENT_SIZE);
+  const customUtf8V = new DataView(customUtf8.buffer);
+  customUtf8V.setUint32(NVE_EVENT_LAYOUT.flags, NVE_EVENT_FLAG_CUSTOM_NAMED | NVE_EVENT_FLAG_UTF8_BYTES, true);
+  customUtf8V.setUint32(NVE_EVENT_LAYOUT.payload, 4, true);
+  customUtf8V.setUint32(NVE_EVENT_LAYOUT.bytes + RAW_EVENT_BYTES_LAYOUT.len, 8, true);
+  const rCustom = EventBatchReader.decodeWire(buildRawWire(customUtf8, new TextEncoder().encode('pingdata')));
+  assert.equal(rCustom.get(0).text(), '');
+  assert.equal(rCustom.get(0).customName(), 'ping');
+  assert.equal(new TextDecoder().decode(rCustom.get(0).customData()), 'data');
 
   // Lone surrogates throw BinCodecError('invalidUtf8') atomically without adding an event
   const atomic = new EventBatchBuilder();

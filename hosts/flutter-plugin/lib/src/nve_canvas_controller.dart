@@ -24,7 +24,10 @@ final class _SessionResources implements NveSceneResources {
   final ResourceVersions versions = ResourceVersions();
 
   @override
-  Uint8List? payload(int resourceId) => session.resourcePayload(resourceId)?.$2;
+  Uint8List? payload(int resourceId, {required Key64 expectedKind}) {
+    final entry = session.resourcePayload(resourceId);
+    return entry != null && entry.$1 == expectedKind ? entry.$2 : null;
+  }
 }
 
 /// Owns a [RuntimeSession] on the UI isolate. Runtime work happens only on scheduled frames:

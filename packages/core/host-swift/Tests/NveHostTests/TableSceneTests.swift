@@ -396,6 +396,17 @@ final class TableSceneTests: XCTestCase {
                                                     XCTAssertEqual(visited[1].0, 0)
                                                     XCTAssertEqual(visited[1].1, NveTables.Typography.color.explicitMask)
 
+                                                    // `noInheritMask`: bits set on node 3 (`depth == 0`) are still visited, while bits on
+                                                    // ancestors (`depth > 0`) are masked out (skipping root when only masked bits remain).
+                                                    var noInhVisited: [(Int, UInt32)] = []
+                                                    let mask = NveTables.Typography.color.explicitMask | NveTables.Typography.maxLines.explicitMask
+                                                    s.forEachInheritedRow(typo, fromNode: 3, noInheritMask: mask) { r, fresh in
+                                                        noInhVisited.append((r, fresh))
+                                                    }
+                                                    XCTAssertEqual(noInhVisited.count, 1)
+                                                    XCTAssertEqual(noInhVisited[0].0, 1)
+                                                    XCTAssertEqual(noInhVisited[0].1, NveTables.Typography.fontSize.explicitMask | NveTables.Typography.maxLines.explicitMask)
+
                                                     // Per-table EventSet checks.
                                                     XCTAssertTrue(s.hasEvent(inter, forNode: 3, eventsWord: NveTables.Interaction.eventsWord, bit: NveInteractionEventSet.press))
                                                     XCTAssertTrue(s.hasEvent(inter, forNode: 3, eventsWord: NveTables.Interaction.eventsWord, bit: NveInteractionEventSet.keyDown))

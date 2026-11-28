@@ -33,6 +33,7 @@ public final class DrawList {
     public static final int HEADER_SIZE = 4;
     public static final int MAX_DRAW_OPS = 65_536;
     public static final int MAX_POLYLINE_POINTS = 16_384;
+    public static final int MAX_CLIP_DEPTH = 64;
 
     public static final int OP_CLEAR = 1;
     public static final int OP_FILL_RECT = 2;
@@ -152,6 +153,7 @@ public final class DrawList {
         final int opCount = (int) u32(buf, offset);
         int pos = offset + HEADER_SIZE;
         int clips = 0;
+        int overflowClips = 0;
         try {
             for (int i = 0; i < opCount; i++) {
                 final int op = i32(buf, pos);
@@ -190,12 +192,18 @@ public final class DrawList {
                         break;
                     }
                     case OP_CLIP_RECT:
-                        clips++;
-                        sink.onClipRect(f32(buf, pos), f32(buf, pos + 4), f32(buf, pos + 8), f32(buf, pos + 12));
+                        if (clips < MAX_CLIP_DEPTH) {
+                            clips++;
+                            sink.onClipRect(f32(buf, pos), f32(buf, pos + 4), f32(buf, pos + 8), f32(buf, pos + 12));
+                        } else {
+                            overflowClips++;
+                        }
                         pos += 16;
                         break;
                     case OP_RESTORE_CLIP:
-                        if (clips > 0) {
+                        if (overflowClips > 0) {
+                            overflowClips--;
+                        } else if (clips > 0) {
                             clips--;
                             sink.onRestoreClip();
                         }

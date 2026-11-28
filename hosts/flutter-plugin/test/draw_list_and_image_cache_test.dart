@@ -23,7 +23,7 @@ int _f32Bits(double v) => (ByteData(4)..setFloat32(0, v, Endian.little)).getUint
 
 void main() {
   group('NveDrawListPainter (flat u32-word nve.res.draw_list decoder + Canvas renderer)', () {
-    test('paints all 8 opcodes accurately onto Flutter Canvas and handles b64 fallback', () async {
+    test('paints all 8 opcodes accurately onto Flutter Canvas from flat word payloads', () async {
       final enc = DrawListEncoder()
         ..clear(packRgba(10, 20, 30, 255))
         ..fillRect(4, 4, 24, 24, packRgba(220, 38, 38, 255))
@@ -76,18 +76,13 @@ void main() {
       // After RestoreClip (78, 80) -> sky blue!
       expect(pixelAt(rgba, 96, 78, 80), (56, 189, 248, 255));
 
-      // Verify `nve-draw1;b64,` ASCII base64 transport decodes identically.
-      final attrStr = '$nveDrawListAttrPrefix${base64.encode(bytes)}';
-      expect(NveDrawListPainter.decodeAttrString(attrStr), equals(bytes));
-      expect(NveDrawListPainter.decodeAttrString('  ${base64.encode(bytes)}  '), equals(bytes));
-      expect(NveDrawListPainter.decodeAttrString(''), isNull);
-      final attrBytes = Uint8List.fromList(utf8.encode(attrStr));
-      final rgbaB64 = await rasterize(96, 96, (Canvas canvas) {
-        final res = painter.paint(canvas, const Rect.fromLTWH(0, 0, 96, 96), attrBytes);
-        expect(res.isOk, isTrue);
-        expect(res.opCount, 10);
+      // Retired `nve-draw1;b64,` ASCII base64 strings must be rejected as flat draw lists.
+      final retiredAttrBytes = Uint8List.fromList(utf8.encode('nve-draw1;b64,${base64.encode(bytes)}'));
+      expect(NveDrawListPainter.validate(retiredAttrBytes).isOk, isFalse);
+      final rgbaRetired = await rasterize(96, 96, (Canvas canvas) {
+        expect(painter.paint(canvas, const Rect.fromLTWH(0, 0, 96, 96), retiredAttrBytes).isOk, isFalse);
       });
-      expect(rgbaB64, equals(rgba));
+      expect(pixelAt(rgbaRetired, 96, 16, 16).$4, 0);
 
       // Verify non-zero byte offset slice view decodes identically.
       final padded = Uint8List(bytes.length + 6)..setRange(3, 3 + bytes.length, bytes);
@@ -246,22 +241,10 @@ void main() {
         NveDrawListErrorCode.trailingBytes,
       );
 
-      // Invalid / empty base64 after prefix
+      // Unbalanced ClipRect + extra RestoreClip + > max clip depth must preserve outer Canvas saveCount!
       final painter = NveDrawListPainter();
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
-      final badB64 = Uint8List.fromList(ascii.encode('${nveDrawListAttrPrefix}!!!not_base64!!!'));
-      expect(
-        painter.paint(canvas, const Rect.fromLTWH(0, 0, 32, 32), badB64).errorCode,
-        NveDrawListErrorCode.invalidBase64,
-      );
-      final emptyB64 = Uint8List.fromList(ascii.encode(nveDrawListAttrPrefix));
-      expect(
-        painter.paint(canvas, const Rect.fromLTWH(0, 0, 32, 32), emptyB64).errorCode,
-        NveDrawListErrorCode.invalidBase64,
-      );
-
-      // Unbalanced ClipRect + extra RestoreClip + > max clip depth must preserve outer Canvas saveCount!
       final unbalancedEnc = DrawListEncoder()..restoreClip();
       for (var i = 0; i < nveDrawMaxClipDepth + 5; i++) {
         unbalancedEnc.clipRect(0, 0, 10, 10);
@@ -271,6 +254,36 @@ void main() {
       expect(res.isOk, isTrue);
       expect(canvas.getSaveCount(), beforeCount);
       recorder.endRecording().dispose();
+    });
+
+    test('tracks overflowClipDepth past 64 nested clips so restores unwind overflow before popping clip #64', () async {
+      final enc = DrawListEncoder()..clear(packRgba(0, 0, 0, 255));
+      for (var i = 0; i < nveDrawMaxClipDepth - 1; i++) {
+        enc.clipRect(0, 0, 96, 96);
+      }
+      // Clip #64 narrows to [0..20); clips #65 and #66 overflow the 64-deep stack.
+      enc
+        ..clipRect(0, 0, 20, 20)
+        ..clipRect(0, 0, 10, 10)
+        ..clipRect(0, 0, 5, 5)
+        // Two restores unwind the 2 overflow clips only; clip #64 [0..20) must remain active!
+        ..restoreClip()
+        ..restoreClip()
+        ..fillRect(0, 0, 96, 96, packRgba(255, 0, 0, 255))
+        // Third restore pops clip #64, reopening [0..96).
+        ..restoreClip()
+        ..fillRect(30, 30, 20, 20, packRgba(0, 0, 255, 255));
+
+      final painter = NveDrawListPainter();
+      final rgba = await rasterize(96, 96, (Canvas canvas) {
+        final before = canvas.getSaveCount();
+        final res = painter.paint(canvas, const Rect.fromLTWH(0, 0, 96, 96), enc.finish());
+        expect(res.isOk, isTrue);
+        expect(canvas.getSaveCount(), before);
+      });
+      expect(pixelAt(rgba, 96, 10, 10), (255, 0, 0, 255), reason: 'inside clip #64');
+      expect(pixelAt(rgba, 96, 70, 70), (0, 0, 0, 255), reason: 'clip #64 was NOT popped by overflow restores');
+      expect(pixelAt(rgba, 96, 40, 40), (0, 0, 255, 255), reason: '3rd restore popped clip #64');
     });
   });
 
@@ -473,33 +486,40 @@ void main() {
           // Also verify a stale failure finishing AFTER the newer generation succeeded does not
           // poison `_failedUris` (checked by LRU-evicting without calling `evict()` / `clear()`).
           final lruCache = NveSceneImageCache(maxEntries: 1);
-          final staleLate = Completer<ui.Image?>();
-          expect(lruCache.resolveOrRequest(key, decode: () => staleLate.future), isNull);
-          lruCache.evict(key);
-          final winner = Completer<ui.Image?>();
-          expect(lruCache.resolveOrRequest(key, decode: () => winner.future), isNull);
-          winner.complete(await makeImage(16, 64, 128));
-          await Future<void>.delayed(Duration.zero);
-          if (failWithThrow) {
-            staleLate.completeError(StateError('late stale failure'));
-          } else {
-            staleLate.complete(null);
+          try {
+            final staleLate = Completer<ui.Image?>();
+            expect(lruCache.resolveOrRequest(key, decode: () => staleLate.future), isNull);
+            if (useClear) {
+              lruCache.clear();
+            } else {
+              lruCache.evict(key);
+            }
+            final winner = Completer<ui.Image?>();
+            expect(lruCache.resolveOrRequest(key, decode: () => winner.future), isNull);
+            winner.complete(await makeImage(16, 64, 128));
+            await Future<void>.delayed(Duration.zero);
+            if (failWithThrow) {
+              staleLate.completeError(StateError('late stale failure'));
+            } else {
+              staleLate.complete(null);
+            }
+            await Future<void>.delayed(Duration.zero);
+            // LRU-evict `key` via an unrelated entry (does not touch `_failedUris`).
+            final other = Completer<ui.Image?>();
+            expect(lruCache.resolveOrRequest('res:other', decode: () => other.future), isNull);
+            other.complete(await makeImage(200, 100, 50));
+            await Future<void>.delayed(Duration.zero);
+            expect(lruCache.containsKey(key), isFalse);
+            // Re-requesting `key` must start a fresh decode (not short-circuited by `_failedUris`).
+            final afterLru = Completer<ui.Image?>();
+            expect(lruCache.resolveOrRequest(key, decode: () => afterLru.future), isNull);
+            expect(lruCache.isInFlight(key), isTrue, reason: '$key must not be poisoned in _failedUris');
+            afterLru.complete(await makeImage(90, 180, 200));
+            await Future<void>.delayed(Duration.zero);
+            expect(lruCache.containsKey(key), isTrue);
+          } finally {
+            lruCache.dispose();
           }
-          await Future<void>.delayed(Duration.zero);
-          // LRU-evict `key` via an unrelated entry (does not touch `_failedUris`).
-          final other = Completer<ui.Image?>();
-          expect(lruCache.resolveOrRequest('res:other', decode: () => other.future), isNull);
-          other.complete(await makeImage(200, 100, 50));
-          await Future<void>.delayed(Duration.zero);
-          expect(lruCache.containsKey(key), isFalse);
-          // Re-requesting `key` must start a fresh decode (not short-circuited by `_failedUris`).
-          final afterLru = Completer<ui.Image?>();
-          expect(lruCache.resolveOrRequest(key, decode: () => afterLru.future), isNull);
-          expect(lruCache.isInFlight(key), isTrue, reason: '$key must not be poisoned in _failedUris');
-          afterLru.complete(await makeImage(90, 180, 200));
-          await Future<void>.delayed(Duration.zero);
-          expect(lruCache.containsKey(key), isTrue);
-          lruCache.dispose();
         }
       }
     });

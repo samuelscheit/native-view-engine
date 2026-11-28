@@ -38,7 +38,9 @@ bool decode_nvev(const uint8_t* data, size_t len, uint32_t default_surface_id,
       out.clear();
       return false;
     }
-    if (out[i].surface == 0u) out[i].surface = default_surface_id;
+    out[i].surface = nve::host::canonical_event_handle(out[i].surface);
+    out[i].node = nve::host::canonical_event_handle(out[i].node);
+    if (out[i].surface == 0u) out[i].surface = nve::host::canonical_event_handle(default_surface_id);
   }
   *out_arena = arena;
   return true;

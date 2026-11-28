@@ -127,6 +127,8 @@ public final class NveSceneStore: ObservableObject {
         } ?? nil
     }
 
+    private static let imageSrcKind = Key64.of("nve.res.image_src")
+
     /// Decoded `ImageSrc` of resource `id`, cached until the runtime republishes the id's bytes.
     public func imageSource(_ id: UInt32) -> NveImageSource? { cachedImageSource(id, in: nil)?.source }
 
@@ -134,12 +136,12 @@ public final class NveSceneStore: ObservableObject {
     /// borrows the published scene for the read.
     private func cachedImageSource(_ id: UInt32, in scene: NveScene?) -> CachedImageSource? {
         if let cached = imageSources[id] { return cached }
-        let bytes = if let scene {
-            try? session.resource(id, in: scene).bytes
+        let res: (kind: Key64, bytes: [UInt8])? = if let scene {
+            try? session.resource(id, in: scene)
         } else {
-            try? session.withScene { try session.resource(id, in: $0).bytes }
+            try? session.withScene { try session.resource(id, in: $0) }
         }
-        guard let bytes, let src = NveImageSource(resourceBytes: bytes) else { return nil }
+        guard let res, res.kind == Self.imageSrcKind, let src = NveImageSource(resourceBytes: res.bytes) else { return nil }
         let key: String? = if case let .encoded(data) = src { "nve.res.image_src#\(Xxh64.hash(data))" } else { nil }
         let cached = CachedImageSource(source: src, encodedKey: key)
         imageSources[id] = cached

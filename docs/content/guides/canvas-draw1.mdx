@@ -1,93 +1,76 @@
 ---
-title: "Vector Canvas (NVE_DRAW1)"
-description: "Binary vector draw-list IR (NVE_DRAW1) rendered natively across Skia, Web Canvas2D, CoreGraphics, Direct2D, Cairo, QPainter, Android Canvas, Compose, SwiftUI, and Flutter Impeller."
+title: "Vector Canvas (DrawList)"
+description: "Flat 4-byte-aligned nve.res.draw_list vector DrawList rendered natively across Skia, Web Canvas2D, Direct2D, Cairo, QPainter, Android Canvas, Compose, SwiftUI, and Flutter Impeller."
 order: 7
 ---
 
-# Vector Canvas (`NVE_DRAW1`)
+# Vector Canvas (`DrawList` / `nve.res.draw_list`)
 
-For telemetry sparklines, charts, custom gauges, and bespoke vector chrome that should render at native refresh rate on **every** host — even hosts without Skia linked — `nve-tables` provides **`NVE_DRAW1`**: a compact, binary vector draw-list IR carried by `ComponentKind::SkiaCanvas` (`skia_canvas` / `canvas`).
+For telemetry sparklines, charts, custom gauges, and bespoke vector chrome that should render at native refresh rate on **every** host — even hosts without Skia linked — `nve-canvas` (`packages/modules/canvas`) provides **`DrawList`**: a canonical 4-byte-aligned `FlatResource` (`nve.res.draw_list`) referenced by the `nve.canvas` table (`draw_list: Res<DrawList>`).
 
 ## Wire Layout
 
-Defined in `packages/core/tables/src/canvas_ir/` (`NVE_DRAW_HEADER_SIZE = 15`):
+Defined in `packages/modules/canvas/src/flat.rs` (`u32`-word stream, 4-byte aligned, little-endian):
 
-| Offset | Size | Field | Value / Bounds |
+| Word Offset | Size | Field | Value / Bounds |
 | :--- | :--- | :--- | :--- |
-| `0..9` | 9 B | `magic` | `b"NVE_DRAW1"` |
-| `9..11` | 2 B | `version` | `u16 = 1` (`NVE_DRAW_VERSION`) |
-| `11..15` | 4 B | `op_count` | `u32` (strictly capped at `MAX_DRAW_OPS = 65_536`) |
-| `15..` | var | `ops` | Packed stream of 1-byte opcode + little-endian IEEE-754 `f32` / `u32` RGBA payloads |
+| `0` | 4 B | `op_count` | `u32` (strictly capped at `MAX_DRAW_OPS = 65_536`) |
+| `1..` | var | `ops` | Stream of `u32` opcode words + IEEE-754 `f32` / `u32` RGBA word payloads |
 
 ### Supported Operations (`CanvasOp`)
 
-| Opcode | Variant | Payload |
+| Opcode (`u32`) | Variant | Word Payload |
 | :--- | :--- | :--- |
-| `1` | `Clear` | `color: ColorRgba` |
+| `1` | `Clear` | `color: ColorRgba` (`u32`) |
 | `2` | `FillRect` | `x, y, w, h: f32`, `color: ColorRgba` |
 | `3` | `FillRoundedRect` | `x, y, w, h, radius: f32`, `color: ColorRgba` |
 | `4` | `FillCircle` | `cx, cy, radius: f32`, `color: ColorRgba` |
 | `5` | `StrokeLine` | `x0, y0, x1, y1, width: f32`, `color: ColorRgba` |
-| `6` | `StrokePolyline` | `point_count: u32` (max `16_384`), `[(x, y): (f32, f32)]`, `width: f32`, `color: ColorRgba` |
+| `6` | `StrokePolyline` | `width: f32`, `color: ColorRgba`, `point_count: u32` (max `16_384`), `[(x, y): (f32, f32)]` |
 | `7` | `ClipRect` | `x, y, w, h: f32` |
-| `8` | `RestoreClip` | *(empty — pops previous clip state)* |
+| `8` | `RestoreClip` | *(empty — pops previous clip state; nested clips capped at depth `64`)* |
 
-`DrawListDecoder` validates finite coordinates, clip stack balance, polyline point caps, and exact byte length before a single draw call hits the GPU or OS graphics context.
+`DrawList::validate` and every host decoder validate finite coordinates, clip-stack balance (with depth cap `64`), polyline point caps, resource kind (`nve.res.draw_list`), and exact byte length before a single draw call hits the GPU or OS graphics context.
 
-## Interactive `NVE_DRAW1` Canvas Playground
+## Interactive Canvas DrawList Playground
 
-Toggle vector primitives, sparkline samples, clip bounds, and inspect the exact `NVE_DRAW1` byte size live:
+Toggle vector primitives, sparkline samples, clip bounds, and inspect the exact `nve.res.draw_list` byte size live:
 
 <LiveDemo id="canvas-draw1" hydrate="visible" height={340} />
 
-## Building a Draw List in Rust
+## Building a `DrawList` in Rust
 
-```rust title="Encoding a telemetry sparkline into NVE_DRAW1" highlight="4-17"
+```rust title="Recording a telemetry sparkline into flat nve.res.draw_list" highlight="4-16"
 use nve_abi::ColorRgba;
-use nve_tables::{CanvasOp, DrawListBuilder};
-use nve_dioxus::prelude::*;
+use nve_canvas::{DrawList, DrawListRecorder};
 
-#[component]
-pub fn FrameSparkline(samples: Vec<f32>) -> Element {
-    let mut b = DrawListBuilder::new();
-    b.push(CanvasOp::FillRoundedRect {
-        x: 0.0, y: 0.0, w: 280.0, h: 64.0, radius: 10.0,
-        color: ColorRgba::rgb(15, 23, 42),
-    });
-    b.push(CanvasOp::ClipRect { x: 8.0, y: 8.0, w: 264.0, h: 48.0 });
-    b.push(CanvasOp::StrokePolyline {
-        points: samples.iter().enumerate()
-            .map(|(i, &v)| (8.0 + i as f32 * 12.0, 56.0 - v.clamp(0.0, 48.0)))
-            .collect(),
-        width: 2.0,
-        color: ColorRgba::rgb(56, 189, 248),
-    });
-    b.push(CanvasOp::RestoreClip);
-
-    // Compact base64 RSX attribute (`nve-draw1;b64,...`) or raw `RawPropValue::Bytes`
-    let attr = b.finish_attr_string();
-    rsx! {
-        skia_canvas {
-            style: "width: 280px; height: 64px;",
-            draw_list: "{attr}"
-        }
-    }
+pub fn record_sparkline(samples: &[f32]) -> DrawList {
+    let mut rec = DrawListRecorder::new();
+    rec.fill_rounded_rect(0.0, 0.0, 280.0, 64.0, 10.0, ColorRgba::rgb(15, 23, 42));
+    rec.clip_rect(8.0, 8.0, 264.0, 48.0);
+    let pts: Vec<(f32, f32)> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (8.0 + i as f32 * 12.0, 56.0 - v.clamp(0.0, 48.0)))
+        .collect();
+    rec.stroke_polyline(&pts, 2.0, ColorRgba::rgb(56, 189, 248));
+    rec.restore_clip();
+    rec.finish()
 }
 ```
 
-## Native 10-Host Renderer Mapping
+## Native Host Renderer Mapping
 
-Every platform host decodes the exact same `NVE_DRAW1` byte stream via either Rust `DrawListDecoder` or shared C++20 `packages/modules/canvas/cxx/include/nve/canvas/canvas.hpp`:
+Every platform host decodes the exact same `nve.res.draw_list` word stream via Rust `DrawListView`, shared C++20 `packages/modules/canvas/cxx/include/nve/canvas/draw_list.hpp`, shared JVM `dev.nve.host.DrawList`, Swift `NveDrawListRenderer`, or Dart `NveDrawListPainter`:
 
 | Host Target | Native Graphics API | Implementation |
 | :--- | :--- | :--- |
-| **Desktop Skia** | Skia `Canvas` (Metal / Vulkan / D3D12) or software `PixelBuffer` | `packages/backends/skia/src/display_list.rs` |
-| **Web WASM** | HTML5 `<canvas>` 2D (`CanvasRenderingContext2D`) | `packages/backends/web/src/canvas.rs` |
-| **macOS & iOS** | CoreGraphics (`CGContext`) | `hosts/apple-common/NveAppleCanvasView.mm` |
+| **Desktop Skia** | Skia `Canvas` (Metal / Vulkan / D3D12) or software `PixelBuffer` | `packages/modules/canvas/skia` |
+| **Web WASM** | HTML5 `<canvas>` 2D (`CanvasRenderingContext2D`) | `packages/modules/canvas/web` |
 | **Windows** | Direct2D (`ID2D1RenderTarget` / `ID2D1PathGeometry`) | `hosts/windows-shell/NveWinD2DMedia.cpp` |
 | **Linux GTK4** | Cairo (`cairo_t` via `GtkDrawingArea` / `GtkSnapshot`) | `hosts/gtk-shell/NveGtkMedia.cpp` |
 | **Qt 6** | `QPainter` (Widgets & Quick texture) | `hosts/qt-shell/NveQtCustomWidgets.cpp` |
-| **Android JNI** | `android.graphics.Canvas` (`NveCanvasView.java`) | `hosts/android-shell/NveAndroidSurfaceJni.cpp` |
-| **Jetpack Compose** | Compose `Canvas` (`DrawScope`) | `hosts/compose-kit/.../NveSurfaceComposable.kt` |
-| **SwiftUI** | SwiftUI `Canvas` / CoreGraphics | `hosts/swiftui-kit/.../NveSceneCanvasView.swift` |
-| **Flutter** | Impeller / Skia `dart:ui.Canvas` (`RenderNveCanvas`) | `hosts/flutter-plugin/lib/src/nve_canvas_host.dart` |
+| **Android JNI** | `android.graphics.Canvas` (`NveCanvasView.java`) | `hosts/android-shell/android-app/src/dev/nve/android/NveCanvasView.java` |
+| **Jetpack Compose** | Compose `Canvas` (`DrawScope`) | `hosts/compose-kit/src/main/kotlin/dev/nve/compose/NveDrawListPainter.kt` |
+| **SwiftUI** | SwiftUI `Canvas` / CoreGraphics | `hosts/swiftui-kit/Sources/NveSwiftUI/NveDrawListRenderer.swift` |
+| **Flutter** | Impeller / Skia `dart:ui.Canvas` (`NveCanvasTablePainter`) | `hosts/flutter-plugin/lib/src/draw_list_painter.dart` |

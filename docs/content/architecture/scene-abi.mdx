@@ -91,15 +91,15 @@ Every language has exactly one reader, named `SceneReader`, that validates `sche
 
 All field offsets come from generated bindings (`cargo run --locked -p nve-cli -- codegen abi`); nothing is hard-coded in the readers. On Android, `NveAndroidSurfaceJni.cpp` wraps each slab in a persistent `GlobalRef` `java.nio.ByteBuffer` and re-creates it only when a slab pointer or capacity grows, giving zero GC allocations per frame.
 
-## Zero-Copy `text_slab` & `NVE_DRAW1`
+## Zero-Copy `text_slab` & Flat `DrawList`
 
 All UTF-8 node strings live packed inside `text_slab`. A host slices `&text_slab[node.text_offset .. node.text_offset + node.text_len]` directly with zero string allocation.
 
-For `SkiaCanvas` nodes, vector drawing operations use the **`NVE_DRAW1`** binary draw-list IR (`packages/core/components/src/canvas_ir/`):
+For `nve.canvas` nodes, vector drawing operations use the flat 4-byte-aligned **`nve.res.draw_list`** `FlatResource` (`packages/modules/canvas/src/flat.rs`):
 
-- 15-byte header: `b"NVE_DRAW1"` (9 B) + `version: u16 (1)` + `op_count: u32` (capped at `65,536`)
+- 4-byte word header (`u32 op_count`, capped at `65,536`) followed by `u32` opcode + IEEE-754 `f32` / `u32` RGBA word payloads
 - 8 compact opcodes: `Clear`, `FillRect`, `FillRoundedRect`, `FillCircle`, `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`
-- Transported natively inside `RawPropValue::Bytes` (or `nve-draw1;b64,` when passed via RSX string attributes). See the [Vector Canvas (`NVE_DRAW1`) Guide](/guides/canvas-draw1).
+- Published via `ResourceStore` (`resource_payload`) with kind `nve.res.draw_list` and validated against expected kind on every host. See the [Vector Canvas (`DrawList`) Guide](/guides/canvas-draw1).
 
 <Callout kind="tip" title="Regenerating and verifying Scene ABI bindings">
 Run `cargo run --locked -p nve-cli -- codegen abi --check` to verify the generated host files across C, Swift, Dart, Java (`dev.nve.host.generated.*`), and TypeScript match `nve-abi` byte-for-byte.

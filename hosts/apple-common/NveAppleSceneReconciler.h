@@ -27,8 +27,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-/// Returns the canonical payload of a runtime resource (`resource_payload`), or `nil`.
-typedef NSData *_Nullable (^NveAppleResourceProvider)(uint32_t resourceId);
+/// Returns the canonical payload of a runtime resource (`resource_payload`) whose kind matches
+/// `expectedKind`, or `nil`.
+typedef NSData *_Nullable (^NveAppleResourceProvider)(uint32_t resourceId, uint64_t expectedKind);
 
 /// Apple adapter of host-cxx's `RetainedTree` over the zero-copy runtime scene: one retained
 /// native view per live node, O(changed) per frame (removed, dirty, moved — geometry only — and the

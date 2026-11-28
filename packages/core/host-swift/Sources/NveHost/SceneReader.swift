@@ -318,10 +318,13 @@ public struct SceneReader<View: SceneViewABI> {
     /// Single-pass zero-allocation ancestor walk for an `#[nve_table(inherited)]` table starting at
     /// `index`. Calls `visit(row, freshExplicitMask)` for each ancestor carrying a row with at
     /// least one previously unresolved explicit bit (word 0), so a host resolves all inherited
-    /// fields (such as `NveTables.Typography`) in one traversal.
+    /// fields (such as `NveTables.Typography`) in one traversal. Bits in `noInheritMask`
+    /// (`#[no_inherit]` fields) are visited only on `index` itself (`depth == 0`) and masked out
+    /// on ancestors (`depth > 0`).
     public func forEachInheritedRow(
         _ table: TableReader,
         fromNode index: Int,
+        noInheritMask: UInt32 = 0,
         _ visit: (_ row: Int, _ freshExplicitMask: UInt32) throws -> Void
     ) rethrows {
         var resolved: UInt32 = 0
@@ -329,11 +332,11 @@ public struct SceneReader<View: SceneViewABI> {
         var depth = 0
         while isLive(current), depth < nodeCapacity {
             if let r = tableRow(table, forNode: current) {
-                let mask = table.explicitMask(r)
+                let mask = depth == 0 ? table.explicitMask(r) : (table.explicitMask(r) & ~noInheritMask)
                 let fresh = mask & ~resolved
                 if fresh != 0 {
                     try visit(r, fresh)
-                    resolved |= mask
+                    resolved |= fresh
                 }
             }
             guard let parent = row(current)?.parentId, let next = self.index(of: parent), next != current else {

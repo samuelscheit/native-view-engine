@@ -30,6 +30,8 @@ export const NVE_EVENT_FLAG_MOD_MASK = 0x1f;
 
 const INTERNAL_FRAMING_MASK =
   NVE_EVENT_FLAG_UTF8_BYTES | NVE_EVENT_FLAG_INLINE_KEY_UTF8 | NVE_EVENT_FLAG_CUSTOM_NAMED | NVE_EVENT_FLAG_KEY_SPLIT_BYTES;
+const NON_TEXT_FRAMING_MASK =
+  NVE_EVENT_FLAG_INLINE_KEY_UTF8 | NVE_EVENT_FLAG_KEY_SPLIT_BYTES | NVE_EVENT_FLAG_CUSTOM_NAMED;
 
 const EV = NVE_EVENT_LAYOUT;
 const RB = RAW_EVENT_BYTES_LAYOUT;
@@ -184,10 +186,10 @@ export class EventView {
     return this.arena.subarray(off, off + len);
   }
 
-  /** Pre-validated UTF-8 text payload (`""` when not flagged `UTF8_BYTES` or when `KEY_SPLIT_BYTES`). */
+  /** Pre-validated UTF-8 text payload (`""` when not a plain `UTF8_BYTES` event). */
   text(): string {
     const f = this.flags;
-    return (f & NVE_EVENT_FLAG_UTF8_BYTES) !== 0 && (f & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) === 0
+    return (f & NVE_EVENT_FLAG_UTF8_BYTES) !== 0 && (f & NON_TEXT_FRAMING_MASK) === 0
       ? UTF8_DECODER.decode(this.bytes())
       : '';
   }
