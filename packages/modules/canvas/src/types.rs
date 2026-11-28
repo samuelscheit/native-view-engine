@@ -1,17 +1,8 @@
-//! Core types, constants, opcodes, sparkline generator, and error types for `NVE_DRAW1`.
+//! Core types, bounds constants, and sparkline generator for flat `nve.res.draw_list` draw lists.
 
 use std::fmt;
 
 use nve_abi::ColorRgba;
-
-/// 9-byte ASCII magic header identifying a binary NVE vector draw-list stream.
-pub const NVE_DRAW_MAGIC: [u8; 9] = *b"NVE_DRAW1";
-
-/// Current binary format version of `NVE_DRAW1`.
-pub const NVE_DRAW_VERSION: u16 = 1;
-
-/// Fixed byte length of the `NVE_DRAW1` header (`9 + 2 + 4`).
-pub const NVE_DRAW_HEADER_SIZE: usize = 15;
 
 /// Strict upper bound on operations per draw list to guard against corrupt/hostile payloads.
 pub const MAX_DRAW_OPS: usize = 65_536;
@@ -19,8 +10,9 @@ pub const MAX_DRAW_OPS: usize = 65_536;
 /// Strict upper bound on vertices inside a single `StrokePolyline` operation.
 pub const MAX_POLYLINE_POINTS: usize = 16_384;
 
-/// Compact prefix used when transporting an `NVE_DRAW1` binary buffer through UTF-8 RSX text props.
-pub const DRAW_LIST_ATTR_PREFIX: &str = "nve-draw1;b64,";
+/// Maximum live nested `ClipRect` depth passed to renderers before overflow balancing absorbs
+/// deeper clips (matches generated host decoders across C++, Java, Dart, Swift, TS, Web, and Skia).
+pub const MAX_CLIP_DEPTH: usize = 64;
 
 /// Cross-platform image scaling mode for `ComponentKind::Image` (`resizeMode` prop).
 #[repr(u8)]
@@ -69,21 +61,7 @@ impl fmt::Display for ImageResizeMode {
     }
 }
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_codec::NveCodec)]
-pub(super) enum DrawOpcode {
-    Clear = 1,
-    FillRect = 2,
-    FillRoundedRect = 3,
-    FillCircle = 4,
-    StrokeLine = 5,
-    StrokePolyline = 6,
-    ClipRect = 7,
-    RestoreClip = 8,
-}
-
-
-/// Typed vector drawing operation encoded inside an `NVE_DRAW1` binary draw list.
+/// Typed vector drawing operation encoded inside a flat `nve.res.draw_list` stream.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CanvasOp {
     Clear {
@@ -136,8 +114,8 @@ impl CanvasOp {
     /// Generates a crisp telemetry sparkline sequence (background rounded frame, clip region,
     /// subtle horizontal reference guides, vector polyline curve, and highlighted terminal dot).
     ///
-    /// Non-finite sample values are safely sanitized so the resulting stream always decodes
-    /// cleanly under strict [`super::DrawListDecoder`] validation.
+    /// Non-finite sample values are safely sanitized so the resulting stream always passes
+    /// strict [`nve_store::FlatResource::validate`] checks.
     pub fn sparkline(
         samples: &[f32],
         width: f32,
@@ -304,54 +282,10 @@ pub(super) fn sanitize_finite(v: f32) -> f32 {
     }
 }
 
-/// Decoded header of an `NVE_DRAW1` binary draw-list buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DrawListHeader {
-    pub version: u16,
-    pub op_count: u32,
-}
-
-/// Strict error type returned by [`super::DrawListDecoder`] on invalid or corrupt buffers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DrawListError {
-    Truncated,
-    BadMagic,
-    UnsupportedVersion(u16),
-    OpCountExceedsLimit { count: u32, max: usize },
-    PolylinePointCountExceedsLimit { count: u32, max: usize },
-    UnknownOpcode(u8),
-    NonFiniteFloat,
-    TrailingBytes(usize),
-    InvalidBase64,
-    UnsupportedPropValue,
-}
-
-impl fmt::Display for DrawListError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Truncated => write!(f, "NVE_DRAW1 buffer truncated"),
-            Self::BadMagic => write!(f, "NVE_DRAW1 magic header mismatch"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported NVE_DRAW1 version {v}"),
-            Self::OpCountExceedsLimit { count, max } => {
-                write!(f, "NVE_DRAW1 op count {count} exceeds limit {max}")
-            }
-            Self::PolylinePointCountExceedsLimit { count, max } => {
-                write!(
-                    f,
-                    "NVE_DRAW1 polyline point count {count} exceeds limit {max}"
-                )
-            }
-            Self::UnknownOpcode(op) => write!(f, "unknown NVE_DRAW1 opcode {op}"),
-            Self::NonFiniteFloat => write!(f, "non-finite f32 value in NVE_DRAW1 stream"),
-            Self::TrailingBytes(n) => {
-                write!(f, "{n} unexpected trailing bytes in NVE_DRAW1 stream")
-            }
-            Self::InvalidBase64 => write!(f, "invalid base64 payload for NVE_DRAW1 attribute"),
-            Self::UnsupportedPropValue => {
-                write!(f, "expected RawPropValue::Bytes or base64 String for drawList")
-            }
-        }
+pub(super) fn sanitize_non_negative(v: f32) -> f32 {
+    if v.is_finite() && v >= 0.0 {
+        v
+    } else {
+        0.0
     }
 }
-
-impl std::error::Error for DrawListError {}

@@ -9,7 +9,6 @@ nve-abi = { workspace = true }
 nve-codec = { workspace = true }
 nve-hash = { workspace = true }
 nve-store = { workspace = true }
-base64 = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,11 +6,11 @@ use nve_abi::{
     EventBatchBuf, EventFlags, FrameId, NveMapEntry, NvePropsRef, NveValue, SurfaceId,
     TextInputEvent, TimestampUs, ROOT_NODE_ID,
 };
-use nve_canvas::{Canvas, CanvasOpRef, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
+use nve_canvas::{Canvas, CanvasOpRef, DrawList};
 use nve_tables::tables::{Image, ImageFit, ImageSrc, ImageSrcView, TextInput};
 use nve_engine::NveApp;
 use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeStore};
+use nve_store::{ChangeSet, FlatResource, NodeStore, ValidatedWords};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, DocBlockKind,
     HOST_SURFACES, PersistConfig, STATE_FILE_NAME, StudioWorkspaceModule,
@@ -19,7 +19,7 @@ use nve_studio_workspace::{
 };
 
 #[test]
-fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_bytes() {
+fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_flat_draw_list() {
     let mut h = MultiBackendHarness::new(960.0, 640.0);
     let store = h.surface.store();
 
@@ -86,14 +86,10 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
         "expected telemetry StrokePolyline op in Canvas draw list, got {} ops",
         dl.len()
     );
-    let raw_bytes = dl.to_owned().to_nve_draw1_bytes();
-    assert!(raw_bytes.starts_with(&NVE_DRAW_MAGIC));
-    assert!(
-        DrawListDecoder::decode(&raw_bytes)
-            .expect("decode NVE_DRAW1")
-            .len()
-            >= 7
-    );
+    let mut flat_words = Vec::new();
+    assert!(dl.to_owned().write_words(&mut flat_words));
+    let validated = ValidatedWords::<DrawList>::try_new(&flat_words).expect("valid flat DrawList");
+    assert!(DrawList::view(validated).len() >= 7);
     assert!(h.html().contains("<canvas "));
 
     // Verify NVE2 wire roundtrip of the Canvas + DrawList resource through StudioWorkspaceModule.

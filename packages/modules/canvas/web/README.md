@@ -1,6 +1,6 @@
 # `nve-canvas-web`
 
-Thin Web (`nve-backend-web`) leaf adapter rendering `nve-canvas` `NVE_DRAW1` draw lists to HTML5 `<canvas>` 2D contexts and SSR attributes.
+Thin Web (`nve-backend-web`) leaf adapter rendering flat `nve.res.draw_list` (`FlatResource`) draw lists to HTML5 `<canvas>` 2D contexts and SSR attributes.
 
 ## Role & API
 

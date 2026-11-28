@@ -2,18 +2,14 @@
 //! [`DrawListView`] / [`CanvasOpRef`] / [`PolylinePoints`] slab readers.
 
 use nve_abi::{ColorRgba, Key64};
+use nve_codec::FloatConstraint;
 use nve_store::{FlatResource, ValidatedWords};
 
+use crate::desc::{
+    DRAW_LIST_CODEC_DESC, OP_CLEAR, OP_CLIP_RECT, OP_FILL_CIRCLE, OP_FILL_RECT,
+    OP_FILL_ROUNDED_RECT, OP_RESTORE_CLIP, OP_STROKE_LINE, OP_STROKE_POLYLINE,
+};
 use crate::{CanvasOp, DrawList, MAX_DRAW_OPS, MAX_POLYLINE_POINTS};
-
-const OP_CLEAR: u32 = 1;
-const OP_FILL_RECT: u32 = 2;
-const OP_FILL_ROUNDED_RECT: u32 = 3;
-const OP_FILL_CIRCLE: u32 = 4;
-const OP_STROKE_LINE: u32 = 5;
-const OP_STROKE_POLYLINE: u32 = 6;
-const OP_CLIP_RECT: u32 = 7;
-const OP_RESTORE_CLIP: u32 = 8;
 
 /// Zero-copy borrowed view over flat `(x, y)` `f32` vertex pairs inside a `StrokePolyline` op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,8 +287,18 @@ impl<'a> Iterator for DrawListOpsIter<'a> {
 
 impl ExactSizeIterator for DrawListOpsIter<'_> {}
 
+#[inline]
+fn word_finite(word: u32) -> bool {
+    FloatConstraint::Finite.check(f32::from_bits(word))
+}
+
+#[inline]
+fn word_non_negative(word: u32) -> bool {
+    FloatConstraint::NonNegative.check(f32::from_bits(word))
+}
+
 impl FlatResource for DrawList {
-    const KIND: Key64 = Key64::of("nve.res.draw_list");
+    const KIND: Key64 = Key64::of(DRAW_LIST_CODEC_DESC.kind_name);
     type View<'a> = DrawListView<'a>;
 
     fn write_words(&self, out: &mut Vec<u32>) -> bool {
@@ -304,14 +310,20 @@ impl FlatResource for DrawList {
         for op in self.ops() {
             match op {
                 CanvasOp::Clear { color } => out.extend_from_slice(&[OP_CLEAR, color.to_u32()]),
-                CanvasOp::FillRect { x, y, w, h, color } => out.extend_from_slice(&[
-                    OP_FILL_RECT,
-                    x.to_bits(),
-                    y.to_bits(),
-                    w.to_bits(),
-                    h.to_bits(),
-                    color.to_u32(),
-                ]),
+                CanvasOp::FillRect { x, y, w, h, color } => {
+                    if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+                        out.truncate(start);
+                        return false;
+                    }
+                    out.extend_from_slice(&[
+                        OP_FILL_RECT,
+                        x.to_bits(),
+                        y.to_bits(),
+                        w.to_bits(),
+                        h.to_bits(),
+                        color.to_u32(),
+                    ]);
+                }
                 CanvasOp::FillRoundedRect {
                     x,
                     y,
@@ -319,27 +331,47 @@ impl FlatResource for DrawList {
                     h,
                     radius,
                     color,
-                } => out.extend_from_slice(&[
-                    OP_FILL_ROUNDED_RECT,
-                    x.to_bits(),
-                    y.to_bits(),
-                    w.to_bits(),
-                    h.to_bits(),
-                    radius.to_bits(),
-                    color.to_u32(),
-                ]),
+                } => {
+                    if !x.is_finite()
+                        || !y.is_finite()
+                        || !w.is_finite()
+                        || !h.is_finite()
+                        || !FloatConstraint::NonNegative.check(*radius)
+                    {
+                        out.truncate(start);
+                        return false;
+                    }
+                    out.extend_from_slice(&[
+                        OP_FILL_ROUNDED_RECT,
+                        x.to_bits(),
+                        y.to_bits(),
+                        w.to_bits(),
+                        h.to_bits(),
+                        radius.to_bits(),
+                        color.to_u32(),
+                    ]);
+                }
                 CanvasOp::FillCircle {
                     cx,
                     cy,
                     radius,
                     color,
-                } => out.extend_from_slice(&[
-                    OP_FILL_CIRCLE,
-                    cx.to_bits(),
-                    cy.to_bits(),
-                    radius.to_bits(),
-                    color.to_u32(),
-                ]),
+                } => {
+                    if !cx.is_finite()
+                        || !cy.is_finite()
+                        || !FloatConstraint::NonNegative.check(*radius)
+                    {
+                        out.truncate(start);
+                        return false;
+                    }
+                    out.extend_from_slice(&[
+                        OP_FILL_CIRCLE,
+                        cx.to_bits(),
+                        cy.to_bits(),
+                        radius.to_bits(),
+                        color.to_u32(),
+                    ]);
+                }
                 CanvasOp::StrokeLine {
                     x0,
                     y0,
@@ -347,21 +379,34 @@ impl FlatResource for DrawList {
                     y1,
                     width,
                     color,
-                } => out.extend_from_slice(&[
-                    OP_STROKE_LINE,
-                    x0.to_bits(),
-                    y0.to_bits(),
-                    x1.to_bits(),
-                    y1.to_bits(),
-                    width.to_bits(),
-                    color.to_u32(),
-                ]),
+                } => {
+                    if !x0.is_finite()
+                        || !y0.is_finite()
+                        || !x1.is_finite()
+                        || !y1.is_finite()
+                        || !FloatConstraint::NonNegative.check(*width)
+                    {
+                        out.truncate(start);
+                        return false;
+                    }
+                    out.extend_from_slice(&[
+                        OP_STROKE_LINE,
+                        x0.to_bits(),
+                        y0.to_bits(),
+                        x1.to_bits(),
+                        y1.to_bits(),
+                        width.to_bits(),
+                        color.to_u32(),
+                    ]);
+                }
                 CanvasOp::StrokePolyline {
                     points,
                     width,
                     color,
                 } => {
-                    if points.len() > MAX_POLYLINE_POINTS {
+                    if points.len() > MAX_POLYLINE_POINTS
+                        || !FloatConstraint::NonNegative.check(*width)
+                    {
                         out.truncate(start);
                         return false;
                     }
@@ -371,17 +416,27 @@ impl FlatResource for DrawList {
                     out.push(color.to_u32());
                     out.push(points.len() as u32);
                     for &(px, py) in points {
+                        if !px.is_finite() || !py.is_finite() {
+                            out.truncate(start);
+                            return false;
+                        }
                         out.push(px.to_bits());
                         out.push(py.to_bits());
                     }
                 }
-                CanvasOp::ClipRect { x, y, w, h } => out.extend_from_slice(&[
-                    OP_CLIP_RECT,
-                    x.to_bits(),
-                    y.to_bits(),
-                    w.to_bits(),
-                    h.to_bits(),
-                ]),
+                CanvasOp::ClipRect { x, y, w, h } => {
+                    if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+                        out.truncate(start);
+                        return false;
+                    }
+                    out.extend_from_slice(&[
+                        OP_CLIP_RECT,
+                        x.to_bits(),
+                        y.to_bits(),
+                        w.to_bits(),
+                        h.to_bits(),
+                    ]);
+                }
                 CanvasOp::RestoreClip => out.push(OP_RESTORE_CLIP),
             }
         }
@@ -393,7 +448,7 @@ impl FlatResource for DrawList {
             return false;
         };
         let count = count_u32 as usize;
-        if count > MAX_DRAW_OPS {
+        if count > MAX_DRAW_OPS || words.len() - 1 < count {
             return false;
         }
         let mut pos = 1usize;
@@ -402,36 +457,105 @@ impl FlatResource for DrawList {
                 return false;
             };
             pos += 1;
-            let advance = match op {
-                OP_CLEAR => 1,
-                OP_FILL_RECT => 5,
-                OP_FILL_ROUNDED_RECT => 6,
-                OP_FILL_CIRCLE => 4,
-                OP_STROKE_LINE => 6,
-                OP_STROKE_POLYLINE => {
-                    let Some(&pt_count_u32) = words.get(pos + 2) else {
+            match op {
+                OP_CLEAR => {
+                    if words.get(pos).is_none() {
+                        return false;
+                    }
+                    pos += 1;
+                }
+                OP_FILL_RECT => {
+                    let Some(s) = words.get(pos..pos + 5) else {
                         return false;
                     };
-                    let pt_count = pt_count_u32 as usize;
+                    if !word_finite(s[0])
+                        || !word_finite(s[1])
+                        || !word_finite(s[2])
+                        || !word_finite(s[3])
+                    {
+                        return false;
+                    }
+                    pos += 5;
+                }
+                OP_FILL_ROUNDED_RECT => {
+                    let Some(s) = words.get(pos..pos + 6) else {
+                        return false;
+                    };
+                    if !word_finite(s[0])
+                        || !word_finite(s[1])
+                        || !word_finite(s[2])
+                        || !word_finite(s[3])
+                        || !word_non_negative(s[4])
+                    {
+                        return false;
+                    }
+                    pos += 6;
+                }
+                OP_FILL_CIRCLE => {
+                    let Some(s) = words.get(pos..pos + 4) else {
+                        return false;
+                    };
+                    if !word_finite(s[0]) || !word_finite(s[1]) || !word_non_negative(s[2]) {
+                        return false;
+                    }
+                    pos += 4;
+                }
+                OP_STROKE_LINE => {
+                    let Some(s) = words.get(pos..pos + 6) else {
+                        return false;
+                    };
+                    if !word_finite(s[0])
+                        || !word_finite(s[1])
+                        || !word_finite(s[2])
+                        || !word_finite(s[3])
+                        || !word_non_negative(s[4])
+                    {
+                        return false;
+                    }
+                    pos += 6;
+                }
+                OP_STROKE_POLYLINE => {
+                    let Some(hdr) = words.get(pos..pos + 3) else {
+                        return false;
+                    };
+                    if !word_non_negative(hdr[0]) {
+                        return false;
+                    }
+                    let pt_count = hdr[2] as usize;
                     if pt_count > MAX_POLYLINE_POINTS {
                         return false;
                     }
-                    let Some(n) = pt_count.checked_mul(2).and_then(|v| v.checked_add(3)) else {
+                    let Some(coord_words) = pt_count.checked_mul(2) else {
                         return false;
                     };
-                    n
+                    let pts_start = pos + 3;
+                    let Some(pts_end) = pts_start.checked_add(coord_words) else {
+                        return false;
+                    };
+                    let Some(pts) = words.get(pts_start..pts_end) else {
+                        return false;
+                    };
+                    if pts.iter().any(|&w| !word_finite(w)) {
+                        return false;
+                    }
+                    pos = pts_end;
                 }
-                OP_CLIP_RECT => 4,
-                OP_RESTORE_CLIP => 0,
+                OP_CLIP_RECT => {
+                    let Some(s) = words.get(pos..pos + 4) else {
+                        return false;
+                    };
+                    if !word_finite(s[0])
+                        || !word_finite(s[1])
+                        || !word_finite(s[2])
+                        || !word_finite(s[3])
+                    {
+                        return false;
+                    }
+                    pos += 4;
+                }
+                OP_RESTORE_CLIP => {}
                 _ => return false,
-            };
-            let Some(next) = pos.checked_add(advance) else {
-                return false;
-            };
-            if next > words.len() {
-                return false;
             }
-            pos = next;
         }
         pos == words.len()
     }

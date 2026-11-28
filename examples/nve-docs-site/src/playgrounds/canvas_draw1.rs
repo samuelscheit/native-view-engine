@@ -5,6 +5,7 @@ use nve_abi::ColorRgba;
 use nve_canvas::{Canvas, DrawList};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
+use nve_store::FlatResource;
 use nve_ui::{
     Accent, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, ColorHex, Theme, use_theme,
     with_alpha,
@@ -137,7 +138,12 @@ fn build_scene_draw_list(
 
     let list = dl.finish();
     let op_count = list.op_count();
-    let raw_len = list.to_nve_draw1_bytes().len();
+    let mut words = Vec::new();
+    let raw_len = if list.write_words(&mut words) {
+        words.len() * 4
+    } else {
+        0
+    };
     (list, op_count, raw_len)
 }
 

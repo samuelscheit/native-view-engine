@@ -7,7 +7,7 @@
 
 use nve_abi::ColorRgba;
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableSystem};
-use nve_canvas::{Canvas, CanvasOpRef, DrawList};
+use nve_canvas::{Canvas, CanvasOpRef, ClipDepthTracker, DrawList, MAX_CLIP_DEPTH};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 
 /// `SkiaTableSystem` plugin painting [`Canvas`] (`nve.canvas`) draw lists onto `PixelBuffer`.
@@ -33,50 +33,37 @@ impl ClipRectPx {
     }
 }
 
-/// Zero-heap-allocation inline clip stack for up to 8 nested `ClipRect` ops.
+/// Zero-heap-allocation clip stack enforcing [`MAX_CLIP_DEPTH`] (`64`) with overflow balance.
 struct ClipStackInline {
-    inline: [ClipRectPx; 8],
-    len: usize,
-    overflow: Vec<ClipRectPx>,
+    stack: [ClipRectPx; MAX_CLIP_DEPTH + 1],
+    tracker: ClipDepthTracker,
 }
 
 impl ClipStackInline {
     fn new(base: ClipRectPx) -> Self {
-        let mut inline = [ClipRectPx::default(); 8];
-        inline[0] = base;
+        let mut stack = [ClipRectPx::default(); MAX_CLIP_DEPTH + 1];
+        stack[0] = base;
         Self {
-            inline,
-            len: 1,
-            overflow: Vec::new(),
+            stack,
+            tracker: ClipDepthTracker::new(),
         }
     }
 
     #[inline]
     fn top(&self) -> ClipRectPx {
-        if let Some(&c) = self.overflow.last() {
-            c
-        } else {
-            self.inline[self.len - 1]
-        }
+        self.stack[self.tracker.depth()]
     }
 
     #[inline]
     fn push(&mut self, c: ClipRectPx) {
-        if self.len < 8 {
-            self.inline[self.len] = c;
-            self.len += 1;
-        } else {
-            self.overflow.push(c);
+        if self.tracker.push() {
+            self.stack[self.tracker.depth()] = c;
         }
     }
 
     #[inline]
     fn pop(&mut self) {
-        if !self.overflow.is_empty() {
-            self.overflow.pop();
-        } else if self.len > 1 {
-            self.len -= 1;
-        }
+        let _ = self.tracker.pop();
     }
 }
 
@@ -441,11 +428,10 @@ fn stroke_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_canvas::DrawListRecorder;
-    use nve_canvas::CanvasOp;
-    use nve_engine::LayoutRect;
     use nve_abi::EventBatchBuf;
-    use nve_store::{ChangeSet, Rgba};
+    use nve_canvas::{CanvasOp, DrawListRecorder};
+    use nve_engine::LayoutRect;
+    use nve_store::{ChangeSet, FlatResource, Rgba};
 
     #[test]
     fn canvas_skia_system_draws_shapes_and_clips() {
@@ -455,26 +441,30 @@ mod tests {
             .fill_rect(0.0, 0.0, 32.0, 32.0, ColorRgba::rgb(0, 255, 0))
             .restore_clip()
             .fill_circle(24.0, 24.0, 4.0, ColorRgba::rgb(0, 0, 255));
-        let mut ops = rec.finish().ops().to_vec();
-        // Append raw non-finite geometry (bypassing DrawListRecorder's sanitize_finite)
-        // so CanvasSkiaSystem's own non-finite guards are exercised directly.
-        ops.push(CanvasOp::FillRoundedRect {
-            x: f32::NAN,
-            y: 0.0,
-            w: 10.0,
-            h: 10.0,
-            radius: f32::NAN,
-            color: ColorRgba::WHITE,
-        });
-        ops.push(CanvasOp::StrokeLine {
-            x0: 0.0,
-            y0: 0.0,
-            x1: f32::INFINITY,
-            y1: 10.0,
-            width: 2.0,
-            color: ColorRgba::WHITE,
-        });
-        let dl = DrawList::from_ops(ops);
+        let dl = rec.finish();
+
+        // Raw non-finite / negative-radius geometry is rejected at FlatResource ingress.
+        let mut bad_words = Vec::new();
+        let bad_dl = DrawList::from_ops(vec![
+            CanvasOp::FillRoundedRect {
+                x: f32::NAN,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+                radius: f32::NAN,
+                color: ColorRgba::WHITE,
+            },
+            CanvasOp::StrokeLine {
+                x0: 0.0,
+                y0: 0.0,
+                x1: f32::INFINITY,
+                y1: 10.0,
+                width: 2.0,
+                color: ColorRgba::WHITE,
+            },
+        ]);
+        assert!(!bad_dl.write_words(&mut bad_words));
+        assert!(bad_words.is_empty());
 
         let mut store = NodeStore::new();
         let mut tx = store.tx();
@@ -529,5 +519,55 @@ mod tests {
         };
         CanvasSkiaSystem.paint_node(&mut ctx2, &store, n);
         assert_eq!(buf.get_rgb(8, 8), Some((0, 0, 0)));
+    }
+
+    #[test]
+    fn canvas_skia_system_enforces_max_clip_depth_66_clips_2_restores() {
+        let mut rec = DrawListRecorder::new();
+        rec.clear(ColorRgba::BLACK);
+        for _ in 0..(MAX_CLIP_DEPTH - 1) {
+            rec.clip_rect(0.0, 0.0, 32.0, 32.0);
+        }
+        // 64th clip is active; 65th and 66th overflow and must not narrow the clip.
+        rec.clip_rect(4.0, 4.0, 8.0, 8.0);
+        rec.clip_rect(0.0, 0.0, 1.0, 1.0);
+        rec.clip_rect(0.0, 0.0, 1.0, 1.0);
+        // Two restores cancel the two overflowed clips; 64th clip stays active.
+        rec.restore_clip().restore_clip();
+        rec.fill_rect(0.0, 0.0, 32.0, 32.0, ColorRgba::rgb(0, 255, 0));
+        // Third restore pops the 64th clip back to full 32x32.
+        rec.restore_clip();
+        rec.fill_rect(16.0, 16.0, 8.0, 8.0, ColorRgba::rgb(0, 0, 255));
+
+        let mut store = NodeStore::new();
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<Canvas>(n)
+            .draw_list_ephemeral(rec.finish())
+            .generation(1);
+        let mut changes = ChangeSet::default();
+        tx.commit_into(&mut changes);
+
+        let mut buf = PixelBuffer::new(32, 32);
+        let mut events = EventBatchBuf::new();
+        let mut ctx = SkiaSystemPaintCtx {
+            buffer: &mut buf,
+            rect: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            clip_rect: None,
+            scale_factor: 1.0,
+            opacity: 1.0,
+            inherited_text_color: Rgba::WHITE,
+            events: &mut events,
+        };
+        CanvasSkiaSystem.paint_node(&mut ctx, &store, n);
+        assert_eq!(buf.get_rgb(6, 6), Some((0, 255, 0)));
+        assert_eq!(buf.get_rgb(1, 1), Some((0, 0, 0)));
+        assert_eq!(buf.get_rgb(20, 20), Some((0, 0, 255)));
     }
 }
