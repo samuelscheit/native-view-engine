@@ -30,8 +30,8 @@ use taffy::style::AvailableSpace;
 use taffy::tree::{Cache, ClearState};
 
 use contents::BoxChildren;
-use node_lists::NodeLists;
 use layout_view::LayoutView;
+use node_lists::NodeLists;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct UnroundedBox {
@@ -349,9 +349,7 @@ impl TaffyStoreLayout {
             let text = resolve_inherited_text(store, id, parent_text);
 
             let dir_changed = self.resolved_rtl[idx] != rtl;
-            let text_measure_changed = self.resolved_text[idx].font_size.to_bits()
-                != text.font_size.to_bits()
-                || self.resolved_text[idx].font_weight != text.font_weight;
+            let text_measure_changed = !self.resolved_text[idx].measure_eq(&text);
 
             self.node_gens[idx] = id.generation();
             self.resolved_rtl[idx] = rtl;

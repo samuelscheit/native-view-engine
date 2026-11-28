@@ -6,27 +6,35 @@ use std::sync::Arc;
 
 use super::hoisted_tests::{VP, assert_matches_layout_of};
 use crate::TaffyStoreLayout;
-use nve_components::tables::{
-    AlignSelf, Display, FlexDirection, Layout, Overflow, Position, TextContent, Typography, Visual,
-};
 use crate::{TextMeasurer, TextStyle};
+use nve_components::tables::{
+    AlignSelf, Display, FlexDirection, FontStyle, Layout, Overflow, OverflowWrap, Position,
+    TextContent, Typography, Visual, WhiteSpace, WordBreak,
+};
 use nve_engine::Viewport;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Transaction};
 
-/// Deterministic measurer whose width depends on text, size, and weight, so every text input
-/// changes the measured box (unlike weight-invariant measurers).
+/// Deterministic measurer whose box depends on every measure-affecting typography field (and
+/// never on paint-only `color`), so every text input changes the measured box.
 struct WeightedMeasurer {
     scale: f32,
 }
 
 impl TextMeasurer for WeightedMeasurer {
     fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
-        let natural = text.chars().count() as f32 * style.font_size * 0.5 * self.scale
-            * f32::from(style.font_weight)
-            / 400.0;
+        let chars = text.chars().count() as f32;
+        let glyph = style.font_size * 0.5 * self.scale * f32::from(style.font_weight) / 400.0
+            + style.letter_spacing;
+        let family: f32 = style.font_family.bytes().map(f32::from).sum::<f32>() * 0.1;
+        let modes = f32::from(style.white_space as u8)
+            + f32::from(style.word_break as u8) * 2.0
+            + f32::from(style.overflow_wrap as u8) * 4.0
+            + f32::from(style.font_style as u8) * 8.0;
+        let natural = chars * glyph + family + modes;
+        let line = style.line_height_points().unwrap_or(style.font_size * 1.25);
         (
             max_width.map_or(natural, |w| natural.min(w)),
-            style.font_size * 1.25,
+            line + style.max_lines as f32,
         )
     }
 }
@@ -188,6 +196,66 @@ fn text_content_and_inherited_typography_reopen_the_pass() {
         tx.edit::<Typography>(parent).font_weight(700);
     });
     f.assert_reopened(ran, label, before, "inherited Typography::font_weight");
+}
+
+/// Every measure-affecting typography field edited on an ancestor re-measures the inheriting
+/// descendant; a paint-only `color` edit on the ancestor never runs a pass.
+#[test]
+fn every_inherited_measure_field_reopens_and_color_stays_skipped() {
+    let mut f = Fixture::new();
+    let (parent, label) = (f.parent, f.label);
+    let edits: [(&str, fn(&mut Transaction<'_>, NodeId)); 8] = [
+        ("line_height", |tx, p| {
+            tx.edit::<Typography>(p).line_height(Length::points(40.0));
+        }),
+        ("letter_spacing", |tx, p| {
+            tx.edit::<Typography>(p).letter_spacing(3.0);
+        }),
+        ("white_space", |tx, p| {
+            tx.edit::<Typography>(p).white_space(WhiteSpace::NoWrap);
+        }),
+        ("max_lines", |tx, p| {
+            tx.edit::<Typography>(p).max_lines(3);
+        }),
+        ("font_style", |tx, p| {
+            tx.edit::<Typography>(p).font_style(FontStyle::Italic);
+        }),
+        ("word_break", |tx, p| {
+            tx.edit::<Typography>(p).word_break(WordBreak::BreakAll);
+        }),
+        ("overflow_wrap", |tx, p| {
+            tx.edit::<Typography>(p)
+                .overflow_wrap(OverflowWrap::Anywhere);
+        }),
+        ("font_family", |tx, p| {
+            tx.edit::<Typography>(p).font_family("Arial");
+        }),
+    ];
+    for (what, edit) in edits {
+        let before = f.rect(label);
+        let ran = f.commit(|tx| edit(tx, parent));
+        f.assert_reopened(ran, label, before, what);
+    }
+
+    // Same-length family replaced in place (the arena reuses the span): still re-measured.
+    let span = f.layout.resolved_text(label).font_family.span;
+    let before = f.rect(label);
+    let ran = f.commit(|tx| {
+        tx.edit::<Typography>(parent).font_family("Inter");
+    });
+    assert_eq!(
+        f.layout.resolved_text(label).font_family.span,
+        span,
+        "same-size family edits reuse the span"
+    );
+    f.assert_reopened(ran, label, before, "same-length font_family");
+
+    let pass = f.layout.layout_gen;
+    assert!(!f.commit(|tx| {
+        tx.edit::<Typography>(parent).color(nve_store::Rgba::WHITE);
+    }));
+    assert_eq!(f.layout.layout_gen, pass, "inherited color never relayouts");
+    f.assert_matches_fresh();
 }
 
 #[test]

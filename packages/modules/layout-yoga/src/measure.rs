@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nve_components::tables::{
     FlexDirection, Layout, Overflow, Scroll, ScrollAxes, TextContent, Typography, Visual,
 };
-use nve_layout::{HeuristicTextMeasurer, MAX_TREE_DEPTH, TextMeasurer, TextStyle};
+use nve_layout::{MAX_TREE_DEPTH, TextMeasurer, TextStyle};
 use nve_store::{NodeId, NodeStore, NveTable};
 
 use crate::ffi::{

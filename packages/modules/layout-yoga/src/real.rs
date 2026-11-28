@@ -240,7 +240,8 @@ impl YogaLayoutEngine {
         }
         self.typo_dirty = false;
         self.typo_stack.clear();
-        self.typo_stack.push((root, ResolvedTextStyle::default(), 0));
+        self.typo_stack
+            .push((root, ResolvedTextStyle::default(), 0));
 
         while let Some((id, parent_text, depth)) = self.typo_stack.pop() {
             if depth > MAX_TREE_DEPTH || !store.is_live(id) {
@@ -252,7 +253,9 @@ impl YogaLayoutEngine {
             {
                 let resolved = text.in_store(store);
                 let changed = state.with_payload_mut(|payload| {
-                    if payload.style.borrowed() == resolved {
+                    if payload.style.borrowed().measure_eq(&resolved) {
+                        // Paint-only edits (`color`) never re-measure or relayout.
+                        payload.style.color = resolved.color;
                         return false;
                     }
                     payload.style = resolved.map_family(|f| (*f).to_owned());
