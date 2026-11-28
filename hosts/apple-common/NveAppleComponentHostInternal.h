@@ -2,7 +2,7 @@
 
 #import "NveAppleComponentHost.h"
 
-#include <nve/host/runtime_session.hpp>
+#include <nve/host/host_session.hpp>
 
 #include <vector>
 
@@ -14,7 +14,6 @@ NS_ASSUME_NONNULL_BEGIN
   NSString *_errorDomain;
   NveAppleSceneReconciler *_reconciler;
   nve::host::RuntimeSession _session;
-  void *_Nullable _dylibHandle;
   uint32_t _surfaceId;
   BOOL _appAttached;
   BOOL _pairRequested;
@@ -25,16 +24,18 @@ NS_ASSUME_NONNULL_BEGIN
   BOOL _reconciling;
   /// The scene guard held during reconcile (`resource_payload` borrows from it).
   const nve::host::RuntimeSceneGuard *_Nullable _activeScene;
-  /// App state carried across a Tier-2 reload, restored once the new app attaches.
-  std::vector<uint8_t> _pendingSnapshotState;
   nve::apple::ValueArena _arena;
 }
 
-/// Attaches `getInterface` (detaching any previous app), restores pending snapshot state, pumps.
+/// Attaches `getInterface` (an in-process app; `NULL` detaches), replacing any app or pairing, and pumps.
 - (BOOL)_attachGetInterface:(NveGetInterfaceFn)getInterface error:(NSError *_Nullable *_Nullable)error;
+/// Loads the app `.dylib` at `path` through the runtime (`load_app_module`; `carry` restores the
+/// running app's state into it), replacing any app or pairing, and pumps.
+- (BOOL)_loadAppModule:(NSString *)path carryState:(BOOL)carry error:(NSError *_Nullable *_Nullable)error;
 - (NSError *)_errorWithCode:(NSInteger)code description:(NSString *)description;
-/// Re-runs `block` on the next main-queue turn when called during reconcile; `NO` otherwise.
-- (BOOL)_deferIfReconciling:(dispatch_block_t)block;
+/// Runs `block` with this host on the next main-queue turn, unless the host is gone by then (the
+/// block never retains it). For calls made during reconcile, which must not re-enter the runtime.
+- (void)_deferToNextTurn:(void (^)(NveAppleComponentHost *host))block;
 
 @end
 

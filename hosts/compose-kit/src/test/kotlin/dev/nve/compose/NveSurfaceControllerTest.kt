@@ -91,7 +91,7 @@ class NveSurfaceControllerTest {
         val c = NveSurfaceController(host)
         assertTrue(c.start(NveSource.App("/data/app/libnve_app.so")))
         assertEquals(listOf<NveSource>(NveSource.App("/data/app/libnve_app.so")), host.started)
-        assertEquals("Hi", c.scene.nodes.getValue(0x1000002).text)
+        assertEquals("Hi", c.scene.at(0x1000002).text)
         assertNull(c.error)
     }
 
@@ -101,7 +101,8 @@ class NveSurfaceControllerTest {
         val c = NveSurfaceController(host)
         assertFalse(c.start(NveSource.Paired("ws://pair.example.test:9000/nve-wire", "t")))
         assertEquals("start failed (6): app library missing", c.error)
-        assertEquals(NveSceneSnapshot.EMPTY, c.scene)
+        assertEquals(0L, c.scene.frameId)
+        assertEquals(0, c.scene.size)
     }
 
     @Test

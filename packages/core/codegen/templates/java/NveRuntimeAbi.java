@@ -15,9 +15,11 @@ public final class NveRuntimeAbi {
 {%- endfor %}
 {%- for e in m.file.enums %}
 
-    // {{ e.name }} (the runtime ABI's one status enum: `STATUS_*`)
+{%- let prefix = spell::enum_prefix(e.name) %}
+
+    // {{ e.name }} (`{{ prefix }}_*`)
 {%- for v in e.variants %}
-    public static final int STATUS_{{ spell::screaming(v.name) }} = {{ spell::int(v.value) }};
+    public static final int {{ prefix }}_{{ spell::screaming(v.name) }} = {{ spell::int(v.value) }};
 {%- endfor %}
 {%- endfor %}
 {%- for r in m.records %}

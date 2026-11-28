@@ -13,6 +13,7 @@ const int nveEventMaskPress = 1;
 
 final class NveCanvasSemanticsAssembler {
   final Map<int, SemanticsNode> _nodes = <int, SemanticsNode>{};
+  final NveTreeWalk _walk = NveTreeWalk();
 
   void clear() => _nodes.clear();
 
@@ -23,7 +24,7 @@ final class NveCanvasSemanticsAssembler {
     final live = <int>{};
     final root = tree.root;
     if (root >= 0) {
-      _Collector(tree, _nodes, live, out, onTap).visit(tree.walk(), root, Offset.zero, surface);
+      _Collector(tree, _nodes, live, out, onTap).visit(tree.walk(_walk), root, Offset.zero, surface);
     }
     _nodes.removeWhere((id, _) => !live.contains(id));
     return out;

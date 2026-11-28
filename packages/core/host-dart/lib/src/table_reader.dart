@@ -117,7 +117,9 @@ final class TableReader {
     ByteData? rowIndexDir,
     ByteData? rowIndexPages,
   })  : _rows = rows,
-        _owners = owners,
+        // An empty table is dense whatever its owners pointer (Rust publishes
+        // `NonNull::dangling()` for an empty `Vec`), like C++ `is_sparse()`.
+        _owners = rowCount > 0 ? owners : null,
         _dirty = dirtyRows ?? ByteData(0),
         _dir = rowIndexDir ?? ByteData(0),
         // Whole pages only (like C++ `TableReader::make`): a partial tail page is unreachable.
@@ -260,7 +262,8 @@ final class TableReader {
   /// Row of node slot [index], or `null`; O(1). Sparse rows resolve through the row index
   /// (`row_index_dir` page → `row + 1` entry), without checking the owner's generation.
   int? rowOfNode(int index) {
-    if (index < 0) {
+    // Node slots are 24-bit; a wider value would wrap dart2js's 32-bit shifts onto a real page.
+    if (index < 0 || index > nodeIndexMask) {
       return null;
     }
     if (_owners == null) {

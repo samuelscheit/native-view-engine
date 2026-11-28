@@ -1,8 +1,9 @@
 /// Validated zero-copy reader over one borrowed `NveSceneView` frame.
 ///
 /// Mirrors the C++ `nve::host::SceneReader`: construction validates the schema hash, every
-/// slab against its count, the text slab's UTF-8, every live node's child range, every dirty
-/// index, and every published table once; later reads are plain typed-list loads. Native hosts
+/// slab against its count, the text slab's UTF-8, every dirty / moved index, the scroll-offset
+/// order, and every published table once, in O(changed + tables) (never O(capacity)); a node's
+/// child range is checked when [children] reads it. Later reads are plain typed-list loads. Native hosts
 /// wrap the borrowed pointers with `Pointer.asTypedList` (`package:nve_host/nve_host_ffi.dart`);
 /// tests and web hosts pass ordinary typed lists.
 library;
@@ -50,7 +51,7 @@ const int _packedWord = 7; // generation | primary_slot << 8 | effects << 16 | f
 const int _flagLive = 1;
 
 final class SceneReader {
-  /// Throws [SceneException] when any slab, child range, dirty index, or table is invalid.
+  /// Throws [SceneException] when any slab, dirty / moved index, scroll order, or table is invalid.
   SceneReader({
     required Key64 expectedSchema,
     required Key64 schemaHash,
@@ -81,8 +82,10 @@ final class SceneReader {
     if (schemaHash != expectedSchema) {
       throw SceneException(SceneErrorKind.schemaMismatch, 'expected $expectedSchema, got $schemaHash');
     }
-    // Division, never `nodeCapacity * words`: a hostile count cannot wrap the 64-bit VM `int`.
+    // Division, never `nodeCapacity * words`: a hostile count cannot wrap the 64-bit VM `int`
+    // (or dart2js's 53-bit doubles). Slots are 24-bit `NodeId` indices.
     if (nodeCapacity < 0 ||
+        nodeCapacity > nodeIndexMask + 1 ||
         rows.length ~/ nodeRowWords < nodeCapacity ||
         rects.length ~/ layoutRectFloats < nodeCapacity) {
       throw SceneException(SceneErrorKind.missingSlab,
@@ -90,17 +93,6 @@ final class SceneReader {
     }
     if (!isValidUtf8(textSlab)) {
       throw const SceneException(SceneErrorKind.invalidUtf8, 'textSlab');
-    }
-    final childLen = childrenSlab.length;
-    for (var i = 0; i < nodeCapacity; i++) {
-      if (!isLive(i)) {
-        continue;
-      }
-      final off = rows[i * nodeRowWords + _childOffWord];
-      final len = rows[i * nodeRowWords + _childLenWord];
-      if (off > childLen || len > childLen - off) {
-        throw SceneException(SceneErrorKind.missingSlab, 'node $i children [$off, +$len) outside slab ($childLen)');
-      }
     }
     for (final (what, indices) in [('dirty', dirtyIndices), ('moved', this.movedIndices)]) {
       for (final index in indices) {
@@ -236,15 +228,22 @@ final class SceneReader {
 
   // ---- children ------------------------------------------------------------------------------
 
-  int childCount(int index) => isLive(index) ? _rows[index * nodeRowWords + _childLenWord] : 0;
+  int childCount(int index) => children(index).length;
 
-  /// Raw child `NodeId`s of [index] in paint order (zero-copy view; empty for dead nodes).
+  /// Raw child `NodeId`s of [index] in paint order (zero-copy view). Empty for dead nodes; a child
+  /// range outside the slab throws [SceneException] (checked here, on read, like C++
+  /// `node_children`, so opening a frame never walks every row).
   Uint32List children(int index) {
     if (!isLive(index)) {
       return Uint32List(0);
     }
     final off = _rows[index * nodeRowWords + _childOffWord];
-    return Uint32List.sublistView(_children, off, off + _rows[index * nodeRowWords + _childLenWord]);
+    final len = _rows[index * nodeRowWords + _childLenWord];
+    if (off > _children.length || len > _children.length - off) {
+      throw SceneException(
+          SceneErrorKind.missingSlab, 'node $index children [$off, +$len) outside slab (${_children.length})');
+    }
+    return Uint32List.sublistView(_children, off, off + len);
   }
 
   // ---- text ----------------------------------------------------------------------------------
@@ -279,11 +278,17 @@ final class SceneReader {
   /// Published table bound to [slot], or `null`.
   TableReader? tableAtSlot(int slot) => slot >= 0 && slot < maxTableSlots ? _bySlot[slot] : null;
 
-  /// Row of node [index] in [table], or `-1` when the table is absent or not attached to it.
+  /// Row of live node [index] in [table], or `-1` when the table is absent or not attached to it.
   ///
-  /// O(1): dense rows are node indices, sparse rows resolve through the published row index.
-  int rowOf(TableReader? table, int index) =>
-      table == null || !hasTable(index, table.slot) ? -1 : table.rowOfNode(index) ?? -1;
+  /// O(1): dense rows are node indices, sparse rows resolve through the published row index and
+  /// must be owned by the node's current `NodeId` (generation checked), so a freed or recycled
+  /// slot with stale `table_set` bits never resolves.
+  int rowOf(TableReader? table, int index) {
+    if (table == null || !isLive(index) || !hasTable(index, table.slot)) {
+      return -1;
+    }
+    return (table.isSparse ? table.rowOf(nodeId(index)) : table.rowOfNode(index)) ?? -1;
+  }
 
   /// Text of `str` field [field] in [row] of [table].
   String str(TableReader table, int row, FieldSpec field) {
@@ -308,16 +313,25 @@ final class ResourceVersions {
   int _epoch = -1;
   Key64? _frame;
 
-  /// Folds in one published frame (repeat calls for the same frame are no-ops).
-  void observe(int sceneEpoch, Key64 frameId, Uint32List dirtyResources) {
+  /// Folds in one published frame (repeat calls for the same frame are no-ops). [onRetired]
+  /// receives every version this frame supersedes, so caches keyed by it evict at once.
+  void observe(int sceneEpoch, Key64 frameId, Uint32List dirtyResources, {void Function(int version)? onRetired}) {
     final last = _frame;
     if (last == frameId && sceneEpoch == _epoch) {
       return;
     }
     if (sceneEpoch != _epoch || last == null || !_follows(frameId, last)) {
+      if (onRetired != null) {
+        _versions.values.forEach(onRetired);
+      }
       _versions.clear();
     } else {
-      dirtyResources.forEach(_versions.remove);
+      for (final id in dirtyResources) {
+        final retired = _versions.remove(id);
+        if (retired != null) {
+          onRetired?.call(retired);
+        }
+      }
     }
     _epoch = sceneEpoch;
     _frame = frameId;

@@ -146,6 +146,16 @@ void _runResourceVersions(Check c) {
   c.eq(v.versionOf(9), carried, 'consecutive across the lo -> hi carry');
   final other = ResourceVersions()..observe(0, const Key64(1, 0), ids([]));
   c.that(other.versionOf(7) > carried, 'versions are never reused across instances');
+  // `onRetired` reports exactly the superseded versions (dirty ids; everything on a reset).
+  final retired = <int>[];
+  final r = ResourceVersions()..observe(0, const Key64(1, 0), ids([]));
+  final r7 = r.versionOf(7), r9 = r.versionOf(9);
+  r.observe(0, const Key64(2, 0), ids([7, 8]), onRetired: retired.add);
+  c.eq(retired.join(','), '$r7', 'dirty id retires its version; unversioned id 8 retires nothing');
+  retired.clear();
+  final r7b = r.versionOf(7);
+  r.observe(1, const Key64(3, 0), ids([]), onRetired: retired.add);
+  c.eq((retired..sort()).join(','), ([r7b, r9]..sort()).join(','), 'new epoch retires every version');
 }
 
 void runRuntimeScene(Check c) {
@@ -186,6 +196,19 @@ void runRuntimeScene(Check c) {
   final text = s.tableAtSlot(_textSlot)!;
   c.eq(s.rowOf(text, 2), 0, 'sparse row via the published row index');
   c.eq(s.rowOf(text, 1), -1, 'sparse table not attached');
+  // A dead slot with stale `table_set` bits resolves no row, dense or sparse.
+  final staleBits = Uint32List.fromList(f.rows)..[3 * nodeRowWords + (_visualSlot >> 5)] |= 1 << (_visualSlot & 31);
+  c.eq(f.open(rows: staleBits).rowOf(visual, 3), -1, 'dead slot with stale dense bit');
+  // A recycled slot (generation 6) never resolves the previous owner's (generation 5) sparse row.
+  final recycled = Uint32List.fromList(f.rows)..[2 * nodeRowWords + 7] = 6 | (0xFF << 8) | (1 << 24);
+  final r = f.open(rows: recycled);
+  c.eq(r.rowOf(r.tableAtSlot(_textSlot), 2), -1, 'sparse owner generation checked');
+  c.eq(r.rowOf(r.tableAtSlot(_visualSlot), 2), 2, 'dense rows have no owner to check');
+  // An empty table with a (dangling) owners view is dense, like C++ `is_sparse()`.
+  final empty = TableReader(
+      key: TextTable.key, slot: 9, words: 1, rowCount: 0, rows: ByteData(0), owners: ByteData(0));
+  c.that(!empty.isSparse, 'rowCount 0 with owners is dense');
+  c.eq(empty.rowOfNode(1), null, 'empty table resolves nothing');
   c.eq(s.str(text, 0, TextTable.text), 'héllo', 'str field decodes UTF-8');
   c.eq(s.text(0, 0), '', 'empty text');
   // A leading BOM is scene text, not stripped (dart:convert would drop it).
@@ -202,11 +225,12 @@ void runRuntimeScene(Check c) {
   expectScene(c, SceneErrorKind.missingSlab, () => f.open(rects: Float32List(15)), 'rects shorter than capacity');
   expectScene(c, SceneErrorKind.missingSlab, () => f.open(capacity: -1), 'negative capacity');
   expectScene(c, SceneErrorKind.invalidUtf8, () => f.open(text: Uint8List.fromList([0xC3])), 'truncated UTF-8');
-  expectScene(c, SceneErrorKind.missingSlab, () => f.open(children: Uint32List(1)), 'child range past slab');
+  // Child ranges are checked on read, not at open (O(changed) open).
+  expectScene(c, SceneErrorKind.missingSlab, () => f.open(children: Uint32List(1)).children(1), 'child range past slab');
   expectScene(c, SceneErrorKind.missingSlab, () => f.open(dirty: Uint32List.fromList([4])), 'dirty index >= capacity');
   expectScene(c, SceneErrorKind.invalidTable, () => f.open(tables: [f.visual(), f.visual()]), 'duplicate slot');
   final huge = Uint32List.fromList(f.rows)..[1 * nodeRowWords + 5] = 0xFFFFFFFF;
-  expectScene(c, SceneErrorKind.missingSlab, () => f.open(rows: huge), 'hostile child offset cannot wrap');
+  expectScene(c, SceneErrorKind.missingSlab, () => f.open(rows: huge).childCount(1), 'hostile child offset cannot wrap');
   final stale = Uint32List.fromList(f.rows)
     ..[1 * nodeRowWords + 6] = 0
     ..[3 * nodeRowWords + 5] = 99; // dead node 3 keeps a stale out-of-slab range

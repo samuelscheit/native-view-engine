@@ -28,10 +28,10 @@ public struct NveTextStyle: Equatable, Sendable {
 
 /// The published core tables of one borrowed scene, read through the generated `NveTables` specs.
 public struct NveRuntimeTables {
-    public let scene: NveRuntimeScene
+    public let scene: NveScene
     public let visual, typography, text, image, scroll, accessibility, textInput, link, interaction: TableReader?
 
-    public init(scene: NveRuntimeScene) {
+    public init(scene: NveScene) {
         self.scene = scene
         visual = scene.table(key: NveTables.Visual.key)
         typography = scene.table(key: NveTables.Typography.key)

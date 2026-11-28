@@ -4,15 +4,15 @@ import { test } from 'node:test';
 import {
   FieldKind,
   Key64,
-  LAYOUT_RECT_BYTES,
   LengthUnit,
-  NODE_ROW_BYTES,
+  NVE_LAYOUT_RECT_LAYOUT,
+  NVE_NODE_ROW_LAYOUT,
+  NVE_PRIMARY_SLOT_NONE,
   NVE_ROW_INDEX_NO_PAGE,
   NVE_ROW_INDEX_PAGE_LEN,
   NVE_SCENE_LAYOUT_WASM32,
   NVE_SCENE_VIEW_LAYOUT,
-  PRIMARY_SLOT_NONE,
-  SCROLL_OFFSET_BYTES,
+  NVE_SCROLL_OFFSET_LAYOUT,
   SceneError,
   SceneReader,
   TableReader,
@@ -45,6 +45,10 @@ function words(w: readonly number[]): DataView {
 
 /** wasm32 layout generated from the Rust `NveSceneView` / `NveTableView` `#[nve_abi]` structs. */
 const WASM32 = NVE_SCENE_LAYOUT_WASM32;
+const NODE_ROW_BYTES = NVE_NODE_ROW_LAYOUT.size;
+const LAYOUT_RECT_BYTES = NVE_LAYOUT_RECT_LAYOUT.size;
+const SCROLL_OFFSET_BYTES = NVE_SCROLL_OFFSET_LAYOUT.size;
+const PRIMARY_SLOT_NONE = NVE_PRIMARY_SLOT_NONE;
 const CAP = 4; // slot 0 is the null node
 const MEMORY_BYTES = 8192;
 const NODE_ID = (index: number, generation: number): number => ((generation << 24) | index) >>> 0;
@@ -278,7 +282,8 @@ test('wasm32 scene layout offsets are locked', () => {
   assert.deepEqual([WASM32.tableView.stride, WASM32.tableView.rows, WASM32.tableView.rowIndexPages], [52, 32, 48]);
   assert.equal(NODE_ROW_BYTES, 32);
   assert.equal(LAYOUT_RECT_BYTES, 16);
-  assert.equal(SCROLL_OFFSET_BYTES, 12);
+  assert.equal(NVE_SCROLL_OFFSET_LAYOUT.size, 12);
+  assert.equal(NVE_SCENE_VIEW_LAYOUT.size, 96);
 });
 
 test('scene from wasm32 linear memory', () => {
@@ -373,6 +378,28 @@ test('a dead row is never validated and never live', () => {
   assert.equal(s.childCount(3), 0);
   assert.equal(s.indexOf(NODE_ID(3, 1)), -1, 'dead slot');
   assert.deepEqual(s.scrollShift(3), [0, 0]);
+  // Its stale `table_set` bit still names the sparse table: a dead slot resolves no row.
+  assert.ok(s.hasTable(3, SPARSE_SLOT));
+  assert.equal(s.rowOf(s.tableAtSlot(SPARSE_SLOT), 3), -1, 'dead slot with stale table bits');
+});
+
+test('a recycled slot never resolves the previous owner\'s sparse row', () => {
+  const f = linearMemory();
+  f.mem.setUint8(f.at.rows! + 3 * NODE_ROW_BYTES + 28, 2); // node 3 now generation 2; owner says 1
+  const s = open(f);
+  assert.ok(s.isLive(3));
+  assert.equal(s.rowOf(s.tableAtSlot(SPARSE_SLOT), 3), -1, 'owner generation checked');
+  assert.equal(s.rowOf(s.tableAtSlot(SPARSE_SLOT), 1), 1, 'current owner still resolves');
+});
+
+test('an empty table with a dangling owners pointer is dense', () => {
+  const f = linearMemory();
+  const sparseView = f.mem.getUint32(f.view + WASM32.tables, true) + WASM32.tableView.stride;
+  f.mem.setUint32(sparseView + WASM32.tableView.rowCount, 0, true); // owners stays non-null
+  const t = open(f).tableAtSlot(SPARSE_SLOT)!;
+  assert.equal(t.rowCount, 0);
+  assert.equal(t.isSparse, false, 'row_count 0 is dense, like C++ is_sparse()');
+  assert.equal(t.rowOfNode(1), null);
 });
 
 test('scene rejections', () => {
@@ -400,10 +427,11 @@ test('scene rejections', () => {
   expectScene('invalidTable', () => open(hugeTables), 'tables past memory');
   const child = linearMemory();
   child.mem.setUint32(child.at.rows! + NODE_ROW_BYTES + 24, 3, true);
-  expectScene('missingSlab', () => open(child), 'child range outside slab');
+  // Child ranges are checked on read, so opening stays O(changed + tables).
+  expectScene('missingSlab', () => open(child).childCount(1), 'child range outside slab');
   const childOff = linearMemory();
   childOff.mem.setUint32(childOff.at.rows! + NODE_ROW_BYTES + 20, 0xffff_ffff, true);
-  expectScene('missingSlab', () => open(childOff), 'child offset outside slab');
+  expectScene('missingSlab', () => open(childOff).childId(1, 0), 'child offset outside slab');
   const dirty = linearMemory();
   dirty.mem.setUint32(dirty.at.dirty! + 4, CAP, true);
   expectScene('missingSlab', () => open(dirty), 'dirty index >= capacity');

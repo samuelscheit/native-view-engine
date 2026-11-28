@@ -4,7 +4,7 @@
 /// queries. Valid only inside the `withScene` scope that produced the reader.
 library;
 
-import 'dart:typed_data' show Uint8List;
+import 'dart:typed_data' show Uint32List;
 import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:nve_host/nve_host.dart';
@@ -13,16 +13,32 @@ import 'package:nve_host/nve_host.dart';
 /// whose children slab forms a cycle (or lists one child twice) ends after at most
 /// `nodeCapacity` visits instead of hanging the UI isolate.
 final class NveTreeWalk {
-  NveTreeWalk._(int capacity) : _seen = Uint8List(capacity);
+  /// Reusable marks: keep one per walker (painter, semantics, hit testing) and pass it to
+  /// [NveSceneTree.walk]; each walk bumps an epoch instead of allocating or clearing.
+  NveTreeWalk();
 
-  final Uint8List _seen;
+  Uint32List _seen = Uint32List(0);
+  int _capacity = 0;
+  int _epoch = 0;
+
+  void _begin(int capacity) {
+    if (_seen.length < capacity) {
+      _seen = Uint32List(capacity);
+      _epoch = 0;
+    }
+    _capacity = capacity;
+    if (++_epoch > 0xFFFFFFFF) {
+      _seen.fillRange(0, _seen.length, 0);
+      _epoch = 1;
+    }
+  }
 
   /// `true` the first time [index] (a valid slot) is entered in this walk.
   bool enter(int index) {
-    if (index <= 0 || index >= _seen.length || _seen[index] != 0) {
+    if (index <= 0 || index >= _capacity || _seen[index] == _epoch) {
       return false;
     }
-    _seen[index] = 1;
+    _seen[index] = _epoch;
     return true;
   }
 }
@@ -43,8 +59,9 @@ final class NveSceneTree {
   /// Root slot index, or `-1` before the first published frame.
   int get root => s.indexOf(rootNodeId);
 
-  /// Fresh visit marks for one recursive walk over this frame.
-  NveTreeWalk walk() => NveTreeWalk._(s.nodeCapacity);
+  /// Visit marks for one recursive walk over this frame: [reuse] (re-armed in O(1), no
+  /// allocation once sized) or a fresh one.
+  NveTreeWalk walk([NveTreeWalk? reuse]) => (reuse ?? NveTreeWalk()).._begin(s.nodeCapacity);
 
   /// Published (pre-scroll) rect of [index].
   Rect rectOf(int index) => Rect.fromLTWH(s.x(index), s.y(index), s.width(index), s.height(index));
@@ -123,9 +140,9 @@ final class NveSceneTree {
   /// Deepest node under [point] (surface coordinates) for which [accept] holds, honoring
   /// `display: none`, child clipping, scroll shifts, and reverse paint order. Transforms are not
   /// applied (they never move layout or hit-test boxes in the runtime either).
-  int? deepestAt(Offset point, bool Function(int index) accept) {
+  int? deepestAt(Offset point, bool Function(int index) accept, {NveTreeWalk? walk}) {
     final r = root;
-    return r < 0 ? null : _deepestAt(walk(), r, point, Offset.zero, accept);
+    return r < 0 ? null : _deepestAt(this.walk(walk), r, point, Offset.zero, accept);
   }
 
   int? _deepestAt(NveTreeWalk w, int index, Offset point, Offset shift, bool Function(int index) accept) {

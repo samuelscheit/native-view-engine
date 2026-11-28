@@ -1,6 +1,5 @@
 import CNveAbi
 import NveHost
-import Darwin
 import Foundation
 import QuartzCore
 import SwiftUI
@@ -14,10 +13,11 @@ private final class WeakController: @unchecked Sendable {
 
 // MARK: - Surface Controller (`libnve_runtime` surface + attached `nve_get_interface` app)
 
-/// One NVE surface hosted by `libnve_runtime`: attaches an app module (static, explicit, or
-/// `dlopen`), pairs with a remote dev server, forwards props / input / hot patches / state
-/// snapshots, drives frames from the runtime wake callback, and publishes the zero-copy scene
-/// through ``store``. Main-thread only (the runtime binds the surface to its creating thread).
+/// One NVE surface hosted by `libnve_runtime`: attaches an app (static, explicit, process image,
+/// or a `.dylib` the runtime loads and hot-reloads with state carried over), pairs with a remote
+/// dev server, forwards props / input / hot patches / state snapshots, drives frames from the
+/// runtime wake callback, and publishes the zero-copy scene through ``store``. Main-thread only
+/// (the runtime binds the surface to its creating thread).
 public final class NveSurfaceController: ObservableObject {
     private static var nextSurfaceId: UInt32 = 1
     private static let idLock = NSLock()
@@ -30,14 +30,15 @@ public final class NveSurfaceController: ObservableObject {
 
     public var onEvent: ((NveEvent) -> Void)?
 
-    private var dylibHandle: UnsafeMutableRawPointer?
     private var lastPropsValue: NveBinValue?
     private var lastDirectPropsEqual: ((Any) -> Bool)?
     private var lastTick: CFTimeInterval = 0
     private var pumpScheduled = false
 
-    /// Creates a runtime surface and, when `getInterface` / `dylibPath` / `vtableSymbol` resolves,
-    /// attaches the app. Throws when `libnve_runtime` is not linked or incompatible.
+    /// Creates a runtime surface and attaches the app: `getInterface` when given, else the
+    /// `dylibPath` module (loaded by the runtime), else `vtableSymbol` from the static table or the
+    /// process image. Throws when `libnve_runtime` is not linked or incompatible, or the module
+    /// does not load.
     public init(
         surfaceId: UInt32? = nil,
         vtableSymbol: String = "nve_get_interface",
@@ -60,26 +61,38 @@ public final class NveSurfaceController: ObservableObject {
         try session.setTextMeasurer(textMeasurer)
         let weakSelf = WeakController(self)
         try session.setWakeHandler { DispatchQueue.main.async { weakSelf.value?.schedulePump() } }
-        if let resolved = NveInterfaceResolver.resolve(
-            symbol: vtableSymbol, getInterface: getInterface, dylibPath: dylibPath, staticTable: staticTable)
+        if getInterface == nil, let dylibPath, !dylibPath.isEmpty {
+            try load(dylibPath: dylibPath)
+        } else if let resolved = NveInterfaceResolver.resolve(
+            symbol: vtableSymbol, getInterface: getInterface, staticTable: staticTable)
         {
             try attach(resolved)
         }
     }
 
-    deinit {
-        // The app's code lives in the dylib: unload it only once the runtime no longer holds it.
-        if let dylibHandle, (try? session.attachApp(nil)) != nil {
-            dlclose(dylibHandle)
-        }
+    // MARK: App lifecycle
+    //
+    // The runtime swaps apps atomically (a rejected one leaves the running app untouched) and owns
+    // every loaded module, unloading it only after its app is destroyed: the host never `dlopen`s
+    // or `dlclose`s app code.
+
+    /// Attaches an in-process app (explicit, static, or process image), replacing any previous one.
+    public func attach(_ resolved: NveResolvedInterface) throws {
+        try session.attachApp(resolved.getInterface)
+        adopt(resolved.source)
     }
 
-    // MARK: App lifecycle
+    /// Loads and attaches the app `.dylib` at `dylibPath`, replacing any previous app.
+    public func load(dylibPath: String) throws {
+        try session.loadAppModule(path: dylibPath, carryState: false)
+        adopt(.dynamicLibrary)
+    }
 
-    /// Attaches `resolved`, atomically replacing any previous app: the runtime keeps the old app
-    /// running when the new interface is rejected, so the old dylib is closed only on success.
-    public func attach(_ resolved: NveResolvedInterface) throws {
-        try swapApp(resolved, restoring: Data())
+    /// Tier-2 hot swap: the runtime loads the rebuilt `.dylib` and carries the running app's state
+    /// into it before its first frame.
+    public func reload(dylibPath: String) throws {
+        try session.loadAppModule(path: dylibPath, carryState: true)
+        adopt(.dynamicLibrary)
     }
 
     public func detach() throws {
@@ -87,37 +100,15 @@ public final class NveSurfaceController: ObservableObject {
         releaseLocalApp()
     }
 
-    /// Tier-2 hot swap: snapshots app state, swaps in the rebuilt dylib, and restores the state
-    /// before the first frame of the new app is pumped.
-    public func reload(dylibPath: String, symbol: String = "nve_get_interface") throws {
-        let state = (try? session.snapshotState()) ?? Data()
-        guard let next = NveInterfaceResolver.resolve(symbol: symbol, dylibPath: dylibPath) else {
-            throw NveRuntimeError.runtimeUnavailable
-        }
-        try swapApp(next, restoring: state)
-    }
-
-    private func swapApp(_ resolved: NveResolvedInterface, restoring state: Data) throws {
-        do {
-            try session.attachApp(resolved.getInterface)
-        } catch {
-            // Every `dlopen` holds its own reference (a reload of the same path returns the same
-            // handle), so the rejected one is released even when it equals the live handle.
-            if let lib = resolved.dylibHandle { dlclose(lib) }
-            throw error
-        }
+    private func adopt(_ source: NveInterfaceResolutionSource) {
         releaseLocalApp()
-        dylibHandle = resolved.dylibHandle
-        resolutionSource = resolved.source
-        if !state.isEmpty { try? session.restoreState(state) }
+        resolutionSource = source
         pump()
     }
 
     /// Forgets the local app the runtime no longer runs (detached, replaced, or dropped by a
-    /// successful pair): closes its dylib and the props it was last sent.
+    /// successful pair) and the props it was last sent.
     private func releaseLocalApp() {
-        if let dylibHandle { dlclose(dylibHandle) }
-        dylibHandle = nil
         resolutionSource = nil
         lastPropsValue = nil
         lastDirectPropsEqual = nil

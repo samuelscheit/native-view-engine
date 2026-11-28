@@ -5,11 +5,11 @@ import XCTest
 final class SceneReaderTests: XCTestCase {
     private let schema = Key64(0xF00D_FACE_C0FF_EE11)
 
-    private func scene() throws -> SceneReader<NveTestRuntimeSceneView> {
+    private func scene() throws -> SceneReader<NveTestSceneView> {
         try SceneReader.open(nve_test_scene(), expectedSchema: schema)
     }
 
-    private func assertRejects(_ v: NveTestRuntimeSceneView, _ expected: SceneError, line: UInt = #line) {
+    private func assertRejects(_ v: NveTestSceneView, _ expected: SceneError, line: UInt = #line) {
         XCTAssertThrowsError(try SceneReader.open(v, expectedSchema: schema), line: line) {
             XCTAssertEqual($0 as? SceneError, expected, line: line)
         }
@@ -106,14 +106,14 @@ final class SceneReaderTests: XCTestCase {
             XCTAssertEqual(rect.width, s.rect(index)?.width)
             visited.append(index)
         }
-        XCTAssertEqual(visited, [1, 2])  // 99 is out of range and skipped
+        XCTAssertEqual(visited, [1, 2])
         XCTAssertEqual(s.removedIds.map(NodeId.init(raw:)), [NodeId(index: 3, generation: 2)])
         XCTAssertEqual(s.scrollOffset(for: .root).y, 12.5)
         XCTAssertEqual(s.scrollOffset(for: NodeId(index: 2, generation: 1)).y, 0, "no scroll entry")
     }
 
     func testRejectsHostileViews() throws {
-        XCTAssertThrowsError(try SceneReader<NveTestRuntimeSceneView>.open(nil, expectedSchema: schema)) {
+        XCTAssertThrowsError(try SceneReader<NveTestSceneView>.open(nil, expectedSchema: schema)) {
             XCTAssertEqual($0 as? SceneError, .nullView)
         }
         XCTAssertThrowsError(try SceneReader.open(nve_test_scene(), expectedSchema: Key64(1))) {
@@ -154,7 +154,7 @@ final class SceneReaderTests: XCTestCase {
         let fits = UInt64(UInt32.max) <= UInt64(Int.max / MemoryLayout<NveTestNodeRow>.stride)
         if !fits { assertRejects(v, .nullSlab) }
         // Empty views are valid with null pointers.
-        var empty = NveTestRuntimeSceneView()
+        var empty = NveTestSceneView()
         empty.schema_hash = schema.value
         let e = try SceneReader.open(empty, expectedSchema: schema)
         XCTAssertEqual(e.nodeCapacity, 0)
@@ -201,6 +201,61 @@ final class SceneReaderTests: XCTestCase {
             var v = base
             v.tables = tp
             assertRejects(v, .invalidTable(index: 0))
+        }
+        // Slots are `0..<128` and unique per frame.
+        var outOfRange = try XCTUnwrap(base.tables).pointee
+        outOfRange.slot = 128
+        withUnsafePointer(to: outOfRange) { tp in
+            var v = base
+            v.tables = tp
+            assertRejects(v, .invalidTable(index: 0))
+        }
+        let twin = try XCTUnwrap(base.tables).pointee
+        [twin, twin].withUnsafeBufferPointer { tp in
+            var v = base
+            v.tables = tp.baseAddress
+            v.table_count = 2
+            assertRejects(v, .invalidTable(index: 1))
+        }
+    }
+
+    /// Open is O(changed + tables): dirty / moved indices are bounds-checked, scroll offsets and
+    /// dirty resources must be strictly ascending (scroll lookups binary-search them).
+    func testRejectsOutOfRangeIndicesAndUnsortedIds() throws {
+        let base = try XCTUnwrap(nve_test_scene()).pointee
+        let past: [UInt32] = [base.node_capacity]
+        past.withUnsafeBufferPointer { p in
+            var v = base
+            v.dirty_indices = p.baseAddress
+            v.dirty_count = 1
+            assertRejects(v, .nodeIndexOutOfRange)
+            v = base
+            v.moved_indices = p.baseAddress
+            v.moved_count = 1
+            assertRejects(v, .nodeIndexOutOfRange)
+        }
+        let resources: [UInt32] = [9, 3]
+        resources.withUnsafeBufferPointer { p in
+            var v = base
+            v.dirty_resources = p.baseAddress
+            assertRejects(v, .unsortedIds)
+        }
+        let scrolls = [NveTestScrollOffset(node_id: 2, x: 0, y: 1), NveTestScrollOffset(node_id: 2, x: 0, y: 2)]
+        scrolls.withUnsafeBufferPointer { p in
+            var v = base
+            v.scroll_offsets = p.baseAddress
+            v.scroll_count = 2
+            assertRejects(v, .unsortedIds)
+        }
+        let sorted = (1...9).map { NveTestScrollOffset(node_id: UInt32($0) * 2, x: Float($0), y: 0) }
+        try sorted.withUnsafeBufferPointer { p in
+            var v = base
+            v.scroll_offsets = p.baseAddress
+            v.scroll_count = UInt32(p.count)
+            let s = try SceneReader.open(v, expectedSchema: schema)
+            for id in 1...19 {
+                XCTAssertEqual(s.scrollOffset(for: NodeId(raw: UInt32(id))).x, id % 2 == 0 ? Float(id / 2) : 0, "id \(id)")
+            }
         }
     }
 

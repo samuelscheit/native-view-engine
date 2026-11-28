@@ -106,17 +106,37 @@ impl<'a> NveValueRef<'a> {
     #[inline] pub fn get(&self, key: &str) -> Option<NveValueRef<'a>> { self.as_map()?.get(key) }
 }
 
+/// The full value, recursively (bytes, elements, and entries), so two values with equal `Debug`
+/// output are equal; an invalid pointer or key prints as `Invalid`.
 impl std::fmt::Debug for NveValueRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct Invalid;
+        impl std::fmt::Debug for Invalid {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("Invalid")
+            }
+        }
         match self.tag() {
             Some(NveValueTag::Null) => f.write_str("Null"),
             Some(NveValueTag::Bool) => f.debug_tuple("Bool").field(&self.as_bool()).finish(),
             Some(NveValueTag::I64) => f.debug_tuple("I64").field(&self.as_i64()).finish(),
             Some(NveValueTag::F64) => f.debug_tuple("F64").field(&self.as_f64()).finish(),
-            Some(NveValueTag::Str) => f.debug_tuple("Str").field(&self.as_str()).finish(),
-            Some(NveValueTag::Bytes) => f.debug_tuple("Bytes").field(&self.as_bytes().map(<[u8]>::len)).finish(),
-            Some(NveValueTag::Array) => f.debug_tuple("Array").field(&self.as_array().map(|a| a.len())).finish(),
-            Some(NveValueTag::Map) => f.debug_tuple("Map").field(&self.as_map().map(|m| m.len())).finish(),
+            Some(NveValueTag::Str) => f.debug_tuple("Str").field(&self.try_as_str()).finish(),
+            Some(NveValueTag::Bytes) => f.debug_tuple("Bytes").field(&self.as_bytes()).finish(),
+            Some(NveValueTag::Array) => match self.as_array() {
+                Some(a) => f.debug_list().entries(a.iter()).finish(),
+                None => Invalid.fmt(f),
+            },
+            Some(NveValueTag::Map) => match self.as_map() {
+                Some(m) => f
+                    .debug_map()
+                    .entries(m.try_iter().map(|e| match e {
+                        Ok((k, v)) => (Ok(k), Some(v)),
+                        Err(_) => (Err(Invalid), None),
+                    }))
+                    .finish(),
+                None => Invalid.fmt(f),
+            },
             None => f.debug_tuple("InvalidTag").field(&self.raw.tag).finish(),
         }
     }

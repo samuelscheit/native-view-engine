@@ -39,6 +39,7 @@ public final class SceneJniTest {
         layoutAndMeasure(c, fx);
         hotReload(c, Path.of(args[1]), Path.of(args[2]), Path.of(args[3]));
         surface(c, fx);
+        surfaceEdges(c, fx);
         c.finish("android_scene_jni_test");
     }
 
@@ -169,8 +170,79 @@ public final class SceneJniTest {
         other.start();
         other.join();
         c.eq(status[0], NveRuntimeAbi.STATUS_INVALID_ARG, "off-thread destroy is refused");
-        c.that(NativeRuntime.lastError(h).contains("thread"), "off-thread destroy explains itself");
+        c.that(NativeRuntime.lastError(h).contains("owner thread"), "off-thread destroy explains itself (to the owner)");
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "the surface survives a refused destroy");
+        c.eq(NativeRuntime.lastError(h), "", "the next successful call clears it");
+
+        // Every owner-thread entry point is gated: nothing off-thread touches the scene / slabs /
+        // events / last_error (which would race the owner).
+        final long[] header = new long[NveJniFrame.HEADER_LEN];
+        final ByteBuffer[] slabs = new ByteBuffer[NveJniFrame.SLABS_LEN];
+        final int[] st = new int[4];
+        final String[] err = new String[1];
+        final boolean[] paired = {true};
+        final Thread probe = new Thread(() -> {
+            st[0] = NativeRuntime.tick(h, 0f, null);
+            st[1] = NativeRuntime.acquireScene(h, header, slabs);
+            st[2] = NativeRuntime.setViewport(h, 10f, 10f, 1f);
+            st[3] = NativeRuntime.dispatchEvents(h, ByteBuffer.allocateDirect(8), 8, null);
+            err[0] = NativeRuntime.lastError(h);
+            NativeRuntime.releaseScene(h);
+            paired[0] = NativeRuntime.pairIsConnected(h);  // the one any-thread query
+        });
+        probe.start();
+        probe.join();
+        for (int s : st) c.eq(s, NveRuntimeAbi.STATUS_INVALID_ARG, "off-thread call refused");
+        c.eq(err[0], "", "off-thread lastError reads nothing");
+        c.that(!paired[0], "pairIsConnected answers any thread");
+        c.that(NativeRuntime.lastError(h).contains("owner thread"), "the owner learns of the refused calls");
+        c.eq(NativeRuntime.tick(h, 0f, null), 0, "the owner keeps working");
+    }
+
+    /**
+     * `RuntimeSurface` lifecycle edges: a consumer that closes then throws still closes the
+     * surface; an off-thread close throws and leaves it open; a synchronous executor hitting the
+     * per-render frame cap does not recurse.
+     */
+    static void surfaceEdges(Expect c, Fixtures fx) throws Exception {
+        final ByteBuffer f1 = fx.frame("showcase_1.nve2");
+        final RuntimeSurface throwing = new RuntimeSurface(11, 100f, 100f, 1f, Runnable::run);
+        c.eq(throwing.submitFrame(f1, f1.remaining()), 0, "submit before a throwing consumer");
+        throwing.setFrameConsumer((s, sf) -> {
+            sf.close();
+            throw new IllegalStateException("consumer bug");
+        });
+        c.throwsAny(throwing::render, "the consumer's exception propagates");
+        c.eq(throwing.handle(), 0L, "close requested in onFrame still ran");
+
+        final RuntimeSurface owned = new RuntimeSurface(12, 100f, 100f, 1f, Runnable::run);
+        final Throwable[] offThread = new Throwable[1];
+        final Thread closer = new Thread(() -> {
+            try {
+                owned.close();
+            } catch (Throwable t) {
+                offThread[0] = t;
+            }
+        });
+        closer.start();
+        closer.join();
+        c.that(offThread[0] instanceof IllegalStateException, "off-thread close throws");
+        c.that(owned.handle() != 0L, "a refused close leaves the surface open");
+        owned.close();
+        c.eq(owned.handle(), 0L, "the owner closes it");
+
+        final int[] frames = new int[1];
+        try (RuntimeSurface endless = new RuntimeSurface(13, 360f, 800f, 1f, Runnable::run)) {
+            c.eq(endless.submitFrame(f1, f1.remaining()), 0, "submit before an endless consumer");
+            endless.setFrameConsumer((s, sf) -> {
+                frames[0]++;
+                sf.render();  // in-frame: schedules another frame every time
+            });
+            c.that(endless.render(), "endless frames: delivered");
+            c.eq(frames[0], 4, "one render stops at MAX_FRAMES_PER_RENDER, without nesting another");
+            c.that(endless.render(), "the next render continues");
+            c.eq(frames[0], 8, "four more");
+        }
     }
 
     /**

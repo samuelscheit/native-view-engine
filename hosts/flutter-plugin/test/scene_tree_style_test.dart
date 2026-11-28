@@ -188,8 +188,9 @@ void main() {
         ..bits(typographyShape, zero, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.lineHeight)
         ..f32(typographyShape, zero, TypographyTable.fontSize, 0)
         ..length(typographyShape, zero, TypographyTable.lineHeight, -4)
-        ..bits(typographyShape, nan, TypographyTable.set, NveTypographySet.fontSize)
-        ..f32(typographyShape, nan, TypographyTable.fontSize, double.nan);
+        ..bits(typographyShape, nan, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.letterSpacing)
+        ..f32(typographyShape, nan, TypographyTable.fontSize, double.nan)
+        ..f32(typographyShape, nan, TypographyTable.letterSpacing, double.infinity);
       final s = b.build();
       final typo = s.findTable(TypographyTable.key);
       const inherited = NveTextStyle(color: 7, fontSize: 13, fontWeight: 300);
@@ -199,6 +200,7 @@ void main() {
       final z = inherited.resolve(s, typo, zero);
       expect((z.fontSize, z.lineHeight), (13, null), reason: 'zero size / negative line height fall back');
       expect(inherited.resolve(s, typo, nan).fontSize, 13, reason: 'NaN size falls back');
+      expect(inherited.resolve(s, typo, nan).letterSpacing, isNull, reason: 'infinite letter spacing is dropped');
     });
 
     test('weight maps onto the nearest Flutter weight and colors unpack RGBA', () {

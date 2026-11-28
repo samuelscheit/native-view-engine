@@ -1055,4 +1055,10 @@ fn single_scene_abi_detects_retired_symbols_and_bridge_tokens() {
     assert_eq!(detect_retired_scene_reference("const NveSceneView* v; SceneReader r;"), None);
     assert_eq!(detect_retired_scene_reference("MyNveRenderNodeish x;"), None);
     assert_eq!(detect_retired_scene_reference("NveRuntimeSceneViews"), None);
+    // Runtime-prefixed reader names retired in Slice 2B-5 (the runtime ABI's own
+    // `NveRuntimeSceneAcquire*` typedefs are different identifiers and pass).
+    assert_eq!(detect_retired_scene_reference("final r = readRuntimeScene(v);"), Some("readRuntimeScene"));
+    assert_eq!(detect_retired_scene_reference("extension V: RuntimeSceneViewABI {}"), Some("RuntimeSceneViewABI"));
+    assert_eq!(detect_retired_scene_reference("let s: NveRuntimeScene"), Some("NveRuntimeScene"));
+    assert_eq!(detect_retired_scene_reference("typedef NveRuntimeSceneAcquireNative = x;"), None);
 }

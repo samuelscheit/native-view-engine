@@ -10,31 +10,25 @@
  * wasm32 linear memory through the generated `NVE_SCENE_LAYOUT_WASM32` offsets, so this static
  * runtime never hard-codes a layout.
  */
-import { NVE_ROW_INDEX_PAGE_LEN } from './generated/nve_abi.generated.ts';
+import {
+  NVE_LAYOUT_RECT_LAYOUT,
+  NVE_NODE_ROW_FLAG_LIVE,
+  NVE_NODE_ROW_LAYOUT,
+  NVE_ROW_INDEX_PAGE_LEN,
+  NVE_SCROLL_OFFSET_LAYOUT,
+} from './generated/nve_abi.generated.ts';
 import { Key64 } from './key64.ts';
 import { MAX_TABLE_WORDS, NODE_INDEX_MASK, TableReader, isIntIn } from './table_reader.ts';
 import type { FieldSpec } from './table_reader.ts';
 import { UTF8_DECODER, isValidUtf8 } from './utf8.ts';
 
-/** Bytes per `NveNodeRow`. */
-export const NODE_ROW_BYTES = 32;
-/** Bytes per `NveLayoutRect` (`x`, `y`, `width`, `height` as f32). */
-export const LAYOUT_RECT_BYTES = 16;
-/** Bytes per `NveScrollOffset` (`node_id` u32, `x` f32, `y` f32). */
-export const SCROLL_OFFSET_BYTES = 12;
-/** `NveNodeRow.primary_slot` of a plain container. */
-export const PRIMARY_SLOT_NONE = 0xff;
 /** Highest table slot a 128-bit `table_set` can address. */
 export const MAX_TABLE_SLOTS = 128;
 
-const PARENT = 16; // `NveNodeRow` byte offsets
-const CHILD_OFF = 20;
-const CHILD_LEN = 24;
-const GENERATION = 28;
-const PRIMARY_SLOT = 29;
-const EFFECTS = 30;
-const FLAGS = 31;
-const FLAG_LIVE = 1;
+// Record layouts come from the generated ABI (`nve codegen abi`), never hard-coded here.
+const ROW = NVE_NODE_ROW_LAYOUT;
+const RECT = NVE_LAYOUT_RECT_LAYOUT;
+const SCROLL = NVE_SCROLL_OFFSET_LAYOUT;
 
 /** Byte offsets of `NveTableView` fields inside wasm32 linear memory (pointers are u32). */
 export interface TableViewLayout {
@@ -131,6 +125,7 @@ export class SceneReader {
   private readonly rows: DataView;
   private readonly rects: DataView;
   private readonly children: DataView;
+  private readonly childLen: number;
   private readonly dirty: DataView;
   private readonly moved: DataView;
   private readonly removed: DataView;
@@ -144,8 +139,8 @@ export class SceneReader {
       throw new SceneError('schemaMismatch', `expected ${s.expectedSchema}, got ${s.schemaHash}`);
     }
     const cap = s.nodeCapacity;
-    requireRecords(s.rows, cap, NODE_ROW_BYTES, 'rows');
-    requireRecords(s.rects, cap, LAYOUT_RECT_BYTES, 'rects');
+    requireRecords(s.rows, cap, ROW.size, 'rows');
+    requireRecords(s.rects, cap, RECT.size, 'rects');
     if (!isValidUtf8(s.textSlab)) throw new SceneError('invalidUtf8', 'textSlab');
     this.frameId = s.frameId;
     this.nodeCapacity = cap;
@@ -163,16 +158,9 @@ export class SceneReader {
     this.movedCount = recordCount(this.moved, 4, 'movedIndices');
     this.removedCount = recordCount(this.removed, 4, 'removedIds');
     this.dirtyResourceCount = recordCount(this.resources, 4, 'dirtyResources');
-    this.scrollCount = recordCount(this.scroll, SCROLL_OFFSET_BYTES, 'scrollOffsets');
-    const childLen = recordCount(this.children, 4, 'childrenSlab');
-    for (let i = 1; i < cap; i++) {
-      if (!this.isLive(i)) continue;
-      const off = this.rows.getUint32(i * NODE_ROW_BYTES + CHILD_OFF, true);
-      const len = this.rows.getUint32(i * NODE_ROW_BYTES + CHILD_LEN, true);
-      if (off > childLen || len > childLen - off) {
-        throw new SceneError('missingSlab', `node ${i} children [${off}, +${len}) outside slab (${childLen})`);
-      }
-    }
+    this.scrollCount = recordCount(this.scroll, SCROLL.size, 'scrollOffsets');
+    // Child ranges are checked when read (`childCount`), never by an O(capacity) walk here.
+    this.childLen = recordCount(this.children, 4, 'childrenSlab');
     for (const [what, view, count] of [
       ['dirty', this.dirty, this.dirtyCount],
       ['moved', this.moved, this.movedCount],
@@ -190,7 +178,7 @@ export class SceneReader {
       }
       this.bySlot[t.slot] = t;
     }
-    ascending(this.scroll, this.scrollCount, SCROLL_OFFSET_BYTES, 'scroll offset node ids');
+    ascending(this.scroll, this.scrollCount, SCROLL.size, 'scroll offset node ids');
     ascending(this.resources, this.dirtyResourceCount, 4, 'dirty resource ids');
   }
 
@@ -258,15 +246,15 @@ export class SceneReader {
       schemaHash: schema,
       frameId: key(layout.frameId),
       nodeCapacity: cap,
-      rows: slab(field(layout.rows), cap, NODE_ROW_BYTES, 'rows'),
-      rects: slab(field(layout.rects), cap, LAYOUT_RECT_BYTES, 'rects'),
+      rows: slab(field(layout.rows), cap, ROW.size, 'rows'),
+      rects: slab(field(layout.rects), cap, RECT.size, 'rects'),
       textSlab: new Uint8Array(text.buffer, text.byteOffset, text.byteLength),
       childrenSlab: slab(field(layout.childrenSlab), field(layout.childrenSlabLen), 4, 'childrenSlab'),
       dirtyIndices: slab(field(layout.dirtyIndices), field(layout.dirtyCount), 4, 'dirtyIndices'),
       removedIds: slab(field(layout.removedIds), field(layout.removedCount), 4, 'removedIds'),
       movedIndices: slab(field(layout.movedIndices), field(layout.movedCount), 4, 'movedIndices'),
       dirtyResources: slab(field(layout.dirtyResources), field(layout.dirtyResourceCount), 4, 'dirtyResources'),
-      scrollOffsets: slab(field(layout.scrollOffsets), field(layout.scrollCount), SCROLL_OFFSET_BYTES, 'scrollOffsets'),
+      scrollOffsets: slab(field(layout.scrollOffsets), field(layout.scrollCount), SCROLL.size, 'scrollOffsets'),
       sceneEpoch: field(layout.sceneEpoch),
       tables,
     });
@@ -275,34 +263,34 @@ export class SceneReader {
   // ---- node rows -----------------------------------------------------------------------------
 
   isLive(index: number): boolean {
-    return isIntIn(index, 1, this.nodeCapacity - 1) && (this.rows.getUint8(index * NODE_ROW_BYTES + FLAGS) & FLAG_LIVE) !== 0;
+    return isIntIn(index, 1, this.nodeCapacity - 1) && (this.rows.getUint8(index * ROW.size + ROW.flags) & NVE_NODE_ROW_FLAG_LIVE) !== 0;
   }
 
   generation(index: number): number {
-    return this.rows.getUint8(this.rowAt(index) + GENERATION);
+    return this.rows.getUint8(this.rowAt(index) + ROW.generation);
   }
 
   primarySlot(index: number): number {
-    return this.rows.getUint8(this.rowAt(index) + PRIMARY_SLOT);
+    return this.rows.getUint8(this.rowAt(index) + ROW.primarySlot);
   }
 
   effects(index: number): number {
-    return this.rows.getUint8(this.rowAt(index) + EFFECTS);
+    return this.rows.getUint8(this.rowAt(index) + ROW.effects);
   }
 
   flags(index: number): number {
-    return this.rows.getUint8(this.rowAt(index) + FLAGS);
+    return this.rows.getUint8(this.rowAt(index) + ROW.flags);
   }
 
   /** Raw parent `NodeId` (`0` = root / detached). */
   parentId(index: number): number {
-    return this.rows.getUint32(this.rowAt(index) + PARENT, true);
+    return this.rows.getUint32(this.rowAt(index) + ROW.parent, true);
   }
 
   /** `true` when table `slot` is attached to node `index`. */
   hasTable(index: number, slot: number): boolean {
     if (!isIntIn(slot, 0, MAX_TABLE_SLOTS - 1) || !isIntIn(index, 1, this.nodeCapacity - 1)) return false;
-    return ((this.rows.getUint32(index * NODE_ROW_BYTES + (slot >>> 5) * 4, true) >>> (slot & 31)) & 1) !== 0;
+    return ((this.rows.getUint32(index * ROW.size + (slot >>> 5) * 4, true) >>> (slot & 31)) & 1) !== 0;
   }
 
   /** Raw `NodeId` of live slot `index`. */
@@ -318,16 +306,16 @@ export class SceneReader {
 
   private rowAt(index: number): number {
     if (!isIntIn(index, 0, this.nodeCapacity - 1)) throw new RangeError(`node ${index} outside capacity ${this.nodeCapacity}`);
-    return index * NODE_ROW_BYTES;
+    return index * ROW.size;
   }
 
   // ---- layout rects --------------------------------------------------------------------------
 
   /** Absolute pre-scroll rect `[x, y, width, height]` of node `index`. */
   rect(index: number): [number, number, number, number] {
-    const at = this.rowAt(index) / 2; // 32-byte rows, 16-byte rects
+    const at = (this.rowAt(index) / ROW.size) * RECT.size;
     const r = this.rects;
-    return [r.getFloat32(at, true), r.getFloat32(at + 4, true), r.getFloat32(at + 8, true), r.getFloat32(at + 12, true)];
+    return [r.getFloat32(at + RECT.x, true), r.getFloat32(at + RECT.y, true), r.getFloat32(at + RECT.width, true), r.getFloat32(at + RECT.height, true)];
   }
 
   // ---- scroll offsets ------------------------------------------------------------------------
@@ -340,9 +328,9 @@ export class SceneReader {
     let hi = this.scrollCount;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      const at = mid * SCROLL_OFFSET_BYTES;
-      const node = this.scroll.getUint32(at, true);
-      if (node === id) return [this.scroll.getFloat32(at + 4, true), this.scroll.getFloat32(at + 8, true)];
+      const at = mid * SCROLL.size;
+      const node = this.scroll.getUint32(at + SCROLL.nodeId, true);
+      if (node === id) return [this.scroll.getFloat32(at + SCROLL.x, true), this.scroll.getFloat32(at + SCROLL.y, true)];
       if (node < id) lo = mid + 1;
       else hi = mid;
     }
@@ -351,15 +339,22 @@ export class SceneReader {
 
   // ---- children ------------------------------------------------------------------------------
 
+  /** Child count of node `index` (`0` when dead); a child range outside the slab throws `SceneError`. */
   childCount(index: number): number {
-    return this.isLive(index) ? this.rows.getUint32(index * NODE_ROW_BYTES + CHILD_LEN, true) : 0;
+    if (!this.isLive(index)) return 0;
+    const off = this.rows.getUint32(index * ROW.size + ROW.childOff, true);
+    const len = this.rows.getUint32(index * ROW.size + ROW.childLen, true);
+    if (off > this.childLen || len > this.childLen - off) {
+      throw new SceneError('missingSlab', `node ${index} children [${off}, +${len}) outside slab (${this.childLen})`);
+    }
+    return len;
   }
 
   /** Raw child `NodeId` `i` of node `index` in paint order. */
   childId(index: number, i: number): number {
     const count = this.childCount(index);
     if (!isIntIn(i, 0, count - 1)) throw new RangeError(`child ${i} outside ${count}`);
-    return this.children.getUint32((this.rows.getUint32(index * NODE_ROW_BYTES + CHILD_OFF, true) + i) * 4, true);
+    return this.children.getUint32((this.rows.getUint32(index * ROW.size + ROW.childOff, true) + i) * 4, true);
   }
 
   // ---- change sets ---------------------------------------------------------------------------
@@ -412,9 +407,14 @@ export class SceneReader {
     return isIntIn(slot, 0, MAX_TABLE_SLOTS - 1) ? (this.bySlot[slot] ?? null) : null;
   }
 
-  /** Row of node `index` in `table`, or `-1` when the table is absent or not attached to it (O(1)). */
+  /**
+   * Row of live node `index` in `table`, or `-1` when the table is absent or not attached to it;
+   * O(1). A sparse row must be owned by the node's current `NodeId` (generation checked), so a
+   * freed slot with stale `table_set` bits never resolves.
+   */
   rowOf(table: TableReader | null, index: number): number {
-    return table === null || !this.hasTable(index, table.slot) ? -1 : (table.rowOfNode(index) ?? -1);
+    if (table === null || !this.isLive(index) || !this.hasTable(index, table.slot)) return -1;
+    return (table.isSparse ? table.rowOf(this.nodeId(index)) : table.rowOfNode(index)) ?? -1;
   }
 
   /** Text of `str` field `f` in `row` of `table`. */

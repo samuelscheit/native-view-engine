@@ -200,11 +200,47 @@ void main() {
         expect(await paintFrame(2, [9]), _blue, reason: 'rewritten id decodes despite the earlier failure');
         resources.map[9] = payload(green);
         expect(await paintFrame(3, [9]), _green, reason: 'equal-length rewrite re-decodes');
+        expect(painter.imageCache.length, 1, reason: 'the superseded decode was evicted on invalidation');
         expect(await paintFrame(4, []), _green, reason: 'clean frame keeps the decode');
         resources.map[9] = payload(blue);
         expect(await paintFrame(6, []), _blue, reason: 'frame gap (missed dirty list) re-decodes');
         resources.map[9] = payload(green);
         expect(await paintFrame(7, [], epoch: 1), _green, reason: 'new scene epoch re-decodes');
+      });
+      painter.dispose();
+    });
+
+    testWidgets('a painter shared by two sessions never aliases their resource ids', (tester) async {
+      final b = SceneBuilder();
+      final root = b.node(const Rect.fromLTWH(0, 0, 100, 100));
+      final img = b.node(const Rect.fromLTWH(0, 0, 40, 40), parent: root);
+      final imageShape = TableShape(ImageTable.key, ImageTable.words, !ImageTable.dense, ImageTable.defaults);
+      b
+        ..bits(imageShape, img, ImageTable.src, 9)
+        ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
+      Uint8List payload(Uint8List encoded) => Uint8List.fromList([
+            1,
+            ...(ByteData(4)..setUint32(0, encoded.length, Endian.little)).buffer.asUint8List(),
+            ...encoded,
+          ]);
+      // Same resource id, same epoch, consecutive frame ids: only the source tells them apart.
+      final a = _Resources({9: payload(makeSolidPngBytes(0, 0, 255, width: 4, height: 4))});
+      final other = _Resources({9: payload(makeSolidPngBytes(0, 255, 0, width: 4, height: 4))});
+      final painter = NveScenePainter();
+      await tester.runAsync(() async {
+        Future<(int, int, int, int)> paintWith(_Resources r, int frame) async {
+          final tree = b.tree(frameId: Key64(frame, 0));
+          var done = false;
+          await rasterize(100, 100, (c) => painter.paint(c, tree, Offset.zero, resources: r, onImageLoaded: () => done = true));
+          for (var j = 0; j < 30 && !done; j++) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+          return pixelAt(await rasterize(100, 100, (c) => painter.paint(c, tree, Offset.zero, resources: r)), 100, 20, 20);
+        }
+
+        expect(await paintWith(a, 1), _blue);
+        expect(await paintWith(other, 2), _green, reason: 'a following frame of another source is not a follow-up');
+        expect(await paintWith(a, 3), _blue);
       });
       painter.dispose();
     });
@@ -320,6 +356,9 @@ final class _Resources implements NveSceneResources {
   _Resources(this.map);
 
   final Map<int, Uint8List> map;
+
+  @override
+  final ResourceVersions versions = ResourceVersions();
 
   @override
   Uint8List? payload(int resourceId) => map[resourceId];

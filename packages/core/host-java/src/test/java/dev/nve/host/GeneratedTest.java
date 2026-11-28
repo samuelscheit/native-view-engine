@@ -1,6 +1,7 @@
 package dev.nve.host;
 
 import dev.nve.host.generated.NveAbi;
+import dev.nve.host.generated.NveModuleTables;
 import dev.nve.host.generated.NveRuntimeAbi;
 import dev.nve.host.generated.NveTables;
 import java.nio.ByteBuffer;
@@ -14,11 +15,10 @@ final class GeneratedTest {
     private GeneratedTest() {}
 
     static void run(Check c) {
-        for (NveTables.Info t : NveTables.all()) {
-            c.that(t.key.equals(Key64.of(t.name)), t.name + " key is xxh64(name)");
-            c.that(t.words >= 1 && t.words <= TableReader.MAX_WORDS, t.name + " word count");
-            for (FieldSpec f : t.fields()) c.that(f.fits(t.words), t.name + " field fits its row");
-        }
+        for (NveTables.Info t : NveTables.all()) table(c, t.key, t.name, t.words, t.fields());
+        c.that(NveModuleTables.all().length > 0, "capability-module tables are generated");
+        for (NveModuleTables.Info t : NveModuleTables.all()) table(c, t.key, t.name, t.words, t.fields());
+        c.eq(NveRuntimeAbi.STATUS_OK, 0, "NveRuntimeStatus values are STATUS_*");
         c.eq(NveRuntimeAbi.SIZEOF_NODE_ROW, 32, "NveNodeRow stride");
         // ABI v4: 8 u32 header words (incl. the row-index lengths), then 5 pointers.
         c.eq(NveAbi.SIZEOF_TABLE_VIEW_64, 32 + 5 * 8, "NveTableView 64-bit size");
@@ -46,5 +46,11 @@ final class GeneratedTest {
                 .attach(NveTables.Accessibility.KEY, 0, NveTables.Accessibility.WORDS, 1, TableSceneTest.words(row), null, null, 0, null, 0, null, 0);
         c.eq(a11y.strOffset(0, label), 5, "Accessibility.label offset");
         c.eq(a11y.strLen(0, label), 7, "Accessibility.label len");
+    }
+
+    private static void table(Check c, Key64 key, String name, int words, FieldSpec[] fields) {
+        c.that(key.equals(Key64.of(name)), name + " key is xxh64(name)");
+        c.that(words >= 1 && words <= TableReader.MAX_WORDS, name + " word count");
+        for (FieldSpec f : fields) c.that(f.fits(words), name + " field fits its row");
     }
 }

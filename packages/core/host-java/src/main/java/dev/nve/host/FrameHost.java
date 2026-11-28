@@ -17,6 +17,14 @@ public interface FrameHost {
     /** Dispatches the events {@code writer} writes (deferred while a frame is consumed); a {@code STATUS_*} code. */
     int send(EventWriter writer);
 
+    /**
+     * {@code true} while a local app runs: {@link #send} (outside a frame) returns only after the
+     * app handled the events and the frame they caused was consumed, so the app's verdict is final
+     * (a controlled input whose value did not change rejected the edit). {@code false} while
+     * paired: the server answers in a later frame, or never.
+     */
+    boolean dispatchesSynchronously();
+
     /** Syncs the runtime scroll offset of {@code nodeId} after a native scroll; a {@code STATUS_*} code. */
     int scrollBy(int nodeId, float dx, float dy);
 

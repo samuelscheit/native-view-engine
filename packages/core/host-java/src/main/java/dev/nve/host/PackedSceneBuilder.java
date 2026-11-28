@@ -198,6 +198,12 @@ public final class PackedSceneBuilder {
         return this;
     }
 
+    /** Drops every published scroll offset (each frame publishes its full set). */
+    public PackedSceneBuilder clearScrolls() {
+        scroll.clear();
+        return this;
+    }
+
     /** Published visual shift of scroll container {@code nodeId} (call in ascending id order). */
     public PackedSceneBuilder scroll(int nodeId, float x, float y) {
         scroll.add(new float[] {Float.intBitsToFloat(nodeId), x, y});

@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <atomic>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,8 +48,12 @@ struct AndroidSurface {
   nve::host::RuntimeSession session;
   std::optional<nve::host::RuntimeSceneGuard> scene;
   JavaVM* jvm = nullptr;
-  /// The thread that created the surface: the runtime's owner thread. `destroy` elsewhere is refused.
+  /// The thread that created the surface: the runtime's owner thread. Every entry point but
+  /// `pairIsConnected` is refused elsewhere (`owned_surface`).
   std::thread::id owner_thread = std::this_thread::get_id();
+  /// Set by a call refused off the owner thread (a static message: writing `last_error` there
+  /// would race the owner); the owner's next `lastError` reports and clears it.
+  std::atomic<const char*> refused{nullptr};
   uint32_t surface_id = 1u;
   std::array<CachedDirectBuffer, nve::jni_frame::SLABS_LEN> slabs{};
   /// Tables packed by the previous `acquireScene`: only `[table_count, prev_table_count)` slab
@@ -63,6 +68,16 @@ struct AndroidSurface {
 
 [[nodiscard]] inline AndroidSurface* surface_of(jlong handle) noexcept {
   return reinterpret_cast<AndroidSurface*>(handle);
+}
+
+/// The surface behind `handle` on its owner thread, else `nullptr` (the caller returns
+/// `INVALID_ARG` touching nothing): the scene guard, slab cache, event scratch, and `last_error`
+/// are owner-thread state, and the runtime itself is single-threaded.
+[[nodiscard]] inline AndroidSurface* owned_surface(jlong handle) noexcept {
+  AndroidSurface* s = surface_of(handle);
+  if (s == nullptr || std::this_thread::get_id() == s->owner_thread) return s;
+  s->refused.store("called off the surface's owner thread (the thread that created it)", std::memory_order_relaxed);
+  return nullptr;
 }
 
 /// Releases the held scene (every mutating call does this first so the runtime is never `Busy`).

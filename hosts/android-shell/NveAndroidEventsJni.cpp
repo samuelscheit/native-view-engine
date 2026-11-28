@@ -9,7 +9,7 @@
 using nve::android::AndroidSurface;
 using nve::android::release_scene;
 using nve::android::status_of;
-using nve::android::surface_of;
+using nve::android::owned_surface;
 using nve::android::write_out;
 
 namespace {
@@ -223,7 +223,7 @@ extern "C" {
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_dispatchEvents(JNIEnv* env, jclass, jlong handle,
                                                                      jobject ring, jint len, jintArray out_changed) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   write_out(env, out_changed, 0);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   const auto* data = ring != nullptr ? static_cast<const uint8_t*>(env->GetDirectBufferAddress(ring)) : nullptr;
@@ -245,7 +245,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_dispatchEvents(JNIEnv* en
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setTextMeasurer(JNIEnv* env, jclass, jlong handle,
                                                                       jobject measurer) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   // Detach the runtime from the old target before dropping its global ref.
@@ -272,7 +272,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setTextMeasurer(JNIEnv* e
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setWakeListener(JNIEnv* env, jclass, jlong handle,
                                                                       jobject listener) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   // Clearing drains in-flight wakes, so the old global ref is never used after release.
   NveRuntimeStatus st = s->session.clear_wake_callback();

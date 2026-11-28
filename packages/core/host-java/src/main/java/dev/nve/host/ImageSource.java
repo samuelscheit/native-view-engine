@@ -65,21 +65,43 @@ public final class ImageSource {
             encoded.duplicate().get(out);
             return out;
         }
+        // RFC 2397: the scheme, media type, and `;base64` token are case-insensitive.
         final int comma = url.indexOf(',');
-        if (!url.startsWith("data:image/") || comma < 0 || !url.substring(0, comma).endsWith(";base64")) return null;
+        final String base64 = ";base64";
+        if (comma < base64.length() || !url.regionMatches(true, 0, "data:image/", 0, "data:image/".length())
+                || !url.regionMatches(true, comma - base64.length(), base64, 0, base64.length())) {
+            return null;
+        }
         return base64(url, comma + 1);
     }
 
-    /** Strict RFC 4648 base64 of {@code s[from ..)}, or {@code null}. */
+    private static boolean isSpace(char c) {
+        return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+    }
+
+    /**
+     * Strict RFC 4648 base64 of {@code s[from ..)} (whitespace ignored), or {@code null}: padding
+     * required and only at the end, and the unused low bits of the last quantum must be zero
+     * (canonical encoding). The output array is sized exactly up front (no copy).
+     */
     static byte[] base64(String s, int from) {
-        final byte[] out = new byte[(s.length() - from) / 4 * 3];
+        int chars = 0;
+        int padded = 0;
+        for (int i = from; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            if (isSpace(c)) continue;
+            chars++;
+            if (c == '=') padded++;
+        }
+        if (chars % 4 != 0 || padded > 2) return null;
+        final byte[] out = new byte[chars / 4 * 3 - padded];
         int n = 0;
         int quad = 0;
         int bits = 0;
         int pad = 0;
         for (int i = from; i < s.length(); i++) {
             final char c = s.charAt(i);
-            if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+            if (isSpace(c)) continue;
             final int v;
             if (c >= 'A' && c <= 'Z') v = c - 'A';
             else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
@@ -95,15 +117,15 @@ public final class ImageSource {
             }
             bits = bits << 6 | Math.max(v, 0);
             if (++quad == 4) {
-                if (n + 3 - pad > out.length) return null;
+                // Non-canonical: bits the padding drops must be zero.
+                if ((pad == 1 && (bits & 0xFF) != 0) || (pad == 2 && (bits & 0xFFFF) != 0)) return null;
                 out[n++] = (byte) (bits >> 16);
                 if (pad < 2) out[n++] = (byte) (bits >> 8);
                 if (pad < 1) out[n++] = (byte) bits;
-                if (pad > 0 && i + 1 < s.length() && s.substring(i + 1).trim().length() > 0) return null;
                 quad = 0;
                 bits = 0;
             }
         }
-        return quad == 0 ? java.util.Arrays.copyOf(out, n) : null;
+        return n == out.length ? out : null;
     }
 }

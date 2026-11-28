@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <dlfcn.h>
 
 namespace nve::apple {
 
@@ -23,53 +22,6 @@ NvePlatformColor *color_from_rgba(uint32_t rgba) {
 #else
   return [UIColor colorWithRed:r green:g blue:b alpha:a];
 #endif
-}
-
-static NSError *dylib_error(NSString *domain, DylibErrorCode code, NSString *description) {
-  return [NSError errorWithDomain:domain
-                             code:static_cast<NSInteger>(code)
-                         userInfo:@{NSLocalizedDescriptionKey : description}];
-}
-
-bool open_nve_dylib(NSString *dylib_path, NSString *error_domain, LoadedDylib *out_dylib, NSError **out_error) {
-  *out_dylib = LoadedDylib{};
-  if (dylib_path.length == 0) {
-    if (out_error) *out_error = dylib_error(error_domain, DylibErrorCode::OpenFailed, @"Empty dylib path");
-    return false;
-  }
-  void *handle = dlopen(dylib_path.UTF8String, RTLD_NOW | RTLD_LOCAL);
-  if (handle == nullptr) {
-    const char *err = dlerror();
-    if (out_error) {
-      *out_error = dylib_error(error_domain, DylibErrorCode::OpenFailed, err ? @(err) : @"dlopen failed");
-    }
-    return false;
-  }
-  auto get_iface = reinterpret_cast<NveGetInterfaceFn>(dlsym(handle, "nve_get_interface"));
-  if (get_iface == nullptr) {
-    dlclose(handle);
-    if (out_error) {
-      *out_error = dylib_error(error_domain, DylibErrorCode::MissingEntryPoint, @"Missing nve_get_interface symbol");
-    }
-    return false;
-  }
-  if (get_iface(1u /* NVE_IFACE_SURFACE */) == nullptr) {
-    dlclose(handle);
-    if (out_error) {
-      *out_error = dylib_error(error_domain, DylibErrorCode::MissingSurfaceInterface, @"Missing NVE_IFACE_SURFACE interface");
-    }
-    return false;
-  }
-  out_dylib->handle = handle;
-  out_dylib->get_interface = get_iface;
-  return true;
-}
-
-void close_dylib(void *&handle) noexcept {
-  if (handle != nullptr) {
-    dlclose(handle);
-    handle = nullptr;
-  }
 }
 
 NvePlatformFont *platform_font(float size, uint16_t weight, bool italic) {
@@ -92,6 +44,15 @@ NvePlatformFont *platform_font(float size, uint16_t weight, bool italic) {
 #endif
 }
 
+static CGSize text_bounds(NSString *str, NSDictionary *attrs, CGFloat limit) {
+  constexpr NSStringDrawingOptions kOptions = NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading;
+#if TARGET_OS_OSX
+  return [str boundingRectWithSize:NSMakeSize(limit, CGFLOAT_MAX) options:kOptions attributes:attrs].size;
+#else
+  return [str boundingRectWithSize:CGSizeMake(limit, CGFLOAT_MAX) options:kOptions attributes:attrs context:nil].size;
+#endif
+}
+
 void native_text_measure(void *ctx, NveStrSlice text, const NveRuntimeTextStyle *style, float max_width,
                          float *out_width, float *out_height) {
   (void)ctx;
@@ -101,24 +62,26 @@ void native_text_measure(void *ctx, NveStrSlice text, const NveRuntimeTextStyle 
   @autoreleasepool {
     NSString *str = [[NSString alloc] initWithBytes:text.ptr length:text.len encoding:NSUTF8StringEncoding];
     if (str == nil) return;
-    const CGFloat limit = (max_width > 0.0f && std::isfinite(max_width)) ? static_cast<CGFloat>(max_width) : CGFLOAT_MAX;
     NSDictionary *attrs = @{
       NSFontAttributeName : platform_font(style->font_size, style->font_weight, style->font_style != NVE_FONT_STYLE_NORMAL)
     };
+    CGFloat limit = (max_width > 0.0f && std::isfinite(max_width)) ? static_cast<CGFloat>(max_width) : CGFLOAT_MAX;
+    if (max_width == 0.0f) {
+      // Min-content probe: wrap at the widest unbreakable (whitespace-delimited) run.
+      limit = 0.0;
+      for (NSString *word in [str componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) {
+        if (word.length > 0u) limit = std::max(limit, std::ceil(text_bounds(word, attrs, CGFLOAT_MAX).width));
+      }
+      if (limit <= 0.0) limit = CGFLOAT_MAX;  // whitespace only: nothing to wrap
+    }
+    const CGSize bounds = text_bounds(str, attrs, limit);
 #if TARGET_OS_OSX
-    const NSRect bounds = [str boundingRectWithSize:NSMakeSize(limit, CGFLOAT_MAX)
-                                            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                         attributes:attrs];
     constexpr double kHorizontalSlack = 4.0;  // NSTextFieldCell 2pt leading + trailing inset
 #else
-    const CGRect bounds = [str boundingRectWithSize:CGSizeMake(limit, CGFLOAT_MAX)
-                                            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                         attributes:attrs
-                                            context:nil];
     constexpr double kHorizontalSlack = 0.0;
 #endif
-    *out_width = static_cast<float>(std::ceil(bounds.size.width) + kHorizontalSlack);
-    *out_height = static_cast<float>(std::ceil(bounds.size.height));
+    *out_width = static_cast<float>(std::ceil(bounds.width) + kHorizontalSlack);
+    *out_height = static_cast<float>(std::ceil(bounds.height));
   }
 }
 

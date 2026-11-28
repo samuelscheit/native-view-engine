@@ -40,7 +40,9 @@ impl NveApp for EchoApp {
     }
 
     fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
-        let signature: String = props.iter().map(|(k, v)| format!("{k}={v:?};")).collect();
+        // `NveValueRef`'s `Debug` prints the whole value (nested elements and entries), so equal
+        // signatures mean equal props, not only equal lengths.
+        let signature = format!("{:?}", props.try_iter().map(|e| e.map_err(|_| ())).collect::<Vec<_>>());
         if signature == self.last {
             return false;
         }

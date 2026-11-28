@@ -357,7 +357,7 @@ final class RuntimeSession {
         keyCode: e.keyCode,
         name: str(e.name),
         text: str(e.text),
-        value: NveValueTree.toDynamicValue(e.value).toObject());
+        value: NveValueTree.toDynamicValue(e.value, lossyUtf8: true).toObject());
   }
 
   /// Canonical payload bytes and kind of published resource [resourceId] (`resource_payload`).
@@ -579,7 +579,7 @@ final class RuntimeSession {
       return cached;
     }
     _reader = null;
-    final reader = readRuntimeScene(_view.ref);
+    final reader = readScene(_view.ref);
     _readerView.setAll(0, bytes);
     return _reader = reader;
   }
@@ -603,8 +603,12 @@ final class RuntimeSession {
       return;
     }
     _reader = null;
-    // `destroy` drains in-flight wake callbacks before freeing, so only then can the listener's
-    // native trampoline close without a worker thread invoking a closed callable.
+    // Unregister first, so no new wake targets the listener; `destroy` then drains in-flight
+    // wake callbacks before freeing, so only after it can the native trampoline close without a
+    // worker thread invoking a closed callable.
+    if (_wake != null) {
+      api.setWakeCallback(_handle, ffi.nullptr, ffi.nullptr);
+    }
     api.destroy(_handle);
     _handle = ffi.nullptr;
     _wake?.close();
@@ -628,23 +632,35 @@ int _encodeUtf8(String s, Uint8List out, int o) {
 ///
 /// Throws [SceneException] for null slabs with non-zero counts, invalid table word counts, or
 /// any [SceneReader] validation failure.
-SceneReader readRuntimeScene(NveSceneView v) {
-  ffi.Pointer<T> require<T extends ffi.NativeType>(ffi.Pointer<T> p, int count, String what) {
+SceneReader readScene(NveSceneView v) {
+  // A non-empty slab must be non-NULL, aligned for its element type, and its byte size must fit
+  // the ABI's 32-bit lengths: a hostile `count * stride` never reaches `asTypedList`.
+  ffi.Pointer<T> require<T extends ffi.NativeType>(ffi.Pointer<T> p, int count, int elemBytes, String what,
+      {int align = 4}) {
     if (count > 0 && p.address == 0) {
       throw SceneException(SceneErrorKind.missingSlab, '$what is NULL with count $count');
+    }
+    if (p.address % align != 0) {
+      throw SceneException(SceneErrorKind.missingSlab, '$what is not $align-byte aligned');
+    }
+    if (count > 0xFFFFFFFF ~/ elemBytes) {
+      throw SceneException(SceneErrorKind.missingSlab, '$what: $count x $elemBytes bytes exceeds 32 bits');
     }
     return p;
   }
 
   final cap = v.nodeCapacity;
-  final rows = cap == 0 ? Uint32List(0) : require(v.rows, cap, 'rows').cast<ffi.Uint32>().asTypedList(cap * nodeRowWords);
+  final rows = cap == 0
+      ? Uint32List(0)
+      : require(v.rows, cap, nodeRowWords * 4, 'rows').cast<ffi.Uint32>().asTypedList(cap * nodeRowWords);
   final rects = cap == 0
       ? Float32List(0)
-      : require(v.rects, cap, 'rects').cast<ffi.Float>().asTypedList(cap * layoutRectFloats);
-  Uint32List u32s(ffi.Pointer<ffi.Uint32> p, int n, String what) => n == 0 ? Uint32List(0) : require(p, n, what).asTypedList(n);
+      : require(v.rects, cap, layoutRectFloats * 4, 'rects').cast<ffi.Float>().asTypedList(cap * layoutRectFloats);
+  Uint32List u32s(ffi.Pointer<ffi.Uint32> p, int n, String what, [int words = 1]) =>
+      n == 0 ? Uint32List(0) : require(p, n, words * 4, what).asTypedList(n * words);
 
   final tables = List<TableReader>.generate(v.tableCount, (i) {
-    final t = (require(v.tables, v.tableCount, 'tables') + i).ref;
+    final t = (require(v.tables, v.tableCount, ffi.sizeOf<NveTableView>(), 'tables', align: 8) + i).ref;
     if (t.words < 1 || t.words > maxTableWords) {
       throw SceneException(SceneErrorKind.invalidTable, 'table $i: words ${t.words} outside 1..=$maxTableWords');
     }
@@ -654,13 +670,13 @@ SceneReader readRuntimeScene(NveSceneView v) {
         slot: t.slot,
         words: t.words,
         rowCount: t.rowCount,
-        rows: ByteData.sublistView(u32s(t.rows, t.rowCount * t.words, 'table $i rows')),
+        rows: ByteData.sublistView(u32s(t.rows, t.rowCount, 'table $i rows', t.words)),
         owners: t.owners.address == 0 ? null : ByteData.sublistView(u32s(t.owners, t.rowCount, 'table $i owners')),
         dirtyRows: ByteData.sublistView(u32s(t.dirtyRows, t.dirtyCount, 'table $i dirtyRows')),
         dirtyCount: t.dirtyCount,
         rowIndexDir: ByteData.sublistView(u32s(t.rowIndexDir, t.rowIndexDirLen, 'table $i rowIndexDir')),
         rowIndexPages: ByteData.sublistView(
-            u32s(t.rowIndexPages, t.rowIndexPageCount * nveRowIndexPageLen, 'table $i rowIndexPages')),
+            u32s(t.rowIndexPages, t.rowIndexPageCount, 'table $i rowIndexPages', nveRowIndexPageLen)),
       );
     } on ArgumentError catch (e) {
       throw SceneException(SceneErrorKind.invalidTable, 'table $i: ${e.message}');
@@ -674,14 +690,15 @@ SceneReader readRuntimeScene(NveSceneView v) {
     nodeCapacity: cap,
     rows: rows,
     rects: rects,
-    textSlab: v.textSlabLen == 0 ? Uint8List(0) : require(v.textSlab, v.textSlabLen, 'textSlab').asTypedList(v.textSlabLen),
+    textSlab:
+        v.textSlabLen == 0 ? Uint8List(0) : require(v.textSlab, v.textSlabLen, 1, 'textSlab', align: 1).asTypedList(v.textSlabLen),
     childrenSlab: u32s(v.childrenSlab, v.childrenSlabLen, 'childrenSlab'),
     dirtyIndices: u32s(v.dirtyIndices, v.dirtyCount, 'dirtyIndices'),
     removedIds: u32s(v.removedIds, v.removedCount, 'removedIds'),
     tables: tables,
     scrollOffsets: v.scrollCount == 0
         ? null
-        : require(v.scrollOffsets, v.scrollCount, 'scrollOffsets')
+        : require(v.scrollOffsets, v.scrollCount, scrollOffsetWords * 4, 'scrollOffsets')
             .cast<ffi.Uint32>()
             .asTypedList(v.scrollCount * scrollOffsetWords),
     sceneEpoch: v.sceneEpoch,

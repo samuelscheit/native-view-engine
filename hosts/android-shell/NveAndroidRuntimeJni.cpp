@@ -11,6 +11,7 @@ using nve::android::clear_exception;
 using nve::android::release_buffers;
 using nve::android::release_scene;
 using nve::android::status_of;
+using nve::android::owned_surface;
 using nve::android::surface_of;
 using nve::android::utf8_of;
 using nve::android::write_out;
@@ -134,14 +135,10 @@ JNIEXPORT jlong JNICALL Java_dev_nve_host_NativeRuntime_create(JNIEnv* env, jcla
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_destroy(JNIEnv* env, jclass, jlong handle) {
-  AndroidSurface* s = surface_of(handle);
+  // Off the owner thread freeing the surface (and the app it runs) would be a use-after-free:
+  // refused and leaked instead.
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
-  if (std::this_thread::get_id() != s->owner_thread) {
-    // Freeing the surface (and the app it runs) under its owner thread would be a use-after-free:
-    // refuse and leak instead. The runtime would refuse the owner-thread calls anyway.
-    s->last_error = "destroy must run on the thread that created the surface";
-    return NVE_RUNTIME_INVALID_ARG;
-  }
   release_buffers(*s, env);
   // Drain in-flight wake / measure calls before their Java targets go away; the runtime drops
   // the app and unloads its module (`load_app_module`) in `reset`.
@@ -155,14 +152,16 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_destroy(JNIEnv* env, jcla
 }
 
 JNIEXPORT jstring JNICALL Java_dev_nve_host_NativeRuntime_lastError(JNIEnv* env, jclass, jlong handle) {
-  const AndroidSurface* s = surface_of(handle);
-  const std::string& msg = s != nullptr ? s->last_error : std::string();
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr) return nve::android::java_string(env, nullptr, 0);
+  if (const char* refused = s->refused.exchange(nullptr, std::memory_order_relaxed)) s->last_error = refused;
+  const std::string& msg = s->last_error;
   return nve::android::java_string(env, reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_attachApp(JNIEnv* env, jclass, jlong handle, jstring so_path,
                                                                 jboolean carry_state) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
   // The runtime owns the module (`load_app_module`): it unloads an old module only after its app
@@ -171,7 +170,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_attachApp(JNIEnv* env, jc
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_detachApp(JNIEnv* env, jclass, jlong handle) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
   return status_of(*s, s->session.detach_app());
@@ -179,7 +178,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_detachApp(JNIEnv* env, jc
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_submitFrame(JNIEnv* env, jclass, jlong handle, jobject buf,
                                                                   jint len) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr || buf == nullptr || len < 0) return NVE_RUNTIME_INVALID_ARG;
   const auto* data = static_cast<const uint8_t*>(env->GetDirectBufferAddress(buf));
   if (data == nullptr || len > env->GetDirectBufferCapacity(buf)) {
@@ -193,7 +192,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_submitFrame(JNIEnv* env, 
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setViewport(JNIEnv*, jclass, jlong handle, jfloat width,
                                                                   jfloat height, jfloat scale) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   const NveRuntimeStatus st = s->session.set_viewport(width, height, scale);
@@ -202,7 +201,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setViewport(JNIEnv*, jcla
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_tick(JNIEnv* env, jclass, jlong handle, jfloat dt,
                                                            jintArray out_changed) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   bool changed = false;
@@ -213,7 +212,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_tick(JNIEnv* env, jclass,
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_hitTest(JNIEnv* env, jclass, jlong handle, jfloat x, jfloat y,
                                                               jintArray out_node) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   uint32_t node = 0u;
@@ -228,7 +227,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_hitTest(JNIEnv* env, jcla
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_scrollBy(JNIEnv* env, jclass, jlong handle, jint node_id,
                                                                jfloat dx, jfloat dy, jfloatArray out_xy) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   float xy[2] = {0.0f, 0.0f};
@@ -245,7 +244,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_scrollBy(JNIEnv* env, jcl
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairConnect(JNIEnv* env, jclass, jlong handle, jstring uri,
                                                                   jstring token) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
   const NveRuntimeStatus st = s->session.pair_connect(utf8_of(env, uri), utf8_of(env, token));
@@ -253,7 +252,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairConnect(JNIEnv* env, 
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairDisconnect(JNIEnv* env, jclass, jlong handle) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
   const NveRuntimeStatus st = s->session.pair_disconnect();
@@ -261,6 +260,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairDisconnect(JNIEnv* en
 }
 
 JNIEXPORT jboolean JNICALL Java_dev_nve_host_NativeRuntime_pairIsConnected(JNIEnv*, jclass, jlong handle) {
+  // Any thread (`RuntimeSurface.isPaired`): a read-only query the runtime serves thread-safely.
   const AndroidSurface* s = surface_of(handle);
   return s != nullptr && s->session.pair_is_connected() ? JNI_TRUE : JNI_FALSE;
 }

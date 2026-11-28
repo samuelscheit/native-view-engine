@@ -91,15 +91,27 @@ class NveComposeTextMeasurer(private val measurer: TextMeasurer, private val den
 
 /**
  * Controlled text field: the runtime value is the source of truth. A keystroke is sent (lone
- * surrogates repaired first) and the field then shows whatever the runtime echoed — dispatch
- * renders synchronously, so a rejected or rewritten keystroke snaps back at once instead of
- * leaving the field diverged from the app.
+ * surrogates repaired first); with a local app ([NveSurfaceController.dispatchIsSynchronous])
+ * the frame is applied before `textChanged` returns, so the field shows the app's verdict at
+ * once and a rejected or rewritten keystroke snaps back. While paired the echo is asynchronous:
+ * the field keeps the typing, a late echo of a value it sent never clobbers newer typing, and
+ * only a value it never sent (the app rewrote it) replaces the text.
  */
 @Composable
 internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceController, enabled: Boolean) {
     val input = node.input ?: return
     var text by remember(node.id) { mutableStateOf(input.value) }
-    LaunchedEffect(node.id, input.value) { text = input.value }
+    // Values sent while paired and not yet echoed, oldest first.
+    val inFlight = remember(node.id) { ArrayDeque<String>() }
+    LaunchedEffect(node.id, input.value) {
+        val echoed = inFlight.indexOf(input.value)
+        if (echoed >= 0) {
+            repeat(echoed + 1) { inFlight.removeFirst() }
+        } else {
+            inFlight.clear()
+            text = input.value
+        }
+    }
     // `onFocusChanged` reports the initial (unfocused) state on attach: only transitions are events.
     var focused by remember(node.id) { mutableStateOf(false) }
     val style = node.textStyle.toCompose(LocalDensity.current)
@@ -107,8 +119,15 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
         value = text,
         onValueChange = {
             val typed = Utf8.wellFormed(it)
-            controller.textChanged(node.id, typed)
-            text = controller.scene.nodes[node.id]?.input?.value ?: typed
+            if (typed == text) return@BasicTextField  // selection / composition only
+            if (controller.dispatchIsSynchronous) {
+                controller.textChanged(node.id, typed)
+                text = controller.scene[node.id]?.input?.value ?: typed
+            } else {
+                inFlight.addLast(typed)
+                text = typed
+                controller.textChanged(node.id, typed)
+            }
         },
         enabled = enabled,
         modifier = base.onFocusChanged {

@@ -7,6 +7,7 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.view.View;
 
+import dev.nve.host.DrawList;
 import dev.nve.host.Rgba;
 
 import java.nio.Buffer;
@@ -14,43 +15,28 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * `NVE_DRAW1` vector draw-list renderer of {@code nve.canvas} nodes.
+ * `NVE_DRAW1` vector draw-list view of {@code nve.canvas} nodes, painted through the shared
+ * {@link DrawList} codec.
  *
  * <p>{@link #setDrawList} copies the frame's draw-list resource (its native buffer dies when the
- * frame is released) into a reusable little-endian buffer (no steady-state allocation once warm),
- * validates it once, and {@link #onDraw} paints all 8 opcodes with reusable {@code Paint},
- * {@code Path}, and {@code RectF} objects.
+ * frame is released) into a reusable buffer (no steady-state allocation once warm) and validates
+ * it once; {@link #onDraw} streams it with reusable {@code Paint}, {@code Path}, and {@code RectF}.
  */
-public final class NveCanvasView extends View {
-    public static final int HEADER_SIZE = 15;
-    public static final int FORMAT_VERSION = 1;
-    public static final int MAX_DRAW_OPS = 65_536;
-    public static final int MAX_POLYLINE_POINTS = 16_384;
-
-    public static final int OP_CLEAR = 1;
-    public static final int OP_FILL_RECT = 2;
-    public static final int OP_FILL_ROUNDED_RECT = 3;
-    public static final int OP_FILL_CIRCLE = 4;
-    public static final int OP_STROKE_LINE = 5;
-    public static final int OP_STROKE_POLYLINE = 6;
-    public static final int OP_CLIP_RECT = 7;
-    public static final int OP_RESTORE_CLIP = 8;
-
-    private static final byte[] MAGIC = {
-        'N', 'V', 'E', '_', 'D', 'R', 'A', 'W', '1'
-    };
-
+public final class NveCanvasView extends View implements DrawList.Sink {
     private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path polyPath = new Path();
     private final RectF scratchRect = new RectF();
 
-    private ByteBuffer drawBuffer;
-    private int drawOffset = 0;
-    private int drawLength = 0;
-    private boolean drawValid = false;
+    /** Validated draw list ({@code drawLength} bytes from 0), or {@code null}. */
+    private ByteBuffer drawList;
+    private int drawLength;
     private ByteBuffer retainedBuffer;
     private float density = 1.0f;
+
+    /** Paint state of the current {@link #onDraw}. */
+    private Canvas canvas;
+    private boolean polyDrawn;
 
     public NveCanvasView(Context context) {
         super(context);
@@ -62,7 +48,7 @@ public final class NveCanvasView extends View {
     }
 
     public void setDensity(float nextDensity) {
-        float safe = (Float.isFinite(nextDensity) && nextDensity > 0.0f) ? nextDensity : 1.0f;
+        final float safe = Float.isFinite(nextDensity) && nextDensity > 0.0f ? nextDensity : 1.0f;
         if (Float.floatToRawIntBits(density) != Float.floatToRawIntBits(safe)) {
             density = safe;
             invalidate();
@@ -72,7 +58,7 @@ public final class NveCanvasView extends View {
     /** Copies and validates draw list {@code src} (its remaining bytes); an invalid one clears the view. */
     public void setDrawList(ByteBuffer src) {
         final int length = src == null ? 0 : src.remaining();
-        if (length < HEADER_SIZE) {
+        if (length < DrawList.HEADER_SIZE) {
             clearDrawList();
             return;
         }
@@ -82,317 +68,115 @@ public final class NveCanvasView extends View {
         }
         ((Buffer) retainedBuffer).clear();
         retainedBuffer.put(src.duplicate());  // one bulk copy
-        if (!validate(retainedBuffer, 0, length)) {
+        if (DrawList.validate(retainedBuffer, 0, length) != null) {
             clearDrawList();
             return;
         }
-        drawBuffer = retainedBuffer;
-        drawOffset = 0;
+        drawList = retainedBuffer;
         drawLength = length;
-        drawValid = true;
         invalidate();
     }
 
     public void clearDrawList() {
-        boolean hadData = drawValid || drawLength != 0;
-        drawBuffer = null;
-        drawOffset = 0;
+        final boolean had = drawList != null;
+        drawList = null;
         drawLength = 0;
-        drawValid = false;
-        if (hadData) {
-            invalidate();
+        if (had) invalidate();
+    }
+
+    @Override
+    protected void onDraw(Canvas c) {
+        super.onDraw(c);
+        if (drawList == null) return;
+        canvas = c;
+        try {
+            DrawList.streamValidated(drawList, 0, this);
+        } finally {
+            canvas = null;
+        }
+    }
+
+    private static boolean visible(int rgba) {
+        return rgba >>> 24 != 0;
+    }
+
+    private void rect(float x, float y, float w, float h) {
+        final float s = density;
+        scratchRect.set(x * s, y * s, (x + Math.max(0.0f, w)) * s, (y + Math.max(0.0f, h)) * s);
+    }
+
+    @Override
+    public void onClear(int rgba) {
+        if (!visible(rgba)) return;
+        fillPaint.setColor(Rgba.toArgb(rgba));
+        canvas.drawRect(0.0f, 0.0f, getWidth(), getHeight(), fillPaint);
+    }
+
+    @Override
+    public void onFillRect(float x, float y, float w, float h, int rgba) {
+        if (w <= 0.0f || h <= 0.0f || !visible(rgba)) return;
+        fillPaint.setColor(Rgba.toArgb(rgba));
+        rect(x, y, w, h);
+        canvas.drawRect(scratchRect, fillPaint);
+    }
+
+    @Override
+    public void onFillRoundedRect(float x, float y, float w, float h, float radius, int rgba) {
+        if (w <= 0.0f || h <= 0.0f || !visible(rgba)) return;
+        fillPaint.setColor(Rgba.toArgb(rgba));
+        final float r = Math.max(0.0f, radius) * density;
+        rect(x, y, w, h);
+        canvas.drawRoundRect(scratchRect, r, r, fillPaint);
+    }
+
+    @Override
+    public void onFillCircle(float cx, float cy, float radius, int rgba) {
+        if (radius <= 0.0f || !visible(rgba)) return;
+        fillPaint.setColor(Rgba.toArgb(rgba));
+        canvas.drawCircle(cx * density, cy * density, radius * density, fillPaint);
+    }
+
+    @Override
+    public void onStrokeLine(float x0, float y0, float x1, float y1, float width, int rgba) {
+        if (width <= 0.0f || !visible(rgba)) return;
+        strokePaint.setColor(Rgba.toArgb(rgba));
+        strokePaint.setStrokeWidth(width * density);
+        canvas.drawLine(x0 * density, y0 * density, x1 * density, y1 * density, strokePaint);
+    }
+
+    @Override
+    public void onStrokePolylineStart(int pointCount, float width, int rgba) {
+        polyDrawn = pointCount >= 2 && width > 0.0f && visible(rgba);
+        if (!polyDrawn) return;
+        polyPath.rewind();
+        strokePaint.setColor(Rgba.toArgb(rgba));
+        strokePaint.setStrokeWidth(width * density);
+    }
+
+    @Override
+    public void onStrokePolylinePoint(int index, float x, float y) {
+        if (!polyDrawn) return;
+        if (index == 0) {
+            polyPath.moveTo(x * density, y * density);
+        } else {
+            polyPath.lineTo(x * density, y * density);
         }
     }
 
     @Override
-    protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-        if (!drawValid || drawBuffer == null || drawLength < HEADER_SIZE) {
-            return;
-        }
-        decodeAndDraw(
-                canvas,
-                drawBuffer,
-                drawOffset,
-                drawLength,
-                density,
-                getWidth(),
-                getHeight(),
-                fillPaint,
-                strokePaint,
-                polyPath,
-                scratchRect);
+    public void onStrokePolylineEnd() {
+        if (polyDrawn) canvas.drawPath(polyPath, strokePaint);
     }
 
-    /**
-     * Fast zero-allocation check for the 9-byte `NVE_DRAW1` header magic.
-     */
-    public static boolean hasDrawMagic(ByteBuffer buf, int offset, int length) {
-        if (buf == null || offset < 0 || length < HEADER_SIZE || offset + length > buf.limit()) {
-            return false;
-        }
-        for (int i = 0; i < MAGIC.length; i++) {
-            if (buf.get(offset + i) != MAGIC[i]) {
-                return false;
-            }
-        }
-        return true;
+    @Override
+    public void onClipRect(float x, float y, float w, float h) {
+        canvas.save();
+        rect(x, y, w, h);
+        canvas.clipRect(scratchRect);
     }
 
-    /**
-     * Strict zero-allocation bounds, version, op-count, polyline-vertex, and finite-float
-     * validation of an `NVE_DRAW1` byte slice.
-     */
-    public static boolean validate(ByteBuffer buf, int offset, int length) {
-        if (!hasDrawMagic(buf, offset, length)) {
-            return false;
-        }
-        final int end = offset + length;
-        final int version = readU16Le(buf, offset + 9);
-        if (version != FORMAT_VERSION) {
-            return false;
-        }
-        final long opCount = readU32Le(buf, offset + 11);
-        if (opCount > MAX_DRAW_OPS) {
-            return false;
-        }
-        int pos = offset + HEADER_SIZE;
-        if ((long) (end - pos) < opCount) {
-            return false;
-        }
-
-        for (long i = 0; i < opCount; i++) {
-            if (pos >= end) {
-                return false;
-            }
-            int op = buf.get(pos++) & 0xFF;
-            switch (op) {
-                case OP_CLEAR:
-                    if (end - pos < 4) return false;
-                    pos += 4;
-                    break;
-                case OP_FILL_RECT:
-                    if (end - pos < 20) return false;
-                    if (!isFiniteRange(buf, pos, 4)) return false;
-                    pos += 20;
-                    break;
-                case OP_FILL_ROUNDED_RECT:
-                    if (end - pos < 24) return false;
-                    if (!isFiniteRange(buf, pos, 5)) return false;
-                    pos += 24;
-                    break;
-                case OP_FILL_CIRCLE:
-                    if (end - pos < 16) return false;
-                    if (!isFiniteRange(buf, pos, 3)) return false;
-                    pos += 16;
-                    break;
-                case OP_STROKE_LINE:
-                    if (end - pos < 24) return false;
-                    if (!isFiniteRange(buf, pos, 5)) return false;
-                    pos += 24;
-                    break;
-                case OP_STROKE_POLYLINE: {
-                    if (end - pos < 12) return false;
-                    if (!Float.isFinite(readF32Le(buf, pos))) return false;
-                    pos += 8; // width + color
-                    long ptCount = readU32Le(buf, pos);
-                    pos += 4;
-                    if (ptCount > MAX_POLYLINE_POINTS) return false;
-                    long neededBytes = ptCount * 8L;
-                    if (neededBytes > (long) (end - pos)) return false;
-                    int floats = (int) (ptCount * 2L);
-                    if (!isFiniteRange(buf, pos, floats)) return false;
-                    pos += (int) neededBytes;
-                    break;
-                }
-                case OP_CLIP_RECT:
-                    if (end - pos < 16) return false;
-                    if (!isFiniteRange(buf, pos, 4)) return false;
-                    pos += 16;
-                    break;
-                case OP_RESTORE_CLIP:
-                    break;
-                default:
-                    return false;
-            }
-        }
-        return pos == end;
+    @Override
+    public void onRestoreClip() {
+        canvas.restore();
     }
-
-    /**
-     * Paints a {@link #validate validated} `NVE_DRAW1` slice of `buf` onto `canvas` with zero per-op
-     * allocations (validated once by {@link #setDrawList}, not per draw). Returns `false` instead
-     * of throwing should the bytes still be inconsistent.
-     */
-    private static boolean decodeAndDraw(
-            Canvas canvas,
-            ByteBuffer buf,
-            int offset,
-            int length,
-            float scale,
-            float viewWidthPx,
-            float viewHeightPx,
-            Paint fillPaint,
-            Paint strokePaint,
-            Path polyPath,
-            RectF scratchRect) {
-        if (canvas == null) {
-            return false;
-        }
-        final float s = (Float.isFinite(scale) && scale > 0.0f) ? scale : 1.0f;
-        final int opCount = (int) readU32Le(buf, offset + 11);
-        int pos = offset + HEADER_SIZE;
-        int clipDepth = 0;
-
-        try {
-            for (int i = 0; i < opCount; i++) {
-                int op = buf.get(pos++) & 0xFF;
-                switch (op) {
-                    case OP_CLEAR: {
-                        int rgba = readI32Le(buf, pos);
-                        pos += 4;
-                        if ((rgba >>> 24) != 0) {
-                            fillPaint.setColor(Rgba.toArgb(rgba));
-                            canvas.drawRect(0.0f, 0.0f, viewWidthPx, viewHeightPx, fillPaint);
-                        }
-                        break;
-                    }
-                    case OP_FILL_RECT: {
-                        float x = readF32Le(buf, pos);
-                        float y = readF32Le(buf, pos + 4);
-                        float w = readF32Le(buf, pos + 8);
-                        float h = readF32Le(buf, pos + 12);
-                        int rgba = readI32Le(buf, pos + 16);
-                        pos += 20;
-                        if (w > 0.0f && h > 0.0f && (rgba >>> 24) != 0) {
-                            fillPaint.setColor(Rgba.toArgb(rgba));
-                            scratchRect.set(x * s, y * s, (x + w) * s, (y + h) * s);
-                            canvas.drawRect(scratchRect, fillPaint);
-                        }
-                        break;
-                    }
-                    case OP_FILL_ROUNDED_RECT: {
-                        float x = readF32Le(buf, pos);
-                        float y = readF32Le(buf, pos + 4);
-                        float w = readF32Le(buf, pos + 8);
-                        float h = readF32Le(buf, pos + 12);
-                        float radius = readF32Le(buf, pos + 16);
-                        int rgba = readI32Le(buf, pos + 20);
-                        pos += 24;
-                        if (w > 0.0f && h > 0.0f && (rgba >>> 24) != 0) {
-                            fillPaint.setColor(Rgba.toArgb(rgba));
-                            float r = Math.max(0.0f, radius) * s;
-                            scratchRect.set(x * s, y * s, (x + w) * s, (y + h) * s);
-                            canvas.drawRoundRect(scratchRect, r, r, fillPaint);
-                        }
-                        break;
-                    }
-                    case OP_FILL_CIRCLE: {
-                        float cx = readF32Le(buf, pos);
-                        float cy = readF32Le(buf, pos + 4);
-                        float radius = readF32Le(buf, pos + 8);
-                        int rgba = readI32Le(buf, pos + 12);
-                        pos += 16;
-                        if (radius > 0.0f && (rgba >>> 24) != 0) {
-                            fillPaint.setColor(Rgba.toArgb(rgba));
-                            canvas.drawCircle(cx * s, cy * s, radius * s, fillPaint);
-                        }
-                        break;
-                    }
-                    case OP_STROKE_LINE: {
-                        float x0 = readF32Le(buf, pos);
-                        float y0 = readF32Le(buf, pos + 4);
-                        float x1 = readF32Le(buf, pos + 8);
-                        float y1 = readF32Le(buf, pos + 12);
-                        float width = readF32Le(buf, pos + 16);
-                        int rgba = readI32Le(buf, pos + 20);
-                        pos += 24;
-                        if (width > 0.0f && (rgba >>> 24) != 0) {
-                            strokePaint.setColor(Rgba.toArgb(rgba));
-                            strokePaint.setStrokeWidth(width * s);
-                            canvas.drawLine(x0 * s, y0 * s, x1 * s, y1 * s, strokePaint);
-                        }
-                        break;
-                    }
-                    case OP_STROKE_POLYLINE: {
-                        float width = readF32Le(buf, pos);
-                        int rgba = readI32Le(buf, pos + 4);
-                        int ptCount = (int) readU32Le(buf, pos + 8);
-                        pos += 12;
-                        if (ptCount >= 2 && width > 0.0f && (rgba >>> 24) != 0) {
-                            polyPath.rewind();
-                            float x0 = readF32Le(buf, pos);
-                            float y0 = readF32Le(buf, pos + 4);
-                            polyPath.moveTo(x0 * s, y0 * s);
-                            for (int p = 1; p < ptCount; p++) {
-                                int ptOff = pos + (p << 3);
-                                polyPath.lineTo(
-                                        readF32Le(buf, ptOff) * s,
-                                        readF32Le(buf, ptOff + 4) * s);
-                            }
-                            strokePaint.setColor(Rgba.toArgb(rgba));
-                            strokePaint.setStrokeWidth(width * s);
-                            canvas.drawPath(polyPath, strokePaint);
-                        }
-                        pos += ptCount << 3;
-                        break;
-                    }
-                    case OP_CLIP_RECT: {
-                        float x = readF32Le(buf, pos);
-                        float y = readF32Le(buf, pos + 4);
-                        float w = readF32Le(buf, pos + 8);
-                        float h = readF32Le(buf, pos + 12);
-                        pos += 16;
-                        canvas.save();
-                        clipDepth++;
-                        scratchRect.set(x * s, y * s, (x + Math.max(0.0f, w)) * s, (y + Math.max(0.0f, h)) * s);
-                        canvas.clipRect(scratchRect);
-                        break;
-                    }
-                    case OP_RESTORE_CLIP: {
-                        if (clipDepth > 0) {
-                            canvas.restore();
-                            clipDepth--;
-                        }
-                        break;
-                    }
-                    default:
-                        return false;
-                }
-            }
-            return true;
-        } finally {
-            while (clipDepth > 0) {
-                canvas.restore();
-                clipDepth--;
-            }
-        }
-    }
-
-    private static boolean isFiniteRange(ByteBuffer buf, int pos, int floatCount) {
-        for (int i = 0; i < floatCount; i++) {
-            if (!Float.isFinite(readF32Le(buf, pos + (i << 2)))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // `buf` is always the view's own little-endian copy.
-    private static int readU16Le(ByteBuffer buf, int pos) {
-        return buf.getShort(pos) & 0xFFFF;
-    }
-
-    private static int readI32Le(ByteBuffer buf, int pos) {
-        return buf.getInt(pos);
-    }
-
-    private static long readU32Le(ByteBuffer buf, int pos) {
-        return readI32Le(buf, pos) & 0xFFFF_FFFFL;
-    }
-
-    private static float readF32Le(ByteBuffer buf, int pos) {
-        return Float.intBitsToFloat(readI32Le(buf, pos));
-    }
-
 }

@@ -9,7 +9,7 @@ using nve::android::AndroidSurface;
 using nve::android::CachedDirectBuffer;
 using nve::android::clear_exception;
 using nve::android::status_of;
-using nve::android::surface_of;
+using nve::android::owned_surface;
 namespace frame = nve::jni_frame;
 
 namespace nve::android {
@@ -138,7 +138,7 @@ extern "C" {
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env, jclass, jlong handle,
                                                                    jlongArray header, jobjectArray slabs) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr || header == nullptr || slabs == nullptr) return NVE_RUNTIME_INVALID_ARG;
   if (static_cast<size_t>(env->GetArrayLength(header)) < frame::HEADER_LEN ||
       static_cast<size_t>(env->GetArrayLength(slabs)) < frame::SLABS_LEN) {
@@ -174,13 +174,13 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env,
 }
 
 JNIEXPORT void JNICALL Java_dev_nve_host_NativeRuntime_releaseScene(JNIEnv*, jclass, jlong handle) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s != nullptr) nve::android::release_scene(*s);
 }
 
 JNIEXPORT jobject JNICALL Java_dev_nve_host_NativeRuntime_resource(JNIEnv* env, jclass, jlong handle,
                                                                   jint resource_id, jlongArray out_kind) {
-  AndroidSurface* s = surface_of(handle);
+  AndroidSurface* s = owned_surface(handle);
   if (s == nullptr || !s->scene || resource_id == 0) return nullptr;
   const std::optional<nve::host::RuntimeResource> res = s->scene->resource(static_cast<uint32_t>(resource_id));
   if (!res) return nullptr;

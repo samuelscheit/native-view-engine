@@ -16,9 +16,12 @@ import 'scene_tree.dart';
 
 /// [NveSceneResources] over the session's `resource_payload`: valid inside [NveCanvasController.withTree].
 final class _SessionResources implements NveSceneResources {
-  const _SessionResources(this.session);
+  _SessionResources(this.session);
 
   final RuntimeSession session;
+
+  @override
+  final ResourceVersions versions = ResourceVersions();
 
   @override
   Uint8List? payload(int resourceId) => session.resourcePayload(resourceId)?.$2;
@@ -71,6 +74,9 @@ class NveCanvasController extends ChangeNotifier {
 
   /// Last tick / dispatch failure (also reported through [FlutterError.reportError]).
   Exception? lastError;
+
+  /// Visit marks reused by every [scrollableAt] walk (epoch-stamped, no per-walk allocation).
+  final NveTreeWalk _walk = NveTreeWalk();
 
   bool _tickScheduled = false;
   Duration? _lastFrame;
@@ -217,7 +223,7 @@ class NveCanvasController extends ChangeNotifier {
 
   /// Raw `NodeId` of the deepest scroll container under [point], or `null`.
   int? scrollableAt(Offset point) => withTree((t) {
-        final i = t.deepestAt(point, t.isScrollContainer);
+        final i = t.deepestAt(point, t.isScrollContainer, walk: _walk);
         return i == null ? null : t.s.nodeId(i);
       });
 
@@ -254,20 +260,23 @@ class NveCanvasController extends ChangeNotifier {
     } on Exception catch (e, st) {
       _report(e, st);
     }
-    if (onAppEvent case final listener?) {
-      for (final event in emitted) {
-        if (isDisposed) {
-          break;
+    try {
+      if (onAppEvent case final listener?) {
+        for (final event in emitted) {
+          if (isDisposed) {
+            break;
+          }
+          listener(event);
         }
-        listener(event);
+      }
+    } finally {
+      // A throwing app-event listener must not hide the published frame from painting.
+      if (published && !isDisposed) {
+        _frames++;
+        notifyListeners();
       }
     }
-    if (!published || isDisposed) {
-      return false;
-    }
-    _frames++;
-    notifyListeners();
-    return true;
+    return published && !isDisposed;
   }
 
   void _onFrame(Duration timestamp) {

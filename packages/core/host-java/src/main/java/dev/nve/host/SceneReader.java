@@ -142,8 +142,6 @@ public final class SceneReader {
         requireAscending(s[S_SCROLL_OFFSETS], NveRuntimeAbi.SCROLL_OFFSET_OFFSET_NODE_ID, SCROLL_SIZE, scrollN,
                 "scroll offset node ids");
 
-        long seenLo = 0L;
-        long seenHi = 0L;
         java.util.Arrays.fill(bySlot, -1);
         for (int t = 0; t < tables; t++) {
             final int th = H_TABLES + t * TABLE_HEADER_STRIDE;
@@ -161,14 +159,8 @@ public final class SceneReader {
             } catch (IllegalArgumentException e) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + t + ": " + e.getMessage());
             }
-            final long bit = 1L << (slot & 63);
-            if (slot >= MAX_TABLES || ((slot < 64 ? seenLo : seenHi) & bit) != 0) {
+            if (slot >= MAX_TABLES || bySlot[slot] != -1) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + t + " slot " + slot);
-            }
-            if (slot < 64) {
-                seenLo |= bit;
-            } else {
-                seenHi |= bit;
             }
             if (!r.isSparse() && r.rowCount() > cap) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE,
@@ -433,11 +425,20 @@ public final class SceneReader {
 
     /** Index of {@code nodeId}'s scroll offset, or {@code -1} when it is not scrolled (O(log n)). */
     public int scrollIndexOf(int nodeId) {
+        return indexOfAscending(scroll, scrollBase + NveRuntimeAbi.SCROLL_OFFSET_OFFSET_NODE_ID, SCROLL_SIZE, scrollCount, nodeId);
+    }
+
+    /**
+     * Index of {@code key} among {@code count} strictly ascending (unsigned) {@code u32}s at
+     * {@code base + i * stride} of {@code d}, or {@code -1} (O(log count)); the order was checked
+     * on attach ({@link #requireAscending}).
+     */
+    private static int indexOfAscending(ByteBuffer d, int base, int stride, int count, int key) {
         int lo = 0;
-        int hi = scrollCount - 1;
+        int hi = count - 1;
         while (lo <= hi) {
             final int mid = (lo + hi) >>> 1;
-            final int c = Integer.compareUnsigned(scrollNodeId(mid), nodeId);
+            final int c = Integer.compareUnsigned(d.getInt(base + mid * stride), key);
             if (c == 0) return mid;
             if (c < 0) {
                 lo = mid + 1;
@@ -516,19 +517,7 @@ public final class SceneReader {
 
     /** {@code true} when resource {@code id} is in {@link #dirtyResource} (O(log n)). */
     public boolean isResourceDirty(int id) {
-        int lo = 0;
-        int hi = dirtyResources.count - 1;
-        while (lo <= hi) {
-            final int mid = (lo + hi) >>> 1;
-            final int c = Integer.compareUnsigned(dirtyResource(mid), id);
-            if (c == 0) return true;
-            if (c < 0) {
-                lo = mid + 1;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        return false;
+        return indexOfAscending(dirtyResources.buf, dirtyResources.base, 4, dirtyResources.count, id) >= 0;
     }
 
     // ---- text ----------------------------------------------------------------------------------

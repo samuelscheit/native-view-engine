@@ -34,12 +34,6 @@ Options:
   --screenshot <out.png>  Wait ~2s after launch and capture a Simulator PNG.
   --release               Build the Rust crate in release profile.
   -h, --help              Show this help message.
-
-Environment:
-  NVE_ENABLE_CAMERA       Set to 1 to opt in to packages/modules/camera/apple and link
-                          AVFoundation/CoreMedia/CoreVideo (default: 0).
-  NVE_ENABLE_NATIVE_VIEWS Set to 1 to opt in to packages/modules/native-views/apple and link
-                          WebKit/AVFoundation according to NVE_NV_ENABLE_* (default: 0).
 EOF
 }
 

@@ -60,6 +60,11 @@ static TABLE_SET: ValueSetDesc = ValueSetDesc { name: "TableVisual", flags: fals
 static EMPTY: ValueSetDesc = ValueSetDesc { name: "Empty", flags: false, values: &[] };
 static TRI: ValueSetDesc = ValueSetDesc { name: "Tri", flags: false, values: &[("Off", 0), ("Max", 3)] };
 static MULTI_BIT: ValueSetDesc = ValueSetDesc { name: "Bits", flags: true, values: &[("Both", 3)] };
+static SAME_VALUE: ValueSetDesc = ValueSetDesc { name: "Twin", flags: false, values: &[("A", 1), ("B", 1)] };
+// Dart escapes `Default` to `defaultValue`, which `DefaultValue` already is: distinct C names
+// (`NVE_ESC_DEFAULT`, `NVE_ESC_DEFAULT_VALUE`), one Dart constant.
+static ESCAPED: ValueSetDesc =
+    ValueSetDesc { name: "Esc", flags: false, values: &[("Default", 0), ("DefaultValue", 1)] };
 
 const fn field(name: &'static str, shift: u8, bits: u8, values: &'static ValueSetDesc) -> FieldDesc {
     FieldDesc { name, kind: FieldKind::Enum, word: 0, shift, bits, effects: 0, values: Some(values) }
@@ -90,6 +95,8 @@ static NO_VALUES: TableDesc = table("nve.no_values", &[field("a", 0, 2, &EMPTY)]
 // The narrow field reuses a set the wide field already emitted: it must still be checked.
 static NARROW_REUSE: TableDesc = table("nve.narrow_reuse", &[field("wide", 0, 2, &TRI), field("narrow", 2, 1, &TRI)]);
 static NOT_A_FLAG: TableDesc = table("nve.not_a_flag", &[field("a", 0, 2, &MULTI_BIT)]);
+static TWIN: TableDesc = table("nve.twin", &[field("a", 0, 2, &SAME_VALUE)]);
+static ESCAPE_CLASH: TableDesc = table("nve.escape_clash", &[field("a", 0, 2, &ESCAPED)]);
 
 #[test]
 fn value_sets_are_deduplicated_and_validated() {
@@ -104,6 +111,8 @@ fn value_sets_are_deduplicated_and_validated() {
         (&NO_VALUES, "at least one value"),
         (&NARROW_REUSE, "exceeds field `narrow`"),
         (&NOT_A_FLAG, "not a single bit"),
+        (&TWIN, "duplicate value 1"),
+        (&ESCAPE_CLASH, "collides with another member once escaped"),
     ] {
         match module_header(&[t]) {
             Err(CodegenError::Validation(m)) => assert!(m.contains(why), "{}: {m}", t.name),

@@ -56,6 +56,7 @@ fn unknown_or_malformed_signatures_are_refused() {
     static UNKNOWN_CALLBACK: [RuntimeFnSignature; 1] = [sig("c", "void", "NveUnknownFn f")];
     static UNNAMED: [RuntimeFnSignature; 1] = [sig("d", "void", "uint32_t")];
     static VOID_PARAM: [RuntimeFnSignature; 1] = [sig("e", "void", "void x")];
+    static CONST_VOID_PARAM: [RuntimeFnSignature; 1] = [sig("g", "void", "const void x")];
     static UNKNOWN_POINTEE: [RuntimeFnSignature; 1] = [sig("f", "void", "const Mystery* const* m")];
     for (slots, why) in [
         (&UNKNOWN_PARAM, "unknown C type `Mystery`"),
@@ -63,6 +64,7 @@ fn unknown_or_malformed_signatures_are_refused() {
         (&UNKNOWN_CALLBACK, "unknown C type `NveUnknownFn`"),
         (&UNNAMED, "needs a type and a name"),
         (&VOID_PARAM, "is `void`"),
+        (&CONST_VOID_PARAM, "is `void`"),
         (&UNKNOWN_POINTEE, "unknown C type `Mystery`"),
     ] {
         match model(slots) {

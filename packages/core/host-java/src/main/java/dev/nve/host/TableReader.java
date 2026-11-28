@@ -70,8 +70,10 @@ public final class TableReader {
         this.dirtyCount = dirtyCount;
         this.rows = le(rows);
         this.rowsBase = base(rows);
-        this.owners = le(owners);
-        this.ownersBase = base(owners);
+        // An empty table is dense whatever its owners buffer (Rust publishes a dangling pointer
+        // for an empty `Vec`), like C++ `is_sparse()`.
+        this.owners = rowCount > 0 ? le(owners) : null;
+        this.ownersBase = rowCount > 0 ? base(owners) : 0;
         this.dirtyRows = le(dirtyRows);
         this.dirtyBase = base(dirtyRows);
         this.indexDir = le(rowIndexDir);

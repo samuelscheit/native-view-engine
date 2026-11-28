@@ -85,11 +85,19 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
 }
 
 /**
- * Compose-facing state of one runtime surface: the latest [NveSceneSnapshot] (observable) plus
- * input entry points that become `EventRing` events. Use on the main thread.
+ * Compose-facing state of one runtime surface: the [NveSceneState] (one per-node observable slot
+ * each, updated in O(changed)) plus input entry points that become `EventRing` events. Use on
+ * the main thread.
  */
 class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
-    var scene: NveSceneSnapshot by mutableStateOf(NveSceneSnapshot.EMPTY)
+    val scene = NveSceneState()
+
+    /**
+     * `true` while a local app renders: a dispatched event's frame is applied before
+     * [textChanged] returns, so a controlled field can show the app's verdict at once. `false`
+     * while paired: the echo arrives later (or never), so fields keep the user's typing.
+     */
+    var dispatchIsSynchronous: Boolean = true
         private set
 
     /** Last start / runtime failure, `null` while healthy. */
@@ -99,7 +107,7 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     private var lastViewport = FloatArray(3)
 
     init {
-        host.setFrameListener { reader, resources -> scene = NveSceneCapture.capture(reader, resources, scene) }
+        host.setFrameListener { reader, resources -> NveSceneCapture.capture(reader, resources, scene) }
     }
 
     /** Attaches the app or pairing session and renders the first frame; `false` (with [error]) on failure. */
@@ -110,6 +118,7 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
             return false
         }
         error = null
+        dispatchIsSynchronous = source is NveSource.App
         host.render()
         return true
     }

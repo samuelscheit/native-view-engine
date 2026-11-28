@@ -86,16 +86,13 @@ final class NveMultiApplePlatformTests: XCTestCase {
         // Static registrations resolve without dlopen; the entry point is handed to the runtime as-is.
         let fromTable = try XCTUnwrap(NveInterfaceResolver.resolve(symbol: "nve_static_app", staticTable: table))
         XCTAssertEqual(fromTable.source, .staticTable)
-        XCTAssertNil(fromTable.dylibHandle)
         XCTAssertNotNil(fromTable.getInterface(UInt32(NVE_IFACE_SURFACE)))
         XCTAssertNil(fromTable.getInterface(UInt32(NVE_IFACE_DEV)))
 
-        // Explicit entry points win over the table; an explicit dylib path bypasses the table.
+        // Explicit entry points win over the table.
         let explicit = try XCTUnwrap(
             NveInterfaceResolver.resolve(symbol: "nve_static_app", getInterface: staticMockGetInterface, staticTable: table))
         XCTAssertEqual(explicit.source, .explicit)
-        XCTAssertNil(NveInterfaceResolver.resolve(
-            symbol: "nve_static_app", dylibPath: "/nonexistent/libnve_app.dylib", staticTable: table))
         XCTAssertNil(NveInterfaceResolver.resolve(symbol: "nve_symbol_that_does_not_exist", staticTable: table))
 
         XCTAssertTrue(table.unregister(symbol: "nve_static_app"))
