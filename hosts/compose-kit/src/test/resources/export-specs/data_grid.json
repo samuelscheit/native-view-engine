@@ -1,0 +1,55 @@
+{
+  "name": "DataGrid",
+  "backend": "fabric",
+  "android_package": "dev.nve.components",
+  "props": [
+    {
+      "name": "density",
+      "prop_type": { "kind": "int_enum", "variants": [0, 1, 2] },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "int", "value": 1 }
+    },
+    {
+      "name": "rowHeight",
+      "prop_type": { "kind": "double" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "float", "value": 44.5 }
+    },
+    {
+      "name": "columns",
+      "prop_type": { "kind": "array", "item": { "kind": "string" } },
+      "optional": false,
+      "nullable": false
+    },
+    {
+      "name": "meta",
+      "prop_type": { "kind": "object", "fields": [] },
+      "optional": true,
+      "nullable": true
+    }
+  ],
+  "events": [
+    {
+      "name": "onRowSelect",
+      "bubbling": "direct",
+      "optional": true,
+      "paper_top_level_name": "topRowSelect",
+      "payload": [
+        { "name": "rowIndex", "field_type": { "kind": "int32" }, "optional": false, "nullable": false },
+        { "name": "note", "field_type": { "kind": "string" }, "optional": true, "nullable": true },
+        { "name": "extra", "field_type": { "kind": "object", "fields": [] }, "optional": true, "nullable": true }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "scrollToRow",
+      "params": [
+        { "name": "index", "param_type": { "kind": "int32" }, "optional": false },
+        { "name": "animated", "param_type": { "kind": "bool" }, "optional": true }
+      ]
+    }
+  ]
+}

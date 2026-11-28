@@ -1,34 +1,76 @@
 package dev.nve.compose
 
+import dev.nve.host.BinReader
+import dev.nve.host.BinTag
+import dev.nve.host.BinWriter
 import dev.nve.host.EventRingReader
 import dev.nve.host.EventRingWriter
 import dev.nve.host.FrameHost
+import dev.nve.host.HybridRuntime
 import dev.nve.host.NativeRuntime
+import dev.nve.host.RuntimeSurface
 import dev.nve.host.SceneReader
 import dev.nve.host.generated.NveAbi
 import dev.nve.host.generated.NveRuntimeAbi
 import dev.nve.host.generated.NveTables
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
 
-/** JVM double of `NativeRuntimeHost`: serves [TestScene] frames and records dispatched `NVEV` v2 batches. */
+/** JVM double of `NativeRuntimeHost`: serves [TestScene] frames and records ABI v6 calls and `NVEV` v2 batches. */
 class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     var startStatus = NveRuntimeAbi.STATUS_OK
+    var setPropsStatus = NveRuntimeAbi.STATUS_OK
+    var hotPatchStatus = NveRuntimeAbi.STATUS_OK
     val started = ArrayList<NveSource>()
     val viewports = ArrayList<List<Float>>()
     val rings = ArrayList<EventRingReader>()
     val scrolls = ArrayList<Triple<Int, Float, Float>>()
+    val propsHistory = ArrayList<ByteArray>()
+    val hotPatches = ArrayList<ByteArray>()
+    val hostCompletions = ArrayList<Triple<Long, Int, ByteArray?>>()
+    val hostPushEvents = ArrayList<Triple<Int, Int, ByteArray?>>()
+    val hostChannels = ArrayList<Triple<Int, Int, ByteArray?>>()
+    var stateBytes: ByteArray? = byteArrayOf(1, 2, 3)
+    var savedStateFiles = HashMap<String, Pair<Int, ByteArray>>()
+    var savedFrame0Files = HashMap<String, Pair<Long, Long>>()
+    var bootedFrame0Bytes: ByteArray? = null
+    var measuredResult: RuntimeSurface.SurfaceMeasure? = RuntimeSurface.SurfaceMeasure(120f, 44f, 32f, 32f)
+    var lastMeasureConstraints: FloatArray? = null
+    var lastMeasureFlags: Int = 0
+    var intrinsicListener: Runnable? = null
+    var hostBridge: NveHostBridge? = null
     var measurer: NativeRuntime.TextMeasurer? = null
     var closed = false
     var synchronous = true
     private var listener: ((SceneReader, NveResourceLookup) -> Unit)? = null
+    private var emittedListener: ((ByteArray) -> Unit)? = null
+    private val pendingEmitted = ArrayDeque<ByteArray>()
+
+    fun enqueueEmitted(write: (EventRingWriter) -> Unit) {
+        val ring = EventRingWriter(ByteBuffer.allocate(4096), 1)
+        write(ring)
+        pendingEmitted.addLast(ring.buffer().array().copyOf(ring.length()))
+    }
+
+    private fun flushEmitted() {
+        val cb = emittedListener ?: return
+        while (pendingEmitted.isNotEmpty()) {
+            cb(pendingEmitted.removeFirst())
+        }
+    }
 
     override fun setFrameListener(listener: (SceneReader, NveResourceLookup) -> Unit) {
         this.listener = listener
+    }
+
+    override fun setEmittedEventListener(listener: ((ByteArray) -> Unit)?) {
+        this.emittedListener = listener
     }
 
     override fun start(source: NveSource): Int {
@@ -55,18 +97,113 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     override fun render(): Boolean {
         scene.frameId = ++frames
         listener?.invoke(scene.reader()) { resources[it] }
+        flushEmitted()
         return true
     }
 
     override fun send(write: FrameHost.EventWriter): Int {
-        val ring = EventRingWriter(ByteBuffer.allocate(1024), 1)
+        val ring = EventRingWriter(ByteBuffer.allocate(4096), 1)
         write.write(ring)
         rings.add(EventRingReader().attach(ring.buffer().array().copyOf(ring.length())))
+        flushEmitted()
         return 0
     }
 
     override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int {
         scrolls.add(Triple(nodeId, dxDp, dyDp))
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun setProps(binMap: ByteArray): Int {
+        if (setPropsStatus != NveRuntimeAbi.STATUS_OK) return setPropsStatus
+        propsHistory.add(binMap.copyOf())
+        flushEmitted()
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun drainEmittedEvents(): ByteArray? =
+        if (pendingEmitted.isEmpty()) null else pendingEmitted.removeFirst()
+
+    override fun snapshotState(): ByteArray? = stateBytes?.copyOf()
+
+    override fun restoreState(state: ByteArray): Int {
+        stateBytes = state.copyOf()
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun saveStateFile(path: String, schemaVersion: Int): Int {
+        savedStateFiles[path] = schemaVersion to (stateBytes?.copyOf() ?: ByteArray(0))
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun restoreStateFile(path: String, schemaVersion: Int): Int {
+        val saved = savedStateFiles[path] ?: return NveRuntimeAbi.STATUS_NOT_FOUND
+        if (saved.first != schemaVersion) return NveRuntimeAbi.STATUS_NOT_FOUND
+        stateBytes = saved.second.copyOf()
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun clearStateFile(path: String): Int {
+        savedStateFiles.remove(path)
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun saveFrame0File(path: String, appBuildId: Long, envHash: Long): Int {
+        savedFrame0Files[path] = appBuildId to envHash
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun bootFrame0File(path: String, appBuildId: Long, envHash: Long): Int {
+        val saved = savedFrame0Files[path] ?: return NveRuntimeAbi.STATUS_NOT_FOUND
+        return if (saved == (appBuildId to envHash)) NveRuntimeAbi.STATUS_OK else NveRuntimeAbi.STATUS_NOT_FOUND
+    }
+
+    override fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long, envHash: Long): Int {
+        bootedFrame0Bytes = envelope.copyOf()
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun applyHotPatch(patch: ByteArray): Int {
+        if (hotPatchStatus != NveRuntimeAbi.STATUS_OK) return hotPatchStatus
+        hotPatches.add(patch.copyOf())
+        flushEmitted()
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun measureSurface(
+        minWidthDp: Float,
+        minHeightDp: Float,
+        maxWidthDp: Float,
+        maxHeightDp: Float,
+        flags: Int,
+    ): RuntimeSurface.SurfaceMeasure? {
+        lastMeasureConstraints = floatArrayOf(minWidthDp, minHeightDp, maxWidthDp, maxHeightDp)
+        lastMeasureFlags = flags
+        return measuredResult
+    }
+
+    override fun setIntrinsicSizeInvalidatedListener(listener: Runnable?): Int {
+        intrinsicListener = listener
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun setHostCallbackBridge(bridge: NveHostBridge?): Int {
+        hostBridge = bridge
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun completeHostRequest(requestId: Long, hostStatus: Int, payload: ByteArray?): Int {
+        hostCompletions.add(Triple(requestId, hostStatus, payload?.copyOf()))
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun pushHostEvent(serviceId: Int, eventId: Int, payload: ByteArray?): Int {
+        hostPushEvents.add(Triple(serviceId, eventId, payload?.copyOf()))
+        return NveRuntimeAbi.STATUS_OK
+    }
+
+    override fun publishHostChannel(channelId: Int, flags: Int, payload: ByteArray?): Int {
+        hostChannels.add(Triple(channelId, flags, payload?.copyOf()))
         return NveRuntimeAbi.STATUS_OK
     }
 
@@ -185,5 +322,98 @@ class NveSurfaceControllerTest {
         assertEquals(NveSource.Paired("ws://h:1/x", "tok"), NveHostActivity.sourceOf("/a.so", " ws://h:1/x ", " tok ", "/b.so"))
         assertEquals(NveSource.App("/a.so"), NveHostActivity.sourceOf(" /a.so ", "  ", null, "/b.so"))
         assertEquals(NveSource.App("/b.so"), NveHostActivity.sourceOf(null, null, null, "/b.so"))
+    }
+
+    @Test
+    fun abiV6PropsEventsStateFrame0HotPatchMeasureAndHostBridge() {
+        val host = FakeRuntimeHost(scene())
+        val c = NveSurfaceController(host)
+        val seenEvents = ArrayList<NveEmittedEvent>()
+        c.onEvent = { seenEvents.add(it) }
+
+        val replyPayload = BinWriter().apply {
+            val m = beginMap(1)
+            writeMapKey("count")
+            writeI64(7)
+            end(m)
+        }.toByteArray()
+        host.enqueueEmitted { it.custom(0, 123L, "onCountChange", replyPayload) }
+
+        assertTrue(c.setProps { w ->
+            val m = w.beginMap(1)
+            w.writeMapKey("initialCount")
+            w.writeI64(7)
+            w.end(m)
+        })
+        assertEquals(1, host.propsHistory.size)
+        val r = BinReader(host.propsHistory[0])
+        assertEquals(BinTag.MAP, r.peekTag())
+        val m = r.beginMap()
+        assertEquals(1, m.count)
+        assertEquals("initialCount", r.readMapKey())
+        assertEquals(7L, r.readI64())
+        r.end(m)
+
+        assertEquals(1, seenEvents.size)
+        assertTrue(seenEvents[0].isCustom)
+        assertEquals("onCountChange", seenEvents[0].name)
+        val evReader = seenEvents[0].payloadReader()
+        val evMark = evReader.beginMap()
+        assertEquals("count", evReader.readMapKey())
+        assertEquals(7L, evReader.readI64())
+        evReader.end(evMark)
+
+        assertArrayEquals(byteArrayOf(1, 2, 3), c.snapshotState())
+        assertTrue(c.restoreState(byteArrayOf(9, 8)))
+        assertArrayEquals(byteArrayOf(9, 8), c.snapshotState())
+        assertTrue(c.saveStateFile("/tmp/state.nve", 1))
+        assertTrue(c.restoreState(byteArrayOf(0)))
+        assertTrue(c.restoreStateFile("/tmp/state.nve", 1))
+        assertArrayEquals(byteArrayOf(9, 8), c.snapshotState())
+        assertTrue(c.clearStateFile("/tmp/state.nve"))
+        assertFalse(c.restoreStateFile("/tmp/state.nve", 1))
+
+        assertTrue(c.saveFrame0File("/tmp/f0.nve2", 42L, 99L))
+        assertTrue(c.bootFrame0File("/tmp/f0.nve2", 42L, 99L))
+        assertFalse(c.bootFrame0File("/tmp/f0.nve2", 43L, 99L))
+        assertTrue(c.bootFrame0Bytes(byteArrayOf(4, 5, 6), 42L, 99L))
+        assertArrayEquals(byteArrayOf(4, 5, 6), host.bootedFrame0Bytes)
+
+        assertTrue(c.applyHotPatch(byteArrayOf(0x4E, 0x56, 0x50, 0x31)))
+        assertEquals(1, host.hotPatches.size)
+
+        val measured = c.measureSurface(0f, 0f, 320f, Float.POSITIVE_INFINITY, NveRuntimeAbi.MEASURE_FLAG_DRY_RUN)
+        assertNotNull(measured)
+        assertEquals(120f, measured!!.width)
+        assertEquals(44f, measured.height)
+        assertTrue(measured.hasFirstBaseline())
+        assertEquals(32f, measured.firstBaseline)
+
+        var invalidated = 0
+        val listener = Runnable { invalidated++ }
+        assertEquals(NveRuntimeAbi.STATUS_OK, c.setIntrinsicSizeInvalidatedListener(listener))
+        host.intrinsicListener?.run()
+        assertEquals(1, invalidated)
+
+        val bridge = object : NveHostBridge {
+            override fun invoke(
+                serviceId: Int,
+                methodId: Int,
+                requestId: Long,
+                request: ByteArray,
+                outPayload: Array<ByteArray?>,
+            ): Int = HybridRuntime.HostStatus.OK.code
+
+            override fun publishChannel(channelId: Int, flags: Int, payload: ByteArray): Int =
+                HybridRuntime.HostStatus.OK.code
+        }
+        assertEquals(NveRuntimeAbi.STATUS_OK, c.setHostBridge(bridge))
+        assertEquals(bridge, host.hostBridge)
+        assertEquals(NveRuntimeAbi.STATUS_OK, c.completeHostRequest(10L, HybridRuntime.HostStatus.OK.code, byteArrayOf(7)))
+        assertEquals(NveRuntimeAbi.STATUS_OK, c.pushHostEvent(0x0010, 1, byteArrayOf(8)))
+        assertEquals(NveRuntimeAbi.STATUS_OK, c.publishHostChannel(42, 1, byteArrayOf(9)))
+        assertEquals(1, host.hostCompletions.size)
+        assertEquals(1, host.hostPushEvents.size)
+        assertEquals(1, host.hostChannels.size)
     }
 }

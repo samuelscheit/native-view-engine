@@ -81,6 +81,40 @@ android.sourceSets.getByName("main").java.srcDir(nveHostJavaDir)
 // Robolectric (`dev.nve.android` renderer suites): it has no Gradle build of its own.
 android.sourceSets.getByName("test").java.srcDir(nveRepoRoot.resolve("hosts/android-shell/android-app/src"))
 
+// Real Kotlin compile & execution verification of `nve-codegen` `export_rn` (Android) +
+// `export_compose` generated sources (written inside `build/`, never committed).
+val nveExportSpecDir = projectDir.resolve("src/test/resources/export-specs")
+val nveExportKotlinOutDir = layout.buildDirectory.dir("generated/nve-export-test")
+android.sourceSets.getByName("test").kotlin.srcDir(nveExportKotlinOutDir)
+
+val generateExportKotlinFixtures by tasks.registering {
+    group = "codegen"
+    description = "Emit real `export_rn` (Android) and `export_compose` .generated.kt test sources via nve-cli."
+    inputs.dir(nveExportSpecDir)
+    inputs.dir(nveRepoRoot.resolve("packages/core/codegen/src"))
+    outputs.dir(nveExportKotlinOutDir)
+    doLast {
+        val outRoot = nveExportKotlinOutDir.get().asFile
+        outRoot.deleteRecursively()
+        outRoot.mkdirs()
+        val specs = nveExportSpecDir.listFiles { f -> f.isFile && f.extension == "json" }?.sortedBy { it.name }.orEmpty()
+        check(specs.isNotEmpty()) { "No export spec JSON fixtures found in $nveExportSpecDir" }
+        for (spec in specs) {
+            val outDir = outRoot.resolve(spec.nameWithoutExtension)
+            val proc = ProcessBuilder(
+                "cargo", "run", "--locked", "-q", "-p", "nve-cli", "--",
+                "codegen", "export", spec.absolutePath, "--target", "rn,compose", "--out", outDir.absolutePath,
+            )
+                .directory(nveRepoRoot)
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val rc = proc.waitFor()
+            check(rc == 0) { "nve-cli codegen export failed ($rc) for ${spec.name}:\n$output" }
+        }
+    }
+}
+
 val generateNveAbi by tasks.registering(Exec::class) {
     group = "codegen"
     description = "Generate the NVE host ABI / table Java bindings via nve-cli when missing."
@@ -97,4 +131,10 @@ tasks.matching {
         (it.name.startsWith("compile") && (it.name.endsWith("JavaWithJavac") || it.name.endsWith("Kotlin")))
 }.configureEach {
     dependsOn(generateNveAbi)
+}
+
+tasks.matching {
+    it.name.startsWith("compile") && it.name.endsWith("UnitTestKotlin")
+}.configureEach {
+    dependsOn(generateExportKotlinFixtures)
 }

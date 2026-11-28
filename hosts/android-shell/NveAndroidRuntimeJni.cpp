@@ -3,11 +3,13 @@
 #include "NveAndroidSurface.hpp"
 
 #include <cmath>
+#include <limits>
 #include <span>
 #include <utility>
 
 using nve::android::AndroidSurface;
 using nve::android::clear_exception;
+using nve::android::direct_buffer_span;
 using nve::android::release_buffers;
 using nve::android::release_scene;
 using nve::android::status_of;
@@ -140,11 +142,15 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_destroy(JNIEnv* env, jcla
   AndroidSurface* s = owned_surface(handle);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
-  // Drain in-flight wake / measure calls before their Java targets go away; the runtime drops
-  // the app and unloads its module (`load_app_module`) in `reset`.
+  // Drain in-flight wake / intrinsic-size / host / measure calls before their Java targets go
+  // away; the runtime drops the app and unloads its module (`load_app_module`) in `reset`.
   (void)s->session.clear_wake_callback();
+  (void)s->session.clear_intrinsic_size_invalidated_callback();
+  (void)s->session.clear_host_callbacks();
   s->session.reset();
   s->wake.release(env);
+  s->intrinsic_size_invalidated.release(env);
+  s->host_bridge.release(env);
   s->measurer.release(env);  // the runtime (and its measurer hook) is gone: no call can race this
   if (s->measure_out != nullptr && env != nullptr) env->DeleteGlobalRef(s->measure_out);
   delete s;
@@ -263,6 +269,139 @@ JNIEXPORT jboolean JNICALL Java_dev_nve_host_NativeRuntime_pairIsConnected(JNIEn
   // Any thread (`RuntimeSurface.isPaired`): a read-only query the runtime serves thread-safely.
   const AndroidSurface* s = surface_of(handle);
   return s != nullptr && s->session.pair_is_connected() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_nve_host_NativeRuntime_snapshotState(JNIEnv* env, jclass, jlong handle,
+                                                                           jintArray out_status) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr) {
+    write_out(env, out_status, NVE_RUNTIME_INVALID_ARG);
+    return nullptr;
+  }
+  release_scene(*s);
+  std::span<const uint8_t> state;
+  const NveRuntimeStatus st = s->session.snapshot_state(&state);
+  const jint code = status_of(*s, st);
+  write_out(env, out_status, code);
+  if (st != NVE_RUNTIME_OK) return nullptr;
+  if (state.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+    s->last_error = "snapshotState payload exceeds JNI array limit";
+    write_out(env, out_status, NVE_RUNTIME_ERROR);
+    return nullptr;
+  }
+  jbyteArray out = env->NewByteArray(static_cast<jsize>(state.size()));
+  if (out == nullptr) {
+    clear_exception(env);
+    s->last_error = "out of memory allocating snapshot byte array";
+    write_out(env, out_status, NVE_RUNTIME_ERROR);
+    return nullptr;
+  }
+  if (!state.empty()) {
+    env->SetByteArrayRegion(out, 0, static_cast<jsize>(state.size()),
+                            reinterpret_cast<const jbyte*>(state.data()));
+  }
+  return out;
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_restoreState(JNIEnv* env, jclass, jlong handle, jobject buf,
+                                                                    jint len) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  std::span<const uint8_t> state;
+  if (!direct_buffer_span(env, buf, len, &state)) {
+    s->last_error = "restoreState needs a direct buffer holding `length` bytes";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
+  release_scene(*s);
+  return status_of(*s, s->session.restore_state(state));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_saveStateFile(JNIEnv* env, jclass, jlong handle, jstring path,
+                                                                     jint schema_version) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  release_scene(*s);
+  return status_of(*s, s->session.save_state_file(utf8_of(env, path), static_cast<uint32_t>(schema_version)));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_restoreStateFile(JNIEnv* env, jclass, jlong handle, jstring path,
+                                                                        jint schema_version) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  release_scene(*s);
+  return status_of(*s, s->session.restore_state_file(utf8_of(env, path), static_cast<uint32_t>(schema_version)));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_clearStateFile(JNIEnv* env, jclass, jlong handle, jstring path) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  release_scene(*s);
+  return status_of(*s, s->session.clear_state_file(utf8_of(env, path)));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_saveFrame0File(JNIEnv* env, jclass, jlong handle, jstring path,
+                                                                      jlong app_build_id, jlong env_hash) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  release_scene(*s);
+  return status_of(*s, s->session.save_frame0_file(utf8_of(env, path), static_cast<uint64_t>(app_build_id),
+                                                   static_cast<uint64_t>(env_hash)));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_bootFrame0File(JNIEnv* env, jclass, jlong handle, jstring path,
+                                                                      jlong app_build_id, jlong env_hash) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr || path == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  release_buffers(*s, env);
+  return status_of(*s, s->session.boot_frame0_file(utf8_of(env, path), static_cast<uint64_t>(app_build_id),
+                                                   static_cast<uint64_t>(env_hash)));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_bootFrame0Bytes(JNIEnv* env, jclass, jlong handle, jobject buf,
+                                                                       jint len, jlong app_build_id, jlong env_hash) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  std::span<const uint8_t> envelope;
+  if (!direct_buffer_span(env, buf, len, &envelope)) {
+    s->last_error = "bootFrame0Bytes needs a direct buffer holding `length` bytes";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
+  release_buffers(*s, env);
+  return status_of(*s, s->session.boot_frame0_bytes(envelope, static_cast<uint64_t>(app_build_id),
+                                                    static_cast<uint64_t>(env_hash)));
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_applyHotPatch(JNIEnv* env, jclass, jlong handle, jobject buf,
+                                                                     jint len, jintArray out_changed) {
+  AndroidSurface* s = owned_surface(handle);
+  write_out(env, out_changed, 0);
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
+  std::span<const uint8_t> patch;
+  if (!direct_buffer_span(env, buf, len, &patch)) {
+    s->last_error = "applyHotPatch needs a direct buffer holding `length` bytes";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
+  release_scene(*s);
+  bool changed = false;
+  const NveRuntimeStatus st = s->session.apply_hot_patch(patch, &changed);
+  write_out(env, out_changed, changed ? 1 : 0);
+  return status_of(*s, st);
+}
+
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_measureSurface(JNIEnv* env, jclass, jlong handle, jfloat min_w,
+                                                                      jfloat min_h, jfloat max_w, jfloat max_h,
+                                                                      jint flags, jfloatArray out_measure) {
+  AndroidSurface* s = owned_surface(handle);
+  if (s == nullptr || out_measure == nullptr || env->GetArrayLength(out_measure) < 4) return NVE_RUNTIME_INVALID_ARG;
+  release_scene(*s);
+  const NveSizeConstraints constraints{min_w, min_h, max_w, max_h};
+  NveSurfaceMeasure measured{};
+  const NveRuntimeStatus st = s->session.measure_surface(constraints, static_cast<uint32_t>(flags), &measured);
+  if (st == NVE_RUNTIME_OK) {
+    const float out[4] = {measured.width, measured.height, measured.first_baseline, measured.last_baseline};
+    env->SetFloatArrayRegion(out_measure, 0, 4, out);
+  }
+  return status_of(*s, st);
 }
 
 }  // extern "C"
