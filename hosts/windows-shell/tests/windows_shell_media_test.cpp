@@ -204,6 +204,13 @@ void test_scene_inputs_and_pointer() {
             node(host, kImgUrl).image.key == node(host, kImgUrl).image.url && node(host, kImgUrl).image_fit == NVE_IMAGE_FIT_CONTAIN);
   NVE_CHECK(node(host, kImgBytes).image.encoded == png_bytes && node(host, kImgBytes).image.key.rfind("bytes:", 0) == 0u);
   NVE_CHECK(node(host, kImgBad).image.empty());
+  {
+    const auto empty_bytes_wire = h::encode_image_bytes({});
+    const auto decoded = h::decode_image_src(empty_bytes_wire);
+    NVE_CHECK(decoded.has_value() && decoded->is_encoded_bytes() && decoded->encoded.empty());
+    const WinImageSource empty_win = WinImageSource::from(*decoded);
+    NVE_CHECK(empty_win.empty() && empty_win.key.empty());
+  }
 
   // Box shadows decoded, visual style.
   const WinNodeVisual& card = node(host, kCard);

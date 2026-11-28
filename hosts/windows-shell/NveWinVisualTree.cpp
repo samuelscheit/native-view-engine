@@ -58,6 +58,7 @@ TextPaint TextPaint::from(const NveRuntimeTextStyle& s) {
 }
 
 WinImageSource WinImageSource::from(const host::ImageSource& src) {
+  if (src.url.empty() && src.encoded.empty()) return WinImageSource{};
   WinImageSource out;
   out.url.assign(src.url);
   out.encoded.assign(src.encoded.begin(), src.encoded.end());

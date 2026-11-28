@@ -257,10 +257,10 @@ GtkTextureLruCache::~GtkTextureLruCache() {
 }
 
 GdkTexture* GtkTextureLruCache::get(const host::ImageSource& src) {
-  const std::string key = host::image_cache_key(src);
   if (src.url.empty() && src.encoded.empty()) {
     return nullptr;
   }
+  const std::string key = host::image_cache_key(src);
   auto it = entries_.find(key);
   if (it != entries_.end()) {
     lru_.splice(lru_.begin(), lru_, it->second.lru_it);

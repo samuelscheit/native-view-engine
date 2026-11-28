@@ -84,7 +84,7 @@ struct WinImageSource {
   std::vector<uint8_t> encoded;
   std::string key;
 
-  [[nodiscard]] bool empty() const noexcept { return key.empty(); }
+  [[nodiscard]] bool empty() const noexcept { return url.empty() && encoded.empty(); }
   [[nodiscard]] static WinImageSource from(const host::ImageSource& src);
 };
 

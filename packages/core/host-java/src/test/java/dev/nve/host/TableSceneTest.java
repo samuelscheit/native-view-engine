@@ -198,6 +198,13 @@ final class TableSceneTest {
         c.that(!bt.bool(3, optBoolEnum) && bt.boolOr(3, optBoolEnum, true) && !bt.boolOr(3, optBoolEnum, false),
                 "PLUS_ONE 2-bit ENUM boolOr raw 0b11 returns fallback");
         c.that(bt.isPresent(3, optBoolEnum) && bt.u32(3, optBoolEnum) == 2, "3-variant PLUS_ONE ENUM raw 3 stays discriminant 2");
+        // 32-bit PLUS_ONE BOOL with bit 31 set (negative signed int in Java) must decode as absent (0), not raw - 1.
+        final FieldSpec optBool32 = new FieldSpec(0, 0, 32, FieldKind.BOOL, OptEncoding.PLUS_ONE, 0xFF, 0xFF, false);
+        final TableReader bt32 = new TableReader().attach(
+                Key64.of("nve.test.optbool32"), 0, 1, 1,
+                words(0x8000_0000), null, null, 0, null, 0, null, 0);
+        c.that(!bt32.isPresent(0, optBool32) && !bt32.bool(0, optBool32) && bt32.u32(0, optBool32) == 0 && bt32.i32(0, optBool32) == 0,
+                "32-bit PLUS_ONE bool with bit 31 set is absent and returns 0");
     }
 
     static void denseTable(Check c) {

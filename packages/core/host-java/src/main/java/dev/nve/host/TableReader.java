@@ -213,7 +213,7 @@ public final class TableReader {
             }
             case PLUS_ONE: {
                 final int raw = f.extract(w);
-                return (raw == 0 || (f.kind == FieldKind.BOOL && raw > 2)) ? 0 : raw - 1;
+                return (raw == 0 || (f.kind == FieldKind.BOOL && raw != 1 && raw != 2)) ? 0 : raw - 1;
             }
             case TAG_XOR: {
                 final int raw = f.extract(w);
@@ -253,7 +253,7 @@ public final class TableReader {
             }
             case PLUS_ONE: {
                 final int raw = f.extract(w);
-                return (raw == 0 || (f.kind == FieldKind.BOOL && raw > 2)) ? 0 : raw - 1;
+                return (raw == 0 || (f.kind == FieldKind.BOOL && raw != 1 && raw != 2)) ? 0 : raw - 1;
             }
             case WIDE_BIT:
                 return (f.extract(w) & 1) == 0 ? 0 : word(r, f.valWord);
