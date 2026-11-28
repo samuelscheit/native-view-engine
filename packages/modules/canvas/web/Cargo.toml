@@ -15,5 +15,8 @@ nve-store = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = ["CanvasRenderingContext2d", "HtmlCanvasElement"] }
 
+[dev-dependencies]
+nve-engine = { workspace = true }
+
 [lints]
 workspace = true

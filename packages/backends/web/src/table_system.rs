@@ -520,6 +520,7 @@ impl StoreBackend for WebStoreRenderer {
     }
 
     fn reset(&mut self) {
+        self.registry.reset();
         self.realized.clear();
         self.plugin_attrs.clear();
         self.plugin_inner_html.clear();

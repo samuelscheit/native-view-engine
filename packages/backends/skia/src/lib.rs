@@ -499,6 +499,9 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
                 self.bump_plugin_epoch(id);
                 plugin_dirty.push(id);
             }
+            for &id in &changes.removed {
+                self.table_registry.remove_node(id);
+            }
             let slots_len = self.table_registry.iter().len();
             let total_res_changed =
                 changes.resources_defined.len() + changes.resources_released.len();
@@ -517,6 +520,9 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
                     for &id in tc.nodes.iter().chain(tc.detached.iter()) {
                         self.bump_plugin_epoch(id);
                         plugin_dirty.push(id);
+                    }
+                    for &id in &tc.detached {
+                        self.table_registry.iter()[i].remove_node(id);
                     }
                 }
                 if total_res_changed > 0 {
@@ -582,6 +588,7 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         self.viewport_dirty = true;
         self.focus = TextFocusState::default();
         self.frame_hooks.reset();
+        self.table_registry.reset();
         self.table_events.clear();
         self.plugin_epochs.clear();
         self.base_plugin_epoch = next_plugin_epoch();

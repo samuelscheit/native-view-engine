@@ -543,6 +543,18 @@ pub(crate) fn draw_plugin_cached(
     if !rect_is_valid(rect) || !scale.is_finite() || scale <= 0.0 {
         return;
     }
+    if registry.prefers_skia_canvas(store, node_id) {
+        let saved = canvas.save();
+        let dst = Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
+        canvas.clip_rect(dst, Some(ClipOp::Intersect), Some(false));
+        canvas.translate((rect.x, rect.y));
+        let painted_native =
+            registry.paint_skia_canvas(store, node_id, canvas, rect.width, rect.height, scale);
+        canvas.restore_to_count(saved);
+        if painted_native {
+            return;
+        }
+    }
     let max_dim = (rect.width * scale).max(rect.height * scale);
     let eff_scale = if max_dim > 4096.0 {
         scale * (4096.0 / max_dim)

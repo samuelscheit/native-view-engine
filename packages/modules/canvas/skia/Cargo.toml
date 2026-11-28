@@ -4,14 +4,27 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+skia = ["nve-backend-skia/skia", "dep:skia-safe"]
+
 [dependencies]
 nve-abi = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-canvas = { workspace = true }
+nve-engine = { workspace = true }
 nve-store = { workspace = true }
+skia-safe = { workspace = true, optional = true }
 
 [dev-dependencies]
-nve-engine = { workspace = true }
+nve-tables = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "canvas_painter_bench"
+harness = false
 
 [lints]
 workspace = true

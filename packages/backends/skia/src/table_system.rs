@@ -43,6 +43,34 @@ pub trait SkiaTableSystem: Send + Sync + 'static {
         _events: &mut EventBatchBuf,
     ) {
     }
+
+    /// Cleans up per-node plugin state when `node` detaches this table or is removed.
+    fn remove_node(&self, _node: NodeId) {}
+
+    /// Clears all per-node plugin state when the owning backend is reset.
+    fn reset(&self) {}
+
+    /// Returns `true` when this plugin prefers painting `node` directly onto a native
+    /// `skia_safe::Canvas` (bypassing CPU `PixelBuffer` rasterization and GPU texture upload).
+    #[cfg(feature = "skia")]
+    fn prefers_skia_canvas(&self, _store: &NodeStore, _node: NodeId) -> bool {
+        false
+    }
+
+    /// Optional native `skia_safe::Canvas` paint hook (`--features skia`), called with `canvas`
+    /// clipped to `(0, 0, width, height)` in logical coordinates under the active `scale`.
+    #[cfg(feature = "skia")]
+    fn paint_skia_canvas(
+        &self,
+        _store: &NodeStore,
+        _node: NodeId,
+        _canvas: &skia_safe::Canvas,
+        _width: f32,
+        _height: f32,
+        _scale: f32,
+    ) -> bool {
+        false
+    }
 }
 
 /// Registry of [`SkiaTableSystem`] plugins installed on a Skia renderer.
@@ -119,5 +147,64 @@ impl SkiaTableRegistry {
         } else {
             false
         }
+    }
+
+    /// Notifies every registered plugin that `node` has been removed from the store.
+    pub fn remove_node(&self, node: NodeId) {
+        for sys in &self.systems {
+            sys.remove_node(node);
+        }
+    }
+
+    /// Notifies every registered plugin that the owning backend has been reset.
+    pub fn reset(&self) {
+        for sys in &self.systems {
+            sys.reset();
+        }
+    }
+
+    /// Returns `true` iff at least one plugin is attached to `node` and every attached plugin
+    /// prefers native `skia_safe::Canvas` painting over the cached `PixelBuffer` path.
+    #[cfg(feature = "skia")]
+    pub fn prefers_skia_canvas(&self, store: &NodeStore, node: NodeId) -> bool {
+        let mut any_attached = false;
+        for sys in &self.systems {
+            if store.has_slot(node, sys.slot()) {
+                any_attached = true;
+                if !sys.prefers_skia_canvas(store, node) {
+                    return false;
+                }
+            }
+        }
+        any_attached
+    }
+
+    /// Paints `node` directly onto a native `skia_safe::Canvas` iff at least one attached plugin
+    /// is present and every attached plugin prefers native `skia_safe::Canvas` painting.
+    ///
+    /// Returns `false` without drawing when any attached plugin requires the cached `PixelBuffer`
+    /// path, preventing mixed-plugin double-painting.
+    #[cfg(feature = "skia")]
+    pub fn paint_skia_canvas(
+        &self,
+        store: &NodeStore,
+        node: NodeId,
+        canvas: &skia_safe::Canvas,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> bool {
+        if !self.prefers_skia_canvas(store, node) {
+            return false;
+        }
+        let mut painted = false;
+        for sys in &self.systems {
+            if store.has_slot(node, sys.slot())
+                && sys.paint_skia_canvas(store, node, canvas, width, height, scale)
+            {
+                painted = true;
+            }
+        }
+        painted
     }
 }
