@@ -1,17 +1,152 @@
 //! Direct zero-serialization [`nve_engine::RuntimeApp`] adapter over [`DioxusSurface`] with
-//! single-bridge coalesced async task wakeup via [`nve_engine::WakeBridge`].
+//! single-bridge coalesced async task wakeup via [`nve_engine::WakeBridge`], embedding-host props
+//! ([`HostProps`]), outbound event emission ([`HostEventEmitter`]), `NVE_SIG1` state snapshots,
+//! and `NVE_IFACE_HOST = 5` host services ([`FfiHostServices`]).
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::Waker;
 
-use nve_abi::{FrameId, ValidatedEvents};
+use dioxus_core::ScopeId;
+use dioxus_signals::{ReadableExt, Signal, WritableExt};
+use nve_abi::{
+    encode_bin_value_to_vec, BinValueView, EventBatchBuf, FrameId, NodeId,
+    NveHostCallbacks, NvePropsRef, SurfaceId, TimestampUs, ValidatedEvents,
+};
 use nve_engine::{AppFrame, CapabilityUnsupported, HotPatchMsg, RuntimeApp, WakeBridge, WakeToken};
+use nve_host_services::FfiHostServices;
 use nve_store::NodeStore;
 
 use crate::DioxusSurface;
 
+/// Embedding-host props snapshot provided in `ScopeId::ROOT` context by [`DioxusRuntimeApp`].
+///
+/// Each prop value is stored as compact binary `NveBinValue` bytes decoded zero-copy via
+/// [`BinValueView`].
+#[derive(Clone, Default)]
+pub struct HostProps {
+    entries: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+    revision: Arc<AtomicU64>,
+    rev_signal: Option<Signal<u64>>,
+}
+
+impl HostProps {
+    fn new_reactive(owner_scope: ScopeId) -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(BTreeMap::new())),
+            revision: Arc::new(AtomicU64::new(0)),
+            rev_signal: Some(Signal::new_in_scope(0, owner_scope)),
+        }
+    }
+
+    #[inline]
+    fn track_reactive(&self) {
+        if let Some(sig) = self.rev_signal
+            && dioxus_core::Runtime::try_current().is_some()
+        {
+            let _ = *sig.read();
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.track_reactive();
+        self.revision.load(Ordering::Acquire)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.track_reactive();
+        self.entries.read().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.track_reactive();
+        self.entries.read().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    pub fn get_with<R>(&self, key: &str, f: impl FnOnce(BinValueView<'_>) -> R) -> Option<R> {
+        self.track_reactive();
+        let guard = self.entries.read().unwrap_or_else(|e| e.into_inner());
+        let bytes = guard.get(key)?;
+        let view = BinValueView::parse(bytes).ok()?;
+        Some(f(view))
+    }
+
+    pub fn get_str(&self, key: &str) -> Option<String> {
+        self.get_with(key, |v| v.as_str().map(str::to_owned)).flatten()
+    }
+
+    pub fn get_i64(&self, key: &str) -> Option<i64> {
+        self.get_with(key, |v| v.as_i64()).flatten()
+    }
+
+    pub fn get_f64(&self, key: &str) -> Option<f64> {
+        self.get_with(key, |v| v.as_f64()).flatten()
+    }
+
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.get_with(key, |v| v.as_bool()).flatten()
+    }
+
+    fn replace_from_props(&self, props: NvePropsRef<'_>) -> bool {
+        let mut next = BTreeMap::new();
+        for (key, value) in props.iter() {
+            if let Ok(encoded) = encode_bin_value_to_vec(value) {
+                next.insert(key.to_owned(), encoded);
+            }
+        }
+        let mut guard = self.entries.write().unwrap_or_else(|e| e.into_inner());
+        if *guard == next {
+            return false;
+        }
+        *guard = next;
+        let rev = self.revision.fetch_add(1, Ordering::Release) + 1;
+        drop(guard);
+        if let Some(mut sig) = self.rev_signal {
+            sig.set(rev);
+        }
+        true
+    }
+}
+
+/// Outbound component event queue provided in `ScopeId::ROOT` context by [`DioxusRuntimeApp`],
+/// drained by embedding hosts via `NveComponentApi::drain_emitted_events` / `RuntimeApp::drain_emitted_events`.
+#[derive(Clone, Default)]
+pub struct HostEventEmitter {
+    surface_id: SurfaceId,
+    buf: Arc<Mutex<EventBatchBuf>>,
+}
+
+impl HostEventEmitter {
+    pub fn new(surface_id: SurfaceId) -> Self {
+        Self {
+            surface_id,
+            buf: Arc::new(Mutex::new(EventBatchBuf::new())),
+        }
+    }
+
+    /// Appends a custom named outbound event for the embedding host.
+    pub fn emit_custom(&self, node: NodeId, name: &str, data: &[u8]) {
+        let mut guard = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        guard.push_custom(self.surface_id, node, TimestampUs(0), name, data);
+    }
+
+    /// Runs `f` directly against the underlying outbound [`EventBatchBuf`].
+    pub fn with_batch(&self, f: impl FnOnce(&mut EventBatchBuf)) {
+        let mut guard = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        f(&mut guard);
+    }
+
+    fn drain_into(&self, dst: &mut EventBatchBuf) {
+        dst.clear();
+        let mut guard = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::swap(&mut *guard, dst);
+    }
+}
+
 /// Hosts an in-process [`DioxusSurface`] directly inside any `SurfaceRuntime` with zero `NVE2`
-/// wire serialization and single-bridge coalesced cross-thread async task wakeups.
+/// wire serialization, single-bridge coalesced cross-thread async task wakeups, host props,
+/// outbound event emission, `NVE_SIG1` signal snapshots, and `NVE_IFACE_HOST = 5` host services.
 pub struct DioxusRuntimeApp {
     // Declared FIRST so dropping `DioxusRuntimeApp` disables zombie wakers BEFORE `surface` drops.
     _wake_token: WakeToken,
@@ -19,18 +154,37 @@ pub struct DioxusRuntimeApp {
     wake: Arc<WakeBridge>,
     surface: DioxusSurface,
     mounted: bool,
+    host_props: HostProps,
+    event_emitter: HostEventEmitter,
+    emitted_drain: EventBatchBuf,
+    state_scratch: Vec<u8>,
+    host_services: Arc<FfiHostServices>,
 }
 
 impl DioxusRuntimeApp {
-    pub fn new(surface: DioxusSurface) -> Self {
+    pub fn new(mut surface: DioxusSurface) -> Self {
         let wake = Arc::new(WakeBridge::new());
         let (waker, wake_token) = wake.detachable_waker();
+        let event_emitter = HostEventEmitter::new(surface.surface_id());
+        let host_services = Arc::new(FfiHostServices::new());
+        let host_props = surface.in_root_scope(|| {
+            let props = HostProps::new_reactive(ScopeId::ROOT);
+            dioxus_core::provide_context(props.clone());
+            dioxus_core::provide_context(event_emitter.clone());
+            dioxus_core::provide_context(Arc::clone(&host_services));
+            props
+        });
         Self {
             _wake_token: wake_token,
             waker,
             wake,
             surface,
             mounted: false,
+            host_props,
+            event_emitter,
+            emitted_drain: EventBatchBuf::new(),
+            state_scratch: Vec::new(),
+            host_services,
         }
     }
 
@@ -47,6 +201,21 @@ impl DioxusRuntimeApp {
     #[inline]
     pub fn wake_bridge(&self) -> &Arc<WakeBridge> {
         &self.wake
+    }
+
+    #[inline]
+    pub fn host_props(&self) -> &HostProps {
+        &self.host_props
+    }
+
+    #[inline]
+    pub fn event_emitter(&self) -> &HostEventEmitter {
+        &self.event_emitter
+    }
+
+    #[inline]
+    pub fn host_services(&self) -> &Arc<FfiHostServices> {
+        &self.host_services
     }
 }
 
@@ -94,6 +263,67 @@ impl RuntimeApp for DioxusRuntimeApp {
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> Result<bool, CapabilityUnsupported> {
         Ok(self.surface.apply_hot_patch(patch))
+    }
+
+    fn set_props(&mut self, props: NvePropsRef<'_>) -> Result<bool, CapabilityUnsupported> {
+        let host_props = &self.host_props;
+        let changed = self
+            .surface
+            .in_root_scope(|| host_props.replace_from_props(props));
+        if changed && self.mounted {
+            self.surface.vdom.mark_dirty(ScopeId::APP);
+        }
+        Ok(changed)
+    }
+
+    fn drain_emitted_events(&mut self) -> Result<ValidatedEvents<'_>, CapabilityUnsupported> {
+        self.event_emitter.drain_into(&mut self.emitted_drain);
+        Ok(self.emitted_drain.as_validated())
+    }
+
+    fn supports_state(&self) -> bool {
+        true
+    }
+
+    fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {
+        self.state_scratch.clear();
+        if self.surface.signal_registry().is_empty() {
+            return Ok(&[]);
+        }
+        if let Ok(bytes) = self.surface.snapshot_signals() {
+            self.state_scratch = bytes;
+        }
+        Ok(&self.state_scratch)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), CapabilityUnsupported> {
+        if state.is_empty() {
+            return Ok(());
+        }
+        let _ = self.surface.hydrate_signals(state);
+        if self.mounted {
+            self.surface.vdom.mark_dirty(ScopeId::APP);
+        }
+        Ok(())
+    }
+
+    fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+        self.host_services.bind(callbacks);
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        if batch.is_empty() {
+            return false;
+        }
+        match self.host_services.ingest_batch(batch) {
+            Ok(stats) if stats.total() > 0 => {
+                if self.mounted {
+                    self.surface.vdom.mark_dirty(ScopeId::APP);
+                }
+                true
+            }
+            _ => false,
+        }
     }
 }
 

@@ -55,7 +55,16 @@ final class RuntimeApi {
         pairConnect = vtable.ref.pairConnect.asFunction(),
         pairDisconnect = vtable.ref.pairDisconnect.asFunction(),
         pairIsConnected = vtable.ref.pairIsConnected.asFunction(),
-        _lastError = vtable.ref.lastError.asFunction();
+        _lastError = vtable.ref.lastError.asFunction(),
+        measureSurface = vtable.ref.measureSurface.asFunction(),
+        setIntrinsicSizeInvalidatedCallback = vtable.ref.setIntrinsicSizeInvalidatedCallback.asFunction(),
+        saveFrame0File = vtable.ref.saveFrame0File.asFunction(),
+        bootFrame0File = vtable.ref.bootFrame0File.asFunction(),
+        bootFrame0Bytes = vtable.ref.bootFrame0Bytes.asFunction(),
+        setHostCallbacks = vtable.ref.setHostCallbacks.asFunction(),
+        completeHostRequest = vtable.ref.completeHostRequest.asFunction(),
+        pushHostEvent = vtable.ref.pushHostEvent.asFunction(),
+        publishHostChannel = vtable.ref.publishHostChannel.asFunction();
 
   /// Resolves `nve_runtime_get_interface` from [library] and validates the returned vtable.
   ///
@@ -133,6 +142,15 @@ final class RuntimeApi {
   final NveRuntimePairDisconnectDart pairDisconnect;
   final NveRuntimePairIsConnectedDart pairIsConnected;
   final NveRuntimeLastErrorDart _lastError;
+  final NveRuntimeMeasureSurfaceDart measureSurface;
+  final NveRuntimeSetIntrinsicSizeInvalidatedCallbackDart setIntrinsicSizeInvalidatedCallback;
+  final NveRuntimeSaveFrame0FileDart saveFrame0File;
+  final NveRuntimeBootFrame0FileDart bootFrame0File;
+  final NveRuntimeBootFrame0BytesDart bootFrame0Bytes;
+  final NveRuntimeSetHostCallbacksDart setHostCallbacks;
+  final NveRuntimeCompleteHostRequestDart completeHostRequest;
+  final NveRuntimePushHostEventDart pushHostEvent;
+  final NveRuntimePublishHostChannelDart publishHostChannel;
 
   /// Thread-local diagnostic text of the last failing call on this thread (`''` when none).
   String lastError() {

@@ -13,6 +13,8 @@ use nve_store::{ChangeSet, NodeId, ResourceId};
 
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeBuilder, RuntimeError};
+use crate::hooks::IntrinsicSizeNotifier;
+use crate::host_router::{unbind_and_drop_app, RuntimeHostRouter};
 use crate::lock::SceneLock;
 use crate::pair::{PairSession, WIRE_PAIRING_SUPPORTED};
 use crate::state::RuntimeInner;
@@ -63,6 +65,8 @@ pub struct SurfaceRuntime {
     pub(crate) surface_id: SurfaceId,
     pub(crate) lock: SceneLock,
     pub(crate) wake: Arc<WakeBridge>,
+    pub(crate) intrinsic_size: IntrinsicSizeNotifier,
+    pub(crate) host_router: RuntimeHostRouter,
     pub(crate) pair_connected: Arc<AtomicBool>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) owner_thread: std::thread::ThreadId,
@@ -72,10 +76,16 @@ pub struct SurfaceRuntime {
 
 impl Drop for SurfaceRuntime {
     fn drop(&mut self) {
-        // Synchronously drain and clear any installed host wake callback before dropping so
-        // background wakers and any embedded pairing worker can never invoke a freed host context.
+        // Synchronously drain and clear all host callbacks BEFORE destroying any app or pairing
+        // worker so background threads can never invoke freed host contexts.
         self.wake.clear_sink();
+        self.intrinsic_size.clear();
+        self.host_router.shutdown();
         self.pair_connected.store(false, Ordering::Release);
+        let inner = self.inner.get_mut();
+        let old_app = inner.app.take();
+        let old_binding = inner.host_binding.take();
+        unbind_and_drop_app(old_app, old_binding, &self.host_router);
     }
 }
 
@@ -171,21 +181,27 @@ impl SurfaceRuntime {
         &self,
         mut app: Box<dyn RuntimeApp>,
     ) -> Result<(), RuntimeError> {
-        let (had_pending, old_pair, old_app) = self.with_write(|inner| {
+        let new_binding = self.host_router.new_owner_binding();
+        let new_tag = new_binding.owner_tag();
+        let new_callbacks = new_binding.callbacks();
+        let (had_pending, old_pair, old_app, old_binding) = self.with_write(|inner| {
             let old_pair = inner.pair.take();
             if old_pair.is_some() {
                 inner.state.metrics.pair_connected = 0;
             }
             inner.reset_for_app_change();
+            app.bind_host(Some(new_callbacks));
             let pending = app.install_wake_bridge(Arc::clone(&self.wake));
             let old_app = inner.app.replace(app);
+            let old_binding = inner.host_binding.replace(new_binding);
+            inner.state.active_host_owner_tag = new_tag;
             inner.state.needs_render = true;
             inner.state.needs_publish = true;
-            Ok((pending, old_pair, old_app))
+            Ok((pending, old_pair, old_app, old_binding))
         })?;
-        // The replaced app (and the module it owns) is destroyed outside the surface lock: its
-        // `destroy` may block or re-enter (wake sinks), and its code unloads with it.
-        drop(old_app);
+        // Unbind (`active = false`, `bind_host(None)`, `discard_pending_for_owner`) and destroy
+        // the replaced app strictly outside the surface lock before freeing `old_binding`.
+        unbind_and_drop_app(old_app, old_binding, &self.host_router);
         // Shut down any replaced pairing worker OUTSIDE the surface write lock to avoid deadlocks.
         if let Some(mut pair) = old_pair {
             pair.shutdown();
@@ -221,13 +237,13 @@ impl SurfaceRuntime {
         self.check_not_poisoned()?;
         self.check_owner_thread()?;
         let mut validated = Some(PairSession::validate_and_parse(uri, token)?);
-        let (old_pair, old_app) = self.with_write(|inner| {
+        let (old_pair, old_app, old_binding) = self.with_write(|inner| {
             if let Some(existing) = inner.pair.take() {
                 inner.reset_for_app_change();
                 inner.state.needs_render = false;
                 inner.state.needs_publish = false;
                 inner.state.metrics.pair_connected = 0;
-                return Ok((Some(existing), None));
+                return Ok((Some(existing), None, None));
             }
             // Fast path: no prior pair running (a local app at most). Spawn BEFORE touching the
             // app so a failed spawn leaves it running; then swap it out in this same write.
@@ -242,15 +258,17 @@ impl SurfaceRuntime {
                 Arc::clone(&self.pair_connected),
             )?;
             let old_app = inner.app.take();
+            let old_binding = inner.host_binding.take();
+            inner.state.active_host_owner_tag = 0;
             inner.reset_for_app_change();
             inner.state.needs_render = false;
             inner.state.needs_publish = false;
             inner.state.metrics.pair_connected = 0;
             inner.pair = Some(session);
-            Ok((None, old_app))
+            Ok((None, old_app, old_binding))
         })?;
-        // The replaced app (and any module it owns) is destroyed outside the surface lock.
-        drop(old_app);
+        // Unbind and destroy the replaced app outside the surface lock before dropping `old_binding`.
+        unbind_and_drop_app(old_app, old_binding, &self.host_router);
         if let Some(mut old) = old_pair {
             // Join the old worker completely OUTSIDE the write lock before reusing `pair_connected`
             // and clearing the wake latch so it can never clobber the replacement session.
@@ -324,18 +342,20 @@ impl SurfaceRuntime {
     }
 
     pub(crate) fn detach_app_shared(&self) -> Result<(), RuntimeError> {
-        let old_app = self.with_write(|inner| {
+        let (old_app, old_binding) = self.with_write(|inner| {
             // Only reset when a local app was actually attached so `attach_app_interface(h, NULL)`
             // while paired never wipes the live paired replica.
             let old_app = inner.app.take();
+            let old_binding = inner.host_binding.take();
             if old_app.is_some() {
+                inner.state.active_host_owner_tag = 0;
                 inner.reset_for_app_change();
                 inner.state.needs_render = false;
                 inner.state.needs_publish = false;
             }
-            Ok(old_app)
+            Ok((old_app, old_binding))
         })?;
-        drop(old_app);
+        unbind_and_drop_app(old_app, old_binding, &self.host_router);
         Ok(())
     }
 
@@ -385,7 +405,9 @@ impl SurfaceRuntime {
             state.scene.reconcile_scroll_offsets(store);
             state.publish_scene(store, resources, &full, laid_out);
             Ok(())
-        })
+        })?;
+        self.intrinsic_size.notify();
+        Ok(())
     }
 
     pub fn layout_engine_name(&self) -> Result<&'static str, RuntimeError> {
@@ -401,7 +423,11 @@ impl SurfaceRuntime {
     }
 
     pub(crate) fn submit_nve2_shared(&self, bytes: &[u8]) -> Result<(), RuntimeError> {
-        self.with_write(|inner| inner.submit_nve2(bytes))
+        let layout_invalidated = self.with_write(|inner| inner.submit_nve2(bytes))?;
+        if layout_invalidated {
+            self.intrinsic_size.notify();
+        }
+        Ok(())
     }
 
     pub fn tick(&mut self, dt_s: f32) -> Result<bool, RuntimeError> {
@@ -431,11 +457,14 @@ impl SurfaceRuntime {
         } else {
             0.0
         };
-        let (changed, follow_up) = self.with_write(|inner| {
+        let (changed, follow_up, layout_invalidated) = self.with_write(|inner| {
             // Clear pending wake ONLY after acquiring the write lock so `SceneBusy` never drops wakes.
             let _ = self.wake.take_pending();
-            inner.tick(dt)
+            inner.tick(dt, &self.host_router)
         })?;
+        if layout_invalidated {
+            self.intrinsic_size.notify();
+        }
         if follow_up {
             self.wake.trigger();
         }

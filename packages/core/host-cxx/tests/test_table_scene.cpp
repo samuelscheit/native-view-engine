@@ -30,6 +30,11 @@ NVE_STATIC_ASSERT(offsetof(TestTableView, dirty_count) == 20, "NveTableView.dirt
 NVE_STATIC_ASSERT(offsetof(TestTableView, row_index_page_count) == 28, "NveTableView.row_index_page_count @28");
 NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(TestTableView) == 72, "NveTableView is 72 bytes on 64-bit");
 NVE_STATIC_ASSERT(sizeof(TestTableView) == sizeof(NveTableView), "mirror matches the generated NveTableView");
+NVE_STATIC_ASSERT(sizeof(NveSurfaceMeasure) == 16, "NveSurfaceMeasure is 16 bytes");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceMeasure, width) == 0, "NveSurfaceMeasure.width @0");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceMeasure, height) == 4, "NveSurfaceMeasure.height @4");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceMeasure, first_baseline) == 8, "NveSurfaceMeasure.first_baseline @8");
+NVE_STATIC_ASSERT(offsetof(NveSurfaceMeasure, last_baseline) == 12, "NveSurfaceMeasure.last_baseline @12");
 
 using nve::host::field;
 using nve::host::Key64;
@@ -469,6 +474,20 @@ void test_scene_reader_and_session_mock() {
     return NVE_RUNTIME_NOT_FOUND;
   };
   mock_api.clear_state_file = [](NveRuntimeHandle, NveStrSlice) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.measure_surface = [](NveRuntimeHandle, const NveSizeConstraints*, uint32_t, NveSurfaceMeasure* out) -> int32_t {
+    if (out != nullptr) *out = NveSurfaceMeasure{120.0f, 40.0f, 32.0f, 32.0f};
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.set_intrinsic_size_invalidated_callback = [](NveRuntimeHandle, NveRuntimeIntrinsicSizeInvalidatedFn, void*) -> int32_t {
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.save_frame0_file = [](NveRuntimeHandle, NveStrSlice, uint64_t, uint64_t) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.boot_frame0_file = [](NveRuntimeHandle, NveStrSlice, uint64_t, uint64_t) -> int32_t { return NVE_RUNTIME_NOT_FOUND; };
+  mock_api.boot_frame0_bytes = [](NveRuntimeHandle, NveBufferSlice, uint64_t, uint64_t) -> int32_t { return NVE_RUNTIME_NOT_FOUND; };
+  mock_api.set_host_callbacks = [](NveRuntimeHandle, const NveHostCallbacks*) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.complete_host_request = [](NveRuntimeHandle, uint64_t, int32_t, NveBufferSlice) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.push_host_event = [](NveRuntimeHandle, uint32_t, uint32_t, NveBufferSlice) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.publish_host_channel = [](NveRuntimeHandle, uint32_t, uint32_t, NveBufferSlice) -> int32_t { return NVE_RUNTIME_OK; };
 
   {
     auto sess = nve::host::RuntimeSession::create(&mock_api);

@@ -5,9 +5,9 @@ use nve_tables::tables::{
 };
 use nve_store::{NodeId, NodeStore};
 
-use taffy::geometry::Size;
+use taffy::geometry::{Line, Size};
 use taffy::style::{AvailableSpace, BoxSizing};
-use taffy::tree::{Cache, Layout, LayoutInput, LayoutOutput, RunMode};
+use taffy::tree::{Cache, Layout, LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode};
 use taffy::util::ResolveOrZero;
 use taffy::{
     CacheTree, CoreStyle, LayoutContainingBlock, LayoutFlexboxContainer, LayoutGridContainer,
@@ -16,7 +16,7 @@ use taffy::{
     compute_oof_layout,
 };
 
-use crate::{ResolvedTextStyle, TextMeasurer};
+use crate::{ResolvedTextStyle, SizeConstraints, SurfaceMeasure, TextMeasurer};
 
 use super::contents::BoxChildren;
 use super::node_lists::NodeLists;
@@ -26,6 +26,8 @@ use super::UnroundedBox;
 pub(super) struct LayoutView<'s> {
     pub(super) store: &'s NodeStore,
     pub(super) root_index: u32,
+    pub(super) root_fills_viewport: bool,
+    pub(super) dry_run: bool,
     pub(super) viewport: (f32, f32),
     pub(super) resolved_rtl: &'s [bool],
     pub(super) resolved_text: &'s [ResolvedTextStyle],
@@ -59,8 +61,98 @@ impl<'s> LayoutView<'s> {
             store: self.store,
             id: self.id_of(n),
             is_root: i as u32 == self.root_index,
+            root_fills_viewport: self.root_fills_viewport,
             viewport: self.viewport,
             rtl: self.resolved_rtl[i],
+        }
+    }
+
+    /// Pure `RunMode::ComputeSize` measurement pass over `root` without mutating `boxes` or
+    /// `hoisted`. Honors `ideal` (unconstrained max-content sizing) and clamps constrained passes
+    /// to `[min, max]`.
+    pub(super) fn measure_root_dry_run(
+        &mut self,
+        root: NodeId,
+        constraints: SizeConstraints,
+        ideal: bool,
+    ) -> SurfaceMeasure {
+        let sanitize_min = |v: f32| if v.is_finite() && v > 0.0 { v } else { 0.0 };
+        let min_w = sanitize_min(constraints.min_w);
+        let min_h = sanitize_min(constraints.min_h);
+        let max_w = if constraints.max_w.is_finite() && constraints.max_w >= 0.0 {
+            Some(constraints.max_w.max(min_w))
+        } else {
+            None
+        };
+        let max_h = if constraints.max_h.is_finite() && constraints.max_h >= 0.0 {
+            Some(constraints.max_h.max(min_h))
+        } else {
+            None
+        };
+
+        let (known_dimensions, available_space, parent_size) = if ideal {
+            (
+                Size::NONE,
+                Size {
+                    width: AvailableSpace::MaxContent,
+                    height: AvailableSpace::MaxContent,
+                },
+                Size::NONE,
+            )
+        } else {
+            let axis = |min_v: f32, max_v: Option<f32>| match max_v {
+                Some(m) if (m - min_v).abs() <= f32::EPSILON => {
+                    (Some(m), AvailableSpace::Definite(m), Some(m))
+                }
+                Some(m) => (None, AvailableSpace::Definite(m), Some(m)),
+                None => (None, AvailableSpace::MaxContent, None),
+            };
+            let (kw, aw, pw) = axis(min_w, max_w);
+            let (kh, ah, ph) = axis(min_h, max_h);
+            (
+                Size {
+                    width: kw,
+                    height: kh,
+                },
+                Size {
+                    width: aw,
+                    height: ah,
+                },
+                Size {
+                    width: pw,
+                    height: ph,
+                },
+            )
+        };
+
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            axis: RequestedAxis::Both,
+            known_dimensions,
+            known_dimensions_are_definite: Size {
+                width: known_dimensions.width.is_some(),
+                height: known_dimensions.height.is_some(),
+            },
+            parent_size,
+            available_space,
+            vertical_margins_are_collapsible: Line::FALSE,
+        };
+        let out = self.compute_child_layout(tid_from_nve(root), input);
+        let clamp = |v: f32, min_v: f32, max_v: Option<f32>| {
+            let finite = if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+            if ideal {
+                finite
+            } else {
+                let capped = max_v.map_or(finite, |m| finite.min(m));
+                capped.max(min_v)
+            }
+        };
+        SurfaceMeasure {
+            width: clamp(out.size.width, min_w, max_w),
+            height: clamp(out.size.height, min_h, max_h),
+            first_baseline: out.baselines.first.filter(|v| v.is_finite()).unwrap_or(f32::NAN),
+            last_baseline: out.baselines.last.filter(|v| v.is_finite()).unwrap_or(f32::NAN),
         }
     }
 
@@ -231,6 +323,9 @@ impl LayoutPartialTree for LayoutView<'_> {
 
     #[inline]
     fn set_unrounded_layout(&mut self, n: taffy::NodeId, layout: &Layout) {
+        if self.dry_run {
+            return;
+        }
         self.boxes[ix(n)] = UnroundedBox {
             x: layout.location.x,
             y: layout.location.y,
@@ -270,7 +365,7 @@ impl LayoutPartialTree for LayoutView<'_> {
                     )
                 }
             };
-            if inputs.run_mode == RunMode::PerformLayout {
+            if inputs.run_mode == RunMode::PerformLayout && !tree.dry_run {
                 compute_oof_layout(tree, n, &mut out);
             }
             out
@@ -291,12 +386,15 @@ impl LayoutContainingBlock for LayoutView<'_> {
 
     #[inline]
     fn clear_hoisted_children(&mut self, n: taffy::NodeId) {
+        if self.dry_run {
+            return;
+        }
         self.hoisted.clear(ix(n));
     }
 
     #[inline]
     fn add_hoisted_children(&mut self, n: taffy::NodeId, hoisted: &[taffy::NodeId]) {
-        if hoisted.is_empty() {
+        if self.dry_run || hoisted.is_empty() {
             return;
         }
         let store = self.store;

@@ -5,6 +5,7 @@
 
 mod app_files;
 mod hooks;
+mod host;
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -166,8 +167,10 @@ unsafe extern "C" fn rt_destroy(handle: NveRuntimeHandle) {
             set_last_error(e.to_string());
             return;
         }
-        // Drain and clear any host wake callback first so workers stop before reader drain.
+        // Drain and clear all host callbacks first so workers stop before reader drain.
         rt.wake.clear_sink();
+        rt.intrinsic_size.clear();
+        rt.host_router.clear_callbacks();
         if !rt.lock.try_acquire_write_timeout(DESTROY_WAIT_TIMEOUT) {
             set_last_error(
                 "destroy timed out waiting for active scene_acquire reader; leaking runtime to avoid UAF",
@@ -435,6 +438,15 @@ static RUNTIME_API: NveRuntimeApi = NveRuntimeApi {
     pair_disconnect: rt_pair_disconnect,
     pair_is_connected: rt_pair_is_connected,
     last_error: rt_last_error,
+    measure_surface: host::rt_measure_surface,
+    set_intrinsic_size_invalidated_callback: host::rt_set_intrinsic_size_invalidated_callback,
+    save_frame0_file: app_files::rt_save_frame0_file,
+    boot_frame0_file: app_files::rt_boot_frame0_file,
+    boot_frame0_bytes: app_files::rt_boot_frame0_bytes,
+    set_host_callbacks: host::rt_set_host_callbacks,
+    complete_host_request: host::rt_complete_host_request,
+    push_host_event: host::rt_push_host_event,
+    publish_host_channel: host::rt_publish_host_channel,
 };
 
 /// Single exported C ABI entry point for `libnve_runtime`.

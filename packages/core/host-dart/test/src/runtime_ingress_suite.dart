@@ -112,15 +112,29 @@ void runRuntimeIngress(Check c) {
   c.eq(metricsOffset((m) => m.dirtyNodes = 1, 4), 52, 'metrics.dirty_nodes @52');
   c.eq(metricsOffset((m) => m.pairConnected = 1, 4), 56, 'metrics.pair_connected @56');
   final apiSize = ffi.sizeOf<NveRuntimeApi>();
-  c.eq(apiSize, 16 + nveRuntimeApiSlotCount * _ptr, 'NveRuntimeApi size: header + $nveRuntimeApiSlotCount slots');
+  final rawApiSize = 16 + nveRuntimeApiSlotCount * _ptr;
+  final alignedApiSize = (rawApiSize + 7) & ~7;
+  c.eq(
+    apiSize == rawApiSize || (_ptr == 4 && apiSize == alignedApiSize),
+    true,
+    'NveRuntimeApi size ($apiSize): header + $nveRuntimeApiSlotCount slots (raw $rawApiSize, aligned $alignedApiSize)',
+  );
   int apiOffset(void Function(NveRuntimeApi a) write, [int? width]) =>
       _offsetOf<NveRuntimeApi>(apiSize, (p) => write(p.ref), width ?? _ptr);
   c.eq(apiOffset((a) => a.abiVersion = 1, 4), 0, 'api.abi_version @0');
   c.eq(apiOffset((a) => a.structSize = 1, 4), 4, 'api.struct_size @4');
   c.eq(apiOffset((a) => a.schemaHash = 1, 8), 8, 'api.schema_hash @8');
+  c.eq(ffi.sizeOf<NveSurfaceMeasure>(), 16, 'NveSurfaceMeasure size');
+  int measureOffset(void Function(NveSurfaceMeasure m) write) => _offsetOf<NveSurfaceMeasure>(16, (p) => write(p.ref), 4);
+  c.eq(measureOffset((m) => m.width = 1), 0, 'measure.width @0');
+  c.eq(measureOffset((m) => m.height = 1), 4, 'measure.height @4');
+  c.eq(measureOffset((m) => m.firstBaseline = 1), 8, 'measure.first_baseline @8');
+  c.eq(measureOffset((m) => m.lastBaseline = 1), 12, 'measure.last_baseline @12');
   c.eq(apiOffset((a) => a.create = p.cast()), 16, 'api.create is slot 0');
   c.eq(apiOffset((a) => a.setTextMeasurer = p.cast()), 16 + 4 * _ptr, 'api.set_text_measurer is slot 4');
-  c.eq(apiOffset((a) => a.lastError = p.cast()), 16 + (nveRuntimeApiSlotCount - 1) * _ptr, 'api.last_error is last');
+  c.eq(apiOffset((a) => a.lastError = p.cast()), 16 + 27 * _ptr, 'api.last_error is slot 27');
+  c.eq(apiOffset((a) => a.measureSurface = p.cast()), 16 + 28 * _ptr, 'api.measure_surface is slot 28');
+  c.eq(apiOffset((a) => a.publishHostChannel = p.cast()), 16 + (nveRuntimeApiSlotCount - 1) * _ptr, 'api.publish_host_channel is last');
   final api = NativeHeap.zeroed<NveRuntimeApi>(apiSize);
   try {
     c.eq(runtimeApiSlotsComplete(ffi.nullptr), false, 'NULL vtable is incomplete');

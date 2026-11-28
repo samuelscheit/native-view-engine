@@ -11,6 +11,8 @@ use nve_engine::{Frame0Meta, Viewport};
 use nve_interop::{
     SurfacePresentation, WindowDescriptor, WindowFlags, WindowHandleId, WindowManager,
 };
+use nve_runtime::PairReplicaClient;
+use nve_wire::PairConnectConfig;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -22,7 +24,6 @@ use super::multi_window::{
     CloseVetoHandler, HostWakeEvent, SecondaryAppFactory, SurfaceWindow, apply_window_state,
     build_window_attributes, create_presenter,
 };
-use super::pair_client::{PairConnectConfig, PairedRemoteApp};
 use super::session::{DesktopSession, prewarm_frame0_into_replica};
 use super::{DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot};
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
@@ -120,7 +121,7 @@ impl DesktopWindowHost<HotAppSlot> {
     }
 }
 
-impl DesktopWindowHost<PairedRemoteApp> {
+impl DesktopWindowHost<PairReplicaClient> {
     pub fn new_paired(
         pair_config: PairConnectConfig,
         options: DesktopPreviewOptions,
@@ -136,7 +137,8 @@ impl DesktopWindowHost<PairedRemoteApp> {
             scale_factor: scale,
         };
         let initial_timeout = pair_config.initial_frame_timeout;
-        let app = PairedRemoteApp::connect(pair_config)?;
+        let app = PairReplicaClient::connect(pair_config, "nve-skia-shell")
+            .map_err(|e| DesktopHostError::Pairing(e.to_string()))?;
         let mut session = DesktopSession::new_with_layout(
             app,
             options.surface_id,
@@ -146,10 +148,11 @@ impl DesktopWindowHost<PairedRemoteApp> {
             options.layout_engine,
         )?;
         let _ = session.notify_viewport_resize();
-        session.app_mut().wait_for_frame(initial_timeout)?;
-        if let Some(banner) = session.app().remote_status_banner() {
-            session.set_status_banner(Some(banner));
-        }
+        session
+            .app_mut()
+            .wait_for_frame(initial_timeout)
+            .map_err(|e| DesktopHostError::Pairing(e.to_string()))?;
+        session.set_status_banner(Some(session.app().remote_status_banner()));
         session.render_and_rasterize()?;
         Ok(Self::from_primary_session(options, session))
     }

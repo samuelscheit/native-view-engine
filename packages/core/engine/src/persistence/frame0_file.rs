@@ -242,6 +242,25 @@ impl Frame0File {
         Ok((footer, payload))
     }
 
+    /// Validates an in-memory `frame0.nve2` envelope buffer against the expected schema hash,
+    /// app build ID, and environment hash, returning the parsed footer and borrowed `NVE2`
+    /// keyframe payload slice without copying.
+    pub fn read_and_validate_bytes(
+        bytes: &[u8],
+        expected_schema_hash: u64,
+        expected_app_build_id: u64,
+        expected_env_hash: u64,
+    ) -> Result<(Frame0Footer, &[u8]), Frame0Miss> {
+        Self::validate_bytes(
+            bytes,
+            Frame0Meta {
+                table_schema_hash: expected_schema_hash,
+                app_build_id: expected_app_build_id,
+                env_hash: expected_env_hash,
+            },
+        )
+    }
+
     pub fn read_and_validate(
         path: impl AsRef<Path>,
         expected: Frame0Meta,

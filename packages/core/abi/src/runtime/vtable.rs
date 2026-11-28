@@ -7,11 +7,12 @@ use core::mem::{align_of, offset_of, size_of};
 use nve_hash::Xxh64Hasher;
 
 use super::{
-    NveRuntimeConfig, NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics,
-    NveSceneView, NveRuntimeWakeFn,
+    NveRuntimeConfig, NveRuntimeHandle, NveRuntimeIntrinsicSizeInvalidatedFn,
+    NveRuntimeMeasureTextFn, NveRuntimeMetrics, NveRuntimeWakeFn, NveSceneView, NveSurfaceMeasure,
 };
 use crate::event::NveEventBatch;
-use crate::ffi::{NveBufferSlice, NveGetInterfaceFn};
+use crate::ffi::{NveBufferSlice, NveGetInterfaceFn, NveSizeConstraints};
+use crate::host::{HostRequestId, HostServiceId, NveHostCallbacks};
 use crate::id::NodeId;
 use crate::value::{NveMapEntry, NveStrSlice};
 
@@ -54,6 +55,12 @@ pub const RUNTIME_CALLBACK_TYPEDEFS: &[RuntimeFnSignature] = &[
         "void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width, float* out_width, float* out_height",
         "Native text measurer; owner thread, during layout; measures `text` with the node's resolved typography (`style`, borrowed for the call); `max_width` is INFINITY when unconstrained.",
     ),
+    sig(
+        "NveRuntimeIntrinsicSizeInvalidatedFn",
+        "void",
+        "void* ctx",
+        "Intrinsic-size-invalidated callback; owner thread, invoked outside internal locks after layout-affecting commits.",
+    ),
 ];
 
 /// Every function-pointer slot of [`NveRuntimeApi`], in vtable order.
@@ -86,6 +93,15 @@ pub const RUNTIME_API_SLOTS: &[RuntimeFnSignature] = &[
     sig("pair_disconnect", "int32_t", "NveRuntimeHandle handle", "Owner thread."),
     sig("pair_is_connected", "uint32_t", "NveRuntimeHandle handle", "Any thread."),
     sig("last_error", "size_t", "uint8_t* out_buf, size_t cap", "Calling thread's last error (NUL-terminated); returns the full byte length."),
+    sig("measure_surface", "int32_t", "NveRuntimeHandle handle, const NveSizeConstraints* constraints, uint32_t flags, NveSurfaceMeasure* out_measure", "Owner thread; measures surface under constraints (`NVE_MEASURE_FLAG_DRY_RUN` never mutates committed viewport/rects or publishes; `NVE_MEASURE_FLAG_IDEAL` requests intrinsic unconstrained size)."),
+    sig("set_intrinsic_size_invalidated_callback", "int32_t", "NveRuntimeHandle handle, NveRuntimeIntrinsicSizeInvalidatedFn cb, void* ctx", "Installs (NULL clears and drains) the intrinsic-size-invalidated callback; invoked outside internal locks on layout-affecting commits."),
+    sig("save_frame0_file", "int32_t", "NveRuntimeHandle handle, NveStrSlice utf8_path, uint64_t app_build_id, uint64_t env_hash", "Owner thread; writes the active scene as a crash-atomic checksummed Frame-0 NVE2 file; NOT_FOUND when empty, UNSUPPORTED on wasm32."),
+    sig("boot_frame0_file", "int32_t", "NveRuntimeHandle handle, NveStrSlice utf8_path, uint64_t app_build_id, uint64_t env_hash", "Owner thread; validates and boots a Frame-0 NVE2 file into the replica scene; auto-removes corrupt/mismatched files and returns NOT_FOUND, UNSUPPORTED on wasm32."),
+    sig("boot_frame0_bytes", "int32_t", "NveRuntimeHandle handle, NveBufferSlice envelope, uint64_t app_build_id, uint64_t env_hash", "Owner thread; validates and boots an in-memory Frame-0 NVE2 envelope into the replica scene (works on wasm32)."),
+    sig("set_host_callbacks", "int32_t", "NveRuntimeHandle handle, const NveHostCallbacks* callbacks", "Owner thread; installs (NULL clears and drains) host capability callbacks for NVE_IFACE_HOST = 5."),
+    sig("complete_host_request", "int32_t", "NveRuntimeHandle handle, uint64_t request_id, int32_t status, NveBufferSlice payload", "Any thread; completes an in-flight NVE_HOST_PENDING request in the runtime host router and triggers wake (stale/unknown ids are dropped)."),
+    sig("push_host_event", "int32_t", "NveRuntimeHandle handle, uint32_t service_id, uint32_t event_id, NveBufferSlice payload", "Any thread; enqueues an unsolicited host push event for delivery on the next tick and triggers wake."),
+    sig("publish_host_channel", "int32_t", "NveRuntimeHandle handle, uint32_t channel_id, uint32_t flags, NveBufferSlice payload", "Any thread; enqueues an inbound host channel message for delivery on the next tick and triggers wake."),
 ];
 
 /// Single exported C ABI vtable returned by `nve_runtime_get_interface(uint32_t abi_version)`.
@@ -194,6 +210,57 @@ pub struct NveRuntimeApi {
     pub pair_disconnect: unsafe extern "C" fn(handle: NveRuntimeHandle) -> i32,
     pub pair_is_connected: unsafe extern "C" fn(handle: NveRuntimeHandle) -> u32,
     pub last_error: unsafe extern "C" fn(out_buf: *mut u8, cap: usize) -> usize,
+    pub measure_surface: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        constraints: *const NveSizeConstraints,
+        flags: u32,
+        out_measure: *mut NveSurfaceMeasure,
+    ) -> i32,
+    pub set_intrinsic_size_invalidated_callback: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        cb: Option<NveRuntimeIntrinsicSizeInvalidatedFn>,
+        ctx: *mut c_void,
+    ) -> i32,
+    pub save_frame0_file: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        utf8_path: NveStrSlice,
+        app_build_id: u64,
+        env_hash: u64,
+    ) -> i32,
+    pub boot_frame0_file: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        utf8_path: NveStrSlice,
+        app_build_id: u64,
+        env_hash: u64,
+    ) -> i32,
+    pub boot_frame0_bytes: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        envelope: NveBufferSlice,
+        app_build_id: u64,
+        env_hash: u64,
+    ) -> i32,
+    pub set_host_callbacks: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        callbacks: *const NveHostCallbacks,
+    ) -> i32,
+    pub complete_host_request: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        request_id: HostRequestId,
+        status: i32,
+        payload: NveBufferSlice,
+    ) -> i32,
+    pub push_host_event: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        service_id: HostServiceId,
+        event_id: u32,
+        payload: NveBufferSlice,
+    ) -> i32,
+    pub publish_host_channel: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        channel_id: u32,
+        flags: u32,
+        payload: NveBufferSlice,
+    ) -> i32,
 }
 
 /// Entry-point signature exported by `libnve_runtime` (`nve_runtime_get_interface`).
@@ -245,7 +312,9 @@ macro_rules! lock_runtime_api_slots {
                 i += 1;
             )*
             assert!(i == RUNTIME_API_SLOTS.len());
-            assert!(size_of::<NveRuntimeApi>() == 16 + i * size_of::<usize>());
+            let raw_size = 16 + i * size_of::<usize>();
+            let align = align_of::<NveRuntimeApi>();
+            assert!(size_of::<NveRuntimeApi>() == (raw_size + align - 1) & !(align - 1));
         };
     };
 }
@@ -279,6 +348,15 @@ lock_runtime_api_slots!(
     pair_disconnect,
     pair_is_connected,
     last_error,
+    measure_surface,
+    set_intrinsic_size_invalidated_callback,
+    save_frame0_file,
+    boot_frame0_file,
+    boot_frame0_bytes,
+    set_host_callbacks,
+    complete_host_request,
+    push_host_event,
+    publish_host_channel,
 );
 
 const _: () = {
@@ -315,4 +393,13 @@ const _: () = {
     assert!(offset_of!(NveRuntimeApi, pair_disconnect) == 16 + 25 * P);
     assert!(offset_of!(NveRuntimeApi, pair_is_connected) == 16 + 26 * P);
     assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 27 * P);
+    assert!(offset_of!(NveRuntimeApi, measure_surface) == 16 + 28 * P);
+    assert!(offset_of!(NveRuntimeApi, set_intrinsic_size_invalidated_callback) == 16 + 29 * P);
+    assert!(offset_of!(NveRuntimeApi, save_frame0_file) == 16 + 30 * P);
+    assert!(offset_of!(NveRuntimeApi, boot_frame0_file) == 16 + 31 * P);
+    assert!(offset_of!(NveRuntimeApi, boot_frame0_bytes) == 16 + 32 * P);
+    assert!(offset_of!(NveRuntimeApi, set_host_callbacks) == 16 + 33 * P);
+    assert!(offset_of!(NveRuntimeApi, complete_host_request) == 16 + 34 * P);
+    assert!(offset_of!(NveRuntimeApi, push_host_event) == 16 + 35 * P);
+    assert!(offset_of!(NveRuntimeApi, publish_host_channel) == 16 + 36 * P);
 };

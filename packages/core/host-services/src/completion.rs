@@ -576,8 +576,7 @@ impl CompletionSink {
         })
     }
 
-    /// Drains ONLY queued `Response` records whose `owner_tag` equals `owner_tag` (strict match,
-    /// including `owner_tag == 0`, never wildcard-stealing nonzero owners or broadcasts) in-place.
+    /// Drains ONLY queued `Response` records matching `owner_tag` (strict match) in-place.
     pub fn drain_batch_for_owner_into(
         &self,
         owner_tag: u64,
@@ -585,6 +584,13 @@ impl CompletionSink {
     ) -> Result<usize, NveHostBatchError> {
         self.drain_filtered_into_with_budget(builder, NVE_HOST_BATCH_MAX_BYTES, |r| {
             r.kind == NveHostEventKind::Response && r.owner_tag == owner_tag
+        })
+    }
+
+    /// Drains unscoped `Push`/`Channel` records and `owner_tag`'s `Response` records in FIFO order.
+    pub fn drain_owner_and_broadcasts_into(&self, owner_tag: u64, builder: &mut NveHostEventBatchBuilder) -> Result<usize, NveHostBatchError> {
+        self.drain_filtered_into_with_budget(builder, NVE_HOST_BATCH_MAX_BYTES, |r| {
+            r.kind != NveHostEventKind::Response || r.owner_tag == owner_tag
         })
     }
 

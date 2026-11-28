@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+pub use nve_abi::{NveSizeConstraints as SizeConstraints, NveSurfaceMeasure as SurfaceMeasure};
 use nve_engine::{LayoutRect, Viewport};
 use nve_store::{ChangeSet, NodeId, NodeStore};
 
@@ -36,6 +37,23 @@ pub trait StoreLayoutEngine: Send {
     /// panicking host `TextMeasurer`) must leave the engine dirty so the next call retries.
     fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool;
 
+    /// Measures `root` under `constraints` (or unconstrained intrinsic sizing when `ideal` is
+    /// `true`) without mutating committed layout boxes, published rects, or viewport state.
+    fn measure_root(
+        &mut self,
+        _store: &NodeStore,
+        _root: NodeId,
+        _constraints: SizeConstraints,
+        _ideal: bool,
+    ) -> SurfaceMeasure {
+        SurfaceMeasure {
+            width: 0.0,
+            height: 0.0,
+            first_baseline: f32::NAN,
+            last_baseline: f32::NAN,
+        }
+    }
+
     /// Returns the absolute rounded layout rect of `id` from the latest pass, if live.
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect>;
 
@@ -60,6 +78,16 @@ impl<L: StoreLayoutEngine + ?Sized> StoreLayoutEngine for Box<L> {
 
     fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
         (**self).compute_layout(store, root, viewport)
+    }
+
+    fn measure_root(
+        &mut self,
+        store: &NodeStore,
+        root: NodeId,
+        constraints: SizeConstraints,
+        ideal: bool,
+    ) -> SurfaceMeasure {
+        (**self).measure_root(store, root, constraints, ideal)
     }
 
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {

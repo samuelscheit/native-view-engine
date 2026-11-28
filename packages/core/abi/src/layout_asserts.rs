@@ -19,8 +19,8 @@ use crate::host::{
     NveHostApi, NveHostCallbacks, NveHostEventBatchHeader, NveHostEventRecordHeader, NveHostStatus,
 };
 use crate::runtime::{
-    NveLayoutRect, NveNodeRow, NveRuntimeConfig, NveRuntimeMetrics,
-    NveSceneView, NveRuntimeStatus, NveScrollOffset, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
+    NveLayoutRect, NveNodeRow, NveRuntimeConfig, NveRuntimeMetrics, NveRuntimeStatus,
+    NveSceneView, NveScrollOffset, NveSurfaceMeasure, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
 };
 use crate::value::{
     NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveStrSlice, NveValue,
@@ -238,6 +238,13 @@ const _: () = {
     assert!(offset_of!(NveLayoutRect, width) == 8);
     assert!(offset_of!(NveLayoutRect, height) == 12);
 
+    assert!(size_of::<NveSurfaceMeasure>() == 16);
+    assert!(align_of::<NveSurfaceMeasure>() == 4);
+    assert!(offset_of!(NveSurfaceMeasure, width) == 0);
+    assert!(offset_of!(NveSurfaceMeasure, height) == 4);
+    assert!(offset_of!(NveSurfaceMeasure, first_baseline) == 8);
+    assert!(offset_of!(NveSurfaceMeasure, last_baseline) == 12);
+
     assert!(size_of::<NveNodeRow>() == NVE_NODE_ROW_SIZE);
     assert!(align_of::<NveNodeRow>() == 4);
     assert!(offset_of!(NveNodeRow, table_set) == 0);
@@ -366,6 +373,6 @@ const _: () = {
 
     assert!(size_of::<NveSceneView>() == 136);
     assert!(align_of::<NveSceneView>() == 8);
-    assert!(size_of::<crate::runtime::NveRuntimeApi>() == 16 + 28 * 8);
+    assert!(size_of::<crate::runtime::NveRuntimeApi>() == 16 + 37 * 8);
     assert!(align_of::<crate::runtime::NveRuntimeApi>() == 8);
 };

@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use nve_abi::{FrameId, NvePropsRef, ValidatedEvents};
+use nve_abi::{
+    FrameId, NveHostCallbacks, NvePropsRef, NveSizeConstraints, NveSurfaceMeasure, ValidatedEvents,
+};
 use nve_store::{ChangeSet, NodeStore, Transaction};
 
 use crate::HotPatchMsg;
@@ -95,6 +97,28 @@ pub trait RuntimeApp {
     /// Restores state produced by [`Self::snapshot_state`]; the runtime re-renders afterwards.
     fn restore_state(&mut self, _state: &[u8]) -> Result<(), CapabilityUnsupported> {
         Err(CapabilityUnsupported)
+    }
+
+    /// Measures the surface under `constraints` and `NVE_MEASURE_FLAG_*` bits.
+    ///
+    /// Returning `Some(measure)` delegates sizing to the app (e.g. `NVE_IFACE_LAYOUT = 2`);
+    /// returning `None` falls back to the runtime's [`StoreLayoutEngine::measure_root`].
+    fn measure_surface(
+        &mut self,
+        _constraints: NveSizeConstraints,
+        _flags: u32,
+    ) -> Option<NveSurfaceMeasure> {
+        None
+    }
+
+    /// Binds or unbinds the runtime's `NVE_IFACE_HOST = 5` callbacks. Called automatically on
+    /// attach (`Some(callbacks)`) and before reload, detach, or drop (`None`).
+    fn bind_host(&mut self, _callbacks: Option<NveHostCallbacks>) {}
+
+    /// Delivers one canonical `NVHB` v1 host event batch drained from `RuntimeHostRouter`.
+    /// Returns `true` when the app dirtied state and needs a re-render.
+    fn dispatch_host_events(&mut self, _batch: &[u8]) -> bool {
+        false
     }
 }
 

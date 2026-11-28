@@ -137,6 +137,8 @@ class HostSession {
   ~HostSession() {
     *alive_ = false;  // a `pump` whose sink destroys the session stops touching it
     (void)runtime_.clear_wake_callback();  // drains in-flight wakes before `wake_` dies
+    (void)runtime_.clear_intrinsic_size_invalidated_callback();
+    (void)runtime_.clear_host_callbacks();
   }
   HostSession(const HostSession&) = delete;
   HostSession& operator=(const HostSession&) = delete;
@@ -319,6 +321,56 @@ class HostSession {
 
   /// Deletes the state file at `path` (cold start, e.g. `--reset-state`).
   bool clear_state_file(std::string_view path) { return runtime_.clear_state_file(path) == NVE_RUNTIME_OK; }
+
+  /// Measures the surface under `constraints` and `NVE_MEASURE_FLAG_*` bits.
+  [[nodiscard]] NveRuntimeStatus measure_surface(const NveSizeConstraints& constraints, uint32_t flags,
+                                                 NveSurfaceMeasure* out_measure) noexcept {
+    return runtime_.measure_surface(constraints, flags, out_measure);
+  }
+
+  /// Registers or clears (`nullptr`) the intrinsic-size invalidation callback.
+  [[nodiscard]] NveRuntimeStatus set_intrinsic_size_invalidated_callback(
+      NveRuntimeIntrinsicSizeInvalidatedFn cb, void* ctx) noexcept {
+    return runtime_.set_intrinsic_size_invalidated_callback(cb, ctx);
+  }
+
+  /// Atomically persists the active scene as a Frame-0 `frame0.nve2` file on disk.
+  bool save_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u) {
+    return runtime_.save_frame0_file(path, app_build_id, env_hash) == NVE_RUNTIME_OK;
+  }
+
+  /// Boots a persisted `frame0.nve2` file immediately (`false` on miss/corrupt/mismatch).
+  bool boot_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u) {
+    return runtime_.boot_frame0_file(path, app_build_id, env_hash) == NVE_RUNTIME_OK;
+  }
+
+  /// Boots an in-memory `frame0.nve2` envelope immediately (`false` on corrupt/mismatch).
+  bool boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id = 0u, uint64_t env_hash = 0u) {
+    return runtime_.boot_frame0_bytes(envelope, app_build_id, env_hash) == NVE_RUNTIME_OK;
+  }
+
+  /// Installs or clears (`nullptr`) the host's `NVE_IFACE_HOST = 5` callback table.
+  [[nodiscard]] NveRuntimeStatus set_host_callbacks(const NveHostCallbacks* callbacks) noexcept {
+    return runtime_.set_host_callbacks(callbacks);
+  }
+
+  /// Completes an asynchronous `Pending` host request from ANY thread.
+  [[nodiscard]] NveRuntimeStatus complete_host_request(uint64_t request_id, int32_t status,
+                                                       std::span<const uint8_t> payload = {}) const noexcept {
+    return runtime_.complete_host_request(request_id, status, payload);
+  }
+
+  /// Enqueues an unsolicited host push event from ANY thread.
+  [[nodiscard]] NveRuntimeStatus push_host_event(uint32_t service_id, uint32_t event_id,
+                                                 std::span<const uint8_t> payload = {}) const noexcept {
+    return runtime_.push_host_event(service_id, event_id, payload);
+  }
+
+  /// Enqueues an inbound host channel message from ANY thread.
+  [[nodiscard]] NveRuntimeStatus publish_host_channel(uint32_t channel_id, uint32_t flags = 0u,
+                                                      std::span<const uint8_t> payload = {}) const noexcept {
+    return runtime_.publish_host_channel(channel_id, flags, payload);
+  }
 
  private:
   HostSession(RuntimeSession rt, uint32_t surface_id) : runtime_(std::move(rt)) { events_.surface_id = surface_id; }

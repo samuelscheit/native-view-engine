@@ -355,6 +355,19 @@ impl MotionClock {
     /// Advances all active tracks by `dt_s` seconds, invoking `on_complete` in key order for every
     /// track that settles on this tick (zero allocations).
     pub fn tick_with(&mut self, dt_s: f32, mut on_complete: impl FnMut(MotionCompletion)) {
+        self.step_active_with(dt_s, |key, value, settled| {
+            if settled {
+                on_complete(MotionCompletion {
+                    key,
+                    final_value: value,
+                });
+            }
+        });
+    }
+
+    /// Advances all active tracks by `dt_s` seconds, invoking `on_step(key, new_value, settled)` in
+    /// key order for every active track stepped on this tick (zero allocations).
+    pub fn step_active_with(&mut self, dt_s: f32, mut on_step: impl FnMut(MotionKey, f32, bool)) {
         if self.active_count == 0 {
             return;
         }
@@ -369,14 +382,12 @@ impl MotionClock {
                 continue;
             }
             remaining -= 1;
-            if self.tracks[i].step(dt_s, pref) {
+            let settled = self.tracks[i].step(dt_s, pref);
+            if settled {
                 self.active[i] = false;
                 self.active_count -= 1;
-                on_complete(MotionCompletion {
-                    key: self.keys[i],
-                    final_value: self.tracks[i].value(),
-                });
             }
+            on_step(self.keys[i], self.tracks[i].value(), settled);
         }
     }
 

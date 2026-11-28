@@ -3099,6 +3099,7 @@ dependencies = [
  "nve-abi",
  "nve-codec",
  "nve-engine",
+ "nve-host-services",
  "nve-interop",
  "nve-runtime",
  "nve-store",
@@ -3429,6 +3430,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
+ "nve-engine",
  "nve-store",
  "nve-tables",
 ]
@@ -3528,6 +3530,7 @@ dependencies = [
  "criterion",
  "nve-abi",
  "nve-engine",
+ "nve-host-services",
  "nve-layout",
  "nve-store",
  "nve-tables",
@@ -3576,6 +3579,7 @@ dependencies = [
  "nve-layout-yoga",
  "nve-linking",
  "nve-motion-skia",
+ "nve-runtime",
  "nve-secure-store",
  "nve-store",
  "nve-svg-skia",

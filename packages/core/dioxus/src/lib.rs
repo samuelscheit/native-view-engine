@@ -61,7 +61,7 @@ pub use nve_tables::paint::{
 pub use nve_tables::transform::{
     affine_concat, affine_inverse_map_point, affine_map_point, Transform2D,
 };
-pub use runtime_app::DioxusRuntimeApp;
+pub use runtime_app::{DioxusRuntimeApp, HostEventEmitter, HostProps};
 pub use signal_archive::{
     reconcile_signal_entry, signal_slot_id, BinValueSlot, HydrationReport, SignalArchive,
     SignalArchiveError, SignalCodec, SignalDelta, SignalDeltaOp, SignalRegistry,

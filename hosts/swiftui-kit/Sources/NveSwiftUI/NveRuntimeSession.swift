@@ -65,6 +65,7 @@ public final class NveRuntimeSession {
     public let api: UnsafePointer<NveRuntimeApi>
     public let handle: NveRuntimeHandle
     private var wakeBox: Unmanaged<WakeBox>?
+    private var intrinsicSizeBox: Unmanaged<WakeBox>?
     private var measurerBox: Unmanaged<MeasurerBox>?
 
     /// The `NveRuntimeApi` of the `libnve_runtime` linked into this process, if any.
@@ -103,9 +104,10 @@ public final class NveRuntimeSession {
     }
 
     deinit {
-        // `destroy` drains in-flight wake / measure callbacks before the boxes are released.
+        // `destroy` drains in-flight wake / intrinsic-size / measure callbacks before the boxes are released.
         api.pointee.destroy(handle)
         wakeBox?.release()
+        intrinsicSizeBox?.release()
         measurerBox?.release()
     }
 
@@ -284,6 +286,90 @@ public final class NveRuntimeSession {
                 outH.pointee = s.height
             }, next?.toOpaque())
         try swapBox(&measurerBox, next, status)
+    }
+
+    // MARK: Surface sizing, Frame-0 boot & host services (ABI v6)
+
+    /// Measures the surface under `constraints` and `NVE_MEASURE_FLAG_*` bits without mutating
+    /// committed viewport, rects, or published scene state.
+    public func measureSurface(
+        constraints: NveSizeConstraints,
+        flags: UInt32 = NVE_MEASURE_FLAG_DRY_RUN
+    ) throws -> NveSurfaceMeasure {
+        var c = constraints
+        var out = NveSurfaceMeasure()
+        try check(api.pointee.measure_surface(handle, &c, flags, &out))
+        return out
+    }
+
+    /// Registers a handler invoked outside internal locks when layout-affecting dirties
+    /// invalidate cached intrinsic surface dimensions (`nil` unregisters and drains in-flight calls).
+    public func setIntrinsicSizeInvalidatedHandler(_ handler: (@Sendable () -> Void)?) throws {
+        let next = handler.map { Unmanaged.passRetained(WakeBox($0)) }
+        let status = next == nil
+            ? api.pointee.set_intrinsic_size_invalidated_callback(handle, nil, nil)
+            : api.pointee.set_intrinsic_size_invalidated_callback(handle, { ctx in
+                guard let ctx else { return }
+                Unmanaged<WakeBox>.fromOpaque(ctx).takeUnretainedValue().handler()
+            }, next?.toOpaque())
+        try swapBox(&intrinsicSizeBox, next, status)
+    }
+
+    /// Atomically persists the active scene as a Frame-0 `frame0.nve2` file on disk.
+    public func saveFrame0File(path: String, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws {
+        var path = path
+        try path.withUTF8 { p in
+            try check(api.pointee.save_frame0_file(handle, NveStrSlice(ptr: p.baseAddress, len: p.count), appBuildId, envHash))
+        }
+    }
+
+    /// Validates and boots a persisted `frame0.nve2` file immediately.
+    public func bootFrame0File(path: String, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws {
+        var path = path
+        try path.withUTF8 { p in
+            try check(api.pointee.boot_frame0_file(handle, NveStrSlice(ptr: p.baseAddress, len: p.count), appBuildId, envHash))
+        }
+    }
+
+    /// Validates and boots an in-memory `frame0.nve2` envelope buffer (`NSData` / bundled asset).
+    public func bootFrame0Bytes(_ envelope: Data, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws {
+        try envelope.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            try check(api.pointee.boot_frame0_bytes(handle, NveBufferSlice(ptr: bytes.baseAddress, len: bytes.count), appBuildId, envHash))
+        }
+    }
+
+    /// Installs or clears (`nil`) the host's `NVE_IFACE_HOST = 5` callback table.
+    public func setHostCallbacks(_ callbacks: NveHostCallbacks?) throws {
+        if var cb = callbacks {
+            try check(api.pointee.set_host_callbacks(handle, &cb))
+        } else {
+            try check(api.pointee.set_host_callbacks(handle, nil))
+        }
+    }
+
+    /// Completes an asynchronous `Pending` host request from ANY thread and wakes the runtime.
+    public func completeHostRequest(requestId: UInt64, status: Int32, payload: Data = Data()) throws {
+        try payload.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            try check(api.pointee.complete_host_request(handle, requestId, status, NveBufferSlice(ptr: bytes.baseAddress, len: bytes.count)))
+        }
+    }
+
+    /// Enqueues an unsolicited host push event from ANY thread and wakes the runtime.
+    public func pushHostEvent(serviceId: UInt32, eventId: UInt32, payload: Data = Data()) throws {
+        try payload.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            try check(api.pointee.push_host_event(handle, serviceId, eventId, NveBufferSlice(ptr: bytes.baseAddress, len: bytes.count)))
+        }
+    }
+
+    /// Enqueues an inbound host channel message from ANY thread and wakes the runtime.
+    public func publishHostChannel(channelId: UInt32, flags: UInt32 = 0, payload: Data = Data()) throws {
+        try payload.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            try check(api.pointee.publish_host_channel(handle, channelId, flags, NveBufferSlice(ptr: bytes.baseAddress, len: bytes.count)))
+        }
     }
 
     /// Commits a callback-box swap. On success the runtime has drained in-flight calls of the old

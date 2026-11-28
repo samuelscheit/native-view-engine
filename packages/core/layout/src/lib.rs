@@ -14,7 +14,7 @@ pub mod overlay;
 pub mod scene;
 mod taffy_store;
 
-pub use engine::{DynLayoutEngine, StoreLayoutEngine};
+pub use engine::{DynLayoutEngine, SizeConstraints, StoreLayoutEngine, SurfaceMeasure};
 pub use measure::{
     HeuristicTextMeasurer, ResolvedFamily, ResolvedTextStyle, TextMeasurer, TextStyle,
     resolve_inherited_text,

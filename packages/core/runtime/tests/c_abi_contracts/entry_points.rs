@@ -7,10 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nve_abi::{
-    ArenaOffset, ByteLen, EventId, InteractionEvent, NodeId, NveBufferSlice, NveEvent,
-    NveEventBatch, NveRuntimeConfig, NveRuntimeMetrics, NveRuntimeStatus, NveSceneView,
-    NveStrSlice, RawEventBytes, SurfaceId, TimestampUs, NVE_RUNTIME_ABI_VERSION,
-    NVE_RUNTIME_SCHEMA_HASH, NVE_TABLE_INTERACTION,
+    ArenaOffset, ByteLen, EventId, HostRequestId, HostServiceId, InteractionEvent, NodeId,
+    NveBufferSlice, NveEvent, NveEventBatch, NveHostCallbacks, NveHostStatus, NveRuntimeConfig,
+    NveRuntimeMetrics, NveRuntimeStatus, NveSceneView, NveSizeConstraints, NveStrSlice,
+    NveSurfaceMeasure, RawEventBytes, SurfaceId, TimestampUs, NVE_MEASURE_FLAG_DRY_RUN,
+    NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH, NVE_TABLE_INTERACTION,
 };
 use nve_engine::Viewport;
 use nve_layout::TaffyStoreLayout;
@@ -144,6 +145,50 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
             NveRuntimeStatus::InvalidArg.as_i32()
         );
         assert_eq!((api.pair_is_connected)(null_h), 0);
+        // Runtime ABI v6 slots 28..=36 null-handle guards.
+        let constraints = NveSizeConstraints::loose(200.0, 100.0);
+        let mut measure = NveSurfaceMeasure::default();
+        assert_eq!(
+            (api.measure_surface)(null_h, &constraints, NVE_MEASURE_FLAG_DRY_RUN, &mut measure),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.set_intrinsic_size_invalidated_callback)(null_h, None, std::ptr::null_mut()),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.save_frame0_file)(null_h, NveStrSlice::EMPTY, 0, 0),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.boot_frame0_file)(null_h, NveStrSlice::EMPTY, 0, 0),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.boot_frame0_bytes)(null_h, NveBufferSlice::EMPTY, 0, 0),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.set_host_callbacks)(null_h, std::ptr::null::<NveHostCallbacks>()),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.complete_host_request)(
+                null_h,
+                HostRequestId(1),
+                NveHostStatus::Ok.as_i32(),
+                NveBufferSlice::EMPTY
+            ),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.push_host_event)(null_h, HostServiceId(1), 0, NveBufferSlice::EMPTY),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.publish_host_channel)(null_h, 1, 0, NveBufferSlice::EMPTY),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
     }
 
     // 2. Live handle validation, wake callback, viewport bump, scroll_by, spurious release, pairing.
@@ -406,6 +451,51 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
             assert_eq!(
                 (api.pair_connect)(h_bg, NveStrSlice::EMPTY, NveStrSlice::EMPTY),
                 NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            // Runtime ABI v6 owner-thread slots reject cross-thread calls.
+            let c = NveSizeConstraints::loose(200.0, 100.0);
+            let mut m = NveSurfaceMeasure::default();
+            assert_eq!(
+                (api.measure_surface)(h_bg, &c, NVE_MEASURE_FLAG_DRY_RUN, &mut m),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            assert_eq!(
+                (api.set_intrinsic_size_invalidated_callback)(h_bg, None, std::ptr::null_mut()),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            assert_eq!(
+                (api.save_frame0_file)(h_bg, NveStrSlice::EMPTY, 0, 0),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            assert_eq!(
+                (api.boot_frame0_file)(h_bg, NveStrSlice::EMPTY, 0, 0),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            assert_eq!(
+                (api.boot_frame0_bytes)(h_bg, NveBufferSlice::EMPTY, 0, 0),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            assert_eq!(
+                (api.set_host_callbacks)(h_bg, std::ptr::null()),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            // Runtime ABI v6 ANY-thread host ingress slots MUST succeed cross-thread!
+            assert_eq!(
+                (api.complete_host_request)(
+                    h_bg,
+                    HostRequestId(999),
+                    NveHostStatus::Ok.as_i32(),
+                    NveBufferSlice::EMPTY
+                ),
+                NveRuntimeStatus::Ok.as_i32()
+            );
+            assert_eq!(
+                (api.push_host_event)(h_bg, HostServiceId(0x42), 1, NveBufferSlice::EMPTY),
+                NveRuntimeStatus::Ok.as_i32()
+            );
+            assert_eq!(
+                (api.publish_host_channel)(h_bg, 7, 0, NveBufferSlice::EMPTY),
+                NveRuntimeStatus::Ok.as_i32()
             );
 
             // Read-only cross-thread calls MUST succeed!

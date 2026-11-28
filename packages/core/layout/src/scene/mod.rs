@@ -20,7 +20,10 @@ use nve_tables::tables::Interaction;
 use nve_engine::{LayoutRect, Viewport};
 use nve_store::{ChangeSet, NodeId, NodeStore};
 
-use crate::{HeuristicTextMeasurer, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
+use crate::{
+    HeuristicTextMeasurer, SizeConstraints, StoreLayoutEngine, SurfaceMeasure, TaffyStoreLayout,
+    TextMeasurer,
+};
 
 pub use overlay_scene::{OverlayState, ResolvedOverlay, is_overlay_closed};
 pub use scroll::{ScrollOffsets, compute_scroll_content_size};
@@ -164,6 +167,17 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     /// Runs the engine's self-gated layout pass for the store root at the current viewport.
     pub fn recompute_layout(&mut self, store: &NodeStore) -> bool {
         self.layout.compute_layout(store, NodeId::ROOT, self.viewport)
+    }
+
+    /// Pure sizing pass over the store root without mutating committed layout boxes or rects.
+    pub fn measure_root(
+        &mut self,
+        store: &NodeStore,
+        constraints: SizeConstraints,
+        ideal: bool,
+    ) -> SurfaceMeasure {
+        self.layout
+            .measure_root(store, NodeId::ROOT, constraints, ideal)
     }
 
     /// Clears layout, interaction, scroll, and overlay state (keeps viewport and text measurer).

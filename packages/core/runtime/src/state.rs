@@ -1,9 +1,10 @@
 //! Internal [`SurfaceState`] and [`RuntimeInner`] owning `LaidOutScene`, reusable `ChangeSet`
 //! scratch buffers, `WireDecoder`, and `FrameTickHook`s (publication lives in `publish.rs`).
 
-use nve_abi::table::NveTableView;
+use nve_abi::table::{effect, NveTableView};
 use nve_abi::{
-    FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveSceneView, NveScrollOffset,
+    FrameId, NveHostEventBatchBuilder, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveSceneView,
+    NveScrollOffset,
 };
 use nve_engine::LayoutRect;
 use nve_layout::{DynLayoutEngine, LaidOutScene};
@@ -13,7 +14,20 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder, ResourceStore};
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
 use crate::delta::SceneDelta;
+use crate::host_router::{OwnerBinding, RuntimeHostRouter};
 use crate::pair::{PairInboundEvent, PairSession};
+
+/// Returns `true` when `changes` can affect intrinsic or laid-out surface dimensions.
+#[inline]
+pub(crate) fn changes_affect_layout(changes: &ChangeSet) -> bool {
+    !changes.created.is_empty()
+        || !changes.removed.is_empty()
+        || !changes.children.is_empty()
+        || changes
+            .effects
+            .iter()
+            .any(|&fx| fx & (effect::LAYOUT | effect::MEASURE) != 0)
+}
 
 // Full field-by-field + little-endian proof (including `pub(crate)` `flags` and
 // `ChildSpan::{off, len}`) is enforced at compile time in `nve_store::store`.
@@ -64,6 +78,9 @@ pub(crate) struct SurfaceState {
     /// so committing a different store resets them into a new epoch first.
     pub(crate) committed_store: u64,
     pub(crate) metrics: NveRuntimeMetrics,
+    pub(crate) host_batch_builder: NveHostEventBatchBuilder,
+    pub(crate) active_host_owner_tag: u64,
+    pub(crate) intrinsic_size_dirty: bool,
     pub(crate) needs_render: bool,
     pub(crate) needs_publish: bool,
 }
@@ -85,7 +102,10 @@ pub(crate) enum PublishedResources {
 }
 
 pub(crate) struct RuntimeInner {
+    // `app` MUST be declared before `host_binding` so Rust's field drop order destroys the app
+    // before the heap-pinned `OwnerBinding` even if `SurfaceRuntime::drop` ever skips cleanup.
     pub(crate) app: Option<Box<dyn RuntimeApp>>,
+    pub(crate) host_binding: Option<Box<OwnerBinding>>,
     pub(crate) pair: Option<PairSession>,
     pub(crate) replica_store: NodeStore,
     pub(crate) state: SurfaceState,
@@ -270,9 +290,27 @@ impl RuntimeInner {
         }
     }
 
-    /// Runs one host tick. Returns `(changed, needs_follow_up_wake)`.
-    pub(crate) fn tick(&mut self, dt_s: f32) -> Result<(bool, bool), RuntimeError> {
+    /// Runs one host tick. Returns `(changed, needs_follow_up_wake, intrinsic_size_invalidated)`.
+    pub(crate) fn tick(
+        &mut self,
+        dt_s: f32,
+        host_router: &RuntimeHostRouter,
+    ) -> Result<(bool, bool, bool), RuntimeError> {
         let mut has_changes = false;
+
+        let host_follow_up = if let Some(ref mut app) = self.app {
+            let (dirtied, more) = host_router.drain_into_app(
+                self.state.active_host_owner_tag,
+                &mut self.state.host_batch_builder,
+                app.as_mut(),
+            );
+            if dirtied {
+                self.state.needs_render = true;
+            }
+            more
+        } else {
+            false
+        };
 
         if let Some(ref mut app) = self.app
             && app.poll_async_work()
@@ -331,7 +369,7 @@ impl RuntimeInner {
         };
 
         let mut needs_follow_up_wake =
-            (self.state.needs_render && self.app.is_some()) || pair_follow_up;
+            (self.state.needs_render && self.app.is_some()) || pair_follow_up || host_follow_up;
 
         if !self.state.tick_hooks.is_empty() {
             let (store, state) = self.split_store_mut_and_state();
@@ -358,6 +396,10 @@ impl RuntimeInner {
             }
         }
 
+        let layout_invalidated = self.state.intrinsic_size_dirty
+            || (has_changes && changes_affect_layout(&self.state.merged_changes));
+        self.state.intrinsic_size_dirty = false;
+
         let changed = if has_changes || self.state.needs_publish {
             self.commit_and_publish(has_changes);
             true
@@ -365,7 +407,7 @@ impl RuntimeInner {
             false
         };
 
-        Ok((changed, needs_follow_up_wake))
+        Ok((changed, needs_follow_up_wake, layout_invalidated))
     }
 
     fn reset_pair_replica(&mut self, has_changes: &mut bool) {
@@ -466,7 +508,7 @@ impl RuntimeInner {
         }
     }
 
-    pub(crate) fn submit_nve2(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
+    pub(crate) fn submit_nve2(&mut self, bytes: &[u8]) -> Result<bool, RuntimeError> {
         if self.app.is_some() {
             return Err(RuntimeError::InvalidArg(
                 "cannot submit NVE2 wire frames while an app is attached",
@@ -478,10 +520,43 @@ impl RuntimeInner {
             ));
         }
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let mut has_changes = false;
         self.apply_wire_bytes(bytes, false, true, &mut has_changes)?;
+        let layout_invalidated = has_changes && changes_affect_layout(&self.state.merged_changes);
+        self.commit_and_publish(has_changes);
+        Ok(layout_invalidated)
+    }
+
+    /// Applies a pre-validated Frame-0 `NVE2` keyframe payload into `replica_store`, verifies
+    /// `expected_nodes`, commits layout, and publishes the initial `NveSceneView`.
+    pub(crate) fn boot_validated_frame0(
+        &mut self,
+        payload: &[u8],
+        expected_nodes: usize,
+    ) -> Result<(), RuntimeError> {
+        if self.app.is_some() {
+            return Err(RuntimeError::InvalidArg(
+                "cannot boot frame0 while an app is attached",
+            ));
+        }
+        if self.pair.is_some() {
+            return Err(RuntimeError::InvalidArg(
+                "cannot boot frame0 while a pair session is attached",
+            ));
+        }
+        let mut has_changes = false;
+        if self.apply_wire_bytes(payload, true, false, &mut has_changes).is_err() {
+            return Err(RuntimeError::NotFound("frame0.nve2 NVE2 decode failed"));
+        }
+        if self.replica_store.stats().live_nodes != expected_nodes {
+            self.reset_for_app_change();
+            self.state
+                .merged_changes
+                .copy_from(&self.state.empty_changes);
+            return Err(RuntimeError::NotFound("frame0.nve2 node_count mismatch"));
+        }
         self.commit_and_publish(has_changes);
         Ok(())
     }

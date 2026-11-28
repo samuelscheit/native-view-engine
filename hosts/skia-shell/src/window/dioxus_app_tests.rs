@@ -7,13 +7,13 @@ use std::task::{Poll, Waker};
 
 use nve_abi::{ColorRgba, SurfaceId, METHOD_WINDOW_REQUEST_FRAME, SERVICE_WINDOW};
 use nve_dioxus::prelude::*;
-use nve_dioxus::DioxusSurface;
+use nve_dioxus::{DioxusRuntimeApp, DioxusSurface};
 use nve_engine::{HotPatchMsg, Viewport};
 use nve_host_services::HostServiceProvider;
 
 use super::{
     DesktopApp, DesktopHostError, DesktopPreviewOptions, DesktopSession, DesktopWindowHost,
-    DioxusDesktopApp,
+    RuntimeAppDesktopBridge,
 };
 use crate::host_services::SkiaHostServices;
 
@@ -80,7 +80,7 @@ fn dioxus_desktop_app_wakes_on_background_thread_completion_and_renders_update()
 
     let gate = Gate::default();
     let surface = DioxusSurface::new(SurfaceId::ROOT, AsyncDesktopRoot).with_context(gate.clone());
-    let mut app = DioxusDesktopApp::new(surface);
+    let mut app = RuntimeAppDesktopBridge::new(DioxusRuntimeApp::new(surface));
 
     let wake_hits = Arc::new(AtomicUsize::new(0));
     let hits_cb = Arc::clone(&wake_hits);
@@ -132,13 +132,16 @@ fn dioxus_desktop_app_wakes_on_background_thread_completion_and_renders_update()
         initial_bytes.as_slice(),
         "post-wake render must emit updated frame bytes"
     );
-    assert!(session.app().surface().store().live_nodes().next().is_some());
-    assert!(session.app_mut().surface_mut().store().live_nodes().next().is_some());
+    assert!(session.app().app().surface().store().live_nodes().next().is_some());
+    assert!(session.app_mut().app_mut().surface_mut().store().live_nodes().next().is_some());
     assert!(!session.app_mut().poll_async_work());
 
     let host_surface = DioxusSurface::new(SurfaceId::ROOT, AsyncDesktopRoot).with_context(gate);
-    let host = DesktopWindowHost::new_dioxus(host_surface, DesktopPreviewOptions::default())
-        .expect("new_dioxus must construct primary session");
+    let host = DesktopWindowHost::new_runtime_app(
+        DioxusRuntimeApp::new(host_surface),
+        DesktopPreviewOptions::default(),
+    )
+    .expect("new_runtime_app must construct primary session");
     assert!(host.windows.is_empty());
 }
 
@@ -166,7 +169,7 @@ fn dioxus_desktop_app_reload_returns_err_and_preserves_replica_and_nve2_sync() {
     let sig_slot: SignalSlot = Rc::new(RefCell::new(None));
     let surface = DioxusSurface::new(SurfaceId::ROOT, CounterRoot).with_context(Rc::clone(&sig_slot));
     let mut session = DesktopSession::new(
-        DioxusDesktopApp::new(surface),
+        RuntimeAppDesktopBridge::new(DioxusRuntimeApp::new(surface)),
         SurfaceId::ROOT,
         Viewport {
             width: 320.0,
@@ -188,7 +191,7 @@ fn dioxus_desktop_app_reload_returns_err_and_preserves_replica_and_nve2_sync() {
             dylib_path: "nonexistent_app.dylib".into(),
             build_ms: 12,
         })
-        .expect_err("in-process DioxusDesktopApp must reject dylib reload");
+        .expect_err("in-process RuntimeApp must reject dylib reload");
     assert!(
         matches!(reload_err, DesktopHostError::Reload(_)),
         "expected DesktopHostError::Reload, got {reload_err:?}"
@@ -206,7 +209,11 @@ fn dioxus_desktop_app_reload_returns_err_and_preserves_replica_and_nve2_sync() {
 
     // Subsequent incremental NVE2 delta must still apply cleanly onto the preserved replica.
     let mut sig = sig_slot.borrow().expect("root signal installed");
-    session.app_mut().surface_mut().in_root_scope(|| sig.set(2));
+    session
+        .app_mut()
+        .app_mut()
+        .surface_mut()
+        .in_root_scope(|| sig.set(2));
     session
         .render_and_rasterize()
         .expect("incremental NVE2 frame after rejected reload must remain synchronized");

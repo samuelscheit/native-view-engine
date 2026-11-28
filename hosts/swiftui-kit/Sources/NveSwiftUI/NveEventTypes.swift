@@ -27,6 +27,7 @@ public enum NveEventKind: UInt8, Sendable, Hashable {
     case pointerEnter = 18
     case pointerLeave = 19
     case wheel = 20
+    case pointerCancel = 21
 }
 
 /// Gesture arbitration outcome mirroring `GestureDisposition` in `packages/core/interop`.
@@ -127,13 +128,14 @@ public extension EventBatchBuilder {
             } else {
                 pushKey(surface: s, node: n, timestamp: ts, event: id, key: "")
             }
-        case .pointerDown, .pointerMove, .pointerUp, .pointerEnter, .pointerLeave:
+        case .pointerDown, .pointerMove, .pointerUp, .pointerEnter, .pointerLeave, .pointerCancel:
             let id: InteractionEventId
             switch event.kind {
             case .pointerDown: id = .pointerDown
             case .pointerMove: id = .pointerMove
             case .pointerUp: id = .pointerUp
             case .pointerEnter: id = .pointerEnter
+            case .pointerCancel: id = .pointerCancel
             default: id = .pointerLeave
             }
             if case let .pointer(x, y, modifiers, pflags) = event.payload {
@@ -245,12 +247,13 @@ public extension EventBatchReader {
                     keyCode: rec.keyCode,
                     isComposing: rec.flags.isComposing
                 )
-            case .pointerDown, .pointerMove, .pointerUp, .pointerEnter, .pointerLeave:
+            case .pointerDown, .pointerMove, .pointerUp, .pointerEnter, .pointerLeave, .pointerCancel:
                 switch id {
                 case .pointerDown: kind = .pointerDown
                 case .pointerMove: kind = .pointerMove
                 case .pointerUp: kind = .pointerUp
                 case .pointerEnter: kind = .pointerEnter
+                case .pointerCancel: kind = .pointerCancel
                 default: kind = .pointerLeave
                 }
                 let pflags = rec.flags.pointerButton | (rec.flags.isCapture ? 0x08 : 0)

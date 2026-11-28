@@ -388,6 +388,18 @@ final class MockRuntime: @unchecked Sendable {
             }
             return msg.count
         }
+        a.measure_surface = { _, _, _, out in
+            out?.pointee = NveSurfaceMeasure(width: 120, height: 40, first_baseline: .nan, last_baseline: .nan)
+            return MockRuntime.shared.status()
+        }
+        a.set_intrinsic_size_invalidated_callback = { _, _, _ in MockRuntime.shared.status() }
+        a.save_frame0_file = { _, _, _, _ in MockRuntime.shared.status() }
+        a.boot_frame0_file = { _, _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
+        a.boot_frame0_bytes = { _, _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
+        a.set_host_callbacks = { _, _ in MockRuntime.shared.status() }
+        a.complete_host_request = { _, _, _, _ in MockRuntime.shared.status() }
+        a.push_host_event = { _, _, _, _ in MockRuntime.shared.status() }
+        a.publish_host_channel = { _, _, _, _ in MockRuntime.shared.status() }
         let p = UnsafeMutablePointer<NveRuntimeApi>.allocate(capacity: 1)
         p.initialize(to: a)
         return UnsafePointer(p)

@@ -4,6 +4,15 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
+## Track 1B-2 Slice 1 — Runtime ABI v6, `RuntimeHostRouter`, `measure_surface`, Frame-0 Boot & `skia-shell` Cleanup
+
+- **Runtime ABI v6 (`37` slots `0..=36`), dry-run measurement, Frame-0 boot & host router (`nve-abi`, `nve-layout`, `nve-layout-yoga`, `nve-engine`, `nve-runtime`, `nve-dioxus`, `nve-motion`, `hosts/skia-shell`, `host-{cxx,dart}`, `swiftui-kit`)**:
+  - Upgraded `NveRuntimeApi` to v6 (`runtime_hash=0xDCA4E1BA4674FF40`) with `NveSurfaceMeasure` (16 B), `NVE_MEASURE_FLAG_{DRY_RUN,IDEAL}`, `NveRuntimeIntrinsicSizeInvalidatedFn`, and slots `28..=36` (`measure_surface`, `set_intrinsic_size_invalidated_callback`, `save_frame0_file`, `boot_frame0_file`, `boot_frame0_bytes`, `set_host_callbacks`, `complete_host_request`, `push_host_event`, `publish_host_channel`) plus ILP32 odd-slot tail-padding assertions across Rust, C, and Dart.
+  - Implemented `measure_root` (`TaffyStoreLayout` + `YogaLayoutEngine`), `IntrinsicSizeNotifier`, `Frame0File::read_and_validate_bytes`, `RuntimeHostRouter` (`CompletionSink` + `OversizedRetryCache` + monotonic `OwnerBinding` reload tags + central `SERVICE_WINDOW::METHOD_WINDOW_REQUEST_FRAME -> WakeBridge`), completed `DioxusRuntimeApp` (`HostProps`, `HostEventEmitter`, `SignalRegistry`, `Arc<FfiHostServices>`), added opt-in `MotionRuntimeTickHook`, deleted `hosts/skia-shell/src/window/{pair_client,dioxus_app}.rs`, and synced C++/Dart/SwiftUI thin wrappers (`NveEventKind::pointerCancel` included).
+- **5-crate zero-alloc guards, benchmarks & Track 3A/DrawList/i18n review hardening (`3e32c87c`, `97c7382d`, `16c7c745`)**:
+  - Closed Track 3A P0 password-masking leak + accessibility/host-services P1+P2 findings, DrawList Askama codegen 5-host P1+P2 findings, `nve-i18n` L2 P1+P2 findings, and Track 3A P2/P3 shadow/GPU-cache P2 follow-ups.
+  - Added `CountingAlloc` zero-alloc guards and Criterion benchmarks across `nve-hash`, `nve-wire-core`, `nve-http-web`, `nve-mdx`, and `nve-router`, lowering `nve-arch-invariants` shrink-only ceilings (`alloc_guards` `7 → 2`, `all_crate_benches` `31 → 28`).
+
 ## `nve-i18n` Native OS Upgrade (L1 → L2)
 
 - **BCP-47 `-u-` extensions, zero-dep Apple `CoreFoundation` ICU, cached `Intl.Locale`, zero-alloc & Criterion bench (`packages/framework/i18n`, `nve-ui`, `nve-arch-invariants`)**:
