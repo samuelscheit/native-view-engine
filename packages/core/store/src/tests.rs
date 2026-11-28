@@ -1,33 +1,47 @@
 use nve_abi::table::effect;
 
 use crate::{
-    ChangeSet, Length, NodeId, NodeStore, NveTable, RealizationOrder, Res, Resource, Rgba, Str,
-    TableSlot, WordValue,
+    ChangeSet, FlatResource, Length, NodeId, NodeStore, NveTable, RealizationOrder, Res, Rgba,
+    Str, TableSlot, WordEnum, WordValue,
 };
 
-crate::word_enum! {
-    pub enum Align: 2 { Start = 0, Center = 1, End = 2 }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum Align {
+    #[default]
+    Start = 0,
+    Center = 1,
+    End = 2,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shadows(pub Vec<f32>);
 
-impl Resource for Shadows {
-    const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.shadows");
-    fn encode(&self, out: &mut Vec<u8>) {
-        for v in &self.0 {
+impl Shadows {
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.0.len() * 4);
+        for &v in &self.0 {
             out.extend_from_slice(&v.to_le_bytes());
         }
+        out
     }
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self(
-            bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes(*c))
-                .collect(),
-        ))
+}
+
+impl FlatResource for Shadows {
+    const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.shadows");
+    type View<'a> = Vec<f32>;
+
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        out.extend(self.0.iter().map(|&v| v.to_bits()));
+        true
+    }
+
+    fn validate(_words: &[u32]) -> bool {
+        true
+    }
+
+    fn view<'a>(words: crate::ValidatedWords<'a, Self>) -> Self::View<'a> {
+        words.iter().map(|&w| f32::from_bits(w)).collect()
     }
 }
 
@@ -45,10 +59,8 @@ pub struct Visual {
     #[default(Length::AUTO)]
     pub width: Length,
     #[effect(layout)]
-    #[bits(2)]
     pub align: Align,
     #[effect(layout)]
-    #[bits(1)]
     #[default(true)]
     pub wrap: bool,
     #[effect(semantics)]
@@ -224,7 +236,7 @@ fn resources_dedup_refcount_and_ephemeral_in_place() {
     let (ra, rb) = (s.row::<Visual>(a).shadows(), s.row::<Visual>(b).shadows());
     assert_eq!(ra, rb, "deduplicated");
     assert_eq!(c.resources_defined, vec![ra]);
-    assert_eq!(s.resource::<Shadows>(ra), Some(&Shadows(vec![1.0, 2.0])));
+    assert_eq!(s.resource::<Shadows>(ra), Some(vec![1.0, 2.0]));
 
     let mut tx = s.tx();
     tx.edit::<Visual>(a).shadows(None);
@@ -246,72 +258,66 @@ fn resources_dedup_refcount_and_ephemeral_in_place() {
     assert_eq!(s.row::<Visual>(a).shadows(), id, "rewritten in place");
     assert_eq!(c.resources_defined, vec![id]);
     assert_eq!(c.table(Visual::slot()).unwrap().masks, vec![1 << 6]);
-    assert_eq!(s.resource::<Shadows>(id), Some(&Shadows(vec![2.0])));
+    assert_eq!(s.resource::<Shadows>(id), Some(vec![2.0]));
 }
 
 #[test]
-fn encoded_borrows_canonical_bytes_and_tracks_in_place_rewrites() {
+fn payload_bytes_borrows_canonical_bytes_and_tracks_in_place_rewrites() {
     let bytes = |v: &[f32]| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
     let mut s = NodeStore::new();
-    assert_eq!(s.resources().encoded(crate::ResourceId::NONE), None);
-    assert_eq!(s.resources().encoded(crate::ResourceId(99)), None, "out of range");
+    assert_eq!(s.resources().payload_bytes(crate::ResourceId::NONE), None);
+    assert_eq!(s.resources().payload_bytes(crate::ResourceId(99)), None, "out of range");
 
     let mut tx = s.tx();
     let a = tx.create();
     tx.edit::<Visual>(a).shadows(Some(Shadows(vec![1.0, 2.0])));
     commit_tx(tx);
     let interned = s.row::<Visual>(a).shadows();
-    let first = s.resources().encoded(interned).unwrap();
+    let first = s.resources().payload_bytes(interned).unwrap();
     assert_eq!(first, bytes(&[1.0, 2.0]).as_slice());
-    assert_eq!(first.as_ptr(), s.resources().encoded(interned).unwrap().as_ptr(), "zero-copy cache");
+    assert_eq!(first.as_ptr(), s.resources().payload_bytes(interned).unwrap().as_ptr(), "zero-copy cache");
 
     let mut tx = s.tx();
     tx.edit::<Visual>(a).shadows_ephemeral(Shadows(vec![3.0]));
     commit_tx(tx);
     let eph = s.row::<Visual>(a).shadows();
-    assert_eq!(s.resources().encoded(eph).unwrap(), bytes(&[3.0]).as_slice(), "lazy ephemeral");
+    assert_eq!(s.resources().payload_bytes(eph).unwrap(), bytes(&[3.0]).as_slice(), "lazy ephemeral");
     let mut tx = s.tx();
     tx.edit::<Visual>(a).shadows_ephemeral(Shadows(vec![4.0, 5.0]));
     commit_tx(tx);
     assert_eq!(s.row::<Visual>(a).shadows(), eph, "rewritten in place");
-    assert_eq!(s.resources().encoded(eph).unwrap(), bytes(&[4.0, 5.0]).as_slice(), "cache reset");
-    let mut wire = Vec::new();
-    assert!(s.resources().encode(eph, &mut wire));
-    assert_eq!(wire, bytes(&[4.0, 5.0]));
+    assert_eq!(s.resources().payload_bytes(eph).unwrap(), bytes(&[4.0, 5.0]).as_slice(), "cache reset");
 
     let mut tx = s.tx();
     tx.remove(a);
     commit_tx(tx);
     commit(&mut s);
-    assert_eq!(s.resources().encoded(eph), None, "released ids are stale");
-    assert_eq!(s.resources().encoded(interned), None);
+    assert_eq!(s.resources().payload_bytes(eph), None, "released ids are stale");
+    assert_eq!(s.resources().payload_bytes(interned), None);
 
     let mut replica = NodeStore::replica();
     let id = crate::ResourceId(1);
-    assert!(replica.resources.define_at(id, Shadows::KIND, true, &bytes(&[6.0])));
+    assert!(replica.resources.define_at(id, Shadows::KIND, true, &[], &bytes(&[6.0])));
     replica.resources.retain(id);
-    assert_eq!(replica.resources().encoded(id).unwrap(), bytes(&[6.0]).as_slice());
+    assert_eq!(replica.resources().payload_bytes(id).unwrap(), bytes(&[6.0]).as_slice());
 }
 
 #[test]
-fn replica_keeps_codec_less_kinds_as_opaque_exact_bytes() {
+fn replica_keeps_unknown_kinds_as_exact_words() {
     let mut replica = NodeStore::replica();
     let kind = nve_abi::Key64::of("test.module_only_kind");
     let id = crate::ResourceId(2);
-    let payload = [9u8, 8, 7, 6, 5];
-    assert!(replica.resources.define_at(id, kind, false, &payload));
+    let payload = [9u8, 8, 7, 6, 5, 4, 3, 2];
+    assert!(replica.resources.define_at(id, kind, false, &[], &payload));
     replica.resources.retain(id);
-    assert!(replica.resources.is_defined(id), "opaque resources satisfy Patch validation");
+    assert!(replica.resources.is_defined(id), "unknown kinds satisfy Patch validation");
     assert_eq!(replica.resources().kind(id), Some(kind));
-    assert_eq!(replica.resource::<Shadows>(id), None, "no typed view without a codec");
-    assert_eq!(replica.resources().encoded(id), Some(&payload[..]));
-    let mut wire = Vec::new();
-    assert!(replica.resources().encode(id, &mut wire), "re-encodes byte-exact");
-    assert_eq!(wire, payload);
-    // Ephemeral opaque payloads keep their bytes too (nothing could re-encode them).
-    assert!(replica.resources.define_at(crate::ResourceId(4), kind, true, &payload));
+    assert_eq!(replica.resource::<Shadows>(id), None, "no typed view for a foreign kind");
+    assert_eq!(replica.resources().payload_bytes(id), Some(&payload[..]));
+    // Ephemeral payloads keep their words too.
+    assert!(replica.resources.define_at(crate::ResourceId(4), kind, true, &[], &payload));
     replica.resources.retain(crate::ResourceId(4));
-    assert_eq!(replica.resources().encoded(crate::ResourceId(4)), Some(&payload[..]));
+    assert_eq!(replica.resources().payload_bytes(crate::ResourceId(4)), Some(&payload[..]));
 }
 
 fn commit_tx(tx: crate::Transaction<'_>) -> ChangeSet {
@@ -525,14 +531,14 @@ fn published_row_index_tracks_swap_remove_compaction_and_slot_reuse() {
         for index in 0..(s.capacity() as u32 + 2 * nve_abi::table::NVE_ROW_INDEX_PAGE_LEN) {
             let expected = owners
                 .iter()
-                .position(|&raw| NodeId(raw).node_index().0 == index)
+                .position(|&raw| raw.node_index().0 == index)
                 .map(|r| r as u32);
             assert_eq!(published_row_of(v, index), expected, "round {round}, node slot {index}");
         }
         for &n in &live {
             assert_eq!(
                 published_row_of(v, n.index() as u32).map(|r| owners[r as usize]),
-                s.has::<Badge>(n).then_some(n.raw()),
+                s.has::<Badge>(n).then_some(n),
                 "round {round}: {n:?}"
             );
         }
@@ -546,67 +552,190 @@ fn word_values_are_total() {
 }
 
 #[test]
-fn publish_table_views_and_table_event_bus_roundtrip() {
+fn publish_table_views_and_surface_event_tracker_roundtrip() {
+    #[repr(u8)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, crate::EventEnum)]
+    enum WidgetEvent {
+        Press = 0,
+        Hover = 1,
+        Focus = 2,
+    }
+
+    #[allow(dead_code)]
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.widget_events", storage = "sparse", flags = "publish", events = WidgetEvent)]
+    struct WidgetEvents {
+        #[effect(semantics)]
+        disabled: bool,
+    }
+
+    assert_eq!(WidgetEvents::DESC.events_word, 0);
+    assert_ne!(WidgetEvents::DESC.flags & nve_abi::table::table_flags::HAS_EVENTS, 0);
+    assert_eq!(WidgetEvents::DESC.defaults[0], 0);
+
     let mut store = NodeStore::new();
-    let mut tx = store.tx();
-    let n = tx.create();
-    tx.set_children(NodeId::ROOT, &[n]);
-    tx.edit::<Visual>(n).opacity(0.4).bg(Rgba::rgb(1, 2, 3));
-    let mut changes = ChangeSet::default();
-    tx.commit_into(&mut changes);
+    let mut tracker = crate::SurfaceEventTracker::new();
+    tracker.track::<WidgetEvents>();
+    let mut transitions = Vec::new();
 
-    let mut views = Vec::new();
-    let mut dirty = Vec::new();
-    store.publish_table_views(&changes, &mut views, &mut dirty);
-    let view = views
-        .iter()
-        .find(|v| v.key_lo == Visual::KEY.lo() && v.key_hi == Visual::KEY.hi())
-        .expect("published Visual NveTableView");
-    assert_eq!(view.words as usize, Visual::DESC.words());
-    assert!(view.row_count as usize > n.index());
-    assert_eq!(view.dirty_count, 1);
+    let (n1, n2) = {
+        let mut tx = store.tx();
+        let n1 = tx.create();
+        let n2 = tx.create();
+        tx.set_children(NodeId::ROOT, &[n1, n2]);
+        tx.edit::<Visual>(n1).opacity(0.4).bg(Rgba::rgb(1, 2, 3));
+        tx.edit::<WidgetEvents>(n1)
+            .listen(WidgetEvent::Press)
+            .listen(WidgetEvent::Hover);
+        tx.edit::<WidgetEvents>(n2).listen(WidgetEvent::Press);
+        let mut changes = ChangeSet::default();
+        tx.commit_into(&mut changes);
 
-    // Zero-serialization in-process TableEventBus + FFI NveDirectEvent + EventRing round-trip.
-    let mut bus = crate::TableEventBus::new();
-    bus.emit::<Visual, (f32, f32)>(7, n, 1234, 42, (10.0, 20.0));
-    let events: Vec<_> = bus.drain().collect();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].payload::<(f32, f32)>(), Some(&(10.0, 20.0)));
+        let mut views = Vec::new();
+        let mut dirty = Vec::new();
+        store.publish_table_views(&changes, &mut views, &mut dirty);
+        let view = views
+            .iter()
+            .find(|v| v.key_lo == Visual::KEY.lo() && v.key_hi == Visual::KEY.hi())
+            .expect("published Visual NveTableView");
+        assert_eq!(view.words as usize, Visual::DESC.words());
+        assert!(view.row_count as usize > n1.index());
+        assert_eq!(view.dirty_count, 1);
 
-    let native = events[0].to_native_event(|_| b"ok".to_vec());
-    let direct = native.as_direct_event();
-    let batch = [direct];
-    // SAFETY: `batch` and `native` outlive `batch_ref` in this test.
-    let batch_ref = unsafe { nve_abi::NveEventBatchRef::from_slice(&batch) };
-    let decoded_direct = nve_abi::direct_event_to_native(batch_ref.get(0).unwrap()).unwrap();
-    assert_eq!(decoded_direct, native);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+        (n1, n2)
+    };
 
-    let ring = nve_abi::encode_events(std::slice::from_ref(&native));
-    let decoded_ring = nve_abi::decode_events(&ring).unwrap();
-    assert_eq!(decoded_ring, vec![native]);
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 2);
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Hover), 1);
+    assert_eq!(
+        tracker.listeners_of::<WidgetEvents>(n1),
+        WidgetEvent::Press | WidgetEvent::Hover
+    );
+    assert_eq!(
+        store.row::<WidgetEvents>(n1).listeners(),
+        WidgetEvent::Press | WidgetEvent::Hover
+    );
+    assert_eq!(
+        transitions,
+        vec![
+            (WidgetEvents::slot(), WidgetEvent::Press.event_id(), true),
+            (WidgetEvents::slot(), WidgetEvent::Hover.event_id(), true),
+        ]
+    );
+
+    // Unlisten Hover on n1 (1 -> 0) and detach WidgetEvents on n2 (Press 2 -> 1).
+    transitions.clear();
+    {
+        let mut tx = store.tx();
+        tx.edit::<WidgetEvents>(n1).unlisten(WidgetEvent::Hover);
+        tx.detach::<WidgetEvents>(n2);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+    }
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 1);
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Hover), 0);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Hover.event_id(), false)]
+    );
+
+    // Removing n1 drops Press from 1 -> 0.
+    transitions.clear();
+    {
+        let mut tx = store.tx();
+        tx.remove(n1);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+    }
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 0);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Press.event_id(), false)]
+    );
+
+    // Slot reuse: after `n1` is removed and recycled, a new node `n3` reusing `n1.index()` with
+    // bumped generation must start with 0 listeners and track exact 0->1 / 1->0 transitions.
+    transitions.clear();
+    let n3 = {
+        let mut tx = store.tx();
+        let n3 = tx.create();
+        tx.set_children(NodeId::ROOT, &[n2, n3]);
+        tx.edit::<WidgetEvents>(n3).listen(WidgetEvent::Press);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+        n3
+    };
+    assert_eq!(n3.index(), n1.index(), "slot index recycled");
+    assert_ne!(n3, n1, "generation bumped on slot reuse");
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 1);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Press.event_id(), true)]
+    );
+    transitions.clear();
+    {
+        let mut tx = store.tx();
+        tx.remove(n3);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+    }
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 0);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Press.event_id(), false)]
+    );
+
+    // Uniform 64 B NveEvent batch + wire roundtrip.
+    let mut batch = crate::EventBatchBuf::new();
+    batch.push_event(
+        WidgetEvents::KEY,
+        nve_abi::SurfaceId::new(7, 0),
+        n2,
+        crate::TimestampUs(1234),
+        WidgetEvent::Press,
+        crate::EventFlags::EMPTY,
+        [10.0f32.to_bits(), 20.0f32.to_bits(), 0, 0, 0, 0],
+        b"ok",
+    );
+    let validated = batch.as_validated();
+    assert_eq!(validated.len(), 1);
+    let ev = validated.get(0).unwrap();
+    assert_eq!(ev.table(), WidgetEvents::KEY);
+    assert_eq!(ev.event(), WidgetEvent::Press.event_id());
+    assert_eq!(ev.bytes(), b"ok");
+
+    let wire = batch.to_wire_bytes();
+    let decoded = crate::EventBatchBuf::decode_wire(&wire).unwrap();
+    assert_eq!(decoded.events(), batch.events());
+    assert_eq!(decoded.bytes(), batch.bytes());
 }
 
 #[test]
 fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
-    crate::register_codec::<Shadows>();
     let mut store = NodeStore::replica();
-    let mut encoded = Vec::new();
-    Shadows(vec![1.0, 2.0]).encode(&mut encoded);
+    let encoded = Shadows(vec![1.0, 2.0]).to_le_bytes();
 
     // Repeatedly defining + reclaiming the same unreferenced resource id across many frames must
     // preserve `RES_IN_FREE` and never grow `free` unboundedly.
     for _ in 0..20 {
-        assert!(
-            store
-                .resources
-                .define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded)
-        );
+        assert!(store
+            .resources
+            .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &encoded));
         // Duplicate define_at in the same frame must not push a duplicate into `pending_free`.
-        assert!(
-            store
-                .resources
-                .define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded)
-        );
+        assert!(store
+            .resources
+            .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &encoded));
         assert_eq!(
             store.resources.pending_free_len(),
             1,
@@ -614,6 +743,7 @@ fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
         );
         store.resources.end_frame();
         assert_eq!(store.stats().resources_live, 0);
+        assert_eq!(store.resources.words_live(), 0);
         assert!(
             store.resources.free_len() <= 1,
             "free list must not grow on repeated replica recycle: len={}",
@@ -623,77 +753,52 @@ fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
 }
 
 #[test]
-fn replica_mirrors_unregistered_resource_kinds_as_opaque_bytes() {
+fn replica_mirrors_unknown_resource_kinds_as_exact_words() {
     let mut store = NodeStore::replica();
     let kind = nve_abi::Key64::of("nve.res.test_unlinked_module_kind");
-    let bytes = [7u8, 0, 1, 2, 3];
+    let bytes = [7u8, 0, 1, 2, 3, 4, 5, 6];
     for (id, ephemeral) in [(1, false), (2, true)] {
         let rid = crate::ResourceId(id);
-        assert!(store.resources.define_at(rid, kind, ephemeral, &bytes), "unknown kind is kept, not rejected");
+        assert!(store.resources.define_at(rid, kind, ephemeral, &[], &bytes), "unknown kind is kept, not rejected");
         store.resources.retain(rid);
         assert_eq!(store.resources.kind(rid), Some(kind));
         assert!(store.resources.is_defined(rid));
-        assert_eq!(store.resource::<Shadows>(rid), None, "opaque bytes never downcast to a typed value");
-        let mut out = Vec::new();
-        assert!(store.resources.encode(rid, &mut out), "opaque entries re-encode their exact bytes");
-        assert_eq!(out, bytes);
+        assert_eq!(store.resource::<Shadows>(rid), None, "foreign kind never views as another type");
+        assert_eq!(store.resources.payload_bytes(rid), Some(&bytes[..]), "exact words kept");
     }
-    assert!(!store.resources.define_at(crate::ResourceId(0), kind, false, &bytes), "id 0 stays reserved");
+    assert!(!store.resources.define_at(crate::ResourceId(0), kind, false, &[], &bytes), "id 0 stays reserved");
+    assert!(!store.resources.define_at(crate::ResourceId(3), kind, false, &[], &bytes[..5]), "payload must be whole words");
 
-    // Redefining an opaque slot with a decodable known kind clears the opaque flag.
-    crate::register_codec::<Shadows>();
-    let mut enc = Vec::new();
-    Shadows(vec![4.0]).encode(&mut enc);
-    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &enc));
-    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(&Shadows(vec![4.0])));
+    // Redefining the slot with a known kind makes it viewable as that type.
+    let enc = Shadows(vec![4.0]).to_le_bytes();
+    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &enc));
+    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(vec![4.0]));
 }
 
 #[test]
 fn replica_define_at_retain_not_clobbered_by_intern() {
-    crate::register_codec::<Shadows>();
     let mut store = NodeStore::replica();
-    let mut enc_a = Vec::new();
-    Shadows(vec![1.0, 2.0]).encode(&mut enc_a);
-    let mut enc_b = Vec::new();
-    Shadows(vec![9.0, 8.0]).encode(&mut enc_b);
+    let enc_a = Shadows(vec![1.0, 2.0]).to_le_bytes();
 
     // Frame 1: define unreferenced id=1 -> end_frame moves it onto `free` with `RES_IN_FREE`.
-    assert!(
-        store
-            .resources
-            .define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a)
-    );
+    assert!(store
+        .resources
+        .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &enc_a));
     store.resources.end_frame();
 
     // Frame 2: wire redefines id=1 AND retains it (still carries `RES_IN_FREE` until popped).
-    assert!(
-        store
-            .resources
-            .define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a)
-    );
+    assert!(store
+        .resources
+        .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &enc_a));
     store.resources.retain(crate::ResourceId(1));
     store.resources.end_frame();
-    assert_eq!(
-        store.resource::<Shadows>(crate::ResourceId(1)),
-        Some(&Shadows(vec![1.0, 2.0]))
-    );
+    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(vec![1.0, 2.0]));
 
     // Local `intern` pops id=1 from `free`, must see it is live and skip it instead of clobbering!
-    let local_id = store.resources.intern(Shadows(vec![9.0, 8.0]));
-    assert_ne!(
-        local_id,
-        crate::ResourceId(1),
-        "live replica resource slot must not be clobbered"
-    );
-    assert_eq!(
-        store.resource::<Shadows>(crate::ResourceId(1)),
-        Some(&Shadows(vec![1.0, 2.0]))
-    );
-    assert_eq!(
-        store.resource::<Shadows>(local_id),
-        Some(&Shadows(vec![9.0, 8.0]))
-    );
-    let _ = enc_b;
+    let local_id = store.resources.intern(&Shadows(vec![9.0, 8.0]));
+    assert_ne!(local_id, crate::ResourceId(1), "live replica resource slot must not be clobbered");
+    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(vec![1.0, 2.0]));
+    assert_eq!(store.resource::<Shadows>(local_id), Some(vec![9.0, 8.0]));
 }
 
 #[test]
@@ -729,53 +834,54 @@ fn install_dynamic_table_rejects_static_slot_and_schema_mismatch() {
 }
 
 #[test]
-#[should_panic(expected = "distinct Rust types")]
-fn intern_type_mismatch_on_kind_collision_panics() {
+fn intern_distinct_rust_types_with_same_kind_do_not_alias() {
     #[derive(Debug, PartialEq)]
     struct CollideA(u32);
     #[derive(Debug, PartialEq)]
     struct CollideB(u32);
     const SHARED_KIND: nve_hash::Key64 = nve_hash::Key64(nve_hash::const_id("test.collide.kind"));
-    impl Resource for CollideA {
+    impl FlatResource for CollideA {
         const KIND: nve_hash::Key64 = SHARED_KIND;
-        fn encode(&self, out: &mut Vec<u8>) {
-            out.extend_from_slice(&self.0.to_le_bytes());
-        }
-        fn decode(b: &[u8]) -> Option<Self> {
-            b.try_into().ok().map(|a| Self(u32::from_le_bytes(a)))
-        }
+        type View<'a> = u32;
+        fn write_words(&self, out: &mut Vec<u32>) -> bool { out.push(self.0); true }
+        fn validate(w: &[u32]) -> bool { w.len() == 1 }
+        fn view(w: crate::ValidatedWords<'_, Self>) -> u32 { w[0] }
     }
-    impl Resource for CollideB {
+    impl FlatResource for CollideB {
         const KIND: nve_hash::Key64 = SHARED_KIND;
-        fn encode(&self, out: &mut Vec<u8>) {
-            out.extend_from_slice(&self.0.to_le_bytes());
-        }
-        fn decode(b: &[u8]) -> Option<Self> {
-            b.try_into().ok().map(|a| Self(u32::from_le_bytes(a)))
-        }
+        type View<'a> = u32;
+        fn write_words(&self, out: &mut Vec<u32>) -> bool { out.push(self.0); true }
+        fn validate(w: &[u32]) -> bool { w.len() == 1 }
+        fn view(w: crate::ValidatedWords<'_, Self>) -> u32 { w[0] }
     }
 
     let mut store = NodeStore::new();
-    let _ = store.resources.intern(CollideA(42));
-    // Identical bytes + identical KIND, different Rust type -> must miss dedup and panic in register_codec.
-    let _ = store.resources.intern(CollideB(42));
+    let id_a = store.resources.intern(&CollideA(42));
+    // Identical words + identical KIND, different Rust type -> must NOT alias and must keep type isolation.
+    let id_b = store.resources.intern(&CollideB(42));
+    assert_ne!(id_a, id_b);
+    assert_eq!(store.resource::<CollideA>(id_a), Some(42));
+    assert_eq!(store.resource::<CollideB>(id_a), None);
+    assert_eq!(store.resource::<CollideB>(id_b), Some(42));
+    assert_eq!(store.resource::<CollideA>(id_b), None);
 }
 
 #[test]
 fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free() {
-    crate::register_codec::<Shadows>();
     let mut store = NodeStore::replica();
-    let mut enc_a = Vec::new();
-    Shadows(vec![1.0, 2.0]).encode(&mut enc_a);
-    let mut enc_b = Vec::new();
-    Shadows(vec![3.0, 4.0]).encode(&mut enc_b);
+    let enc_a = Shadows(vec![1.0, 2.0]).to_le_bytes();
+    let enc_b = Shadows(vec![3.0, 4.0]).to_le_bytes();
 
     let id = crate::ResourceId(1);
     // Same-frame define_at -> retain -> define_at -> release must preserve RES_PENDING_FREE.
-    assert!(store.resources.define_at(id, Shadows::KIND, false, &enc_a));
+    assert!(store
+        .resources
+        .define_at(id, Shadows::KIND, false, &[], &enc_a));
     assert_eq!(store.resources.pending_free_len(), 1);
     store.resources.retain(id);
-    assert!(store.resources.define_at(id, Shadows::KIND, false, &enc_b));
+    assert!(store
+        .resources
+        .define_at(id, Shadows::KIND, false, &[], &enc_b));
     store.resources.release(id);
     assert_eq!(
         store.resources.pending_free_len(),
@@ -786,6 +892,7 @@ fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free(
     store.resources.end_frame();
     assert_eq!(store.resources.pending_free_len(), 0);
     assert_eq!(store.stats().resources_live, 0);
+    assert_eq!(store.resources.words_live(), 0);
     assert_eq!(
         store.resources.free_len(),
         1,
@@ -955,15 +1062,14 @@ fn wire_decoder_rejects_hostile_sparse_node_and_resource_keyframes_before_alloca
     // 2. Hostile padded keyframe jumping to ResourceId(400_000): 400_000 * ENTRY_BYTES (~56 B) =
     //    ~22.4 MiB > (16 MiB + 64 KiB * 16 = 17 MiB) -> rejected with WireError::Budget before
     //    allocating; ResourceId(0) short-circuits to Resource; ResourceId(1 << 20) hits Budget.
-    crate::register_codec::<Shadows>();
-    let mut shadow_blob = Vec::new();
-    Shadows(vec![1.0]).encode(&mut shadow_blob);
+    let shadow_blob = Shadows(vec![1.0]).to_le_bytes();
     let build_res_op = |rid: u32| {
         let mut def_res = Vec::new();
         def_res.extend_from_slice(&rid.to_le_bytes());
         def_res.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
         def_res.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
         def_res.extend_from_slice(&0u32.to_le_bytes());
+        def_res.extend_from_slice(&0u32.to_le_bytes()); // child_count
         def_res.extend_from_slice(&(shadow_blob.len() as u32).to_le_bytes());
         def_res.extend_from_slice(&shadow_blob);
         def_res
@@ -1364,7 +1470,7 @@ fn dense_reserve_bulk_repeated_root_patches_and_empty_patch_do_not_inflate_rows(
         col.row_count()
     );
 
-    // 3. Two-op sparse Patch frame including NodeId(300) (>= 256, page 1) in Op 2 exercises
+    // 3. Two-op sparse Patch frame including NodeId::new(300, 0) (>= 256, page 1) in Op 2 exercises
     //    fallible try_writer -> try_attach + PagedIndex::try_set's dir resize and new-page branch.
     let text_slot = Text::slot();
     let text_decl = encode_table_decl(&Text::DESC, 1);
@@ -1398,7 +1504,7 @@ fn dense_reserve_bulk_repeated_root_patches_and_empty_patch_do_not_inflate_rows(
             .expect("two-op sparse frame succeeds via try_writer -> try_attach + try_set");
         tx.commit_into(&mut changes);
     }
-    assert!(replica.has::<Text>(NodeId(300)));
+    assert!(replica.has::<Text>(NodeId::new(300, 0)));
     assert_eq!(
         replica.columns[text_slot.0 as usize]
             .as_ref()
@@ -1412,9 +1518,9 @@ fn dense_reserve_bulk_repeated_root_patches_and_empty_patch_do_not_inflate_rows(
 fn wire_detach_on_high_index_node_across_sparse_and_dynamic_tables_dedups_sparsely() {
     use crate::wire::{Op, WireDecoder};
 
-    // Frame 1: create high-index NodeId(100_000) (3.2 MiB << 16 MiB), declare 32 dynamic sparse
-    // tables + static sparse Text, and attach all 33 to NodeId(100_000).
-    let high_id = NodeId(100_000);
+    // Frame 1: create high-index NodeId::new(100_000, 0) (3.2 MiB << 16 MiB), declare 32 dynamic sparse
+    // tables + static sparse Text, and attach all 33 to NodeId::new(100_000, 0).
+    let high_id = NodeId::new(100_000, 0);
     let create_body = high_id.raw().to_le_bytes();
     let text_slot = Text::slot();
     let mut decls = encode_table_decl(&Text::DESC, 0);
@@ -1461,7 +1567,7 @@ fn wire_detach_on_high_index_node_across_sparse_and_dynamic_tables_dedups_sparse
     // Frame 2: detach across all 33 sparse tables; also detach->re-attach->detach slot 0 (must
     // dedup to 1 entry), detach->re-attach slot 1 (must NOT appear in ChangeSet::detached), and
     // CreateNodes + Patch + Detach on a brand-new CREATED node (must NOT appear in detached).
-    let fresh_id = NodeId(100_001);
+    let fresh_id = NodeId::new(100_001, 0);
     let fresh_create = fresh_id.raw().to_le_bytes();
     let mut fresh_patch = Vec::new();
     fresh_patch.extend_from_slice(&fresh_id.raw().to_le_bytes());
@@ -1596,7 +1702,7 @@ fn session_budget_allows_churned_keyframes_and_blocks_multiframe_stride_1024_amp
     );
     assert_eq!(
         replica.resource::<Shadows>(replica.row::<Visual>(last_node).shadows()),
-        Some(&last_shadow)
+        Some(last_shadow.0.clone())
     );
 
     // 2. Multi-frame stride-1024 node + dense-Visual attack (spoofing frame == 1 on every delta
@@ -1656,9 +1762,7 @@ fn session_budget_allows_churned_keyframes_and_blocks_multiframe_stride_1024_amp
     );
 
     // 3. Multi-frame stride-1024 resource attack must hit WireError::Budget well before 500 frames.
-    crate::register_codec::<Shadows>();
-    let mut blob = Vec::new();
-    Shadows(vec![42.0]).encode(&mut blob);
+    let blob = Shadows(vec![42.0]).to_le_bytes();
     let mut res_store = NodeStore::replica();
     let mut res_dec = WireDecoder::default();
     let mut res_hit_at = None;
@@ -1669,6 +1773,7 @@ fn session_budget_allows_churned_keyframes_and_blocks_multiframe_stride_1024_amp
         def.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
         def.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
         def.extend_from_slice(&0u32.to_le_bytes());
+        def.extend_from_slice(&0u32.to_le_bytes()); // child_count
         def.extend_from_slice(&(blob.len() as u32).to_le_bytes());
         def.extend_from_slice(&blob);
         let frame = build_wire_frame_num(
@@ -1739,7 +1844,7 @@ fn dirty_list_try_reserve_plus_one_prevents_grow_at_exact_64_and_patch_detach_re
     }
 
     // Frame 2: Write MODIFIED values to all 64 nodes so `changed == 1` fills `dirty.len() == 64`
-    // (`buf_len == 65`), re-patch already-dirty NodeId(2) (which bumps `buf_len` to 66 via
+    // (`buf_len == 65`), re-patch already-dirty NodeId::new(2, 0) (which bumps `buf_len` to 66 via
     // `reserve_bulk` and exercises `try_writer`'s `try_reserve(0)` fast path), then Detach ROOT
     // and re-Patch ROOT (pushing the 65th dirty entry so `dirty.len() == 65` and `buf_len() == 66`,
     // never 128 via grow()). Direct `len == buf_len` -> `try_reserve(0)` is tested below.
@@ -1788,7 +1893,7 @@ fn dirty_list_try_reserve_plus_one_prevents_grow_at_exact_64_and_patch_detach_re
         tx.commit_into(&mut changes);
     }
     assert_eq!(replica.row::<Visual>(NodeId::ROOT).bg(), Rgba(0x1122_3344));
-    assert_eq!(replica.row::<Visual>(NodeId(2)).bg(), Rgba(0xAABB_CCDD));
+    assert_eq!(replica.row::<Visual>(NodeId::new(2, 0)).bg(), Rgba(0xAABB_CCDD));
 
     // Direct DirtyList boundary: when `len == buf_len` (64 == 64), `try_reserve(0)` must add the
     // 1 scratch slot (65) so a subsequent no-op `push_if(_, false)` does NOT double to 128.
@@ -1840,10 +1945,10 @@ fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() 
         decls
     };
 
-    // Vector 1a (positive): 1 high-index live node (NodeId(500_000)) + 32 dynamic 1-word sparse
-    // tables each receiving 2,000 repeated `(NodeId(500_000), mask = 0)` patches -> succeeds with
+    // Vector 1a (positive): 1 high-index live node (NodeId::new(500_000, 0)) + 32 dynamic 1-word sparse
+    // tables each receiving 2,000 repeated `(NodeId::new(500_000, 0), mask = 0)` patches -> succeeds with
     // `paged_pool_cap() <= 8` AND exact bounded/charged `owners`/`masks`/`rows` capacities <= 2,000.
-    let high_id = NodeId(500_000);
+    let high_id = NodeId::new(500_000, 0);
     let dup_decls = build_dyn_sparse_decls(32, 1, 0xCAFE_F000_0000_0000, "dup.paged");
     let create_high = high_id.raw().to_le_bytes();
     let repeat_n: u32 = 2_000;
@@ -2058,15 +2163,14 @@ fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereser
     //    from `ENTRY_BYTES` so the guard holds whatever an `Entry` weighs.
     let rid1 =
         (SESSION_BASE_SLOT_BYTES / 32 * 31 / crate::resource::ResourceStore::ENTRY_BYTES) as u32;
-    crate::register_codec::<Shadows>();
-    let mut blob = Vec::new();
-    Shadows(vec![1.5]).encode(&mut blob);
+    let blob = Shadows(vec![1.5]).to_le_bytes();
     let build_res = |fnum: u64, rid: u32| {
         let mut def = Vec::new();
         def.extend_from_slice(&rid.to_le_bytes());
         def.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
         def.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
         def.extend_from_slice(&0u32.to_le_bytes());
+        def.extend_from_slice(&0u32.to_le_bytes()); // child_count
         def.extend_from_slice(&(blob.len() as u32).to_le_bytes());
         def.extend_from_slice(&blob);
         build_wire_frame_num(fnum, &[(Op::DefineResources as u8, 0, 1, &def)])
@@ -2106,7 +2210,7 @@ fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereser
     }
     assert_eq!(r_store.resources.entries_cap(), cap_before_rf3);
 
-    // 2. NodeStore::nodes overshoot guard: Frame 1 NodeId(500_000) (~16.00 MB) + Frame 2
+    // 2. NodeStore::nodes overshoot guard: Frame 1 NodeId::new(500_000, 0) (~16.00 MB) + Frame 2
     //    NodeId(500_001) (+1) must clamp nodes_cap to SessionBudget (never 2x to 1_000_002).
     let nf1 = build_wire_frame_num(
         1,
@@ -2124,7 +2228,7 @@ fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereser
     let mut n_dec = WireDecoder::default();
     {
         let mut tx = n_store.tx();
-        n_dec.apply(&mut tx, &nf1).expect("NodeId(500_000) fits");
+        n_dec.apply(&mut tx, &nf1).expect("NodeId::new(500_000, 0) fits");
         tx.commit_into(&mut changes);
     }
     assert_eq!(n_store.nodes_cap(), 500_001);
@@ -2206,4 +2310,148 @@ fn paged_index_try_set_dir_doubling_never_starves_required_pool_growth() {
     assert_eq!(short.dir_cap(), 500);
     assert_eq!(short.pool_cap(), 100);
     assert_eq!(short_budget.remaining(), 1_027);
+}
+
+#[test]
+fn opt_word_wide_option_64bit_flags_and_grid_line_roundtrip_and_wire() {
+    use crate::wire::{WireDecoder, WireEncoder};
+    use crate::{word_flags, GridLine};
+
+    word_flags! {
+        pub struct SampleFlags(u8) {
+            const A = 1 << 0;
+            const B = 1 << 1;
+            const C = 1 << 2;
+        }
+    }
+
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.c2_all", storage = "sparse", flags = "publish")]
+    #[allow(dead_code)]
+    pub struct C2All {
+        #[effect(paint)]
+        pub opt_bool: Option<bool>,
+        #[effect(paint)]
+        pub opt_u8: Option<u8>,
+        #[effect(paint)]
+        pub opt_i8: Option<i8>,
+        #[effect(paint)]
+        pub opt_u16: Option<u16>,
+        #[effect(paint)]
+        pub opt_i16: Option<i16>,
+        #[effect(paint)]
+        pub opt_align: Option<Align>,
+        #[effect(paint)]
+        pub opt_flags: Option<SampleFlags>,
+        #[effect(layout)]
+        pub opt_len: Option<Length>,
+        #[effect(layout)]
+        pub opt_grid: Option<GridLine>,
+        #[effect(semantics)]
+        pub opt_node: Option<NodeId>,
+        #[effect(semantics)]
+        pub opt_surf: Option<nve_abi::SurfaceId>,
+        #[effect(paint)]
+        pub wide_f32: Option<f32>,
+        #[effect(paint)]
+        pub wide_u32: Option<u32>,
+        #[effect(paint)]
+        pub wide_i32: Option<i32>,
+        #[effect(paint)]
+        pub wide_rgba: Option<Rgba>,
+        #[effect(paint)]
+        pub wide_u64: u64,
+        #[effect(paint)]
+        pub wide_i64: i64,
+        #[effect(paint)]
+        pub wide_f64: f64,
+    }
+
+    let mut src = NodeStore::new();
+    let mut tx = src.tx();
+    let def_n = tx.create();
+    let full_n = tx.create();
+    tx.set_children(NodeId::ROOT, &[def_n, full_n]);
+    let _ = tx.edit::<C2All>(def_n);
+    tx.edit::<C2All>(full_n)
+        .opt_bool(Some(false))
+        .opt_u8(Some(u8::MAX))
+        .opt_i8(Some(i8::MIN))
+        .opt_u16(Some(u16::MAX))
+        .opt_i16(Some(i16::MIN))
+        .opt_align(Some(Align::Start))
+        .opt_flags(Some(SampleFlags::A | SampleFlags::C))
+        .opt_len(Some(Length::points(0.0)))
+        .opt_grid(Some(GridLine::Span(3)))
+        .opt_node(Some(NodeId::ROOT))
+        .opt_surf(Some(nve_abi::SurfaceId::ROOT))
+        .wide_f32(Some(0.0))
+        .wide_u32(Some(u32::MAX))
+        .wide_i32(Some(i32::MIN))
+        .wide_rgba(Some(Rgba::TRANSPARENT))
+        .wide_u64(0x1234_5678_9ABC_DEF0)
+        .wide_i64(-0x1234_5678_9ABC_DEF0)
+        .wide_f64(core::f64::consts::PI);
+
+    // Typed `tx.set` via generated `Prop` handles (including wide & 64-bit).
+    tx.set(def_n, C2All::WIDE_F32, Some(2.5));
+    tx.set(def_n, C2All::WIDE_U64, 99u64);
+    let changes = commit_tx(tx);
+
+    // Wire roundtrip into a replica store.
+    let mut enc = WireEncoder::default();
+    let mut wire = Vec::new();
+    enc.encode(&src, &changes, &mut wire);
+
+    let mut dst = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut dst_tx = dst.tx();
+    dec.apply(&mut dst_tx, &wire).expect("NVE2 decode C2All");
+    commit_tx(dst_tx);
+
+    let d = dst.try_row::<C2All>(def_n).unwrap();
+    assert_eq!(d.opt_bool(), None);
+    assert_eq!(d.opt_u8(), None);
+    assert_eq!(d.opt_i16(), None);
+    assert_eq!(d.opt_align(), None);
+    assert_eq!(d.opt_flags(), None);
+    assert_eq!(d.opt_len(), None);
+    assert_eq!(d.opt_grid(), None);
+    assert_eq!(d.opt_node(), None);
+    assert_eq!(d.wide_f32(), Some(2.5));
+    assert_eq!(d.wide_u32(), None);
+    assert_eq!(d.wide_rgba(), None);
+    assert_eq!(d.wide_u64(), 99);
+    assert_eq!(d.wide_i64(), 0);
+    assert_eq!(d.wide_f64(), 0.0);
+
+    // Sentinel boundary values must roundtrip as `Some(...)` (never conflated with `None`).
+    let f = dst.try_row::<C2All>(full_n).unwrap();
+    assert_eq!(f.opt_bool(), Some(false));
+    assert_eq!(f.opt_u8(), Some(u8::MAX));
+    assert_eq!(f.opt_i8(), Some(i8::MIN));
+    assert_eq!(f.opt_u16(), Some(u16::MAX));
+    assert_eq!(f.opt_i16(), Some(i16::MIN));
+    assert_eq!(f.opt_align(), Some(Align::Start));
+    assert_eq!(f.opt_flags(), Some(SampleFlags::A | SampleFlags::C));
+    assert_eq!(f.opt_len(), Some(Length::points(0.0)));
+    assert_eq!(f.opt_grid(), Some(GridLine::Span(3)));
+    assert_eq!(f.opt_node(), Some(NodeId::ROOT));
+    assert_eq!(f.opt_surf(), Some(nve_abi::SurfaceId::ROOT));
+    assert_eq!(f.wide_f32(), Some(0.0));
+    assert_eq!(f.wide_u32(), Some(u32::MAX));
+    assert_eq!(f.wide_i32(), Some(i32::MIN));
+    assert_eq!(f.wide_rgba(), Some(Rgba::TRANSPARENT));
+    assert_eq!(f.wide_u64(), 0x1234_5678_9ABC_DEF0);
+    assert_eq!(f.wide_i64(), -0x1234_5678_9ABC_DEF0);
+    assert_eq!(f.wide_f64(), core::f64::consts::PI);
+
+    // Clearing a wide Option back to None works cleanly.
+    let mut tx2 = dst.tx();
+    tx2.edit::<C2All>(full_n).wide_f32(None).wide_rgba(None);
+    commit_tx(tx2);
+    let f2 = dst.try_row::<C2All>(full_n).unwrap();
+    assert_eq!(f2.wide_f32(), None);
+    assert_eq!(f2.wide_rgba(), None);
+    assert_eq!(f2.wide_u32(), Some(u32::MAX));
 }

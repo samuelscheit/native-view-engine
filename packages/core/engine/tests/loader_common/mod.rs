@@ -89,32 +89,27 @@ pub struct NveMapEntry {
     pub value: NveValue,
 }
 
-#[repr(C)]
+#[repr(C, align(64))]
 #[derive(Clone, Copy)]
-pub struct NveDirectEvent {
-    pub surface_id: u32,
-    pub node_id: u32,
+pub struct NveEvent {
     pub timestamp_us: u64,
-    pub kind: u8,
-    pub payload_tag: u8,
-    pub modifiers: u8,
-    pub event_flags: u8,
-    pub key_code: u32,
-    pub name: NveStrSlice,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub text: NveStrSlice,
-    pub value: NveValue,
+    pub table: u64,
+    pub surface: u32,
+    pub node: u32,
+    pub event: u32,
+    pub flags: u32,
+    pub payload: [u32; 6],
+    pub bytes_offset: u32,
+    pub bytes_len: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NveEventBatch {
-    pub ptr: *const NveDirectEvent,
-    pub count: u32,
-    pub _pad: u32,
+    pub events: *const NveEvent,
+    pub bytes: *const u8,
+    pub event_count: u32,
+    pub bytes_len: u32,
 }
 
 #[repr(C)]

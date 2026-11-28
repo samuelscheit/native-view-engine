@@ -2,11 +2,11 @@ import NveHost
 import Foundation
 import SwiftUI
 
-/// Fixed `NVE_DRAW1` protocol constants matching `packages/core/components/src/canvas_ir.rs`.
+/// Fixed `FlatResource` (`nve.res.draw_list`) word-stream constants matching
+/// `packages/modules/canvas/src/flat.rs`.
 public enum NveDrawListConstants {
-    public static let magic: [UInt8] = Array("NVE_DRAW1".utf8)
-    public static let version: UInt16 = 1
-    public static let headerSize: Int = 15
+    public static let wordSize: Int = 4
+    public static let headerSize: Int = 4
     public static let maxOps: Int = 65_536
     public static let maxPolylinePoints: Int = 16_384
     public static let maxClipDepth: Int = 64
@@ -14,83 +14,79 @@ public enum NveDrawListConstants {
     public static let attrPrefixBytes: [UInt8] = Array("nve-draw1;b64,".utf8)
 }
 
-/// Decoded header of an `NVE_DRAW1` binary draw-list buffer.
+/// Decoded header of a flat `nve.res.draw_list` `u32`-word draw-list buffer.
 public struct NveDrawListHeader: Equatable, Sendable {
-    public let version: UInt16
     public let opCount: UInt32
 
-    public init(version: UInt16, opCount: UInt32) {
-        self.version = version
+    public init(opCount: UInt32) {
         self.opCount = opCount
     }
 }
 
-/// Strict validation and decode errors for `NVE_DRAW1` streams.
+/// Strict validation and decode errors for flat `nve.res.draw_list` word streams.
 public enum NveDrawListError: Error, Equatable, Sendable {
     case truncated
-    case badMagic
-    case unsupportedVersion(UInt16)
     case opCountExceedsLimit(UInt32)
     case polylinePointCountExceedsLimit(UInt32)
-    case unknownOpcode(UInt8)
+    case unknownOpcode(UInt32)
     case nonFiniteFloat
     case trailingBytes(Int)
     case invalidBase64
 }
 
-/// Zero-copy `NVE_DRAW1` binary vector draw-list validator & SwiftUI `GraphicsContext` renderer.
+/// Zero-copy `FlatResource` (`nve.res.draw_list`) binary vector draw-list validator & SwiftUI
+/// `GraphicsContext` renderer matching `packages/modules/canvas/src/flat.rs` byte-for-byte.
 ///
 /// Decodes all 8 opcodes (`Clear`, `FillRect`, `FillRoundedRect`, `FillCircle`, `StrokeLine`,
-/// `StrokePolyline`, `ClipRect`, `RestoreClip`) directly from `UnsafeRawBufferPointer` or `Data`
-/// with strict bounds, NaN/Inf, vertex-cap, and balanced clip-stack guards.
+/// `StrokePolyline`, `ClipRect`, `RestoreClip`) from little-endian `u32` words directly out of
+/// `UnsafeRawBufferPointer` or `Data` with strict bounds, NaN/Inf, vertex-cap, and balanced
+/// clip-stack guards.
 public enum NveDrawListRenderer {
-    public static let opClear: UInt8 = 1
-    public static let opFillRect: UInt8 = 2
-    public static let opFillRoundedRect: UInt8 = 3
-    public static let opFillCircle: UInt8 = 4
-    public static let opStrokeLine: UInt8 = 5
-    public static let opStrokePolyline: UInt8 = 6
-    public static let opClipRect: UInt8 = 7
-    public static let opRestoreClip: UInt8 = 8
+    public static let opClear: UInt32 = 1
+    public static let opFillRect: UInt32 = 2
+    public static let opFillRoundedRect: UInt32 = 3
+    public static let opFillCircle: UInt32 = 4
+    public static let opStrokeLine: UInt32 = 5
+    public static let opStrokePolyline: UInt32 = 6
+    public static let opClipRect: UInt32 = 7
+    public static let opRestoreClip: UInt32 = 8
 
-    /// Strictly validates an `NVE_DRAW1` binary stream zero-copy from `raw`.
+    /// Strictly validates a flat `nve.res.draw_list` little-endian `u32`-word stream zero-copy from `raw`.
     public static func validate(_ raw: UnsafeRawBufferPointer) throws -> NveDrawListHeader {
         let len = raw.count
         guard len >= NveDrawListConstants.headerSize else {
             throw NveDrawListError.truncated
         }
-        for i in 0 ..< NveDrawListConstants.magic.count {
-            if raw[i] != NveDrawListConstants.magic[i] {
-                throw NveDrawListError.badMagic
-            }
-        }
-        let version = UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: 9, as: UInt16.self))
-        guard version == NveDrawListConstants.version else {
-            throw NveDrawListError.unsupportedVersion(version)
-        }
-        let opCount = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 11, as: UInt32.self))
-        guard Int(opCount) <= NveDrawListConstants.maxOps else {
-            throw NveDrawListError.opCountExceedsLimit(opCount)
-        }
 
-        var pos = NveDrawListConstants.headerSize
-        guard len - pos >= Int(opCount) else {
-            throw NveDrawListError.truncated
+        @inline(__always)
+        func loadU32(_ offset: Int) -> UInt32 {
+            UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
         }
 
         @inline(__always)
         func checkFiniteFloat(at offset: Int) throws {
-            let bits = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
-            let v = Float(bitPattern: bits)
+            let v = Float(bitPattern: loadU32(offset))
             if !v.isFinite {
                 throw NveDrawListError.nonFiniteFloat
             }
         }
 
+        let opCount = loadU32(0)
+        guard opCount <= UInt32(NveDrawListConstants.maxOps) else {
+            throw NveDrawListError.opCountExceedsLimit(opCount)
+        }
+
+        var pos = NveDrawListConstants.headerSize
+        guard len - pos >= Int(opCount) * NveDrawListConstants.wordSize else {
+            throw NveDrawListError.truncated
+        }
+
         for _ in 0 ..< Int(opCount) {
-            guard pos < len else { throw NveDrawListError.truncated }
-            let opcode = raw[pos]
-            pos += 1
+            guard len - pos >= NveDrawListConstants.wordSize else {
+                throw NveDrawListError.truncated
+            }
+            let opcode = loadU32(pos)
+            pos += NveDrawListConstants.wordSize
 
             switch opcode {
             case opClear:
@@ -133,15 +129,13 @@ public enum NveDrawListRenderer {
             case opStrokePolyline:
                 guard len - pos >= 12 else { throw NveDrawListError.truncated }
                 try checkFiniteFloat(at: pos)
-                let ptCount = UInt32(
-                    littleEndian: raw.loadUnaligned(fromByteOffset: pos + 8, as: UInt32.self)
-                )
+                let ptCount = loadU32(pos + 8)
                 pos += 12
-                guard Int(ptCount) <= NveDrawListConstants.maxPolylinePoints else {
+                guard ptCount <= UInt32(NveDrawListConstants.maxPolylinePoints) else {
                     throw NveDrawListError.polylinePointCountExceedsLimit(ptCount)
                 }
-                let (needed, overflow) = Int(ptCount).multipliedReportingOverflow(by: 8)
-                guard !overflow, len - pos >= needed else {
+                let needed = Int(ptCount) * 8
+                guard len - pos >= needed else {
                     throw NveDrawListError.truncated
                 }
                 for _ in 0 ..< Int(ptCount) {
@@ -169,17 +163,17 @@ public enum NveDrawListRenderer {
         if pos != len {
             throw NveDrawListError.trailingBytes(len - pos)
         }
-        return NveDrawListHeader(version: version, opCount: opCount)
+        return NveDrawListHeader(opCount: opCount)
     }
 
-    /// Validates an `NVE_DRAW1` `Data` payload.
+    /// Validates a flat `nve.res.draw_list` `Data` payload.
     public static func validate(_ data: Data) throws -> NveDrawListHeader {
         try data.withUnsafeBytes { raw in
             try validate(raw)
         }
     }
 
-    /// Decodes a `nve-draw1;b64,...` or bare base64 string into raw `NVE_DRAW1` bytes.
+    /// Decodes a `nve-draw1;b64,...` or bare base64 string into validated flat `nve.res.draw_list` word bytes.
     public static func decodeAttrString(_ raw: String) throws -> Data {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let b64: String
@@ -188,18 +182,13 @@ public enum NveDrawListRenderer {
         } else {
             b64 = trimmed
         }
-        guard !b64.isEmpty,
-              let decoded = Data(base64Encoded: b64, options: .ignoreUnknownCharacters),
-              !decoded.isEmpty
-        else {
-            throw NveDrawListError.invalidBase64
-        }
+        let decoded = try decodeBase64(b64)
         _ = try validate(decoded)
         return decoded
     }
 
-    /// Zero-copy validates and renders raw `NVE_DRAW1` (or `nve-draw1;b64,...` fallback)
-    /// bytes onto a SwiftUI `GraphicsContext` within `bounds`.
+    /// Zero-copy validates and renders flat `nve.res.draw_list` word bytes (or `nve-draw1;b64,...`
+    /// base64 attribute payload) onto a SwiftUI `GraphicsContext` within `bounds`.
     @discardableResult
     public static func draw(
         _ raw: UnsafeRawBufferPointer,
@@ -211,12 +200,10 @@ public enum NveDrawListRenderer {
             let b64Slice = UnsafeRawBufferPointer(
                 rebasing: raw[NveDrawListConstants.attrPrefixBytes.count ..< raw.count]
             )
-            guard let b64Str = String(bytes: b64Slice, encoding: .utf8),
-                  let decoded = Data(base64Encoded: b64Str, options: .ignoreUnknownCharacters),
-                  !decoded.isEmpty
-            else {
+            guard let b64Str = String(bytes: b64Slice, encoding: .utf8) else {
                 throw NveDrawListError.invalidBase64
             }
+            let decoded = try decodeBase64(b64Str)
             return try draw(decoded, into: &context, in: bounds, cornerRadius: cornerRadius)
         }
 
@@ -236,22 +223,22 @@ public enum NveDrawListRenderer {
 
         var activeCtx = baseCtx
         var clipStack: [GraphicsContext] = []
+        var overflowClipDepth = 0
         var pos = NveDrawListConstants.headerSize
-
-        @inline(__always)
-        func loadF32(_ offset: Int) -> CGFloat {
-            let bits = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
-            return CGFloat(Float(bitPattern: bits))
-        }
 
         @inline(__always)
         func loadU32(_ offset: Int) -> UInt32 {
             UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
         }
 
+        @inline(__always)
+        func loadF32(_ offset: Int) -> CGFloat {
+            CGFloat(Float(bitPattern: loadU32(offset)))
+        }
+
         for _ in 0 ..< Int(header.opCount) {
-            let opcode = raw[pos]
-            pos += 1
+            let opcode = loadU32(pos)
+            pos += NveDrawListConstants.wordSize
 
             switch opcode {
             case opClear:
@@ -345,10 +332,14 @@ public enum NveDrawListRenderer {
                 if clipStack.count < NveDrawListConstants.maxClipDepth {
                     clipStack.append(activeCtx)
                     activeCtx.clip(to: Path(CGRect(x: x, y: y, width: w, height: h)))
+                } else {
+                    overflowClipDepth += 1
                 }
 
             case opRestoreClip:
-                if let previous = clipStack.popLast() {
+                if overflowClipDepth > 0 {
+                    overflowClipDepth -= 1
+                } else if let previous = clipStack.popLast() {
                     activeCtx = previous
                 }
 
@@ -360,7 +351,7 @@ public enum NveDrawListRenderer {
         return Int(header.opCount)
     }
 
-    /// Convenience zero-copy overload for `UnsafeBufferPointer<UInt8>` (e.g. `SceneReader` text slices).
+    /// Convenience zero-copy overload for `UnsafeBufferPointer<UInt8>` (e.g. `SceneReader` slices).
     @discardableResult
     public static func draw(
         _ bytes: UnsafeBufferPointer<UInt8>,
@@ -384,9 +375,20 @@ public enum NveDrawListRenderer {
         }
     }
 
+    private static func decodeBase64(_ raw: String) throws -> Data {
+        let compact = String(raw.filter { !$0.isWhitespace })
+        guard !compact.isEmpty,
+              let decoded = Data(base64Encoded: compact),
+              !decoded.isEmpty
+        else {
+            throw NveDrawListError.invalidBase64
+        }
+        return decoded
+    }
+
     private static func hasAttrPrefix(_ raw: UnsafeRawBufferPointer) -> Bool {
         let prefix = NveDrawListConstants.attrPrefixBytes
-        guard raw.count > prefix.count else { return false }
+        guard raw.count >= prefix.count else { return false }
         for i in 0 ..< prefix.count {
             if raw[i] != prefix[i] { return false }
         }

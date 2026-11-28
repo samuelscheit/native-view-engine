@@ -100,13 +100,13 @@ final class NveSceneTree {
 
   bool isScrollContainer(int index) => s.rowOf(scroll, index) >= 0;
 
-  /// `Interaction.event_mask` of [index] (`0` when absent or disabled).
+  /// `Interaction` listener bitmask (`NveInteractionEventSet`) of [index] (`0` when absent or disabled).
   int eventMask(int index) {
     final row = s.rowOf(interaction, index);
     if (row < 0 || interaction!.boolean(row, InteractionTable.disabled)) {
       return 0;
     }
-    return interaction!.u32(row, InteractionTable.eventMask);
+    return interaction!.eventMask(row, InteractionTable.eventsWord);
   }
 
   /// Live child slot indices of [index] in paint order (stable `z_index` sort when any is set).

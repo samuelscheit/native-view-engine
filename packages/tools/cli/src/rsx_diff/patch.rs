@@ -150,7 +150,7 @@ impl fmt::Display for TextChange {
     }
 }
 
-/// CSS text of `value` for attribute `spec` such that `nve_components::css` stores exactly what
+/// CSS text of `value` for attribute `spec` such that `nve_tables::css` stores exactly what
 /// the compiled app stores for the same RSX value. Float literals mirror the typed numeric path
 /// (`apply_numeric_attr`: `f32` conversion and clamps); strings pass through unchanged.
 pub fn css_value(value: &TypedAttrValue, spec: &AttrSpec) -> Result<String, String> {

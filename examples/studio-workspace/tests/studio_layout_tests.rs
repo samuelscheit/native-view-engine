@@ -6,10 +6,7 @@ use std::time::Instant;
 use common::{
     MultiBackendHarness, data_attr_in_store, find_in_store, live_node_ids, register_studio_tables,
 };
-use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveDirectEventRef,
-    NveEventBatchRef,
-};
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{
     Frame0File, Frame0Meta, LayoutRect, NveApp, StateFile, StoreBackend, StoreWireReplica,
@@ -17,7 +14,7 @@ use nve_engine::{
 };
 use nve_layout::{DynLayoutEngine, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_layout_yoga::YogaLayoutEngine;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeStore};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, CornerRadiusMode, DensityMode, LayoutEngineMode, StudioWorkspaceModule,
 };
@@ -38,11 +35,11 @@ fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
     };
 
     register_studio_tables();
-    let mut app = common::headless_module(1);
+    let mut app = common::headless_module(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, vp);
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
-    let f1 = app.render(1).to_vec();
+    backend.set_viewport(SurfaceId::ROOT, vp);
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
+    let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1)
         .expect("submit initial studio frame");
 
@@ -53,17 +50,16 @@ fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
         let nid =
             find_in_store(host.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).expect("node layout");
-        let ev = [NveDirectEvent::press(
-            1,
+        let mut ev = EventBatchBuf::new();
+        ev.push_press(
+            SurfaceId::ROOT,
             nid,
-            fid * 16_000,
+            TimestampUs(fid * 16_000),
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
-        )];
-        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-        let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
-        assert!(app.dispatch_events(batch), "press '{tid}' not handled");
-        let frame = app.render(fid).to_vec();
+        );
+        assert!(app.dispatch_events(ev.as_validated()), "press '{tid}' not handled");
+        let frame = app.render(FrameId(fid)).to_vec();
         host.submit_nve2_frame(&frame)
             .expect("submit frame after press");
     };
@@ -88,7 +84,7 @@ fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
     assert!(!saved_state_bytes.is_empty());
 
     let meta = Frame0Meta {
-        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+        table_schema_hash: nve_tables::tables::core_tables_schema_hash(),
         app_build_id: 1,
         env_hash: 0,
     };
@@ -100,11 +96,9 @@ fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
     drop(state_file);
 
     let mut cold_backend = HeadlessBackend::new();
-    cold_backend.set_viewport(1, vp);
-    let mut cold_host = StoreWireReplica::new(
-        cold_backend,
-        nve_components::tables::core_realization_order(),
-    );
+    cold_backend.set_viewport(SurfaceId::ROOT, vp);
+    let mut cold_host =
+        StoreWireReplica::new(cold_backend, nve_tables::tables::core_realization_order());
 
     let t0 = Instant::now();
     let (boot_footer, _) = Frame0File::boot_into_replica(&frame0_path, meta, &mut cold_host)
@@ -125,16 +119,16 @@ fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
         scale_factor: 2.0,
     };
     let mut wide_backend = HeadlessBackend::new();
-    wide_backend.set_viewport(1, wide_vp);
+    wide_backend.set_viewport(SurfaceId::ROOT, wide_vp);
     let mut wide_host = StoreWireReplica::new(
         wide_backend,
-        nve_components::tables::core_realization_order(),
+        nve_tables::tables::core_realization_order(),
     );
     Frame0File::boot_into_replica(&frame0_path, meta, &mut wide_host)
         .expect("wide viewport Frame-0 boot");
     let root_wide = wide_host
         .backend()
-        .layout_of(StoreNodeId::ROOT.raw())
+        .layout_of(NodeId::ROOT)
         .expect("root layout");
     assert!((root_wide.width - 1440.0).abs() <= 1.0);
 
@@ -143,7 +137,7 @@ fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
         .load()
         .expect("load state.nve")
         .expect("state payload present");
-    let mut cold_app = common::headless_module(1);
+    let mut cold_app = common::headless_module(SurfaceId::ROOT);
     let t_state_start = Instant::now();
     cold_app.restore_state(&restored_bytes);
     let t_state = t_state_start.elapsed();
@@ -210,18 +204,20 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
         let cy = rect.y + rect.height * 0.5;
 
         let t0 = Instant::now();
-        let handled = h.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: nid,
-            timestamp_us: h.next_frame * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: cx, y: cy },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
+            nid,
+            TimestampUs(h.next_frame * 16_000),
+            cx,
+            cy,
+        );
+        let handled = h.surface.dispatch_events(batch.as_validated());
         assert!(handled);
         let t_disp = t0.elapsed().as_micros();
         let fid = h.next_frame;
         h.next_frame += 1;
-        let rec_us = h.surface.reconcile(fid);
+        let rec_us = h.surface.reconcile(FrameId(fid));
         let fe_us = t0.elapsed().as_micros();
         let store = h.surface.store();
         let changes = h.surface.last_changes();
@@ -336,11 +332,11 @@ impl StoreLayoutEngine for HostMirrorLayoutEngine {
         self.inner.sync_changes(store, changes);
     }
 
-    fn compute_layout(&mut self, store: &NodeStore, root: StoreNodeId, viewport: Viewport) -> bool {
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
         self.inner.compute_layout(store, root, viewport)
     }
 
-    fn layout_of(&self, id: StoreNodeId) -> Option<LayoutRect> {
+    fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
         self.inner.layout_of(id)
     }
 
@@ -364,16 +360,14 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         scale_factor: 1.0,
     };
 
-    let mut app = common::headless_module(1);
+    let mut app = common::headless_module(SurfaceId::ROOT);
     let mut dyn_backend: HeadlessBackend<DynLayoutEngine> =
         HeadlessBackend::with_layout(Box::new(TaffyStoreLayout::new()));
-    dyn_backend.set_viewport(1, vp);
-    let mut replica = StoreWireReplica::new(
-        dyn_backend,
-        nve_components::tables::core_realization_order(),
-    );
+    dyn_backend.set_viewport(SurfaceId::ROOT, vp);
+    let mut replica =
+        StoreWireReplica::new(dyn_backend, nve_tables::tables::core_realization_order());
 
-    let f1 = app.render(1).to_vec();
+    let f1 = app.render(FrameId(1)).to_vec();
     replica.submit_nve2_frame(&f1).unwrap();
     assert_eq!(replica.backend().layout_engine().name(), "taffy");
     assert_eq!(read_root_layout_engine_prop(replica.store()), "taffy");
@@ -392,16 +386,16 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         let nid =
             find_in_store(replica.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = replica.backend().layout_of(nid).unwrap();
-        let ev = [NveDirectEvent::press(
-            1,
+        let mut ev = EventBatchBuf::new();
+        ev.push_press(
+            SurfaceId::ROOT,
             nid,
-            fid * 16_000,
+            TimestampUs(fid * 16_000),
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
-        )];
-        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-        assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
-        let frame = app.render(fid).to_vec();
+        );
+        assert!(app.dispatch_events(ev.as_validated()));
+        let frame = app.render(FrameId(fid)).to_vec();
         replica.submit_nve2_frame(&frame).unwrap();
         frame
     };
@@ -430,16 +424,15 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
 
     let emitted = app.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
-    // SAFETY: `emitted` stays borrowed from `app` for the duration of `ev0`.
-    let ev0 = unsafe { NveDirectEventRef::from_raw(&emitted[0]) };
-    assert_eq!(ev0.kind(), Some(NativeEventKind::Custom));
-    assert_eq!(ev0.name(), "layout_engine_changed");
-    assert_eq!(ev0.value().as_str(), Some("yoga"));
+    let ev0 = emitted.get(0).expect("emitted event");
+    assert!(ev0.is_custom());
+    assert_eq!(ev0.custom_name(), "layout_engine_changed");
+    assert_eq!(ev0.custom_data(), b"yoga");
 
     let taffy_rects_before: Vec<(NodeId, LayoutRect)> = {
         let mut pairs: Vec<(NodeId, LayoutRect)> = live_node_ids(replica.store())
             .into_iter()
-            .filter_map(|id| replica.backend().layout_of(id.raw()).map(|r| (id.raw(), r)))
+            .filter_map(|id| replica.backend().layout_of(id).map(|r| (id, r)))
             .collect();
         pairs.sort_by_key(|(id, _)| *id);
         pairs

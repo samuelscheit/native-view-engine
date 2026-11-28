@@ -146,6 +146,7 @@ if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG
 fi
 
 HEADER_DEPS=(
+  "$REPO_ROOT"/packages/core/host-cxx/include/nve/generated/*.h
   "$REPO_ROOT"/packages/core/host-cxx/include/nve/host/*.h
   "$REPO_ROOT"/packages/core/host-cxx/include/nve/host/*.hpp
   "$REPO_ROOT"/hosts/apple-common/*.h

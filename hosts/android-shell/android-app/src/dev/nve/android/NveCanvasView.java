@@ -15,8 +15,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * `NVE_DRAW1` vector draw-list view of {@code nve.canvas} nodes, painted through the shared
- * {@link DrawList} codec.
+ * {@code nve.res.draw_list} ({@code FlatResource}) vector draw-list view of {@code nve.canvas}
+ * nodes, painted through the shared {@link DrawList} codec.
  *
  * <p>{@link #setDrawList} copies the frame's draw-list resource (its native buffer dies when the
  * frame is released) into a reusable buffer (no steady-state allocation once warm) and validates
@@ -58,7 +58,7 @@ public final class NveCanvasView extends View implements DrawList.Sink {
     /** Copies and validates draw list {@code src} (its remaining bytes); an invalid one clears the view. */
     public void setDrawList(ByteBuffer src) {
         final int length = src == null ? 0 : src.remaining();
-        if (length < DrawList.HEADER_SIZE) {
+        if (length < DrawList.HEADER_SIZE || (length & 3) != 0) {
             clearDrawList();
             return;
         }

@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, ElementId, Template, TemplateNode, WriteMutations};
-use nve_components::tables::{Layout, Typography, Visual};
+use nve_abi::SurfaceId;
+use nve_tables::tables::{Layout, Typography, Visual};
 use nve_dioxus::{NVE_TYPED_STYLE_ATTR, NveMutationWriter, TypedStyle};
 use nve_store::{Length, NodeId, Rgba};
 
@@ -55,7 +56,7 @@ impl Scene {
     /// A scene with a `root` view under the surface root.
     pub fn new() -> Self {
         let mut scene = Self {
-            writer: NveMutationWriter::new(1),
+            writer: NveMutationWriter::new(SurfaceId::ROOT),
             ids: HashMap::new(),
             next: 1,
         };
@@ -143,7 +144,7 @@ impl Scene {
     pub fn layout<R>(
         &self,
         name: &str,
-        f: impl FnOnce(&nve_components::tables::LayoutRef<'_>) -> R,
+        f: impl FnOnce(&nve_tables::tables::LayoutRef<'_>) -> R,
     ) -> Option<R> {
         self.writer
             .store()
@@ -188,17 +189,17 @@ impl Scene {
     /// `Some(color)` when the node's text color is explicit, `None` when inherited.
     pub fn explicit_color(&self, name: &str) -> Option<Rgba> {
         let t = self.writer.store().try_row::<Typography>(self.node(name))?;
-        (t.set() & Typography::SET_COLOR != 0).then(|| t.color())
+        t.is_color_explicit().then(|| t.color())
     }
 
     /// `Some(px)` when the node's font size is explicit, `None` when inherited.
     pub fn explicit_font_size(&self, name: &str) -> Option<f32> {
         let t = self.writer.store().try_row::<Typography>(self.node(name))?;
-        (t.set() & Typography::SET_FONT_SIZE != 0).then(|| t.font_size())
+        t.is_font_size_explicit().then(|| t.font_size())
     }
 
     /// The CSS `currentColor` of `name` (nearest explicit color up the tree, else black).
     pub fn text_color(&self, name: &str) -> Rgba {
-        nve_components::effective_text_color(self.writer.store(), self.node(name))
+        nve_tables::effective_text_color(self.writer.store(), self.node(name))
     }
 }

@@ -18,6 +18,7 @@ mod native {
     use std::time::{Duration, Instant};
 
     use criterion::{Criterion, criterion_group};
+    use nve_abi::SurfaceId;
     use nve_dioxus::NveMutationWriter;
 
     use crate::counting_alloc::count_allocs;
@@ -42,7 +43,7 @@ mod native {
     const REMOUNT_EVERY: u64 = ITEMS as u64 * 128;
 
     fn mounted(lane: Lane, v: &Values) -> NveMutationWriter {
-        let mut writer = NveMutationWriter::new(1);
+        let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
         mount_list(&mut writer, v);
         for i in 0..ITEMS * 4 {
             lane(&mut writer, v, i);

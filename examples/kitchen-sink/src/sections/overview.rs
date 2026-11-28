@@ -4,9 +4,10 @@
 
 use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, 
+use nve_motion::{write_transitions, Motion, TransitionSpec};
+use nve_ui::{
     use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Col,
-    IconButton, Orientation, Row, Separator, Stack,
+    ColorHex, IconButton, Orientation, Row, Separator, Stack,
 };
 
 use crate::i18n_copy::copy;
@@ -43,8 +44,11 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
         .bg(theme.surface.subtle)
         .border(1.0, theme.border.default)
         .cursor(CursorKind::Pointer)
-        .transition(TransitionSpec::all(150))
-        .on_hover_with(|patch| patch.bg(theme.status.accent.solid).border(1.0, theme.status.accent.text))
+        .on_hover_with(|patch| {
+            patch
+                .bg(theme.status.accent.solid)
+                .border(1.0, theme.status.accent.text)
+        })
         .on_active_with(|patch| patch.opacity(0.85))
         .on_focus_visible_with(|patch| patch.border(2.0, theme.border.focus));
 
@@ -143,6 +147,10 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                         pressable {
                             test_id: "ks-hover-demo",
                             nve_style: hover_card_style,
+                            nve_table: nve_dioxus::table_attr::<Motion, _>(
+                                [TransitionSpec::all(150)],
+                                |tx, node, specs| write_transitions(tx, node, specs),
+                            ),
                             onpress: move |_| {
                                 last_action.set("Activated interactive pseudo-state tile".to_owned());
                             },

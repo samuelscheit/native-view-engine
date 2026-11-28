@@ -15,8 +15,8 @@ use nve_backend_web::snapshot::{
 use nve_backend_web::ssg::{
     WebSsgDocumentOptions, inject_ssg_into_shell_html, inject_ssg_with_scripts_into_shell_html,
 };
-use nve_backend_web::{SsrOutput, StyleSheetCache, WebBackend};
-use nve_components::tables::{Accessibility, AriaRole, Layout, Scroll, Typography};
+use nve_backend_web::{SsrOutput, StyleSheetCache, WebBackend, WebTableRegistry};
+use nve_tables::tables::{Accessibility, AriaRole, Layout, Scroll, Typography};
 use nve_store::{NodeId, NodeStore, Rgba};
 use support::*;
 
@@ -27,7 +27,9 @@ fn sample_ssr_backend() -> (NodeStore, WebBackend) {
     let mut store = NodeStore::new();
     commit(&mut web, &mut store, |tx| {
         let h = text(tx, 2, UNICODE_TITLE);
-        tx.edit::<Accessibility>(h).role(AriaRole::Heading).level(1);
+        tx.edit::<Accessibility>(h)
+            .role(Some(AriaRole::Heading))
+            .level(Some(1));
         tx.edit::<Typography>(h).color(Rgba::WHITE).font_size(20.0);
         let scroll = node(tx, 3);
         tx.edit::<Scroll>(scroll);
@@ -60,17 +62,18 @@ fn scroll_containers_carry_nve_s_marker_in_ssr_and_live_class_resolution() {
     assert!(html.contains("data-nve-id=\"3\" class=\"nve nve-s"), "{html}");
 
     let mut live = StyleSheetCache::new();
-    assert!(live.resolve_node(&store, NodeId(3)).classes.starts_with("nve nve-s"));
-    let heading = live.resolve_node(&store, NodeId(2)).classes;
+    let systems = WebTableRegistry::new();
+    assert!(live.resolve_node(&store, nid(3), &systems).classes.starts_with("nve nve-s"));
+    let heading = live.resolve_node(&store, nid(2), &systems).classes;
     assert!(!heading.split(' ').any(|c| c == "nve-s"), "{heading}");
-    let root = live.resolve_node(&store, NodeId::ROOT).classes;
+    let root = live.resolve_node(&store, NodeId::ROOT, &systems).classes;
     assert!(!root.split(' ').any(|c| c == "nve-s"), "{root}");
 }
 
 #[test]
 fn scroll_axes_classes_restore_automatic_min_size_of_scroll_content() {
     use nve_backend_web::NVE_BASE_RESET_CSS;
-    use nve_components::tables::ScrollAxes;
+    use nve_tables::tables::ScrollAxes;
 
     let cases = [
         (ScrollAxes::Vertical, &["nve-s", "nve-sy"][..], &["nve-sx"][..]),
@@ -93,8 +96,9 @@ fn scroll_axes_classes_restore_automatic_min_size_of_scroll_content() {
         tx.set_children(NodeId::ROOT, &ids);
     });
     let mut live = StyleSheetCache::new();
+    let systems = WebTableRegistry::new();
     for (i, (axes, present, absent)) in cases.into_iter().enumerate() {
-        let classes = live.resolve_node(&store, NodeId(10 + i as u32)).classes;
+        let classes = live.resolve_node(&store, nid(10 + i as u32), &systems).classes;
         let tokens: Vec<&str> = classes.split(' ').collect();
         for c in present {
             assert!(tokens.contains(c), "{axes:?}: missing {c} in {classes}");

@@ -4,11 +4,9 @@
 
 use std::time::{Duration, Instant};
 
-use nve_abi::{
-    native_events_to_direct, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId,
-};
-use nve_components::tables::{is_subtree_display_none, Interaction, TextInput};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_abi::{EventBatchBuf, InteractionEvent, NodeId, TextInputEvent, TimestampUs};
+use nve_store::NodeStore;
+use nve_tables::tables::{is_subtree_display_none, Interaction, TextInput};
 
 use super::session::{now_us, DesktopSession, ShellSkiaBackend};
 pub(super) use super::text_edit::{paragraph_bounds_at, word_bounds_at};
@@ -22,7 +20,7 @@ use super::{DesktopApp, DesktopHostError};
 const MULTI_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_MAX_DIST_SQ: f32 = 36.0; // 6.0 logical px
 
-pub(super) fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(super) fn is_focusable(store: &NodeStore, id: NodeId) -> bool {
     if !store.is_live(id) || is_subtree_display_none(store, id) {
         return false;
     }
@@ -30,7 +28,8 @@ pub(super) fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
         return true;
     }
     store.try_row::<Interaction>(id).is_some_and(|i| {
-        (u64::from(i.event_mask()) & (EventMask::FOCUS | EventMask::BLUR)) != 0
+        let l = i.listeners();
+        l.contains(InteractionEvent::Focus) || l.contains(InteractionEvent::Blur)
     })
 }
 
@@ -42,17 +41,16 @@ fn hit_test_focusable(
 ) -> Option<NodeId> {
     let mut cur = backend.hit_test_interaction(store, x, y).or_else(|| backend.hit_test(store, x, y))?;
     for _ in 0..256 {
-        let sid = StoreNodeId(cur);
-        if is_focusable(store, sid) {
+        if is_focusable(store, cur) {
             return Some(cur);
         }
-        let Some(parent) = store.parent(sid) else {
+        let Some(parent) = store.parent(cur) else {
             break;
         };
-        if parent.raw() == cur {
+        if parent == cur {
             break;
         }
-        cur = parent.raw();
+        cur = parent;
     }
     None
 }
@@ -71,7 +69,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     pub fn focus_node(&mut self, next_focus: Option<NodeId>) -> Result<bool, DesktopHostError> {
         let prev_focus = self.replica.backend().focused_node();
         let had_preedit = self.replica.backend().focus_state().ime_preedit.is_some();
-        let next_valid = next_focus.filter(|&id| is_focusable(self.replica.store(), StoreNodeId(id)));
+        let next_valid = next_focus.filter(|&id| is_focusable(self.replica.store(), id));
         {
             let (store, backend) = self.replica.store_and_backend_mut();
             backend.set_focused_node(store, next_valid);
@@ -82,34 +80,22 @@ impl<A: DesktopApp> DesktopSession<A> {
         }
         self.dragging_text_node = None;
         self.reset_multi_click();
-        let ts = now_us();
-        let mut events = Vec::with_capacity(3);
+        let ts = TimestampUs(now_us());
+        let mut events = EventBatchBuf::with_capacity(3, 0);
         if let Some(old_id) = prev_focus {
             if had_preedit {
                 self.push_composition_event(
                     &mut events,
                     old_id,
                     ts,
-                    NativeEventKind::CompositionEnd,
-                    String::new(),
+                    TextInputEvent::CompositionEnd,
+                    "",
                 );
             }
-            events.push(NativeEvent {
-                surface_id: self.surface_id,
-                node_id: old_id,
-                timestamp_us: ts,
-                kind: NativeEventKind::Blur,
-                payload: EventPayload::Empty,
-            });
+            events.push_blur(self.surface_id, old_id, ts);
         }
         if let Some(new_id) = resolved_next {
-            events.push(NativeEvent {
-                surface_id: self.surface_id,
-                node_id: new_id,
-                timestamp_us: ts,
-                kind: NativeEventKind::Focus,
-                payload: EventPayload::Empty,
-            });
+            events.push_focus(self.surface_id, new_id, ts);
         }
         self.dispatch_and_redraw(&events)?;
         Ok(true)
@@ -129,8 +115,8 @@ impl<A: DesktopApp> DesktopSession<A> {
             .hit_test_interaction(self.replica.store(), x, y)
             .or_else(|| self.replica.backend().hit_test(self.replica.store(), x, y));
 
-        let ts = now_us();
-        let mut events = Vec::with_capacity(4);
+        let ts = TimestampUs(now_us());
+        let mut events = EventBatchBuf::with_capacity(4, 0);
         let mut visual_changed = {
             let (store, backend) = self.replica.store_and_backend_mut();
             backend.pointer_down(store, x, y)
@@ -150,26 +136,14 @@ impl<A: DesktopApp> DesktopSession<A> {
                             &mut events,
                             old_id,
                             ts,
-                            NativeEventKind::CompositionEnd,
-                            String::new(),
+                            TextInputEvent::CompositionEnd,
+                            "",
                         );
                     }
-                    events.push(NativeEvent {
-                        surface_id: self.surface_id,
-                        node_id: old_id,
-                        timestamp_us: ts,
-                        kind: NativeEventKind::Blur,
-                        payload: EventPayload::Empty,
-                    });
+                    events.push_blur(self.surface_id, old_id, ts);
                 }
                 if let Some(new_id) = resolved_next {
-                    events.push(NativeEvent {
-                        surface_id: self.surface_id,
-                        node_id: new_id,
-                        timestamp_us: ts,
-                        kind: NativeEventKind::Focus,
-                        payload: EventPayload::Empty,
-                    });
+                    events.push_focus(self.surface_id, new_id, ts);
                 }
             }
         }
@@ -181,7 +155,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             .filter(|&id| {
                 self.replica
                     .backend()
-                    .is_text_input(self.replica.store(), StoreNodeId(id))
+                    .is_text_input(self.replica.store(), id)
             })
             && next_focus == Some(text_id)
         {
@@ -207,7 +181,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             let hit_idx = self
                 .replica
                 .backend()
-                .cursor_index_at_x(self.replica.store(), StoreNodeId(text_id), x)
+                .cursor_index_at_x(self.replica.store(), text_id, x)
                 .unwrap_or_else(|| self.replica.backend().focus_state().caret_byte_index);
             let prev_sel = (
                 self.replica.backend().focus_state().selection_anchor,
@@ -219,7 +193,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let val = self
                         .replica
                         .backend()
-                        .text_input_value(self.replica.store(), StoreNodeId(text_id))
+                        .text_input_value(self.replica.store(), text_id)
                         .unwrap_or_default();
                     let (w_start, w_end) = word_bounds_at(&val, hit_idx);
                     let (store, backend) = self.replica.store_and_backend_mut();
@@ -230,7 +204,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let val = self
                         .replica
                         .backend()
-                        .text_input_value(self.replica.store(), StoreNodeId(text_id))
+                        .text_input_value(self.replica.store(), text_id)
                         .unwrap_or_default();
                     let (p_start, p_end) = paragraph_bounds_at(&val, hit_idx);
                     let (store, backend) = self.replica.store_and_backend_mut();
@@ -261,13 +235,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         }
 
         if let Some(node_id) = press_target {
-            events.push(NativeEvent {
-                surface_id: self.surface_id,
-                node_id,
-                timestamp_us: ts,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point { x, y },
-            });
+            events.push_press(self.surface_id, node_id, ts, x, y);
         }
 
         if events.is_empty() && !visual_changed {
@@ -277,11 +245,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let handled = if events.is_empty() {
             false
         } else {
-            let mut direct = Vec::with_capacity(events.len());
-            native_events_to_direct(&events, &mut direct);
-            // SAFETY: `direct` borrows solely from `events`, which outlives `dispatch_events`.
-            let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
-            self.app.dispatch_events(batch)
+            self.app.dispatch_events(events.as_validated())
         };
         if handled {
             self.render_and_rasterize()?;
@@ -305,13 +269,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                 && self
                     .replica
                     .backend()
-                    .is_text_input(self.replica.store(), StoreNodeId(node_id));
+                    .is_text_input(self.replica.store(), node_id);
             if !is_valid {
                 self.dragging_text_node = None;
             } else if let Some(next_caret) = self
                 .replica
                 .backend()
-                .cursor_index_at_x(self.replica.store(), StoreNodeId(node_id), x)
+                .cursor_index_at_x(self.replica.store(), node_id, x)
                 && next_caret != self.replica.backend().focus_state().caret_byte_index
             {
                 let anchor = self.replica.backend().focus_state().selection_anchor;
@@ -357,5 +321,51 @@ impl<A: DesktopApp> DesktopSession<A> {
     #[cfg(test)]
     pub fn handle_pointer_up_logical(&mut self) {
         let _ = self.handle_pointer_up_with_redraw();
+    }
+
+    /// Scrolls the `ScrollView` under logical `(x, y)` by `(delta_x, delta_y)` (positive `delta_y`
+    /// scrolls down), clamps to content bounds, dispatches `ScrollEvent::Scroll` into the app,
+    /// and re-renders / re-rasterizes when either the app handled the event or the scroll offset
+    /// changed.
+    pub fn handle_scroll_logical(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> Result<bool, DesktopHostError> {
+        self.cursor_logical = (x, y);
+        let Some(scroll_node_id) = self
+            .replica
+            .backend()
+            .hit_test_scroll_container(self.replica.store(), x, y)
+        else {
+            return Ok(false);
+        };
+        let prev = self.replica.backend().scroll_offset(scroll_node_id);
+        let (store, backend) = self.replica.store_and_backend_mut();
+        let (new_x, new_y) = backend.apply_scroll_delta(store, scroll_node_id, delta_x, delta_y);
+        let offset_changed = (prev.0 - new_x).abs() > 1e-4 || (prev.1 - new_y).abs() > 1e-4;
+        let (content_width, content_height) = backend
+            .scroll_content_size(store, scroll_node_id)
+            .unwrap_or((self.viewport.width, self.viewport.height));
+
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_scroll(
+            self.surface_id,
+            scroll_node_id,
+            TimestampUs(now_us()),
+            new_x,
+            new_y,
+            content_width,
+            content_height,
+        );
+        let handled = self.app.dispatch_events(batch.as_validated());
+        if handled {
+            self.render_and_rasterize()?;
+        } else if offset_changed {
+            self.rasterize_current();
+        }
+        Ok(handled || offset_changed)
     }
 }

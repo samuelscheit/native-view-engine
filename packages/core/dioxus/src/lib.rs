@@ -25,41 +25,38 @@ pub mod typed_style;
 mod writer;
 
 pub use elements::{
-    CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent, KeyEventData,
-    PressEvent, PressEventData, ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData,
-    TableEvent, TableEventData, TextEvent, TextEventData,
+    ComponentView, CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent,
+    KeyEventData, NveEventData, PressEvent, PressEventData, RawNveEvent, ScrollEvent,
+    ScrollEventData, SubmitEvent, SubmitEventData, TableEvent, TableEventData, TextEvent,
+    TextEventData,
 };
 pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
     ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
 };
-pub use nve_components::input_hints::{AutofillHint, InputMode};
-pub use nve_components::interaction::{
-    resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
-    FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+pub use nve_tables::input_hints::{AutofillHint, InputMode};
+pub use nve_tables::interaction::{
+    CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
-pub use nve_components::layout_ext::{
+pub use nve_tables::layout_ext::{
     compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
     GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
     PositionInsets, PositionMode,
 };
-pub use nve_components::media::{
-    Display, FlexWrap, MediaEnv, MediaPointer, MediaQuery, Overflow,
-    ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH,
+pub use nve_tables::media::{
+    MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, MEDIA_FLAG_HAS_MAX_WIDTH,
     MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
-pub use nve_components::motion::{
-    lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for,
-    EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
-    TimedTransition, TransitionProperty, TransitionSpec,
+pub use nve_tables::tables::{Display, FlexWrap, Overflow, TextAlign};
+pub use nve_tables::{LayoutSnapshot, StylePatchExt, VisualSnapshot};
+pub use nve_store::RowPatch;
+pub use nve_engine::InteractionTracker;
+pub use nve_tables::paint::{
+    lerp_color_premul, sample_gradient_stops, BackgroundFill, GradientStop, LinearGradient,
+    RadialGradient,
 };
-pub use nve_components::paint::{
-    lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
-    LinearGradient, RadialGradient,
-};
-pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
-pub use nve_components::transform::{
-    affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
+pub use nve_tables::transform::{
+    affine_concat, affine_inverse_map_point, affine_map_point, Transform2D,
 };
 pub use runtime_app::DioxusRuntimeApp;
 pub use signal_archive::{
@@ -74,7 +71,9 @@ pub use stream_slot::{
     NVE_SUSPENSE_ATTR,
 };
 pub use surface::DioxusSurface;
-pub use table_attr::{table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR};
+pub use table_attr::{
+    table_attr, table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR,
+};
 pub use traits::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
     use_provide_existing_trait_store, use_provide_trait_store, use_trait, use_trait_store,
@@ -86,8 +85,9 @@ pub use traits::{
     BUILTIN_TRAIT_COUNT, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 pub use typed_style::{
-    parse_flex_align, parse_flex_direction, parse_flex_justify, ShowOn, TypedStyle,
-    NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR,
+    parse_flex_align, parse_flex_direction, parse_flex_justify, PendingResponsiveRule,
+    PendingStateRule, PendingStylePatch, ShowOn, TypedStyle, NVE_SHOW_ON_ATTR,
+    NVE_TYPED_STYLE_ATTR,
 };
 pub use writer::{NveMutationWriter, StoreMutationTx};
 
@@ -113,9 +113,10 @@ pub type CustomEvent = dioxus_core::Event<CustomEventData>;
 pub mod prelude {
     pub use crate::dioxus_elements;
     pub use crate::elements::{
-        events::*, CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent,
-        KeyEventData, PressEvent, PressEventData, ScrollEvent, ScrollEventData, SubmitEvent,
-        SubmitEventData, TableEvent, TableEventData, TextEvent, TextEventData,
+        events::*, ComponentView, CompositionEvent, CompositionEventData, FocusEvent,
+        FocusEventData, KeyEvent, KeyEventData, NveEventData, PressEvent, PressEventData,
+        RawNveEvent, ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData, TableEvent,
+        TableEventData, TextEvent, TextEventData,
     };
     pub use crate::error_boundary::{
         throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
@@ -123,7 +124,8 @@ pub mod prelude {
     };
     pub use crate::stream_slot::{NveStreamSlot, StreamSlotRole, SuspenseSlot};
     pub use crate::table_attr::{
-        table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR,
+        table_attr, table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter,
+        NVE_TABLE_ATTR,
     };
     pub use crate::traits::{
         use_environment, use_provide_existing_trait_store, use_provide_trait_store, use_trait,
@@ -133,7 +135,9 @@ pub mod prelude {
         TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitScope, TraitStore,
         TraitSwitch, UiDensity, VerticalSizeClass,
     };
-    pub use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
+    pub use crate::typed_style::{
+        PendingStylePatch, ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR,
+    };
     pub use crate::{BlurEvent, BlurEventData, CustomEvent, CustomEventData, DioxusSurface};
     pub use dioxus_core;
     pub use dioxus_core::{
@@ -145,18 +149,17 @@ pub mod prelude {
     pub use dioxus_signals;
     pub use dioxus_signals::{ReadableExt, Signal, WritableExt};
     pub use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-    pub use nve_components::tables::AlignSelf;
-    pub use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
-    pub use nve_components::layout_ext::{
+    pub use nve_tables::tables::AlignSelf;
+    pub use nve_tables::interaction::{CursorKind, InteractionState, StateStyleRule};
+    pub use nve_tables::layout_ext::{
         GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit, LayoutDirection,
         PositionMode,
     };
-    pub use nve_components::media::{
-        Display, MediaQuery, ResponsiveRule, ResponsiveStylePatch, StylePatch,
-    };
-    pub use nve_components::input_hints::{AutofillHint, InputMode};
-    pub use nve_components::motion::{EasingCurve, TransitionProperty, TransitionSpec};
-    pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-    pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
-    pub use nve_components::transform::Transform2D;
+    pub use nve_tables::media::{MediaQuery, ResponsiveRule};
+    pub use nve_tables::tables::Display;
+    pub use nve_tables::StylePatchExt;
+    pub use nve_store::RowPatch;
+    pub use nve_tables::input_hints::{AutofillHint, InputMode};
+    pub use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
+    pub use nve_tables::transform::Transform2D;
 }

@@ -385,7 +385,7 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
             continue;
         }
 
-        let ssr_id = attr_val(&attrs, "data-nve-id").and_then(|s| s.parse::<NodeId>().ok());
+        let ssr_id = attr_val(&attrs, "data-nve-id").and_then(crate::key_events::parse_dom_node_id);
         let ssr_hash = attr_val(&attrs, "data-nve-ssr-hash").map(str::to_owned);
         let base_control_value = if is_form_control_tag(&tag) {
             Some(if tag == "input" {

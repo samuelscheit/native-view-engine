@@ -2,9 +2,10 @@
 //! `:disabled`) and live [`CursorKind`] resolution for [`crate::SkiaBackend`] over `&NodeStore`.
 
 use nve_abi::NodeId;
-use nve_components::interaction::{CursorKind, FocusModality, InteractionState, InteractionTracker};
+use nve_engine::InteractionTracker;
 use nve_layout::StoreLayoutEngine;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
+use nve_tables::interaction::{CursorKind, FocusModality, InteractionState};
 
 use crate::SkiaBackend;
 
@@ -24,11 +25,11 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         self.layout_tree
             .interaction_tracker()
             .active_cursor_node()
-            .map(|id| self.layout_tree.effective_cursor(store, StoreNodeId(id)))
+            .map(|id| self.layout_tree.effective_cursor(store, id))
             .unwrap_or(CursorKind::Default)
     }
 
-    pub fn effective_cursor(&self, store: &NodeStore, node_id: StoreNodeId) -> CursorKind {
+    pub fn effective_cursor(&self, store: &NodeStore, node_id: NodeId) -> CursorKind {
         self.layout_tree.effective_cursor(store, node_id)
     }
 
@@ -36,7 +37,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let hit = self.hit_test_interaction(store, x, y);
         let dirty = self.layout_tree.interaction_tracker_mut_move(hit);
         if !dirty.is_empty() {
-            self.sync_motion_targets(store, &dirty);
+            self.sync_frame_hooks(store, &dirty);
             self.rebuild_display_list(store);
             true
         } else {
@@ -47,7 +48,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn pointer_leave(&mut self, store: &NodeStore) -> bool {
         let dirty = self.layout_tree.dispatch_pointer_leave();
         if !dirty.is_empty() {
-            self.sync_motion_targets(store, &dirty);
+            self.sync_frame_hooks(store, &dirty);
             self.rebuild_display_list(store);
             true
         } else {
@@ -59,7 +60,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let hit = self.hit_test_interaction(store, x, y);
         let dirty = self.layout_tree.interaction_tracker_mut_down(hit);
         if !dirty.is_empty() {
-            self.sync_motion_targets(store, &dirty);
+            self.sync_frame_hooks(store, &dirty);
             self.rebuild_display_list(store);
             true
         } else {
@@ -71,7 +72,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let hit = self.hit_test_interaction(store, x, y);
         let dirty = self.layout_tree.interaction_tracker_mut_up(hit);
         if !dirty.is_empty() {
-            self.sync_motion_targets(store, &dirty);
+            self.sync_frame_hooks(store, &dirty);
             self.rebuild_display_list(store);
             true
         } else {
@@ -87,7 +88,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     ) -> bool {
         let dirty = self.layout_tree.dispatch_focus(node_id, modality);
         if !dirty.is_empty() {
-            self.sync_motion_targets(store, &dirty);
+            self.sync_frame_hooks(store, &dirty);
             self.rebuild_display_list(store);
             true
         } else {

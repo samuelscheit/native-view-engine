@@ -3,6 +3,8 @@
 
 use nve_abi::ColorRgba;
 use nve_interop::traits::{SizeClass, UiDensity};
+use nve_store::Rgba;
+use nve_tables::tables::BoxShadow;
 
 use super::scale::Tone;
 
@@ -189,27 +191,27 @@ impl Radius {
     pub const DEFAULT: Self = Self { sm: 4.0, md: 6.0, lg: 10.0, xl: 14.0, full: 999.0 };
 }
 
-/// Shadow stack per elevation tier (CSS `box-shadow` until Phase 1 types shadows). Dark and
-/// high-contrast modes keep in-flow tiers flat and reserve shadows for floating layers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Typed shadow per elevation tier. Dark and high-contrast modes keep in-flow tiers flat and
+/// reserve shadows for floating layers.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Elevation {
-    pub raised: &'static str,
-    pub overlay: &'static str,
-    pub modal: &'static str,
+    pub raised: Option<BoxShadow>,
+    pub overlay: Option<BoxShadow>,
+    pub modal: Option<BoxShadow>,
 }
 
 impl Elevation {
     pub const LIGHT: Self = Self {
-        raised: "0 1px 2px rgba(9, 9, 11, 0.06)",
-        overlay: "0 1px 2px rgba(9, 9, 11, 0.06), 0 8px 24px rgba(9, 9, 11, 0.10)",
-        modal: "0 2px 4px rgba(9, 9, 11, 0.08), 0 24px 48px rgba(9, 9, 11, 0.16)",
+        raised: Some(BoxShadow::new(0.0, 1.0, 2.0, Rgba::new(9, 9, 11, 15))),
+        overlay: Some(BoxShadow::new(0.0, 8.0, 24.0, Rgba::new(9, 9, 11, 26))),
+        modal: Some(BoxShadow::new(0.0, 24.0, 48.0, Rgba::new(9, 9, 11, 41))),
     };
     pub const DARK: Self = Self {
-        raised: "none",
-        overlay: "0 8px 24px rgba(0, 0, 0, 0.45)",
-        modal: "0 24px 64px rgba(0, 0, 0, 0.6)",
+        raised: None,
+        overlay: Some(BoxShadow::new(0.0, 8.0, 24.0, Rgba::new(0, 0, 0, 115))),
+        modal: Some(BoxShadow::new(0.0, 24.0, 64.0, Rgba::new(0, 0, 0, 153))),
     };
-    pub const FLAT: Self = Self { raised: "none", overlay: "none", modal: "none" };
+    pub const FLAT: Self = Self { raised: None, overlay: None, modal: None };
 }
 
 /// CSS-style cubic Bézier easing control points.

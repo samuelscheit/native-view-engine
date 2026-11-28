@@ -2,15 +2,14 @@
 //! inverse mapping (with optional animated transform override), scroll offsets, overflow clipping,
 //! `z_index` reverse paint order, and `display: contents` pass-through.
 
-use nve_abi::{EventMask, NodeId as AbiNodeId};
-use nve_components::layout_ext::compute_sticky_offset;
-use nve_components::tables::{
+use nve_tables::layout_ext::compute_sticky_offset;
+use nve_tables::tables::{
     Interaction, Layout as NveLayout, Overflow, Position, Scroll, Transform as TransformTable,
     Visual, generates_box, is_node_display_none, visual_clips_overflow,
 };
-use nve_components::transform::Transform2D;
+use nve_tables::transform::Transform2D;
 use nve_engine::LayoutRect;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeId, NodeStore};
 
 use crate::{MAX_TREE_DEPTH, StoreLayoutEngine};
 
@@ -20,7 +19,7 @@ use super::{LaidOutScene, length_to_dim};
 #[derive(Clone, Copy)]
 struct Hit {
     /// Deepest accepting node under the point.
-    target: Option<AbiNodeId>,
+    target: Option<NodeId>,
     /// The point lies on a visible box of this subtree, so the hit bubbles to this node.
     covered: bool,
 }
@@ -32,7 +31,7 @@ const MISS: Hit = Hit {
 
 impl<L: StoreLayoutEngine> LaidOutScene<L> {
     /// Nearest ancestor of `id` that generates a box (skips `display: contents` ancestors).
-    fn box_parent(store: &NodeStore, id: StoreNodeId) -> Option<StoreNodeId> {
+    fn box_parent(store: &NodeStore, id: NodeId) -> Option<NodeId> {
         let mut cur = store.parent(id);
         for _ in 0..MAX_TREE_DEPTH {
             let anc = cur?;
@@ -45,14 +44,14 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     }
 
     /// Computes sticky offset `(dx, dy)` for `id` against its nearest scroll ancestor.
-    pub fn compute_sticky_delta(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+    pub fn compute_sticky_delta(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
         if !generates_box(store, id) {
             return (0.0, 0.0);
         }
         self.sticky_delta_of_box(store, id)
     }
 
-    fn sticky_delta_of_box(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+    fn sticky_delta_of_box(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
         let Some(l) = store.try_row::<NveLayout>(id) else {
             return (0.0, 0.0);
         };
@@ -78,7 +77,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
                 break;
             }
             steps += 1;
-            let raw = anc.raw();
+            let raw = anc;
             let has_offset = self.scroll.contains(raw);
             let is_scroll = store.has::<Scroll>(anc)
                 || store.try_row::<Visual>(anc).is_some_and(|v| {
@@ -99,7 +98,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             width: self.viewport.width,
             height: self.viewport.height,
         });
-        let insets = nve_components::layout_ext::PositionInsets {
+        let insets = nve_tables::layout_ext::PositionInsets {
             top: length_to_dim(l.inset_top()),
             right: length_to_dim(l.inset_right()),
             bottom: length_to_dim(l.inset_bottom()),
@@ -116,14 +115,14 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
     /// Reads the `Transform2D` of `id` from `NodeStore`'s `Transform` table, if attached and `id`
     /// generates a box.
-    pub fn effective_transform(&self, store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
+    pub fn effective_transform(&self, store: &NodeStore, id: NodeId) -> Option<Transform2D> {
         if !generates_box(store, id) {
             return None;
         }
         Self::transform_of_box(store, id)
     }
 
-    fn transform_of_box(store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
+    fn transform_of_box(store: &NodeStore, id: NodeId) -> Option<Transform2D> {
         let t = store.try_row::<TransformTable>(id)?;
         let tf = Transform2D {
             translate_x: t.translate_x(),
@@ -139,34 +138,31 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
     /// Returns `true` when `id` subscribes to any UI event via its `Interaction` table.
     #[inline]
-    pub fn is_event_target(store: &NodeStore, id: StoreNodeId) -> bool {
+    pub fn is_event_target(store: &NodeStore, id: NodeId) -> bool {
         store
             .try_row::<Interaction>(id)
-            .is_some_and(|i| i.event_mask() != 0)
+            .is_some_and(|i| !i.listeners().is_empty())
     }
 
-    /// Returns `true` when `id` is a scroll container (`Scroll` table or `EventMask::SCROLL`).
+    /// Returns `true` when `id` is a scroll container (it owns a `Scroll` row, which also carries
+    /// its `ScrollEvent` listeners).
     #[inline]
-    pub fn is_scroll_container(store: &NodeStore, id: StoreNodeId) -> bool {
+    pub fn is_scroll_container(store: &NodeStore, id: NodeId) -> bool {
         store.has::<Scroll>(id)
-            || store
-                .try_row::<Interaction>(id)
-                .is_some_and(|i| (u64::from(i.event_mask()) & EventMask::SCROLL) != 0)
     }
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest node subscribing to events.
-    pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<AbiNodeId> {
+    pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
         self.hit_test_where(store, x, y, |id| Self::is_event_target(store, id))
     }
 
-    /// Hit-tests `(x, y)` in reverse paint order for the deepest scrollable node (`Scroll` table
-    /// or `EventMask::SCROLL`).
+    /// Hit-tests `(x, y)` in reverse paint order for the deepest scroll container (`Scroll` row).
     pub fn hit_test_scroll_container(
         &self,
         store: &NodeStore,
         x: f32,
         y: f32,
-    ) -> Option<AbiNodeId> {
+    ) -> Option<NodeId> {
         self.hit_test_where(store, x, y, |id| Self::is_scroll_container(store, id))
     }
 
@@ -176,8 +172,8 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         store: &NodeStore,
         x: f32,
         y: f32,
-        accepts: impl Fn(StoreNodeId) -> bool,
-    ) -> Option<AbiNodeId> {
+        accepts: impl Fn(NodeId) -> bool,
+    ) -> Option<NodeId> {
         self.hit_test_where_with_transform(store, x, y, |_, base| base, accepts)
     }
 
@@ -188,9 +184,9 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         store: &NodeStore,
         x: f32,
         y: f32,
-        resolve_transform: impl Fn(StoreNodeId, Option<Transform2D>) -> Option<Transform2D>,
-        accepts: impl Fn(StoreNodeId) -> bool,
-    ) -> Option<AbiNodeId> {
+        resolve_transform: impl Fn(NodeId, Option<Transform2D>) -> Option<Transform2D>,
+        accepts: impl Fn(NodeId) -> bool,
+    ) -> Option<NodeId> {
         let mut walk = HitWalk {
             scene: self,
             store,
@@ -199,7 +195,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             scratch: self.hit_scratch.take(),
         };
         let target = walk
-            .walk(StoreNodeId::ROOT, (x, y), (0.0, 0.0), false, 0)
+            .walk(NodeId::ROOT, (x, y), (0.0, 0.0), false, 0)
             .target;
         debug_assert!(walk.scratch.is_empty(), "every level truncates its keys");
         self.hit_scratch.set(walk.scratch);
@@ -208,7 +204,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 }
 
 #[inline]
-fn paint_z(store: &NodeStore, id: StoreNodeId) -> i32 {
+fn paint_z(store: &NodeStore, id: NodeId) -> i32 {
     match store.try_row::<Visual>(id).map_or(0, |v| v.z_index()) {
         0 => 0,
         z if generates_box(store, id) => z,
@@ -216,7 +212,7 @@ fn paint_z(store: &NodeStore, id: StoreNodeId) -> i32 {
     }
 }
 
-fn single_z_level(store: &NodeStore, children: &[StoreNodeId]) -> bool {
+fn single_z_level(store: &NodeStore, children: &[NodeId]) -> bool {
     match children {
         [] | [_] => true,
         [first, rest @ ..] => {
@@ -228,7 +224,7 @@ fn single_z_level(store: &NodeStore, children: &[StoreNodeId]) -> bool {
 
 const STACK_SORT_LEN: usize = 64;
 
-fn fill_z_keys(store: &NodeStore, children: &[StoreNodeId], keys: &mut [(i32, u32)]) {
+fn fill_z_keys(store: &NodeStore, children: &[NodeId], keys: &mut [(i32, u32)]) {
     for (i, (key, &c)) in keys.iter_mut().zip(children).enumerate() {
         *key = (paint_z(store, c), i as u32);
     }
@@ -253,13 +249,13 @@ struct EnteredNode {
 impl<
     'a,
     L: StoreLayoutEngine,
-    T: Fn(StoreNodeId, Option<Transform2D>) -> Option<Transform2D>,
-    F: Fn(StoreNodeId) -> bool,
+    T: Fn(NodeId, Option<Transform2D>) -> Option<Transform2D>,
+    F: Fn(NodeId) -> bool,
 > HitWalk<'a, L, T, F>
 {
     fn walk_children(
         &mut self,
-        children: &'a [StoreNodeId],
+        children: &'a [NodeId],
         point: (f32, f32),
         offset: (f32, f32),
         hidden: bool,
@@ -280,7 +276,7 @@ impl<
 
     fn child_hit(
         &mut self,
-        cid: StoreNodeId,
+        cid: NodeId,
         point: (f32, f32),
         offset: (f32, f32),
         hidden: bool,
@@ -293,7 +289,7 @@ impl<
     #[inline(never)]
     fn walk_sorted_on_stack(
         &mut self,
-        children: &'a [StoreNodeId],
+        children: &'a [NodeId],
         point: (f32, f32),
         offset: (f32, f32),
         hidden: bool,
@@ -310,7 +306,7 @@ impl<
     #[inline(never)]
     fn walk_sorted_in_scratch(
         &mut self,
-        children: &'a [StoreNodeId],
+        children: &'a [NodeId],
         point: (f32, f32),
         offset: (f32, f32),
         hidden: bool,
@@ -335,7 +331,7 @@ impl<
     #[inline(never)]
     fn enter_node(
         &self,
-        id: StoreNodeId,
+        id: NodeId,
         point: (f32, f32),
         offset: (f32, f32),
         inherited_hidden: bool,
@@ -380,7 +376,7 @@ impl<
             && py >= r_y
             && py <= r_y + rect.height;
         let clips = store.has::<Scroll>(id) || visual.as_ref().is_some_and(visual_clips_overflow);
-        if !inside && id != StoreNodeId::ROOT && clips {
+        if !inside && id != NodeId::ROOT && clips {
             return None;
         }
         let (sx, sy) = scene.scroll.visual_shift(store, id);
@@ -395,7 +391,7 @@ impl<
 
     fn walk(
         &mut self,
-        id: StoreNodeId,
+        id: NodeId,
         point: (f32, f32),
         offset: (f32, f32),
         inherited_hidden: bool,
@@ -422,7 +418,7 @@ impl<
             None => {}
         }
         Hit {
-            target: (covered && (self.accepts)(id)).then_some(id.raw()),
+            target: (covered && (self.accepts)(id)).then_some(id),
             covered,
         }
     }
@@ -430,8 +426,8 @@ impl<
 
 #[cfg(test)]
 mod tests {
-    use nve_abi::EventMask;
-    use nve_components::tables::{Interaction, Layout, Scroll};
+    use nve_abi::InteractionEvent;
+    use nve_tables::tables::{EventSet, Interaction, Layout, Scroll};
     use nve_engine::Viewport;
     use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 
@@ -455,7 +451,7 @@ mod tests {
                 .width(Length::points(120.0))
                 .height(Length::points(200.0));
             tx.edit::<Interaction>(child)
-                .event_mask(EventMask::PRESS as u32);
+                .listeners(EventSet::one(InteractionEvent::Press));
 
             tx.set_children(scroller, &[child]);
             tx.set_children(NodeId::ROOT, &[scroller]);
@@ -472,12 +468,12 @@ mod tests {
         assert!(scene.commit(&store, &changes));
 
         // Inside the 120x80 scroll viewport hits the interactive child.
-        assert_eq!(scene.hit_test(&store, 40.0, 40.0), Some(child.raw()));
+        assert_eq!(scene.hit_test(&store, 40.0, 40.0), Some(child));
         // Below the 80px scroll viewport (inside child's 200px overflow) MUST be clipped.
         assert_eq!(scene.hit_test(&store, 40.0, 140.0), None);
         assert_eq!(
             scene.hit_test_scroll_container(&store, 40.0, 40.0),
-            Some(scroller.raw())
+            Some(scroller)
         );
     }
 }

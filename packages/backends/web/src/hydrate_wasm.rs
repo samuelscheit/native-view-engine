@@ -2,7 +2,7 @@
 //! `WebBackend::hydrate_into`, and live-DOM positional pairing (`crate::hydrate::pair_ssr_dom`).
 
 use nve_abi::NodeId;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 use wasm_bindgen::JsCast;
 
 use crate::hydrate::{
@@ -198,21 +198,21 @@ fn is_ignored_dom_element(el: &web_sys::Element) -> bool {
 }
 
 fn parse_ssr_id(el: &web_sys::Element) -> Option<NodeId> {
-    el.get_attribute("data-nve-id")?.parse().ok()
+    crate::key_events::parse_dom_node_id(&el.get_attribute("data-nve-id")?)
 }
 
 /// The promoted SSR root element: `container` itself or its UI child carrying the root
 /// `data-nve-id`, else its first UI child carrying any `data-nve-id`.
 fn find_hydrate_root(container: &web_sys::Element) -> Option<web_sys::Element> {
     // Mounts whose container IS the SSR root (`<div id="app" data-nve-id="1">`).
-    if parse_ssr_id(container) == Some(StoreNodeId::ROOT.raw()) {
+    if parse_ssr_id(container) == Some(NodeId::ROOT) {
         return Some(container.clone());
     }
     let mut first_ui: Option<web_sys::Element> = None;
     let mut cur = container.first_element_child();
     while let Some(el) = cur {
         if !is_ignored_dom_element(&el) && let Some(id) = parse_ssr_id(&el) {
-            if id == StoreNodeId::ROOT.raw() {
+            if id == NodeId::ROOT {
                 return Some(el);
             }
             first_ui.get_or_insert(el.clone());
@@ -355,20 +355,19 @@ impl WebBackend {
             }
         }
         for (node, el) in pairing.adopted {
-            let raw = node.raw();
-            if parse_ssr_id(&el) != Some(raw) {
-                let _ = el.set_attribute("data-nve-id", &raw.to_string());
+            if parse_ssr_id(&el) != Some(node) {
+                let _ = el.set_attribute("data-nve-id", &node.raw().to_string());
             }
-            self.live_elements.insert(raw, el);
+            self.live_elements.insert(node, el);
         }
         self.deferred_controls
-            .extend(pairing.pass.controls.iter().map(|(n, _)| n.raw()));
+            .extend(pairing.pass.controls.iter().map(|(n, _)| *n));
         Some(pairing.pass)
     }
 
-    pub(crate) fn write_hydrated_control(&mut self, node: StoreNodeId, value: &str) {
-        self.deferred_controls.remove(&node.raw());
-        if let Some(el) = self.live_elements.get(&node.raw()) {
+    pub(crate) fn write_hydrated_control(&mut self, node: NodeId, value: &str) {
+        self.deferred_controls.remove(&node);
+        if let Some(el) = self.live_elements.get(&node) {
             write_dom_control_value(el, value);
         }
     }

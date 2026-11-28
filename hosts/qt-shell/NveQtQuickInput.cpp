@@ -88,21 +88,24 @@ void NveQtQuickItem::Impl::press(QPointF pos) {
     focus->input.caret = static_cast<int>(focus->input.edit.size());
   }
   const uint32_t down = [&] {
-    QuickNodeView* d = nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_EVENT_POINTER_DOWN); });
+    QuickNodeView* d = nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_POINTER_DOWN); });
     return d != nullptr ? d->id : 0u;
   }();
   set_focus(focus != nullptr ? focus->id : 0u);  // may dispatch: records can change
   if (const QuickNodeView* d = find(down); d != nullptr && down != 0u) {
     const QPointF local = pos - origin_of(*d);
-    (void)dispatch_pointer(down, NVE_EVENT_POINTER_DOWN, static_cast<float>(local.x()), static_cast<float>(local.y()));
+    (void)dispatch_pointer(down, NVE_INTERACTION_EVENT_POINTER_DOWN, static_cast<float>(local.x()),
+                           static_cast<float>(local.y()));
   }
 }
 
 void NveQtQuickItem::Impl::release(QPointF pos) {
   QuickNodeView* hit = pick(pos);
-  if (QuickNodeView* up = nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_EVENT_POINTER_UP); })) {
+  if (QuickNodeView* up =
+          nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_POINTER_UP); })) {
     const QPointF local = pos - origin_of(*up);
-    (void)dispatch_pointer(up->id, NVE_EVENT_POINTER_UP, static_cast<float>(local.x()), static_cast<float>(local.y()));
+    (void)dispatch_pointer(up->id, NVE_INTERACTION_EVENT_POINTER_UP, static_cast<float>(local.x()),
+                           static_cast<float>(local.y()));
     hit = pick(pos);  // the dispatch may have changed the scene
   }
   const uint32_t pressed = std::exchange(pressed_, 0u);
@@ -122,21 +125,24 @@ void NveQtQuickItem::Impl::hover(QPointF pos, bool inside) {
   const std::vector<uint32_t> before = std::exchange(hovered_, path);
   for (auto it = before.rbegin(); it != before.rend(); ++it) {
     if (std::find(path.begin(), path.end(), *it) != path.end()) continue;
-    if (const QuickNodeView* v = find(*it); v != nullptr && v->wants(NVE_EVENT_POINTER_LEAVE)) {
-      (void)dispatch_pointer(*it, NVE_EVENT_POINTER_LEAVE, 0.0f, 0.0f);
+    if (const QuickNodeView* v = find(*it); v != nullptr && v->wants(NVE_INTERACTION_EVENT_POINTER_LEAVE)) {
+      (void)dispatch_pointer(*it, NVE_INTERACTION_EVENT_POINTER_LEAVE, 0.0f, 0.0f);
     }
   }
   for (const uint32_t id : path) {
     if (std::find(before.begin(), before.end(), id) != before.end()) continue;
-    if (const QuickNodeView* v = find(id); v != nullptr && v->wants(NVE_EVENT_POINTER_ENTER)) {
+    if (const QuickNodeView* v = find(id); v != nullptr && v->wants(NVE_INTERACTION_EVENT_POINTER_ENTER)) {
       const QPointF local = pos - origin_of(*v);
-      (void)dispatch_pointer(id, NVE_EVENT_POINTER_ENTER, static_cast<float>(local.x()), static_cast<float>(local.y()));
+      (void)dispatch_pointer(id, NVE_INTERACTION_EVENT_POINTER_ENTER, static_cast<float>(local.x()),
+                             static_cast<float>(local.y()));
     }
   }
   hit = inside ? pick(pos) : nullptr;
-  if (QuickNodeView* mv = nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_EVENT_POINTER_MOVE); })) {
+  if (QuickNodeView* mv =
+          nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_POINTER_MOVE); })) {
     const QPointF local = pos - origin_of(*mv);
-    (void)dispatch_pointer(mv->id, NVE_EVENT_POINTER_MOVE, static_cast<float>(local.x()), static_cast<float>(local.y()));
+    (void)dispatch_pointer(mv->id, NVE_INTERACTION_EVENT_POINTER_MOVE, static_cast<float>(local.x()),
+                           static_cast<float>(local.y()));
     hit = inside ? pick(pos) : nullptr;
   }
   // Cursor: the nearest explicit one, else a hand over pressables, an I-beam over inputs.
@@ -377,7 +383,7 @@ uint32_t NveQtQuickItem::hitTestNode(QPointF item_pos, bool interactive_only) co
   QuickNodeView* hit = impl_->pick(item_pos);
   if (interactive_only) {
     hit = nearest(hit, [](const QuickNodeView& v) {
-      return v.event_mask != 0u || v.activatable() || v.focusable || v.scrollable;
+      return v.interaction_events != 0u || v.activatable() || v.focusable || v.scrollable;
     });
   }
   return hit != nullptr ? hit->id : 0u;

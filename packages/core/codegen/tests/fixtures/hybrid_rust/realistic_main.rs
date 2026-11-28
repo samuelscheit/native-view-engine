@@ -1,7 +1,10 @@
 // Driver of the realistic spec's generated bindings, compiled by real `rustc -D warnings` and run.
 use crypto_hybrid::*;
 use nve_abi::hybrid::{decode_bin_arg, encode_to_vec};
-use nve_abi::{NveBufferSlice, NveMapEntry, NveMapRef, NveStrSlice, NveValue};
+use nve_abi::{
+    EventBatchBuf, NodeId, NveBufferSlice, NveMapEntry, NveMapRef, NveStrSlice, NveValue,
+    SurfaceId, TimestampUs,
+};
 
 #[derive(Default)]
 struct MyCrypto;
@@ -152,15 +155,16 @@ fn main() {
         (vvt.destroy)(vh);
     }
 
-    let mut saw_direct = false;
-    emit_video_surface_on_progress(1, 2, 333, 1200, u64::MAX, |d| {
-        saw_direct = true;
-        assert_eq!((d.surface_id, d.node_id, d.timestamp_us), (1, 2, 333));
-        let payload = unsafe { d.value.as_ref() };
-        assert_eq!(payload.get("position_ms").and_then(|v| v.as_i64()), Some(1200));
-        assert_eq!(payload.get("duration_ms").and_then(|v| v.as_i64()), Some(-1));
-    })
-    .unwrap();
-    assert!(saw_direct);
+    let mut batch = EventBatchBuf::new();
+    let (surf, node, ts) = (SurfaceId::new(1, 1), NodeId::new(2, 1), TimestampUs(333));
+    emit_video_surface_on_progress(surf, node, ts, 1200, u64::MAX, &mut batch).unwrap();
+    let validated = batch.as_validated();
+    assert_eq!(validated.len(), 1);
+    let ev = validated.get(0).unwrap();
+    assert!(ev.is_custom());
+    assert_eq!((ev.surface(), ev.node(), ev.timestamp()), (surf, node, ts));
+    assert_eq!(ev.custom_name(), "on_progress");
+    let decoded_ev = decode_bin_arg::<VideoSurfaceOnProgressEvent>(ev.custom_data()).unwrap();
+    assert_eq!((decoded_ev.position_ms, decoded_ev.duration_ms), (1200, u64::MAX));
     println!("realistic hybrid e2e ok");
 }

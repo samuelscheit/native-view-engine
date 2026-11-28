@@ -3,7 +3,7 @@
 //! contents child is replaced, recursively and in document order, by its own children. Contents
 //! nodes are never laid out; the rounding pass passes their parent's origin straight through.
 
-use nve_components::tables::is_display_contents;
+use nve_tables::tables::is_display_contents;
 use nve_store::{NodeId, NodeStore};
 
 use super::node_lists::NodeLists;

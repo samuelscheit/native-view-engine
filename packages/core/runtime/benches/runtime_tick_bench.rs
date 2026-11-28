@@ -4,8 +4,8 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use nve_abi::EventMask;
-use nve_components::tables::{Interaction, Layout, TextContent, Visual};
+use nve_abi::InteractionEvent;
+use nve_tables::tables::{Interaction, Layout, TextContent, Visual};
 use nve_engine::Viewport;
 use nve_runtime::RuntimeBuilder;
 use nve_store::wire::WireEncoder;
@@ -29,7 +29,7 @@ fn build_tree_and_dirty_deltas(count: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
             tx.edit::<Visual>(item).background(Rgba::rgb(30, 41, 59));
             if i % 4 == 0 {
                 tx.edit::<Interaction>(item)
-                    .event_mask(EventMask::PRESS as u32);
+                    .listen(InteractionEvent::Press);
             }
             let lbl = tx.create();
             tx.edit::<TextContent>(lbl).text("Row Item");

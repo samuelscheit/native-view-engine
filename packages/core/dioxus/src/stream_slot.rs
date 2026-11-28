@@ -5,7 +5,7 @@ use dioxus_core_macro::Props;
 
 use crate::prelude::*;
 
-pub use nve_components::tables::{
+pub use nve_tables::tables::{
     StreamSlotRole, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
 };
 

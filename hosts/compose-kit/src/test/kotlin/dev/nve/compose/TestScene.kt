@@ -1,5 +1,6 @@
 package dev.nve.compose
 
+import dev.nve.host.EventRingReader
 import dev.nve.host.FieldSpec
 import dev.nve.host.Key64
 import dev.nve.host.PackedSceneBuilder
@@ -56,6 +57,11 @@ class TestScene(capacity: Int = 16, var frameId: Long = 1L, var epoch: Int = 0) 
         return this
     }
 
+    fun setEvents(t: PackedSceneBuilder.Table, index: Int, eventsWord: Int, eventMask: Int): TestScene {
+        t.setEvents(index, eventsWord, eventMask)
+        return this
+    }
+
     /** Runtime scroll offset of container [index] (call in ascending index order). */
     fun scroll(index: Int, x: Float, y: Float): TestScene {
         scrolls.add(Triple(index, x, y))
@@ -87,9 +93,16 @@ fun NveSceneState.at(id: Int): NveNode = this[id] ?: error("no node ${Integer.to
 fun capture(scene: TestScene, resources: NveResourceLookup, into: NveSceneState = NveSceneState()): NveSceneState =
     into.also { NveSceneCapture.capture(scene.reader(), resources, it) }
 
-/** `ImageSource` wire bytes (tag + u32 length + payload). */
-fun imageSourceBytes(tag: Int, payload: ByteArray): ByteBuffer =
-    ByteBuffer.allocateDirect(5 + payload.size).order(ByteOrder.LITTLE_ENDIAN).apply {
-        put(tag.toByte()).putInt(payload.size).put(payload)
+/** True when this `NVEV` v2 batch holds `(table, event)` at [index]. */
+fun EventRingReader.isEvent(table: Key64, event: Int, index: Int = 0): Boolean =
+    count() > index && table(index) == table && event(index) == event
+
+/** `ImageSource` `FlatResource` wire bytes (`u32 tag | u32 length | payload zero-padded to 4 B`). */
+fun imageSourceBytes(tag: Int, payload: ByteArray): ByteBuffer {
+    val padded = (payload.size + 3) and 3.inv()
+    return ByteBuffer.allocateDirect(8 + padded).order(ByteOrder.LITTLE_ENDIAN).apply {
+        putInt(tag).putInt(payload.size).put(payload)
+        repeat(padded - payload.size) { put(0.toByte()) }
         flip()
     }
+}

@@ -16,7 +16,11 @@ public final class NveAbi {
 {%- if let Some(doc) = k.doc %}
     /** {{ spell::one_line(doc) }} */
 {%- endif %}
+{%- if k.ty == "u64" %}
+    public static final Key64 {{ spell::bare(k.name) }} = Key64.fromHalves({{ spell::lo_hex(k.value) }}, {{ spell::hi_hex(k.value) }});
+{%- else %}
     public static final int {{ spell::bare(k.name) }} = {{ spell::java_int(k.value, k.hex) }};
+{%- endif %}
 {%- endfor %}
 
     // Modular interface IDs (`nve_get_interface`).

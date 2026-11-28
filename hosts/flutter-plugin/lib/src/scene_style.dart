@@ -1,7 +1,7 @@
 /// Typography resolution and color conversion over a published runtime scene: one inherited
 /// [NveTextStyle] per node, following the host rule (`nve::host::inherit_text_style`): a
-/// `Typography` field applies exactly when its `set` bit is on; otherwise the parent's value
-/// flows down, whatever the row's default bits hold.
+/// `Typography` field applies exactly when its `__explicit` override bit is on; otherwise the
+/// parent's value flows down, whatever the row's default bits hold.
 library;
 
 import 'package:flutter/painting.dart';
@@ -44,7 +44,7 @@ final class NveTextStyle {
   final double? lineHeight;
   final int? maxLines;
 
-  /// `TypographyTable.decoration*` bits.
+  /// `NveTextDecoration` bits.
   final int decoration;
 
   /// This style overridden by node [index]'s `Typography` row in [table] (if any).
@@ -54,32 +54,32 @@ final class NveTextStyle {
       return this;
     }
     final t = table!;
-    final set = t.u32(row, TypographyTable.set);
-    if (set == 0) {
+    final mask = t.explicitMask(row);
+    if (mask == 0) {
       return this;
     }
-    bool has(int bit) => set & bit != 0;
-    final rawSize = has(NveTypographySet.fontSize) ? t.f32(row, TypographyTable.fontSize) : fontSize;
+    bool has(FieldSpec f) => f.isExplicitIn(mask);
+    final rawSize = has(TypographyTable.fontSize) ? t.f32(row, TypographyTable.fontSize) : fontSize;
     final size = rawSize.isFinite && rawSize > 0 ? rawSize : fontSize;
-    final family = has(NveTypographySet.fontFamily) ? s.str(t, row, TypographyTable.fontFamily) : fontFamily;
+    final family = has(TypographyTable.fontFamily) ? s.str(t, row, TypographyTable.fontFamily) : fontFamily;
     return NveTextStyle(
-      color: has(NveTypographySet.color) ? t.color(row, TypographyTable.color).packed : color,
+      color: has(TypographyTable.color) ? t.color(row, TypographyTable.color).packed : color,
       fontSize: size,
-      fontWeight: has(NveTypographySet.fontWeight) ? t.u32(row, TypographyTable.fontWeight) : fontWeight,
-      italic: has(NveTypographySet.fontStyle)
+      fontWeight: has(TypographyTable.fontWeight) ? t.u32(row, TypographyTable.fontWeight) : fontWeight,
+      italic: has(TypographyTable.fontStyle)
           ? t.enumValue(row, TypographyTable.fontStyle) != NveFontStyle.normal
           : italic,
-      textAlign: has(NveTypographySet.textAlign) ? t.enumValue(row, TypographyTable.textAlign) : textAlign,
+      textAlign: has(TypographyTable.textAlign) ? t.enumValue(row, TypographyTable.textAlign) : textAlign,
       fontFamily: family == null || family.isEmpty ? null : family,
-      letterSpacing: has(NveTypographySet.letterSpacing)
+      letterSpacing: has(TypographyTable.letterSpacing)
           ? _letterSpacing(t.f32(row, TypographyTable.letterSpacing), letterSpacing)
           : letterSpacing,
       // The `LengthValue` is decoded only when the row sets a line height.
-      lineHeight: has(NveTypographySet.lineHeight)
+      lineHeight: has(TypographyTable.lineHeight)
           ? _lineHeight(t.length(row, TypographyTable.lineHeight), size, lineHeight)
           : lineHeight,
-      maxLines: has(NveTypographySet.maxLines) ? t.u32(row, TypographyTable.maxLines) : maxLines,
-      decoration: has(NveTypographySet.textDecoration) ? t.u32(row, TypographyTable.textDecoration) : decoration,
+      maxLines: has(TypographyTable.maxLines) ? t.optU32(row, TypographyTable.maxLines) : maxLines,
+      decoration: has(TypographyTable.textDecoration) ? t.u32(row, TypographyTable.textDecoration) : decoration,
     );
   }
 

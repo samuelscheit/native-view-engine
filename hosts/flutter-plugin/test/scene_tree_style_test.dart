@@ -24,8 +24,8 @@ void main() {
         ..bits(visualShape, scroller, VisualTable.overflowY, NveOverflow.scroll)
         ..scrollOffset(scroller, 0, 100)
         ..bits(layoutShape, hiddenNode, LayoutTable.display, NveDisplay.none)
-        ..bits(interactionShape, deep, InteractionTable.eventMask, nveEventMaskPress)
-        ..bits(interactionShape, sibling, InteractionTable.eventMask, nveEventMaskPress);
+        ..events(interactionShape, deep, InteractionTable.eventsWord, NveInteractionEventSet.press)
+        ..events(interactionShape, sibling, InteractionTable.eventsWord, NveInteractionEventSet.press);
     });
 
     test('visual rects subtract every ancestor scroll shift; published rects stay pre-scroll', () {
@@ -65,7 +65,7 @@ void main() {
       b.bits(interactionShape, deep, InteractionTable.disabled, 1);
       final t = b.tree();
       expect(t.eventMask(deep), 0);
-      expect(t.eventMask(sibling), nveEventMaskPress);
+      expect(t.eventMask(sibling), NveInteractionEventSet.press);
       expect(t.eventMask(root), 0);
     });
 
@@ -121,16 +121,14 @@ void main() {
       final child = b.node(Rect.zero, parent: parent);
       final plain = b.node(Rect.zero, parent: parent);
       b
-        ..bits(
-            typographyShape,
-            parent,
-            TypographyTable.set,
-            NveTypographySet.color |
-                NveTypographySet.fontSize |
-                NveTypographySet.fontWeight |
-                NveTypographySet.fontFamily |
-                NveTypographySet.lineHeight |
-                NveTypographySet.textDecoration)
+        ..explicit(typographyShape, parent, [
+          TypographyTable.color,
+          TypographyTable.fontSize,
+          TypographyTable.fontWeight,
+          TypographyTable.fontFamily,
+          TypographyTable.lineHeight,
+          TypographyTable.textDecoration,
+        ])
         ..bits(typographyShape, parent, TypographyTable.color, packRgba(255, 0, 0))
         ..f32(typographyShape, parent, TypographyTable.fontSize, 20)
         ..bits(typographyShape, parent, TypographyTable.fontWeight, 700)
@@ -138,10 +136,13 @@ void main() {
         ..length(typographyShape, parent, TypographyTable.lineHeight, 150, percent: true)
         ..bits(typographyShape, parent, TypographyTable.textDecoration,
             NveTextDecoration.underline | NveTextDecoration.lineThrough)
-        ..bits(typographyShape, child, TypographyTable.set,
-            NveTypographySet.fontStyle | NveTypographySet.maxLines | NveTypographySet.textAlign)
+        ..explicit(typographyShape, child, [
+          TypographyTable.fontStyle,
+          TypographyTable.maxLines,
+          TypographyTable.textAlign,
+        ])
         ..bits(typographyShape, child, TypographyTable.fontStyle, NveFontStyle.italic)
-        ..bits(typographyShape, child, TypographyTable.maxLines, 2)
+        ..optBits(typographyShape, child, TypographyTable.maxLines, 2)
         ..bits(typographyShape, child, TypographyTable.textAlign, NveTextAlign.center);
       final s = b.build();
       final typo = s.findTable(TypographyTable.key);
@@ -175,37 +176,45 @@ void main() {
       final b = SceneBuilder();
       final parent = b.node(const Rect.fromLTWH(0, 0, 10, 10));
       final unset = b.node(Rect.zero, parent: parent);
+      final cleared = b.node(Rect.zero, parent: parent);
       final zero = b.node(Rect.zero, parent: parent);
       final nan = b.node(Rect.zero, parent: parent);
       final autoReset = b.node(Rect.zero, parent: parent);
       final negSpacing = b.node(Rect.zero, parent: parent);
       b
-        // Non-default bits under an empty `set`: an ancestor's style must flow through untouched.
+        // Non-default bits under an empty `__explicit` mask: an ancestor's style must flow through untouched.
         ..bits(typographyShape, unset, TypographyTable.color, packRgba(0, 255, 0))
         ..f32(typographyShape, unset, TypographyTable.fontSize, 40)
         ..bits(typographyShape, unset, TypographyTable.fontWeight, 900)
         ..bits(typographyShape, unset, TypographyTable.textAlign, NveTextAlign.center)
-        ..bits(typographyShape, unset, TypographyTable.set, NveTypographySet.maxLines)
-        ..bits(typographyShape, unset, TypographyTable.maxLines, 3)
-        ..bits(typographyShape, zero, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.lineHeight)
+        ..explicit(typographyShape, unset, [TypographyTable.maxLines])
+        ..optBits(typographyShape, unset, TypographyTable.maxLines, 3)
+        ..explicit(typographyShape, cleared, [TypographyTable.maxLines])
+        ..optBits(typographyShape, cleared, TypographyTable.maxLines, null)
+        ..explicit(typographyShape, zero, [TypographyTable.fontSize, TypographyTable.lineHeight])
         ..f32(typographyShape, zero, TypographyTable.fontSize, 0)
         ..length(typographyShape, zero, TypographyTable.lineHeight, -4)
-        ..bits(typographyShape, nan, TypographyTable.set,
-            NveTypographySet.fontSize | NveTypographySet.letterSpacing | NveTypographySet.lineHeight)
+        ..explicit(typographyShape, nan, [
+          TypographyTable.fontSize,
+          TypographyTable.letterSpacing,
+          TypographyTable.lineHeight,
+        ])
         ..f32(typographyShape, nan, TypographyTable.fontSize, double.nan)
         ..f32(typographyShape, nan, TypographyTable.letterSpacing, double.infinity)
         ..length(typographyShape, nan, TypographyTable.lineHeight, double.nan)
-        ..bits(typographyShape, autoReset, TypographyTable.set, NveTypographySet.lineHeight)
+        ..explicit(typographyShape, autoReset, [TypographyTable.lineHeight])
         ..bits(typographyShape, autoReset, TypographyTable.lineHeight, 2) // LengthUnit.auto
-        ..bits(typographyShape, negSpacing, TypographyTable.set, NveTypographySet.letterSpacing)
+        ..explicit(typographyShape, negSpacing, [TypographyTable.letterSpacing])
         ..f32(typographyShape, negSpacing, TypographyTable.letterSpacing, -0.5);
       final s = b.build();
       final typo = s.findTable(TypographyTable.key);
-      const inherited = NveTextStyle(color: 7, fontSize: 13, fontWeight: 300, letterSpacing: 1.5, lineHeight: 24);
+      const inherited =
+          NveTextStyle(color: 7, fontSize: 13, fontWeight: 300, letterSpacing: 1.5, lineHeight: 24, maxLines: 5);
       final u = inherited.resolve(s, typo, unset);
       expect((u.color, u.fontSize, u.fontWeight, u.textAlign, u.letterSpacing, u.lineHeight),
           (7, 13, 300, NveTextAlign.start, 1.5, 24));
-      expect(u.maxLines, 3, reason: 'only the set field applies');
+      expect(u.maxLines, 3, reason: 'only the explicit field applies');
+      expect(inherited.resolve(s, typo, cleared).maxLines, isNull, reason: 'explicit zeroNiche null clears inherited maxLines');
       final z = inherited.resolve(s, typo, zero);
       expect((z.fontSize, z.lineHeight), (13, 24), reason: 'zero size / negative line height inherit parent');
       final n = inherited.resolve(s, typo, nan);
@@ -225,18 +234,18 @@ void main() {
       final pctZero = b.node(Rect.zero, parent: parent);
       final ptsZero = b.node(Rect.zero, parent: parent);
       b
-        ..bits(typographyShape, pctValid, TypographyTable.set, NveTypographySet.lineHeight)
+        ..explicit(typographyShape, pctValid, [TypographyTable.lineHeight])
         ..length(typographyShape, pctValid, TypographyTable.lineHeight, 150, percent: true)
-        ..bits(typographyShape, pctWithSize, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.lineHeight)
+        ..explicit(typographyShape, pctWithSize, [TypographyTable.fontSize, TypographyTable.lineHeight])
         ..f32(typographyShape, pctWithSize, TypographyTable.fontSize, 10)
         ..length(typographyShape, pctWithSize, TypographyTable.lineHeight, 120, percent: true)
-        ..bits(typographyShape, pctNeg, TypographyTable.set, NveTypographySet.lineHeight)
+        ..explicit(typographyShape, pctNeg, [TypographyTable.lineHeight])
         ..length(typographyShape, pctNeg, TypographyTable.lineHeight, -50, percent: true)
-        ..bits(typographyShape, pctNan, TypographyTable.set, NveTypographySet.lineHeight)
+        ..explicit(typographyShape, pctNan, [TypographyTable.lineHeight])
         ..length(typographyShape, pctNan, TypographyTable.lineHeight, double.nan, percent: true)
-        ..bits(typographyShape, pctZero, TypographyTable.set, NveTypographySet.lineHeight)
+        ..explicit(typographyShape, pctZero, [TypographyTable.lineHeight])
         ..length(typographyShape, pctZero, TypographyTable.lineHeight, 0, percent: true)
-        ..bits(typographyShape, ptsZero, TypographyTable.set, NveTypographySet.lineHeight)
+        ..explicit(typographyShape, ptsZero, [TypographyTable.lineHeight])
         ..length(typographyShape, ptsZero, TypographyTable.lineHeight, 0);
       final s = b.build();
       final typo = s.findTable(TypographyTable.key);

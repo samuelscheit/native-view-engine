@@ -14,7 +14,7 @@ impl Transaction<'_> {
     /// per-frame tracking. Removed node indices and released resources are recycled afterwards, so
     /// ids seen in this frame never alias within it.
     pub fn commit_into(self, changes: &mut ChangeSet) {
-        let s = self.store;
+        let s = self.core.store;
         changes.clear();
         s.frame += 1;
         changes.frame = s.frame;
@@ -103,7 +103,7 @@ impl Transaction<'_> {
             }
             col.dirty.clear();
             if col.detached.len() > 1 {
-                col.detached.sort_unstable_by_key(|id| id.0);
+                col.detached.sort_unstable_by_key(|id| id.raw());
                 col.detached.dedup();
             }
             for id in col.detached.drain(..) {

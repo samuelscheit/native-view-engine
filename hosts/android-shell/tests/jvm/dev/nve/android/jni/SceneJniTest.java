@@ -1,5 +1,6 @@
 package dev.nve.android.jni;
 
+import dev.nve.host.DrawList;
 import dev.nve.host.FieldSpec;
 import dev.nve.host.ImageSource;
 import dev.nve.host.Key64;
@@ -9,7 +10,6 @@ import dev.nve.host.SceneReader;
 import dev.nve.host.RuntimeSurface;
 import dev.nve.host.SceneSemantics;
 import dev.nve.host.TableReader;
-import dev.nve.host.generated.NveAbi;
 import dev.nve.host.generated.NveJniFrame;
 import dev.nve.host.generated.NveModuleTables;
 import dev.nve.host.generated.NveRuntimeAbi;
@@ -29,7 +29,7 @@ import java.util.List;
 public final class SceneJniTest {
     private SceneJniTest() {}
 
-    static final Key64 DRAW_LIST_KIND = Key64.of("nve.res.draw_list");
+    static final Key64 DRAW_LIST_KIND = DrawList.KIND;
 
     public static void main(String[] args) throws Exception {
         System.loadLibrary("nve_android_shell");
@@ -87,8 +87,10 @@ public final class SceneJniTest {
         c.that(table(s, NveTables.TextInput.KEY).bool(row(s, NveTables.TextInput.KEY, input), NveTables.TextInput.SECURE), "secure");
         c.eq(str(s, NveTables.Accessibility.KEY, input, NveTables.Accessibility.LABEL), "Password", "a11y label");
         final int button = fx.id("button");
-        c.eq(table(s, NveTables.Accessibility.KEY).u32(row(s, NveTables.Accessibility.KEY, button), NveTables.Accessibility.ROLE),
-                NveTables.Values.AriaRole.BUTTON, "button role");
+        final TableReader a11y = table(s, NveTables.Accessibility.KEY);
+        final int br = s.rowOf(a11y, s.resolve(button));
+        c.that(a11y.isPresent(br, NveTables.Accessibility.ROLE)
+                && a11y.u32(br, NveTables.Accessibility.ROLE) == NveTables.Values.AriaRole.BUTTON, "button role");
         c.eq(str(s, NveTables.DebugId.KEY, button, NveTables.DebugId.TEST_ID), "submit-btn", "test id");
         semantics(c, fx, s);
         c.that(s.primaryTable(s.resolve(fx.id("scroll"))) != null, "scroll container realizes a table");
@@ -112,6 +114,7 @@ public final class SceneJniTest {
         c.eq(logo == null ? null : ImageSource.decode(logo).url, "asset://logo.png", "image url");
         final ByteBuffer draw = NativeRuntime.resource(h, fx.id("canvas_res"), kf);
         c.that(draw != null && draw.capacity() > 0 && kf[0] == DRAW_LIST_KIND.value(), "draw list resource (module kind mirrored raw)");
+        assertLiveFillRect(c, draw, 0f, 0f, 120f, 40f, 30, 41, 59, 255, "showcase_1 draw list");
         c.eq(table(s, NveModuleTables.Canvas.KEY).u32(row(s, NveModuleTables.Canvas.KEY, fx.id("canvas")), NveModuleTables.Canvas.DRAW_LIST),
                 fx.id("canvas_res"), "canvas draw list id");
         c.that(NativeRuntime.resource(h, 0, kf) == null && NativeRuntime.resource(h, 9999, kf) == null, "missing resources");
@@ -277,15 +280,20 @@ public final class SceneJniTest {
         c.eq(NativeRuntime.submitFrame(h, f3, f3.remaining()), 0, "submit recycle frame");
         SceneReader s = scene.acquire();
         c.eq(s.sceneEpoch(), epoch, "recycling stays in the epoch");
+        final int logo = fx.id("logo_res");
         final int recycled = fx.id("recycled_res");
         final int eph = fx.id("canvas_eph_res");
-        c.eq(recycled, fx.id("logo_res"), "the fixture recycles the freed logo id");
+        c.eq(recycled & 0x00FF_FFFF, logo & 0x00FF_FFFF, "the fixture recycles the freed logo slot");
+        c.eq((recycled >>> 24) & 0xFF, ((logo >>> 24) + 1) & 0xFF, "recycling bumps the resource generation");
+        c.that(NativeRuntime.resource(h, logo, new long[1]) == null, "stale logo generation is rejected");
         c.that(s.isResourceDirty(recycled), "a recycled id is dirty");
         c.that(s.isResourceDirty(eph) && !s.isResourceDirty(fx.id("hero_res")), "new ephemeral id dirty, untouched hero clean");
         final long[] kf = new long[1];
         final ByteBuffer img = NativeRuntime.resource(h, recycled, kf);
         c.eq(img == null ? null : ImageSource.decode(img).url, "asset://recycled.png", "the recycled id serves its new bytes");
         final ByteBuffer d3 = NativeRuntime.resource(h, eph, kf);
+        c.that(d3 != null && kf[0] == DrawList.KIND.value(), "showcase_3 ephemeral draw list kind");
+        assertLiveFillRect(c, d3, 0f, 0f, 60f, 40f, 30, 41, 59, 255, "showcase_3 ephemeral draw list");
         final byte[] before = new byte[d3 == null ? 0 : d3.remaining()];
         if (d3 != null) d3.get(before);
         scene.release();
@@ -296,12 +304,58 @@ public final class SceneJniTest {
         c.eq(s.dirtyResourceCount(), 1, "only the rewritten ephemeral id is dirty");
         c.that(s.isResourceDirty(eph), "an in-place ephemeral rewrite keeps its id and is dirty");
         final ByteBuffer d4 = NativeRuntime.resource(h, eph, kf);
+        c.that(d4 != null && kf[0] == DrawList.KIND.value(), "showcase_4 ephemeral draw list kind");
+        assertLiveFillRect(c, d4, 0f, 0f, 90f, 40f, 30, 41, 59, 255, "showcase_4 ephemeral draw list");
         final byte[] after = new byte[d4 == null ? 0 : d4.remaining()];
         if (d4 != null) d4.get(after);
         c.that(before.length > 0 && !java.util.Arrays.equals(before, after), "the same id carries new draw-list bytes");
         c.eq(table(s, NveModuleTables.Canvas.KEY).u32(row(s, NveModuleTables.Canvas.KEY, fx.id("canvas")), NveModuleTables.Canvas.DRAW_LIST),
                 eph, "canvas row points at the ephemeral id");
         scene.release();
+    }
+
+    /** Proves live Rust `FlatResource` draw-list bytes pass `DrawList.validate` and decode the exact `FillRect`. */
+    static void assertLiveFillRect(Expect c, ByteBuffer buf, float ex, float ey, float ew, float eh,
+            int er, int eg, int eb, int ea, String label) {
+        if (buf == null) {
+            c.that(false, label + " present");
+            return;
+        }
+        final int pos = buf.position();
+        final int len = buf.remaining();
+        c.that(DrawList.validate(buf, pos, len) == null, label + " validates as canonical FlatResource");
+        final int[] ops = new int[1];
+        final int[] fillRects = new int[1];
+        final float[] rect = new float[4];
+        final int[] rgba = new int[1];
+        final DrawList.Error err = DrawList.decode(buf, pos, len, new DrawList.Sink() {
+            @Override public void onClear(int col) { ops[0]++; }
+            @Override public void onFillRect(float x, float y, float w, float h, int col) {
+                ops[0]++;
+                fillRects[0]++;
+                rect[0] = x;
+                rect[1] = y;
+                rect[2] = w;
+                rect[3] = h;
+                rgba[0] = col;
+            }
+            @Override public void onFillRoundedRect(float x, float y, float w, float h, float r, int col) { ops[0]++; }
+            @Override public void onFillCircle(float cx, float cy, float r, int col) { ops[0]++; }
+            @Override public void onStrokeLine(float x0, float y0, float x1, float y1, float w, int col) { ops[0]++; }
+            @Override public void onStrokePolylineStart(int n, float w, int col) { ops[0]++; }
+            @Override public void onStrokePolylinePoint(int i, float x, float y) {}
+            @Override public void onStrokePolylineEnd() {}
+            @Override public void onClipRect(float x, float y, float w, float h) { ops[0]++; }
+            @Override public void onRestoreClip() { ops[0]++; }
+        });
+        c.that(err == null, label + " decodes");
+        c.eq(buf.position(), pos, label + " buffer position untouched");
+        c.eq(ops[0], 1, label + " op count");
+        c.eq(fillRects[0], 1, label + " FillRect count");
+        c.that(rect[0] == ex && rect[1] == ey && rect[2] == ew && rect[3] == eh,
+                label + " rect (" + rect[0] + "," + rect[1] + "," + rect[2] + "," + rect[3] + ")");
+        c.that(Rgba.r(rgba[0]) == er && Rgba.g(rgba[0]) == eg && Rgba.b(rgba[0]) == eb && Rgba.a(rgba[0]) == ea,
+                label + " color");
     }
 
     /** {@link SceneSemantics} over real tables: kinds, pressability, and inherited typography. */
@@ -470,7 +524,7 @@ public final class SceneJniTest {
         final int[] renders = new int[1];
         surface.setFrameConsumer((s, sf) -> {
             seen[0] = s;
-            statuses[0] = sf.send(r -> r.empty(NveAbi.EVENT_FOCUS, fx.id("input"), 2L));
+            statuses[0] = sf.send(r -> r.focus(fx.id("input"), 2L));
             statuses[1] = sf.scrollBy(fx.id("scroll"), 0f, 10f);
             statuses[2] = sf.hitTest(1f, 1f);
             try {
@@ -514,7 +568,7 @@ public final class SceneJniTest {
             c.that(surface.resource(fx.id("logo_res")) == null, "resources unreadable outside the consumer");
             c.eq(surface.setViewport(300f, 600f, 1f), 0, "surface viewport");
             c.that(surface.render(), "viewport change redelivers");
-            c.eq(surface.send(r -> r.point(NveAbi.EVENT_PRESS, fx.id("button"), 1L, 1f, 1f)), 0, "send");
+            c.eq(surface.send(r -> r.press(fx.id("button"), 1L, 1f, 1f)), 0, "send");
             c.that(surface.hitTest(-1f, -1f) == 0, "surface hit test");
             reentrancy(c, fx, surface);
         }

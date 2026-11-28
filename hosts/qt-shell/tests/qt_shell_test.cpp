@@ -64,9 +64,13 @@ void test_counter_widgets_measurement_and_events() {
             measure_text("Hello", host::text_style(16.0f), kInf).width);  // NaN: unbounded
 
   std::vector<int64_t> counts;
-  host.set_event_callback([&counts](std::span<const NveDirectEvent> evs) {
-    for (const NveDirectEvent& ev : evs) {
-      if (ev.kind == NVE_EVENT_CUSTOM && ev.value.tag == NVE_VAL_I64) counts.push_back(ev.value.data.i64_val);
+  host.set_event_callback([&counts](NveEventBatch batch) {
+    for (const NveEvent& ev : host::batch_events(batch)) {
+      if (host::is_custom_event(ev) && host::event_custom_name(ev, batch) == CounterApp::kCountEventName) {
+        host::BinReader r(host::event_custom_data(ev, batch));
+        const int64_t v = r.read_i64();
+        if (r.ok()) counts.push_back(v);
+      }
     }
   });
 

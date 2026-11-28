@@ -30,17 +30,76 @@ class RowRef {
 
   [[nodiscard]] bool present() const noexcept { return reader_ != nullptr; }
 
-  [[nodiscard]] uint32_t bits(FieldSpec f) const noexcept {
-    if (reader_ != nullptr) {
-      if (const std::optional<uint32_t> v = reader_->bits(row_, f)) return *v;
-    }
-    return desc_ != nullptr && nve_field_fits(f, desc_->words) != 0 ? nve_field_bits(desc_->defaults[f.word], f)
-                                                                    : 0u;
+  /// Decoded field bits (respecting `f.opt`); `nullopt` when absent or invalid.
+  [[nodiscard]] std::optional<uint32_t> opt_bits(FieldSpec f) const noexcept {
+    if (reader_ != nullptr) return reader_->bits(row_, f);
+    uint32_t out = 0u;
+    if (desc_ == nullptr || nve_field_opt_bits(desc_->defaults, desc_->words, f, &out) == 0) return std::nullopt;
+    return out;
   }
-  [[nodiscard]] float f32(FieldSpec f) const noexcept { return std::bit_cast<float>(bits(f)); }
-  [[nodiscard]] int32_t i32(FieldSpec f) const noexcept { return nve_bits_sign_extend(bits(f), f.bits); }
-  [[nodiscard]] bool boolean(FieldSpec f) const noexcept { return (bits(f) & 1u) != 0u; }
-  [[nodiscard]] LengthValue length(FieldSpec f) const noexcept { return LengthValue::decode(bits(f)); }
+  [[nodiscard]] std::optional<uint32_t> opt_u32(FieldSpec f) const noexcept { return opt_bits(f); }
+  [[nodiscard]] std::optional<int32_t> opt_i32(FieldSpec f) const noexcept {
+    if (reader_ != nullptr) return reader_->i32(row_, f);
+    int32_t out = 0;
+    if (desc_ == nullptr || nve_field_opt_i32(desc_->defaults, desc_->words, f, &out) == 0) return std::nullopt;
+    return out;
+  }
+  [[nodiscard]] std::optional<float> opt_f32(FieldSpec f) const noexcept {
+    const std::optional<uint32_t> b = opt_bits(f);
+    return b ? std::optional<float>(std::bit_cast<float>(*b)) : std::nullopt;
+  }
+  [[nodiscard]] std::optional<bool> opt_bool(FieldSpec f) const noexcept {
+    if (reader_ != nullptr) return reader_->boolean(row_, f);
+    const std::optional<uint32_t> b = opt_bits(f);
+    if (!b) return std::nullopt;
+    if (f.opt == static_cast<uint8_t>(NVE_OPT_PLUS_ONE)) {
+      return *b <= 1u ? std::optional<bool>(*b == 1u) : std::nullopt;
+    }
+    return (*b & 1u) != 0u;
+  }
+  [[nodiscard]] std::optional<Rgba> opt_color(FieldSpec f) const noexcept {
+    const std::optional<uint32_t> b = opt_bits(f);
+    return b ? std::optional<Rgba>(Rgba{*b}) : std::nullopt;
+  }
+  [[nodiscard]] std::optional<LengthValue> opt_length(FieldSpec f) const noexcept {
+    const std::optional<uint32_t> b = opt_bits(f);
+    return b ? std::optional<LengthValue>(LengthValue::decode(*b)) : std::nullopt;
+  }
+  [[nodiscard]] std::optional<GridLineValue> opt_grid_line(FieldSpec f) const noexcept {
+    const std::optional<uint32_t> b = opt_bits(f);
+    return b ? std::optional<GridLineValue>(GridLineValue::decode(*b)) : std::nullopt;
+  }
+
+  [[nodiscard]] uint32_t bits(FieldSpec f) const noexcept { return opt_bits(f).value_or(0u); }
+  [[nodiscard]] float f32(FieldSpec f) const noexcept { return opt_f32(f).value_or(0.0f); }
+  [[nodiscard]] int32_t i32(FieldSpec f) const noexcept { return opt_i32(f).value_or(0); }
+  [[nodiscard]] bool boolean(FieldSpec f) const noexcept { return opt_bool(f).value_or(false); }
+  [[nodiscard]] LengthValue length(FieldSpec f) const noexcept {
+    return opt_length(f).value_or(LengthValue{NVE_LENGTH_AUTO, 0.0f});
+  }
+  [[nodiscard]] GridLineValue grid_line(FieldSpec f) const noexcept {
+    return opt_grid_line(f).value_or(GridLineValue{NVE_GRID_LINE_AUTO, 0, 0u});
+  }
+
+  [[nodiscard]] uint64_t u64(FieldSpec f) const noexcept {
+    if (reader_ != nullptr) return reader_->u64(row_, f).value_or(0u);
+    return desc_ != nullptr && f.kind != static_cast<uint8_t>(NVE_FIELD_STR)
+               ? nve_field_u64(desc_->defaults, desc_->words, f)
+               : 0u;
+  }
+  [[nodiscard]] int64_t i64(FieldSpec f) const noexcept { return static_cast<int64_t>(u64(f)); }
+  [[nodiscard]] double f64(FieldSpec f) const noexcept { return std::bit_cast<double>(u64(f)); }
+
+  /// `true` when this node's row is present and `f` is explicitly set (word 0 explicit bit on
+  /// inherited tables; always true for non-inherited fields on a present row).
+  [[nodiscard]] bool is_explicit(FieldSpec f) const noexcept {
+    return reader_ != nullptr && reader_->is_explicit(row_, f);
+  }
+
+  /// Per-table `EventSet` listener bitmask word (`0` when absent or `NVE_NO_EVENTS_WORD`).
+  [[nodiscard]] uint32_t events(uint8_t events_word) const noexcept {
+    return reader_ != nullptr ? reader_->events(row_, events_word) : 0u;
+  }
 
   /// `Str` field text (empty when absent or out of the slab).
   [[nodiscard]] std::string_view str(FieldSpec f, const SceneReader& scene) const noexcept {

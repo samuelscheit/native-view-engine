@@ -2,7 +2,6 @@ package dev.nve.host;
 
 import dev.nve.host.generated.NveJniFrame;
 import dev.nve.host.generated.NveRuntimeAbi;
-import java.nio.Buffer;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -180,16 +179,16 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     public int send(EventWriter writer) {
         if (handle == 0L) return NveRuntimeAbi.STATUS_INVALID_ARG;
         final int count = ring.count();
-        final int length = ring.length();
+        final int arenaLength = ring.arenaLength();
         try {
             writer.write(ring);
         } catch (BufferOverflowException e) {
-            ring.truncate(count, length);  // the batch is all-or-nothing
+            ring.truncate(count, arenaLength);  // the batch is all-or-nothing
             final int st = inFrame || count == 0 ? NveRuntimeAbi.STATUS_OK : dispatchPending();
             if (st != NveRuntimeAbi.STATUS_OK) return st;
             if (!growAndRetry(writer)) return NveRuntimeAbi.STATUS_INVALID_ARG;
         } catch (RuntimeException e) {
-            ring.truncate(count, length);
+            ring.truncate(count, arenaLength);
             throw e;
         }
         if (inFrame) return NveRuntimeAbi.STATUS_OK;
@@ -199,20 +198,16 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     }
 
     private boolean growAndRetry(EventWriter writer) {
-        for (int cap = ring.buffer().capacity() * 2; cap <= MAX_RING_BYTES; cap *= 2) {
-            final ByteBuffer bigger = ByteBuffer.allocateDirect(cap);
-            final ByteBuffer pending = ring.buffer().duplicate();
-            ((Buffer) pending).flip();
-            bigger.put(pending);
-            final EventRingWriter grown = EventRingWriter.resume(bigger, surfaceId, ring.count());
+        for (int cap = ring.capacity() * 2; cap <= MAX_RING_BYTES; cap *= 2) {
+            final EventRingWriter grown = ring.copyTo(ByteBuffer.allocateDirect(cap));
             final int count = grown.count();
-            final int length = grown.length();
+            final int arenaLength = grown.arenaLength();
             try {
                 writer.write(grown);
                 ring = grown;
                 return true;
             } catch (BufferOverflowException retry) {
-                grown.truncate(count, length);  // still too small: double again
+                grown.truncate(count, arenaLength);  // still too small: double again
             }
         }
         return false;

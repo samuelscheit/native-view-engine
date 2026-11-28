@@ -6,10 +6,10 @@
 /// point the runtime may trigger from another thread; it is delivered asynchronously.
 library;
 
-import 'dart:convert' show utf8;
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
+import 'event_batch.dart';
 import 'generated/nve_abi_const.generated.dart';
 import 'generated/nve_abi_ffi.generated.dart';
 import 'generated/nve_runtime_abi.generated.dart';
@@ -23,104 +23,6 @@ import 'utf8.dart' show utf8EncodedLength;
 import 'value_tree.dart' show NveValueTree;
 
 export 'scene_view_ffi.dart' show readScene;
-
-/// One input event (`NveDirectEvent`); string fields are copied into native memory per dispatch.
-final class RuntimeEvent {
-  const RuntimeEvent(
-    this.kind, {
-    required this.payload,
-    this.nodeId = 0,
-    this.timestampUs = 0,
-    this.x = 0,
-    this.y = 0,
-    this.width = 0,
-    this.height = 0,
-    this.modifiers = 0,
-    this.eventFlags = 0,
-    this.keyCode = 0,
-    this.name = '',
-    this.text = '',
-    this.value,
-  });
-
-  /// App-defined event [name] (imperative commands, custom gestures) carrying an `NveValue`
-  /// [value] (`null` / `bool` / `int` / `double` / `String` / `Uint8List` / `List` / `Map` /
-  /// `DynamicValue`).
-  const RuntimeEvent.custom(int nodeId, String name, {Object? value, int timestampUs = 0})
-      : this(NveEventKind.custom,
-            payload: NveEventPayloadTag.custom, nodeId: nodeId, name: name, value: value, timestampUs: timestampUs);
-
-  const RuntimeEvent.press(int nodeId, double x, double y, {int timestampUs = 0})
-      : this(NveEventKind.press, payload: NveEventPayloadTag.point, nodeId: nodeId, x: x, y: y, timestampUs: timestampUs);
-
-  const RuntimeEvent.longPress(int nodeId, double x, double y, {int timestampUs = 0})
-      : this(NveEventKind.longPress, payload: NveEventPayloadTag.point, nodeId: nodeId, x: x, y: y, timestampUs: timestampUs);
-
-  /// Pointer down / move / up / enter / leave; [button] is `0..=2` (`event_flags` low bits).
-  const RuntimeEvent.pointer(NveEventKind kind, int nodeId, double x, double y,
-      {int button = 0, int modifiers = 0, int timestampUs = 0})
-      : this(kind,
-            payload: NveEventPayloadTag.pointer,
-            nodeId: nodeId,
-            x: x,
-            y: y,
-            eventFlags: button & nveEventFlagButtonMask,
-            modifiers: modifiers,
-            timestampUs: timestampUs);
-
-  /// Scroll position report ([x], [y] = offset; [contentWidth] / [contentHeight] = extent).
-  const RuntimeEvent.scroll(int nodeId, double x, double y, double contentWidth, double contentHeight,
-      {int timestampUs = 0})
-      : this(NveEventKind.scroll,
-            payload: NveEventPayloadTag.scroll,
-            nodeId: nodeId,
-            x: x,
-            y: y,
-            width: contentWidth,
-            height: contentHeight,
-            timestampUs: timestampUs);
-
-  const RuntimeEvent.wheel(int nodeId, double dx, double dy, {int modifiers = 0, int timestampUs = 0})
-      : this(NveEventKind.wheel,
-            payload: NveEventPayloadTag.wheel, nodeId: nodeId, x: dx, y: dy, modifiers: modifiers, timestampUs: timestampUs);
-
-  const RuntimeEvent.textChange(int nodeId, String text, {int timestampUs = 0})
-      : this(NveEventKind.textChange, payload: NveEventPayloadTag.text, nodeId: nodeId, text: text, timestampUs: timestampUs);
-
-  const RuntimeEvent.submit(int nodeId, String text, {int timestampUs = 0})
-      : this(NveEventKind.submit, payload: NveEventPayloadTag.text, nodeId: nodeId, text: text, timestampUs: timestampUs);
-
-  const RuntimeEvent.focus(int nodeId, {bool focused = true, int timestampUs = 0})
-      : this(focused ? NveEventKind.focus : NveEventKind.blur,
-            payload: NveEventPayloadTag.empty, nodeId: nodeId, timestampUs: timestampUs);
-
-  /// `KeyDown` / `KeyUp`: [key] is the W3C key value, [code] the physical key code.
-  const RuntimeEvent.key(NveEventKind kind, int nodeId, String key, String code,
-      {int modifiers = 0, int keyCode = 0, bool composing = false, int timestampUs = 0})
-      : this(kind,
-            payload: NveEventPayloadTag.key,
-            nodeId: nodeId,
-            text: key,
-            name: code,
-            modifiers: modifiers,
-            keyCode: keyCode,
-            eventFlags: composing ? nveEventFlagComposing : 0,
-            timestampUs: timestampUs);
-
-  final NveEventKind kind;
-  final NveEventPayloadTag payload;
-  final int nodeId;
-  final int timestampUs;
-  final double x, y, width, height;
-  final int modifiers;
-  final int eventFlags;
-  final int keyCode;
-  final String name;
-  final String text;
-
-  /// Structured payload marshalled into `NveDirectEvent.value` (custom events).
-  final Object? value;
-}
 
 /// Snapshot of `NveRuntimeMetrics`.
 final class RuntimeMetrics {
@@ -300,41 +202,18 @@ final class RuntimeSession {
     }
     api.check(status, 'drain_emitted_events');
     final batch = _batch.ref;
-    if (batch.len == 0) {
+    if (batch.eventCount == 0) {
       return const <RuntimeEvent>[];
     }
-    if (batch.ptr.address == 0) {
-      throw RuntimeException(NveRuntimeStatus.error, 'drain_emitted_events: NULL batch with ${batch.len} events');
+    if (batch.events.address == 0) {
+      throw RuntimeException(NveRuntimeStatus.error, 'drain_emitted_events: NULL batch with ${batch.eventCount} events');
     }
-    return [
-      for (var i = 0; i < batch.len; i++)
-        if (_decodeEvent(batch.ptr[i]) case final event?) event,
-    ];
-  }
-
-  /// Copies one borrowed native event; `null` for a payload tag this binding does not know
-  /// (unknown kinds decode as `custom`, the ABI's forward-compatible fallback).
-  static RuntimeEvent? _decodeEvent(NveDirectEvent e) {
-    final payload = NveEventPayloadTag.fromCode(e.payloadTag);
-    if (payload == null) {
-      return null;
+    if (batch.eventCount > 0xFFFFFFFF ~/ nveEventSize) {
+      throw RuntimeException(NveRuntimeStatus.error, 'drain_emitted_events: eventCount ${batch.eventCount} overflows 32 bits');
     }
-    // Malformed app text becomes U+FFFD instead of dropping the whole drained batch.
-    String str(NveStrSlice s) => utf8.decode(checkedNativeBytes(s.ptr, s.len), allowMalformed: true);
-    return RuntimeEvent(NveEventKind.fromCode(e.kind),
-        payload: payload,
-        nodeId: e.nodeId,
-        timestampUs: e.timestampUs,
-        x: e.x,
-        y: e.y,
-        width: e.width,
-        height: e.height,
-        modifiers: e.modifiers,
-        eventFlags: e.eventFlags,
-        keyCode: e.keyCode,
-        name: str(e.name),
-        text: str(e.text),
-        value: NveValueTree.toDynamicValue(e.value, lossyUtf8: true).toObject());
+    final records = batch.events.cast<ffi.Uint8>().asTypedList(batch.eventCount * nveEventSize);
+    final arena = checkedNativeBytes(batch.bytes, batch.bytesLen);
+    return EventBatch.validateAndDecode(records, arena);
   }
 
   /// Canonical payload bytes and kind of published resource [resourceId] (`resource_payload`).
@@ -407,66 +286,35 @@ final class RuntimeSession {
     return _outU32.value != 0;
   }
 
-  /// Dispatches [events] in order; `true` when the app requested a re-render.
+  /// Dispatches [events] in order as one uniform 64-byte `NveEventBatch`; `true` when the app
+  /// requested a re-render.
   bool dispatchEvents(List<RuntimeEvent> events) {
     final handle = _live;
     if (events.isEmpty) {
       return false;
     }
-    var textBytes = 0;
-    for (final e in events) {
-      textBytes += utf8EncodedLength(e.name) + utf8EncodedLength(e.text);
-    }
-    final bytes = _bytes.reserve(textBytes);
-    final view = bytes.asTypedList(textBytes);
-    final array = _events.reserve(events.length * ffi.sizeOf<NveDirectEvent>()).cast<NveDirectEvent>();
-    // Structured values only: plain input batches never allocate an arena.
-    final arena = events.any((e) => e.value != null) ? HybridArena() : null;
-    var cursor = 0;
-    void copyStr(String s, NveStrSlice out) {
-      final start = cursor;
-      cursor = encodeUtf8Into(s, view, cursor);
-      out
-        ..ptr = cursor == start ? ffi.nullptr : bytes + start
-        ..len = cursor - start;
-    }
+    return _dispatchBatch(handle, EventBatch.encode(events, defaultSurfaceId: surfaceId));
+  }
 
-    for (var i = 0; i < events.length; i++) {
-      final e = events[i];
-      final out = (array + i).ref
-        ..surfaceId = surfaceId
-        ..nodeId = e.nodeId
-        ..timestampUs = e.timestampUs
-        ..kind = e.kind.code
-        ..payloadTag = e.payload.code
-        ..modifiers = e.modifiers
-        ..eventFlags = e.eventFlags
-        ..keyCode = e.keyCode
-        ..x = e.x
-        ..y = e.y
-        ..width = e.width
-        ..height = e.height;
-      copyStr(e.name, out.name);
-      copyStr(e.text, out.text);
-      if (arena == null) {
-        out.value.tag = NveValueTag.nullValue.code;
-      } else {
-        try {
-          NveValueTree.writeObject(arena, out.value, e.value);
-        } on Object {
-          arena.dispose();
-          rethrow;
-        }
-      }
+  /// Dispatches an already-encoded [EventBatch] directly across `dispatch_events`.
+  bool dispatchEventBatch(EventBatch batch) => _dispatchBatch(_live, batch);
+
+  bool _dispatchBatch(NveRuntimeHandle handle, EventBatch batch) {
+    if (batch.eventCount == 0) {
+      return false;
+    }
+    final evBuf = _events.reserve(batch.records.length);
+    evBuf.asTypedList(batch.records.length).setAll(0, batch.records);
+    final byteBuf = batch.bytes.isEmpty ? ffi.nullptr : _bytes.reserve(batch.bytes.length);
+    if (batch.bytes.isNotEmpty) {
+      byteBuf.asTypedList(batch.bytes.length).setAll(0, batch.bytes);
     }
     _batch.ref
-      ..ptr = array
-      ..len = events.length;
-    try {
-      api.check(api.dispatchEvents(handle, _batch.ref, _outU32), 'dispatch_events');
-    } finally {
-      arena?.dispose();
-    }
+      ..events = evBuf.cast<NveEvent>()
+      ..bytes = byteBuf
+      ..eventCount = batch.eventCount
+      ..bytesLen = batch.bytes.length;
+    api.check(api.dispatchEvents(handle, _batch.ref, _outU32), 'dispatch_events');
     return _outU32.value != 0;
   }
 
@@ -596,4 +444,3 @@ final class RuntimeSession {
     _events.free();
   }
 }
-

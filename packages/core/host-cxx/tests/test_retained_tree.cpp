@@ -164,7 +164,6 @@ void test_reparent_between_styled_parents_at_one_origin() {
   for (uint32_t id = 1u; id <= 5u; ++id) w.create(id);
   w.set(2u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, length_points(100.0f));
   for (const auto& [id, size] : {std::pair{3u, 20.0f}, std::pair{4u, 30.0f}}) {
-    w.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE);
     w.set_f32(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, size);
   }
   CHECK(w.set_str(5u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "x"));
@@ -260,7 +259,6 @@ void test_cascade_recreated_view_is_relinked() {
   if (!h.host) return;
   Nve2Writer& w = h.w;
   for (uint32_t id = 1u; id <= 4u; ++id) w.create(id);  // 2 styled parent, 3 cascaded child, 4 grandchild
-  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 16.0f);
   w.set_children(3u, std::vector<uint32_t>{4u});
   w.set_children(2u, std::vector<uint32_t>{3u});
@@ -366,13 +364,13 @@ void test_dirty_resource_updates_its_clean_users() {
   before = updates();
   CHECK(h.sync() == 1u && v[5].updates == before[3] + 1);
 
-  // A background fill (`nve.res.background_fill`, solid: tag 0 + RGBA) read by the column.
+  // A background fill (`nve.res.background_fill`, solid: u32 tag 0 + u32 RGBA) read by the column.
   const Key64 kFillKind = Key64::of("nve.res.background_fill");
-  w.define_resource(12u, kFillKind, std::vector<uint8_t>{0u, 1u, 2u, 3u, 4u});
+  w.define_resource(12u, kFillKind, std::vector<uint8_t>{0u, 0u, 0u, 0u, 1u, 2u, 3u, 4u});
   w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND_FILL, 12u);
   CHECK(h.submit());
   (void)h.sync();
-  w.define_resource(12u, kFillKind, std::vector<uint8_t>{0u, 9u, 8u, 7u, 6u});
+  w.define_resource(12u, kFillKind, std::vector<uint8_t>{0u, 0u, 0u, 0u, 9u, 8u, 7u, 6u});
   CHECK(h.submit());
   before = updates();
   CHECK(h.sync() == 1u);

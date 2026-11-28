@@ -228,9 +228,9 @@ final class SceneReader {
 
   // ---- children ------------------------------------------------------------------------------
 
-  /// Number of direct children of [index] (`0` for dead / out-of-range nodes; throws
-  /// [SceneException] when the row's child range lies outside the children slab). Reads the row
-  /// directly without allocating a `Uint32List.sublistView`.
+  static final Uint32List _emptyU32 = Uint32List(0);
+
+  /// Child count of live node [index] (zero-alloc; validates range against the children slab).
   int childCount(int index) {
     if (!isLive(index)) {
       return 0;
@@ -250,7 +250,7 @@ final class SceneReader {
   Uint32List children(int index) {
     final len = childCount(index);
     if (len == 0) {
-      return Uint32List(0);
+      return _emptyU32;
     }
     final off = _rows[index * nodeRowWords + _childOffWord];
     return Uint32List.sublistView(_children, off, off + len);
@@ -304,6 +304,31 @@ final class SceneReader {
   String str(TableReader table, int row, FieldSpec field) {
     final (offset, len) = table.str(row, field);
     return text(offset, len);
+  }
+
+  /// Nearest row (starting at live node [index]) in inherited [table] where [field] is explicitly
+  /// set (`explicitMask` word 0), or `-1` when none sets it (caller falls back to table defaults).
+  /// Non-inheriting fields inspect only [index]. Bounded by [nodeCapacity] against cyclic parents.
+  int inheritedRowOf(TableReader? table, int index, FieldSpec field) {
+    if (table == null) {
+      return -1;
+    }
+    var cur = index;
+    for (var depth = 0; cur > 0 && depth < nodeCapacity; depth++) {
+      final r = rowOf(table, cur);
+      if (r >= 0 && table.isExplicit(r, field)) {
+        return r;
+      }
+      if (!field.inherits) {
+        return -1;
+      }
+      final next = indexOf(parentId(cur));
+      if (next <= 0 || next == cur) {
+        return -1;
+      }
+      cur = next;
+    }
+    return -1;
   }
 }
 

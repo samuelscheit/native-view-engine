@@ -1,6 +1,8 @@
 #import "NveAppleComponentHostInternal.h"
 
 #include <cmath>
+#include <cstring>
+#include <limits>
 
 using nve::host::RuntimeSession;
 
@@ -178,11 +180,26 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
   return st == NVE_RUNTIME_OK && changed;
 }
 
-- (void)_dispatch:(const NveDirectEvent &)ev {
-  const NveEventBatch batch{&ev, 1u, 0u};
+- (void)_dispatchBatch:(NveEventBatch)batch {
   (void)_session.dispatch_events(batch);
-  _arena.reset();
   [self renderFrame];
+}
+
+- (void)_dispatchEvent:(const NveEvent &)ev {
+  alignas(NVE_EVENT_ALIGN) const NveEvent aligned = ev;
+  [self _dispatchBatch:NveEventBatch{&aligned, nullptr, 1u, 0u}];
+}
+
+- (void)_dispatchTextEvent:(NveTextInputEvent)kind nodeId:(uint32_t)nodeId text:(NSString *)text {
+  const char *utf8 = text.UTF8String ?: "";
+  const size_t size = std::strlen(utf8);
+  if (size > std::numeric_limits<uint32_t>::max()) return;
+  const nve::host::EventFactory factory{_surfaceId};
+  alignas(NVE_EVENT_ALIGN) NveEvent ev =
+      factory.base(NVE_TABLE_TEXT_INPUT, nodeId, static_cast<uint32_t>(kind), NVE_EVENT_FLAG_UTF8_BYTES);
+  const auto len = static_cast<uint32_t>(size);
+  ev.bytes = RawEventBytes{0u, len};
+  [self _dispatchBatch:NveEventBatch{&ev, len != 0u ? reinterpret_cast<const uint8_t *>(utf8) : nullptr, 1u, len}];
 }
 
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
@@ -190,7 +207,7 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
     [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchPressOnNodeId:nodeId x:x y:y]; }];
     return;
   }
-  [self _dispatch:nve::apple::make_point_event(_surfaceId, nodeId, NVE_EVENT_PRESS, x, y)];
+  [self _dispatchEvent:nve::host::EventFactory{_surfaceId}.press(nodeId, x, y)];
 }
 
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text {
@@ -199,7 +216,7 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
     [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchTextChangeOnNodeId:nodeId text:copy]; }];
     return;
   }
-  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_TEXT_CHANGE, text.UTF8String ?: "", _arena)];
+  [self _dispatchTextEvent:NVE_TEXT_INPUT_EVENT_CHANGE nodeId:nodeId text:text];
 }
 
 - (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text {
@@ -208,7 +225,7 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
     [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchSubmitOnNodeId:nodeId text:copy]; }];
     return;
   }
-  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_SUBMIT, text.UTF8String ?: "", _arena)];
+  [self _dispatchTextEvent:NVE_TEXT_INPUT_EVENT_SUBMIT nodeId:nodeId text:text];
 }
 
 - (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused {
@@ -216,19 +233,22 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
     [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchFocusOnNodeId:nodeId focused:focused]; }];
     return;
   }
-  NveDirectEvent ev = nve::apple::make_point_event(_surfaceId, nodeId, focused ? NVE_EVENT_FOCUS : NVE_EVENT_BLUR, 0.0f, 0.0f);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_EMPTY;
-  [self _dispatch:ev];
+  [self _dispatchEvent:nve::host::EventFactory{_surfaceId}.focus(nodeId, focused == YES)];
 }
 
 - (void)dispatchScrollOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y contentWidth:(float)cw contentHeight:(float)ch {
+  if (nodeId == 0u) return;
   if (_reconciling) {
     [self _deferToNextTurn:^(NveAppleComponentHost *host) {
       [host dispatchScrollOnNodeId:nodeId x:x y:y contentWidth:cw contentHeight:ch];
     }];
     return;
   }
-  [self _dispatch:nve::apple::make_scroll_event(_surfaceId, nodeId, x, y, cw, ch)];
+  const float sx = std::isfinite(x) ? x : 0.0f;
+  const float sy = std::isfinite(y) ? y : 0.0f;
+  const float scw = (std::isfinite(cw) && cw >= 0.0f) ? cw : 0.0f;
+  const float sch = (std::isfinite(ch) && ch >= 0.0f) ? ch : 0.0f;
+  [self _dispatchEvent:nve::host::EventFactory{_surfaceId}.scroll(nodeId, sx, sy, scw, sch)];
 }
 
 - (void)_schedulePump {
@@ -259,11 +279,13 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 - (void)drainEmittedEvents {
   id<NveAppleComponentViewAdapter> adapter = _adapter;
   NveEventBatch batch{};
-  if (adapter == nil || _session.drain_emitted_events(&batch) != NVE_RUNTIME_OK || batch.ptr == nullptr) return;
+  if (adapter == nil || _session.drain_emitted_events(&batch) != NVE_RUNTIME_OK) return;
+  const std::span<const NveEvent> span = nve::host::batch_events(batch);
+  if (span.empty()) return;
   // Copy out before emitting: handlers may call back into the runtime, invalidating the batch.
-  NSMutableArray<NSArray *> *events = [NSMutableArray arrayWithCapacity:batch.len];
-  for (uint32_t i = 0; i < batch.len; ++i) {
-    [events addObject:@[ nve::apple::event_name(batch.ptr[i]), nve::apple::payload_dictionary_from_event(batch.ptr[i]) ]];
+  NSMutableArray<NSArray *> *events = [NSMutableArray arrayWithCapacity:span.size()];
+  for (const NveEvent &ev : span) {
+    [events addObject:@[ nve::apple::event_name(ev, batch), nve::apple::payload_dictionary_from_event(ev, batch) ]];
   }
   for (NSArray *e in events) [adapter nveEmitEvent:e[0] payload:e[1]];
 }

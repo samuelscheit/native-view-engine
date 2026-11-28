@@ -10,13 +10,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{EventBatchBuf, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     core_realization_order, register_core_tables, Interaction, TextContent,
 };
 use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeStore};
 use nve_wire::{
     parse_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportError,
 };
@@ -196,7 +196,7 @@ fn spawn_pair_and_wait_ready(extra_args: &[&str]) -> (ChildGuard, Vec<String>, R
 fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
     fn walk(
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
         nearest_pressable: Option<NodeId>,
         label: &str,
     ) -> Option<NodeId> {
@@ -205,9 +205,9 @@ fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
         }
         let active_pressable = if store
             .try_row::<Interaction>(id)
-            .is_some_and(|i| i.event_mask() != 0)
+            .is_some_and(|i| !i.listeners().is_empty())
         {
-            Some(id.raw())
+            Some(id)
         } else {
             nearest_pressable
         };
@@ -224,7 +224,7 @@ fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
         }
         None
     }
-    walk(store, StoreNodeId::ROOT, None, label)
+    walk(store, NodeId::ROOT, None, label)
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
     register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -283,14 +283,11 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
         find_pressable_with_label(replica.store(), "Reset").expect("find Reset pressable node");
 
     let send_press = |client: &NveWireClient, node_id: NodeId, ts: u64| {
-        let ev_ring = encode_events(&[NativeEvent {
-            surface_id: 1,
-            node_id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 40.0, y: 20.0 },
-        }]);
-        client.send_events(ev_ring).expect("send EventBatch");
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, node_id, TimestampUs(ts), 40.0, 20.0);
+        client
+            .send_events(batch.to_wire_bytes())
+            .expect("send EventBatch");
     };
 
     send_press(&ws, inc_node, 1_000);

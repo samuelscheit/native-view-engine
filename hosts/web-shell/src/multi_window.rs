@@ -35,7 +35,7 @@ impl PopupWindowSpec {
         width: u32,
         height: u32,
     ) -> Result<Self, PopupWindowError> {
-        if surface_id == 0 {
+        if surface_id.is_null() {
             return Err(PopupWindowError::InvalidSurfaceId);
         }
         if width == 0 || height == 0 {
@@ -51,11 +51,11 @@ impl PopupWindowSpec {
     }
 
     pub fn target_name(&self) -> String {
-        format!("nve-surface-{}", self.surface_id)
+        format!("nve-surface-{}", self.surface_id.raw())
     }
 
     pub fn mount_root_id(&self) -> String {
-        format!("nve-popup-root-{}", self.surface_id)
+        format!("nve-popup-root-{}", self.surface_id.raw())
     }
 
     pub fn format_window_features(&self) -> String {
@@ -144,7 +144,7 @@ impl WebMultiWindowHost {
         session: WebAppSession,
         presentation: SurfacePresentation,
     ) -> Result<WindowHandleId, PopupWindowError> {
-        if surface_id == 0 {
+        if surface_id.is_null() {
             return Err(PopupWindowError::InvalidSurfaceId);
         }
         if self.sessions.contains_key(&surface_id) {
@@ -229,7 +229,7 @@ impl WebMultiWindowHost {
 
 #[cfg(all(test, feature = "app-kitchen-sink"))]
 mod tests {
-    use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
+    use nve_abi::TimestampUs;
     use nve_backend_web::WebBackend;
     use nve_engine::Viewport;
     use nve_interop::WindowRect;
@@ -241,9 +241,9 @@ mod tests {
             .live_nodes()
             .find_map(|id| {
                 store
-                    .try_row::<nve_components::tables::DebugId>(id)
+                    .try_row::<nve_tables::tables::DebugId>(id)
                     .filter(|d| d.test_id() == testid)
-                    .map(|_| id.raw())
+                    .map(|_| id)
             })
             .expect("testID present in store")
     }
@@ -251,15 +251,20 @@ mod tests {
     #[test]
     fn popup_spec_validates_inputs_and_formats_features_and_blocker_error() {
         assert_eq!(
-            PopupWindowSpec::new(0, "Bad", 400, 300),
+            PopupWindowSpec::new(SurfaceId::NULL, "Bad", 400, 300),
+            Err(PopupWindowError::InvalidSurfaceId)
+        );
+        // Non-zero generation paired with index 0 must also be rejected as null.
+        assert_eq!(
+            PopupWindowSpec::new(SurfaceId::new(0, 1), "BadGen", 400, 300),
             Err(PopupWindowError::InvalidSurfaceId)
         );
         assert_eq!(
-            PopupWindowSpec::new(2, "Bad", 0, 300),
+            PopupWindowSpec::new(SurfaceId::new(2, 0), "Bad", 0, 300),
             Err(PopupWindowError::InvalidDimensions { width: 0, height: 300 })
         );
 
-        let spec = PopupWindowSpec::new(7, "Inspector", 480, 640).unwrap();
+        let spec = PopupWindowSpec::new(SurfaceId::new(7, 0), "Inspector", 480, 640).unwrap();
         assert_eq!(spec.target_name(), "nve-surface-7");
         assert_eq!(spec.mount_root_id(), "nve-popup-root-7");
         assert_eq!(
@@ -268,75 +273,85 @@ mod tests {
         );
 
         let blocked = PopupWindowError::PopupBlocked {
-            surface_id: 7,
+            surface_id: SurfaceId::new(7, 0),
             title: "Inspector".into(),
         };
         let msg = blocked.to_string();
         assert!(msg.contains("popup blocker"));
         assert!(msg.contains("Inspector"));
-        assert!(msg.contains("surface 7"));
+        assert!(msg.contains("surface(7,0)"));
     }
 
     #[test]
     fn multi_surface_web_host_isolates_sessions_cascades_popovers_and_applies_typed_commands() {
         let mut host = WebMultiWindowHost::new();
 
-        let mut studio = WebAppSession::new_studio_workspace(1, WebBackend::new(), Viewport::default());
+        let s1 = SurfaceId::ROOT;
+        let s2 = SurfaceId::new(2, 0);
+        let s3 = SurfaceId::new(3, 0);
+
+        // Index-0 with non-zero generation is rejected at mount_surface ingress.
+        assert!(matches!(
+            host.mount_surface(
+                SurfaceId::new(0, 1),
+                WebAppSession::new_kitchen_sink(s1, WebBackend::new(), Viewport::default()),
+                SurfacePresentation::PrimaryWindow(WindowDescriptor::default()),
+            ),
+            Err(PopupWindowError::InvalidSurfaceId)
+        ));
+
+        let mut studio = WebAppSession::new_studio_workspace(s1, WebBackend::new(), Viewport::default());
         studio.render_initial().unwrap();
         let mut kitchen_sink =
-            WebAppSession::new_kitchen_sink(2, WebBackend::new(), Viewport::default());
+            WebAppSession::new_kitchen_sink(s2, WebBackend::new(), Viewport::default());
         kitchen_sink.render_initial().unwrap();
 
         let h1 = host
             .mount_surface(
-                1,
+                s1,
                 studio,
                 SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Studio", 1280.0, 800.0)),
             )
             .unwrap();
-        let spec2 = PopupWindowSpec::new(2, "Kitchen Sink Popup", 420, 360).unwrap();
+        let spec2 = PopupWindowSpec::new(s2, "Kitchen Sink Popup", 420, 360).unwrap();
         let h2 = host
-            .mount_surface(2, kitchen_sink, spec2.to_presentation(Some(1)))
+            .mount_surface(s2, kitchen_sink, spec2.to_presentation(Some(s1)))
             .unwrap();
 
         // Mount a popover anchored to surface 1 that must cascade when surface 1 unmounts.
         let mut popover =
-            WebAppSession::new_kitchen_sink(3, WebBackend::new(), Viewport::default());
+            WebAppSession::new_kitchen_sink(s3, WebBackend::new(), Viewport::default());
         popover.render_initial().unwrap();
         let _h3 = host
             .mount_surface(
-                3,
+                s3,
                 popover,
                 SurfacePresentation::Popover {
-                    anchor_surface: 1,
+                    anchor_surface: s1,
                     anchor_rect: WindowRect::new(10.0, 10.0, 80.0, 24.0),
                     descriptor: WindowDescriptor::new("Quick Menu", 200.0, 140.0),
                 },
             )
             .unwrap();
 
-        assert_eq!(host.active_surface_ids(), vec![1, 2, 3]);
+        assert_eq!(host.active_surface_ids(), vec![s1, s2, s3]);
         assert!(matches!(
             host.mount_surface(
-                1,
-                WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default()),
+                s1,
+                WebAppSession::new_kitchen_sink(s1, WebBackend::new(), Viewport::default()),
                 SurfacePresentation::PrimaryWindow(WindowDescriptor::default()),
             ),
-            Err(PopupWindowError::DuplicateSurface(1))
+            Err(PopupWindowError::DuplicateSurface(sid)) if sid == s1
         ));
 
         // Clicking Increment on surface 2 updates surface 2 only, leaving surface 3 untouched.
-        let inc_node = find_testid_node_id(host.session(2).unwrap().store(), "ks-counter-inc");
-        host.session_mut(2).unwrap().backend_mut().push_event(NativeEvent {
-            surface_id: 2,
-            node_id: inc_node,
-            timestamp_us: 1000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 20.0, y: 20.0 },
+        let inc_node = find_testid_node_id(host.session(s2).unwrap().store(), "ks-counter-inc");
+        host.session_mut(s2).unwrap().backend_mut().with_pending_events(|evs| {
+            evs.push_press(s2, inc_node, TimestampUs(1000), 20.0, 20.0);
         });
-        host.session_mut(2).unwrap().pump_events().unwrap().unwrap();
-        assert!(host.session(2).unwrap().render_html().contains("Count: 1"));
-        assert!(host.session(3).unwrap().render_html().contains("Count: 0"));
+        host.session_mut(s2).unwrap().pump_events().unwrap().unwrap();
+        assert!(host.session(s2).unwrap().render_html().contains("Count: 1"));
+        assert!(host.session(s3).unwrap().render_html().contains("Count: 0"));
 
         // Direct typed WindowCommand dispatch updates title & focus cleanly.
         assert_eq!(
@@ -356,12 +371,12 @@ mod tests {
         let events = host.drain_lifecycle_events();
         assert!(events
             .iter()
-            .any(|e| matches!(e, WindowLifecycleEvent::Opened { surface_id: 2, .. })));
+            .any(|e| matches!(e, WindowLifecycleEvent::Opened { surface_id, .. } if *surface_id == s2)));
 
         // Unmounting primary surface 1 cascades popover 3 while leaving popup 2 mounted.
-        let removed = host.unmount_surface(1);
-        assert_eq!(removed, vec![3, 1]);
-        assert_eq!(host.active_surface_ids(), vec![2]);
+        let removed = host.unmount_surface(s1);
+        assert_eq!(removed, vec![s3, s1]);
+        assert_eq!(host.active_surface_ids(), vec![s2]);
         assert_eq!(host.surface_count(), 1);
     }
 }

@@ -26,6 +26,9 @@ pub struct WireDecoder {
     dynamic_exhausted: bool,
     kids_scratch: Vec<NodeId>,
     budget: SessionBudget,
+    res_children_scratch: Vec<ResourceId>,
+    /// Bounds the CPU of resource-graph cycle checks per frame (hostile deep child chains).
+    cycle_budget: usize,
 }
 
 impl Default for WireDecoder {
@@ -37,6 +40,8 @@ impl Default for WireDecoder {
             dynamic_exhausted: false,
             kids_scratch: Vec::new(),
             budget: SessionBudget::default(),
+            res_children_scratch: Vec::new(),
+            cycle_budget: 0,
         }
     }
 }
@@ -72,7 +77,7 @@ impl<'a> R<'a> {
     }
 
     fn node(&mut self) -> Result<NodeId, WireError> {
-        self.u32().map(NodeId)
+        self.u32().map(NodeId::from_raw_or_null)
     }
 }
 
@@ -83,6 +88,7 @@ impl WireDecoder {
         self.next_dynamic_slot = TableSlot((MAX_TABLE_SLOTS - 1) as u8);
         self.dynamic_exhausted = false;
         self.kids_scratch.clear();
+        self.res_children_scratch.clear();
         self.budget.reset();
     }
 
@@ -107,6 +113,15 @@ impl WireDecoder {
             return Some((m.words(), m.str_words(), m.resource_words()));
         }
         table::try_desc(slot).map(|d| (d.words(), d.str_words, d.resource_words))
+    }
+
+    /// Declared resource kind of `word` in `slot`, falling back to the static registry before the
+    /// replica lazily allocates the column on its first `Op::Patch`.
+    fn slot_resource_kind(store: &NodeStore, slot: TableSlot, word: usize) -> Option<Key64> {
+        match store.table_meta(slot) {
+            Some(m) => m.resource_kind(word),
+            None => table::try_desc(slot).and_then(|d| d.resource_kind(word)),
+        }
     }
 
     fn local(&self, wire: u8) -> Result<TableSlot, WireError> {
@@ -165,6 +180,7 @@ impl WireDecoder {
                 self.budget.charge(pre_reserved)?;
             }
         }
+        self.cycle_budget = (bytes.len() / 4).max(1024).saturating_mul(8);
         let mut r = R {
             b: bytes,
             at: HEADER_WORDS * 4,
@@ -238,32 +254,50 @@ impl WireDecoder {
                 for _ in 0..count {
                     let id = r.node()?;
                     if !tx.store_mut().try_create_at(id, Some(&mut self.budget))? {
-                        return Err(WireError::NodeExists(id.0));
+                        return Err(WireError::NodeExists(id.raw()));
                     }
                 }
             }
             Op::DefineResources => {
-                // Minimum entry size: id + kind_lo + kind_hi + ephemeral + len = 20 bytes.
-                if (count as usize) > r.remaining() / 20 {
+                // Minimum entry size: id + kind_lo + kind_hi + flags + child_count + byte_len = 24 bytes.
+                if (count as usize) > r.remaining() / 24 {
                     return Err(WireError::Truncated);
                 }
                 for _ in 0..count {
                     let id = r.u32()?;
-                    if id == 0 {
+                    let rid = ResourceId(id);
+                    if rid.index() == 0 {
                         return Err(WireError::Resource { id, kind: 0 });
                     }
-                    if id >= MAX_RESOURCE_SLOTS {
+                    if rid.index() >= MAX_RESOURCE_SLOTS as usize {
                         return Err(WireError::Budget);
                     }
                     let kind = Key64::from_halves(r.u32()?, r.u32()?);
-                    let ephemeral = r.u32()? != 0;
+                    let flags = r.u32()?;
+                    if (flags & !1u32) != 0 {
+                        return Err(WireError::Resource { id, kind: kind.0 });
+                    }
+                    let ephemeral = (flags & 1) != 0;
+                    let child_count = r.u32()? as usize;
+                    if child_count > r.remaining() / 4 {
+                        return Err(WireError::Truncated);
+                    }
+                    self.res_children_scratch.clear();
+                    for _ in 0..child_count {
+                        self.res_children_scratch.push(ResourceId(r.u32()?));
+                    }
                     let len = r.u32()? as usize;
+                    if !len.is_multiple_of(4) {
+                        return Err(WireError::Resource { id, kind: kind.0 });
+                    }
                     let blob = r.bytes(len)?;
-                    if !tx.store_mut().resources.try_define_at(
-                        ResourceId(id),
+                    if !tx.store_mut().resources.define_at_with_budget(
+                        rid,
                         kind,
                         ephemeral,
+                        &self.res_children_scratch,
                         blob,
+                        &mut self.cycle_budget,
                         Some(&mut self.budget),
                     )? {
                         return Err(WireError::Resource { id, kind: kind.0 });
@@ -304,11 +338,14 @@ impl WireDecoder {
                         bits &= bits - 1;
                         vals[i] = r.u32()?;
                         let res = ResourceId(vals[i]);
-                        if resource_words & (1 << i) != 0
-                            && !res.is_none()
-                            && !tx.store().resources.is_defined(res)
-                        {
-                            return Err(WireError::Resource { id: res.0, kind: 0 });
+                        if resource_words & (1 << i) != 0 && !res.is_none() {
+                            if let Some(expected) = Self::slot_resource_kind(tx.store(), slot, i) {
+                                if tx.store().resources.kind(res) != Some(expected) {
+                                    return Err(WireError::Resource { id: res.0, kind: expected.0 });
+                                }
+                            } else if !tx.store().resources.is_defined(res) {
+                                return Err(WireError::Resource { id: res.0, kind: 0 });
+                            }
                         }
                     }
                     let mut w = tx.try_writer(id, slot, &mut self.budget)?;
@@ -317,7 +354,9 @@ impl WireDecoder {
                         let i = bits.trailing_zeros() as usize;
                         bits &= bits - 1;
                         if resource_words & (1 << i) != 0 {
-                            w.put_resource_id(i, ResourceId(vals[i]));
+                            w.put_resource_id_wire(i, ResourceId(vals[i]));
+                        } else if i == 0 && w.desc.inherited() {
+                            w.put_explicit_word(vals[0]);
                         } else {
                             w.put(i, 0, u32::MAX, vals[i]);
                         }
@@ -434,11 +473,7 @@ impl WireDecoder {
     }
 
     fn live(&self, tx: &Transaction<'_>, id: NodeId) -> Result<NodeId, WireError> {
-        if tx.store().is_live(id) {
-            Ok(id)
-        } else {
-            Err(WireError::DeadNode(id.0))
-        }
+        if tx.store().is_live(id) { Ok(id) } else { Err(WireError::DeadNode(id.raw())) }
     }
 
     fn declare(&mut self, tx: &mut Transaction<'_>, r: &mut R<'_>) -> Result<(), WireError> {
@@ -474,7 +509,14 @@ impl WireDecoder {
             return Err(WireError::SchemaMismatch { key: key.0 });
         }
         let name = core::str::from_utf8(r.bytes(name_len)?).map_err(|_| WireError::InvalidUtf8)?;
-        if !table::validate_desc_invariants(words, str_words, resource_words, &defaults, &effects) {
+        if !table::validate_desc_invariants(
+            words,
+            flags,
+            str_words,
+            resource_words,
+            &defaults,
+            &effects,
+        ) {
             return Err(WireError::SchemaMismatch { key: key.0 });
         }
 

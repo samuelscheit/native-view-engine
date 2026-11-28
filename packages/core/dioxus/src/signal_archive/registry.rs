@@ -10,7 +10,7 @@ use nve_engine::{StateFile, StateSaveOutcome};
 use super::codec::{SignalArchive, SignalTableSnapshot};
 use super::signal_codec::SignalCodec;
 use super::{reconcile_signal_entry, signal_slot_id, SignalArchiveError, SignalValue};
-use nve_components::reconcile::DivergenceKind;
+use nve_interop::reconcile::DivergenceKind;
 
 /// Summary returned by [`SignalRegistry::hydrate_from_table`] describing exact schema-evolution
 /// behavior on cold start.

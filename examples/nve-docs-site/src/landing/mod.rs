@@ -38,7 +38,7 @@ pub fn LandingPage() -> Element {
     drop(snap);
 
     let mobile_pad = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().padding_xy(16.0, 0.0));
+        .at(MediaQuery::max_width(959), RowPatch::new().padding_xy(16.0, 0.0));
 
     rsx! {
         view {
@@ -110,7 +110,7 @@ pub(crate) fn SiteFooter() -> Element {
     drop(snap);
 
     let mobile_col = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+        .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
 
     type FooterLink = (&'static str, &'static str, bool);
     let columns: [(&'static str, &[FooterLink]); 4] = [

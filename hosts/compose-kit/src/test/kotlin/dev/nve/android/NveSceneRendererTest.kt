@@ -1,5 +1,8 @@
 package dev.nve.android
 
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Color as AndroidColor
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
@@ -11,11 +14,15 @@ import android.widget.ScrollView
 import android.widget.TextView
 import dev.nve.compose.TestScene
 import dev.nve.compose.imageSourceBytes
+import dev.nve.compose.isEvent
+import dev.nve.host.DrawList
+import dev.nve.host.EventRingReader
 import dev.nve.host.EventRingWriter
 import dev.nve.host.FrameHost
 import dev.nve.host.ImageSource
 import dev.nve.host.Key64
 import dev.nve.host.generated.NveAbi
+import dev.nve.host.generated.NveModuleTables
 import dev.nve.host.generated.NveTables
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -27,13 +34,15 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** Records what the renderer sends and serves resources by id. */
+/** Records what the renderer sends (validated `NVEV` v2 batches) and serves resources by id. */
 private class FakeFrameHost : FrameHost {
-    val rings = ArrayList<ByteBuffer>()
+    val rings = ArrayList<EventRingReader>()
     val resources = HashMap<Int, ByteBuffer>()
+    val resourceKinds = HashMap<Int, Key64>()
     val resourceCalls = ArrayList<Int>()
     private var kind = Key64.ZERO
     var synchronous = false
@@ -43,7 +52,7 @@ private class FakeFrameHost : FrameHost {
     override fun send(writer: FrameHost.EventWriter): Int {
         val ring = EventRingWriter(ByteBuffer.allocate(1024), 1)
         writer.write(ring)
-        rings.add(ByteBuffer.wrap(ring.buffer().array().copyOf(ring.length())).order(ByteOrder.LITTLE_ENDIAN))
+        rings.add(EventRingReader().attach(ring.buffer().array().copyOf(ring.length())))
         answer?.invoke()
         return 0
     }
@@ -54,22 +63,22 @@ private class FakeFrameHost : FrameHost {
 
     override fun resource(id: Int): ByteBuffer? {
         resourceCalls.add(id)
-        kind = ImageSource.KIND
+        kind = resourceKinds[id] ?: ImageSource.KIND
         return resources[id]?.duplicate()
     }
 
     override fun resourceKind(): Key64 = kind
 
-    fun kinds(): List<Int> = rings.map { it.get(20).toInt() }
-
     /** `(x, y)` of every scroll event sent. */
     fun scrolls(): List<Pair<Float, Float>> =
-        rings.filter { it.get(20).toInt() == NveAbi.EVENT_SCROLL }.map { it.getFloat(22) to it.getFloat(26) }
+        rings.filter { it.isEvent(NveAbi.TABLE_SCROLL, NveAbi.SCROLL_EVENT_SCROLL) }
+            .map { it.payloadF32(0, 0) to it.payloadF32(0, 1) }
 }
 
 /** `NveSceneRenderer` + `NveViewStyle` on real Android Views (Robolectric). */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NveSceneRendererTest {
     private val context: android.content.Context = RuntimeEnvironment.getApplication()
     private val root = FrameLayout(context)
@@ -178,7 +187,7 @@ class NveSceneRendererTest {
         assertEquals(60, sv.scrollY)
         apply(scene(3).also { it.dirty = intArrayOf() })
         assertEquals("scrolled back to the origin when the offset is gone", 0, sv.scrollY)
-        assertTrue("renderer-caused scrolls are not user input", host.kinds().none { it == NveAbi.EVENT_SCROLL })
+        assertTrue("renderer-caused scrolls are not user input", host.scrolls().isEmpty())
     }
 
     @Test
@@ -233,7 +242,7 @@ class NveSceneRendererTest {
         host.synchronous = false
         edit.setText("typed")
         assertEquals("paired: the echo comes later", "typed", edit.text.toString())
-        assertEquals(3, host.kinds().count { it == NveAbi.EVENT_TEXT_CHANGE })
+        assertEquals(3, host.rings.count { it.isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_CHANGE) })
     }
 
     @Test
@@ -297,8 +306,9 @@ class NveSceneRendererTest {
         apply(s)
         val edit = view(s, 4) as EditText
         edit.onEditorAction(EditorInfo.IME_ACTION_DONE)
-        assertEquals(listOf(NveAbi.EVENT_SUBMIT), host.kinds().filter { it == NveAbi.EVENT_SUBMIT })
-        assertEquals(s.id(4), host.rings.last().getInt(8))
+        val submits = host.rings.filter { it.isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_SUBMIT) }
+        assertEquals(1, submits.size)
+        assertEquals(s.id(4), submits.last().node(0))
     }
 
     @Test
@@ -314,10 +324,11 @@ class NveSceneRendererTest {
         apply(rewritten)
         assertEquals("DRAFT", edit.text.toString())
         assertEquals("the caret stays where it was", 2, edit.selectionStart)
-        assertTrue("renderer writes are not text changes", host.kinds().none { it == NveAbi.EVENT_TEXT_CHANGE })
+        assertTrue("renderer writes are not text changes", host.rings.none { it.isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_CHANGE) })
         edit.setText("typed\uD83D")
-        val typed = host.rings.last { it.get(20).toInt() == NveAbi.EVENT_TEXT_CHANGE }
-        assertEquals("a lone surrogate is sent as U+FFFD (5 + 3 UTF-8 bytes)", 8, typed.getInt(22))
+        val typed = host.rings.last { it.isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_CHANGE) }
+        assertEquals("a lone surrogate is sent as U+FFFD (5 + 3 UTF-8 bytes)", 8, typed.bytesLen(0))
+        assertEquals("typed\uFFFD", typed.text(0))
     }
 
     @Test
@@ -333,6 +344,30 @@ class NveSceneRendererTest {
         assertEquals("unrelated dirty ids touch nothing", listOf(9, 9), host.resourceCalls)
         apply(scene(5).also { it.dirty = intArrayOf(8); it.dirtyResources.add(9) })
         assertEquals("a dirty image showing a dirty resource decodes once", listOf(9, 9, 9), host.resourceCalls)
+
+        // Canvas node: FlatResource draw list paints, dirty rewrite updates it, foreign kind clears it.
+        fun fillRectDrawList(rgba: Int): ByteBuffer = ByteBuffer.allocate(28).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(1).putInt(DrawList.OP_FILL_RECT).putFloat(0f).putFloat(0f).putFloat(16f).putFloat(16f).putInt(rgba)
+            .also { it.flip() }
+        fun canvasScene(frameId: Long): TestScene = TestScene(frameId = frameId, epoch = 2)
+            .node(2, 1, 0f, 0f, 16f, 16f)
+            .also { it.set(it.table(NveModuleTables.Canvas.KEY, NveModuleTables.Canvas.WORDS), 2, NveModuleTables.Canvas.DRAW_LIST, 12) }
+        fun sample(v: View): Int = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888).let { bmp ->
+            layout(v, 16, 16)
+            v.draw(AndroidCanvas(bmp))
+            bmp.getPixel(8, 8)
+        }
+        host.resources[12] = fillRectDrawList(0xFF0000FF.toInt()) // red in RGBA wire order
+        host.resourceKinds[12] = DrawList.KIND
+        apply(canvasScene(1))
+        val canvasView = view(canvasScene(1), 2) as NveCanvasView
+        assertEquals("canvas paints FlatResource FillRect", AndroidColor.RED, sample(canvasView))
+        host.resources[12] = fillRectDrawList(0xFFFF0000.toInt()) // blue in RGBA wire order
+        apply(canvasScene(2).also { it.dirty = intArrayOf(); it.dirtyResources.add(12) })
+        assertEquals("dirty draw-list resource rebinds canvas", AndroidColor.BLUE, sample(canvasView))
+        host.resourceKinds[12] = ImageSource.KIND
+        apply(canvasScene(3).also { it.dirty = intArrayOf(); it.dirtyResources.add(12) })
+        assertEquals("foreign resource kind clears canvas", 0, sample(canvasView))
     }
 
     private fun layout(v: View, w: Int, h: Int) {

@@ -1,9 +1,9 @@
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventBatchBuf, InteractionEvent, TimestampUs, ValidatedEvents};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{core_realization_order, register_core_tables, TextContent};
+use nve_tables::tables::{core_realization_order, register_core_tables, TextContent};
 use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeId, NodeStore};
 use nve_wire::{
     format_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportKind,
 };
@@ -76,7 +76,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     let (ctrl_tx, ctrl_rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
     let server_thread = std::thread::spawn(move || {
-        let surface = DioxusSurface::new(1, InspectDemo);
+        let surface = DioxusSurface::new(SurfaceId::ROOT, InspectDemo);
         let mut session = PairSession::start(
             surface,
             "127.0.0.1",
@@ -120,7 +120,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -139,13 +139,9 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
         .expect("pressable button");
 
     let make_tap = |ts: u64| {
-        encode_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: btn_node,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 60.0, y: 75.0 },
-        }])
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, btn_node, TimestampUs(ts), 60.0, 75.0);
+        batch.to_wire_bytes()
     };
 
     // 1. QUIC tap -> Counter: 1 across QUIC, WebTransport, and WSS.
@@ -203,23 +199,23 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
     }
 
     impl PairedApp for TelemetryMockApp {
-        fn render(&mut self, _frame_id: u64) -> Cow<'_, [u8]> {
+        fn render(&mut self, _frame_id: nve_abi::FrameId) -> Cow<'_, [u8]> {
             register_core_tables();
             let mut store = NodeStore::new();
             let mut changes = ChangeSet::default();
             {
                 let mut tx = store.tx();
-                let _ = tx.create_at(StoreNodeId::ROOT);
-                let _ = tx.create_at(StoreNodeId(2));
+                let _ = tx.create_at(NodeId::ROOT);
+                let _ = tx.create_at(NodeId::new(2, 0));
                 tx.set_str(
-                    StoreNodeId(2),
+                    NodeId::new(2, 0),
                     TextContent::TEXT,
                     &format!(
                         "peers={}",
                         self.updates.last().map(|u| u.peers).unwrap_or(-1)
                     ),
                 );
-                tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+                tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
                 tx.commit_into(&mut changes);
             }
             let mut out = Vec::new();
@@ -227,7 +223,7 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
             Cow::Owned(out)
         }
 
-        fn dispatch_events(&mut self, _events: &[NveDirectEvent]) -> bool {
+        fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
             false
         }
 
@@ -308,7 +304,7 @@ fn pair_session_answers_keyframe_request_after_deltas_with_fresh_full_snapshot_f
     let (ctrl_tx, ctrl_rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
     let server_thread = std::thread::spawn(move || {
-        let surface = DioxusSurface::new(1, InspectDemo);
+        let surface = DioxusSurface::new(SurfaceId::ROOT, InspectDemo);
         let mut session = PairSession::start(
             surface,
             "127.0.0.1",
@@ -338,7 +334,7 @@ fn pair_session_answers_keyframe_request_after_deltas_with_fresh_full_snapshot_f
     let make_replica = || {
         let mut headless = HeadlessBackend::new();
         headless.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: 393.0,
                 height: 852.0,
@@ -360,13 +356,9 @@ fn pair_session_answers_keyframe_request_after_deltas_with_fresh_full_snapshot_f
         .expect("pressable button");
 
     let tap = |ts: u64| {
-        encode_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: btn_node,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 60.0, y: 75.0 },
-        }])
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, btn_node, TimestampUs(ts), 60.0, 75.0);
+        batch.to_wire_bytes()
     };
 
     // Advance scene via incremental CommandDelta -> invalidates server's stale Frame-1 keyframe!
@@ -445,7 +437,7 @@ fn pair_session_late_join_preserves_wire_slot_labels_and_empty_sparse_tables() {
             ops_builder(&mut out, &mut ops);
             let total_words = (out.len() / 4) as u32;
             out[0..4].copy_from_slice(&0x3245_564Eu32.to_le_bytes());
-            out[4..8].copy_from_slice(&1u32.to_le_bytes());
+            out[4..8].copy_from_slice(&u32::from(nve_store::wire::VERSION).to_le_bytes());
             out[8..12].copy_from_slice(&frame_num.to_le_bytes());
             out[12..16].copy_from_slice(&0u32.to_le_bytes());
             out[16..20].copy_from_slice(&ops.to_le_bytes());
@@ -487,7 +479,7 @@ fn pair_session_late_join_preserves_wire_slot_labels_and_empty_sparse_tables() {
     }
 
     impl PairedApp for DynamicWireSlotApp {
-        fn render(&mut self, _frame_id: u64) -> Cow<'_, [u8]> {
+        fn render(&mut self, _frame_id: FrameId) -> Cow<'_, [u8]> {
             match self.step {
                 0 => {
                     self.step = 1;
@@ -549,8 +541,8 @@ fn pair_session_late_join_preserves_wire_slot_labels_and_empty_sparse_tables() {
             }
         }
 
-        fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
-            if events.iter().any(|e| e.kind == NativeEventKind::Press as u8) {
+        fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+            if events.iter().any(|e| e.interaction() == Some(InteractionEvent::Press)) {
                 self.step += 1;
                 true
             } else {
@@ -589,13 +581,9 @@ fn pair_session_late_join_preserves_wire_slot_labels_and_empty_sparse_tables() {
     let _f1_a = peer_a.recv_frame_timeout(timeout).expect("peer A frame 1");
 
     let tap = |ts: u64| {
-        encode_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: 2,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 10.0, y: 10.0 },
-        }])
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, NodeId::new(2, 0), TimestampUs(ts), 10.0, 10.0);
+        batch.to_wire_bytes()
     };
 
     // Trigger Frame 2 delta: badge=42, ephemeral DETACHED (0 live rows in mirror_store!).
@@ -627,7 +615,7 @@ fn pair_session_late_join_preserves_wire_slot_labels_and_empty_sparse_tables() {
 
     let find_val = |store: &NodeStore, dec: &WireDecoder, wire_slot: u8| -> Option<u32> {
         let (_, slot) = dec.declared_wire_tables().find(|&(w, _)| w == wire_slot)?;
-        store.words(StoreNodeId(2), slot).and_then(|w| w.first().copied())
+        store.words(NodeId::new(2, 0), slot).and_then(|w| w.first().copied())
     };
     assert_eq!(find_val(&store_b, &dec_b, 77), Some(42));
     assert_eq!(find_val(&store_b, &dec_b, 78), None);

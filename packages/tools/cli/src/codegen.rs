@@ -127,7 +127,7 @@ fn write_or_check_generated(
 }
 
 /// Published `nve.canvas` tables (one mirror per host language; core tables come from
-/// `nve-components`).
+/// `nve-tables`).
 const CANVAS_TABLES: &[&nve_store::TableDesc] = &[&<nve_canvas::Canvas as nve_store::NveTable>::DESC];
 
 /// Capability-module table mirrors for C/C++ hosts. They are generated here (tools may link
@@ -141,7 +141,7 @@ fn module_table_headers() -> Result<Vec<nve_codegen::GeneratedFile>, nve_codegen
 }
 
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    use nve_components::tables::CORE_TABLE_DESCS;
+    use nve_tables::tables::CORE_TABLE_DESCS;
     let mut files = nve_codegen::generate_all_abi_files(CORE_TABLE_DESCS)
         .map_err(|e| format!("ABI codegen failed: {e}"))?;
     files.extend(module_table_headers().map_err(|e| format!("module table codegen failed: {e}"))?);

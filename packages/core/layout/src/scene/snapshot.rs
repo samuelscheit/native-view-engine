@@ -1,9 +1,9 @@
 //! Value-type layout/visual snapshots and visibility helpers over `NodeStore`.
 
 use nve_abi::ColorRgba;
-use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
-use nve_components::tables::{Layout as NveLayout, Typography, box_visual};
-use nve_store::{Length, NodeId as StoreNodeId, NodeStore};
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::tables::{Layout as NveLayout, Typography, box_visual};
+use nve_store::{Length, NodeId, NodeStore};
 
 #[inline]
 pub fn length_to_dim(l: Length) -> nve_abi::Dimension {
@@ -17,7 +17,7 @@ pub fn length_to_dim(l: Length) -> nve_abi::Dimension {
 }
 
 /// Extracts a value-type [`LayoutSnapshot`] from `store` for `id`.
-pub fn layout_snapshot_of(store: &NodeStore, id: StoreNodeId) -> LayoutSnapshot {
+pub fn layout_snapshot_of(store: &NodeStore, id: NodeId) -> LayoutSnapshot {
     let Some(l) = store.try_row::<NveLayout>(id) else {
         return LayoutSnapshot::default();
     };
@@ -29,35 +29,9 @@ pub fn layout_snapshot_of(store: &NodeStore, id: StoreNodeId) -> LayoutSnapshot 
         min_height: length_to_dim(l.min_height()),
         max_width: length_to_dim(l.max_width()),
         max_height: length_to_dim(l.max_height()),
-        flex_direction: match l.flex_direction() {
-            nve_components::tables::FlexDirection::Column => nve_abi::FlexDirection::Column,
-            nve_components::tables::FlexDirection::Row => nve_abi::FlexDirection::Row,
-            nve_components::tables::FlexDirection::ColumnReverse => {
-                nve_abi::FlexDirection::ColumnReverse
-            }
-            nve_components::tables::FlexDirection::RowReverse => nve_abi::FlexDirection::RowReverse,
-        },
-        justify_content: match l.justify_content() {
-            nve_components::tables::JustifyContent::FlexStart => nve_abi::FlexJustify::FlexStart,
-            nve_components::tables::JustifyContent::Center => nve_abi::FlexJustify::Center,
-            nve_components::tables::JustifyContent::FlexEnd => nve_abi::FlexJustify::FlexEnd,
-            nve_components::tables::JustifyContent::SpaceBetween => {
-                nve_abi::FlexJustify::SpaceBetween
-            }
-            nve_components::tables::JustifyContent::SpaceAround => {
-                nve_abi::FlexJustify::SpaceAround
-            }
-            nve_components::tables::JustifyContent::SpaceEvenly => {
-                nve_abi::FlexJustify::SpaceEvenly
-            }
-        },
-        align_items: match l.align_items() {
-            nve_components::tables::AlignItems::Stretch => nve_abi::FlexAlign::Stretch,
-            nve_components::tables::AlignItems::FlexStart => nve_abi::FlexAlign::FlexStart,
-            nve_components::tables::AlignItems::Center => nve_abi::FlexAlign::Center,
-            nve_components::tables::AlignItems::FlexEnd => nve_abi::FlexAlign::FlexEnd,
-            nve_components::tables::AlignItems::Baseline => nve_abi::FlexAlign::Baseline,
-        },
+        flex_direction: l.flex_direction().into(),
+        justify_content: l.justify_content().into(),
+        align_items: l.align_items().into(),
         align_self: l.align_self(),
         flex_grow: l.flex_grow(),
         flex_shrink: l.flex_shrink(),
@@ -78,7 +52,7 @@ pub fn layout_snapshot_of(store: &NodeStore, id: StoreNodeId) -> LayoutSnapshot 
 }
 
 /// Extracts a value-type [`VisualSnapshot`] from `store` for `id`.
-pub fn visual_snapshot_of(store: &NodeStore, id: StoreNodeId) -> VisualSnapshot {
+pub fn visual_snapshot_of(store: &NodeStore, id: NodeId) -> VisualSnapshot {
     let mut snap = VisualSnapshot::default();
     if let Some(v) = box_visual(store, id) {
         snap.background = ColorRgba::from_u32(v.background().0);

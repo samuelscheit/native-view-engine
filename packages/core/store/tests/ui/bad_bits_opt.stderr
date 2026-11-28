@@ -1,0 +1,7 @@
+error: `x`: #[bits(4)] is only permitted for narrowing integer primitives (`u8|i8|u16|i16|u32|i32`), not `Option < u8 >`
+ --> tests/ui/bad_bits_opt.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -13,8 +13,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use nve_abi::{NveLayoutRect, NveNodeRow, NVE_NODE_ROW_FLAG_LIVE};
-use nve_components::tables::{Layout, Visual};
+use nve_abi::{FrameId, NveLayoutRect, NveNodeRow, ValidatedEvents, NVE_NODE_ROW_FLAG_LIVE};
+use nve_tables::tables::{Layout, Visual};
 use nve_engine::Viewport;
 use nve_runtime::{AppFrame, FrameTickHook, RuntimeApp, RuntimeBuilder, SurfaceRuntime};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, Transaction};
@@ -26,14 +26,14 @@ struct StoreApp {
 }
 
 impl RuntimeApp for StoreApp {
-    fn render_frame(&mut self, _frame_id: u64) -> AppFrame<'_> {
+    fn render_frame(&mut self, _frame_id: FrameId) -> AppFrame<'_> {
         if !std::mem::take(&mut self.dirty) {
             return AppFrame::Clean;
         }
         AppFrame::Direct { changes: &self.changes }
     }
 
-    fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 
@@ -82,9 +82,12 @@ impl Frame {
     /// Box of slot `i` relative to its parent's rect (absolute for roots).
     fn local(&self, i: usize) -> NveLayoutRect {
         let r = self.rects[i];
-        match NodeId::from_raw(self.rows[i].parent).index() {
-            0 => r,
-            p => NveLayoutRect { x: r.x - self.rects[p].x, y: r.y - self.rects[p].y, ..r },
+        match NodeId::from_raw(self.rows[i].parent) {
+            None => r,
+            Some(p) => {
+                let p = p.index();
+                NveLayoutRect { x: r.x - self.rects[p].x, y: r.y - self.rects[p].y, ..r }
+            }
         }
     }
 

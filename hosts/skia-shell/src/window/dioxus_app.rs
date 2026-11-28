@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use nve_abi::{FrameId, NveEventBatchRef, SurfaceId};
+use nve_abi::{FrameId, SurfaceId, ValidatedEvents};
 use nve_dioxus::{DioxusRuntimeApp, DioxusSurface};
 use nve_engine::{HotPatchMsg, RuntimeApp, Viewport, WakeBridge};
 
@@ -59,7 +59,10 @@ impl DesktopApp for DioxusDesktopApp {
         self.app.surface_mut().render_nve2_slice(frame_id)
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+        if events.is_empty() {
+            return false;
+        }
         self.app.dispatch_events(events)
     }
 

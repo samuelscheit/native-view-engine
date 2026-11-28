@@ -1,19 +1,20 @@
 //! Content-addressed deduplicated structural, `@media`, `:hover`/`:active`/`:focus`/`:disabled`,
-//! cursor, and transition stylesheet cache directly over `NodeStore` word tables.
+//! cursor, and plugin-contributed (`WebTableSystem::resolve_style`) stylesheet cache directly over
+//! `NodeStore` word tables.
 
 use std::rc::Rc;
 
 use nve_abi::hash::HashSet;
-use nve_components::interaction::CursorKind;
-use nve_components::tables::{
-    Interaction, Motion, Responsive, ResponsiveRules, Scroll, ScrollAxes, StateRules, Transitions,
+use nve_tables::interaction::CursorKind;
+use nve_tables::tables::{
+    Interaction, Responsive, ResponsiveRules, ResponsiveRulesView, Scroll, ScrollAxes, StateRules,
 };
 use nve_store::{NodeId, NodeStore};
 
 use crate::css::{format_content_class, write_store_node_css};
-use crate::media_css::{compile_node_media_rules, CompiledMediaRule};
-use crate::state_css::{compile_node_state_rules, format_cursor_rule, CompiledStateRule};
-use crate::transition_css::compile_node_transitions;
+use crate::media_css::{compile_node_media_rules_view, CompiledMediaRule};
+use crate::state_css::{compile_node_state_rules_view, format_cursor_rule, CompiledStateRule};
+use crate::table_system::WebTableRegistry;
 
 /// Maximum number of deduplicated dynamic CSS rules emitted before falling back to inline styles.
 pub const MAX_DYNAMIC_RULES: usize = 8192;
@@ -38,9 +39,61 @@ pub struct ResolvedNodeStyle {
     pub inline_fallback: String,
     pub structural_rule: Option<(String, String)>,
     pub cursor_rule: Option<(&'static str, &'static str)>,
-    pub transition_rule: Option<(String, String)>,
+    /// Plugin class rules (`class`, `decls`) contributed via `WebTableSystem::resolve_style`.
+    pub class_rules: Vec<(String, String)>,
     pub media_rules: Vec<CompiledMediaRule>,
     pub state_rules: Vec<CompiledStateRule>,
+}
+
+impl ResolvedNodeStyle {
+    /// Applies the content-addressed class `class` (rule body `decls`) to this node.
+    pub fn push_class_rule(&mut self, class: String, decls: String) {
+        self.push_class(&class);
+        self.class_rules.push((class, decls));
+    }
+
+    /// Applies the `@media`-gated rule `rule` to this node.
+    pub fn push_media_rule(&mut self, rule: CompiledMediaRule) {
+        self.push_class(&rule.class_name);
+        self.media_rules.push(rule);
+    }
+
+    fn push_class(&mut self, class: &str) {
+        if !self.classes.is_empty() {
+            self.classes.push(' ');
+        }
+        self.classes.push_str(class);
+    }
+
+    fn remove_class(&mut self, class: &str) {
+        let kept: Vec<&str> = self.classes.split(' ').filter(|c| *c != class).collect();
+        self.classes = kept.join(" ");
+    }
+
+    /// Once the dynamic rule budget is exhausted, drops plugin rules pushed since the
+    /// `(class_rules, media_rules)` lengths `since`: class rules not already in the sheet and all
+    /// new `@media` rules.
+    fn enforce_rule_budget(
+        &mut self,
+        since: (usize, usize),
+        allow_new: bool,
+        has_rule: &impl Fn(&str) -> bool,
+    ) {
+        if allow_new {
+            return;
+        }
+        let rejected: Vec<String> = self.class_rules[since.0..]
+            .iter()
+            .filter(|(cls, _)| !has_rule(cls))
+            .map(|(cls, _)| cls.clone())
+            .chain(self.media_rules[since.1..].iter().map(|m| m.class_name.clone()))
+            .collect();
+        for cls in &rejected {
+            self.remove_class(cls);
+        }
+        self.class_rules.retain(|(cls, _)| !rejected.contains(cls));
+        self.media_rules.truncate(since.1);
+    }
 }
 
 /// Content-addressed CSS stylesheet cache shared between SSR and live `wasm32` DOM.
@@ -121,11 +174,18 @@ impl StyleSheetCache {
         self.structural_known.contains(cls)
     }
 
-    /// Resolves classes for `id` in `store`, moving any unseen rules into the cache.
-    pub fn resolve_node(&mut self, store: &NodeStore, id: NodeId) -> ResolvedNodeStyle {
+    /// Resolves classes for `id` in `store` (core tables + `systems` plugins), moving any unseen
+    /// rules into the cache.
+    pub fn resolve_node(
+        &mut self,
+        store: &NodeStore,
+        id: NodeId,
+        systems: &WebTableRegistry,
+    ) -> ResolvedNodeStyle {
         let allow_new = self.rule_count() < MAX_DYNAMIC_RULES;
-        let mut resolved =
-            resolve_store_node_style(store, id, allow_new, |cls| self.knows_structural(cls));
+        let mut resolved = resolve_store_node_style(store, id, systems, allow_new, |cls| {
+            self.knows_structural(cls)
+        });
         if let Some((cls, decls)) = resolved.structural_rule.take() {
             self.register_structural(&cls, decls);
         }
@@ -135,7 +195,7 @@ impl StyleSheetCache {
         {
             self.register_structural(cls, decls.to_owned());
         }
-        if let Some((cls, decls)) = resolved.transition_rule.take() {
+        for (cls, decls) in std::mem::take(&mut resolved.class_rules) {
             self.register_structural(&cls, decls);
         }
         for mr in std::mem::take(&mut resolved.media_rules) {
@@ -240,6 +300,7 @@ fn cursor_class_and_decl(c: CursorKind) -> Option<(&'static str, &'static str)> 
 pub fn resolve_store_node_style(
     store: &NodeStore,
     id: NodeId,
+    systems: &WebTableRegistry,
     allow_new: bool,
     has_rule: impl Fn(&str) -> bool,
 ) -> ResolvedNodeStyle {
@@ -285,7 +346,7 @@ pub fn resolve_store_node_style(
             && let Some(rules) = store.resource::<StateRules>(sr_res)
         {
             let start = out.state_rules.len();
-            compile_node_state_rules(&rules.0, &mut out.state_rules);
+            compile_node_state_rules_view(rules, Some(store), true, &mut out.state_rules);
             for compiled in &out.state_rules[start..] {
                 out.classes.push(' ');
                 out.classes.push_str(&compiled.class_name);
@@ -295,36 +356,28 @@ pub fn resolve_store_node_style(
 
     if let Some(resp) = store.try_row::<Responsive>(id) {
         let rr_res = resp.rules();
-        let rules_slice: &[nve_components::media::ResponsiveRule] = if !rr_res.is_none() {
+        let rules_view = if !rr_res.is_none() {
             store
                 .resource::<ResponsiveRules>(rr_res)
-                .map(|r| &*r.0)
-                .unwrap_or(&[])
+                .unwrap_or(ResponsiveRulesView::EMPTY)
         } else {
-            &[]
+            ResponsiveRulesView::EMPTY
         };
         let start = out.media_rules.len();
-        compile_node_media_rules(resp.show_on(), rules_slice, &mut out.media_rules);
+        compile_node_media_rules_view(resp.show_on(), rules_view, Some(store), &mut out.media_rules);
         for compiled in &out.media_rules[start..] {
             out.classes.push(' ');
             out.classes.push_str(&compiled.class_name);
         }
     }
 
-    if let Some(motion) = store.try_row::<Motion>(id) {
-        let tr_res = motion.transitions();
-        if !tr_res.is_none()
-            && let Some(specs) = store.resource::<Transitions>(tr_res)
-            && let Some(tr) = compile_node_transitions(&specs.0)
-        {
-            out.classes.push(' ');
-            out.classes.push_str(&tr.class_name);
-            out.transition_rule = Some((tr.class_name, tr.decls));
-            if let Some(rm) = tr.reduced_motion_rule {
-                out.media_rules.push(rm);
-            }
+    let since = (out.class_rules.len(), out.media_rules.len());
+    for sys in systems.iter() {
+        if store.has_slot(id, sys.slot()) {
+            sys.resolve_style(store, id, &mut out);
         }
     }
+    out.enforce_rule_budget(since, allow_new, &has_rule);
 
     out
 }

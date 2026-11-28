@@ -148,7 +148,7 @@ public final class TableReader {
         return rows.getInt(rowsBase + (r * words + w) * 4);
     }
 
-    /** Field bits of row {@code r}; throws {@link IndexOutOfBoundsException} when the field is past this row. */
+    /** Raw extracted bits of {@code f} at {@code (f.word, f.shift, f.bits)} (no optional decoding). */
     public int bits(int r, FieldSpec f) {
         return f.extract(fieldWord(r, f));
     }
@@ -158,31 +158,184 @@ public final class TableReader {
         return word(r, f.word);
     }
 
-    /** Unsigned field bits as raw int bits ({@code U32}, {@code ENUM}, {@code RESOURCE}, {@code NODE}). */
+    /** Hidden word 0 explicit-override mask of an {@code #[nve_table(inherited)]} row. */
+    public int explicitMask(int r) {
+        return word(r, 0);
+    }
+
+    /** {@code true} when {@code f} has an explicit-override bit set in word 0 of row {@code r}. */
+    public boolean isExplicit(int r, FieldSpec f) {
+        if (!f.fits(words)) throw new IndexOutOfBoundsException("field word " + f.word + " past " + words + "-word row");
+        return f.hasExplicitBit() && (word(r, 0) & f.explicitMask()) != 0;
+    }
+
+    /** {@code EventSet} listener bitmask of row {@code r} at {@code eventsWord} ({@code 0} when {@code 0xFF}). */
+    public int events(int r, int eventsWord) {
+        return eventsWord == FieldSpec.NO_WORD ? 0 : word(r, eventsWord);
+    }
+
+    /** {@code true} when optional field {@code f} holds {@code Some} (always {@code true} for {@link OptEncoding#REQUIRED}). */
+    public boolean isPresent(int r, FieldSpec f) {
+        if (!f.fits(words)) throw new IndexOutOfBoundsException("field word " + f.word + " past " + words + "-word row");
+        switch (f.optEncoding) {
+            case REQUIRED:
+                word(r, f.word);
+                return true;
+            case ZERO_NICHE:
+                return f.kind.isTwoWord()
+                        ? (word(r, f.word) | word(r, f.word + 1)) != 0
+                        : f.extract(word(r, f.word)) != 0;
+            case BIT0_PRESENT:
+            case WIDE_BIT:
+                return (f.extract(word(r, f.word)) & 1) != 0;
+            case PLUS_ONE:
+                return f.extract(word(r, f.word)) != 0;
+            case TAG_XOR:
+                return (f.extract(word(r, f.word)) & f.tagNicheMask()) != 0;
+            default:
+                throw new AssertionError(f.optEncoding);
+        }
+    }
+
+    private int decodedUnsigned(int r, FieldSpec f) {
+        final int w = fieldWord(r, f);
+        switch (f.optEncoding) {
+            case REQUIRED:
+            case ZERO_NICHE:
+                return f.extract(w);
+            case BIT0_PRESENT: {
+                final int raw = f.extract(w);
+                return (raw & 1) == 0 ? 0 : raw >>> 1;
+            }
+            case PLUS_ONE: {
+                final int raw = f.extract(w);
+                return raw == 0 ? 0 : raw - 1;
+            }
+            case TAG_XOR: {
+                final int raw = f.extract(w);
+                final int niche = f.tagNicheMask();
+                return (raw & niche) == 0 ? 0 : raw ^ niche;
+            }
+            case WIDE_BIT:
+                return (f.extract(w) & 1) == 0 ? 0 : word(r, f.valWord);
+            default:
+                throw new AssertionError(f.optEncoding);
+        }
+    }
+
+    /** Decoded unsigned field value ({@code U32}, {@code ENUM}, {@code RESOURCE}, {@code NODE}); {@code 0} when optional and absent. */
     public int u32(int r, FieldSpec f) {
-        return bits(r, f);
+        return decodedUnsigned(r, f);
     }
 
+    /** Decoded unsigned field value, or {@code fallback} when optional and absent. */
+    public int u32Or(int r, FieldSpec f, int fallback) {
+        return isPresent(r, f) ? decodedUnsigned(r, f) : fallback;
+    }
+
+    /** Decoded signed field value (sign-extended from payload width); {@code 0} when optional and absent. */
     public int i32(int r, FieldSpec f) {
-        return f.extractSigned(fieldWord(r, f));
+        final int w = fieldWord(r, f);
+        switch (f.optEncoding) {
+            case REQUIRED:
+            case ZERO_NICHE:
+                return f.extractSigned(w);
+            case BIT0_PRESENT: {
+                final int raw = f.extract(w);
+                if ((raw & 1) == 0) return 0;
+                final int pBits = f.bits - 1;
+                final int payload = raw >>> 1;
+                return pBits >= 32 ? payload : (payload << (32 - pBits)) >> (32 - pBits);
+            }
+            case PLUS_ONE: {
+                final int raw = f.extract(w);
+                return raw == 0 ? 0 : raw - 1;
+            }
+            case WIDE_BIT:
+                return (f.extract(w) & 1) == 0 ? 0 : word(r, f.valWord);
+            case TAG_XOR:
+                return decodedUnsigned(r, f);
+            default:
+                throw new AssertionError(f.optEncoding);
+        }
     }
 
+    /** Decoded signed field value, or {@code fallback} when optional and absent. */
+    public int i32Or(int r, FieldSpec f, int fallback) {
+        return isPresent(r, f) ? i32(r, f) : fallback;
+    }
+
+    /** Decoded {@code f32} field ({@code 0f} when optional and absent). */
     public float f32(int r, FieldSpec f) {
-        return Float.intBitsToFloat(bits(r, f));
+        return Float.intBitsToFloat(decodedUnsigned(r, f));
     }
 
+    /** Decoded {@code f32} field, or {@code fallback} when optional and absent. */
+    public float f32Or(int r, FieldSpec f, float fallback) {
+        return isPresent(r, f) ? f32(r, f) : fallback;
+    }
+
+    /** Decoded {@code bool} field ({@code false} when optional and absent). */
     public boolean bool(int r, FieldSpec f) {
-        return (bits(r, f) & 1) != 0;
+        return (decodedUnsigned(r, f) & 1) != 0;
     }
 
-    /** Packed RGBA word (decode channels with {@link Rgba}). */
+    /** Decoded {@code bool} field, or {@code fallback} when optional and absent. */
+    public boolean boolOr(int r, FieldSpec f, boolean fallback) {
+        return isPresent(r, f) ? bool(r, f) : fallback;
+    }
+
+    /** Packed RGBA word (decode channels with {@link Rgba}); {@code 0} when optional and absent. */
     public int color(int r, FieldSpec f) {
-        return bits(r, f);
+        return decodedUnsigned(r, f);
     }
 
-    /** Packed length word (decode with {@link Length}). */
+    /** Packed RGBA word, or {@code fallback} when optional and absent. */
+    public int colorOr(int r, FieldSpec f, int fallback) {
+        return isPresent(r, f) ? decodedUnsigned(r, f) : fallback;
+    }
+
+    /** Packed length word (decode with {@link Length}); {@code 0} when optional and absent. */
     public int length(int r, FieldSpec f) {
-        return bits(r, f);
+        return decodedUnsigned(r, f);
+    }
+
+    /** Packed length word, or {@code fallback} when optional and absent. */
+    public int lengthOr(int r, FieldSpec f, int fallback) {
+        return isPresent(r, f) ? decodedUnsigned(r, f) : fallback;
+    }
+
+    /** Packed 16-bit grid line (decode with {@link GridLine}); {@code GridLine.AUTO} when optional and absent. */
+    public int gridLine(int r, FieldSpec f) {
+        return decodedUnsigned(r, f);
+    }
+
+    /** Packed 16-bit grid line, or {@code fallback} when optional and absent. */
+    public int gridLineOr(int r, FieldSpec f, int fallback) {
+        return isPresent(r, f) ? decodedUnsigned(r, f) : fallback;
+    }
+
+    /** Two-word unsigned 64-bit field ({@code U64}, {@code I64}, {@code F64} raw little-endian bits). */
+    public long u64(int r, FieldSpec f) {
+        final int w = wide64Word(f);
+        return (word(r, w) & 0xFFFFFFFFL) | ((long) word(r, w + 1) << 32);
+    }
+
+    /** Two-word signed 64-bit field. */
+    public long i64(int r, FieldSpec f) {
+        return u64(r, f);
+    }
+
+    /** Two-word IEEE-754 {@code f64} field. */
+    public double f64(int r, FieldSpec f) {
+        return Double.longBitsToDouble(u64(r, f));
+    }
+
+    private int wide64Word(FieldSpec f) {
+        if ((f.kind != FieldKind.U64 && f.kind != FieldKind.I64 && f.kind != FieldKind.F64) || !f.fits(words)) {
+            throw new IndexOutOfBoundsException(f.kind + " field at word " + f.word + " is not 64-bit in a " + words + "-word row");
+        }
+        return f.word;
     }
 
     /** Text-slab offset of a {@code STR} field (throws for a non-{@code STR} spec or one past the row). */

@@ -1,4 +1,4 @@
-// `NVE_DRAW1` canvas draw lists painted with `QPainter` (shared by the Widgets and Quick hosts).
+// Flat `nve.res.draw_list` canvas draw lists painted with `QPainter` (Widgets and Quick hosts).
 #include "NveQtPaint.hpp"
 
 #include <QPaintDevice>

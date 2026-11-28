@@ -195,31 +195,6 @@ pub(super) fn c_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
     }
 }
 
-/// `NveValue` of an event parameter that needs no encoding (scalars, enums, strings, bytes).
-///
-/// Mirrors the `HybridCodec` of each type: `u64` bit-casts, `usize` past `i64::MAX` is an error
-/// (the enclosing function returns `Result<_, DecodeError>`).
-pub(super) fn direct_nve_value_expr(expr: &str, ty: &HybridType) -> Option<String> {
-    const V: &str = "nve_abi::NveValue";
-    Some(match ty {
-        HybridType::Bool => format!("{V}::bool({expr})"),
-        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
-            format!("{V}::i64(<i64 as {FROM}<_>>::from({expr}))")
-        }
-        HybridType::I64 => format!("{V}::i64({expr})"),
-        HybridType::U64 => format!("{V}::i64(i64::from_ne_bytes({expr}.to_ne_bytes()))"),
-        HybridType::Usize => format!(
-            "{V}::i64(i64::try_from({expr}).map_err(|_| nve_abi::DecodeError::OutOfRange(\"usize\"))?)"
-        ),
-        HybridType::F32 => format!("{V}::f64(<f64 as {FROM}<f32>>::from({expr}))"),
-        HybridType::F64 => format!("{V}::f64({expr})"),
-        HybridType::Enum(_) => format!("{V}::i64(<i64 as {FROM}<u32>>::from({expr}.to_u32()))"),
-        HybridType::String => format!("{V}::from_str({expr}.as_str())"),
-        HybridType::Bytes => format!("{V}::from_bytes({expr}.as_slice())"),
-        _ => return None,
-    })
-}
-
 pub(super) fn rust_prop_default_expr(ty: &HybridType, def: Option<&HybridDefaultValue>) -> String {
     let Some(def) = def else {
         return default_expr(ty);

@@ -8,7 +8,7 @@ use dioxus_core::{
     AttributeValue, ElementId, IntoAttributeValue, Template, TemplateAttribute, TemplateNode,
     WriteMutations,
 };
-use nve_components::tables::Visual;
+use nve_tables::tables::Visual;
 use nve_dioxus::{NveMutationWriter, table_attr_fn};
 use nve_store::Rgba;
 

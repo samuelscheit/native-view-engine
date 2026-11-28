@@ -16,37 +16,27 @@ private func packRgba(_ r: UInt8, _ g: UInt8, _ b: UInt8, _ a: UInt8 = 255) -> U
     UInt32(r) | (UInt32(g) << 8) | (UInt32(b) << 16) | (UInt32(a) << 24)
 }
 
-/// Minimal `NVE_DRAW1` binary builder matching `packages/core/components/src/canvas_ir.rs`.
+/// Minimal flat `nve.res.draw_list` `u32`-word builder matching `packages/modules/canvas/src/flat.rs`.
 private struct DrawListBuilder {
-    private var buf: [UInt8] = []
+    private var words: [UInt32] = [0]
     private var opCount: UInt32 = 0
 
-    init() {
-        buf.append(contentsOf: NveDrawListConstants.magic)
-        appendU16(NveDrawListConstants.version)
-        appendU32(0)
-    }
-
-    private mutating func appendU16(_ v: UInt16) {
-        withUnsafeBytes(of: v.littleEndian) { buf.append(contentsOf: $0) }
-    }
-
     private mutating func appendU32(_ v: UInt32) {
-        withUnsafeBytes(of: v.littleEndian) { buf.append(contentsOf: $0) }
+        words.append(v)
     }
 
     private mutating func appendF32(_ v: Float) {
-        appendU32(v.bitPattern)
+        words.append(v.bitPattern)
     }
 
     mutating func clear(_ rgba: UInt32) {
-        buf.append(NveDrawListRenderer.opClear)
+        appendU32(NveDrawListRenderer.opClear)
         appendU32(rgba)
         opCount += 1
     }
 
     mutating func fillRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ rgba: UInt32) {
-        buf.append(NveDrawListRenderer.opFillRect)
+        appendU32(NveDrawListRenderer.opFillRect)
         appendF32(x)
         appendF32(y)
         appendF32(w)
@@ -63,7 +53,7 @@ private struct DrawListBuilder {
         _ radius: Float,
         _ rgba: UInt32
     ) {
-        buf.append(NveDrawListRenderer.opFillRoundedRect)
+        appendU32(NveDrawListRenderer.opFillRoundedRect)
         appendF32(x)
         appendF32(y)
         appendF32(w)
@@ -74,7 +64,7 @@ private struct DrawListBuilder {
     }
 
     mutating func fillCircle(_ cx: Float, _ cy: Float, _ radius: Float, _ rgba: UInt32) {
-        buf.append(NveDrawListRenderer.opFillCircle)
+        appendU32(NveDrawListRenderer.opFillCircle)
         appendF32(cx)
         appendF32(cy)
         appendF32(radius)
@@ -90,7 +80,7 @@ private struct DrawListBuilder {
         _ width: Float,
         _ rgba: UInt32
     ) {
-        buf.append(NveDrawListRenderer.opStrokeLine)
+        appendU32(NveDrawListRenderer.opStrokeLine)
         appendF32(x0)
         appendF32(y0)
         appendF32(x1)
@@ -101,7 +91,7 @@ private struct DrawListBuilder {
     }
 
     mutating func strokePolyline(_ points: [(Float, Float)], _ width: Float, _ rgba: UInt32) {
-        buf.append(NveDrawListRenderer.opStrokePolyline)
+        appendU32(NveDrawListRenderer.opStrokePolyline)
         appendF32(width)
         appendU32(rgba)
         appendU32(UInt32(points.count))
@@ -113,7 +103,7 @@ private struct DrawListBuilder {
     }
 
     mutating func clipRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float) {
-        buf.append(NveDrawListRenderer.opClipRect)
+        appendU32(NveDrawListRenderer.opClipRect)
         appendF32(x)
         appendF32(y)
         appendF32(w)
@@ -122,19 +112,27 @@ private struct DrawListBuilder {
     }
 
     mutating func restoreClip() {
-        buf.append(NveDrawListRenderer.opRestoreClip)
+        appendU32(NveDrawListRenderer.opRestoreClip)
         opCount += 1
     }
 
     func finish() -> Data {
-        var out = buf
-        withUnsafeBytes(of: opCount.littleEndian) { raw in
-            for i in 0 ..< 4 {
-                out[11 + i] = raw[i]
-            }
+        var out = words
+        out[0] = opCount
+        var bytes = Data(capacity: out.count * 4)
+        for w in out {
+            withUnsafeBytes(of: w.littleEndian) { bytes.append(contentsOf: $0) }
         }
-        return Data(out)
+        return bytes
     }
+}
+
+private func encodeWords(_ words: [UInt32]) -> Data {
+    var bytes = Data(capacity: words.count * 4)
+    for w in words {
+        withUnsafeBytes(of: w.littleEndian) { bytes.append(contentsOf: $0) }
+    }
+    return bytes
 }
 
 private func makeSolidPngData(r: UInt8, g: UInt8, b: UInt8, width: Int, height: Int) -> Data {
@@ -235,9 +233,10 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
         b.restoreClip()
         b.fillRect(70, 74, 16, 12, packRgba(56, 189, 248))
         let drawData = b.finish()
+        XCTAssertEqual(drawData.count, 56 * 4)
+        XCTAssertEqual(drawData.count & 3, 0)
 
         let header = try NveDrawListRenderer.validate(drawData)
-        XCTAssertEqual(header.version, 1)
         XCTAssertEqual(header.opCount, 10)
 
         var executedOps = 0
@@ -294,47 +293,112 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
         XCTAssertEqual(afterRestore.0, 56, accuracy: 3)
         XCTAssertEqual(afterRestore.2, 248, accuracy: 3)
 
-        // Verify `nve-draw1;b64,` base64 attribute decoding roundtrip
+        // Verify `nve-draw1;b64,` base64 attribute decoding into flat words and direct draw fallback
         let attrStr = NveDrawListConstants.attrPrefix + drawData.base64EncodedString()
         let decoded = try NveDrawListRenderer.decodeAttrString(attrStr)
         XCTAssertEqual(decoded, drawData)
+        var b64ExecutedOps = 0
+        let b64Canvas = Canvas { ctx, size in
+            b64ExecutedOps = (try? NveDrawListRenderer.draw(
+                Data(attrStr.utf8),
+                into: &ctx,
+                in: CGRect(origin: .zero, size: size)
+            )) ?? -1
+        }.frame(width: 96, height: 96)
+        let b64Renderer = ImageRenderer(content: b64Canvas)
+        b64Renderer.scale = 1.0
+        let b64Cg = try XCTUnwrap(b64Renderer.cgImage)
+        XCTAssertEqual(b64ExecutedOps, 10)
+        XCTAssertEqual(rgbaPixel(in: b64Cg, x: 16, y: 16).0, 220, accuracy: 3)
+
+        // Verify empty flat draw list (single zero word = 4 bytes) and unbalanced clip balancing
+        let emptyFlat = DrawListBuilder().finish()
+        XCTAssertEqual(emptyFlat, Data([0, 0, 0, 0]))
+        XCTAssertEqual(try NveDrawListRenderer.validate(emptyFlat), NveDrawListHeader(opCount: 0))
+
+        var clipTest = DrawListBuilder()
+        clipTest.restoreClip() // unmatched extra restore must be a safe no-op
+        clipTest.clipRect(0, 0, 16, 16) // intentionally left unclosed
+        clipTest.fillRect(0, 0, 32, 32, packRgba(255, 0, 0))
+        let clipData = clipTest.finish()
+        var clipOps = 0
+        let clipCanvas = Canvas { ctx, size in
+            clipOps = (try? NveDrawListRenderer.draw(
+                clipData,
+                into: &ctx,
+                in: CGRect(origin: .zero, size: size)
+            )) ?? -1
+        }.frame(width: 32, height: 32)
+        let clipRenderer = ImageRenderer(content: clipCanvas)
+        clipRenderer.scale = 1.0
+        _ = try XCTUnwrap(clipRenderer.cgImage)
+        XCTAssertEqual(clipOps, 3)
     }
 
-    func testDrawListValidatorRejectsTruncatedCorruptNonFiniteAndOversizedBuffers() {
-        // Truncated header
+    func testDrawListValidatorRejectsTruncatedCorruptNonFiniteAndOversizedBuffers() throws {
+        // Exact byte-for-byte parity with `packages/modules/canvas/src/flat.rs` word layout
+        let black = packRgba(0, 0, 0)
+        let white = packRgba(255, 255, 255)
+        var parity = DrawListBuilder()
+        parity.clear(black)
+        parity.fillRect(1.0, 2.0, 3.0, 4.0, white)
+        parity.strokePolyline([(5.0, 6.0)], 2.5, white)
+        parity.restoreClip()
+        let expectedWords: [UInt32] = [
+            4,
+            1, black,
+            2, Float(1.0).bitPattern, Float(2.0).bitPattern, Float(3.0).bitPattern, Float(4.0).bitPattern, white,
+            6, Float(2.5).bitPattern, white, 1, Float(5.0).bitPattern, Float(6.0).bitPattern,
+            8,
+        ]
+        XCTAssertEqual(parity.finish(), encodeWords(expectedWords))
+        XCTAssertEqual(try NveDrawListRenderer.validate(parity.finish()), NveDrawListHeader(opCount: 4))
+
+        // Truncated header (< 4 bytes)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(Data())) { err in
+            XCTAssertEqual(err as? NveDrawListError, .truncated)
+        }
         XCTAssertThrowsError(try NveDrawListRenderer.validate(Data([1, 2, 3]))) { err in
             XCTAssertEqual(err as? NveDrawListError, .truncated)
         }
 
-        // Bad magic
-        var badMagic = Data("NVE_DRAWX".utf8)
-        badMagic.append(contentsOf: [1, 0, 0, 0, 0, 0])
-        XCTAssertThrowsError(try NveDrawListRenderer.validate(badMagic)) { err in
-            XCTAssertEqual(err as? NveDrawListError, .badMagic)
+        // Retired legacy `NVE_DRAW1` 15-byte header is rejected
+        var legacy = Data("NVE_DRAW1".utf8)
+        legacy.append(contentsOf: [1, 0, 0, 0, 0, 0])
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(legacy)) { err in
+            XCTAssertEqual(err as? NveDrawListError, .opCountExceedsLimit(0x5F45_564E))
         }
 
-        // Unsupported version
-        var badVer = DrawListBuilder().finish()
-        badVer[9] = 99
-        XCTAssertThrowsError(try NveDrawListRenderer.validate(badVer)) { err in
-            XCTAssertEqual(err as? NveDrawListError, .unsupportedVersion(99))
+        // Op count exceeds limit (maxOps + 1 and UInt32.max without 32-bit overflow)
+        let tooMany = UInt32(NveDrawListConstants.maxOps + 1)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(encodeWords([tooMany]))) { err in
+            XCTAssertEqual(err as? NveDrawListError, .opCountExceedsLimit(tooMany))
+        }
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(encodeWords([UInt32.max]))) { err in
+            XCTAssertEqual(err as? NveDrawListError, .opCountExceedsLimit(UInt32.max))
         }
 
-        // Op count exceeds limit
-        var hugeOps = DrawListBuilder().finish()
-        let tooMany = UInt32(NveDrawListConstants.maxOps + 1).littleEndian
-        withUnsafeBytes(of: tooMany) { raw in
-            for i in 0 ..< 4 { hugeOps[11 + i] = raw[i] }
+        // Truncated opcode word and truncated op payloads
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(Data([1, 0, 0, 0, 1, 0]))) { err in
+            XCTAssertEqual(err as? NveDrawListError, .truncated)
         }
-        XCTAssertThrowsError(try NveDrawListRenderer.validate(hugeOps)) { err in
-            XCTAssertEqual(err as? NveDrawListError, .opCountExceedsLimit(UInt32(NveDrawListConstants.maxOps + 1)))
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(Data([1, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0x00]))) { err in
+            XCTAssertEqual(err as? NveDrawListError, .truncated)
+        }
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(encodeWords([1, 2, 0, 0, 0, 0]))) { err in
+            XCTAssertEqual(err as? NveDrawListError, .truncated)
+        }
+        XCTAssertThrowsError(
+            try NveDrawListRenderer.validate(encodeWords([1, 6, Float(1.0).bitPattern, white, 2, 0, 0]))
+        ) { err in
+            XCTAssertEqual(err as? NveDrawListError, .truncated)
         }
 
-        // Unknown opcode
-        var unknown = Data(NveDrawListConstants.magic)
-        unknown.append(contentsOf: [1, 0, 1, 0, 0, 0, 0x7F])
-        XCTAssertThrowsError(try NveDrawListRenderer.validate(unknown)) { err in
-            XCTAssertEqual(err as? NveDrawListError, .unknownOpcode(0x7F))
+        // Unknown UInt32 opcodes (0, 9, 0x7F, and high-bits non-zero 0x0001_0001)
+        for badOp: UInt32 in [0, 9, 0x7F, 0x0001_0001] {
+            XCTAssertThrowsError(try NveDrawListRenderer.validate(encodeWords([1, badOp]))) { err in
+                XCTAssertEqual(err as? NveDrawListError, .unknownOpcode(badOp))
+            }
         }
 
         // Non-finite NaN & Infinity
@@ -350,27 +414,51 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
             XCTAssertEqual(err as? NveDrawListError, .nonFiniteFloat)
         }
 
-        // Oversized polyline vertex count
-        var badPoly = Data(NveDrawListConstants.magic)
-        badPoly.append(contentsOf: [1, 0, 1, 0, 0, 0, NveDrawListRenderer.opStrokePolyline])
-        withUnsafeBytes(of: Float(2.0).bitPattern.littleEndian) { badPoly.append(contentsOf: $0) }
-        withUnsafeBytes(of: packRgba(255, 255, 255).littleEndian) { badPoly.append(contentsOf: $0) }
-        let overPts = UInt32(NveDrawListConstants.maxPolylinePoints + 1).littleEndian
-        withUnsafeBytes(of: overPts) { badPoly.append(contentsOf: $0) }
-        XCTAssertThrowsError(try NveDrawListRenderer.validate(badPoly)) { err in
-            XCTAssertEqual(
-                err as? NveDrawListError,
-                .polylinePointCountExceedsLimit(UInt32(NveDrawListConstants.maxPolylinePoints + 1))
-            )
+        var badPolyFloat = DrawListBuilder()
+        badPolyFloat.strokePolyline([(1, .nan)], 2, white)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(badPolyFloat.finish())) { err in
+            XCTAssertEqual(err as? NveDrawListError, .nonFiniteFloat)
         }
 
-        // Trailing bytes
+        var badClipFloat = DrawListBuilder()
+        badClipFloat.clipRect(0, 0, -.infinity, 10)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(badClipFloat.finish())) { err in
+            XCTAssertEqual(err as? NveDrawListError, .nonFiniteFloat)
+        }
+
+        // Oversized polyline vertex count (maxPolylinePoints + 1 and UInt32.max)
+        let overPts = UInt32(NveDrawListConstants.maxPolylinePoints + 1)
+        let badPoly = encodeWords([1, NveDrawListRenderer.opStrokePolyline, Float(2.0).bitPattern, white, overPts])
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(badPoly)) { err in
+            XCTAssertEqual(err as? NveDrawListError, .polylinePointCountExceedsLimit(overPts))
+        }
+        let maxPoly = encodeWords([1, NveDrawListRenderer.opStrokePolyline, Float(2.0).bitPattern, white, UInt32.max])
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(maxPoly)) { err in
+            XCTAssertEqual(err as? NveDrawListError, .polylinePointCountExceedsLimit(UInt32.max))
+        }
+
+        // Trailing bytes (both unaligned and word-aligned)
         var b = DrawListBuilder()
-        b.clear(packRgba(0, 0, 0))
-        var trailing = b.finish()
-        trailing.append(contentsOf: [0xDE, 0xAD])
-        XCTAssertThrowsError(try NveDrawListRenderer.validate(trailing)) { err in
+        b.clear(black)
+        var trailing2 = b.finish()
+        trailing2.append(contentsOf: [0xDE, 0xAD])
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(trailing2)) { err in
             XCTAssertEqual(err as? NveDrawListError, .trailingBytes(2))
+        }
+        var trailing4 = b.finish()
+        trailing4.append(contentsOf: [0xDE, 0xAD, 0xBE, 0xEF])
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(trailing4)) { err in
+            XCTAssertEqual(err as? NveDrawListError, .trailingBytes(4))
+        }
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(Data([0, 0, 0, 0, 0xAA]))) { err in
+            XCTAssertEqual(err as? NveDrawListError, .trailingBytes(1))
+        }
+
+        // Invalid base64 attribute strings
+        for badAttr in ["", NveDrawListConstants.attrPrefix, "\(NveDrawListConstants.attrPrefix)!!!invalid!!!"] {
+            XCTAssertThrowsError(try NveDrawListRenderer.decodeAttrString(badAttr)) { err in
+                XCTAssertEqual(err as? NveDrawListError, .invalidBase64)
+            }
         }
     }
 

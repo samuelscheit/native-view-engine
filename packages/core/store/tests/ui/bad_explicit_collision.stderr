@@ -1,0 +1,7 @@
+error: field `explicit_mask` collides with generated `*Ref::explicit_mask()` method on inherited table
+ --> tests/ui/bad_explicit_collision.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

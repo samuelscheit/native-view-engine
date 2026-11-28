@@ -1,14 +1,137 @@
-//! Visual, typography, responsive, interaction-state, and transition builders on [`TypedStyle`].
+//! Visual, typography, responsive, and interaction-state builders on [`TypedStyle`].
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use nve_abi::{ColorRgba, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
-use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::motion::TransitionSpec;
-use nve_components::style_patch::StylePatch;
+use nve_tables::interaction::{CursorKind, InteractionState};
+use nve_tables::layout_ext::GridTrack;
+use nve_tables::media::MediaQuery;
+use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
+use nve_tables::tables::BoxShadow;
+use nve_tables::StylePatchExt;
+use nve_store::RowPatch;
 
 use super::TypedStyle;
+
+/// Staged style patch for [`TypedStyle`] responsive and interaction-state rules.
+///
+/// Wraps a table-generic [`RowPatch`] (forwarding every [`StylePatchExt`] fluent builder directly)
+/// plus optional uninterned child resources (`BackgroundFill`, `GridTrack` lists) that are interned
+/// via [`nve_store::TempResources`] during [`TypedStyle::apply_to_tx`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PendingStylePatch {
+    pub patch: RowPatch,
+    pub background_fill: Option<BackgroundFill>,
+    pub grid_template_columns: Option<Arc<[GridTrack]>>,
+    pub grid_template_rows: Option<Arc<[GridTrack]>>,
+}
+
+impl PendingStylePatch {
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            patch: RowPatch::new(),
+            background_fill: None,
+            grid_template_columns: None,
+            grid_template_rows: None,
+        }
+    }
+
+    #[inline]
+    pub fn has_pending_resources(&self) -> bool {
+        self.background_fill.is_some()
+            || self.grid_template_columns.is_some()
+            || self.grid_template_rows.is_some()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.patch.is_empty() && !self.has_pending_resources()
+    }
+
+    #[inline]
+    pub fn background_fill(mut self, fill: BackgroundFill) -> Self {
+        self.background_fill = Some(fill);
+        self
+    }
+
+    #[inline]
+    pub fn linear_gradient(
+        mut self,
+        angle_deg: f32,
+        stops: impl Into<Vec<GradientStop>>,
+    ) -> Self {
+        self.background_fill = Some(BackgroundFill::Linear(LinearGradient::new(
+            angle_deg, stops,
+        )));
+        self
+    }
+
+    #[inline]
+    pub fn radial_gradient(
+        mut self,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        stops: impl Into<Vec<GradientStop>>,
+    ) -> Self {
+        self.background_fill = Some(BackgroundFill::Radial(RadialGradient::new(
+            center_x, center_y, radius, stops,
+        )));
+        self
+    }
+
+    #[inline]
+    pub fn grid_cols(mut self, tracks: impl Into<Vec<GridTrack>>) -> Self {
+        self.grid_template_columns = Some(Arc::from(tracks.into()));
+        self
+    }
+
+    #[inline]
+    pub fn grid_rows(mut self, tracks: impl Into<Vec<GridTrack>>) -> Self {
+        self.grid_template_rows = Some(Arc::from(tracks.into()));
+        self
+    }
+}
+
+impl From<RowPatch> for PendingStylePatch {
+    #[inline]
+    fn from(patch: RowPatch) -> Self {
+        Self {
+            patch,
+            background_fill: None,
+            grid_template_columns: None,
+            grid_template_rows: None,
+        }
+    }
+}
+
+impl StylePatchExt for PendingStylePatch {
+    #[inline(always)]
+    fn row_patch(&self) -> &RowPatch {
+        &self.patch
+    }
+
+    #[inline(always)]
+    fn row_patch_mut(&mut self) -> &mut RowPatch {
+        &mut self.patch
+    }
+}
+
+/// Staged `(MediaQuery, PendingStylePatch)` rule attached to [`TypedStyle`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingResponsiveRule {
+    pub query: MediaQuery,
+    pub patch: PendingStylePatch,
+}
+
+/// Staged `(InteractionState, PendingStylePatch)` rule attached to [`TypedStyle`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingStateRule {
+    pub state: InteractionState,
+    pub patch: PendingStylePatch,
+}
 
 impl TypedStyle {
     // --- Visual style ---
@@ -106,9 +229,10 @@ impl TypedStyle {
         self
     }
 
+    /// Sets the node's shadows (`[]` / `None` explicitly clears any previous shadows).
     #[inline]
-    pub fn box_shadow(mut self, shadow: impl Into<Cow<'static, str>>) -> Self {
-        self.box_shadow = Some(shadow.into());
+    pub fn box_shadows(mut self, shadows: impl IntoIterator<Item = BoxShadow>) -> Self {
+        self.box_shadows = Some(shadows.into_iter().collect::<Arc<[BoxShadow]>>());
         self
     }
 
@@ -133,8 +257,11 @@ impl TypedStyle {
     }
 
     #[inline]
-    pub fn at(mut self, query: MediaQuery, patch: StylePatch) -> Self {
-        self.responsive.push(ResponsiveRule::new(query, patch));
+    pub fn at(mut self, query: MediaQuery, patch: impl Into<PendingStylePatch>) -> Self {
+        self.responsive.push(PendingResponsiveRule {
+            query,
+            patch: patch.into(),
+        });
         self
     }
 
@@ -142,23 +269,23 @@ impl TypedStyle {
     pub fn at_with(
         self,
         query: MediaQuery,
-        build: impl FnOnce(StylePatch) -> StylePatch,
+        build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
     ) -> Self {
-        self.at(query, build(StylePatch::new()))
+        self.at(query, build(PendingStylePatch::new()))
     }
 
     #[inline]
-    pub fn on_compact(self, patch: StylePatch) -> Self {
+    pub fn on_compact(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.at(MediaQuery::compact(), patch)
     }
 
     #[inline]
-    pub fn on_medium(self, patch: StylePatch) -> Self {
+    pub fn on_medium(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.at(MediaQuery::medium(), patch)
     }
 
     #[inline]
-    pub fn on_expanded(self, patch: StylePatch) -> Self {
+    pub fn on_expanded(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.at(MediaQuery::expanded(), patch)
     }
 
@@ -171,8 +298,15 @@ impl TypedStyle {
     }
 
     #[inline]
-    pub fn on_state(mut self, state: InteractionState, patch: StylePatch) -> Self {
-        self.state_rules.push(StateStyleRule::new(state, patch));
+    pub fn on_state(
+        mut self,
+        state: InteractionState,
+        patch: impl Into<PendingStylePatch>,
+    ) -> Self {
+        self.state_rules.push(PendingStateRule {
+            state,
+            patch: patch.into(),
+        });
         self
     }
 
@@ -180,73 +314,74 @@ impl TypedStyle {
     pub fn on_state_with(
         self,
         state: InteractionState,
-        build: impl FnOnce(StylePatch) -> StylePatch,
+        build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
     ) -> Self {
-        self.on_state(state, build(StylePatch::new()))
+        self.on_state(state, build(PendingStylePatch::new()))
     }
 
     #[inline]
-    pub fn on_hover(self, patch: StylePatch) -> Self {
+    pub fn on_hover(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.on_state(InteractionState::HOVER, patch)
     }
 
     #[inline]
-    pub fn on_hover_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+    pub fn on_hover_with(
+        self,
+        build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
+    ) -> Self {
         self.on_state_with(InteractionState::HOVER, build)
     }
 
     #[inline]
-    pub fn on_active(self, patch: StylePatch) -> Self {
+    pub fn on_active(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.on_state(InteractionState::ACTIVE, patch)
     }
 
     #[inline]
-    pub fn on_active_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+    pub fn on_active_with(
+        self,
+        build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
+    ) -> Self {
         self.on_state_with(InteractionState::ACTIVE, build)
     }
 
     #[inline]
-    pub fn on_focus(self, patch: StylePatch) -> Self {
+    pub fn on_focus(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.on_state(InteractionState::FOCUS, patch)
     }
 
     #[inline]
-    pub fn on_focus_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+    pub fn on_focus_with(
+        self,
+        build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
+    ) -> Self {
         self.on_state_with(InteractionState::FOCUS, build)
     }
 
     #[inline]
-    pub fn on_focus_visible(self, patch: StylePatch) -> Self {
+    pub fn on_focus_visible(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.on_state(InteractionState::FOCUS_VISIBLE, patch)
     }
 
     #[inline]
-    pub fn on_focus_visible_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+    pub fn on_focus_visible_with(
+        self,
+        build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
+    ) -> Self {
         self.on_state_with(InteractionState::FOCUS_VISIBLE, build)
     }
 
     #[inline]
-    pub fn on_disabled(self, patch: StylePatch) -> Self {
+    pub fn on_disabled(self, patch: impl Into<PendingStylePatch>) -> Self {
         self.on_state(InteractionState::DISABLED, patch)
     }
 
     #[inline]
-    pub fn on_disabled_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+    pub fn on_disabled_with(
+        self,
+        build: impl FnOnce(PendingStylePatch) -> PendingStylePatch,
+    ) -> Self {
         self.on_state_with(InteractionState::DISABLED, build)
-    }
-
-    // --- Declarative style transitions ---
-
-    #[inline]
-    pub fn transition(mut self, spec: TransitionSpec) -> Self {
-        self.transitions.push(spec);
-        self
-    }
-
-    #[inline]
-    pub fn transitions(mut self, specs: &[TransitionSpec]) -> Self {
-        self.transitions.extend_from_slice(specs);
-        self
     }
 }
 

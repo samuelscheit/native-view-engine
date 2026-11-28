@@ -1,5 +1,6 @@
 package dev.nve.compose
 
+import dev.nve.host.DrawList
 import dev.nve.host.ImageSource
 import dev.nve.host.Key64
 import dev.nve.host.SceneSemantics
@@ -16,8 +17,8 @@ import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
 
 class NveSceneCaptureTest {
-    private val drawKind = Key64.of("nve.res.draw_list")
-    private val press = NveTables.Values.EventMask.PRESS
+    private val drawKind = DrawList.KIND
+    private val press = NveTables.Values.InteractionEventSet.PRESS
 
     /** Root(1) → column(2) → [title(3), input(4), image(5), scroll(6) → [row(7)], canvas(8), button(9)]. */
     private fun showcase(scene: TestScene = TestScene()): TestScene {
@@ -40,10 +41,8 @@ class NveSceneCaptureTest {
         scene.set(visual, 8, NveTables.Visual.OPACITY, 1f)
             .set(visual, 8, NveTables.Visual.VISIBILITY, NveTables.Values.Visibility.HIDDEN)
         val typo = scene.table(NveTables.Typography.KEY, NveTables.Typography.WORDS)
-        scene.set(typo, 2, NveTables.Typography.SET, 0b11)  // color + size on the column
-            .set(typo, 2, NveTables.Typography.COLOR, 0xFF00FF00.toInt())
+        scene.set(typo, 2, NveTables.Typography.COLOR, 0xFF00FF00.toInt())
             .set(typo, 2, NveTables.Typography.FONT_SIZE, 20f)
-            .set(typo, 3, NveTables.Typography.SET, (1 shl 6) or (1 shl 1))  // weight + size override
             .set(typo, 3, NveTables.Typography.FONT_WEIGHT, 700)
             .set(typo, 3, NveTables.Typography.FONT_SIZE, 24f)
         val text = scene.table(NveTables.Text.KEY, NveTables.Text.WORDS)
@@ -58,7 +57,8 @@ class NveSceneCaptureTest {
         val canvas = scene.table(NveModuleTables.Canvas.KEY, NveModuleTables.Canvas.WORDS)
         scene.set(canvas, 8, NveModuleTables.Canvas.DRAW_LIST, 2)
         val interaction = scene.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS)
-        scene.set(interaction, 9, NveTables.Interaction.EVENT_MASK, press).set(interaction, 3, NveTables.Interaction.EVENT_MASK, press)
+        scene.setEvents(interaction, 9, NveTables.Interaction.EVENTS_WORD, press)
+            .setEvents(interaction, 3, NveTables.Interaction.EVENTS_WORD, press)
             .set(interaction, 3, NveTables.Interaction.DISABLED, 1)
         val a11y = scene.table(NveTables.Accessibility.KEY, NveTables.Accessibility.WORDS)
         scene.set(a11y, 9, NveTables.Accessibility.ROLE, NveTables.Values.AriaRole.BUTTON).set(a11y, 9, NveTables.Accessibility.LABEL, "Submit form")
@@ -75,7 +75,7 @@ class NveSceneCaptureTest {
             calls.add(id)
             return when (id) {
                 1 -> NveResource(ImageSource.KIND, image)
-                2 -> NveResource(Key64.of("nve.res.draw_list"), draw)
+                2 -> NveResource(DrawList.KIND, draw)
                 else -> null
             }
         }
@@ -112,6 +112,7 @@ class NveSceneCaptureTest {
         assertEquals(200f to 150f, scroll.scrollContentWidth to scroll.scrollContentHeight)
         val row = snap.at(0x1000007)
         assertEquals(0f to 0f, row.x to row.y, "scroll content is relative to the scroll container")
+        assertNull(row.semantics.role, "absent optional AriaRole is null, not BUTTON")
         assertTrue(row.semantics.hidden)
         val canvas = snap.at(0x1000008)
         assertArrayEquals(byteArrayOf(1, 2, 3), canvas.drawList)
@@ -193,7 +194,7 @@ class NveSceneCaptureTest {
         scene.set(visual, 2, NveTables.Visual.OPACITY, Float.NaN).set(visual, 2, NveTables.Visual.BORDER_RADIUS, Float.NaN)
             .set(visual, 2, NveTables.Visual.BORDER_WIDTH, Float.NEGATIVE_INFINITY)
         val typo = scene.table(NveTables.Typography.KEY, NveTables.Typography.WORDS)
-        scene.set(typo, 2, NveTables.Typography.SET, NveTables.Values.TypographySet.FONT_SIZE).set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
+        scene.set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
         val text = scene.table(NveTables.Text.KEY, NveTables.Text.WORDS)
         scene.set(text, 2, NveTables.Text.TEXT, "x")
         val n = capture(scene, { null }).at(0x1000002)
@@ -206,6 +207,10 @@ class NveSceneCaptureTest {
     fun brokenOrForeignResourcesRenderEmpty() {
         val res = Resources(imageSourceBytes(7, byteArrayOf(1)), ByteBuffer.allocate(0))
         assertNull(capture(showcase(), res).at(0x1000005).image, "unknown image tag")
+        val foreignCanvas = capture(showcase(), { id ->
+            if (id == 2) NveResource(ImageSource.KIND, ByteBuffer.allocate(4)) else null
+        })
+        assertNull(foreignCanvas.at(0x1000008).drawList, "foreign kind rejected for canvas")
         val noLookup = capture(showcase(), { null })
         assertNull(noLookup.at(0x1000005).image)
         assertNull(noLookup.at(0x1000008).drawList)

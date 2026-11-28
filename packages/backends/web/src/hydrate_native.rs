@@ -5,8 +5,8 @@
 
 use nve_abi::hash::{HashMap, HashSet};
 use nve_abi::NodeId;
-use nve_components::tables::TextInput;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_tables::tables::TextInput;
+use nve_store::{ChangeSet, NodeStore};
 
 use crate::hydrate::{pair_ssr_dom, HydratedControlState, HydrationPass, HydrationReport, SsrDomTree};
 use crate::hydrate_native_parse::{parse_ssr_html_tree, NativeSsrTree};
@@ -157,7 +157,7 @@ impl WebBackend {
         for (node, idx) in pairing.adopted {
             if let Some(el) = tree.arena.get(idx) {
                 dom.nodes.insert(
-                    node.raw(),
+                    node,
                     NativeDomNode {
                         instance_id: el.instance_id,
                         control_value: el.live_control_value.clone(),
@@ -184,9 +184,9 @@ impl WebBackend {
             return;
         }
         for removed in &changes.removed {
-            dom.nodes.remove(&removed.raw());
+            dom.nodes.remove(removed);
         }
-        let deferred: HashSet<StoreNodeId> = pass
+        let deferred: HashSet<NodeId> = pass
             .map(|p| p.controls.iter().map(|(n, _)| *n).collect())
             .unwrap_or_default();
         for &id in changes.created.iter().chain(changes.touched.iter()) {
@@ -195,7 +195,7 @@ impl WebBackend {
             }
             let value = store.try_row::<TextInput>(id).map(|t| t.value().to_owned());
             let next_id = &mut dom.next_instance_id;
-            let node = dom.nodes.entry(id.raw()).or_insert_with(|| {
+            let node = dom.nodes.entry(id).or_insert_with(|| {
                 let instance_id = *next_id;
                 *next_id += 1;
                 NativeDomNode {
@@ -205,7 +205,7 @@ impl WebBackend {
             });
             if let Some(value) = value
                 && self.input_sync.borrow_mut().on_backend_value_commit(
-                    id.raw(),
+                    id,
                     &value,
                     deferred.contains(&id),
                 )
@@ -215,11 +215,11 @@ impl WebBackend {
         }
     }
 
-    pub(crate) fn write_hydrated_control(&mut self, node: StoreNodeId, value: &str) {
+    pub(crate) fn write_hydrated_control(&mut self, node: NodeId, value: &str) {
         if let Some(n) = self
             .native_dom
             .as_mut()
-            .and_then(|d| d.nodes.get_mut(&node.raw()))
+            .and_then(|d| d.nodes.get_mut(&node))
         {
             n.control_value = Some(value.to_owned());
         }

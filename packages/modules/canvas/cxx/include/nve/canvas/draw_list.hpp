@@ -1,31 +1,18 @@
-// `NVE_DRAW1` canvas draw lists: constants, op structs, and the strict zero-allocation streaming
-// decoder. Byte-identical to `packages/modules/canvas/src/codec.rs`; a `nve.canvas` row's
-// `draw_list` resource (`nve.res.draw_list`) holds these raw bytes.
+// Canonical 4-byte-aligned `FlatResource` (`nve.res.draw_list`) canvas draw lists: constants,
+// op structs, and the strict zero-allocation streaming decoder. Byte-identical to
+// `packages/modules/canvas/src/flat.rs` (`[op_count: u32, (opcode: u32, args...)*]`).
 #pragma once
 
-#include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <span>
-#include <string>
-#include <string_view>
-#include <vector>
 
 namespace nve::canvas {
 
-/// 9-byte ASCII magic header identifying a binary `NVE_DRAW1` vector draw-list stream.
-inline constexpr std::array<uint8_t, 9> kDrawListMagic = {
-    'N', 'V', 'E', '_', 'D', 'R', 'A', 'W', '1'};
-
-/// Current binary format version of `NVE_DRAW1`.
-inline constexpr uint16_t kDrawListVersion = 1u;
-
-/// Fixed byte length of the `NVE_DRAW1` header (`9 + 2 + 4`).
-inline constexpr size_t kDrawListHeaderSize = 15u;
+/// Fixed byte length of the flat draw-list header (1 little-endian `u32` word: `op_count`).
+inline constexpr size_t kDrawListHeaderSize = 4u;
 
 /// Strict upper bound on operations per draw list to guard against corrupt/hostile payloads.
 inline constexpr size_t kMaxDrawOps = 65536u;
@@ -33,16 +20,16 @@ inline constexpr size_t kMaxDrawOps = 65536u;
 /// Strict upper bound on vertices inside a single `StrokePolyline` operation.
 inline constexpr size_t kMaxPolylinePoints = 16384u;
 
-/// Wire opcodes matching `packages/modules/canvas/src/types.rs` `DrawOpcode` byte-for-byte.
-enum class DrawOpcode : uint8_t {
-  Clear = 1,
-  FillRect = 2,
-  FillRoundedRect = 3,
-  FillCircle = 4,
-  StrokeLine = 5,
-  StrokePolyline = 6,
-  ClipRect = 7,
-  RestoreClip = 8,
+/// Wire opcodes matching `packages/modules/canvas/src/flat.rs` (`OP_*` `u32` words) byte-for-byte.
+enum class DrawOpcode : uint32_t {
+  Clear = 1u,
+  FillRect = 2u,
+  FillRoundedRect = 3u,
+  FillCircle = 4u,
+  StrokeLine = 5u,
+  StrokePolyline = 6u,
+  ClipRect = 7u,
+  RestoreClip = 8u,
 };
 
 /// Unpacked RGBA8888 color matching `nve_abi::ColorRgba` (`to_u32` packs `[r, g, b, a]` LE).
@@ -90,11 +77,6 @@ struct DrawPoint {
 
 namespace detail {
 
-inline uint16_t read_le_u16_unaligned(const uint8_t* p) noexcept {
-  return static_cast<uint16_t>(
-      static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8u));
-}
-
 inline uint32_t read_le_u32_unaligned(const uint8_t* p) noexcept {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8u) |
          (static_cast<uint32_t>(p[2]) << 16u) | (static_cast<uint32_t>(p[3]) << 24u);
@@ -107,29 +89,10 @@ inline float read_le_f32_unaligned(const uint8_t* p) noexcept {
   return val;
 }
 
-inline void write_le_u16(std::vector<uint8_t>& buf, uint16_t v) {
-  buf.push_back(static_cast<uint8_t>(v & 0xFFu));
-  buf.push_back(static_cast<uint8_t>((v >> 8u) & 0xFFu));
-}
-
-inline void write_le_u32(std::vector<uint8_t>& buf, uint32_t v) {
-  buf.push_back(static_cast<uint8_t>(v & 0xFFu));
-  buf.push_back(static_cast<uint8_t>((v >> 8u) & 0xFFu));
-  buf.push_back(static_cast<uint8_t>((v >> 16u) & 0xFFu));
-  buf.push_back(static_cast<uint8_t>((v >> 24u) & 0xFFu));
-}
-
-inline void write_le_f32(std::vector<uint8_t>& buf, float v) {
-  const float finite = std::isfinite(v) ? v : 0.0f;
-  uint32_t bits = 0u;
-  std::memcpy(&bits, &finite, sizeof(uint32_t));
-  write_le_u32(buf, bits);
-}
-
-} // namespace detail
+}  // namespace detail
 
 /// Zero-allocation random-access view over validated little-endian `(f32, f32)` vertices inside
-/// an `NVE_DRAW1` `StrokePolyline` payload. Safe on unaligned pointers.
+/// a flat `StrokePolyline` payload. Safe on unaligned byte pointers.
 class PolylinePointView {
  public:
   class Iterator {
@@ -235,8 +198,7 @@ struct DrawRestoreClipOp {};
 enum class DrawListError : uint8_t {
   Ok = 0,
   Truncated,
-  BadMagic,
-  UnsupportedVersion,
+  Unaligned,
   OpCountExceedsLimit,
   PolylinePointCountExceedsLimit,
   UnknownOpcode,
@@ -245,7 +207,6 @@ enum class DrawListError : uint8_t {
 };
 
 struct DrawListHeader {
-  uint16_t version{0};
   uint32_t op_count{0};
 };
 
@@ -258,7 +219,7 @@ struct DrawListDecodeResult {
   explicit constexpr operator bool() const noexcept { return ok(); }
 };
 
-/// Parses and validates only the fixed 15-byte `NVE_DRAW1` header.
+/// Parses and validates the leading `u32` `op_count` header word and 4-byte stream alignment.
 inline DrawListError decode_draw_list_header(
     std::span<const uint8_t> bytes,
     DrawListHeader& out_header) noexcept {
@@ -266,26 +227,22 @@ inline DrawListError decode_draw_list_header(
   if (bytes.size() < kDrawListHeaderSize) {
     return DrawListError::Truncated;
   }
-  if (std::memcmp(bytes.data(), kDrawListMagic.data(), kDrawListMagic.size()) != 0) {
-    return DrawListError::BadMagic;
+  if ((bytes.size() & 3u) != 0u) {
+    return DrawListError::Unaligned;
   }
-  const uint16_t version = detail::read_le_u16_unaligned(bytes.data() + 9u);
-  if (version != kDrawListVersion) {
-    return DrawListError::UnsupportedVersion;
-  }
-  const uint32_t op_count = detail::read_le_u32_unaligned(bytes.data() + 11u);
+  const uint32_t op_count = detail::read_le_u32_unaligned(bytes.data());
   if (static_cast<size_t>(op_count) > kMaxDrawOps) {
     return DrawListError::OpCountExceedsLimit;
   }
-  out_header.version = version;
   out_header.op_count = op_count;
   return DrawListError::Ok;
 }
 
-/// Zero-allocation streaming visitor decoder for `NVE_DRAW1` binary draw lists.
+/// Zero-allocation streaming visitor decoder for canonical flat `u32`-word `nve.res.draw_list`
+/// payloads (`packages/modules/canvas/src/flat.rs`).
 ///
-/// Validates header magic, version, strict op/vertex limits, unaligned-safe bounds,
-/// finite IEEE-754 floats (rejects NaN/Inf), and exact byte consumption (no trailing bytes).
+/// Validates 4-byte length alignment, strict op/vertex limits, unaligned-safe bounds,
+/// finite IEEE-754 floats (rejects NaN/Inf), and exact word consumption (no trailing words).
 ///
 /// `Visitor` must expose:
 /// - `on_clear(const DrawClearOp&)`
@@ -309,8 +266,8 @@ inline DrawListDecodeResult decode_draw_list(
   size_t pos = kDrawListHeaderSize;
   const size_t total = bytes.size();
   const uint32_t op_count = header.op_count;
-  // Every op consumes at least 1 byte (its opcode tag).
-  if (total - pos < static_cast<size_t>(op_count)) {
+  // Every op consumes at least 1 u32 word (its opcode word).
+  if ((total - pos) / 4u < static_cast<size_t>(op_count)) {
     return DrawListDecodeResult{DrawListError::Truncated, 0u, pos};
   }
 
@@ -320,6 +277,15 @@ inline DrawListDecodeResult decode_draw_list(
     }
     out_ptr = bytes.data() + pos;
     pos += n;
+    return true;
+  };
+
+  auto read_u32 = [&](uint32_t& out_val) noexcept -> bool {
+    const uint8_t* p = nullptr;
+    if (!take(4u, p)) {
+      return false;
+    }
+    out_val = detail::read_le_u32_unaligned(p);
     return true;
   };
 
@@ -336,15 +302,6 @@ inline DrawListDecodeResult decode_draw_list(
     return DrawListError::Ok;
   };
 
-  auto read_u32 = [&](uint32_t& out_val) noexcept -> bool {
-    const uint8_t* p = nullptr;
-    if (!take(4u, p)) {
-      return false;
-    }
-    out_val = detail::read_le_u32_unaligned(p);
-    return true;
-  };
-
   auto read_color = [&](DrawColorRgba& out_color) noexcept -> bool {
     uint32_t raw = 0u;
     if (!read_u32(raw)) {
@@ -356,12 +313,11 @@ inline DrawListDecodeResult decode_draw_list(
 
   uint32_t decoded_ops = 0u;
   for (uint32_t i = 0u; i < op_count; ++i) {
-    const uint8_t* tag_ptr = nullptr;
-    if (!take(1u, tag_ptr)) {
+    uint32_t raw_opcode = 0u;
+    if (!read_u32(raw_opcode)) {
       return DrawListDecodeResult{DrawListError::Truncated, decoded_ops, pos};
     }
-    const uint8_t tag = *tag_ptr;
-    switch (static_cast<DrawOpcode>(tag)) {
+    switch (static_cast<DrawOpcode>(raw_opcode)) {
       case DrawOpcode::Clear: {
         DrawClearOp op{};
         if (!read_color(op.color)) {
@@ -530,7 +486,7 @@ struct NoopDrawListVisitor {
   void on_restore_clip(const DrawRestoreClipOp&) const noexcept {}
 };
 
-/// Zero-allocation full structural validation of an `NVE_DRAW1` payload.
+/// Zero-allocation full structural validation of a flat `nve.res.draw_list` payload.
 inline DrawListDecodeResult validate_draw_list(std::span<const uint8_t> bytes) noexcept {
   return decode_draw_list(bytes, NoopDrawListVisitor{});
 }

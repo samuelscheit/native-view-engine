@@ -50,7 +50,7 @@ class NveSurfaceComposeTest {
         val input = s.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS)
         s.set(input, 4, NveTables.TextInput.VALUE, "draft")
         val interaction = s.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS)
-        s.set(interaction, 5, NveTables.Interaction.EVENT_MASK, NveTables.Values.EventMask.PRESS)
+        s.setEvents(interaction, 5, NveTables.Interaction.EVENTS_WORD, NveTables.Values.InteractionEventSet.PRESS)
         val a11y = s.table(NveTables.Accessibility.KEY, NveTables.Accessibility.WORDS)
         s.set(a11y, 5, NveTables.Accessibility.ROLE, NveTables.Values.AriaRole.BUTTON).set(a11y, 5, NveTables.Accessibility.LABEL, "Submit form")
             .set(a11y, 6, NveTables.Accessibility.HIDDEN, 1)
@@ -72,18 +72,24 @@ class NveSurfaceComposeTest {
         assertEquals(listOf(300f, 400f), host.viewports.last().take(2))
 
         assertTrue(
-            "mounting a text field sends no focus / blur: ${host.rings.map { it.get(20).toInt() }}",
-            host.rings.none { it.get(20).toInt() == NveAbi.EVENT_BLUR || it.get(20).toInt() == NveAbi.EVENT_FOCUS },
+            "mounting a text field sends no focus / blur: ${host.rings.map { it.table(0) to it.event(0) }}",
+            host.rings.none {
+                it.isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_BLUR) ||
+                    it.isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_FOCUS)
+            },
         )
         compose.onNodeWithTag("submit-btn").performClick()
         val press = host.rings.last()
-        assertEquals(NveAbi.EVENT_PRESS, press.get(20).toInt())
-        assertEquals(0x1000005, press.getInt(8))
+        assertTrue(press.isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_PRESS))
+        assertEquals(0x1000005, press.node(0))
 
         compose.onNodeWithText("draft").performTextInput("!")
-        assertTrue("focusing by input is a real focus event", host.rings.any { it.get(20).toInt() == NveAbi.EVENT_FOCUS })
-        val text = host.rings.last { it.get(20).toInt() == NveAbi.EVENT_TEXT_CHANGE }
-        assertEquals(0x1000004, text.getInt(8))
+        assertTrue(
+            "focusing by input is a real focus event",
+            host.rings.any { it.isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_FOCUS) },
+        )
+        val text = host.rings.last { it.isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_CHANGE) }
+        assertEquals(0x1000004, text.node(0))
 
         val measurer = host.measurer
         assertTrue("Compose text measurer installed", measurer is NveComposeTextMeasurer)
@@ -130,7 +136,7 @@ class NveSurfaceComposeTest {
         s.set(input, 8, NveTables.TextInput.VALUE, value)
         val interaction = s.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS)
         s.set(interaction, 8, NveTables.Interaction.DISABLED, 1)
-            .set(interaction, 9, NveTables.Interaction.EVENT_MASK, NveTables.Values.EventMask.PRESS)
+            .setEvents(interaction, 9, NveTables.Interaction.EVENTS_WORD, NveTables.Values.InteractionEventSet.PRESS)
         val visual = s.table(NveTables.Visual.KEY, NveTables.Visual.WORDS)
         s.set(visual, 9, NveTables.Visual.VISIBILITY, NveTables.Values.Visibility.HIDDEN).set(visual, 9, NveTables.Visual.OPACITY, 1f)
         val debug = s.table(NveTables.DebugId.KEY, NveTables.DebugId.WORDS)
@@ -144,7 +150,7 @@ class NveSurfaceComposeTest {
         // 1x1 PNG as a base64 data URL, decoded by `ImageSource.bytes` at capture.
         val png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
         host.resources[1] = NveResource(dev.nve.host.ImageSource.KIND, imageSourceBytes(0, png.toByteArray()))
-        host.resources[2] = NveResource(dev.nve.host.Key64.of("nve.res.draw_list"), java.nio.ByteBuffer.allocate(0))
+        host.resources[2] = NveResource(dev.nve.host.DrawList.KIND, java.nio.ByteBuffer.allocate(4))
         val controller = NveSurfaceController(host)
         controller.start(NveSource.App("/libnve_app.so"))
         compose.setContent { NveSurface(controller, Modifier.size(300.dp, 600.dp)) }
@@ -176,7 +182,7 @@ class NveSurfaceComposeTest {
         compose.onNodeWithTag("field").performTextInput("!")
         compose.waitForIdle()
         compose.onNodeWithTag("field").assertTextEquals("fixed")
-        assertTrue(host.rings.any { it.get(20).toInt() == NveAbi.EVENT_TEXT_CHANGE })
+        assertTrue(host.rings.any { it.isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_CHANGE) })
 
         // A new epoch with the same node ids: fresh state, the new value shows.
         val next = TestScene(epoch = 1).node(2, 1, 0f, 0f, 300f, 400f).node(3, 2, 10f, 10f, 200f, 40f)
@@ -230,7 +236,12 @@ class NveSurfaceComposeTest {
         val visual = s.table(NveTables.Visual.KEY, NveTables.Visual.WORDS)
         s.set(visual, 2, NveTables.Visual.VISIBILITY, NveTables.Values.Visibility.HIDDEN).set(visual, 2, NveTables.Visual.OPACITY, 1f)
         s.set(s.table(NveTables.Text.KEY, NveTables.Text.WORDS), 3, NveTables.Text.TEXT, "Go")
-        s.set(s.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS), 3, NveTables.Interaction.EVENT_MASK, NveTables.Values.EventMask.PRESS)
+        s.setEvents(
+            s.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS),
+            3,
+            NveTables.Interaction.EVENTS_WORD,
+            NveTables.Values.InteractionEventSet.PRESS,
+        )
         s.set(s.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS), 4, NveTables.TextInput.VALUE, "x")
         val debug = s.table(NveTables.DebugId.KEY, NveTables.DebugId.WORDS)
         s.set(debug, 3, NveTables.DebugId.TEST_ID, "go").set(debug, 4, NveTables.DebugId.TEST_ID, "field")
@@ -242,8 +253,9 @@ class NveSurfaceComposeTest {
         assertEquals("no semantics under a hidden ancestor", 0, compose.onAllNodesWithTag("go", useUnmergedTree = true).fetchSemanticsNodes().size)
         assertEquals(0, compose.onAllNodesWithTag("field", useUnmergedTree = true).fetchSemanticsNodes().size)
         assertTrue("no press / focus / text event", host.rings.none {
-            val kind = it.get(20).toInt()
-            kind == NveAbi.EVENT_PRESS || kind == NveAbi.EVENT_FOCUS || kind == NveAbi.EVENT_TEXT_CHANGE
+            it.isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_PRESS) ||
+                it.isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_FOCUS) ||
+                it.isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_CHANGE)
         })
     }
 
@@ -265,11 +277,11 @@ class NveSurfaceComposeTest {
         compose.waitForIdle()
         assertTrue("the vertical gesture reached the runtime", host.scrolls.isNotEmpty())
         assertTrue("no horizontal delta: ${host.scrolls}", host.scrolls.all { it.second == 0f })
-        val scroll = host.rings.last { it.get(20).toInt() == NveAbi.EVENT_SCROLL }
-        assertEquals("the untouched axis keeps its position (not 0)", 30f, scroll.getFloat(22), 0.5f)
-        assertTrue("vertical position advanced: ${scroll.getFloat(26)}", scroll.getFloat(26) > 45f)
+        val scroll = host.rings.last { it.isEvent(NveAbi.TABLE_SCROLL, NveAbi.SCROLL_EVENT_SCROLL) }
+        assertEquals("the untouched axis keeps its position (not 0)", 30f, scroll.payloadF32(0, 0), 0.5f)
+        assertTrue("vertical position advanced: ${scroll.payloadF32(0, 1)}", scroll.payloadF32(0, 1) > 45f)
         val dySum = host.scrolls.sumOf { it.third.toDouble() }.toFloat()
-        assertEquals("deltas add up to the absolute position", scroll.getFloat(26) - 45f, dySum, 0.5f)
+        assertEquals("deltas add up to the absolute position", scroll.payloadF32(0, 1) - 45f, dySum, 0.5f)
     }
 
     @Test

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use nve_abi::xxh64;
-use nve_components::tables::{FontStyle, OverflowWrap, Typography, WhiteSpace, WordBreak};
+use nve_tables::tables::{FontStyle, OverflowWrap, Typography, WhiteSpace, WordBreak};
 use nve_store::{Length, NodeId, NodeStore, Rgba, StrSpan};
 
 /// Fully resolved, inherited typography of one node: everything a host needs to measure text
@@ -171,50 +171,41 @@ pub fn resolve_inherited_text(
     let Some(t) = store.try_row::<Typography>(id) else {
         return parent;
     };
-    let set = t.set();
-    // Rows without `set` bits (older producers) mark a field explicit by a non-default value.
-    let explicit = |bit: u32, differs: bool| set & bit != 0 || (set == 0 && differs);
-    if explicit(Typography::SET_COLOR, t.color() != Rgba::BLACK) {
+    if t.is_color_explicit() {
         parent.color = t.color();
     }
-    if explicit(Typography::SET_FONT_SIZE, t.font_size().to_bits() != 16.0f32.to_bits()) {
-        let raw_fs = t.font_size();
-        if raw_fs.is_finite() && raw_fs >= 0.0 {
-            parent.font_size = raw_fs;
-        }
+    let fs = t.font_size();
+    if t.is_font_size_explicit() && fs.is_finite() && fs >= 0.0 {
+        parent.font_size = fs;
     }
-    if explicit(Typography::SET_FONT_WEIGHT, t.font_weight() != 400) {
+    if t.is_font_weight_explicit() {
         parent.font_weight = t.font_weight();
     }
-    if explicit(Typography::SET_LINE_HEIGHT, t.line_height() != Length::AUTO) {
-        let lh = t.line_height();
-        // `NaN` / `inf` / negative heights are invalid CSS: keep the inherited value.
-        if lh.is_auto() || (lh.value().is_finite() && lh.value() >= 0.0) {
-            parent.line_height = lh;
-        }
+    let lh = t.line_height();
+    // `NaN` / `inf` / negative heights are invalid CSS: keep the inherited value.
+    if t.is_line_height_explicit() && (lh.is_auto() || (lh.value().is_finite() && lh.value() >= 0.0)) {
+        parent.line_height = lh;
     }
-    if explicit(Typography::SET_LETTER_SPACING, t.letter_spacing() != 0.0) {
-        let ls = t.letter_spacing();
-        if ls.is_finite() {
-            parent.letter_spacing = ls;
-        }
+    let ls = t.letter_spacing();
+    if t.is_letter_spacing_explicit() && ls.is_finite() {
+        parent.letter_spacing = ls;
     }
-    if explicit(Typography::SET_FONT_FAMILY, !t.font_family().is_empty()) {
+    if t.is_font_family_explicit() {
         parent.font_family = ResolvedFamily::new(store, t.font_family_span());
     }
-    if explicit(Typography::SET_MAX_LINES, t.max_lines() != 0) {
-        parent.max_lines = t.max_lines();
+    if t.is_max_lines_explicit() {
+        parent.max_lines = t.max_lines().map_or(0, |n| u32::from(n.get()));
     }
-    if explicit(Typography::SET_FONT_STYLE, t.font_style() != FontStyle::Normal) {
+    if t.is_font_style_explicit() {
         parent.font_style = t.font_style();
     }
-    if explicit(Typography::SET_WHITE_SPACE, t.white_space() != WhiteSpace::Normal) {
+    if t.is_white_space_explicit() {
         parent.white_space = t.white_space();
     }
-    if explicit(Typography::SET_WORD_BREAK, t.word_break() != WordBreak::Normal) {
+    if t.is_word_break_explicit() {
         parent.word_break = t.word_break();
     }
-    if explicit(Typography::SET_OVERFLOW_WRAP, t.overflow_wrap() != OverflowWrap::Normal) {
+    if t.is_overflow_wrap_explicit() {
         parent.overflow_wrap = t.overflow_wrap();
     }
     parent
@@ -394,8 +385,7 @@ mod tests {
         tx.edit::<Typography>(parent).line_height(Length::points(18.0)).font_family("Inter");
         // Raw `NaN` points bits (tag `00`): no constructor produces them, a wire frame can.
         tx.edit::<Typography>(nan)
-            .line_height(Length(f32::NAN.to_bits() & !0b11))
-            .set(Typography::SET_LINE_HEIGHT);
+            .line_height(Length(f32::NAN.to_bits() & !0b11));
         tx.edit::<Typography>(negative).line_height(Length::points(-4.0));
         tx.edit::<Typography>(family).font_family("Arial");
         tx.commit_into(&mut nve_store::ChangeSet::default());

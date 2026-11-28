@@ -3,8 +3,9 @@
 // `SceneTables` binds every core table a native view host renders (generated `NveTableDesc`s,
 // no hand-written layouts). `read_node` decodes one node into `NodeData`: kind (from
 // `NveNodeRow::primary_slot`), absolute and parent-relative rects, visual style, inherited
-// typography, text, image, text input, scroll, interaction, accessibility, and link fields.
-// String views borrow the scene and are valid only while its `RuntimeSceneGuard` is held.
+// typography (via `#[nve_table(inherited)]` word 0 `explicit_bit` checks), text, image, text
+// input, scroll, interaction, accessibility, and link fields. String views borrow the scene and
+// are valid only while its `RuntimeSceneGuard` is held.
 //
 // Floats are sealed here, once, for every host: app-written NaN / Inf / negative extents become
 // the field's neutral value (sizes 0, opacity 1, inherited typography, "no request" NaN for
@@ -19,9 +20,9 @@
 #include <span>
 #include <string_view>
 
-#include "bound_table.hpp"
 #include "../generated/nve_abi.generated.h"
 #include "../generated/nve_tables.generated.h"
+#include "bound_table.hpp"
 #include "runtime_session.hpp"
 
 namespace nve::host {
@@ -32,33 +33,22 @@ namespace nve::host {
 /// hold no children). A text node with its own text stays `Text`.
 enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 
-/// Subscription bit of `kind` in `nve.interaction.event_mask` (Rust `EventMask::of`; the three
-/// composition kinds share one bit, so it is not `1 << (kind - 1)`); `0` for unknown kinds.
-[[nodiscard]] constexpr uint32_t event_bit(NveEventKind kind) noexcept {
-  switch (kind) {
-    case NVE_EVENT_PRESS: return NVE_EVENT_MASK_PRESS;
-    case NVE_EVENT_LONG_PRESS: return NVE_EVENT_MASK_LONG_PRESS;
-    case NVE_EVENT_SCROLL: return NVE_EVENT_MASK_SCROLL;
-    case NVE_EVENT_TEXT_CHANGE: return NVE_EVENT_MASK_TEXT_CHANGE;
-    case NVE_EVENT_FOCUS: return NVE_EVENT_MASK_FOCUS;
-    case NVE_EVENT_BLUR: return NVE_EVENT_MASK_BLUR;
-    case NVE_EVENT_LAYOUT: return NVE_EVENT_MASK_LAYOUT;
-    case NVE_EVENT_CUSTOM: return NVE_EVENT_MASK_CUSTOM;
-    case NVE_EVENT_COMPOSITION_START:
-    case NVE_EVENT_COMPOSITION_UPDATE:
-    case NVE_EVENT_COMPOSITION_END: return NVE_EVENT_MASK_COMPOSITION;
-    case NVE_EVENT_KEY_DOWN: return NVE_EVENT_MASK_KEY_DOWN;
-    case NVE_EVENT_KEY_UP: return NVE_EVENT_MASK_KEY_UP;
-    case NVE_EVENT_SUBMIT: return NVE_EVENT_MASK_SUBMIT;
-    case NVE_EVENT_POINTER_DOWN: return NVE_EVENT_MASK_POINTER_DOWN;
-    case NVE_EVENT_POINTER_MOVE: return NVE_EVENT_MASK_POINTER_MOVE;
-    case NVE_EVENT_POINTER_UP: return NVE_EVENT_MASK_POINTER_UP;
-    case NVE_EVENT_POINTER_ENTER: return NVE_EVENT_MASK_POINTER_ENTER;
-    case NVE_EVENT_POINTER_LEAVE: return NVE_EVENT_MASK_POINTER_LEAVE;
-    case NVE_EVENT_WHEEL: return NVE_EVENT_MASK_WHEEL;
-    case NVE_EVENT_TABLE_EVENT: return NVE_EVENT_MASK_TABLE_EVENT;
-  }
-  return 0u;
+/// Listener bit of one per-table event in its table's `EventSet` word (`1u << event_id`).
+[[nodiscard]] constexpr uint32_t event_set_bit(NveInteractionEvent ev) noexcept {
+  const auto id = static_cast<uint32_t>(ev);
+  return id <= static_cast<uint32_t>(NVE_INTERACTION_EVENT_WHEEL) ? (uint32_t{1} << id) : 0u;
+}
+[[nodiscard]] constexpr uint32_t event_set_bit(NveTextInputEvent ev) noexcept {
+  const auto id = static_cast<uint32_t>(ev);
+  return id <= static_cast<uint32_t>(NVE_TEXT_INPUT_EVENT_COMPOSITION_END) ? (uint32_t{1} << id) : 0u;
+}
+[[nodiscard]] constexpr uint32_t event_set_bit(NveScrollEvent ev) noexcept {
+  const auto id = static_cast<uint32_t>(ev);
+  return id <= static_cast<uint32_t>(NVE_SCROLL_EVENT_SCROLL) ? (uint32_t{1} << id) : 0u;
+}
+[[nodiscard]] constexpr uint32_t event_set_bit(NveLayoutEvent ev) noexcept {
+  const auto id = static_cast<uint32_t>(ev);
+  return id <= static_cast<uint32_t>(NVE_LAYOUT_EVENT_LAYOUT) ? (uint32_t{1} << id) : 0u;
 }
 
 /// `v` when finite, else `fallback`.
@@ -128,21 +118,21 @@ struct VisualStyle {
   uint8_t overflow_x = NVE_OVERFLOW_VISIBLE;
   uint8_t overflow_y = NVE_OVERFLOW_VISIBLE;
   uint8_t visibility = NVE_VISIBILITY_INHERIT;
-  uint32_t box_shadows = 0u;     // `ResourceId` (`nve.res.box_shadows`), 0 = none
-  uint32_t background_fill = 0u; // `ResourceId` (gradient fills), 0 = none
+  uint32_t box_shadows = 0u;      // `ResourceId` (`nve.res.box_shadows`), 0 = none
+  uint32_t background_fill = 0u;  // `ResourceId` (gradient fills), 0 = none
 };
 
 struct ImageData {
   uint32_t src = 0u;  // `ResourceId` (`nve.res.image_src`)
   std::string_view alt;
   uint8_t fit = NVE_IMAGE_FIT_COVER;
-  bool tint_enabled = false;
-  uint32_t tint = 0u;
+  std::optional<uint32_t> tint;  // packed RGBA8888 when present
   uint16_t intrinsic_width = 0u;
   uint16_t intrinsic_height = 0u;
 };
 
 struct TextInputData {
+  uint32_t events = 0u;  // `NVE_TEXT_INPUT_EVENT_SET_*` bits
   std::string_view value;
   std::string_view placeholder;
   bool multiline = false;
@@ -154,6 +144,7 @@ struct TextInputData {
 };
 
 struct ScrollData {
+  uint32_t events = 0u;  // `NVE_SCROLL_EVENT_SET_*` bits
   uint8_t axes = NVE_SCROLL_AXES_VERTICAL;
   uint8_t scrollbars = NVE_SCROLLBARS_AUTO;
   bool paging = false;
@@ -163,21 +154,22 @@ struct ScrollData {
 };
 
 struct InteractionData {
-  uint32_t event_mask = 0u;
+  uint32_t events = 0u;  // `NVE_INTERACTION_EVENT_SET_*` bits
   uint8_t cursor = 0u;
   bool disabled = false;
   bool focusable = false;
+  std::optional<int16_t> tab_index;
 };
 
 struct AccessibilityData {
   bool present = false;
-  uint8_t role = NVE_ARIA_ROLE_NONE;
+  std::optional<uint8_t> role;  // `NVE_ARIA_ROLE_*` when set
   uint8_t level = 0u;
   bool hidden = false;
-  uint8_t checked = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t selected = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t expanded = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t pressed = NVE_ARIA_TRI_STATE_UNSET;
+  std::optional<uint8_t> checked;   // `NVE_ARIA_TRI_STATE_*` when set
+  std::optional<uint8_t> selected;  // `NVE_ARIA_TRI_STATE_*` when set
+  std::optional<uint8_t> expanded;  // `NVE_ARIA_TRI_STATE_*` when set
+  std::optional<uint8_t> pressed;   // `NVE_ARIA_TRI_STATE_*` when set
   std::string_view label;
   std::string_view hint;
   std::string_view value_text;
@@ -186,7 +178,6 @@ struct AccessibilityData {
   float value_max = NAN;
 };
 
-/// One decoded node. Views borrow the scene (valid while its guard is held).
 /// Identity and geometry of one live node: all a geometry-only `move` needs.
 struct NodeGeometry {
   uint32_t id = 0u;      // packed `NodeId`
@@ -203,6 +194,7 @@ struct NodeGeometry {
 /// Everything a view shows for one live node.
 struct NodeData : NodeGeometry {
   std::span<const uint32_t> children;  // packed `NodeId`s
+  uint32_t layout_events = 0u;         // `NVE_LAYOUT_EVENT_SET_*` bits
   VisualStyle visual;
   TextStyle text_style;
   std::string_view text;
@@ -217,8 +209,17 @@ struct NodeData : NodeGeometry {
   [[nodiscard]] bool hidden() const noexcept {
     return visual.visibility == NVE_VISIBILITY_HIDDEN || visual.opacity <= 0.001f;
   }
-  [[nodiscard]] bool wants(NveEventKind kind) const noexcept {
-    return !interaction.disabled && (interaction.event_mask & event_bit(kind)) != 0u;
+  [[nodiscard]] bool wants(NveInteractionEvent ev) const noexcept {
+    return !interaction.disabled && (interaction.events & event_set_bit(ev)) != 0u;
+  }
+  [[nodiscard]] bool wants(NveTextInputEvent ev) const noexcept {
+    return !interaction.disabled && (input.events & event_set_bit(ev)) != 0u;
+  }
+  [[nodiscard]] bool wants(NveScrollEvent ev) const noexcept {
+    return !interaction.disabled && (scroll.events & event_set_bit(ev)) != 0u;
+  }
+  [[nodiscard]] bool wants(NveLayoutEvent ev) const noexcept {
+    return !interaction.disabled && (layout_events & event_set_bit(ev)) != 0u;
   }
   [[nodiscard]] bool scrollable() const noexcept {
     return kind == NodeKind::Scroll || visual.overflow_x >= NVE_OVERFLOW_SCROLL ||
@@ -227,19 +228,20 @@ struct NodeData : NodeGeometry {
 };
 
 /// `NVE_ARIA_ROLE_*` of `node`: its explicit `nve.accessibility.role`, else its kind's native role
-/// (a view that takes presses is a button).
-[[nodiscard]] inline uint8_t aria_role(const NodeData& node) noexcept {
-  if (node.a11y.present && node.a11y.role != NVE_ARIA_ROLE_NONE) return node.a11y.role;
+/// (a view that takes presses is a button), or `std::nullopt` for a plain container.
+[[nodiscard]] inline std::optional<uint8_t> aria_role(const NodeData& node) noexcept {
+  if (node.a11y.present && node.a11y.role.has_value()) return node.a11y.role;
   switch (node.kind) {
-    case NodeKind::Text: return NVE_ARIA_ROLE_TEXT;
-    case NodeKind::Image: return NVE_ARIA_ROLE_IMAGE;
+    case NodeKind::Text: return static_cast<uint8_t>(NVE_ARIA_ROLE_TEXT);
+    case NodeKind::Image: return static_cast<uint8_t>(NVE_ARIA_ROLE_IMAGE);
     case NodeKind::TextInput:
-      return node.input.input_kind == NVE_INPUT_KIND_SEARCH ? NVE_ARIA_ROLE_SEARCH_BOX : NVE_ARIA_ROLE_TEXT_BOX;
-    case NodeKind::Link: return NVE_ARIA_ROLE_LINK;
-    case NodeKind::Scroll: return NVE_ARIA_ROLE_SCROLL_AREA;
+      return static_cast<uint8_t>(node.input.input_kind == NVE_INPUT_KIND_SEARCH ? NVE_ARIA_ROLE_SEARCH_BOX
+                                                                                 : NVE_ARIA_ROLE_TEXT_BOX);
+    case NodeKind::Link: return static_cast<uint8_t>(NVE_ARIA_ROLE_LINK);
+    case NodeKind::Scroll: return static_cast<uint8_t>(NVE_ARIA_ROLE_SCROLL_AREA);
     case NodeKind::View: break;
   }
-  return node.wants(NVE_EVENT_PRESS) ? NVE_ARIA_ROLE_BUTTON : NVE_ARIA_ROLE_NONE;
+  return node.wants(NVE_INTERACTION_EVENT_PRESS) ? std::optional<uint8_t>(NVE_ARIA_ROLE_BUTTON) : std::nullopt;
 }
 
 /// Accessible name of `node`: its explicit label, else its text (Text) or alt text (Image).
@@ -278,21 +280,21 @@ struct SceneTables {
   }
 };
 
-/// `parent` with node `index`'s explicit typography (bits in `nve.typography.set`) applied.
+/// `parent` with node `index`'s explicit typography (word 0 `explicit_bit` on `nve.typography`,
+/// matching Rust `ResolvedRow<Typography>`) applied.
 [[nodiscard]] inline TextStyle inherit_text_style(const TextStyle& parent, const SceneTables& t,
                                                   const SceneReader& scene, uint32_t index) noexcept {
   if (!t.typography.has(index)) return parent;
   const RowRef r = t.typography.at(index);
-  const uint32_t set = r.bits(NVE_TABLE_TYPOGRAPHY_SET);
   TextStyle s = parent;
-  if ((set & NVE_TYPOGRAPHY_SET_COLOR) != 0u) s.color = r.bits(NVE_TABLE_TYPOGRAPHY_COLOR);
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_COLOR)) s.color = r.bits(NVE_TABLE_TYPOGRAPHY_COLOR);
   // Invalid values keep the inherited one (as the runtime's `resolve_inherited_text`: a `0`
   // size is valid, an explicit `auto` line height resets to `normal`).
-  if ((set & NVE_TYPOGRAPHY_SET_FONT_SIZE) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_FONT_SIZE)) {
     const float size = r.f32(NVE_TABLE_TYPOGRAPHY_FONT_SIZE);
     if (std::isfinite(size) && size >= 0.0f) s.font_size = size;
   }
-  if ((set & NVE_TYPOGRAPHY_SET_LINE_HEIGHT) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT)) {
     const LengthValue lh = r.length(NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT);
     if (lh.unit == NVE_LENGTH_AUTO) {
       s.line_height = LengthValue{NVE_LENGTH_AUTO, 0.0f};
@@ -300,33 +302,35 @@ struct SceneTables {
       s.line_height = lh;
     }
   }
-  if ((set & NVE_TYPOGRAPHY_SET_LETTER_SPACING) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_LETTER_SPACING)) {
     s.letter_spacing = finite_or(r.f32(NVE_TABLE_TYPOGRAPHY_LETTER_SPACING), s.letter_spacing);
   }
-  if ((set & NVE_TYPOGRAPHY_SET_FONT_FAMILY) != 0u) s.font_family = r.str(NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, scene);
-  if ((set & NVE_TYPOGRAPHY_SET_MAX_LINES) != 0u) s.max_lines = r.bits(NVE_TABLE_TYPOGRAPHY_MAX_LINES);
-  if ((set & NVE_TYPOGRAPHY_SET_FONT_WEIGHT) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_FONT_FAMILY)) s.font_family = r.str(NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, scene);
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_MAX_LINES)) {
+    s.max_lines = r.opt_u32(NVE_TABLE_TYPOGRAPHY_MAX_LINES).value_or(0u);
+  }
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_FONT_WEIGHT)) {
     s.font_weight = static_cast<uint16_t>(r.bits(NVE_TABLE_TYPOGRAPHY_FONT_WEIGHT));
   }
-  if ((set & NVE_TYPOGRAPHY_SET_FONT_STYLE) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_FONT_STYLE)) {
     s.font_style = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_FONT_STYLE));
   }
-  if ((set & NVE_TYPOGRAPHY_SET_WHITE_SPACE) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_WHITE_SPACE)) {
     s.white_space = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_WHITE_SPACE));
   }
-  if ((set & NVE_TYPOGRAPHY_SET_WORD_BREAK) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_WORD_BREAK)) {
     s.word_break = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_WORD_BREAK));
   }
-  if ((set & NVE_TYPOGRAPHY_SET_OVERFLOW_WRAP) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_OVERFLOW_WRAP)) {
     s.overflow_wrap = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_OVERFLOW_WRAP));
   }
-  if ((set & NVE_TYPOGRAPHY_SET_TEXT_ALIGN) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_TEXT_ALIGN)) {
     s.text_align = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_TEXT_ALIGN));
   }
-  if ((set & NVE_TYPOGRAPHY_SET_TEXT_DECORATION) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION)) {
     s.text_decoration = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION));
   }
-  if ((set & NVE_TYPOGRAPHY_SET_VERTICAL_ALIGN) != 0u) {
+  if (r.is_explicit(NVE_TABLE_TYPOGRAPHY_VERTICAL_ALIGN)) {
     s.vertical_align = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_VERTICAL_ALIGN));
   }
   return s;
@@ -371,6 +375,16 @@ inline void read_geometry_row(const SceneReader& scene, const SceneTables& t, ui
 [[nodiscard]] constexpr NodeKind realized_kind(NodeKind kind, bool has_children, std::string_view text) noexcept {
   return kind == NodeKind::Text && has_children && text.empty() ? NodeKind::View : kind;
 }
+
+[[nodiscard]] inline std::optional<uint8_t> opt_u8(const RowRef& r, FieldSpec f) noexcept {
+  const std::optional<uint32_t> v = r.opt_bits(f);
+  return v ? std::optional<uint8_t>(static_cast<uint8_t>(*v)) : std::nullopt;
+}
+
+[[nodiscard]] inline float opt_finite_or_nan(const RowRef& r, FieldSpec f) noexcept {
+  const std::optional<float> v = r.opt_f32(f);
+  return v ? finite_or(*v, NAN) : NAN;
+}
 }  // namespace detail
 
 /// Identity and geometry of live node `index` (`std::nullopt` when it has no row).
@@ -395,6 +409,7 @@ inline void read_geometry_row(const SceneReader& scene, const SceneTables& t, ui
   if (row == nullptr) return n;
   detail::read_geometry_row(scene, t, index, *row, n);
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
+  n.layout_events = t.layout.at(index).events(NVE_TABLE_LAYOUT_EVENTS_WORD);
   n.text = t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene);
   n.kind = detail::realized_kind(n.kind, !n.children.empty(), n.text);
   n.text_style = text_style;
@@ -414,57 +429,61 @@ inline void read_geometry_row(const SceneReader& scene, const SceneTables& t, ui
 
   if (t.image.has(index)) {
     const RowRef r = t.image.at(index);
+    const std::optional<Rgba> tint = r.opt_color(NVE_TABLE_IMAGE_TINT);
     n.image = ImageData{r.bits(NVE_TABLE_IMAGE_SRC),
                         r.str(NVE_TABLE_IMAGE_ALT, scene),
                         static_cast<uint8_t>(r.bits(NVE_TABLE_IMAGE_FIT)),
-                        r.boolean(NVE_TABLE_IMAGE_TINT_ENABLED),
-                        r.bits(NVE_TABLE_IMAGE_TINT),
-                        static_cast<uint16_t>(r.bits(NVE_TABLE_IMAGE_INTRINSIC_WIDTH)),
-                        static_cast<uint16_t>(r.bits(NVE_TABLE_IMAGE_INTRINSIC_HEIGHT))};
+                        tint ? std::optional<uint32_t>(tint->packed) : std::nullopt,
+                        static_cast<uint16_t>(r.opt_u32(NVE_TABLE_IMAGE_INTRINSIC_WIDTH).value_or(0u)),
+                        static_cast<uint16_t>(r.opt_u32(NVE_TABLE_IMAGE_INTRINSIC_HEIGHT).value_or(0u))};
   }
   if (t.text_input.has(index)) {
     const RowRef r = t.text_input.at(index);
-    n.input = TextInputData{r.str(NVE_TABLE_TEXT_INPUT_VALUE, scene),
+    n.input = TextInputData{r.events(NVE_TABLE_TEXT_INPUT_EVENTS_WORD),
+                            r.str(NVE_TABLE_TEXT_INPUT_VALUE, scene),
                             r.str(NVE_TABLE_TEXT_INPUT_PLACEHOLDER, scene),
                             r.boolean(NVE_TABLE_TEXT_INPUT_MULTILINE),
                             r.boolean(NVE_TABLE_TEXT_INPUT_SECURE),
                             r.boolean(NVE_TABLE_TEXT_INPUT_READ_ONLY),
                             r.boolean(NVE_TABLE_TEXT_INPUT_REQUIRED),
                             static_cast<uint8_t>(r.bits(NVE_TABLE_TEXT_INPUT_INPUT_KIND)),
-                            r.bits(NVE_TABLE_TEXT_INPUT_MAX_LENGTH)};
+                            r.opt_u32(NVE_TABLE_TEXT_INPUT_MAX_LENGTH).value_or(0u)};
   }
   if (t.scroll.has(index)) {
     const RowRef r = t.scroll.at(index);
-    n.scroll = ScrollData{static_cast<uint8_t>(r.bits(NVE_TABLE_SCROLL_AXES)),
+    n.scroll = ScrollData{r.events(NVE_TABLE_SCROLL_EVENTS_WORD),
+                          static_cast<uint8_t>(r.bits(NVE_TABLE_SCROLL_AXES)),
                           static_cast<uint8_t>(r.bits(NVE_TABLE_SCROLL_SCROLLBARS)),
                           r.boolean(NVE_TABLE_SCROLL_PAGING),
                           r.boolean(NVE_TABLE_SCROLL_BOUNCE),
-                          finite_or(r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_X), NAN),
-                          finite_or(r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y), NAN)};
+                          detail::opt_finite_or_nan(r, NVE_TABLE_SCROLL_REQUESTED_SCROLL_X),
+                          detail::opt_finite_or_nan(r, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y)};
   }
   if (t.interaction.has(index)) {
     const RowRef r = t.interaction.at(index);
-    n.interaction = InteractionData{r.bits(NVE_TABLE_INTERACTION_EVENT_MASK),
+    const std::optional<int32_t> tab = r.opt_i32(NVE_TABLE_INTERACTION_TAB_INDEX);
+    n.interaction = InteractionData{r.events(NVE_TABLE_INTERACTION_EVENTS_WORD),
                                     static_cast<uint8_t>(r.bits(NVE_TABLE_INTERACTION_CURSOR)),
                                     r.boolean(NVE_TABLE_INTERACTION_DISABLED),
-                                    r.boolean(NVE_TABLE_INTERACTION_FOCUSABLE)};
+                                    r.boolean(NVE_TABLE_INTERACTION_FOCUSABLE),
+                                    tab ? std::optional<int16_t>(static_cast<int16_t>(*tab)) : std::nullopt};
   }
   if (t.accessibility.has(index)) {
     const RowRef r = t.accessibility.at(index);
     n.a11y = AccessibilityData{true,
-                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_ROLE)),
-                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_LEVEL)),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_ROLE),
+                               static_cast<uint8_t>(r.opt_u32(NVE_TABLE_ACCESSIBILITY_LEVEL).value_or(0u)),
                                r.boolean(NVE_TABLE_ACCESSIBILITY_HIDDEN),
-                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_CHECKED)),
-                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_SELECTED)),
-                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_EXPANDED)),
-                               static_cast<uint8_t>(r.bits(NVE_TABLE_ACCESSIBILITY_PRESSED)),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_CHECKED),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_SELECTED),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_EXPANDED),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_PRESSED),
                                r.str(NVE_TABLE_ACCESSIBILITY_LABEL, scene),
                                r.str(NVE_TABLE_ACCESSIBILITY_HINT, scene),
                                r.str(NVE_TABLE_ACCESSIBILITY_VALUE_TEXT, scene),
-                               finite_or(r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_NOW), NAN),
-                               finite_or(r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MIN), NAN),
-                               finite_or(r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MAX), NAN)};
+                               detail::opt_finite_or_nan(r, NVE_TABLE_ACCESSIBILITY_VALUE_NOW),
+                               detail::opt_finite_or_nan(r, NVE_TABLE_ACCESSIBILITY_VALUE_MIN),
+                               detail::opt_finite_or_nan(r, NVE_TABLE_ACCESSIBILITY_VALUE_MAX)};
   }
   n.href = t.link.at(index).str(NVE_TABLE_LINK_HREF, scene);
   return n;

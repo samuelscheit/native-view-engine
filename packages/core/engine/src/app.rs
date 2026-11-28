@@ -9,8 +9,8 @@ use std::any::Any;
 use std::cell::RefCell;
 
 use nve_abi::{
-    FrameId, NveDirectEvent, NveEventBatchRef, NveGestureDisposition, NveHostCallbacks,
-    NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
+    FrameId, NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize, NvePropsRef,
+    NveSizeConstraints, SurfaceId, ValidatedEvents,
 };
 
 thread_local! {
@@ -91,8 +91,8 @@ pub trait NveApp: Sized + 'static {
     /// Renders pending mutations into a binary `nve_abi::CommandBuffer` slice valid until the next call.
     fn render(&mut self, frame_id: FrameId) -> &[u8];
 
-    /// Processes a direct typed event batch (`NveEventBatchRef`); returns `true` if re-render is needed.
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool;
+    /// Processes an ingress-validated event batch (`ValidatedEvents`); returns `true` if re-render is needed.
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool;
 
     /// Intrinsic size measurement for embedded hosts (RN Yoga, Flutter RenderBox, SwiftUI, Compose).
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {
@@ -122,9 +122,9 @@ pub trait NveApp: Sized + 'static {
         false
     }
 
-    /// Drains component-emitted outbound events as a direct borrowed `NveDirectEvent` slice.
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
-        &[]
+    /// Drains component-emitted outbound events as an ingress-validated zero-copy batch.
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
+        ValidatedEvents::EMPTY
     }
 
     /// Applies a Tier-1 hot-reload patch, decoded from the `NVP1` bytes the host passed to
@@ -164,20 +164,21 @@ macro_rules! export_nve_app {
         const _: () = {
             use ::std::ffi::c_void;
             use $crate::abi::{
-                NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveEventBatch,
-                NveEventBatchRef, NveGestureDisposition, NveHostApi, NveHostCallbacks,
+                FrameId, InterfaceId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
+                NveEventBatch, NveGestureDisposition, NveHostApi, NveHostCallbacks,
                 NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints,
-                NveSurfaceApi, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST,
-                NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+                NveSurfaceApi, SurfaceId, ValidatedEvents, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+                NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
             };
             use $crate::NveApp;
 
-            unsafe extern "C" fn __nve_create(surface_id: u32) -> NveAppHandle {
+            unsafe extern "C" fn __nve_create(surface_id: SurfaceId) -> NveAppHandle {
                 $crate::app::ffi_catch_unwind(
                     "NveSurfaceApi::create",
                     ::std::ptr::null_mut(),
                     || {
-                        let boxed = Box::new(<$app_ty as NveApp>::create(surface_id));
+                        let canonical = SurfaceId::from_raw_or_null(surface_id.raw());
+                        let boxed = Box::new(<$app_ty as NveApp>::create(canonical));
                         Box::into_raw(boxed) as NveAppHandle
                     },
                 )
@@ -195,7 +196,7 @@ macro_rules! export_nve_app {
 
             unsafe extern "C" fn __nve_render(
                 handle: NveAppHandle,
-                frame_id: u64,
+                frame_id: FrameId,
             ) -> NveBufferSlice {
                 if handle.is_null() {
                     return NveBufferSlice::EMPTY;
@@ -221,8 +222,10 @@ macro_rules! export_nve_app {
                 $crate::app::ffi_catch_unwind("NveSurfaceApi::dispatch_events", 0, || {
                     // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                     let app = unsafe { &mut *(handle as *mut $app_ty) };
-                    // SAFETY: Host guarantees `batch` points to valid `NveDirectEvent`s for this call.
-                    let events = unsafe { NveEventBatchRef::from_raw(batch) };
+                    // SAFETY: Host guarantees `batch` points to readable `NveEvent` and byte arena slices for this call.
+                    let Ok(events) = (unsafe { ValidatedEvents::try_from_raw(batch) }) else {
+                        return 0;
+                    };
                     u32::from(app.dispatch_events(events))
                 })
             }
@@ -300,7 +303,7 @@ macro_rules! export_nve_app {
                     || {
                         // SAFETY: Non-null `handle` is an exclusive live `$app_ty` created by `__nve_create`.
                         let app = unsafe { &mut *(handle as *mut $app_ty) };
-                        NveEventBatch::from_slice(app.drain_emitted_events())
+                        app.drain_emitted_events().as_raw_batch()
                     },
                 )
             }
@@ -421,7 +424,7 @@ macro_rules! export_nve_app {
             };
 
             #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn $symbol(interface_id: u32) -> *const c_void {
+            pub unsafe extern "C" fn $symbol(interface_id: InterfaceId) -> *const c_void {
                 match interface_id {
                     NVE_IFACE_SURFACE => &__NVE_SURFACE_API as *const NveSurfaceApi as *const c_void,
                     NVE_IFACE_LAYOUT => &__NVE_LAYOUT_API as *const NveLayoutApi as *const c_void,

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nve_components::tables::Visual;
+use nve_tables::tables::Visual;
 use nve_runtime::{FrameTickHook, RuntimeBuilder};
 use nve_store::{NodeId, Rgba, Transaction};
 

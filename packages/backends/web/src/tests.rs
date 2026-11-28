@@ -1,11 +1,11 @@
 use nve_abi::ColorRgba;
-use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
-use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::style_patch::StylePatch;
-use nve_components::tables::{
+use nve_tables::interaction::{CursorKind, InteractionState, StateStyleRule};
+use nve_tables::media::{MediaQuery, ResponsiveRule};
+use nve_tables::tables::{
     Accessibility, AriaRole, DebugId, FlexDirection, Interaction, Layout, Link, Responsive,
     ResponsiveRules, StateRules, TextContent, Transform, Typography, Visual,
 };
+use nve_tables::{RowPatch, StylePatchExt};
 use nve_engine::{HotPatchMsg, StoreBackend};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
@@ -42,20 +42,20 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
         .state_rules(Some(StateRules(
             vec![StateStyleRule::new(
                 InteractionState::HOVER,
-                StylePatch::new().bg(ColorRgba::rgb(30, 64, 175)),
+                RowPatch::new().bg(ColorRgba::rgb(30, 64, 175)),
             )]
             .into(),
         )));
     tx.edit::<Responsive>(card1).rules(Some(ResponsiveRules(
         vec![ResponsiveRule::new(
             MediaQuery::expanded(),
-            StylePatch::new().gap(24.0),
+            RowPatch::new().gap(24.0),
         )]
         .into(),
     )));
     tx.edit::<Accessibility>(heading)
-        .role(AriaRole::Heading)
-        .level(1);
+        .role(Some(AriaRole::Heading))
+        .level(Some(1));
     tx.edit::<TextContent>(heading).text("Hello NVE2 Web");
     tx.edit::<Typography>(heading).color(Rgba::WHITE).font_size(24.0);
     tx.edit::<DebugId>(heading).test_id("hero-title");
@@ -96,13 +96,16 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
     assert!(doc.contains("<style data-nve-base>"));
     assert!(doc.contains("<style data-nve-ssr"));
 
-    // Hydration seeds rule hashes with zero duplicate CSS rules.
-    let hydrated = WebBackend::hydrate_from_ssr(&ssr);
-    assert!(hydrated.hydration_report().is_clean());
-    assert_eq!(
-        hydrated.hydration_report().reused_css_rules as usize,
-        ssr.rule_hashes.len()
-    );
+    #[cfg(feature = "hydrate")]
+    {
+        // Hydration seeds rule hashes with zero duplicate CSS rules.
+        let hydrated = WebBackend::hydrate_from_ssr(&ssr);
+        assert!(hydrated.hydration_report().is_clean());
+        assert_eq!(
+            hydrated.hydration_report().reused_css_rules as usize,
+            ssr.rule_hashes.len()
+        );
+    }
 
     // Tier-1 hot-patch updates text directly in NodeStore!
     let patched = web.apply_template_patch(
@@ -126,7 +129,7 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
 #[cfg(feature = "hydrate")]
 #[test]
 fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_stale() {
-    use nve_abi::{EventMask, NativeEventKind};
+    use nve_abi::{EventBatchBuf, InteractionEvent};
     use crate::CapturedPreHydrationEvent;
 
     let mut store = NodeStore::new();
@@ -136,7 +139,7 @@ fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_sta
     let label = tx.create();
     tx.set_children(NodeId::ROOT, &[btn]);
     tx.set_children(btn, &[label]);
-    tx.edit::<Interaction>(btn).event_mask(EventMask::PRESS as u32);
+    tx.edit::<Interaction>(btn).listen(InteractionEvent::Press);
     tx.edit::<TextContent>(label).text("Click Me");
     tx.commit_into(&mut changes);
 
@@ -147,24 +150,27 @@ fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_sta
     let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
     hydrated.queue_pre_hydration_events(vec![
         CapturedPreHydrationEvent::Press {
-            node_id: label.raw(),
+            node_id: label,
             x: 10.0,
             y: 12.0,
             age_ms: 25,
         },
         CapturedPreHydrationEvent::Press {
-            node_id: label.raw(),
+            node_id: label,
             x: 10.0,
             y: 12.0,
             age_ms: 60_000,
         },
     ]);
     hydrated.commit(&store, &changes).unwrap();
-    let drained = hydrated.drain_events();
+    let mut drained = EventBatchBuf::new();
+    hydrated.drain_events(&mut drained);
+    let validated = drained.as_validated();
     assert_eq!(hydrated.hydration_report().replayed_events, 1);
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].kind, NativeEventKind::Press);
-    assert_eq!(drained[0].node_id, btn.raw());
+    assert_eq!(validated.len(), 1);
+    let ev = validated.get(0).unwrap();
+    assert_eq!(ev.interaction(), Some(InteractionEvent::Press));
+    assert_eq!(ev.node(), btn);
 }
 
 #[test]
@@ -182,7 +188,7 @@ fn base_reset_css_keeps_element_defaults_zero_specificity() {
 
 #[test]
 fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
-    use nve_components::tables::{LinkTarget, TextInput};
+    use nve_tables::tables::{LinkTarget, TextInput};
     use crate::{is_safe_custom_tag, is_safe_web_attr, is_safe_web_url};
 
     // URL scheme & control-char smuggling vectors
@@ -274,14 +280,20 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     let txt = tx.create();
     let link = tx.create();
     let inp = tx.create();
-    tx.set_children(NodeId::ROOT, &[txt, link, inp]);
+    let txt_clamped = tx.create();
+    let inp_zero = tx.create();
+    tx.set_children(NodeId::ROOT, &[txt, txt_clamped, link, inp, inp_zero]);
     tx.edit::<TextContent>(txt).text("safe");
     tx.edit::<Typography>(txt)
-        .font_family("Inter;}</style><script>alert(1)</script>");
+        .font_family("Inter;}</style><script>alert(1)</script>")
+        .max_lines(core::num::NonZeroU16::new(0));
+    tx.edit::<TextContent>(txt_clamped).text("clamped");
+    tx.edit::<Typography>(txt_clamped).max_lines(core::num::NonZeroU16::new(3));
     tx.edit::<Link>(link)
         .href("https://example.com")
         .target(LinkTarget::Blank);
-    tx.edit::<TextInput>(inp).max_length(u16::MAX);
+    tx.edit::<TextInput>(inp).max_length(None);
+    tx.edit::<TextInput>(inp_zero).max_length(Some(0));
     tx.commit_into(&mut changes);
     web.commit(&store, &changes).unwrap();
 
@@ -290,6 +302,14 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     assert!(doc.contains("target=\"_blank\""));
     assert!(doc.contains("rel=\"noopener noreferrer\""));
     assert!(!doc.contains("maxlength=\"65535\""));
+    assert!(doc.contains("maxlength=\"0\""), "Some(0) max_length must be emitted: {doc}");
+    assert!(!doc.contains("-webkit-line-clamp:0;"), "None max_lines must not emit broken CSS clamp: {doc}");
+    assert_eq!(
+        doc.matches("display:-webkit-box").count(),
+        1,
+        "companion -webkit-box layout CSS must emit only for the clamped node: {doc}"
+    );
+    assert!(doc.contains("-webkit-line-clamp:3;"), "Some(3) max_lines must emit clamp: {doc}");
 
     // Plain relative paths, query paths, data: srcset, multi-URL ping, data-nve-* prefix,
     // whitespace-padded tags/attrs, raw-text tags, font-family comments/quotes, and non-finite flex.
@@ -333,6 +353,42 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     web2.commit(&store2, &changes2).unwrap();
     let css3 = web2.render_ssr(&store2).style_css;
     assert!(!css3.contains("Unclosed"), "unbalanced quote in font_family leaked: {css3}");
+}
+
+#[test]
+fn web_typography_explicit_default_color_and_empty_font_family_reset_emit_css() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut web = WebBackend::new();
+
+    let mut tx = store.tx();
+    let parent = tx.create();
+    let child = tx.create();
+    tx.set_children(NodeId::ROOT, &[parent]);
+    tx.set_children(parent, &[child]);
+
+    tx.edit::<Typography>(parent)
+        .color(Rgba::WHITE)
+        .font_family("Inter");
+    tx.edit::<TextContent>(child).text("reset");
+    // Explicitly write table-default BLACK color and empty font-family to override parent!
+    tx.edit::<Typography>(child)
+        .color(Rgba::BLACK)
+        .font_family("");
+    tx.commit_into(&mut changes);
+
+    web.commit(&store, &changes).unwrap();
+    let ssr = web.render_ssr(&store);
+    assert!(
+        ssr.style_css.contains("color:#000000;"),
+        "explicit default BLACK color must emit CSS to override parent: {}",
+        ssr.style_css
+    );
+    assert!(
+        ssr.style_css.contains("font-family:initial;"),
+        "explicit empty font_family must emit font-family:initial; to reset inherited parent font: {}",
+        ssr.style_css
+    );
 }
 
 #[test]
@@ -391,7 +447,7 @@ fn plugin_table_detach_automatically_clears_owned_attrs_inner_html_and_inline_cs
 
 #[test]
 fn css_visibility_emits_visible_hidden_and_omits_inherit() {
-    use nve_components::tables::{Visibility, Visual};
+    use nve_tables::tables::{Visibility, Visual};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
@@ -443,19 +499,19 @@ fn css_visibility_emits_visible_hidden_and_omits_inherit() {
     // CSS visibility keywords: collapse -> Hidden, initial -> Visible, inherit/unset/revert/revert-layer -> Inherit, invalid ignored.
     {
         let mut tx = store.tx();
-        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "collapse"));
+        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "collapse"));
         tx.commit_into(&mut changes);
     }
     assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden);
     {
         let mut tx = store.tx();
-        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "bogus"));
+        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "bogus"));
         tx.commit_into(&mut changes);
     }
     assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden, "invalid visibility value must not overwrite");
     {
         let mut tx = store.tx();
-        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "initial"));
+        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "initial"));
         tx.commit_into(&mut changes);
     }
     assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Visible);
@@ -467,7 +523,7 @@ fn css_visibility_emits_visible_hidden_and_omits_inherit() {
         }
         {
             let mut tx = store.tx();
-            assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", kw));
+            assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", kw));
             tx.commit_into(&mut changes);
         }
         assert_eq!(
@@ -1020,8 +1076,8 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
         tx.edit::<RetagChanged>(n).v(2);
         tx.commit_into(&mut changes);
     }
-    let mut live: HashMap<u32, MockRetagEl> = HashMap::default();
-    live.insert(n.raw(), MockRetagEl::default());
+    let mut live: HashMap<NodeId, MockRetagEl> = HashMap::default();
+    live.insert(n, MockRetagEl::default());
     let mut synced_slots: Vec<(TableSlot, NodeId)> = Vec::new();
     renderer.commit_plugins_active_with(
         &store,
@@ -1033,7 +1089,7 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
         |sys, nid, _| synced_slots.push((sys.slot(), nid)),
     );
 
-    let el = live.get(&n.raw()).unwrap();
+    let el = live.get(&n).unwrap();
     let replayed = el.attrs.borrow();
     // 1) Detached plugin's attr, inline CSS, and innerHTML MUST NOT touch the fresh retagged element.
     assert!(
@@ -1070,8 +1126,8 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
         tx.edit::<RetagCanvas>(n).ops(7);
         tx.commit_into(&mut changes);
     }
-    let mut live3: HashMap<u32, MockRetagEl> = HashMap::default();
-    live3.insert(n.raw(), MockRetagEl::default());
+    let mut live3: HashMap<NodeId, MockRetagEl> = HashMap::default();
+    live3.insert(n, MockRetagEl::default());
     synced_slots.clear();
     renderer.commit_plugins_active_with(
         &store,
@@ -1089,7 +1145,7 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
     );
     assert!(
         live3
-            .get(&n.raw())
+            .get(&n)
             .unwrap()
             .attrs
             .borrow()
@@ -1108,7 +1164,7 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
 
 #[test]
 fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
-    use nve_components::tables::{Accessibility, AriaLive, AriaRole};
+    use nve_tables::tables::{Accessibility, AriaLive, AriaRole};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
@@ -1119,12 +1175,12 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
         let p = tx.create();
         let a = tx.create();
         tx.set_children(NodeId::ROOT, &[u, o, p, a]);
-        tx.edit::<Accessibility>(u).live(AriaLive::Unset);
-        tx.edit::<Accessibility>(o).live(AriaLive::Off);
-        tx.edit::<Accessibility>(p).live(AriaLive::Polite).modal(true);
+        tx.edit::<Accessibility>(u).live(None);
+        tx.edit::<Accessibility>(o).live(Some(AriaLive::Off));
+        tx.edit::<Accessibility>(p).live(Some(AriaLive::Polite)).modal(true);
         tx.edit::<Accessibility>(a)
-            .role(AriaRole::Alert)
-            .live(AriaLive::Assertive);
+            .role(Some(AriaRole::Alert))
+            .live(Some(AriaLive::Assertive));
         tx.commit_into(&mut changes);
         (u, o, p, a)
     };
@@ -1150,4 +1206,192 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
     let assertive_tag = tag_for(assertive);
     assert!(assertive_tag.contains("role=\"alert\""));
     assert!(assertive_tag.contains("aria-live=\"assertive\""));
+}
+
+#[test]
+fn patch_css_emits_single_side_padding_margin_logical_combo_overflow_axes_and_nested_wire_resources() {
+    use nve_tables::interaction::{InteractionState, StateStyleRule};
+    use nve_tables::layout_ext::GridTrack;
+    use nve_tables::media::{MediaQuery, ResponsiveRule};
+    use nve_tables::paint::{BackgroundFill, GradientStop};
+    use nve_tables::tables::{
+        BackgroundFillRes, GridLayout, GridTracks, Interaction, Layout, Overflow, Responsive,
+        ResponsiveRules, StateRules, Visual,
+    };
+    use nve_store::wire::{WireDecoder, WireEncoder};
+    use nve_store::{Length, NodeStore};
+
+    let decls = |patch: &RowPatch, store: Option<&NodeStore>, css: &mut String| {
+        let mut words = Vec::new();
+        assert!(nve_store::FlatResource::write_words(patch, &mut words));
+        let view = nve_store::RowPatchView::from_words(&words).expect("valid RowPatch words");
+        crate::patch_css::write_row_patch_view_decls(view, store, css);
+    };
+
+    // 1. Single-side padding & margin are emitted (never silently dropped).
+    let mut single_side = RowPatch::new();
+    single_side
+        .set(Layout::PADDING_TOP, Length::points(12.0))
+        .set(Layout::MARGIN_LEFT, Length::points(-4.0));
+    let mut css = String::new();
+    decls(&single_side, None, &mut css);
+    assert!(css.contains("padding-top:12px;"), "got: {css}");
+    assert!(css.contains("margin-left:-4px;"), "got: {css}");
+
+    // 2. Combining `.padding(8.0).padding_inline_start(16.0)` preserves top/bottom + logical inline.
+    let combo = RowPatch::new()
+        .padding(8.0)
+        .padding_inline_start(16.0)
+        .margin(6.0)
+        .margin_inline_end(10.0);
+    css.clear();
+    decls(&combo, None, &mut css);
+    assert!(css.contains("padding-top:8px;"), "got: {css}");
+    assert!(css.contains("padding-bottom:8px;"), "got: {css}");
+    assert!(css.contains("padding-inline-start:16px;"), "got: {css}");
+    assert!(css.contains("margin-top:6px;"), "got: {css}");
+    assert!(css.contains("margin-bottom:6px;"), "got: {css}");
+    assert!(css.contains("margin-inline-end:10px;"), "got: {css}");
+
+    // 3. Overflow X/Y distinct, single-axis Y, and equal shorthand.
+    let mut ov_xy = RowPatch::new();
+    ov_xy
+        .set(Visual::OVERFLOW_X, Overflow::Hidden)
+        .set(Visual::OVERFLOW_Y, Overflow::Auto);
+    css.clear();
+    decls(&ov_xy, None, &mut css);
+    assert!(css.contains("overflow-x:hidden;overflow-y:auto;"), "got: {css}");
+
+    let mut ov_y_only = RowPatch::new();
+    ov_y_only.set(Visual::OVERFLOW_Y, Overflow::Scroll);
+    css.clear();
+    decls(&ov_y_only, None, &mut css);
+    assert!(css.contains("overflow-y:scroll;"), "got: {css}");
+    assert!(!css.contains("overflow-x:"), "got: {css}");
+
+    // 4. Nested `BackgroundFillRes` inside `StateRules` + nested `GridTracks` inside `ResponsiveRules`
+    //    round-tripped over `NVE2` wire into a replica `WebBackend` SSR stylesheet!
+    let mut prod = NodeStore::new();
+    let mut prod_changes = ChangeSet::default();
+    let node = {
+        let mut tx = prod.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.with_temp_resources(|scope| {
+            let grad_id = scope.intern(&BackgroundFillRes(BackgroundFill::linear(
+                45.0,
+                vec![
+                    GradientStop::new(0.0, ColorRgba::rgb(255, 0, 0)),
+                    GradientStop::new(1.0, ColorRgba::rgb(0, 0, 255)),
+                ],
+            )));
+            let tracks_id = scope.intern(&GridTracks::new(vec![
+                GridTrack::Fr(1.0),
+                GridTrack::Px(240.0),
+            ]));
+            let hover_patch = RowPatch::new().background_fill_id(grad_id);
+            let media_patch = RowPatch::new().with_res_id(GridLayout::TEMPLATE_COLUMNS, tracks_id);
+            scope.tx().edit::<Interaction>(n).state_rules(Some(StateRules::new(vec![
+                StateStyleRule::new(InteractionState::HOVER, hover_patch),
+            ])));
+            scope.tx().edit::<Responsive>(n).rules(Some(ResponsiveRules::new(vec![
+                ResponsiveRule {
+                    query: MediaQuery::min_width(900),
+                    patch: media_patch,
+                },
+            ])));
+        });
+        tx.commit_into(&mut prod_changes);
+        n
+    };
+    let mut wire = Vec::new();
+    WireEncoder::default().encode(&prod, &prod_changes, &mut wire);
+
+    let mut replica = NodeStore::replica();
+    let mut rep_changes = ChangeSet::default();
+    {
+        let mut rtx = replica.tx();
+        WireDecoder::default().apply(&mut rtx, &wire).unwrap();
+        rtx.commit_into(&mut rep_changes);
+    }
+    let mut web = WebBackend::new();
+    web.commit(&replica, &rep_changes).unwrap();
+    let _html = web.render_html(&replica);
+    let (css_out, _) = web.stylesheet().serialize_css();
+    assert!(
+        css_out.contains("linear-gradient(45deg"),
+        "wire replica Web CSS must emit nested StateRules gradient: {css_out}"
+    );
+    assert!(
+        css_out.contains("grid-template-columns:1fr 240px;"),
+        "wire replica Web CSS must emit nested ResponsiveRules GridTracks: {css_out}"
+    );
+    let _ = node;
+}
+
+#[test]
+fn synchronous_reentrant_commit_during_event_callback_has_no_refcell_borrow_conflict() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use nve_abi::{EventBatchBuf, InteractionEvent, SurfaceId, TimestampUs};
+    use nve_tables::tables::{Interaction, TextInput};
+    use nve_store::{ChangeSet, NodeId, NodeStore};
+
+    use crate::events::WebEventState;
+    use crate::input_attrs::InputSyncTracker;
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (btn, inp) = {
+        let mut tx = store.tx();
+        let b = tx.create();
+        let i = tx.create();
+        tx.set_children(NodeId::ROOT, &[b, i]);
+        tx.edit::<Interaction>(b).listen(InteractionEvent::Press);
+        tx.edit::<TextInput>(i).value("init");
+        tx.commit_into(&mut changes);
+        (b, i)
+    };
+
+    let state = Rc::new(RefCell::new(WebEventState::new()));
+    let sync = Rc::new(RefCell::new(InputSyncTracker::new()));
+    let events = Rc::new(RefCell::new(EventBatchBuf::new()));
+    state.borrow_mut().sync(&store, &changes, |_, _, _| {});
+
+    // Simulate synchronous `on_event` pumping `WebBackend::commit` -> `state.borrow_mut()` &
+    // `sync.borrow_mut()` & `events.borrow_mut().clear()` inside click / input / compositionend.
+    let reentrant_commit = |st: &Rc<RefCell<WebEventState>>,
+                            sy: &Rc<RefCell<InputSyncTracker>>,
+                            ev: &Rc<RefCell<EventBatchBuf>>,
+                            s: &NodeStore,
+                            c: &ChangeSet| {
+        st.borrow_mut().sync(s, c, |_, _, _| {});
+        sy.borrow_mut().remove(inp);
+        ev.borrow_mut().clear();
+    };
+
+    // 1. Click path: drop `st_ref` before `notify_event`.
+    let st_ref = state.borrow();
+    let click_id = st_ref.listens::<Interaction>(btn, InteractionEvent::Press).then_some(btn);
+    drop(st_ref);
+    assert_eq!(click_id, Some(btn));
+    events.borrow_mut().push_press(SurfaceId::ROOT, btn, TimestampUs(1), 5.0, 5.0);
+    reentrant_commit(&state, &sync, &events, &store, &changes);
+
+    // 2. Input path: release `sync.borrow_mut()` before `notify_event`.
+    let changed = sync.borrow_mut().on_input_event(inp, "abc".into(), false);
+    assert_eq!(changed.as_deref(), Some("abc"));
+    if let Some(val) = changed {
+        events.borrow_mut().push_text_change(SurfaceId::ROOT, inp, TimestampUs(2), &val);
+        reentrant_commit(&state, &sync, &events, &store, &changes);
+    }
+
+    // 3. CompositionEnd path: drop `guard` before `notify_event`.
+    {
+        let mut guard = sync.borrow_mut();
+        let _ = guard.on_input_event(inp, "你好".into(), true);
+        drop(guard);
+        reentrant_commit(&state, &sync, &events, &store, &changes);
+    }
 }

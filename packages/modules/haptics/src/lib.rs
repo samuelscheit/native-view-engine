@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_HAPTICS;
 use nve_host_services::{
-    pack_typed, resolve_typed, BinReader, HostServiceHandler, HostServiceProvider, ServiceError,
+    pack_typed, resolve_typed, HostServiceHandler, HostServiceProvider, NveCodec, NveDecode,
+    ServiceError,
 };
 
 pub use native::NativeHaptics;
@@ -22,7 +23,8 @@ pub const METHOD_SELECTION: u32 = 3;
 
 /// Impact intensity style for [`HapticsClient::impact`].
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
+#[nve_codec(crate_path = "::nve_host_services")]
 pub enum ImpactStyle {
     Light = 1,
     Medium = 2,
@@ -31,37 +33,14 @@ pub enum ImpactStyle {
     Rigid = 5,
 }
 
-impl ImpactStyle {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            1 => Some(Self::Light),
-            2 => Some(Self::Medium),
-            3 => Some(Self::Heavy),
-            4 => Some(Self::Soft),
-            5 => Some(Self::Rigid),
-            _ => None,
-        }
-    }
-}
-
 /// Notification feedback style for [`HapticsClient::notification`].
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
+#[nve_codec(crate_path = "::nve_host_services")]
 pub enum NotificationHaptic {
     Success = 1,
     Warning = 2,
     Error = 3,
-}
-
-impl NotificationHaptic {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            1 => Some(Self::Success),
-            2 => Some(Self::Warning),
-            3 => Some(Self::Error),
-            _ => None,
-        }
-    }
 }
 
 /// Recorded haptic trigger captured by [`MemoryHaptics`] for test assertions.
@@ -77,11 +56,7 @@ pub fn encode_impact_request(style: ImpactStyle) -> [u8; 1] {
 }
 
 pub fn decode_impact_request(bytes: &[u8]) -> Result<ImpactStyle, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let raw = r.read_u8()?;
-    r.finish()?;
-    ImpactStyle::from_u8(raw)
-        .ok_or_else(|| ServiceError::InvalidArg(format!("invalid ImpactStyle {raw}")))
+    Ok(ImpactStyle::decode_exact(bytes)?)
 }
 
 pub fn encode_notification_haptic_request(kind: NotificationHaptic) -> [u8; 1] {
@@ -89,11 +64,7 @@ pub fn encode_notification_haptic_request(kind: NotificationHaptic) -> [u8; 1] {
 }
 
 pub fn decode_notification_haptic_request(bytes: &[u8]) -> Result<NotificationHaptic, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let raw = r.read_u8()?;
-    r.finish()?;
-    NotificationHaptic::from_u8(raw)
-        .ok_or_else(|| ServiceError::InvalidArg(format!("invalid NotificationHaptic {raw}")))
+    Ok(NotificationHaptic::decode_exact(bytes)?)
 }
 
 /// Direct typed in-process backend for [`SERVICE_HAPTICS`].

@@ -485,7 +485,7 @@ test('hardening: specs, NaN / fractional / Infinity arguments, hostile tables, B
   for (const [w, k, sh, b] of [
     [0, FieldKind.U32, 24, 16], [0, FieldKind.U32, 0, 0], [0, FieldKind.I32, 0, 33], [0, FieldKind.I32, 31, 2],
     [32, FieldKind.U32, 0, 32], [31, FieldKind.Str, 0, 32], [0.5, FieldKind.U32, 0, 8], [0, FieldKind.U32, NaN, 8],
-    [0, FieldKind.U32, 0, Infinity], [-1, FieldKind.U32, 0, 8], [0, 10 as FieldKind, 0, 8],
+    [0, FieldKind.U32, 0, Infinity], [-1, FieldKind.U32, 0, 8], [0, 14 as FieldKind, 0, 8],
   ] as const) {
     assert.throws(() => field(w, k, sh, b), RangeError, `bad spec ${w}/${sh}/${b}/${k}`);
   }

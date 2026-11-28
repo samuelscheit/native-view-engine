@@ -59,7 +59,7 @@ enum {{ e.name }} {
 {%- endif %}
 final class {{ r.name }} extends ffi.{% if r.is_union %}Union{% else %}Struct{% endif %} {
 {%- for f in r.fields %}
-  {{ dart::field(f) }}
+  {{ dart::field(m.base_aliases, f) }}
 {%- endfor %}
 }
 {%- endfor %}

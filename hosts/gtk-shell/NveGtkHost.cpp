@@ -213,10 +213,19 @@ void NveGtkHost::sync_views() {
 
 // --- Input -------------------------------------------------------------------------------------
 
-bool NveGtkHost::dispatch(const NveDirectEvent& ev) {
+bool NveGtkHost::dispatch(const NveEvent& ev) {
   if (syncing_) return false;
   const auto alive = alive_;  // the event sink may destroy this host during the dispatch
   const bool changed = session_->dispatch(ev);
+  if (!alive->load(std::memory_order_acquire)) return changed;
+  sync_views();
+  return changed;
+}
+
+bool NveGtkHost::dispatch_text(uint32_t node_id, NveTextInputEvent kind, std::string_view text) {
+  if (syncing_) return false;
+  const auto alive = alive_;  // the event sink may destroy this host during the dispatch
+  const bool changed = session_->dispatch_text(node_id, kind, text);
   if (!alive->load(std::memory_order_acquire)) return changed;
   sync_views();
   return changed;
@@ -227,11 +236,11 @@ bool NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
 }
 
 bool NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
-  return dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
+  return dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_CHANGE, text);
 }
 
 bool NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {
-  return dispatch(session_->events().text(node_id, NVE_EVENT_SUBMIT, text));
+  return dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_SUBMIT, text);
 }
 
 bool NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {

@@ -34,10 +34,10 @@ struct GtkNodeSemantics {
   std::string value_text;
   std::string placeholder;
   uint8_t level = 0u;
-  uint8_t checked = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t selected = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t expanded = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t pressed = NVE_ARIA_TRI_STATE_UNSET;
+  std::optional<uint8_t> checked;
+  std::optional<uint8_t> selected;
+  std::optional<uint8_t> expanded;
+  std::optional<uint8_t> pressed;
   float value_now = NAN;
   float value_min = NAN;
   float value_max = NAN;
@@ -97,8 +97,8 @@ class GtkTextureLruCache {
   uint64_t misses_ = 0u;
 };
 
-/// Paints all 8 `NVE_DRAW1` opcodes onto `cr` (validated first; balanced save/restore even on
-/// corrupt payloads or unbalanced clip stacks).
+/// Paints all 8 flat `nve.res.draw_list` opcodes onto `cr` (validated first; balanced save/restore
+/// even on corrupt payloads or unbalanced clip stacks).
 canvas::DrawListDecodeResult render_draw_list_to_cairo(cairo_t* cr, double width, double height,
                                                        std::span<const uint8_t> bytes) noexcept;
 
@@ -113,7 +113,7 @@ struct GtkHostConfig {
 /// widgets by `RetainedTree` (O(changed) per frame). View → `GtkFixed`, Text → `GtkLabel`,
 /// Image → `GtkPicture` (LRU `GdkTexture`s), TextInput → `GtkEntry` / `GtkTextView`,
 /// Scroll → `GtkScrolledWindow`, Link → `GtkFixed` (link role, opens `href`), `nve.canvas` →
-/// `GtkDrawingArea` (cairo `NVE_DRAW1`). Scoped CSS for visuals and inherited typography, GTK
+/// `GtkDrawingArea` (cairo flat draw list). Scoped CSS for visuals and inherited typography, GTK
 /// accessible roles/properties/states, Pango text measurement fed to layout, press / text /
 /// submit / focus / scroll events, live resize, and hot-reload / paired / app-state lifecycles.
 class NveGtkHost {
@@ -218,7 +218,8 @@ class NveGtkHost {
     gulong destroy_handler = 0u;
   };
 
-  bool dispatch(const NveDirectEvent& ev);
+  bool dispatch(const NveEvent& ev);
+  bool dispatch_text(uint32_t node_id, NveTextInputEvent kind, std::string_view text);
   void install_wake_poster();
   void sync_views();
   void apply_semantics(GtkNodeView& view, const host::NodeData& node);

@@ -2,16 +2,16 @@
 //!
 //! - Matches `AttributeValue::Float`/`Int`/`Bool` directly without string formatting/reparsing.
 //! - Matches `TypedStyle`, `MediaQuery`, and extensible [`TableAttr`] directly via `AttributeValue::Any`.
-//! - Routes inline `style` and CSS shorthands straight into `nve_components::apply_css_attr_to_tx`.
+//! - Routes inline `style` and CSS shorthands straight into `nve_tables::apply_css_attr_to_tx`.
 //! - Zero `set_raw_prop`, zero `ComponentKind`, zero module-specific downcasts.
 
 use dioxus_core::{AttributeValue, ElementId};
-use nve_components::input_hints::{AutofillHint, InputMode};
-use nve_components::media::MediaQuery;
-use nve_components::tables::{
+use nve_tables::input_hints::{AutofillHint, InputMode};
+use nve_tables::media::MediaQuery;
+use nve_tables::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
-    AriaTriState, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link,
-    LinkTarget, OptAutofillHint, Responsive, TextInput, Typography, Visual,
+    AriaTriState, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link, LinkRel,
+    LinkTarget, Responsive, TextInput, Typography, Visual,
 };
 use nve_store::{Length, NodeId};
 
@@ -47,7 +47,7 @@ impl StoreMutationTx<'_, '_> {
                     }
                     ts.apply_to_tx(self.tx, node);
                     self.typed_styles.insert(node, ts.clone());
-                    self.replay_standalone_and_inline(node, nve_components::STYLE_LAYER_ALL);
+                    self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
                     return;
                 }
                 if (name == NVE_SHOW_ON_ATTR || name == NVE_SHOW_ON_KEBAB_ATTR)
@@ -194,30 +194,21 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Visual>(node).opacity(f.clamp(0.0, 1.0));
             }
             "font-size" | "fontSize" => {
-                let cur_set = self
-                    .tx
-                    .store()
-                    .try_row::<Typography>(node)
-                    .map_or(0, |t| t.set())
-                    | Typography::SET_FONT_SIZE;
-                self.tx
-                    .edit::<Typography>(node)
-                    .font_size(f.max(1.0))
-                    .set(cur_set);
+                self.tx.edit::<Typography>(node).font_size(f.max(1.0));
             }
             "z-index" | "zIndex" => {
                 self.tx.edit::<Visual>(node).z_index(f as i32);
             }
             "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => {
-                self.tx.edit::<Accessibility>(node).value_now(f);
+                self.tx.edit::<Accessibility>(node).value_now(Some(f));
                 return false;
             }
             "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => {
-                self.tx.edit::<Accessibility>(node).value_min(f);
+                self.tx.edit::<Accessibility>(node).value_min(Some(f));
                 return false;
             }
             "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => {
-                self.tx.edit::<Accessibility>(node).value_max(f);
+                self.tx.edit::<Accessibility>(node).value_max(Some(f));
                 return false;
             }
             _ => return false,
@@ -231,8 +222,7 @@ impl StoreMutationTx<'_, '_> {
             "tabIndex" | "tab-index" | "tab_index" => {
                 self.tx
                     .edit::<Interaction>(node)
-                    .tab_index_set(true)
-                    .tab_index(v.clamp(i16::MIN as i64, i16::MAX as i64) as i16);
+                    .tab_index(Some(v.clamp(i16::MIN as i64, i16::MAX as i64) as i16));
             }
             "z-index" | "zIndex" => {
                 self.tx
@@ -241,14 +231,12 @@ impl StoreMutationTx<'_, '_> {
                 self.finish_standalone_style(node, name, StandaloneStyleRef::Int(v));
             }
             "minlength" => {
-                self.tx
-                    .edit::<TextInput>(node)
-                    .min_length(v.clamp(0, u16::MAX as i64) as u16);
+                let len = (v >= 0).then(|| v.min(i64::from(u16::MAX)) as u16);
+                self.tx.edit::<TextInput>(node).min_length(len);
             }
             "maxlength" => {
-                self.tx
-                    .edit::<TextInput>(node)
-                    .max_length(v.clamp(0, u16::MAX as i64) as u16);
+                let len = (v >= 0).then(|| v.min(i64::from(u16::MAX)) as u16);
+                self.tx.edit::<TextInput>(node).max_length(len);
             }
             _ => self.apply_numeric_attr(node, name, v as f64),
         }
@@ -261,23 +249,25 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Interaction>(node).disabled(b);
             }
             "ariaChecked" | "aria-checked" | "aria_checked" => {
-                self.tx
-                    .edit::<Accessibility>(node)
-                    .checked(if b { AriaTriState::True } else { AriaTriState::False });
+                self.tx.edit::<Accessibility>(node).checked(Some(if b {
+                    AriaTriState::True
+                } else {
+                    AriaTriState::False
+                }));
             }
             "ariaSelected" | "aria-selected" | "aria_selected" => {
-                self.tx.edit::<Accessibility>(node).selected(if b {
+                self.tx.edit::<Accessibility>(node).selected(Some(if b {
                     AriaTriState::True
                 } else {
                     AriaTriState::False
-                });
+                }));
             }
             "ariaExpanded" | "aria-expanded" | "aria_expanded" => {
-                self.tx.edit::<Accessibility>(node).expanded(if b {
+                self.tx.edit::<Accessibility>(node).expanded(Some(if b {
                     AriaTriState::True
                 } else {
                     AriaTriState::False
-                });
+                }));
             }
             "ariaModal" | "aria-modal" | "aria_modal" => {
                 self.tx.edit::<Accessibility>(node).modal(b);
@@ -309,25 +299,25 @@ impl StoreMutationTx<'_, '_> {
             self.apply_inline_style_attr(node, value);
             return;
         }
-        match nve_components::apply_css_attr_layers_status_to_tx(
+        match nve_tables::apply_css_attr_layers_status_to_tx(
             self.tx,
             node,
             name,
             value,
-            nve_components::STYLE_LAYER_ALL,
+            nve_tables::STYLE_LAYER_ALL,
         ) {
-            nve_components::CssAttrResult::Applied(_) => {
+            nve_tables::CssAttrResult::Applied(_) => {
                 self.finish_standalone_style(node, name, StandaloneStyleRef::Str(value));
                 return;
             }
-            nve_components::CssAttrResult::Invalid(layer) => {
+            nve_tables::CssAttrResult::Invalid(layer) => {
                 debug_assert!(layer != 0, "invalid CSS attr `{name}` must carry a non-zero layer");
                 if self.remove_standalone_style(node, name) {
                     self.rebuild_style_layers_mask(node, layer);
                 }
                 return;
             }
-            nve_components::CssAttrResult::Unknown => {}
+            nve_tables::CssAttrResult::Unknown => {}
         }
         if self.apply_identity_attr(node, name, Some(value)) {
             return;
@@ -358,12 +348,12 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Link>(node).target(target);
             }
             "rel" => {
-                let mut rel = 0u8;
+                let mut rel = LinkRel::EMPTY;
                 for tok in value.split_ascii_whitespace() {
                     match tok {
-                        "noopener" => rel |= 1,
-                        "noreferrer" => rel |= 2,
-                        "nofollow" => rel |= 4,
+                        "noopener" => rel |= LinkRel::NOOPENER,
+                        "noreferrer" => rel |= LinkRel::NOREFERRER,
+                        "nofollow" => rel |= LinkRel::NOFOLLOW,
                         _ => {}
                     }
                 }
@@ -383,13 +373,11 @@ impl StoreMutationTx<'_, '_> {
                 }
             }
             "autocomplete" | "autoComplete" | "auto_complete" => {
-                let hint = AutofillHint::parse_html_autocomplete(value)
-                    .map(OptAutofillHint::some)
-                    .unwrap_or(OptAutofillHint::NONE);
+                let hint = AutofillHint::from_whatwg_token(value);
                 self.tx.edit::<TextInput>(node).autofill(hint);
             }
             "inputmode" | "inputMode" | "input_mode" => {
-                let mode = InputMode::parse_html_inputmode(value).unwrap_or(InputMode::Text);
+                let mode = InputMode::from_whatwg_token(value).unwrap_or(InputMode::Text);
                 self.tx.edit::<TextInput>(node).input_mode(mode);
             }
             "pattern" => {
@@ -417,7 +405,9 @@ impl StoreMutationTx<'_, '_> {
             }
             "aria-level" | "ariaLevel" | "aria_level" => {
                 if let Ok(lvl) = value.trim().parse::<u8>() {
-                    self.tx.edit::<Accessibility>(node).level(lvl);
+                    self.tx
+                        .edit::<Accessibility>(node)
+                        .level((lvl > 0).then_some(lvl));
                 }
             }
             "ariaChecked" | "aria-checked" | "aria_checked" => {
@@ -437,26 +427,27 @@ impl StoreMutationTx<'_, '_> {
             }
             "ariaLive" | "aria-live" | "aria_live" => {
                 let live = match value.trim() {
-                    "polite" => AriaLive::Polite,
-                    "assertive" => AriaLive::Assertive,
-                    _ => AriaLive::Off,
+                    "polite" => Some(AriaLive::Polite),
+                    "assertive" => Some(AriaLive::Assertive),
+                    "off" => Some(AriaLive::Off),
+                    _ => None,
                 };
                 self.tx.edit::<Accessibility>(node).live(live);
             }
             "ariaOrientation" | "aria-orientation" | "aria_orientation" => {
                 let orient = match value.trim() {
-                    "horizontal" => AriaOrientation::Horizontal,
-                    "vertical" => AriaOrientation::Vertical,
-                    _ => AriaOrientation::Unset,
+                    "horizontal" => Some(AriaOrientation::Horizontal),
+                    "vertical" => Some(AriaOrientation::Vertical),
+                    _ => None,
                 };
                 self.tx.edit::<Accessibility>(node).orientation(orient);
             }
             "ariaAutoComplete" | "aria-autocomplete" | "aria_autocomplete" => {
                 let ac = match value.trim() {
-                    "inline" => AriaAutoComplete::Inline,
-                    "list" | "both" => AriaAutoComplete::List,
-                    "none" => AriaAutoComplete::None,
-                    _ => AriaAutoComplete::Unset,
+                    "inline" => Some(AriaAutoComplete::Inline),
+                    "list" | "both" => Some(AriaAutoComplete::List),
+                    "none" => Some(AriaAutoComplete::None),
+                    _ => None,
                 };
                 self.tx.edit::<Accessibility>(node).autocomplete(ac);
             }
@@ -471,7 +462,7 @@ impl StoreMutationTx<'_, '_> {
                     .and_then(|a| {
                         let r = a.relations();
                         (!r.is_none())
-                            .then(|| self.tx.store().resource::<AriaRelations>(r).cloned())
+                            .then(|| self.tx.store().resource::<AriaRelations>(r).map(|v| v.to_owned()))
                             .flatten()
                     })
                     .unwrap_or_default();
@@ -513,7 +504,7 @@ impl StoreMutationTx<'_, '_> {
             if super::current_color::key_sets_border_color(name) {
                 self.refresh_current_color_border(node);
             }
-            let layer = nve_components::css_attr_layer(name);
+            let layer = nve_tables::css_attr_layer(name);
             debug_assert!(layer != 0, "removed standalone style `{name}` must have a non-zero layer");
             self.rebuild_style_layers_mask(node, layer);
             return;
@@ -537,10 +528,10 @@ impl StoreMutationTx<'_, '_> {
             "style" => {
                 if let Some((inline, prev_mask)) = self.inline_styles.remove(&node) {
                     self.buffer_pool.recycle_inline(inline);
-                    if nve_components::mask_border_color_source(prev_mask).is_some() {
+                    if nve_tables::mask_border_color_source(prev_mask).is_some() {
                         self.refresh_current_color_border(node);
                     }
-                    let layers = nve_components::prop_bits_to_layers(prev_mask);
+                    let layers = nve_tables::prop_bits_to_layers(prev_mask);
                     if layers != 0 {
                         self.rebuild_style_layers_mask(node, layers);
                     }
@@ -550,7 +541,7 @@ impl StoreMutationTx<'_, '_> {
                 if let Some(prev) = self.typed_styles.remove(&node) {
                     prev.clear_diff_from(None, self.tx, node);
                 }
-                self.replay_standalone_and_inline(node, nve_components::STYLE_LAYER_ALL);
+                self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
             }
             NVE_SHOW_ON_ATTR | NVE_SHOW_ON_KEBAB_ATTR => {
                 if self.tx.store().has::<Responsive>(node) {
@@ -567,7 +558,7 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Link>(node).target(LinkTarget::Default);
             }
             "rel" if self.tx.store().has::<Link>(node) => {
-                self.tx.edit::<Link>(node).rel(0);
+                self.tx.edit::<Link>(node).rel(LinkRel::EMPTY);
             }
             "src" if self.tx.store().has::<Image>(node) => {
                 self.tx.edit::<Image>(node).src(None);
@@ -597,7 +588,7 @@ impl StoreMutationTx<'_, '_> {
                 self.apply_bool_attr(node, "disabled", false);
             }
             "tabIndex" | "tab-index" | "tab_index" if self.tx.store().has::<Interaction>(node) => {
-                self.tx.edit::<Interaction>(node).tab_index_set(false).tab_index(0);
+                self.tx.edit::<Interaction>(node).tab_index(None);
             }
             "accessibilityLabel" | "aria-label" | "ariaLabel"
                 if self.tx.store().has::<Accessibility>(node) =>
@@ -605,22 +596,22 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Accessibility>(node).label("");
             }
             "accessibilityRole" | "role" if self.tx.store().has::<Accessibility>(node) => {
-                self.tx.edit::<Accessibility>(node).role(AriaRole::None);
+                self.tx.edit::<Accessibility>(node).role(None);
             }
             "ariaChecked" | "aria-checked" | "aria_checked"
                 if self.tx.store().has::<Accessibility>(node) =>
             {
-                self.tx.edit::<Accessibility>(node).checked(AriaTriState::Unset);
+                self.tx.edit::<Accessibility>(node).checked(None);
             }
             "ariaSelected" | "aria-selected" | "aria_selected"
                 if self.tx.store().has::<Accessibility>(node) =>
             {
-                self.tx.edit::<Accessibility>(node).selected(AriaTriState::Unset);
+                self.tx.edit::<Accessibility>(node).selected(None);
             }
             "ariaExpanded" | "aria-expanded" | "aria_expanded"
                 if self.tx.store().has::<Accessibility>(node) =>
             {
-                self.tx.edit::<Accessibility>(node).expanded(AriaTriState::Unset);
+                self.tx.edit::<Accessibility>(node).expanded(None);
             }
             "ariaModal" | "aria-modal" | "aria_modal"
                 if self.tx.store().has::<Accessibility>(node) =>
@@ -638,12 +629,12 @@ impl StoreMutationTx<'_, '_> {
 }
 
 #[inline]
-fn parse_tri_state(s: &str) -> AriaTriState {
+fn parse_tri_state(s: &str) -> Option<AriaTriState> {
     match s.trim() {
-        "true" => AriaTriState::True,
-        "false" => AriaTriState::False,
-        "mixed" => AriaTriState::Mixed,
-        _ => AriaTriState::Unset,
+        "true" => Some(AriaTriState::True),
+        "false" => Some(AriaTriState::False),
+        "mixed" => Some(AriaTriState::Mixed),
+        _ => None,
     }
 }
 

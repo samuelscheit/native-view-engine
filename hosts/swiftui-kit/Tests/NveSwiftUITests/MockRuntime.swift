@@ -1,6 +1,7 @@
 import CNveAbi
 import Foundation
 import NveHost
+import NveHostAbi
 @testable import NveSwiftUI
 
 private let pageLen = Int(nveRowIndexPageLen)
@@ -100,10 +101,32 @@ struct SceneBuilder {
 
     static func put(_ row: inout [UInt32], _ f: FieldSpec, _ v: UInt32) {
         let mask: UInt32 = f.bits >= 32 ? .max : ((1 << UInt32(f.bits)) - 1) << UInt32(f.shift)
-        row[Int(f.word)] = (row[Int(f.word)] & ~mask) | ((v << UInt32(f.shift)) & mask)
+        let encoded: UInt32
+        switch f.opt {
+        case .required, .zeroNiche:
+            encoded = v
+        case .plusOne:
+            encoded = v &+ 1
+        case .bit0Present:
+            encoded = (v << 1) | 1
+        case .tagXor:
+            encoded = v ^ (f.kind == .length ? 0b11 : 0xC000)
+        case .wideBit:
+            row[Int(f.valWord)] = v
+            encoded = 1
+        }
+        row[Int(f.word)] = (row[Int(f.word)] & ~mask) | ((encoded << UInt32(f.shift)) & mask)
     }
 
     static func put(_ row: inout [UInt32], _ f: FieldSpec, _ v: Float) { put(&row, f, v.bitPattern) }
+
+    static func setExplicit(_ row: inout [UInt32], _ fields: FieldSpec...) {
+        for f in fields { row[0] |= f.explicitMask }
+    }
+
+    static func setEvents(_ row: inout [UInt32], eventsWord: UInt8, _ bits: UInt32) {
+        row[Int(eventsWord)] = bits
+    }
 
     static func put(_ row: inout [UInt32], _ f: FieldSpec, _ span: (UInt32, UInt32)) {
         row[Int(f.word)] = span.0
@@ -152,14 +175,13 @@ final class MockRuntime: @unchecked Sendable {
     var sceneEpoch: UInt32 = 0
     var dirtyResources: [UInt32] = []
     var state: [UInt8] = []
-    var emitted: [NveDirectEvent] = []
-    private var drained: [NveDirectEvent] = []
+    var emitted = EventBatchBuilder()
 
     var creates = 0, destroys = 0, acquires = 0, releases = 0, ticks = 0, attaches = 0, detaches = 0
     /// `load_app_module` calls: path and `carry_state`.
     var loads: [(String, UInt32)] = []
     var propCounts: [UInt32] = []
-    var dispatched: [[NveEvent]] = []
+    var dispatched: [[NveSwiftUI.NveEvent]] = []
     var viewports: [(Float, Float, Float)] = []
     var pairedUri = ""
     var paired = false
@@ -177,7 +199,7 @@ final class MockRuntime: @unchecked Sendable {
         scene = fresh.scene
         frameId = 1; removed = []; dirty = []; schema = NVE_RUNTIME_SCHEMA_HASH; tickChanged = true
         failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; sceneEpoch = 0; dirtyResources = []
-        state = []; emitted = []; drained = []
+        state = []; emitted = EventBatchBuilder()
         creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0; loads = []
         propCounts = []; dispatched = []; viewports = []; pairedUri = ""; paired = false; restored = []; patches = []
         wake = (nil, nil); measurer = (nil, nil)
@@ -223,9 +245,20 @@ final class MockRuntime: @unchecked Sendable {
     }
 
     fileprivate func drain() -> NveEventBatch {
-        drained = emitted
-        emitted = []
-        return drained.withUnsafeBufferPointer { NveEventBatch(ptr: $0.baseAddress, len: UInt32($0.count), _pad: 0) }
+        let current = emitted
+        emitted = EventBatchBuilder()
+        guard !current.isEmpty else {
+            return NveEventBatch(events: nil, bytes: nil, event_count: 0, bytes_len: 0)
+        }
+        let words: [UInt64] = current.withRecordWords { Array($0) }
+        let recPtr = pin(words).map { UnsafeRawPointer($0).assumingMemoryBound(to: CNveAbi.NveEvent.self) }
+        let bytesPtr = pin(current.bytes)
+        return NveEventBatch(
+            events: recPtr,
+            bytes: bytesPtr,
+            event_count: UInt32(current.count),
+            bytes_len: UInt32(current.bytes.count)
+        )
     }
 
     /// Fires the installed text measurer like runtime layout would.
@@ -267,7 +300,8 @@ final class MockRuntime: @unchecked Sendable {
             return m.status()
         }
         a.dispatch_events = { _, batch, changed in
-            MockRuntime.shared.dispatched.append(NveDirectEventWriter.decodeBatch(batch))
+            let decoded = (try? EventBatchReader.validate(batch: batch).decodeEvents()) ?? []
+            MockRuntime.shared.dispatched.append(decoded)
             changed?.pointee = 1
             return 0
         }

@@ -10,7 +10,7 @@ import 'check.dart';
 void runFfi(Check c) {
   final abi = ffi.Abi.current();
   if (abi == ffi.Abi.linuxIA32 || abi == ffi.Abi.androidIA32) {
-    // i386 System V is C-only (see `nveAbiRecordSizes`): Dart cannot over-align `NveDirectEvent`.
+    // i386 System V is C-only (see `nveAbiRecordSizes`): Dart cannot over-align `NveEvent`.
     c.skip('ffi.sizeOf skipped on $abi (i386 System V is C-only)');
     return;
   }
@@ -23,7 +23,8 @@ void runFfi(Check c) {
     'NveValueData': ffi.sizeOf<NveValueData>(),
     'NveValue': ffi.sizeOf<NveValue>(),
     'NveMapEntry': ffi.sizeOf<NveMapEntry>(),
-    'NveDirectEvent': ffi.sizeOf<NveDirectEvent>(),
+    'RawEventBytes': ffi.sizeOf<RawEventBytes>(),
+    'NveEvent': ffi.sizeOf<NveEvent>(),
     'NveEventBatch': ffi.sizeOf<NveEventBatch>(),
     'NvePropEntry': ffi.sizeOf<NvePropEntry>(),
     'NvePropSlice': ffi.sizeOf<NvePropSlice>(),

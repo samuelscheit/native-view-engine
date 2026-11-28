@@ -27,18 +27,21 @@ const RESERVED_RUNTIME_NAMES: &[&str] = &[
     "BinMapWriter",
     "BinValueView",
     "DecodeError",
+    "EventBatchBuf",
     "HybridCodec",
     "HybridElem",
     "HybridFields",
     "HybridStruct",
     "NveAppHandle",
     "NveBufferSlice",
-    "NveDirectEvent",
+    "NveEvent",
+    "NveEventBatch",
     "NveMapEntry",
     "NveMapRef",
     "NveStrSlice",
     "NveValue",
     "NveValueRef",
+    "RawEventBytes",
 ];
 
 /// Slots every module/view vtable carries ahead of its methods (C header, all bindings); compared

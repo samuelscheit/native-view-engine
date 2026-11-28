@@ -2,16 +2,31 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+use nve_abi::EventEnum;
 use nve_store::{NodeId, NveTable, Str, Transaction};
+
+/// Typed events emitted back from WebView hosts.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EventEnum)]
+pub enum WebViewEvent {
+    LoadStart = 0,
+    LoadEnd = 1,
+    Error = 2,
+    Message = 3,
+}
 
 /// Embedded WebView table (`nve.web_view`).
 #[derive(NveTable)]
-#[nve_table(name = "nve.web_view", storage = "sparse", flags = "publish")]
+#[nve_table(
+    name = "nve.web_view",
+    storage = "sparse",
+    flags = "publish",
+    events = WebViewEvent
+)]
 pub struct WebView {
     #[effect(realize, paint)]
     pub url: Str,
     #[effect(semantics)]
-    #[bits(1)]
     #[default(true)]
     pub allows_back_forward: bool,
 }
@@ -59,14 +74,6 @@ impl WebViewCommand {
             _ => None,
         }
     }
-}
-
-/// Typed `TableEvent` IDs emitted back from WebView hosts.
-pub mod events {
-    pub const LOAD_START: u32 = 1;
-    pub const LOAD_END: u32 = 2;
-    pub const ERROR: u32 = 3;
-    pub const MESSAGE: u32 = 4;
 }
 
 #[cfg(test)]

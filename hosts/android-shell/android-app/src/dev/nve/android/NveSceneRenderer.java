@@ -22,7 +22,6 @@ import dev.nve.host.RuntimeSurface;
 import dev.nve.host.SceneSemantics;
 import dev.nve.host.SceneSemantics.Kind;
 import dev.nve.host.Utf8;
-import dev.nve.host.generated.NveAbi;
 import dev.nve.host.generated.NveTables;
 
 import java.util.ArrayList;
@@ -368,19 +367,22 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
             public void afterTextChanged(Editable e) {
                 if (reconciling) return;
                 final String text = Utf8.wellFormed(e);  // IMEs can leave lone surrogates
-                surface.send(r -> r.text(NveAbi.EVENT_TEXT_CHANGE, id, now(), text));
+                surface.send(r -> r.textChange(id, now(), text));
                 if (surface.dispatchesSynchronously()) showVerdict(id);
             }
         });
         edit.setOnEditorActionListener((v, actionId, event) -> {
             if (reconciling || !isSubmit(actionId, event)) return false;
             final String text = Utf8.wellFormed(v.getText());
-            surface.send(r -> r.text(NveAbi.EVENT_SUBMIT, id, now(), text));
+            surface.send(r -> r.submit(id, now(), text));
             return true;
         });
         edit.setOnFocusChangeListener((v, focused) -> {
             if (reconciling) return;  // detaching / re-adding views moves focus without the user
-            surface.send(r -> r.empty(focused ? NveAbi.EVENT_FOCUS : NveAbi.EVENT_BLUR, id, now()));
+            surface.send(r -> {
+                if (focused) r.focus(id, now());
+                else r.blur(id, now());
+            });
         });
         return edit;
     }
@@ -458,7 +460,7 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
             final float ch = content.getHeight() / density;
             final float sx = across.getScrollX() / density;
             final float sy = down.getScrollY() / density;
-            surface.send(r -> r.scroll(NveAbi.EVENT_SCROLL, id, now(), sx, sy, cw, ch));
+            surface.send(r -> r.scroll(id, now(), sx, sy, cw, ch));
         });
     }
 
@@ -469,7 +471,7 @@ final class NveSceneRenderer implements RuntimeSurface.FrameConsumer {
             n.view.setClickable(false);
             return;
         }
-        n.view.setOnClickListener(v -> surface.send(r -> r.point(NveAbi.EVENT_PRESS, n.id, now(), n.w * 0.5f, n.h * 0.5f)));
+        n.view.setOnClickListener(v -> surface.send(r -> r.press(n.id, now(), n.w * 0.5f, n.h * 0.5f)));
     }
 
     private void reconcileChildren(SceneReader s, int i) {

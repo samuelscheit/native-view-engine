@@ -43,7 +43,7 @@ using nve::host::Nve2FrameBuilder;
 constexpr uint8_t kBlobSlot = 41u;
 constexpr uint32_t kBlobId = 7u;
 constexpr Key64 kBlobKind = Key64::of("cxx.hooks.blob");
-constexpr std::array<uint8_t, 5> kBlobBytes{1u, 2u, 3u, 4u, 5u};
+constexpr std::array<uint8_t, 8> kBlobBytes{1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u};
 
 const NveRuntimeApi* runtime_api() { return nve_runtime_get_interface(NVE_RUNTIME_ABI_VERSION); }
 
@@ -234,9 +234,9 @@ void test_app_hooks_without_app() {
   uint32_t raw_changed = 5u;
   CHECK(session.api()->set_props(session.handle(), nullptr, 2u, &raw_changed) == NVE_RUNTIME_INVALID_ARG);
 
-  NveEventBatch events{reinterpret_cast<const NveDirectEvent*>(&session), 3u, 0u};
+  NveEventBatch events{reinterpret_cast<const NveEvent*>(&session), nullptr, 3u, 0u};
   CHECK(session.drain_emitted_events(&events) == NVE_RUNTIME_UNSUPPORTED);
-  CHECK(events.ptr == nullptr && events.len == 0u);
+  CHECK(events.events == nullptr && events.bytes == nullptr && events.event_count == 0u && events.bytes_len == 0u);
   CHECK(session.drain_emitted_events(nullptr) == NVE_RUNTIME_INVALID_ARG);
   CHECK(session.api()->drain_emitted_events(session.handle(), nullptr) == NVE_RUNTIME_INVALID_ARG);
 

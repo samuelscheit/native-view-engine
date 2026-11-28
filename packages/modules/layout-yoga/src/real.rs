@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nve_components::tables::{Layout, Scroll, TextContent, Typography, Visual};
+use nve_tables::tables::{Layout, Scroll, TextContent, Typography, Visual};
 use nve_engine::{LayoutRect, Viewport};
 use nve_layout::{
     HeuristicTextMeasurer, MAX_TREE_DEPTH, ResolvedTextStyle, StoreLayoutEngine, TextMeasurer,
@@ -128,7 +128,7 @@ impl YogaLayoutEngine {
         let Some(entry) = self.nodes.get_mut(&id) else {
             return;
         };
-        let hidden_input = nve_components::tables::is_hidden_text_input(store, id);
+        let hidden_input = nve_tables::tables::is_hidden_text_input(store, id);
         let layout = store.try_row::<Layout>(id);
         let visual = store.try_row::<Visual>(id);
         let mut props = if let Some(ref l) = layout {

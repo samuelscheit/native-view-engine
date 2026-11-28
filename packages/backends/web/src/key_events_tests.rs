@@ -20,8 +20,8 @@ fn text_like_input_types_and_raw_node_ids() {
         assert!(!is_text_like_input_type(t), "{t}");
     }
     let id = NodeId::new(0x12_3456, 7);
-    assert_eq!(node_id_from_raw(id.raw()), Some(id));
-    assert_eq!(node_id_from_raw(0), None, "the null node is never a target");
+    assert_eq!(NodeId::from_raw(id.raw()), Some(id));
+    assert_eq!(NodeId::from_raw(0), None, "the null node is never a target");
     assert_eq!(parse_dom_node_id(&id.raw().to_string()), Some(id));
     assert_eq!(parse_dom_node_id("1"), Some(NodeId::ROOT));
     for bad in ["0", "", "-3", "x1", "4294967296"] {

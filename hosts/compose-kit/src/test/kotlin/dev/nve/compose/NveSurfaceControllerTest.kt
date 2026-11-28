@@ -1,10 +1,10 @@
 package dev.nve.compose
 
+import dev.nve.host.EventRingReader
 import dev.nve.host.EventRingWriter
+import dev.nve.host.FrameHost
 import dev.nve.host.NativeRuntime
 import dev.nve.host.SceneReader
-import dev.nve.host.FrameHost
-import dev.nve.host.RuntimeSurface
 import dev.nve.host.generated.NveAbi
 import dev.nve.host.generated.NveRuntimeAbi
 import dev.nve.host.generated.NveTables
@@ -14,14 +14,13 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
-/** JVM double of `NativeRuntimeHost`: serves [TestScene] frames and records dispatched rings. */
+/** JVM double of `NativeRuntimeHost`: serves [TestScene] frames and records dispatched `NVEV` v2 batches. */
 class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     var startStatus = NveRuntimeAbi.STATUS_OK
     val started = ArrayList<NveSource>()
     val viewports = ArrayList<List<Float>>()
-    val rings = ArrayList<ByteBuffer>()
+    val rings = ArrayList<EventRingReader>()
     val scrolls = ArrayList<Triple<Int, Float, Float>>()
     var measurer: NativeRuntime.TextMeasurer? = null
     var closed = false
@@ -62,7 +61,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     override fun send(write: FrameHost.EventWriter): Int {
         val ring = EventRingWriter(ByteBuffer.allocate(1024), 1)
         write.write(ring)
-        rings.add(ByteBuffer.wrap(ring.buffer().array().copyOf(ring.length())).order(ByteOrder.LITTLE_ENDIAN))
+        rings.add(EventRingReader().attach(ring.buffer().array().copyOf(ring.length())))
         return 0
     }
 
@@ -84,10 +83,6 @@ class NveSurfaceControllerTest {
     private fun scene() = TestScene().node(2, 1, 0f, 0f, 100f, 40f).also {
         it.set(it.table(NveTables.Text.KEY, NveTables.Text.WORDS), 2, NveTables.Text.TEXT, "Hi")
     }
-
-    /** `(count, node, kind, payload tag)` of the ring's first event. */
-    private fun head(ring: ByteBuffer): List<Int> =
-        listOf(ring.getInt(0), ring.getInt(8), ring.get(20).toInt(), ring.get(21).toInt())
 
     @Test
     fun startRendersTheFirstFrame() {
@@ -132,14 +127,28 @@ class NveSurfaceControllerTest {
         c.focusChanged(0x1000003, false)
         c.scrolled(0x1000004, 0f, 12f, 0f, 30f, 100f, 300f)
         c.scrolled(0xFF000005.toInt(), 0f, 1f, 0f, 1f, 100f, 300f)
-        assertEquals(listOf(1, 0x1000002, NveAbi.EVENT_PRESS, 1), head(host.rings[0]))
-        assertEquals(50f, host.rings[0].getFloat(22))
-        assertEquals(listOf(1, 0x1000003, NveAbi.EVENT_TEXT_CHANGE, 3), head(host.rings[1]))
-        assertEquals(3, host.rings[1].getInt(22), "UTF-8 byte length")
-        assertEquals(listOf(1, 0x1000003, NveAbi.EVENT_SUBMIT, 3), head(host.rings[2]))
-        assertEquals(NveAbi.EVENT_FOCUS, head(host.rings[3])[2])
-        assertEquals(NveAbi.EVENT_BLUR, head(host.rings[4])[2])
-        assertEquals(listOf(1, 0x1000004, NveAbi.EVENT_SCROLL, 2), head(host.rings[5]))
+        assertEquals(1, host.rings[0].count())
+        assertTrue(host.rings[0].isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_PRESS))
+        assertEquals(0x1000002, host.rings[0].node(0))
+        assertEquals(50f to 20f, host.rings[0].payloadF32(0, 0) to host.rings[0].payloadF32(0, 1))
+        assertEquals(1, host.rings[1].count())
+        assertTrue(host.rings[1].isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_CHANGE))
+        assertEquals(0x1000003, host.rings[1].node(0))
+        assertEquals(3, host.rings[1].bytesLen(0), "UTF-8 byte length")
+        assertEquals("h\u00e9", host.rings[1].text(0))
+        assertTrue(host.rings[2].isEvent(NveAbi.TABLE_TEXT_INPUT, NveAbi.TEXT_INPUT_EVENT_SUBMIT))
+        assertEquals(0x1000003, host.rings[2].node(0))
+        assertEquals("done", host.rings[2].text(0))
+        assertTrue(host.rings[3].isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_FOCUS))
+        assertEquals(0x1000003, host.rings[3].node(0))
+        assertTrue(host.rings[4].isEvent(NveAbi.TABLE_INTERACTION, NveAbi.INTERACTION_EVENT_BLUR))
+        assertEquals(0x1000003, host.rings[4].node(0))
+        assertTrue(host.rings[5].isEvent(NveAbi.TABLE_SCROLL, NveAbi.SCROLL_EVENT_SCROLL))
+        assertEquals(0x1000004, host.rings[5].node(0))
+        assertEquals(
+            listOf(0f, 30f, 100f, 300f),
+            List(4) { host.rings[5].payloadF32(0, it) },
+        )
         assertEquals(
             listOf(Triple(0x1000004, 0f, 12f), Triple(0xFF000005.toInt(), 0f, 1f)), host.scrolls,
             "native scroll syncs runtime offsets with exact raw u32 ids (no float truncation)",

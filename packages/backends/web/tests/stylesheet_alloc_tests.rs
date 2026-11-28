@@ -7,10 +7,10 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
 use std::alloc::System;
 
-use nve_backend_web::StyleSheetCache;
+use nve_backend_web::{StyleSheetCache, WebTableRegistry};
 use nve_backend_web::state_css::format_cursor_rule;
-use nve_components::CursorKind;
-use nve_components::tables::{Interaction, Visual};
+use nve_tables::CursorKind;
+use nve_tables::tables::{Interaction, Visual};
 use nve_store::{ChangeSet, NodeId, NodeStore, Rgba};
 
 struct CountingAlloc;
@@ -125,15 +125,16 @@ fn registration_costs(prior: u32) -> Vec<(usize, usize)> {
         (prior_nodes, probes)
     };
     let mut cache = StyleSheetCache::new();
+    let systems = WebTableRegistry::new();
     for &n in &prior_nodes {
-        let _ = cache.resolve_node(&store, n);
+        let _ = cache.resolve_node(&store, n, &systems);
     }
     assert_eq!(cache.rule_count(), prior as usize);
     probes
         .iter()
         .map(|&(fresh, twin)| {
-            let new_rule = allocations(|| drop(cache.resolve_node(&store, fresh)));
-            let known = allocations(|| drop(cache.resolve_node(&store, twin)));
+            let new_rule = allocations(|| drop(cache.resolve_node(&store, fresh, &systems)));
+            let known = allocations(|| drop(cache.resolve_node(&store, twin, &systems)));
             (new_rule, known)
         })
         .collect()
@@ -182,7 +183,8 @@ fn known_cursor_class_registers_with_zero_allocations() {
         pair
     };
     let mut cache = StyleSheetCache::new();
-    drop(cache.resolve_node(&store, first));
+    let systems = WebTableRegistry::new();
+    drop(cache.resolve_node(&store, first, &systems));
     let rules = cache.rule_count();
     let Some((cls, _)) = format_cursor_rule(CursorKind::Pointer) else {
         unreachable!("Pointer has a cursor rule");
@@ -196,7 +198,7 @@ fn known_cursor_class_registers_with_zero_allocations() {
         classes.push_str(cls);
         drop(std::hint::black_box(classes));
     });
-    let twin_cost = allocations(|| drop(cache.resolve_node(&store, twin)));
+    let twin_cost = allocations(|| drop(cache.resolve_node(&store, twin, &systems)));
     assert_eq!(
         twin_cost, class_list,
         "known cursor hit must not allocate its declarations"

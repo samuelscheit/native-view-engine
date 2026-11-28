@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nve_abi::{
-    NveBufferSlice, NveEventBatch, NveEventBatchRef, NveGetInterfaceFn, NveRuntimeApi,
-    NveRuntimeConfig, NveRuntimeHandle, NveRuntimeMetrics, NveSceneView, NveRuntimeStatus,
-    NveRuntimeWakeFn, NveStrSlice, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
+    NodeId, NveBufferSlice, NveEventBatch, NveGetInterfaceFn, NveRuntimeApi, NveRuntimeConfig,
+    NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeStatus, NveRuntimeWakeFn, NveSceneView,
+    NveStrSlice, SurfaceId, ValidatedEvents, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_engine::Viewport;
 use nve_engine::app::format_panic_payload;
@@ -144,7 +144,7 @@ unsafe extern "C" fn rt_create(config: *const NveRuntimeConfig) -> NveRuntimeHan
         };
         let positive_or = |v: f32, fallback: f32| if v.is_finite() && v > 0.0 { v } else { fallback };
         let rt = RuntimeBuilder::new()
-            .surface_id(cfg.surface_id.max(1))
+            .surface_id(SurfaceId::from_raw(cfg.surface_id).unwrap_or(SurfaceId::ROOT))
             .viewport(Viewport {
                 width: positive_or(cfg.width, 800.0),
                 height: positive_or(cfg.height, 600.0),
@@ -259,10 +259,10 @@ unsafe extern "C" fn rt_dispatch_events(
     out_changed: *mut u32,
 ) -> i32 {
     with_runtime("nve_runtime::dispatch_events", handle, |rt| {
-        // SAFETY: Caller guarantees `batch` points to valid `NveDirectEvent`s when structurally valid.
-        let events = unsafe { NveEventBatchRef::try_from_raw(batch) }.ok_or(
-            RuntimeError::InvalidArg("invalid NveEventBatch (null/misaligned pointer or len overflow)"),
-        )?;
+        // SAFETY: Caller guarantees `batch` points to valid `NveEvent`s and bytes for the call.
+        let events = unsafe { ValidatedEvents::try_from_raw(batch) }.map_err(|_| {
+            RuntimeError::InvalidArg("invalid NveEventBatch (null pointer, bad span or UTF-8)")
+        })?;
         let changed = rt.dispatch_events_shared(events)?;
         // SAFETY: `out_changed` is null or a valid caller out slot.
         unsafe { write_opt(out_changed, u32::from(changed)) };
@@ -274,26 +274,28 @@ unsafe extern "C" fn rt_hit_test(
     handle: NveRuntimeHandle,
     x: f32,
     y: f32,
-    out_node_id: *mut u32,
+    out_node_id: *mut NodeId,
 ) -> i32 {
     with_runtime("nve_runtime::hit_test", handle, |rt| {
         let out = required(out_node_id, "null out_node_id")?;
         let hit = rt.hit_test(x, y)?;
         // SAFETY: `out` is a non-null caller out slot.
-        unsafe { out.write(hit.unwrap_or(0)) };
+        unsafe { out.write(hit.unwrap_or(NodeId::NULL)) };
         Ok(())
     })
 }
 
 unsafe extern "C" fn rt_scroll_by(
     handle: NveRuntimeHandle,
-    node_id: u32,
+    node_id: NodeId,
     dx: f32,
     dy: f32,
     out_x: *mut f32,
     out_y: *mut f32,
 ) -> i32 {
     with_runtime("nve_runtime::scroll_by", handle, |rt| {
+        let node_id = NodeId::from_raw(node_id.raw())
+            .ok_or(RuntimeError::InvalidArg("scroll target node id is null"))?;
         let (x, y) = rt.scroll_by_shared(node_id, dx, dy)?;
         // SAFETY: Both out pointers are null or valid caller out slots.
         unsafe {

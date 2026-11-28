@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use nve_codec::{ByteReader, ByteWriter, CodecError};
+
 use crate::route::Routable;
 use crate::stack::{NavigationAction, NavigationTransition};
 
@@ -152,10 +154,12 @@ pub fn encode_nav_packet_into(
     packet: NavPacketRef<'_>,
     dst: &mut Vec<u8>,
 ) -> Result<(), Nvn1EncodeError> {
-    let uri_len =
-        u16::try_from(packet.uri.len()).map_err(|_| Nvn1EncodeError::UriTooLong(packet.uri.len()))?;
-    let tab_id_len = u16::try_from(packet.tab_id.len())
-        .map_err(|_| Nvn1EncodeError::TabIdTooLong(packet.tab_id.len()))?;
+    if packet.uri.len() > usize::from(u16::MAX) {
+        return Err(Nvn1EncodeError::UriTooLong(packet.uri.len()));
+    }
+    if packet.tab_id.len() > usize::from(u16::MAX) {
+        return Err(Nvn1EncodeError::TabIdTooLong(packet.tab_id.len()));
+    }
 
     let mut flags = 0u8;
     if packet.can_go_back {
@@ -168,19 +172,20 @@ pub fn encode_nav_packet_into(
         flags |= NVN1_FLAG_IS_MODAL;
     }
 
-    dst.reserve(NVN1_MIN_PACKET_BYTES + packet.uri.len() + packet.tab_id.len());
-    dst.extend_from_slice(&NVN1_MAGIC);
-    dst.push(NVN1_VERSION);
-    dst.push(packet.action as u8);
-    dst.push(flags);
-    dst.push(0);
-    dst.extend_from_slice(&packet.stack_depth.to_le_bytes());
-    dst.extend_from_slice(&packet.active_tab_index.to_le_bytes());
-    dst.extend_from_slice(&uri_len.to_le_bytes());
-    dst.extend_from_slice(packet.uri.as_bytes());
-    dst.extend_from_slice(&tab_id_len.to_le_bytes());
-    dst.extend_from_slice(packet.tab_id.as_bytes());
-    Ok(())
+    ByteWriter::with_buf(dst, |w| {
+        w.reserve(NVN1_MIN_PACKET_BYTES + packet.uri.len() + packet.tab_id.len());
+        w.write_raw(&NVN1_MAGIC);
+        w.write_u8(NVN1_VERSION);
+        w.write_u8(packet.action as u8);
+        w.write_u8(flags);
+        w.write_u8(0);
+        w.write_u32(packet.stack_depth);
+        w.write_u32(packet.active_tab_index);
+        w.write_str_u16(packet.uri)
+            .map_err(|_| Nvn1EncodeError::UriTooLong(packet.uri.len()))?;
+        w.write_str_u16(packet.tab_id)
+            .map_err(|_| Nvn1EncodeError::TabIdTooLong(packet.tab_id.len()))
+    })
 }
 
 /// Decodes a binary `NVN1` slice with zero heap allocations and strict bounds/UTF-8 validation.
@@ -189,49 +194,45 @@ pub fn decode_nav_packet_ref(bytes: &[u8]) -> Result<NavPacketRef<'_>, Nvn1Decod
         return Err(Nvn1DecodeError::Truncated);
     }
 
-    let magic = [bytes[0], bytes[1], bytes[2], bytes[3]];
+    let mut r = ByteReader::new(bytes);
+    let magic = r.read_array::<4>().map_err(|_| Nvn1DecodeError::Truncated)?;
     if magic != NVN1_MAGIC {
         return Err(Nvn1DecodeError::InvalidMagic(magic));
     }
-    let version = bytes[4];
+    let version = r.read_u8().map_err(|_| Nvn1DecodeError::Truncated)?;
     if version != NVN1_VERSION {
         return Err(Nvn1DecodeError::UnsupportedVersion(version));
     }
+    let raw_action = r.read_u8().map_err(|_| Nvn1DecodeError::Truncated)?;
     let action =
-        NavigationAction::from_u8(bytes[5]).ok_or(Nvn1DecodeError::InvalidAction(bytes[5]))?;
-    let flags = bytes[6];
+        NavigationAction::from_u8(raw_action).ok_or(Nvn1DecodeError::InvalidAction(raw_action))?;
+    let flags = r.read_u8().map_err(|_| Nvn1DecodeError::Truncated)?;
     if (flags & !NVN1_KNOWN_FLAGS_MASK) != 0 {
         return Err(Nvn1DecodeError::InvalidFlags(flags));
     }
-    let reserved = bytes[7];
+    let reserved = r.read_u8().map_err(|_| Nvn1DecodeError::Truncated)?;
     if reserved != 0 {
         return Err(Nvn1DecodeError::NonZeroReserved(reserved));
     }
 
-    let stack_depth = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    let active_tab_index = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
-    let uri_len = u16::from_le_bytes([bytes[16], bytes[17]]) as usize;
-
-    let uri_end = 18usize.checked_add(uri_len).ok_or(Nvn1DecodeError::Truncated)?;
-    let tab_len_end = uri_end.checked_add(2).ok_or(Nvn1DecodeError::Truncated)?;
-    if bytes.len() < tab_len_end {
-        return Err(Nvn1DecodeError::Truncated);
-    }
-    let uri = std::str::from_utf8(&bytes[18..uri_end])
-        .map_err(|_| Nvn1DecodeError::InvalidUtf8("uri"))?;
-
-    let tab_id_len = u16::from_le_bytes([bytes[uri_end], bytes[uri_end + 1]]) as usize;
-    let tab_end = tab_len_end
-        .checked_add(tab_id_len)
-        .ok_or(Nvn1DecodeError::Truncated)?;
-    if bytes.len() < tab_end {
-        return Err(Nvn1DecodeError::Truncated);
-    }
-    if bytes.len() > tab_end {
-        return Err(Nvn1DecodeError::TrailingBytes(bytes.len() - tab_end));
-    }
-    let tab_id = std::str::from_utf8(&bytes[tab_len_end..tab_end])
-        .map_err(|_| Nvn1DecodeError::InvalidUtf8("tab_id"))?;
+    let stack_depth = r.read_u32().map_err(|_| Nvn1DecodeError::Truncated)?;
+    let active_tab_index = r.read_u32().map_err(|_| Nvn1DecodeError::Truncated)?;
+    let uri = r
+        .read_str_u16(usize::from(u16::MAX))
+        .map_err(|err| match err {
+            CodecError::InvalidUtf8 => Nvn1DecodeError::InvalidUtf8("uri"),
+            _ => Nvn1DecodeError::Truncated,
+        })?;
+    let tab_id = r
+        .read_str_u16(usize::from(u16::MAX))
+        .map_err(|err| match err {
+            CodecError::InvalidUtf8 => Nvn1DecodeError::InvalidUtf8("tab_id"),
+            _ => Nvn1DecodeError::Truncated,
+        })?;
+    r.finish().map_err(|err| match err {
+        CodecError::TrailingBytes(n) => Nvn1DecodeError::TrailingBytes(n),
+        _ => Nvn1DecodeError::Truncated,
+    })?;
 
     Ok(NavPacketRef {
         action,

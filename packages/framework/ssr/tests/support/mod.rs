@@ -19,6 +19,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use minicbor::{Decode, Encode};
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::{WebBackend, WebTableSystem};
 use nve_store::{NodeId, NodeStore, NveTable, Str, TableSlot};
 use nve_dioxus::DioxusSurface;
@@ -165,7 +166,7 @@ pub fn pump_client_settled(surface: &mut DioxusSurface, web: &mut WebBackend, fr
         let mut progressed = false;
         while surface.poll_work(&waker) {
             *frame += 1;
-            surface.commit_to(*frame, web).expect("commit frame");
+            surface.commit_to(FrameId(*frame), web).expect("commit frame");
             progressed = true;
         }
         if !progressed {
@@ -454,7 +455,7 @@ impl hyper::service::Service<Request<Incoming>> for LoopbackSsrService {
                 .with_keepalive_interval(keepalive);
             let resp = pool
                 .render_streaming(SsrPageOptions::new("Disconnect Test", web_backend), plan, client, |c| {
-                    DioxusSurface::new(1, SlowPanelApp).with_context(c)
+                    DioxusSurface::new(SurfaceId::ROOT, SlowPanelApp).with_context(c)
                 })
                 .await
                 .expect("streaming SSR response");

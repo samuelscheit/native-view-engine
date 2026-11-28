@@ -81,11 +81,11 @@ pub fn BenchmarkProgressionDashboard() -> Element {
         .map(|c| c.to_vec())
         .collect();
     let mobile_col = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+        .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
     let bar_canvas_resp = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().width_px(270.0));
+        .at(MediaQuery::max_width(959), RowPatch::new().width_px(270.0));
     let line_canvas_resp = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().width_px(260.0));
+        .at(MediaQuery::max_width(959), RowPatch::new().width_px(260.0));
 
     rsx! {
         view {

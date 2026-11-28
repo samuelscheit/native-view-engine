@@ -8,7 +8,7 @@ use nve_abi::schema::AbiFileDescriptor;
 use nve_abi::table::TableDesc;
 
 use super::layout::{RecordLayout, Ty};
-use super::model::table_error;
+use super::tables::table_error;
 use crate::error::CodegenError;
 
 /// Words reserved in the languages that spell table fields as lowerCamel members: Swift
@@ -95,6 +95,9 @@ const GENERATED_TABLE_MEMBERS: &[(&str, &str)] = &[
     ("flags", "flags"),
     ("str_words", "strWords"),
     ("resource_words", "resourceWords"),
+    ("events_word", "eventsWord"),
+    ("inherited", "inherited"),
+    ("resource_kinds", "resourceKinds"),
     ("defaults", "defaults"),
     ("field_list", "fieldList"),
     ("fields", "fields"),
@@ -120,7 +123,12 @@ pub(super) fn abi(
     for file in files {
         known.extend(file.aliases.iter().map(|a| a.name));
         for c in file.consts {
-            if c.ty != "u32" || c.value > u64::from(u32::MAX) {
+            let valid = match c.ty {
+                "u32" => c.value <= u64::from(u32::MAX),
+                "u64" => true,
+                _ => false,
+            };
+            if !valid {
                 return Err(invalid(format!(
                     "const `{}` must be a u32 value (is {} {})",
                     c.name, c.ty, c.value

@@ -328,7 +328,7 @@ void NveGtkHost::Adapter::set_children(const host::NodeGeometry&, GtkNodeView** 
 // --- Per-kind bindings -------------------------------------------------------------------------
 
 void NveGtkHost::update_press(GtkNodeView& v, const host::NodeData& node) {
-  v.wants_press = node.wants(NVE_EVENT_PRESS);
+  v.wants_press = node.wants(NVE_INTERACTION_EVENT_PRESS);
   const bool needs = !node.interaction.disabled && (v.wants_press || !v.href.empty());
   if (v.kind == WidgetKind::Label) gtk_widget_set_can_target(v.widget, needs ? TRUE : FALSE);  // text buttons
   if (needs && v.click == nullptr) {
@@ -428,7 +428,7 @@ void NveGtkHost::edit_text(GtkNodeView& view) {
   const auto alive = alive_;  // the dispatch may destroy this host, not only the view
   (void)host::dispatch_controlled_edit<GtkNodeView>(
       view.text, current,
-      [&](std::string_view sent) { return dispatch(session_->events().text(id, NVE_EVENT_TEXT_CHANGE, sent)); },
+      [&](std::string_view sent) { return dispatch_text(id, NVE_TEXT_INPUT_EVENT_CHANGE, sent); },
       [&]() -> host::ControlledAnswer<GtkNodeView> {
         // Paired answers are asynchronous and arrive through `app_published`.
         if (!alive->load(std::memory_order_acquire) || is_paired()) return {};

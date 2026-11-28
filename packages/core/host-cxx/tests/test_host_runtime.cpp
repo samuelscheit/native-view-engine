@@ -39,12 +39,10 @@ void test_writer_round_trip_and_retained_tree() {
   // overflow_x / overflow_y share word 6: both must survive.
   w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_X, NVE_OVERFLOW_HIDDEN);
   w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_Y, NVE_OVERFLOW_SCROLL);
-  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_COLOR);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 20.0f);
   w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, rgba(9, 9, 9));
   w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "héllo");
   w.set(3u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, length_points(30.0f));
-  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_WEIGHT);
   w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_WEIGHT, 700u);
   const std::vector<uint8_t> src = encode_image_url("file:///tmp/a.png");
   w.define_resource(7u, kImageSrcKind, src);
@@ -86,7 +84,7 @@ void test_writer_round_trip_and_retained_tree() {
     if (guard) {
       const NodeData col = read_node(guard->reader(), h.tables, 2u, TextStyle{});
       CHECK(col.visual.overflow_x == NVE_OVERFLOW_HIDDEN && col.visual.overflow_y == NVE_OVERFLOW_SCROLL);
-      CHECK(col.scrollable() && !col.wants(NVE_EVENT_PRESS));
+      CHECK(col.scrollable() && !col.wants(NVE_INTERACTION_EVENT_PRESS));
       const NodeData img = read_node(guard->reader(), h.tables, 4u, TextStyle{});
       CHECK(img.image.fit == NVE_IMAGE_FIT_CONTAIN);
       const auto res = guard->resource(img.image.src);
@@ -189,7 +187,6 @@ void test_font_family_survives_text_slab_growth() {
   w.create(1u);
   w.create(2u);
   w.create(3u);
-  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_FAMILY);
   CHECK(w.set_str(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, family));
   CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "child"));
   w.set_children(2u, std::vector<uint32_t>{3u});
@@ -290,15 +287,11 @@ void test_read_node_seals_floats() {
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, nan);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, -inf);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, inf);
-  constexpr uint32_t kTypoSet =
-      NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_LETTER_SPACING | NVE_TYPOGRAPHY_SET_LINE_HEIGHT;
   const auto points = [](float v) { return std::bit_cast<uint32_t>(v) & ~uint32_t{NVE_LENGTH_TAG_MASK}; };
-  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, kTypoSet);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, nan);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, inf);
   w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, points(nan));
   // Control: valid values on the same fields are taken.
-  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, kTypoSet);
   w.set_f32(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 30.0f);
   w.set_f32(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, 2.0f);
   w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, points(40.0f));
@@ -308,8 +301,6 @@ void test_read_node_seals_floats() {
   w.set_f32(3u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 7.0f);
   // As the runtime resolves typography: size 0 is valid, an explicit `auto` line height resets
   // the inherited one; `word-break` / `overflow-wrap` are inherited text style.
-  w.set(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
-        kTypoSet | NVE_TYPOGRAPHY_SET_WORD_BREAK | NVE_TYPOGRAPHY_SET_OVERFLOW_WRAP);
   w.set_f32(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 0.0f);
   w.set(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, kLengthAuto);
   w.set(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_WORD_BREAK, NVE_WORD_BREAK_BREAK_ALL);
@@ -490,11 +481,12 @@ void test_host_session_counter() {
   if (!host) return;
   CHECK(!host->has_app());
   std::vector<int64_t> emitted;
-  host->set_event_sink([&emitted](std::span<const NveDirectEvent> evs) {
-    for (const NveDirectEvent& ev : evs) {
-      const std::string_view name(reinterpret_cast<const char*>(ev.name.ptr), ev.name.len);
-      if (ev.kind == NVE_EVENT_CUSTOM && name == CounterApp::kCountEventName && ev.value.tag == NVE_VAL_I64) {
-        emitted.push_back(ev.value.data.i64_val);
+  host->set_event_sink([&emitted](NveEventBatch batch) {
+    for (const NveEvent& ev : batch_events(batch)) {
+      if (is_custom_event(ev) && event_custom_name(ev, batch) == CounterApp::kCountEventName) {
+        BinReader r(event_custom_data(ev, batch));
+        const int64_t val = r.read_i64();
+        if (r.ok()) emitted.push_back(val);
       }
     }
   });
@@ -514,7 +506,7 @@ void test_host_session_counter() {
   prop.value.data.str_val = NveStrSlice{reinterpret_cast<const uint8_t*>(title.data()), title.size()};
   CHECK(host->set_props(std::span<const NveMapEntry>(&prop, 1u)));
   CHECK(scene_text(*host, CounterApp::kTitle) == "Retitled");
-  CHECK(host->events().press(9u, 0, 0).surface_id == 3u);
+  CHECK(host->events().press(9u, 0, 0).surface == 3u);
 
   // The wake poster receives runtime wakes (a state restore schedules a render) and, once
   // cleared, never again.
@@ -546,18 +538,18 @@ void test_resource_codecs() {
   std::vector<uint8_t> bad_tag = url;
   bad_tag[0] = 2u;
   CHECK(!decode_image_src(bad_tag));
-  std::vector<uint8_t> bad_utf8 = encode_image_url("ab");
+  std::vector<uint8_t> bad_utf8 = encode_image_url("abcd");
   bad_utf8.back() = 0xFFu;
   CHECK(!decode_image_src(bad_utf8));
 
   const BoxShadow shadows[] = {{1.0f, 2.0f, 3.0f, 4.0f, rgba(1, 2, 3, 4), false}, {-1.0f, 0.0f, 8.0f, 0.0f, 7u, true}};
   const std::vector<uint8_t> enc = encode_box_shadows(shadows);
-  CHECK(enc.size() == 4u + 2u * 21u);
+  CHECK(enc.size() == 4u + 2u * 24u);
   const auto dec = decode_box_shadows(enc);
   CHECK(dec && dec->size() == 2u && (*dec)[0] == shadows[0] && (*dec)[1] == shadows[1]);
   for (size_t cut = 0; cut < enc.size(); ++cut) CHECK(!decode_box_shadows(std::span<const uint8_t>(enc.data(), cut)));
   std::vector<uint8_t> bad_inset = enc;
-  bad_inset.back() = 2u;
+  bad_inset[enc.size() - 4u] = 2u;
   CHECK(!decode_box_shadows(bad_inset));
   const uint8_t bomb[] = {0x01, 0x10, 0x00, 0x00};  // 4097 shadows
   CHECK(!decode_box_shadows(bomb));
@@ -565,21 +557,30 @@ void test_resource_codecs() {
 
 }  // namespace
 
-/// `event_bit` matches Rust `EventMask::of` for every kind (composition kinds share a bit).
+/// Per-table `event_set_bit` matches generated `NVE_*_EVENT_SET_*` masks for every event enum.
 void test_event_bits() {
-  static_assert(event_bit(NVE_EVENT_PRESS) == 1u);
-  CHECK(event_bit(NVE_EVENT_COMPOSITION_START) == (1u << 8u));
-  CHECK(event_bit(NVE_EVENT_COMPOSITION_UPDATE) == event_bit(NVE_EVENT_COMPOSITION_END));
-  CHECK(event_bit(NVE_EVENT_KEY_DOWN) == (1u << 9u) && event_bit(NVE_EVENT_SUBMIT) == (1u << 11u));
-  CHECK(event_bit(NVE_EVENT_WHEEL) == (1u << 17u) && event_bit(NVE_EVENT_TABLE_EVENT) == (1u << 18u));
-  CHECK(event_bit(static_cast<NveEventKind>(0)) == 0u && event_bit(static_cast<NveEventKind>(22)) == 0u);
-  uint32_t all = 0u;
-  for (uint32_t k = 1u; k <= 21u; ++k) {
-    const uint32_t bit = event_bit(static_cast<NveEventKind>(k));
+  static_assert(event_set_bit(NVE_INTERACTION_EVENT_PRESS) == NVE_INTERACTION_EVENT_SET_PRESS);
+  static_assert(event_set_bit(NVE_INTERACTION_EVENT_WHEEL) == NVE_INTERACTION_EVENT_SET_WHEEL);
+  static_assert(event_set_bit(NVE_TEXT_INPUT_EVENT_CHANGE) == NVE_TEXT_INPUT_EVENT_SET_CHANGE);
+  static_assert(event_set_bit(NVE_TEXT_INPUT_EVENT_COMPOSITION_END) == NVE_TEXT_INPUT_EVENT_SET_COMPOSITION_END);
+  static_assert(event_set_bit(NVE_SCROLL_EVENT_SCROLL) == NVE_SCROLL_EVENT_SET_SCROLL);
+  static_assert(event_set_bit(NVE_LAYOUT_EVENT_LAYOUT) == NVE_LAYOUT_EVENT_SET_LAYOUT);
+  CHECK(event_set_bit(static_cast<NveInteractionEvent>(12)) == 0u);
+  CHECK(event_set_bit(static_cast<NveTextInputEvent>(5)) == 0u);
+  CHECK(event_set_bit(static_cast<NveScrollEvent>(1)) == 0u);
+  CHECK(event_set_bit(static_cast<NveLayoutEvent>(1)) == 0u);
+  uint32_t all_int = 0u;
+  for (uint32_t k = 0u; k <= static_cast<uint32_t>(NVE_INTERACTION_EVENT_WHEEL); ++k) {
+    const uint32_t bit = event_set_bit(static_cast<NveInteractionEvent>(k));
     CHECK(bit != 0u && (bit & (bit - 1u)) == 0u);
-    all |= bit;
+    all_int |= bit;
   }
-  CHECK(all == (1u << 19u) - 1u);  // 21 kinds cover exactly the 19 mask bits
+  CHECK(all_int == (1u << 12u) - 1u);
+  uint32_t all_ti = 0u;
+  for (uint32_t k = 0u; k <= static_cast<uint32_t>(NVE_TEXT_INPUT_EVENT_COMPOSITION_END); ++k) {
+    all_ti |= event_set_bit(static_cast<NveTextInputEvent>(k));
+  }
+  CHECK(all_ti == (1u << 5u) - 1u);
 }
 
 int main() {

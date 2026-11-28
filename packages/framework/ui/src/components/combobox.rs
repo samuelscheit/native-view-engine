@@ -94,7 +94,7 @@ pub fn Combobox(
             },
             border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .text_style(TypedTextStyle {
             color: theme.text.primary,
@@ -157,7 +157,7 @@ pub fn Combobox(
             border_color: theme.border.default,
             border_radius: theme.radius.full,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -238,7 +238,7 @@ pub fn Combobox(
                     },
                     border_radius: theme.radius.sm,
                     opacity: if opt_disabled { 0.45 } else { 1.0 },
-                    box_shadow: "none",
+                    box_shadow: None,
                 })
                 .finish();
 

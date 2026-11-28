@@ -4,7 +4,7 @@
 use nve_abi::table::NVE_ROW_INDEX_PAGE_LEN;
 use nve_abi::{slab_ptr, NveNodeRow, NveSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH};
 use nve_layout::ScrollOffsets;
-use nve_store::{ChangeSet, NodeId, NodeStore, TableSlot};
+use nve_store::{ChangeSet, NodeStore, TableSlot};
 
 use crate::builder::Timer;
 use crate::state::{layout_rect_to_abi, PublishedResources, SurfaceState};
@@ -38,7 +38,7 @@ impl SurfaceState {
     pub(crate) fn invalidate_published_view(&mut self) {
         self.published_view = NveSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
-            frame_id: self.frame_id,
+            frame_id: self.frame_id.raw(),
             scene_epoch: self.scene_epoch,
             ..NveSceneView::default()
         };
@@ -132,8 +132,12 @@ impl SurfaceState {
         self.published_scroll.clear();
         let scroll = self.scene.scroll_offsets();
         for (node_id, (sx, sy)) in scroll.iter() {
-            let (x, y) = ScrollOffsets::visual_shift_with(store, NodeId(node_id), sx, sy);
-            self.published_scroll.push(NveScrollOffset { node_id, x, y });
+            let (x, y) = ScrollOffsets::visual_shift_with(store, node_id, sx, sy);
+            self.published_scroll.push(NveScrollOffset {
+                node_id: node_id.raw(),
+                x,
+                y,
+            });
         }
         self.published_scroll.sort_unstable_by_key(|s| s.node_id);
 
@@ -157,7 +161,7 @@ impl SurfaceState {
 
         self.published_view = NveSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
-            frame_id: self.frame_id,
+            frame_id: self.frame_id.raw(),
             node_capacity: rows_slice.len() as u32,
             dirty_count: self.delta.dirty.len() as u32,
             removed_count: self.delta.removed.len() as u32,
@@ -183,7 +187,7 @@ impl SurfaceState {
         };
 
         self.published_resources = resources;
-        self.metrics.frame_id = self.frame_id;
+        self.metrics.frame_id = self.frame_id.raw();
         self.metrics.publish_us = t_pub.elapsed_us();
         self.metrics.dirty_nodes = self.delta.dirty.len() as u32;
         if laid_out || !changes.created.is_empty() || !changes.removed.is_empty() {

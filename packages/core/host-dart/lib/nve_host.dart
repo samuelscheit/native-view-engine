@@ -5,6 +5,7 @@
 library;
 
 export 'src/bin_codec.dart';
+export 'src/event_batch.dart';
 export 'src/generated/nve_abi_const.generated.dart';
 export 'src/generated/nve_tables.generated.dart';
 export 'src/hybrid_runtime.dart';

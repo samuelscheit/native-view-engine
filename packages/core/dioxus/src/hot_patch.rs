@@ -4,7 +4,7 @@
 //! `target_test_id`, `node_path`, or exact `text_replacements`, never spraying
 //! `attr_updates` or text overwrites onto unrelated sibling nodes.
 
-use nve_components::tables::{DebugId, TextContent};
+use nve_tables::tables::{DebugId, TextContent};
 use nve_engine::HotPatchMsg;
 use nve_store::NodeId;
 

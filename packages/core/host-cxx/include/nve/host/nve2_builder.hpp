@@ -35,7 +35,7 @@ struct Nve2TableDecl {
 class Nve2FrameBuilder {
  public:
   static constexpr uint32_t kMagic = 0x3245564Eu;  // "NVE2"
-  static constexpr uint32_t kVersion = 1u;
+  static constexpr uint32_t kVersion = 2u;
 
   /// `frame == 1` marks a keyframe (full reset); later frames are deltas.
   explicit Nve2FrameBuilder(uint64_t frame = 1u) : frame_(frame) { out_.resize(6u * 4u); }
@@ -116,13 +116,16 @@ class Nve2FrameBuilder {
     return *this;
   }
 
-  /// Defines resource `id` of `kind` with its codec encoding (e.g. `nve.res.image_src`).
-  Nve2FrameBuilder& define_resource(uint32_t id, Key64 kind, std::span<const uint8_t> encoded, bool ephemeral = false) {
+  /// Defines resource `id` of `kind` with its 4-byte-aligned flat-word payload and optional child ids.
+  Nve2FrameBuilder& define_resource(uint32_t id, Key64 kind, std::span<const uint8_t> encoded, bool ephemeral = false,
+                                    std::span<const uint32_t> children = {}) {
     const size_t op = begin(4u, 0u, 1u);
     push(id);
     push(kind.lo());
     push(kind.hi());
     push(ephemeral ? 1u : 0u);
+    push(static_cast<uint32_t>(children.size()));
+    for (const uint32_t cid : children) push(cid);
     push(static_cast<uint32_t>(encoded.size()));
     push_bytes(encoded);
     end(op);
@@ -186,11 +189,28 @@ class Nve2FrameBuilder {
   std::vector<uint8_t> out_;
 };
 
-/// Sets field `f` of `row` (non-string) and returns its word bit for `Nve2FrameBuilder::patch`.
+/// Sets scalar field `f` of `row` (encoding `Some(value)` per `f.opt`, setting `val_word` for
+/// `NVE_OPT_WIDE_BIT` and word 0 `explicit_bit` on inherited tables) and returns its word bitmask
+/// for `Nve2FrameBuilder::patch`.
 inline uint32_t set_field(std::span<uint32_t> row, NveFieldSpec f, uint32_t value) noexcept {
+  uint32_t word_bits = 0u;
+  uint32_t val_word_bits = 0u;
+  if (nve_field_fits(f, static_cast<uint32_t>(row.size())) == 0 ||
+      nve_field_opt_encode(f, 1, value, &word_bits, &val_word_bits) == 0) {
+    return 0u;
+  }
   const uint32_t mask = f.bits >= 32u ? 0xFFFFFFFFu : ((uint32_t{1} << f.bits) - 1u) << f.shift;
-  row[f.word] = (row[f.word] & ~mask) | ((value << f.shift) & mask);
-  return uint32_t{1} << f.word;
+  row[f.word] = (row[f.word] & ~mask) | ((word_bits << f.shift) & mask);
+  uint32_t dirty = uint32_t{1} << f.word;
+  if (f.opt == static_cast<uint8_t>(NVE_OPT_WIDE_BIT)) {
+    row[f.val_word] = val_word_bits;
+    dirty |= uint32_t{1} << f.val_word;
+  }
+  if (f.explicit_bit != NVE_NO_EXPLICIT_BIT) {
+    row[0] |= uint32_t{1} << f.explicit_bit;
+    dirty |= 1u;
+  }
+  return dirty;
 }
 
 }  // namespace nve::host

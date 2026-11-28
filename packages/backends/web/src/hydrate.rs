@@ -7,16 +7,18 @@
 //! reported as structured [`HydrationMismatch`]es and rebuilt. Adopted form controls go through 3-way
 //! `PreferLocal` reconciliation, and pre-hydration events are remapped from SSR to client IDs.
 
+use std::rc::Rc;
+
 use nve_abi::hash::HashMap;
-use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId};
-use nve_components::reconcile::{reconcile_three_way, ConflictPolicy, ThreeWayEntry};
-use nve_components::tables::{Interaction, TextInput};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_abi::{InteractionEvent, NodeId, TextInputEvent, TimestampUs};
+use nve_interop::{reconcile_three_way, ConflictPolicy, ThreeWayEntry};
+use nve_tables::tables::{Interaction, TextInput};
+use nve_store::NodeStore;
 
 use crate::event_replay::{
-    drain_valid_pre_hydration_events, pre_hydration_event_to_native, CapturedPreHydrationEvent,
+    drain_valid_pre_hydration_events, push_pre_hydration_event, CapturedPreHydrationEvent,
 };
-use crate::events::NodeEventMeta;
+use crate::events::WebEventState;
 use crate::table_system::WebTableRegistry;
 use crate::WebBackend;
 
@@ -214,7 +216,7 @@ pub(crate) trait SsrDomTree {
 /// Result of pairing one SSR element tree against the first hydrated commit.
 pub(crate) struct HydrationPairing<El> {
     /// `(client node, SSR element)` pairs adopted in place.
-    pub(crate) adopted: Vec<(StoreNodeId, El)>,
+    pub(crate) adopted: Vec<(NodeId, El)>,
     /// Stale SSR elements (excess siblings and tag-mismatched subtrees) to discard.
     pub(crate) stale: Vec<El>,
     pub(crate) pass: HydrationPass,
@@ -225,7 +227,7 @@ pub(crate) struct HydrationPairing<El> {
 pub(crate) struct HydrationPass {
     /// SSR `data-nve-id` -> client `NodeId`.
     pub(crate) remap: HashMap<NodeId, NodeId>,
-    pub(crate) controls: Vec<(StoreNodeId, HydratedControlState)>,
+    pub(crate) controls: Vec<(NodeId, HydratedControlState)>,
 }
 
 /// Top-down positional pairing of `root` against `store` starting at `NodeId::ROOT`.
@@ -241,7 +243,7 @@ pub(crate) fn pair_ssr_dom<T: SsrDomTree>(
         stale: Vec::new(),
         pass: HydrationPass::default(),
     };
-    let mut stack = vec![(StoreNodeId::ROOT, root)];
+    let mut stack = vec![(NodeId::ROOT, root)];
     while let Some((node, el)) = stack.pop() {
         if !store.is_live(node) {
             continue;
@@ -251,7 +253,7 @@ pub(crate) fn pair_ssr_dom<T: SsrDomTree>(
         if !actual.eq_ignore_ascii_case(expected) {
             report.replaced_nodes += 1;
             report.mismatches.push(HydrationMismatch {
-                node_id: node.raw(),
+                node_id: node,
                 expected_tag: expected.to_owned(),
                 actual_tag: actual,
             });
@@ -260,7 +262,7 @@ pub(crate) fn pair_ssr_dom<T: SsrDomTree>(
         }
         report.adopted_nodes += 1;
         if let Some(ssr_id) = tree.ssr_id(&el) {
-            out.pass.remap.insert(ssr_id, node.raw());
+            out.pass.remap.insert(ssr_id, node);
         }
         if store.has::<TextInput>(node) {
             out.pass.controls.push((node, tree.control_state(&el, expected)));
@@ -276,17 +278,17 @@ pub(crate) fn pair_ssr_dom<T: SsrDomTree>(
         for &missing in &kids[paired..] {
             report.replaced_nodes += 1;
             report.mismatches.push(HydrationMismatch {
-                node_id: missing.raw(),
+                node_id: missing,
                 expected_tag: registry.resolve_tag(store, missing).0.to_owned(),
                 actual_tag: "<missing>".to_owned(),
             });
         }
         let mut dom_kids = dom_kids.into_iter();
-        let pairs: Vec<(StoreNodeId, T::El)> =
+        let pairs: Vec<(NodeId, T::El)> =
             kids.iter().copied().zip(dom_kids.by_ref()).collect();
         for extra in dom_kids {
             report.mismatches.push(HydrationMismatch {
-                node_id: node.raw(),
+                node_id: node,
                 expected_tag: String::new(),
                 actual_tag: tree.tag(&extra),
             });
@@ -305,7 +307,7 @@ fn remap_pre_hydration_event(
     let old = ev.node_id();
     let new_id = match remap.get(&old) {
         Some(&mapped) => mapped,
-        None if old == StoreNodeId::ROOT.raw() => old,
+        None if old == NodeId::ROOT => old,
         None => return None,
     };
     Some(ev.with_node_id(new_id))
@@ -327,7 +329,8 @@ impl WebBackend {
     /// `TextChange` events are enqueued BEFORE replayed actions so typed input reaches app state
     /// first), then ID-remapped pre-hydration event replay.
     pub(crate) fn finish_hydration(&mut self, store: &NodeStore, pass: Option<HydrationPass>) {
-        let mut events: Vec<NativeEvent> = Vec::new();
+        let pending = Rc::clone(&self.pending_events);
+        let mut events = pending.borrow_mut();
         let surface_id = self.surface_id.get();
         let remap = pass.as_ref().map(|p| &p.remap);
         for (node, ctrl) in pass.as_ref().map_or(&[][..], |p| &p.controls[..]) {
@@ -349,16 +352,10 @@ impl WebBackend {
             self.write_hydrated_control(*node, &decision.resolved);
             self.input_sync
                 .borrow_mut()
-                .on_backend_value_sync(node.raw(), &decision.resolved);
+                .on_backend_value_sync(*node, &decision.resolved);
             if decision.emit_upstream {
                 self.hydration_report.reconciled_dirty_controls += 1;
-                events.push(NativeEvent {
-                    surface_id,
-                    node_id: node.raw(),
-                    timestamp_us: 0,
-                    kind: NativeEventKind::TextChange,
-                    payload: EventPayload::Text(decision.resolved),
-                });
+                events.push_text_change(surface_id, *node, TimestampUs(0), &decision.resolved);
             }
         }
 
@@ -373,18 +370,22 @@ impl WebBackend {
                     .filter_map(|ev| remap_pre_hydration_event(ev, map))
                     .collect()
             });
-            let valid =
-                drain_valid_pre_hydration_events(remapped, |id| store.is_live(StoreNodeId(id)));
-            let meta = self.node_event_meta.borrow();
-            for captured in valid {
-                let Some(target_id) = resolve_replay_target(store, &meta, &captured) else {
+            let valid = drain_valid_pre_hydration_events(remapped, |id| store.is_live(id));
+            let state = self.event_state.borrow();
+            for captured in &valid {
+                let Some(target_id) = resolve_replay_target(store, &state, captured) else {
                     continue;
                 };
-                events.push(pre_hydration_event_to_native(captured, surface_id, 0, target_id));
+                push_pre_hydration_event(
+                    captured,
+                    surface_id,
+                    TimestampUs(0),
+                    target_id,
+                    &mut events,
+                );
                 self.hydration_report.replayed_events += 1;
             }
         }
-        self.pending_events.borrow_mut().extend(events);
         #[cfg(target_arch = "wasm32")]
         self.deferred_controls.clear();
     }
@@ -400,34 +401,36 @@ impl WebBackend {
 }
 
 /// Bubbles a replayed event from its (remapped) target to the nearest ancestor subscribed to its
-/// kind (`PRESS`, `KEY_DOWN`, `SUBMIT`/text input), falling back to the original target.
+/// event (`Press`, `KeyDown`, `Submit`/text input), falling back to the original target.
 /// `Press`/`Submit` are dropped (`None`) when any node on that path is `Interaction::disabled`,
 /// matching the browser, which never dispatches activation on disabled controls.
 pub(crate) fn resolve_replay_target(
     store: &NodeStore,
-    meta: &HashMap<NodeId, NodeEventMeta>,
+    state: &WebEventState,
     ev: &CapturedPreHydrationEvent,
 ) -> Option<NodeId> {
     let activation = matches!(
         ev,
         CapturedPreHydrationEvent::Press { .. } | CapturedPreHydrationEvent::Submit { .. }
     );
-    let mut cur = Some(StoreNodeId(ev.node_id()));
+    let mut cur = Some(ev.node_id());
     while let Some(nid) = cur {
         if activation && store.try_row::<Interaction>(nid).is_some_and(|i| i.disabled()) {
             return None;
         }
-        if let Some(m) = meta.get(&nid.raw()) {
-            let matched = match ev {
-                CapturedPreHydrationEvent::Press { .. } => (m.mask & EventMask::PRESS) != 0,
-                CapturedPreHydrationEvent::KeyDown { .. } => (m.mask & EventMask::KEY_DOWN) != 0,
-                CapturedPreHydrationEvent::Submit { .. } => {
-                    m.is_input || (m.mask & EventMask::SUBMIT) != 0
-                }
-            };
-            if matched {
-                return Some(nid.raw());
+        let matched = match ev {
+            CapturedPreHydrationEvent::Press { .. } => {
+                state.listens::<Interaction>(nid, InteractionEvent::Press)
             }
+            CapturedPreHydrationEvent::KeyDown { .. } => {
+                state.listens::<Interaction>(nid, InteractionEvent::KeyDown)
+            }
+            CapturedPreHydrationEvent::Submit { .. } => {
+                state.is_input(nid) || state.listens::<TextInput>(nid, TextInputEvent::Submit)
+            }
+        };
+        if matched {
+            return Some(nid);
         }
         cur = store.parent(nid);
     }

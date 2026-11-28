@@ -1,6 +1,6 @@
 //! Skia `Canvas` display-list renderer (`--features skia`).
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, EventBatchBuf};
 use skia_safe::{
     canvas::SrcRectConstraint,
     font_style::{Slant, Weight as SkiaWeight, Width as SkiaWidth},
@@ -19,7 +19,7 @@ use crate::raster::PixelBuffer;
 use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry};
 use crate::text::{TextAlign, LINE_HEIGHT_MULTIPLIER};
 use crate::{DisplayList, PaintOp};
-use nve_store::{NodeStore, TableEventBus};
+use nve_store::NodeStore;
 
 const PREFERRED_SANS_FAMILIES: &[&str] = &[
     ".AppleSystemUIFont",
@@ -125,7 +125,7 @@ impl SkiaCanvasRenderer {
         scale_factor: f32,
         store: &NodeStore,
         registry: &SkiaTableRegistry,
-        events: &mut TableEventBus,
+        events: &mut EventBatchBuf,
     ) {
         self.paint_display_list_inner(
             display_list,
@@ -150,7 +150,7 @@ impl SkiaCanvasRenderer {
         display_list: &DisplayList,
         canvas: &Canvas,
         scale_factor: f32,
-        mut plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut TableEventBus)>,
+        mut plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut EventBatchBuf)>,
     ) {
         let scale = sanitize_scale_factor(scale_factor);
         let saved = canvas.save();

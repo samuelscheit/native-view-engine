@@ -24,7 +24,7 @@ assert_eq!(layout.name(), "taffy");
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `nve-store`, `taffy`.
+- **Depends on**: `nve-abi`, `nve-tables`, `nve-engine`, `nve-store`, `taffy`.
 - **Used by**: `nve-backend-headless`, `nve-backend-skia`, `nve-runtime`, `packages/modules/layout-yoga`.
 - **Must NOT depend on**: backends, `dioxus*`, `web-sys`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 

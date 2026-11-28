@@ -4,7 +4,7 @@
 use nve_abi::NodeId;
 use nve_backend_headless::HeadlessBackend;
 use nve_layout::StoreLayoutEngine;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 
 use crate::SkiaBackend;
 
@@ -14,7 +14,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         self.layout_tree.scene().scroll_offset(node_id)
     }
 
-    pub fn scroll_content_size(&self, store: &NodeStore, node_id: StoreNodeId) -> Option<(f32, f32)> {
+    pub fn scroll_content_size(&self, store: &NodeStore, node_id: NodeId) -> Option<(f32, f32)> {
         self.layout_tree.scene().scroll_content_size(store, node_id)
     }
 
@@ -23,7 +23,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn set_scroll_offset(
         &mut self,
         store: &NodeStore,
-        node_id: StoreNodeId,
+        node_id: NodeId,
         x: f32,
         y: f32,
     ) -> (f32, f32) {
@@ -40,7 +40,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn apply_scroll_delta(
         &mut self,
         store: &NodeStore,
-        node_id: StoreNodeId,
+        node_id: NodeId,
         dx: f32,
         dy: f32,
     ) -> (f32, f32) {
@@ -55,7 +55,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     #[inline]
-    pub(crate) fn visual_scroll_shift(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+    pub(crate) fn visual_scroll_shift(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
         self.layout_tree.scene().visual_scroll_shift(store, id)
     }
 
@@ -69,7 +69,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 pub(crate) fn compute_scroll_content_size<L: StoreLayoutEngine>(
     store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
-    node_id: StoreNodeId,
+    node_id: NodeId,
 ) -> Option<(f32, f32)> {
     layout_tree.scene().scroll_content_size(store, node_id)
 }

@@ -14,8 +14,8 @@ mod snapshot;
 use std::cell::Cell;
 use std::sync::Arc;
 
-use nve_components::interaction::InteractionTracker;
-use nve_components::tables::Interaction;
+use nve_engine::InteractionTracker;
+use nve_tables::tables::Interaction;
 use nve_engine::{LayoutRect, Viewport};
 use nve_store::{ChangeSet, NodeId, NodeStore};
 
@@ -132,16 +132,16 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     /// running the layout pass yet (useful when callers time layout separately).
     pub fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
         for &id in &changes.removed {
-            self.interaction.remove_node(id.raw());
-            self.scroll.remove(id.raw());
+            self.interaction.remove_node(id);
+            self.scroll.remove(id);
         }
         for &id in changes.created.iter().chain(&changes.touched) {
             if !store.is_live(id) {
                 continue;
             }
             let disabled = store.try_row::<Interaction>(id).is_some_and(|i| i.disabled());
-            if self.interaction.is_disabled(id.raw()) != disabled {
-                let _ = self.interaction.set_disabled(id.raw(), disabled);
+            if self.interaction.is_disabled(id) != disabled {
+                let _ = self.interaction.set_disabled(id, disabled);
             }
         }
         self.layout.sync_changes(store, changes);

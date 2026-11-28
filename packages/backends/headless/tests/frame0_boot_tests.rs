@@ -12,11 +12,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     core_realization_order, core_tables_schema_hash, FlexDirection, Interaction, Layout,
     TextContent, Typography, Visual,
 };
 use nve_engine::{Frame0File, Frame0Meta, StoreBackend, StoreWireReplica, Viewport};
+use nve_abi::{EventSet, InteractionEvent, SurfaceId};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -77,7 +78,7 @@ fn build_responsive_app_tree() -> (NodeStore, ChangeSet, NodeId, NodeId, NodeId)
                 .color(Rgba::rgb(241, 245, 249));
             row.edit::<TextContent>().text("Workspace Row");
             if i % 3 == 0 {
-                row.edit::<Interaction>().event_mask(1);
+                row.edit::<Interaction>().listeners(EventSet::one(InteractionEvent::Press));
             }
             rows.push(row.id());
         }
@@ -114,7 +115,7 @@ fn build_flat_n_nodes(n: usize) -> NodeStore {
             nm.edit::<TextContent>().text("Row Item");
         }
         if i % 8 == 0 {
-            nm.edit::<Interaction>().event_mask(1);
+            nm.edit::<Interaction>().listeners(EventSet::one(InteractionEvent::Press));
         }
         kids.push(nm.id());
     }
@@ -138,7 +139,7 @@ fn frame0_boot_table_layout_parity_and_responsive_viewports() {
     };
 
     let mut live_backend = HeadlessBackend::new();
-    live_backend.set_viewport(1, desktop);
+    live_backend.set_viewport(SurfaceId::ROOT, desktop);
     live_backend
         .commit(&live_store, &live_changes)
         .expect("live desktop commit");
@@ -154,7 +155,7 @@ fn frame0_boot_table_layout_parity_and_responsive_viewports() {
 
     // 1. Boot at identical desktop viewport -> 100% table + layout rect parity.
     let mut desktop_backend = HeadlessBackend::new();
-    desktop_backend.set_viewport(1, desktop);
+    desktop_backend.set_viewport(SurfaceId::ROOT, desktop);
     let mut desktop_replica = StoreWireReplica::new(desktop_backend, core_realization_order());
     let (footer, _) =
         Frame0File::boot_into_replica(&path, meta, &mut desktop_replica).expect("boot desktop");
@@ -168,8 +169,8 @@ fn frame0_boot_table_layout_parity_and_responsive_viewports() {
     for id in [NodeId::ROOT, shell, sidebar, main_pane] {
         assert_eq!(booted.children(id), live_store.children(id));
         assert_eq!(
-            desktop_replica.backend().layout_of(id.raw()),
-            live_backend.layout_of(id.raw()),
+            desktop_replica.backend().layout_of(id),
+            live_backend.layout_of(id),
             "rect mismatch for node {:?}",
             id
         );
@@ -190,38 +191,38 @@ fn frame0_boot_table_layout_parity_and_responsive_viewports() {
                 .map(|t| t.font_size())
         );
         assert_eq!(
-            booted.try_row::<Interaction>(row_id).map(|i| i.event_mask()),
+            booted.try_row::<Interaction>(row_id).map(|i| i.listeners()),
             live_store
                 .try_row::<Interaction>(row_id)
-                .map(|i| i.event_mask())
+                .map(|i| i.listeners())
         );
         assert_eq!(
-            desktop_replica.backend().layout_of(row_id.raw()),
-            live_backend.layout_of(row_id.raw())
+            desktop_replica.backend().layout_of(row_id),
+            live_backend.layout_of(row_id)
         );
     }
 
     // 2. Boot the EXACT SAME frame0.nve2 file at mobile viewport -> fresh responsive layout!
     let mut mobile_backend = HeadlessBackend::new();
-    mobile_backend.set_viewport(1, mobile);
+    mobile_backend.set_viewport(SurfaceId::ROOT, mobile);
     let mut mobile_replica = StoreWireReplica::new(mobile_backend, core_realization_order());
     Frame0File::boot_into_replica(&path, meta, &mut mobile_replica).expect("boot mobile");
 
     let desktop_sidebar = desktop_replica
         .backend()
-        .layout_of(sidebar.raw())
+        .layout_of(sidebar)
         .expect("desktop sidebar rect");
     let desktop_main = desktop_replica
         .backend()
-        .layout_of(main_pane.raw())
+        .layout_of(main_pane)
         .expect("desktop main rect");
     let mobile_sidebar = mobile_replica
         .backend()
-        .layout_of(sidebar.raw())
+        .layout_of(sidebar)
         .expect("mobile sidebar rect");
     let mobile_main = mobile_replica
         .backend()
-        .layout_of(main_pane.raw())
+        .layout_of(main_pane)
         .expect("mobile main rect");
 
     assert!((desktop_sidebar.width - 320.0).abs() <= 1.0);
@@ -254,7 +255,7 @@ fn frame0_boot_counting_alloc_o1_guard_1k_vs_20k() {
     let measure_boot = |path: &PathBuf| -> (usize, usize) {
         let mut backend = HeadlessBackend::new().with_mutation_tracking(false);
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: 1280.0,
                 height: 800.0,
@@ -267,7 +268,7 @@ fn frame0_boot_counting_alloc_o1_guard_1k_vs_20k() {
             let (footer, _) =
                 Frame0File::boot_into_replica_with_buf(path, meta, &mut scratch, &mut replica)
                     .expect("boot frame0");
-            assert!(replica.backend().layout_of(NodeId::ROOT.raw()).is_some());
+            assert!(replica.backend().layout_of(NodeId::ROOT).is_some());
             footer.node_count as usize
         });
         (live, allocs)

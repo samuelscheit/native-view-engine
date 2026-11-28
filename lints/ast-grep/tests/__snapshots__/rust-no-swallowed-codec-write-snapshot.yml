@@ -1,0 +1,206 @@
+id: rust-no-swallowed-codec-write
+snapshots:
+  "fn encode(v: &impl NveEncode, w: &mut ByteWriter) {\n    let _ = v.encode(w);\n}\n":
+    labels:
+    - source: let _ = v.encode(w);
+      style: primary
+      start: 56
+      end: 76
+    - source: NveEncode
+      style: secondary
+      start: 19
+      end: 28
+    - source: |
+        fn encode(v: &impl NveEncode, w: &mut ByteWriter) {
+            let _ = v.encode(w);
+        }
+      style: secondary
+      start: 0
+      end: 79
+    - source: encode
+      style: secondary
+      start: 66
+      end: 72
+    - source: v.encode
+      style: secondary
+      start: 64
+      end: 72
+    - source: v.encode(w)
+      style: secondary
+      start: 64
+      end: 75
+  "fn encode(w: &mut ByteWriter) {\n    let _ = w.patch_u32(0, 42);\n}\n":
+    labels:
+    - source: let _ = w.patch_u32(0, 42);
+      style: primary
+      start: 36
+      end: 63
+    - source: patch_u32
+      style: secondary
+      start: 46
+      end: 55
+    - source: w.patch_u32
+      style: secondary
+      start: 44
+      end: 55
+    - source: w.patch_u32(0, 42)
+      style: secondary
+      start: 44
+      end: 62
+  "fn encode(w: &mut ByteWriter, s: &str) {\n    _ = w.write_str(s);\n}\n":
+    labels:
+    - source: _ = w.write_str(s);
+      style: primary
+      start: 45
+      end: 64
+    - source: write_str
+      style: secondary
+      start: 51
+      end: 60
+    - source: w.write_str
+      style: secondary
+      start: 49
+      end: 60
+    - source: w.write_str(s)
+      style: secondary
+      start: 49
+      end: 63
+    - source: _ = w.write_str(s)
+      style: secondary
+      start: 45
+      end: 63
+  "fn encode(w: &mut ByteWriter, s: &str) {\n    let _ = w.write_str(s);\n}\n":
+    labels:
+    - source: let _ = w.write_str(s);
+      style: primary
+      start: 45
+      end: 68
+    - source: ByteWriter
+      style: secondary
+      start: 18
+      end: 28
+    - source: |
+        fn encode(w: &mut ByteWriter, s: &str) {
+            let _ = w.write_str(s);
+        }
+      style: secondary
+      start: 0
+      end: 71
+    - source: write_str
+      style: secondary
+      start: 55
+      end: 64
+    - source: w.write_str
+      style: secondary
+      start: 53
+      end: 64
+    - source: w.write_str(s)
+      style: secondary
+      start: 53
+      end: 67
+  "fn encode(w: &mut ByteWriter, s: &str) {\n    let _r = w.write_str(s);\n}\n":
+    labels:
+    - source: let _r = w.write_str(s);
+      style: primary
+      start: 45
+      end: 69
+    - source: _r
+      style: secondary
+      start: 49
+      end: 51
+    - source: write_str
+      style: secondary
+      start: 56
+      end: 65
+    - source: w.write_str
+      style: secondary
+      start: 54
+      end: 65
+    - source: w.write_str(s)
+      style: secondary
+      start: 54
+      end: 68
+    - source: ByteWriter
+      style: secondary
+      start: 18
+      end: 28
+    - source: |
+        fn encode(w: &mut ByteWriter, s: &str) {
+            let _r = w.write_str(s);
+        }
+      style: secondary
+      start: 0
+      end: 72
+  "fn encode(w: &mut SliceWriter<'_>) {\n    let _ = w.write_u32(42);\n}\n":
+    labels:
+    - source: let _ = w.write_u32(42);
+      style: primary
+      start: 41
+      end: 65
+    - source: SliceWriter
+      style: secondary
+      start: 18
+      end: 29
+    - source: |
+        fn encode(w: &mut SliceWriter<'_>) {
+            let _ = w.write_u32(42);
+        }
+      style: secondary
+      start: 0
+      end: 68
+    - source: write_u32
+      style: secondary
+      start: 51
+      end: 60
+    - source: w.write_u32
+      style: secondary
+      start: 49
+      end: 60
+    - source: w.write_u32(42)
+      style: secondary
+      start: 49
+      end: 64
+  "fn encode(w: &mut SliceWriter<'_>) {\n    let res = w.write_u32(1);\n    debug_assert!(res.is_ok());\n}\n":
+    labels:
+    - source: debug_assert!(res.is_ok())
+      style: primary
+      start: 71
+      end: 97
+    - source: SliceWriter
+      style: secondary
+      start: 18
+      end: 29
+    - source: |
+        fn encode(w: &mut SliceWriter<'_>) {
+            let res = w.write_u32(1);
+            debug_assert!(res.is_ok());
+        }
+      style: secondary
+      start: 0
+      end: 101
+  "fn encode(w: &mut SliceWriter<'_>) {\n    w.write_u32(42).ok();\n}\n":
+    labels:
+    - source: w.write_u32(42).ok();
+      style: primary
+      start: 41
+      end: 62
+    - source: write_u32
+      style: secondary
+      start: 43
+      end: 52
+    - source: w.write_u32
+      style: secondary
+      start: 41
+      end: 52
+    - source: w.write_u32(42)
+      style: secondary
+      start: 41
+      end: 56
+    - source: w.write_u32(42).ok
+      style: secondary
+      start: 41
+      end: 59
+    - source: w.write_u32(42).ok()
+      style: secondary
+      start: 41
+      end: 61

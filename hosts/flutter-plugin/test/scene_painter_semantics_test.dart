@@ -97,7 +97,7 @@ void main() {
       final input = b.node(const Rect.fromLTWH(0, 50, 100, 40), parent: root);
       _fill(b, root, packRgba(255, 255, 255));
       b
-        ..bits(typographyShape, root, TypographyTable.set, NveTypographySet.color | NveTypographySet.fontSize)
+        ..explicit(typographyShape, root, [TypographyTable.color, TypographyTable.fontSize])
         ..bits(typographyShape, root, TypographyTable.color, packRgba(255, 0, 0))
         ..f32(typographyShape, root, TypographyTable.fontSize, 10)
         ..str(textShape, label, TextTable.text, 'MM')
@@ -136,12 +136,7 @@ void main() {
         ..bits(imageShape, img, ImageTable.src, 9)
         ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
       final png = makeSolidPngBytes(0, 0, 255, width: 4, height: 4);
-      final payload = Uint8List.fromList([
-        1,
-        ...(ByteData(4)..setUint32(0, png.length, Endian.little)).buffer.asUint8List(),
-        ...png,
-      ]);
-      final resources = _Resources({9: payload});
+      final resources = _Resources({9: _imageSrcBytes(1, png)});
       final painter = NveScenePainter();
       var decoded = 0;
       await tester.runAsync(() async {
@@ -169,11 +164,7 @@ void main() {
       b
         ..bits(imageShape, img, ImageTable.src, 9)
         ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
-      Uint8List payload(Uint8List encoded) => Uint8List.fromList([
-            1,
-            ...(ByteData(4)..setUint32(0, encoded.length, Endian.little)).buffer.asUint8List(),
-            ...encoded,
-          ]);
+      Uint8List payload(Uint8List encoded) => _imageSrcBytes(1, encoded);
       final blue = makeSolidPngBytes(0, 0, 255, width: 4, height: 4);
       final green = makeSolidPngBytes(0, 255, 0, width: 4, height: 4);
       expect(green.length, blue.length, reason: 'same byte length: an (id, length) key would collide');
@@ -218,11 +209,7 @@ void main() {
       b
         ..bits(imageShape, img, ImageTable.src, 9)
         ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
-      Uint8List payload(Uint8List encoded) => Uint8List.fromList([
-            1,
-            ...(ByteData(4)..setUint32(0, encoded.length, Endian.little)).buffer.asUint8List(),
-            ...encoded,
-          ]);
+      Uint8List payload(Uint8List encoded) => _imageSrcBytes(1, encoded);
       // Same resource id, same epoch, consecutive frame ids: only the source tells them apart.
       final a = _Resources({9: payload(makeSolidPngBytes(0, 0, 255, width: 4, height: 4))});
       final other = _Resources({9: payload(makeSolidPngBytes(0, 255, 0, width: 4, height: 4))});
@@ -262,18 +249,17 @@ void main() {
     });
 
     test('image source payloads decode', () {
-      Uint8List payload(int tag, List<int> bytes) => Uint8List.fromList([
-            tag,
-            ...(ByteData(4)..setUint32(0, bytes.length, Endian.little)).buffer.asUint8List(),
-            ...bytes,
-          ]);
-      expect((decodeImageSource(payload(0, 'https://x/a.png'.codeUnits)) as NveImageUrl).uri, 'https://x/a.png');
-      expect((decodeImageSource(payload(1, [1, 2, 3])) as NveImageBytes).bytes, [1, 2, 3]);
-      expect(decodeImageSource(payload(1, [])), isNull, reason: 'empty encoded bytes');
-      expect(decodeImageSource(payload(2, [1])), isNull, reason: 'unknown tag');
-      expect(decodeImageSource(payload(0, [0xC3])), isNull, reason: 'invalid UTF-8');
-      expect(decodeImageSource(Uint8List.fromList([0, 9, 0, 0, 0, 1])), isNull, reason: 'truncated');
-      expect(decodeImageSource(Uint8List.fromList([...payload(0, [0x61]), 0])), isNull, reason: 'trailing bytes');
+      expect((decodeImageSource(_imageSrcBytes(0, 'https://x/a.png'.codeUnits)) as NveImageUrl).uri, 'https://x/a.png');
+      expect((decodeImageSource(_imageSrcBytes(1, [1, 2, 3])) as NveImageBytes).bytes, [1, 2, 3]);
+      expect(decodeImageSource(_imageSrcBytes(1, [])), isNull, reason: 'empty encoded bytes');
+      expect(decodeImageSource(_imageSrcBytes(2, [1])), isNull, reason: 'unknown tag');
+      expect(decodeImageSource(_imageSrcBytes(0, [0xC3])), isNull, reason: 'invalid UTF-8');
+      final badPad = Uint8List.fromList(_imageSrcBytes(1, [1, 2, 3]))..[11] = 1;
+      expect(decodeImageSource(badPad), isNull, reason: 'non-zero pad byte');
+      expect(decodeImageSource(Uint8List.fromList([0, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0])), isNull, reason: 'truncated');
+      expect(decodeImageSource(Uint8List.fromList([..._imageSrcBytes(0, [0x61]), 0, 0, 0, 0])), isNull,
+          reason: 'trailing bytes');
+      expect(decodeImageSource(Uint8List.fromList([0, 1, 0, 0, 0, 0x61])), isNull, reason: 'legacy 5-byte layout');
       expect(decodeImageSource(Uint8List(0)), isNull);
     });
   });
@@ -295,9 +281,10 @@ void main() {
       final invisibleParent = b.node(const Rect.fromLTWH(0, 140, 100, 40), parent: root);
       final shown = b.node(const Rect.fromLTWH(0, 160, 50, 20), parent: invisibleParent);
       b
-        ..bits(interactionShape, button, InteractionTable.eventMask, nveEventMaskPress)
+        ..events(interactionShape, button, InteractionTable.eventsWord, NveInteractionEventSet.press)
         ..str(textShape, button, TextTable.text, 'Save')
-        ..bits(a11yShape, heading, AccessibilityTable.role, NveAriaRole.heading)
+        ..optBits(a11yShape, heading, AccessibilityTable.role, NveAriaRole.heading)
+        ..optBits(a11yShape, heading, AccessibilityTable.live, NveAriaLive.off)
         ..str(textShape, heading, TextTable.text, 'Settings')
         ..str(textInputShape, password, TextInputTable.value, 'héllo')
         ..bits(textInputShape, password, TextInputTable.secure, 1)
@@ -306,10 +293,11 @@ void main() {
         ..str(textShape, hiddenKid, TextTable.text, 'secret')
         ..bits(visualShape, clipper, VisualTable.overflowX, NveOverflow.hidden)
         ..str(textShape, outside, TextTable.text, 'clipped')
-        ..bits(a11yShape, toggle, AccessibilityTable.role, NveAriaRole.switchValue)
-        ..bits(a11yShape, toggle, AccessibilityTable.checked, NveAriaTriState.trueValue)
+        ..optBits(a11yShape, toggle, AccessibilityTable.role, NveAriaRole.switchValue)
+        ..optBits(a11yShape, toggle, AccessibilityTable.checked, NveAriaTriState.trueValue)
+        ..optBits(a11yShape, toggle, AccessibilityTable.live, NveAriaLive.polite)
         ..str(a11yShape, toggle, AccessibilityTable.label, 'Wi-Fi')
-        ..bits(a11yShape, decorative, AccessibilityTable.role, NveAriaRole.presentation)
+        ..optBits(a11yShape, decorative, AccessibilityTable.role, NveAriaRole.presentation)
         ..str(textShape, decorative, TextTable.text, 'ornament')
         ..f32(visualShape, transparent, VisualTable.opacity, 0)
         ..str(textShape, transparent, TextTable.text, 'faded out')
@@ -326,10 +314,12 @@ void main() {
       expect(data['Save']!.flagsCollection.isButton, isTrue);
       expect(data['Save']!.rect, const Rect.fromLTWH(0, 0, 100, 40));
       expect(data['Settings']!.flagsCollection.isHeader, isTrue);
+      expect(data['Settings']!.flagsCollection.isLiveRegion, isFalse);
       expect(data['Settings']!.hasAction(SemanticsAction.tap), isFalse);
       expect(data['Password']!.flagsCollection.isTextField, isTrue);
       expect(data['Password']!.value, '•••••', reason: 'secure value masked per code point');
       expect(data['Wi-Fi']!.flagsCollection.isToggled, Tristate.isTrue);
+      expect(data['Wi-Fi']!.flagsCollection.isLiveRegion, isTrue);
       final saveNode = nodes.first;
       expect(saveNode.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
       asm.build(b.tree(), const Rect.fromLTWH(0, 0, 200, 200), (id, c) => taps.add((id, c)));
@@ -362,4 +352,16 @@ final class _Resources implements NveSceneResources {
 
   @override
   Uint8List? payload(int resourceId) => map[resourceId];
+}
+
+Uint8List _imageSrcBytes(int tag, List<int> bytes) {
+  final hdr = ByteData(8)
+    ..setUint32(0, tag, Endian.little)
+    ..setUint32(4, bytes.length, Endian.little);
+  final pad = (4 - (bytes.length & 3)) & 3;
+  return Uint8List.fromList([
+    ...hdr.buffer.asUint8List(),
+    ...bytes,
+    ...List<int>.filled(pad, 0),
+  ]);
 }

@@ -1,6 +1,8 @@
 //! Bearer-token TLS 1.3 handshake messages (`Hello`, `HelloAck`, `Reject`) and out-of-order
 //! `AsyncSlot` chunk payloads for `NveWireFrame` v2.
 
+use nve_codec::{write_fixed, ByteReader, ByteSink, ByteWriter, CodecError, NveCodec, SliceWriter};
+
 use crate::frame::NveWireError;
 
 /// Default wire schema version negotiated during `Hello` / `HelloAck`.
@@ -32,7 +34,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Handshake rejection reason carried in `NveWireKind::Reject` payloads.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
 pub enum NveWireRejectReason {
     Unauthorized = 1,
     SchemaVersionMismatch = 2,
@@ -42,27 +44,18 @@ pub enum NveWireRejectReason {
 }
 
 impl NveWireRejectReason {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Result<Self, NveWireError> {
-        match raw {
-            1 => Ok(Self::Unauthorized),
-            2 => Ok(Self::SchemaVersionMismatch),
-            3 => Ok(Self::UnsupportedVersion),
-            4 => Ok(Self::ServerBusy),
-            5 => Ok(Self::FrameTooLarge),
-            _ => Err(NveWireError::InvalidPayload("unknown reject reason")),
-        }
-    }
-
     pub fn encode(self, detail: &str) -> Vec<u8> {
-        let detail_bytes = detail.as_bytes();
-        let clipped_len = detail_bytes.len().min(256);
-        let mut out = Vec::with_capacity(4 + clipped_len);
-        out.push(self as u8);
-        out.push(0);
-        out.extend_from_slice(&(clipped_len as u16).to_le_bytes());
-        out.extend_from_slice(&detail_bytes[..clipped_len]);
-        out
+        let mut clipped_len = detail.len().min(256);
+        while clipped_len > 0 && !detail.is_char_boundary(clipped_len) {
+            clipped_len -= 1;
+        }
+        let detail_bytes = &detail.as_bytes()[..clipped_len];
+        let mut w = ByteWriter::with_capacity(4 + clipped_len);
+        w.write_u8(self as u8);
+        w.write_u8(0);
+        w.write_u16(clipped_len as u16);
+        w.write_raw(detail_bytes);
+        w.into_bytes()
     }
 
     pub fn decode(bytes: &[u8]) -> Result<(Self, String), NveWireError> {
@@ -72,12 +65,15 @@ impl NveWireRejectReason {
                 actual: bytes.len(),
             });
         }
-        let reason = Self::from_u8(bytes[0])?;
-        let detail_len = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
-        if bytes.len() != 4 + detail_len {
+        let mut r = ByteReader::new(bytes);
+        let reason = Self::from_repr(r.read_u8()?)
+            .ok_or(NveWireError::InvalidPayload("unknown reject reason"))?;
+        r.expect_zero(1)?;
+        let detail_len = usize::from(r.read_u16()?);
+        if r.remaining() != detail_len {
             return Err(NveWireError::InvalidPayload("reject detail length mismatch"));
         }
-        let detail = std::str::from_utf8(&bytes[4..])
+        let detail = std::str::from_utf8(r.read_exact(detail_len)?)
             .map_err(|_| NveWireError::InvalidUtf8)?
             .to_owned();
         Ok((reason, detail))
@@ -115,14 +111,14 @@ impl NveWireHello {
         if name.len() > MAX_CLIENT_NAME_BYTES {
             return Err(NveWireError::InvalidPayload("client name exceeds 128 bytes"));
         }
-        let mut out = Vec::with_capacity(10 + token.len() + name.len());
-        out.extend_from_slice(&self.schema_version.to_le_bytes());
-        out.extend_from_slice(&self.capabilities.to_le_bytes());
-        out.extend_from_slice(&(token.len() as u16).to_le_bytes());
-        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-        out.extend_from_slice(token);
-        out.extend_from_slice(name);
-        Ok(out)
+        let mut w = ByteWriter::with_capacity(10 + token.len() + name.len());
+        w.write_u16(self.schema_version);
+        w.write_u32(self.capabilities);
+        w.write_u16(token.len() as u16);
+        w.write_u16(name.len() as u16);
+        w.write_raw(token);
+        w.write_raw(name);
+        Ok(w.into_bytes())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, NveWireError> {
@@ -132,20 +128,21 @@ impl NveWireHello {
                 actual: bytes.len(),
             });
         }
-        let schema_version = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let capabilities = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
-        let token_len = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-        let name_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+        let mut r = ByteReader::new(bytes);
+        let schema_version = r.read_u16()?;
+        let capabilities = r.read_u32()?;
+        let token_len = usize::from(r.read_u16()?);
+        let name_len = usize::from(r.read_u16()?);
         if token_len > MAX_TOKEN_BYTES || name_len > MAX_CLIENT_NAME_BYTES {
             return Err(NveWireError::InvalidPayload("hello string exceeds limit"));
         }
-        if bytes.len() != 10 + token_len + name_len {
+        if r.remaining() != token_len + name_len {
             return Err(NveWireError::InvalidPayload("hello payload length mismatch"));
         }
-        let bearer_token = std::str::from_utf8(&bytes[10..10 + token_len])
+        let bearer_token = std::str::from_utf8(r.read_exact(token_len)?)
             .map_err(|_| NveWireError::InvalidUtf8)?
             .to_owned();
-        let client_name = std::str::from_utf8(&bytes[10 + token_len..])
+        let client_name = std::str::from_utf8(r.read_exact(name_len)?)
             .map_err(|_| NveWireError::InvalidUtf8)?
             .to_owned();
         Ok(Self {
@@ -168,13 +165,24 @@ pub struct NveWireHelloAck {
 impl NveWireHelloAck {
     pub const ENCODED_LEN: usize = 12;
 
+    #[inline]
+    fn write_to_sink<S: ByteSink>(&self, w: &mut S) -> Result<(), CodecError> {
+        w.put_u32(self.session_id)?;
+        w.put_u16(self.schema_version)?;
+        w.put_zeroes(2)?;
+        w.put_u32(self.server_capabilities)
+    }
+
+    #[inline]
+    pub fn write_into(&self, dst: &mut [u8; Self::ENCODED_LEN]) -> Result<(), CodecError> {
+        let mut w = SliceWriter::new(dst);
+        self.write_to_sink(&mut w)?;
+        w.finish()
+    }
+
+    #[inline]
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
-        let mut out = [0u8; Self::ENCODED_LEN];
-        out[0..4].copy_from_slice(&self.session_id.to_le_bytes());
-        out[4..6].copy_from_slice(&self.schema_version.to_le_bytes());
-        out[6..8].copy_from_slice(&0u16.to_le_bytes());
-        out[8..12].copy_from_slice(&self.server_capabilities.to_le_bytes());
-        out
+        write_fixed::<{ Self::ENCODED_LEN }>(|w| self.write_to_sink(w))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, NveWireError> {
@@ -184,10 +192,16 @@ impl NveWireHelloAck {
                 actual: bytes.len(),
             });
         }
+        let mut r = ByteReader::new(bytes);
+        let session_id = r.read_u32()?;
+        let schema_version = r.read_u16()?;
+        r.expect_zero(2)?;
+        let server_capabilities = r.read_u32()?;
+        r.finish()?;
         Ok(Self {
-            session_id: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            schema_version: u16::from_le_bytes([bytes[4], bytes[5]]),
-            server_capabilities: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            session_id,
+            schema_version,
+            server_capabilities,
         })
     }
 }
@@ -205,12 +219,12 @@ impl<'a> NveWireSlotChunk<'a> {
     pub const HEADER_LEN: usize = 12;
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::HEADER_LEN + self.data.len());
-        out.extend_from_slice(&self.slot_id.to_le_bytes());
-        out.extend_from_slice(&self.chunk_index.to_le_bytes());
-        out.extend_from_slice(&self.total_chunks.to_le_bytes());
-        out.extend_from_slice(self.data);
-        out
+        let mut w = ByteWriter::with_capacity(Self::HEADER_LEN + self.data.len());
+        w.write_u32(self.slot_id);
+        w.write_u32(self.chunk_index);
+        w.write_u32(self.total_chunks);
+        w.write_raw(self.data);
+        w.into_bytes()
     }
 
     pub fn decode(bytes: &'a [u8]) -> Result<Self, NveWireError> {
@@ -220,14 +234,32 @@ impl<'a> NveWireSlotChunk<'a> {
                 actual: bytes.len(),
             });
         }
-        let slot_id = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let chunk_index = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        let total_chunks = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        let mut r = ByteReader::new(bytes);
+        let slot_id = r.read_u32()?;
+        let chunk_index = r.read_u32()?;
+        let total_chunks = r.read_u32()?;
+        let data = r.remaining_slice();
         Ok(Self {
             slot_id,
             chunk_index,
             total_chunks,
-            data: &bytes[Self::HEADER_LEN..],
+            data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reject_detail_clips_on_utf8_char_boundary() {
+        let detail = "€".repeat(100);
+        assert_eq!(detail.len(), 300);
+        let bytes = NveWireRejectReason::Unauthorized.encode(&detail);
+        let (reason, decoded) = NveWireRejectReason::decode(&bytes).expect("must decode valid UTF-8");
+        assert_eq!(reason, NveWireRejectReason::Unauthorized);
+        assert_eq!(decoded.len(), 255);
+        assert_eq!(decoded, "€".repeat(85));
     }
 }

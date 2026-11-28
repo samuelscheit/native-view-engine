@@ -38,7 +38,7 @@ pub use signal_codec::{BinValueSlot, SignalCodec};
 use std::fmt;
 
 use nve_abi::{encode_bin_value_to_vec, BinValueView, DecodeError, NveValueRef};
-use nve_components::reconcile::{
+use nve_interop::reconcile::{
     reconcile_three_way, ConflictPolicy, ReconcileDecision, ThreeWayEntry,
 };
 use nve_abi::Xxh64Hasher;
@@ -94,7 +94,7 @@ pub fn signal_slot_id(component_path: &str, signal_name: &str) -> u64 {
 
 /// Discriminant tag for archived signal values.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nve_codec::NveCodec)]
 pub enum SignalValueTag {
     Null = 0,
     Bool = 1,
@@ -106,22 +106,6 @@ pub enum SignalValueTag {
     BinValue = 7,
 }
 
-impl SignalValueTag {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Null),
-            1 => Some(Self::Bool),
-            2 => Some(Self::I64),
-            3 => Some(Self::U64),
-            4 => Some(Self::F64),
-            5 => Some(Self::Str),
-            6 => Some(Self::Bytes),
-            7 => Some(Self::BinValue),
-            _ => None,
-        }
-    }
-}
 
 /// Typed value stored in one archived signal slot.
 #[derive(Debug, Clone)]
@@ -213,6 +197,7 @@ pub enum SignalArchiveError {
     UnsortedOrDuplicateSlot(u64),
     TrailingBytes(usize),
     PayloadTooLarge(usize),
+    Codec(nve_codec::CodecError),
     Persistence(PersistenceError),
 }
 
@@ -255,6 +240,7 @@ impl fmt::Display for SignalArchiveError {
             }
             Self::TrailingBytes(n) => write!(f, "signal archive has {n} trailing bytes"),
             Self::PayloadTooLarge(n) => write!(f, "signal payload length {n} exceeds u32::MAX"),
+            Self::Codec(e) => write!(f, "signal archive binary codec error: {e}"),
             Self::Persistence(e) => write!(f, "signal archive persistence error: {e}"),
         }
     }

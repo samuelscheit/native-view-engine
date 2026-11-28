@@ -9,7 +9,8 @@ mod counting_alloc;
 mod writer_list;
 
 use counting_alloc::count_allocs;
-use nve_components::tables::{Layout, Visual};
+use nve_abi::SurfaceId;
+use nve_tables::tables::{Layout, Visual};
 use nve_dioxus::NveMutationWriter;
 use nve_store::{Length, NodeId, Rgba};
 use writer_list::{
@@ -57,7 +58,7 @@ pub fn assert_item_subtree(writer: &NveMutationWriter, k: usize, pick: usize) {
         Some(inner_node),
         "item {k}: assign_node_id"
     );
-    assert_eq!(writer.element_id_of(inner_node.0), Some(inner(k)));
+    assert_eq!(writer.element_id_of(inner_node), Some(inner(k)));
     let width = store.try_row::<Layout>(inner_node).map(|l| l.width());
     assert_eq!(
         width,
@@ -124,7 +125,7 @@ fn assert_zero_steady_state(
 #[test]
 fn writer_steady_state_mutations_allocate_nothing() {
     let v = values();
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     mount_list(&mut writer, &v);
     for k in 0..ITEMS {
         assert_item_subtree(&writer, k, 0);
@@ -164,7 +165,7 @@ fn writer_steady_state_mutations_allocate_nothing() {
         let node = writer.resolve_el(item(k)).expect("item bound");
         assert!(writer.store().is_live(node));
         assert!(children.contains(&node));
-        assert_eq!(writer.element_id_of(node.0), Some(item(k)));
+        assert_eq!(writer.element_id_of(node), Some(item(k)));
         let last_frame = (0..end).rev().find(|i| i % ITEMS == k).unwrap_or(k);
         assert_item_subtree(&writer, k, (last_frame / ITEMS) % 2);
     }

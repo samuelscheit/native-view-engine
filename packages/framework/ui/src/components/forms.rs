@@ -85,7 +85,7 @@ pub fn Input(
             border_color,
             border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .text_style(TypedTextStyle {
             color: theme.text.primary,
@@ -147,8 +147,8 @@ pub fn Input(
                 secure_text_entry: secure,
                 read_only: read_only,
                 disabled: disabled,
-                autocomplete: autocomplete.map(AutofillHint::as_html_autocomplete),
-                input_mode: input_mode.map(InputMode::as_html_inputmode),
+                autocomplete: autocomplete.map(AutofillHint::whatwg_token),
+                input_mode: input_mode.map(InputMode::whatwg_token),
                 tab_index: tab_index,
                 accessibility_role: "{a11y_role}",
                 accessibility_label: a11y_label,
@@ -227,7 +227,7 @@ pub fn Checkbox(
             border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radius.sm,
             opacity: if disabled { 0.5 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -244,7 +244,7 @@ pub fn Checkbox(
             border_color: boxc.border,
             border_radius: theme.radius.sm,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -346,7 +346,7 @@ pub fn Switch(
             border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radius.sm,
             opacity: if disabled { 0.5 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -369,7 +369,7 @@ pub fn Switch(
             border_color: track.border,
             border_radius: theme.radius.full,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -382,7 +382,7 @@ pub fn Switch(
             border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radius.full,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

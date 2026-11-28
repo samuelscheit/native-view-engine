@@ -1,3 +1,4 @@
+use nve_abi::SurfaceId;
 use nve_interop::{
     FrameworkKind, InteropRuntime, SurfaceDescriptor, SurfaceEnvironment, SurfacePresentation,
     WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowLifecycleEvent,
@@ -8,24 +9,22 @@ use nve_interop::{
 fn surface_descriptor_defaults_to_embedded_and_supports_window_presentations() {
     let mut rt = InteropRuntime::new();
     let embedded = rt
-        .surfaces
         .register_root(FrameworkKind::Nve, "EmbeddedCard", SurfaceEnvironment::default())
         .unwrap();
-    assert_eq!(rt.surfaces.get(embedded).unwrap().presentation, SurfacePresentation::Embedded);
-    assert!(rt.surfaces.get(embedded).unwrap().presentation.is_embedded());
+    assert_eq!(rt.surfaces().get(embedded).unwrap().presentation, SurfacePresentation::Embedded);
+    assert!(rt.surfaces().get(embedded).unwrap().presentation.is_embedded());
 
     let primary_desc = WindowDescriptor::new("Main Studio", 1280.0, 800.0)
         .with_bounds(WindowRect::new(100.0, 80.0, 1280.0, 800.0))
         .with_min_size(640.0, 480.0);
     let primary_surface = rt
-        .surfaces
         .register_surface(
             SurfaceDescriptor::new(FrameworkKind::Nve, "PrimaryWindow")
                 .with_presentation(SurfacePresentation::PrimaryWindow(primary_desc.clone())),
         )
         .unwrap();
     assert_eq!(
-        rt.surfaces.get(primary_surface).unwrap().presentation,
+        rt.surfaces().get(primary_surface).unwrap().presentation,
         SurfacePresentation::PrimaryWindow(primary_desc.clone())
     );
 
@@ -46,7 +45,7 @@ fn multi_window_open_focus_resize_move_title_state_and_flags() {
     let mut wm = WindowManager::new();
     let primary = wm
         .open_window(
-            1,
+            SurfaceId::ROOT,
             SurfacePresentation::PrimaryWindow(
                 WindowDescriptor::new("Primary", 1024.0, 768.0)
                     .with_bounds(WindowRect::new(20.0, 30.0, 1024.0, 768.0))
@@ -57,9 +56,9 @@ fn multi_window_open_focus_resize_move_title_state_and_flags() {
         .unwrap();
     let secondary = wm
         .open_window(
-            2,
+            SurfaceId::new(2, 0),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: false,
                 descriptor: WindowDescriptor::new("Inspector", 420.0, 600.0),
             },
@@ -72,11 +71,11 @@ fn multi_window_open_focus_resize_move_title_state_and_flags() {
 
     // Reject duplicate surface window and Embedded presentation.
     assert_eq!(
-        wm.open_window(1, SurfacePresentation::PrimaryWindow(WindowDescriptor::default())),
-        Err(WindowError::SurfaceAlreadyHasWindow(1))
+        wm.open_window(SurfaceId::ROOT, SurfacePresentation::PrimaryWindow(WindowDescriptor::default())),
+        Err(WindowError::SurfaceAlreadyHasWindow(SurfaceId::ROOT))
     );
     assert!(matches!(
-        wm.open_window(99, SurfacePresentation::Embedded),
+        wm.open_window(SurfaceId::new(99, 0), SurfacePresentation::Embedded),
         Err(WindowError::InvalidDescriptor(_))
     ));
 
@@ -124,13 +123,16 @@ fn multi_window_open_focus_resize_move_title_state_and_flags() {
 fn modal_parent_focus_blocking_and_release_after_modal_close() {
     let mut wm = WindowManager::new();
     let parent = wm
-        .open_window(1, SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Main", 800.0, 600.0)))
+        .open_window(
+            SurfaceId::ROOT,
+            SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Main", 800.0, 600.0)),
+        )
         .unwrap();
     let modal = wm
         .open_window(
-            2,
+            SurfaceId::new(2, 0),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: true,
                 descriptor: WindowDescriptor::new("Confirm Save", 400.0, 220.0),
             },
@@ -138,9 +140,9 @@ fn modal_parent_focus_blocking_and_release_after_modal_close() {
         .unwrap();
     let nested_modal = wm
         .open_window(
-            3,
+            SurfaceId::new(3, 0),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(2),
+                parent: Some(SurfaceId::new(2, 0)),
                 modal: true,
                 descriptor: WindowDescriptor::new("Nested Alert", 300.0, 160.0),
             },
@@ -185,22 +187,25 @@ fn modal_parent_focus_blocking_and_release_after_modal_close() {
 fn cascading_close_of_owned_sheets_popovers_and_utility_panels_preserves_independent_secondary() {
     let mut wm = WindowManager::new();
     let parent = wm
-        .open_window(10, SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Workspace", 1000.0, 700.0)))
+        .open_window(
+            SurfaceId::new(10, 0),
+            SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Workspace", 1000.0, 700.0)),
+        )
         .unwrap();
     let sheet = wm
         .open_window(
-            11,
+            SurfaceId::new(11, 0),
             SurfacePresentation::Sheet {
-                parent: 10,
+                parent: SurfaceId::new(10, 0),
                 descriptor: WindowDescriptor::new("Export Sheet", 480.0, 360.0),
             },
         )
         .unwrap();
     let popover_on_sheet = wm
         .open_window(
-            12,
+            SurfaceId::new(12, 0),
             SurfacePresentation::Popover {
-                anchor_surface: 11,
+                anchor_surface: SurfaceId::new(11, 0),
                 anchor_rect: WindowRect::new(20.0, 40.0, 120.0, 32.0),
                 descriptor: WindowDescriptor::new("Format Picker", 220.0, 180.0),
             },
@@ -208,9 +213,9 @@ fn cascading_close_of_owned_sheets_popovers_and_utility_panels_preserves_indepen
         .unwrap();
     let panel = wm
         .open_window(
-            13,
+            SurfaceId::new(13, 0),
             SurfacePresentation::UtilityPanel {
-                parent: Some(10),
+                parent: Some(SurfaceId::new(10, 0)),
                 always_on_top: true,
                 descriptor: WindowDescriptor::new("Color Palette", 240.0, 320.0),
             },
@@ -218,9 +223,9 @@ fn cascading_close_of_owned_sheets_popovers_and_utility_panels_preserves_indepen
         .unwrap();
     let independent = wm
         .open_window(
-            14,
+            SurfaceId::new(14, 0),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(10),
+                parent: Some(SurfaceId::new(10, 0)),
                 modal: false,
                 descriptor: WindowDescriptor::new("Detached Docs", 640.0, 480.0),
             },
@@ -251,13 +256,16 @@ fn cascading_close_of_owned_sheets_popovers_and_utility_panels_preserves_indepen
 fn close_request_veto_allow_and_deny_flows() {
     let mut wm = WindowManager::new();
     let win = wm
-        .open_window(1, SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Doc", 640.0, 480.0)))
+        .open_window(
+            SurfaceId::ROOT,
+            SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Doc", 640.0, 480.0)),
+        )
         .unwrap();
     let popover = wm
         .open_window(
-            2,
+            SurfaceId::new(2, 0),
             SurfacePresentation::Popover {
-                anchor_surface: 1,
+                anchor_surface: SurfaceId::ROOT,
                 anchor_rect: WindowRect::new(10.0, 10.0, 80.0, 24.0),
                 descriptor: WindowDescriptor::new("Menu", 180.0, 120.0),
             },
@@ -274,7 +282,10 @@ fn close_request_veto_allow_and_deny_flows() {
     assert_eq!(wm.get(win).unwrap().lifecycle, WindowLifecycleState::ClosePending);
     assert_eq!(
         wm.drain_events(),
-        vec![WindowLifecycleEvent::CloseRequested { handle: win, surface_id: 1 }]
+        vec![WindowLifecycleEvent::CloseRequested {
+            handle: win,
+            surface_id: SurfaceId::ROOT,
+        }]
     );
 
     // Deny (veto) returns window to Open with no windows closed.
@@ -294,7 +305,7 @@ fn close_request_veto_allow_and_deny_flows() {
 fn direct_typed_window_commands_and_lifecycle_event_flows() {
     let open_cmds = [
         WindowCommand::OpenWindow {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             presentation: SurfacePresentation::PrimaryWindow(
                 WindowDescriptor::new("Main Window — 日本語", 1280.0, 720.0)
                     .with_bounds(WindowRect::new(40.0, 50.0, 1280.0, 720.0))
@@ -304,33 +315,33 @@ fn direct_typed_window_commands_and_lifecycle_event_flows() {
             ),
         },
         WindowCommand::OpenWindow {
-            surface_id: 2,
+            surface_id: SurfaceId::new(2, 0),
             presentation: SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: true,
                 descriptor: WindowDescriptor::new("Modal", 400.0, 250.0),
             },
         },
         WindowCommand::OpenWindow {
-            surface_id: 3,
+            surface_id: SurfaceId::new(3, 0),
             presentation: SurfacePresentation::UtilityPanel {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 always_on_top: true,
                 descriptor: WindowDescriptor::new("Tools", 220.0, 480.0),
             },
         },
         WindowCommand::OpenWindow {
-            surface_id: 4,
+            surface_id: SurfaceId::new(4, 0),
             presentation: SurfacePresentation::Popover {
-                anchor_surface: 1,
+                anchor_surface: SurfaceId::ROOT,
                 anchor_rect: WindowRect::new(120.0, 64.0, 88.0, 32.0),
                 descriptor: WindowDescriptor::new("Quick Actions", 260.0, 180.0),
             },
         },
         WindowCommand::OpenWindow {
-            surface_id: 5,
+            surface_id: SurfaceId::new(5, 0),
             presentation: SurfacePresentation::Sheet {
-                parent: 1,
+                parent: SurfaceId::ROOT,
                 descriptor: WindowDescriptor::new("Settings Sheet", 540.0, 400.0),
             },
         },
@@ -383,7 +394,10 @@ fn direct_typed_window_commands_and_lifecycle_event_flows() {
 fn window_manager_validation_rejects_invalid_descriptors_bounds_and_constraints() {
     let mut wm = WindowManager::new();
     let h = wm
-        .open_window(1, SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Main", 640.0, 480.0)))
+        .open_window(
+            SurfaceId::ROOT,
+            SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Main", 640.0, 480.0)),
+        )
         .unwrap();
 
     // Non-finite or zero bounds rejected cleanly.

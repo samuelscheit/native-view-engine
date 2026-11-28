@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use nve_abi::ColorRgba;
-use nve_components::tables::ImageFit;
+use nve_tables::tables::ImageFit;
 use nve_engine::LayoutRect;
 
 use super::png::{decode_pass, PngHeader};

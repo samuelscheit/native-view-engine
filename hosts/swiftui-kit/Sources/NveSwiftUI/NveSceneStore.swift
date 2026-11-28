@@ -238,18 +238,30 @@ public final class NveSceneStore: ObservableObject {
     }
 }
 
-/// Decoded `nve.res.image_src` resource (`ImageSrc` wire encoding).
+/// Decoded `nve.res.image_src` resource (`ImageSrc` `FlatResource` 4-byte-aligned word encoding).
 public enum NveImageSource: Equatable, Sendable {
     case url(String)
     case encoded([UInt8])
 
-    /// Tag `0` = URL (`u32` LE length + UTF-8), tag `1` = encoded bytes (`u32` LE length + bytes).
+    /// `FlatResource` layout: `u32 tag` (`0` = URL, `1` = encoded bytes) | `u32 byte_len` | payload
+    /// zero-padded to a 4-byte boundary.
     public init?(resourceBytes b: [UInt8]) {
-        guard b.count >= 5 else { return nil }
-        let len = Int(UInt32(b[1]) | UInt32(b[2]) << 8 | UInt32(b[3]) << 16 | UInt32(b[4]) << 24)
-        guard len == b.count - 5 else { return nil }
-        let payload = Array(b[5...])
-        switch b[0] {
+        guard b.count >= 8, (b.count & 3) == 0 else { return nil }
+        let tag = UInt32(b[0]) | UInt32(b[1]) << 8 | UInt32(b[2]) << 16 | UInt32(b[3]) << 24
+        let len = UInt32(b[4]) | UInt32(b[5]) << 8 | UInt32(b[6]) << 16 | UInt32(b[7]) << 24
+        let maxLen: UInt32
+        switch tag {
+        case 0: maxLen = 256 * 1024
+        case 1: maxLen = 32 * 1024 * 1024
+        default: return nil
+        }
+        guard len <= maxLen else { return nil }
+        let lenInt = Int(len)
+        let padded = (lenInt + 3) & ~3
+        guard padded == b.count - 8 else { return nil }
+        for i in (8 + lenInt)..<b.count where b[i] != 0 { return nil }
+        let payload = Array(b[8..<(8 + lenInt)])
+        switch tag {
         case 0:
             guard let s = String(bytes: payload, encoding: .utf8) else { return nil }
             self = .url(s)

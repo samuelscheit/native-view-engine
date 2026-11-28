@@ -1,12 +1,12 @@
-use nve_abi::ColorRgba;
-use nve_components::paint::{BackgroundFill, GradientStop};
-use nve_components::tables::{
+use nve_abi::{ColorRgba, SurfaceId};
+use nve_tables::paint::{BackgroundFill, GradientStop};
+use nve_tables::tables::{
     BackgroundFillRes, BoxShadows, Layout, Scroll, TextContent, Typography, Visual,
 };
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
-use nve_components::tables::parse_box_shadow;
+use nve_tables::tables::BoxShadow;
 
 use crate::{PaintOp, PixelBuffer, SkiaBackend};
 
@@ -16,7 +16,7 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 320.0,
             height: 200.0,
@@ -42,9 +42,12 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
         .border_radius(10.0)
         .border_width(2.0)
         .border_color(Rgba::rgb(56, 189, 248))
-        .box_shadows(Some(BoxShadows::new(parse_box_shadow(
-            "0 4px 12px rgba(0,0,0,0.4)",
-        ))))
+        .box_shadows(Some(BoxShadows::new(vec![BoxShadow::new(
+            0.0,
+            4.0,
+            12.0,
+            Rgba::new(0, 0, 0, 102),
+        )])))
         .background_fill(Some(BackgroundFillRes(BackgroundFill::linear(
             90.0,
             vec![
@@ -61,7 +64,7 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
     tx.edit::<Layout>(scroller)
         .width(Length::points(280.0))
         .height(Length::points(90.0));
-    tx.edit::<Scroll>(scroller).axes(nve_components::tables::ScrollAxes::Vertical);
+    tx.edit::<Scroll>(scroller).axes(nve_tables::tables::ScrollAxes::Vertical);
     tx.edit::<Layout>(tall)
         .flex_shrink(0.0)
         .height(Length::points(300.0));
@@ -93,14 +96,14 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
 
 #[test]
 fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
-    use nve_abi::EventMask;
-    use nve_components::tables::{Interaction, ScrollAxes, Visibility};
+    use nve_abi::InteractionEvent;
+    use nve_tables::tables::{Interaction, ScrollAxes, Visibility};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 300.0,
             height: 300.0,
@@ -121,14 +124,14 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
         tx.edit::<Visual>(p)
             .visibility(Visibility::Hidden)
             .background(Rgba::rgb(255, 0, 0));
-        tx.edit::<Interaction>(p).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(p).listen(InteractionEvent::Press);
         // Ordinary `Inherit` child under Hidden parent: neither painted nor hit-testable (including scroll & interaction).
         tx.edit::<Layout>(inh)
             .width(Length::points(80.0))
             .height(Length::points(80.0));
         tx.edit::<Visual>(inh).background(Rgba::rgb(0, 0, 255));
         tx.edit::<Scroll>(inh).axes(ScrollAxes::Vertical);
-        tx.edit::<Interaction>(inh).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(inh).listen(InteractionEvent::Press);
         // Explicit `Visible` child under Hidden parent: painted, hit-testable, interaction & scroll eligible.
         tx.edit::<Layout>(vis)
             .width(Length::points(80.0))
@@ -137,7 +140,7 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
             .visibility(Visibility::Visible)
             .background(Rgba::rgb(0, 255, 0));
         tx.edit::<Scroll>(vis).axes(ScrollAxes::Vertical);
-        tx.edit::<Interaction>(vis).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(vis).listen(InteractionEvent::Press);
         tx.commit_into(&mut changes);
         (p, inh, vis)
     };
@@ -157,20 +160,112 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
     assert!(!painted_colors.contains(&ColorRgba::rgb(0, 0, 255)), "inherit child under hidden parent must not paint");
     assert!(painted_colors.contains(&ColorRgba::rgb(0, 255, 0)), "explicit Visible child under hidden parent must paint");
 
-    let inh_r = backend.layout_of(inherit_child.raw()).unwrap();
-    let vis_r = backend.layout_of(visible_child.raw()).unwrap();
+    let inh_r = backend.layout_of(inherit_child).unwrap();
+    let vis_r = backend.layout_of(visible_child).unwrap();
     assert_eq!(backend.hit_test(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
     assert_eq!(backend.hit_test_interaction(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
     assert_eq!(backend.hit_test_scroll_container(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
-    assert_eq!(backend.hit_test(&store, vis_r.x + 10.0, vis_r.y + 10.0), Some(visible_child.raw()));
+    assert_eq!(backend.hit_test(&store, vis_r.x + 10.0, vis_r.y + 10.0), Some(visible_child));
     assert_eq!(
         backend.hit_test_interaction(&store, vis_r.x + 10.0, vis_r.y + 10.0),
-        Some(visible_child.raw())
+        Some(visible_child)
     );
     assert_eq!(
         backend.hit_test_scroll_container(&store, vis_r.x + 10.0, vis_r.y + 10.0),
-        Some(visible_child.raw())
+        Some(visible_child)
     );
     assert_eq!(backend.hit_test(&store, 190.0, 190.0), None);
     let _ = hidden_parent;
+}
+
+#[test]
+fn skia_inherited_typography_and_explicit_default_resets() {
+    use core::num::NonZeroU16;
+    use nve_tables::tables::VerticalAlign;
+    use nve_store::ResolvedRow;
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut backend = SkiaBackend::new();
+    backend.set_viewport(
+        SurfaceId::ROOT,
+        Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        },
+    );
+
+    let (parent, child_inherit, child_reset) = {
+        let mut tx = store.tx();
+        let p = tx.create();
+        let c1 = tx.create();
+        let c2 = tx.create();
+        tx.set_children(NodeId::ROOT, &[p]);
+        tx.set_children(p, &[c1, c2]);
+        tx.edit::<Layout>(p)
+            .width(Length::points(280.0))
+            .height(Length::points(120.0));
+        tx.edit::<Typography>(p)
+            .color(Rgba::WHITE)
+            .font_weight(700)
+            .font_size(22.0)
+            .max_lines(NonZeroU16::new(2))
+            .vertical_align(VerticalAlign::Middle);
+
+        tx.edit::<TextContent>(c1).text("inherits");
+        tx.edit::<TextContent>(c2).text("resets");
+        // Explicitly write table defaults BLACK + 400 + None + Baseline to override ancestor.
+        tx.edit::<Typography>(c2)
+            .color(Rgba::BLACK)
+            .font_weight(400)
+            .max_lines(None)
+            .vertical_align(VerticalAlign::Baseline);
+        tx.commit_into(&mut changes);
+        (p, c1, c2)
+    };
+
+    backend.commit(&store, &changes).unwrap();
+    let mut seen_inherits = None;
+    let mut seen_resets = None;
+    for op in &backend.display_list().ops {
+        if let PaintOp::DrawText {
+            text,
+            font_size,
+            font_weight,
+            color,
+            ..
+        } = op
+        {
+            if text == "inherits" {
+                seen_inherits = Some((*font_size, *font_weight, *color));
+            } else if text == "resets" {
+                seen_resets = Some((*font_size, *font_weight, *color));
+            }
+        }
+    }
+    assert_eq!(
+        seen_inherits,
+        Some((22.0, 700, ColorRgba::from_u32(Rgba::WHITE.0)))
+    );
+    assert_eq!(
+        seen_resets,
+        Some((22.0, 400, ColorRgba::from_u32(Rgba::BLACK.0)))
+    );
+
+    // `max_lines` and `vertical_align` inherit onto text-run leaf children unless explicitly reset.
+    let root_r = ResolvedRow::<Typography>::root(&store);
+    let p_r = ResolvedRow::<Typography>::resolve(&store, parent, &root_r);
+    let c1_r = ResolvedRow::<Typography>::resolve(&store, child_inherit, &p_r);
+    let c2_r = ResolvedRow::<Typography>::resolve(&store, child_reset, &p_r);
+    assert_eq!(p_r.get().max_lines(), NonZeroU16::new(2));
+    assert_eq!(p_r.get().vertical_align(), VerticalAlign::Middle);
+    assert_eq!(c1_r.get().max_lines(), NonZeroU16::new(2));
+    assert_eq!(c1_r.get().vertical_align(), VerticalAlign::Middle);
+    assert!(c1_r.get().is_max_lines_explicit());
+    assert!(c1_r.get().is_vertical_align_explicit());
+    assert_eq!(c2_r.get().max_lines(), None);
+    assert_eq!(c2_r.get().vertical_align(), VerticalAlign::Baseline);
+    assert!(c2_r.get().is_max_lines_explicit());
+    assert!(c2_r.get().is_vertical_align_explicit());
 }

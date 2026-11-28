@@ -1,12 +1,12 @@
-// NVE host runtime: decoders (and encoders, for C++ apps / fixtures) of the core resource kinds
-// a native view host renders, byte-identical to `nve_components::tables::resources`:
+// NVE host runtime: decoders (and encoders, for C++ apps / fixtures) of the core `FlatResource`
+// kinds a native view host renders, word-identical to `nve_tables::tables::resources`:
 //
-//   nve.res.image_src   u8 tag; 0 = Url (u32 len + UTF-8), 1 = EncodedBytes (u32 len + bytes)
-//   nve.res.box_shadows u32 count (<= 4096); per shadow f32 offset_x, offset_y, blur, spread,
-//                       u32 RGBA, u8 inset
+//   nve.res.image_src   u32 tag (0 = Url, 1 = EncodedBytes) | u32 byte_len | payload padded to 4 B
+//   nve.res.box_shadows u32 count (<= 4096); per shadow 6 u32 words:
+//                       f32 offset_x, offset_y, blur, spread, u32 RGBA, u32 inset (0 | 1)
 //
 // Decoders return views into the given bytes (no allocation except the shadow list) and reject
-// trailing bytes, over-limit counts, and invalid UTF-8 exactly like Rust.
+// unaligned lengths, trailing bytes, over-limit counts, and invalid UTF-8 exactly like Rust.
 #pragma once
 
 #include <algorithm>
@@ -39,10 +39,6 @@ class ResourceCursor {
     at_ += n;
     return s;
   }
-  [[nodiscard]] std::optional<uint8_t> u8() noexcept {
-    const auto s = take(1u);
-    return s ? std::optional<uint8_t>((*s)[0]) : std::nullopt;
-  }
   [[nodiscard]] std::optional<uint32_t> u32() noexcept {
     const auto s = take(4u);
     return s ? std::optional<uint32_t>(nve_load_u32_le(s->data())) : std::nullopt;
@@ -64,6 +60,10 @@ class ResourceCursor {
 
 inline void put_u32(std::vector<uint8_t>& out, uint32_t v) {
   for (uint32_t s = 0; s < 32u; s += 8u) out.push_back(static_cast<uint8_t>(v >> s));
+}
+
+inline void pad4(std::vector<uint8_t>& out) {
+  while ((out.size() & 3u) != 0u) out.push_back(0u);
 }
 }  // namespace detail
 
@@ -87,29 +87,36 @@ struct ImageSource {
 [[nodiscard]] inline std::optional<ImageSource> decode_image_src(std::span<const uint8_t> bytes) noexcept {
   constexpr uint32_t kMaxString = 256u * 1024u;
   constexpr uint32_t kMaxImage = 32u * 1024u * 1024u;
+  if ((bytes.size() & 3u) != 0u) return std::nullopt;
   detail::ResourceCursor r(bytes);
-  const auto tag = r.u8();
+  const auto tag = r.u32();
   if (!tag || *tag > 1u) return std::nullopt;
   const auto len = r.count(*tag == 0u ? kMaxString : kMaxImage);
   if (!len) return std::nullopt;
-  const auto body = r.take(*len);
-  if (!body || !r.done()) return std::nullopt;
-  if (*tag == 1u) return ImageSource{{}, *body};
-  if (!body->empty() && nve_utf8_valid(body->data(), body->size()) == 0) return std::nullopt;
-  return ImageSource{std::string_view(reinterpret_cast<const char*>(body->data()), body->size()), {}};
+  const size_t padded = (static_cast<size_t>(*len) + 3u) & ~size_t{3u};
+  const auto raw = r.take(padded);
+  if (!raw || !r.done()) return std::nullopt;
+  const std::span<const uint8_t> body = raw->first(*len);
+  if (*tag == 1u) return ImageSource{{}, body};
+  if (!body.empty() && nve_utf8_valid(body.data(), body.size()) == 0) return std::nullopt;
+  return ImageSource{std::string_view(reinterpret_cast<const char*>(body.data()), body.size()), {}};
 }
 
 [[nodiscard]] inline std::vector<uint8_t> encode_image_url(std::string_view url) {
-  std::vector<uint8_t> out{0u};
+  std::vector<uint8_t> out;
+  detail::put_u32(out, 0u);
   detail::put_u32(out, static_cast<uint32_t>(url.size()));
   out.insert(out.end(), url.begin(), url.end());
+  detail::pad4(out);
   return out;
 }
 
 [[nodiscard]] inline std::vector<uint8_t> encode_image_bytes(std::span<const uint8_t> encoded) {
-  std::vector<uint8_t> out{1u};
+  std::vector<uint8_t> out;
+  detail::put_u32(out, 1u);
   detail::put_u32(out, static_cast<uint32_t>(encoded.size()));
   out.insert(out.end(), encoded.begin(), encoded.end());
+  detail::pad4(out);
   return out;
 }
 
@@ -124,15 +131,16 @@ struct BoxShadow {
 };
 
 [[nodiscard]] inline std::optional<std::vector<BoxShadow>> decode_box_shadows(std::span<const uint8_t> bytes) {
+  if ((bytes.size() & 3u) != 0u) return std::nullopt;
   detail::ResourceCursor r(bytes);
   const auto n = r.count(4096u);
   if (!n) return std::nullopt;
   std::vector<BoxShadow> out;
   out.reserve(std::min<uint32_t>(*n, 16u));
-  for (uint32_t i = 0; i < *n; ++i) {
+  for (uint32_t i = 0u; i < *n; ++i) {
     const auto x = r.f32(), y = r.f32(), blur = r.f32(), spread = r.f32();
     const auto color = r.u32();
-    const auto inset = r.u8();
+    const auto inset = r.u32();
     if (!x || !y || !blur || !spread || !color || !inset || *inset > 1u) return std::nullopt;
     // Sealed like `read_node` floats: NaN / Inf never reach a painter (an infinite D2D geometry
     // fails the whole frame); blur is a non-negative extent, spread may be negative.
@@ -152,7 +160,7 @@ struct BoxShadow {
       detail::put_u32(out, std::bit_cast<uint32_t>(f));
     }
     detail::put_u32(out, s.color);
-    out.push_back(s.inset ? 1u : 0u);
+    detail::put_u32(out, s.inset ? 1u : 0u);
   }
   return out;
 }

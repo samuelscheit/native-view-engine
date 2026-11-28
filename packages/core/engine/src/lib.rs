@@ -13,6 +13,7 @@ pub mod profiler;
 pub mod runtime_app;
 pub mod store_backend;
 pub mod wake;
+pub mod tracker;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NodeId, SurfaceId};
@@ -22,6 +23,7 @@ pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp}
 pub use runtime_app::{AppFrame, CapabilityUnsupported, FrameTickHook, RuntimeApp};
 pub use store_backend::{StoreBackend, StoreWireReplica};
 pub use wake::{WakeBridge, WakeCallback, WakeToken};
+pub use tracker::InteractionTracker;
 
 pub use hotreload::HotPatchMsg;
 pub use persistence::{
@@ -110,7 +112,7 @@ impl<B: StoreBackend> SurfaceRunner<B> {
         backend.set_viewport(surface_id, viewport);
         Self {
             surface_id,
-            next_frame_id: 1,
+            next_frame_id: FrameId(1),
             backend,
             profiler: FrameProfiler::new(512),
         }
@@ -134,7 +136,7 @@ impl<B: StoreBackend> SurfaceRunner<B> {
 
     pub fn next_frame_id(&mut self) -> FrameId {
         let id = self.next_frame_id;
-        self.next_frame_id += 1;
+        self.next_frame_id = self.next_frame_id.next();
         id
     }
 

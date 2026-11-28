@@ -4,7 +4,7 @@
 use std::cell::Cell;
 
 use nve_abi::hash::HashMap;
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, NodeId, SurfaceId, TimestampUs};
 
 /// Standard W3C UI Events `keyCode` for IME composition keystrokes (`Process` key).
 pub const IME_PROCESS_KEY_CODE: u32 = 229;
@@ -130,83 +130,81 @@ pub fn web_composition_start(
     guard: &ImeCompositionGuard,
     surface_id: SurfaceId,
     node_id: NodeId,
-    timestamp_us: u64,
-) -> NativeEvent {
+    timestamp: TimestampUs,
+    out: &mut EventBatchBuf,
+) {
     guard.on_composition_start();
-    NativeEvent {
-        kind: NativeEventKind::CompositionStart,
+    out.push_composition(
         surface_id,
         node_id,
-        timestamp_us,
-        payload: EventPayload::Empty,
-    }
+        timestamp,
+        nve_abi::TextInputEvent::CompositionStart,
+        "",
+    );
 }
 
 pub fn web_composition_update(
     guard: &ImeCompositionGuard,
     surface_id: SurfaceId,
     node_id: NodeId,
-    timestamp_us: u64,
-    preedit: String,
-) -> NativeEvent {
+    timestamp: TimestampUs,
+    preedit: &str,
+    out: &mut EventBatchBuf,
+) {
     if !guard.is_composing() {
         guard.on_composition_start();
     }
-    NativeEvent {
-        kind: NativeEventKind::CompositionUpdate,
+    out.push_composition(
         surface_id,
         node_id,
-        timestamp_us,
-        payload: EventPayload::Text(preedit),
-    }
+        timestamp,
+        nve_abi::TextInputEvent::CompositionUpdate,
+        preedit,
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn web_composition_end(
     guard: &ImeCompositionGuard,
     tracker: &mut InputSyncTracker,
     surface_id: SurfaceId,
     node_id: NodeId,
-    timestamp_us: u64,
-    committed: String,
+    timestamp: TimestampUs,
+    committed: &str,
     full_value: String,
-) -> [NativeEvent; 2] {
+    out: &mut EventBatchBuf,
+) {
     guard.on_composition_end();
     let synced = tracker.on_composition_end(node_id, full_value);
-    [
-        NativeEvent {
-            kind: NativeEventKind::CompositionEnd,
-            surface_id,
-            node_id,
-            timestamp_us,
-            payload: EventPayload::Text(committed),
-        },
-        NativeEvent {
-            kind: NativeEventKind::TextChange,
-            surface_id,
-            node_id,
-            timestamp_us,
-            payload: EventPayload::Text(synced),
-        },
-    ]
+    out.push_composition(
+        surface_id,
+        node_id,
+        timestamp,
+        nve_abi::TextInputEvent::CompositionEnd,
+        committed,
+    );
+    out.push_text_change(surface_id, node_id, timestamp, &synced);
 }
 
 pub fn web_composition_cancel_on_blur(
     guard: &ImeCompositionGuard,
     surface_id: SurfaceId,
     node_id: NodeId,
-    timestamp_us: u64,
-) -> Option<NativeEvent> {
+    timestamp: TimestampUs,
+    out: &mut EventBatchBuf,
+) -> bool {
     if !guard.is_composing() {
-        return None;
+        return false;
     }
     guard.on_composition_end();
-    Some(NativeEvent {
-        kind: NativeEventKind::CompositionEnd,
+    out.push_composition(
         surface_id,
         node_id,
-        timestamp_us,
-        payload: EventPayload::Empty,
-    })
+        timestamp,
+        nve_abi::TextInputEvent::CompositionEnd,
+        "",
+    );
+    true
 }
 
 /// Live `.value` of an `<input>`, `<textarea>`, or `<select>` (`None` for any other element).

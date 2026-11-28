@@ -1,6 +1,7 @@
 import CNveAbi
-import NveHost
 import Foundation
+import NveHost
+import NveHostAbi
 import QuartzCore
 import SwiftUI
 
@@ -32,6 +33,7 @@ public final class NveSurfaceController: ObservableObject {
 
     private var lastPropsValue: NveBinValue?
     private var lastDirectPropsEqual: ((Any) -> Bool)?
+    private var inboundBatch = EventBatchBuilder()
     private var lastTick: CFTimeInterval = 0
     private var pumpScheduled = false
 
@@ -182,9 +184,10 @@ public final class NveSurfaceController: ObservableObject {
 
     @discardableResult
     public func dispatchEvents(_ events: [NveEvent]) -> Bool {
-        guard !events.isEmpty,
-              let changed = try? NveDirectEventWriter.withBatch(events, { try session.dispatch($0) })
-        else { return false }
+        guard !events.isEmpty else { return false }
+        inboundBatch.clear()
+        for event in events { inboundBatch.push(event) }
+        guard let changed = try? inboundBatch.withRawBatch({ try session.dispatch($0) }) else { return false }
         pump()
         return changed
     }
@@ -194,9 +197,11 @@ public final class NveSurfaceController: ObservableObject {
 
     /// Imperative command as a custom event carrying a typed `NveBinValue`.
     public func dispatchCommand(name: String, value: NveBinValue, nodeId: UInt32 = 1) {
-        _ = try? NveDirectEventWriter.withCustomEvent(
-            surfaceId: surfaceId, nodeId: nodeId, timestampUs: NveEvent.nowUs(), name: name, value: value,
-            { try session.dispatch($0) })
+        inboundBatch.clear()
+        guard (try? inboundBatch.pushCustomEvent(
+            surfaceId: surfaceId, nodeId: nodeId, timestampUs: NveEvent.nowUs(), name: name, value: value
+        )) != nil else { return }
+        _ = try? inboundBatch.withRawBatch { try session.dispatch($0) }
         pump()
     }
 
@@ -256,7 +261,8 @@ public final class NveSurfaceController: ObservableObject {
         if (try? session.tick(dt: dt)) == true { store.sync() }
         isPaired = session.isPaired
         // Always drain: undrained events would pile up in the runtime while nobody listens.
-        guard let batch = try? session.drainEmittedEvents(), batch.len > 0, let onEvent else { return }
-        for event in NveDirectEventWriter.decodeBatch(batch) { onEvent(event) }
+        guard let batch = try? session.drainEmittedEvents(), batch.event_count > 0, let onEvent,
+              let reader = try? EventBatchReader.validate(batch: batch) else { return }
+        for event in reader.decodeEvents() { onEvent(event) }
     }
 }

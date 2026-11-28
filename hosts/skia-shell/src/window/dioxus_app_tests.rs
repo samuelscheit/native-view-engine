@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
-use nve_abi::{ColorRgba, METHOD_WINDOW_REQUEST_FRAME, SERVICE_WINDOW};
+use nve_abi::{ColorRgba, SurfaceId, METHOD_WINDOW_REQUEST_FRAME, SERVICE_WINDOW};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, Viewport};
@@ -79,7 +79,7 @@ fn dioxus_desktop_app_wakes_on_background_thread_completion_and_renders_update()
     }
 
     let gate = Gate::default();
-    let surface = DioxusSurface::new(1, AsyncDesktopRoot).with_context(gate.clone());
+    let surface = DioxusSurface::new(SurfaceId::ROOT, AsyncDesktopRoot).with_context(gate.clone());
     let mut app = DioxusDesktopApp::new(surface);
 
     let wake_hits = Arc::new(AtomicUsize::new(0));
@@ -90,7 +90,7 @@ fn dioxus_desktop_app_wakes_on_background_thread_completion_and_renders_update()
 
     let mut session = DesktopSession::new(
         app,
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 320.0,
             height: 200.0,
@@ -136,7 +136,7 @@ fn dioxus_desktop_app_wakes_on_background_thread_completion_and_renders_update()
     assert!(session.app_mut().surface_mut().store().live_nodes().next().is_some());
     assert!(!session.app_mut().poll_async_work());
 
-    let host_surface = DioxusSurface::new(1, AsyncDesktopRoot).with_context(gate);
+    let host_surface = DioxusSurface::new(SurfaceId::ROOT, AsyncDesktopRoot).with_context(gate);
     let host = DesktopWindowHost::new_dioxus(host_surface, DesktopPreviewOptions::default())
         .expect("new_dioxus must construct primary session");
     assert!(host.windows.is_empty());
@@ -164,10 +164,10 @@ fn dioxus_desktop_app_reload_returns_err_and_preserves_replica_and_nve2_sync() {
     }
 
     let sig_slot: SignalSlot = Rc::new(RefCell::new(None));
-    let surface = DioxusSurface::new(1, CounterRoot).with_context(Rc::clone(&sig_slot));
+    let surface = DioxusSurface::new(SurfaceId::ROOT, CounterRoot).with_context(Rc::clone(&sig_slot));
     let mut session = DesktopSession::new(
         DioxusDesktopApp::new(surface),
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 320.0,
             height: 200.0,

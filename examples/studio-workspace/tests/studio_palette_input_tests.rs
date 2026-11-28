@@ -4,12 +4,12 @@ use std::path::PathBuf;
 
 use common::{MultiBackendHarness, find_in_store, register_studio_tables};
 use nve_abi::{
-    NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef, NveSizeConstraints, NveValue,
-    ROOT_NODE_ID, pack_key_modifiers,
+    EventBatchBuf, EventFlags, FrameId, NveMapEntry, NvePropsRef, NveSizeConstraints, NveValue,
+    SurfaceId, TimestampUs, ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{NveApp, StoreBackend, StoreWireReplica, Viewport};
-use nve_interop::{NvePluginHost, PluginRequirement};
+use nve_interop::PluginRequirement;
 use nve_studio_workspace::{
     AccentTheme, ActiveView, LayoutEngineMode, MOBILE_BREAKPOINT_PT, StudioWorkspaceModule,
     fuzzy_score,
@@ -88,33 +88,33 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
     assert!(h.find_by_test_id("studio-panel").is_none());
 
     register_studio_tables();
-    let mut app = common::headless_module(1);
-    let first_frame = app.render(1).to_vec();
+    let mut app = common::headless_module(SurfaceId::ROOT);
+    let first_frame = app.render(FrameId(1)).to_vec();
     assert!(!app.state_snapshot().is_mobile_portrait());
 
-    let resize_mobile = [NveDirectEvent::layout(
-        1,
+    let mut resize_mobile = EventBatchBuf::new();
+    resize_mobile.push_layout(
+        SurfaceId::ROOT,
         ROOT_NODE_ID,
-        1000,
+        TimestampUs(1000),
         0.0,
         0.0,
         393.0,
         852.0,
-    )];
-    // SAFETY: `resize_mobile` outlives the synchronous `dispatch_events` call.
-    assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&resize_mobile) }));
+    );
+    assert!(app.dispatch_events(resize_mobile.as_validated()));
     assert!(app.state_snapshot().is_mobile_portrait());
-    let mobile_frame = app.render(2).to_vec();
+    let mobile_frame = app.render(FrameId(2)).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
             scale_factor: 3.0,
         },
     );
-    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(host, nve_tables::tables::core_realization_order());
     rep.submit_nve2_frame(&first_frame).expect("frame 1");
     rep.submit_nve2_frame(&mobile_frame).expect("frame 2");
     assert!(
@@ -136,8 +136,8 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
 fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     let h = MultiBackendHarness::new(960.0, 640.0);
 
-    let mut snap_app = common::headless_module(1);
-    let f1 = snap_app.render(1).to_vec();
+    let mut snap_app = common::headless_module(SurfaceId::ROOT);
+    let f1 = snap_app.render(FrameId(1)).to_vec();
     let p1 = NveWireFrame::new(NveWireKind::CommandDelta, 1, f1.clone())
         .encode()
         .unwrap();
@@ -146,16 +146,16 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
 
     let nid = h.find_by_test_id("task-status-2").unwrap();
     let rect = h.headless.layout_of(nid).unwrap();
-    let ev = [NveDirectEvent::press(
-        1,
+    let mut ev = EventBatchBuf::new();
+    ev.push_press(
+        SurfaceId::ROOT,
         nid,
-        16_000,
+        TimestampUs(16_000),
         rect.x + rect.width * 0.5,
         rect.y + rect.height * 0.5,
-    )];
-    // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-    assert!(snap_app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
-    let f2_incremental = snap_app.render(2).to_vec();
+    );
+    assert!(snap_app.dispatch_events(ev.as_validated()));
+    let f2_incremental = snap_app.render(FrameId(2)).to_vec();
 
     let p2 = NveWireFrame::new(NveWireKind::CommandDelta, 2, f2_incremental.clone())
         .encode()
@@ -164,9 +164,8 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     assert_eq!(r2.header.sequence, 2);
     assert_eq!(r2.payload, f2_incremental.as_slice());
 
-    // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-    assert!(snap_app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
-    let f3_incremental = snap_app.render(3).to_vec();
+    assert!(snap_app.dispatch_events(ev.as_validated()));
+    let f3_incremental = snap_app.render(FrameId(3)).to_vec();
     let p3 = NveWireFrame::new(NveWireKind::CommandDelta, 3, f3_incremental.clone())
         .encode()
         .unwrap();
@@ -200,25 +199,30 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     ));
-    if !dylib_path.exists() {
+    let test_mtime = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok());
+    let dylib_stale = std::fs::metadata(&dylib_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .is_none_or(|d_mtime| test_mtime.is_some_and(|t_mtime| d_mtime < t_mtime));
+    if dylib_stale {
         let status = std::process::Command::new("cargo")
-            .args(["build", "-p", "nve-studio-workspace"])
+            .args(["build", "--locked", "-p", "nve-studio-workspace"])
             .current_dir(workspace_root)
             .status()
             .expect("build nve-studio-workspace cdylib");
         assert!(status.success());
     }
 
-    let mut plugin_host = NvePluginHost::with_surface_base(50_000);
-    let pid = plugin_host
-        .load_dynamic(
-            "aether-studio",
-            &dylib_path,
-            PluginRequirement::EMBEDDED_COMPONENT,
-        )
+    let mut runtime = nve_interop::InteropRuntime::new();
+    let pid = runtime
+        .load_plugin_dynamic("aether-studio", &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("load studio cdylib as plugin");
-    let slot = plugin_host.get_mut(pid).unwrap();
-    assert_eq!(slot.surface_id(), 50_000);
+    let mut slot = runtime.plugin_mut(pid).unwrap();
+    let plugin_sid = slot.surface_id();
+    assert!(!plugin_sid.is_null());
     assert!(slot.capabilities().surface);
     assert!(slot.capabilities().layout);
     assert!(slot.capabilities().component);
@@ -230,31 +234,29 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         NveMapEntry::new("view", NveValue::from_str("stream")),
     ];
     assert!(slot.set_props(&plugin_entries).unwrap());
-    let pf1 = slot.render(1).unwrap().to_vec();
+    let pf1 = slot.render(FrameId(1)).unwrap().to_vec();
     assert!(pf1.len() > 24);
 
-    let gen2 = plugin_host
-        .hot_swap_dynamic(pid, &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
+    let gen2 = runtime
+        .hot_swap_plugin_dynamic(pid, &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("hot-swap studio plugin");
     assert_eq!(gen2, 2);
-    let slot2 = plugin_host.get_mut(pid).unwrap();
-    assert_eq!(slot2.surface_id(), 50_000);
-    let pf2 = slot2.render(2).unwrap().to_vec();
+    let mut slot2 = runtime.plugin_mut(pid).unwrap();
+    assert_eq!(slot2.surface_id(), plugin_sid);
+    let pf2 = slot2.render(FrameId(2)).unwrap().to_vec();
 
     register_studio_tables();
     let mut verify_host = HeadlessBackend::new();
     verify_host.set_viewport(
-        50_000,
+        plugin_sid,
         Viewport {
             width: 960.0,
             height: 640.0,
             scale_factor: 1.0,
         },
     );
-    let mut verify_rep = StoreWireReplica::new(
-        verify_host,
-        nve_components::tables::core_realization_order(),
-    );
+    let mut verify_rep =
+        StoreWireReplica::new(verify_host, nve_tables::tables::core_realization_order());
     verify_rep.submit_nve2_frame(&pf2).unwrap();
     let tree = verify_rep.backend().render_ascii_tree(verify_rep.store());
     assert!(tree.contains("100k Stream"));
@@ -278,11 +280,11 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
         scale_factor: 1.0,
     };
     register_studio_tables();
-    let mut app = common::headless_module(1);
+    let mut app = common::headless_module(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, vp);
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
-    let f1 = app.render(1).to_vec();
+    backend.set_viewport(SurfaceId::ROOT, vp);
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
+    let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1).unwrap();
     assert!(!app.state_snapshot().palette.open);
 
@@ -292,20 +294,18 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
                         meta: bool,
                         ctrl: bool,
                         fid: u64| {
-        let ev = [NveDirectEvent::key_down(
-            1,
+        let mut ev = EventBatchBuf::new();
+        ev.push_key_down(
+            SurfaceId::ROOT,
             ROOT_NODE_ID,
-            fid * 16_000,
+            TimestampUs(fid * 16_000),
             key,
             "",
-            pack_key_modifiers(meta, ctrl, false, false, false),
+            EventFlags::from_modifiers(meta, ctrl, false, false, false),
             0,
-            false,
-        )];
-        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-        let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
-        assert!(app.dispatch_events(batch), "keydown {key:?} not handled");
-        let frame = app.render(fid).to_vec();
+        );
+        assert!(app.dispatch_events(ev.as_validated()), "keydown {key:?} not handled");
+        let frame = app.render(FrameId(fid)).to_vec();
         host.submit_nve2_frame(&frame).unwrap();
     };
 
@@ -314,16 +314,12 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
                    tid: &str,
                    text: &str,
                    fid: u64| {
-        let nid =
-            find_in_store(host.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
-        let ev = [NveDirectEvent::text_change(1, nid, fid * 16_000, text)];
-        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-        let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
-        assert!(
-            app.dispatch_events(batch),
-            "text change on '{tid}' not handled"
-        );
-        let frame = app.render(fid).to_vec();
+        let nid = find_in_store(host.store(), tid)
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let mut ev = EventBatchBuf::new();
+        ev.push_text_change(SurfaceId::ROOT, nid, TimestampUs(fid * 16_000), text);
+        assert!(app.dispatch_events(ev.as_validated()), "text change on '{tid}' not handled");
+        let frame = app.render(FrameId(fid)).to_vec();
         host.submit_nve2_frame(&frame).unwrap();
     };
 
@@ -427,59 +423,59 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     );
 
     register_studio_tables();
-    let mut app = common::headless_module(1);
+    let mut app = common::headless_module(SurfaceId::ROOT);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 960.0,
             height: 640.0,
             scale_factor: 1.0,
         },
     );
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
-    let f1 = app.render(1).to_vec();
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
+    let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1).unwrap();
 
     let new_task_nid = find_in_store(host.store(), "board-new-task-input").unwrap();
-    let ev_type = [NveDirectEvent::text_change(
-        1,
+    let mut ev_type = EventBatchBuf::new();
+    ev_type.push_text_change(
+        SurfaceId::ROOT,
         new_task_nid,
-        16_000,
+        TimestampUs(16_000),
         "Persist across hot-swap",
-    )];
-    // SAFETY: `ev_type` outlives the synchronous `dispatch_events` call.
-    assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_type) }));
-    let f2 = app.render(2).to_vec();
+    );
+    assert!(app.dispatch_events(ev_type.as_validated()));
+    let f2 = app.render(FrameId(2)).to_vec();
     host.submit_nve2_frame(&f2).unwrap();
 
-    let ev_submit = [NveDirectEvent::submit(1, new_task_nid, 32_000, "")];
-    // SAFETY: `ev_submit` outlives the synchronous `dispatch_events` call.
-    assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_submit) }));
-    let _ = app.render(3);
+    let mut ev_submit = EventBatchBuf::new();
+    ev_submit.push_submit(SurfaceId::ROOT, new_task_nid, TimestampUs(32_000), "");
+    assert!(app.dispatch_events(ev_submit.as_validated()));
+    let _ = app.render(FrameId(3));
 
     let eng_entries = [NveMapEntry::new("view", NveValue::from_str("engineering"))];
     // SAFETY: `eng_entries` outlives the synchronous `set_props` call.
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&eng_entries) }));
-    let f4 = app.render(4).to_vec();
+    let f4 = app.render(FrameId(4)).to_vec();
     host.submit_nve2_frame(&f4).unwrap();
     let chat_nid = find_in_store(host.store(), "chat-composer-input").unwrap();
-    let ev_chat = [NveDirectEvent::text_change(
-        1,
+    let mut ev_chat = EventBatchBuf::new();
+    ev_chat.push_text_change(
+        SurfaceId::ROOT,
         chat_nid,
-        48_000,
+        TimestampUs(48_000),
         "Live typed message survives reload",
-    )];
-    // SAFETY: `ev_chat` outlives the synchronous `dispatch_events` call.
-    assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_chat) }));
-    let _ = app.render(5);
-    let ev_chat_submit = [NveDirectEvent::submit(1, chat_nid, 64_000, "")];
-    // SAFETY: `ev_chat_submit` outlives the synchronous `dispatch_events` call.
-    assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_chat_submit) }));
-    let _ = app.render(6);
+    );
+    assert!(app.dispatch_events(ev_chat.as_validated()));
+    let _ = app.render(FrameId(5));
+    let mut ev_chat_submit = EventBatchBuf::new();
+    ev_chat_submit.push_submit(SurfaceId::ROOT, chat_nid, TimestampUs(64_000), "");
+    assert!(app.dispatch_events(ev_chat_submit.as_validated()));
+    let _ = app.render(FrameId(6));
 
     let saved = app.snapshot_state().to_vec();
-    let mut restored = common::headless_module(1);
+    let mut restored = common::headless_module(SurfaceId::ROOT);
     restored.restore_state(&saved);
     let snap = restored.state_snapshot();
     assert!(

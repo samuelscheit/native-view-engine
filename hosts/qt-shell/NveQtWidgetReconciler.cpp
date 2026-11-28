@@ -95,14 +95,14 @@ void view_activate(QtNodeView* view, QPointF pos) {
   (void)view->host->activate(id, wants_press, href, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
 }
 
-void view_hover(QtNodeView* view, NveEventKind kind, QPointF pos) {
+void view_hover(QtNodeView* view, NveInteractionEvent kind, QPointF pos) {
   if (view == nullptr || view->sem.disabled) return;
-  if (kind == NVE_EVENT_POINTER_ENTER || kind == NVE_EVENT_POINTER_LEAVE) {
-    const bool enter = kind == NVE_EVENT_POINTER_ENTER;
+  if (kind == NVE_INTERACTION_EVENT_POINTER_ENTER || kind == NVE_INTERACTION_EVENT_POINTER_LEAVE) {
+    const bool enter = kind == NVE_INTERACTION_EVENT_POINTER_ENTER;
     if (view->hovered == enter) return;
     view->hovered = enter;
   }
-  if ((view->event_mask & host::event_bit(kind)) == 0u) return;
+  if ((view->interaction_events & host::event_set_bit(kind)) == 0u) return;
   (void)view->host->dispatch_pointer(view->id, kind, static_cast<float>(pos.x()), static_cast<float>(pos.y()));
 }
 
@@ -443,8 +443,8 @@ void NveQtWidget::Impl::update_scroll(QtNodeView& v, const host::NodeData& node)
 }
 
 void NveQtWidget::Impl::update_interaction(QtNodeView& v, const host::NodeData& node) {
-  v.event_mask = node.interaction.event_mask;
-  v.wants_press = node.wants(NVE_EVENT_PRESS);
+  v.interaction_events = node.interaction.events;
+  v.wants_press = node.wants(NVE_INTERACTION_EVENT_PRESS);
   v.href.assign(node.href);
   const bool activatable = !node.interaction.disabled && (v.wants_press || !v.href.empty());
   if (node.interaction.cursor != NVE_CURSOR_KIND_AUTO) {
@@ -456,7 +456,7 @@ void NveQtWidget::Impl::update_interaction(QtNodeView& v, const host::NodeData& 
   }
   if (v.frame != nullptr) {
     v.frame->setFocusPolicy(node.interaction.focusable && !node.interaction.disabled ? Qt::StrongFocus : Qt::NoFocus);
-    v.frame->setMouseTracking(node.wants(NVE_EVENT_POINTER_MOVE));
+    v.frame->setMouseTracking(node.wants(NVE_INTERACTION_EVENT_POINTER_MOVE));
   }
 }
 

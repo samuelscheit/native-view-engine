@@ -128,8 +128,8 @@ pub struct WebPopupController {
 #[wasm_bindgen]
 impl WebPopupController {
     #[wasm_bindgen(getter)]
-    pub fn surface_id(&self) -> SurfaceId {
-        self.surface_id
+    pub fn surface_id(&self) -> u32 {
+        self.surface_id.raw()
     }
 
     #[wasm_bindgen(getter)]
@@ -172,7 +172,7 @@ impl WebPopupController {
     }
 
     pub fn close(&self) {
-        close_popup_window(self.surface_id);
+        close_popup_window(self.surface_id.raw());
     }
 }
 
@@ -180,11 +180,13 @@ impl WebPopupController {
 /// and registers its lifecycle in the browser `WindowManager`, returning a clear error if blocked.
 #[wasm_bindgen]
 pub fn open_popup_window(
-    surface_id: SurfaceId,
+    surface_id: u32,
     title: &str,
     width: u32,
     height: u32,
 ) -> Result<WebPopupController, JsValue> {
+    let surface_id = SurfaceId::from_raw(surface_id)
+        .ok_or_else(|| JsValue::from_str(&PopupWindowError::InvalidSurfaceId.to_string()))?;
     let spec = PopupWindowSpec::new(surface_id, title, width, height)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
@@ -246,7 +248,10 @@ pub fn open_popup_window(
 
 /// Closes a previously opened popup window and unregisters its handle.
 #[wasm_bindgen]
-pub fn close_popup_window(surface_id: SurfaceId) {
+pub fn close_popup_window(surface_id: u32) {
+    let Some(surface_id) = SurfaceId::from_raw(surface_id) else {
+        return;
+    };
     if let Some(entry) = POPUP_WINDOWS.with(|popups| popups.borrow_mut().remove(&surface_id)) {
         let _ = entry.window.close();
         let _ = WINDOW_MANAGER.with(|wm| wm.borrow_mut().close_window(entry.handle));

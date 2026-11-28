@@ -36,7 +36,7 @@ pub const STRICT_TSCONFIG: &str = r#"{
 /// hook (`dir/resolve_host.mjs`) mapping `'@nve/host'` to `dir/host_ts_pkg/src/index.ts`.
 pub fn prepare_offline_host_ts_pkg(dir: &Path) -> PathBuf {
     let src = super::workspace_root().join("packages/core/host-ts");
-    let abi_files = generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    let abi_files = generate_all_abi_files(nve_tables::tables::CORE_TABLE_DESCS)
         .expect("generate host ABI files");
 
     for dst in [dir.join("node_modules/@nve/host"), dir.join("host_ts_pkg")] {

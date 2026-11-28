@@ -1,5 +1,7 @@
-//! `Transaction` and validated [`NodeMut`]: the only way to mutate a [`NodeStore`];
-//! `commit_into` closes the frame.
+//! [`TxCore`] (every mutation), [`Transaction`] (adds `commit_into`, which closes the frame) and
+//! validated [`NodeMut`]: the only way to mutate a [`NodeStore`].
+
+use std::ops::{Deref, DerefMut};
 
 mod children;
 
@@ -7,29 +9,54 @@ use nve_abi::table::effect;
 
 use crate::changes::Command;
 use crate::id::{NodeId, NodeIndex, ResourceId};
-use crate::node_mut::NodeMut;
-use crate::resource::Resource;
+use crate::node_mut::{NodeMut, TempResources};
+use crate::resource::FlatResource;
 use crate::row::{DirtyList, RowWriter};
+use crate::row_patch::RowPatchView;
 use crate::span_pool::StrSpan;
-use crate::store::{CREATED, IN_FREE, LIVE, NodeRow, NodeStore, PENDING_FREE};
-use crate::table::{NveTable, Prop, ResProp, StrProp, TableSlot};
-use crate::value::WordValue;
+use crate::store::{NodeRow, NodeStore, CREATED, IN_FREE, LIVE, PENDING_FREE};
+use crate::table::{NveTable, Prop, ResProp, ScalarField, StrProp, TableSlot};
 
-/// Mutable frame scope over a [`NodeStore`].
-pub struct Transaction<'s> {
+/// Non-committing mutation handle: every node, table, and resource edit of a frame. Reached through
+/// a [`Transaction`] (via `Deref`) or [`TempResources::tx`], which must not close the frame while
+/// temporary resource handles are still retained.
+pub struct TxCore<'s> {
     pub(crate) store: &'s mut NodeStore,
+}
+
+/// Mutable frame scope over a [`NodeStore`]: [`TxCore`] plus `commit_into`.
+pub struct Transaction<'s> {
+    pub(crate) core: TxCore<'s>,
+}
+
+impl<'s> Deref for Transaction<'s> {
+    type Target = TxCore<'s>;
+
+    #[inline(always)]
+    fn deref(&self) -> &TxCore<'s> {
+        &self.core
+    }
+}
+
+impl DerefMut for Transaction<'_> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
 }
 
 impl NodeStore {
     /// Opens a mutation scope. Changes accumulate across transactions until `commit_into`.
     #[inline]
     pub fn tx(&mut self) -> Transaction<'_> {
-        Transaction { store: self }
+        Transaction {
+            core: TxCore { store: self },
+        }
     }
 }
 
 #[inline(always)]
-fn touch(node: &mut NodeRow, touched: &mut DirtyList, index: NodeIndex, fx: u8) {
+pub(crate) fn touch(node: &mut NodeRow, touched: &mut DirtyList, index: NodeIndex, fx: u8) {
     let had = node.effects;
     node.effects = had | fx;
     touched.push_if(index, (had == 0) & (fx != 0));
@@ -43,6 +70,13 @@ pub(crate) fn writer_at_typed<T: NveTable>(
 ) -> RowWriter<'_> {
     let slot = T::slot();
     store.column_mut_typed::<T>(slot);
+    writer_at_existing(store, index, slot)
+}
+
+/// Internal writer taking an already-validated `NodeIndex` (zero redundant liveness checks).
+#[inline]
+fn writer_at(store: &mut NodeStore, index: NodeIndex, slot: TableSlot) -> RowWriter<'_> {
+    store.column_mut(slot);
     writer_at_existing(store, index, slot)
 }
 
@@ -141,7 +175,7 @@ fn try_writer_at_existing<'a>(
     })
 }
 
-impl Transaction<'_> {
+impl TxCore<'_> {
     /// Read access to the store mid-transaction.
     #[inline]
     pub fn store(&self) -> &NodeStore {
@@ -158,10 +192,7 @@ impl Transaction<'_> {
     #[inline]
     pub fn spawn(&mut self) -> NodeMut<'_> {
         let index = self.alloc_slot();
-        NodeMut {
-            store: self.store,
-            index,
-        }
+        NodeMut::new(self.store, index)
     }
 
     /// Validates `id` once and returns a [`NodeMut`] handle (`None` if dead/stale).
@@ -170,10 +201,7 @@ impl Transaction<'_> {
         let index = id.node_index();
         let r = self.store.nodes.get(index)?;
         if r.flags & LIVE != 0 && r.generation == id.generation() {
-            Some(NodeMut {
-                store: self.store,
-                index,
-            })
+            Some(NodeMut::new(self.store, index))
         } else {
             None
         }
@@ -314,7 +342,7 @@ impl Transaction<'_> {
         budget: &mut crate::wire::budget::SessionBudget,
     ) -> Result<RowWriter<'a>, crate::wire::WireError> {
         if !self.store.is_live(id) {
-            return Err(crate::wire::WireError::DeadNode(id.0));
+            return Err(crate::wire::WireError::DeadNode(id.raw()));
         }
         self.store.column_mut(slot);
         try_writer_at_existing(self.store, id.node_index(), slot, budget)
@@ -340,44 +368,137 @@ impl Transaction<'_> {
         writer_at_typed::<T>(self.store, id.node_index());
     }
 
-    /// Sets one scalar property.
+    /// Sets one scalar or wide-optional property.
     #[inline(always)]
-    pub fn set<T: NveTable, V: WordValue>(&mut self, id: NodeId, prop: Prop<T, V>, value: V) {
-        assert!(
-            self.store.is_live(id),
-            "NodeStore: write to dead node {id:?}"
-        );
-        writer_at_typed::<T>(self.store, id.node_index()).put(
+    pub fn set<T: NveTable, V: ScalarField>(&mut self, id: NodeId, prop: Prop<T, V>, value: V) {
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        value.write_row(
+            &mut w,
             prop.word as usize,
             prop.shift as u32,
             prop.mask,
-            value.to_bits(),
+            prop.val_word as usize,
         );
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
     }
 
     /// Sets one string property.
     #[inline]
     pub fn set_str<T: NveTable>(&mut self, id: NodeId, prop: StrProp<T>, text: &str) {
-        assert!(
-            self.store.is_live(id),
-            "NodeStore: write to dead node {id:?}"
-        );
-        writer_at_typed::<T>(self.store, id.node_index()).put_str(prop.word as usize, text);
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        w.put_str(prop.word as usize, text);
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
+    }
+
+    /// Opens a leak-free temporary resource scope for building nested resources (e.g.
+    /// `ResponsiveRules` / `StateRules` embedding child `BackgroundFillRes` / `GridTracks`).
+    #[inline]
+    pub fn with_temp_resources<R>(&mut self, f: impl FnOnce(&mut TempResources<'_>) -> R) -> R {
+        let mut scope = TempResources::new(self.store);
+        f(&mut scope)
     }
 
     /// Sets (interned) or clears one resource property.
     #[inline]
-    pub fn set_resource<T: NveTable, R: Resource>(
+    pub fn set_resource<T: NveTable, R: FlatResource>(
         &mut self,
         id: NodeId,
         prop: ResProp<T, R>,
         value: Option<R>,
     ) {
-        assert!(
-            self.store.is_live(id),
-            "NodeStore: write to dead node {id:?}"
-        );
-        writer_at_typed::<T>(self.store, id.node_index()).put_resource(prop.word as usize, value);
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        w.put_resource(prop.word as usize, value.as_ref());
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
+    }
+
+    /// Points one resource property at a live [`ResourceId`] of type `R` (or `ResourceId::NONE`).
+    /// Returns `false` without mutating if `rid` is stale, dead, or of a mismatched kind/type.
+    #[inline]
+    pub fn set_resource_id<T: NveTable, R: FlatResource>(
+        &mut self,
+        id: NodeId,
+        prop: ResProp<T, R>,
+        rid: ResourceId,
+    ) -> bool {
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        // Reject before attaching `T` so an invalid id never realizes the row.
+        if !rid.is_none() && !self.store.resources.is_live_of::<R>(rid) {
+            return false;
+        }
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        if !w.put_resource_id::<R>(prop.word as usize, rid) {
+            return false;
+        }
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
+        true
+    }
+
+    /// Applies every valid table operation in `patch` onto live node `id`, attaching a touched
+    /// table only when at least one op passes word, liveness, and resource-kind checks.
+    pub fn apply_row_patch(&mut self, id: NodeId, patch: RowPatchView<'_>) {
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        for table in patch.tables() {
+            let Some(slot) = crate::table::slot_of(table.key()) else {
+                continue;
+            };
+            let desc = crate::table::desc(slot);
+            let words_len = desc.words();
+            let str_mask = desc.str_words | (desc.str_words << 1);
+            let res_mask = desc.resource_words;
+            let has_valid = table.ops().any(|op| {
+                let wi = op.word() as usize;
+                let bit = 1u32 << (wi & 31);
+                if wi >= words_len || (str_mask & bit) != 0 || op.is_resource() != ((res_mask & bit) != 0) {
+                    return false;
+                }
+                if !op.is_resource() {
+                    return true;
+                }
+                let rid = ResourceId(op.set_bits());
+                rid.is_none()
+                    || desc
+                        .resource_kind(wi)
+                        .is_some_and(|k| self.store.resources.is_live_with_kind(rid, k))
+            });
+            if !has_valid {
+                continue;
+            }
+            let mut w = writer_at(self.store, id.node_index(), slot);
+            let inherited = desc.inherited;
+            for op in table.ops() {
+                let wi = op.word() as usize;
+                let bit = 1u32 << (wi & 31);
+                if wi >= words_len || (str_mask & bit) != 0 || op.is_resource() != ((res_mask & bit) != 0) {
+                    continue;
+                }
+                if op.is_resource() {
+                    let rid = ResourceId(op.set_bits());
+                    if rid.is_none()
+                        || desc
+                            .resource_kind(wi)
+                            .is_some_and(|k| w.resources.is_live_with_kind(rid, k))
+                    {
+                        w.put_resource_id_wire(wi, rid);
+                    }
+                } else if wi == 0 && inherited {
+                    let merged = op.clear_mask().apply(w.words()[0], op.set_bits());
+                    w.put_explicit_word(merged);
+                } else {
+                    w.put(wi, 0, op.clear_mask().raw(), op.set_bits());
+                }
+            }
+        }
     }
 
     /// Detaches table `T` from `id`, releasing its strings and resources.

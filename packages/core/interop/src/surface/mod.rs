@@ -1,5 +1,6 @@
 //! Cross-framework surface hierarchy, environment/theme cascading, and lifecycle orchestration.
 
+mod env;
 mod orchestrator;
 mod types;
 

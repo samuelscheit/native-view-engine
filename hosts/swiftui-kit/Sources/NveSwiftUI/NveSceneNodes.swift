@@ -47,10 +47,7 @@ public struct NveRuntimeTables {
     /// Row of node slot `index` in `table`, O(1): only when the node's `table_set` holds the table
     /// (unattached dense rows are zeros, not defaults); sparse rows via the published row index.
     public func row(_ table: TableReader?, _ index: Int) -> Int? {
-        guard let table, scene.isLive(index), table.slot < 128, scene.hasTable(index, slot: UInt8(table.slot)) else {
-            return nil
-        }
-        return table.row(ofNode: index)
+        table.flatMap { scene.tableRow($0, forNode: index) }
     }
 
     public func string(_ table: TableReader?, _ index: Int, _ field: FieldSpec) -> String? {
@@ -98,10 +95,18 @@ public struct NveRuntimeTables {
     public func isLink(_ i: Int) -> Bool { row(link, i) != nil }
     public func isInteractive(_ i: Int) -> Bool { row(interaction, i) != nil || isLink(i) }
 
+    public func interactionEvents(_ i: Int) -> UInt32 {
+        interaction.map { scene.eventSet($0, forNode: i, eventsWord: NveTables.Interaction.eventsWord) } ?? 0
+    }
+
+    public func hasInteractionEvent(_ i: Int, bit: UInt32) -> Bool {
+        interaction.map { scene.hasEvent($0, forNode: i, eventsWord: NveTables.Interaction.eventsWord, bit: bit) } ?? false
+    }
+
     public func imageSource(_ i: Int) -> (resource: UInt32, fit: NveImageFit, tint: NveColor?)? {
         guard let image, let r = row(image, i), let src = image.resource(r, NveTables.Image.src), src != 0 else { return nil }
         let fit = NveImageFit(rawValue: image.enumValue(r, NveTables.Image.fit) ?? 0) ?? .cover
-        let tint = image.bool(r, NveTables.Image.tintEnabled) == true ? NveColor(image.color(r, NveTables.Image.tint)) : nil
+        let tint = NveColor(image.color(r, NveTables.Image.tint))
         return (src, fit, tint)
     }
 
@@ -119,51 +124,42 @@ public struct NveRuntimeTables {
     /// Resolves every typography field from the nearest ancestor that sets it explicitly.
     public func textStyle(_ i: Int) -> NveTextStyle {
         let defaults = NveTables.Typography.defaults
-        let fallback = { (f: FieldSpec) in f.extract(defaults[Int(f.word)]) }
-        var resolved: UInt32 = 0
+        let fallback = { (f: FieldSpec) in f.decodeBits(from: defaults) ?? 0 }
         var style = NveTextStyle(
             color: NveColor(Rgba(packed: fallback(NveTables.Typography.color))),
             fontSize: CGFloat(Float(bitPattern: fallback(NveTables.Typography.fontSize))),
             fontWeight: UInt16(truncatingIfNeeded: fallback(NveTables.Typography.fontWeight)),
             italic: false, align: .start, maxLines: 0, decoration: 0)
-        var node = i
-        var depth = 0
-        while let typography, scene.isLive(node), depth < scene.nodeCapacity {
-            if let r = row(typography, node), let set = typography.u32(r, NveTables.Typography.set) {
-                let fresh = set & ~resolved
-                func take(_ bit: UInt32, _ apply: () -> Void) { if fresh & bit != 0 { apply() } }
-                take(NveTypographySet.color) { style.color = NveColor(typography.color(r, NveTables.Typography.color)) }
-                take(NveTypographySet.fontSize) {
-                    if let s = typography.f32(r, NveTables.Typography.fontSize), s.isFinite, s > 0 { style.fontSize = CGFloat(s) }
-                }
-                take(NveTypographySet.fontWeight) {
-                    style.fontWeight = UInt16(truncatingIfNeeded: typography.u32(r, NveTables.Typography.fontWeight) ?? 400)
-                }
-                take(NveTypographySet.fontStyle) {
-                    style.italic = (typography.enumValue(r, NveTables.Typography.fontStyle) ?? 0) != NveFontStyle.normal.rawValue
-                }
-                take(NveTypographySet.textAlign) {
-                    style.align = NveTextAlign(rawValue: typography.enumValue(r, NveTables.Typography.textAlign) ?? 0) ?? .start
-                }
-                take(NveTypographySet.maxLines) { style.maxLines = Int(typography.u32(r, NveTables.Typography.maxLines) ?? 0) }
-                take(NveTypographySet.textDecoration) {
-                    style.decoration = typography.u32(r, NveTables.Typography.textDecoration) ?? 0
-                }
-                resolved |= set
+        guard let typography else { return style }
+        scene.forEachInheritedRow(typography, fromNode: i) { r, fresh in
+            func take(_ field: FieldSpec, _ apply: () -> Void) { if fresh & field.explicitMask != 0 { apply() } }
+            take(NveTables.Typography.color) { style.color = NveColor(typography.color(r, NveTables.Typography.color)) }
+            take(NveTables.Typography.fontSize) {
+                if let s = typography.f32(r, NveTables.Typography.fontSize), s.isFinite, s > 0 { style.fontSize = CGFloat(s) }
             }
-            guard let parent = scene.row(node)?.parentId, let p = scene.index(of: parent), p != node else { break }
-            node = p
-            depth += 1
+            take(NveTables.Typography.fontWeight) {
+                style.fontWeight = UInt16(truncatingIfNeeded: typography.u32(r, NveTables.Typography.fontWeight) ?? 400)
+            }
+            take(NveTables.Typography.fontStyle) {
+                style.italic = (typography.enumValue(r, NveTables.Typography.fontStyle) ?? 0) != NveFontStyle.normal.rawValue
+            }
+            take(NveTables.Typography.textAlign) {
+                style.align = NveTextAlign(rawValue: typography.enumValue(r, NveTables.Typography.textAlign) ?? 0) ?? .start
+            }
+            take(NveTables.Typography.maxLines) { style.maxLines = Int(typography.u32(r, NveTables.Typography.maxLines) ?? 0) }
+            take(NveTables.Typography.textDecoration) {
+                style.decoration = typography.u32(r, NveTables.Typography.textDecoration) ?? 0
+            }
         }
         return style
     }
 
     // MARK: Accessibility
 
-    public func accessibility(_ i: Int) -> (role: NveAriaRole, level: Int, label: String?, hint: String?, value: String?, hidden: Bool)? {
+    public func accessibility(_ i: Int) -> (role: NveAriaRole?, level: Int, label: String?, hint: String?, value: String?, hidden: Bool)? {
         guard let accessibility, let r = row(accessibility, i) else { return nil }
         return (
-            NveAriaRole(rawValue: accessibility.enumValue(r, NveTables.Accessibility.role) ?? 0) ?? .none_,
+            accessibility.enumValue(r, NveTables.Accessibility.role).flatMap(NveAriaRole.init(rawValue:)),
             Int(accessibility.u32(r, NveTables.Accessibility.level) ?? 0),
             string(accessibility, i, NveTables.Accessibility.label),
             string(accessibility, i, NveTables.Accessibility.hint),

@@ -110,6 +110,10 @@ const fn field_kind_name(k: FieldKind) -> &'static str {
         FieldKind::Str => "Str",
         FieldKind::Resource => "Resource",
         FieldKind::Node => "Node",
+        FieldKind::U64 => "U64",
+        FieldKind::I64 => "I64",
+        FieldKind::F64 => "F64",
+        FieldKind::GridLine => "GridLine",
     }
 }
 
@@ -212,6 +216,10 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         FieldKind::Str,
         FieldKind::Resource,
         FieldKind::Node,
+        FieldKind::U64,
+        FieldKind::I64,
+        FieldKind::F64,
+        FieldKind::GridLine,
     ]
     .into_iter()
     .map(|k| (field_kind_name(k).to_owned(), k as i64))

@@ -1,13 +1,13 @@
 //! Zero-copy Taffy `StyleView` implementing `CoreStyle`, Flexbox, Grid, and OOF style traits
 //! directly over `NodeStore` word columns.
 
-use nve_components::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
-use nve_components::tables::{
+use nve_tables::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
+use nve_tables::tables::{
     AlignContent as NveAlignContent, AlignItems as NveAlignItems, AlignSelf as NveAlignSelf,
     BoxSizing as NveBoxSizing, Display as NveDisplay, FlexDirection as NveFlexDirection,
     FlexWrap as NveFlexWrap, GridItem, GridLayout, GridLine as NveGridLine, GridTracks,
-    JustifyContent as NveJustifyContent, Layout as NveLayout, Overflow as NveOverflow,
-    Position as NvePosition, Visual,
+    GridTracksIter, JustifyContent as NveJustifyContent, Layout as NveLayout,
+    Overflow as NveOverflow, Position as NvePosition, Visual,
 };
 use nve_store::{Length, NodeId, NodeStore};
 
@@ -32,12 +32,12 @@ pub(super) struct StyleView<'a> {
 
 impl<'a> StyleView<'a> {
     #[inline(always)]
-    fn layout(&self) -> nve_components::tables::LayoutRef<'a> {
+    fn layout(&self) -> nve_tables::tables::LayoutRef<'a> {
         self.store.row::<NveLayout>(self.id)
     }
 
     #[inline(always)]
-    fn visual(&self) -> nve_components::tables::VisualRef<'a> {
+    fn visual(&self) -> nve_tables::tables::VisualRef<'a> {
         self.store.row::<Visual>(self.id)
     }
 
@@ -176,13 +176,13 @@ impl GenericRepetition for WordRepetition {
 }
 
 #[derive(Clone)]
-pub(super) struct GridTrackIter<'a>(core::slice::Iter<'a, GridTrack>);
+pub(super) struct GridTrackIter<'a>(GridTracksIter<'a>);
 
 impl Iterator for GridTrackIter<'_> {
     type Item = GenericGridTemplateComponent<String, WordRepetition>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let &t = self.0.next()?;
+        let t = self.0.next()?;
         Some(match t {
             GridTrack::Auto => GenericGridTemplateComponent::Single(MinMax {
                 min: MinTrackSizingFunction::auto(),
@@ -226,7 +226,7 @@ impl CoreStyle for StyleView<'_> {
     #[inline]
     fn box_generation_mode(&self) -> BoxGenerationMode {
         if self.layout().display() == NveDisplay::None
-            || nve_components::tables::is_hidden_text_input(self.store, self.id)
+            || nve_tables::tables::is_hidden_text_input(self.store, self.id)
         {
             BoxGenerationMode::None
         } else {
@@ -324,8 +324,9 @@ impl CoreStyle for StyleView<'_> {
 
     #[inline]
     fn aspect_ratio(&self) -> Option<f32> {
-        let r = self.layout().aspect_ratio();
-        (r.is_finite() && r > 0.0).then_some(r)
+        self.layout()
+            .aspect_ratio()
+            .filter(|&r| r.is_finite() && r > 0.0)
     }
 
     #[inline]
@@ -491,13 +492,13 @@ impl GridContainerStyle for StyleView<'_> {
     fn grid_template_rows(&self) -> Option<Self::TemplateTrackList<'_>> {
         let g = self.store.try_row::<GridLayout>(self.id)?;
         let res = self.store.resource::<GridTracks>(g.template_rows())?;
-        (!res.0.is_empty()).then(|| GridTrackIter(res.0.iter()))
+        (!res.is_empty()).then(|| GridTrackIter(res.iter()))
     }
 
     fn grid_template_columns(&self) -> Option<Self::TemplateTrackList<'_>> {
         let g = self.store.try_row::<GridLayout>(self.id)?;
         let res = self.store.resource::<GridTracks>(g.template_columns())?;
-        (!res.0.is_empty()).then(|| GridTrackIter(res.0.iter()))
+        (!res.is_empty()).then(|| GridTrackIter(res.iter()))
     }
 
     fn grid_auto_rows(&self) -> Self::AutoTrackList<'_> {

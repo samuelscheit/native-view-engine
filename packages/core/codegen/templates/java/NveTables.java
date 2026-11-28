@@ -4,6 +4,7 @@ package dev.nve.host.generated;
 import dev.nve.host.FieldKind;
 import dev.nve.host.FieldSpec;
 import dev.nve.host.Key64;
+import dev.nve.host.OptEncoding;
 
 /** {{ doc }} */
 public final class {{ class }} {
@@ -17,14 +18,20 @@ public final class {{ class }} {
         public final int words;
         /** Dense: row = node index, no owners; sparse: owners + the published row index. */
         public final boolean dense;
+        /** Word of the {@code EventSet<E>} listener mask ({@code 0xFF}: no events). */
+        public final int eventsWord;
+        /** Word 0 is the explicit-override mask; unset inheriting fields resolve from the parent row. */
+        public final boolean inherited;
         private final FieldSpec[] fields;
 
-        Info(String name, Key64 key, Key64 schemaHash, int words, boolean dense, FieldSpec... fields) {
+        Info(String name, Key64 key, Key64 schemaHash, int words, boolean dense, int eventsWord, boolean inherited, FieldSpec... fields) {
             this.name = name;
             this.key = key;
             this.schemaHash = schemaHash;
             this.words = words;
             this.dense = dense;
+            this.eventsWord = eventsWord;
+            this.inherited = inherited;
             this.fields = fields;
         }
 
@@ -46,8 +53,13 @@ public final class {{ class }} {
         public static final int FLAGS = {{ t.desc.flags }};
         public static final int STR_WORDS = 0x{{ "{:08X}"|format(t.desc.str_words) }};
         public static final int RESOURCE_WORDS = 0x{{ "{:08X}"|format(t.desc.resource_words) }};
-{%- for f in t.desc.fields %}
-        public static final FieldSpec {{ spell::screaming(f.name) }} = new FieldSpec({{ f.word }}, {{ f.shift }}, {{ model::host_bits(f) }}, FieldKind.{{ model::kind::java(f.kind) }});
+        public static final int EVENTS_WORD = 0x{{ "{:02X}"|format(t.events_word()) }};
+        public static final boolean INHERITED = {{ t.inherited() }};
+{%- for f in t.fields %}
+        public static final FieldSpec {{ spell::screaming(f.name()) }} = new FieldSpec({{ f.desc.word }}, {{ f.desc.shift }}, {{ f.bits }}, FieldKind.{{ tables::kind::java(f.desc.kind) }}, OptEncoding.{{ tables::opt::java(f.desc.opt_encoding) }}, 0x{{ "{:02X}"|format(f.val_word) }}, 0x{{ "{:02X}"|format(f.explicit_bit) }}, {{ f.inherits }});
+{%- endfor %}
+{%- for (f, kind) in t.resource_fields() %}
+        public static final Key64 {{ spell::screaming(f.name()) }}_RESOURCE_KIND = Key64.fromHalves({{ kind.lo_hex() }}, {{ kind.hi_hex() }});
 {%- endfor %}
 
         /** A fresh copy of the default row. */
@@ -60,12 +72,12 @@ public final class {{ class }} {
 {%- endfor %}
 
 
-    /** Named field value sets ({@code word_enum!} variants, flag bits), one class per set. */
+    /** Named value sets ({@code WordEnum} variants, flag bits, {@code EventSet} listener bits), one class per set. */
     public static final class Values {
         private Values() {}
 {%- for s in value_sets %}
 
-        /** {@code {{ s.name }}} field values. */
+        /** {@code {{ s.name }}} {% if s.flags %}bits{% else %}values{% endif %}. */
         public static final class {{ s.name }} {
             private {{ s.name }}() {}
 {%- for (n, v) in s.values %}
@@ -77,8 +89,8 @@ public final class {{ class }} {
 
     private static final Info[] ALL = {
 {%- for t in tables %}
-        new Info("{{ t.desc.name }}", {{ t.ident }}.KEY, {{ t.ident }}.SCHEMA_HASH, {{ t.ident }}.WORDS, {{ t.ident }}.DENSE
-{%- for f in t.desc.fields %}, {{ t.ident }}.{{ spell::screaming(f.name) }}{% endfor %}),
+        new Info("{{ t.desc.name }}", {{ t.ident }}.KEY, {{ t.ident }}.SCHEMA_HASH, {{ t.ident }}.WORDS, {{ t.ident }}.DENSE, {{ t.ident }}.EVENTS_WORD, {{ t.ident }}.INHERITED
+{%- for f in t.fields %}, {{ t.ident }}.{{ spell::screaming(f.name()) }}{% endfor %}),
 {%- endfor %}
     };
 

@@ -4,9 +4,9 @@
 
 id: no-legacy-event-style-symbols-rust
 language: rust
-severity: warning
+severity: error
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Synced with `BANNED_LEGACY_SYMBOLS_1B1D` in `arch_invariants`. Flip to `error` once Track 1B-1d lands."
+note: "[stage: Post1B1D] Synced with `BANNED_LEGACY_SYMBOLS_1B1D` in `arch_invariants`. Enforced as `error`."
 ignores:
   - "packages/tools/arch-invariants/**"
   - "**/tests/**"
@@ -26,9 +26,9 @@ rule:
 ---
 id: no-legacy-event-style-symbols-cpp
 language: cpp
-severity: warning
+severity: error
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Includes `namespace_identifier` scopes and exempts React Native Fabric's `facebook::react::EventPayload` / `react::EventPayload`. Staged as `warning` while Apple/C++ hosts still reference `NveDirectEvent`."
+note: "[stage: Post1B1D] Includes `namespace_identifier` scopes and exempts React Native Fabric's `facebook::react::EventPayload` / `react::EventPayload`. Enforced as `error`."
 ignores:
   - "**/*.generated.*"
   - "**/tests/**"
@@ -128,9 +128,9 @@ rule:
 ---
 id: no-legacy-event-style-symbols-swift
 language: swift
-severity: warning
+severity: error
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Staged as `warning` while `NveDirectWriters.swift` still references `NveDirectEvent`."
+note: "[stage: Post1B1D] Enforced as `error`."
 ignores:
   - "**/*.generated.*"
   - "**/Tests/**"
@@ -157,9 +157,9 @@ rule:
 ---
 id: no-legacy-event-style-symbols-dart
 language: dart
-severity: warning
+severity: error
 message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to canonical `NveEvent` / typed style tables."
-note: "[stage: Post1B1D] Staged as `warning` while Flutter host still references `NveEventPayloadTag` / `NveDirectEvent`."
+note: "[stage: Post1B1D] Enforced as `error`."
 ignores:
   - "**/*.generated.*"
   - "**/test/**"

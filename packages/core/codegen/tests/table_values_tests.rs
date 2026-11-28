@@ -7,10 +7,11 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
-use nve_abi::table::{FieldDesc, FieldKind, Storage, TableDesc, ValueSetDesc};
+use nve_abi::table::{FieldDesc, FieldKind, NO_VAL_WORD, OptEncoding, Storage, TableDesc, ValueSetDesc};
+use nve_abi::InteractionEvent;
 use nve_codegen::abi::spell::screaming;
 use nve_codegen::{CodegenError, generate_module_table_header, generate_table_files};
-use nve_components::tables::{AriaRole, CORE_TABLE_DESCS, CursorKind, Typography, text_decoration};
+use nve_tables::tables::{AriaRole, CORE_TABLE_DESCS, CursorKind, TextDecoration};
 
 fn core_header() -> String {
     let files = generate_table_files(CORE_TABLE_DESCS).expect("core tables");
@@ -27,14 +28,22 @@ fn every_named_field_value_is_mirrored_once() {
     let h = core_header();
     let mut sets = 0;
     for desc in CORE_TABLE_DESCS {
+        if let Some(set) = desc.events {
+            let banner = format!("/* `{}` bits. */", set.name);
+            assert_eq!(h.matches(&banner).count(), 1, "{} emitted once", set.name);
+            sets += 1;
+            for (name, value) in set.values {
+                let line = format!("#define NVE_{}_{} {value}u\n", screaming(set.name), screaming(name));
+                assert!(h.contains(&line), "missing `{line}`");
+            }
+        }
         for f in desc.fields {
-            // Every enum field names its variants (`word_enum!`), so hosts never hand-copy them;
-            // packed codecs are not lists: `GridLine` (`Auto` / `Line(i)` / `Span(n)`) and
-            // `OptAutofillHint` (`0` = none, else `AutofillHint + 1`).
-            let packed = desc.name == "nve.grid_item" || f.name == "autofill";
-            assert!(f.kind != FieldKind::Enum || packed || f.values.is_some(), "{}.{}", desc.name, f.name);
+            // Every `FieldKind::Enum` field names its variants (`#[derive(WordEnum)]`), so hosts
+            // never hand-copy them (`GridLine` has its own `FieldKind::GridLine`).
+            assert!(f.kind != FieldKind::Enum || f.values.is_some(), "{}.{}", desc.name, f.name);
             let Some(set) = f.values else { continue };
-            let banner = format!("/* `{}` field values. */", set.name);
+            let kind_word = if set.flags { "bits" } else { "values" };
+            let banner = format!("/* `{}` {kind_word}. */", set.name);
             assert_eq!(h.matches(&banner).count(), 1, "{} emitted once", set.name);
             sets += 1;
             for (name, value) in set.values {
@@ -46,8 +55,10 @@ fn every_named_field_value_is_mirrored_once() {
     assert!(sets > 30, "{sets} value-carrying fields");
     assert!(h.contains(&format!("#define NVE_ARIA_ROLE_SWITCH {}u", AriaRole::Switch.to_word())));
     assert!(h.contains(&format!("#define NVE_CURSOR_KIND_NOT_ALLOWED {}u", CursorKind::NotAllowed.to_word())));
-    assert!(h.contains(&format!("#define NVE_TEXT_DECORATION_LINE_THROUGH {}u", text_decoration::LINE_THROUGH)));
-    assert!(h.contains(&format!("#define NVE_TYPOGRAPHY_SET_FONT_SIZE {}u", Typography::SET_FONT_SIZE)));
+    assert!(h.contains(&format!("#define NVE_TEXT_DECORATION_LINE_THROUGH {}u", TextDecoration::LINE_THROUGH.bits())));
+    assert!(h.contains(&format!("#define NVE_INTERACTION_EVENT_SET_PRESS {}u", InteractionEvent::Press.bit())));
+    assert!(h.contains("#define NVE_TABLE_TYPOGRAPHY_INHERITED 1"));
+    assert!(h.contains("#define NVE_TABLE_INTERACTION_EVENTS_WORD 0x00u"));
 }
 
 static ROLE: ValueSetDesc = ValueSetDesc { name: "Mode", flags: false, values: &[("Off", 0), ("On", 1)] };
@@ -67,7 +78,18 @@ static ESCAPED: ValueSetDesc =
     ValueSetDesc { name: "Esc", flags: false, values: &[("Default", 0), ("DefaultValue", 1)] };
 
 const fn field(name: &'static str, shift: u8, bits: u8, values: &'static ValueSetDesc) -> FieldDesc {
-    FieldDesc { name, kind: FieldKind::Enum, word: 0, shift, bits, effects: 0, values: Some(values) }
+    FieldDesc {
+        name,
+        kind: FieldKind::Enum,
+        opt_encoding: OptEncoding::Required,
+        word: 0,
+        shift,
+        bits,
+        effects: 0,
+        val_word: NO_VAL_WORD,
+        no_inherit: false,
+        values: Some(values),
+    }
 }
 
 const fn table(name: &'static str, fields: &'static [FieldDesc]) -> TableDesc {
@@ -81,7 +103,11 @@ const fn table(name: &'static str, fields: &'static [FieldDesc]) -> TableDesc {
         word_effects: &[4],
         str_words: 0,
         resource_words: 0,
+        events_word: NO_VAL_WORD,
+        events: None,
+        inherited: false,
         fields,
+        resource_kinds: &[],
     }
 }
 
@@ -130,7 +156,7 @@ fn value_sets_reach_swift_and_dart() {
     let swift = text("NveTables.generated.swift");
     let dart = text("nve_tables.generated.dart");
     for desc in CORE_TABLE_DESCS {
-        for set in desc.fields.iter().filter_map(|f| f.values) {
+        for set in desc.events.into_iter().chain(desc.fields.iter().filter_map(|f| f.values)) {
             let head = if set.flags {
                 format!("public enum Nve{} {{\n", set.name)
             } else {
@@ -140,11 +166,22 @@ fn value_sets_reach_swift_and_dart() {
             assert_eq!(dart.matches(&format!("abstract final class Nve{} {{", set.name)).count(), 1, "Dart {}", set.name);
         }
     }
-    for set in ["CursorKind", "StreamSlotRole", "BoxSizing", "Direction", "InputMode", "EventMask"] {
+    for set in [
+        "CursorKind",
+        "StreamSlotRole",
+        "BoxSizing",
+        "Direction",
+        "InputMode",
+        "InteractionEventSet",
+        "TextInputEventSet",
+        "ScrollEventSet",
+        "LayoutEventSet",
+        "TextDecoration",
+    ] {
         assert!(swift.contains(&format!("public enum Nve{set}")), "Swift {set}");
     }
     assert!(swift.contains("case none_ = 3") && swift.contains("case scaleDown = 4"), "escaped + camel");
-    assert!(swift.contains("public enum NveTypographySet {\n    public static let color: UInt32 = 0x1\n"));
+    assert!(swift.contains("public enum NveTextDecoration {\n    public static let underline: UInt32 = 0x1\n"));
 }
 
 #[test]

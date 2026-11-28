@@ -196,6 +196,8 @@ fn has_const_size_eq(
     false
 }
 
+pub use crate::handle_hygiene::{scan_bare_handle_params, scan_handle_hygiene};
+
 pub fn scan_bare_primitive_domain_fields(
     rel: &str,
     raw: &str,

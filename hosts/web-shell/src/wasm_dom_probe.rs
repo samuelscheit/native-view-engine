@@ -5,7 +5,7 @@
 
 use nve_backend_web::hydrate::SELECT_BASE_CASES;
 use nve_backend_web::{WebBackend, WebTableSystem};
-use nve_components::tables::{Accessibility, TextContent, TextInput, register_core_tables};
+use nve_tables::tables::{Accessibility, TextContent, TextInput, register_core_tables};
 use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableSlot, Transaction};
 use nve_web_html::{
@@ -106,19 +106,19 @@ fn drive_native_overlays(host: &web_sys::Element) -> ProbeResult {
     let mut web = WebBackend::mount_into(host.clone());
     nve_example_issues_client::register_web_systems(web.table_registry_mut());
     let mut store = new_store();
-    let (dialog_n, popover_n) = (NodeId(2), NodeId(3));
+    let (dialog_n, popover_n) = (NodeId::new(2, 0), NodeId::new(3, 0));
     commit(&mut web, &mut store, |tx| {
         let _ = tx.create_at(NodeId::ROOT);
         let _ = tx.create_at(dialog_n);
         let _ = tx.create_at(popover_n);
         tx.edit::<HtmlSemantics>(dialog_n)
-            .element(SemanticElement::Dialog)
+            .element(Some(SemanticElement::Dialog))
             .open(true)
-            .closed_by(ClosedBy::Any);
+            .closed_by(Some(ClosedBy::Any));
         tx.edit::<Accessibility>(dialog_n).modal(true);
         tx.edit::<TextContent>(dialog_n).text("Settings");
         tx.edit::<HtmlSemantics>(popover_n)
-            .popover(PopoverMode::Auto)
+            .popover(Some(PopoverMode::Auto))
             .data_nve_open(true);
         tx.set_children(NodeId::ROOT, &[dialog_n, popover_n]);
     })?;
@@ -197,7 +197,7 @@ fn drive_overlay_resync(
     dialog: &web_sys::Element,
     popover: &web_sys::Element,
 ) -> Result<(), String> {
-    let (dialog_n, popover_n) = (NodeId(2), NodeId(3));
+    let (dialog_n, popover_n) = (NodeId::new(2, 0), NodeId::new(3, 0));
     commit(web, store, |tx| {
         tx.edit::<Accessibility>(dialog_n).modal(false);
     })?;
@@ -216,7 +216,7 @@ fn drive_overlay_resync(
     commit(web, store, |tx| {
         tx.edit::<HtmlSemantics>(popover_n).data_nve_open(true);
     })?;
-    let sibling = NodeId(4);
+    let sibling = NodeId::new(4, 0);
     commit(web, store, |tx| {
         let _ = tx.create_at(sibling);
         tx.edit::<TextContent>(sibling).text("sibling");
@@ -228,13 +228,13 @@ fn drive_overlay_resync(
     )?;
 
     for (n, open, label) in [
-        (NodeId(5), false, "closed"),
-        (NodeId(6), true, "open modal"),
+        (NodeId::new(5, 0), false, "closed"),
+        (NodeId::new(6, 0), true, "open modal"),
     ] {
         commit(web, store, |tx| {
             let _ = tx.create_at(n);
             tx.edit::<HtmlSemantics>(n)
-                .element(SemanticElement::Details)
+                .element(Some(SemanticElement::Details))
                 .open(true);
             tx.edit::<Accessibility>(n).modal(true);
             tx.append_child(NodeId::ROOT, n);
@@ -248,7 +248,7 @@ fn drive_overlay_resync(
         )?;
         commit(web, store, |tx| {
             tx.edit::<HtmlSemantics>(n)
-                .element(SemanticElement::Dialog)
+                .element(Some(SemanticElement::Dialog))
                 .open(open);
         })?;
         let el = query(host, &selector)?;
@@ -325,12 +325,13 @@ fn hydrate_select_case(mount: &web_sys::Element, expected: &str) -> Result<(), S
     let mut client = WebBackend::hydrate_into(mount.clone());
     client.register_table_system(SelectProbeSystem);
     let mut store = new_store();
+    let select_n = NodeId::new(2, 0);
     commit(&mut client, &mut store, |tx| {
         let _ = tx.create_at(NodeId::ROOT);
-        let _ = tx.create_at(NodeId(2));
-        tx.edit::<HtmlDataAttrs>(NodeId(2));
-        tx.edit::<TextInput>(NodeId(2)).value(expected);
-        tx.set_children(NodeId::ROOT, &[NodeId(2)]);
+        let _ = tx.create_at(select_n);
+        tx.edit::<HtmlDataAttrs>(select_n);
+        tx.edit::<TextInput>(select_n).value(expected);
+        tx.set_children(NodeId::ROOT, &[select_n]);
     })?;
     let report = client.hydration_report();
     check(report.mismatches.is_empty(), "select must adopt")?;
@@ -349,10 +350,11 @@ pub fn nve_probe_container_root_hydration() -> String {
 }
 
 fn build_text_frame(tx: &mut Transaction<'_>, label: &str) {
+    let text_n = NodeId::new(2, 0);
     let _ = tx.create_at(NodeId::ROOT);
-    let _ = tx.create_at(NodeId(2));
-    tx.edit::<TextContent>(NodeId(2)).text(label);
-    tx.set_children(NodeId::ROOT, &[NodeId(2)]);
+    let _ = tx.create_at(text_n);
+    tx.edit::<TextContent>(text_n).text(label);
+    tx.set_children(NodeId::ROOT, &[text_n]);
 }
 
 fn run_container_root_hydration() -> ProbeResult {
@@ -396,7 +398,7 @@ fn hydrate_container_root(mount: &web_sys::Element, mount_id: &str, tag: &str) -
     let mut store = new_store();
     commit(&mut client, &mut store, |tx| build_text_frame(tx, "client"))?;
     commit(&mut client, &mut store, |tx| {
-        tx.edit::<TextContent>(NodeId(2)).text("client-2");
+        tx.edit::<TextContent>(NodeId::new(2, 0)).text("client-2");
     })?;
     check(
         mount.is_connected(),

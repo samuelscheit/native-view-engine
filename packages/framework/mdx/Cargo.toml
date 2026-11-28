@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+nve-codec = { workspace = true }
 nve-hash = { workspace = true }
 
 [lints]

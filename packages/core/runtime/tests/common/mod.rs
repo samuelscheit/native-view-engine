@@ -5,7 +5,7 @@ use nve_abi::{
     NveBufferSlice, NveRuntimeApi, NveRuntimeHandle, NveSceneView, NveRuntimeStatus,
     NVE_RUNTIME_ABI_VERSION,
 };
-use nve_components::tables::{Layout, TextContent};
+use nve_tables::tables::{Layout, TextContent};
 use nve_runtime::nve_runtime_get_interface;
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};

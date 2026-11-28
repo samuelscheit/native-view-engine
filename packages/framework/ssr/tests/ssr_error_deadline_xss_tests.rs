@@ -12,6 +12,7 @@ use core::time::Duration;
 use std::time::Instant;
 
 use http::StatusCode;
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::{NVE_STREAM_KEEPALIVE_COMMENT, WebBackend};
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
@@ -74,7 +75,7 @@ async fn scenario_5_post_headers_domain_err_streams_error_boundary_and_hydrates_
             SsrPageOptions::new("DomainErr Stream", web_backend),
             StreamPlan::default(),
             ssr_client,
-            |c| DioxusSurface::new(1, DomainErrApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, DomainErrApp).with_context(c),
         )
         .await
         .expect("headers sent before DomainErr resolves");
@@ -116,9 +117,10 @@ async fn scenario_5_post_headers_domain_err_streams_error_boundary_and_hydrates_
     assert_eq!(hydrated, vec![(0, 1, 1), (1, 1, 1)]);
 
     let mut cli_web = WebBackend::hydrate_from_streaming_html(&full_html);
-    let mut cli_surface = DioxusSurface::new(50, DomainErrApp).with_context(cli_client.clone());
+    let mut cli_surface =
+        DioxusSurface::new(SurfaceId::new(50, 0), DomainErrApp).with_context(cli_client.clone());
     let mut frame = 1u64;
-    cli_surface.commit_to(frame, &mut cli_web).unwrap();
+    cli_surface.commit_to(FrameId(frame), &mut cli_web).unwrap();
     let rep = cli_web.hydration_report();
     assert!(
         rep.mismatches.is_empty(),
@@ -192,7 +194,7 @@ async fn scenario_6_total_deadline_expiry_emits_stream_end_and_client_recovers()
             SsrPageOptions::new("Deadline Recovery", web_backend),
             plan,
             erased_ssr_query_client(ssr_transport),
-            |c| DioxusSurface::new(1, DeadlineApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, DeadlineApp).with_context(c),
         )
         .await
         .expect("headers ok");
@@ -229,9 +231,10 @@ async fn scenario_6_total_deadline_expiry_emits_stream_end_and_client_recovers()
     hydrate_client_from_html(&cli_client, &full_html);
 
     let mut cli_web = WebBackend::hydrate_from_streaming_html(&full_html);
-    let mut cli_surface = DioxusSurface::new(60, DeadlineApp).with_context(cli_client.clone());
+    let mut cli_surface =
+        DioxusSurface::new(SurfaceId::new(60, 0), DeadlineApp).with_context(cli_client.clone());
     let mut frame = 1u64;
-    cli_surface.commit_to(frame, &mut cli_web).unwrap();
+    cli_surface.commit_to(FrameId(frame), &mut cli_web).unwrap();
     let rep = cli_web.hydration_report();
     assert!(
         rep.mismatches.is_empty(),
@@ -354,7 +357,7 @@ async fn scenario_7_adversarial_xss_payloads_safely_escaped_and_round_tripped() 
 
         let resp = pool
             .render_streaming(adversarial_page(), StreamPlan::default(), client, |c| {
-                DioxusSurface::new(1, XssApp).with_context(c)
+                DioxusSurface::new(SurfaceId::ROOT, XssApp).with_context(c)
             })
             .await
             .expect("adversarial render");

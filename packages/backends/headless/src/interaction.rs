@@ -1,10 +1,10 @@
 //! Interactive pseudo-state tracking and cursor resolution forwarding to [`nve_layout::LaidOutScene`].
 
-use nve_abi::NodeId;
-use nve_components::interaction::{CursorKind, FocusModality, InteractionState, InteractionTracker};
-use nve_components::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
+use nve_engine::InteractionTracker;
 use nve_layout::StoreLayoutEngine;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeId, NodeStore, RowPatchView};
+use nve_tables::interaction::{CursorKind, FocusModality, InteractionState};
+use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
 
 use crate::HeadlessBackend;
 
@@ -25,7 +25,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 
     #[inline]
-    pub fn is_interaction_target(&self, store: &NodeStore, id: StoreNodeId) -> bool {
+    pub fn is_interaction_target(&self, store: &NodeStore, id: NodeId) -> bool {
         self.scene.is_interaction_target(store, id)
     }
 
@@ -35,12 +35,17 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 
     #[inline]
-    pub fn effective_patch(&self, store: &NodeStore, id: StoreNodeId) -> StylePatch {
-        self.scene.effective_patch(store, id)
+    pub fn visit_effective_state_patches<'a>(
+        &self,
+        store: &'a NodeStore,
+        id: NodeId,
+        f: impl FnMut(RowPatchView<'a>),
+    ) {
+        self.scene.visit_effective_state_patches(store, id, f);
     }
 
     #[inline]
-    pub fn effective_visual(&self, store: &NodeStore, id: StoreNodeId) -> VisualSnapshot {
+    pub fn effective_visual(&self, store: &NodeStore, id: NodeId) -> VisualSnapshot {
         self.scene.effective_visual(store, id)
     }
 
@@ -48,13 +53,13 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     pub fn effective_layout_and_visual(
         &self,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
     ) -> (LayoutSnapshot, VisualSnapshot) {
         self.scene.effective_layout_and_visual(store, id)
     }
 
     #[inline]
-    pub fn effective_cursor(&self, store: &NodeStore, id: StoreNodeId) -> CursorKind {
+    pub fn effective_cursor(&self, store: &NodeStore, id: NodeId) -> CursorKind {
         self.scene.effective_cursor(store, id)
     }
 

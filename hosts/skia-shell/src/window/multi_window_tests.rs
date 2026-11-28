@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
-use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
+use nve_abi::{ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId, ValidatedEvents};
+use nve_tables::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::Viewport;
 use nve_interop::{SurfacePresentation, WindowDescriptor, WindowError, WindowRect};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 
 use super::multi_window::HeadlessMultiWindowHost;
 use super::{DesktopApp, DesktopHostError, DesktopSession};
@@ -43,22 +43,23 @@ impl DesktopApp for SurfaceCounterApp {
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         let mut tx = self.store.tx();
         if !self.initialized {
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(2));
-            let _ = tx.create_at(StoreNodeId(4));
-            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(2, 0));
+            let _ = tx.create_at(NodeId::new(4, 0));
+            tx.set(NodeId::new(2, 0), Layout::WIDTH, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::percent(100.0));
             let p = Length::points(12.0);
-            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
-            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
-            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(140.0));
-            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(48.0));
-            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
-            tx.set_children(StoreNodeId(2), &[StoreNodeId(4)]);
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_TOP, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_RIGHT, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_BOTTOM, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_LEFT, p);
+            tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(NodeId::new(4, 0), Layout::WIDTH, Length::points(140.0));
+            tx.set(NodeId::new(4, 0), Layout::HEIGHT, Length::points(48.0));
+            tx.edit::<Interaction>(NodeId::new(4, 0))
+                .listeners(EventSet::one(InteractionEvent::Press));
+            tx.set_children(NodeId::new(2, 0), &[NodeId::new(4, 0)]);
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             self.initialized = true;
         }
         let bg = if self.presses > 0 {
@@ -66,7 +67,7 @@ impl DesktopApp for SurfaceCounterApp {
         } else {
             Rgba::rgb(37, 99, 235)
         };
-        tx.set(StoreNodeId(4), Visual::BACKGROUND, bg);
+        tx.set(NodeId::new(4, 0), Visual::BACKGROUND, bg);
         tx.commit_into(&mut self.changes);
         self.frame_buf.clear();
         self.encoder
@@ -74,12 +75,12 @@ impl DesktopApp for SurfaceCounterApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            if ev.surface_id() == self.surface_id
-                && ev.node_id() == 4
-                && ev.kind() == Some(NativeEventKind::Press)
+            if ev.surface() == self.surface_id
+                && ev.node() == NodeId::new(4, 0)
+                && ev.interaction() == Some(InteractionEvent::Press)
             {
                 self.presses += 1;
                 handled = true;
@@ -110,21 +111,21 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
     let primary_h = host
         .open_window(
             100,
-            1,
+            SurfaceId::ROOT,
             SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Primary", 400.0, 300.0)),
-            make_session(1, 400.0, 300.0),
+            make_session(SurfaceId::ROOT, 400.0, 300.0),
         )
         .unwrap();
     let inspector_h = host
         .open_window(
             200,
-            2,
+            SurfaceId::new(2, 0),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: false,
                 descriptor: WindowDescriptor::new("Inspector", 320.0, 260.0),
             },
-            make_session(2, 320.0, 260.0),
+            make_session(SurfaceId::new(2, 0), 320.0, 260.0),
         )
         .unwrap();
 
@@ -132,7 +133,7 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
     assert_ne!(primary_h, inspector_h);
 
     // Click inside window 200 (surface 2) affects ONLY surface 2, never surface 1.
-    let btn2 = host.window(200).unwrap().session.layout_of(4).unwrap();
+    let btn2 = host.window(200).unwrap().session.layout_of(NodeId::new(4, 0)).unwrap();
     assert!(host
         .route_click(200, btn2.x + btn2.width * 0.5, btn2.y + btn2.height * 0.5)
         .unwrap());
@@ -149,20 +150,20 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
     let modal_h = host
         .open_window(
             300,
-            3,
+            SurfaceId::new(3, 0),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: true,
                 descriptor: WindowDescriptor::new("Confirm", 280.0, 180.0),
             },
-            make_session(3, 280.0, 180.0),
+            make_session(SurfaceId::new(3, 0), 280.0, 180.0),
         )
         .unwrap();
     assert_eq!(
         host.route_focus(100),
         Err(WindowError::BlockedByModalChild { target: primary_h, modal_child: modal_h })
     );
-    let btn1 = host.window(100).unwrap().session.layout_of(4).unwrap();
+    let btn1 = host.window(100).unwrap().session.layout_of(NodeId::new(4, 0)).unwrap();
     assert!(!host
         .route_click(100, btn1.x + btn1.width * 0.5, btn1.y + btn1.height * 0.5)
         .unwrap());
@@ -188,50 +189,50 @@ fn close_veto_and_cascading_child_cleanup_and_exit_policy() {
     let allow_primary = Arc::new(AtomicBool::new(false));
     let allow_flag = Arc::clone(&allow_primary);
     host.set_close_veto_handler(move |_handle, sid| {
-        if sid == 1 { allow_flag.load(Ordering::SeqCst) } else { true }
+        if sid == SurfaceId::ROOT { allow_flag.load(Ordering::SeqCst) } else { true }
     });
 
     let primary_h = host
         .open_window(
             10,
-            1,
+            SurfaceId::ROOT,
             SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Primary", 400.0, 300.0)),
-            make_session(1, 400.0, 300.0),
+            make_session(SurfaceId::ROOT, 400.0, 300.0),
         )
         .unwrap();
     let sheet_h = host
         .open_window(
             20,
-            2,
+            SurfaceId::new(2, 0),
             SurfacePresentation::Sheet {
-                parent: 1,
+                parent: SurfaceId::ROOT,
                 descriptor: WindowDescriptor::new("Sheet", 300.0, 200.0),
             },
-            make_session(2, 300.0, 200.0),
+            make_session(SurfaceId::new(2, 0), 300.0, 200.0),
         )
         .unwrap();
     let popover_h = host
         .open_window(
             30,
-            3,
+            SurfaceId::new(3, 0),
             SurfacePresentation::Popover {
-                anchor_surface: 2,
+                anchor_surface: SurfaceId::new(2, 0),
                 anchor_rect: WindowRect::new(10.0, 10.0, 80.0, 28.0),
                 descriptor: WindowDescriptor::new("Popover", 180.0, 140.0),
             },
-            make_session(3, 180.0, 140.0),
+            make_session(SurfaceId::new(3, 0), 180.0, 140.0),
         )
         .unwrap();
     let detached_h = host
         .open_window(
             40,
-            4,
+            SurfaceId::new(4, 0),
             SurfacePresentation::SecondaryWindow {
                 parent: None,
                 modal: false,
                 descriptor: WindowDescriptor::new("Detached", 300.0, 200.0),
             },
-            make_session(4, 300.0, 200.0),
+            make_session(SurfaceId::new(4, 0), 300.0, 200.0),
         )
         .unwrap();
 
@@ -248,7 +249,7 @@ fn close_veto_and_cascading_child_cleanup_and_exit_policy() {
     assert_eq!(closed_primary.closed_handles, vec![popover_h, sheet_h, primary_h]);
     assert!(!closed_primary.should_exit_loop);
     assert_eq!(host.window_count(), 1);
-    assert!(host.window_by_surface(4).is_some());
+    assert!(host.window_by_surface(SurfaceId::new(4, 0)).is_some());
 
     // Closing the final remaining window signals loop exit.
     let closed_last = host.handle_close_requested(40).unwrap();

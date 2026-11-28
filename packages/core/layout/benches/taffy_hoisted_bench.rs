@@ -18,7 +18,7 @@ mod native {
 
     use criterion::{Criterion, criterion_group};
     use nve_layout::TaffyStoreLayout;
-    use nve_components::tables::core_realization_order;
+    use nve_tables::tables::core_realization_order;
     use nve_store::{ChangeSet, NodeId, NodeStore};
 
     use crate::counting_alloc::count_allocs;

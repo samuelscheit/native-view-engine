@@ -1,13 +1,9 @@
-//! Deterministic seeded property & fuzz-style tests for `nve-abi` `EventRing` and FFI helpers.
-//!
-//! Uses a zero-dependency `XorShift64` PRNG so every failure is 100% reproducible.
-
-#![cfg(feature = "wire")]
+//! Deterministic seeded property & fuzz-style tests for `nve-abi` 64-byte `NveEvent`,
+//! `EventBatchBuf`, `ValidatedEvents`, `NVEV` v2 wire codec, and FFI helpers.
 
 use nve_abi::{
-    decode_events, direct_event_to_native, encode_events, native_events_to_direct, EventPayload,
-    NativeEvent, NativeEventKind, NveBufferSlice, NveDirectEventRef, NveGestureDisposition,
-    NveSizeConstraints,
+    EventBatchBuf, EventFlags, EventId, InteractionEvent, Key64, NodeId, NveBufferSlice,
+    NveGestureDisposition, NveSizeConstraints, SurfaceId, TimestampUs, ValidatedEvents,
 };
 
 struct XorShift64(u64);
@@ -69,101 +65,77 @@ impl XorShift64 {
 }
 
 #[test]
-fn event_ring_and_direct_event_seeded_roundtrip_including_table_events() {
+fn event_batch_wire_and_validated_ffi_seeded_roundtrip() {
     let mut rng = XorShift64::new(0xC0DE_5EED_CAFE_BABE);
-    let mut events = Vec::with_capacity(64);
+    let mut buf = EventBatchBuf::with_capacity(64, 1024);
 
     for i in 0..64u64 {
-        let surface_id = (rng.next_u32() % 4) + 1;
-        let node_id = (rng.next_u32() % 1000) + 1;
-        let timestamp_us = i * 16_667;
-        let ev = match i % 6 {
-            0 => NativeEvent {
-                surface_id,
-                node_id,
-                timestamp_us,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Empty,
-            },
-            1 => NativeEvent {
-                surface_id,
-                node_id,
-                timestamp_us,
-                kind: NativeEventKind::Scroll,
-                payload: EventPayload::Scroll {
-                    x: rng.next_f32(),
-                    y: rng.next_f32(),
-                    content_width: 1000.0,
-                    content_height: 4000.0,
-                },
-            },
-            2 => NativeEvent {
-                surface_id,
-                node_id,
-                timestamp_us,
-                kind: NativeEventKind::TextChange,
-                payload: EventPayload::Text(rng.next_string(24)),
-            },
-            3 => NativeEvent {
-                surface_id,
-                node_id,
-                timestamp_us,
-                kind: NativeEventKind::Layout,
-                payload: EventPayload::Layout {
-                    x: rng.next_f32(),
-                    y: rng.next_f32(),
-                    width: 200.0,
-                    height: 80.0,
-                },
-            },
-            4 => NativeEvent {
-                surface_id,
-                node_id,
-                timestamp_us,
-                kind: NativeEventKind::Custom,
-                payload: EventPayload::Custom {
-                    name: rng.next_string(12),
-                    data: rng.next_bytes(32),
-                },
-            },
-            _ => NativeEvent {
-                surface_id,
-                node_id,
-                timestamp_us,
-                kind: NativeEventKind::TableEvent,
-                payload: EventPayload::TableEvent {
-                    table_key: rng.next_u64(),
-                    event_id: rng.next_u32(),
-                    payload: rng.next_bytes(48),
-                },
-            },
-        };
-        events.push(ev);
+        let surface = SurfaceId::new((rng.next_u32() % 4) + 1, 0);
+        let node = NodeId::new((rng.next_u32() % 1000) + 1, 0);
+        let ts = TimestampUs(i * 16_667);
+        match i % 7 {
+            0 => buf.push_press(surface, node, ts, rng.next_f32(), rng.next_f32()),
+            1 => buf.push_scroll(surface, node, ts, rng.next_f32(), rng.next_f32(), 1000.0, 4000.0),
+            2 => buf.push_text_change(surface, node, ts, &rng.next_string(24)),
+            3 => buf.push_layout(surface, node, ts, rng.next_f32(), rng.next_f32(), 200.0, 80.0),
+            4 => buf.push_custom(surface, node, ts, &rng.next_string(12), &rng.next_bytes(32)),
+            5 => buf.push_key_down(
+                surface,
+                node,
+                ts,
+                &rng.next_string(24),
+                &rng.next_string(12),
+                EventFlags::from_modifiers(i % 2 == 0, i % 3 == 0, false, true, false),
+                rng.next_u32(),
+            ),
+            _ => buf.push_table_event(
+                Key64(rng.next_u64()),
+                surface,
+                node,
+                ts,
+                EventId(rng.next_u32() % 32),
+                EventFlags::EMPTY,
+                [rng.next_u32(), rng.next_u32(), 0, 0, 0, 0],
+                &rng.next_bytes(48),
+            ),
+        }
     }
 
-    let encoded = encode_events(&events);
-    let decoded = decode_events(&encoded).expect("decode_events");
-    assert_eq!(decoded, events);
+    let encoded = buf.to_wire_bytes();
+    let decoded = EventBatchBuf::decode_wire(&encoded).expect("decode_wire");
+    assert_eq!(decoded, buf);
 
-    // Zero-copy NveDirectEvent round-trip
-    let mut direct = Vec::new();
-    native_events_to_direct(&events, &mut direct);
-    assert_eq!(direct.len(), events.len());
-    for (d, expected) in direct.iter().zip(&events) {
-        // SAFETY: `direct` borrows `events` which remain alive across this loop.
-        let r = unsafe { NveDirectEventRef::from_raw(d) };
-        assert_eq!(direct_event_to_native(r).as_ref(), Some(expected));
+    // Zero-copy raw FFI ingress round-trip
+    // SAFETY: `buf` stays alive for the lifetime of `view`.
+    let view = unsafe { ValidatedEvents::try_from_raw(buf.as_raw_batch()) }.expect("try_from_raw");
+    assert_eq!(view.len(), buf.len());
+    for (a, b) in view.iter().zip(decoded.as_validated().iter()) {
+        assert_eq!(a.raw(), b.raw());
+        assert_eq!(a.bytes(), b.bytes());
+        assert_eq!(a.text(), b.text());
+        assert_eq!(a.key(), b.key());
+        assert_eq!(a.code(), b.code());
+        assert_eq!(a.custom_name(), b.custom_name());
+        assert_eq!(a.custom_data(), b.custom_data());
     }
 
-    // Corrupt truncation fuzzing must never panic.
-    for cut in 0..encoded.len().min(64) {
-        let _ = decode_events(&encoded[..cut]);
+    // Every strict prefix of a valid wire frame MUST return `Err(...)` (never silently succeed).
+    for cut in 0..encoded.len() {
+        assert!(
+            EventBatchBuf::decode_wire(&encoded[..cut]).is_err(),
+            "strict prefix cut={cut}/{} must fail decode_wire",
+            encoded.len()
+        );
     }
     let mut rng2 = XorShift64::new(0xDEAD_BEEF_1234_5678);
     for _ in 0..200 {
-        let junk = rng2.next_bytes(64);
-        let _ = decode_events(&junk);
+        let junk = rng2.next_bytes(96);
+        if let Ok(decoded) = EventBatchBuf::decode_wire(&junk) {
+            assert_eq!(decoded.to_wire_bytes(), junk);
+        }
     }
+
+    assert_eq!(InteractionEvent::Press.event_id(), EventId(0));
 }
 
 #[test]

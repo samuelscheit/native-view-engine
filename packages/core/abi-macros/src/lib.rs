@@ -5,9 +5,13 @@
 
 extern crate proc_macro;
 
+mod codec;
 mod emit;
+mod event_enum;
 mod parse;
 mod table;
+mod tok;
+mod word_enum;
 
 use proc_macro::{Group, LexError, Span, TokenStream, TokenTree};
 
@@ -95,11 +99,43 @@ fn respan(stream: TokenStream, span: Span) -> TokenStream {
 }
 
 /// Derives `nve_store::NveTable` for a word-table schema struct (see `table.rs` docs).
-#[proc_macro_derive(NveTable, attributes(nve_table, effect, default, bits, values))]
+#[proc_macro_derive(NveTable, attributes(nve_table, effect, default, bits, no_inherit))]
 pub fn derive_nve_table(input: TokenStream) -> TokenStream {
     match table::derive(input) {
         Ok(code) => parse_at_call_site(&code)
             .unwrap_or_else(|e| compile_error(&format!("NveTable emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Derives `nve_codec::{NveEncode, NveDecode}` for Tier-2 little-endian binary structs and enums.
+#[proc_macro_derive(NveCodec, attributes(nve_codec))]
+pub fn derive_nve_codec(input: TokenStream) -> TokenStream {
+    match codec::derive(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("NveCodec emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Derives `nve_store::{WordValue, OptWord}` + `COUNT`/`BITS`/`ALL`/`to_word`/`from_word`
+/// for fieldless `#[repr(u8)]` contiguous `0..N` enums.
+#[proc_macro_derive(WordEnum, attributes(word_enum))]
+pub fn derive_word_enum(input: TokenStream) -> TokenStream {
+    match word_enum::derive(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("WordEnum emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Derives `nve_abi::EventEnum` + `COUNT`/`ALL`/`event_id`/`bit`/`set`/`from_event_id`/`BitOr`
+/// for table-scoped `#[repr(u8)]` contiguous `0..N` (`1 <= N <= 32`) event enums.
+#[proc_macro_derive(EventEnum, attributes(event_enum))]
+pub fn derive_event_enum(input: TokenStream) -> TokenStream {
+    match event_enum::derive(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("EventEnum emit error: {e}"))),
         Err(msg) => compile_error(&msg),
     }
 }

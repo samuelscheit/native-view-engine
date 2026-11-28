@@ -15,7 +15,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use nve_codegen::{generate_all_abi_files, generate_c_abi_header, generate_table_files};
-use nve_components::tables::CORE_TABLE_DESCS;
+use nve_tables::tables::CORE_TABLE_DESCS;
 
 struct CountingAlloc;
 

@@ -6,17 +6,17 @@ use std::ffi::{c_int, c_long};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use nve_abi::{EventMask, ROOT_NODE_ID};
+use nve_abi::{EventSet, FrameId, InteractionEvent, SurfaceId, ROOT_NODE_ID};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     core_realization_order, register_core_tables, FlexDirection, Interaction, Layout, TextContent,
     Visual,
 };
 use nve_engine::{FrameProfiler, FrameTiming, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 #[cfg(unix)]
 const RUSAGE_SELF: c_int = 0;
@@ -140,9 +140,9 @@ pub(crate) fn measure_cold_init_latencies() -> Vec<ColdInitSample> {
         let mut changes = ChangeSet::default();
         {
             let mut tx = store.tx();
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(ROOT_NODE_ID + 1));
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(ROOT_NODE_ID + 1)]);
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(ROOT_NODE_ID.raw() + 1, 0));
+            tx.set_children(NodeId::ROOT, &[NodeId::new(ROOT_NODE_ID.raw() + 1, 0)]);
             tx.commit_into(&mut changes);
         }
         let mut frame0 = Vec::new();
@@ -150,7 +150,7 @@ pub(crate) fn measure_cold_init_latencies() -> Vec<ColdInitSample> {
 
         let t0 = Instant::now();
         let mut backend = make_backend();
-        backend.set_viewport(1, Viewport::default());
+        backend.set_viewport(SurfaceId::ROOT, Viewport::default());
         let mut replica = StoreWireReplica::new(backend, core_realization_order());
         replica
             .submit_nve2_frame(&frame0)
@@ -307,13 +307,13 @@ impl BenchFeedSource {
         self.store = NodeStore::new();
         self.encoder = WireEncoder::default();
         let mut root_children = Vec::with_capacity(self.rows);
-        let mut next_id = ROOT_NODE_ID + 1;
+        let mut next_id = ROOT_NODE_ID.raw() + 1;
 
         {
             let mut tx = self.store.tx();
             for i in 0..self.rows {
-                let row_id = StoreNodeId(next_id);
-                let text_id = StoreNodeId(next_id + 1);
+                let row_id = NodeId::new(next_id, 0);
+                let text_id = NodeId::new(next_id + 1, 0);
                 next_id += 2;
 
                 tx.create_at(row_id);
@@ -328,7 +328,7 @@ impl BenchFeedSource {
                 tx.set(row_id, Layout::COLUMN_GAP, Length::points(12.0));
                 tx.set(row_id, Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
                 tx.set(row_id, Visual::BORDER_RADIUS, 8.0f32);
-                tx.set(row_id, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+                tx.edit::<Interaction>(row_id).listeners(EventSet::one(InteractionEvent::Press));
 
                 tx.create_at(text_id);
                 tx.set_str(
@@ -339,7 +339,7 @@ impl BenchFeedSource {
                 tx.set_children(row_id, &[text_id]);
                 root_children.push(row_id);
             }
-            tx.set_children(StoreNodeId::ROOT, &root_children);
+            tx.set_children(NodeId::ROOT, &root_children);
             tx.commit_into(&mut self.changes);
         }
 
@@ -358,7 +358,7 @@ impl BenchFeedSource {
             let mut tx = self.store.tx();
             for i in 0..updates {
                 let idx = ((frame_id as usize * 7 + i) % self.rows) as u32;
-                let text_id = StoreNodeId(ROOT_NODE_ID + 1 + idx * 2 + 1);
+                let text_id = NodeId::new(ROOT_NODE_ID.raw() + 1 + idx * 2 + 1, 0);
                 tx.set_str(
                     text_id,
                     TextContent::TEXT,
@@ -378,7 +378,9 @@ pub(crate) fn run_backend_bench<B: StoreBackend>(
     trace_path: Option<&Path>,
 ) {
     let mut replica = StoreWireReplica::new(backend, core_realization_order());
-    replica.backend_mut().set_viewport(1, Viewport::default());
+    replica
+        .backend_mut()
+        .set_viewport(SurfaceId::ROOT, Viewport::default());
     let mut profiler = FrameProfiler::new(2048);
     let mut feed = BenchFeedSource::new(rows);
     let mut init_bytes = Vec::with_capacity(rows.saturating_mul(160).max(4096));
@@ -400,7 +402,7 @@ pub(crate) fn run_backend_bench<B: StoreBackend>(
             .submit_nve2_frame(&patch)
             .expect("incremental bench frame");
         profiler.record(FrameTiming {
-            frame_id: f,
+            frame_id: FrameId(f),
             op_count: stats.op_count,
             mutation_count: stats.mutation_count,
             reconcile_us: 0,
@@ -506,9 +508,13 @@ mod tests {
         let mut headless = StoreWireReplica::new(HeadlessBackend::new(), core_realization_order());
         let mut skia = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
         let mut web = StoreWireReplica::new(WebBackend::new(), core_realization_order());
-        headless.backend_mut().set_viewport(1, Viewport::default());
-        skia.backend_mut().set_viewport(1, Viewport::default());
-        web.backend_mut().set_viewport(1, Viewport::default());
+        headless
+            .backend_mut()
+            .set_viewport(SurfaceId::ROOT, Viewport::default());
+        skia.backend_mut()
+            .set_viewport(SurfaceId::ROOT, Viewport::default());
+        web.backend_mut()
+            .set_viewport(SurfaceId::ROOT, Viewport::default());
 
         headless.submit_nve2_frame(&init3).unwrap();
         skia.submit_nve2_frame(&init3).unwrap();

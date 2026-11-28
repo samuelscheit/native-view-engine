@@ -3,7 +3,7 @@
 use nve_abi::SurfaceId;
 
 use super::types::{
-    ArbitrationDecision, ArbitrationReason, FastU32Map, GestureCapabilities, GestureDisposition,
+    ArbitrationDecision, ArbitrationReason, FastKeyMap, GestureCapabilities, GestureDisposition,
     PointerPhase, PointerSample, ScrollEdgeState, SurfaceChain,
 };
 
@@ -23,9 +23,9 @@ struct ActivePointer {
 /// inside a SwiftUI vertical `ScrollView`).
 #[derive(Debug, Default)]
 pub struct GestureArbitrator {
-    capabilities: FastU32Map<GestureCapabilities, 16>,
-    overrides: FastU32Map<GestureDisposition, 8>,
-    active_pointers: FastU32Map<ActivePointer, 8>,
+    capabilities: FastKeyMap<SurfaceId, GestureCapabilities, 16>,
+    overrides: FastKeyMap<SurfaceId, GestureDisposition, 8>,
+    active_pointers: FastKeyMap<u32, ActivePointer, 8>,
 }
 
 impl GestureArbitrator {
@@ -75,6 +75,12 @@ impl GestureArbitrator {
     #[inline]
     pub fn active_pointer_count(&self) -> usize {
         self.active_pointers.len()
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn has_surface_state(&self, surface_id: SurfaceId) -> bool {
+        self.capabilities.get(surface_id).is_some() || self.overrides.get(surface_id).is_some()
     }
 
     /// Arbitrates a pointer sample along `hit_chain` (ordered **innermost -> outermost**).

@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::ssr_variants::{SsrStyleOverride, ssr_style_overrides, write_scoped_overrides};
 use nve_backend_web::{SsrOutput, WebBackend};
 use nve_dioxus::DioxusSurface;
@@ -74,9 +75,9 @@ fn web_backend() -> WebBackend {
 }
 
 fn render(host: &DocsHost, site: &Arc<CompiledSite>, route: &str, base_path: &str, viewport: DocsViewport) -> Result<(DioxusSurface, WebBackend), String> {
-    let mut surface = host.mount(1, Arc::clone(site), route, base_path, viewport);
+    let mut surface = host.mount(SurfaceId::ROOT, Arc::clone(site), route, base_path, viewport);
     let mut backend = web_backend();
-    surface.commit_to(1, &mut backend).map_err(|e| format!("docs SSR commit for '{route}': {e}"))?;
+    surface.commit_to(FrameId(1), &mut backend).map_err(|e| format!("docs SSR commit for '{route}': {e}"))?;
     Ok((surface, backend))
 }
 

@@ -18,7 +18,7 @@ let _ = &mut bus;
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `serde`.
+- **Depends on**: `nve-abi`, `nve-tables`, `nve-engine`, `serde`.
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

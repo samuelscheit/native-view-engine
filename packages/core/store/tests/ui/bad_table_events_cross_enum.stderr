@@ -1,0 +1,14 @@
+error[E0308]: mismatched types
+  --> tests/ui/bad_table_events_cross_enum.rs:26:44
+   |
+26 |     tx.edit::<TableA>(NodeId::ROOT).listen(EventB::Hover);
+   |                                     ------ ^^^^^^^^^^^^^ expected `EventA`, found `EventB`
+   |                                     |
+   |                                     arguments to this method are incorrect
+   |
+note: method defined here
+  --> tests/ui/bad_table_events_cross_enum.rs:16:10
+   |
+16 | #[derive(NveTable)]
+   |          ^^^^^^^^
+   = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

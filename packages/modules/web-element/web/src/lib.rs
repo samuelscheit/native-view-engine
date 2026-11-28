@@ -33,7 +33,7 @@ impl WebTableSystem for WebElementWebSystem {
         let Some(attrs) = store.resource::<WebElementAttrs>(row.attrs()) else {
             return;
         };
-        for (k, v) in attrs.0.iter() {
+        for (k, v) in attrs.iter() {
             if is_safe_web_attr(k, v) {
                 write_attr(k.trim(), v, out);
             }
@@ -52,7 +52,7 @@ impl WebTableSystem for WebElementWebSystem {
         };
         let attrs = store.resource::<WebElementAttrs>(row.attrs());
         if let Some(attrs) = attrs {
-            for (k, v) in attrs.0.iter() {
+            for (k, v) in attrs.iter() {
                 if is_safe_web_attr(k, v) {
                     ctx.set_attr(node, k, v);
                 }
@@ -60,7 +60,7 @@ impl WebTableSystem for WebElementWebSystem {
         }
         ctx.retain_slot_attrs(node, |existing| {
             attrs.is_some_and(|a| {
-                a.0.iter()
+                a.iter()
                     .any(|(k, v)| k == existing && is_safe_web_attr(k, v))
             })
         });

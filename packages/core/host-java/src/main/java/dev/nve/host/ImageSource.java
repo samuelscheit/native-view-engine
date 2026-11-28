@@ -1,11 +1,13 @@
 package dev.nve.host;
 
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Decoded {@code nve.res.image_src} resource ({@code nve_components::ImageSrc} wire bytes): a URL /
+ * Decoded {@code nve.res.image_src} resource ({@code nve_tables::ImageSrc} {@code FlatResource}
+ * 4-byte-aligned word buffer: {@code u32 tag | u32 byte_len | payload zero-padded to 4 B}): a URL /
  * URI, or inline encoded image bytes (PNG / WebP / JPEG). Bytes are a zero-copy slice of the
  * resource buffer, valid while the scene that published it is acquired.
  */
@@ -15,6 +17,8 @@ public final class ImageSource {
 
     private static final int TAG_URL = 0;
     private static final int TAG_ENCODED = 1;
+    private static final int MAX_URL_BYTES = 256 * 1024;
+    private static final int MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 
     /** URL / URI, or {@code null} for inline bytes. */
     public final String url;
@@ -28,26 +32,47 @@ public final class ImageSource {
 
     /**
      * Decodes {@code bytes[position .. limit)}; throws {@link BinCodecException} unless it is exactly
-     * one well-formed image source.
+     * one well-formed 4-byte-aligned {@code FlatResource} image source.
      */
     public static ImageSource decode(ByteBuffer bytes) {
         final ByteBuffer b = bytes.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        if (b.remaining() < 5) throw new BinCodecException(BinCodecException.Kind.TRUNCATED, "image source header");
-        final int tag = b.get() & 0xFF;
+        if (b.remaining() < 8) {
+            throw new BinCodecException(BinCodecException.Kind.TRUNCATED, "image source header");
+        }
+        final int tag = b.getInt();
         final long len = b.getInt() & 0xFFFFFFFFL;
-        if (len > b.remaining()) {
+        final long padded = (len + 3L) & ~3L;
+        if (padded > b.remaining()) {
             throw new BinCodecException(BinCodecException.Kind.TRUNCATED, "image source payload " + len + " > " + b.remaining());
         }
-        if (len < b.remaining()) {
-            throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (b.remaining() - len) + " bytes after image source");
+        if (padded < b.remaining()) {
+            throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (b.remaining() - padded) + " bytes after image source");
         }
+        final int n = (int) len;
+        final int base = b.position();
+        for (int i = n; i < (int) padded; i++) {
+            if (b.get(base + i) != 0) {
+                throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, "non-zero image source padding byte");
+            }
+        }
+        ((Buffer) b).limit(base + n);
         final ByteBuffer payload = b.slice();
-        if (tag == TAG_ENCODED) return new ImageSource(null, payload);
-        if (tag != TAG_URL) throw new BinCodecException(BinCodecException.Kind.INVALID_TAG, "image source tag " + tag);
+        if (tag == TAG_ENCODED) {
+            if (n > MAX_IMAGE_BYTES) {
+                throw new BinCodecException(BinCodecException.Kind.TOO_LARGE, "image source encoded bytes " + n);
+            }
+            return new ImageSource(null, payload);
+        }
+        if (tag != TAG_URL) {
+            throw new BinCodecException(BinCodecException.Kind.INVALID_TAG, "image source tag " + tag);
+        }
+        if (n > MAX_URL_BYTES) {
+            throw new BinCodecException(BinCodecException.Kind.TOO_LARGE, "image source url bytes " + n);
+        }
         if (!Utf8.isValid(payload, payload.position(), payload.remaining())) {
             throw new BinCodecException(BinCodecException.Kind.INVALID_UTF8, "image source url");
         }
-        final byte[] utf8 = new byte[payload.remaining()];
+        final byte[] utf8 = new byte[n];
         payload.get(utf8);
         return new ImageSource(new String(utf8, StandardCharsets.UTF_8), null);
     }

@@ -14,8 +14,12 @@ impl Rng {
     }
 }
 
+fn node(index: u32) -> NodeId {
+    NodeId::new(index, 0)
+}
+
 fn ids(base: u32, n: usize) -> impl Iterator<Item = NodeId> {
-    (0..n as u32).map(move |i| NodeId(base + i))
+    (0..n as u32).map(move |i| node(base + i))
 }
 
 /// Iterator that reports an arbitrary (possibly lying) `size_hint`.
@@ -98,7 +102,7 @@ fn lying_size_hints_never_overflow_or_overwrite_neighbours() {
     lists.clear(1);
     // Upper bound `usize::MAX`: no `len + upper` overflow, items still land in place.
     lists.extend(1, lying(40, 3, (0, Some(usize::MAX))));
-    assert_eq!(lists.get(1), &[NodeId(40), NodeId(41), NodeId(42)]);
+    assert_eq!(lists.get(1), &[node(40), node(41), node(42)]);
     // Under-reporting hint (claims 0 items, yields 9): must spill to the tail, never overwrite
     // node 2's span that follows node 1 in the pool.
     lists.extend(1, lying(50, 9, (0, Some(0))));
@@ -138,7 +142,7 @@ fn model_based_random_ops_match_vec_of_vecs() {
                     // Over-estimating filter, like the store lookup in `add_hoisted_children`.
                     1 => {
                         let doubled = (0..2 * n as u32).filter(|i| i % 2 == 0);
-                        lists.extend(idx, doubled.map(|i| NodeId(base + i / 2)));
+                        lists.extend(idx, doubled.map(|i| node(base + i / 2)));
                     }
                     2 => lists.extend(idx, lying(base, n, (0, Some(usize::MAX)))),
                     _ => lists.extend(idx, lying(base, n, (0, Some(0)))),
@@ -181,7 +185,7 @@ fn steady_state_rewrites_keep_pool_capacity_and_length() {
             lists.clear(idx);
             let n = (idx + round) % 7;
             let filtered = (0..2 * n as u32).filter(|i| i % 2 == 0);
-            lists.extend(idx, filtered.map(|i| NodeId(idx as u32 * 8 + i / 2)));
+            lists.extend(idx, filtered.map(|i| node(idx as u32 * 8 + i / 2)));
         }
         relocated |= lists.dead > 0;
         lists.compact();
@@ -288,7 +292,7 @@ fn growth_relocates_then_compaction_restores_index_order() {
     // Node 0 outgrows its capacity while not last: moves to the tail with doubled capacity
     // (2 -> 4, one `NULL` pad slot), leaving a 2-slot hole.
     lists.extend(0, ids(12, 1));
-    assert_eq!(lists.get(0), &[NodeId(10), NodeId(11), NodeId(12)]);
+    assert_eq!(lists.get(0), &[node(10), node(11), node(12)]);
     assert_eq!((lists.spans[0].len, lists.spans[0].cap), (3, 4));
     assert_eq!(lists.dead, 2);
     // The doubled capacity absorbs the next item in place.
@@ -302,7 +306,7 @@ fn growth_relocates_then_compaction_restores_index_order() {
         "compaction packs spans in node-index order"
     );
     assert_eq!(lists.spans[1].start, 4);
-    assert_eq!(lists.get(1), &[NodeId(20), NodeId(21)]);
+    assert_eq!(lists.get(1), &[node(20), node(21)]);
     lists.release(0);
     assert_eq!(lists.dead, 4);
     lists.assert_consistent();

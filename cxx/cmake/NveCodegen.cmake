@@ -1,6 +1,6 @@
 # Shared CMake helper: keeps the generated host ABI headers (`nve codegen abi` ->
 # `packages/core/host-cxx/include/nve/generated/`) fresh relative to their inputs (`nve-abi`,
-# `nve-components` tables, the codegen crate and its Askama templates), and adds the
+# `nve-tables` tables, the codegen crate and its Askama templates), and adds the
 # static `nve::host_cxx` runtime target that carries them.
 #
 # Usage:

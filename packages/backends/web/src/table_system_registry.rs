@@ -3,10 +3,11 @@
 
 use std::sync::Arc;
 
-use nve_components::tables::{Accessibility, AriaRole, Image, Link, TextContent, TextInput};
+use nve_tables::tables::{Accessibility, AriaRole, Image, Link, TextContent, TextInput};
 use nve_store::{NodeId, NodeStore, TableSlot};
 
 use super::WebSystemCommitCtx;
+use crate::stylesheet::ResolvedNodeStyle;
 #[cfg(target_arch = "wasm32")]
 use super::ctx::ClickInterceptor;
 
@@ -40,6 +41,10 @@ pub trait WebTableSystem: Send + Sync + 'static {
 
     /// Emits extra inline CSS declarations into `out` (e.g. `backdrop-filter:...;`).
     fn write_inline_css(&self, _store: &NodeStore, _node: NodeId, _out: &mut String) {}
+
+    /// Contributes content-addressed class and `@media` rules for `node` to the shared stylesheet
+    /// (SSR `<style>` and live constructable sheets), e.g. compiled `transition` lists.
+    fn resolve_style(&self, _store: &NodeStore, _node: NodeId, _out: &mut ResolvedNodeStyle) {}
 
     /// Synchronizes live/mirror DOM state when this table's row changes on `node`.
     fn commit_node(
@@ -160,17 +165,19 @@ impl WebTableRegistry {
         if store.has::<Link>(node) {
             return ("a", None);
         }
-        if let Some(a11y) = store.try_row::<Accessibility>(node) {
-            match a11y.role() {
+        if let Some(a11y) = store.try_row::<Accessibility>(node)
+            && let Some(role) = a11y.role()
+        {
+            match role {
                 AriaRole::Button => return ("button", None),
                 AriaRole::Heading => {
                     return (
                         match a11y.level() {
-                            1 => "h1",
-                            3 => "h3",
-                            4 => "h4",
-                            5 => "h5",
-                            6 => "h6",
+                            Some(1) => "h1",
+                            Some(3) => "h3",
+                            Some(4) => "h4",
+                            Some(5) => "h5",
+                            Some(6) => "h6",
                             _ => "h2",
                         },
                         None,

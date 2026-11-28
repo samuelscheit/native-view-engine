@@ -1,5 +1,6 @@
 #import "NveAppleSceneReconciler.h"
 
+#include <nve/host/core_resources.hpp>
 #include <nve/host/retained_tree.hpp>
 
 #include <algorithm>
@@ -14,8 +15,8 @@ using nve::host::NodeGeometry;
 
 namespace {
 
-/// Decoded inline (tag 1) images kept across syncs; past this many distinct resources the cache
-/// restarts instead of growing without bound.
+/// Decoded inline (`EncodedBytes`) images kept across syncs; past this many distinct resources the
+/// cache restarts instead of growing without bound.
 constexpr size_t kInlineImageCacheLimit = 256u;
 
 CGRect cg_rect(const NveLayoutRect &r) { return CGRectMake(r.x, r.y, r.width, r.height); }
@@ -155,22 +156,19 @@ struct NveAppleAdapter {
   }
 
  private:
-  /// The platform image of `nve.res.image_src` resource `resource` (tag 0: URL through the shared
-  /// URL cache, tag 1: encoded bytes decoded once per resource id).
+  /// The platform image of `nve.res.image_src` (flat-word `Url` or `EncodedBytes`): URLs go
+  /// through the shared URL cache; inline bytes are decoded once per resource id.
   id image_for(uint32_t resource) {
     if (const auto hit = inline_images.find(resource); hit != inline_images.end()) return hit->second;
     if (!resources) return nil;
     NSData *bytes = resources(resource);
-    if (bytes.length < 5u) return nil;
-    const uint8_t *p = static_cast<const uint8_t *>(bytes.bytes);
-    const uint32_t len = uint32_t{p[1]} | (uint32_t{p[2]} << 8u) | (uint32_t{p[3]} << 16u) | (uint32_t{p[4]} << 24u);
-    if (static_cast<NSUInteger>(len) + 5u != bytes.length) return nil;
-    if (p[0] == 0u) {
-      return nve::apple::shared_image_cache().image_for_source(
-          std::string_view(reinterpret_cast<const char *>(p + 5), len));
-    }
-    if (p[0] != 1u) return nil;
-    id image = nve::apple::decode_image_data([bytes subdataWithRange:NSMakeRange(5, len)]);
+    if (bytes == nil || bytes.length == 0u) return nil;
+    const std::span<const uint8_t> raw(static_cast<const uint8_t *>(bytes.bytes), bytes.length);
+    const std::optional<nve::host::ImageSource> src = nve::host::decode_image_src(raw);
+    if (!src) return nil;
+    if (src->is_url()) return nve::apple::shared_image_cache().image_for_source(src->url);
+    if (src->encoded.empty()) return nil;
+    id image = nve::apple::decode_image_data([NSData dataWithBytes:src->encoded.data() length:src->encoded.size()]);
     if (image == nil) return nil;
     if (inline_images.size() >= kInlineImageCacheLimit) inline_images.clear();
     inline_images.emplace(resource, image);

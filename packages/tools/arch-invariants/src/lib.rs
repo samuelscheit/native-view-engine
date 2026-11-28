@@ -11,6 +11,7 @@ pub mod bench;
 pub mod codegen_53bit;
 pub mod dag;
 pub mod host_runtimes;
+pub mod handle_hygiene;
 pub mod hot_path;
 pub mod hygiene;
 pub mod inline_style_keys;

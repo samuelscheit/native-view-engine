@@ -7,9 +7,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::CosmicTextEngine;
-use nve_components::tables::{core_realization_order, register_core_tables};
+use nve_tables::tables::{core_realization_order, register_core_tables};
 use nve_engine::{Frame0File, Frame0Meta, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_layout::TextMeasurer;
 use nve_example_kitchen_sink::{KITCHEN_SINK_STATE_VERSION, KitchenSinkModule};
@@ -43,10 +44,10 @@ fn prerender_module<A: NveApp>(
     register_core_tables();
     let mut backend = HeadlessBackend::new();
     backend.set_text_measurer(measurer);
-    backend.set_viewport(1, viewport);
+    backend.set_viewport(SurfaceId::ROOT, viewport);
     let mut replica = StoreWireReplica::new(backend, core_realization_order());
 
-    let frame1 = app.render(1);
+    let frame1 = app.render(FrameId(1));
     replica
         .submit_nve2_frame(frame1)
         .map_err(|e| format!("failed to render Frame-0 NVE2: {e}"))?;
@@ -57,7 +58,7 @@ fn prerender_module<A: NveApp>(
 
     // Round-trip validate into a cold replica before writing to disk.
     let mut verify_backend = HeadlessBackend::new();
-    verify_backend.set_viewport(1, viewport);
+    verify_backend.set_viewport(SurfaceId::ROOT, viewport);
     let mut verify_replica = StoreWireReplica::new(verify_backend, core_realization_order());
     let (footer, _) = Frame0File::boot_bytes_into_replica(&buf, meta, &mut verify_replica)
         .map_err(|e| format!("generated frame0.nve2 failed validation: {e}"))?;
@@ -91,13 +92,13 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
         || app_arg.eq_ignore_ascii_case("studio-workspace")
         || app_arg.eq_ignore_ascii_case("nve-studio-workspace")
     {
-        let mut app = StudioWorkspaceModule::create(1);
+        let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
         let res = prerender_module(&mut app, viewport, measurer)?;
         ("studio".to_string(), STUDIO_SNAPSHOT_SCHEMA_VERSION, res)
     } else if app_arg.eq_ignore_ascii_case("kitchen-sink")
         || app_arg.eq_ignore_ascii_case("nve-example-kitchen-sink")
     {
-        let mut app = KitchenSinkModule::create(1);
+        let mut app = KitchenSinkModule::create(SurfaceId::ROOT);
         let res = prerender_module(&mut app, viewport, measurer)?;
         ("kitchen-sink".to_string(), KITCHEN_SINK_STATE_VERSION, res)
     } else {
@@ -173,7 +174,7 @@ mod tests {
             let meta = Frame0Meta::default_core();
             let mut skia = SkiaBackend::new();
             skia.set_viewport(
-                1,
+                SurfaceId::ROOT,
                 Viewport {
                     width: w,
                     height: h,

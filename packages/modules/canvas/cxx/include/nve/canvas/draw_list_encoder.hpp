@@ -1,30 +1,58 @@
-// `NVE_DRAW1` encoder (C++ apps, demos, and host test fixtures); byte-identical to `DrawListBuilder`.
+// Canonical 4-byte-aligned `FlatResource` (`nve.res.draw_list`) encoder for C++ apps, demos, and
+// host test fixtures; byte-identical to `packages/modules/canvas/src/flat.rs` (`DrawList::write_words`).
 #pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <span>
+#include <vector>
 
 #include "draw_list.hpp"
 
 namespace nve::canvas {
 
+namespace detail {
+
+inline void write_le_u32(std::vector<uint8_t>& buf, uint32_t v) {
+  buf.push_back(static_cast<uint8_t>(v & 0xFFu));
+  buf.push_back(static_cast<uint8_t>((v >> 8u) & 0xFFu));
+  buf.push_back(static_cast<uint8_t>((v >> 16u) & 0xFFu));
+  buf.push_back(static_cast<uint8_t>((v >> 24u) & 0xFFu));
+}
+
+inline void write_le_f32(std::vector<uint8_t>& buf, float v) {
+  const float finite = std::isfinite(v) ? v : 0.0f;
+  uint32_t bits = 0u;
+  std::memcpy(&bits, &finite, sizeof(uint32_t));
+  write_le_u32(buf, bits);
+}
+
+}  // namespace detail
+
 class DrawListEncoder {
  public:
   explicit DrawListEncoder(size_t capacity_bytes = 256u) {
     buf_.reserve(std::max(capacity_bytes, kDrawListHeaderSize));
-    buf_.insert(buf_.end(), kDrawListMagic.begin(), kDrawListMagic.end());
-    detail::write_le_u16(buf_, kDrawListVersion);
-    detail::write_le_u32(buf_, 0u);
+    detail::write_le_u32(buf_, 0u);  // word 0: op_count placeholder
   }
 
   uint32_t op_count() const noexcept { return op_count_; }
 
   DrawListEncoder& clear(DrawColorRgba color) {
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::Clear));
+    if (!can_push()) return *this;
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::Clear));
     detail::write_le_u32(buf_, color.to_u32());
     ++op_count_;
     return *this;
   }
 
   DrawListEncoder& fill_rect(float x, float y, float w, float h, DrawColorRgba color) {
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::FillRect));
+    if (!can_push()) return *this;
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::FillRect));
     detail::write_le_f32(buf_, x);
     detail::write_le_f32(buf_, y);
     detail::write_le_f32(buf_, w);
@@ -41,7 +69,8 @@ class DrawListEncoder {
       float h,
       float radius,
       DrawColorRgba color) {
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::FillRoundedRect));
+    if (!can_push()) return *this;
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::FillRoundedRect));
     detail::write_le_f32(buf_, x);
     detail::write_le_f32(buf_, y);
     detail::write_le_f32(buf_, w);
@@ -53,7 +82,8 @@ class DrawListEncoder {
   }
 
   DrawListEncoder& fill_circle(float cx, float cy, float radius, DrawColorRgba color) {
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::FillCircle));
+    if (!can_push()) return *this;
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::FillCircle));
     detail::write_le_f32(buf_, cx);
     detail::write_le_f32(buf_, cy);
     detail::write_le_f32(buf_, radius);
@@ -69,7 +99,8 @@ class DrawListEncoder {
       float y1,
       float width,
       DrawColorRgba color) {
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::StrokeLine));
+    if (!can_push()) return *this;
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::StrokeLine));
     detail::write_le_f32(buf_, x0);
     detail::write_le_f32(buf_, y0);
     detail::write_le_f32(buf_, x1);
@@ -84,8 +115,9 @@ class DrawListEncoder {
       std::span<const DrawPoint> points,
       float width,
       DrawColorRgba color) {
+    if (!can_push()) return *this;
     const size_t clamped = std::min(points.size(), kMaxPolylinePoints);
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::StrokePolyline));
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::StrokePolyline));
     detail::write_le_f32(buf_, width);
     detail::write_le_u32(buf_, color.to_u32());
     detail::write_le_u32(buf_, static_cast<uint32_t>(clamped));
@@ -98,7 +130,8 @@ class DrawListEncoder {
   }
 
   DrawListEncoder& clip_rect(float x, float y, float w, float h) {
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::ClipRect));
+    if (!can_push()) return *this;
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::ClipRect));
     detail::write_le_f32(buf_, x);
     detail::write_le_f32(buf_, y);
     detail::write_le_f32(buf_, w);
@@ -108,7 +141,8 @@ class DrawListEncoder {
   }
 
   DrawListEncoder& restore_clip() {
-    buf_.push_back(static_cast<uint8_t>(DrawOpcode::RestoreClip));
+    if (!can_push()) return *this;
+    detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::RestoreClip));
     ++op_count_;
     return *this;
   }
@@ -196,14 +230,16 @@ class DrawListEncoder {
   }
 
   std::vector<uint8_t> finish() {
-    buf_[11u] = static_cast<uint8_t>(op_count_ & 0xFFu);
-    buf_[12u] = static_cast<uint8_t>((op_count_ >> 8u) & 0xFFu);
-    buf_[13u] = static_cast<uint8_t>((op_count_ >> 16u) & 0xFFu);
-    buf_[14u] = static_cast<uint8_t>((op_count_ >> 24u) & 0xFFu);
+    buf_[0u] = static_cast<uint8_t>(op_count_ & 0xFFu);
+    buf_[1u] = static_cast<uint8_t>((op_count_ >> 8u) & 0xFFu);
+    buf_[2u] = static_cast<uint8_t>((op_count_ >> 16u) & 0xFFu);
+    buf_[3u] = static_cast<uint8_t>((op_count_ >> 24u) & 0xFFu);
     return buf_;
   }
 
  private:
+  bool can_push() const noexcept { return static_cast<size_t>(op_count_) < kMaxDrawOps; }
+
   std::vector<uint8_t> buf_;
   uint32_t op_count_{0u};
 };

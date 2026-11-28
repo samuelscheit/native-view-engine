@@ -9,7 +9,7 @@ use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, Criterion};
 use http_body_util::BodyExt as _;
 use minicbor::{Decode, Encode};
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, SurfaceId};
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -143,7 +143,7 @@ fn bench_nve_ssr(c: &mut Criterion) {
                         black_box(page.clone()),
                         StreamPlan::default(),
                         client,
-                        |c| DioxusSurface::new(1, BenchApp).with_context(c),
+                        |c| DioxusSurface::new(SurfaceId::ROOT, BenchApp).with_context(c),
                     )
                     .await
                     .expect("render streaming");
@@ -163,7 +163,7 @@ fn bench_nve_ssr(c: &mut Criterion) {
                         black_box(page.clone()),
                         StreamPlan::default(),
                         client,
-                        |c| DioxusSurface::new(1, BenchApp).with_context(c),
+                        |c| DioxusSurface::new(SurfaceId::ROOT, BenchApp).with_context(c),
                     )
                     .await
                     .expect("render streaming");

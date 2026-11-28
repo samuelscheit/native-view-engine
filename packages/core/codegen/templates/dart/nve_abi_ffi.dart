@@ -32,19 +32,19 @@ typedef NveHostChannelPublishNative = ffi.Int32 Function(
 {%- endif %}
 final class {{ r.name }} extends ffi.{% if r.is_union %}Union{% else %}Struct{% endif %} {
 {%- for f in r.fields %}
-  {{ dart::field(f) }}
+  {{ dart::field(m.core.aliases, f) }}
 {%- endfor %}
 }
 {%- endfor %}
 {%- for iface in m.core.modules %}
 {%- for method in iface.methods %}
 
-typedef Nve{{ spell::pascal(method.name) }}Native = {{ dart::native(method.return_type) }} Function(
+typedef Nve{{ spell::pascal(method.name) }}Native = {{ dart::native(m.core.aliases, method.return_type) }} Function(
 {%- if method.has_self %}
   ffi.Pointer<ffi.Void> handle,
 {%- endif %}
 {%- for p in method.params %}
-  {{ dart::native(p.ty) }} {{ spell::camel(p.name) }},
+  {{ dart::native(m.core.aliases, p.ty) }} {{ spell::camel(p.name) }},
 {%- endfor %}
 );
 {%- endfor %}

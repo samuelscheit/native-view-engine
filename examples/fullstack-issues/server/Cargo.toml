@@ -6,6 +6,7 @@ license.workspace = true
 description = "Reference fullstack issue-tracker server built on nve-rpc, nve-server, nve-http-hyper, and streaming nve-ssr."
 
 [dependencies]
+nve-abi = { workspace = true }
 nve-example-issues-api = { workspace = true }
 nve-example-issues-client = { workspace = true, features = ["web"] }
 nve-backend-web = { workspace = true, features = ["ssr"] }
@@ -25,7 +26,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 nve-canvas = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-engine = { workspace = true }
 nve-store = { workspace = true }
 nve-web-html = { workspace = true }

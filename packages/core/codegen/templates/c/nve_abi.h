@@ -13,7 +13,11 @@ NVE_EXTERN_C_BEGIN
 {%- if let Some(doc) = k.doc %}
 /* {{ spell::one_line(doc) }} */
 {%- endif %}
+{%- if k.ty == "u64" %}
+#define {{ k.name }} {{ spell::uint64(k.value, k.hex) }}ULL
+{%- else %}
 #define {{ k.name }} {{ spell::uint(k.value, k.hex) }}u
+{%- endif %}
 {%- endfor %}
 
 /* Modular interface IDs resolved once via `nve_get_interface(uint32_t)`. */

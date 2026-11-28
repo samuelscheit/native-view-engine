@@ -16,7 +16,7 @@ static ImageResizeMode resize_mode_for_fit(uint32_t fit) noexcept {
   }
 }
 
-static A11yRole role_for_aria(uint32_t aria) noexcept {
+static A11yRole role_for_aria(uint8_t aria) noexcept {
   switch (aria) {
     case NVE_ARIA_ROLE_BUTTON: return A11yRole::Button;
     case NVE_ARIA_ROLE_LINK: return A11yRole::Link;
@@ -29,7 +29,7 @@ static A11yRole role_for_aria(uint32_t aria) noexcept {
     case NVE_ARIA_ROLE_LIST: return A11yRole::List;
     case NVE_ARIA_ROLE_LIST_ITEM: return A11yRole::ListItem;
     case NVE_ARIA_ROLE_CHECKBOX: return A11yRole::CheckBox;
-    case NVE_ARIA_ROLE_NONE: return A11yRole::None;
+    case NVE_ARIA_ROLE_PRESENTATION: return A11yRole::None;
     default: return A11yRole::Group;
   }
 }
@@ -83,7 +83,7 @@ NodeView node_view(const NodeData &n) {
       v.kind = NodeKind::Image;
       v.image_resource = n.image.src;
       v.image_fit = resize_mode_for_fit(n.image.fit);
-      if (n.image.tint_enabled) v.image_tint_rgba = n.image.tint;
+      if (n.image.tint.has_value()) v.image_tint_rgba = *n.image.tint;
       a.role = A11yRole::Image;
       a.label = n.image.alt;
       a.has_explicit_label = !a.label.empty();
@@ -103,13 +103,13 @@ NodeView node_view(const NodeData &n) {
       break;
   }
   const bool link = n.kind == nve::host::NodeKind::Link;
-  v.interactive = link || n.wants(NVE_EVENT_PRESS);
+  v.interactive = link || n.wants(NVE_INTERACTION_EVENT_PRESS);
   if (v.interactive && v.kind == NodeKind::Container) a.role = link ? A11yRole::Link : A11yRole::Button;
   a.disabled = a.disabled || n.interaction.disabled;
 
   if (n.a11y.present) {
-    if (n.a11y.role != NVE_ARIA_ROLE_NONE) {
-      a.role = role_for_aria(n.a11y.role);
+    if (n.a11y.role.has_value()) {
+      a.role = role_for_aria(*n.a11y.role);
       a.explicit_role = true;
     }
     if (!n.a11y.label.empty()) {

@@ -6,6 +6,7 @@ mod attributes;
 mod current_color;
 mod element_map;
 mod identity_attrs;
+mod listeners;
 mod mutations;
 mod standalone_style;
 #[cfg(test)]
@@ -13,9 +14,9 @@ mod tests;
 
 use dioxus_core::{ElementId, TemplateAttribute, TemplateNode};
 use nve_abi::hash::{HashMap, HashSet};
-use nve_abi::{EventMask, NodeId as AbiNodeId, SurfaceId};
-use nve_components::interaction::CursorKind;
-use nve_components::tables::{
+use nve_abi::SurfaceId;
+use nve_tables::interaction::CursorKind;
+use nve_tables::tables::{
     self, AriaRole, Image, Interaction, Link, Scroll, TextContent, TextInput,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
@@ -52,6 +53,8 @@ pub struct NveMutationWriter {
     pub(crate) current_color_borders: HashSet<NodeId>,
     /// Recycled style lists and strings of removed nodes.
     pub(crate) buffer_pool: BufferPool,
+    /// Dense node-index flags for non-table Dioxus listeners (bit 0 = `ontableevent`, bit 1 = custom).
+    pub(crate) aux_event_flags: Vec<u8>,
     #[cfg(test)]
     pub(crate) standalone_replay_count: usize,
     #[cfg(test)]
@@ -77,6 +80,7 @@ impl NveMutationWriter {
             standalone_style_attrs: HashMap::default(),
             current_color_borders: HashSet::default(),
             buffer_pool: BufferPool::default(),
+            aux_event_flags: Vec::new(),
             #[cfg(test)]
             standalone_replay_count: 0,
             #[cfg(test)]
@@ -110,35 +114,8 @@ impl NveMutationWriter {
     }
 
     #[inline]
-    pub fn element_id_of(&self, node_id: AbiNodeId) -> Option<ElementId> {
-        self.elements.element_of(NodeId(node_id))
-    }
-
-    #[inline]
-    pub fn has_event_mask(&self, node_id: AbiNodeId, mask: u64) -> bool {
-        let nid = NodeId(node_id);
-        self.store
-            .try_row::<Interaction>(nid)
-            .is_some_and(|i| (u64::from(i.event_mask()) & mask) != 0)
-    }
-
-    /// Walks up from `node_id` to `NodeId::ROOT` checking if any ancestor subscribed to `mask`.
-    pub fn has_event_mask_in_chain(&self, node_id: AbiNodeId, mask: u64) -> bool {
-        let mut cur = Some(NodeId(node_id));
-        while let Some(nid) = cur {
-            if !self.store.is_live(nid) {
-                break;
-            }
-            if self
-                .store
-                .try_row::<Interaction>(nid)
-                .is_some_and(|i| (u64::from(i.event_mask()) & mask) != 0)
-            {
-                return true;
-            }
-            cur = self.store.parent(nid);
-        }
-        false
+    pub fn element_id_of(&self, node_id: NodeId) -> Option<ElementId> {
+        self.elements.element_of(node_id)
     }
 
     /// Runs `f` inside a single [`Transaction`] on the owned [`NodeStore`] and commits the
@@ -160,6 +137,7 @@ impl NveMutationWriter {
             standalone_style_attrs,
             current_color_borders,
             buffer_pool,
+            aux_event_flags,
             #[cfg(test)]
             standalone_replay_count,
             #[cfg(test)]
@@ -181,6 +159,7 @@ impl NveMutationWriter {
                 standalone_style_attrs,
                 current_color_borders,
                 buffer_pool,
+                aux_event_flags,
                 #[cfg(test)]
                 standalone_replay_count,
                 #[cfg(test)]
@@ -210,6 +189,7 @@ pub struct StoreMutationTx<'s, 'a> {
     pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, StandaloneStyleList>,
     pub(crate) current_color_borders: &'a mut HashSet<NodeId>,
     pub(crate) buffer_pool: &'a mut BufferPool,
+    pub(crate) aux_event_flags: &'a mut Vec<u8>,
     #[cfg(test)]
     pub(crate) standalone_replay_count: &'a mut usize,
     #[cfg(test)]
@@ -243,10 +223,10 @@ impl StoreMutationTx<'_, '_> {
             pool.assign(&mut list[pos].1, val);
             return pos;
         }
-        let rank = nve_components::css_key_rank(name);
+        let rank = nve_tables::css_key_rank(name);
         let pos = list
             .iter()
-            .rposition(|(k, _)| nve_components::css_key_rank(k) <= rank)
+            .rposition(|(k, _)| nve_tables::css_key_rank(k) <= rank)
             .map_or(0, |i| i + 1);
         list.insert(pos, (pool.string(name), pool.value(val)));
         pos
@@ -291,7 +271,7 @@ impl StoreMutationTx<'_, '_> {
                     .z_index((*i).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
             }
             StandaloneStyleVal::Str(s) => {
-                nve_components::apply_css_attr_layers_to_tx(self.tx, node, k, s, layers);
+                nve_tables::apply_css_attr_layers_to_tx(self.tx, node, k, s, layers);
             }
         }
     }
@@ -304,7 +284,7 @@ impl StoreMutationTx<'_, '_> {
         }
         if let Some(saved) = self.standalone_style_attrs.remove(&node) {
             for (k, val) in &saved {
-                let entry_layer = nve_components::css_attr_layer(k);
+                let entry_layer = nve_tables::css_attr_layer(k);
                 debug_assert!(entry_layer != 0, "standalone style key `{k}` must have a non-zero layer");
                 if (entry_layer & layers) == 0 {
                     continue;
@@ -320,13 +300,13 @@ impl StoreMutationTx<'_, '_> {
     pub(crate) fn reapply_inline_style(&mut self, node: NodeId, layers: u8) {
         if layers != 0
             && let Some((inline, mask)) = self.inline_styles.get(&node)
-            && (nve_components::prop_bits_to_layers(*mask) & layers) != 0
+            && (nve_tables::prop_bits_to_layers(*mask) & layers) != 0
         {
             #[cfg(test)]
             {
                 *self.inline_reapply_count += 1;
             }
-            nve_components::apply_css_attr_layers_to_tx(self.tx, node, "style", inline, layers);
+            nve_tables::apply_css_attr_layers_to_tx(self.tx, node, "style", inline, layers);
         }
     }
 
@@ -341,7 +321,7 @@ impl StoreMutationTx<'_, '_> {
         if current_color::key_sets_border_color(name) {
             self.refresh_current_color_border(node);
         }
-        let bits = nve_components::css_key_bits(name);
+        let bits = nve_tables::css_key_bits(name);
         debug_assert!(bits.is_some(), "standalone style key `{name}` must have css_key_bits");
         let bits = bits.unwrap_or(0);
         let mut affected_bits = bits;
@@ -352,7 +332,7 @@ impl StoreMutationTx<'_, '_> {
             let mut scan_bits = bits;
             let mut overlapped = false;
             for (k, _) in list.get(pos + 1..).unwrap_or(&[]) {
-                let entry_bits = nve_components::css_key_bits(k).unwrap_or(0);
+                let entry_bits = nve_tables::css_key_bits(k).unwrap_or(0);
                 if (entry_bits & scan_bits) != 0 {
                     overlapped = true;
                     scan_bits |= entry_bits;
@@ -365,19 +345,19 @@ impl StoreMutationTx<'_, '_> {
             && let Some(saved) = self.standalone_style_attrs.remove(&node)
         {
             for (k, val) in saved.get(pos + 1..).unwrap_or(&[]) {
-                let entry_bits = nve_components::css_key_bits(k).unwrap_or(0);
+                let entry_bits = nve_tables::css_key_bits(k).unwrap_or(0);
                 if (entry_bits & affected_bits) == 0 {
                     continue;
                 }
                 affected_bits |= entry_bits;
-                let entry_layer = nve_components::prop_bits_to_layers(entry_bits);
+                let entry_layer = nve_tables::prop_bits_to_layers(entry_bits);
                 self.replay_one_standalone_entry(node, k, val, entry_layer);
             }
             self.standalone_style_attrs.insert(node, saved);
         }
 
         let inline_layers = self.inline_styles.get(&node).map_or(0, |&(_, mask)| {
-            nve_components::prop_bits_to_layers(mask & affected_bits)
+            nve_tables::prop_bits_to_layers(mask & affected_bits)
         });
         if inline_layers != 0 {
             self.reapply_inline_style(node, inline_layers);
@@ -392,11 +372,11 @@ impl StoreMutationTx<'_, '_> {
             Some(&(_, mask)) => mask,
             None => 0,
         };
-        let next_mask = nve_components::apply_inline_style_layers_to_tx(
+        let next_mask = nve_tables::apply_inline_style_layers_to_tx(
             self.tx,
             node,
             value,
-            nve_components::STYLE_LAYER_ALL,
+            nve_tables::STYLE_LAYER_ALL,
         );
         match self.inline_styles.get_mut(&node) {
             Some((inline, mask)) => {
@@ -409,10 +389,10 @@ impl StoreMutationTx<'_, '_> {
                 self.inline_styles.insert(node, (inline, next_mask));
             }
         }
-        if nve_components::mask_border_color_source(prev_mask | next_mask).is_some() {
+        if nve_tables::mask_border_color_source(prev_mask | next_mask).is_some() {
             self.refresh_current_color_border(node);
         }
-        let dropped = nve_components::prop_bits_to_layers(prev_mask & !next_mask);
+        let dropped = nve_tables::prop_bits_to_layers(prev_mask & !next_mask);
         if dropped != 0 {
             self.rebuild_style_layers_mask(node, dropped);
         }
@@ -424,13 +404,13 @@ impl StoreMutationTx<'_, '_> {
         if layers == 0 {
             return;
         }
-        if layers & nve_components::STYLE_LAYER_LAYOUT != 0 {
+        if layers & nve_tables::STYLE_LAYER_LAYOUT != 0 {
             self.tx.detach::<tables::Layout>(node);
         }
-        if layers & nve_components::STYLE_LAYER_VISUAL != 0 {
+        if layers & nve_tables::STYLE_LAYER_VISUAL != 0 {
             self.tx.detach::<tables::Visual>(node);
         }
-        if layers & nve_components::STYLE_LAYER_TYPOGRAPHY != 0 {
+        if layers & nve_tables::STYLE_LAYER_TYPOGRAPHY != 0 {
             self.tx.detach::<tables::Typography>(node);
         }
         if let Some(ts) = self.typed_styles.get(&node) {
@@ -464,7 +444,7 @@ impl StoreMutationTx<'_, '_> {
                     .focusable(true);
                 self.tx
                     .edit::<tables::Accessibility>(node)
-                    .role(AriaRole::Button);
+                    .role(Some(AriaRole::Button));
             }
             "a" => {
                 let _ = self.tx.edit::<Link>(node);
@@ -552,6 +532,9 @@ impl StoreMutationTx<'_, '_> {
             if let Some(list) = self.standalone_style_attrs.remove(&nid) {
                 self.buffer_pool.recycle_list(list);
             }
+            if let Some(slot) = self.aux_event_flags.get_mut(nid.index()) {
+                *slot = 0;
+            }
         }
         self.tx.remove(root);
     }
@@ -563,51 +546,5 @@ impl StoreMutationTx<'_, '_> {
             cur = *self.tx.store().children(cur).get(idx as usize)?;
         }
         Some(cur)
-    }
-
-    pub(crate) fn update_event_mask(&mut self, node: NodeId, bit: u64, set: bool) {
-        debug_assert!(
-            bit <= u64::from(u32::MAX),
-            "EventMask bit {bit:#x} exceeds Interaction::event_mask u32 width"
-        );
-        let cur = u64::from(
-            self.tx
-                .store()
-                .try_row::<Interaction>(node)
-                .map_or(0, |i| i.event_mask()),
-        );
-        let next = if set { cur | bit } else { cur & !bit };
-        self.tx
-            .edit::<Interaction>(node)
-            .event_mask(u32::try_from(next).unwrap_or(u32::MAX));
-    }
-}
-
-pub(crate) fn event_name_to_mask(name: &str) -> u64 {
-    match name {
-        "press" | "onpress" | "click" | "onclick" => EventMask::PRESS,
-        "longpress" | "onlongpress" => EventMask::LONG_PRESS,
-        "scroll" | "onscroll" => EventMask::SCROLL,
-        "change" | "onchange" | "input" | "oninput" => EventMask::TEXT_CHANGE,
-        "focus" | "onfocus" => EventMask::FOCUS,
-        "blur" | "onblur" => EventMask::BLUR,
-        "layout" | "onlayout" => EventMask::LAYOUT,
-        "compositionstart"
-        | "oncompositionstart"
-        | "compositionupdate"
-        | "oncompositionupdate"
-        | "compositionend"
-        | "oncompositionend" => EventMask::COMPOSITION,
-        "keydown" | "onkeydown" => EventMask::KEY_DOWN,
-        "keyup" | "onkeyup" => EventMask::KEY_UP,
-        "submit" | "onsubmit" => EventMask::SUBMIT,
-        "pointerdown" | "onpointerdown" => EventMask::POINTER_DOWN,
-        "pointermove" | "onpointermove" => EventMask::POINTER_MOVE,
-        "pointerup" | "onpointerup" => EventMask::POINTER_UP,
-        "pointerenter" | "onpointerenter" => EventMask::POINTER_ENTER,
-        "pointerleave" | "onpointerleave" => EventMask::POINTER_LEAVE,
-        "wheel" | "onwheel" => EventMask::WHEEL,
-        "tableevent" | "ontableevent" => EventMask::TABLE_EVENT,
-        _ => EventMask::CUSTOM,
     }
 }

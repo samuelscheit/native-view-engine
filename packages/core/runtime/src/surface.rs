@@ -5,11 +5,8 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use nve_abi::{
-    Key64, NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveSceneView,
-    SurfaceId,
-};
-use nve_components::tables::{Overflow, Scroll, Visual};
+use nve_abi::{Key64, NveRuntimeMetrics, NveSceneView, SurfaceId, ValidatedEvents};
+use nve_tables::tables::{Overflow, Scroll, Visual};
 use nve_engine::Viewport;
 use nve_layout::DynLayoutEngine;
 use nve_store::{ChangeSet, NodeId, ResourceId};
@@ -381,7 +378,7 @@ impl SurfaceRuntime {
             state.adopt_store(store);
             state.scene.replace_layout_engine(engine);
             state.layout_engine_name = state.scene.layout_engine_name();
-            state.frame_id = state.frame_id.wrapping_add(1).max(1);
+            state.frame_id = state.frame_id.next();
             let mut full = ChangeSet::default();
             full.created.extend(store.live_nodes());
             let laid_out = state.scene.commit(store, &full);
@@ -445,13 +442,13 @@ impl SurfaceRuntime {
         Ok(changed)
     }
 
-    pub fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> Result<bool, RuntimeError> {
+    pub fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> Result<bool, RuntimeError> {
         self.dispatch_events_shared(events)
     }
 
     pub(crate) fn dispatch_events_shared(
         &self,
-        events: NveEventBatchRef<'_>,
+        events: ValidatedEvents<'_>,
     ) -> Result<bool, RuntimeError> {
         self.render_if_changed(|inner| {
             if let Some(app) = inner.app.as_mut() {
@@ -466,7 +463,7 @@ impl SurfaceRuntime {
         })
     }
 
-    pub fn hit_test(&self, x: f32, y: f32) -> Result<Option<AbiNodeId>, RuntimeError> {
+    pub fn hit_test(&self, x: f32, y: f32) -> Result<Option<NodeId>, RuntimeError> {
         self.check_not_poisoned()?;
         self.check_owner_thread()?;
         let _guard = self.lock.hit_read_guard().ok_or(RuntimeError::SceneBusy)?;
@@ -476,7 +473,7 @@ impl SurfaceRuntime {
         Ok(inner.state.scene.hit_test(inner.active_store(), x, y))
     }
 
-    pub fn hit_test_interaction(&self, x: f32, y: f32) -> Result<Option<AbiNodeId>, RuntimeError> {
+    pub fn hit_test_interaction(&self, x: f32, y: f32) -> Result<Option<NodeId>, RuntimeError> {
         self.check_not_poisoned()?;
         self.check_owner_thread()?;
         let _guard = self.lock.hit_read_guard().ok_or(RuntimeError::SceneBusy)?;
@@ -491,7 +488,7 @@ impl SurfaceRuntime {
 
     pub fn scroll_by(
         &mut self,
-        node_id: AbiNodeId,
+        node_id: NodeId,
         dx: f32,
         dy: f32,
     ) -> Result<(f32, f32), RuntimeError> {
@@ -500,7 +497,7 @@ impl SurfaceRuntime {
 
     pub(crate) fn scroll_by_shared(
         &self,
-        node_id: AbiNodeId,
+        node_id: NodeId,
         dx: f32,
         dy: f32,
     ) -> Result<(f32, f32), RuntimeError> {
@@ -509,7 +506,7 @@ impl SurfaceRuntime {
         }
         self.with_write(|inner| {
             let (store, _, state) = inner.split_store_and_state();
-            let id = NodeId(node_id);
+            let id = node_id;
             if !store.is_live(id) {
                 return Err(RuntimeError::NotFound("scroll target node is not live"));
             }
@@ -559,7 +556,7 @@ impl SurfaceRuntime {
         // SAFETY: The caller's reader lock excludes writers, so `inner` and the published
         // `ResourceStore` (set and cleared only under the write lock) are immutable.
         let resources = unsafe { &*self.inner.get() }.published_resources()?;
-        Some((resources.kind(id)?, resources.encoded(id)?))
+        Some((resources.kind(id)?, resources.payload_bytes(id)?))
     }
 
     pub fn metrics(&self) -> Result<NveRuntimeMetrics, RuntimeError> {

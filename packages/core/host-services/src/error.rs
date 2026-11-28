@@ -68,6 +68,15 @@ impl From<std::io::Error> for ServiceError {
     }
 }
 
+impl From<nve_codec::CodecError> for ServiceError {
+    fn from(err: nve_codec::CodecError) -> Self {
+        match err {
+            nve_codec::CodecError::BadEnum { .. } => Self::InvalidArg(err.to_string()),
+            other => Self::Codec(other.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for ServiceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

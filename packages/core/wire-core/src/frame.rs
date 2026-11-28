@@ -7,6 +7,7 @@
 use std::fmt;
 
 use nve_abi::xxh64;
+use nve_codec::{write_fixed, ByteReader, ByteSink, ByteWriter, CodecError, NveCodec};
 
 /// 2-byte ASCII magic identifying `NveWireFrame` v2 packets (`"NW"`).
 pub const NVE_WIRE_MAGIC: [u8; 2] = *b"NW";
@@ -40,7 +41,7 @@ pub const NVE_WIRE_FLAG_FINAL_CHUNK: u8 = 1 << 2;
 
 /// Logical multiplexed channel identifier for `NveWireFrame`.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
 pub enum NveWireChannel {
     Control = 0,
     UiScene = 1,
@@ -50,24 +51,10 @@ pub enum NveWireChannel {
     Presence = 5,
 }
 
-impl NveWireChannel {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Result<Self, NveWireError> {
-        match raw {
-            0 => Ok(Self::Control),
-            1 => Ok(Self::UiScene),
-            2 => Ok(Self::AsyncSlot),
-            3 => Ok(Self::InputEvents),
-            4 => Ok(Self::StateSync),
-            5 => Ok(Self::Presence),
-            other => Err(NveWireError::UnknownChannel(other)),
-        }
-    }
-}
 
 /// Frame message kind discriminator for `NveWireFrame` v2.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
 pub enum NveWireKind {
     Hello = 1,
     HelloAck = 2,
@@ -95,28 +82,6 @@ pub enum NveWireKind {
 }
 
 impl NveWireKind {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Result<Self, NveWireError> {
-        match raw {
-            1 => Ok(Self::Hello),
-            2 => Ok(Self::HelloAck),
-            3 => Ok(Self::Reject),
-            4 => Ok(Self::SceneKeyframe),
-            5 => Ok(Self::CommandDelta),
-            6 => Ok(Self::NodePatchDelta),
-            7 => Ok(Self::SlotChunk),
-            8 => Ok(Self::EventBatch),
-            9 => Ok(Self::CrdtDelta),
-            10 => Ok(Self::Presence),
-            11 => Ok(Self::HotPatch),
-            12 => Ok(Self::Ping),
-            13 => Ok(Self::Pong),
-            14 => Ok(Self::KeyframeRequest),
-            15 => Ok(Self::Bye),
-            other => Err(NveWireError::UnknownKind(other)),
-        }
-    }
-
     /// Default logical channel associated with this frame kind.
     #[inline]
     pub const fn default_channel(self) -> NveWireChannel {
@@ -154,6 +119,27 @@ pub enum NveWireError {
     TrailingBytes(usize),
     InvalidUtf8,
     InvalidPayload(&'static str),
+}
+
+impl From<CodecError> for NveWireError {
+    #[inline]
+    fn from(err: CodecError) -> Self {
+        match err {
+            CodecError::Truncated { needed, remaining } => Self::Truncated {
+                expected: needed,
+                actual: remaining,
+            },
+            CodecError::InvalidUtf8 => Self::InvalidUtf8,
+            CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
+            CodecError::NonZeroReserved(v) => Self::NonZeroReserved(v as u16),
+            CodecError::BadMagic => Self::InvalidPayload("invalid wire magic"),
+            CodecError::BadVersion(_) => Self::InvalidPayload("unsupported wire version"),
+            CodecError::BadEnum { .. } => Self::InvalidPayload("invalid wire enum tag"),
+            CodecError::BadBool(_) => Self::InvalidPayload("invalid wire bool byte"),
+            CodecError::LenOverflow { len, max } => Self::FrameTooLarge { len, max },
+            CodecError::DepthExceeded { .. } => Self::InvalidPayload("wire nesting depth exceeded"),
+        }
+    }
 }
 
 impl fmt::Display for NveWireError {
@@ -221,19 +207,22 @@ impl NveWireHeader {
             }
     }
 
-    /// Serializes the 16-byte little-endian header.
+    #[inline]
+    fn write_to_sink<S: ByteSink>(&self, w: &mut S) -> Result<(), CodecError> {
+        w.put_raw(&NVE_WIRE_MAGIC)?;
+        w.put_u8(NVE_WIRE_VERSION)?;
+        w.put_u8(self.channel as u8)?;
+        w.put_u8(self.kind as u8)?;
+        w.put_u8(self.flags)?;
+        w.put_zeroes(2)?;
+        w.put_u32(self.sequence)?;
+        w.put_u32(self.payload_len)
+    }
+
+    /// Serializes the 16-byte little-endian header with zero heap allocation.
     #[inline]
     pub fn to_bytes(&self) -> [u8; NVE_WIRE_HEADER_SIZE] {
-        let mut out = [0u8; NVE_WIRE_HEADER_SIZE];
-        out[0..2].copy_from_slice(&NVE_WIRE_MAGIC);
-        out[2] = NVE_WIRE_VERSION;
-        out[3] = self.channel as u8;
-        out[4] = self.kind as u8;
-        out[5] = self.flags;
-        out[6..8].copy_from_slice(&0u16.to_le_bytes());
-        out[8..12].copy_from_slice(&self.sequence.to_le_bytes());
-        out[12..16].copy_from_slice(&self.payload_len.to_le_bytes());
-        out
+        write_fixed::<NVE_WIRE_HEADER_SIZE>(|w| self.write_to_sink(w))
     }
 
     /// Parses and validates a 16-byte header BEFORE any payload allocation.
@@ -244,22 +233,27 @@ impl NveWireHeader {
                 actual: bytes.len(),
             });
         }
-        let magic = [bytes[0], bytes[1]];
+        let mut r = ByteReader::new(bytes);
+        let magic = r.read_array::<2>()?;
         if magic != NVE_WIRE_MAGIC {
             return Err(NveWireError::InvalidMagic(magic));
         }
-        if bytes[2] != NVE_WIRE_VERSION {
-            return Err(NveWireError::UnsupportedVersion(bytes[2]));
+        let version = r.read_u8()?;
+        if version != NVE_WIRE_VERSION {
+            return Err(NveWireError::UnsupportedVersion(version));
         }
-        let channel = NveWireChannel::from_u8(bytes[3])?;
-        let kind = NveWireKind::from_u8(bytes[4])?;
-        let flags = bytes[5];
-        let reserved = u16::from_le_bytes([bytes[6], bytes[7]]);
+        let raw_channel = r.read_u8()?;
+        let channel =
+            NveWireChannel::from_repr(raw_channel).ok_or(NveWireError::UnknownChannel(raw_channel))?;
+        let raw_kind = r.read_u8()?;
+        let kind = NveWireKind::from_repr(raw_kind).ok_or(NveWireError::UnknownKind(raw_kind))?;
+        let flags = r.read_u8()?;
+        let reserved = r.read_u16()?;
         if reserved != 0 {
             return Err(NveWireError::NonZeroReserved(reserved));
         }
-        let sequence = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-        let payload_len = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+        let sequence = r.read_u32()?;
+        let payload_len = r.read_u32()?;
         let effective_max = max_frame_bytes.min(MAX_WIRE_FRAME_BYTES);
         if (payload_len as usize) > effective_max {
             return Err(NveWireError::FrameTooLarge {
@@ -300,11 +294,7 @@ impl<'a> NveWireFrameRef<'a> {
         }
         let payload_end = NVE_WIRE_HEADER_SIZE + header.payload_len as usize;
         if header.has_xxh64() {
-            let expected = u64::from_le_bytes(
-                bytes[payload_end..payload_end + NVE_WIRE_TRAILER_SIZE]
-                    .try_into()
-                    .expect("8-byte trailer"),
-            );
+            let expected = ByteReader::new(&bytes[payload_end..]).read_u64()?;
             let actual = xxh64(&bytes[..payload_end], NVE_WIRE_XXH64_SEED);
             if actual != expected {
                 return Err(NveWireError::ChecksumMismatch { expected, actual });
@@ -407,13 +397,16 @@ impl NveWireFrame {
     pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), NveWireError> {
         let header = self.header()?;
         out.clear();
-        out.reserve(header.total_wire_len());
-        out.extend_from_slice(&header.to_bytes());
-        out.extend_from_slice(&self.payload);
-        if header.has_xxh64() {
-            let digest = xxh64(out, NVE_WIRE_XXH64_SEED);
-            out.extend_from_slice(&digest.to_le_bytes());
-        }
+        ByteWriter::with_buf(out, |w| -> Result<(), CodecError> {
+            w.reserve(header.total_wire_len());
+            header.write_to_sink(w)?;
+            w.write_raw(&self.payload);
+            if header.has_xxh64() {
+                let digest = xxh64(w.as_slice(), NVE_WIRE_XXH64_SEED);
+                w.write_u64(digest);
+            }
+            Ok(())
+        })?;
         Ok(())
     }
 

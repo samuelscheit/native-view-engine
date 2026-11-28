@@ -48,7 +48,7 @@ pub fn responsive_two_col() -> TypedStyle {
         .width_pct(100.0)
         .flex_row()
         .gap(14.0)
-        .at(ONE_COLUMN, ResponsiveStylePatch::new().flex_col())
+        .at(ONE_COLUMN, RowPatch::new().flex_col())
 }
 
 /// Equal-width cell of [`responsive_two_col`]: `flex: 1 1 0%` shares the row, and the stacked
@@ -61,6 +61,6 @@ pub fn responsive_two_col_cell() -> TypedStyle {
         .min_width_px(0.0)
         .at(
             ONE_COLUMN,
-            ResponsiveStylePatch::new().flex_grow(0.0).flex_basis(Dimension::Auto),
+            RowPatch::new().flex_grow(0.0).flex_basis(Dimension::Auto),
         )
 }

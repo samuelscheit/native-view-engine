@@ -2,6 +2,7 @@
 /// for the NVE C ABI. Import [nve_host.dart] for everything that also runs on Dart-web.
 library;
 
+export 'src/event_batch.dart';
 export 'src/generated/nve_abi_ffi.generated.dart';
 export 'src/generated/nve_runtime_abi.generated.dart';
 export 'src/hybrid_ffi.dart' hide checkedNativeBytes;

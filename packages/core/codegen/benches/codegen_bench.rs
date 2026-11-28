@@ -15,7 +15,7 @@ mod native {
         GeneratedFile, HybridTarget, generate_all_abi_files, generate_c_abi_header,
         generate_hybrid_all, generate_table_files, parse_hybrid_rust_spec,
     };
-    use nve_components::tables::CORE_TABLE_DESCS;
+    use nve_tables::tables::CORE_TABLE_DESCS;
 
     /// Modules, views (props, events, methods), structs, enums, and C functions.
     const REALISTIC_HYBRID_SPEC: &str = include_str!("../tests/fixtures/realistic_hybrid.nve.rs");

@@ -146,18 +146,51 @@ void test_hostile_specs_and_views() {
   CHECK(t.has_value());
   // Raw C specs bypass `field()`: every malformed one reads as nullopt, never a UB shift (UBSan).
   const NveFieldSpec bad[] = {
-      {0, 0, 0, NVE_FIELD_U32},  {0, 0, 33, NVE_FIELD_U32},  {0, 31, 2, NVE_FIELD_I32}, {0, 255, 255, NVE_FIELD_I32},
-      {40, 0, 32, NVE_FIELD_U32}, {6, 0, 32, NVE_FIELD_U32}, {5, 0, 32, NVE_FIELD_STR}, {0, 0, 32, 99},
+      {0, 0, 0, NVE_FIELD_U32, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {0, 0, 33, NVE_FIELD_U32, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {0, 31, 2, NVE_FIELD_I32, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {0, 255, 255, NVE_FIELD_I32, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {40, 0, 32, NVE_FIELD_U32, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {6, 0, 32, NVE_FIELD_U32, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {5, 0, 32, NVE_FIELD_STR, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {5, 0, 32, NVE_FIELD_U64, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {0, 0, 32, 99, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0},
+      {0, 0, 1, NVE_FIELD_F32, NVE_OPT_WIDE_BIT, 6, NVE_NO_EXPLICIT_BIT, 0},
   };
   for (const NveFieldSpec& f : bad) {
     CHECK(!t->bits(0, f).has_value());
     CHECK(!t->i32(0, f).has_value());
     CHECK(!t->f32(0, f).has_value());
+    CHECK(!t->u64(0, f).has_value());
     CHECK(!t->str(0, f).has_value());
   }
   // `str()` only reads `Str` specs that fit the row (a U32 spec at word 3 is not a string).
-  CHECK(!t->str(0, NveFieldSpec{3, 0, 32, NVE_FIELD_U32}).has_value());
+  CHECK(!t->str(0, NveFieldSpec{3, 0, 32, NVE_FIELD_U32, NVE_OPT_REQUIRED, NVE_NO_VAL_WORD, NVE_NO_EXPLICIT_BIT, 0})
+             .has_value());
   CHECK(t->str(0, kLabel).has_value());
+  // Optional, 64-bit, GridLine, explicit-bit, and EventSet reads.
+  constexpr auto kOptBool = field(0, 0, 2, NVE_FIELD_ENUM, NVE_OPT_PLUS_ONE);
+  constexpr auto kOptI16 = field(0, 2, 17, NVE_FIELD_I32, NVE_OPT_BIT0_PRESENT);
+  constexpr auto kOptWideF = field(0, 19, 1, NVE_FIELD_F32, NVE_OPT_WIDE_BIT, 1);
+  constexpr auto kWideF64 = field(2, 0, 32, NVE_FIELD_F64);
+  constexpr auto kGrid = field(4, 0, 16, NVE_FIELD_GRID_LINE);
+  constexpr auto kOptGrid = field(4, 16, 16, NVE_FIELD_GRID_LINE, NVE_OPT_TAG_XOR);
+  const uint64_t f64_bits = std::bit_cast<uint64_t>(3.25);
+  const uint32_t gl_bits = nve_grid_line_encode(NveGridLine{NVE_GRID_LINE_SPAN, 0, 4u});
+  const uint32_t w0 = 2u | (((static_cast<uint32_t>(-12) & 0xFFFFu) << 1u | 1u) << 2u) | (1u << 19u);
+  const std::array<uint32_t, 5> ext_row = {w0, f32_bits(9.5f), static_cast<uint32_t>(f64_bits),
+                                           static_cast<uint32_t>(f64_bits >> 32u),
+                                           gl_bits | ((gl_bits ^ NVE_GRID_LINE_TAG_NICHE) << 16u)};
+  const auto ext = TableReader::make(kVisual, 1u, 5u, 1u, ext_row, {}, {});
+  CHECK(ext.has_value());
+  CHECK(ext->boolean(0, kOptBool) == true && ext->i32(0, kOptI16) == -12 && ext->f32(0, kOptWideF) == 9.5f);
+  CHECK(ext->f64(0, kWideF64) == 3.25 && ext->u64(0, kWideF64) == f64_bits);
+  CHECK(ext->grid_line(0, kGrid) == (nve::host::GridLineValue{NVE_GRID_LINE_SPAN, 0, 4u}));
+  CHECK(ext->grid_line(0, kOptGrid) == (nve::host::GridLineValue{NVE_GRID_LINE_SPAN, 0, 4u}));
+  const std::array<uint32_t, 5> empty_row{};
+  const auto ext0 = TableReader::make(kVisual, 1u, 5u, 1u, empty_row, {}, {});
+  CHECK(!ext0->boolean(0, kOptBool).has_value() && !ext0->i32(0, kOptI16).has_value() &&
+        !ext0->f32(0, kOptWideF).has_value() && !ext0->grid_line(0, kOptGrid).has_value());
   // Hostile word counts are rejected before any span is formed (64-bit overflow / 32-bit hosts).
   const TestTableView huge{1u, 2u, 0u, 0x80000001u, 0xFFFFFFFFu, 0u, 0u, 0u, rows.data(), nullptr, nullptr, nullptr, nullptr};
   CHECK(!TableReader::from_view(huge).has_value());

@@ -1,10 +1,11 @@
-// `EventRing` (`nve_abi::encode_events`, written by `dev.nve.host.EventRingWriter`) → borrowed
-// `NveDirectEvent` batch → `NveRuntimeApi::dispatch_events`, plus the host text measurer and wake
-// listener callbacks into Java.
+// `NVEV` v2 `EventRing` (written by `dev.nve.host.EventRingWriter`) → aligned `NveEventBatch` →
+// `NveRuntimeApi::dispatch_events`, plus the host text measurer and wake listener callbacks into
+// Java.
 #include "NveAndroidSurface.hpp"
 
 #include <cmath>
 #include <cstring>
+#include <span>
 
 using nve::android::AndroidSurface;
 using nve::android::release_scene;
@@ -14,118 +15,33 @@ using nve::android::write_out;
 
 namespace {
 
-static_assert(NVE_EVENT_PAYLOAD_EMPTY == 0 && NVE_EVENT_PAYLOAD_POINT == 1 && NVE_EVENT_PAYLOAD_SCROLL == 2 &&
-                  NVE_EVENT_PAYLOAD_TEXT == 3 && NVE_EVENT_PAYLOAD_LAYOUT == 4 && NVE_EVENT_PAYLOAD_CUSTOM == 5 &&
-                  NVE_EVENT_PAYLOAD_KEY == 6 && NVE_EVENT_PAYLOAD_POINTER == 7 && NVE_EVENT_PAYLOAD_WHEEL == 8 &&
-                  NVE_EVENT_PAYLOAD_TABLE_EVENT == 9,
-              "EventRingWriter payload tags drifted from NveEventPayloadTag");
-
-static_assert(NVE_EVENT_PRESS == 1 && NVE_EVENT_TABLE_EVENT == 21, "NveEventKind range changed: update decode_ring");
-
-constexpr size_t kEventHeaderBytes = 18u;
-
-/// Bounds-checked little-endian cursor over one ring.
-struct Cursor {
-  const uint8_t* p;
-  size_t len;
-  size_t at = 0u;
-
-  template <class T>
-  bool read(T& out) noexcept {
-    if (len - at < sizeof(T)) return false;
-    std::memcpy(&out, p + at, sizeof(T));
-    at += sizeof(T);
-    return true;
-  }
-
-  bool slice(size_t n, NveStrSlice& out) noexcept {
-    if (len - at < n) return false;
-    out = NveStrSlice{n == 0u ? nullptr : p + at, n};
-    at += n;
-    return true;
-  }
-
-  template <class Len>
-  bool prefixed(NveStrSlice& out) noexcept {
-    Len n = 0;
-    return read(n) && slice(n, out);
-  }
-
-  /// A length-prefixed string that must be well-formed UTF-8 (the runtime borrows it as `&str`).
-  template <class Len>
-  bool utf8(NveStrSlice& out) noexcept {
-    return prefixed<Len>(out) && (out.len == 0u || nve_utf8_valid(out.ptr, out.len) != 0);
-  }
-};
-
-/// Decodes the whole ring (`nve_abi::encode_events`) into `out`, borrowing strings / bytes from
-/// `ring`, with `nve_abi::direct_event_to_native`'s field mapping; `false` on any malformed byte,
-/// unknown event kind, or string that is not UTF-8 (text, custom name, key, code).
-bool decode_ring(const uint8_t* ring, size_t len, std::vector<NveDirectEvent>& out) {
-  Cursor c{ring, len};
-  uint32_t count = 0u;
-  if (!c.read(count) || count > (len - c.at) / kEventHeaderBytes) return false;
-  out.clear();
-  out.reserve(count);
+/// Validates an `NVEV` v2 wire frame (14-byte header + `count * 64 B NveEvent` + `bytes_len` byte
+/// arena), copies the records into the 64-byte-aligned reusable scratch `out` (patching
+/// `surface == 0` to `default_surface_id`), and borrows the arena slice into `*out_arena`.
+bool decode_nvev(const uint8_t* data, size_t len, uint32_t default_surface_id,
+                 std::vector<NveEvent, nve::host::AlignedAllocator<NveEvent, NVE_EVENT_ALIGN>>& out,
+                 std::span<const uint8_t>* out_arena) {
+  if (len < nve::host::kEventWireHeaderSize) return false;
+  if (nve_load_u32_le(data + 0u) != nve::host::kEventWireMagic) return false;
+  if (nve_load_u16_le(data + 4u) != nve::host::kEventWireVersion) return false;
+  const uint32_t count = nve_load_u32_le(data + 6u);
+  const uint32_t blen = nve_load_u32_le(data + 10u);
+  const uint64_t ev_bytes = uint64_t{count} * NVE_EVENT_SIZE;
+  const uint64_t expected = nve::host::kEventWireHeaderSize + ev_bytes + uint64_t{blen};
+  if (expected != len) return false;
+  const std::span<const uint8_t> arena{
+      data + nve::host::kEventWireHeaderSize + static_cast<size_t>(ev_bytes), blen};
+  out.resize(count);
   for (uint32_t i = 0u; i < count; ++i) {
-    NveDirectEvent ev{};
-    ev.value.tag = NVE_VAL_NULL;
-    if (!c.read(ev.surface_id) || !c.read(ev.node_id) || !c.read(ev.timestamp_us) || !c.read(ev.kind) ||
-        !c.read(ev.payload_tag) || ev.kind < NVE_EVENT_PRESS || ev.kind > NVE_EVENT_TABLE_EVENT) {
+    std::memcpy(&out[i], data + nve::host::kEventWireHeaderSize + size_t{i} * NVE_EVENT_SIZE, NVE_EVENT_SIZE);
+    if (!nve::host::validate_event_record(out[i], arena)) {
+      out.clear();
       return false;
     }
-    bool ok = true;
-    switch (ev.payload_tag) {
-      case NVE_EVENT_PAYLOAD_EMPTY:
-        break;
-      case NVE_EVENT_PAYLOAD_POINT:
-        ok = c.read(ev.x) && c.read(ev.y);
-        break;
-      case NVE_EVENT_PAYLOAD_SCROLL:
-      case NVE_EVENT_PAYLOAD_LAYOUT:
-        ok = c.read(ev.x) && c.read(ev.y) && c.read(ev.width) && c.read(ev.height);
-        break;
-      case NVE_EVENT_PAYLOAD_TEXT:
-        ok = c.utf8<uint32_t>(ev.text);
-        break;
-      case NVE_EVENT_PAYLOAD_CUSTOM: {
-        NveStrSlice data{};
-        ok = c.utf8<uint16_t>(ev.name) && c.prefixed<uint32_t>(data);
-        if (ok && data.len > 0u) {
-          ev.value.tag = NVE_VAL_BYTES;
-          ev.value.data.bytes_val = NveBufferSlice{data.ptr, data.len};
-        }
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_KEY: {
-        // modifiers, is_composing, key_code, key (u16 + utf8) -> text, code (u16 + utf8) -> name
-        uint8_t composing = 0u;
-        ok = c.read(ev.modifiers) && c.read(composing) && c.read(ev.key_code) && c.utf8<uint16_t>(ev.text) &&
-             c.utf8<uint16_t>(ev.name);
-        ev.event_flags = composing != 0u ? NVE_EVENT_FLAG_COMPOSING : 0u;
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_POINTER:
-        ok = c.read(ev.x) && c.read(ev.y) && c.read(ev.modifiers) && c.read(ev.event_flags);
-        break;
-      case NVE_EVENT_PAYLOAD_WHEEL:
-        ok = c.read(ev.x) && c.read(ev.y) && c.read(ev.modifiers);
-        break;
-      case NVE_EVENT_PAYLOAD_TABLE_EVENT: {
-        // table_key (u64) -> value i64, event_id -> key_code, payload (u32 + bytes) -> text
-        uint64_t table_key = 0u;
-        ok = c.read(table_key) && c.read(ev.key_code) && c.prefixed<uint32_t>(ev.text);
-        ev.value.tag = NVE_VAL_I64;
-        ev.value.data.i64_val = static_cast<int64_t>(table_key);
-        break;
-      }
-      default:
-        return false;
-    }
-    if (!ok) return false;
-    out.push_back(ev);
+    if (out[i].surface == 0u) out[i].surface = default_surface_id;
   }
-  return c.at == len;
+  *out_arena = arena;
+  return true;
 }
 
 /// Detaches a runtime thread this library attached, when that thread exits.
@@ -227,18 +143,22 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_dispatchEvents(JNIEnv* en
   write_out(env, out_changed, 0);
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   const auto* data = ring != nullptr ? static_cast<const uint8_t*>(env->GetDirectBufferAddress(ring)) : nullptr;
-  if (data == nullptr || len < 4 || len > env->GetDirectBufferCapacity(ring) ||
-      !decode_ring(data, static_cast<size_t>(len), s->events)) {
-    s->last_error = "malformed EventRing (direct buffer, exact length, known kinds / payload tags, UTF-8 strings required)";
+  std::span<const uint8_t> arena;
+  if (data == nullptr || len < static_cast<jint>(nve::host::kEventWireHeaderSize) ||
+      static_cast<jlong>(len) > env->GetDirectBufferCapacity(ring) ||
+      !decode_nvev(data, static_cast<size_t>(len), s->surface_id, s->events, &arena)) {
+    s->last_error = "malformed NVEV v2 EventRing (direct buffer, exact length, valid framing & UTF-8 required)";
     return NVE_RUNTIME_INVALID_ARG;
-  }
-  for (NveDirectEvent& ev : s->events) {
-    if (ev.surface_id == 0u) ev.surface_id = s->surface_id;
   }
   release_scene(*s);
   bool changed = false;
-  const NveRuntimeStatus st = s->session.dispatch_events(
-      NveEventBatch{s->events.data(), static_cast<uint32_t>(s->events.size()), 0u}, &changed);
+  const NveEventBatch batch{
+      s->events.empty() ? nullptr : s->events.data(),
+      arena.empty() ? nullptr : arena.data(),
+      static_cast<uint32_t>(s->events.size()),
+      static_cast<uint32_t>(arena.size()),
+  };
+  const NveRuntimeStatus st = s->session.dispatch_events(batch, &changed);
   write_out(env, out_changed, changed ? 1 : 0);
   return status_of(*s, st);
 }

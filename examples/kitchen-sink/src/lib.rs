@@ -22,8 +22,8 @@ pub fn register_web_systems(registry: &mut nve_backend_web::WebTableRegistry) {
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    ColorScheme, FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
-    NveSizeConstraints, SurfaceId,
+    ColorScheme, FrameId, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
+    SurfaceId, ValidatedEvents,
 };
 use nve_dioxus::prelude::{Signal, WritableExt};
 use nve_system_env::ThemeSnapshot;
@@ -171,8 +171,8 @@ impl NveApp for KitchenSinkModule {
         }
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
-        self.surface.dispatch_direct_events(events)
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+        self.surface.dispatch_events(events)
     }
 
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {

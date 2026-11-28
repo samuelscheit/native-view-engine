@@ -1,9 +1,9 @@
 //! `dioxus_core::WriteMutations` implementation over [`StoreMutationTx`].
 
 use dioxus_core::{AttributeValue, ElementId, Template, WriteMutations};
-use nve_components::tables::{Display, Layout, TextContent};
+use nve_tables::tables::{Display, Layout, TextContent};
 
-use super::{event_name_to_mask, StoreMutationTx};
+use super::StoreMutationTx;
 
 impl StoreMutationTx<'_, '_> {
     fn drain_incoming_from_stack(&mut self, m: usize) {
@@ -205,13 +205,13 @@ impl WriteMutations for StoreMutationTx<'_, '_> {
 
     fn create_event_listener(&mut self, name: &'static str, id: ElementId) {
         if let Some(node) = self.resolve_el(id) {
-            self.update_event_mask(node, event_name_to_mask(name), true);
+            self.set_event_listener(node, name, true);
         }
     }
 
     fn remove_event_listener(&mut self, name: &'static str, id: ElementId) {
         if let Some(node) = self.resolve_el(id) {
-            self.update_event_mask(node, event_name_to_mask(name), false);
+            self.set_event_listener(node, name, false);
         }
     }
 

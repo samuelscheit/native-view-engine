@@ -1,4 +1,4 @@
-// GTK host: cairo `NVE_DRAW1` rendering (pixels, clips, corrupt payloads), `nve.canvas` nodes
+// GTK host: cairo flat draw-list rendering (pixels, clips, corrupt payloads), `nve.canvas` nodes
 // (`GtkDrawingArea`, resource bytes, generation-driven redraws, table detach), native scroll views
 // (content extents, user scroll -> event + runtime offset, programmatic scroll, overflow views),
 // and paired thin-client lifecycle.
@@ -43,11 +43,14 @@ void test_cairo_renderer() {
   NVE_CHECK(pixel(s, 35, 5) == 0xFF00FF00u);  // circle centre
   NVE_CHECK(pixel(s, 20, 18) == 0xFF000000u); // polyline
 
-  // Corrupt payload: rejected before painting, cairo state stays balanced.
+  // Corrupt payloads (truncated word stream & unaligned bytes): rejected before painting, cairo state stays balanced.
   std::vector<uint8_t> bad = bytes;
-  bad.pop_back();
+  bad.resize(bad.size() - 4u);
+  std::vector<uint8_t> unaligned = bytes;
+  unaligned.pop_back();
   cairo_save(cr);
   NVE_CHECK(render_draw_list_to_cairo(cr, 40.0, 20.0, bad).error == DrawListError::Truncated);
+  NVE_CHECK(render_draw_list_to_cairo(cr, 40.0, 20.0, unaligned).error == DrawListError::Unaligned);
   cairo_restore(cr);
   NVE_CHECK(cairo_status(cr) == CAIRO_STATUS_SUCCESS);
   // An unbalanced clip stack is unwound: drawing afterwards is unclipped.
@@ -65,7 +68,12 @@ void test_cairo_renderer() {
 std::vector<uint8_t> sparkline(float y) {
   const DrawPoint pts[] = {{0.0f, y}, {10.0f, 2.0f}, {20.0f, y}};
   DrawListEncoder e;
-  e.clear(DrawColorRgba::rgb(250, 250, 250)).stroke_polyline(pts, 1.5f, DrawColorRgba::rgb(37, 99, 235));
+  // Flat `u32`-word draw list (naturally 4-byte aligned for NVE2 DefineResources).
+  e.clear(DrawColorRgba::rgb(250, 250, 250))
+      .clip_rect(0.0f, 0.0f, 120.0f, 40.0f)
+      .stroke_polyline(pts, 1.5f, DrawColorRgba::rgb(37, 99, 235))
+      .restore_clip()
+      .fill_rect(0.0f, 0.0f, 2.0f, 2.0f, DrawColorRgba::rgb(37, 99, 235));
   return e.finish();
 }
 
@@ -133,7 +141,7 @@ void test_scroll_views() {
   w.attach(kScroll, NVE_TABLE_SCROLL_DESC);
   w.set(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(100.0f));
   w.set_f32(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
-  w.set(kScroll, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_SCROLL));
+  w.set_events(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_EVENTS_WORD, NVE_SCROLL_EVENT_SET_SCROLL);
   w.create(kTall);
   w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(300.0f));
   w.set_f32(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
@@ -170,19 +178,20 @@ void test_scroll_views() {
   GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
   NVE_CHECK(gtk_adjustment_get_upper(vadj) >= 299.0);
   gtk_adjustment_set_value(vadj, 50.0);
-  NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) >= 1u);
-  const auto* ev = app.last(NVE_EVENT_SCROLL);
-  NVE_CHECK(approx(ev->ev.y, 50.0, 0.5) && approx(ev->ev.height, 300.0, 1.0));
+  NVE_CHECK(app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) >= 1u);
+  const auto* ev = app.last(NVE_SCROLL_EVENT_SCROLL);
+  NVE_CHECK(approx(h::event_payload_f32(ev->ev, 1u), 50.0, 0.5) &&
+            approx(h::event_payload_f32(ev->ev, 3u), 300.0, 1.0));
   float rx = -1.0f, ry = -1.0f;
   NVE_CHECK(host.session().runtime().scroll_by(kScroll, 0.0f, 0.0f, &rx, &ry) == NVE_RUNTIME_OK);
   NVE_CHECK(approx(ry, 50.0, 0.5) && approx(rx, 0.0, 0.01));
 
   // Programmatic scroll is applied once and not echoed back as a user scroll.
-  const size_t scrolls = app.count(NVE_EVENT_SCROLL, kScroll);
+  const size_t scrolls = app.count(NVE_SCROLL_EVENT_SCROLL, kScroll);
   w.set_f32(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 120.0f);
   flush(host);
   NVE_CHECK(approx(gtk_adjustment_get_value(vadj), 120.0, 0.5));
-  NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) == scrolls);
+  NVE_CHECK(app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == scrolls);
   gtk_adjustment_set_value(vadj, 10.0);  // the user scrolls away; an unrelated frame keeps it
   w.set(kTall, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(9, 9, 9));
   flush(host);

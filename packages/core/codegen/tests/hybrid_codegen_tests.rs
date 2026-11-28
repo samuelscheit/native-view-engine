@@ -60,7 +60,7 @@ fn parses_realistic_multi_item_rust_spec_accurately() {
     assert_eq!(crypto.name, "Crypto");
     assert_eq!(crypto.trait_name, "CryptoSpec");
     assert_eq!(crypto.methods.len(), 11);
-    assert!(crypto.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
+    assert!(crypto.interface_id().raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
 
     assert_eq!(spec.views.len(), 1);
     let video = &spec.views[0];
@@ -69,7 +69,7 @@ fn parses_realistic_multi_item_rust_spec_accurately() {
     assert_eq!(video.props.len(), 9);
     assert_eq!(video.events.len(), 2);
     assert_eq!(video.methods.len(), 3);
-    assert!(video.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
+    assert!(video.interface_id().raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
     assert_ne!(crypto.interface_id(), video.interface_id());
     assert_ne!(crypto.schema_hash(&spec), video.schema_hash(&spec));
 }
@@ -793,8 +793,8 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
 fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
     use core::mem::{align_of, offset_of, size_of};
     use nve_abi::{
-        NveBufferSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NveStrSlice, NveValue,
-        NveValueArray, NveValueData, NveValueMap,
+        NveBufferSlice, NveEvent, NveEventBatch, NveMapEntry, NveStrSlice, NveValue, NveValueArray,
+        NveValueData, NveValueMap, RawEventBytes,
     };
 
     if !common::require_tool("clang") {
@@ -888,22 +888,29 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         ],
     );
     check_layout(
-        "NveDirectEvent",
-        size_of::<NveDirectEvent>(),
-        align_of::<NveDirectEvent>(),
+        "RawEventBytes",
+        size_of::<RawEventBytes>(),
+        align_of::<RawEventBytes>(),
         &[
-            ("surface_id", offset_of!(NveDirectEvent, surface_id)),
-            ("node_id", offset_of!(NveDirectEvent, node_id)),
-            ("timestamp_us", offset_of!(NveDirectEvent, timestamp_us)),
-            ("kind", offset_of!(NveDirectEvent, kind)),
-            ("payload_tag", offset_of!(NveDirectEvent, payload_tag)),
-            ("name", offset_of!(NveDirectEvent, name)),
-            ("x", offset_of!(NveDirectEvent, x)),
-            ("y", offset_of!(NveDirectEvent, y)),
-            ("width", offset_of!(NveDirectEvent, width)),
-            ("height", offset_of!(NveDirectEvent, height)),
-            ("text", offset_of!(NveDirectEvent, text)),
-            ("value", offset_of!(NveDirectEvent, value)),
+            ("offset", offset_of!(RawEventBytes, offset)),
+            ("len", offset_of!(RawEventBytes, len)),
+        ],
+    );
+    // C keeps `NveEvent` naturally aligned (`alignof(uint64_t)`) for Swift ClangImporter
+    // compatibility while Rust slabs are 64-byte cache-line aligned; size and every field offset match.
+    check_layout(
+        "NveEvent",
+        size_of::<NveEvent>(),
+        align_of::<u64>(),
+        &[
+            ("timestamp", offset_of!(NveEvent, timestamp)),
+            ("table", offset_of!(NveEvent, table)),
+            ("surface", offset_of!(NveEvent, surface)),
+            ("node", offset_of!(NveEvent, node)),
+            ("event", offset_of!(NveEvent, event)),
+            ("flags", offset_of!(NveEvent, flags)),
+            ("payload", offset_of!(NveEvent, payload)),
+            ("bytes", offset_of!(NveEvent, bytes)),
         ],
     );
     check_layout(
@@ -911,8 +918,10 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         size_of::<NveEventBatch>(),
         align_of::<NveEventBatch>(),
         &[
-            ("ptr", offset_of!(NveEventBatch, ptr)),
-            ("len", offset_of!(NveEventBatch, len)),
+            ("events", offset_of!(NveEventBatch, events)),
+            ("bytes", offset_of!(NveEventBatch, bytes)),
+            ("event_count", offset_of!(NveEventBatch, event_count)),
+            ("bytes_len", offset_of!(NveEventBatch, bytes_len)),
         ],
     );
 
@@ -1329,8 +1338,8 @@ pub trait UserAnalyticsSpec {
 "#;
 
     let spec = parse_hybrid_rust_spec(spec_src).expect("parse fixed interface_id + layout spec");
-    assert_eq!(spec.modules[0].interface_id(), 1);
-    assert!(spec.modules[1].interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
+    assert_eq!(spec.modules[0].interface_id(), nve_abi::InterfaceId(1));
+    assert!(spec.modules[1].interface_id().raw() >= NVE_HYBRID_INTERFACE_ID_BASE);
     assert_eq!(spec.structs[0].align, Some(16));
     assert_eq!(spec.structs[0].expected_size, Some(16));
     assert_eq!(spec.structs[0].fields[3].offset, Some(12));

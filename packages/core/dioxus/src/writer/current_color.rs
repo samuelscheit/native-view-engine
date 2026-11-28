@@ -2,7 +2,7 @@
 //! `currentColor`, re-resolved against each node's effective text color at the end of every
 //! transaction, so own-color, ancestor-color, reparent, and replay-order changes all converge.
 
-use nve_components::{css_border_color_source, css_key_bits, mask_border_color_source};
+use nve_tables::{css_border_color_source, css_key_bits, mask_border_color_source};
 use nve_store::NodeId;
 
 use super::{StandaloneStyleVal, StoreMutationTx};
@@ -44,7 +44,7 @@ impl StoreMutationTx<'_, '_> {
     pub(crate) fn resolve_current_color_borders(&mut self) {
         for &node in self.current_color_borders.iter() {
             if self.tx.store().is_live(node) {
-                nve_components::resolve_current_color_border(self.tx, node);
+                nve_tables::resolve_current_color_border(self.tx, node);
             }
         }
     }

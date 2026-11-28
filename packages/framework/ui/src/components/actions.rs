@@ -114,7 +114,7 @@ pub fn Button(
             border_color: bc,
             border_radius: theme.radius.md,
             opacity: if blocked { 0.5 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -238,7 +238,7 @@ pub fn IconButton(
             border_color: bc,
             border_radius: theme.radius.md,
             opacity: if blocked { 0.5 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -329,7 +329,7 @@ pub fn Badge(
             border_color,
             border_radius: theme.radius.full,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

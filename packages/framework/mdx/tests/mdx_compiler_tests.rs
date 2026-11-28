@@ -460,7 +460,7 @@ fn nvs2_search_roundtrip_ranking_trigrams_speed_and_fuzzing() {
     );
 
     let site = compile_site(&src, &CompileOptions::default());
-    let encoded = site.search_index.encode();
+    let encoded = site.search_index.encode().expect("encode NVS2");
     assert_eq!(&encoded[..4], NVS2_MAGIC);
     assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), NVS2_VERSION);
 
@@ -487,6 +487,17 @@ fn nvs2_search_roundtrip_ranking_trigrams_speed_and_fuzzing() {
     // Prefix & trigram substring matching (`uantum` is middle of `quantumlayout`).
     assert!(!decoded.query("quant", 5).is_empty());
     assert!(!decoded.query("uantum", 5).is_empty());
+
+    // Non-zero reserved header bytes must be strictly rejected.
+    let mut bad_reserved = encoded.clone();
+    bad_reserved[6] = 0x55;
+    let payload_len = bad_reserved.len() - 8;
+    let new_ck = nve_hash::xxh64(&bad_reserved[..payload_len], 0);
+    bad_reserved[payload_len..].copy_from_slice(&new_ck.to_le_bytes());
+    assert!(matches!(
+        SearchIndex::decode(&bad_reserved),
+        Err(nve_mdx::SearchIndexError::NonZeroReserved(0x55))
+    ));
 
     // Adversarial decoding: every truncation length must return Err without panicking.
     for cut in 0..encoded.len() {
@@ -528,8 +539,8 @@ fn rust_codegen_is_deterministic_and_embeds_live_blocks_and_search() {
         "---\ntitle: Home\n---\n# Welcome\n\n```rsx live\nrsx! { div { \"hi\" } }\n```\n",
     );
     let site = compile_site(&src, &CompileOptions::default());
-    let a = generate_rust_module(&site, &SiteCodegenOptions::default());
-    let b = generate_rust_module(&site, &SiteCodegenOptions::default());
+    let a = generate_rust_module(&site, &SiteCodegenOptions::default()).unwrap();
+    let b = generate_rust_module(&site, &SiteCodegenOptions::default()).unwrap();
     assert_eq!(a, b);
     assert!(a.contains("pub const PAGES:"));
     assert!(a.contains("pub const LIVE_BLOCKS:"));
@@ -560,7 +571,7 @@ fn adversarial_parser_fuzzing_never_panics() {
 
     for (idx, sample) in inputs.iter().enumerate() {
         let page = compile_document(&format!("/fuzz/{idx}"), &format!("fuzz/{idx}.mdx"), sample);
-        let idx_bin = SearchIndex::build(&[page]).encode();
+        let idx_bin = SearchIndex::build(&[page]).encode().unwrap();
         let decoded = SearchIndex::decode(&idx_bin).expect("fuzz search roundtrip");
         let _ = decoded.query("item", 5);
     }

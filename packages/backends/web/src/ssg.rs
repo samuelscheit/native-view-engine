@@ -18,8 +18,8 @@
 //!
 //! All `<style>` payloads go through `</style` breakout escaping.
 
-use nve_abi::{NveDirectEvent, NveEventBatchRef, ROOT_NODE_ID};
-use nve_components::tables::core_realization_order;
+use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs, ROOT_NODE_ID};
+use nve_tables::tables::core_realization_order;
 use nve_engine::{BackendError, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::NodeStore;
 
@@ -54,27 +54,27 @@ pub fn prerender_nve_app_frame0<A: NveApp>(
     mut backend: WebBackend,
     viewport: Viewport,
 ) -> Result<(NodeStore, WebBackend), BackendError> {
-    let mut app = A::create(1);
+    let mut app = A::create(SurfaceId::ROOT);
     if viewport.width.is_finite()
         && viewport.height.is_finite()
         && viewport.width > 0.0
         && viewport.height > 0.0
     {
-        let layout = [NveDirectEvent::layout(
-            1,
+        let mut layout = EventBatchBuf::with_capacity(1, 0);
+        layout.push_layout(
+            SurfaceId::ROOT,
             ROOT_NODE_ID,
-            0,
+            TimestampUs(0),
             0.0,
             0.0,
             viewport.width,
             viewport.height,
-        )];
-        // SAFETY: `layout` is a stack-local slice containing no nested pointers.
-        let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout) });
+        );
+        let _ = app.dispatch_events(layout.as_validated());
     }
-    backend.set_viewport(1, viewport);
+    backend.set_viewport(SurfaceId::ROOT, viewport);
     let mut replica = StoreWireReplica::new(backend, core_realization_order());
-    let frame_bytes = app.render(1);
+    let frame_bytes = app.render(FrameId(1));
     if !frame_bytes.is_empty() {
         replica.submit_nve2_frame(frame_bytes)?;
     }

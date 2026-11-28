@@ -116,8 +116,8 @@ fn forgotten_attr_is_dropped_from_mirror_and_never_replayed_onto_a_retagged_elem
     let changes = frame(&mut store, |tx| {
         tx.edit::<Disclosure>(n).imperative(true);
     });
-    let mut live: HashMap<u32, MockEl> = HashMap::default();
-    live.insert(n.raw(), MockEl::default());
+    let mut live: HashMap<NodeId, MockEl> = HashMap::default();
+    live.insert(n, MockEl::default());
     renderer.commit_plugins_active_with(
         &store,
         &changes,
@@ -127,7 +127,7 @@ fn forgotten_attr_is_dropped_from_mirror_and_never_replayed_onto_a_retagged_elem
         &[n],
         |_, _, _| {},
     );
-    let replayed = live[&n.raw()].attrs.borrow();
+    let replayed = live[&n].attrs.borrow();
     assert!(
         !replayed.iter().any(|(k, _)| k == "open"),
         "stale open replayed: {replayed:?}"
@@ -172,8 +172,8 @@ fn watched_table_changes_recommit_watchers_only_on_nodes_carrying_their_table() 
     let changes = frame(&mut store, |tx| {
         tx.edit::<Modality>(dialog).modal(true);
     });
-    let mut live: HashMap<u32, MockEl> = HashMap::default();
-    live.insert(dialog.raw(), MockEl::default());
+    let mut live: HashMap<NodeId, MockEl> = HashMap::default();
+    live.insert(dialog, MockEl::default());
     let mut synced: Vec<(TableSlot, NodeId)> = Vec::new();
     renderer.commit_plugins_active_with(
         &store,

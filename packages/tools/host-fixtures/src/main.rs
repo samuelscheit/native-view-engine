@@ -11,9 +11,9 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use nve_abi::{ColorRgba, EventMask};
+use nve_abi::{ColorRgba, InteractionEvent};
 use nve_canvas::{Canvas, DrawList};
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, AlignItems, AriaRole, DebugId, FlexDirection, FontStyle, Image, ImageFit, ImageSrc,
     Interaction, Layout, Scroll, ScrollAxes, TextAlign, TextContent, TextInput, Typography, Visual,
 };
@@ -67,7 +67,6 @@ fn showcase_keyframe(tx: &mut Transaction<'_>) -> Showcase {
         .opacity(0.9);
     // Inherited by every text descendant: color, italic, centered (the title overrides the color).
     tx.edit::<Typography>(column)
-        .set(Typography::SET_COLOR | Typography::SET_FONT_STYLE | Typography::SET_TEXT_ALIGN)
         .color(Rgba::rgb(1, 2, 3))
         .font_style(FontStyle::Italic)
         .text_align(TextAlign::Center);
@@ -75,11 +74,12 @@ fn showcase_keyframe(tx: &mut Transaction<'_>) -> Showcase {
     let title = tx.create();
     tx.edit::<TextContent>(title).text("Hello NVE");
     tx.edit::<Typography>(title)
-        .set(Typography::SET_COLOR | Typography::SET_FONT_SIZE | Typography::SET_FONT_WEIGHT)
         .color(Rgba::rgb(248, 250, 252))
         .font_size(24.0)
         .font_weight(700);
-    tx.edit::<Accessibility>(title).role(AriaRole::Heading).level(1);
+    tx.edit::<Accessibility>(title)
+        .role(Some(AriaRole::Heading))
+        .level(Some(1));
 
     let input = tx.create();
     tx.edit::<Layout>(input).width(Length::points(200.0)).height(Length::points(40.0));
@@ -111,8 +111,8 @@ fn showcase_keyframe(tx: &mut Transaction<'_>) -> Showcase {
 
     let button = tx.create();
     tx.edit::<Layout>(button).width(Length::points(120.0)).height(Length::points(44.0));
-    tx.edit::<Interaction>(button).event_mask(EventMask::PRESS as u32);
-    tx.edit::<Accessibility>(button).role(AriaRole::Button).label("Submit");
+    tx.edit::<Interaction>(button).listen(InteractionEvent::Press);
+    tx.edit::<Accessibility>(button).role(Some(AriaRole::Button)).label("Submit");
     tx.edit::<DebugId>(button).test_id("submit-btn");
     tx.edit::<TextContent>(button).text("Submit");
 
@@ -208,5 +208,54 @@ fn main() {
     if let Err(e) = run(PathBuf::from(dir)) {
         eprintln!("nve-host-fixtures: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nve_store::wire::WireDecoder;
+
+    #[test]
+    fn generates_and_decodes_all_showcase_and_hot_frames() {
+        let dir = std::env::temp_dir().join(format!(
+            "nve_host_fixtures_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        run(dir.clone()).expect("generate host fixtures");
+
+        let mut replica = NodeStore::replica();
+        let mut dec = WireDecoder::default();
+        for name in [
+            "showcase_1.nve2",
+            "showcase_2.nve2",
+            "showcase_3.nve2",
+            "showcase_4.nve2",
+        ] {
+            let bytes = std::fs::read(dir.join(name)).expect("read generated frame");
+            assert!(!bytes.is_empty(), "{name} should be non-empty");
+            let mut tx = replica.tx();
+            dec.apply(&mut tx, &bytes).expect("decode showcase frame");
+            let mut changes = ChangeSet::default();
+            tx.commit_into(&mut changes);
+        }
+
+        let ids = std::fs::read_to_string(dir.join("showcase.ids")).expect("read showcase.ids");
+        for key in ["column=", "title=", "button=", "logo_res=", "canvas_eph_res="] {
+            assert!(ids.contains(key), "showcase.ids missing {key}");
+        }
+
+        for name in ["hot_v1.nve2", "hot_v2.nve2"] {
+            let bytes = std::fs::read(dir.join(name)).expect("read hot frame");
+            let mut hot_replica = NodeStore::replica();
+            let mut hot_dec = WireDecoder::default();
+            let mut tx = hot_replica.tx();
+            hot_dec.apply(&mut tx, &bytes).expect("decode hot frame");
+            let mut changes = ChangeSet::default();
+            tx.commit_into(&mut changes);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

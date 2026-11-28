@@ -175,10 +175,18 @@ size_t QtHost::sync() {
 
 // --- Input -------------------------------------------------------------------------------------
 
-bool QtHost::dispatch(const NveDirectEvent& ev) {
+bool QtHost::dispatch(const NveEvent& ev) {
   if (syncing_) return false;
   const auto alive = alive_;  // the event sink may destroy this host during the dispatch
   const bool changed = session_->dispatch(ev);
+  if (alive->load(std::memory_order_acquire)) (void)sync();
+  return changed;
+}
+
+bool QtHost::dispatch(NveEventBatch batch) {
+  if (syncing_) return false;
+  const auto alive = alive_;
+  const bool changed = session_->dispatch(batch);
   if (alive->load(std::memory_order_acquire)) (void)sync();
   return changed;
 }
@@ -188,11 +196,19 @@ bool QtHost::simulate_press(uint32_t node_id, float x, float y) {
 }
 
 bool QtHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
-  return dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
+  if (syncing_) return false;
+  const auto alive = alive_;
+  const bool changed = session_->dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_CHANGE, text);
+  if (alive->load(std::memory_order_acquire)) (void)sync();
+  return changed;
 }
 
 bool QtHost::dispatch_submit(uint32_t node_id, std::string_view text) {
-  return dispatch(session_->events().text(node_id, NVE_EVENT_SUBMIT, text));
+  if (syncing_) return false;
+  const auto alive = alive_;
+  const bool changed = session_->dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_SUBMIT, text);
+  if (alive->load(std::memory_order_acquire)) (void)sync();
+  return changed;
 }
 
 bool QtHost::dispatch_focus(uint32_t node_id, bool focused) {
@@ -205,11 +221,8 @@ bool QtHost::dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, f
   return dispatch(session_->events().scroll(node_id, offset_x, offset_y, content_width, content_height));
 }
 
-bool QtHost::dispatch_pointer(uint32_t node_id, NveEventKind kind, float x, float y) {
-  NveDirectEvent ev = session_->events().base(node_id, kind, NVE_EVENT_PAYLOAD_POINT);
-  ev.x = x;
-  ev.y = y;
-  return dispatch(ev);
+bool QtHost::dispatch_pointer(uint32_t node_id, NveInteractionEvent kind, float x, float y) {
+  return dispatch(session_->events().pointer(node_id, kind, x, y));
 }
 
 bool QtHost::activate(uint32_t node_id, bool wants_press, std::string_view href, float x, float y) {
@@ -302,7 +315,7 @@ std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, AppliedReso
   }
   ids.draw_list = 0u;
   if (node.kind == host::NodeKind::Image) {
-    const uint32_t tint = node.image.tint_enabled ? node.image.tint : 0u;
+    const std::optional<uint32_t> tint = node.image.tint;
     if (paint.content == NodeContent::Image && resource_unchanged(node.image.src, ids.image_src) &&
         paint.fit == node.image.fit && ids.image_tint == tint) {
       return std::nullopt;
@@ -313,7 +326,7 @@ std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, AppliedReso
     if (const auto src = host::decode_image_src(scene_resource(node.image.src, host::kImageSrcKind))) {
       image = images_.get(*src);
     }
-    if (!image.isNull() && node.image.tint_enabled) image = tinted_image(image, qcolor(tint));
+    if (!image.isNull() && tint.has_value()) image = tinted_image(image, qcolor(*tint));
     if (paint.content == NodeContent::Image && paint.fit == node.image.fit && image.cacheKey() == paint.image.cacheKey()) {
       return std::nullopt;  // the same decoded (untinted) image
     }
@@ -322,7 +335,8 @@ std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, AppliedReso
     paint.fit = node.image.fit;
     return NodeContent::Image;
   }
-  ids.image_src = ids.image_tint = 0u;
+  ids.image_src = 0u;
+  ids.image_tint.reset();
   // Text paints on leaves only (a text wrapper with children is a View holding its runs).
   if (!node.text.empty() && node.children.empty()) {
     QString text = display_text(node.text);

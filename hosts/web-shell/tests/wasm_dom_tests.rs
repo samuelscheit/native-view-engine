@@ -7,15 +7,15 @@
 //!   verifies the `wasm_bindgen` entrypoints and `WebAppController` surface compile cleanly
 //!   with zero warnings.
 
-use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{InteractionEvent, NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
-use nve_components::tables::{DebugId, Interaction};
+use nve_tables::tables::{DebugId, Interaction};
 use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeStore};
 use nve_web_shell::{HotReloadAction, WebAppSession};
 
 fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
-    fn walk(store: &NodeStore, id: StoreNodeId, target: &str) -> Option<NodeId> {
+    fn walk(store: &NodeStore, id: NodeId, target: &str) -> Option<NodeId> {
         if !store.is_live(id) {
             return None;
         }
@@ -23,7 +23,7 @@ fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
             .try_row::<DebugId>(id)
             .is_some_and(|d| d.test_id() == target)
         {
-            return Some(id.raw());
+            return Some(id);
         }
         for &child in store.children(id) {
             if let Some(found) = walk(store, child, target) {
@@ -32,7 +32,7 @@ fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
         }
         None
     }
-    walk(store, StoreNodeId::ROOT, target)
+    walk(store, NodeId::ROOT, target)
 }
 
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
@@ -42,21 +42,16 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
         "expected mounted node with testID='{test_id}'"
     );
     let node_id = node_id.expect("checked above");
-    let mask = session
+    let listens_press = session
         .store()
-        .try_row::<Interaction>(StoreNodeId(node_id))
-        .map_or(0, |i| u64::from(i.event_mask()));
-    assert_ne!(
-        mask & EventMask::PRESS,
-        0,
-        "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
+        .try_row::<Interaction>(node_id)
+        .is_some_and(|i| i.listeners().contains(InteractionEvent::Press));
+    assert!(
+        listens_press,
+        "node '{test_id}' (id={node_id}) should subscribe to InteractionEvent::Press"
     );
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
-        node_id,
-        timestamp_us,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 12.0, y: 10.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, node_id, TimestampUs(timestamp_us), 12.0, 10.0);
     });
     session
         .pump_events()
@@ -87,7 +82,8 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
         height: 840.0,
         scale_factor: 2.0,
     };
-    let mut session = WebAppSession::new_studio_workspace(1, WebBackend::new(), viewport);
+    let mut session =
+        WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::new(), viewport);
     session.render_initial().expect("initial mount");
 
     let html0 = session.render_html();
@@ -179,7 +175,8 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
 
 #[test]
 fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
-    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
+    let mut session =
+        WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     session.render_initial().expect("initial kitchen-sink mount");
 
     let inc_id = find_node_by_test_id(session.store(), "ks-counter-inc")
@@ -188,22 +185,14 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
         .expect("ks-counter-reset button");
 
     // Unhandled press on a nonexistent node must be ignored cleanly (no frame, no panic).
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
-        node_id: 99_999,
-        timestamp_us: 10,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 0.0, y: 0.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, NodeId::new(99_999, 0), TimestampUs(10), 0.0, 0.0);
     });
     assert!(session.pump_events().expect("pump should not fail").is_none());
 
     for step in 1..=10u64 {
-        session.backend_mut().push_event(NativeEvent {
-            surface_id: 1,
-            node_id: inc_id,
-            timestamp_us: step * 100,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 40.0, y: 20.0 },
+        session.backend_mut().with_pending_events(|evs| {
+            evs.push_press(SurfaceId::ROOT, inc_id, TimestampUs(step * 100), 40.0, 20.0);
         });
         let timing = session
             .pump_events()
@@ -215,12 +204,8 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
         assert!(html.contains(&format!("Count: {step}")));
     }
 
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
-        node_id: reset_id,
-        timestamp_us: 2000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 40.0, y: 20.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, reset_id, TimestampUs(2000), 40.0, 20.0);
     });
     session.pump_events().expect("reset pump").expect("reset frame");
     assert!(session.render_html().contains("Count: 0"));
@@ -228,7 +213,8 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
 
 #[test]
 fn hot_patch_empty_and_out_of_bounds_edge_cases() {
-    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
+    let mut session =
+        WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     session.render_initial().expect("initial mount");
 
     // Empty TemplatePatch succeeds with 0 mutations.
@@ -242,7 +228,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         text_replacements: vec![],
     };
     let action = session
-        .handle_hot_patch_frame(&empty_patch.to_bytes())
+        .handle_hot_patch_frame(&empty_patch.to_bytes().unwrap())
         .expect("empty template patch");
     assert_eq!(
         action,
@@ -264,7 +250,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         text_replacements: vec![],
     };
     let oob_action = session
-        .handle_hot_patch_frame(&oob_patch.to_bytes())
+        .handle_hot_patch_frame(&oob_patch.to_bytes().unwrap())
         .expect("oob patch");
     match oob_action {
         HotReloadAction::TemplatePatched {

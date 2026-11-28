@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
-use nve_components::tables::TextContent;
-use nve_abi::{FrameId, NveEventBatchRef};
+use nve_tables::tables::TextContent;
+use nve_abi::{FrameId, ValidatedEvents};
 use nve_runtime::{AppFrame, RuntimeApp, RuntimeBuilder, SurfaceRuntime};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, NodeId, NodeStore};
@@ -37,7 +37,7 @@ impl RuntimeApp for OneFrameApp {
         }
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 }
@@ -80,9 +80,18 @@ fn every_scene_reset_bumps_the_epoch_and_plain_frames_do_not() {
 /// Valid `NVE2` header and first op, then an unknown op: the body fails mid-transaction.
 fn mid_frame_corrupt(frame_num: u32) -> Vec<u8> {
     let words: [u32; 12] = [
-        0x3245_564E, 1, frame_num, 0, 2, 12, // header: "NVE2", v1, frame, flags, 2 ops, 12 words
-        3 | (1 << 16), 1, 99, // CreateNodes(count 1) -> node 99
-        0xFE | (1 << 16), 1, 0xDEAD_BEEF, // unknown op
+        nve_store::wire::MAGIC,
+        u32::from(nve_store::wire::VERSION),
+        frame_num,
+        0,
+        2,
+        12, // header: "NVE2", current version, frame, flags, 2 ops, 12 words
+        3 | (1 << 16),
+        1,
+        99, // CreateNodes(count 1) -> node 99
+        0xFE | (1 << 16),
+        1,
+        0xDEAD_BEEF, // unknown op
     ];
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
@@ -158,7 +167,7 @@ impl RuntimeApp for StoreSwitchingApp {
         AppFrame::Direct { changes: &self.changes }
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 
@@ -239,7 +248,7 @@ impl RuntimeApp for InlineResetApp {
         AppFrame::Direct { changes: &self.changes }
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 

@@ -18,7 +18,7 @@ shared C++ host stack (`packages/core/host-cxx`, linked via `cxx/cmake/NveHostSt
   - single-line inputs → `GtkEntry`, multiline → `GtkTextView` (controlled text via
     `nve::host::ControlledText`: app values win, user echoes are absorbed);
   - scroll nodes and `overflow: scroll` → `GtkScrolledWindow` + inner `GtkFixed`;
-  - `nve.canvas` nodes → `GtkDrawingArea` painting the `NVE_DRAW1` draw list with Cairo (`NveGtkMedia.cpp`).
+  - `nve.canvas` nodes → `GtkDrawingArea` painting the flat `nve.res.draw_list` with Cairo (`NveGtkMedia.cpp`).
 - **Style & accessibility (`NveGtkStyleA11y.cpp`)**: per-node CSS rules under host-scoped classes
   (`.nve-host-<id>-node-<node_id>`) in one `GtkCssProvider`; ARIA roles / states / properties map
   to `GtkAccessible`.

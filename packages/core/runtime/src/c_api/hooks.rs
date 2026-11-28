@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn host_measurer_sanitizes_the_style_and_skips_degenerate_sizes() {
-        use nve_components::tables::WhiteSpace;
+        use nve_tables::tables::WhiteSpace;
         use nve_store::Length;
 
         let m = HostTextMeasurer {

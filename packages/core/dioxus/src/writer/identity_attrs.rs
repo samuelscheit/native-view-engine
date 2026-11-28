@@ -1,7 +1,7 @@
 //! Identity (`DebugId`: `testID`/`id`/`slot`) and streaming SSR boundary (`StreamBoundary`:
 //! `data-nve-stream-slot`/`data-nve-suspense`/`data-nve-slot-role`) string attributes.
 
-use nve_components::tables::{
+use nve_tables::tables::{
     DebugId, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR, StreamBoundary,
     StreamSlotRole,
 };

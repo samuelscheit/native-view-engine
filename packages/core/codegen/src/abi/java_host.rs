@@ -1,13 +1,16 @@
 //! Java host files outside the core table set: capability-module tables (`NveModuleTables`,
-//! rendered by the shared `NveTables` template) and the golden `EventRing` test vector
-//! (`nve_abi::encode_events`).
+//! rendered by the shared `NveTables` template) and the golden `NVEV` v2 event-batch test vector
+//! (`nve_abi::EventBatchBuf::to_wire_bytes`).
 
 use std::fmt::Write as _;
 
 use nve_abi::table::TableDesc;
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, encode_events};
+use nve_abi::{
+    EventBatchBuf, EventFlags, EventId, InteractionEvent, Key64, NodeId, SurfaceId, TextInputEvent,
+    TimestampUs,
+};
 
-use super::model::{tables_model, value_sets};
+use super::tables::{tables_model, value_sets};
 use super::{JavaTables, render};
 use crate::error::CodegenError;
 use crate::schema::export::GeneratedFile;
@@ -22,49 +25,50 @@ fn header(out: &mut String, doc: &str, class: &str) {
     );
 }
 
-/// Surface id of every golden event.
-pub const VECTOR_SURFACE: u32 = 7;
+/// Surface of every golden event.
+pub const VECTOR_SURFACE: SurfaceId = SurfaceId::new(7, 1);
 
-/// One event per payload kind; host suites write the same list and compare bytes.
-pub fn golden_events() -> Vec<NativeEvent> {
-    let ev = |node, ts, kind, payload| NativeEvent { surface_id: VECTOR_SURFACE, node_id: node, timestamp_us: ts, kind, payload };
-    vec![
-        ev(1, 10, NativeEventKind::Focus, EventPayload::Empty),
-        ev(2, 11, NativeEventKind::Press, EventPayload::Point { x: 1.5, y: -2.0 }),
-        ev(3, 12, NativeEventKind::Scroll, EventPayload::Scroll { x: 0.0, y: 30.0, content_width: 300.0, content_height: 900.0 }),
-        ev(4, 13, NativeEventKind::TextChange, EventPayload::Text("h\u{e9}\u{1F680}".into())),
-        ev(5, 14, NativeEventKind::Layout, EventPayload::Layout { x: 1.0, y: 2.0, width: 3.0, height: 4.0 }),
-        ev(6, 15, NativeEventKind::Custom, EventPayload::Custom { name: "submit".into(), data: vec![9, 8, 7] }),
-        ev(
-            7,
-            16,
-            NativeEventKind::KeyDown,
-            EventPayload::Key { key: "\u{e9}".into(), code: "KeyE".into(), modifiers: 0x05, key_code: 69, is_composing: true },
-        ),
-        ev(8, 17, NativeEventKind::PointerDown, EventPayload::Pointer { x: 3.0, y: 4.0, modifiers: 0x02, flags: 0x09 }),
-        ev(9, 18, NativeEventKind::Wheel, EventPayload::Wheel { delta_x: 0.0, delta_y: -12.5, modifiers: 0x01 }),
-        ev(
-            0x8100_0002,
-            19,
-            NativeEventKind::TableEvent,
-            EventPayload::TableEvent { table_key: 0x1122_3344_5566_7788, event_id: 42, payload: vec![1, 2] },
-        ),
-    ]
+/// Table key of the golden module-table event (`nve.vector_table`).
+pub const VECTOR_TABLE: Key64 = Key64::of("nve.vector_table");
+
+/// One event per `EventBatchBuf` framing: empty, inline payload, UTF-8 text, IME composition,
+/// inline key, arena-split key (`> NVE_EVENT_INLINE_KEY_CAP` bytes), pointer with button and
+/// capture flags, wheel, named custom, and a module-table event with raw bytes. Host suites write
+/// the same list and compare the `NVEV` v2 frame byte for byte.
+pub fn golden_events() -> EventBatchBuf {
+    let (s, node, ts) = (VECTOR_SURFACE, |i| NodeId::new(i, 1), TimestampUs);
+    let mods = EventFlags::MOD_META | EventFlags::MOD_SHIFT;
+    let mut b = EventBatchBuf::with_capacity(12, 128);
+    b.push_focus(s, node(1), ts(10));
+    b.push_press(s, node(2), ts(11), 1.5, -2.0);
+    b.push_scroll(s, node(3), ts(12), 0.0, 30.0, 300.0, 900.0);
+    b.push_text_change(s, node(4), ts(13), "h\u{e9}\u{1F680}");
+    b.push_composition(s, node(4), ts(14), TextInputEvent::CompositionUpdate, "\u{3042}");
+    b.push_layout(s, node(5), ts(15), 1.0, 2.0, 3.0, 4.0);
+    b.push_custom(s, node(6), ts(16), "submit", &[9, 8, 7]);
+    b.push_key_down(s, node(7), ts(17), "\u{e9}", "KeyE", mods | EventFlags::COMPOSING, 69);
+    b.push_key_up(s, node(7), ts(18), "MediaTrackPrevious", "MediaTrackPrevious", EventFlags::MOD_REPEAT, 177);
+    b.push_pointer(s, node(8), ts(19), InteractionEvent::PointerDown, 3.0, 4.0, 2, EventFlags::CAPTURE | EventFlags(1 << EventFlags::BUTTON_SHIFT));
+    b.push_wheel(s, node(9), ts(20), 0.0, -12.5, EventFlags::MOD_CTRL);
+    b.push_table_event(VECTOR_TABLE, s, node(10), ts(21), EventId(3), EventFlags::EMPTY, [1, 2, 3, 4, 5, 6], &[1, 2]);
+    b
 }
 
-/// `EventRingVectors.java` (test sources): `ring()` = `encode_events(golden_events())`.
+/// `EventRingVectors.java` (test sources): `frame()` = `golden_events().to_wire_bytes()`.
 pub fn java_event_ring_vectors() -> GeneratedFile {
-    let ring = encode_events(&golden_events());
-    let mut out = String::with_capacity(ring.len() * 6 + 1024);
+    let frame = golden_events().to_wire_bytes();
+    let mut out = String::with_capacity(frame.len() * 6 + 1024);
     header(
         &mut out,
-        "{@code nve_abi::encode_events} of one event per payload kind (surface 7): Focus/Empty, Press/Point, Scroll, \
-         TextChange/Text, Layout, Custom, KeyDown/Key, PointerDown/Pointer, Wheel, TableEvent (see abi/java_host.rs).",
+        "{@code nve_abi::EventBatchBuf} {@code NVEV} v2 frame of the golden events (see abi/java_host.rs): Focus, Press, \
+         Scroll, TextChange, CompositionUpdate, Layout, Custom, inline-key KeyDown, split-key KeyUp, PointerDown, Wheel, \
+         and a module-table event.",
         "EventRingVectors",
     );
-    let _ = writeln!(out, "\n    public static final int SURFACE = {VECTOR_SURFACE};");
-    out.push_str("\n    /** Encoded ring bytes. */\n    public static byte[] ring() {\n        return new byte[] {");
-    for (i, b) in ring.iter().enumerate() {
+    let _ = writeln!(out, "\n    public static final int SURFACE = 0x{:08X};", VECTOR_SURFACE.raw());
+    let _ = writeln!(out, "    public static final long TABLE = 0x{:016X}L;", VECTOR_TABLE.0);
+    out.push_str("\n    /** Encoded {@code NVEV} v2 frame bytes. */\n    public static byte[] frame() {\n        return new byte[] {");
+    for (i, b) in frame.iter().enumerate() {
         if i % 16 == 0 {
             out.push_str("\n            ");
         }
@@ -100,10 +104,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn golden_ring_round_trips_and_covers_every_payload() {
+    fn golden_frame_round_trips_and_covers_every_framing() {
         let events = golden_events();
-        assert_eq!(nve_abi::decode_events(&encode_events(&events)).unwrap(), events);
-        assert_eq!(events.len(), 10);
+        assert_eq!(events.len(), 12, "a push was dropped");
+        assert_eq!(EventBatchBuf::decode_wire(&events.to_wire_bytes()).unwrap(), events);
+        let flags = |i: usize| events.events()[i].flags;
+        assert!(flags(3).contains(EventFlags::UTF8_BYTES));
+        assert!(flags(7).contains(EventFlags::INLINE_KEY_UTF8));
+        assert!(flags(8).contains(EventFlags::KEY_SPLIT_BYTES));
+        assert!(flags(6).contains(EventFlags::CUSTOM_NAMED));
     }
 
     #[test]
@@ -115,7 +124,7 @@ mod tests {
         }
         assert!(files[0].content.contains("public final class NveModuleTables"));
         assert!(files[0].content.contains("public static final class Values"));
-        assert!(files[1].content.contains("public static byte[] ring()"));
+        assert!(files[1].content.contains("public static byte[] frame()"));
     }
 
     #[test]

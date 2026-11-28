@@ -44,9 +44,9 @@ pub(crate) use live::{CLOSE_BRIDGES, sync_overlay_state, try_dialog_backdrop_fal
 #[cfg(target_arch = "wasm32")]
 mod live {
     use nve_backend_web::NativeEventBridge;
-    use nve_components::tables::Accessibility;
+    use nve_tables::tables::Accessibility;
     use nve_store::{NodeId, NodeStore};
-    use nve_web_html::{HtmlSemantics, PopoverMode};
+    use nve_web_html::HtmlSemantics;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -117,7 +117,7 @@ export function nve_toggle_event_closed(ev) {
                 .try_row::<Accessibility>(node)
                 .is_some_and(|a| a.modal());
             sync_dialog_open_state(dialog, row.open(), modal);
-        } else if row.popover() != PopoverMode::None {
+        } else if row.popover().is_some() {
             nve_sync_popover_state(el, row.data_nve_open());
         }
     }

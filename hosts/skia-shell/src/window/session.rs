@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use nve_abi::{ColorRgba, FrameId, NodeId, NveDirectEvent, SurfaceId, ROOT_NODE_ID};
+use nve_abi::{ColorRgba, EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs, ROOT_NODE_ID};
 use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceError, GpuSwapchain,
 };
@@ -16,15 +16,16 @@ use nve_backend_skia::gpu::GpuSurfaceConfig;
 use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use nve_backend_skia::{CursorKind, SkiaBackend};
 use nve_canvas_skia::CanvasSkiaSystem;
-use nve_components::tables::{core_realization_order, register_core_tables};
+use nve_tables::tables::{core_realization_order, register_core_tables};
 use nve_engine::{
     Frame0File, Frame0Footer, Frame0Meta, HotPatchMsg, LayoutRect, StoreBackend, StoreWireReplica,
     Viewport,
 };
 use nve_layout::DynLayoutEngine;
+use nve_store::ChangeSet;
 #[cfg(test)]
 use nve_store::NodeStore;
-use nve_store::{ChangeSet, NodeId as StoreNodeId};
+use nve_motion_skia::MotionDriver;
 use nve_svg_skia::SvgSkiaSystem;
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
@@ -45,8 +46,8 @@ pub(super) fn now_us() -> u64 {
         .unwrap_or(0)
 }
 
-/// Creates a [`StoreWireReplica<ShellSkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`)
-/// and an explicit pluggable [`DynLayoutEngine`].
+/// Creates a [`StoreWireReplica<ShellSkiaBackend>`] configured with shell table systems (`Canvas` +
+/// `Svg`), the `nve-motion` frame hook, and an explicit pluggable [`DynLayoutEngine`].
 pub fn new_shell_skia_replica_with_layout(
     surface_id: SurfaceId,
     viewport: Viewport,
@@ -56,6 +57,7 @@ pub fn new_shell_skia_replica_with_layout(
     let mut backend = SkiaBackend::with_layout(layout);
     backend.register_table_system(CanvasSkiaSystem);
     backend.register_table_system(SvgSkiaSystem);
+    backend.register_frame_hook(MotionDriver::new());
     backend.set_viewport(surface_id, viewport);
     StoreWireReplica::new(backend, core_realization_order())
 }
@@ -102,8 +104,10 @@ pub struct DesktopSession<A: DesktopApp> {
     status_banner: Option<String>,
     show_hud: bool,
     last_frame_bytes: Vec<u8>,
-    frame_counter: u64,
+    frame_counter: FrameId,
     last_telemetry: Option<FrameTelemetry>,
+    /// Wall-clock instant of the previous animation tick (`None` while idle).
+    last_animation_tick: Option<Instant>,
     #[cfg(feature = "skia")]
     skia_renderer: SkiaCanvasRenderer,
     #[cfg(feature = "skia")]
@@ -184,7 +188,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             replica,
             layout_choice: LayoutEngineChoice::Taffy,
             surface_id,
-            next_frame_id: 1,
+            next_frame_id: FrameId(1),
             viewport,
             pixel_buffer,
             clear_color,
@@ -198,8 +202,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             status_banner: None,
             show_hud,
             last_frame_bytes,
-            frame_counter: 0,
+            frame_counter: FrameId::ZERO,
             last_telemetry: None,
+            last_animation_tick: None,
             #[cfg(feature = "skia")]
             skia_renderer: SkiaCanvasRenderer::new(),
             #[cfg(feature = "skia")]
@@ -267,7 +272,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let val = self
             .replica
             .backend()
-            .text_input_value(self.replica.store(), StoreNodeId(id))?;
+            .text_input_value(self.replica.store(), id)?;
         val.get(s..e).map(str::to_owned)
     }
 
@@ -322,6 +327,10 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     /// Dispatches a direct typed [`SkiaHostEvent`] into the mounted app with zero serialization.
     pub fn dispatch_host_event(&mut self, event: &SkiaHostEvent) -> bool {
+        if let SkiaHostEvent::ThemeChanged(theme) = event {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.set_reduced_motion(store, theme.reduced_motion);
+        }
         self.app.dispatch_host_event(event)
     }
 
@@ -341,18 +350,17 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// Dispatches the current logical viewport dimensions to the mounted app as a `Layout` event
     /// so responsive layouts (e.g. mobile portrait vs. desktop) react immediately.
     pub fn notify_viewport_resize(&mut self) -> bool {
-        let event = [NveDirectEvent::layout(
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_layout(
             self.surface_id,
             ROOT_NODE_ID,
-            now_us(),
+            TimestampUs(now_us()),
             0.0,
             0.0,
             self.viewport.width,
             self.viewport.height,
-        )];
-        // SAFETY: `NveDirectEvent::layout` contains only scalar geometry and no borrowed pointers.
-        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
-        self.app.dispatch_events(batch)
+        );
+        self.app.dispatch_events(batch.as_validated())
     }
 
     /// Presents the current retained `DisplayList` directly through a hardware or offscreen
@@ -381,54 +389,6 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn cursor_logical(&self) -> (f32, f32) {
         self.cursor_logical
-    }
-
-    /// Scrolls the `ScrollView` under logical `(x, y)` by `(delta_x, delta_y)` (positive `delta_y`
-    /// scrolls down), clamps to content bounds, dispatches `NativeEventKind::Scroll` into the app,
-    /// and re-renders / re-rasterizes when either the app handled the event or the scroll offset
-    /// changed.
-    pub fn handle_scroll_logical(
-        &mut self,
-        x: f32,
-        y: f32,
-        delta_x: f32,
-        delta_y: f32,
-    ) -> Result<bool, DesktopHostError> {
-        self.cursor_logical = (x, y);
-        let Some(scroll_node_id) = self
-            .replica
-            .backend()
-            .hit_test_scroll_container(self.replica.store(), x, y)
-        else {
-            return Ok(false);
-        };
-        let sid = StoreNodeId(scroll_node_id);
-        let prev = self.replica.backend().scroll_offset(scroll_node_id);
-        let (store, backend) = self.replica.store_and_backend_mut();
-        let (new_x, new_y) = backend.apply_scroll_delta(store, sid, delta_x, delta_y);
-        let offset_changed = (prev.0 - new_x).abs() > 1e-4 || (prev.1 - new_y).abs() > 1e-4;
-        let (content_width, content_height) = backend
-            .scroll_content_size(store, sid)
-            .unwrap_or((self.viewport.width, self.viewport.height));
-
-        let event = [NveDirectEvent::scroll(
-            self.surface_id,
-            scroll_node_id,
-            now_us(),
-            new_x,
-            new_y,
-            content_width,
-            content_height,
-        )];
-        // SAFETY: `NveDirectEvent::scroll` contains only scalar geometry and no borrowed pointers.
-        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
-        let handled = self.app.dispatch_events(batch);
-        if handled {
-            self.render_and_rasterize()?;
-        } else if offset_changed {
-            self.rasterize_current();
-        }
-        Ok(handled || offset_changed)
     }
 
     /// Updates physical surface dimensions and HiDPI scale factor, then re-layouts and re-blits.
@@ -466,6 +426,27 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(())
     }
 
+    /// Advances frame-hook animations by the wall-clock time since the previous tick (clamped to
+    /// 100 ms) and re-rasterizes; returns whether another frame must be scheduled.
+    pub fn tick_animations(&mut self) -> bool {
+        if !self.replica.backend().needs_next_frame() {
+            self.last_animation_tick = None;
+            return false;
+        }
+        let now = Instant::now();
+        let dt_s = self
+            .last_animation_tick
+            .replace(now)
+            .map_or(0.0, |prev| now.duration_since(prev).as_secs_f32().min(0.1));
+        let (store, backend) = self.replica.store_and_backend_mut();
+        let animating = backend.advance_animations(store, dt_s);
+        self.rasterize_current();
+        if !animating {
+            self.last_animation_tick = None;
+        }
+        animating
+    }
+
     /// Renders a frame (or drains ordered queued remote frames) into `SkiaBackend` and rasterizes.
     pub fn render_and_rasterize(&mut self) -> Result<&PixelBuffer, DesktopHostError> {
         let mut saw_queued = false;
@@ -492,7 +473,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         }
         if !saw_queued && !self.app.uses_queued_wire_frames() {
             let frame_id = self.next_frame_id;
-            self.next_frame_id += 1;
+            self.next_frame_id = self.next_frame_id.next();
             let bytes = self.app.render(frame_id);
             if !bytes.is_empty() {
                 self.replica.submit_nve2_frame(bytes)?;
@@ -546,14 +527,14 @@ impl<A: DesktopApp> DesktopSession<A> {
             draw_hud_banner(&mut self.pixel_buffer, self.viewport.scale_factor, banner);
         }
         let elapsed_us = t0.elapsed().as_micros() as u64;
-        self.frame_counter += 1;
+        self.frame_counter = self.frame_counter.next();
         self.last_telemetry = Some(FrameTelemetry {
             backend: if painted_via_skia {
                 active_kind
             } else {
                 GpuBackendKind::Softbuffer
             },
-            frame_index: self.frame_counter,
+            frame_index: self.frame_counter.raw(),
             width: self.pixel_buffer.width(),
             height: self.pixel_buffer.height(),
             scale_factor: self.viewport.scale_factor,
@@ -572,7 +553,10 @@ impl<A: DesktopApp> DesktopSession<A> {
     pub fn handle_hot_patch(&mut self, msg: HotPatchMsg) -> Result<bool, DesktopHostError> {
         match &msg {
             HotPatchMsg::TemplatePatch { generation, .. } => {
-                let changed = self.app.apply_hot_patch(&msg.to_bytes());
+                let bytes = msg
+                    .to_bytes()
+                    .map_err(|e| DesktopHostError::Reload(e.to_string()))?;
+                let changed = self.app.apply_hot_patch(&bytes);
                 self.status_banner = Some(format!("Tier-1 patch gen #{generation}"));
                 if changed {
                     self.render_and_rasterize()?;

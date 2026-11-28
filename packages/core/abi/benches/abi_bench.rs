@@ -1,5 +1,5 @@
 //! Criterion micro-benchmarks for `nve-abi` (fixed-point number codec and
-//! `native_events_to_direct` conversion).
+//! `EventBatchBuf` / `ValidatedEvents` batching).
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
@@ -11,9 +11,8 @@ mod native {
     use criterion::{criterion_group, Criterion};
     use nve_abi::num::{parse_f32, write_f32};
     use nve_abi::{
-        native_events_to_direct, EventPayload, NativeEvent, NativeEventKind,
+        EventBatchBuf, NodeId, SurfaceId, TimestampUs, ValidatedEvents,
     };
-
     fn bench_num_codec(c: &mut Criterion) {
         let values = [0.0f32, 12.0, 0.5, -3.125, 1920.5, 0.333, 99.999, 42.25];
         let inputs = ["0", "12", "0.5", "-3.125", "1920.5", "0.333", "99.999", "42.25"];
@@ -42,25 +41,25 @@ mod native {
     }
 
     fn bench_direct_event_conversion(c: &mut Criterion) {
-        let events: Vec<NativeEvent> = (0..32u32)
-            .map(|i| NativeEvent {
-                surface_id: 1,
-                node_id: i + 1,
-                timestamp_us: u64::from(i) * 1000,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point {
-                    x: i as f32 * 10.0,
-                    y: i as f32 * 5.0,
-                },
-            })
-            .collect();
-        let mut direct = Vec::with_capacity(32);
+        let mut buf = EventBatchBuf::with_capacity(32, 256);
 
-        c.bench_function("native_events_to_direct_32", |b| {
+        c.bench_function("event_batch_push_and_validate_32", |b| {
             b.iter(|| {
-                direct.clear();
-                native_events_to_direct(black_box(&events), &mut direct);
-                black_box(direct.len())
+                buf.clear();
+                for i in 0..32u32 {
+                    buf.push_press(
+                        SurfaceId::ROOT,
+                        NodeId::new(i + 1, 0),
+                        TimestampUs(u64::from(i) * 1000),
+                        i as f32 * 10.0,
+                        i as f32 * 5.0,
+                    );
+                }
+                let raw = buf.as_raw_batch();
+                // SAFETY: `buf` stays alive for this validation pass.
+                let validated = unsafe { ValidatedEvents::try_from_raw(raw) }
+                    .expect("valid bench event batch");
+                black_box(validated.len())
             });
         });
     }

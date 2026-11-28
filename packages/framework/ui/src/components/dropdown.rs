@@ -155,7 +155,7 @@ pub fn DropdownMenu(
             },
             border_radius: theme.radius.md,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -237,7 +237,7 @@ pub fn DropdownMenu(
                 border_color: bc,
                 border_radius: theme.radius.sm,
                 opacity: if item.disabled { 0.45 } else { 1.0 },
-                box_shadow: "none",
+                box_shadow: None,
             })
             .finish();
 

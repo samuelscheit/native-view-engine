@@ -22,6 +22,7 @@
 use core::fmt;
 
 use bytes::Bytes;
+use nve_codec::ByteReader;
 use nve_rpc::{ProcId, Tag64};
 
 use crate::slab::{rpc_status_from_u8, MAX_PROTOCOL_ERR_MSG_BYTES};
@@ -32,10 +33,12 @@ pub const NVEQ_VERSION: u8 = 2;
 /// Reads the encoded entry count from an `NVEQ` v2 header in O(1) without decoding payloads.
 #[inline]
 pub fn nveq_entry_count(bytes: &[u8]) -> Option<u32> {
-    if bytes.len() < 9 || bytes[0..4] != MAGIC || bytes[4] != NVEQ_VERSION {
+    let mut r = ByteReader::new(bytes);
+    r.expect_magic(&MAGIC).ok()?;
+    if r.read_u8().ok()? != NVEQ_VERSION {
         return None;
     }
-    Some(u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]))
+    r.read_u32().ok()
 }
 const MAX_HYDRATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HYDRATE_ENTRIES: usize = 4096;
@@ -232,66 +235,73 @@ pub(crate) fn decode_hydration_entries(bytes: &[u8]) -> Result<Vec<HydratedEntry
     if bytes.len() < 9 {
         return Err(DehydrateError::Truncated);
     }
-    if bytes[..4] != MAGIC {
-        return Err(DehydrateError::InvalidMagic);
+    let mut r = ByteReader::new(bytes);
+    r.expect_magic(&MAGIC)
+        .map_err(|_| DehydrateError::InvalidMagic)?;
+    let version = r.read_u8().map_err(|_| DehydrateError::Truncated)?;
+    if version != NVEQ_VERSION {
+        return Err(DehydrateError::UnsupportedVersion(version));
     }
-    if bytes[4] != NVEQ_VERSION {
-        return Err(DehydrateError::UnsupportedVersion(bytes[4]));
-    }
-    let entry_count = u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]) as usize;
+    let entry_count = r.read_u32().map_err(|_| DehydrateError::Truncated)? as usize;
     if entry_count > MAX_HYDRATE_ENTRIES {
         return Err(DehydrateError::TooManyEntries(entry_count));
     }
 
-    let mut pos = 9usize;
     let mut out = Vec::with_capacity(entry_count.min(64));
 
     for _ in 0..entry_count {
-        let proc_id = ProcId::from_raw(read_u64(bytes, &mut pos)?);
-        let age_ms = read_u32(bytes, &mut pos)?;
-        let flags = read_u8(bytes, &mut pos)?;
+        let proc_id = ProcId::from_raw(r.read_u64().map_err(|_| DehydrateError::Truncated)?);
+        let age_ms = r.read_u32().map_err(|_| DehydrateError::Truncated)?;
+        let flags = r.read_u8().map_err(|_| DehydrateError::Truncated)?;
         if (flags & HYDRATE_RESERVED_FLAGS_MASK) != 0 {
             return Err(DehydrateError::InvalidFlags(flags));
         }
         let subscribed_all = (flags & HYDRATE_FLAG_SUBSCRIBED_ALL) != 0;
         let entry_kind = (flags >> HYDRATE_KIND_SHIFT) & HYDRATE_KIND_MASK;
 
-        let tag_count = read_u16(bytes, &mut pos)? as usize;
+        let tag_count = r.read_u16().map_err(|_| DehydrateError::Truncated)? as usize;
         if tag_count > MAX_HYDRATE_TAGS_PER_ENTRY {
             return Err(DehydrateError::TooManyTags(tag_count));
         }
         let mut tags = Vec::with_capacity(tag_count);
         for _ in 0..tag_count {
-            tags.push(Tag64::from_raw(read_u64(bytes, &mut pos)?));
+            tags.push(Tag64::from_raw(
+                r.read_u64().map_err(|_| DehydrateError::Truncated)?,
+            ));
         }
-        let args_len = read_u32(bytes, &mut pos)? as usize;
-        let encoded_args = Bytes::copy_from_slice(read_slice(bytes, &mut pos, args_len)?);
+        let args_len = r.read_u32().map_err(|_| DehydrateError::Truncated)? as usize;
+        let encoded_args =
+            Bytes::copy_from_slice(r.read_exact(args_len).map_err(|_| DehydrateError::Truncated)?);
 
         let payload = match entry_kind {
             ENTRY_KIND_OK => {
-                let body_len = read_u32(bytes, &mut pos)? as usize;
-                let raw_body = Bytes::copy_from_slice(read_slice(bytes, &mut pos, body_len)?);
+                let body_len = r.read_u32().map_err(|_| DehydrateError::Truncated)? as usize;
+                let raw_body = Bytes::copy_from_slice(
+                    r.read_exact(body_len).map_err(|_| DehydrateError::Truncated)?,
+                );
                 HydratedPayload::Ok(raw_body)
             }
             ENTRY_KIND_DOMAIN_ERR => {
-                let status = read_u8(bytes, &mut pos)?;
+                let status = r.read_u8().map_err(|_| DehydrateError::Truncated)?;
                 if rpc_status_from_u8(status).is_none() {
                     return Err(DehydrateError::InvalidStatus(status));
                 }
-                let body_len = read_u32(bytes, &mut pos)? as usize;
-                let body = Bytes::copy_from_slice(read_slice(bytes, &mut pos, body_len)?);
+                let body_len = r.read_u32().map_err(|_| DehydrateError::Truncated)? as usize;
+                let body = Bytes::copy_from_slice(
+                    r.read_exact(body_len).map_err(|_| DehydrateError::Truncated)?,
+                );
                 HydratedPayload::DomainErr { status, body }
             }
             ENTRY_KIND_PROTOCOL_ERR => {
-                let status = read_u8(bytes, &mut pos)?;
+                let status = r.read_u8().map_err(|_| DehydrateError::Truncated)?;
                 if rpc_status_from_u8(status).is_none() {
                     return Err(DehydrateError::InvalidStatus(status));
                 }
-                let msg_len = read_u32(bytes, &mut pos)? as usize;
+                let msg_len = r.read_u32().map_err(|_| DehydrateError::Truncated)? as usize;
                 if msg_len > MAX_PROTOCOL_ERR_MSG_BYTES {
                     return Err(DehydrateError::TooLarge(msg_len));
                 }
-                let msg_bytes = read_slice(bytes, &mut pos, msg_len)?;
+                let msg_bytes = r.read_exact(msg_len).map_err(|_| DehydrateError::Truncated)?;
                 let message = core::str::from_utf8(msg_bytes)
                     .map_err(|_| DehydrateError::InvalidUtf8)?
                     .to_owned();
@@ -311,41 +321,8 @@ pub(crate) fn decode_hydration_entries(bytes: &[u8]) -> Result<Vec<HydratedEntry
         });
     }
 
-    if pos != bytes.len() {
-        return Err(DehydrateError::TrailingBytes(bytes.len() - pos));
+    if r.remaining() != 0 {
+        return Err(DehydrateError::TrailingBytes(r.remaining()));
     }
     Ok(out)
-}
-
-#[inline]
-fn read_u8(bytes: &[u8], pos: &mut usize) -> Result<u8, DehydrateError> {
-    Ok(read_slice(bytes, pos, 1)?[0])
-}
-
-#[inline]
-fn read_u16(bytes: &[u8], pos: &mut usize) -> Result<u16, DehydrateError> {
-    let slice = read_slice(bytes, pos, 2)?;
-    Ok(u16::from_le_bytes([slice[0], slice[1]]))
-}
-
-#[inline]
-fn read_u32(bytes: &[u8], pos: &mut usize) -> Result<u32, DehydrateError> {
-    let slice = read_slice(bytes, pos, 4)?;
-    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
-
-#[inline]
-fn read_u64(bytes: &[u8], pos: &mut usize) -> Result<u64, DehydrateError> {
-    let slice = read_slice(bytes, pos, 8)?;
-    Ok(u64::from_le_bytes([
-        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-    ]))
-}
-
-#[inline]
-fn read_slice<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], DehydrateError> {
-    let end = pos.checked_add(len).ok_or(DehydrateError::Truncated)?;
-    let slice = bytes.get(*pos..end).ok_or(DehydrateError::Truncated)?;
-    *pos = end;
-    Ok(slice)
 }

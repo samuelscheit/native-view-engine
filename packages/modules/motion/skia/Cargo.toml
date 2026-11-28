@@ -1,0 +1,25 @@
+[package]
+name = "nve-motion-skia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-backend-skia = { workspace = true }
+nve-tables = { workspace = true }
+nve-motion = { workspace = true }
+nve-store = { workspace = true }
+
+[dev-dependencies]
+nve-engine = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "driver_bench"
+harness = false
+
+[lints]
+workspace = true

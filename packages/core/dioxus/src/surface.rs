@@ -6,9 +6,9 @@
 use std::time::Instant;
 
 use dioxus_core::{ComponentFunction, Element, ScopeId, VirtualDom};
-use nve_abi::{FrameId, NodeId as AbiNodeId, SurfaceId};
-use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::tables::{Responsive, ResponsiveRules};
+use nve_abi::{FrameId, SurfaceId};
+use nve_tables::media::MediaQuery;
+use nve_tables::tables::{Responsive, ResponsiveRules, ResponsiveRulesView};
 use nve_engine::{BackendApplyStats, BackendError, HotPatchMsg, StoreBackend};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, NodeId, NodeStore};
@@ -51,6 +51,7 @@ pub struct DioxusSurface {
     surface_id: SurfaceId,
     pub(crate) vdom: VirtualDom,
     pub(crate) writer: NveMutationWriter,
+    pub(crate) event_slots: crate::events::EventSlots,
     initialized: bool,
     pending_hot_patches: Vec<HotPatchMsg>,
     signal_registry: SignalRegistry,
@@ -64,6 +65,7 @@ impl DioxusSurface {
             surface_id,
             vdom,
             writer: NveMutationWriter::new(surface_id),
+            event_slots: crate::events::EventSlots::new(),
             initialized: false,
             pending_hot_patches: Vec::new(),
             signal_registry: SignalRegistry::new(1),
@@ -153,26 +155,22 @@ impl DioxusSurface {
     }
 
     #[inline]
-    pub fn node_show_on(&self, node_id: AbiNodeId) -> Option<MediaQuery> {
+    pub fn node_show_on(&self, node_id: NodeId) -> Option<MediaQuery> {
         self.writer
             .store()
-            .try_row::<Responsive>(NodeId(node_id))
+            .try_row::<Responsive>(node_id)
             .and_then(|r| r.show_on())
     }
 
     #[inline]
-    pub fn node_responsive_rules(&self, node_id: AbiNodeId) -> &[ResponsiveRule] {
+    pub fn node_responsive_rules(&self, node_id: NodeId) -> Option<ResponsiveRulesView<'_>> {
         let store = self.writer.store();
-        let Some(resp) = store.try_row::<Responsive>(NodeId(node_id)) else {
-            return &[];
-        };
+        let resp = store.try_row::<Responsive>(node_id)?;
         let res = resp.rules();
         if res.is_none() {
-            return &[];
+            return None;
         }
-        store
-            .resource::<ResponsiveRules>(res)
-            .map_or(&[], |r| &*r.0)
+        store.resource::<ResponsiveRules>(res)
     }
 
     pub fn signal_registry(&self) -> &SignalRegistry {

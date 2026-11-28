@@ -62,6 +62,8 @@ class NveDrawListPainterTest {
         val good = DrawListBytes().fillRect(0f, 0f, 8f, 8f, red).build()
         val image = ImageBitmap(8, 8)
         assertEquals(DrawList.Error.TRAILING_BYTES, paint(Canvas(image), good + 0.toByte()))
+        assertEquals(DrawList.Error.TRAILING_BYTES, paint(Canvas(image), good + ByteArray(4)))
+        assertEquals(DrawList.Error.TRUNCATED, paint(Canvas(image), good.copyOf(good.size - 1)))
         assertEquals(0f, image.toPixelMap()[4, 4].alpha)
     }
 
@@ -128,7 +130,7 @@ class NveDrawListPainterTest {
         private var count = 0
 
         private fun op(code: Int, vararg floats: Float): DrawListBytes {
-            ops.put(code.toByte())
+            ops.putInt(code)
             floats.forEach { ops.putFloat(it) }
             count++
             return this
@@ -144,7 +146,7 @@ class NveDrawListPainterTest {
 
         fun build(): ByteArray {
             val out = ByteBuffer.allocate(DrawList.HEADER_SIZE + ops.position()).order(ByteOrder.LITTLE_ENDIAN)
-            out.put("NVE_DRAW1".toByteArray(Charsets.US_ASCII)).putShort(DrawList.FORMAT_VERSION.toShort()).putInt(count)
+            out.putInt(count)
             out.put(ops.array(), 0, ops.position())
             return out.array()
         }

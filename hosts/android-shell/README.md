@@ -8,8 +8,8 @@ The standalone zero-Gradle APK (`android-app/`) renders the runtime scene on nat
 |---|---|
 | `NveAndroidRuntimeJni.cpp` | create / destroy (owner thread only), app attach via the runtime's `load_app_module` (hot reload, optional state carry; loaded in place on Android) / detach, `submitFrame`, viewport, tick, hit test, `scrollBy`, pairing |
 | `NveAndroidSceneJni.cpp` | packed scene frame in the generated `NveJniFrame` layout (`long[]` header + cached `DirectByteBuffer` slabs: deltas incl. `moved_indices` / `dirty_resources`, `scroll_offsets`, tables with their sparse row index), per-call resource views |
-| `NveAndroidEventsJni.cpp` | `EventRing` (`nve_abi::encode_events`, all 10 payload tags; unknown kinds and non-UTF-8 strings rejected) → `NveDirectEvent` batch, host text measurer and wake listener callbacks into Java (runtime threads attached once as daemons) |
-| `android-app/` | `NveMainActivity` (lifecycle, pairing intent, keys), `NveSceneRenderer` (frame → Views), `NveViewStyle` (tables → View styles / TalkBack), `NveTextMeasurer` (`StaticLayout` measurement for runtime layout), `NveCanvasView` (`NVE_DRAW1`) |
+| `NveAndroidEventsJni.cpp` | `NVEV` v2 `EventRing` (`EventRingWriter`; header, arena spans, framing flags, and UTF-8 validated) → 64-byte-aligned `NveEventBatch`, host text measurer and wake listener callbacks into Java (runtime threads attached once as daemons) |
+| `android-app/` | `NveMainActivity` (lifecycle, pairing intent, keys), `NveSceneRenderer` (frame → Views), `NveViewStyle` (tables → View styles / TalkBack), `NveTextMeasurer` (`StaticLayout` measurement for runtime layout), `NveCanvasView` (`nve.res.draw_list` `FlatResource`) |
 
 Contracts locked at compile time: the packed frame layout is generated once (`nve codegen abi`:
 `NveJniFrame.java` + `nve_jni_frame.generated.hpp`), and CMake turns every `STATUS_*`, the

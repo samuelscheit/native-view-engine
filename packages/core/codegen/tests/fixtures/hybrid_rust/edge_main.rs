@@ -2,8 +2,8 @@
 use edge_hybrid::*;
 use nve_abi::hybrid::{decode_bin_arg, encode_to_vec};
 use nve_abi::{
-    NveBufferSlice, NveMapEntry, NveMapRef, NveStrSlice, NveValue, NveValueTag,
-    encode_bin_value_to_vec,
+    EventBatchBuf, NodeId, NveBufferSlice, NveMapEntry, NveMapRef, NveStrSlice, NveValue,
+    NveValueTag, SurfaceId, TimestampUs, encode_bin_value_to_vec,
 };
 
 #[derive(Default)]
@@ -325,50 +325,60 @@ fn canvas_view(node: &Node) {
 }
 
 fn direct_events(node: &Node) {
-    let mut seen = 0;
+    let mut batch = EventBatchBuf::new();
     let values = vec![Some("a".to_owned()), None];
-    emit_canvas_on_change(1, 2, 3, 44, node.clone(), values.clone(), sample_extra(), None, Tone::High, |d| {
-        seen += 1;
-        assert_eq!((d.surface_id, d.node_id, d.timestamp_us), (1, 2, 3));
-        assert_eq!(unsafe { d.name.as_str() }, Ok("on_change"));
-        let payload = unsafe { d.value.as_ref() };
-        assert_eq!(payload.get("surface_id").and_then(|v| v.as_i64()), Some(44));
-        let sink = payload.get("sink").unwrap();
-        assert!(sink.as_map().is_some());
-        assert_eq!(<Node as nve_abi::hybrid::HybridCodec>::decode_value_ref(sink).as_ref(), Ok(node));
-        let vals = payload.get("values").and_then(|v| v.as_array()).unwrap();
-        assert_eq!(vals.get(0).and_then(|v| v.as_str()), Some("a"));
-        assert!(vals.get(1).unwrap().is_null());
-        let extra = payload.get("extra").unwrap();
-        assert!(extra.as_map().is_some());
-        assert_eq!(NveHybridValue::from_ffi_ref(extra), Ok(sample_extra()));
-        assert!(payload.get("maybe").unwrap().is_null());
-        assert_eq!(payload.get("tone").and_then(|v| v.as_i64()), Some(9));
-    })
+    let (surf, nid, ts) = (SurfaceId::new(1, 1), NodeId::new(2, 1), TimestampUs(3));
+    emit_canvas_on_change(
+        surf,
+        nid,
+        ts,
+        44,
+        node.clone(),
+        values.clone(),
+        sample_extra(),
+        None,
+        Tone::High,
+        &mut batch,
+    )
     .unwrap();
-    CanvasOnPingEvent {}.emit_direct(0, 0, 0, |d| {
-        seen += 1;
-        assert_eq!(unsafe { d.value.as_ref() }.as_map().map(|m| m.len()), Some(0));
-    })
-    .unwrap();
-    emit_canvas_on_blob(0, 0, 0, [1; 33], 12, |d| {
-        seen += 1;
-        let payload = unsafe { d.value.as_ref() };
-        assert_eq!(payload.get("digest").and_then(|v| v.as_array()).map(|a| a.len()), Some(33));
-        assert_eq!(payload.get("size").and_then(|v| v.as_i64()), Some(12));
-    })
-    .unwrap();
+    CanvasOnPingEvent {}.push_to(SurfaceId::NULL, NodeId::NULL, TimestampUs(0), &mut batch).unwrap();
+    emit_canvas_on_blob(SurfaceId::NULL, NodeId::NULL, TimestampUs(0), [1; 33], 12, &mut batch).unwrap();
     assert_eq!(CanvasOnBlobEvent::default().digest, [0; 33]);
     if let Ok(too_big) = usize::try_from(u64::MAX) {
-        let result = emit_canvas_on_blob(0, 0, 0, [0; 33], too_big, |_| seen += 100);
+        let result = emit_canvas_on_blob(SurfaceId::NULL, NodeId::NULL, TimestampUs(0), [0; 33], too_big, &mut batch);
         assert_eq!(result, Err(nve_abi::DecodeError::OutOfRange("usize")));
     }
-    emit_blank_on_tap(0, 0, 0, 1.5, |d| {
-        seen += 1;
-        assert_eq!(unsafe { d.value.as_ref() }.get("x").and_then(|v| v.as_f64()), Some(1.5));
-    })
-    .unwrap();
-    assert_eq!(seen, 4);
+    emit_blank_on_tap(SurfaceId::NULL, NodeId::NULL, TimestampUs(0), 1.5, &mut batch).unwrap();
+
+    let validated = batch.as_validated();
+    assert_eq!(validated.len(), 4);
+
+    let e0 = validated.get(0).unwrap();
+    assert!(e0.is_custom());
+    assert_eq!((e0.surface(), e0.node(), e0.timestamp()), (surf, nid, ts));
+    assert_eq!(e0.custom_name(), "on_change");
+    let c0 = decode_bin_arg::<CanvasOnChangeEvent>(e0.custom_data()).unwrap();
+    assert_eq!(c0.surface_id, 44);
+    assert_eq!(&c0.sink, node);
+    assert_eq!(c0.values, values);
+    assert_eq!(c0.extra, sample_extra());
+    assert_eq!(c0.maybe, None);
+    assert_eq!(c0.tone, Tone::High);
+
+    let e1 = validated.get(1).unwrap();
+    assert_eq!(e1.custom_name(), "on_ping");
+    assert_eq!(decode_bin_arg::<CanvasOnPingEvent>(e1.custom_data()), Ok(CanvasOnPingEvent {}));
+
+    let e2 = validated.get(2).unwrap();
+    assert_eq!(e2.custom_name(), "on_blob");
+    let c2 = decode_bin_arg::<CanvasOnBlobEvent>(e2.custom_data()).unwrap();
+    assert_eq!((c2.digest, c2.size), ([1; 33], 12));
+
+    let e3 = validated.get(3).unwrap();
+    assert_eq!(e3.custom_name(), "on_tap");
+    let c3 = decode_bin_arg::<BlankOnTapEvent>(e3.custom_data()).unwrap();
+    assert_eq!(c3.x, 1.5);
+
     let bvt = build_blank_vtable::<Blank>();
     unsafe {
         let h = (bvt.create)();

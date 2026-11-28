@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use nve_abi::{NveBufferSlice, NveDirectEvent, NveEventBatch, NvePropsRef};
+use nve_abi::{NveBufferSlice, NveEventBatch, NvePropsRef, ValidatedEvents};
 use nve_engine::{CapabilityUnsupported, HotPatchMsg};
 use nve_layout::{HeuristicTextMeasurer, TextMeasurer};
 
@@ -77,10 +77,10 @@ impl SurfaceRuntime {
     }
 
     /// Drains app-emitted outbound events (borrowed until the next call on `self`).
-    pub fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], RuntimeError> {
+    pub fn drain_emitted_events(&mut self) -> Result<ValidatedEvents<'_>, RuntimeError> {
         let batch = self.drain_emitted_events_shared()?;
-        // SAFETY: The batch borrows app memory that stays untouched while `&mut self` is held.
-        Ok(unsafe { batch.try_as_slice() }.unwrap_or(&[]))
+        // SAFETY: The batch views app memory that stays untouched while `&mut self` is held.
+        Ok(unsafe { ValidatedEvents::from_raw(batch) })
     }
 
     /// FFI form: the batch stays valid until the next owner-thread call into the runtime.
@@ -89,7 +89,7 @@ impl SurfaceRuntime {
             with_app(
                 inner,
                 "app does not emit events (NVE_IFACE_COMPONENT)",
-                |app| app.drain_emitted_events().map(NveEventBatch::from_slice),
+                |app| app.drain_emitted_events().map(|events| events.as_raw_batch()),
             )
         })
     }

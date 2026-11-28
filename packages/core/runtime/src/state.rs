@@ -238,7 +238,7 @@ impl RuntimeInner {
     fn commit_and_publish(&mut self, has_changes: bool) {
         let (store, resources, state) = self.split_store_and_state();
         state.invalidate_published_view();
-        state.frame_id = state.frame_id.wrapping_add(1).max(1);
+        state.frame_id = state.frame_id.next();
         state.adopt_store(store);
         let t_lay = Timer::start();
         let laid_out = if has_changes {
@@ -288,7 +288,7 @@ impl RuntimeInner {
             };
             self.state.needs_render = false;
             pumps += 1;
-            let next_frame = self.state.frame_id.wrapping_add(1).max(1);
+            let next_frame = self.state.frame_id.next();
             let has_direct_store = app.direct_store().is_some();
             let t_rec = Timer::start();
             match app.render_frame(next_frame) {

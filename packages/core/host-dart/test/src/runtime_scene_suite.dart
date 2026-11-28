@@ -251,10 +251,38 @@ void runRuntimeScene(Check c) {
   // ---- generated core table layouts ---------------------------------------------------------
   c.that(!TextTable.dense && VisualTable.dense, 'storage');
   c.eq(VisualTable.defaults.length, VisualTable.words, 'defaults cover every word');
-  c.that(TypographyTable.fontSize.fits(TypographyTable.words), 'typography fontSize fits');
+  c.that(TypographyTable.inherited && TypographyTable.fontSize.fits(TypographyTable.words), 'typography inherited');
   c.eq(f32FromBits(TypographyTable.defaults[TypographyTable.fontSize.word]), 16.0, 'typography default font size');
   c.eq(NveOverflow.hidden, 1, 'word enum value');
-  c.eq(NveAriaTriState.trueValue, 2, 'reserved-word variant renamed');
-  c.eq(NveTypographySet.fontStyle, 1 << 7, 'typography set bit');
+  c.eq(NveAriaTriState.trueValue, 1, 'reserved-word variant renamed');
+  c.eq((TypographyTable.fontStyle.explicitBit, TypographyTable.fontStyle.inherits), (7, true), 'typography explicitBit');
+  c.eq(InteractionTable.eventsWord, 0, 'interaction eventsWord');
+  c.eq(NveInteractionEventSet.press, 1, 'interaction event set bit');
   c.eq(NveTextDecoration.lineThrough, 4, 'text decoration bit');
+
+  // ---- inheritedRowOf (explicit mask + ancestor walk + cycle termination) -------------------
+  const typoSlot = 12;
+  final inhRows = Uint32List.fromList(f.rows);
+  inhRows[1 * nodeRowWords + (typoSlot >> 5)] |= 1 << (typoSlot & 31);
+  inhRows[2 * nodeRowWords + (typoSlot >> 5)] |= 1 << (typoSlot & 31);
+  final typoWords = Uint32List(2 * TypographyTable.words)
+    ..[0] = (1 << TypographyTable.color.explicitBit) | (1 << TypographyTable.fontSize.explicitBit)
+    ..[TypographyTable.words] = 1 << TypographyTable.fontSize.explicitBit;
+  final typoTable = TableReader.sparse(
+    key: TypographyTable.key,
+    slot: typoSlot,
+    words: TypographyTable.words,
+    rows: ByteData.sublistView(typoWords),
+    owners: [1, 2 | (5 << 24)],
+  );
+  final inhScene = f.open(rows: inhRows, tables: [f.visual(), f.textTable(), typoTable]);
+  c.eq(inhScene.inheritedRowOf(typoTable, 2, TypographyTable.fontSize), 1, 'child override wins');
+  c.eq(inhScene.inheritedRowOf(typoTable, 2, TypographyTable.color), 0, 'unset field inherits parent row');
+  c.eq(inhScene.inheritedRowOf(typoTable, 2, TypographyTable.fontStyle), -1, 'unset everywhere -> -1');
+  final noInhField = FieldSpec(1, FieldKind.u32, explicitBit: TypographyTable.color.explicitBit, inherits: false);
+  c.eq(inhScene.inheritedRowOf(typoTable, 2, noInhField), -1, 'non-inheriting field does not walk parent');
+  // Cyclic parent chain terminates cleanly.
+  final cyclicRows = Uint32List.fromList(inhRows)..[1 * nodeRowWords + 4] = 2 | (5 << 24);
+  final cyclicScene = f.open(rows: cyclicRows, tables: [f.visual(), f.textTable(), typoTable]);
+  c.eq(cyclicScene.inheritedRowOf(typoTable, 2, TypographyTable.fontStyle), -1, 'cyclic parent chain terminates');
 }

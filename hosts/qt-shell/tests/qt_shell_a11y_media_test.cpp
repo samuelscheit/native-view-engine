@@ -55,9 +55,6 @@ void test_a11y_images_and_visuals() {
   h::Nve2Writer& w = app.w;
   w.create(1u);
   w.create(kColumn);
-  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
-        NVE_TYPOGRAPHY_SET_FONT_STYLE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_TEXT_DECORATION |
-            NVE_TYPOGRAPHY_SET_COLOR);
   w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
   (void)w.set_str(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "Courier");
   w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION, NVE_TEXT_DECORATION_UNDERLINE);
@@ -66,8 +63,6 @@ void test_a11y_images_and_visuals() {
   text_node(w, kHeading, "Settings and more settings that will not fit");
   a11y(w, kHeading, NVE_ARIA_ROLE_HEADING, "");
   w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LEVEL, 2u);
-  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
-        NVE_TYPOGRAPHY_SET_MAX_LINES | NVE_TYPOGRAPHY_SET_TEXT_ALIGN);
   w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_MAX_LINES, 1u);
   w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_ALIGN, NVE_TEXT_ALIGN_CENTER);
 
@@ -75,7 +70,7 @@ void test_a11y_images_and_visuals() {
   a11y(w, kCheck, NVE_ARIA_ROLE_CHECKBOX, "Agree");
   (void)w.set_str(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_HINT, "Accept the terms");
   w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_CHECKED, NVE_ARIA_TRI_STATE_TRUE);
-  subscribe(w, kCheck, {NVE_EVENT_PRESS});
+  subscribe(w, kCheck, {NVE_INTERACTION_EVENT_PRESS});
   w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(0, 0, 255));
   w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_COLOR, h::rgba(0, 255, 0));
   w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, 3.0f);
@@ -89,7 +84,7 @@ void test_a11y_images_and_visuals() {
 
   w.create(kDisabled);
   a11y(w, kDisabled, NVE_ARIA_ROLE_BUTTON, "Disabled");
-  subscribe(w, kDisabled, {NVE_EVENT_PRESS});
+  subscribe(w, kDisabled, {NVE_INTERACTION_EVENT_PRESS});
   w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
   size_node(w, kDisabled, 20.0f, 20.0f);
 
@@ -107,7 +102,6 @@ void test_a11y_images_and_visuals() {
   image(w, kImgFile, 62u, h::encode_image_url("file://" + tmp), "");
   image(w, kImgBad, 63u, h::encode_image_url("data:image/png;base64,AAAA"), "");
   image(w, kImgTint, 64u, h::encode_image_bytes(red), "");
-  w.set_bool(kImgTint, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_TINT_ENABLED, true);
   w.set(kImgTint, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_TINT, h::rgba(0, 0, 255));
   text_node(w, kHidden, "hidden");
   w.set(kHidden, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_VISIBILITY, NVE_VISIBILITY_HIDDEN);
@@ -160,12 +154,12 @@ void test_a11y_images_and_visuals() {
   QAccessibleActionInterface* act = check->actionInterface();
   NVE_CHECK(act != nullptr && act->actionNames() == QStringList{QAccessibleActionInterface::pressAction()});
   act->doAction(QAccessibleActionInterface::pressAction());
-  NVE_CHECK(app.count(NVE_EVENT_PRESS, kCheck) == 1u);  // the accessible press reaches the app
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_PRESS, kCheck) == 1u);  // the accessible press reaches the app
   QAccessibleInterface* disabled = iface(kDisabled);
   NVE_CHECK(disabled->state().disabled && disabled->actionInterface()->actionNames().isEmpty());
   NVE_CHECK(!widget.nativeWidgetForNodeId(kDisabled)->isEnabled());
   click(widget.nativeWidgetForNodeId(kDisabled), QPointF(2, 2));
-  NVE_CHECK(app.count(NVE_EVENT_PRESS, kDisabled) == 0u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_PRESS, kDisabled) == 0u);
   QAccessibleInterface* slider = iface(kSlider);
   NVE_CHECK(slider->role() == QAccessible::Slider && slider->valueInterface() != nullptr);
   NVE_CHECK(slider->valueInterface()->currentValue().toDouble() == 30.0);

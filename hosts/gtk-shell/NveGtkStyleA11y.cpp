@@ -80,7 +80,8 @@ GtkAccessibleRole aria_to_gtk(uint8_t role) noexcept {
 
 /// Explicit `nve.accessibility.role`, else the node kind's native role (`host::aria_role`).
 GtkAccessibleRole gtk_internal::accessible_role(const host::NodeData& node) noexcept {
-  return aria_to_gtk(host::aria_role(node));
+  const std::optional<uint8_t> role = host::aria_role(node);
+  return role ? aria_to_gtk(*role) : GTK_ACCESSIBLE_ROLE_GENERIC;
 }
 
 namespace {
@@ -166,25 +167,25 @@ void apply_accessibility(GtkWidget* widget, const GtkNodeSemantics& s) {
                                  GTK_ACCESSIBLE_PROPERTY_READ_ONLY, s.read_only ? TRUE : FALSE, -1);
   gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_DISABLED, s.disabled ? TRUE : FALSE,
                               GTK_ACCESSIBLE_STATE_HIDDEN, s.hidden ? TRUE : FALSE, -1);
-  if (s.checked != NVE_ARIA_TRI_STATE_UNSET) {
-    gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_CHECKED, tristate(s.checked), -1);
+  if (s.checked.has_value()) {
+    gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_CHECKED, tristate(*s.checked), -1);
   } else {
     gtk_accessible_reset_state(acc, GTK_ACCESSIBLE_STATE_CHECKED);
   }
-  if (s.pressed != NVE_ARIA_TRI_STATE_UNSET) {
-    gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_PRESSED, tristate(s.pressed), -1);
+  if (s.pressed.has_value()) {
+    gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_PRESSED, tristate(*s.pressed), -1);
   } else {
     gtk_accessible_reset_state(acc, GTK_ACCESSIBLE_STATE_PRESSED);
   }
-  if (s.selected != NVE_ARIA_TRI_STATE_UNSET) {
+  if (s.selected.has_value()) {
     gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_SELECTED,
-                                s.selected == NVE_ARIA_TRI_STATE_TRUE ? TRUE : FALSE, -1);
+                                *s.selected == NVE_ARIA_TRI_STATE_TRUE ? TRUE : FALSE, -1);
   } else {
     gtk_accessible_reset_state(acc, GTK_ACCESSIBLE_STATE_SELECTED);
   }
-  if (s.expanded != NVE_ARIA_TRI_STATE_UNSET) {
+  if (s.expanded.has_value()) {
     gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_EXPANDED,
-                                s.expanded == NVE_ARIA_TRI_STATE_TRUE ? TRUE : FALSE, -1);
+                                *s.expanded == NVE_ARIA_TRI_STATE_TRUE ? TRUE : FALSE, -1);
   } else {
     gtk_accessible_reset_state(acc, GTK_ACCESSIBLE_STATE_EXPANDED);
   }

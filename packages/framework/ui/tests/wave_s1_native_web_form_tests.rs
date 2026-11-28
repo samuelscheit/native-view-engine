@@ -13,9 +13,11 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::UiHarness;
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::{MemorySnapshotStorage, SnapshotStorage, WebBackend};
 use nve_dioxus::elements::backend::StoreBackend;
 use nve_dioxus::prelude::*;
+use nve_motion::MotionPreference;
 use nve_dioxus::DioxusSurface;
 use nve_ui::prelude::*;
 use nve_web_html_web::register_web_html_systems;
@@ -126,11 +128,11 @@ fn NativeWebPrimitivesShowcase() -> Element {
 
 #[test]
 fn native_overlays_disclosure_accordion_and_form_emit_exact_html5_and_hydrate_zero_mismatches() {
-    let mut surface = DioxusSurface::new(1, NativeWebPrimitivesShowcase);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, NativeWebPrimitivesShowcase);
 
     let mut web = WebBackend::new();
     register_web_html_systems(web.table_registry_mut());
-    surface.commit_to(1, &mut web).unwrap();
+    surface.commit_to(FrameId(1), &mut web).unwrap();
 
     let ssr = web.render_ssr(surface.store());
     let mirror = web.render_html(surface.store());
@@ -371,7 +373,7 @@ fn form_draft_store_works_with_memory_snapshot_storage_and_rejects_corruption_pl
     let mut fields = BTreeMap::new();
     fields.insert("title".into(), "Launch Notes".into());
     fields.insert("body".into(), "Binary draft".into());
-    let mut blob = encode_form_draft(&fields);
+    let mut blob = encode_form_draft(&fields).unwrap();
     assert!(blob.starts_with(b"NVE_FORM_DRAFT_V1"));
     assert_eq!(decode_form_draft(&blob), Some(fields.clone()));
     // Flip one bit -> XXH64 checksum MUST reject.

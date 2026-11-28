@@ -2,7 +2,7 @@
 
 use super::hoisted_tests::{assert_matches_fresh_layout, layout_once};
 use crate::TaffyStoreLayout;
-use nve_components::tables::{
+use nve_tables::tables::{
     Display, FlexDirection, InputKind, Layout, Overflow, Position, TextInput, Visual,
 };
 use nve_engine::LayoutRect;
@@ -106,8 +106,8 @@ fn contents_never_clips_and_a_contents_root_still_generates_the_viewport_box() {
     tx.edit::<Layout>(NodeId::ROOT).display(Display::Contents);
     tx.commit_into(&mut f.changes);
     layout_once(&mut f.store, &f.changes, &mut f.layout);
-    assert!(!nve_components::tables::node_clips_overflow(&f.store, f.c1));
-    assert!(nve_components::tables::node_clips_overflow(&f.store, f.row));
+    assert!(!nve_tables::tables::node_clips_overflow(&f.store, f.c1));
+    assert!(nve_tables::tables::node_clips_overflow(&f.store, f.row));
     assert_eq!(rect(&f.layout, NodeId::ROOT), (0.0, 0.0, 400.0, 300.0));
     assert_eq!(rect(&f.layout, f.leaves[2]), at(120.0, 10.0, 70.0, 20.0));
     assert_matches_fresh_layout(&f.store, &f.layout);
@@ -278,7 +278,7 @@ fn a_hidden_text_input_is_display_none_not_contents() {
     commit_frame(&mut f, |tx| {
         tx.edit::<TextInput>(c2).input_kind(InputKind::Hidden);
     });
-    assert!(!nve_components::tables::is_display_contents(&f.store, c2));
+    assert!(!nve_tables::tables::is_display_contents(&f.store, c2));
     // `c2` is now a (hidden) box child itself; its child `d` is never flattened into `row`.
     assert_eq!(f.layout.box_children.get(&f.store, f.row), &[a, b, c2, e]);
     assert_eq!(rect(&f.layout, e), at(120.0, 10.0, 40.0, 20.0));
@@ -359,7 +359,7 @@ fn contents_under_grid_text_and_hidden_ancestors_match_fresh_layout() {
         tx.edit::<Layout>(row).display(Display::Grid);
     });
     commit_frame(&mut f, |tx| {
-        tx.edit::<nve_components::tables::TextContent>(b)
+        tx.edit::<nve_tables::tables::TextContent>(b)
             .text("flattened text");
     });
     // A `display: none` ancestor hides the contents subtree; restoring it restores the flow.

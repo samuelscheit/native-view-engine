@@ -9,8 +9,9 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{criterion_group, Criterion};
-    use nve_components::tables::{
-        core_tables_schema_hash, Interaction, Layout, TextContent, Typography, Visual,
+    use nve_tables::tables::{
+        core_tables_schema_hash, EventSet, Interaction, InteractionEvent, Layout, TextContent,
+        Typography, Visual,
     };
     use nve_engine::{Frame0File, Frame0Meta, StateFile};
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
@@ -35,7 +36,7 @@ mod native {
                 nm.edit::<TextContent>().text("Bench Row Label");
             }
             if i % 8 == 0 {
-                nm.edit::<Interaction>().event_mask(1);
+                nm.edit::<Interaction>().listeners(EventSet::one(InteractionEvent::Press));
             }
             children.push(nm.id());
         }

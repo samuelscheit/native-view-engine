@@ -210,7 +210,7 @@ suite_rust_clippy() {
   cargo clippy --locked --workspace --all-targets -- -D warnings
   cargo clippy --locked -p nve-ui --features spatial-focus --all-targets -- -D warnings
   if has_wasm_target; then
-    cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy --locked -p nve-web-shell -p nve-docs-site --target wasm32-unknown-unknown -- -D warnings
   fi
 }
 
@@ -244,6 +244,17 @@ suite_abi_codegen_parity() {
   cargo run --locked -p nve-cli -- codegen abi --check
 }
 
+suite_rust_abi_release() {
+  cd "$REPO_ROOT"
+  cargo test --locked --release -p nve-abi --lib id::tests
+}
+
+suite_rust_abi_32bit() {
+  cd "$REPO_ROOT"
+  cargo check --locked -p nve-abi --target i686-linux-android
+  cargo check --locked -p nve-abi --target armv7-linux-androideabi
+}
+
 suite_rust_rpc_hyper_matrix() {
   cd "$REPO_ROOT"
   cargo check --locked -p nve-http-hyper --no-default-features --all-targets
@@ -265,6 +276,7 @@ suite_rust_wasm() {
   cd "$REPO_ROOT"
   cargo check --locked -p nve-web-shell --target wasm32-unknown-unknown
   cargo check --locked -p nve-web-shell --no-default-features --features app-issues --target wasm32-unknown-unknown
+  cargo check --locked -p nve-docs-site --target wasm32-unknown-unknown
   cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-http-web -p nve-query-dioxus -p nve-example-issues-api -p nve-example-issues-client --target wasm32-unknown-unknown
 }
 

@@ -12,7 +12,7 @@ namespace {
 float positive_or(float v, float fallback) noexcept { return std::isfinite(v) && v > 0.0f ? v : fallback; }
 
 bool hover_target(const WinNodeVisual& v) noexcept {
-  return v.wants(NVE_EVENT_POINTER_ENTER) || v.wants(NVE_EVENT_POINTER_LEAVE);
+  return v.wants(NVE_INTERACTION_EVENT_POINTER_ENTER) || v.wants(NVE_INTERACTION_EVENT_POINTER_LEAVE);
 }
 
 }  // namespace
@@ -153,7 +153,7 @@ void NveWinHost::notify_if_changed(uint64_t before) {
 
 // --- Input -------------------------------------------------------------------------------------
 
-bool NveWinHost::dispatch(const NveDirectEvent& ev) {
+bool NveWinHost::dispatch(const NveEvent& ev) {
   if (syncing_) return false;
   const auto alive = alive_;  // the event sink may destroy this host during the dispatch
   const bool changed = session_->dispatch(ev);
@@ -161,7 +161,15 @@ bool NveWinHost::dispatch(const NveDirectEvent& ev) {
   return changed;
 }
 
-bool NveWinHost::dispatch_pointer(uint32_t node, NveEventKind kind, float x, float y) {
+bool NveWinHost::dispatch_text(uint32_t node_id, NveTextInputEvent kind, std::string_view text) {
+  if (syncing_) return false;
+  const auto alive = alive_;  // the event sink may destroy this host during the dispatch
+  const bool changed = session_->dispatch_text(node_id, kind, text);
+  if (alive->load(std::memory_order_acquire)) sync_views();
+  return changed;
+}
+
+bool NveWinHost::dispatch_pointer(uint32_t node, NveInteractionEvent kind, float x, float y) {
   const auto frame = tree_.frame_of(node);
   const float lx = frame ? x - frame->rect.x : x, ly = frame ? y - frame->rect.y : y;
   return dispatch(session_->events().pointer(node, kind, lx, ly));
@@ -175,7 +183,7 @@ uint32_t NveWinHost::press_target(float x, float y) const {
   uint32_t target = 0u;
   for (const WinNodeVisual* v = tree_.hit_test(x, y); v != nullptr; v = tree_.find(v->parent)) {
     if (v->interaction.disabled) return 0u;  // disables itself and everything inside it
-    if (target == 0u && (v->wants(NVE_EVENT_PRESS) || host::openable_link(v->href))) target = v->id;
+    if (target == 0u && (v->wants(NVE_INTERACTION_EVENT_PRESS) || host::openable_link(v->href))) target = v->id;
   }
   return target;
 }
@@ -192,12 +200,12 @@ PressResult NveWinHost::pointer_up(float x, float y) {
   const WinNodeVisual* target = id != 0u && id == down ? tree_.find(id) : nullptr;
   if (target == nullptr || syncing_) return r;
   r.node_id = id;
-  if (!target->wants(NVE_EVENT_PRESS)) {
+  if (!target->wants(NVE_INTERACTION_EVENT_PRESS)) {
     r.href = target->href;  // `press_target` admitted it: an openable link
     return r;
   }
   r.dispatched = true;
-  r.changed = dispatch_pointer(id, NVE_EVENT_PRESS, x, y);  // may destroy `target`
+  r.changed = dispatch_pointer(id, NVE_INTERACTION_EVENT_PRESS, x, y);  // may destroy `target`
   return r;
 }
 
@@ -209,7 +217,7 @@ PressResult NveWinHost::press_at(float x, float y) {
 bool NveWinHost::scrolled(const WinNodeVisual& node, float x, float y) {
   const uint32_t id = node.id;
   const auto [cw, ch] = tree_.content_size(node);
-  const bool report = node.wants(NVE_EVENT_SCROLL);
+  const bool report = node.wants(NVE_SCROLL_EVENT_SCROLL);
   const uint64_t before = tree_.revision();
   tree_.set_scroll_offset(id, x, y);
   notify_if_changed(before);
@@ -250,27 +258,34 @@ void NveWinHost::pointer_move(float x, float y) {
   const WinNodeVisual* hit = tree_.hit_test(x, y);
   const WinNodeVisual* target = tree_.nearest(hit, hover_target);
   const uint32_t next = target != nullptr ? target->id : 0u;
-  const auto wants = [this](uint32_t id, NveEventKind k) {
+  const auto wants = [this](uint32_t id, NveInteractionEvent k) {
     const WinNodeVisual* v = tree_.find(id);
     return v != nullptr && v->wants(k);
   };
   const uint32_t mover = [&] {
-    const WinNodeVisual* m = tree_.nearest(hit, [](const WinNodeVisual& v) { return v.wants(NVE_EVENT_POINTER_MOVE); });
+    const WinNodeVisual* m =
+        tree_.nearest(hit, [](const WinNodeVisual& v) { return v.wants(NVE_INTERACTION_EVENT_POINTER_MOVE); });
     return m != nullptr ? m->id : 0u;
   }();
   if (next != hovered_) {
     const uint32_t prev = std::exchange(hovered_, next);
-    if (prev != 0u && wants(prev, NVE_EVENT_POINTER_LEAVE)) (void)dispatch_pointer(prev, NVE_EVENT_POINTER_LEAVE, x, y);
-    if (next != 0u && wants(next, NVE_EVENT_POINTER_ENTER)) (void)dispatch_pointer(next, NVE_EVENT_POINTER_ENTER, x, y);
+    if (prev != 0u && wants(prev, NVE_INTERACTION_EVENT_POINTER_LEAVE)) {
+      (void)dispatch_pointer(prev, NVE_INTERACTION_EVENT_POINTER_LEAVE, x, y);
+    }
+    if (next != 0u && wants(next, NVE_INTERACTION_EVENT_POINTER_ENTER)) {
+      (void)dispatch_pointer(next, NVE_INTERACTION_EVENT_POINTER_ENTER, x, y);
+    }
   }
-  if (mover != 0u && wants(mover, NVE_EVENT_POINTER_MOVE)) (void)dispatch_pointer(mover, NVE_EVENT_POINTER_MOVE, x, y);
+  if (mover != 0u && wants(mover, NVE_INTERACTION_EVENT_POINTER_MOVE)) {
+    (void)dispatch_pointer(mover, NVE_INTERACTION_EVENT_POINTER_MOVE, x, y);
+  }
 }
 
 void NveWinHost::pointer_leave() {
   const uint32_t prev = std::exchange(hovered_, 0u);
   const WinNodeVisual* v = tree_.find(prev);
-  if (v != nullptr && v->wants(NVE_EVENT_POINTER_LEAVE)) {
-    (void)dispatch(session_->events().pointer(prev, NVE_EVENT_POINTER_LEAVE, -1.0f, -1.0f));
+  if (v != nullptr && v->wants(NVE_INTERACTION_EVENT_POINTER_LEAVE)) {
+    (void)dispatch(session_->events().pointer(prev, NVE_INTERACTION_EVENT_POINTER_LEAVE, -1.0f, -1.0f));
   }
 }
 
@@ -286,11 +301,11 @@ uint8_t NveWinHost::cursor_at(float x, float y) const {
 }
 
 bool NveWinHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
-  return dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
+  return dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_CHANGE, text);
 }
 
 bool NveWinHost::dispatch_submit(uint32_t node_id, std::string_view text) {
-  return dispatch(session_->events().text(node_id, NVE_EVENT_SUBMIT, text));
+  return dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_SUBMIT, text);
 }
 
 bool NveWinHost::dispatch_focus(uint32_t node_id, bool focused) {

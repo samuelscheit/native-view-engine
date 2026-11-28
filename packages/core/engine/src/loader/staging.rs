@@ -635,13 +635,13 @@ mod staging_tests {
         let d1 = StagedDylib::load_with_root(&link, None, "mods", "g1").expect("load v1 via symlink");
         assert_eq!(d1.loaded_copy_path(), std::fs::canonicalize(&v1).expect("canon v1"));
         // SAFETY: Test fixture returns its integer tag without dereferencing.
-        assert_eq!(unsafe { (d1.get_interface())(0) as usize }, 1);
+        assert_eq!(unsafe { (d1.get_interface())(nve_abi::InterfaceId(0)) as usize }, 1);
         std::fs::remove_file(&link).expect("test fs op");
         std::os::unix::fs::symlink(&v2, &link).expect("test fs op");
         let d2 = StagedDylib::load_with_root(&link, None, "mods", "g2").expect("load v2 via repointed symlink");
         assert_eq!(d2.loaded_copy_path(), std::fs::canonicalize(&v2).expect("canon v2"));
         // SAFETY: Test fixture returns its integer tag without dereferencing.
-        assert_eq!(unsafe { (d2.get_interface())(0) as usize }, 2);
+        assert_eq!(unsafe { (d2.get_interface())(nve_abi::InterfaceId(0)) as usize }, 2);
         drop((d1, d2));
         std::fs::write(&v1, b"overwritten-v1").expect("test fs op");
         assert!(matches!(StagedDylib::load_with_root(&v1, None, "mods", "g3"), Err(LoaderError::AlreadyLoadedInPlace(_))));

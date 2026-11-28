@@ -6,8 +6,8 @@ use std::ffi::c_void;
 use std::ptr;
 
 use nve_abi::{
-    NveBufferSlice, NveEventBatch, NveRuntimeApi, NveRuntimeConfig, NveRuntimeStatus,
-    NVE_IFACE_DEV, NVE_IFACE_SURFACE, NVE_RUNTIME_ABI_VERSION,
+    FrameId, InterfaceId, NveBufferSlice, NveEventBatch, NveRuntimeApi, NveRuntimeConfig,
+    NveRuntimeStatus, SurfaceId, NVE_IFACE_DEV, NVE_IFACE_SURFACE, NVE_RUNTIME_ABI_VERSION,
 };
 use nve_runtime::nve_runtime_get_interface;
 
@@ -17,14 +17,14 @@ struct RawVtable<const N: usize>([*const c_void; N]);
 // SAFETY: Immutable table of function addresses.
 unsafe impl<const N: usize> Sync for RawVtable<N> {}
 
-unsafe extern "C" fn create(_surface: u32) -> *mut c_void {
+unsafe extern "C" fn create(_surface: SurfaceId) -> *mut c_void {
     Box::into_raw(Box::new(0u8)).cast()
 }
 unsafe extern "C" fn destroy(h: *mut c_void) {
     // SAFETY: `h` came from `create`.
     drop(unsafe { Box::from_raw(h.cast::<u8>()) });
 }
-unsafe extern "C" fn render(_h: *mut c_void, _frame: u64) -> NveBufferSlice {
+unsafe extern "C" fn render(_h: *mut c_void, _frame: FrameId) -> NveBufferSlice {
     NveBufferSlice::EMPTY
 }
 unsafe extern "C" fn dispatch(_h: *mut c_void, _batch: NveEventBatch) -> u32 {
@@ -51,10 +51,10 @@ static PARTIAL_SURFACE: RawVtable<4> = RawVtable([
 static PARTIAL_DEV: RawVtable<3> =
     RawVtable([ptr::null(), snapshot as *const c_void, restore as *const c_void]);
 
-unsafe extern "C" fn partial_surface_module(id: u32) -> *const c_void {
+unsafe extern "C" fn partial_surface_module(id: InterfaceId) -> *const c_void {
     if id == NVE_IFACE_SURFACE { (&raw const PARTIAL_SURFACE).cast() } else { ptr::null() }
 }
-unsafe extern "C" fn partial_dev_module(id: u32) -> *const c_void {
+unsafe extern "C" fn partial_dev_module(id: InterfaceId) -> *const c_void {
     match id {
         NVE_IFACE_SURFACE => (&raw const FULL_SURFACE).cast(),
         NVE_IFACE_DEV => (&raw const PARTIAL_DEV).cast(),

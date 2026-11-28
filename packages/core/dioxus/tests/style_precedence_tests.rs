@@ -285,7 +285,7 @@ fn same_frame_layer_removal_and_invalid_attr_fallback() {
         scene
             .writer
             .store()
-            .try_row::<nve_components::tables::Visual>(scene.node("style_to_wb"))
+            .try_row::<nve_tables::tables::Visual>(scene.node("style_to_wb"))
             .map(|v| v.background()),
         Some(Rgba::TRANSPARENT),
         "removed inline background must clear"

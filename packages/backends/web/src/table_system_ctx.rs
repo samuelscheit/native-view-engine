@@ -1,7 +1,7 @@
 //! Per-commit mutable context ([`WebSystemCommitCtx`]) passed into [`super::WebTableSystem`] hooks.
 
 use nve_abi::hash::HashMap;
-use nve_store::{NodeId, TableEventBus, TableSlot};
+use nve_store::{EventBatchBuf, NodeId, TableSlot};
 
 #[cfg(target_arch = "wasm32")]
 use crate::table_system::WebStoreRenderer;
@@ -30,6 +30,11 @@ impl ClickInterceptors {
         }
     }
 
+    /// Whether no plugin click hooks are registered.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.hooks.is_empty()
+    }
+
     /// Runs every hook in priority order until one consumes the click.
     pub(crate) fn consume(&self, ev: &web_sys::MouseEvent) -> bool {
         self.hooks.iter().any(|hook| hook(ev))
@@ -54,11 +59,11 @@ impl WebStoreRenderer {
     pub(crate) fn sync_connected_plugins(
         &mut self,
         store: &nve_store::NodeStore,
-        live: &HashMap<u32, web_sys::Element>,
+        live: &HashMap<NodeId, web_sys::Element>,
     ) {
         for (slot, node) in self.connected_sync.drain(..) {
             if store.is_live(node)
-                && let (Some(sys), Some(el)) = (self.registry.get(slot), live.get(&node.raw()))
+                && let (Some(sys), Some(el)) = (self.registry.get(slot), live.get(&node))
             {
                 sys.sync_connected(store, node, el);
             }
@@ -84,7 +89,7 @@ pub struct WebSystemCommitCtx<'a> {
     pub attrs: &'a mut HashMap<NodeId, Vec<(String, String)>>,
     pub inner_html: &'a mut HashMap<NodeId, String>,
     pub inline_css: &'a mut HashMap<NodeId, String>,
-    pub events: &'a mut TableEventBus,
+    pub events: &'a mut EventBatchBuf,
     pub(crate) current_slot: TableSlot,
     pub(crate) registry: &'a WebTableRegistry,
     pub(crate) slot_attrs: &'a mut HashMap<(NodeId, TableSlot), Vec<OwnedAttr>>,
@@ -376,13 +381,13 @@ impl RetagElementSink for web_sys::Element {
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn replay_retagged_mirrors<E: RetagElementSink>(
     retagged: &[NodeId],
-    live: &HashMap<u32, E>,
+    live: &HashMap<NodeId, E>,
     plugin_attrs: &HashMap<NodeId, Vec<(String, String)>>,
     plugin_inline_css: &HashMap<NodeId, String>,
     plugin_inner_html: &HashMap<NodeId, String>,
 ) {
     for &nid in retagged {
-        let Some(el) = live.get(&nid.raw()) else {
+        let Some(el) = live.get(&nid) else {
             continue;
         };
         if let Some(attrs) = plugin_attrs.get(&nid) {
@@ -407,12 +412,12 @@ pub(crate) fn dispatch_retagged_sync<E>(
     registry: &WebTableRegistry,
     store: &nve_store::NodeStore,
     retagged: &[NodeId],
-    live: &HashMap<u32, E>,
+    live: &HashMap<NodeId, E>,
     committed: &nve_abi::hash::HashSet<(TableSlot, NodeId)>,
     mut on_sync: impl FnMut(&dyn crate::table_system::WebTableSystem, NodeId, &E),
 ) {
     for &nid in retagged {
-        let Some(el) = live.get(&nid.raw()) else { continue };
+        let Some(el) = live.get(&nid) else { continue };
         for sys in registry.iter() {
             let slot = sys.slot();
             if store.has_slot(nid, slot) && !committed.contains(&(slot, nid)) {

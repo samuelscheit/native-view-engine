@@ -1,171 +1,271 @@
-//! Zero-serialization in-process typed `TableEvent` bus + FFI `NveDirectEvent` bridge.
+//! Per-surface refcounted event listener tracker (`[u32; 32]` counts per tracked table).
 //!
-//! Modules emit typed return events (e.g. `WebView` load/message, `VideoPlayer` progress,
-//! `Camera` frame, 3P `MapView` region-change) without allocating or serializing in-process.
-//! When crossing a C ABI / wire boundary, each event encodes cleanly into
-//! `NativeEventKind::TableEvent` (`NveDirectEvent::table_event`).
+//! Tracks `EventSet<E>` listener masks across committed `ChangeSet`s with zero hash maps and zero
+//! steady-state heap allocations. Backends call [`SurfaceEventTracker::sync`] after each commit to
+//! observe exact `0 -> 1` (subscribe) and `1 -> 0` (unsubscribe) transitions per `(TableSlot, EventId)`
+//! for lazy platform listener delegation (e.g. DOM root listeners on Web).
 
-use std::any::Any;
-use std::sync::Arc;
+use nve_abi::table::{MAX_TABLE_SLOTS, NO_VAL_WORD};
+use nve_abi::{EventEnum, EventId, EventSet};
 
-use nve_abi::{EventPayload, Key64, NativeEvent, NativeEventKind, NveDirectEvent, SurfaceId};
-
+use crate::changes::ChangeSet;
 use crate::id::NodeId;
-use crate::table::{NveTable, TableSlot};
+use crate::store::NodeStore;
+use crate::table::{HasEvents, TableSlot};
 
-/// One typed table event delivered in-process with zero serialization.
 #[derive(Debug, Clone)]
-pub struct TypedTableEvent {
-    pub surface_id: SurfaceId,
-    pub node: NodeId,
-    pub timestamp_us: u64,
-    pub table: TableSlot,
-    pub table_key: Key64,
-    pub event_id: u32,
-    /// In-process typed payload (`None` for wire-decoded events that only carry raw bytes).
-    typed: Option<Arc<dyn Any + Send + Sync>>,
-    /// Wire-encoded payload bytes (populated lazily or when decoded from FFI/EventRing).
-    wire_bytes: Vec<u8>,
+struct TrackedTable {
+    slot: TableSlot,
+    events_word: u8,
+    counts: [u32; 32],
+    /// Dense node-index-indexed shadow of each live node's last observed `events_word` mask.
+    masks: Vec<u32>,
 }
 
-impl TypedTableEvent {
-    /// Creates an in-process typed event (zero serialization).
-    pub fn typed<T: NveTable, P: Send + Sync + 'static>(
-        surface_id: SurfaceId,
-        node: NodeId,
-        timestamp_us: u64,
-        event_id: u32,
-        payload: P,
-    ) -> Self {
+impl TrackedTable {
+    fn new(slot: TableSlot, events_word: u8) -> Self {
         Self {
-            surface_id,
-            node,
-            timestamp_us,
-            table: T::slot(),
-            table_key: T::DESC.key,
-            event_id,
-            typed: Some(Arc::new(payload)),
-            wire_bytes: Vec::new(),
+            slot,
+            events_word,
+            counts: [0; 32],
+            masks: Vec::new(),
+        }
+    }
+}
+
+/// Refcounted listener tracker over every `#[nve_table(events = E)]` table in a surface's
+/// [`NodeStore`].
+#[derive(Debug, Clone)]
+pub struct SurfaceEventTracker {
+    /// Maps `TableSlot.0` -> index in `tables` (`u8::MAX` = untracked).
+    slot_to_idx: [u8; MAX_TABLE_SLOTS],
+    tables: Vec<TrackedTable>,
+}
+
+impl Default for SurfaceEventTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SurfaceEventTracker {
+    pub const fn new() -> Self {
+        Self {
+            slot_to_idx: [u8::MAX; MAX_TABLE_SLOTS],
+            tables: Vec::new(),
         }
     }
 
-    /// Creates a table event carrying raw wire payload bytes (from FFI / EventRing).
-    pub fn from_wire(
-        surface_id: SurfaceId,
-        node: NodeId,
-        timestamp_us: u64,
-        table: TableSlot,
-        table_key: Key64,
-        event_id: u32,
-        payload: Vec<u8>,
-    ) -> Self {
-        Self {
-            surface_id,
-            node,
-            timestamp_us,
-            table,
-            table_key,
-            event_id,
-            typed: None,
-            wire_bytes: payload,
+    /// Pre-registers a compiled `#[nve_table(events = E)]` table so the first frame's `sync` does
+    /// not allocate a table entry.
+    pub fn track<T: HasEvents>(&mut self) {
+        self.track_slot(T::slot(), T::DESC.events_word);
+    }
+
+    /// Pre-registers `slot` with its `events_word` (`0..32`).
+    pub fn track_slot(&mut self, slot: TableSlot, events_word: u8) {
+        let _ = self.ensure_tracked(slot, events_word);
+    }
+
+    /// Pre-sizes dense per-node shadow masks across all currently tracked tables so steady-state
+    /// [`Self::sync`] performs zero heap allocations up to `node_capacity` nodes.
+    pub fn reserve_nodes(&mut self, node_capacity: usize) {
+        for t in &mut self.tables {
+            if t.masks.len() < node_capacity {
+                t.masks.resize(node_capacity, 0);
+            }
         }
     }
 
-    /// Zero-cost typed downcast for in-process consumers.
     #[inline]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "TableEvent type-erased in-process payload boundary"
-    )]
-    pub fn payload<P: 'static>(&self) -> Option<&P> {
-        self.typed.as_deref()?.downcast_ref::<P>()
+    fn ensure_tracked(&mut self, slot: TableSlot, events_word: u8) -> Option<usize> {
+        let slot_idx = slot.0 as usize;
+        if slot_idx >= MAX_TABLE_SLOTS || events_word >= 32 {
+            return None;
+        }
+        let existing = self.slot_to_idx[slot_idx];
+        if existing != u8::MAX {
+            return Some(existing as usize);
+        }
+        let idx = self.tables.len();
+        debug_assert!(idx < MAX_TABLE_SLOTS);
+        self.tables.push(TrackedTable::new(slot, events_word));
+        self.slot_to_idx[slot_idx] = idx as u8;
+        Some(idx)
     }
 
-    /// Raw wire bytes (if present).
     #[inline]
-    pub fn wire_bytes(&self) -> &[u8] {
-        &self.wire_bytes
-    }
-
-    /// Converts into a cross-boundary [`NativeEvent`] (encodes via `encode_payload` if needed).
-    pub fn to_native_event(&self, encode_payload: impl FnOnce(&Self) -> Vec<u8>) -> NativeEvent {
-        let payload = if !self.wire_bytes.is_empty() {
-            self.wire_bytes.clone()
+    fn table_ref(&self, slot: TableSlot) -> Option<&TrackedTable> {
+        let idx = *self.slot_to_idx.get(slot.0 as usize)?;
+        if idx == u8::MAX {
+            None
         } else {
-            encode_payload(self)
-        };
-        NativeEvent {
-            surface_id: self.surface_id,
-            node_id: self.node.0,
-            timestamp_us: self.timestamp_us,
-            kind: NativeEventKind::TableEvent,
-            payload: EventPayload::TableEvent {
-                table_key: self.table_key.0,
-                event_id: self.event_id,
-                payload,
-            },
+            self.tables.get(idx as usize)
         }
     }
 
-    /// Borrows this event's raw wire bytes as a zero-copy [`NveDirectEvent`].
     #[inline]
-    pub fn as_direct_event(&self) -> NveDirectEvent {
-        NveDirectEvent::table_event(
-            self.surface_id,
-            self.node.0,
-            self.timestamp_us,
-            self.table_key,
-            self.event_id,
-            &self.wire_bytes,
-        )
-    }
-}
-
-/// Reusable per-surface queue of typed table return events.
-#[derive(Debug, Default)]
-pub struct TableEventBus {
-    queue: Vec<TypedTableEvent>,
-}
-
-impl TableEventBus {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Enqueues a zero-serialization typed event for table `T`.
-    pub fn emit<T: NveTable, P: Send + Sync + 'static>(
-        &mut self,
-        surface_id: SurfaceId,
-        node: NodeId,
-        timestamp_us: u64,
-        event_id: u32,
-        payload: P,
+    fn apply_mask_delta(
+        t: &mut TrackedTable,
+        node_index: usize,
+        new_mask: u32,
+        on_transition: &mut impl FnMut(TableSlot, EventId, bool),
     ) {
-        self.queue
-            .push(TypedTableEvent::typed::<T, P>(surface_id, node, timestamp_us, event_id, payload));
+        let old_mask = t.masks.get(node_index).copied().unwrap_or(0);
+        if old_mask == new_mask {
+            return;
+        }
+        if new_mask != 0 && node_index >= t.masks.len() {
+            t.masks.resize(node_index + 1, 0);
+        }
+        if node_index < t.masks.len() {
+            t.masks[node_index] = new_mask;
+        }
+        let mut added = new_mask & !old_mask;
+        while added != 0 {
+            let bit = added.trailing_zeros() as usize;
+            added &= added - 1;
+            let prev = t.counts[bit];
+            t.counts[bit] = prev + 1;
+            if prev == 0 {
+                on_transition(t.slot, EventId(bit as u32), true);
+            }
+        }
+        let mut removed = old_mask & !new_mask;
+        while removed != 0 {
+            let bit = removed.trailing_zeros() as usize;
+            removed &= removed - 1;
+            debug_assert!(
+                t.counts[bit] > 0,
+                "SurfaceEventTracker: refcount underflow for slot {:?} bit {bit}",
+                t.slot
+            );
+            let next = t.counts[bit].saturating_sub(1);
+            t.counts[bit] = next;
+            if next == 0 {
+                on_transition(t.slot, EventId(bit as u32), false);
+            }
+        }
     }
 
-    /// Enqueues a raw wire event decoded from FFI / EventRing.
-    pub fn emit_raw(&mut self, event: TypedTableEvent) {
-        self.queue.push(event);
+    /// Updates refcounts from one committed [`ChangeSet`] against `store`, invoking
+    /// `on_transition(slot, event_id, true)` when an event transitions `0 -> 1` listeners and
+    /// `on_transition(slot, event_id, false)` when it transitions `1 -> 0`.
+    pub fn sync(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+        mut on_transition: impl FnMut(TableSlot, EventId, bool),
+    ) {
+        if !changes.removed.is_empty() {
+            for &id in &changes.removed {
+                let idx = id.index();
+                for t in &mut self.tables {
+                    if idx < t.masks.len() && t.masks[idx] != 0 {
+                        Self::apply_mask_delta(t, idx, 0, &mut on_transition);
+                    }
+                }
+            }
+        }
+
+        for tc in changes.tables() {
+            let ew = store.events_word(tc.slot);
+            if ew == NO_VAL_WORD {
+                continue;
+            }
+            let Some(t_idx) = self.ensure_tracked(tc.slot, ew) else {
+                continue;
+            };
+            let t = &mut self.tables[t_idx];
+            let ew = t.events_word;
+            let ev_bit = 1u32 << ew;
+            for &id in &tc.detached {
+                let idx = id.index();
+                if idx < t.masks.len() && t.masks[idx] != 0 {
+                    Self::apply_mask_delta(t, idx, 0, &mut on_transition);
+                }
+            }
+            for (id, dirty_mask) in tc.iter() {
+                if (dirty_mask & ev_bit) == 0 {
+                    continue;
+                }
+                let new_mask = store
+                    .words(id, tc.slot)
+                    .and_then(|w| w.get(ew as usize).copied())
+                    .unwrap_or(0);
+                Self::apply_mask_delta(t, id.index(), new_mask, &mut on_transition);
+            }
+        }
     }
 
+    /// Silently zeroes all active counts and per-node masks (retains allocated capacity).
+    pub fn reset(&mut self) {
+        for t in &mut self.tables {
+            t.counts = [0; 32];
+            t.masks.fill(0);
+        }
+    }
+
+    /// Raw 32-bit listener mask tracked for `id` in `slot` (`0` if untracked or unset).
     #[inline]
-    pub fn len(&self) -> usize {
-        self.queue.len()
+    pub fn listeners(&self, slot: TableSlot, id: NodeId) -> u32 {
+        self.table_ref(slot)
+            .and_then(|t| t.masks.get(id.index()).copied())
+            .unwrap_or(0)
     }
 
+    /// Typed [`EventSet`] tracked for `id` in table `T`.
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+    pub fn listeners_of<T: HasEvents>(&self, id: NodeId) -> EventSet<T::Event> {
+        EventSet::from_raw(self.listeners(T::slot(), id))
     }
 
-    /// Drains all pending table events.
-    pub fn drain(&mut self) -> std::vec::Drain<'_, TypedTableEvent> {
-        self.queue.drain(..)
+    /// Number of live nodes currently subscribed to `(slot, event)`.
+    #[inline]
+    pub fn active_count(&self, slot: TableSlot, event: EventId) -> u32 {
+        let bit = event.raw() as usize;
+        if bit >= 32 {
+            return 0;
+        }
+        self.table_ref(slot).map_or(0, |t| t.counts[bit])
     }
 
-    pub fn clear(&mut self) {
-        self.queue.clear();
+    /// Number of live nodes currently subscribed to typed `event` on table `T`.
+    #[inline]
+    pub fn active_count_of<T: HasEvents>(&self, event: T::Event) -> u32 {
+        self.active_count(T::slot(), event.event_id())
+    }
+
+    /// Whether at least one live node is subscribed to `(slot, event)`.
+    #[inline]
+    pub fn has_active(&self, slot: TableSlot, event: EventId) -> bool {
+        self.active_count(slot, event) > 0
+    }
+
+    /// Whether at least one live node is subscribed to typed `event` on table `T`.
+    #[inline]
+    pub fn has_active_of<T: HasEvents>(&self, event: T::Event) -> bool {
+        self.active_count_of::<T>(event) > 0
+    }
+
+    /// Bitmask of every event bit `0..32` with `active_count > 0` on `slot`.
+    #[inline]
+    pub fn active_mask(&self, slot: TableSlot) -> u32 {
+        let Some(t) = self.table_ref(slot) else {
+            return 0;
+        };
+        let mut mask = 0u32;
+        for (bit, &count) in t.counts.iter().enumerate() {
+            if count > 0 {
+                mask |= 1u32 << bit;
+            }
+        }
+        mask
+    }
+
+    /// Typed [`EventSet`] of every active event on table `T`.
+    #[inline]
+    pub fn active_set<T: HasEvents>(&self) -> EventSet<T::Event> {
+        EventSet::from_raw(self.active_mask(T::slot()))
     }
 }

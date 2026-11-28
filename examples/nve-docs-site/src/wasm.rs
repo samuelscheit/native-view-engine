@@ -11,17 +11,13 @@ mod appearance;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
-    ROOT_NODE_ID, SurfaceId,
-};
+use nve_abi::{EventBatchBuf, FrameId, InteractionEvent, NodeId, ROOT_NODE_ID, SurfaceId};
 use nve_backend_web::{HydrationReport, WebBackend};
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_dioxus::DioxusSurface;
 use nve_docs::{DocsRoute, DocsViewport};
 use nve_engine::{StoreBackend, Viewport};
 use nve_router::web::{BrowserHistoryBackend, WebHistoryAdapter};
-use nve_store::NodeId as StoreNodeId;
 use nve_ui::ThemeMode;
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use wasm_bindgen::JsCast;
@@ -35,7 +31,7 @@ use appearance::{
     stored_theme_mode, sync_document_theme,
 };
 
-const DOCS_SURFACE_ID: SurfaceId = 1;
+const DOCS_SURFACE_ID: SurfaceId = SurfaceId::ROOT;
 
 struct DocsWebSession {
     base_path: String,
@@ -55,37 +51,36 @@ struct DocsWebSession {
 
 impl DocsWebSession {
     fn render_next_frame(&mut self) -> Result<(), String> {
-        self.frame_id = self.frame_id.saturating_add(1);
+        self.frame_id = self.frame_id.next();
         self.surface
             .commit_to(self.frame_id, &mut self.backend)
             .map_err(|e| format!("WebBackend commit_to failed: {e}"))?;
         Ok(())
     }
 
-    fn find_node_by_test_id(&self, tid: &str) -> Option<nve_abi::NodeId> {
+    fn find_node_by_test_id(&self, tid: &str) -> Option<NodeId> {
         let store = self.surface.store();
-        let mut stack = vec![StoreNodeId::ROOT];
+        let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
-            if id != StoreNodeId::ROOT
+            if id != NodeId::ROOT
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
         None
     }
 
-    fn data_attr_of(&self, id: nve_abi::NodeId, key: &str) -> Option<String> {
+    fn data_attr_of(&self, id: NodeId, key: &str) -> Option<String> {
         let store = self.surface.store();
-        let res = store.try_row::<HtmlDataAttrs>(StoreNodeId(id))?.entries();
+        let res = store.try_row::<HtmlDataAttrs>(id)?.entries();
         let list = store.resource::<DataAttrList>(res)?;
         let stripped = key.strip_prefix("data-").unwrap_or(key);
-        list.0
-            .iter()
-            .find(|(k, _)| k == key || k == stripped)
-            .map(|(_, v)| v.clone())
+        list.iter()
+            .find(|(k, _)| *k == key || *k == stripped)
+            .map(|(_, v)| v.to_owned())
     }
 
     fn current_active_route(&self) -> Option<String> {
@@ -124,37 +119,45 @@ impl DocsWebSession {
         }
     }
 
-    fn retarget_root_keydown(&self, events: &mut [NativeEvent]) {
+    fn retarget_root_keydown(&self, src: &EventBatchBuf, dst: &mut EventBatchBuf) {
+        dst.clear();
         let search_input_id = self.find_node_by_test_id("docs-search-input");
         let docs_root_id = self.find_node_by_test_id("docs-root");
 
-        for ev in events {
-            if ev.node_id == ROOT_NODE_ID
-                && ev.kind == NativeEventKind::KeyDown
-                && let EventPayload::Key { key, modifiers, .. } = &ev.payload
-            {
-                let has_primary = (*modifiers & (NVE_KEY_MOD_META | NVE_KEY_MOD_CTRL)) != 0;
-                let is_cmd_k = has_primary && key.eq_ignore_ascii_case("k");
-                if is_cmd_k {
-                    if let Some(root_id) = docs_root_id {
-                        ev.node_id = root_id;
-                    }
-                } else if let Some(input_id) = search_input_id {
-                    ev.node_id = input_id;
-                } else if let Some(root_id) = docs_root_id {
-                    ev.node_id = root_id;
+        for ev in src.as_validated().iter() {
+            if ev.node() == ROOT_NODE_ID && ev.interaction() == Some(InteractionEvent::KeyDown) {
+                let is_cmd_k = ev.has_primary_modifier() && ev.key().eq_ignore_ascii_case("k");
+                let target = if is_cmd_k {
+                    docs_root_id.unwrap_or(ROOT_NODE_ID)
+                } else {
+                    search_input_id.or(docs_root_id).unwrap_or(ROOT_NODE_ID)
+                };
+                if target != ROOT_NODE_ID {
+                    dst.push_key_down(
+                        ev.surface(),
+                        target,
+                        ev.timestamp(),
+                        ev.key(),
+                        ev.code(),
+                        ev.flags(),
+                        ev.key_code(),
+                    );
+                    continue;
                 }
             }
+            dst.push_validated(ev);
         }
     }
 
     fn pump_events(&mut self) -> Result<(), String> {
-        let mut drained = self.backend.drain_events();
+        let mut drained = EventBatchBuf::new();
+        self.backend.drain_events(&mut drained);
         if drained.is_empty() {
             return Ok(());
         }
-        self.retarget_root_keydown(&mut drained);
-        if self.surface.dispatch_events(&drained) {
+        let mut retargeted = EventBatchBuf::with_capacity(drained.len(), drained.bytes().len());
+        self.retarget_root_keydown(&drained, &mut retargeted);
+        if self.surface.dispatch_events(retargeted.as_validated()) {
             self.render_next_frame()?;
             self.sync_browser_chrome(true);
         }
@@ -418,7 +421,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         surface,
         backend,
         history,
-        frame_id: 0,
+        frame_id: FrameId::ZERO,
         viewport: actual_vp,
         last_route: initial_route.as_str().to_string(),
         persisted_mode,

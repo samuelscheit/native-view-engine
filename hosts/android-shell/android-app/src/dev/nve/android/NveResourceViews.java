@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.widget.ImageView;
 
+import dev.nve.host.DrawList;
 import dev.nve.host.FrameHost;
 import dev.nve.host.ImageSource;
 import dev.nve.host.SceneReader;
@@ -72,7 +73,7 @@ final class NveResourceViews {
         index(n, res);
         n.boundPass = pass;
         final ByteBuffer bytes = res == 0 ? null : surface.resource(res);
-        if (bytes == null) {
+        if (bytes == null || !surface.resourceKind().equals(DrawList.KIND)) {
             view.clearDrawList();
         } else {
             view.setDrawList(bytes);  // copied: the frame's buffer dies at release

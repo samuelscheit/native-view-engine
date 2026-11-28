@@ -1,6 +1,9 @@
 //! Zero-allocation steady-state clean-frame and paint-only verification for [`YogaLayoutEngine`]
 //! with positive + cross-thread `CountingAlloc` isolation probes.
 
+#[path = "support/require_yoga.rs"]
+mod require_yoga;
+
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
 use std::cell::Cell;
 use std::hint::{black_box, spin_loop};
@@ -8,11 +11,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use nve_components::tables::{Layout, TextContent, Typography, Visual};
+use nve_tables::tables::{Layout, TextContent, Typography, Visual};
 use nve_engine::Viewport;
 use nve_layout::StoreLayoutEngine;
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
+use require_yoga::require_yoga_or_skip;
 
 struct CountingAlloc;
 
@@ -60,17 +64,6 @@ fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, usize) {
     let out = f();
     let after = THREAD_ALLOCS.with(Cell::get);
     (out, after.wrapping_sub(before))
-}
-
-fn require_yoga_or_skip() -> bool {
-    if YogaLayoutEngine::is_available() {
-        return true;
-    }
-    assert!(
-        std::env::var_os("NVE_REQUIRE_YOGA").is_none(),
-        "NVE_REQUIRE_YOGA is set but real React Native Yoga was not compiled in (set RN_REACT_COMMON_DIR)"
-    );
-    false
 }
 
 #[test]

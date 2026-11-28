@@ -25,16 +25,6 @@ pub use state_file::{
 #[cfg(not(target_arch = "wasm32"))]
 static ATOMIC_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-#[inline]
-pub(crate) fn le_u32(b: &[u8]) -> u32 {
-    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-}
-
-#[inline]
-pub(crate) fn le_u64(b: &[u8]) -> u64 {
-    u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
-}
-
 #[derive(Debug)]
 pub enum PersistenceError {
     Io(io::Error),

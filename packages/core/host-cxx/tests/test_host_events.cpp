@@ -1,12 +1,14 @@
-// `OwnedEvents` (the deep copy `HostSession::pump` hands its sink) and the pump's event path:
-// every slice kind copied into flat slabs (text, STR, BYTES, nested ARRAY / MAP, NULL-with-len,
-// the depth limit), slices valid after a move, zero C++ allocations for a reused buffer and for a
-// steady-state `pump` (counting global `operator new`), and a sink that destroys its session.
+// `OwnedEvents` (64-byte-aligned `NveEvent` + flat byte arena + `NVEV` v2 wire codec) and
+// `HostSession::pump`'s outbound event path: deep copy + out-of-bounds span sanitization, inline
+// and split UTF-8 key packing, custom events, `NVEV` v2 wire round-trip and rejection of malformed
+// frames, zero C++ allocations (counting both default and C++17 aligned `operator new`) for a
+// reused buffer and for a steady-state `pump`, and a sink that destroys its session under ASan.
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <new>
 #include <span>
@@ -16,13 +18,32 @@
 #include <vector>
 
 #include "check.h"
+#include "nve/host/bin_codec.hpp"
 #include "nve/host/host_session.hpp"
 #include "nve/host/owned_events.hpp"
 
-// --- Counting global allocator (this test binary only) -----------------------------------------
+// --- Counting global allocator (this test binary only; counts both default and aligned new) -----
 namespace {
 thread_local bool g_counting = false;
 thread_local size_t g_allocs = 0u;
+
+void* aligned_alloc_compat(size_t align, size_t n) {
+  const size_t a = align < sizeof(void*) ? sizeof(void*) : align;
+  const size_t sz = n != 0u ? n : a;
+#if defined(_WIN32)
+  return _aligned_malloc(sz, a);
+#else
+  void* p = nullptr;
+  return posix_memalign(&p, a, sz) == 0 ? p : nullptr;
+#endif
+}
+void aligned_free_compat(void* p) noexcept {
+#if defined(_WIN32)
+  _aligned_free(p);
+#else
+  std::free(p);
+#endif
+}
 }  // namespace
 
 void* operator new(std::size_t n) {
@@ -32,6 +53,13 @@ void* operator new(std::size_t n) {
 }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void* operator new(std::size_t n, std::align_val_t al) {
+  if (g_counting) ++g_allocs;
+  if (void* p = aligned_alloc_compat(static_cast<size_t>(al), n)) return p;
+  throw std::bad_alloc();
+}
+void operator delete(void* p, std::align_val_t) noexcept { aligned_free_compat(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { aligned_free_compat(p); }
 
 namespace {
 
@@ -47,122 +75,54 @@ size_t allocations(Fn&& fn) {
   return g_allocs;
 }
 
-std::string_view sv(NveStrSlice s) { return str_view(s); }
-std::span<const uint8_t> bytes(NveBufferSlice b) { return buffer_span(b); }
+void test_owned_events_builders_and_copy() {
+  OwnedEvents src;
+  CHECK(src.push_press(1u, 7u, 100u, 12.5f, 24.0f));
+  CHECK(src.push_key(1u, 8u, 101u, NVE_INTERACTION_EVENT_KEY_DOWN, "ArrowUp", "ArrowUp",
+                     NVE_EVENT_FLAG_MOD_SHIFT, 38u));
+  // > 16 B key exercises the `KEY_SPLIT_BYTES` arena path with multi-byte UTF-8.
+  const std::string long_key = "MediaTrackNext\xC3\xA9""123";
+  CHECK(long_key.size() > NVE_EVENT_INLINE_KEY_CAP);
+  CHECK(src.push_key(1u, 9u, 102u, NVE_INTERACTION_EVENT_KEY_UP, long_key, "MediaTrackNext",
+                     NVE_EVENT_FLAG_MOD_META, 176u));
+  CHECK(src.push_text_change(1u, 10u, 103u, "h\xC3\xA9llo"));
+  const std::array<uint8_t, 4> payload{9u, 8u, 7u, 6u};
+  CHECK(src.push_custom(1u, 11u, 104u, "analytics.click", payload));
+  // Invalid UTF-8 is rejected before touching the slabs.
+  CHECK(!src.push_text_change(1u, 10u, 105u, std::string_view("\xFF", 1u)));
+  CHECK(!src.push_key(1u, 10u, 106u, NVE_INTERACTION_EVENT_KEY_DOWN, std::string_view("\xC0\xAF", 2u)));
+  CHECK(!src.push_custom(1u, 10u, 107u, std::string_view("\xED\xA0\x80", 3u), payload));
 
-NveValue str_value(std::string_view s) {
-  NveValue v{};
-  v.tag = NVE_VAL_STR;
-  v.data.str_val = str_slice(s);
-  return v;
-}
-NveValue bytes_value(std::span<const uint8_t> b) {
-  NveValue v{};
-  v.tag = NVE_VAL_BYTES;
-  v.data.bytes_val = buffer_slice(b);
-  return v;
-}
-NveValue i64_value(int64_t n) {
-  NveValue v{};
-  v.tag = NVE_VAL_I64;
-  v.data.i64_val = n;
-  return v;
-}
-NveValue array_value(std::span<const NveValue> items) {
-  NveValue v{};
-  v.tag = NVE_VAL_ARRAY;
-  v.data.array_val = NveValueArray{items.empty() ? nullptr : items.data(), items.size()};
-  return v;
-}
-NveValue map_value(std::span<const NveMapEntry> entries) {
-  NveValue v{};
-  v.tag = NVE_VAL_MAP;
-  v.data.map_val = NveValueMap{entries.empty() ? nullptr : entries.data(), entries.size()};
-  return v;
-}
-
-/// `true` when `p` lies inside `owner`'s storage, i.e. not inside the source buffers.
-bool owned_by(const void* p, const void* source_begin, size_t source_len) {
-  const auto* b = static_cast<const uint8_t*>(source_begin);
-  const auto* q = static_cast<const uint8_t*>(p);
-  return p != nullptr && (q < b || q >= b + source_len);
-}
-
-void test_owned_events_copy_every_slice_kind() {
-  // Sources the copy must not depend on: overwritten after `assign`.
-  std::array<char, 64> text_buf{};
-  std::array<uint8_t, 4> blob{9u, 8u, 7u, 6u};
-  std::string name_storage = "custom";
-  std::array<char, 8> key_buf{'k', 'e', 'y', 0};
-  std::array<NveValue, 2> deep{};
-  std::array<NveValue, 3> items{};
-  std::array<NveMapEntry, 3> entries{};
-  const std::string_view text_src = "h\xC3\xA9llo";  // UTF-8, copied byte for byte
-  std::copy(text_src.begin(), text_src.end(), text_buf.begin());
-
-  deep[0] = i64_value(42);
-  deep[1] = str_value("deep");
-  items[0] = str_value(std::string_view(text_buf.data(), 3u));
-  items[1] = bytes_value(blob);
-  items[2] = array_value(deep);  // nested array
-  entries[0] = NveMapEntry{str_slice(std::string_view(key_buf.data(), 3u)), array_value(items)};
-  entries[1] = NveMapEntry{str_slice("null"), str_value({})};
-  NveValue hostile{};  // NULL pointer with a non-zero length: copied as empty, never read
-  hostile.tag = NVE_VAL_BYTES;
-  hostile.data.bytes_val = NveBufferSlice{nullptr, 99u};
-  entries[2] = NveMapEntry{NveStrSlice{nullptr, 5u}, hostile};
-
-  std::array<NveDirectEvent, 2> evs{};
-  evs[0].node_id = 7u;
-  evs[0].kind = NVE_EVENT_CUSTOM;
-  evs[0].name = str_slice(name_storage);
-  evs[0].text = str_slice(std::string_view(text_buf.data(), text_src.size()));
-  evs[0].value = map_value(entries);
-  evs[1].node_id = 8u;
-  evs[1].text = NveStrSlice{nullptr, 12u};
-  evs[1].value = NveValue{};
-  evs[1].value.tag = NVE_VAL_ARRAY;
-  evs[1].value.data.array_val = NveValueArray{nullptr, 3u};
+  const NveEventBatch src_batch = src.batch();
+  CHECK(validate_event_batch(src_batch));
+  CHECK(reinterpret_cast<uintptr_t>(src_batch.events) % NVE_EVENT_ALIGN == 0u);
 
   OwnedEvents owned;
-  owned.assign(evs);
-  // Scribble every source: the copy must not alias any of them.
-  text_buf.fill('#');
-  blob.fill(0u);
-  name_storage.assign(name_storage.size(), '#');
-  key_buf.fill('#');
-  deep.fill(NveValue{});
-  items.fill(NveValue{});
-  entries.fill(NveMapEntry{});
-  evs.fill(NveDirectEvent{});
+  owned.assign(src_batch);
+  src.clear();  // owned must not alias `src`
 
   const auto check = [&](const OwnedEvents& o) {
-    CHECK(o.events().size() == 2u);
-    const NveDirectEvent& e = o.events()[0];
-    CHECK(e.node_id == 7u && e.kind == NVE_EVENT_CUSTOM);
-    CHECK(sv(e.name) == "custom" && sv(e.text) == text_src);
-    CHECK(owned_by(e.text.ptr, text_buf.data(), text_buf.size()));
-    CHECK(e.value.tag == NVE_VAL_MAP && e.value.data.map_val.len == 3u);
-    const NveMapEntry* m = e.value.data.map_val.ptr;
-    CHECK(sv(m[0].key) == "key" && m[0].value.tag == NVE_VAL_ARRAY && m[0].value.data.array_val.len == 3u);
-    const NveValue* a = m[0].value.data.array_val.ptr;
-    CHECK(a[0].tag == NVE_VAL_STR && sv(a[0].data.str_val) == "h\xC3\xA9");
-    CHECK(a[1].tag == NVE_VAL_BYTES && bytes(a[1].data.bytes_val).size() == 4u &&
-          bytes(a[1].data.bytes_val)[0] == 9u && bytes(a[1].data.bytes_val)[3] == 6u);
-    CHECK(a[2].tag == NVE_VAL_ARRAY && a[2].data.array_val.len == 2u);
-    CHECK(a[2].data.array_val.ptr[0].data.i64_val == 42 && sv(a[2].data.array_val.ptr[1].data.str_val) == "deep");
-    CHECK(sv(m[1].key) == "null" && m[1].value.tag == NVE_VAL_STR && m[1].value.data.str_val.ptr == nullptr);
-    // NULL with a non-zero length: empty, never dereferenced.
-    CHECK(m[2].key.ptr == nullptr && m[2].key.len == 0u);
-    CHECK(m[2].value.data.bytes_val.ptr == nullptr && m[2].value.data.bytes_val.len == 0u);
-    const NveDirectEvent& f = o.events()[1];
-    CHECK(f.text.ptr == nullptr && f.text.len == 0u);
-    CHECK(f.value.tag == NVE_VAL_ARRAY && f.value.data.array_val.ptr == nullptr && f.value.data.array_val.len == 0u);
+    const NveEventBatch b = o.batch();
+    CHECK(o.size() == 5u && validate_event_batch(b));
+    CHECK(reinterpret_cast<uintptr_t>(b.events) % NVE_EVENT_ALIGN == 0u);
+    CHECK(is_interaction_event(b.events[0], NVE_INTERACTION_EVENT_PRESS));
+    CHECK(event_payload_f32(b.events[0], 0u) == 12.5f && event_payload_f32(b.events[0], 1u) == 24.0f);
+    CHECK(is_interaction_event(b.events[1], NVE_INTERACTION_EVENT_KEY_DOWN));
+    CHECK((b.events[1].flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) != 0u);
+    CHECK(event_key(b.events[1], b) == "ArrowUp" && event_code(b.events[1], b) == "ArrowUp");
+    CHECK(is_interaction_event(b.events[2], NVE_INTERACTION_EVENT_KEY_UP));
+    CHECK((b.events[2].flags & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) != 0u);
+    CHECK(event_key(b.events[2], b) == long_key && event_code(b.events[2], b) == "MediaTrackNext");
+    CHECK(is_text_input_event(b.events[3], NVE_TEXT_INPUT_EVENT_CHANGE));
+    CHECK(event_text(b.events[3], b) == "h\xC3\xA9llo");
+    CHECK(is_custom_event(b.events[4]) && event_custom_name(b.events[4], b) == "analytics.click");
+    const std::span<const uint8_t> d = event_custom_data(b.events[4], b);
+    CHECK(d.size() == 4u && d[0] == 9u && d[3] == 6u);
   };
   check(owned);
 
-  // Moves keep every slice valid (the slabs move, nothing is rebased).
-  const NveDirectEvent* before = owned.events().data();
+  // Moves keep the exact 64-byte-aligned slab pointer.
+  const NveEvent* before = owned.events().data();
   OwnedEvents moved(std::move(owned));
   CHECK(moved.events().data() == before);
   check(moved);
@@ -171,53 +131,95 @@ void test_owned_events_copy_every_slice_kind() {
   check(assigned);
   static_assert(std::is_nothrow_move_constructible_v<OwnedEvents> && std::is_nothrow_move_assignable_v<OwnedEvents>);
 
-  assigned.assign({});
-  CHECK(assigned.empty() && assigned.events().empty());
+  // Hostile batch: NULL with non-zero counts, or out-of-bounds event byte span -> sanitized.
+  assigned.assign(NveEventBatch{nullptr, nullptr, 5u, 9u});
+  CHECK(assigned.empty());
+  alignas(NVE_EVENT_ALIGN) NveEvent oob{};
+  oob.table = NVE_TABLE_TEXT_INPUT;
+  oob.flags = NVE_EVENT_FLAG_UTF8_BYTES;
+  oob.bytes = RawEventBytes{4u, 20u};
+  const std::array<uint8_t, 6> small_arena{'a', 'b', 'c', 'd', 'e', 'f'};
+  assigned.assign(NveEventBatch{&oob, small_arena.data(), 1u, static_cast<uint32_t>(small_arena.size())});
+  CHECK(assigned.size() == 1u && assigned.events()[0].bytes.len == 0u &&
+        event_text(assigned.events()[0], assigned.batch()).empty());
 }
 
-/// Values nested deeper than `kBinValueMaxDepth` copy as `Null`; everything above is kept.
-void test_owned_events_depth_limit() {
-  constexpr size_t kChain = kBinValueMaxDepth + 6u;
-  std::vector<NveValue> chain(kChain + 1u);
-  chain[kChain] = i64_value(1);
-  for (size_t i = kChain; i-- > 0u;) chain[i] = array_value(std::span<const NveValue>(&chain[i + 1u], 1u));
-  NveDirectEvent ev{};
-  ev.value = chain[0];
-  OwnedEvents owned;
-  owned.assign(std::span<const NveDirectEvent>(&ev, 1u));
-  size_t depth = 0u;
-  const NveValue* v = &owned.events()[0].value;
-  while (v->tag == NVE_VAL_ARRAY && v->data.array_val.len == 1u) {
-    v = v->data.array_val.ptr;
-    ++depth;
+/// `NVEV` v2 wire round-trip and hostile-frame rejection (magic, version, truncation, trailing,
+/// conflicting flags, invalid UTF-8 in inline/split/custom/text payloads).
+void test_nvev_v2_wire_codec() {
+  OwnedEvents src;
+  CHECK(src.push_press(2u, 3u, 55u, 1.0f, 2.0f));
+  CHECK(src.push_key(2u, 4u, 56u, NVE_INTERACTION_EVENT_KEY_DOWN, "Enter", "Enter", 0u, 13u));
+  CHECK(src.push_key(2u, 5u, 57u, NVE_INTERACTION_EVENT_KEY_UP, "VeryLongCustomKeyName", "CodeX", 0u, 0u));
+  CHECK(src.push_text_change(2u, 6u, 58u, "caf\xC3\xA9"));
+  const std::array<uint8_t, 3> raw_data{1u, 2u, 3u};
+  CHECK(src.push_custom(2u, 7u, 59u, "ping", raw_data));
+
+  const std::vector<uint8_t> wire = src.to_wire_bytes();
+  CHECK(wire.size() == kEventWireHeaderSize + 5u * NVE_EVENT_SIZE + src.bytes().size());
+  CHECK(wire[0] == 'N' && wire[1] == 'V' && wire[2] == 'E' && wire[3] == 'V');
+  CHECK(nve_load_u16_le(wire.data() + 4u) == 2u);
+
+  const std::optional<OwnedEvents> dec = OwnedEvents::decode_wire(wire);
+  CHECK(dec.has_value() && dec->size() == 5u);
+  if (dec) {
+    const NveEventBatch b = dec->batch();
+    CHECK(event_key(b.events[1], b) == "Enter" && event_code(b.events[1], b) == "Enter");
+    CHECK(event_key(b.events[2], b) == "VeryLongCustomKeyName" && event_code(b.events[2], b) == "CodeX");
+    CHECK(event_text(b.events[3], b) == "caf\xC3\xA9");
+    CHECK(event_custom_name(b.events[4], b) == "ping" && event_custom_data(b.events[4], b).size() == 3u);
   }
-  CHECK(depth == kBinValueMaxDepth);
-  CHECK(v->tag == NVE_VAL_NULL);
+
+  // Every truncated prefix and trailing byte must fail.
+  for (size_t cut = 0u; cut < wire.size(); ++cut) {
+    CHECK(!OwnedEvents::decode_wire(std::span<const uint8_t>(wire.data(), cut)).has_value());
+  }
+  std::vector<uint8_t> trailing = wire;
+  trailing.push_back(0u);
+  CHECK(!OwnedEvents::decode_wire(trailing).has_value());
+
+  // Wrong magic / version v1 rejected.
+  std::vector<uint8_t> bad_magic = wire;
+  bad_magic[3] = 'X';
+  CHECK(!OwnedEvents::decode_wire(bad_magic).has_value());
+  std::vector<uint8_t> v1 = wire;
+  v1[4] = 1u;
+  CHECK(!OwnedEvents::decode_wire(v1).has_value());
+
+  // Conflicting framing flags rejected.
+  std::vector<uint8_t> conflict = wire;
+  const uint32_t bad_flags = NVE_EVENT_FLAG_INLINE_KEY_UTF8 | NVE_EVENT_FLAG_KEY_SPLIT_BYTES;
+  nve_store_u32_le(conflict.data() + kEventWireHeaderSize + 28u, bad_flags);
+  CHECK(!OwnedEvents::decode_wire(conflict).has_value());
+
+  // Invalid UTF-8 in text arena rejected.
+  std::vector<uint8_t> bad_utf8 = wire;
+  const size_t arena_off = kEventWireHeaderSize + 5u * NVE_EVENT_SIZE;
+  const size_t text_off = src.events()[3].bytes.offset;
+  bad_utf8[arena_off + text_off] = 0xFFu;
+  CHECK(!OwnedEvents::decode_wire(bad_utf8).has_value());
 }
 
-/// A reused `OwnedEvents` allocates only when a batch outgrows every earlier one.
+/// A reused `OwnedEvents` allocates nothing once its slabs are sized.
 void test_owned_events_reuse_allocates_nothing() {
-  std::array<NveValue, 4> items{str_value("aaaaaaaa"), str_value("bb"), i64_value(3), str_value("c")};
-  std::array<NveMapEntry, 2> map{NveMapEntry{str_slice("items"), array_value(items)},
-                                 NveMapEntry{str_slice("text"), str_value("payload")}};
-  std::array<NveDirectEvent, 3> evs{};
-  for (NveDirectEvent& e : evs) {
-    e.name = str_slice("evt");
-    e.text = str_slice("some text");
-    e.value = map_value(map);
+  OwnedEvents src;
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    CHECK(src.push_custom(1u, i + 1u, i, "evt", std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("payload"), 7u)));
   }
   OwnedEvents owned;
-  owned.assign(evs);  // sizes the slabs
+  owned.assign(src.batch());  // sizes both slabs
   CHECK(allocations([&] {
           for (int i = 0; i < 100; ++i) {
-            owned.assign(std::span<const NveDirectEvent>(evs).first(1u + static_cast<size_t>(i) % 3u));
+            NveEventBatch sub = src.batch();
+            sub.event_count = 1u + static_cast<uint32_t>(i % 3);
+            owned.assign(sub);
           }
         }) == 0u);
-  CHECK(owned.events().size() == 1u + 99u % 3u && sv(owned.events()[0].value.data.map_val.ptr[1].value.data.str_val) == "payload");
+  CHECK(owned.size() == 1u + 99u % 3u && event_custom_name(owned.events()[0], owned.batch()) == "evt");
 }
 
-/// A C ABI app that emits one rich event (text + nested MAP / ARRAY / BYTES) per dispatched
-/// event without allocating, so `pump`'s own allocations are what the counter sees.
+/// A C ABI app that emits one custom event (name + `NveBinValue` payload) per dispatched event
+/// without allocating, so `pump`'s own allocations are what the counter sees.
 class Emitter {
  public:
   static const void* get_interface(uint32_t id) {
@@ -236,54 +238,49 @@ class Emitter {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<Emitter*>(h);
-    for (uint32_t i = 0u; batch.ptr != nullptr && i < batch.len && self->len_ < self->pending_.size(); ++i) {
+    for (uint32_t i = 0u; batch.events != nullptr && i < batch.event_count && self->len_ < self->pending_.size(); ++i) {
       ++self->count_;
-      self->deep_[0] = i64_value(self->count_);
-      self->deep_[1] = bytes_value(kBlob);
-      self->items_[0] = str_value("item");
-      self->items_[1] = array_value(self->deep_);
-      self->entries_[0] = NveMapEntry{str_slice("count"), i64_value(self->count_)};
-      self->entries_[1] = NveMapEntry{str_slice("items"), array_value(self->items_)};
-      NveDirectEvent& ev = self->pending_[self->len_++];
-      ev = NveDirectEvent{};
-      ev.node_id = batch.ptr[i].node_id;
-      ev.kind = NVE_EVENT_CUSTOM;
-      ev.name = str_slice("rich");
-      ev.text = str_slice("h\xC3\xA9llo");
-      ev.value = map_value(self->entries_);
+      static constexpr char kName[] = "rich";
+      uint8_t* dst = self->arena_.data() + self->arena_len_;
+      std::memcpy(dst, kName, 4u);
+      nve_store_u64_le(dst + 4u, static_cast<uint64_t>(self->count_));
+      NveEvent& ev = self->pending_[self->len_++];
+      ev = NveEvent{};
+      ev.table = NVE_TABLE_CUSTOM;
+      ev.surface = batch.events[i].surface;
+      ev.node = batch.events[i].node;
+      ev.flags = NVE_EVENT_FLAG_CUSTOM_NAMED;
+      ev.payload[0] = 4u;
+      ev.bytes = RawEventBytes{self->arena_len_, 12u};
+      self->arena_len_ += 12u;
     }
     return 0u;
   }
 
   static NveEventBatch drain(NveAppHandle h) {
     auto* self = static_cast<Emitter*>(h);
-    const NveEventBatch out{self->len_ != 0u ? self->pending_.data() : nullptr, self->len_, 0u};
-    self->len_ = 0u;  // the batch stays readable until the next call into the app
+    const NveEventBatch out{self->len_ != 0u ? self->pending_.data() : nullptr,
+                            self->arena_len_ != 0u ? self->arena_.data() : nullptr, self->len_, self->arena_len_};
+    self->len_ = 0u;
+    self->arena_len_ = 0u;
     return out;
   }
 
-  static constexpr std::array<uint8_t, 3> kBlob{1u, 2u, 3u};
-  std::array<NveDirectEvent, 8> pending_{};
+  alignas(NVE_EVENT_ALIGN) std::array<NveEvent, 8> pending_{};
+  std::array<uint8_t, 128> arena_{};
   uint32_t len_ = 0u;
+  uint32_t arena_len_ = 0u;
   int64_t count_ = 0;
-  std::array<NveValue, 2> deep_{};
-  std::array<NveValue, 2> items_{};
-  std::array<NveMapEntry, 2> entries_{};
 };
 
-bool rich_event_ok(const NveDirectEvent& ev, int64_t expected_count) {
-  if (sv(ev.name) != "rich" || sv(ev.text) != "h\xC3\xA9llo" || ev.value.tag != NVE_VAL_MAP) return false;
-  const NveMapEntry* m = ev.value.data.map_val.ptr;
-  if (ev.value.data.map_val.len != 2u || sv(m[0].key) != "count" || m[0].value.data.i64_val != expected_count) return false;
-  const NveValue* items = m[1].value.data.array_val.ptr;
-  if (m[1].value.data.array_val.len != 2u || sv(items[0].data.str_val) != "item") return false;
-  const NveValue* deep = items[1].data.array_val.ptr;
-  return items[1].data.array_val.len == 2u && deep[0].data.i64_val == expected_count &&
-         bytes(deep[1].data.bytes_val).size() == 3u && bytes(deep[1].data.bytes_val)[2] == 3u;
+bool rich_event_ok(const NveEvent& ev, NveEventBatch batch, int64_t expected_count) {
+  if (!is_custom_event(ev) || event_custom_name(ev, batch) != "rich") return false;
+  const std::span<const uint8_t> d = event_custom_data(ev, batch);
+  return d.size() == 8u && static_cast<int64_t>(nve_load_u64_le(d.data())) == expected_count;
 }
 
-/// Steady-state `pump` with a sink: the deep copy reuses its slabs and the sink is shared, not
-/// copied, so a dispatch + pump makes no C++ allocation at all.
+/// Steady-state `pump` with a sink: the copy reuses its 64-byte-aligned slabs and the sink is
+/// shared, not copied, so a dispatch + pump makes zero C++ allocations (default OR aligned).
 void test_steady_state_pump_allocates_nothing() {
   auto host = HostSession::create(RuntimeSession::default_config());
   CHECK(host != nullptr);
@@ -292,13 +289,13 @@ void test_steady_state_pump_allocates_nothing() {
   int64_t expected = 0;
   size_t delivered = 0u;
   bool all_ok = true;
-  host->set_event_sink([&](std::span<const NveDirectEvent> evs) {
-    for (const NveDirectEvent& ev : evs) {
-      all_ok = all_ok && rich_event_ok(ev, ++expected);
+  host->set_event_sink([&](NveEventBatch batch) {
+    for (const NveEvent& ev : batch_events(batch)) {
+      all_ok = all_ok && rich_event_ok(ev, batch, ++expected);
       ++delivered;
     }
   });
-  const NveDirectEvent press = host->events().press(3u, 0.0f, 0.0f);
+  const NveEvent press = host->events().press(3u, 0.0f, 0.0f);
   for (int i = 0; i < 4; ++i) (void)host->dispatch(press);  // warm-up sizes every slab
   CHECK(allocations([&] {
           for (int i = 0; i < 200; ++i) (void)host->dispatch(press);
@@ -314,9 +311,9 @@ void test_sink_destroying_the_session() {
   if (!host) return;
   CHECK(host->attach(&Emitter::get_interface));
   bool batch_ok = false;
-  host->set_event_sink([&](std::span<const NveDirectEvent> evs) {
+  host->set_event_sink([&](NveEventBatch batch) {
     host.reset();  // destroys the session, its runtime, the app, and the event buffer
-    batch_ok = evs.size() == 1u && rich_event_ok(evs[0], 1);
+    batch_ok = batch.event_count == 1u && rich_event_ok(batch.events[0], batch, 1);
   });
   HostSession* raw = host.get();
   (void)raw->dispatch(raw->events().press(3u, 0.0f, 0.0f));
@@ -326,8 +323,8 @@ void test_sink_destroying_the_session() {
 }  // namespace
 
 int main() {
-  test_owned_events_copy_every_slice_kind();
-  test_owned_events_depth_limit();
+  test_owned_events_builders_and_copy();
+  test_nvev_v2_wire_codec();
   test_owned_events_reuse_allocates_nothing();
   test_steady_state_pump_allocates_nothing();
   test_sink_destroying_the_session();

@@ -1,8 +1,8 @@
 id: rust-no-word-enum-macro
 language: rust
-severity: warning
-message: "Legacy manual-bit-width `word_enum!` macro is banned [stage: Post1B1D]; use `#[derive(WordEnum)]`."
-note: "[stage: Post1B1D] Staged as `warning` until Track 1B-1d replaces `word_enum!` with `#[derive(WordEnum)]`."
+severity: error
+message: "Legacy manual-bit-width `word_enum!` macro is banned; use `#[derive(WordEnum)]`."
+note: "Enforced since Track 1B-1d C2: `word_enum!` is replaced by `#[derive(WordEnum)]`."
 files:
   - "packages/**/*.rs"
 ignores:

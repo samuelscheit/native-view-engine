@@ -1,7 +1,7 @@
 //! Parity guard: every `(attribute, value)` pair `to_template_patches` accepts is applied by
-//! `nve_components::css`, and every attribute's `css` flag matches `css_key_bits`.
+//! `nve_tables::css`, and every attribute's `css` flag matches `css_key_bits`.
 
-use nve_components::{
+use nve_tables::{
     CssAttrResult, STYLE_LAYER_ALL, apply_css_attr_layers_status_to_tx, css_key_bits,
 };
 use nve_store::{NodeId, NodeStore};
@@ -93,7 +93,7 @@ fn every_lowered_value_is_applied_by_the_css_parser() {
             assert!(spec.css, "{} lowered {value} without a css form", spec.name);
             assert!(
                 matches!(apply(spec.name, &css), CssAttrResult::Applied(_)),
-                "{}: {value} -> {css:?} is not applied by nve_components::css",
+                "{}: {value} -> {css:?} is not applied by nve_tables::css",
                 spec.name
             );
         }

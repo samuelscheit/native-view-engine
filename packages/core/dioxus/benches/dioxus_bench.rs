@@ -11,6 +11,7 @@ mod native {
     use criterion::{criterion_group, Criterion};
     use dioxus_core::Element;
     use dioxus_core_macro::rsx;
+    use nve_abi::{FrameId, SurfaceId};
     use nve_dioxus::prelude::*;
     use nve_dioxus::DioxusSurface;
 
@@ -35,9 +36,9 @@ mod native {
         let mut buf = Vec::with_capacity(8192);
         c.bench_function("dioxus_surface_mount_32_rows_nve2", |b| {
             b.iter(|| {
-                let mut surface = DioxusSurface::new(1, bench_list_app);
+                let mut surface = DioxusSurface::new(SurfaceId::ROOT, bench_list_app);
                 buf.clear();
-                let timings = surface.render_nve2(1, &mut buf);
+                let timings = surface.render_nve2(FrameId(1), &mut buf);
                 black_box((timings, buf.len()))
             });
         });

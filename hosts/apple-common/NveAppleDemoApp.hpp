@@ -4,7 +4,9 @@
 // ROOT(1) -> card(2) -> [title(3) text, button(4) pressable -> label(5) "Clicks: N"]
 #pragma once
 
+#include <nve/host/bin_codec.hpp>
 #include <nve/host/nve2_builder.hpp>
+#include <nve/host/owned_events.hpp>
 #include <nve/generated/nve_abi.generated.h>
 
 #include <array>
@@ -61,8 +63,8 @@ class DemoApp {
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     DemoApp *app = self(h);
     uint32_t changed = 0u;
-    for (uint32_t i = 0; batch.ptr != nullptr && i < batch.len; ++i) {
-      if (batch.ptr[i].kind == NVE_EVENT_PRESS && (batch.ptr[i].node_id & 0x00FFFFFFu) == kButton) {
+    for (const NveEvent &ev : nve::host::batch_events(batch)) {
+      if (nve::host::is_interaction_event(ev, NVE_INTERACTION_EVENT_PRESS) && (ev.node & 0x00FFFFFFu) == kButton) {
         ++app->count_;
         app->dirty_ = true;
         app->emit_count();
@@ -104,7 +106,7 @@ class DemoApp {
     DemoApp *app = self(h);
     app->drained_.swap(app->emitted_);
     app->emitted_.clear();
-    return NveEventBatch{app->drained_.data(), static_cast<uint32_t>(app->drained_.size()), 0u};
+    return app->drained_.batch();
   }
 
   static uint32_t apply_hot_patch(NveAppHandle, NveBufferSlice) { return 0u; }
@@ -124,15 +126,9 @@ class DemoApp {
   }
 
   void emit_count() {
-    NveDirectEvent ev{};
-    ev.surface_id = surface_;
-    ev.node_id = kButton;
-    ev.kind = NVE_EVENT_CUSTOM;
-    ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-    ev.name = NveStrSlice{reinterpret_cast<const uint8_t *>("countChanged"), 12u};
-    ev.value.tag = NVE_VAL_I64;
-    ev.value.data.i64_val = count_;
-    emitted_.push_back(ev);
+    bin_.clear();
+    bin_.write_i64(static_cast<int64_t>(count_));
+    (void)emitted_.push_custom(surface_, kButton, 0u, "countChanged", bin_.bytes());
   }
 
   std::string label() const { return "Clicks: " + std::to_string(count_); }
@@ -173,7 +169,8 @@ class DemoApp {
 
     std::array<uint32_t, NVE_TABLE_INTERACTION_WORDS> in{};
     defaults(in, NVE_TABLE_INTERACTION_DEFAULTS);
-    b.patch(interaction, kButton, set_field(in, NVE_TABLE_INTERACTION_EVENT_MASK, 1u /* EventMask::PRESS */), in);
+    in[NVE_TABLE_INTERACTION_EVENTS_WORD] = NVE_INTERACTION_EVENT_SET_PRESS;
+    b.patch(interaction, kButton, uint32_t{1} << NVE_TABLE_INTERACTION_EVENTS_WORD, in);
 
     b.set_string(text, kTitle, NVE_TABLE_TEXT_TEXT.word, title_);
     b.set_string(text, kLabel, NVE_TABLE_TEXT_TEXT.word, label());
@@ -200,8 +197,8 @@ class DemoApp {
     std::array<uint32_t, NVE_TABLE_TYPOGRAPHY_WORDS> ty{};
     defaults(ty, NVE_TABLE_TYPOGRAPHY_DEFAULTS);
     b.patch(typo, kCard,
-            set_field(ty, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_COLOR | NVE_TYPOGRAPHY_SET_FONT_SIZE) |
-                set_field(ty, NVE_TABLE_TYPOGRAPHY_COLOR, accent_) | set_field(ty, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 0x41900000u),
+            set_field(ty, NVE_TABLE_TYPOGRAPHY_COLOR, accent_) |
+                set_field(ty, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 0x41900000u),
             ty);
   }
 
@@ -211,8 +208,9 @@ class DemoApp {
   bool dirty_ = true;
   bool built_ = false;
   std::vector<uint8_t> frame_;
-  std::vector<NveDirectEvent> emitted_;
-  std::vector<NveDirectEvent> drained_;
+  nve::host::OwnedEvents emitted_;
+  nve::host::OwnedEvents drained_;
+  nve::host::BinWriter bin_;
   std::string state_;
 };
 

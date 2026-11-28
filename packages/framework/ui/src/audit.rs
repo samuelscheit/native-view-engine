@@ -1,8 +1,9 @@
 //! Rendered-tree accessibility audits over a committed [`NodeStore`].
 
 use nve_abi::ColorRgba;
-use nve_components::tables::{
-    is_subtree_display_none, Accessibility, AriaTriState, TextContent, Typography, Visual,
+use nve_tables::effective_text_color;
+use nve_tables::tables::{
+    is_subtree_display_none, Accessibility, AriaTriState, TextContent, Visual,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -52,18 +53,8 @@ pub fn text_contrast_violations(store: &NodeStore, min: f64) -> Vec<ContrastViol
         if text.text().trim().is_empty() || is_subtree_display_none(store, id) {
             continue;
         }
-        let mut fg = None;
-        let mut cur = Some(id);
-        while let (None, Some(n)) = (fg, cur) {
-            if let Some(t) = store.try_row::<Typography>(n)
-                && t.set() & Typography::SET_COLOR != 0
-            {
-                fg = Some(ColorRgba::from_u32(t.color().0));
-            }
-            cur = store.parent(n);
-        }
         let Some(bg) = effective_background(store, Some(id), &mut layers) else { continue };
-        let fg = composite(fg.unwrap_or(ColorRgba::BLACK), bg);
+        let fg = composite(ColorRgba::from_u32(effective_text_color(store, id).0), bg);
         let ratio = wcag_contrast(fg, bg);
         if ratio < min {
             out.push(ContrastViolation { node: id, text: text.text().to_owned(), ratio, fg, bg });
@@ -105,8 +96,8 @@ pub fn indicator_contrast_violations(store: &NodeStore, min: f64) -> Vec<Contras
     for id in store.live_nodes() {
         let Some(a) = store.try_row::<Accessibility>(id) else { continue };
         let state = match (a.checked(), a.selected()) {
-            (AriaTriState::True | AriaTriState::Mixed, _) => "checked",
-            (_, AriaTriState::True) => "selected",
+            (Some(AriaTriState::True | AriaTriState::Mixed), _) => "checked",
+            (_, Some(AriaTriState::True)) => "selected",
             _ => continue,
         };
         if is_subtree_display_none(store, id) {

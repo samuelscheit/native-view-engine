@@ -13,21 +13,21 @@ mod interaction;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use nve_abi::{NativeEvent, NodeId, SurfaceId};
 use nve_engine::{LayoutRect, Viewport};
 use nve_layout::{LaidOutScene, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
-use nve_components::tables::TextContent;
-use nve_store::{NodeId as StoreNodeId, NodeStore, TableSlot};
+use nve_store::{EventBatchBuf, NodeId, NodeStore, SurfaceId, TableSlot};
+use nve_tables::tables::TextContent;
 
-pub use nve_components::interaction::{
-    CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
-};
-pub use nve_components::layout_ext::{
+pub use nve_engine::InteractionTracker;
+pub use nve_tables::interaction::{CursorKind, FocusModality, InteractionState, StateStyleRule};
+pub use nve_tables::layout_ext::{
     GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack, GridTrackPlacement,
     GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges, PositionInsets, PositionMode,
 };
-pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
+pub use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
+pub use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+pub use nve_tables::tables::Display;
+pub use nve_tables::{RowPatch, StylePatchExt};
 pub use nve_layout::{layout_snapshot_of, visual_snapshot_of};
 
 pub(crate) use nve_layout::MAX_TREE_DEPTH;
@@ -52,8 +52,8 @@ pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) rect_gen: u64,
     pub(crate) track_mutations: bool,
     pub(crate) last_mutations: Vec<HeadlessMutation>,
-    pub(crate) pending_events: Vec<NativeEvent>,
-    pub(crate) walk_stack: Vec<(StoreNodeId, usize)>,
+    pub(crate) pending_events: EventBatchBuf,
+    pub(crate) walk_stack: Vec<(NodeId, usize)>,
 }
 
 impl Default for HeadlessBackend<TaffyStoreLayout> {
@@ -71,13 +71,13 @@ impl HeadlessBackend<TaffyStoreLayout> {
 impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     pub fn with_layout(layout: L) -> Self {
         Self {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             scene: LaidOutScene::new(layout),
             prev_rects: Vec::new(),
             rect_gen: 0,
             track_mutations: true,
             last_mutations: Vec::new(),
-            pending_events: Vec::new(),
+            pending_events: EventBatchBuf::new(),
             walk_stack: Vec::new(),
         }
     }
@@ -170,14 +170,14 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         fn walk<L: StoreLayoutEngine>(
             backend: &HeadlessBackend<L>,
             store: &NodeStore,
-            id: StoreNodeId,
+            id: NodeId,
             depth: usize,
             out: &mut String,
         ) {
             for _ in 0..depth {
                 out.push_str("  ");
             }
-            let r = backend.layout_of(id.raw()).unwrap_or_default();
+            let r = backend.layout_of(id).unwrap_or_default();
             let _ = write!(
                 out,
                 "Node#{} ({:.0},{:.0} {:.0}×{:.0})",
@@ -187,19 +187,19 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 r.width,
                 r.height
             );
-            if let Some(dbg) = store.try_row::<nve_components::tables::DebugId>(id) {
+            if let Some(dbg) = store.try_row::<nve_tables::tables::DebugId>(id) {
                 let tid = dbg.test_id();
                 if !tid.is_empty() {
                     let _ = write!(out, " [{tid}]");
                 }
             }
-            if let Some(tc) = store.try_row::<nve_components::tables::TextContent>(id) {
+            if let Some(tc) = store.try_row::<nve_tables::tables::TextContent>(id) {
                 let t = tc.text();
                 if !t.is_empty() {
                     let _ = write!(out, " \"{t}\"");
                 }
             }
-            if let Some(ti) = store.try_row::<nve_components::tables::TextInput>(id) {
+            if let Some(ti) = store.try_row::<nve_tables::tables::TextInput>(id) {
                 let v = ti.value();
                 if !v.is_empty() {
                     let _ = write!(out, " value=\"{v}\"");
@@ -211,13 +211,15 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             }
         }
         let mut out = String::new();
-        walk(self, store, StoreNodeId::ROOT, 0, &mut out);
+        walk(self, store, NodeId::ROOT, 0, &mut out);
         out
     }
 
+    /// Events queued for the next [`nve_engine::StoreBackend::drain_events`] (e.g. synthetic
+    /// input injected by tests or harnesses through the typed `EventBatchBuf::push_*` builders).
     #[inline]
-    pub fn push_event(&mut self, event: NativeEvent) {
-        self.pending_events.push(event);
+    pub fn pending_events_mut(&mut self) -> &mut EventBatchBuf {
+        &mut self.pending_events
     }
 
     #[inline]
@@ -232,17 +234,17 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     #[inline]
     pub fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
-        self.scene.layout_of(StoreNodeId(id))
+        self.scene.layout_of(id)
     }
 
     /// Formats a human-readable ASCII tree + layout rect dump of `store` for debugging and snapshot tests.
     pub fn dump_tree(&self, store: &NodeStore) -> String {
         let mut out = String::new();
-        self.dump_rec(store, StoreNodeId::ROOT, 0, &mut out);
+        self.dump_rec(store, NodeId::ROOT, 0, &mut out);
         out
     }
 
-    fn dump_rec(&self, store: &NodeStore, id: StoreNodeId, depth: usize, out: &mut String) {
+    fn dump_rec(&self, store: &NodeStore, id: NodeId, depth: usize, out: &mut String) {
         if depth > MAX_TREE_DEPTH || !store.is_live(id) {
             return;
         }

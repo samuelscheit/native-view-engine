@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use nve_abi::SurfaceId;
 use nve_backend_web::StreamingError;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
@@ -58,7 +59,7 @@ async fn scenario_8_dsd_placement_hygiene_fails_before_headers() {
             SsrPageOptions::new("Bad Form", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(transport1),
-            |c| DioxusSurface::new(1, InsideFormApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, InsideFormApp).with_context(c),
         )
         .await
         .expect_err("slot inside <form> must fail BEFORE headers");
@@ -79,7 +80,7 @@ async fn scenario_8_dsd_placement_hygiene_fails_before_headers() {
                 // Place `NveStreamSlot` directly inside `<table>` (HTML5 foster-parenting trap!).
                 view {
                     nve_table: table_attr_fn(|tx, node| {
-                        tx.edit::<HtmlSemantics>(node).element(SemanticElement::Table);
+                        tx.edit::<HtmlSemantics>(node).element(Some(SemanticElement::Table));
                     }),
                     NveStreamSlot {
                         slot_id: "bad-table-slot".to_owned(),
@@ -95,7 +96,7 @@ async fn scenario_8_dsd_placement_hygiene_fails_before_headers() {
             SsrPageOptions::new("Bad Table", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(ControlledTransport::default()),
-            |c| DioxusSurface::new(1, InsideTableApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, InsideTableApp).with_context(c),
         )
         .await
         .expect_err("slot directly inside <table> must fail BEFORE headers");
@@ -150,7 +151,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
             move |_| {
                 let _ = entered_tx.send(());
                 let _ = unblock_rx.recv();
-                DioxusSurface::new(1, TinyApp)
+                DioxusSurface::new(SurfaceId::ROOT, TinyApp)
             },
         )
         .await
@@ -167,7 +168,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
         SsrPageOptions::new("q", web_backend),
         StreamPlan::default(),
         erased_ssr_query_client(ControlledTransport::default()),
-        |_| DioxusSurface::new(2, TinyApp),
+        |_| DioxusSurface::new(SurfaceId::new(2, 0), TinyApp),
     ));
     let noop_waker = Waker::noop();
     let mut cx = Context::from_waker(noop_waker);
@@ -182,7 +183,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
             SsrPageOptions::new("over", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(ControlledTransport::default()),
-            |_| DioxusSurface::new(3, TinyApp),
+            |_| DioxusSurface::new(SurfaceId::new(3, 0), TinyApp),
         )
         .await
         .expect_err("bounded worker queue must return SsrError::PoolOverloaded");
@@ -205,7 +206,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
             SsrPageOptions::new("Drop Drain", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(transport.clone()),
-            |c| DioxusSurface::new(1, SlowPanelApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, SlowPanelApp).with_context(c),
         )
         .await
         .unwrap();

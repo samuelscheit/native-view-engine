@@ -1,5 +1,5 @@
-use nve_abi::{EventMask, NVE_PRIMARY_SLOT_NONE};
-use nve_components::tables::{
+use nve_abi::{EventSet, InteractionEvent, NVE_PRIMARY_SLOT_NONE, SurfaceId};
+use nve_tables::tables::{
     core_realization_order, FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
 };
 use nve_engine::{Frame0File, Frame0Meta, StoreBackend, StoreWireReplica, Viewport};
@@ -14,7 +14,7 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 400.0,
             height: 300.0,
@@ -42,7 +42,7 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
     tx.edit::<Layout>(btn)
         .height(Length::points(48.0))
         .flex_direction(FlexDirection::Row);
-    tx.edit::<Interaction>(btn).event_mask(EventMask::PRESS as u32);
+    tx.edit::<Interaction>(btn).listeners(EventSet::one(InteractionEvent::Press));
     tx.commit_into(&mut changes);
 
     let stats = backend.commit(&store, &changes).unwrap();
@@ -50,11 +50,11 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
     assert!(backend
         .last_mutations()
         .iter()
-        .any(|m| matches!(m, HeadlessMutation::Create(id, slot) if *id == title.raw() && *slot == TextContent::slot())));
+        .any(|m| matches!(m, HeadlessMutation::Create(id, slot) if *id == title && *slot == TextContent::slot())));
 
-    let btn_rect = backend.layout_of(btn.raw()).unwrap();
+    let btn_rect = backend.layout_of(btn).unwrap();
     assert_eq!((btn_rect.x, btn_rect.y, btn_rect.width, btn_rect.height), (0.0, 60.0, 400.0, 48.0));
-    assert_eq!(backend.hit_test(&store, 100.0, 80.0), Some(btn.raw()));
+    assert_eq!(backend.hit_test(&store, 100.0, 80.0), Some(btn));
     assert_eq!(backend.hit_test(&store, 100.0, 20.0), None);
 
     // The plain root realizes no table; the title's realizing table is `TextContent`.
@@ -63,13 +63,13 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
 
     // Frame-0 NVE2 export round-trips cleanly into a cold replica with live layout.
     let meta = Frame0Meta {
-        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+        table_schema_hash: nve_tables::tables::core_tables_schema_hash(),
         app_build_id: 1,
         env_hash: 0,
     };
     let frame0_bytes = Frame0File::encode(&store, meta).unwrap();
     let mut cold_backend = HeadlessBackend::new();
-    cold_backend.set_viewport(1, Viewport { width: 400.0, height: 300.0, scale_factor: 2.0 });
+    cold_backend.set_viewport(SurfaceId::ROOT, Viewport { width: 400.0, height: 300.0, scale_factor: 2.0 });
     let mut cold = StoreWireReplica::new(cold_backend, core_realization_order());
     let (footer, _) = Frame0File::boot_bytes_into_replica(&frame0_bytes, meta, &mut cold).unwrap();
     assert_eq!(footer.node_count, 4);
@@ -77,7 +77,7 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
         cold.store().try_row::<TextContent>(title).map(|t| t.text()),
         Some("Dashboard")
     );
-    assert_eq!(cold.backend().layout_of(btn.raw()), Some(btn_rect));
+    assert_eq!(cold.backend().layout_of(btn), Some(btn_rect));
 
     let dump = backend.dump_tree(&store);
     assert!(dump.contains("Dashboard"));
@@ -85,13 +85,13 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
 
 #[test]
 fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fixed_uses_viewport() {
-    use nve_components::tables::{BoxShadow, BoxShadows, Position, Visibility};
+    use nve_tables::tables::{BoxShadow, BoxShadows, Position, Visibility};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 500.0,
             height: 400.0,
@@ -127,14 +127,14 @@ fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fix
             .width(Length::points(80.0))
             .height(Length::points(40.0));
         tx.edit::<Visual>(z).opacity(0.0);
-        tx.edit::<Interaction>(z).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(z).listeners(EventSet::one(InteractionEvent::Press));
 
         // visibility: hidden is NOT hit-testable.
         tx.edit::<Layout>(h)
             .width(Length::points(80.0))
             .height(Length::points(40.0));
         tx.edit::<Visual>(h).visibility(Visibility::Hidden);
-        tx.edit::<Interaction>(h).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(h).listeners(EventSet::one(InteractionEvent::Press));
 
         // position: fixed is positioned relative to root viewport (0, 0), NOT parent (50, 100).
         tx.edit::<Layout>(f)
@@ -151,11 +151,11 @@ fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fix
     backend.commit(&store, &changes).unwrap();
 
     // opacity: 0 box at (50, 100, 80x40) hits `zero_op`.
-    assert_eq!(backend.hit_test(&store, 70.0, 110.0), Some(zero_op.raw()));
+    assert_eq!(backend.hit_test(&store, 70.0, 110.0), Some(zero_op));
     // visibility: hidden box at (50, 140, 80x40) does NOT hit.
     assert_eq!(backend.hit_test(&store, 70.0, 150.0), None);
     // position: fixed box is anchored to viewport (20, 10), NOT parent (50+20, 100+10).
-    let fr = backend.layout_of(fixed_box.raw()).unwrap();
+    let fr = backend.layout_of(fixed_box).unwrap();
     assert_eq!((fr.x, fr.y, fr.width, fr.height), (20.0, 10.0, 60.0, 30.0));
     let _ = parent;
 
@@ -164,16 +164,16 @@ fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fix
     tx.remove(zero_op);
     tx.commit_into(&mut changes);
     backend.commit(&store, &changes).unwrap();
-    assert_eq!(backend.layout_of(zero_op.raw()), None);
+    assert_eq!(backend.layout_of(zero_op), None);
 }
 
 #[test]
 fn hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
-    use nve_components::tables::Visibility;
+    use nve_tables::tables::Visibility;
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, Viewport { width: 300.0, height: 300.0, scale_factor: 1.0 });
+    backend.set_viewport(SurfaceId::ROOT, Viewport { width: 300.0, height: 300.0, scale_factor: 1.0 });
 
     let (hidden_parent, inherit_child, visible_child) = {
         let mut tx = store.tx();
@@ -184,29 +184,29 @@ fn hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
         tx.set_children(p, &[inh, vis]);
         tx.edit::<Layout>(p).width(Length::points(200.0)).height(Length::points(200.0));
         tx.edit::<Visual>(p).visibility(Visibility::Hidden);
-        tx.edit::<Interaction>(p).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(p).listeners(EventSet::one(InteractionEvent::Press));
         // Ordinary `Visibility::Inherit` child under Hidden parent inherits hiddenness.
         tx.edit::<Layout>(inh).width(Length::points(80.0)).height(Length::points(80.0));
-        tx.edit::<Interaction>(inh).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(inh).listeners(EventSet::one(InteractionEvent::Press));
         // Explicit `Visibility::Visible` child overrides Hidden parent (CSS parity).
         tx.edit::<Layout>(vis).width(Length::points(80.0)).height(Length::points(80.0));
         tx.edit::<Visual>(vis).visibility(Visibility::Visible);
-        tx.edit::<Interaction>(vis).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(vis).listeners(EventSet::one(InteractionEvent::Press));
         tx.commit_into(&mut changes);
         (p, inh, vis)
     };
     backend.commit(&store, &changes).unwrap();
 
-    let inh_r = backend.layout_of(inherit_child.raw()).unwrap();
-    let vis_r = backend.layout_of(visible_child.raw()).unwrap();
+    let inh_r = backend.layout_of(inherit_child).unwrap();
+    let vis_r = backend.layout_of(visible_child).unwrap();
     // Inherit child under Hidden parent: NOT hit-testable.
     assert_eq!(backend.hit_test(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
     assert_eq!(backend.hit_test_interaction(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
     // Explicit Visible child under Hidden parent: IS hit-testable.
-    assert_eq!(backend.hit_test(&store, vis_r.x + 10.0, vis_r.y + 10.0), Some(visible_child.raw()));
+    assert_eq!(backend.hit_test(&store, vis_r.x + 10.0, vis_r.y + 10.0), Some(visible_child));
     assert_eq!(
         backend.hit_test_interaction(&store, vis_r.x + 10.0, vis_r.y + 10.0),
-        Some(visible_child.raw())
+        Some(visible_child)
     );
     // Inside hidden_parent outside visible_child: must NOT hit hidden_parent.
     assert_eq!(backend.hit_test(&store, 190.0, 190.0), None);
@@ -215,14 +215,14 @@ fn hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
 
 #[test]
 fn hidden_text_input_collapses_to_zero_layout_no_hit_and_auto_cursor() {
-    use nve_components::interaction::CursorKind;
-    use nve_components::tables::{InputKind, TextInput};
+    use nve_tables::interaction::CursorKind;
+    use nve_tables::tables::{InputKind, TextInput};
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 320.0,
             height: 200.0,
@@ -247,29 +247,29 @@ fn hidden_text_input_collapses_to_zero_layout_no_hit_and_auto_cursor() {
             .width(Length::points(200.0))
             .height(Length::points(40.0));
         tx.edit::<Interaction>(sized)
-            .event_mask((EventMask::PRESS | EventMask::FOCUS) as u32)
+            .listeners(InteractionEvent::Press | InteractionEvent::Focus)
             .cursor(CursorKind::Pointer);
         tx.edit::<Layout>(sib)
             .width(Length::points(120.0))
             .height(Length::points(30.0));
         tx.edit::<Interaction>(sib)
-            .event_mask(EventMask::PRESS as u32);
+            .listeners(EventSet::one(InteractionEvent::Press));
         tx.commit_into(&mut changes);
         (bare, sized, sib)
     };
     backend.commit(&store, &changes).unwrap();
 
     for id in [hidden_bare, hidden_sized] {
-        let r = backend.layout_of(id.raw()).expect("layout entry exists");
+        let r = backend.layout_of(id).expect("layout entry exists");
         assert_eq!((r.width, r.height), (0.0, 0.0), "InputKind::Hidden must lay out as 0x0");
         assert!(!backend.is_interaction_target(&store, id));
         assert_eq!(backend.effective_cursor(&store, id), CursorKind::Auto);
     }
     // Sibling starts at y=0 because both hidden inputs take 0 space in flow.
-    let sib_r = backend.layout_of(sibling.raw()).expect("sibling layout");
+    let sib_r = backend.layout_of(sibling).expect("sibling layout");
     assert_eq!((sib_r.x, sib_r.y, sib_r.width, sib_r.height), (0.0, 0.0, 120.0, 30.0));
-    assert_eq!(backend.hit_test(&store, 10.0, 10.0), Some(sibling.raw()));
-    assert_eq!(backend.hit_test_interaction(&store, 10.0, 10.0), Some(sibling.raw()));
+    assert_eq!(backend.hit_test(&store, 10.0, 10.0), Some(sibling));
+    assert_eq!(backend.hit_test_interaction(&store, 10.0, 10.0), Some(sibling));
 
     // Toggling `InputKind::Hidden -> InputKind::Text` re-triggers layout via `#[effect(layout, paint, semantics)]`.
     {
@@ -278,8 +278,8 @@ fn hidden_text_input_collapses_to_zero_layout_no_hit_and_auto_cursor() {
         tx.commit_into(&mut changes);
     }
     backend.commit(&store, &changes).unwrap();
-    let grown = backend.layout_of(hidden_sized.raw()).expect("unhidden layout");
+    let grown = backend.layout_of(hidden_sized).expect("unhidden layout");
     assert_eq!((grown.width, grown.height), (200.0, 40.0));
     assert!(backend.is_interaction_target(&store, hidden_sized));
-    assert_eq!(backend.layout_of(sibling.raw()).unwrap().y, 40.0);
+    assert_eq!(backend.layout_of(sibling).unwrap().y, 40.0);
 }

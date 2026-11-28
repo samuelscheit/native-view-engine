@@ -455,7 +455,11 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 self.process_pending_remote_frames();
                 self.process_app_wakes();
                 if let Some(sw) = self.windows.get_mut(&window_id) {
+                    let animating = sw.session.tick_animations();
                     sw.present_pixels();
+                    if animating {
+                        sw.window.request_redraw();
+                    }
                 }
             }
             _ => {}

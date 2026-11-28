@@ -2,14 +2,15 @@
 //! `primary_slot` realization.
 
 use dioxus_core::{AttributeValue, ElementId, WriteMutations};
-use nve_components::tables::{Interaction, Layout, Link, TextContent, Visual};
+use nve_abi::SurfaceId;
+use nve_tables::tables::{Interaction, Layout, Link, TextContent, TextInput, Visual};
 use nve_store::{Length, NodeId, NveTable};
 
 use super::NveMutationWriter;
 
 #[test]
 fn direct_numeric_and_bool_attributes_avoid_string_roundtrip() {
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(1));
@@ -34,14 +35,13 @@ fn direct_numeric_and_bool_attributes_avoid_string_roundtrip() {
     assert_eq!(store.try_row::<Visual>(node).unwrap().opacity(), 0.5);
     let inter = store.try_row::<Interaction>(node).unwrap();
     assert!(inter.disabled());
-    assert!(inter.tab_index_set());
-    assert_eq!(inter.tab_index(), 3);
+    assert_eq!(inter.tab_index(), Some(3));
     assert_eq!(store.primary_slot(node), Link::slot());
 }
 
 #[test]
 fn remove_node_cleans_up_subtree_and_id_maps() {
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.create_text_node("hello", ElementId(2));
@@ -92,7 +92,7 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
     }
 
     let clears = Rc::new(Cell::new(0));
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.set_attribute(
@@ -266,7 +266,7 @@ fn inline_style_update_clears_dropped_declarations_and_skips_redundant_dirtying(
     use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
     use nve_store::NveTable as _;
 
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
 
     // Node A (no TypedStyle, no standalone): updating style clears dropped Layout/Visual props.
     writer.with_transaction(|mtx| {
@@ -416,10 +416,10 @@ fn canonical_style_precedence_standalone_clear_composite_fast_lane_and_invalid_k
 
     use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
     use nve_abi::table::effect;
-    use nve_components::tables::Typography;
+    use nve_tables::tables::Typography;
     use nve_store::NveTable as _;
 
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
 
     // 1. Canonical precedence: `style="width: 100px;"` then standalone `width="240"` -> inline 100px wins
     //    immediately and survives identical re-apply and additive `style` updates.
@@ -608,10 +608,10 @@ fn standalone_invalid_reset_empty_style_clear_noop_and_shorthand_order_preservat
     use std::rc::Rc;
 
     use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
-    use nve_components::tables::Typography;
+    use nve_tables::tables::Typography;
     use nve_store::NveTable as _;
 
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
 
     // 1. Standalone invalid value on untouched node must NOT record junk in standalone_style_attrs.
     writer.with_transaction(|mtx| {
@@ -855,4 +855,56 @@ fn typed_style_clamps_extreme_scalars_to_the_style_scalar_range() {
     assert_eq!(clamped.layout().gap, MAX_STYLE_SCALAR);
     assert_eq!(clamped.layout().margin.top, -MAX_STYLE_SCALAR);
     assert_eq!(clamped.style().font_size, MAX_STYLE_SCALAR);
+}
+
+#[test]
+fn text_input_minlength_and_maxlength_preserve_zero_and_map_negative_to_none() {
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n1 = writer.resolve_el(ElementId(1)).unwrap();
+
+    // Int attribute path: 0 -> Some(0), negative -> None, large positive -> clamped u16::MAX.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Int(0), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Int(0), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), Some(0));
+    assert_eq!(ti.max_length(), Some(0));
+
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Int(100_000), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Int(100_000), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), Some(u16::MAX));
+    assert_eq!(ti.max_length(), Some(u16::MAX));
+
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Int(-5), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Int(-1), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), None);
+    assert_eq!(ti.max_length(), None);
+
+    // String attribute path: "0" -> Some(0), "-3" -> None, "42" -> Some(42).
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Text("0".into()), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Text("42".into()), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), Some(0));
+    assert_eq!(ti.max_length(), Some(42));
+
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Text("-3".into()), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Text("-9".into()), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), None);
+    assert_eq!(ti.max_length(), None);
 }

@@ -52,7 +52,7 @@ pub fn create_nve_docs_surface(
     base_path: &str,
     viewport: DocsViewport,
 ) -> DioxusSurface {
-    create_nve_docs_surface_on(1, route, base_path, viewport)
+    create_nve_docs_surface_on(SurfaceId::ROOT, route, base_path, viewport)
 }
 
 /// Create a `DioxusSurface` for the official embedded `docs/content/` on an explicit `surface_id`.

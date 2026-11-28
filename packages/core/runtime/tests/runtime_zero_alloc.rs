@@ -8,9 +8,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    EventMask, NveRuntimeStatus, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
+    FrameId, InteractionEvent, NveRuntimeStatus, SurfaceId, ValidatedEvents,
+    NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
 };
-use nve_components::tables::{Interaction, Layout, Scroll, TextContent, Visual};
+use nve_tables::tables::{Interaction, Layout, Scroll, TextContent, Visual};
 use nve_engine::Viewport;
 use nve_runtime::{
     AppFrame, FrameTickHook, RuntimeApp, RuntimeBuilder, RuntimeError, SurfaceRuntime,
@@ -87,7 +88,7 @@ fn build_sample_nve2_frame() -> (NodeStore, ChangeSet, Vec<u8>) {
             .height(Length::points(80.0));
         tx.edit::<Visual>(card).background(Rgba::rgb(30, 41, 59));
         tx.edit::<Interaction>(card)
-            .event_mask(EventMask::PRESS as u32);
+            .listen(InteractionEvent::Press);
 
         let label = tx.create();
         tx.edit::<TextContent>(label).text("Hello NveRuntime");
@@ -107,7 +108,7 @@ fn build_sample_nve2_frame() -> (NodeStore, ChangeSet, Vec<u8>) {
 fn steady_state_clean_and_dirty_nve2_ticks_are_zero_alloc() {
     let (mut src_store, mut changes, initial_frame) = build_sample_nve2_frame();
     let mut rt = RuntimeBuilder::new()
-        .surface_id(1)
+        .surface_id(SurfaceId::ROOT)
         .viewport(Viewport {
             width: 400.0,
             height: 300.0,
@@ -124,7 +125,7 @@ fn steady_state_clean_and_dirty_nve2_ticks_are_zero_alloc() {
     let _ = rt.tick(1.0 / 60.0).expect("warm tick");
     let card_id = src_store.id_at(3).expect("card node");
     let hit = rt.hit_test(50.0, 25.0).expect("warm hit");
-    assert_eq!(hit, Some(card_id.raw()));
+    assert_eq!(hit, Some(card_id));
     {
         let g = rt.acquire_scene().expect("warm acquire");
         assert_eq!(g.view().schema_hash, NVE_RUNTIME_SCHEMA_HASH);
@@ -137,7 +138,7 @@ fn steady_state_clean_and_dirty_nve2_ticks_are_zero_alloc() {
             let changed = rt.tick(1.0 / 60.0).expect("clean tick");
             assert!(!changed);
             let h = rt.hit_test(50.0, 25.0).expect("hit");
-            assert_eq!(h, Some(card_id.raw()));
+            assert_eq!(h, Some(card_id));
             let g = rt.acquire_scene().expect("acquire");
             assert_eq!(g.view().frame_id, 1);
         }
@@ -228,7 +229,7 @@ struct DirectTestApp {
 }
 
 impl RuntimeApp for DirectTestApp {
-    fn render_frame(&mut self, _frame_id: u64) -> AppFrame<'_> {
+    fn render_frame(&mut self, _frame_id: FrameId) -> AppFrame<'_> {
         if !self.dirty {
             return AppFrame::Clean;
         }
@@ -238,7 +239,7 @@ impl RuntimeApp for DirectTestApp {
         }
     }
 
-    fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 

@@ -215,7 +215,7 @@ public final class NveRuntimeSession {
 
     /// Outbound app events since the last drain, borrowed until the next owner-thread call.
     public func drainEmittedEvents() throws -> NveEventBatch {
-        var batch = NveEventBatch(ptr: nil, len: 0, _pad: 0)
+        var batch = NveEventBatch(events: nil, bytes: nil, event_count: 0, bytes_len: 0)
         try check(api.pointee.drain_emitted_events(handle, &batch))
         return batch
     }

@@ -5,9 +5,9 @@
 //! [`ZSiblings::BOTTOM`] lands on sibling 0, the last one visited topmost-first in both
 //! shapes, so every query rejects all other siblings before hitting.
 
-use nve_abi::EventMask;
+use nve_abi::{EventSet, InteractionEvent, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{Interaction, Layout, Position, Visual, core_realization_order};
+use nve_tables::tables::{Interaction, Layout, Position, Visual, core_realization_order};
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 
@@ -38,7 +38,7 @@ impl ZSiblings {
                 tx.edit::<Visual>(id)
                     .z_index(if distinct_z { i as i32 } else { 0 });
                 tx.edit::<Interaction>(id)
-                    .event_mask(EventMask::PRESS as u32);
+                    .listeners(EventSet::one(InteractionEvent::Press));
                 id
             })
             .collect();
@@ -46,7 +46,7 @@ impl ZSiblings {
         tx.commit_into(&mut changes);
         let mut backend = HeadlessBackend::new().with_mutation_tracking(false);
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: 1280.0,
                 height: 800.0,
@@ -64,7 +64,7 @@ impl ZSiblings {
     /// `hit_test` and `hit_test_interaction` at [`Self::BOTTOM`]; both must find sibling 0.
     pub fn hit_bottom(&self) -> bool {
         let (x, y) = Self::BOTTOM;
-        let expected = Some(self.bottom.raw());
+        let expected = Some(self.bottom);
         self.backend.hit_test(&self.store, x, y) == expected
             && self.backend.hit_test_interaction(&self.store, x, y) == expected
     }

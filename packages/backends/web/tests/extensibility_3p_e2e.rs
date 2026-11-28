@@ -3,28 +3,36 @@
 //! Proves that an external crate can define a custom `#[derive(NveTable)]` capability with:
 //! - typed word-table state patches
 //! - typed imperative commands
-//! - zero-serialization in-process typed `TableEvent` (`TableEventBus`) AND cross-ABI `NveDirectEvent` + `EventRing` (`encode_events`/`decode_events`)
+//! - uniform pointer-free 64-byte `NveEvent` (`EventBatchBuf` + `NVEV` v2 wire codec) across in-process and FFI boundaries
 //! - `NVE2` binary wire round-trip into a replica `NodeStore`
 //! - zero-decode `NveTableView` publish inside `NveSceneView`
 //! - uniform `WebTableSystem` live DOM + SSR plugin integration
 //! - deferred DOM creation & `COMPOSITE`-only fast lane on `WebStoreRenderer`
 //!
-//! Zero edits to `nve-abi`, `nve-store`, `nve-components`, `nve-engine`, or `nve-backend-web`.
+//! Zero edits to `nve-abi`, `nve-store`, `nve-tables`, `nve-engine`, or `nve-backend-web`.
 
-use nve_abi::{
-    decode_events, direct_event_to_native, encode_events, EventPayload, NativeEventKind,
-    NveDirectEvent, NveDirectEventRef, NveEventPayloadTag,
-};
+use nve_abi::{EventBatchBuf, EventEnum, EventFlags, SurfaceId, TimestampUs, ValidatedEvents};
 use nve_backend_web::{WebStoreRenderer, WebSystemCommitCtx, WebTableSystem};
-use nve_components::tables::{Layout, Transform, Visual};
+use nve_tables::tables::{Layout, Transform, Visual};
 use nve_engine::StoreBackend;
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Str, TableSlot};
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EventEnum)]
+enum MapEvent {
+    RegionChanged = 0,
+}
+
 /// Third-party map widget table defined completely outside core crates.
 #[allow(dead_code)]
 #[derive(NveTable)]
-#[nve_table(name = "acme.map_view", storage = "sparse", flags = "publish")]
+#[nve_table(
+    name = "acme.map_view",
+    storage = "sparse",
+    flags = "publish",
+    events = MapEvent
+)]
 struct MockMapTable {
     #[effect(paint)]
     lat: f32,
@@ -37,7 +45,6 @@ struct MockMapTable {
 }
 
 const CMD_FLY_TO: u32 = 1;
-const EVENT_REGION_CHANGED: u32 = 42;
 
 fn encode_fly_to(lat: f32, lng: f32, zoom: f32) -> Vec<u8> {
     let mut out = Vec::with_capacity(12);
@@ -131,8 +138,16 @@ impl WebTableSystem for MockMapWebSystem {
             ctx.set_attr(node, "data-lat", &ev.lat.to_string());
             ctx.set_attr(node, "data-lng", &ev.lng.to_string());
             ctx.set_attr(node, "data-zoom", &ev.zoom.to_string());
-            ctx.events
-                .emit::<MockMapTable, _>(1, node, 1234, EVENT_REGION_CHANGED, ev);
+            ctx.events.push_event(
+                MockMapTable::KEY,
+                SurfaceId::ROOT,
+                node,
+                TimestampUs(1234),
+                MapEvent::RegionChanged,
+                EventFlags::EMPTY,
+                [ev.lat.to_bits(), ev.lng.to_bits(), ev.zoom.to_bits(), 0, 0, 0],
+                &ev.encode(),
+            );
         }
     }
 }
@@ -173,9 +188,10 @@ fn third_party_mock_map_e2e_nve2_scene_view_events_and_web_fast_lane() {
     // SAFETY: `map_view.rows` points to 1 valid `MockMapTable` row inside the live scene table.
     unsafe {
         let words = std::slice::from_raw_parts(map_view.rows, MockMapTable::DESC.words());
-        assert!((f32::from_bits(words[0]) - 37.7749).abs() < 1e-4);
-        assert!((f32::from_bits(words[1]) - (-122.4194)).abs() < 1e-4);
-        assert!((f32::from_bits(words[2]) - 12.0).abs() < 1e-4);
+        // Word 0 is the table's `events_word` (`EventSet<MapEvent>`); user fields start at word 1.
+        assert!((f32::from_bits(words[1]) - 37.7749).abs() < 1e-4);
+        assert!((f32::from_bits(words[2]) - (-122.4194)).abs() < 1e-4);
+        assert!((f32::from_bits(words[3]) - 12.0).abs() < 1e-4);
     }
 
     // 2. WebStoreRenderer realizes `<acme-map>` on first commit (zero create-then-replace churn).
@@ -215,56 +231,33 @@ fn third_party_mock_map_e2e_nve2_scene_view_events_and_web_fast_lane() {
     assert_eq!(renderer.realized(map_node).unwrap().composite_fast_flushes, 1);
     assert!((renderer.realized(map_node).unwrap().opacity - 0.65).abs() < 1e-6);
 
-    // 4. Zero-serialization in-process typed return event + cross-ABI EventRing & NveDirectEvent.
-    let drained: Vec<_> = renderer.events.drain().collect();
-    assert_eq!(drained.len(), 1);
-    let ev = &drained[0];
-    assert_eq!(ev.node, map_node);
-    assert_eq!(ev.table_key, MockMapTable::DESC.key);
-    assert_eq!(ev.event_id, EVENT_REGION_CHANGED);
+    // 4. Uniform 64 B NveEvent in-process batch + cross-ABI NveEventBatch + NVEV v2 wire roundtrip.
     let expected = MapRegionChanged {
         lat: 48.8566,
         lng: 2.3522,
         zoom: 14.0,
     };
-    assert_eq!(ev.payload::<MapRegionChanged>(), Some(&expected));
+    let validated = renderer.events.as_validated();
+    assert_eq!(validated.len(), 1);
+    let ev = validated.get(0).unwrap();
+    assert_eq!(ev.node(), map_node);
+    assert_eq!(ev.table(), MockMapTable::KEY);
+    assert_eq!(ev.as_event::<MapEvent>(MockMapTable::KEY), Some(MapEvent::RegionChanged));
+    assert_eq!(MapRegionChanged::decode(ev.bytes()), Some(expected.clone()));
 
-    // Cross-ABI EventRing (`encode_events`/`decode_events`) round-trip.
-    let native = ev.to_native_event(|e| e.payload::<MapRegionChanged>().unwrap().encode());
-    let encoded_ring = encode_events(std::slice::from_ref(&native));
-    let decoded_ring = decode_events(&encoded_ring).unwrap();
-    assert_eq!(decoded_ring.len(), 1);
-    assert_eq!(decoded_ring[0].kind, NativeEventKind::TableEvent);
-    match &decoded_ring[0].payload {
-        EventPayload::TableEvent {
-            table_key,
-            event_id,
-            payload,
-        } => {
-            assert_eq!(*table_key, MockMapTable::DESC.key.0);
-            assert_eq!(*event_id, EVENT_REGION_CHANGED);
-            assert_eq!(MapRegionChanged::decode(payload).unwrap(), expected);
-        }
-        other => panic!("expected TableEvent payload, got {other:?}"),
-    }
+    let encoded_wire = renderer.events.to_wire_bytes();
+    let decoded_wire = EventBatchBuf::decode_wire(&encoded_wire).unwrap();
+    assert_eq!(decoded_wire.len(), 1);
+    let dec_ev = decoded_wire.as_validated().get(0).unwrap();
+    assert_eq!(dec_ev.as_event::<MapEvent>(MockMapTable::KEY), Some(MapEvent::RegionChanged));
+    assert_eq!(MapRegionChanged::decode(dec_ev.bytes()), Some(expected.clone()));
 
-    // Zero-copy NveDirectEvent::table_event round-trip.
-    let wire_payload = expected.encode();
-    let direct = NveDirectEvent::table_event(
-        1,
-        map_node.0,
-        5678,
-        MockMapTable::DESC.key,
-        EVENT_REGION_CHANGED,
-        &wire_payload,
-    );
-    assert_eq!(direct.kind, NativeEventKind::TableEvent as u8);
-    assert_eq!(direct.payload_tag, NveEventPayloadTag::TableEvent as u8);
-    // SAFETY: `direct` and its payload backing live across `direct_ref`.
-    let direct_ref = unsafe { NveDirectEventRef::from_raw(&direct) };
-    let roundtripped = direct_event_to_native(direct_ref).unwrap();
-    assert_eq!(roundtripped.kind, NativeEventKind::TableEvent);
-    assert_eq!(roundtripped.timestamp_us, 5678);
+    // Zero-copy FFI NveEventBatch ingress validation round-trip.
+    // SAFETY: `renderer.events` outlives `ffi_view`.
+    let ffi_view = unsafe { ValidatedEvents::try_from_raw(renderer.events.as_raw_batch()) }.unwrap();
+    assert_eq!(ffi_view.len(), 1);
+    assert_eq!(ffi_view.get(0).unwrap().timestamp(), TimestampUs(1234));
+    renderer.events.clear();
 
     // 5. Verify NVE2 replica store receives both frames identically (including MockMapTable + command).
     let mut replica = NodeStore::replica();
@@ -290,7 +283,9 @@ fn third_party_mock_map_e2e_nve2_scene_view_events_and_web_fast_lane() {
 
     let mut replica_web = WebStoreRenderer::new().with_table_system(MockMapWebSystem);
     replica_web.commit(&replica, &replica_changes).unwrap();
-    let r_events: Vec<_> = replica_web.events.drain().collect();
-    assert_eq!(r_events.len(), 1);
-    assert_eq!(r_events[0].payload::<MapRegionChanged>(), Some(&expected));
+    let r_val = replica_web.events.as_validated();
+    assert_eq!(r_val.len(), 1);
+    let rev = r_val.get(0).unwrap();
+    assert_eq!(rev.as_event::<MapEvent>(MockMapTable::KEY), Some(MapEvent::RegionChanged));
+    assert_eq!(MapRegionChanged::decode(rev.bytes()), Some(expected));
 }

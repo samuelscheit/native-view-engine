@@ -3,15 +3,14 @@
 //! - Verifies all 5 interactive playgrounds mount and respond to real press/input events
 //! - Verifies lossless zero-mismatch `WebBackend::hydrate_from_ssr` DOM identity preservation
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
 use nve_canvas::{Canvas, DrawList};
 use nve_canvas_web::CanvasWebSystem;
-use nve_components::tables::{DebugId, TextContent};
+use nve_tables::tables::{DebugId, TextContent};
 use nve_docs::{DocsViewport, default_component_registry};
 use nve_engine::{StoreBackend, StoreWireReplica};
 use nve_mdx::validate_site;
-use nve_store::NodeId as StoreNodeId;
 use nve_web_html_web::register_web_html_systems;
 
 use nve_docs_site::{
@@ -31,7 +30,7 @@ impl InteractiveHarness {
         register_web_html_systems(backend.table_registry_mut());
         backend.register_table_system(CanvasWebSystem);
         surface
-            .commit_to(1, &mut backend)
+            .commit_to(FrameId(1), &mut backend)
             .expect("initial commit_to");
         Self {
             surface,
@@ -48,13 +47,13 @@ impl InteractiveHarness {
 
     fn maybe_find(&self, test_id: &str) -> Option<NodeId> {
         let store = self.surface.store();
-        let mut stack = vec![StoreNodeId::ROOT];
+        let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
-            if id != StoreNodeId::ROOT
+            if id != NodeId::ROOT
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == test_id
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
@@ -63,11 +62,11 @@ impl InteractiveHarness {
 
     fn collect_text(&self, root: NodeId) -> String {
         let mut out = String::new();
-        self.collect_text_rec(StoreNodeId(root), &mut out);
+        self.collect_text_rec(root, &mut out);
         out
     }
 
-    fn collect_text_rec(&self, id: StoreNodeId, out: &mut String) {
+    fn collect_text_rec(&self, id: NodeId, out: &mut String) {
         let store = self.surface.store();
         if let Some(tc) = store.try_row::<TextContent>(id) {
             out.push_str(tc.text());
@@ -84,46 +83,47 @@ impl InteractiveHarness {
     fn draw_op_count(&self, id: NodeId) -> usize {
         let store = self.surface.store();
         store
-            .try_row::<Canvas>(StoreNodeId(id))
+            .try_row::<Canvas>(id)
             .and_then(|c| store.resource::<DrawList>(c.draw_list()))
             .map_or(0, |dl| dl.len())
     }
 
     fn press(&mut self, test_id: &str) {
         let node_id = self.find(test_id);
-        let ev = NativeEvent {
-            surface_id: 1,
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
             node_id,
-            timestamp_us: self.frame_id * 1000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 10.0, y: 10.0 },
-        };
+            TimestampUs(self.frame_id * 1000),
+            10.0,
+            10.0,
+        );
         assert!(
-            self.surface.dispatch_events(&[ev]),
+            self.surface.dispatch_events(batch.as_validated()),
             "press on '{test_id}' should be handled"
         );
         self.frame_id += 1;
         self.surface
-            .commit_to(self.frame_id, &mut self.backend)
+            .commit_to(FrameId(self.frame_id), &mut self.backend)
             .expect("commit_to");
     }
 
     fn type_text(&mut self, test_id: &str, value: &str) {
         let node_id = self.find(test_id);
-        let ev = NativeEvent {
-            surface_id: 1,
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(
+            SurfaceId::ROOT,
             node_id,
-            timestamp_us: self.frame_id * 1000,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(value.to_string()),
-        };
+            TimestampUs(self.frame_id * 1000),
+            value,
+        );
         assert!(
-            self.surface.dispatch_events(&[ev]),
+            self.surface.dispatch_events(batch.as_validated()),
             "text change on '{test_id}' should be handled"
         );
         self.frame_id += 1;
         self.surface
-            .commit_to(self.frame_id, &mut self.backend)
+            .commit_to(FrameId(self.frame_id), &mut self.backend)
             .expect("commit_to");
     }
 }
@@ -227,7 +227,7 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
 
             let mut surface = create_nve_docs_surface(route, "", client_vp);
             surface
-                .commit_to(1, &mut hydrated)
+                .commit_to(FrameId(1), &mut hydrated)
                 .expect("hydrate commit_to");
 
             let report = hydrated.hydration_report();
@@ -447,17 +447,17 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     use nve_engine::{NveApp, Viewport};
     use nve_docs_site::DocsSiteModule;
 
-    let mut module = DocsSiteModule::create(1);
-    let frame_bytes = module.render(1).to_vec();
+    let mut module = DocsSiteModule::create(SurfaceId::ROOT);
+    let frame_bytes = module.render(FrameId(1)).to_vec();
     assert!(!frame_bytes.is_empty(), "native NveApp Frame 1 must be non-empty");
 
-    nve_components::tables::register_core_tables();
+    nve_tables::tables::register_core_tables();
     let _ = <nve_canvas::Canvas as nve_store::NveTable>::slot();
     nve_web_html::register_web_html_tables();
     let mut skia = SkiaBackend::new();
     skia.register_table_system(nve_canvas_skia::CanvasSkiaSystem);
     skia.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1280.0,
             height: 800.0,
@@ -465,7 +465,7 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
         },
     );
     let mut replica =
-        StoreWireReplica::new(skia, nve_components::tables::core_realization_order());
+        StoreWireReplica::new(skia, nve_tables::tables::core_realization_order());
     replica
         .submit_nve2_frame(&frame_bytes)
         .expect("SkiaBackend submit_nve2_frame for native DocsSiteModule");
@@ -499,7 +499,7 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     // Verify binary NVDS state snapshot + restore
     let snap = module.snapshot_state().to_vec();
     assert!(snap.starts_with(b"NVDS"));
-    let mut restored = DocsSiteModule::create(2);
+    let mut restored = DocsSiteModule::create(SurfaceId::new(2, 0));
     restored.restore_state(&snap);
-    assert!(!restored.render(1).is_empty());
+    assert!(!restored.render(FrameId(1)).is_empty());
 }

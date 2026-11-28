@@ -1,6 +1,7 @@
-// `nve.canvas` for C++ view hosts: the generated table binding and the `NVE_DRAW1` resource kind.
+// `nve.canvas` for C++ view hosts: the generated table binding and the `nve.res.draw_list` kind.
 // A canvas node's `draw_list` word is a `ResourceId` whose bytes (`RuntimeSceneGuard::resource`,
-// kind `kDrawListKind`) are a raw `NVE_DRAW1` buffer; `generation` bumps on every redraw request.
+// kind `kDrawListKind`) are a 4-byte-aligned flat `u32`-word draw list (`FlatResource`);
+// `generation` bumps on every redraw request.
 #pragma once
 
 #include <cstdint>
@@ -13,7 +14,7 @@
 
 namespace nve::canvas {
 
-/// `<DrawList as Resource>::KIND`.
+/// `<DrawList as FlatResource>::KIND`.
 inline constexpr host::Key64 kDrawListKind = host::Key64::of("nve.res.draw_list");
 
 struct CanvasData {

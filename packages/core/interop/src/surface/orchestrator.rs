@@ -1,31 +1,59 @@
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 
+use nve_abi::hash::HashMap;
 use nve_abi::SurfaceId;
 
 use super::types::{
-    EnvironmentOverrides, FrameworkKind, LifecycleState, SafeAreaInsets, SurfaceDescriptor,
-    SurfaceEnvironment, SurfaceEvent, SurfaceRecord, TeardownRecord, ThemeContext,
+    EnvironmentOverrides, FrameworkKind, LifecycleState, SurfaceDescriptor, SurfaceEnvironment,
+    SurfaceEvent, SurfaceRecord, TeardownRecord,
 };
 use crate::error::InteropError;
 #[cfg(feature = "layout")]
 use crate::layout::IntrinsicSize;
 
-type TeardownHook = Box<dyn FnOnce(&TeardownRecord) + Send + 'static>;
+pub(crate) type TeardownHook = Box<dyn FnOnce(&TeardownRecord) + Send + 'static>;
+pub(crate) type PendingTeardownHooks = Vec<(usize, TeardownHook)>;
 
-/// Hierarchical registry of surfaces spanning heterogeneous UI frameworks
+/// Strongly typed dense slot index inside [`SurfaceOrchestrator::free`].
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurfaceSlotIndex(u32);
+
+/// Compact hot slot header inside [`SurfaceOrchestrator`] carrying an 8-bit ABA generation tag
+/// and a cold boxed [`SurfaceRecord`] (16 bytes total — 4 slots per 64-byte cache line).
+pub(super) struct SurfaceSlot {
+    pub(super) generation: u8,
+    pub(super) record: Option<Box<SurfaceRecord>>,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<SurfaceSlot>() <= 16);
+};
+
+impl SurfaceSlot {
+    const fn empty() -> Self {
+        Self {
+            generation: 0,
+            record: None,
+        }
+    }
+}
+
+/// Hierarchical dense-slab registry of surfaces spanning heterogeneous UI frameworks
 /// (e.g. Flutter root -> NVE surface -> React Native Fabric island -> SwiftUI island).
 ///
-/// Responsibilities:
-/// - Parent/child ownership graph with cycle prevention
-/// - Lifecycle state machine (`Mounted`, `Paused`, `Resumed`, `Destroyed`) with subtree propagation
-/// - Theme, safe-area, scale-factor, and locale cascading with per-surface override support
-/// - Leak-free bottom-up cascading teardown
+/// Backed by a compact generational `Vec<SurfaceSlot>` + FIFO free queue (`index:24 | generation:8`,
+/// slot `0` reserved sentinel so [`SurfaceId::NULL`] is never live) for O(1) lookup, insert,
+/// destroy, and permanent ABA protection (slots whose generation reaches `u8::MAX` are retired
+/// instead of wrapping back to `0`).
 pub struct SurfaceOrchestrator {
-    next_id: SurfaceId,
-    surfaces: BTreeMap<SurfaceId, SurfaceRecord>,
+    pub(super) slots: Vec<SurfaceSlot>,
+    free: VecDeque<SurfaceSlotIndex>,
+    teardown_hooks: HashMap<SurfaceId, TeardownHook>,
     roots: Vec<SurfaceId>,
-    events: Vec<SurfaceEvent>,
-    teardown_hooks: BTreeMap<SurfaceId, TeardownHook>,
+    pub(super) events: Vec<SurfaceEvent>,
+    pub(super) env_stack: Vec<(SurfaceId, usize)>,
+    active_count: usize,
 }
 
 impl Default for SurfaceOrchestrator {
@@ -35,56 +63,108 @@ impl Default for SurfaceOrchestrator {
 }
 
 impl SurfaceOrchestrator {
+    /// Stack buffer capacity used by [`Self::ancestor_chain_into`] and `GestureArbitrator`'s
+    /// inline surface chain for zero-allocation pointer arbitration across realistic nesting depths.
+    pub const INLINE_ANCESTOR_CAP: usize = 32;
+
     pub fn new() -> Self {
         Self {
-            next_id: 1,
-            surfaces: BTreeMap::new(),
+            slots: vec![SurfaceSlot::empty()],
+            free: VecDeque::new(),
+            teardown_hooks: HashMap::default(),
             roots: Vec::new(),
             events: Vec::new(),
-            teardown_hooks: BTreeMap::new(),
+            env_stack: Vec::new(),
+            active_count: 0,
         }
     }
 
-    /// Registers a surface (root or child), inheriting environment from its parent when present.
-    pub fn register_surface(&mut self, desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
-        let id = match desc.id {
-            Some(explicit) => {
-                if self.surfaces.contains_key(&explicit) {
-                    return Err(InteropError::DuplicateSurface(explicit));
-                }
-                if explicit >= self.next_id {
-                    self.next_id = explicit.saturating_add(1);
-                }
-                explicit
+    #[inline]
+    fn slot_ref(&self, id: SurfaceId) -> Option<&SurfaceSlot> {
+        let idx = id.index();
+        if idx == 0 {
+            return None;
+        }
+        let slot = self.slots.get(idx)?;
+        (slot.generation == id.generation() && slot.record.is_some()).then_some(slot)
+    }
+
+    #[inline]
+    fn slot_mut(&mut self, id: SurfaceId) -> Option<&mut SurfaceSlot> {
+        let idx = id.index();
+        if idx == 0 {
+            return None;
+        }
+        let slot = self.slots.get_mut(idx)?;
+        (slot.generation == id.generation() && slot.record.is_some()).then_some(slot)
+    }
+
+    #[inline]
+    pub(super) fn get_mut(&mut self, id: SurfaceId) -> Option<&mut SurfaceRecord> {
+        self.slot_mut(id)?.record.as_deref_mut()
+    }
+
+    pub(crate) fn allocate_slot_with_limit(
+        &mut self,
+        max_index: u32,
+    ) -> Result<SurfaceId, InteropError> {
+        if let Some(slot_idx) = self.free.pop_front() {
+            let generation = self.slots[slot_idx.0 as usize].generation;
+            Ok(SurfaceId::new(slot_idx.0, generation))
+        } else {
+            let idx_usize = self.slots.len();
+            if idx_usize > max_index as usize {
+                return Err(InteropError::SurfaceSlotsExhausted);
             }
-            None => {
-                while self.surfaces.contains_key(&self.next_id) {
-                    self.next_id = self.next_id.saturating_add(1);
-                }
-                let allocated = self.next_id;
-                self.next_id = self.next_id.saturating_add(1);
-                allocated
+            self.slots.push(SurfaceSlot::empty());
+            Ok(SurfaceId::new(idx_usize as u32, 0))
+        }
+    }
+
+    /// Registers a surface (root or child), inheriting environment from its parent when present
+    /// and sealing the invariant `child.environment == child.overrides.apply(parent.environment)`.
+    pub fn register_surface(&mut self, mut desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
+        desc.overrides.validate()?;
+        if let Some(ref env) = desc.environment {
+            env.validate()?;
+        }
+        let resolved_env = match (desc.parent, desc.environment) {
+            (Some(parent_id), Some(mut explicit_env)) => {
+                let parent_env = &self
+                    .get(parent_id)
+                    .ok_or(InteropError::ParentNotFound(parent_id))?
+                    .environment;
+                desc.overrides.apply_to(&mut explicit_env);
+                desc.overrides.seal_against_parent(&explicit_env, parent_env);
+                explicit_env
+            }
+            (Some(parent_id), None) => {
+                let mut env = self
+                    .get(parent_id)
+                    .ok_or(InteropError::ParentNotFound(parent_id))?
+                    .environment
+                    .clone();
+                desc.overrides.apply_to(&mut env);
+                env
+            }
+            (None, Some(mut explicit_env)) => {
+                desc.overrides.apply_to(&mut explicit_env);
+                // Roots have no parent to block cascades from; keep overrides empty so direct root
+                // environment updates are never silently frozen.
+                desc.overrides = EnvironmentOverrides::default();
+                explicit_env
+            }
+            (None, None) => {
+                let mut env = SurfaceEnvironment::default();
+                desc.overrides.apply_to(&mut env);
+                desc.overrides = EnvironmentOverrides::default();
+                env
             }
         };
 
-        let inherited_env = match desc.parent {
-            Some(parent_id) => {
-                let parent = self
-                    .surfaces
-                    .get(&parent_id)
-                    .ok_or(InteropError::ParentNotFound(parent_id))?;
-                if parent.state == LifecycleState::Destroyed {
-                    return Err(InteropError::SurfaceDestroyed(parent_id));
-                }
-                parent.environment.clone()
-            }
-            None => SurfaceEnvironment::default(),
-        };
+        let id = self.allocate_slot_with_limit(SurfaceId::MAX_INDEX)?;
 
-        let mut resolved_env = desc.environment.unwrap_or(inherited_env);
-        apply_overrides(&mut resolved_env, &desc.overrides);
-
-        let record = SurfaceRecord {
+        let record = Box::new(SurfaceRecord {
             id,
             parent: desc.parent,
             children: Vec::new(),
@@ -97,17 +177,18 @@ impl SurfaceOrchestrator {
             viewport_size: desc.initial_size,
             #[cfg(feature = "window")]
             presentation: desc.presentation,
-        };
+        });
 
         if let Some(parent_id) = desc.parent {
-            if let Some(parent) = self.surfaces.get_mut(&parent_id) {
+            if let Some(parent) = self.get_mut(parent_id) {
                 parent.children.push(id);
             }
         } else {
             self.roots.push(id);
         }
 
-        self.surfaces.insert(id, record);
+        self.slots[id.index()].record = Some(record);
+        self.active_count += 1;
         self.events.push(SurfaceEvent::Mounted {
             surface_id: id,
             parent: desc.parent,
@@ -148,61 +229,90 @@ impl SurfaceOrchestrator {
     where
         F: FnOnce(&TeardownRecord) + Send + 'static,
     {
-        let record = self
-            .surfaces
-            .get(&surface_id)
-            .ok_or(InteropError::SurfaceNotFound(surface_id))?;
-        if record.state == LifecycleState::Destroyed {
-            return Err(InteropError::SurfaceDestroyed(surface_id));
+        if self.slot_ref(surface_id).is_none() {
+            return Err(InteropError::SurfaceNotFound(surface_id));
         }
         self.teardown_hooks.insert(surface_id, Box::new(hook));
         Ok(())
     }
 
+    #[inline]
     pub fn get(&self, surface_id: SurfaceId) -> Option<&SurfaceRecord> {
-        self.surfaces.get(&surface_id)
+        self.slot_ref(surface_id)?.record.as_deref()
     }
 
+    #[inline]
     pub fn roots(&self) -> &[SurfaceId] {
         &self.roots
     }
 
     pub fn children(&self, surface_id: SurfaceId) -> Result<&[SurfaceId], InteropError> {
-        self.surfaces
-            .get(&surface_id)
+        self.get(surface_id)
             .map(|s| s.children.as_slice())
             .ok_or(InteropError::SurfaceNotFound(surface_id))
     }
 
+    /// Writes the ancestor chain starting from `surface_id` up to its root into `out` with zero
+    /// heap allocations.
+    ///
+    /// Returns `Ok(Some(len))` when the chain fits in `out`, `Ok(None)` if the hierarchy is deeper
+    /// than `out.len()` (caller may fall back to [`Self::ancestor_chain`]), or
+    /// `Err(InteropError::SurfaceNotFound)` if `surface_id` is missing/stale.
+    #[inline]
+    pub fn ancestor_chain_into(
+        &self,
+        surface_id: SurfaceId,
+        out: &mut [SurfaceId],
+    ) -> Result<Option<usize>, InteropError> {
+        let mut rec = self
+            .get(surface_id)
+            .ok_or(InteropError::SurfaceNotFound(surface_id))?;
+        let mut len = 0usize;
+        let mut current = surface_id;
+        loop {
+            if len == out.len() {
+                return Ok(None);
+            }
+            out[len] = current;
+            len += 1;
+            match rec.parent {
+                Some(parent_id) => match self.get(parent_id) {
+                    Some(parent_rec) => {
+                        current = parent_id;
+                        rec = parent_rec;
+                    }
+                    None => break,
+                },
+                None => break,
+            }
+        }
+        Ok(Some(len))
+    }
+
     /// Returns the ancestor chain starting from `surface_id` itself up to the root.
     pub fn ancestor_chain(&self, surface_id: SurfaceId) -> Result<Vec<SurfaceId>, InteropError> {
-        if !self.surfaces.contains_key(&surface_id) {
+        if self.get(surface_id).is_none() {
             return Err(InteropError::SurfaceNotFound(surface_id));
         }
         let mut chain = Vec::new();
         let mut cursor = Some(surface_id);
         while let Some(id) = cursor {
             chain.push(id);
-            cursor = self.surfaces.get(&id).and_then(|r| r.parent);
+            cursor = self.get(id).and_then(|r| r.parent);
         }
         Ok(chain)
     }
 
     /// Returns all descendants of `surface_id` in pre-order (excluding `surface_id`).
     pub fn descendants(&self, surface_id: SurfaceId) -> Result<Vec<SurfaceId>, InteropError> {
-        if !self.surfaces.contains_key(&surface_id) {
-            return Err(InteropError::SurfaceNotFound(surface_id));
-        }
+        let root = self
+            .get(surface_id)
+            .ok_or(InteropError::SurfaceNotFound(surface_id))?;
         let mut out = Vec::new();
-        let mut stack: Vec<SurfaceId> = self.surfaces[&surface_id]
-            .children
-            .iter()
-            .rev()
-            .copied()
-            .collect();
+        let mut stack: Vec<SurfaceId> = root.children.iter().rev().copied().collect();
         while let Some(id) = stack.pop() {
             out.push(id);
-            if let Some(node) = self.surfaces.get(&id) {
+            if let Some(node) = self.get(id) {
                 for &child in node.children.iter().rev() {
                     stack.push(child);
                 }
@@ -212,29 +322,26 @@ impl SurfaceOrchestrator {
     }
 
     /// Active (non-destroyed) surface count.
+    #[inline]
     pub fn active_count(&self) -> usize {
-        self.surfaces
-            .values()
-            .filter(|s| s.state != LifecycleState::Destroyed)
-            .count()
+        self.active_count
     }
 
-    /// Transitions a single surface to `next_state` (for `Destroyed`, use [`Self::destroy_surface`]).
+    /// Transitions a single surface to a non-destructive lifecycle state (`Resumed`/`Paused`).
+    ///
+    /// Rejects `LifecycleState::Destroyed` with [`InteropError::InvalidLifecycleTransition`] so
+    /// destruction happens through one single mechanism ([`Self::destroy_surface`] or
+    /// [`crate::InteropRuntime::destroy_surface_cascade`]).
     pub fn transition_state(
         &mut self,
         surface_id: SurfaceId,
         next_state: LifecycleState,
     ) -> Result<(), InteropError> {
-        if next_state == LifecycleState::Destroyed {
-            self.destroy_surface(surface_id)?;
-            return Ok(());
-        }
         let record = self
-            .surfaces
-            .get_mut(&surface_id)
+            .get_mut(surface_id)
             .ok_or(InteropError::SurfaceNotFound(surface_id))?;
         let prev = record.state;
-        if !prev.can_transition_to(next_state) {
+        if next_state == LifecycleState::Destroyed || !prev.can_transition_to(next_state) {
             return Err(InteropError::InvalidLifecycleTransition {
                 surface: surface_id,
                 from: prev,
@@ -252,22 +359,21 @@ impl SurfaceOrchestrator {
         Ok(())
     }
 
-    /// Propagates a lifecycle transition (`Resumed` or `Paused`) to `surface_id` and all descendants.
+    /// Propagates a non-destructive lifecycle transition (`Resumed` or `Paused`) to `surface_id`
+    /// and all descendants in pre-order.
+    ///
+    /// Rejects `LifecycleState::Destroyed` with [`InteropError::InvalidLifecycleTransition`]
+    /// (use [`Self::destroy_surface`] or [`crate::InteropRuntime::destroy_surface_cascade`]).
     pub fn propagate_lifecycle(
         &mut self,
         surface_id: SurfaceId,
         next_state: LifecycleState,
     ) -> Result<Vec<SurfaceId>, InteropError> {
-        if next_state == LifecycleState::Destroyed {
-            let torn_down = self.destroy_surface(surface_id)?;
-            return Ok(torn_down.into_iter().map(|r| r.surface_id).collect());
-        }
-        let mut targets = vec![surface_id];
-        targets.extend(self.descendants(surface_id)?);
-
-        // Validate root first so invalid transitions fail atomically.
-        let root_state = self.surfaces[&surface_id].state;
-        if !root_state.can_transition_to(next_state) {
+        let root_state = self
+            .get(surface_id)
+            .ok_or(InteropError::SurfaceNotFound(surface_id))?
+            .state;
+        if next_state == LifecycleState::Destroyed || !root_state.can_transition_to(next_state) {
             return Err(InteropError::InvalidLifecycleTransition {
                 surface: surface_id,
                 from: root_state,
@@ -275,10 +381,12 @@ impl SurfaceOrchestrator {
             });
         }
 
+        let mut targets = vec![surface_id];
+        targets.extend(self.descendants(surface_id)?);
+
         let mut transitioned = Vec::new();
         for id in targets {
-            if let Some(rec) = self.surfaces.get_mut(&id)
-                && rec.state != LifecycleState::Destroyed
+            if let Some(rec) = self.get_mut(id)
                 && rec.state != next_state
                 && rec.state.can_transition_to(next_state)
             {
@@ -303,155 +411,51 @@ impl SurfaceOrchestrator {
         size: IntrinsicSize,
     ) -> Result<(), InteropError> {
         let rec = self
-            .surfaces
-            .get_mut(&surface_id)
+            .get_mut(surface_id)
             .ok_or(InteropError::SurfaceNotFound(surface_id))?;
-        if rec.state == LifecycleState::Destroyed {
-            return Err(InteropError::SurfaceDestroyed(surface_id));
-        }
         rec.viewport_size = size;
         Ok(())
     }
 
-    /// Updates the environment at `surface_id` and propagates it down the subtree,
-    /// respecting each descendant's [`EnvironmentOverrides`].
-    pub fn update_environment(
-        &mut self,
-        surface_id: SurfaceId,
-        environment: SurfaceEnvironment,
-    ) -> Result<Vec<SurfaceId>, InteropError> {
-        let rec = self
-            .surfaces
-            .get(&surface_id)
-            .ok_or(InteropError::SurfaceNotFound(surface_id))?;
-        if rec.state == LifecycleState::Destroyed {
-            return Err(InteropError::SurfaceDestroyed(surface_id));
-        }
-
-        let mut updated = Vec::new();
-        self.propagate_env_recursive(surface_id, &environment, &mut updated);
-        Ok(updated)
-    }
-
-    fn propagate_env_recursive(
-        &mut self,
-        surface_id: SurfaceId,
-        incoming: &SurfaceEnvironment,
-        updated: &mut Vec<SurfaceId>,
-    ) {
-        let (effective, children) = {
-            let Some(rec) = self.surfaces.get_mut(&surface_id) else {
-                return;
-            };
-            let mut next = incoming.clone();
-            apply_overrides(&mut next, &rec.overrides);
-            if rec.environment != next {
-                rec.environment = next.clone();
-                updated.push(surface_id);
-                self.events.push(SurfaceEvent::EnvironmentPropagated {
-                    surface_id,
-                    environment: next.clone(),
-                });
-            }
-            (rec.environment.clone(), rec.children.clone())
-        };
-
-        for child_id in children {
-            self.propagate_env_recursive(child_id, &effective, updated);
-        }
-    }
-
-    /// Convenience helper to update only the theme at `surface_id` and cascade to children.
-    pub fn set_theme(
-        &mut self,
-        surface_id: SurfaceId,
-        theme: ThemeContext,
-    ) -> Result<Vec<SurfaceId>, InteropError> {
-        let mut env = self
-            .surfaces
-            .get(&surface_id)
-            .ok_or(InteropError::SurfaceNotFound(surface_id))?
-            .environment
-            .clone();
-        env.theme = theme;
-        self.update_environment(surface_id, env)
-    }
-
-    /// Convenience helper to update safe-area insets at `surface_id` and cascade to children.
-    pub fn set_safe_area(
-        &mut self,
-        surface_id: SurfaceId,
-        safe_area: SafeAreaInsets,
-    ) -> Result<Vec<SurfaceId>, InteropError> {
-        let mut env = self
-            .surfaces
-            .get(&surface_id)
-            .ok_or(InteropError::SurfaceNotFound(surface_id))?
-            .environment
-            .clone();
-        env.safe_area = safe_area;
-        self.update_environment(surface_id, env)
-    }
-
-    /// Convenience helper to update display scale factor at `surface_id` and cascade to children.
-    pub fn set_scale_factor(
-        &mut self,
-        surface_id: SurfaceId,
-        scale_factor: f32,
-    ) -> Result<Vec<SurfaceId>, InteropError> {
-        let mut env = self
-            .surfaces
-            .get(&surface_id)
-            .ok_or(InteropError::SurfaceNotFound(surface_id))?
-            .environment
-            .clone();
-        env.scale_factor = scale_factor;
-        self.update_environment(surface_id, env)
-    }
-
     /// Reparents `surface_id` under `new_parent` (or promotes it to a root if `None`),
-    /// preventing cycles and re-propagating environment from the new parent.
+    /// validating existence and acyclicity before mutating any state.
     pub fn reparent(
         &mut self,
         surface_id: SurfaceId,
         new_parent: Option<SurfaceId>,
     ) -> Result<(), InteropError> {
-        let old_parent = {
-            let rec = self
-                .surfaces
-                .get(&surface_id)
-                .ok_or(InteropError::SurfaceNotFound(surface_id))?;
-            if rec.state == LifecycleState::Destroyed {
-                return Err(InteropError::SurfaceDestroyed(surface_id));
-            }
-            rec.parent
-        };
+        let old_parent = self
+            .get(surface_id)
+            .ok_or(InteropError::SurfaceNotFound(surface_id))?
+            .parent;
 
         if old_parent == new_parent {
             return Ok(());
         }
 
-        if let Some(target_parent) = new_parent {
+        let new_parent_env = if let Some(target_parent) = new_parent {
             let parent_rec = self
-                .surfaces
-                .get(&target_parent)
+                .get(target_parent)
                 .ok_or(InteropError::ParentNotFound(target_parent))?;
-            if parent_rec.state == LifecycleState::Destroyed {
-                return Err(InteropError::SurfaceDestroyed(target_parent));
+            let mut cursor = Some(target_parent);
+            while let Some(ancestor_id) = cursor {
+                if ancestor_id == surface_id {
+                    return Err(InteropError::InvalidParentCycle {
+                        surface: surface_id,
+                        proposed_parent: target_parent,
+                    });
+                }
+                cursor = self.get(ancestor_id).and_then(|r| r.parent);
             }
-            let ancestors = self.ancestor_chain(target_parent)?;
-            if ancestors.contains(&surface_id) {
-                return Err(InteropError::InvalidParentCycle {
-                    surface: surface_id,
-                    proposed_parent: target_parent,
-                });
-            }
-        }
+            Some(parent_rec.environment.clone())
+        } else {
+            None
+        };
 
-        // Detach from old parent / root list.
+        // All validation passed; mutate tree links atomically.
         match old_parent {
             Some(old_pid) => {
-                if let Some(old_p) = self.surfaces.get_mut(&old_pid) {
+                if let Some(old_p) = self.get_mut(old_pid) {
                     old_p.children.retain(|&c| c != surface_id);
                 }
             }
@@ -460,21 +464,22 @@ impl SurfaceOrchestrator {
             }
         }
 
-        // Attach to new parent / root list.
-        let new_parent_env = match new_parent {
+        match new_parent {
             Some(new_pid) => {
-                let new_p = self.surfaces.get_mut(&new_pid).expect("validated new_parent exists");
-                new_p.children.push(surface_id);
-                Some(new_p.environment.clone())
+                if let Some(new_p) = self.get_mut(new_pid) {
+                    new_p.children.push(surface_id);
+                }
             }
             None => {
                 self.roots.push(surface_id);
-                None
             }
-        };
+        }
 
-        if let Some(rec) = self.surfaces.get_mut(&surface_id) {
+        if let Some(rec) = self.get_mut(surface_id) {
             rec.parent = new_parent;
+            if new_parent.is_none() {
+                rec.overrides = EnvironmentOverrides::default();
+            }
         }
 
         self.events.push(SurfaceEvent::Reparented {
@@ -484,33 +489,46 @@ impl SurfaceOrchestrator {
         });
 
         if let Some(env) = new_parent_env {
-            let mut updated = Vec::new();
-            self.propagate_env_recursive(surface_id, &env, &mut updated);
+            self.propagate_env_iterative(surface_id, env, None);
         }
 
         Ok(())
     }
 
-    /// Destroys `surface_id` and its entire subtree in strict bottom-up (post-order) sequence,
-    /// firing teardown hooks, detaching from parents, and removing all entries so zero leaks remain.
+    /// Destroys `surface_id` and its entire subtree in strict bottom-up (post-order) sequence.
+    ///
+    /// All state mutations (parent/root detachment, slot retirement/recycling, `active_count`,
+    /// hook extraction, and `Destroyed` events) finish before any user teardown hook runs. Every
+    /// registered teardown hook in the destroyed subtree executes even if an earlier hook panics;
+    /// the first panic (if any) is resumed only after all hooks have completed.
     pub fn destroy_surface(
         &mut self,
         surface_id: SurfaceId,
     ) -> Result<Vec<TeardownRecord>, InteropError> {
+        let (records, pending_hooks) = self.destroy_surface_parts(surface_id)?;
+        Self::fire_teardown_hooks(&records, pending_hooks);
+        Ok(records)
+    }
+
+    /// Commits all orchestrator teardown mutations and returns the torn-down records plus deferred
+    /// user teardown hooks so callers (such as [`crate::InteropRuntime::destroy_surface_cascade`])
+    /// can clean up sibling subsystems before any user hook runs.
+    pub(crate) fn destroy_surface_parts(
+        &mut self,
+        surface_id: SurfaceId,
+    ) -> Result<(Vec<TeardownRecord>, PendingTeardownHooks), InteropError> {
         let parent_of_root = self
-            .surfaces
-            .get(&surface_id)
+            .get(surface_id)
             .ok_or(InteropError::SurfaceNotFound(surface_id))?
             .parent;
 
-        // Collect post-order traversal (deepest leaves first, target root last).
-        let mut order = Vec::new();
-        self.collect_post_order(surface_id, &mut order);
+        // Collect post-order traversal iteratively (deepest leaves first, target root last).
+        let order = self.collect_post_order_iterative(surface_id);
 
         // Detach the target surface from its parent or root list.
         match parent_of_root {
             Some(pid) => {
-                if let Some(parent) = self.surfaces.get_mut(&pid) {
+                if let Some(parent) = self.get_mut(pid) {
                     parent.children.retain(|&c| c != surface_id);
                 }
             }
@@ -520,8 +538,30 @@ impl SurfaceOrchestrator {
         }
 
         let mut records = Vec::with_capacity(order.len());
+        let mut pending_hooks: Vec<(usize, TeardownHook)> = Vec::new();
         for id in order {
-            if let Some(mut rec) = self.surfaces.remove(&id) {
+            let idx = id.index();
+            let rec = match self.slots.get_mut(idx) {
+                Some(slot) if slot.generation == id.generation() => {
+                    let rec = slot.record.take();
+                    if rec.is_some() {
+                        if let Some(next_gen) = slot.generation.checked_add(1) {
+                            slot.generation = next_gen;
+                            self.free.push_back(SurfaceSlotIndex(id.index_u32()));
+                        }
+                        debug_assert!(self.active_count > 0);
+                        self.active_count -= 1;
+                    }
+                    rec
+                }
+                _ => None,
+            };
+            let hook = if self.teardown_hooks.is_empty() {
+                None
+            } else {
+                self.teardown_hooks.remove(&id)
+            };
+            if let Some(mut rec) = rec {
                 let previous_state = rec.state;
                 rec.state = LifecycleState::Destroyed;
                 let teardown = TeardownRecord {
@@ -530,46 +570,59 @@ impl SurfaceOrchestrator {
                     component_name: rec.component_name,
                     previous_state,
                 };
-                if let Some(hook) = self.teardown_hooks.remove(&id) {
-                    hook(&teardown);
-                }
                 self.events.push(SurfaceEvent::Destroyed {
                     surface_id: id,
                     framework: teardown.framework,
                 });
+                let rec_idx = records.len();
                 records.push(teardown);
+                if let Some(hook) = hook {
+                    pending_hooks.push((rec_idx, hook));
+                }
             }
         }
 
-        Ok(records)
+        Ok((records, pending_hooks))
     }
 
-    fn collect_post_order(&self, surface_id: SurfaceId, out: &mut Vec<SurfaceId>) {
-        if let Some(rec) = self.surfaces.get(&surface_id) {
-            for &child in &rec.children {
-                self.collect_post_order(child, out);
+    /// Executes every deferred teardown hook in bottom-up order, isolating panics so subsequent
+    /// hooks always run, then resumes the first caught panic (if any) once all hooks have run.
+    pub(crate) fn fire_teardown_hooks(
+        records: &[TeardownRecord],
+        pending_hooks: PendingTeardownHooks,
+    ) {
+        let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
+        for (rec_idx, hook) in pending_hooks {
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hook(&records[rec_idx]);
+            })) && first_panic.is_none()
+            {
+                first_panic = Some(payload);
             }
-            out.push(surface_id);
         }
+        if let Some(payload) = first_panic {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    fn collect_post_order_iterative(&self, root: SurfaceId) -> Vec<SurfaceId> {
+        let mut out = Vec::new();
+        let mut stack: Vec<(SurfaceId, bool)> = vec![(root, false)];
+        while let Some((id, visited)) = stack.pop() {
+            if visited {
+                out.push(id);
+            } else if let Some(rec) = self.get(id) {
+                stack.push((id, true));
+                for &child in rec.children.iter().rev() {
+                    stack.push((child, false));
+                }
+            }
+        }
+        out
     }
 
     /// Drains all orchestrator events accumulated since the last drain.
     pub fn drain_events(&mut self) -> Vec<SurfaceEvent> {
         std::mem::take(&mut self.events)
-    }
-}
-
-fn apply_overrides(env: &mut SurfaceEnvironment, overrides: &EnvironmentOverrides) {
-    if let Some(theme) = &overrides.theme {
-        env.theme = theme.clone();
-    }
-    if let Some(safe_area) = overrides.safe_area {
-        env.safe_area = safe_area;
-    }
-    if let Some(scale) = overrides.scale_factor {
-        env.scale_factor = scale;
-    }
-    if let Some(locale) = &overrides.locale {
-        env.locale = locale.clone();
     }
 }

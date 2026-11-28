@@ -11,12 +11,12 @@
 
 mod display_list;
 mod focus;
+pub mod frame_hook;
 pub mod font;
 pub mod gpu;
 mod hit_test;
 pub mod image_cache;
 mod interaction;
-mod motion;
 pub mod raster;
 mod scroll;
 pub mod table_system;
@@ -36,14 +36,16 @@ mod text_tests;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::{ColorRgba, NativeEvent, NodeId, SurfaceId};
+use nve_abi::{ColorRgba, EventBatchBuf, NodeId, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::ImageFit;
 use nve_engine::{BackendApplyStats, BackendError, LayoutRect, StoreBackend, Viewport};
 use nve_layout::{StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, Rgba, TableEventBus};
+use nve_store::{ChangeSet, NodeStore, ResolvedRow, Rgba};
+use nve_tables::tables::{ImageFit, Typography};
 
-use display_list::{emit_node_into, InheritedTextStyle};
+pub use nve_engine::InteractionTracker;
+
+use display_list::emit_node_into;
 
 pub use focus::TextFocusState;
 pub use font::{bitmap_font_metrics, BitmapFontMetrics, BitmapFontTextMeasurer};
@@ -68,26 +70,26 @@ pub use image_cache::{
     compute_image_placement, decode_image_uri, decode_png, encode_rgb_png, DecodedImage,
     ImageCache, ImageDecodeError, ImageDrawPlacement,
 };
-pub use motion::MotionDriver;
-pub use nve_components::interaction::{
-    CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+pub use frame_hook::{NodeTargets, SkiaFrameHook, SkiaFrameHooks, TargetsOf};
+pub use nve_tables::interaction::{
+    CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
-pub use nve_components::layout_ext::{
+pub use nve_tables::layout_ext::{
     compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
     GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
     PositionInsets, PositionMode,
 };
-pub use nve_components::motion::{EasingCurve, MotionPreference, TransitionProperty, TransitionSpec};
-pub use nve_components::paint::{
-    lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
-    LinearGradient, RadialGradient,
+pub use nve_tables::paint::{
+    lerp_color_premul, sample_gradient_stops, BackgroundFill, GradientStop, LinearGradient,
+    RadialGradient,
 };
-pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
-pub use nve_components::transform::Transform2D;
+pub use nve_tables::snapshots::{LayoutSnapshot, VisualSnapshot};
+pub use nve_tables::tables::{BoxShadow, Display};
+pub use nve_tables::transform::Transform2D;
+pub use nve_tables::{RowPatch, StylePatchExt};
 pub use raster::{
-    draw_hud_banner, parse_box_shadow, rasterize_display_list, rasterize_display_list_bitmap,
-    rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, BoxShadow,
-    PixelBuffer,
+    draw_hud_banner, rasterize_display_list, rasterize_display_list_bitmap,
+    rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, PixelBuffer,
 };
 pub use table_system::{SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
@@ -163,7 +165,7 @@ pub enum PaintOp {
     },
     /// Delegated capability plugin paint op (`nve-svg-skia`, `nve-canvas-skia`, 3P crates).
     Plugin {
-        node_id: StoreNodeId,
+        node_id: NodeId,
         rect: LayoutRect,
         inherited_text_color: Rgba,
     },
@@ -180,10 +182,10 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) viewport: Viewport,
     pub(crate) text_engine: Arc<CosmicTextEngine>,
     pub(crate) focus: TextFocusState,
-    pub(crate) motion: MotionDriver,
+    pub(crate) frame_hooks: SkiaFrameHooks,
     pub(crate) table_registry: SkiaTableRegistry,
-    pub(crate) table_events: TableEventBus,
-    pub(crate) sort_scratch: Vec<StoreNodeId>,
+    pub(crate) table_events: EventBatchBuf,
+    pub(crate) sort_scratch: Vec<NodeId>,
 }
 
 impl Default for SkiaBackend<TaffyStoreLayout> {
@@ -212,9 +214,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             viewport: Viewport::default(),
             text_engine,
             focus: TextFocusState::default(),
-            motion: MotionDriver::new(),
+            frame_hooks: SkiaFrameHooks::default(),
             table_registry: SkiaTableRegistry::new(),
-            table_events: TableEventBus::new(),
+            table_events: EventBatchBuf::new(),
             sort_scratch: Vec::new(),
         }
     }
@@ -236,12 +238,12 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     #[inline]
-    pub fn table_events(&self) -> &TableEventBus {
+    pub fn table_events(&self) -> &EventBatchBuf {
         &self.table_events
     }
 
     #[inline]
-    pub fn table_events_mut(&mut self) -> &mut TableEventBus {
+    pub fn table_events_mut(&mut self) -> &mut EventBatchBuf {
         &mut self.table_events
     }
 
@@ -269,7 +271,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             viewport: self.viewport,
             text_engine: self.text_engine,
             focus: self.focus,
-            motion: self.motion,
+            frame_hooks: self.frame_hooks,
             table_registry: self.table_registry,
             table_events: self.table_events,
             sort_scratch: self.sort_scratch,
@@ -288,7 +290,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
     /// Disjoint borrows of `(display_list, table_registry, table_events)` for GPU/Skia rendering.
     #[inline]
-    pub fn paint_parts_mut(&mut self) -> (&DisplayList, &SkiaTableRegistry, &mut TableEventBus) {
+    pub fn paint_parts_mut(&mut self) -> (&DisplayList, &SkiaTableRegistry, &mut EventBatchBuf) {
         (&self.display_list, &self.table_registry, &mut self.table_events)
     }
 
@@ -304,8 +306,8 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
     /// Computes the visual (scroll-shifted + sticky-clamped) layout rectangle of `node_id` in
     /// logical viewport coordinates.
-    pub fn visual_rect_of(&self, store: &NodeStore, node_id: StoreNodeId) -> Option<LayoutRect> {
-        let mut rect = self.layout_tree.layout_of(node_id.raw())?;
+    pub fn visual_rect_of(&self, store: &NodeStore, node_id: NodeId) -> Option<LayoutRect> {
+        let mut rect = self.layout_tree.layout_of(node_id)?;
         let (own_sx, own_sy) = self.layout_tree.compute_sticky_delta(store, node_id);
         rect.x += own_sx;
         rect.y += own_sy;
@@ -330,7 +332,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     /// Compiles the retained [`DisplayList`] directly from `store`.
     pub fn rebuild_display_list(&mut self, store: &NodeStore) {
         self.display_list.ops.clear();
-        if !store.is_live(StoreNodeId::ROOT) {
+        if !store.is_live(NodeId::ROOT) {
             return;
         }
         let clip_bounds = LayoutRect {
@@ -343,17 +345,17 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             store,
             &self.layout_tree,
             &self.focus,
-            &self.motion,
+            &self.frame_hooks,
             &self.table_registry,
             self.text_engine.as_ref(),
             clip_bounds,
             (0.0, 0.0),
             false,
             false,
-            InheritedTextStyle::default(),
+            ResolvedRow::<Typography>::root(store),
             &mut self.sort_scratch,
             &mut self.display_list.ops,
-            StoreNodeId::ROOT,
+            NodeId::ROOT,
         );
     }
 
@@ -407,7 +409,7 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         let t_mount = Instant::now();
         self.reconcile_scroll_offsets(store);
         self.reconcile_focus_state(store);
-        self.reconcile_motion_after_frame(store, changes);
+        self.frame_hooks_after_commit(store, changes);
         for cmd in &changes.commands {
             let _ = self.table_registry.dispatch_command(
                 store,
@@ -424,8 +426,12 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         Ok(stats)
     }
 
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        self.layout_tree.drain_events()
+    fn drain_events(&mut self, out: &mut EventBatchBuf) {
+        self.layout_tree.drain_events(out);
+        if !self.table_events.is_empty() {
+            out.extend_from_validated(self.table_events.as_validated());
+            self.table_events.clear();
+        }
     }
 
     fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {
@@ -436,7 +442,7 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         self.layout_tree.reset();
         self.display_list.ops.clear();
         self.focus = TextFocusState::default();
-        self.motion = MotionDriver::new();
+        self.frame_hooks.reset();
         self.table_events.clear();
     }
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::hoisted_tests::{VP, assert_matches_layout_of};
 use crate::TaffyStoreLayout;
 use crate::{TextMeasurer, TextStyle};
-use nve_components::tables::{
+use nve_tables::tables::{
     AlignSelf, Display, FlexDirection, FontStyle, Layout, Overflow, OverflowWrap, Position,
     TextContent, Typography, Visual, WhiteSpace, WordBreak,
 };
@@ -216,7 +216,7 @@ fn every_inherited_measure_field_reopens_and_color_stays_skipped() {
             tx.edit::<Typography>(p).white_space(WhiteSpace::NoWrap);
         }),
         ("max_lines", |tx, p| {
-            tx.edit::<Typography>(p).max_lines(3);
+            tx.edit::<Typography>(p).max_lines(core::num::NonZeroU16::new(3));
         }),
         ("font_style", |tx, p| {
             tx.edit::<Typography>(p).font_style(FontStyle::Italic);
@@ -362,7 +362,7 @@ fn a_fault_while_measuring_a_fixed_box_never_drops_fixed_subtrees() {
         let mut tx = f.store.tx();
         let [fixed, fixed_text] = [(); 2].map(|_| tx.create());
         tx.edit::<Layout>(fixed)
-            .position(nve_components::tables::Position::Fixed)
+            .position(nve_tables::tables::Position::Fixed)
             .inset_right(Length::points(8.0))
             .inset_bottom(Length::points(6.0));
         tx.edit::<TextContent>(fixed_text).text("FIXED toast");
@@ -447,7 +447,7 @@ fn switching_the_layout_root_round_trips_to_fresh_layouts() {
         if round == 1 {
             assert!(f.commit(|tx| {
                 tx.edit::<Layout>(NodeId::ROOT)
-                    .direction(nve_components::tables::Direction::Rtl);
+                    .direction(nve_tables::tables::Direction::Rtl);
             }));
             assert!(f.layout.resolved_rtl(label), "inherits the root's rtl");
         }

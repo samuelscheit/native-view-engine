@@ -5,7 +5,7 @@
 //! `position: absolute` badges hoisted to the card, and an inner relative box whose
 //! `position: fixed` toast bubbles past both the inner box and the card to the root.
 
-use nve_components::tables::{FlexDirection, Layout, Position, TextContent, Visual};
+use nve_tables::tables::{FlexDirection, Layout, Position, TextContent, Visual};
 use nve_engine::Viewport;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 

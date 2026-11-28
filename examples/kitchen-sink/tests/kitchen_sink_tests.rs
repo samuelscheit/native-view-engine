@@ -1,14 +1,12 @@
 use std::path::PathBuf;
 
-use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
-};
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
 use nve_canvas_skia::CanvasSkiaSystem;
 use nve_canvas_web::CanvasWebSystem;
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_example_kitchen_sink::{
@@ -17,18 +15,18 @@ use nve_example_kitchen_sink::{
     KITCHEN_SINK_STATE_MAGIC,
 };
 use nve_i18n::CalendarDate;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 use nve_ui::DateRange;
 use nve_web_html_web::register_web_html_systems;
 
 fn find_node_by_test_id(store: &NodeStore, test_id: &str) -> NodeId {
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
-        if id != StoreNodeId::ROOT
+        if id != NodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == test_id
         {
-            return id.raw();
+            return id;
         }
         stack.extend_from_slice(store.children(id));
     }
@@ -46,19 +44,18 @@ fn press_test_id(
 ) {
     let id = find_node_by_test_id(surface.store(), test_id);
     let rect = backend.layout_of(id).unwrap_or_default();
-    let handled = surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: id,
-        timestamp_us: frame_id * 16_000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point {
-            x: rect.x + 2.0,
-            y: rect.y + 2.0,
-        },
-    }]);
+    let mut batch = EventBatchBuf::new();
+    batch.push_press(
+        SurfaceId::ROOT,
+        id,
+        TimestampUs(frame_id * 16_000),
+        rect.x + 2.0,
+        rect.y + 2.0,
+    );
+    let handled = surface.dispatch_events(batch.as_validated());
     assert!(handled, "expected press on '{test_id}' to be handled");
     surface
-        .commit_to(frame_id, backend)
+        .commit_to(FrameId(frame_id), backend)
         .expect("commit test press frame");
 }
 
@@ -117,7 +114,7 @@ fn binary_state_codec_roundtrips_all_fields_and_rejects_corruption() {
 
 #[test]
 fn single_command_buffer_drives_headless_skia_and_web_with_events() {
-    let mut app = create_surface(1);
+    let mut app = create_surface(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
     let mut skia = SkiaBackend::new();
     skia.register_table_system(CanvasSkiaSystem);
@@ -130,11 +127,11 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
         height: 860.0,
         scale_factor: 1.0,
     };
-    headless.set_viewport(1, vp);
-    skia.set_viewport(1, vp);
-    web.set_viewport(1, vp);
+    headless.set_viewport(SurfaceId::ROOT, vp);
+    skia.set_viewport(SurfaceId::ROOT, vp);
+    web.set_viewport(SurfaceId::ROOT, vp);
 
-    app.reconcile(1);
+    app.reconcile(FrameId(1));
     headless.commit(app.store(), app.last_changes()).unwrap();
     skia.commit(app.store(), app.last_changes()).unwrap();
     web.commit(app.store(), app.last_changes()).unwrap();
@@ -147,15 +144,11 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
     // Press Increment + twice via testID lookup.
     for frame_id in 2..=3 {
         let inc_id = find_node_by_test_id(app.store(), "ks-counter-inc");
-        let handled = app.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: inc_id,
-            timestamp_us: frame_id * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 10.0, y: 10.0 },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, inc_id, TimestampUs(frame_id * 16_000), 10.0, 10.0);
+        let handled = app.dispatch_events(batch.as_validated());
         assert!(handled);
-        app.reconcile(frame_id);
+        app.reconcile(FrameId(frame_id));
         headless.commit(app.store(), app.last_changes()).unwrap();
         skia.commit(app.store(), app.last_changes()).unwrap();
         web.commit(app.store(), app.last_changes()).unwrap();
@@ -179,10 +172,10 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
 
 #[test]
 fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary() {
-    let mut app = create_surface(1);
+    let mut app = create_surface(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1440.0,
             height: 900.0,
@@ -190,7 +183,7 @@ fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary(
         },
     );
 
-    app.commit_to(1, &mut headless).unwrap();
+    app.commit_to(FrameId(1), &mut headless).unwrap();
     assert!(headless.render_ascii_tree(app.store()).contains("Overview & Primitives"));
 
     // Toggle theme, density, locale, pseudo, and reduced motion.
@@ -237,29 +230,29 @@ fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary(
 
 #[test]
 fn module_snapshot_and_restore_preserves_full_gallery_state() {
-    let mut m1 = KitchenSinkModule::create(1);
+    let mut m1 = KitchenSinkModule::create(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
-    headless.set_viewport(1, Viewport::default());
+    headless.set_viewport(SurfaceId::ROOT, Viewport::default());
     let mut rep1 =
-        StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
-    let f1 = m1.render(1).to_vec();
+        StoreWireReplica::new(headless, nve_tables::tables::core_realization_order());
+    let f1 = m1.render(FrameId(1)).to_vec();
     rep1.submit_nve2_frame(&f1).unwrap();
 
     let inc_id = find_node_by_test_id(rep1.store(), "ks-counter-inc");
-    let press_ev = [NveDirectEvent::press(1, inc_id, 1_000, 4.0, 4.0)];
-    // SAFETY: `press_ev` stack array outlives the synchronous `dispatch_events` call.
-    assert!(m1.dispatch_events(unsafe { NveEventBatchRef::from_slice(&press_ev) }));
-    let _ = m1.render(2);
+    let mut press_ev = EventBatchBuf::new();
+    press_ev.push_press(SurfaceId::ROOT, inc_id, TimestampUs(1_000), 4.0, 4.0);
+    assert!(m1.dispatch_events(press_ev.as_validated()));
+    let _ = m1.render(FrameId(2));
     assert_eq!(m1.count(), 1);
 
     let snap = m1.snapshot_state().to_vec();
-    let mut m2 = KitchenSinkModule::create(2);
+    let mut m2 = KitchenSinkModule::create(SurfaceId::new(2, 0));
     assert!(m2.try_restore_state(&snap));
     assert_eq!(m2.count(), 1);
     let mut h2 = HeadlessBackend::new();
-    h2.set_viewport(2, Viewport::default());
-    let mut rep2 = StoreWireReplica::new(h2, nve_components::tables::core_realization_order());
-    rep2.submit_nve2_frame(m2.render(1)).unwrap();
+    h2.set_viewport(SurfaceId::new(2, 0), Viewport::default());
+    let mut rep2 = StoreWireReplica::new(h2, nve_tables::tables::core_realization_order());
+    rep2.submit_nve2_frame(m2.render(FrameId(1))).unwrap();
     assert!(rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 1"));
 }
 
@@ -272,39 +265,40 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     ));
-    if !dylib_path.exists() {
-        let status = std::process::Command::new("cargo")
-            .args(["build", "-p", "nve-example-kitchen-sink"])
-            .current_dir(workspace_root)
-            .status()
-            .expect("build cdylib");
-        assert!(status.success());
-    }
+    // Always rebuild (incremental no-op when fresh): a dylib left over from an older commit
+    // speaks a stale wire format and fails spuriously.
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "nve-example-kitchen-sink"])
+        .current_dir(workspace_root)
+        .status()
+        .expect("build cdylib");
+    assert!(status.success());
 
     let mut host = HeadlessBackend::new();
     host.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1280.0,
             height: 860.0,
             scale_factor: 1.0,
         },
     );
-    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(host, nve_tables::tables::core_realization_order());
 
-    let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
-    let frame1 = inst.render(1);
+    let mut inst = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).expect("load gen 1");
+    let frame1 = inst.render(FrameId(1));
     rep.submit_nve2_frame(frame1).unwrap();
     assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 0"));
 
     let inc_node = find_node_by_test_id(rep.store(), "ks-counter-inc");
-    let press_ev = [NveDirectEvent::press(1, inc_node, 1000, 10.0, 10.0)];
+    let mut press_ev = EventBatchBuf::new();
+    press_ev.push_press(SurfaceId::ROOT, inc_node, TimestampUs(1000), 10.0, 10.0);
 
-    assert!(inst.dispatch_events(&press_ev));
-    let f2 = inst.render(2);
+    assert!(inst.dispatch_events(press_ev.as_validated()));
+    let f2 = inst.render(FrameId(2));
     rep.submit_nve2_frame(f2).unwrap();
-    assert!(inst.dispatch_events(&press_ev));
-    let f3 = inst.render(3);
+    assert!(inst.dispatch_events(press_ev.as_validated()));
+    let f3 = inst.render(FrameId(3));
     rep.submit_nve2_frame(f3).unwrap();
     assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 2"));
 
@@ -316,7 +310,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
 
     let mut host2 = HeadlessBackend::new();
     host2.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1280.0,
             height: 860.0,
@@ -324,8 +318,8 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
         },
     );
     let mut rep2 =
-        StoreWireReplica::new(host2, nve_components::tables::core_realization_order());
-    let f4 = inst.render(4);
+        StoreWireReplica::new(host2, nve_tables::tables::core_realization_order());
+    let f4 = inst.render(FrameId(4));
     rep2.submit_nve2_frame(f4).unwrap();
     assert!(
         rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 2"),
@@ -337,7 +331,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
 #[test]
 fn os_appearance_host_events_retheme_auto_mode_in_place_and_pinned_modes_ignore_the_os_scheme() {
     use nve_abi::{ColorScheme, ContrastLevel};
-    use nve_components::tables::Visual;
+    use nve_tables::tables::Visual;
     use nve_system_env::ThemeSnapshot;
 
     let os = |scheme, contrast| {
@@ -345,12 +339,12 @@ fn os_appearance_host_events_retheme_auto_mode_in_place_and_pinned_modes_ignore_
     };
     let root_bg = |m: &KitchenSinkModule| {
         let store = m.surface().store();
-        store.row::<Visual>(StoreNodeId(find_node_by_test_id(store, "kitchen-sink-root"))).background()
+        store.row::<Visual>(find_node_by_test_id(store, "kitchen-sink-root")).background()
     };
-    let mut module = KitchenSinkModule::create(1);
+    let mut module = KitchenSinkModule::create(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
-    headless.set_viewport(1, Viewport { width: 1440.0, height: 900.0, scale_factor: 1.0 });
-    module.commit_to(1, &mut headless).expect("frame 1");
+    headless.set_viewport(SurfaceId::ROOT, Viewport { width: 1440.0, height: 900.0, scale_factor: 1.0 });
+    module.commit_to(FrameId(1), &mut headless).expect("frame 1");
     assert!(headless.render_ascii_tree(module.surface().store()).contains("Theme: Auto"));
     let dark = root_bg(&module);
     press_test_id(module.surface_mut(), &mut headless, "ks-counter-inc", 2);
@@ -358,13 +352,13 @@ fn os_appearance_host_events_retheme_auto_mode_in_place_and_pinned_modes_ignore_
     assert!(module.dispatch_host_events(&os(ColorScheme::Light, ContrastLevel::Standard)));
     assert!(!module.dispatch_host_events(&os(ColorScheme::Light, ContrastLevel::Standard)), "same appearance is a no-op");
     assert!(!module.dispatch_host_events(b"not a theme snapshot"), "foreign batches are ignored");
-    module.commit_to(3, &mut headless).expect("frame 3");
+    module.commit_to(FrameId(3), &mut headless).expect("frame 3");
     let light = root_bg(&module);
     assert_ne!(light, dark, "Auto mode follows the OS light scheme");
     assert!(headless.render_ascii_tree(module.surface().store()).contains("Count: 1"), "re-themed without losing state");
 
     assert!(module.dispatch_host_events(&os(ColorScheme::Dark, ContrastLevel::High)));
-    module.commit_to(4, &mut headless).expect("frame 4");
+    module.commit_to(FrameId(4), &mut headless).expect("frame 4");
     let hc_dark = root_bg(&module);
     assert!(hc_dark != dark && hc_dark != light, "high contrast resolves its own polarity");
 
@@ -380,10 +374,10 @@ fn os_appearance_host_events_retheme_auto_mode_in_place_and_pinned_modes_ignore_
 /// stacked 390px column is guarded in the browser by `run_docs_e2e.mjs` (collapsed flex items).
 #[test]
 fn two_col_cells_share_the_row_with_equal_widths() {
-    let mut module = KitchenSinkModule::create(1);
+    let mut module = KitchenSinkModule::create(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
-    headless.set_viewport(1, Viewport { width: 1440.0, height: 900.0, scale_factor: 1.0 });
-    module.commit_to(1, &mut headless).expect("frame 1");
+    headless.set_viewport(SurfaceId::ROOT, Viewport { width: 1440.0, height: 900.0, scale_factor: 1.0 });
+    module.commit_to(FrameId(1), &mut headless).expect("frame 1");
     let [counter, cursor, buttons] = ["ks-counter-card", "ks-cursor-card", "ks-buttons-card"].map(|tid| {
         headless.layout_of(find_node_by_test_id(module.surface().store(), tid)).unwrap_or_default()
     });

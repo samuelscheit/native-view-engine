@@ -30,7 +30,8 @@ void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t>
 void input(h::Nve2Writer& w, uint32_t id, std::string_view value) {
   w.create(id);
   (void)w.set_str(id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, value);
-  events(w, id, {NVE_EVENT_TEXT_CHANGE, NVE_EVENT_SUBMIT, NVE_EVENT_FOCUS, NVE_EVENT_BLUR});
+  events(w, id, {NVE_TEXT_INPUT_EVENT_CHANGE, NVE_TEXT_INPUT_EVENT_SUBMIT});
+  events(w, id, {NVE_INTERACTION_EVENT_FOCUS, NVE_INTERACTION_EVENT_BLUR});
   sized(w, id, 160.0f, 24.0f);
 }
 
@@ -88,9 +89,6 @@ void test_scene_inputs_and_pointer() {
   h::Nve2Writer& w = app.w;
   w.create(1u);
   w.create(kColumn);
-  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
-        NVE_TYPOGRAPHY_SET_FONT_STYLE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_TEXT_DECORATION |
-            NVE_TYPOGRAPHY_SET_COLOR | NVE_TYPOGRAPHY_SET_FONT_WEIGHT);
   w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
   (void)w.set_str(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "Inter");
   w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION, NVE_TEXT_DECORATION_UNDERLINE);
@@ -129,7 +127,8 @@ void test_scene_inputs_and_pointer() {
   w.set(kGrab, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_CURSOR, NVE_CURSOR_KIND_GRAB);
   w.create(kHover);
   sized(w, kHover, 50.0f, 20.0f);
-  events(w, kHover, {NVE_EVENT_POINTER_ENTER, NVE_EVENT_POINTER_LEAVE, NVE_EVENT_POINTER_MOVE});
+  events(w, kHover,
+         {NVE_INTERACTION_EVENT_POINTER_ENTER, NVE_INTERACTION_EVENT_POINTER_LEAVE, NVE_INTERACTION_EVENT_POINTER_MOVE});
   w.create(kCard);
   sized(w, kCard, 60.0f, 30.0f);
   w.define_resource(43u, h::kBoxShadowsKind, h::encode_box_shadows(shadows));
@@ -140,11 +139,11 @@ void test_scene_inputs_and_pointer() {
   w.set_f32(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 0.5f);
   w.create(kDisabled);  // disabled, with a pressable child: the child takes no presses either
   sized(w, kDisabled, 50.0f, 20.0f);
-  events(w, kDisabled, {NVE_EVENT_PRESS});
+  events(w, kDisabled, {NVE_INTERACTION_EVENT_PRESS});
   w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
   w.create(kInsideDisabled);
   sized(w, kInsideDisabled, 20.0f, 10.0f);
-  events(w, kInsideDisabled, {NVE_EVENT_PRESS});
+  events(w, kInsideDisabled, {NVE_INTERACTION_EVENT_PRESS});
   const uint32_t disabled_kids[] = {kInsideDisabled};
   w.set_children(kDisabled, disabled_kids);
   w.create(kBadLink);  // a link the shell must never open
@@ -155,14 +154,14 @@ void test_scene_inputs_and_pointer() {
   w.set_children(kColumn, column_kids);
   // Overlapping absolute siblings: the earlier one has the higher z-index, so it paints on top.
   absolute(w, kAbove, 300.0f, 10.0f, 50.0f, 50.0f, 5);
-  events(w, kAbove, {NVE_EVENT_PRESS});
+  events(w, kAbove, {NVE_INTERACTION_EVENT_PRESS});
   absolute(w, kBelow, 320.0f, 20.0f, 50.0f, 50.0f, 0);
-  events(w, kBelow, {NVE_EVENT_PRESS});
+  events(w, kBelow, {NVE_INTERACTION_EVENT_PRESS});
   const uint32_t root_kids[] = {kColumn, kAbove, kBelow};
   w.set_children(1u, root_kids);
   // Controlled input: the app upper-cases what it receives.
   app.on_event = [](ScriptedApp& a, const h::testing::RecordedEvent& e) {
-    if (e.ev.kind != NVE_EVENT_TEXT_CHANGE || e.ev.node_id != kEntry) return;
+    if (!h::is_text_input_event(e.ev, NVE_TEXT_INPUT_EVENT_CHANGE) || e.ev.node != kEntry) return;
     std::string upper = e.text;
     for (char& c : upper) c = static_cast<char>(c >= 'a' && c <= 'z' ? c - 32 : c);
     (void)a.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, upper);
@@ -176,7 +175,7 @@ void test_scene_inputs_and_pointer() {
   // Kinds and interaction.
   NVE_CHECK(node(host, kHeading).kind == h::NodeKind::Text && node(host, kHeading).text == "Settings");
   NVE_CHECK(node(host, kLink).kind == h::NodeKind::Link && node(host, kImgUrl).kind == h::NodeKind::Image);
-  NVE_CHECK(node(host, kDisabled).interaction.disabled && !node(host, kDisabled).wants(NVE_EVENT_PRESS));
+  NVE_CHECK(node(host, kDisabled).interaction.disabled && !node(host, kDisabled).wants(NVE_INTERACTION_EVENT_PRESS));
 
   // Inherited typography reaches every text-bearing descendant; explicit values win.
   for (const uint32_t id : {kHeading, kLinkText, kEntry}) {
@@ -193,11 +192,12 @@ void test_scene_inputs_and_pointer() {
   NVE_CHECK(node(host, kSecret).input.secure && !node(host, kSecret).input.multiline);  // secure: single-line
   NVE_CHECK(node(host, kNotes).input.multiline && node(host, kNotes).input.read_only);
   NVE_CHECK(host.dispatch_text_change(kEntry, "hey"));
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "hey" && node(host, kEntry).input.value == "HEY");
-  NVE_CHECK(!host.dispatch_submit(kEntry, "HEY") && app.last(NVE_EVENT_SUBMIT)->text == "HEY");
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "hey" && node(host, kEntry).input.value == "HEY");
+  NVE_CHECK(!host.dispatch_submit(kEntry, "HEY") && app.last(NVE_TEXT_INPUT_EVENT_SUBMIT)->text == "HEY");
   (void)host.dispatch_focus(kEntry, true);
   (void)host.dispatch_focus(kEntry, false);
-  NVE_CHECK(app.count(NVE_EVENT_FOCUS, kEntry) == 1u && app.count(NVE_EVENT_BLUR, kEntry) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_FOCUS, kEntry) == 1u &&
+            app.count(NVE_INTERACTION_EVENT_BLUR, kEntry) == 1u);
 
   // Images: URL, inline bytes (content-hash key), an empty source -> nothing to draw.
   NVE_CHECK(node(host, kImgUrl).image.url == "data:image/png;base64,iVBORw0KGgo=" &&
@@ -223,14 +223,17 @@ void test_scene_inputs_and_pointer() {
   NVE_CHECK(pos(kBelow) < pos(kAbove) && pos(kColumn) < pos(kBelow));
   NVE_CHECK(host.press_at(330.0f, 30.0f).node_id == kAbove);
   NVE_CHECK(host.press_at(360.0f, 65.0f).node_id == kBelow);
-  NVE_CHECK(app.count(NVE_EVENT_PRESS, kAbove) == 1u && app.count(NVE_EVENT_PRESS, kBelow) == 1u);
-  const auto* press = app.last(NVE_EVENT_PRESS);
-  NVE_CHECK(approx(press->ev.x, 40.0, 0.5) && approx(press->ev.y, 45.0, 0.5));  // node-local
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_PRESS, kAbove) == 1u &&
+            app.count(NVE_INTERACTION_EVENT_PRESS, kBelow) == 1u);
+  const auto* press = app.last(NVE_INTERACTION_EVENT_PRESS);
+  NVE_CHECK(approx(h::event_payload_f32(press->ev, 0u), 40.0, 0.5) &&
+            approx(h::event_payload_f32(press->ev, 1u), 45.0, 0.5));  // node-local
 
   // A press needs the same target under the button's down and up: dragging off cancels it.
-  const size_t above_presses = app.count(NVE_EVENT_PRESS, kAbove);
+  const size_t above_presses = app.count(NVE_INTERACTION_EVENT_PRESS, kAbove);
   NVE_CHECK(host.pointer_down(330.0f, 30.0f) == kAbove);
-  NVE_CHECK(host.pointer_up(5.0f, 5.0f).node_id == 0u && app.count(NVE_EVENT_PRESS, kAbove) == above_presses);
+  NVE_CHECK(host.pointer_up(5.0f, 5.0f).node_id == 0u &&
+            app.count(NVE_INTERACTION_EVENT_PRESS, kAbove) == above_presses);
   NVE_CHECK(host.pointer_down(330.0f, 30.0f) == kAbove && host.pointer_up(335.0f, 35.0f).dispatched);
   NVE_CHECK(host.pointer_up(330.0f, 30.0f).node_id == 0u);  // no matching down
 
@@ -239,7 +242,7 @@ void test_scene_inputs_and_pointer() {
   NVE_CHECK(host.press_at(dx, dy).node_id == 0u);
   const auto [ix, iy] = center(host, kInsideDisabled);
   NVE_CHECK(host.press_target(ix, iy) == 0u && host.press_at(ix, iy).node_id == 0u);
-  NVE_CHECK(app.count(NVE_EVENT_PRESS, kInsideDisabled) == 0u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_PRESS, kInsideDisabled) == 0u);
   // Links report openable hrefs only (the window opens them natively); others are inert.
   const auto [lx, ly] = center(host, kLinkText);
   const PressResult link = host.press_at(lx, ly);
@@ -258,13 +261,15 @@ void test_scene_inputs_and_pointer() {
   const auto [vx, vy] = center(host, kHover);
   host.pointer_move(vx, vy);
   host.pointer_move(vx + 1.0f, vy);
-  NVE_CHECK(host.hovered_node() == kHover && app.count(NVE_EVENT_POINTER_ENTER, kHover) == 1u);
-  NVE_CHECK(app.count(NVE_EVENT_POINTER_MOVE, kHover) == 2u && approx(app.last(NVE_EVENT_POINTER_MOVE)->ev.x, 26.0, 0.5));
+  NVE_CHECK(host.hovered_node() == kHover && app.count(NVE_INTERACTION_EVENT_POINTER_ENTER, kHover) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_POINTER_MOVE, kHover) == 2u &&
+            approx(h::event_payload_f32(app.last(NVE_INTERACTION_EVENT_POINTER_MOVE)->ev, 0u), 26.0, 0.5));
   host.pointer_move(gx, gy);
-  NVE_CHECK(host.hovered_node() == 0u && app.count(NVE_EVENT_POINTER_LEAVE, kHover) == 1u);
+  NVE_CHECK(host.hovered_node() == 0u && app.count(NVE_INTERACTION_EVENT_POINTER_LEAVE, kHover) == 1u);
   host.pointer_move(vx, vy);
   host.pointer_leave();
-  NVE_CHECK(app.count(NVE_EVENT_POINTER_ENTER, kHover) == 2u && app.count(NVE_EVENT_POINTER_LEAVE, kHover) == 2u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_POINTER_ENTER, kHover) == 2u &&
+            app.count(NVE_INTERACTION_EVENT_POINTER_LEAVE, kHover) == 2u);
 
   // Geometry-only change (`move`): padding on the column shifts every child; positions follow.
   const float heading_y = abs_rect(host, kHeading).y;

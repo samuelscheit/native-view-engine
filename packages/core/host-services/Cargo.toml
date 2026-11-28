@@ -7,6 +7,7 @@ description = "Binary NVE_IFACE_HOST = 5 host-service transport, FFI client, bin
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-codec = { workspace = true }
 nve-interop = { version = "0.1.0", path = "../interop", default-features = false, features = ["channel"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

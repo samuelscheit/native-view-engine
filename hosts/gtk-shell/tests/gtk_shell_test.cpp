@@ -5,6 +5,7 @@
 #include "gtk_test_helpers.hpp"
 #include "NveGtkInternal.hpp"
 
+#include <nve/host/bin_codec.hpp>
 #include <nve/host/demo_counter_app.hpp>
 
 #include <algorithm>
@@ -151,20 +152,14 @@ void test_runtime_measures_labels_with_their_typography() {
   w.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(90.0f));
   w.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
   for (const uint32_t id : {kNoWrap, kMono, kSpaced, kTall, kWraps, kCapped}) text_node(w, id, kText);
-  const auto typo = [&](uint32_t id, uint32_t set) { w.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, set); };
   const auto field = [&](uint32_t id, NveFieldSpec f, uint32_t v) { w.set(id, NVE_TABLE_TYPOGRAPHY_DESC, f, v); };
-  typo(kNoWrap, NVE_TYPOGRAPHY_SET_WHITE_SPACE);
   field(kNoWrap, NVE_TABLE_TYPOGRAPHY_WHITE_SPACE, NVE_WHITE_SPACE_NO_WRAP);
-  typo(kMono, NVE_TYPOGRAPHY_SET_WHITE_SPACE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_FONT_STYLE);
   field(kMono, NVE_TABLE_TYPOGRAPHY_WHITE_SPACE, NVE_WHITE_SPACE_PRE);
   field(kMono, NVE_TABLE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
   (void)w.set_str(kMono, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "NoSuchFontNve, monospace");
-  typo(kSpaced, NVE_TYPOGRAPHY_SET_WHITE_SPACE | NVE_TYPOGRAPHY_SET_LETTER_SPACING);
   field(kSpaced, NVE_TABLE_TYPOGRAPHY_WHITE_SPACE, NVE_WHITE_SPACE_NO_WRAP);
   (void)w.set_f32(kSpaced, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, 2.5f);
-  typo(kTall, NVE_TYPOGRAPHY_SET_LINE_HEIGHT);
   field(kTall, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, h::length_percent(180.0f));
-  typo(kCapped, NVE_TYPOGRAPHY_SET_MAX_LINES | NVE_TYPOGRAPHY_SET_LINE_HEIGHT);
   field(kCapped, NVE_TABLE_TYPOGRAPHY_MAX_LINES, 2u);
   field(kCapped, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, h::length_points(30.0f));
   const uint32_t kids[] = {kNoWrap, kMono, kSpaced, kTall, kWraps, kCapped};
@@ -217,9 +212,14 @@ void test_counter_widgets_measurement_and_events() {
   test_measure_typography(host);
 
   std::vector<int64_t> counts;
-  host.set_event_callback([&counts](std::span<const NveDirectEvent> evs) {
-    for (const NveDirectEvent& ev : evs) {
-      if (ev.kind == NVE_EVENT_CUSTOM && ev.value.tag == NVE_VAL_I64) counts.push_back(ev.value.data.i64_val);
+  host.set_event_callback([&counts](NveEventBatch batch) {
+    for (const NveEvent& ev : nve::host::batch_events(batch)) {
+      if (!nve::host::is_custom_event(ev) || nve::host::event_custom_name(ev, batch) != CounterApp::kCountEventName) {
+        continue;
+      }
+      nve::host::BinReader reader(nve::host::event_custom_data(ev, batch));
+      const int64_t value = reader.read_i64();
+      if (reader.ok()) counts.push_back(value);
     }
   });
 

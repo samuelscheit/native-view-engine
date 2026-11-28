@@ -2,6 +2,9 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 
+#include <nve/host/bin_codec.hpp>
+#include <nve/host/owned_events.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -11,10 +14,6 @@ namespace nve::apple {
 namespace {
 constexpr uint32_t kMaxDepth = 32u;
 
-uint64_t now_us() noexcept {
-  return static_cast<uint64_t>([[NSDate date] timeIntervalSince1970] * 1'000'000.0);
-}
-
 NveValue null_value() noexcept {
   NveValue v{};
   v.tag = NVE_VAL_NULL;
@@ -23,6 +22,56 @@ NveValue null_value() noexcept {
 
 std::string_view sv(NveStrSlice s) noexcept {
   return s.ptr != nullptr ? std::string_view(reinterpret_cast<const char *>(s.ptr), s.len) : std::string_view();
+}
+
+id objc_object_from_bin_reader(nve::host::BinReader &r, uint32_t depth = 0u) {
+  using nve::host::BinTag;
+  if (depth > kMaxDepth) {
+    r.skip_value();
+    return [NSNull null];
+  }
+  const BinTag tag = r.peek_tag();
+  if (!r.ok()) return [NSNull null];
+  switch (tag) {
+    case BinTag::Null:
+      (void)r.read_null();
+      return [NSNull null];
+    case BinTag::Bool:
+      return @(r.read_bool());
+    case BinTag::I64:
+      return @(r.read_i64());
+    case BinTag::F64: {
+      const double d = r.read_f64();
+      return std::isfinite(d) ? (id)@(d) : (id)[NSNull null];
+    }
+    case BinTag::Str:
+      return nsstring_from_sv(r.read_str());
+    case BinTag::Bytes: {
+      const std::span<const uint8_t> b = r.read_bytes();
+      return !b.empty() ? [NSData dataWithBytes:b.data() length:b.size()] : [NSData data];
+    }
+    case BinTag::Array: {
+      const auto mark = r.begin_array();
+      NSMutableArray *a = [NSMutableArray arrayWithCapacity:mark.count];
+      for (uint32_t i = 0u; i < mark.count && r.ok(); ++i) {
+        [a addObject:objc_object_from_bin_reader(r, depth + 1u)];
+      }
+      r.end(mark);
+      return a;
+    }
+    case BinTag::Map: {
+      const auto mark = r.begin_map();
+      NSMutableDictionary *m = [NSMutableDictionary dictionaryWithCapacity:mark.count];
+      for (uint32_t i = 0u; i < mark.count && r.ok(); ++i) {
+        const std::string_view key = r.read_map_key();
+        if (!r.ok()) break;
+        m[nsstring_from_sv(key)] = objc_object_from_bin_reader(r, depth + 1u);
+      }
+      r.end(mark);
+      return m;
+    }
+  }
+  return [NSNull null];
 }
 }  // namespace
 
@@ -133,76 +182,104 @@ id objc_object_from_nve_value(const NveValue &v, uint32_t depth) {
   }
 }
 
-NSString *event_name(const NveDirectEvent &ev) {
-  if (ev.name.ptr != nullptr && ev.name.len > 0u) return nsstring_from_sv(sv(ev.name));
-  switch (ev.kind) {
-    case NVE_EVENT_PRESS: return @"press";
-    case NVE_EVENT_LONG_PRESS: return @"longPress";
-    case NVE_EVENT_SCROLL: return @"scroll";
-    case NVE_EVENT_TEXT_CHANGE: return @"textChange";
-    case NVE_EVENT_FOCUS: return @"focus";
-    case NVE_EVENT_BLUR: return @"blur";
-    case NVE_EVENT_LAYOUT: return @"layout";
-    case NVE_EVENT_SUBMIT: return @"submit";
-    case NVE_EVENT_KEY_DOWN: return @"keyDown";
-    case NVE_EVENT_KEY_UP: return @"keyUp";
-    default: return @"custom";
+NSString *event_name(const NveEvent &ev, NveEventBatch batch) {
+  if (nve::host::is_custom_event(ev)) {
+    const std::string_view custom = nve::host::event_custom_name(ev, batch);
+    return !custom.empty() ? nsstring_from_sv(custom) : @"custom";
   }
+  if (ev.table == NVE_TABLE_INTERACTION) {
+    switch (ev.event) {
+      case NVE_INTERACTION_EVENT_PRESS: return @"press";
+      case NVE_INTERACTION_EVENT_LONG_PRESS: return @"longPress";
+      case NVE_INTERACTION_EVENT_FOCUS: return @"focus";
+      case NVE_INTERACTION_EVENT_BLUR: return @"blur";
+      case NVE_INTERACTION_EVENT_KEY_DOWN: return @"keyDown";
+      case NVE_INTERACTION_EVENT_KEY_UP: return @"keyUp";
+      case NVE_INTERACTION_EVENT_POINTER_DOWN: return @"pointerDown";
+      case NVE_INTERACTION_EVENT_POINTER_MOVE: return @"pointerMove";
+      case NVE_INTERACTION_EVENT_POINTER_UP: return @"pointerUp";
+      case NVE_INTERACTION_EVENT_POINTER_ENTER: return @"pointerEnter";
+      case NVE_INTERACTION_EVENT_POINTER_LEAVE: return @"pointerLeave";
+      case NVE_INTERACTION_EVENT_WHEEL: return @"wheel";
+      default: break;
+    }
+  } else if (ev.table == NVE_TABLE_TEXT_INPUT) {
+    switch (ev.event) {
+      case NVE_TEXT_INPUT_EVENT_CHANGE: return @"textChange";
+      case NVE_TEXT_INPUT_EVENT_SUBMIT: return @"submit";
+      case NVE_TEXT_INPUT_EVENT_COMPOSITION_START: return @"compositionStart";
+      case NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE: return @"compositionUpdate";
+      case NVE_TEXT_INPUT_EVENT_COMPOSITION_END: return @"compositionEnd";
+      default: break;
+    }
+  } else if (ev.table == NVE_TABLE_SCROLL) {
+    if (ev.event == NVE_SCROLL_EVENT_SCROLL) return @"scroll";
+  } else if (ev.table == NVE_TABLE_LAYOUT) {
+    if (ev.event == NVE_LAYOUT_EVENT_LAYOUT) return @"layout";
+  }
+  return @"custom";
 }
 
-NSDictionary<NSString *, id> *payload_dictionary_from_event(const NveDirectEvent &ev) {
+NSDictionary<NSString *, id> *payload_dictionary_from_event(const NveEvent &ev, NveEventBatch batch) {
   NSMutableDictionary *p = [NSMutableDictionary dictionary];
-  p[@"nodeId"] = @(ev.node_id);
-  p[@"surfaceId"] = @(ev.surface_id);
-  p[@"timestampUs"] = @(ev.timestamp_us);
-  switch (ev.payload_tag) {
-    case NVE_EVENT_PAYLOAD_POINT:
-      p[@"x"] = @(ev.x);
-      p[@"y"] = @(ev.y);
-      break;
-    case NVE_EVENT_PAYLOAD_SCROLL:
-    case NVE_EVENT_PAYLOAD_LAYOUT:
-      p[@"x"] = @(ev.x);
-      p[@"y"] = @(ev.y);
-      p[@"width"] = @(ev.width);
-      p[@"height"] = @(ev.height);
-      break;
-    case NVE_EVENT_PAYLOAD_TEXT:
-      p[@"text"] = nsstring_from_sv(sv(ev.text));
-      break;
-    default:
-      break;
+  p[@"nodeId"] = @(ev.node);
+  p[@"surfaceId"] = @(ev.surface);
+  p[@"timestampUs"] = @(ev.timestamp);
+  if (nve::host::is_custom_event(ev)) {
+    const std::span<const uint8_t> data = nve::host::event_custom_data(ev, batch);
+    if (!data.empty()) {
+      if (nve::host::BinReader::validate(data) == nve::host::BinError::None) {
+        nve::host::BinReader reader(data);
+        if (reader.peek_tag() != nve::host::BinTag::Null) {
+          p[@"value"] = objc_object_from_bin_reader(reader);
+        }
+      } else {
+        p[@"value"] = [NSData dataWithBytes:data.data() length:data.size()];
+      }
+    }
+    return p;
   }
-  if (ev.value.tag != NVE_VAL_NULL) p[@"value"] = objc_object_from_nve_value(ev.value);
+  if (ev.table == NVE_TABLE_INTERACTION) {
+    switch (ev.event) {
+      case NVE_INTERACTION_EVENT_PRESS:
+      case NVE_INTERACTION_EVENT_LONG_PRESS:
+        p[@"x"] = @(nve::host::event_payload_f32(ev, 0u));
+        p[@"y"] = @(nve::host::event_payload_f32(ev, 1u));
+        break;
+      case NVE_INTERACTION_EVENT_POINTER_DOWN:
+      case NVE_INTERACTION_EVENT_POINTER_MOVE:
+      case NVE_INTERACTION_EVENT_POINTER_UP:
+      case NVE_INTERACTION_EVENT_POINTER_ENTER:
+      case NVE_INTERACTION_EVENT_POINTER_LEAVE:
+        p[@"x"] = @(nve::host::event_payload_f32(ev, 0u));
+        p[@"y"] = @(nve::host::event_payload_f32(ev, 1u));
+        p[@"pointerId"] = @(ev.payload[2]);
+        break;
+      case NVE_INTERACTION_EVENT_WHEEL:
+        p[@"deltaX"] = @(nve::host::event_payload_f32(ev, 0u));
+        p[@"deltaY"] = @(nve::host::event_payload_f32(ev, 1u));
+        break;
+      case NVE_INTERACTION_EVENT_KEY_DOWN:
+      case NVE_INTERACTION_EVENT_KEY_UP: {
+        p[@"keyCode"] = @(ev.payload[0]);
+        const std::string_view key = nve::host::event_key(ev, batch);
+        if (!key.empty()) p[@"key"] = nsstring_from_sv(key);
+        const std::string_view code = nve::host::event_code(ev, batch);
+        if (!code.empty()) p[@"code"] = nsstring_from_sv(code);
+        break;
+      }
+      default:
+        break;
+    }
+  } else if (ev.table == NVE_TABLE_TEXT_INPUT) {
+    p[@"text"] = nsstring_from_sv(nve::host::event_text(ev, batch));
+  } else if (ev.table == NVE_TABLE_SCROLL || ev.table == NVE_TABLE_LAYOUT) {
+    p[@"x"] = @(nve::host::event_payload_f32(ev, 0u));
+    p[@"y"] = @(nve::host::event_payload_f32(ev, 1u));
+    p[@"width"] = @(nve::host::event_payload_f32(ev, 2u));
+    p[@"height"] = @(nve::host::event_payload_f32(ev, 3u));
+  }
   return p;
-}
-
-NveDirectEvent make_point_event(uint32_t surface, uint32_t node, uint8_t kind, float x, float y) {
-  NveDirectEvent ev{};
-  ev.surface_id = surface;
-  ev.node_id = node;
-  ev.timestamp_us = now_us();
-  ev.kind = kind;
-  ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
-  ev.x = x;
-  ev.y = y;
-  ev.value = null_value();
-  return ev;
-}
-
-NveDirectEvent make_text_event(uint32_t surface, uint32_t node, uint8_t kind, std::string_view text, ValueArena &arena) {
-  NveDirectEvent ev = make_point_event(surface, node, kind, 0.0f, 0.0f);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
-  ev.text = arena.str(text);
-  return ev;
-}
-
-NveDirectEvent make_scroll_event(uint32_t surface, uint32_t node, float x, float y, float content_w, float content_h) {
-  NveDirectEvent ev = make_point_event(surface, node, NVE_EVENT_SCROLL, x, y);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_SCROLL;
-  ev.width = content_w;
-  ev.height = content_h;
-  return ev;
 }
 
 }  // namespace nve::apple

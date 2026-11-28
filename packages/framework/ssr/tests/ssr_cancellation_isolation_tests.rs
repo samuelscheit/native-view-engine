@@ -8,6 +8,7 @@ mod support;
 
 use core::time::Duration;
 
+use nve_abi::SurfaceId;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
 use nve_query::QueryOptions;
@@ -122,7 +123,7 @@ async fn scenario_4_concurrent_user_a_vs_user_b_isolation_shared_pool() {
                     SsrPageOptions::new(format!("Profile-{}", principal.name), web_backend),
                     StreamPlan::default(),
                     client,
-                    |c| DioxusSurface::new(1, ProfileApp).with_context(c),
+                    |c| DioxusSurface::new(SurfaceId::ROOT, ProfileApp).with_context(c),
                 )
                 .await
                 .expect("profile SSR");

@@ -69,12 +69,12 @@ void test_controlled_text_inputs() {
   w.set_children(1u, kids);
   // kEcho / kNotes: echo; kUpper: transform to upper case; kReject: ignore edits.
   app.on_event = [](ScriptedApp& a, const RecordedEvent& e) {
-    if (e.ev.kind != NVE_EVENT_TEXT_CHANGE || e.ev.node_id == kReject) return;
+    if (!h::is_text_input_event(e.ev, NVE_TEXT_INPUT_EVENT_CHANGE) || e.ev.node == kReject) return;
     std::string v = e.text;
-    if (e.ev.node_id == kUpper) {
+    if (e.ev.node == kUpper) {
       for (char& c : v) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
-    (void)a.w.set_str(e.ev.node_id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, v);
+    (void)a.w.set_str(e.ev.node, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, v);
   };
 
   NveQtWidget widget(QtHostConfig{.width = 400.0f, .height = 400.0f});
@@ -105,77 +105,81 @@ void test_controlled_text_inputs() {
   // Typing: one TextChange per edit; the app's echo never fights the caret.
   echo->setCursorPosition(5);
   type(echo, Qt::Key_A, QStringLiteral("a"));
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEcho) == 1u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "helloa");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "helloa");
   NVE_CHECK(echo->text() == "helloa" && echo->cursorPosition() == 6);
   echo->setCursorPosition(0);
   type(echo, Qt::Key_X, QStringLiteral("x"));
   NVE_CHECK(echo->text() == "xhelloa" && echo->cursorPosition() == 1);  // the echo did not move the caret
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEcho) == 2u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == 2u);
   // Max length: QLineEdit refuses beyond 12 chars, so no TextChange either.
   for (int i = 0; i < 8; ++i) type(echo, Qt::Key_Z, QStringLiteral("z"));
-  NVE_CHECK(echo->text().size() == 12 && app.last(NVE_EVENT_TEXT_CHANGE)->text.size() == 12u);
+  NVE_CHECK(echo->text().size() == 12 && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text.size() == 12u);
   // App-driven value replaces the text and is not reported back.
-  const size_t edits = app.count(NVE_EVENT_TEXT_CHANGE, kEcho);
+  const size_t edits = app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho);
   (void)w.set_str(kEcho, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "reset");
   flush(host);
-  NVE_CHECK(echo->text() == "reset" && app.count(NVE_EVENT_TEXT_CHANGE, kEcho) == edits);
+  NVE_CHECK(echo->text() == "reset" && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == edits);
   // Submit (Return) carries the current text.
   type(echo, Qt::Key_Return, QStringLiteral("\r"));
-  NVE_CHECK(app.count(NVE_EVENT_SUBMIT, kEcho) == 1u && app.last(NVE_EVENT_SUBMIT)->text == "reset");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_SUBMIT, kEcho) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_SUBMIT)->text == "reset");
 
   // Transforming app: the widget adopts the transformed value.
   type(upper, Qt::Key_Q, QStringLiteral("q"));
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "q" && upper->text() == "Q");
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "q" && upper->text() == "Q");
   type(upper, Qt::Key_W, QStringLiteral("w"));
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "Qw" && upper->text() == "QW");
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "Qw" && upper->text() == "QW");
   // Rejecting app (value unchanged, nothing republished): the field shows the app's value again,
   // and that write-back is no edit; the next keystroke starts from it.
   reject->setCursorPosition(5);
-  const size_t rejected = app.count(NVE_EVENT_TEXT_CHANGE, kReject);
+  const size_t rejected = app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kReject);
   type(reject, Qt::Key_S, QStringLiteral("s"));
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixeds" && reject->text() == "fixed");
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kReject) == rejected + 1u);
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "fixeds" && reject->text() == "fixed");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kReject) == rejected + 1u);
   reject->setCursorPosition(5);
   type(reject, Qt::Key_T, QStringLiteral("t"));
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixedt" && reject->text() == "fixed");
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "fixedt" && reject->text() == "fixed");
 
   // IME: composition is neither dispatched nor clobbered by an app update; the commit is.
   spin();  // window activation is asynchronous
   echo->setFocus();
   spin();
-  NVE_CHECK(echo->hasFocus() && app.count(NVE_EVENT_FOCUS, kEcho) == 1u);
+  NVE_CHECK(echo->hasFocus() && app.count(NVE_INTERACTION_EVENT_FOCUS, kEcho) == 1u);
   echo->setCursorPosition(5);
-  const size_t before_ime = app.count(NVE_EVENT_TEXT_CHANGE, kEcho);
+  const size_t before_ime = app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho);
   QInputMethodEvent preedit(QStringLiteral("ni"), {});
   QApplication::sendEvent(echo, &preedit);
-  NVE_CHECK(echo->composing() && app.count(NVE_EVENT_TEXT_CHANGE, kEcho) == before_ime);
+  NVE_CHECK(echo->composing() && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == before_ime);
   (void)w.set_str(kEcho, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "app-wins?");
   flush(host);
   NVE_CHECK(echo->text() == "reset");  // composing: untouched
   QInputMethodEvent commit;
   commit.setCommitString(QStringLiteral("你"));
   QApplication::sendEvent(echo, &commit);
-  NVE_CHECK(!echo->composing() && app.last(NVE_EVENT_TEXT_CHANGE)->text == "reset你");
+  NVE_CHECK(!echo->composing() && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "reset你");
   NVE_CHECK(echo->text() == "reset你");
 
   // Multi-line: edits dispatch, host writes do not, max length is enforced by the host.
   notes->moveCursor(QTextCursor::End);
   notes->insertPlainText(QStringLiteral("\nd"));
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->ev.node_id == kNotes && app.last(NVE_EVENT_TEXT_CHANGE)->text == "a\nb c\nd");
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->ev.node == kNotes &&
+            app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "a\nb c\nd");
   notes->insertPlainText(QStringLiteral("efgh"));
-  NVE_CHECK(notes->toPlainText() == "a\nb c\nde" && app.last(NVE_EVENT_TEXT_CHANGE)->text == "a\nb c\nde");
-  const size_t notes_edits = app.count(NVE_EVENT_TEXT_CHANGE, kNotes);
+  NVE_CHECK(notes->toPlainText() == "a\nb c\nde" && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "a\nb c\nde");
+  const size_t notes_edits = app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNotes);
   (void)w.set_str(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "x\ny");
   flush(host);
-  NVE_CHECK(notes->toPlainText() == "x\ny" && app.count(NVE_EVENT_TEXT_CHANGE, kNotes) == notes_edits);
+  NVE_CHECK(notes->toPlainText() == "x\ny" && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNotes) == notes_edits);
 
   // Focus / blur round-trip.
   reject->setFocus(Qt::MouseFocusReason);
   spin();
-  NVE_CHECK(app.count(NVE_EVENT_FOCUS, kReject) == 1u && app.count(NVE_EVENT_BLUR, kEcho) >= 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_FOCUS, kReject) == 1u &&
+            app.count(NVE_INTERACTION_EVENT_BLUR, kEcho) >= 1u);
   reject->clearFocus();
   spin();
-  NVE_CHECK(app.count(NVE_EVENT_BLUR, kReject) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_BLUR, kReject) == 1u);
   widget.hide();
 }
 
@@ -188,7 +192,7 @@ void test_scroll_views() {
   w.attach(kScroll, NVE_TABLE_SCROLL_DESC);
   w.set(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(100.0f));
   w.set_f32(kScroll, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
-  subscribe(w, kScroll, {NVE_EVENT_SCROLL});
+  subscribe(w, kScroll, {NVE_SCROLL_EVENT_SCROLL});
   w.create(kTall);
   w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(300.0f));
   w.set_f32(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
@@ -224,30 +228,31 @@ void test_scroll_views() {
   QScrollBar* bar = area->verticalScrollBar();
   NVE_CHECK(bar->maximum() >= 199);
   bar->setValue(50);
-  NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) == 1u);
-  const RecordedEvent* ev = app.last(NVE_EVENT_SCROLL);
-  NVE_CHECK(approx(ev->ev.y, 50.0, 0.5) && approx(ev->ev.height, 300.0, 1.0));
+  NVE_CHECK(app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 1u);
+  const RecordedEvent* ev = app.last(NVE_SCROLL_EVENT_SCROLL);
+  NVE_CHECK(approx(h::event_payload_f32(ev->ev, 1u), 50.0, 0.5) &&
+            approx(h::event_payload_f32(ev->ev, 3u), 300.0, 1.0));
   const auto runtime_offset = host.scroll_by(kScroll, 0.0f, 0.0f);
   NVE_CHECK(runtime_offset && approx(runtime_offset->y(), 50.0, 0.5) && approx(runtime_offset->x(), 0.0, 0.01));
   NVE_CHECK(!host.scroll_by(kTall, 0.0f, 1.0f));                       // not a scroll container
   NVE_CHECK(!host.scroll_by(kScroll, std::nanf(""), 0.0f));          // non-finite delta refused
   spin();  // queued wakes from the offset change: no Scroll echo
-  NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) == 1u);
+  NVE_CHECK(app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 1u);
 
   // Programmatic scroll is applied once and not echoed back as a user scroll.
   w.set_f32(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 120.0f);
   flush(host);
-  NVE_CHECK(bar->value() == 120 && app.count(NVE_EVENT_SCROLL, kScroll) == 1u);
+  NVE_CHECK(bar->value() == 120 && app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 1u);
   NVE_CHECK(approx(host.scroll_by(kScroll, 0.0f, 0.0f)->y(), 120.0, 0.5));
   bar->setValue(10);  // the user scrolls away; an unrelated frame keeps it
-  NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) == 2u);
+  NVE_CHECK(app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 2u);
   w.set(kTall, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(9, 9, 9));
   flush(host);
   NVE_CHECK(bar->value() == 10);
   // An out-of-range target clamps to the content.
   w.set_f32(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 5000.0f);
   flush(host);
-  NVE_CHECK(bar->value() == bar->maximum() && app.count(NVE_EVENT_SCROLL, kScroll) == 2u);
+  NVE_CHECK(bar->value() == bar->maximum() && app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 2u);
 
   // A growing child grows the scroll extent without touching the scroll node.
   w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(500.0f));
@@ -256,7 +261,7 @@ void test_scroll_views() {
   // Shrinking clamps the bar without reporting a user scroll.
   w.set(kTall, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(50.0f));
   flush(host);
-  NVE_CHECK(area->widget()->height() == 100 && bar->value() == 0 && app.count(NVE_EVENT_SCROLL, kScroll) == 2u);
+  NVE_CHECK(area->widget()->height() == 100 && bar->value() == 0 && app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 2u);
   widget.hide();
 }
 
@@ -267,22 +272,24 @@ void test_pointer_cursor_links_and_removal() {
   w.create(1u);
   w.create(kHover);
   size_node(w, kHover, 50.0f, 20.0f);
-  subscribe(w, kHover, {NVE_EVENT_POINTER_ENTER, NVE_EVENT_POINTER_LEAVE, NVE_EVENT_POINTER_MOVE});
+  subscribe(w, kHover,
+            {NVE_INTERACTION_EVENT_POINTER_ENTER, NVE_INTERACTION_EVENT_POINTER_LEAVE,
+             NVE_INTERACTION_EVENT_POINTER_MOVE});
   w.set(kHover, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_CURSOR, NVE_CURSOR_KIND_GRAB);
   text_node(w, kLink, "docs");
   (void)w.set_str(kLink, NVE_TABLE_LINK_DESC, NVE_TABLE_LINK_HREF, "https://example.com/docs");
   text_node(w, kPressLink, "app link");
   (void)w.set_str(kPressLink, NVE_TABLE_LINK_DESC, NVE_TABLE_LINK_HREF, "https://example.com/never");
-  subscribe(w, kPressLink, {NVE_EVENT_PRESS});
+  subscribe(w, kPressLink, {NVE_INTERACTION_EVENT_PRESS});
   w.create(kSelfRemove);
   size_node(w, kSelfRemove, 30.0f, 30.0f);
-  subscribe(w, kSelfRemove, {NVE_EVENT_PRESS});
+  subscribe(w, kSelfRemove, {NVE_INTERACTION_EVENT_PRESS});
   text_node(w, kText, "plain");
   w.set(kText, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_CURSOR, NVE_CURSOR_KIND_TEXT);
   const uint32_t kids[] = {kHover, kLink, kPressLink, kSelfRemove, kText};
   w.set_children(1u, kids);
   app.on_event = [](ScriptedApp& a, const RecordedEvent& e) {
-    if (e.ev.kind == NVE_EVENT_PRESS && e.ev.node_id == kSelfRemove) {
+    if (h::is_interaction_event(e.ev, NVE_INTERACTION_EVENT_PRESS) && e.ev.node == kSelfRemove) {
       a.w.remove(kSelfRemove);
       const uint32_t rest[] = {kHover, kLink, kPressLink, kText};
       a.w.set_children(1u, rest);
@@ -309,20 +316,22 @@ void test_pointer_cursor_links_and_removal() {
   QApplication::sendEvent(hover, &move);
   QEvent leave(QEvent::Leave);
   QApplication::sendEvent(hover, &leave);
-  NVE_CHECK(app.count(NVE_EVENT_POINTER_ENTER, kHover) == 1u && app.count(NVE_EVENT_POINTER_LEAVE, kHover) == 1u);
-  NVE_CHECK(app.count(NVE_EVENT_POINTER_MOVE, kHover) == 1u);
-  const RecordedEvent* mv = app.last(NVE_EVENT_POINTER_MOVE);
-  NVE_CHECK(mv->ev.x == 7.0f && mv->ev.y == 8.0f && app.last(NVE_EVENT_POINTER_ENTER)->ev.x == 3.0f);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_POINTER_ENTER, kHover) == 1u &&
+            app.count(NVE_INTERACTION_EVENT_POINTER_LEAVE, kHover) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_POINTER_MOVE, kHover) == 1u);
+  const RecordedEvent* mv = app.last(NVE_INTERACTION_EVENT_POINTER_MOVE);
+  NVE_CHECK(h::event_payload_f32(mv->ev, 0u) == 7.0f && h::event_payload_f32(mv->ev, 1u) == 8.0f &&
+            h::event_payload_f32(app.last(NVE_INTERACTION_EVENT_POINTER_ENTER)->ev, 0u) == 3.0f);
   // Unsubscribed nodes send no pointer events.
   QApplication::sendEvent(widget.nativeWidgetForNodeId(kText), &enter);
-  NVE_CHECK(app.count(NVE_EVENT_POINTER_ENTER) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_POINTER_ENTER) == 1u);
 
   // A link without a Press subscription opens natively; with one, the app gets Press instead.
   click(widget.nativeWidgetForNodeId(kLink), QPointF(2, 2));
   NVE_CHECK(sink.opened.size() == 1u && sink.opened[0] == QUrl("https://example.com/docs"));
   NVE_CHECK(widget.accessibilityInfoForNodeId(kLink)->role == QAccessible::Link);
   click(widget.nativeWidgetForNodeId(kPressLink), QPointF(2, 2));
-  NVE_CHECK(sink.opened.size() == 1u && app.count(NVE_EVENT_PRESS, kPressLink) == 1u);
+  NVE_CHECK(sink.opened.size() == 1u && app.count(NVE_INTERACTION_EVENT_PRESS, kPressLink) == 1u);
   QDesktopServices::unsetUrlHandler(QStringLiteral("https"));
 
   // A press whose handler removes the pressed node: the widget dies later, safely.

@@ -1,7 +1,9 @@
 //! Direct typed keyboard/pointer/input event routing, CJK IME composition guards, and
-//! single-root `wasm32` DOM event delegation (`closest('[data-nve-id]')` -> `NodeEventMeta`).
+//! refcounted lazy single-root `wasm32` DOM event delegation backed by [`SurfaceEventTracker`].
 
-use nve_abi::NodeId;
+use nve_abi::{EventId, NodeId};
+use nve_tables::tables::{Interaction, Layout, Link, Scroll, TextInput};
+use nve_store::{ChangeSet, HasEvents, NodeStore, SurfaceEventTracker, TableSlot};
 
 pub use crate::input_attrs::{ImeCompositionGuard, InputSyncTracker, IME_PROCESS_KEY_CODE};
 
@@ -10,43 +12,116 @@ use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
-use nve_abi::hash::HashMap;
-#[cfg(target_arch = "wasm32")]
-use nve_abi::{
-    EventMask, EventPayload, NativeEvent, NativeEventKind,
-};
+use nve_abi::TimestampUs;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
 #[cfg(target_arch = "wasm32")]
-use crate::input_attrs::{
-    web_composition_cancel_on_blur, web_composition_end, web_composition_start,
-    web_composition_update,
-};
+pub(crate) use crate::events_dom::RootEventDelegator;
 #[cfg(target_arch = "wasm32")]
 use crate::RenderCallback;
 
-/// Per-node event routing metadata consulted by the root event delegator (zero `ComponentKind`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct NodeEventMeta {
-    pub is_input: bool,
-    pub is_link: bool,
-    pub mask: u64,
+/// Dense node-kind flag: node carries a [`TextInput`] table.
+pub const NODE_KIND_INPUT: u8 = 1 << 0;
+/// Dense node-kind flag: node carries a [`Link`] table.
+pub const NODE_KIND_LINK: u8 = 1 << 1;
+
+/// Per-surface event subscription tracker + dense node-index kind flags (zero `HashMap`).
+#[derive(Debug, Clone)]
+pub struct WebEventState {
+    pub tracker: SurfaceEventTracker,
+    pub node_kinds: Vec<u8>,
+    pub input_count: u32,
 }
 
-/// Pure ancestor-chain resolver used by root event delegation (testable on native targets).
-pub fn resolve_delegated_node<F>(
-    ancestor_chain: &[(NodeId, NodeEventMeta)],
-    predicate: F,
-) -> Option<NodeId>
-where
-    F: Fn(NodeEventMeta) -> bool,
-{
-    ancestor_chain
-        .iter()
-        .find_map(|&(id, meta)| predicate(meta).then_some(id))
+impl Default for WebEventState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WebEventState {
+    pub fn new() -> Self {
+        let mut tracker = SurfaceEventTracker::new();
+        tracker.track::<Interaction>();
+        tracker.track::<TextInput>();
+        tracker.track::<Scroll>();
+        tracker.track::<Layout>();
+        Self {
+            tracker,
+            node_kinds: Vec::new(),
+            input_count: 0,
+        }
+    }
+
+    #[inline]
+    pub fn is_input(&self, id: NodeId) -> bool {
+        (self.node_kinds.get(id.index()).copied().unwrap_or(0) & NODE_KIND_INPUT) != 0
+    }
+
+    #[inline]
+    pub fn is_link(&self, id: NodeId) -> bool {
+        (self.node_kinds.get(id.index()).copied().unwrap_or(0) & NODE_KIND_LINK) != 0
+    }
+
+    #[inline]
+    pub fn listens<T: HasEvents>(&self, id: NodeId, event: T::Event) -> bool {
+        self.tracker.listeners_of::<T>(id).contains(event)
+    }
+
+    pub fn sync(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+        on_transition: impl FnMut(TableSlot, EventId, bool),
+    ) {
+        for &removed in &changes.removed {
+            let idx = removed.index();
+            if idx < self.node_kinds.len() {
+                let prev = self.node_kinds[idx];
+                if (prev & NODE_KIND_INPUT) != 0 {
+                    self.input_count = self.input_count.saturating_sub(1);
+                }
+                self.node_kinds[idx] = 0;
+            }
+        }
+        for &id in changes.created.iter().chain(changes.touched.iter()) {
+            if !store.is_live(id) {
+                continue;
+            }
+            let mut next = 0u8;
+            if store.has::<TextInput>(id) {
+                next |= NODE_KIND_INPUT;
+            }
+            if store.has::<Link>(id) {
+                next |= NODE_KIND_LINK;
+            }
+            let idx = id.index();
+            let prev = self.node_kinds.get(idx).copied().unwrap_or(0);
+            if prev != next {
+                if (next != 0) && idx >= self.node_kinds.len() {
+                    self.node_kinds.resize(idx + 1, 0);
+                }
+                if idx < self.node_kinds.len() {
+                    self.node_kinds[idx] = next;
+                }
+                match ((prev & NODE_KIND_INPUT) != 0, (next & NODE_KIND_INPUT) != 0) {
+                    (false, true) => self.input_count += 1,
+                    (true, false) => self.input_count = self.input_count.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        }
+        self.tracker.sync(store, changes, on_transition);
+    }
+
+    pub fn reset(&mut self) {
+        self.tracker.reset();
+        self.node_kinds.fill(0);
+        self.input_count = 0;
+    }
 }
 
 /// Returns `true` when an `<a href="...">` explicitly opts out of client-side SPA interception
@@ -57,7 +132,7 @@ pub fn is_hard_nav_anchor(hard_nav_attr: Option<&str>) -> bool {
 }
 
 /// Returns `true` when a hydrated click on an `<a href="...">` inside an interactive
-/// `EventMask::PRESS` node should call `preventDefault()` and emit `NativeEventKind::Press` for
+/// `InteractionEvent::Press` node should call `preventDefault()` and emit `Press` for
 /// zero-reload SPA navigation.
 #[inline]
 pub fn should_intercept_anchor_click(
@@ -82,11 +157,12 @@ pub fn should_intercept_anchor_click(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn now_us() -> u64 {
-    web_sys::window()
+pub(crate) fn now_us() -> TimestampUs {
+    let us = web_sys::window()
         .and_then(|w| w.performance())
         .map(|p| (p.now() * 1000.0) as u64)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    TimestampUs(us)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -110,16 +186,15 @@ pub(crate) fn target_to_element(target: Option<web_sys::EventTarget>) -> Option<
 pub(crate) fn collect_ancestors(
     start: &web_sys::Element,
     root: &web_sys::Element,
-    meta_map: &HashMap<NodeId, NodeEventMeta>,
-) -> Vec<(NodeId, NodeEventMeta, web_sys::Element)> {
+) -> Vec<(NodeId, web_sys::Element)> {
     let mut out = Vec::with_capacity(8);
     let mut cur = Some(start.clone());
     while let Some(el) = cur {
-        if let Some(raw) = el.get_attribute("data-nve-id")
-            && let Ok(id) = raw.parse::<NodeId>()
+        if let Some(id) = el
+            .get_attribute("data-nve-id")
+            .and_then(|raw| crate::key_events::parse_dom_node_id(&raw))
         {
-            let meta = meta_map.get(&id).copied().unwrap_or_default();
-            out.push((id, meta, el.clone()));
+            out.push((id, el.clone()));
         }
         if el.is_same_node(Some(root)) {
             break;
@@ -129,25 +204,44 @@ pub(crate) fn collect_ancestors(
     out
 }
 
-/// Owns the delegated DOM event closures attached to the single mount root on `wasm32`.
 #[cfg(target_arch = "wasm32")]
-pub(crate) type DomEventListener = (web_sys::EventTarget, &'static str, bool, Closure<dyn FnMut(web_sys::Event)>);
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) struct RootEventDelegator {
-    listeners: Vec<DomEventListener>,
+pub(crate) struct DomListenerGuard {
+    target: web_sys::EventTarget,
+    name: &'static str,
+    capture: bool,
+    cb: Closure<dyn FnMut(web_sys::Event)>,
 }
 
 #[cfg(target_arch = "wasm32")]
-impl Drop for RootEventDelegator {
-    fn drop(&mut self) {
-        for (target, name, capture, cb) in &self.listeners {
-            let _ = target.remove_event_listener_with_callback_and_bool(
-                name,
-                cb.as_ref().unchecked_ref(),
-                *capture,
-            );
+impl DomListenerGuard {
+    pub(crate) fn attach(
+        target: web_sys::EventTarget,
+        name: &'static str,
+        capture: bool,
+        cb: Closure<dyn FnMut(web_sys::Event)>,
+    ) -> Self {
+        let _ = target.add_event_listener_with_callback_and_bool(
+            name,
+            cb.as_ref().unchecked_ref(),
+            capture,
+        );
+        Self {
+            target,
+            name,
+            capture,
+            cb,
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for DomListenerGuard {
+    fn drop(&mut self) {
+        let _ = self.target.remove_event_listener_with_callback_and_bool(
+            self.name,
+            self.cb.as_ref().unchecked_ref(),
+            self.capture,
+        );
     }
 }
 
@@ -156,363 +250,6 @@ pub(crate) fn notify_event(on_event: &Rc<RefCell<Option<RenderCallback>>>) {
     let cb = on_event.borrow().clone();
     if let Some(cb) = cb {
         cb();
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn register_listener(
-    listeners: &mut Vec<DomEventListener>,
-    target: &web_sys::EventTarget,
-    name: &'static str,
-    capture: bool,
-    cb: Closure<dyn FnMut(web_sys::Event)>,
-) {
-    let _ = target.add_event_listener_with_callback_and_bool(
-        name,
-        cb.as_ref().unchecked_ref(),
-        capture,
-    );
-    listeners.push((target.clone(), name, capture, cb));
-}
-
-#[cfg(target_arch = "wasm32")]
-impl RootEventDelegator {
-    /// Owns already-registered `listeners`, detaching them on drop.
-    pub(crate) fn from_listeners(listeners: Vec<DomEventListener>) -> Self {
-        Self { listeners }
-    }
-
-    pub(crate) fn attach(root: web_sys::Element, backend: &crate::WebBackend) -> Self {
-        let (surface_id, events, meta) =
-            (&backend.surface_id, &backend.pending_events, &backend.node_event_meta);
-        let (input_sync, ime, on_event) =
-            (&backend.input_sync, &backend.ime_guard, &backend.on_event);
-        let mut listeners: Vec<DomEventListener> = Vec::new();
-        let root_target: web_sys::EventTarget = root.clone().into();
-
-        // Click -> plugin click hooks (e.g. `<dialog closedby>` backdrop fallback), else Press.
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let hooks = Rc::clone(&backend.click_interceptors);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                if ev.dyn_ref::<web_sys::MouseEvent>().is_some_and(|me| hooks.borrow().consume(me)) {
-                    return;
-                }
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                let press_ev = if let Some((id, _, _target_el)) = chain
-                    .iter()
-                    .find(|(_, meta, _)| (meta.mask & EventMask::PRESS) != 0)
-                    && let Some(me) = ev.dyn_ref::<web_sys::MouseEvent>()
-                {
-                    if let Ok(Some(anchor)) = el.closest("a[href]")
-                        && r.contains(Some(&anchor))
-                    {
-                        let hard = is_hard_nav_anchor(
-                            anchor.get_attribute("data-nve-hard-nav").as_deref(),
-                        );
-                        if !hard
-                            && should_intercept_anchor_click(
-                                me.button(),
-                                me.meta_key(),
-                                me.ctrl_key(),
-                                me.shift_key(),
-                                me.alt_key(),
-                                anchor.get_attribute("target").as_deref(),
-                                anchor.has_attribute("download"),
-                            )
-                        {
-                            ev.prevent_default();
-                        }
-                    }
-                    Some(NativeEvent {
-                        kind: NativeEventKind::Press,
-                        surface_id: sid.get(),
-                        node_id: *id,
-                        timestamp_us: now_us(),
-                        payload: EventPayload::Point {
-                            x: me.client_x() as f32,
-                            y: me.client_y() as f32,
-                        },
-                    })
-                } else {
-                    None
-                };
-                if let Some(ev) = press_ev {
-                    evs.borrow_mut().push(ev);
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "click", false, cb);
-        }
-
-        // Input -> NativeEventKind::TextChange
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let sync = Rc::clone(input_sync);
-            let ime_g = Rc::clone(ime);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                if ime_g.should_suppress_input() {
-                    return;
-                }
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                let found = chain
-                    .iter()
-                    .find(|(_, meta, _)| meta.is_input || (meta.mask & EventMask::TEXT_CHANGE) != 0)
-                    .map(|(id, _, target_el)| (*id, read_dom_input_value(target_el)));
-                if let Some((id, val)) = found {
-                    let changed = sync.borrow_mut().on_input_event(id, val, false);
-                    if let Some(changed) = changed {
-                        evs.borrow_mut().push(NativeEvent {
-                            kind: NativeEventKind::TextChange,
-                            surface_id: sid.get(),
-                            node_id: id,
-                            timestamp_us: now_us(),
-                            payload: EventPayload::Text(changed),
-                        });
-                        notify_event(&notify);
-                    }
-                }
-            });
-            register_listener(&mut listeners, &root_target, "input", false, cb);
-        }
-
-        // Composition start / update / end
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let ime_g = Rc::clone(ime);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                if let Some((id, _, _)) = chain.first() {
-                    evs.borrow_mut()
-                        .push(web_composition_start(&ime_g, sid.get(), *id, now_us()));
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "compositionstart", false, cb);
-        }
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let ime_g = Rc::clone(ime);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                if let Some((id, _, _)) = chain.first() {
-                    let data = ev
-                        .dyn_ref::<web_sys::CompositionEvent>()
-                        .and_then(|c| c.data())
-                        .unwrap_or_default();
-                    evs.borrow_mut().push(web_composition_update(
-                        &ime_g,
-                        sid.get(),
-                        *id,
-                        now_us(),
-                        data,
-                    ));
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "compositionupdate", false, cb);
-        }
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let sync = Rc::clone(input_sync);
-            let ime_g = Rc::clone(ime);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                if let Some((id, _, target_el)) = chain.first() {
-                    let committed = ev
-                        .dyn_ref::<web_sys::CompositionEvent>()
-                        .and_then(|c| c.data())
-                        .unwrap_or_default();
-                    let full = read_dom_input_value(target_el);
-                    let pair = {
-                        let mut guard = sync.borrow_mut();
-                        web_composition_end(
-                            &ime_g,
-                            &mut guard,
-                            sid.get(),
-                            *id,
-                            now_us(),
-                            committed,
-                            full,
-                        )
-                    };
-                    evs.borrow_mut().extend(pair);
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "compositionend", false, cb);
-        }
-
-        // Focus / Blur
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                let focus_id = chain
-                    .iter()
-                    .find(|(_, meta, _)| (meta.mask & EventMask::FOCUS) != 0)
-                    .map(|(id, _, _)| *id);
-                if let Some(id) = focus_id {
-                    evs.borrow_mut().push(NativeEvent {
-                        kind: NativeEventKind::Focus,
-                        surface_id: sid.get(),
-                        node_id: id,
-                        timestamp_us: now_us(),
-                        payload: EventPayload::Empty,
-                    });
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "focusin", false, cb);
-        }
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let ime_g = Rc::clone(ime);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                let cancel = chain
-                    .first()
-                    .and_then(|(id, _, _)| web_composition_cancel_on_blur(&ime_g, sid.get(), *id, now_us()));
-                let blur_id = chain
-                    .iter()
-                    .find(|(_, meta, _)| (meta.mask & EventMask::BLUR) != 0)
-                    .map(|(id, _, _)| *id);
-                let mut pushed = false;
-                if let Some(c) = cancel {
-                    evs.borrow_mut().push(c);
-                    pushed = true;
-                }
-                if let Some(id) = blur_id {
-                    evs.borrow_mut().push(NativeEvent {
-                        kind: NativeEventKind::Blur,
-                        surface_id: sid.get(),
-                        node_id: id,
-                        timestamp_us: now_us(),
-                        payload: EventPayload::Empty,
-                    });
-                    pushed = true;
-                }
-                if pushed {
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "focusout", false, cb);
-        }
-
-        // Scroll (capture phase since `scroll` does not bubble in DOM)
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                let scroll_target = chain
-                    .iter()
-                    .find(|(_, meta, _)| (meta.mask & EventMask::SCROLL) != 0)
-                    .map(|(id, _, target_el)| {
-                        (
-                            *id,
-                            target_el.scroll_left() as f32,
-                            target_el.scroll_top() as f32,
-                            target_el.scroll_width() as f32,
-                            target_el.scroll_height() as f32,
-                        )
-                    });
-                if let Some((id, x, y, content_width, content_height)) = scroll_target {
-                    evs.borrow_mut().push(NativeEvent {
-                        kind: NativeEventKind::Scroll,
-                        surface_id: sid.get(),
-                        node_id: id,
-                        timestamp_us: now_us(),
-                        payload: EventPayload::Scroll {
-                            x,
-                            y,
-                            content_width,
-                            content_height,
-                        },
-                    });
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "scroll", true, cb);
-        }
-
-        crate::key_events::attach_keydown(&mut listeners, &root, backend);
-
-        // Form Submit -> NativeEventKind::Submit
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(el) = target_to_element(ev.target()) else { return };
-                let chain = collect_ancestors(&el, &r, &m.borrow());
-                let submit_id = chain
-                    .iter()
-                    .find(|(_, meta, _)| (meta.mask & EventMask::SUBMIT) != 0)
-                    .map(|(id, _, _)| *id);
-                if let Some(id) = submit_id {
-                    ev.prevent_default();
-                    let val = el
-                        .query_selector("input,textarea,select")
-                        .ok()
-                        .flatten()
-                        .map(|ctrl| read_dom_input_value(&ctrl))
-                        .unwrap_or_else(|| read_dom_input_value(&el));
-                    evs.borrow_mut().push(NativeEvent {
-                        kind: NativeEventKind::Submit,
-                        surface_id: sid.get(),
-                        node_id: id,
-                        timestamp_us: now_us(),
-                        payload: EventPayload::Text(val),
-                    });
-                    notify_event(&notify);
-                }
-            });
-            register_listener(&mut listeners, &root_target, "submit", false, cb);
-        }
-
-        Self { listeners }
     }
 }
 

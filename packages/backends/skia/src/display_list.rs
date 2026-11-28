@@ -3,18 +3,17 @@
 //! inherited typography propagation, zero-allocation z-index sorting, and uniform
 //! `SkiaTableRegistry` plugin dispatch (`PaintOp::Plugin`).
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, NodeId};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::style_patch::Display;
-use nve_components::tables::{
-    BackgroundFillRes, BoxShadows, Display as NveDisplay, Image, ImageSrc, Layout, Overflow,
-    Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
-};
 use nve_engine::LayoutRect;
 use nve_layout::StoreLayoutEngine;
-use nve_store::{NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{NodeStore, ResolvedRow, ResourceId, Rgba};
+use nve_tables::tables::{
+    BackgroundFillRes, BoxShadows, Display, Image, ImageSrc, ImageSrcView, Layout, Overflow,
+    Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
+};
 
-use crate::motion::MotionDriver;
+use crate::frame_hook::SkiaFrameHooks;
 use crate::scroll::compute_scroll_content_size;
 use crate::table_system::SkiaTableRegistry;
 use crate::text::{CosmicTextEngine, TextAlign};
@@ -63,7 +62,7 @@ pub(crate) fn intersects_clip(clip: LayoutRect, r: LayoutRect, pad: f32) -> bool
 }
 
 #[inline]
-pub(crate) fn should_clip_children(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(crate) fn should_clip_children(store: &NodeStore, id: NodeId) -> bool {
     if store.has::<Scroll>(id) {
         return true;
     }
@@ -81,7 +80,7 @@ pub(crate) fn should_clip_children(store: &NodeStore, id: StoreNodeId) -> bool {
 fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
-    id: StoreNodeId,
+    id: NodeId,
     rect: LayoutRect,
     ops: &mut Vec<PaintOp>,
 ) {
@@ -93,7 +92,7 @@ fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     if !has_v && !has_h {
         return;
     }
-    let (sx, sy) = layout_tree.scene().scroll_offset(id.raw());
+    let (sx, sy) = layout_tree.scene().scroll_offset(id);
     let corner_gap = if has_v && has_h {
         SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
     } else {
@@ -147,14 +146,6 @@ fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct InheritedTextStyle {
-    pub(crate) font_weight: Option<u16>,
-    pub(crate) text_align: Option<TextAlign>,
-    pub(crate) text_color: Option<ColorRgba>,
-    pub(crate) font_size: Option<f32>,
-}
-
 #[inline]
 fn map_text_align(align: NveTextAlign) -> TextAlign {
     match align {
@@ -169,27 +160,48 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
     focus: &TextFocusState,
-    motion: &MotionDriver,
+    frame_hooks: &SkiaFrameHooks,
     table_registry: &SkiaTableRegistry,
     text_engine: &CosmicTextEngine,
     clip_bounds: LayoutRect,
     offset: (f32, f32),
     in_transform: bool,
     inherited_hidden: bool,
-    inherited_text: InheritedTextStyle,
-    sort_scratch: &mut Vec<StoreNodeId>,
+    parent_typo: ResolvedRow<'_, Typography>,
+    sort_scratch: &mut Vec<NodeId>,
     ops: &mut Vec<PaintOp>,
-    id: StoreNodeId,
+    id: NodeId,
 ) {
-    if !store.is_live(id) || nve_components::tables::is_hidden_text_input(store, id) {
+    if !store.is_live(id) || nve_tables::tables::is_hidden_text_input(store, id) {
         return;
     }
-    let patch = layout_tree.effective_patch(store, id);
-    if patch.display == Some(Display::None)
-        || (patch.display.is_none()
+    let mut patched_display: Option<Display> = None;
+    let mut patched_bg_fill: Option<ResourceId> = None;
+    let mut color_override = false;
+    let mut font_size_override = false;
+    layout_tree.visit_effective_state_patches(store, id, |pv| {
+        if let Some(d) = pv.get_prop(Layout::DISPLAY) {
+            patched_display = Some(d);
+        }
+        if let Some(rid) = pv.get_res_id(Visual::BACKGROUND_FILL) {
+            patched_bg_fill = Some(rid);
+        } else if pv.get_prop(Visual::BACKGROUND).is_some() {
+            // Solid `bg(...)` override clears any base gradient unless a higher-priority rule
+            // explicitly sets a non-none `BACKGROUND_FILL`.
+            patched_bg_fill = Some(ResourceId::NONE);
+        }
+        if pv.get_prop(Typography::COLOR).is_some() {
+            color_override = true;
+        }
+        if pv.get_prop(Typography::FONT_SIZE).is_some() {
+            font_size_override = true;
+        }
+    });
+    if patched_display == Some(Display::None)
+        || (patched_display.is_none()
             && store
                 .try_row::<Layout>(id)
-                .is_some_and(|l| l.display() == NveDisplay::None))
+                .is_some_and(|l| l.display() == Display::None))
     {
         return;
     }
@@ -197,7 +209,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         .try_row::<Visual>(id)
         .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
 
-    let Some(base_rect) = layout_tree.layout_of(id.raw()) else {
+    let Some(base_rect) = layout_tree.layout_of(id) else {
         return;
     };
     let (stx, sty) = layout_tree.compute_sticky_delta(store, id);
@@ -205,15 +217,12 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     let rect = offset_rect(base_rect, node_offset);
 
     let mut style = layout_tree.effective_visual(store, id);
-    motion.apply_animated_style(id.raw(), &mut style);
+    frame_hooks.apply_visual(id, &mut style);
     if style.opacity <= 0.001 {
         return;
     }
 
-    let effective_tf = motion.resolve_animated_transform(
-        id.raw(),
-        layout_tree.effective_transform(store, id),
-    );
+    let effective_tf = frame_hooks.resolve_transform(id, layout_tree.effective_transform(store, id));
     let has_tf = effective_tf.is_some_and(|t| !t.is_identity());
     let any_tf = in_transform || has_tf;
 
@@ -241,7 +250,9 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         if !shadow_res.is_none()
             && let Some(shadows) = store.resource::<BoxShadows>(shadow_res)
         {
-            for sh in shadows.0.iter() {
+            // Inset shadows are not rasterized by Skia yet (docs/BACKLOG.md); never paint them
+            // as outer shadows.
+            for sh in shadows.iter().filter(|sh| !sh.inset) {
                 let shadow_bounds = LayoutRect {
                     x: rect.x + sh.offset_x - sh.spread_radius,
                     y: rect.y + sh.offset_y - sh.spread_radius,
@@ -267,18 +278,22 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     // 2. Background gradient or solid fill
     if !effective_hidden && in_clip {
         let mut painted_gradient = false;
-        if let Some(v) = store.try_row::<Visual>(id) {
-            let fill_res = v.background_fill();
-            if !fill_res.is_none()
-                && let Some(fill) = store.resource::<BackgroundFillRes>(fill_res)
-            {
-                ops.push(PaintOp::FillRoundedRectGradient {
-                    rect,
-                    radius,
-                    gradient: fill.0.clone(),
-                });
-                painted_gradient = true;
-            }
+        let fill_res = match patched_bg_fill {
+            Some(rid) => (!rid.is_none()).then_some(rid),
+            None => store
+                .try_row::<Visual>(id)
+                .map(|v| v.background_fill())
+                .filter(|rid| !rid.is_none()),
+        };
+        if let Some(fill_res) = fill_res
+            && let Some(fill) = store.resource::<BackgroundFillRes>(fill_res)
+        {
+            ops.push(PaintOp::FillRoundedRectGradient {
+                rect,
+                radius,
+                gradient: fill.to_owned(),
+            });
+            painted_gradient = true;
         }
         if !painted_gradient && style.background.a > 0 {
             ops.push(PaintOp::FillRoundedRect {
@@ -299,35 +314,22 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         }
     }
 
-    // 4. Typography resolution (inheriting from parent; state/responsive/motion overrides win)
-    let typo = store.try_row::<Typography>(id);
-    let effective_weight = typo
-        .filter(|t| t.set() & Typography::SET_FONT_WEIGHT != 0 || t.font_weight() != 400)
-        .map(|t| t.font_weight())
-        .or(inherited_text.font_weight)
-        .unwrap_or(400);
-    let effective_align = typo
-        .filter(|t| t.text_align() != NveTextAlign::Start)
-        .map(|t| map_text_align(t.text_align()))
-        .or(inherited_text.text_align)
-        .unwrap_or_default();
-    let effective_color = if patch.text_color.is_some() || motion.has_active_color(id.raw()) {
+    // 4. Typography resolution (branchless inheritance via `ResolvedRow<Typography>`;
+    //    state/responsive/motion overrides win).
+    let resolved_typo = ResolvedRow::<Typography>::resolve(store, id, &parent_typo);
+    let typo = resolved_typo.get();
+    let effective_weight = typo.font_weight();
+    let effective_align = map_text_align(typo.text_align());
+    let color_override = color_override || frame_hooks.overrides_text_color(id);
+    let effective_color = if color_override {
         style.text_color
     } else {
-        typo.filter(|t| t.set() & Typography::SET_COLOR != 0 || t.color() != Rgba::BLACK)
-            .map(|t| ColorRgba::from_u32(t.color().0))
-            .or(inherited_text.text_color)
-            .unwrap_or(style.text_color)
+        ColorRgba::from_u32(typo.color().0)
     };
-    let effective_font_size = if patch.font_size.is_some() {
+    let effective_font_size = if font_size_override {
         style.font_size
     } else {
-        typo.filter(|t| {
-            t.set() & Typography::SET_FONT_SIZE != 0 || (t.font_size() - 16.0).abs() > 1e-4
-        })
-        .map(|t| t.font_size())
-        .or(inherited_text.font_size)
-        .unwrap_or(style.font_size)
+        typo.font_size()
     };
 
     // 5. Leaf & specialized core tables: Image, TextInput, TextContent, and registered SkiaTableSystems
@@ -335,13 +337,13 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         if let Some(img) = store.try_row::<Image>(id) {
             let src_res = img.src();
             if !src_res.is_none()
-                && let Some(ImageSrc::Url(url)) = store.resource::<ImageSrc>(src_res)
+                && let Some(ImageSrcView::Url(url)) = store.resource::<ImageSrc>(src_res)
                 && !url.is_empty()
             {
                 ops.push(PaintOp::DrawImage {
                     rect,
                     radius,
-                    src: url.clone(),
+                    src: url.to_owned(),
                     fit: img.fit(),
                 });
             }
@@ -405,12 +407,13 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
 
             let (sx, sy) = layout_tree.scene().visual_scroll_shift(store, id);
             let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
-            let child_inherited = InheritedTextStyle {
-                font_weight: Some(effective_weight),
-                text_align: Some(effective_align),
-                text_color: Some(effective_color),
-                font_size: Some(effective_font_size),
-            };
+            let mut child_typo = resolved_typo;
+            if color_override {
+                child_typo.override_prop(Typography::COLOR, Rgba(effective_color.to_u32()));
+            }
+            if font_size_override {
+                child_typo.override_prop(Typography::FONT_SIZE, effective_font_size);
+            }
 
             let has_z_order = children.len() > 1
                 && children
@@ -429,14 +432,14 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                         store,
                         layout_tree,
                         focus,
-                        motion,
+                        frame_hooks,
                         table_registry,
                         text_engine,
                         child_clip,
                         child_offset,
                         any_tf,
                         effective_hidden,
-                        child_inherited,
+                        child_typo,
                         sort_scratch,
                         ops,
                         cid,
@@ -449,14 +452,14 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                         store,
                         layout_tree,
                         focus,
-                        motion,
+                        frame_hooks,
                         table_registry,
                         text_engine,
                         child_clip,
                         child_offset,
                         any_tf,
                         effective_hidden,
-                        child_inherited,
+                        child_typo,
                         sort_scratch,
                         ops,
                         cid,

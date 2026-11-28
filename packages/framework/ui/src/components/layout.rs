@@ -153,7 +153,7 @@ pub fn Separator(
             border_color: ColorRgba::TRANSPARENT,
             border_radius: 0.0,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -189,7 +189,7 @@ pub fn Card(
             theme.surface.base,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
             theme.border.default,
-            "none",
+            None,
         ),
         CardVariant::Subtle => (
             theme.surface.subtle,
@@ -199,7 +199,7 @@ pub fn Card(
             } else {
                 ColorRgba::TRANSPARENT
             },
-            "none",
+            None,
         ),
     };
 

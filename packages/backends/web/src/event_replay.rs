@@ -1,5 +1,5 @@
 //! Pre-hydration global event capture (`<script data-nve-replay>`) and atomic replay into
-//! `NativeEvent`s on hydration handoff.
+//! [`EventBatchBuf`] on hydration handoff.
 //!
 //! Policy before WASM boots:
 //! - `<a href="...">` links (with non-empty href != `#`) are NEVER intercepted: browser navigates
@@ -11,7 +11,7 @@
 //! - `window.__nveReplayDrain()` atomically detaches every listener, freezes & clears the queue,
 //!   and returns the captured events once — guaranteeing zero double-firing across hydration.
 
-use nve_abi::{pack_key_modifiers, EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, EventFlags, NodeId, SurfaceId, TimestampUs};
 
 /// Maximum age (in milliseconds) of a pre-hydration event eligible for replay.
 /// Events older than this threshold are dropped as stale.
@@ -132,21 +132,18 @@ pub fn drain_valid_pre_hydration_events(
         .collect()
 }
 
-/// Converts a validated [`CapturedPreHydrationEvent`] into a typed [`NativeEvent`].
-pub fn pre_hydration_event_to_native(
-    ev: CapturedPreHydrationEvent,
+/// Appends a validated [`CapturedPreHydrationEvent`] into `out`.
+pub fn push_pre_hydration_event(
+    ev: &CapturedPreHydrationEvent,
     surface_id: SurfaceId,
-    timestamp_us: u64,
+    timestamp: TimestampUs,
     target_node_id: NodeId,
-) -> NativeEvent {
+    out: &mut EventBatchBuf,
+) {
     match ev {
-        CapturedPreHydrationEvent::Press { x, y, .. } => NativeEvent {
-            surface_id,
-            node_id: target_node_id,
-            timestamp_us,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x, y },
-        },
+        CapturedPreHydrationEvent::Press { x, y, .. } => {
+            out.push_press(surface_id, target_node_id, timestamp, *x, *y);
+        }
         CapturedPreHydrationEvent::KeyDown {
             key,
             meta,
@@ -154,26 +151,13 @@ pub fn pre_hydration_event_to_native(
             shift,
             alt,
             ..
-        } => NativeEvent {
-            surface_id,
-            node_id: target_node_id,
-            timestamp_us,
-            kind: NativeEventKind::KeyDown,
-            payload: EventPayload::Key {
-                key,
-                code: String::new(),
-                modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
-                key_code: 0,
-                is_composing: false,
-            },
-        },
-        CapturedPreHydrationEvent::Submit { value, .. } => NativeEvent {
-            surface_id,
-            node_id: target_node_id,
-            timestamp_us,
-            kind: NativeEventKind::Submit,
-            payload: EventPayload::Text(value),
-        },
+        } => {
+            let flags = EventFlags::from_modifiers(*meta, *ctrl, *shift, *alt, false);
+            out.push_key_down(surface_id, target_node_id, timestamp, key, "", flags, 0);
+        }
+        CapturedPreHydrationEvent::Submit { value, .. } => {
+            out.push_submit(surface_id, target_node_id, timestamp, value);
+        }
     }
 }
 
@@ -215,6 +199,9 @@ extern "C" {
 pub(crate) fn drain_browser_pre_hydration_events() -> Vec<CapturedPreHydrationEvent> {
     let out = std::cell::RefCell::new(Vec::new());
     let mut push_press = |node_id: u32, x: f32, y: f32, age_ms: f64| {
+        let Some(node_id) = NodeId::from_raw(node_id) else {
+            return;
+        };
         out.borrow_mut().push(CapturedPreHydrationEvent::Press {
             node_id,
             x,
@@ -228,6 +215,9 @@ pub(crate) fn drain_browser_pre_hydration_events() -> Vec<CapturedPreHydrationEv
     };
     let mut push_key =
         |node_id: u32, key: String, meta: bool, ctrl: bool, shift: bool, alt: bool, age_ms: f64| {
+            let Some(node_id) = NodeId::from_raw(node_id) else {
+                return;
+            };
             out.borrow_mut().push(CapturedPreHydrationEvent::KeyDown {
                 node_id,
                 key,
@@ -243,6 +233,9 @@ pub(crate) fn drain_browser_pre_hydration_events() -> Vec<CapturedPreHydrationEv
             });
         };
     let mut push_submit = |node_id: u32, value: String, age_ms: f64| {
+        let Some(node_id) = NodeId::from_raw(node_id) else {
+            return;
+        };
         out.borrow_mut().push(CapturedPreHydrationEvent::Submit {
             node_id,
             value,

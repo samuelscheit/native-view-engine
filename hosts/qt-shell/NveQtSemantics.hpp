@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <optional>
 
 class QObject;
 
@@ -21,10 +22,10 @@ struct NodeSemantics {
   QString value_text;
   QString placeholder;
   uint8_t level = 0u;   // heading level
-  uint8_t checked = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t selected = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t expanded = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t pressed = NVE_ARIA_TRI_STATE_UNSET;
+  std::optional<uint8_t> checked;
+  std::optional<uint8_t> selected;
+  std::optional<uint8_t> expanded;
+  std::optional<uint8_t> pressed;
   float value_now = NAN;
   float value_min = NAN;
   float value_max = NAN;

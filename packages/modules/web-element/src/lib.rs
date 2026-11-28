@@ -5,7 +5,10 @@
 use std::sync::Arc;
 
 use nve_abi::Key64;
-use nve_store::{NveTable, Res, Resource, Str};
+use nve_store::{
+    read_str_words_unchecked, validate_str_words, write_str_words, FlatResource, NveTable, Res,
+    Str, ValidatedWords,
+};
 
 const MAX_ATTRS: usize = 512;
 const MAX_STR_BYTES: usize = 64 * 1024;
@@ -22,46 +25,97 @@ impl WebElementAttrs {
     }
 }
 
-impl Resource for WebElementAttrs {
-    const KIND: Key64 = Key64::of("nve.res.web_element_attrs");
+/// Zero-copy borrowed view over flat [`WebElementAttrs`] words (`[count, (key_str, val_str)*]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebElementAttrsView<'a>(&'a [u32]);
 
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        for (k, v) in self.0.iter() {
-            out.extend_from_slice(&(k.len() as u32).to_le_bytes());
-            out.extend_from_slice(k.as_bytes());
-            out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-            out.extend_from_slice(v.as_bytes());
-        }
+impl<'a> WebElementAttrsView<'a> {
+    #[inline(always)]
+    pub const fn len(self) -> usize {
+        if self.0.is_empty() { 0 } else { self.0[0] as usize }
     }
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut pos = 0usize;
-        let read_u32 = |pos: &mut usize| -> Option<u32> {
-            let end = pos.checked_add(4)?;
-            let v = u32::from_le_bytes(bytes.get(*pos..end)?.try_into().ok()?);
-            *pos = end;
-            Some(v)
-        };
-        let read_str = |pos: &mut usize| -> Option<String> {
-            let len = read_u32(pos)? as usize;
-            if len > MAX_STR_BYTES {
-                return None;
-            }
-            let end = pos.checked_add(len)?;
-            let s = std::str::from_utf8(bytes.get(*pos..end)?).ok()?.to_owned();
-            *pos = end;
-            Some(s)
-        };
-        let n = read_u32(&mut pos)? as usize;
-        if n > MAX_ATTRS {
+    #[inline(always)]
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn iter(self) -> WebElementAttrsIter<'a> {
+        WebElementAttrsIter {
+            words: self.0,
+            pos: 1,
+            remaining: self.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WebElementAttrsIter<'a> {
+    words: &'a [u32],
+    pos: usize,
+    remaining: usize,
+}
+
+impl<'a> Iterator for WebElementAttrsIter<'a> {
+    type Item = (&'a str, &'a str);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
             return None;
         }
-        let mut out = Vec::with_capacity(n.min(32));
-        for _ in 0..n {
-            out.push((read_str(&mut pos)?, read_str(&mut pos)?));
+        // SAFETY: `WebElementAttrsView` is only constructible from `ValidatedWords<WebElementAttrs>`,
+        // whose `validate` checked every key/value span via `validate_str_words`.
+        let k = unsafe { read_str_words_unchecked(self.words, &mut self.pos) }?;
+        // SAFETY: Same validated invariant as `k`.
+        let v = unsafe { read_str_words_unchecked(self.words, &mut self.pos) }?;
+        self.remaining -= 1;
+        Some((k, v))
+    }
+}
+
+impl FlatResource for WebElementAttrs {
+    const KIND: Key64 = Key64::of("nve.res.web_element_attrs");
+    type View<'a> = WebElementAttrsView<'a>;
+
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        if self.0.len() > MAX_ATTRS {
+            return false;
         }
-        (pos == bytes.len()).then(|| Self(Arc::from(out)))
+        let start = out.len();
+        out.push(self.0.len() as u32);
+        for (k, v) in self.0.iter() {
+            if !write_str_words(out, k, MAX_STR_BYTES) || !write_str_words(out, v, MAX_STR_BYTES) {
+                out.truncate(start);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn validate(words: &[u32]) -> bool {
+        let Some(&count_u32) = words.first() else {
+            return false;
+        };
+        let count = count_u32 as usize;
+        if count > MAX_ATTRS {
+            return false;
+        }
+        let mut pos = 1usize;
+        for _ in 0..count {
+            if !validate_str_words(words, &mut pos, MAX_STR_BYTES)
+                || !validate_str_words(words, &mut pos, MAX_STR_BYTES)
+            {
+                return false;
+            }
+        }
+        pos == words.len()
+    }
+
+    #[inline(always)]
+    fn view(words: ValidatedWords<'_, Self>) -> WebElementAttrsView<'_> {
+        WebElementAttrsView(words.as_slice())
     }
 }
 
@@ -98,11 +152,24 @@ mod tests {
         let row = store.try_row::<WebElement>(n).unwrap();
         assert_eq!(row.tag(), "my-chart");
         let attrs = store.resource::<WebElementAttrs>(row.attrs()).unwrap();
-        assert_eq!(attrs.0.as_ref(), &[("theme".to_owned(), "dark".to_owned())]);
+        let got: Vec<(&str, &str)> = attrs.iter().collect();
+        assert_eq!(got, vec![("theme", "dark")]);
 
-        let mut buf = Vec::new();
-        attrs.encode(&mut buf);
-        assert_eq!(WebElementAttrs::decode(&buf).unwrap(), *attrs);
-        assert!(WebElementAttrs::decode(&[]).is_none());
+        let orig = WebElementAttrs::from_pairs(vec![
+            ("theme".into(), "dark".into()),
+            ("aria-label".into(), "Chart".into()),
+        ]);
+        let mut words = Vec::new();
+        assert!(orig.write_words(&mut words));
+        let vw = nve_store::ValidatedWords::<WebElementAttrs>::try_new(&words).unwrap();
+        let rebuilt = WebElementAttrs::from_pairs(
+            WebElementAttrs::view(vw)
+                .iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
+        );
+        assert_eq!(rebuilt, orig);
+        assert!(!WebElementAttrs::validate(&[]));
+        assert!(!WebElementAttrs::validate(&[0x7FFF_FFFF]));
     }
 }

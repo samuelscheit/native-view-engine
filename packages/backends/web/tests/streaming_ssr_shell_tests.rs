@@ -14,7 +14,7 @@ use nve_backend_web::{
     StreamingDocumentOptions, StreamingError, StreamingSsrSession, ZeroJsLiveConfig,
     ZeroJsLiveSession, streaming_http_headers,
 };
-use nve_components::tables::{Accessibility, AriaRole, Typography};
+use nve_tables::tables::{Accessibility, AriaRole, Typography};
 use nve_store::{NodeId, NodeStore, Rgba, Transaction};
 
 use support::*;
@@ -167,7 +167,7 @@ fn dsd_placement_hygiene_rejects_form_ancestor_foster_traps_and_nested_slots() {
     // 1. Deeply nested inside `<form>` -> rejected.
     let err = shell_err(&|tx| {
         let form = node(tx, 2);
-        tx.edit::<Accessibility>(form).role(AriaRole::Form);
+        tx.edit::<Accessibility>(form).role(Some(AriaRole::Form));
         let mid = node(tx, 3);
         let slot = stream_slot(tx, 4, "inside-form");
         tx.set_children(mid, &[slot]);

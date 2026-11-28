@@ -8,9 +8,9 @@ pub mod shadow;
 pub(crate) mod text_blend;
 mod transform;
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, EventBatchBuf};
 use nve_engine::LayoutRect;
-use nve_store::{NodeStore, TableEventBus};
+use nve_store::NodeStore;
 
 use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry};
 use crate::text::CosmicTextEngine;
@@ -29,7 +29,6 @@ use transform::{
 };
 
 pub use pixel_buffer::PixelBuffer;
-pub use shadow::{parse_box_shadow, BoxShadow};
 
 pub(crate) fn fill_rounded_rect(
     buf: &mut PixelBuffer,
@@ -238,7 +237,7 @@ pub fn rasterize_display_list_with_plugins(
     text_engine: &CosmicTextEngine,
     store: &NodeStore,
     registry: &SkiaTableRegistry,
-    events: &mut TableEventBus,
+    events: &mut EventBatchBuf,
 ) {
     rasterize_display_list_inner(
         display_list,
@@ -257,7 +256,7 @@ pub(crate) fn rasterize_display_list_with_text_engine_and_plugins(
     scale_factor: f32,
     clear_color: ColorRgba,
     text_engine: &CosmicTextEngine,
-    plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut TableEventBus)>,
+    plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut EventBatchBuf)>,
 ) {
     rasterize_display_list_inner(
         display_list,
@@ -286,7 +285,7 @@ fn rasterize_display_list_inner(
     scale_factor: f32,
     clear_color: ColorRgba,
     text_engine: Option<&CosmicTextEngine>,
-    mut plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut TableEventBus)>,
+    mut plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut EventBatchBuf)>,
 ) {
     let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor

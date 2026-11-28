@@ -10,8 +10,19 @@ import 'package:nve_flutter/nve_flutter.dart';
 
 import 'src/test_support.dart';
 
+Uint8List _wordsToBytes(List<int> words) {
+  final out = Uint8List(words.length * 4);
+  final view = ByteData.sublistView(out);
+  for (var i = 0; i < words.length; i++) {
+    view.setUint32(i * 4, words[i], Endian.little);
+  }
+  return out;
+}
+
+int _f32Bits(double v) => (ByteData(4)..setFloat32(0, v, Endian.little)).getUint32(0, Endian.little);
+
 void main() {
-  group('NveDrawListPainter (NVE_DRAW1 binary decoder + Canvas renderer)', () {
+  group('NveDrawListPainter (flat u32-word nve.res.draw_list decoder + Canvas renderer)', () {
     test('paints all 8 opcodes accurately onto Flutter Canvas and handles b64 fallback', () async {
       final enc = DrawListEncoder()
         ..clear(packRgba(10, 20, 30, 255))
@@ -30,11 +41,11 @@ void main() {
         ..fillRect(70, 74, 16, 12, packRgba(56, 189, 248, 255));
 
       final bytes = enc.finish();
+      expect(bytes.length, 56 * 4, reason: 'exact 4-byte-aligned flat word count');
       final painter = NveDrawListPainter();
 
       final validation = NveDrawListPainter.validate(bytes);
       expect(validation.isOk, isTrue);
-      expect(validation.version, nveDrawVersion);
       expect(validation.opCount, 10);
 
       final rgba = await rasterize(96, 96, (Canvas canvas) {
@@ -66,99 +77,176 @@ void main() {
       expect(pixelAt(rgba, 96, 78, 80), (56, 189, 248, 255));
 
       // Verify `nve-draw1;b64,` ASCII base64 transport decodes identically.
-      final attrBytes = Uint8List.fromList(utf8.encode('$nveDrawListAttrPrefix${base64.encode(bytes)}'));
+      final attrStr = '$nveDrawListAttrPrefix${base64.encode(bytes)}';
+      expect(NveDrawListPainter.decodeAttrString(attrStr), equals(bytes));
+      expect(NveDrawListPainter.decodeAttrString('  ${base64.encode(bytes)}  '), equals(bytes));
+      expect(NveDrawListPainter.decodeAttrString(''), isNull);
+      final attrBytes = Uint8List.fromList(utf8.encode(attrStr));
       final rgbaB64 = await rasterize(96, 96, (Canvas canvas) {
         final res = painter.paint(canvas, const Rect.fromLTWH(0, 0, 96, 96), attrBytes);
         expect(res.isOk, isTrue);
         expect(res.opCount, 10);
       });
       expect(rgbaB64, equals(rgba));
+
+      // Verify non-zero byte offset slice view decodes identically.
+      final padded = Uint8List(bytes.length + 6)..setRange(3, 3 + bytes.length, bytes);
+      final sliced = Uint8List.sublistView(padded, 3, 3 + bytes.length);
+      expect(NveDrawListPainter.validate(sliced).opCount, 10);
+      final rgbaSliced = await rasterize(96, 96, (Canvas canvas) {
+        expect(painter.paint(canvas, const Rect.fromLTWH(0, 0, 96, 96), sliced).isOk, isTrue);
+      });
+      expect(rgbaSliced, equals(rgba));
     });
 
-    test('rejects truncated, corrupt, non-finite, oversized, and trailing NVE_DRAW1 buffers', () async {
-      // Truncated header
-      expect(
-        NveDrawListPainter.validate(Uint8List(8)).errorCode,
-        NveDrawListErrorCode.truncated,
-      );
+    test('matches packages/modules/canvas/src/flat.rs wire word layout byte-for-byte', () {
+      final red = packRgba(255, 0, 0, 255);
+      final blue = packRgba(0, 0, 255, 255);
+      final green = packRgba(0, 255, 0, 255);
+      final encoded = (DrawListEncoder()
+            ..clear(red)
+            ..fillRect(1.5, 2.5, 10.0, 20.0, blue)
+            ..strokePolyline(const [(3.0, 4.0)], 2.0, green)
+            ..restoreClip())
+          .finish();
 
-      // Bad magic
-      final badMagic = Uint8List(nveDrawHeaderSize)..setAll(0, ascii.encode('NVE_DRAWX'));
-      expect(NveDrawListPainter.validate(badMagic).errorCode, NveDrawListErrorCode.badMagic);
+      final expected = _wordsToBytes(<int>[
+        4, // opCount
+        NveDrawOpcode.clear, red,
+        NveDrawOpcode.fillRect, _f32Bits(1.5), _f32Bits(2.5), _f32Bits(10.0), _f32Bits(20.0), blue,
+        NveDrawOpcode.strokePolyline, _f32Bits(2.0), green, 1, _f32Bits(3.0), _f32Bits(4.0),
+        NveDrawOpcode.restoreClip,
+      ]);
+      expect(encoded, equals(expected));
 
-      // Unsupported version
-      final badVer = DrawListEncoder().finish();
-      ByteData.sublistView(badVer).setUint16(9, 99, Endian.little);
+      // Empty draw list (word 0 == 0) and 0-point polyline are valid flat payloads.
+      final empty = DrawListEncoder().finish();
+      expect(empty, equals(Uint8List(4)));
+      final emptyRes = NveDrawListPainter.validate(empty);
+      expect(emptyRes.isOk, isTrue);
+      expect(emptyRes.opCount, 0);
+
+      final emptyPoly = (DrawListEncoder()..strokePolyline(const [], 2.0, red)).finish();
+      expect(emptyPoly.length, (1 + 4) * 4);
+      expect(NveDrawListPainter.validate(emptyPoly).isOk, isTrue);
+    });
+
+    test('rejects truncated, unaligned, legacy, non-finite, oversized, and trailing flat buffers', () async {
+      // Truncated header (< 4 bytes)
+      for (var n = 0; n < 4; n++) {
+        expect(
+          NveDrawListPainter.validate(Uint8List(n)).errorCode,
+          NveDrawListErrorCode.truncated,
+          reason: '$n-byte buffer shorter than 4-byte header',
+        );
+      }
+
+      // Legacy 15-byte-header NVE_DRAW1 buffer is rejected ('NVE_' LE u32 > nveDrawMaxOps)
+      final legacy = Uint8List.fromList(<int>[
+        ...ascii.encode('NVE_DRAW1'),
+        1, 0, // version 1
+        0, 0, 0, 0, // opCount 0
+      ]);
       expect(
-        NveDrawListPainter.validate(badVer).errorCode,
-        NveDrawListErrorCode.unsupportedVersion,
+        NveDrawListPainter.validate(legacy).errorCode,
+        NveDrawListErrorCode.opCountExceedsLimit,
       );
 
       // Op count > MAX_DRAW_OPS
-      final hugeOps = DrawListEncoder().finish();
-      ByteData.sublistView(hugeOps).setUint32(11, nveDrawMaxOps + 1, Endian.little);
+      final hugeOps = _wordsToBytes(<int>[nveDrawMaxOps + 1]);
       expect(
         NveDrawListPainter.validate(hugeOps).errorCode,
         NveDrawListErrorCode.opCountExceedsLimit,
       );
 
-      // Lying op count exceeding remaining bytes
-      final lyingOps = DrawListEncoder().finish();
-      ByteData.sublistView(lyingOps).setUint32(11, 100, Endian.little);
-      expect(NveDrawListPainter.validate(lyingOps).errorCode, NveDrawListErrorCode.truncated);
-
-      // Unknown opcode
-      final unknownOp = Uint8List(nveDrawHeaderSize + 1)
-        ..setAll(0, nveDrawMagic);
-      ByteData.sublistView(unknownOp)
-        ..setUint16(9, nveDrawVersion, Endian.little)
-        ..setUint32(11, 1, Endian.little);
-      unknownOp[nveDrawHeaderSize] = 99;
+      // Lying op count exceeding remaining bytes & unaligned opcode prefix
       expect(
-        NveDrawListPainter.validate(unknownOp).errorCode,
-        NveDrawListErrorCode.unknownOpcode,
+        NveDrawListPainter.validate(_wordsToBytes(<int>[100])).errorCode,
+        NveDrawListErrorCode.truncated,
+      );
+      expect(
+        NveDrawListPainter.validate(Uint8List.fromList(<int>[1, 0, 0, 0, 8, 0])).errorCode,
+        NveDrawListErrorCode.truncated,
       );
 
-      // Non-finite NaN & Infinity in FillRect
+      // Unknown u32 opcode (including 0, 99, and high bits set on valid low byte)
+      for (final badOp in <int>[0, 9, 99, 0x00010001]) {
+        final unknownOp = _wordsToBytes(<int>[1, badOp]);
+        expect(
+          NveDrawListPainter.validate(unknownOp).errorCode,
+          NveDrawListErrorCode.unknownOpcode,
+          reason: 'opcode 0x${badOp.toRadixString(16)}',
+        );
+      }
+
+      // Truncated fixed-size op payload (both word-short and unaligned byte-short)
+      expect(
+        NveDrawListPainter.validate(_wordsToBytes(<int>[1, NveDrawOpcode.clear])).errorCode,
+        NveDrawListErrorCode.truncated,
+      );
+      expect(
+        NveDrawListPainter.validate(Uint8List.fromList(<int>[1, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0x00])).errorCode,
+        NveDrawListErrorCode.truncated,
+      );
+
+      // Non-finite NaN & Infinity across geometry ops and polyline width/vertices
       final nanRect = (DrawListEncoder()..fillRect(double.nan, 0, 10, 10, packRgba(255, 0, 0))).finish();
       expect(NveDrawListPainter.validate(nanRect).errorCode, NveDrawListErrorCode.nonFiniteFloat);
-      final infCircle = (DrawListEncoder()..fillCircle(0, double.infinity, 5, packRgba(255, 0, 0))).finish();
+      final infRadius = (DrawListEncoder()..fillRoundedRect(0, 0, 10, 10, double.infinity, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(infRadius).errorCode, NveDrawListErrorCode.nonFiniteFloat);
+      final infCircle = (DrawListEncoder()..fillCircle(0, double.negativeInfinity, 5, packRgba(255, 0, 0))).finish();
       expect(NveDrawListPainter.validate(infCircle).errorCode, NveDrawListErrorCode.nonFiniteFloat);
+      final nanLine = (DrawListEncoder()..strokeLine(0, 0, 10, 10, double.nan, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(nanLine).errorCode, NveDrawListErrorCode.nonFiniteFloat);
+      final infPolyWidth = (DrawListEncoder()..strokePolyline(const [(0, 0)], double.infinity, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(infPolyWidth).errorCode, NveDrawListErrorCode.nonFiniteFloat);
+      final nanPolyPt = (DrawListEncoder()..strokePolyline(const [(0, double.nan)], 2.0, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(nanPolyPt).errorCode, NveDrawListErrorCode.nonFiniteFloat);
+      final nanClip = (DrawListEncoder()..clipRect(0, 0, double.nan, 10)).finish();
+      expect(NveDrawListPainter.validate(nanClip).errorCode, NveDrawListErrorCode.nonFiniteFloat);
 
       // Polyline vertex count > MAX_POLYLINE_POINTS
-      final badPoly = Uint8List(nveDrawHeaderSize + 13)..setAll(0, nveDrawMagic);
-      ByteData.sublistView(badPoly)
-        ..setUint16(9, nveDrawVersion, Endian.little)
-        ..setUint32(11, 1, Endian.little)
-        ..setUint8(15, NveDrawOpcode.strokePolyline)
-        ..setFloat32(16, 2.0, Endian.little)
-        ..setUint32(20, packRgba(255, 255, 255), Endian.little)
-        ..setUint32(24, nveDrawMaxPolylinePoints + 1, Endian.little);
+      final badPoly = _wordsToBytes(<int>[
+        1,
+        NveDrawOpcode.strokePolyline,
+        _f32Bits(2.0),
+        packRgba(255, 255, 255),
+        nveDrawMaxPolylinePoints + 1,
+      ]);
       expect(
         NveDrawListPainter.validate(badPoly).errorCode,
         NveDrawListErrorCode.polylinePointCountExceedsLimit,
       );
 
-      // Truncated polyline vertices
-      final truncPoly = Uint8List(nveDrawHeaderSize + 13)..setAll(0, nveDrawMagic);
-      ByteData.sublistView(truncPoly)
-        ..setUint16(9, nveDrawVersion, Endian.little)
-        ..setUint32(11, 1, Endian.little)
-        ..setUint8(15, NveDrawOpcode.strokePolyline)
-        ..setFloat32(16, 2.0, Endian.little)
-        ..setUint32(20, packRgba(255, 255, 255), Endian.little)
-        ..setUint32(24, 4, Endian.little);
+      // Truncated polyline header and vertices (aligned & unaligned)
+      final truncPolyHdr = _wordsToBytes(<int>[1, NveDrawOpcode.strokePolyline, _f32Bits(2.0)]);
+      expect(NveDrawListPainter.validate(truncPolyHdr).errorCode, NveDrawListErrorCode.truncated);
+
+      final truncPoly = _wordsToBytes(<int>[
+        1,
+        NveDrawOpcode.strokePolyline,
+        _f32Bits(2.0),
+        packRgba(255, 255, 255),
+        4,
+      ]);
       expect(NveDrawListPainter.validate(truncPoly).errorCode, NveDrawListErrorCode.truncated);
 
-      // Trailing bytes
+      // Trailing bytes (unaligned 2 bytes and full extra 4-byte word, after ops and empty list)
       final valid = (DrawListEncoder()..clear(packRgba(0, 0, 0))).finish();
-      final trailing = Uint8List.fromList(<int>[...valid, 0xAA, 0xBB]);
       expect(
-        NveDrawListPainter.validate(trailing).errorCode,
+        NveDrawListPainter.validate(Uint8List.fromList(<int>[...valid, 0xAA, 0xBB])).errorCode,
+        NveDrawListErrorCode.trailingBytes,
+      );
+      expect(
+        NveDrawListPainter.validate(Uint8List.fromList(<int>[...valid, 0, 0, 0, 0])).errorCode,
+        NveDrawListErrorCode.trailingBytes,
+      );
+      expect(
+        NveDrawListPainter.validate(Uint8List.fromList(<int>[0, 0, 0, 0, 0xFF])).errorCode,
         NveDrawListErrorCode.trailingBytes,
       );
 
-      // Invalid base64 after prefix
+      // Invalid / empty base64 after prefix
       final painter = NveDrawListPainter();
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
@@ -167,15 +255,19 @@ void main() {
         painter.paint(canvas, const Rect.fromLTWH(0, 0, 32, 32), badB64).errorCode,
         NveDrawListErrorCode.invalidBase64,
       );
+      final emptyB64 = Uint8List.fromList(ascii.encode(nveDrawListAttrPrefix));
+      expect(
+        painter.paint(canvas, const Rect.fromLTWH(0, 0, 32, 32), emptyB64).errorCode,
+        NveDrawListErrorCode.invalidBase64,
+      );
 
-      // Unbalanced ClipRect + extra RestoreClip must preserve outer Canvas saveCount!
-      final unbalanced = (DrawListEncoder()
-            ..restoreClip()
-            ..clipRect(0, 0, 10, 10)
-            ..clipRect(2, 2, 6, 6))
-          .finish();
+      // Unbalanced ClipRect + extra RestoreClip + > max clip depth must preserve outer Canvas saveCount!
+      final unbalancedEnc = DrawListEncoder()..restoreClip();
+      for (var i = 0; i < nveDrawMaxClipDepth + 5; i++) {
+        unbalancedEnc.clipRect(0, 0, 10, 10);
+      }
       final beforeCount = canvas.getSaveCount();
-      final res = painter.paint(canvas, const Rect.fromLTWH(0, 0, 32, 32), unbalanced);
+      final res = painter.paint(canvas, const Rect.fromLTWH(0, 0, 32, 32), unbalancedEnc.finish());
       expect(res.isOk, isTrue);
       expect(canvas.getSaveCount(), beforeCount);
       recorder.endRecording().dispose();

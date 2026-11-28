@@ -3,7 +3,7 @@
 //! ([`SsrStyleTracker`], [`StreamingShellOutput`], [`SsrDeltaChunk`]) over `NodeStore`.
 
 use nve_abi::hash::HashSet;
-use nve_components::tables::StreamBoundary;
+use nve_tables::tables::StreamBoundary;
 use nve_store::{NodeId, NodeStore};
 
 use crate::css::NVE_BASE_RESET_CSS;

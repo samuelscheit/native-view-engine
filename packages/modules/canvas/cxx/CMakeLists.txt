@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(nve_canvas_cxx LANGUAGES C CXX)
 
 # Header-only C++20 `nve.canvas` leaf for native C++ hosts: generated table mirror,
-# `NVE_DRAW1` decoder / encoder, and the `CanvasTable` scene binding.
+# flat `u32`-word draw-list decoder / encoder, and the `CanvasTable` scene binding.
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../../../cxx/cmake/NveCodegen.cmake")
 nve_ensure_abi_codegen()
 

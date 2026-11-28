@@ -3,16 +3,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
 use nve_abi::{
-    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
-    NveEventBatch, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi,
-    NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId,
+    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveGestureDisposition,
+    NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NveSizeConstraints,
+    NveSurfaceApi, SurfaceId, ValidatedEvents,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use nve_engine::loader::{LoaderError, StagedDylib};
 
 use super::manifest::{
     resolve_and_validate_tables, PluginCapabilities, PluginError, PluginId, PluginMetadata,
-    PluginRequirement, PluginSourceKind,
+    PluginRequirement, PluginSourceKind, ResolvedTables,
 };
 
 /// Safe RAII wrapper owning one live `nve_get_interface`-compatible plugin instance.
@@ -28,17 +28,42 @@ pub struct NvePluginSlot {
 }
 
 impl NvePluginSlot {
-    /// Instantiates an in-process plugin from its `nve_get_interface` entry point.
-    pub fn from_in_process(
+    /// Opens a dynamic library and validates its required ABI interfaces before any surface slot
+    /// is allocated.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn open_and_validate_dylib(
+        plugin_id: PluginId,
+        generation: u64,
+        dylib_path: &Path,
+        req: PluginRequirement,
+    ) -> Result<(StagedDylib, ResolvedTables), PluginError> {
+        let staged = StagedDylib::load(
+            dylib_path,
+            "nve-plugin-host",
+            &format!("p{plugin_id}_g{generation}"),
+        )
+        .map_err(|err| match err {
+            LoaderError::Io(io) => PluginError::Io(io.to_string()),
+            LoaderError::Load(load) => PluginError::LibraryLoadFailed(load.to_string()),
+            LoaderError::MissingEntry(sym) => PluginError::SymbolNotFound(sym.to_string()),
+            other => PluginError::LibraryLoadFailed(other.to_string()),
+        })?;
+        let tables = resolve_and_validate_tables(staged.get_interface(), req)?;
+        Ok((staged, tables))
+    }
+
+    /// Instantiates a plugin slot from pre-validated ABI tables.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_resolved_tables(
         plugin_id: PluginId,
         name: String,
         surface_id: SurfaceId,
         generation: u64,
-        get_interface: NveGetInterfaceFn,
-        req: PluginRequirement,
+        tables: ResolvedTables,
         prior_state: Option<&[u8]>,
+        source: PluginSourceKind,
+        #[cfg(not(target_arch = "wasm32"))] staged: Option<StagedDylib>,
     ) -> Result<Self, PluginError> {
-        let tables = resolve_and_validate_tables(get_interface, req)?;
         nve_engine::clear_last_ffi_panic();
         let handle = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: `tables.surface.create` was resolved from a validated NVE C-ABI plugin.
@@ -84,14 +109,14 @@ impl NvePluginSlot {
 
         Ok(Self {
             #[cfg(not(target_arch = "wasm32"))]
-            staged: None,
+            staged,
             metadata: PluginMetadata {
                 plugin_id,
                 name,
                 surface_id,
                 generation,
                 capabilities: tables.capabilities,
-                source: PluginSourceKind::InProcess,
+                source,
             },
             surface: tables.surface,
             layout: tables.layout,
@@ -101,9 +126,33 @@ impl NvePluginSlot {
         })
     }
 
+    /// Instantiates an in-process plugin from its `nve_get_interface` entry point.
+    pub(super) fn from_in_process(
+        plugin_id: PluginId,
+        name: String,
+        surface_id: SurfaceId,
+        generation: u64,
+        get_interface: NveGetInterfaceFn,
+        req: PluginRequirement,
+        prior_state: Option<&[u8]>,
+    ) -> Result<Self, PluginError> {
+        let tables = resolve_and_validate_tables(get_interface, req)?;
+        Self::from_resolved_tables(
+            plugin_id,
+            name,
+            surface_id,
+            generation,
+            tables,
+            prior_state,
+            PluginSourceKind::InProcess,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
     /// Loads a compiled dynamic library (`cdylib`) using `nve_engine::loader::StagedDylib`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_dylib(
+    pub(super) fn from_dylib(
         plugin_id: PluginId,
         name: String,
         surface_id: SurfaceId,
@@ -112,29 +161,23 @@ impl NvePluginSlot {
         req: PluginRequirement,
         prior_state: Option<&[u8]>,
     ) -> Result<Self, PluginError> {
-        let staged = StagedDylib::load(
-            dylib_path,
-            "nve-plugin-host",
-            &format!("p{plugin_id}_g{generation}"),
-        )
-        .map_err(|err| match err {
-            LoaderError::Io(io) => PluginError::Io(io.to_string()),
-            LoaderError::Load(load) => PluginError::LibraryLoadFailed(load.to_string()),
-            LoaderError::MissingEntry(sym) => PluginError::SymbolNotFound(sym.to_string()),
-            other => PluginError::LibraryLoadFailed(other.to_string()),
-        })?;
-        let mut slot = Self::from_in_process(
+        let (staged, tables) =
+            Self::open_and_validate_dylib(plugin_id, generation, dylib_path, req)?;
+        Self::from_resolved_tables(
             plugin_id,
             name,
             surface_id,
             generation,
-            staged.get_interface(),
-            req,
+            tables,
             prior_state,
-        )?;
-        slot.staged = Some(staged);
-        slot.metadata.source = PluginSourceKind::DynamicLibrary(dylib_path.to_path_buf());
-        Ok(slot)
+            PluginSourceKind::DynamicLibrary(dylib_path.to_path_buf()),
+            Some(staged),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_generation_for_test(&mut self, generation: u64) {
+        self.metadata.generation = generation;
     }
 
     pub fn metadata(&self) -> &PluginMetadata {
@@ -158,7 +201,7 @@ impl NvePluginSlot {
     }
 
     /// Renders one frame, borrowing the plugin's binary `CommandBuffer` slice zero-copy.
-    pub fn render(&mut self, frame_id: FrameId) -> Result<&[u8], PluginError> {
+    pub(super) fn render(&mut self, frame_id: FrameId) -> Result<&[u8], PluginError> {
         nve_engine::clear_last_ffi_panic();
         let slice = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: `self.handle` is live and belongs to this plugin slot.
@@ -172,12 +215,12 @@ impl NvePluginSlot {
         Ok(unsafe { slice.as_slice() })
     }
 
-    /// Dispatches direct typed FFI events (`NveEventBatch`) into the plugin.
-    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
+    /// Dispatches ingress-validated FFI events (`NveEventBatch`) into the plugin.
+    pub(super) fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> Result<bool, PluginError> {
         nve_engine::clear_last_ffi_panic();
         let handled = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: `self.handle` is live and `events` remains valid for the synchronous FFI call.
-            unsafe { (self.surface.dispatch_events)(self.handle, NveEventBatch::from_slice(events)) }
+            unsafe { (self.surface.dispatch_events)(self.handle, events.as_raw_batch()) }
         }))
         .map_err(|_| PluginError::PluginPanicked("NveSurfaceApi::dispatch_events".into()))?;
         if let Some(msg) = nve_engine::take_last_ffi_panic() {
@@ -187,7 +230,7 @@ impl NvePluginSlot {
     }
 
     /// Queries intrinsic size via `NVE_IFACE_LAYOUT` if exported.
-    pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
+    pub(super) fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
         let api = self.layout?;
         nve_engine::clear_last_ffi_panic();
         let res = catch_unwind(AssertUnwindSafe(|| {
@@ -202,7 +245,7 @@ impl NvePluginSlot {
     }
 
     /// Queries gesture disposition via `NVE_IFACE_LAYOUT` if exported.
-    pub fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
+    pub(super) fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
         let Some(api) = self.layout else {
             return NveGestureDisposition::PassThrough;
         };
@@ -222,7 +265,7 @@ impl NvePluginSlot {
     }
 
     /// Updates plugin props via direct structured `NveMapEntry` slice (`NVE_IFACE_COMPONENT`).
-    pub fn set_props(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
+    pub(super) fn set_props(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
         let Some(api) = self.component else {
             return Err(PluginError::UnsupportedCapability("NVE_IFACE_COMPONENT"));
         };
@@ -244,10 +287,11 @@ impl NvePluginSlot {
         Ok(changed != 0)
     }
 
-    /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported.
-    pub fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    /// Drains component-emitted outbound events via `NVE_IFACE_COMPONENT` if exported, returning
+    /// an ingress-validated zero-copy [`ValidatedEvents`] view.
+    pub(super) fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         let Some(api) = self.component else {
-            return &[];
+            return ValidatedEvents::EMPTY;
         };
         nve_engine::clear_last_ffi_panic();
         match catch_unwind(AssertUnwindSafe(|| {
@@ -256,17 +300,17 @@ impl NvePluginSlot {
         })) {
             Ok(batch) if nve_engine::take_last_ffi_panic().is_none() => {
                 // SAFETY: Borrowed batch remains valid until the next `&mut self` call on this slot.
-                unsafe { batch.as_slice() }
+                unsafe { ValidatedEvents::from_raw(batch) }
             }
             _ => {
                 nve_engine::clear_last_ffi_panic();
-                &[]
+                ValidatedEvents::EMPTY
             }
         }
     }
 
     /// Forwards one binary `NVP1` Tier-1 hot-patch frame via `NVE_IFACE_DEV` if exported.
-    pub fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
+    pub(super) fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
         let Some(api) = self.dev else {
             return false;
         };
@@ -285,7 +329,7 @@ impl NvePluginSlot {
     }
 
     /// Snapshots plugin state via `NVE_IFACE_DEV` if exported.
-    pub fn snapshot_state(&mut self) -> Vec<u8> {
+    pub(super) fn snapshot_state(&mut self) -> Vec<u8> {
         let Some(api) = self.dev else {
             return Vec::new();
         };
@@ -306,7 +350,7 @@ impl NvePluginSlot {
     }
 
     /// Restores plugin state via `NVE_IFACE_DEV` if exported.
-    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+    pub(super) fn restore_state(&mut self, state: &[u8]) -> bool {
         let Some(api) = self.dev else {
             return false;
         };
@@ -317,6 +361,89 @@ impl NvePluginSlot {
         }))
         .is_ok();
         ok && nve_engine::take_last_ffi_panic().is_none()
+    }
+}
+
+/// Sealed mutable borrow guard over a mounted [`NvePluginSlot`] owned by [`crate::InteropRuntime`].
+///
+/// Exposes every read/write plugin operation (`render`, `dispatch_events`, `measure`, `hit_test`,
+/// `set_props`, `drain_emitted_events`, `apply_hot_patch`, `snapshot_state`, `restore_state`)
+/// while preventing external code from calling `std::mem::swap` / `std::mem::replace` on the
+/// underlying [`NvePluginSlot`] and corrupting `NvePluginHost`'s `name_index`/`surface_index`.
+pub struct PluginSlotMut<'a>(&'a mut NvePluginSlot);
+
+impl<'a> PluginSlotMut<'a> {
+    #[inline(always)]
+    pub(crate) fn new(slot: &'a mut NvePluginSlot) -> Self {
+        Self(slot)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_generation_for_test(&mut self, generation: u64) {
+        self.0.set_generation_for_test(generation);
+    }
+
+    /// Renders one frame, borrowing the plugin's binary `CommandBuffer` slice zero-copy.
+    #[inline]
+    pub fn render(&mut self, frame_id: FrameId) -> Result<&[u8], PluginError> {
+        self.0.render(frame_id)
+    }
+
+    /// Dispatches ingress-validated FFI events (`NveEventBatch`) into the plugin.
+    #[inline]
+    pub fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> Result<bool, PluginError> {
+        self.0.dispatch_events(events)
+    }
+
+    /// Queries intrinsic size via `NVE_IFACE_LAYOUT` if exported.
+    #[inline]
+    pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
+        self.0.measure(constraints)
+    }
+
+    /// Queries gesture disposition via `NVE_IFACE_LAYOUT` if exported.
+    #[inline]
+    pub fn hit_test(&mut self, x: f32, y: f32, pointer_phase: u8) -> NveGestureDisposition {
+        self.0.hit_test(x, y, pointer_phase)
+    }
+
+    /// Updates plugin props via direct structured `NveMapEntry` slice (`NVE_IFACE_COMPONENT`).
+    #[inline]
+    pub fn set_props(&mut self, entries: &[NveMapEntry]) -> Result<bool, PluginError> {
+        self.0.set_props(entries)
+    }
+
+    /// Drains component-emitted outbound events via `NVE_IFACE_COMPONENT` if exported.
+    #[inline]
+    pub fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
+        self.0.drain_emitted_events()
+    }
+
+    /// Forwards one binary `NVP1` Tier-1 hot-patch frame via `NVE_IFACE_DEV` if exported.
+    #[inline]
+    pub fn apply_hot_patch(&mut self, patch_nvp1: &[u8]) -> bool {
+        self.0.apply_hot_patch(patch_nvp1)
+    }
+
+    /// Snapshots plugin state via `NVE_IFACE_DEV` if exported.
+    #[inline]
+    pub fn snapshot_state(&mut self) -> Vec<u8> {
+        self.0.snapshot_state()
+    }
+
+    /// Restores plugin state via `NVE_IFACE_DEV` if exported.
+    #[inline]
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        self.0.restore_state(state)
+    }
+}
+
+impl std::ops::Deref for PluginSlotMut<'_> {
+    type Target = NvePluginSlot;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        self.0
     }
 }
 

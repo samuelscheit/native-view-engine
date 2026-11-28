@@ -5,7 +5,10 @@
 //! starts, so the `/* unsupported */` fallback below is unreachable (and would fail the host
 //! compile if it were not).
 
+use nve_abi::schema::AbiAliasDescriptor;
+
 use super::layout::{FieldLayout, Scalar, Ty, Width};
+use super::model::{HexLiteral, U64Split};
 use crate::naming::{screaming_snake_to_camel_case, to_camel_case, to_pascal_case, to_snake_case};
 
 /// `SCREAMING_SNAKE` of a Rust identifier (`NveValueTag` -> `NVE_VALUE_TAG`, `hit_test` -> `HIT_TEST`).
@@ -52,6 +55,25 @@ pub fn uint(value: &u64, hex: &bool) -> String {
     } else {
         value.to_string()
     }
+}
+
+/// 64-bit unsigned constant (`hex = true` -> 16-digit `0x...`).
+pub fn uint64(value: &u64, hex: &bool) -> String {
+    if *hex {
+        format!("0x{value:016X}")
+    } else {
+        value.to_string()
+    }
+}
+
+/// Low 32 bits of a 64-bit constant as `0x........`.
+pub fn lo_hex(value: &u64) -> HexLiteral {
+    U64Split::new(*value).lo_hex()
+}
+
+/// High 32 bits of a 64-bit constant as `0x........`.
+pub fn hi_hex(value: &u64) -> HexLiteral {
+    U64Split::new(*value).hi_hex()
 }
 
 /// Java `int` literal: hex above `i32::MAX`, where a decimal literal would not compile.
@@ -173,15 +195,36 @@ pub mod c {
 }
 
 pub mod dart {
+    use std::collections::BTreeMap;
+
     use super::*;
 
+    /// Follows value-alias chains (`NveNodeId` -> `u32`, `NveAppHandle` -> `*mut c_void`) to their
+    /// underlying ABI type; callback aliases stay named for their custom `Native` typedefs.
+    fn resolve_alias<'a>(spelling: &'a str, aliases: &'a [AbiAliasDescriptor]) -> &'a str {
+        let mut cur = spelling;
+        for _ in 0..=aliases.len() {
+            let Ok(Ty::Named(name)) = Ty::parse(cur) else {
+                break;
+            };
+            if matches!(name, "NveHostInvokeFn" | "NveHostChannelPublishFn") {
+                break;
+            }
+            match aliases.iter().find(|a| a.name == name) {
+                Some(alias) => cur = alias.target,
+                None => break,
+            }
+        }
+        cur
+    }
+
     /// `dart:ffi` native type (`ffi.Uint32`, `ffi.Pointer<NveValue>`, `NveStrSlice`).
-    pub fn native(spelling: &str) -> String {
-        match Ty::parse(spelling) {
+    pub fn native(aliases: &[AbiAliasDescriptor], spelling: &str) -> String {
+        match Ty::parse(resolve_alias(spelling, aliases)) {
             Ok(Ty::Unit | Ty::Void) => "ffi.Void".to_owned(),
             Ok(Ty::Scalar(s)) => native_scalar(s).to_owned(),
-            Ok(Ty::Ptr { pointee, .. }) => format!("ffi.Pointer<{}>", native(pointee)),
-            Ok(Ty::Array { elem, .. }) => format!("ffi.Array<{}>", native(elem)),
+            Ok(Ty::Ptr { pointee, .. }) => format!("ffi.Pointer<{}>", native(aliases, pointee)),
+            Ok(Ty::Array { elem, .. }) => format!("ffi.Array<{}>", native(aliases, elem)),
             Ok(Ty::Named("NveHostInvokeFn")) => {
                 "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_owned()
             }
@@ -210,10 +253,11 @@ pub mod dart {
     }
 
     /// `external` field declaration (with its `@ffi.*` annotation) of an `ffi.Struct` / `ffi.Union`.
-    pub fn field(f: &FieldLayout<'_>) -> String {
+    pub fn field(aliases: &[AbiAliasDescriptor], f: &FieldLayout<'_>) -> String {
         let name = camel(f.desc.name);
-        match f.ty {
-            Ty::Scalar(s) => {
+        let resolved = resolve_alias(f.desc.abi_type(), aliases);
+        match Ty::parse(resolved) {
+            Ok(Ty::Scalar(s)) => {
                 let dart = match s {
                     Scalar::Bool => "bool",
                     Scalar::F32 | Scalar::F64 => "double",
@@ -221,13 +265,13 @@ pub mod dart {
                 };
                 format!("@{}()\n  external {dart} {name};", native_scalar(s))
             }
-            Ty::Array { len, .. } => {
+            Ok(Ty::Array { len, .. }) => {
                 format!(
                     "@ffi.Array({len})\n  external {} {name};",
-                    native(f.desc.abi_type())
+                    native(aliases, resolved)
                 )
             }
-            _ => format!("external {} {name};", native(f.desc.abi_type())),
+            _ => format!("external {} {name};", native(aliases, resolved)),
         }
     }
 
@@ -237,6 +281,8 @@ pub mod dart {
         pub records: std::collections::BTreeSet<&'a str>,
         /// Function-pointer typedefs (`NveRuntimeWakeFn`); each has a Dart `<Stem>Native` typedef.
         pub callbacks: std::collections::BTreeSet<&'a str>,
+        /// Scalar / handle typedefs from the Core ABI (`NveNodeId` -> `u32`, `NveTableKey` -> `u64`).
+        pub aliases: BTreeMap<&'a str, &'a str>,
     }
 
     impl CNames<'_> {
@@ -278,6 +324,20 @@ pub mod dart {
                     Ok((ty.clone(), ty))
                 }
                 named if self.records.contains(named) => pair(named, named),
+                alias if self.aliases.contains_key(alias) => match self.aliases[alias] {
+                    "bool" => pair("ffi.Bool", "bool"),
+                    "u8" => pair("ffi.Uint8", "int"),
+                    "u16" => pair("ffi.Uint16", "int"),
+                    "u32" => pair("ffi.Uint32", "int"),
+                    "u64" => pair("ffi.Uint64", "int"),
+                    "i32" => pair("ffi.Int32", "int"),
+                    "i64" => pair("ffi.Int64", "int"),
+                    "f32" => pair("ffi.Float", "double"),
+                    "f64" => pair("ffi.Double", "double"),
+                    "usize" => pair("ffi.Size", "int"),
+                    "*mut c_void" | "*const c_void" => pair("ffi.Pointer<ffi.Void>", "ffi.Pointer<ffi.Void>"),
+                    other => Err(format!("unsupported alias target `{other}` for `{alias}`")),
+                },
                 unknown => Err(format!("unknown C type `{unknown}`")),
             }
         }
@@ -324,7 +384,7 @@ pub mod dart {
 
     /// Dart enum constant name; Dart keywords get a `Value` suffix.
     pub fn variant(name: &str) -> String {
-        let id = to_camel_case(name);
+        let id = camel(name);
         match id.as_str() {
             "null" | "bool" | "default" | "true" | "false" | "switch" | "case" | "class" | "const"
             | "final" | "in" | "is" | "new" | "this" | "var" | "void" | "with" | "enum" | "super"
@@ -348,7 +408,7 @@ pub mod swift {
             "static", "struct", "subscript", "super", "switch", "throw", "throws", "true", "try",
             "typealias", "var", "where", "while",
         ];
-        let id = to_camel_case(name);
+        let id = camel(name);
         if RESERVED.contains(&id.as_str()) { format!("{id}_") } else { id }
     }
 }

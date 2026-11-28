@@ -154,7 +154,7 @@ pub fn VirtualList(
                     },
                     border_radius: 0.0,
                     opacity: 1.0,
-                    box_shadow: "none",
+                    box_shadow: None,
                 })
                 .finish();
 
@@ -194,7 +194,7 @@ pub fn VirtualList(
             border_color: theme.border.default,
             border_radius: theme.radius.md,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

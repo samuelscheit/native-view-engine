@@ -10,7 +10,7 @@ use core::time::Duration;
 
 use http::StatusCode;
 use hyper::body::Body as _;
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, FrameId, SurfaceId};
 use nve_backend_web::{WebBackend, streaming_http_headers};
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
@@ -82,7 +82,7 @@ async fn scenario_1_adaptive_zero_suspense_fast_path() {
 
     let resp = pool
         .render_streaming(page, StreamPlan::default(), client, |c| {
-            DioxusSurface::new(1, FastApp).with_context(c)
+            DioxusSurface::new(SurfaceId::ROOT, FastApp).with_context(c)
         })
         .await
         .expect("fast path render");
@@ -176,8 +176,8 @@ async fn scenario_1_adaptive_zero_suspense_fast_path() {
     assert_eq!(hydrated, vec![(0, 1, 1)]);
 
     let mut cli_web = WebBackend::hydrate_from_streaming_html(&html);
-    let mut cli_surface = DioxusSurface::new(10, FastApp).with_context(cli_client);
-    cli_surface.commit_to(1, &mut cli_web).unwrap();
+    let mut cli_surface = DioxusSurface::new(SurfaceId::new(10, 0), FastApp).with_context(cli_client);
+    cli_surface.commit_to(FrameId(1), &mut cli_web).unwrap();
     let rep = cli_web.hydration_report();
     assert!(
         rep.mismatches.is_empty(),
@@ -198,7 +198,7 @@ async fn scenario_1_adaptive_zero_suspense_fast_path() {
             SsrPageOptions::new("Static", web_backend).with_status(StatusCode::NOT_FOUND),
             StreamPlan::default(),
             static_client,
-            |_| DioxusSurface::new(2, StaticApp),
+            |_| DioxusSurface::new(SurfaceId::new(2, 0), StaticApp),
         )
         .await
         .unwrap();
@@ -292,7 +292,7 @@ async fn scenario_2_out_of_order_streaming_css_nveq_dedup_and_mid_and_post_hydra
 
     let resp = pool
         .render_streaming(page, StreamPlan::default(), ssr_client, |c| {
-            DioxusSurface::new(1, DashboardApp).with_context(c)
+            DioxusSurface::new(SurfaceId::ROOT, DashboardApp).with_context(c)
         })
         .await
         .expect("streaming response headers");
@@ -403,8 +403,9 @@ async fn scenario_2_out_of_order_streaming_css_nveq_dedup_and_mid_and_post_hydra
     );
 
     let mut mid_web = WebBackend::hydrate_from_streaming_html(&mid_html);
-    let mut mid_surface = DioxusSurface::new(20, DashboardApp).with_context(mid_client);
-    mid_surface.commit_to(1, &mut mid_web).unwrap();
+    let mut mid_surface =
+        DioxusSurface::new(SurfaceId::new(20, 0), DashboardApp).with_context(mid_client);
+    mid_surface.commit_to(FrameId(1), &mut mid_web).unwrap();
     let mid_rep = mid_web.hydration_report();
     assert!(
         mid_rep.mismatches.is_empty(),
@@ -475,8 +476,9 @@ async fn scenario_2_out_of_order_streaming_css_nveq_dedup_and_mid_and_post_hydra
     assert_eq!(post_hydrated, vec![(0, 2, 2), (1, 1, 1), (2, 1, 1)]);
 
     let mut post_web = WebBackend::hydrate_from_streaming_html(&full_html);
-    let mut post_surface = DioxusSurface::new(30, DashboardApp).with_context(post_client);
-    post_surface.commit_to(1, &mut post_web).unwrap();
+    let mut post_surface =
+        DioxusSurface::new(SurfaceId::new(30, 0), DashboardApp).with_context(post_client);
+    post_surface.commit_to(FrameId(1), &mut post_web).unwrap();
     let post_rep = post_web.hydration_report();
     assert!(
         post_rep.mismatches.is_empty(),

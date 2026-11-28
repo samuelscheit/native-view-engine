@@ -273,6 +273,77 @@ public struct SceneReader<View: SceneViewABI> {
         tables.first { $0.slot == UInt32(slot) }.flatMap { TableReader(view: $0) }
     }
 
+    /// Row of live node `index` in `table`, O(1), only when the node's `table_set` attaches `table`
+    /// (unattached dense rows hold zeros, not defaults; sparse rows resolve via the paged row index).
+    public func tableRow(_ table: TableReader, forNode index: Int) -> Int? {
+        guard isLive(index), table.slot < 128, hasTable(index, slot: UInt8(table.slot)) else { return nil }
+        return table.row(ofNode: index)
+    }
+
+    /// Per-table `EventSet<E>` listener bitmask attached to live node `index` (`0` if unattached).
+    public func eventSet(_ table: TableReader, forNode index: Int, eventsWord: UInt8) -> UInt32 {
+        guard let r = tableRow(table, forNode: index) else { return 0 }
+        return table.eventSet(r, eventsWord: eventsWord)
+    }
+
+    /// `true` when live node `index` subscribes to `bit` in `table`'s `eventsWord`.
+    public func hasEvent(_ table: TableReader, forNode index: Int, eventsWord: UInt8, bit: UInt32) -> Bool {
+        (eventSet(table, forNode: index, eventsWord: eventsWord) & bit) != 0
+    }
+
+    /// Nearest row along `index`'s live ancestor chain (starting at `index`) that explicitly sets
+    /// `field` in an `#[nve_table(inherited)]` table (e.g. `NveTables.Typography`). Non-inheriting
+    /// fields check only `index`. Returns `nil` when no ancestor explicitly sets `field` (caller
+    /// falls back to the table's generated `defaults`). Cycle-guarded and allocation-free.
+    public func inheritedRow(_ table: TableReader, forNode index: Int, field: FieldSpec) -> Int? {
+        if !field.inherits {
+            guard let r = tableRow(table, forNode: index), table.isExplicit(r, field) else { return nil }
+            return r
+        }
+        var current = index
+        var depth = 0
+        while isLive(current), depth < nodeCapacity {
+            if let r = tableRow(table, forNode: current), table.isExplicit(r, field) {
+                return r
+            }
+            guard let parent = row(current)?.parentId, let next = self.index(of: parent), next != current else {
+                break
+            }
+            current = next
+            depth += 1
+        }
+        return nil
+    }
+
+    /// Single-pass zero-allocation ancestor walk for an `#[nve_table(inherited)]` table starting at
+    /// `index`. Calls `visit(row, freshExplicitMask)` for each ancestor carrying a row with at
+    /// least one previously unresolved explicit bit (word 0), so a host resolves all inherited
+    /// fields (such as `NveTables.Typography`) in one traversal.
+    public func forEachInheritedRow(
+        _ table: TableReader,
+        fromNode index: Int,
+        _ visit: (_ row: Int, _ freshExplicitMask: UInt32) throws -> Void
+    ) rethrows {
+        var resolved: UInt32 = 0
+        var current = index
+        var depth = 0
+        while isLive(current), depth < nodeCapacity {
+            if let r = tableRow(table, forNode: current) {
+                let mask = table.explicitMask(r)
+                let fresh = mask & ~resolved
+                if fresh != 0 {
+                    try visit(r, fresh)
+                    resolved |= mask
+                }
+            }
+            guard let parent = row(current)?.parentId, let next = self.index(of: parent), next != current else {
+                break
+            }
+            current = next
+            depth += 1
+        }
+    }
+
     /// `offset ..< offset + len` when it lies inside `0 ..< size`, computed in `UInt64` so no
     /// wire value can trap on 32-bit hosts.
     private static func range(_ offset: UInt32, _ len: UInt32, within size: Int) -> (Int, Int)? {

@@ -2,7 +2,7 @@
 //! for the software rasterizer.
 
 use nve_abi::ColorRgba;
-use nve_components::transform::{affine_concat, affine_inverse_map_point, affine_map_point};
+use nve_tables::transform::{affine_concat, affine_inverse_map_point, affine_map_point};
 use nve_engine::LayoutRect;
 
 use crate::raster::clip::{rounded_rect_sdf, ClipStack};

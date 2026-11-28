@@ -68,7 +68,7 @@ void _expectStatus(Check c, NveRuntimeStatus status, void Function() body, Strin
     }
     final ir = s.rowOf(interaction, i);
     final cy = s.y(i) + s.height(i) / 2;
-    if (interactive < 0 && ir >= 0 && interaction!.u32(ir, InteractionTable.eventMask) != 0 && s.width(i) > 0 &&
+    if (interactive < 0 && ir >= 0 && interaction!.eventMask(ir, InteractionTable.eventsWord) != 0 && s.width(i) > 0 &&
         cy > 0 && cy < viewportHeight) {
       interactive = i;
     }
@@ -113,7 +113,7 @@ List<(int, double, double)> _pressTargets(SceneReader s, double viewportHeight) 
   return [
     for (var i = 1; i < s.nodeCapacity; i++)
       if (s.rowOf(interaction, i) case final r when r >= 0)
-        if (interaction!.u32(r, InteractionTable.eventMask) & 1 != 0 &&
+        if (interaction!.eventMask(r, InteractionTable.eventsWord) & NveInteractionEventSet.press != 0 &&
             s.width(i) > 0 &&
             s.y(i) + s.height(i) / 2 > 0 &&
             s.y(i) + s.height(i) / 2 < viewportHeight)
@@ -211,7 +211,8 @@ void _runtimeHooks(Check c, RuntimeSession session) {
 }
 
 /// Real app-emitted events across the runtime C ABI: `libnve_host_fixture_app` echoes props as a
-/// structured `Custom` event and, on `malformed`, first emits one whose name is invalid UTF-8.
+/// structured `Custom` event (`NveBinValue` payload) and, on `malformed`, first emits a `"malformed"`
+/// custom event carrying invalid `NveBinValue` payload bytes (`[0xFF]`).
 void _fixtureAppEvents(Check c, RuntimeApi api) {
   final session = RuntimeSession(api, surfaceId: 7);
   try {
@@ -222,17 +223,19 @@ void _fixtureAppEvents(Check c, RuntimeApi api) {
     final events = session.drainEmittedEvents();
     c.eq(events.length, 1, 'one emitted event');
     if (events case [final e]) {
-      c.eq(e.kind, NveEventKind.custom, 'custom kind');
-      c.eq(e.payload, NveEventPayloadTag.custom, 'custom payload');
-      c.eq((e.name, e.nodeId), ('props', 1), 'name + node');
+      c.eq(e.table, nveTableCustom, 'custom table');
+      c.that(e.isCustom, 'custom event');
+      c.eq((e.name, e.nodeId, e.surfaceId), ('props', 1, 7), 'name + node + surface');
       c.eq(jsonEncode(e.value), '{"count":2,"keys":["count","label"],"ok":true,"ratio":0.5}', 'structured value');
     }
     c.eq(session.drainEmittedEvents(), const <RuntimeEvent>[], 'draining is destructive');
     c.eq(session.setProps({'count': 3, 'label': 'hi'}), false, 'identical props change nothing');
     c.eq(session.setProps({'malformed': true}), true, 'malformed request re-renders');
     final mixed = session.drainEmittedEvents();
-    c.eq(mixed.map((e) => e.name).join('|'), 'bad\uFFFDname|props', 'malformed name decodes lossy, batch intact');
+    c.eq(mixed.map((e) => e.name).join('|'), 'malformed|props', 'malformed payload leaves batch intact');
     if (mixed.length == 2) {
+      c.eq(mixed[0].value, null, 'invalid NveBinValue decodes as null value');
+      c.eq(mixed[0].data?.toList().join(','), '255', 'invalid NveBinValue raw bytes preserved');
       c.eq(jsonEncode(mixed[1].value), '{"count":1,"keys":["malformed"],"ok":true,"ratio":0.5}', 'second event intact');
     }
     // Wake listener swaps: re-registering and clearing never leaves a dangling callable.
@@ -313,8 +316,8 @@ void main() {
     var rerendered = false, changed = false;
     for (final (target, x, y) in targets.take(40)) {
       rerendered = session.dispatchEvents([
-            RuntimeEvent.pointer(NveEventKind.pointerDown, target, x, y),
-            RuntimeEvent.pointer(NveEventKind.pointerUp, target, x, y),
+            RuntimeEvent.pointer(NveInteractionEvent.pointerDown, target, x, y),
+            RuntimeEvent.pointer(NveInteractionEvent.pointerUp, target, x, y),
             RuntimeEvent.press(target, x, y),
           ]) ||
           rerendered;

@@ -25,8 +25,9 @@ leading BOM.
 | `src/utf8.ts` | Strict `isValidUtf8`, BOM-preserving `UTF8_DECODER`, in-place code-point encoding |
 | `src/xxh64.ts` | `Xxh64Hasher`, `xxh64`, `constId`: canonical XXH64, bit-identical to Rust `nve-hash` |
 | `src/bin_codec.ts` | `BinReader` / `BinWriter`, the `NveBinValue` format, `BinMark` (generation-checked container marks) |
-| `src/table_reader.ts` | `FieldKind`, `FieldSpec`, `decodeLength`, `rgba`, `TableReader` |
-| `src/scene_reader.ts` | `SceneReader` over slabs or `SceneReader.fromLinearMemory(memory, ptr, layout, schema)` |
+| `src/table_reader.ts` | `FieldKind`, `OptEncoding`, `FieldSpec`, `decodeLength`, `decodeGridLine`, `rgba`, `TableReader` |
+| `src/scene_reader.ts` | `SceneReader` over slabs or `SceneReader.fromLinearMemory(memory, ptr, layout, schema)`, inheritance & `EventSet` helpers |
+| `src/event_batch.ts` | Uniform 64-byte `NveEvent` `EventBatchBuilder`, `EventBatchReader`, `EventView`, and `NVEV` v2 wire codec |
 | `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue`, WASM linear-memory hybrid call helpers |
 | `src/js_value.ts` | 53-bit-safe plain JS <-> `NveBinValue` codec (`encodeJsValue`, `decodeJsValue`, `writeJsValue`, `readJsValue`) |
 

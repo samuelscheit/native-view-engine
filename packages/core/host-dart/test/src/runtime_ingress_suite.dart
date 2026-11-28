@@ -36,6 +36,26 @@ void runRuntimeIngress(Check c) {
   c.eq(scrollOffsetWords * 4, 12, 'NveScrollOffset is 12 bytes');
   c.eq(ffi.sizeOf<NveScrollOffset>(), scrollOffsetWords * 4, 'NveScrollOffset size');
   c.eq(ffi.sizeOf<NveTableView>(), 32 + 5 * _ptr, 'NveTableView size (72 on 64-bit, 52 on 32-bit)');
+  c.eq(ffi.sizeOf<RawEventBytes>(), 8, 'RawEventBytes size');
+  c.eq(ffi.sizeOf<NveEvent>(), nveEventSize, 'NveEvent size (64 bytes)');
+  c.eq(ffi.sizeOf<NveEventBatch>(), 2 * _ptr + 8, 'NveEventBatch size (24 on 64-bit, 16 on 32-bit)');
+  int evOffset(void Function(NveEvent e) write, [int width = 4]) =>
+      _offsetOf<NveEvent>(nveEventSize, (p) => write(p.ref), width);
+  c.eq(evOffset((e) => e.timestamp = 1, 8), NveEventLayout.timestamp, 'NveEvent.timestamp @0');
+  c.eq(evOffset((e) => e.table = 1, 8), NveEventLayout.table, 'NveEvent.table @8');
+  c.eq(evOffset((e) => e.surface = 1), NveEventLayout.surface, 'NveEvent.surface @16');
+  c.eq(evOffset((e) => e.node = 1), NveEventLayout.node, 'NveEvent.node @20');
+  c.eq(evOffset((e) => e.event = 1), NveEventLayout.event, 'NveEvent.event @24');
+  c.eq(evOffset((e) => e.flags = 1), NveEventLayout.flags, 'NveEvent.flags @28');
+  c.eq(evOffset((e) => e.payload[0] = 1), NveEventLayout.payload, 'NveEvent.payload @32');
+  c.eq(evOffset((e) => e.bytes.offset = 1), NveEventLayout.bytes, 'NveEvent.bytes @56');
+  final batchSize = ffi.sizeOf<NveEventBatch>();
+  int batchOffset(void Function(NveEventBatch b) write, [int width = 4]) =>
+      _offsetOf<NveEventBatch>(batchSize, (p) => write(p.ref), width);
+  c.eq(batchOffset((b) => b.events = ffi.Pointer.fromAddress(0x10), _ptr), 0, 'NveEventBatch.events @0');
+  c.eq(batchOffset((b) => b.bytes = ffi.Pointer.fromAddress(0x10), _ptr), _ptr, 'NveEventBatch.bytes');
+  c.eq(batchOffset((b) => b.eventCount = 1), 2 * _ptr, 'NveEventBatch.eventCount');
+  c.eq(batchOffset((b) => b.bytesLen = 1), 2 * _ptr + 4, 'NveEventBatch.bytesLen');
   final viewSize = ffi.sizeOf<NveSceneView>();
   // 56 + 10 pointers is a multiple of 8 on both data models: no tail padding after `moved_indices`.
   c.eq(viewSize, 56 + 10 * _ptr, 'NveSceneView size (136 on 64-bit, 96 on 32-bit)');
