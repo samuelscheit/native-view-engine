@@ -2,7 +2,7 @@
 //! network/pairing workers, with synchronized callback teardown so hosts can safely free wake
 //! callback contexts immediately after `clear_sink()` / `set_wake_callback(NULL)` / `destroy()`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{Wake, Waker};
 
@@ -25,7 +25,27 @@ pub type WakeCallback = Arc<dyn Fn() + Send + Sync>;
 /// so host `ctx` pointers are never accessed after clearing or surface destruction.
 pub struct WakeBridge {
     pending: AtomicBool,
+    defer_depth: AtomicUsize,
+    deferred_wake: AtomicBool,
     sink: RwLock<Option<WakeCallback>>,
+}
+
+/// RAII deferral guard that postpones synchronous [`WakeCallback`] invocations while a surface
+/// write lock is held, flushing one coalesced wake strictly after the outermost guard drops.
+pub struct WakeDeferGuard<'a> {
+    bridge: &'a WakeBridge,
+}
+
+impl Drop for WakeDeferGuard<'_> {
+    fn drop(&mut self) {
+        if self.bridge.defer_depth.fetch_sub(1, Ordering::SeqCst) == 1
+            && !std::thread::panicking()
+            && self.bridge.deferred_wake.swap(false, Ordering::SeqCst)
+            && self.bridge.pending.load(Ordering::Acquire)
+        {
+            self.bridge.fire_sink();
+        }
+    }
 }
 
 /// RAII lifetime token paired with a [`Waker`] created by [`WakeBridge::detachable_waker`].
@@ -67,10 +87,31 @@ impl Default for WakeBridge {
 
 impl WakeBridge {
     pub fn new() -> Self {
+        let sink = RwLock::new(None);
+        // Prime OS rwlock storage eagerly so steady-state wakes allocate 0 bytes.
+        drop(sink.read());
         Self {
             pending: AtomicBool::new(false),
-            sink: RwLock::new(None),
+            defer_depth: AtomicUsize::new(0),
+            deferred_wake: AtomicBool::new(false),
+            sink,
         }
+    }
+
+    #[inline]
+    fn fire_sink(&self) {
+        let guard = self.sink.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref cb) = *guard {
+            cb();
+        }
+    }
+
+    /// Defers synchronous sink invocations until the returned [`WakeDeferGuard`] is dropped
+    /// (typically declared *outside* a surface write lock so wakes flush after unlock).
+    #[inline]
+    pub fn defer_guard(&self) -> WakeDeferGuard<'_> {
+        self.defer_depth.fetch_add(1, Ordering::SeqCst);
+        WakeDeferGuard { bridge: self }
     }
 
     /// Creates a `std::task::Waker` backed directly by this `WakeBridge`.
@@ -92,7 +133,8 @@ impl WakeBridge {
 
     /// Installs or replaces the host wake sink, waiting for any in-flight invocation of a prior
     /// sink to return before replacing it (dropping any replaced sink *after* releasing the lock).
-    /// If a wake was already pending, invokes the installed sink once under the shared read lock.
+    /// If a wake was already pending, invokes the installed sink once under the shared read lock
+    /// (or defers until any active [`Self::defer_guard`] exits).
     pub fn set_sink(&self, cb: WakeCallback) {
         let (replaced, fire_now) = {
             let mut guard = self.sink.write().unwrap_or_else(|e| e.into_inner());
@@ -101,9 +143,16 @@ impl WakeBridge {
         };
         drop(replaced);
         if fire_now {
-            let guard = self.sink.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref installed) = *guard {
-                installed();
+            if self.defer_depth.load(Ordering::SeqCst) > 0 {
+                self.deferred_wake.store(true, Ordering::SeqCst);
+                if self.defer_depth.load(Ordering::SeqCst) == 0
+                    && self.deferred_wake.swap(false, Ordering::SeqCst)
+                    && self.pending.load(Ordering::Acquire)
+                {
+                    self.fire_sink();
+                }
+            } else {
+                self.fire_sink();
             }
         }
     }
@@ -120,12 +169,19 @@ impl WakeBridge {
 
     /// Marks the bridge dirty and fires the installed sink on the `false -> true` transition while
     /// holding the shared read lock so `clear_sink()`/`destroy()` cannot free host callback state
-    /// mid-call.
+    /// mid-call. Defers sink invocation while any [`WakeDeferGuard`] is active.
     pub fn trigger(&self) {
-        if !self.pending.swap(true, Ordering::AcqRel) {
-            let guard = self.sink.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref cb) = *guard {
-                cb();
+        if !self.pending.swap(true, Ordering::SeqCst) {
+            if self.defer_depth.load(Ordering::SeqCst) > 0 {
+                self.deferred_wake.store(true, Ordering::SeqCst);
+                if self.defer_depth.load(Ordering::SeqCst) == 0
+                    && self.deferred_wake.swap(false, Ordering::SeqCst)
+                    && self.pending.load(Ordering::Acquire)
+                {
+                    self.fire_sink();
+                }
+            } else {
+                self.fire_sink();
             }
         }
     }
@@ -139,7 +195,8 @@ impl WakeBridge {
     /// Clears and returns the coalesced pending flag after acquiring the surface write lock.
     #[inline]
     pub fn take_pending(&self) -> bool {
-        self.pending.swap(false, Ordering::AcqRel)
+        self.deferred_wake.store(false, Ordering::SeqCst);
+        self.pending.swap(false, Ordering::SeqCst)
     }
 }
 

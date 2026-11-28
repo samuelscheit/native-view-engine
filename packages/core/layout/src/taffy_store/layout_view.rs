@@ -32,8 +32,9 @@ pub(super) struct LayoutView<'s> {
     pub(super) resolved_rtl: &'s [bool],
     pub(super) resolved_text: &'s [ResolvedTextStyle],
     pub(super) caches: &'s mut [Cache],
+    pub(super) cache_gen: Option<(&'s mut [u64], u64)>,
     pub(super) boxes: &'s mut [UnroundedBox],
-    pub(super) hoisted: &'s mut NodeLists,
+    pub(super) hoisted: Option<&'s mut NodeLists>,
     pub(super) box_children: &'s BoxChildren,
     pub(super) measurer: &'s dyn TextMeasurer,
 }
@@ -67,28 +68,31 @@ impl<'s> LayoutView<'s> {
         }
     }
 
-    /// Pure `RunMode::ComputeSize` measurement pass over `root` without mutating `boxes` or
-    /// `hoisted`. Honors `ideal` (unconstrained max-content sizing) and clamps constrained passes
-    /// to `[min, max]`.
+    #[inline]
+    fn bump_dry_cache_gen(&mut self) {
+        if let Some((gens, cur)) = self.cache_gen.as_mut() {
+            *cur = cur.wrapping_add(1);
+            if *cur == 0 {
+                gens.fill(0);
+                *cur = 1;
+            }
+        }
+    }
+
+    /// Pure dry-run measurement pass over `root` using `RunMode::PerformLayout` (so CSS flex/grid
+    /// baselines are computed) while leaving committed boxes, rects, caches, and hoisted lists
+    /// untouched. Re-measures at the clamped width/height whenever `0 < min < max` or an explicit
+    /// root size exceeds `max` so wrapped height and baselines reflect the clamped axis.
     pub(super) fn measure_root_dry_run(
         &mut self,
         root: NodeId,
         constraints: SizeConstraints,
         ideal: bool,
     ) -> SurfaceMeasure {
-        let sanitize_min = |v: f32| if v.is_finite() && v > 0.0 { v } else { 0.0 };
-        let min_w = sanitize_min(constraints.min_w);
-        let min_h = sanitize_min(constraints.min_h);
-        let max_w = if constraints.max_w.is_finite() && constraints.max_w >= 0.0 {
-            Some(constraints.max_w.max(min_w))
-        } else {
-            None
-        };
-        let max_h = if constraints.max_h.is_finite() && constraints.max_h >= 0.0 {
-            Some(constraints.max_h.max(min_h))
-        } else {
-            None
-        };
+        let min_w = constraints.min_w;
+        let min_h = constraints.min_h;
+        let max_w = constraints.max_w.is_finite().then_some(constraints.max_w);
+        let max_h = constraints.max_h.is_finite().then_some(constraints.max_h);
 
         let (known_dimensions, available_space, parent_size) = if ideal {
             (
@@ -110,44 +114,61 @@ impl<'s> LayoutView<'s> {
             let (kw, aw, pw) = axis(min_w, max_w);
             let (kh, ah, ph) = axis(min_h, max_h);
             (
-                Size {
-                    width: kw,
-                    height: kh,
-                },
-                Size {
-                    width: aw,
-                    height: ah,
-                },
-                Size {
-                    width: pw,
-                    height: ph,
-                },
+                Size { width: kw, height: kh },
+                Size { width: aw, height: ah },
+                Size { width: pw, height: ph },
             )
         };
 
-        let input = LayoutInput {
-            run_mode: RunMode::ComputeSize,
+        let make_input = |kd: Size<Option<f32>>, avail: Size<AvailableSpace>, ps: Size<Option<f32>>| LayoutInput {
+            run_mode: RunMode::PerformLayout,
             sizing_mode: SizingMode::InherentSize,
             axis: RequestedAxis::Both,
-            known_dimensions,
+            known_dimensions: kd,
             known_dimensions_are_definite: Size {
-                width: known_dimensions.width.is_some(),
-                height: known_dimensions.height.is_some(),
+                width: kd.width.is_some(),
+                height: kd.height.is_some(),
             },
-            parent_size,
-            available_space,
+            parent_size: ps,
+            available_space: avail,
             vertical_margins_are_collapsible: Line::FALSE,
         };
-        let out = self.compute_child_layout(tid_from_nve(root), input);
+        let finite_non_neg = |v: f32| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
         let clamp = |v: f32, min_v: f32, max_v: Option<f32>| {
-            let finite = if v.is_finite() && v >= 0.0 { v } else { 0.0 };
-            if ideal {
-                finite
-            } else {
-                let capped = max_v.map_or(finite, |m| finite.min(m));
-                capped.max(min_v)
-            }
+            let f = finite_non_neg(v);
+            if ideal { f } else { max_v.map_or(f, |m| f.min(m)).max(min_v) }
         };
+
+        let mut out = self.compute_child_layout(
+            tid_from_nve(root),
+            make_input(known_dimensions, available_space, parent_size),
+        );
+        if !ideal {
+            let raw_w = finite_non_neg(out.size.width);
+            let clamped_w = clamp(raw_w, min_w, max_w);
+            let need_w = known_dimensions.width.is_none() && (clamped_w - raw_w).abs() > f32::EPSILON;
+            let (cur_kw, cur_aw, cur_pw) = if need_w {
+                self.bump_dry_cache_gen();
+                let kd = Size { width: Some(clamped_w), height: known_dimensions.height };
+                let avail = Size { width: AvailableSpace::Definite(clamped_w), height: available_space.height };
+                let ps = Size { width: Some(clamped_w), height: parent_size.height };
+                out = self.compute_child_layout(tid_from_nve(root), make_input(kd, avail, ps));
+                (Some(clamped_w), AvailableSpace::Definite(clamped_w), Some(clamped_w))
+            } else {
+                (known_dimensions.width, available_space.width, parent_size.width)
+            };
+            let raw_h = finite_non_neg(out.size.height);
+            let clamped_h = clamp(raw_h, min_h, max_h);
+            let need_h = known_dimensions.height.is_none() && (clamped_h - raw_h).abs() > f32::EPSILON;
+            if need_h {
+                self.bump_dry_cache_gen();
+                let kd = Size { width: cur_kw, height: Some(clamped_h) };
+                let avail = Size { width: cur_aw, height: AvailableSpace::Definite(clamped_h) };
+                let ps = Size { width: cur_pw, height: Some(clamped_h) };
+                out = self.compute_child_layout(tid_from_nve(root), make_input(kd, avail, ps));
+            }
+        }
+
         SurfaceMeasure {
             width: clamp(out.size.width, min_w, max_w),
             height: clamp(out.size.height, min_h, max_h),
@@ -295,17 +316,35 @@ impl TraverseTree for LayoutView<'_> {}
 impl CacheTree for LayoutView<'_> {
     #[inline]
     fn cache_get(&self, n: taffy::NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
-        self.caches[ix(n)].get(input)
+        let i = ix(n);
+        if let Some((gens, cur)) = self.cache_gen.as_ref()
+            && gens[i] != *cur
+        {
+            return None;
+        }
+        self.caches[i].get(input)
     }
 
     #[inline]
     fn cache_store(&mut self, n: taffy::NodeId, input: &LayoutInput, output: LayoutOutput) {
-        self.caches[ix(n)].store(input, output);
+        let i = ix(n);
+        if let Some((gens, cur)) = self.cache_gen.as_mut()
+            && gens[i] != *cur
+        {
+            self.caches[i].clear();
+            gens[i] = *cur;
+        }
+        self.caches[i].store(input, output);
     }
 
     #[inline]
     fn cache_clear(&mut self, n: taffy::NodeId) {
-        self.caches[ix(n)].clear();
+        let i = ix(n);
+        if let Some((gens, _)) = self.cache_gen.as_mut() {
+            gens[i] = 0;
+        } else {
+            self.caches[i].clear();
+        }
     }
 }
 
@@ -386,20 +425,20 @@ impl LayoutContainingBlock for LayoutView<'_> {
 
     #[inline]
     fn clear_hoisted_children(&mut self, n: taffy::NodeId) {
-        if self.dry_run {
-            return;
+        if let Some(hoisted) = self.hoisted.as_deref_mut() {
+            hoisted.clear(ix(n));
         }
-        self.hoisted.clear(ix(n));
     }
 
     #[inline]
     fn add_hoisted_children(&mut self, n: taffy::NodeId, hoisted: &[taffy::NodeId]) {
-        if self.dry_run || hoisted.is_empty() {
+        if hoisted.is_empty() {
             return;
         }
-        let store = self.store;
-        self.hoisted
-            .extend(ix(n), hoisted.iter().filter_map(|&c| store.id_at(ix(c))));
+        if let Some(lists) = self.hoisted.as_deref_mut() {
+            let store = self.store;
+            lists.extend(ix(n), hoisted.iter().filter_map(|&c| store.id_at(ix(c))));
+        }
     }
 }
 

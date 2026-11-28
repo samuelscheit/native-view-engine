@@ -22,7 +22,7 @@ use nve_store::{ChangeSet, NodeStore};
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
 pub use runtime_app::{AppFrame, CapabilityUnsupported, FrameTickHook, RuntimeApp};
 pub use store_backend::{StoreBackend, StoreWireReplica};
-pub use wake::{WakeBridge, WakeCallback, WakeToken};
+pub use wake::{WakeBridge, WakeCallback, WakeDeferGuard, WakeToken};
 pub use tracker::InteractionTracker;
 
 pub use hotreload::HotPatchMsg;

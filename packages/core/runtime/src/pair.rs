@@ -45,6 +45,7 @@ mod enabled {
 
     pub(crate) struct PairSession {
         client: ReconnectingWireClient,
+        wake_alive: Arc<AtomicBool>,
         last_rx: u64,
         last_tx: u64,
         resync: WireResyncState,
@@ -79,21 +80,34 @@ mod enabled {
             let mut wire_cfg = NveWireClientConfig::new(validated.uri.token.clone(), "nve-runtime");
             wire_cfg.cert_sha256 = validated.uri.cert_sha256;
 
+            let wake_alive = Arc::new(AtomicBool::new(true));
+            let wake_gate = Arc::clone(&wake_alive);
             let client = ReconnectingWireClient::spawn_with_connected_flag(
                 validated.uri,
                 wire_cfg,
                 ReconnectConfig::default(),
-                Some(Arc::new(move || wake.trigger())),
+                Some(Arc::new(move || {
+                    if wake_gate.load(std::sync::atomic::Ordering::Acquire) {
+                        wake.trigger();
+                    }
+                })),
                 connected_flag,
             )
             .map_err(|e| RuntimeError::Io(e.to_string()))?;
 
             Ok(Self {
                 client,
+                wake_alive,
                 last_rx: 0,
                 last_tx: 0,
                 resync: WireResyncState::new(),
             })
+        }
+
+        /// Immediately suppresses future wakes from this pairing worker before shutdown joins it.
+        #[inline]
+        pub(crate) fn disable_wake(&self) {
+            self.wake_alive.store(false, std::sync::atomic::Ordering::Release);
         }
 
         #[inline]
@@ -201,6 +215,7 @@ mod enabled {
         }
 
         pub(crate) fn shutdown(&mut self) {
+            self.disable_wake();
             self.client.shutdown();
         }
     }
@@ -553,6 +568,8 @@ mod disabled {
         pub(crate) fn overlay_live_metrics(&self, dst: &mut NveRuntimeMetrics) {
             dst.pair_connected = 0;
         }
+
+        pub(crate) fn disable_wake(&self) {}
 
         pub(crate) fn shutdown(&mut self) {}
     }

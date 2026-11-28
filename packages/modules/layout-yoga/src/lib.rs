@@ -16,6 +16,8 @@ mod ffi;
 #[cfg(nve_has_rn_yoga)]
 mod measure;
 #[cfg(nve_has_rn_yoga)]
+mod measure_root;
+#[cfg(nve_has_rn_yoga)]
 mod real;
 
 use std::fmt;

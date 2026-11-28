@@ -5,6 +5,7 @@
 //! rounded rects, and resolved inherited direction/typography arrays.
 
 mod contents;
+mod dry_run;
 mod layout_view;
 mod node_lists;
 mod style_view;
@@ -30,6 +31,7 @@ use taffy::style::AvailableSpace;
 use taffy::tree::{Cache, ClearState};
 
 use contents::BoxChildren;
+use dry_run::DryRunScratch;
 use layout_view::LayoutView;
 use node_lists::NodeLists;
 
@@ -59,6 +61,7 @@ pub struct TaffyStoreLayout {
     box_children: BoxChildren,
     layout_gen: u64,
     last_viewport: Option<(NodeId, f32, f32)>,
+    committed_store_rev: Option<(u64, u64)>,
     measurer: Arc<dyn TextMeasurer>,
     /// Reusable stack for inheritance walk (`(node_id, parent_rtl, parent_text)`).
     inherit_stack: Vec<(NodeId, bool, ResolvedTextStyle)>,
@@ -72,6 +75,8 @@ pub struct TaffyStoreLayout {
     layout_dirty: bool,
     /// Root of the layout pass in flight; still set on entry only when that pass unwound.
     pass_root: Option<NodeId>,
+    /// Isolated dry-run scratch so `measure_root` never mutates committed caches or state.
+    dry: DryRunScratch,
 }
 
 #[inline]
@@ -112,12 +117,14 @@ impl TaffyStoreLayout {
             box_children: BoxChildren::default(),
             layout_gen: 0,
             last_viewport: None,
+            committed_store_rev: None,
             measurer: Arc::new(HeuristicTextMeasurer),
             inherit_stack: Vec::new(),
             round_stack: Vec::new(),
             inherit_dirty: true,
             layout_dirty: true,
             pass_root: None,
+            dry: DryRunScratch::default(),
         }
     }
 
@@ -126,6 +133,7 @@ impl TaffyStoreLayout {
         for c in &mut self.caches {
             c.clear();
         }
+        self.dry.invalidate();
         self.layout_dirty = true;
     }
 
@@ -145,8 +153,10 @@ impl TaffyStoreLayout {
         self.pass_root = None;
         self.hoisted.reset();
         self.box_children.reset();
+        self.dry.reset();
         self.layout_gen = 0;
         self.last_viewport = None;
+        self.committed_store_rev = None;
         self.inherit_dirty = true;
         self.layout_dirty = true;
     }
@@ -204,6 +214,7 @@ impl TaffyStoreLayout {
             || input_reshaped
         {
             self.inherit_dirty = true;
+            self.committed_store_rev = None;
         }
 
         for &id in &changes.removed {
@@ -244,6 +255,9 @@ impl TaffyStoreLayout {
             if fx & (effect::LAYOUT | effect::MEASURE) != 0 {
                 self.mark_dirty(store, id);
             }
+        }
+        if self.inherit_dirty || self.layout_dirty {
+            self.dry.invalidate();
         }
     }
 
@@ -287,6 +301,7 @@ impl TaffyStoreLayout {
         self.was_contents.fill(false);
         // Every cache was dropped: nothing an unwound pass left behind can be hit.
         self.pass_root = None;
+        self.dry.invalidate();
         self.inherit_dirty = true;
         self.layout_dirty = true;
     }
@@ -374,6 +389,7 @@ impl TaffyStoreLayout {
             }
         }
         self.box_children.compact_if_fragmented();
+        self.committed_store_rev = Some((store.instance_id(), store.frame()));
     }
 
     /// Computes layout for `root` at `viewport` directly from `store` columns, self-gated per the
@@ -430,8 +446,9 @@ impl TaffyStoreLayout {
             resolved_rtl: &self.resolved_rtl,
             resolved_text: &self.resolved_text,
             caches: &mut self.caches,
+            cache_gen: None,
             boxes: &mut self.boxes,
-            hoisted: &mut self.hoisted,
+            hoisted: Some(&mut self.hoisted),
             box_children: &self.box_children,
             measurer: &*self.measurer,
         };
@@ -504,8 +521,8 @@ impl TaffyStoreLayout {
     }
 
     /// Measures `root` under `constraints` (or unconstrained intrinsic sizing when `ideal` is
-    /// `true`) using Taffy `RunMode::ComputeSize`, without mutating committed boxes, rects,
-    /// hoisted out-of-flow lists, `last_viewport`, or `layout_dirty`.
+    /// `true`) into isolated dry-run scratch without mutating committed caches, boxes, rects,
+    /// hoisted out-of-flow lists, resolved inheritance, `last_viewport`, or `layout_dirty`.
     pub fn measure_root(
         &mut self,
         store: &NodeStore,
@@ -513,31 +530,23 @@ impl TaffyStoreLayout {
         constraints: SizeConstraints,
         ideal: bool,
     ) -> SurfaceMeasure {
-        if !store.is_live(root) {
-            return SurfaceMeasure {
-                width: 0.0,
-                height: 0.0,
-                first_baseline: f32::NAN,
-                last_baseline: f32::NAN,
-            };
-        }
-        self.ensure_capacity(store.capacity());
-        self.propagate_inheritance(store, root);
-        let mut view = LayoutView {
+        let committed_inherit = (!self.inherit_dirty
+            && self.committed_store_rev == Some((store.instance_id(), store.frame()))
+            && self.resolved_rtl.len() >= store.capacity()
+            && self.last_viewport.is_some_and(|(r, _, _)| r == root))
+        .then_some((
+            self.resolved_rtl.as_slice(),
+            self.resolved_text.as_slice(),
+            &self.box_children,
+        ));
+        self.dry.measure_root(
             store,
-            root_index: root.index() as u32,
-            root_fills_viewport: false,
-            dry_run: true,
-            viewport: (0.0, 0.0),
-            resolved_rtl: &self.resolved_rtl,
-            resolved_text: &self.resolved_text,
-            caches: &mut self.caches,
-            boxes: &mut self.boxes,
-            hoisted: &mut self.hoisted,
-            box_children: &self.box_children,
-            measurer: &*self.measurer,
-        };
-        view.measure_root_dry_run(root, constraints, ideal)
+            root,
+            constraints,
+            ideal,
+            committed_inherit,
+            &*self.measurer,
+        )
     }
 
     #[inline]

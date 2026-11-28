@@ -20,14 +20,17 @@ pub(super) unsafe extern "C" fn rt_measure_surface(
     out_measure: *mut NveSurfaceMeasure,
 ) -> i32 {
     with_runtime("nve_runtime::measure_surface", handle, |rt| {
-        if constraints.is_null() {
-            return Err(RuntimeError::InvalidArg("null constraints"));
+        if constraints.is_null() || !constraints.is_aligned() {
+            return Err(RuntimeError::InvalidArg("null or misaligned constraints"));
+        }
+        if !out_measure.is_aligned() {
+            return Err(RuntimeError::InvalidArg("misaligned out_measure"));
         }
         let out = required(out_measure, "null out_measure")?;
-        // SAFETY: `constraints` checked non-null above and readable for this call.
+        // SAFETY: `constraints` checked non-null and aligned above and readable for this call.
         let c = unsafe { *constraints };
         let measured = rt.measure_surface_shared(c, flags)?;
-        // SAFETY: `out` is a non-null caller out slot.
+        // SAFETY: `out` is a non-null aligned caller out slot.
         unsafe { out.write(measured) };
         Ok(())
     })
@@ -45,9 +48,10 @@ pub(super) unsafe extern "C" fn rt_set_intrinsic_size_invalidated_callback(
             let callback = cb.map(|func| {
                 let send_ctx = SendPtr(ctx);
                 Arc::new(move || {
-                    // SAFETY: Host guarantees `func(ctx)` stays valid until unregistered with
-                    // `NULL` or `destroy`; `IntrinsicSizeNotifier` drains in-flight calls under
-                    // its `RwLock`.
+                    // SAFETY: Owner-thread-only callback; host guarantees `func(ctx)` stays valid
+                    // until unregistered with `NULL` or `destroy`. `IntrinsicSizeNotifier` clones
+                    // the callback and drops its lock before invoking so re-entrant unregistration
+                    // cannot deadlock.
                     unsafe { func(send_ctx.as_ptr()) };
                 }) as Arc<dyn Fn() + Send + Sync>
             });
@@ -64,7 +68,10 @@ pub(super) unsafe extern "C" fn rt_set_host_callbacks(
         let cb = if callbacks.is_null() {
             None
         } else {
-            // SAFETY: Non-null `callbacks` points to a readable `NveHostCallbacks`.
+            if !callbacks.is_aligned() {
+                return Err(RuntimeError::InvalidArg("misaligned NveHostCallbacks"));
+            }
+            // SAFETY: Non-null aligned `callbacks` points to a readable `NveHostCallbacks`.
             Some(unsafe { *callbacks })
         };
         rt.set_host_callbacks_shared(cb)

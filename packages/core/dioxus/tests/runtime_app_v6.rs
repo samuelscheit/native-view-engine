@@ -12,15 +12,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dioxus_core::Element;
+use dioxus_core::{Element, ScopeId};
+use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use nve_abi::{
     HostRequestId, HostServiceId, NodeId, NveBufferSlice, NveHostCallbacks, NveHostStatus,
     NveMapEntry, NvePropsRef, NveValue, SurfaceId,
 };
 use nve_dioxus::prelude::*;
 use nve_dioxus::{DioxusRuntimeApp, DioxusSurface, HostEventEmitter, HostProps};
-use nve_engine::Viewport;
-use nve_host_services::FfiHostServices;
+use nve_engine::{RuntimeApp, Viewport};
+use nve_host_services::{FfiHostServices, HostPushEvent, ServiceError};
 use nve_runtime::{RuntimeBuilder, SceneReadGuard};
 
 struct ScratchDir(PathBuf);
@@ -266,4 +267,310 @@ fn dioxus_runtime_app_props_events_state_files_and_host_services_end_to_end() {
     }
 
     rt.set_host_callbacks(None).expect("clear host callbacks");
+}
+
+#[derive(Clone)]
+struct RealSignalCtx {
+    persisted_count: Signal<i32>,
+    cancel_hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn real_signals_v6_app() -> Element {
+    let ctx = consume_context::<RealSignalCtx>();
+    let host = consume_context::<Arc<FfiHostServices>>();
+    struct OwnerSignal<T: 'static>(Signal<T>);
+    impl<T: 'static> OwnerSignal<T> {
+        fn get(&self) -> Signal<T> {
+            self.0
+        }
+    }
+    // SAFETY: `DioxusRuntimeApp::dispatch_host_events` always invokes `TypedEventBus` subscribers
+    // strictly on the owner thread inside `ScopeId::ROOT`.
+    unsafe impl<T: 'static> Send for OwnerSignal<T> {}
+    // SAFETY: Same owner-thread invariant as above.
+    unsafe impl<T: 'static> Sync for OwnerSignal<T> {}
+
+    let reply_sig = use_signal(|| "waiting".to_owned());
+    let reply_owner = OwnerSignal(reply_sig);
+    let push_sig = use_signal(|| "none".to_owned());
+    let push_owner = OwnerSignal(push_sig);
+    let cancel_sig = use_signal(|| 0i32);
+    let cancel_owner = OwnerSignal(cancel_sig);
+
+    let cancel_hits = Arc::clone(&ctx.cancel_hits);
+    let _sub = dioxus_core::use_hook(move || {
+        let sub = host
+            .typed_events()
+            .subscribe::<HostPushEvent, _>(false, move |ev| {
+                if ev.service_id == 0x5512 && ev.event_id == 22 {
+                    let mut sig = push_owner.get();
+                    sig.set(String::from_utf8_lossy(&ev.payload).into_owned());
+                }
+            });
+        if host.is_bound() {
+            let _ = host.invoke_with_callback(0x5511, 1, b"ok-req", move |res| {
+                let text = match res {
+                    Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    Err(err) => format!("err:{err:?}"),
+                };
+                let mut sig = reply_owner.get();
+                sig.set(text);
+            });
+            let _ = host.invoke_with_callback(0x5511, 2, b"cancel-req", move |res| {
+                if matches!(res, Err(ServiceError::Cancelled)) {
+                    let mut sig = cancel_owner.get();
+                    sig += 1;
+                    cancel_hits.fetch_add(1, Ordering::Release);
+                }
+            });
+        }
+        sub
+    });
+
+    let count = *ctx.persisted_count.read();
+    let reply = reply_sig.read().clone();
+    let push = push_sig.read().clone();
+    let cancelled = *cancel_sig.read();
+    rsx! {
+        view {
+            style: "width: 320px; height: 100px; flex-direction: column;",
+            text { "count={count} reply={reply} push={push} cancelled={cancelled}" }
+        }
+    }
+}
+
+struct MultiReqHostCtx {
+    ok_req_id: AtomicU64,
+    cancel_req_id: AtomicU64,
+}
+
+unsafe extern "C" fn multi_req_mock_invoke(
+    ctx: *mut c_void,
+    _service_id: u32,
+    method_id: u32,
+    host_req_id: u64,
+    _request: NveBufferSlice,
+    _out_buf: *mut u8,
+    _out_cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    if !out_len.is_null() {
+        // SAFETY: Caller passed writable `out_len`.
+        unsafe { *out_len = 0 };
+    }
+    // SAFETY: `ctx` points to `MultiReqHostCtx` alive until callbacks are cleared.
+    let state = unsafe { &*ctx.cast::<MultiReqHostCtx>() };
+    if method_id == 1 {
+        state.ok_req_id.store(host_req_id, Ordering::Release);
+    } else if method_id == 2 {
+        state.cancel_req_id.store(host_req_id, Ordering::Release);
+    }
+    NveHostStatus::Pending.as_i32()
+}
+
+#[test]
+fn dioxus_runtime_app_real_signals_callbacks_cancel_pre_mount_and_corrupt_restore() {
+    let dir = ScratchDir::new("real-signals");
+    let state_path = dir.0.join("signals.nvestate");
+    let host_ctx = Arc::new(MultiReqHostCtx {
+        ok_req_id: AtomicU64::new(0),
+        cancel_req_id: AtomicU64::new(0),
+    });
+    let cancel_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut surface1 = DioxusSurface::new(SurfaceId::ROOT, real_signals_v6_app);
+    let count_sig1 = surface1.in_root_scope(|| {
+        let sig = Signal::new_in_scope(42i32, ScopeId::ROOT);
+        dioxus_core::provide_context(RealSignalCtx {
+            persisted_count: sig,
+            cancel_hits: Arc::clone(&cancel_hits),
+        });
+        sig
+    });
+    surface1
+        .signal_registry_mut()
+        .register_signal("App", "count", count_sig1);
+
+    let mut rt = RuntimeBuilder::new()
+        .surface_id(SurfaceId::ROOT)
+        .viewport(Viewport {
+            width: 400.0,
+            height: 300.0,
+            scale_factor: 1.0,
+        })
+        .build();
+    rt.set_host_callbacks(Some(NveHostCallbacks {
+        host_ctx: Arc::as_ptr(&host_ctx).cast_mut().cast(),
+        invoke: Some(multi_req_mock_invoke),
+        channel_publish: None,
+    }))
+    .expect("set_host_callbacks");
+    rt.attach_app(Box::new(DioxusRuntimeApp::new(surface1)))
+        .expect("attach app1");
+
+    // 1. Mount fires both async calls; complete #1 and push event -> mutates real `use_signal`s
+    //    inside `dispatch_host_events` with zero `NoCurrentRuntime` panic!
+    assert!(rt.tick(1.0 / 60.0).expect("tick 1"));
+    let ok_req = host_ctx.ok_req_id.load(Ordering::Acquire);
+    let cancel_req = host_ctx.cancel_req_id.load(Ordering::Acquire);
+    assert!(ok_req != 0 && cancel_req != 0 && ok_req != cancel_req);
+
+    let router = rt.host_router();
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            assert!(router.complete_request(
+                HostRequestId(ok_req),
+                NveHostStatus::Ok,
+                b"real-signal-reply",
+            ));
+            router.push_event(HostServiceId(0x5512), 22, b"real-signal-push");
+        });
+    });
+    assert!(rt.tick(1.0 / 60.0).expect("tick 2"));
+    {
+        let g = rt.acquire_scene().expect("acquire after host events");
+        let text = read_text_slab(&g);
+        assert!(
+            text.contains("count=42 reply=real-signal-reply push=real-signal-push"),
+            "real Signal mutations must render cleanly: `{text}`"
+        );
+    }
+
+    // 2. `save_state_file` snapshots live `register_signal` inside `ScopeId::ROOT` without panic!
+    rt.save_state_file(&state_path, 1).expect("save_state_file");
+    assert!(state_path.exists());
+
+    // 3. `detach_app` calls `bind_host(None)` -> cancels in-flight #2 -> mutates `cancel_sig`
+    //    (a live `use_signal`) cleanly without `NoCurrentRuntime` panic or poisoning `rt`!
+    rt.detach_app().expect("detach_app must not poison runtime");
+    assert_eq!(cancel_hits.load(Ordering::Acquire), 1);
+
+    // 4. Pre-mount `restore_state_file` into a fresh `DioxusRuntimeApp` (before first `tick()`)
+    //    hydrates live `register_signal` (`0 -> 42`) cleanly!
+    let mut surface2 = DioxusSurface::new(SurfaceId::ROOT, real_signals_v6_app);
+    let count_sig2 = surface2.in_root_scope(|| {
+        let sig = Signal::new_in_scope(0i32, ScopeId::ROOT);
+        dioxus_core::provide_context(RealSignalCtx {
+            persisted_count: sig,
+            cancel_hits: Arc::clone(&cancel_hits),
+        });
+        sig
+    });
+    surface2
+        .signal_registry_mut()
+        .register_signal("App", "count", count_sig2);
+    rt.attach_app(Box::new(DioxusRuntimeApp::new(surface2)))
+        .expect("attach app2");
+    rt.restore_state_file(&state_path, 1)
+        .expect("pre-mount restore_state_file");
+    assert!(rt.tick(1.0 / 60.0).expect("first tick after pre-mount restore"));
+    {
+        let g = rt.acquire_scene().expect("acquire app2");
+        let text = read_text_slab(&g);
+        assert!(text.contains("count=42"), "pre-mount hydrated signal=`{text}`");
+    }
+
+    // 5. Corrupt `restore_state` MUST NOT panic, poison `rt`, or clobber live signal state!
+    rt.restore_state(b"not-a-valid-nve-sig1-archive")
+        .expect("corrupt restore_state must not poison runtime");
+    let _ = rt.tick(1.0 / 60.0).expect("tick after corrupt restore");
+    {
+        let g = rt.acquire_scene().expect("acquire after corrupt restore");
+        let text = read_text_slab(&g);
+        assert!(text.contains("count=42"), "corrupt restore must keep live signal: `{text}`");
+    }
+
+    // 6. Direct `DioxusRuntimeApp::last_state_error` records decode errors and clears on success.
+    let mut surface3 = DioxusSurface::new(SurfaceId::ROOT, real_signals_v6_app);
+    let count_sig3 = surface3.in_root_scope(|| {
+        let sig = Signal::new_in_scope(7i32, ScopeId::ROOT);
+        dioxus_core::provide_context(RealSignalCtx {
+            persisted_count: sig,
+            cancel_hits: Arc::clone(&cancel_hits),
+        });
+        sig
+    });
+    surface3
+        .signal_registry_mut()
+        .register_signal("App", "count", count_sig3);
+    let mut standalone = DioxusRuntimeApp::new(surface3);
+    let valid_snap = standalone
+        .snapshot_state()
+        .expect("snapshot_state")
+        .to_vec();
+    assert!(standalone.last_state_error().is_none());
+    standalone
+        .restore_state(b"corrupt-bytes")
+        .expect("restore_state corrupt");
+    assert!(
+        standalone.last_state_error().is_some(),
+        "corrupt restore_state must record last_state_error"
+    );
+    standalone
+        .restore_state(&valid_snap)
+        .expect("restore_state valid");
+    assert!(
+        standalone.last_state_error().is_none(),
+        "valid restore_state must clear last_state_error"
+    );
+
+    rt.set_host_callbacks(None).expect("clear host callbacks");
+}
+
+#[component]
+fn PropsChild() -> Element {
+    let props = consume_context::<HostProps>();
+    let badge = props.get_str("badge").unwrap_or_else(|| "init".to_owned());
+    let level = props.get_i64("level").unwrap_or(0);
+    rsx! {
+        text { "badge={badge} level={level}" }
+    }
+}
+
+fn parent_ignoring_host_props() -> Element {
+    // Parent intentionally NEVER reads `HostProps`; `PropsChild` takes zero props so Dioxus
+    // memoizes it unless `HostProps`'s internal reactive signal marks `PropsChild`'s scope dirty.
+    rsx! {
+        view {
+            style: "width: 240px; height: 60px;",
+            PropsChild {}
+        }
+    }
+}
+
+#[test]
+fn dioxus_runtime_app_child_component_reacts_to_host_props_without_parent_read() {
+    let surface = DioxusSurface::new(SurfaceId::ROOT, parent_ignoring_host_props);
+    let mut rt = RuntimeBuilder::new()
+        .surface_id(SurfaceId::ROOT)
+        .viewport(Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        })
+        .app(Box::new(DioxusRuntimeApp::new(surface)))
+        .build();
+
+    assert!(rt.tick(1.0 / 60.0).expect("initial mount"));
+    {
+        let g = rt.acquire_scene().expect("acquire initial");
+        assert!(read_text_slab(&g).contains("badge=init level=0"));
+    }
+
+    let entries = [
+        NveMapEntry::new("badge", NveValue::from_str("gold")),
+        NveMapEntry::new("level", NveValue::i64(9)),
+    ];
+    // SAFETY: `entries` outlives `set_props`.
+    let props_ref = unsafe { NvePropsRef::from_slice(&entries) };
+    assert!(rt.set_props(props_ref).expect("set_props"));
+    assert!(rt.tick(1.0 / 60.0).expect("tick after set_props"));
+    {
+        let g = rt.acquire_scene().expect("acquire updated child");
+        let text = read_text_slab(&g);
+        assert!(
+            text.contains("badge=gold level=9"),
+            "memoized child component must react to HostProps update: `{text}`"
+        );
+    }
 }

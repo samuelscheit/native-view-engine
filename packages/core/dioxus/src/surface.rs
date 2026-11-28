@@ -181,14 +181,19 @@ impl DioxusSurface {
         &mut self.signal_registry
     }
 
-    /// Encodes all signals registered on this surface into a binary `NVE_SIG1` archive.
+    /// Encodes all signals registered on this surface into a binary `NVE_SIG1` archive inside
+    /// `ScopeId::ROOT` so live `dioxus_signals::Signal<T>` readers never panic with `NoCurrentRuntime`.
     pub fn snapshot_signals(&self) -> Result<Vec<u8>, SignalArchiveError> {
-        self.signal_registry.encode_full()
+        self.vdom
+            .in_scope(ScopeId::ROOT, || self.signal_registry.encode_full())
     }
 
-    /// Hydrates registered signals on this surface from a binary `NVE_SIG1` archive.
+    /// Hydrates registered signals on this surface from a binary `NVE_SIG1` archive inside
+    /// `ScopeId::ROOT` so live `dioxus_signals::Signal<T>` writers never panic with `NoCurrentRuntime`.
     pub fn hydrate_signals(&mut self, bytes: &[u8]) -> Result<HydrationReport, SignalArchiveError> {
-        self.signal_registry.hydrate_from_bytes(bytes)
+        let registry = &mut self.signal_registry;
+        self.vdom
+            .in_scope(ScopeId::ROOT, || registry.hydrate_from_bytes(bytes))
     }
 
     /// Reconciles the Dioxus `VirtualDom` directly into the owned [`NodeStore`] and populates

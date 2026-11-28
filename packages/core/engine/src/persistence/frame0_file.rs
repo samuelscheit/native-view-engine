@@ -23,6 +23,7 @@ pub const FRAME0_FOOTER_SIZE: usize = 40;
 pub const MAX_FRAME0_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 const FRAME0_XXH64_SEED: u64 = 0x4E56_4546_524D_3032;
+const NVE2_MAGIC_BYTES: [u8; 4] = *b"NVE2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Frame0Meta {
@@ -310,6 +311,18 @@ impl Frame0File {
         map_frame0_submit_result(res, footer, disk_path)
     }
 
+    /// Returns `true` iff `path` exists, is readable, and begins with the 4-byte `NVE2` magic
+    /// header (prevents corrupt-file cleanup from deleting unrelated files).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn file_has_nve2_magic(path: &Path) -> bool {
+        use std::io::Read as _;
+        let Ok(mut f) = std::fs::File::open(path) else {
+            return false;
+        };
+        let mut magic = [0u8; 4];
+        f.read_exact(&mut magic).is_ok() && magic == NVE2_MAGIC_BYTES
+    }
+
     fn read_into_buf(
         path: &Path,
         expected: Frame0Meta,
@@ -332,7 +345,9 @@ impl Frame0File {
                 Err(ReadBoundedError::Io(e)) => return Err(Frame0Miss::Io(e.to_string())),
                 Err(ReadBoundedError::TooLarge) => {
                     drop(file);
-                    let _ = std::fs::remove_file(path);
+                    if Self::file_has_nve2_magic(path) {
+                        let _ = std::fs::remove_file(path);
+                    }
                     return Err(Frame0Miss::Corrupt("frame0.nve2 exceeds max size"));
                 }
             }
@@ -340,7 +355,7 @@ impl Frame0File {
             Self::validate_bytes(buf, expected)
                 .map(|(f, _)| f)
                 .map_err(|miss| {
-                    if matches!(miss, Frame0Miss::Corrupt(_)) {
+                    if matches!(miss, Frame0Miss::Corrupt(_)) && buf.starts_with(&NVE2_MAGIC_BYTES) {
                         let _ = std::fs::remove_file(path);
                     }
                     miss

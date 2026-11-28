@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use nve_abi::{
     FrameId, HostServiceId, InteractionEvent, NveBufferSlice, NveHostCallbacks, NveHostStatus,
     NveRuntimeStatus, NveSizeConstraints, SurfaceId, ValidatedEvents, METHOD_WINDOW_REQUEST_FRAME,
-    NVE_MEASURE_FLAG_DRY_RUN, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH, SERVICE_WINDOW,
+    NVE_MEASURE_FLAG_DRY_RUN, NVE_MEASURE_FLAG_IDEAL, NVE_RUNTIME_ABI_VERSION,
+    NVE_RUNTIME_SCHEMA_HASH, SERVICE_WINDOW,
 };
 use nve_tables::tables::{Interaction, Layout, Scroll, TextContent, Visual};
 use nve_engine::Viewport;
@@ -500,24 +501,61 @@ fn v6_warm_measure_surface_and_idle_host_router_are_zero_alloc() {
     rt.push_host_event(HostServiceId(0x1001), 1, b"warm")
         .expect("warm push");
     assert!(!rt.tick(1.0 / 60.0).expect("warm drain tick"));
-    let constraints = NveSizeConstraints::loose(320.0, 240.0);
-    let warm_m = rt
-        .measure_surface(constraints, NVE_MEASURE_FLAG_DRY_RUN)
-        .expect("warm measure");
-    assert!(warm_m.width >= 200.0 && warm_m.height >= 80.0);
+    let probes = [
+        (NveSizeConstraints::loose(320.0, 240.0), NVE_MEASURE_FLAG_DRY_RUN),
+        (
+            NveSizeConstraints {
+                min_w: 160.0,
+                min_h: 90.0,
+                max_w: 160.0,
+                max_h: 90.0,
+            },
+            NVE_MEASURE_FLAG_DRY_RUN,
+        ),
+        (
+            NveSizeConstraints {
+                min_w: 120.0,
+                min_h: 40.0,
+                max_w: 280.0,
+                max_h: 160.0,
+            },
+            NVE_MEASURE_FLAG_DRY_RUN,
+        ),
+        (NveSizeConstraints::loose(400.0, 300.0), NVE_MEASURE_FLAG_DRY_RUN),
+        (
+            NveSizeConstraints {
+                min_w: 100.0,
+                min_h: 40.0,
+                max_w: 100.0,
+                max_h: 40.0,
+            },
+            NVE_MEASURE_FLAG_DRY_RUN | NVE_MEASURE_FLAG_IDEAL,
+        ),
+    ];
+    for &(c, flags) in &probes {
+        let warm_m = rt.measure_surface(c, flags).expect("warm measure");
+        assert!(warm_m.width > 0.0 && warm_m.height > 0.0);
+    }
 
-    // 1. Warm `measure_surface(DRY_RUN)` MUST perform 0 heap allocations.
+    // 1. Cycling multiple distinct constraints + `IDEAL` MUST perform 0 heap allocations AND keep
+    //    distinct dimensions intact without clobbering committed clean-frame state.
     let (_, measure_allocs) = count_allocs(|| {
-        for _ in 0..32 {
+        for i in 0..40 {
+            let (c, flags) = probes[i % probes.len()];
             let m = rt
-                .measure_surface(constraints, NVE_MEASURE_FLAG_DRY_RUN)
-                .expect("steady-state measure_surface");
+                .measure_surface(c, flags)
+                .expect("steady-state varying measure_surface");
+            if (flags & NVE_MEASURE_FLAG_IDEAL) != 0 {
+                assert!(m.width >= 200.0 && m.height >= 80.0);
+            } else if c.min_w == 160.0 && c.max_w == 160.0 {
+                assert_eq!((m.width, m.height), (160.0, 90.0));
+            }
             black_box(m);
         }
     });
     assert_eq!(
         measure_allocs, 0,
-        "warm measure_surface(DRY_RUN) must perform 0 heap allocations"
+        "warm measure_surface cycling varying constraints + IDEAL must perform 0 heap allocations"
     );
 
     // 2. Idle `RuntimeHostRouter::drain_into_app` + steady-state `tick()` MUST perform 0 allocs.

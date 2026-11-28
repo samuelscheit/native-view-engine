@@ -383,6 +383,15 @@ void test_scene_reader_and_session_mock() {
     int releases = 0;
     int destroys = 0;
     int wake_fires = 0;
+    int intrinsic_fires = 0;
+    int measures = 0;
+    int frame0_saves = 0;
+    int frame0_file_boots = 0;
+    int frame0_bytes_boots = 0;
+    int host_cb_sets = 0;
+    int host_completes = 0;
+    int host_pushes = 0;
+    int host_channels = 0;
     bool corrupt_view = false;
     NveSceneView view{};
   };
@@ -475,19 +484,42 @@ void test_scene_reader_and_session_mock() {
   };
   mock_api.clear_state_file = [](NveRuntimeHandle, NveStrSlice) -> int32_t { return NVE_RUNTIME_OK; };
   mock_api.measure_surface = [](NveRuntimeHandle, const NveSizeConstraints*, uint32_t, NveSurfaceMeasure* out) -> int32_t {
+    ++g_mock->measures;
     if (out != nullptr) *out = NveSurfaceMeasure{120.0f, 40.0f, 32.0f, 32.0f};
     return NVE_RUNTIME_OK;
   };
-  mock_api.set_intrinsic_size_invalidated_callback = [](NveRuntimeHandle, NveRuntimeIntrinsicSizeInvalidatedFn, void*) -> int32_t {
+  mock_api.set_intrinsic_size_invalidated_callback = [](NveRuntimeHandle, NveRuntimeIntrinsicSizeInvalidatedFn cb, void* ctx) -> int32_t {
+    if (cb != nullptr) cb(ctx);
     return NVE_RUNTIME_OK;
   };
-  mock_api.save_frame0_file = [](NveRuntimeHandle, NveStrSlice, uint64_t, uint64_t) -> int32_t { return NVE_RUNTIME_OK; };
-  mock_api.boot_frame0_file = [](NveRuntimeHandle, NveStrSlice, uint64_t, uint64_t) -> int32_t { return NVE_RUNTIME_NOT_FOUND; };
-  mock_api.boot_frame0_bytes = [](NveRuntimeHandle, NveBufferSlice, uint64_t, uint64_t) -> int32_t { return NVE_RUNTIME_NOT_FOUND; };
-  mock_api.set_host_callbacks = [](NveRuntimeHandle, const NveHostCallbacks*) -> int32_t { return NVE_RUNTIME_OK; };
-  mock_api.complete_host_request = [](NveRuntimeHandle, uint64_t, int32_t, NveBufferSlice) -> int32_t { return NVE_RUNTIME_OK; };
-  mock_api.push_host_event = [](NveRuntimeHandle, uint32_t, uint32_t, NveBufferSlice) -> int32_t { return NVE_RUNTIME_OK; };
-  mock_api.publish_host_channel = [](NveRuntimeHandle, uint32_t, uint32_t, NveBufferSlice) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.save_frame0_file = [](NveRuntimeHandle, NveStrSlice, uint64_t, uint64_t) -> int32_t {
+    ++g_mock->frame0_saves;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.boot_frame0_file = [](NveRuntimeHandle, NveStrSlice, uint64_t, uint64_t) -> int32_t {
+    ++g_mock->frame0_file_boots;
+    return NVE_RUNTIME_NOT_FOUND;
+  };
+  mock_api.boot_frame0_bytes = [](NveRuntimeHandle, NveBufferSlice, uint64_t, uint64_t) -> int32_t {
+    ++g_mock->frame0_bytes_boots;
+    return NVE_RUNTIME_NOT_FOUND;
+  };
+  mock_api.set_host_callbacks = [](NveRuntimeHandle, const NveHostCallbacks*) -> int32_t {
+    ++g_mock->host_cb_sets;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.complete_host_request = [](NveRuntimeHandle, uint64_t, int32_t, NveBufferSlice) -> int32_t {
+    ++g_mock->host_completes;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.push_host_event = [](NveRuntimeHandle, uint32_t, uint32_t, NveBufferSlice) -> int32_t {
+    ++g_mock->host_pushes;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.publish_host_channel = [](NveRuntimeHandle, uint32_t, uint32_t, NveBufferSlice) -> int32_t {
+    ++g_mock->host_channels;
+    return NVE_RUNTIME_OK;
+  };
 
   {
     auto sess = nve::host::RuntimeSession::create(&mock_api);
@@ -558,6 +590,30 @@ void test_scene_reader_and_session_mock() {
     alignas(uint32_t) const std::array<uint32_t, 2> moved_ids = {1u, 1u};
     moved.moved_indices = moved_ids.data();
     CHECK(nve::host::SceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}).has_value());
+
+    // Invoke all 9 Runtime ABI v6 wrapper methods on `RuntimeSession`.
+    NveSizeConstraints c{0.0f, 0.0f, 320.0f, 240.0f};
+    NveSurfaceMeasure m{};
+    CHECK(sess->measure_surface(c, NVE_MEASURE_FLAG_DRY_RUN, &m) == NVE_RUNTIME_OK);
+    CHECK(m.width == 120.0f && m.height == 40.0f && m.first_baseline == 32.0f && m.last_baseline == 32.0f);
+    CHECK(sess->measure_surface(c, NVE_MEASURE_FLAG_DRY_RUN, nullptr) == NVE_RUNTIME_INVALID_ARG);
+    auto intrinsic_cb = [](void* ctx) { ++static_cast<MockState*>(ctx)->intrinsic_fires; };
+    CHECK(sess->set_intrinsic_size_invalidated_callback(intrinsic_cb, &state) == NVE_RUNTIME_OK);
+    CHECK(state.intrinsic_fires == 1);
+    CHECK(sess->clear_intrinsic_size_invalidated_callback() == NVE_RUNTIME_OK);
+    CHECK(sess->save_frame0_file("/tmp/mock_frame0.nve2", 1u, 2u) == NVE_RUNTIME_OK);
+    CHECK(sess->boot_frame0_file("/tmp/mock_frame0.nve2", 1u, 2u) == NVE_RUNTIME_NOT_FOUND);
+    const std::array<uint8_t, 4> payload = {1u, 2u, 3u, 4u};
+    CHECK(sess->boot_frame0_bytes(payload, 1u, 2u) == NVE_RUNTIME_NOT_FOUND);
+    NveHostCallbacks hcb{};
+    CHECK(sess->set_host_callbacks(&hcb) == NVE_RUNTIME_OK);
+    CHECK(sess->clear_host_callbacks() == NVE_RUNTIME_OK);
+    CHECK(sess->complete_host_request(7u, 0, payload) == NVE_RUNTIME_OK);
+    CHECK(sess->push_host_event(0x1001u, 3u, payload) == NVE_RUNTIME_OK);
+    CHECK(sess->publish_host_channel(9u, 1u, payload) == NVE_RUNTIME_OK);
+    CHECK(state.measures == 1 && state.frame0_saves == 1 && state.frame0_file_boots == 1 &&
+          state.frame0_bytes_boots == 1 && state.host_cb_sets == 2 && state.host_completes == 1 &&
+          state.host_pushes == 1 && state.host_channels == 1);
 
     // Corrupted view MUST release reader lock immediately instead of leaking!
     state.corrupt_view = true;

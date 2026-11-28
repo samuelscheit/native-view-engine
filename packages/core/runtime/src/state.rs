@@ -14,7 +14,7 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder, ResourceStore};
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
 use crate::delta::SceneDelta;
-use crate::host_router::{OwnerBinding, RuntimeHostRouter};
+use crate::host_router::{OwnerBindingHandle, RuntimeHostRouter};
 use crate::pair::{PairInboundEvent, PairSession};
 
 /// Returns `true` when `changes` can affect intrinsic or laid-out surface dimensions.
@@ -103,15 +103,20 @@ pub(crate) enum PublishedResources {
 
 pub(crate) struct RuntimeInner {
     // `app` MUST be declared before `host_binding` so Rust's field drop order destroys the app
-    // before the heap-pinned `OwnerBinding` even if `SurfaceRuntime::drop` ever skips cleanup.
+    // before the `OwnerBindingHandle` even if `SurfaceRuntime::drop` ever skips cleanup.
     pub(crate) app: Option<Box<dyn RuntimeApp>>,
-    pub(crate) host_binding: Option<Box<OwnerBinding>>,
+    pub(crate) host_binding: Option<OwnerBindingHandle>,
     pub(crate) pair: Option<PairSession>,
     pub(crate) replica_store: NodeStore,
     pub(crate) state: SurfaceState,
 }
 
 impl RuntimeInner {
+    #[inline]
+    pub(crate) fn has_non_empty_scene(&self) -> bool {
+        self.active_store().stats().live_nodes > 0 || self.state.metrics.live_nodes > 0
+    }
+
     /// Resets `replica_store`, `wire_decoder`, `scene`, `rects`, and `published_view` when
     /// attaching, replacing, or detaching an app/pair or recovering from wire corruption.
     pub(crate) fn reset_for_app_change(&mut self) {
@@ -193,7 +198,12 @@ impl RuntimeInner {
     ) -> Result<(), RuntimeError> {
         let (frame_num, _ops) = WireDecoder::validate_header(bytes)
             .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
+        let had_live_nodes =
+            replica_store.stats().live_nodes > 0 || state.metrics.live_nodes > 0;
         if (is_keyframe || frame_num == 1) && state.has_replica_state {
+            if had_live_nodes {
+                state.intrinsic_size_dirty = true;
+            }
             Self::reset_replica_and_state(replica_store, state);
             state.merged_changes.copy_from(&state.empty_changes);
             *has_changes = false;
@@ -211,6 +221,9 @@ impl RuntimeInner {
         if let Err(err) = apply_res {
             // Discard mid-frame partial mutations immediately so `replica_store` and
             // `LaidOutScene` stay synchronized across `submit_nve2`, `AppFrame::Wire`, and pair.
+            if had_live_nodes {
+                state.intrinsic_size_dirty = true;
+            }
             Self::reset_replica_and_state(replica_store, state);
             state.merged_changes.copy_from(&state.empty_changes);
             *has_changes = false;
@@ -382,7 +395,9 @@ impl RuntimeInner {
                 tx.commit_into(&mut state.hook_changes);
             }
             // A hook that asked for a refresh or wrote this tick (a running animation) needs the
-            // next tick too; wake-driven hosts would otherwise stall after one frame.
+            // next tick too; wake-driven hosts would otherwise stall after one frame. Only mark
+            // `needs_publish` when the hook actually mutated the store (zero-change hooks must not
+            // spin full scene publications/repaints).
             needs_follow_up_wake |= hook_requested || !state.hook_changes.is_empty();
             if !state.hook_changes.is_empty() {
                 Self::record_changes(
@@ -390,8 +405,6 @@ impl RuntimeInner {
                     &mut has_changes,
                     &state.hook_changes,
                 );
-                state.needs_publish = true;
-            } else if hook_requested {
                 state.needs_publish = true;
             }
         }
@@ -411,6 +424,9 @@ impl RuntimeInner {
     }
 
     fn reset_pair_replica(&mut self, has_changes: &mut bool) {
+        if self.replica_store.stats().live_nodes > 0 || self.state.metrics.live_nodes > 0 {
+            self.state.intrinsic_size_dirty = true;
+        }
         self.reset_for_app_change();
         self.state
             .merged_changes
@@ -524,13 +540,16 @@ impl RuntimeInner {
         }
         let mut has_changes = false;
         self.apply_wire_bytes(bytes, false, true, &mut has_changes)?;
-        let layout_invalidated = has_changes && changes_affect_layout(&self.state.merged_changes);
+        let layout_invalidated = self.state.intrinsic_size_dirty
+            || (has_changes && changes_affect_layout(&self.state.merged_changes));
+        self.state.intrinsic_size_dirty = false;
         self.commit_and_publish(has_changes);
         Ok(layout_invalidated)
     }
 
-    /// Applies a pre-validated Frame-0 `NVE2` keyframe payload into `replica_store`, verifies
-    /// `expected_nodes`, commits layout, and publishes the initial `NveSceneView`.
+    /// Atomically decodes a pre-validated Frame-0 `NVE2` keyframe payload into a staging
+    /// `NodeStore`, verifies `expected_nodes`, and ONLY swaps/publishes on success so any failure
+    /// preserves the prior live scene intact.
     pub(crate) fn boot_validated_frame0(
         &mut self,
         payload: &[u8],
@@ -546,18 +565,31 @@ impl RuntimeInner {
                 "cannot boot frame0 while a pair session is attached",
             ));
         }
-        let mut has_changes = false;
-        if self.apply_wire_bytes(payload, true, false, &mut has_changes).is_err() {
+        let mut staging = NodeStore::replica();
+        staging.set_realization_order(self.state.realization_order.clone());
+        let mut decoder = WireDecoder::default();
+        let mut changes = ChangeSet::default();
+        let decode_res = {
+            let mut tx = staging.tx();
+            let res = decoder.apply(&mut tx, payload);
+            if res.is_ok() {
+                tx.commit_into(&mut changes);
+            }
+            res
+        };
+        if decode_res.is_err() {
             return Err(RuntimeError::NotFound("frame0.nve2 NVE2 decode failed"));
         }
-        if self.replica_store.stats().live_nodes != expected_nodes {
-            self.reset_for_app_change();
-            self.state
-                .merged_changes
-                .copy_from(&self.state.empty_changes);
+        if staging.stats().live_nodes != expected_nodes {
             return Err(RuntimeError::NotFound("frame0.nve2 node_count mismatch"));
         }
-        self.commit_and_publish(has_changes);
+        self.state.reset_scene_epoch();
+        self.replica_store = staging;
+        self.state.wire_decoder = decoder;
+        self.state.has_replica_state = true;
+        self.state.merged_changes.copy_from(&changes);
+        self.state.needs_publish = true;
+        self.commit_and_publish(true);
         Ok(())
     }
 }

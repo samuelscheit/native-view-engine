@@ -9,7 +9,7 @@ use nve_engine::loader::{LoaderError, StagedDylib};
 #[cfg(not(target_arch = "wasm32"))]
 use nve_engine::{CapabilityUnsupported, PersistenceError, StateFile, MAX_STATE_FILE_BYTES};
 use nve_engine::{Frame0File, Frame0Meta, Frame0Miss};
-use nve_tables::tables::core_tables_schema_hash;
+use nve_tables::tables::{core_tables_schema_hash, CORE_TABLE_DESCS};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::app::{CAbiAppAdapter, RuntimeApp};
@@ -314,11 +314,6 @@ impl SurfaceRuntime {
         env_hash: u64,
     ) -> Result<(), RuntimeError> {
         self.check_file_op()?;
-        let meta = Frame0Meta {
-            table_schema_hash: core_tables_schema_hash(),
-            app_build_id,
-            env_hash,
-        };
         let encoded = self.with_write(|inner| {
             if inner.state.frame_id.0 == 0 {
                 return Err(RuntimeError::NotFound("surface has no committed frame to save"));
@@ -327,6 +322,13 @@ impl SurfaceRuntime {
             if store.stats().live_nodes == 0 {
                 return Err(RuntimeError::NotFound("surface has no live nodes to save"));
             }
+            // Include every optional module table actually live in `store` so a file containing
+            // non-core tables is never falsely tagged with `core_tables_schema_hash()`.
+            let meta = Frame0Meta {
+                table_schema_hash: store.schema_hash_with_base(CORE_TABLE_DESCS),
+                app_build_id,
+                env_hash,
+            };
             Frame0File::encode(store, meta).map_err(|e| match e {
                 PersistenceError::PayloadTooLarge(_) => {
                     RuntimeError::InvalidArg("frame0 exceeds MAX_FRAME0_FILE_BYTES")
@@ -380,7 +382,8 @@ impl SurfaceRuntime {
         let (footer, payload) = match Frame0File::read_and_validate(path, meta) {
             Ok(v) => v,
             Err(miss) => {
-                if should_remove_frame0_file(&miss) {
+                // Only remove files carrying `NVE2` magic so unrelated files are never deleted.
+                if should_remove_frame0_file(&miss) && Frame0File::file_has_nve2_magic(path) {
                     let _ = std::fs::remove_file(path);
                 }
                 return Err(frame0_miss_error(miss));
@@ -389,7 +392,7 @@ impl SurfaceRuntime {
         if let Err(err) =
             self.with_write(|inner| inner.boot_validated_frame0(&payload, footer.node_count as usize))
         {
-            if matches!(err, RuntimeError::NotFound(_)) {
+            if matches!(err, RuntimeError::NotFound(_)) && Frame0File::file_has_nve2_magic(path) {
                 let _ = std::fs::remove_file(path);
             }
             return Err(err);

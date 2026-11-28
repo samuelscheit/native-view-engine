@@ -47,52 +47,125 @@ impl MotionRuntimeTickHook {
     }
 }
 
+#[inline]
+fn is_driven_property(prop: TransitionProperty) -> bool {
+    matches!(
+        prop,
+        TransitionProperty::Opacity
+            | TransitionProperty::BorderRadius
+            | TransitionProperty::Width
+            | TransitionProperty::Height
+            | TransitionProperty::Padding
+            | TransitionProperty::Gap
+    )
+}
+
+#[inline]
+fn length_eq(a: Length, b: Length) -> bool {
+    a.is_points() == b.is_points()
+        && a.is_percent() == b.is_percent()
+        && a.value().to_bits() == b.value().to_bits()
+}
+
 impl FrameTickHook for MotionRuntimeTickHook {
     fn tick(&mut self, tx: &mut Transaction<'_>, dt_s: f32) -> bool {
         let mut clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
         if !clock.has_active_animations() {
             return false;
         }
-        clock.step_active_with(dt_s, |key, val, _settled| {
-            let MotionKey::Node(node_id, prop) = key else {
-                return;
-            };
-            if !tx.store().is_live(node_id) || !val.is_finite() {
-                return;
-            }
-            match prop {
-                TransitionProperty::Opacity => {
-                    tx.set(node_id, Visual::OPACITY, val.clamp(0.0, 1.0));
+        let mut any_live_driven_active = false;
+        clock.step_and_prune_active_with(
+            dt_s,
+            tx,
+            |tx, key| match key {
+                MotionKey::Node(node_id, _) => tx.store().is_live(node_id),
+                MotionKey::Named(_) => true,
+            },
+            |tx, key, val, settled| {
+                let MotionKey::Node(node_id, prop) = key else {
+                    return;
+                };
+                if !is_driven_property(prop) || !val.is_finite() {
+                    return;
                 }
-                TransitionProperty::BorderRadius => {
-                    tx.set(node_id, Visual::BORDER_RADIUS, val.max(0.0));
+                if !settled {
+                    any_live_driven_active = true;
                 }
-                TransitionProperty::Width => {
-                    tx.set(node_id, Layout::WIDTH, Length::points(val.max(0.0)));
+                match prop {
+                    TransitionProperty::Opacity => {
+                        let next = val.clamp(0.0, 1.0);
+                        if tx
+                            .store()
+                            .try_row::<Visual>(node_id)
+                            .is_none_or(|v| v.opacity().to_bits() != next.to_bits())
+                        {
+                            tx.set(node_id, Visual::OPACITY, next);
+                        }
+                    }
+                    TransitionProperty::BorderRadius => {
+                        let next = val.max(0.0);
+                        if tx
+                            .store()
+                            .try_row::<Visual>(node_id)
+                            .is_none_or(|v| v.border_radius().to_bits() != next.to_bits())
+                        {
+                            tx.set(node_id, Visual::BORDER_RADIUS, next);
+                        }
+                    }
+                    TransitionProperty::Width => {
+                        let next = Length::points(val.max(0.0));
+                        if tx
+                            .store()
+                            .try_row::<Layout>(node_id)
+                            .is_none_or(|l| !length_eq(l.width(), next))
+                        {
+                            tx.set(node_id, Layout::WIDTH, next);
+                        }
+                    }
+                    TransitionProperty::Height => {
+                        let next = Length::points(val.max(0.0));
+                        if tx
+                            .store()
+                            .try_row::<Layout>(node_id)
+                            .is_none_or(|l| !length_eq(l.height(), next))
+                        {
+                            tx.set(node_id, Layout::HEIGHT, next);
+                        }
+                    }
+                    TransitionProperty::Padding => {
+                        let p = Length::points(val.max(0.0));
+                        let same = tx.store().try_row::<Layout>(node_id).is_some_and(|l| {
+                            length_eq(l.padding_top(), p)
+                                && length_eq(l.padding_right(), p)
+                                && length_eq(l.padding_bottom(), p)
+                                && length_eq(l.padding_left(), p)
+                        });
+                        if !same {
+                            tx.set(node_id, Layout::PADDING_TOP, p);
+                            tx.set(node_id, Layout::PADDING_RIGHT, p);
+                            tx.set(node_id, Layout::PADDING_BOTTOM, p);
+                            tx.set(node_id, Layout::PADDING_LEFT, p);
+                        }
+                    }
+                    TransitionProperty::Gap => {
+                        let g = Length::points(val.max(0.0));
+                        let same = tx.store().try_row::<Layout>(node_id).is_some_and(|l| {
+                            length_eq(l.row_gap(), g) && length_eq(l.column_gap(), g)
+                        });
+                        if !same {
+                            tx.set(node_id, Layout::ROW_GAP, g);
+                            tx.set(node_id, Layout::COLUMN_GAP, g);
+                        }
+                    }
+                    TransitionProperty::All
+                    | TransitionProperty::BackgroundColor
+                    | TransitionProperty::Color
+                    | TransitionProperty::BorderColor
+                    | TransitionProperty::Transform => {}
                 }
-                TransitionProperty::Height => {
-                    tx.set(node_id, Layout::HEIGHT, Length::points(val.max(0.0)));
-                }
-                TransitionProperty::Padding => {
-                    let p = Length::points(val.max(0.0));
-                    tx.set(node_id, Layout::PADDING_TOP, p);
-                    tx.set(node_id, Layout::PADDING_RIGHT, p);
-                    tx.set(node_id, Layout::PADDING_BOTTOM, p);
-                    tx.set(node_id, Layout::PADDING_LEFT, p);
-                }
-                TransitionProperty::Gap => {
-                    let g = Length::points(val.max(0.0));
-                    tx.set(node_id, Layout::ROW_GAP, g);
-                    tx.set(node_id, Layout::COLUMN_GAP, g);
-                }
-                TransitionProperty::All
-                | TransitionProperty::BackgroundColor
-                | TransitionProperty::Color
-                | TransitionProperty::BorderColor
-                | TransitionProperty::Transform => {}
-            }
-        });
-        clock.has_active_animations()
+            },
+        );
+        any_live_driven_active
     }
 }
 
@@ -170,5 +243,96 @@ mod tests {
             tx.commit_into(&mut ch);
         }
         assert!(ch.is_empty());
+    }
+
+    #[test]
+    fn motion_runtime_tick_hook_prunes_dead_nodes_ignores_unsupported_and_avoids_zero_dt_churn() {
+        register_core_tables();
+        let mut store = NodeStore::new();
+        let (live_node, dead_node) = {
+            let mut tx = store.tx();
+            let a = tx.create();
+            let b = tx.create();
+            tx.set_children(NodeId::ROOT, &[a, b]);
+            tx.set(a, Visual::OPACITY, 0.25);
+            tx.set(b, Visual::OPACITY, 0.5);
+            let mut ch = ChangeSet::default();
+            tx.commit_into(&mut ch);
+            (a, b)
+        };
+
+        let mut hook = MotionRuntimeTickHook::new();
+        let clock = hook.clock();
+
+        // 1. Named & unsupported TransitionProperty tracks must NOT spin (`tick` returns `false`,
+        //    zero store writes).
+        {
+            let mut c = clock.lock().expect("clock lock");
+            c.animate_spring(MotionKey::named("custom_ui_knob"), SpringSpec::snappy(), 0.0, 1.0);
+            c.animate_spring(
+                (live_node, TransitionProperty::BackgroundColor),
+                SpringSpec::snappy(),
+                0.0,
+                1.0,
+            );
+            c.animate_spring(
+                (live_node, TransitionProperty::Transform),
+                SpringSpec::snappy(),
+                0.0,
+                100.0,
+            );
+        }
+        let mut ch = ChangeSet::default();
+        {
+            let mut tx = store.tx();
+            assert!(
+                !hook.tick(&mut tx, 1.0 / 60.0),
+                "named & unsupported properties must not force follow-up frames"
+            );
+            tx.commit_into(&mut ch);
+        }
+        assert!(ch.is_empty());
+
+        // 2. Dead-node track is pruned immediately when `!store.is_live(dead_node)`.
+        {
+            let mut c = clock.lock().expect("clock lock");
+            c.clear();
+            c.animate_spring((dead_node, TransitionProperty::Opacity), SpringSpec::snappy(), 0.5, 1.0);
+        }
+        {
+            let mut tx = store.tx();
+            tx.set_children(NodeId::ROOT, &[live_node]);
+            tx.remove(dead_node);
+            tx.commit_into(&mut ch);
+        }
+        assert!(!store.is_live(dead_node));
+        {
+            let mut tx = store.tx();
+            assert!(!hook.tick(&mut tx, 1.0 / 60.0), "dead node track must be pruned");
+            tx.commit_into(&mut ch);
+        }
+        assert!(ch.is_empty());
+        assert!(
+            !clock.lock().expect("clock lock").has_active_animations(),
+            "dead node track must be removed from MotionClock"
+        );
+
+        // 3. `dt_s == 0.0` when initial value already equals current column -> zero dirty writes!
+        {
+            let mut c = clock.lock().expect("clock lock");
+            c.animate_spring((live_node, TransitionProperty::Opacity), SpringSpec::snappy(), 0.25, 1.0);
+        }
+        {
+            let mut tx = store.tx();
+            assert!(
+                hook.tick(&mut tx, 0.0),
+                "unsettled live track still requests next frame"
+            );
+            tx.commit_into(&mut ch);
+        }
+        assert!(
+            ch.is_empty(),
+            "dt_s == 0.0 with unchanged column value must not dirty NodeStore"
+        );
     }
 }

@@ -391,6 +391,52 @@ impl MotionClock {
         }
     }
 
+    /// Advances active tracks that satisfy `keep(ctx, key)` by `dt_s` while pruning any track for
+    /// which `keep(ctx, key)` returns `false` (e.g. removed `NodeId`s), preserving key order with
+    /// zero heap allocations.
+    pub fn step_and_prune_active_with<C>(
+        &mut self,
+        dt_s: f32,
+        ctx: &mut C,
+        mut keep: impl FnMut(&C, MotionKey) -> bool,
+        mut on_step: impl FnMut(&mut C, MotionKey, f32, bool),
+    ) {
+        if self.keys.is_empty() {
+            return;
+        }
+        let pref = self.preference;
+        let len = self.keys.len();
+        let mut write = 0usize;
+        for read in 0..len {
+            let key = self.keys[read];
+            if !keep(ctx, key) {
+                if self.active[read] {
+                    self.active_count -= 1;
+                }
+                continue;
+            }
+            let mut track = self.tracks[read];
+            let mut is_active = self.active[read];
+            if is_active {
+                let settled = track.step(dt_s, pref);
+                if settled {
+                    is_active = false;
+                    self.active_count -= 1;
+                }
+                on_step(ctx, key, track.value(), settled);
+            }
+            if write != read {
+                self.keys[write] = key;
+            }
+            self.tracks[write] = track;
+            self.active[write] = is_active;
+            write += 1;
+        }
+        self.keys.truncate(write);
+        self.tracks.truncate(write);
+        self.active.truncate(write);
+    }
+
     #[inline]
     pub fn value(&self, key: &MotionKey) -> Option<f32> {
         self.track(key).map(MotionTrack::value)

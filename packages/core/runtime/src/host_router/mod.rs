@@ -6,6 +6,8 @@
 //! push / channel ingress, and zero-allocation idle steady-state batch draining inside
 //! `SurfaceRuntime::tick`.
 
+mod slots;
+
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,20 +22,60 @@ use nve_host_services::{CompletionSink, HostServiceProvider, InvokeResult, Overs
 use crate::app::RuntimeApp;
 use crate::wake::WakeBridge;
 
+pub(crate) use slots::OwnerBindingHandle;
+use slots::{lookup_owner_binding, CallbackRetryIds, CallbacksSlot, SlotCallGuard};
+
 enum HostBackend {
     None,
-    Callbacks(NveHostCallbacks),
+    Callbacks(Arc<CallbacksSlot>),
     Provider(Arc<dyn HostServiceProvider>),
 }
 
-/// Shared state backing [`RuntimeHostRouter`] and every per-attach [`OwnerBinding`].
+enum AcquiredBackend {
+    None,
+    Callbacks(SlotCallGuard),
+    Provider(Arc<dyn HostServiceProvider>),
+}
+
+/// RAII guard cleaning up an in-flight `CompletionSink` slot unless disarmed on `Pending`.
+struct InFlightGuard<'a> {
+    sink: &'a CompletionSink,
+    host_req_id: u64,
+    armed: bool,
+}
+
+impl<'a> InFlightGuard<'a> {
+    #[inline]
+    fn new(sink: &'a CompletionSink, host_req_id: u64) -> Self {
+        Self {
+            sink,
+            host_req_id,
+            armed: true,
+        }
+    }
+
+    #[inline]
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.sink.finish_sync(self.host_req_id);
+        }
+    }
+}
+
+/// Shared state backing [`RuntimeHostRouter`] and every per-attach [`OwnerBindingHandle`].
 pub(crate) struct HostRouterShared {
     sink: CompletionSink,
     retry_cache: OversizedRetryCache,
+    callback_retry_ids: CallbackRetryIds,
     backend: RwLock<HostBackend>,
     wake: Arc<WakeBridge>,
     has_queued: Arc<AtomicBool>,
-    in_drain: Arc<AtomicBool>,
     next_owner_tag: AtomicU64,
 }
 
@@ -41,17 +83,13 @@ impl HostRouterShared {
     fn new(wake: Arc<WakeBridge>) -> Self {
         let sink = CompletionSink::new();
         let has_queued = Arc::new(AtomicBool::new(false));
-        let in_drain = Arc::new(AtomicBool::new(false));
         let queued_flag = Arc::clone(&has_queued);
-        let draining_flag = Arc::clone(&in_drain);
         let wake_cb = Arc::clone(&wake);
         sink.set_on_ready(Some(Arc::new(move || {
-            // SeqCst pair with `drain_into_app`: when draining under the surface write lock,
-            // defer host wake callbacks to `tick_shared` outside the lock without losing wakes.
+            // `WakeBridge::defer_guard` in `SurfaceRuntime::with_write` defers synchronous wake
+            // delivery until after the surface write lock releases.
             queued_flag.store(true, Ordering::SeqCst);
-            if !draining_flag.load(Ordering::SeqCst) {
-                wake_cb.trigger();
-            }
+            wake_cb.trigger();
         })));
         let backend = RwLock::new(HostBackend::None);
         // Prime OS rwlock storage eagerly so hot-path reads never lazily allocate.
@@ -59,10 +97,10 @@ impl HostRouterShared {
         Self {
             sink,
             retry_cache: OversizedRetryCache::new(),
+            callback_retry_ids: CallbackRetryIds::new(),
             backend,
             wake,
             has_queued,
-            in_drain,
             next_owner_tag: AtomicU64::new(1),
         }
     }
@@ -75,39 +113,25 @@ impl HostRouterShared {
             }
         }
     }
-}
 
-/// Heap-pinned per-attach host callback context handed to an attached [`RuntimeApp`] via
-/// `bind_host`. Every attach / Tier-2 reload receives a fresh monotonic `owner_tag`; deactivating
-/// it before unbinding and destroying the old app guarantees stale generations can never route
-/// calls or collide on `request_id` with the replacement generation.
-pub(crate) struct OwnerBinding {
-    owner_tag: u64,
-    active: AtomicBool,
-    shared: Arc<HostRouterShared>,
-}
-
-impl OwnerBinding {
-    #[inline]
-    pub(crate) fn owner_tag(&self) -> u64 {
-        self.owner_tag
+    fn acquire_backend(&self) -> AcquiredBackend {
+        let guard = self.backend.read().unwrap_or_else(|e| e.into_inner());
+        match &*guard {
+            HostBackend::None => AcquiredBackend::None,
+            HostBackend::Callbacks(slot) => AcquiredBackend::Callbacks(slot.enter()),
+            HostBackend::Provider(provider) => AcquiredBackend::Provider(Arc::clone(provider)),
+        }
     }
 
-    #[inline]
-    pub(crate) fn deactivate(&self) {
-        self.active.store(false, Ordering::Release);
-    }
-
-    /// Returns the C-ABI [`NveHostCallbacks`] pointing to this heap-pinned binding.
-    ///
-    /// Valid until this [`OwnerBinding`] is dropped (which strictly happens AFTER the bound app
-    /// has been unbound via `bind_host(None)` and dropped).
-    pub(crate) fn callbacks(&self) -> NveHostCallbacks {
-        let ctx: *const Self = self;
-        NveHostCallbacks {
-            host_ctx: ctx.cast_mut().cast::<c_void>(),
-            invoke: Some(router_invoke),
-            channel_publish: Some(router_channel_publish),
+    fn swap_backend(&self, next: HostBackend) {
+        let prev = {
+            let mut guard = self.backend.write().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut *guard, next)
+        };
+        self.retry_cache.clear();
+        self.callback_retry_ids.clear();
+        if let HostBackend::Callbacks(old_slot) = prev {
+            old_slot.drain_other_threads();
         }
     }
 }
@@ -124,43 +148,30 @@ impl RuntimeHostRouter {
         }
     }
 
-    /// Allocates a fresh pinned [`OwnerBinding`] with a unique monotonic `owner_tag`.
-    pub(crate) fn new_owner_binding(&self) -> Box<OwnerBinding> {
-        Box::new(OwnerBinding {
-            owner_tag: self.shared.alloc_owner_tag(),
-            active: AtomicBool::new(true),
-            shared: Arc::clone(&self.shared),
-        })
+    /// Allocates a fresh generational [`OwnerBindingHandle`] with a unique monotonic `owner_tag`.
+    pub(crate) fn new_owner_binding(&self) -> OwnerBindingHandle {
+        OwnerBindingHandle::register(self.shared.alloc_owner_tag(), Arc::clone(&self.shared))
     }
 
     /// Installs or clears the host's raw C-ABI [`NveHostCallbacks`] table, synchronously draining
-    /// any in-flight host calls before returning.
+    /// any other threads' in-flight host calls before returning without deadlocking on same-thread
+    /// re-entrancy.
     pub fn set_callbacks(&self, callbacks: Option<NveHostCallbacks>) {
-        let mut guard = self
-            .shared
-            .backend
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        *guard = match callbacks {
-            Some(cb) => HostBackend::Callbacks(cb),
+        let next = match callbacks {
+            Some(cb) => HostBackend::Callbacks(CallbacksSlot::new(cb)),
             None => HostBackend::None,
         };
-        self.shared.retry_cache.clear();
+        self.shared.swap_backend(next);
     }
 
     /// Installs or clears an in-process Rust [`HostServiceProvider`], synchronously draining any
-    /// in-flight calls before returning.
+    /// prior C-callback slot's cross-thread calls before returning.
     pub fn set_provider(&self, provider: Option<Arc<dyn HostServiceProvider>>) {
-        let mut guard = self
-            .shared
-            .backend
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        *guard = match provider {
+        let next = match provider {
             Some(p) => HostBackend::Provider(p),
             None => HostBackend::None,
         };
-        self.shared.retry_cache.clear();
+        self.shared.swap_backend(next);
     }
 
     /// Clears the installed callbacks/provider without touching pending sink queues (used early
@@ -169,7 +180,7 @@ impl RuntimeHostRouter {
         self.set_callbacks(None);
     }
 
-    /// Clears `on_ready`, callbacks, retry cache, and pending sink state on runtime drop.
+    /// Clears `on_ready`, callbacks, retry caches, and pending sink state on runtime drop.
     pub(crate) fn shutdown(&self) {
         self.shared.sink.set_on_ready(None);
         self.set_callbacks(None);
@@ -181,6 +192,7 @@ impl RuntimeHostRouter {
     /// cached oversized sync retries so a reloaded generation never sees stale responses.
     pub(crate) fn discard_pending_for_owner(&self, owner_tag: u64) -> usize {
         self.shared.retry_cache.clear();
+        self.shared.callback_retry_ids.clear_owner(owner_tag);
         self.shared.sink.discard_pending_for_owner(owner_tag)
     }
 
@@ -228,30 +240,19 @@ impl RuntimeHostRouter {
         if !self.shared.has_queued.load(Ordering::Acquire) {
             return (false, false);
         }
-        struct DrainGuard<'a>(&'a AtomicBool);
-        impl Drop for DrainGuard<'_> {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::SeqCst);
-            }
-        }
-        // Suppress synchronous wake callbacks during drain (while the surface write lock is held)
-        // and clear `has_queued` BEFORE locking `sink` so concurrent pushes or cap-deferred records
-        // re-arm `has_queued` and trigger `follow_up` wake after `with_write` releases.
-        self.shared.in_drain.store(true, Ordering::SeqCst);
-        let written = {
-            let _guard = DrainGuard(&self.shared.in_drain);
-            self.shared.has_queued.store(false, Ordering::SeqCst);
-            builder.clear();
-            self.shared
-                .sink
-                .drain_owner_and_broadcasts_into(owner_tag, builder)
-                .unwrap_or(0)
-        };
-        let more = self.shared.has_queued.load(Ordering::SeqCst);
+        self.shared.has_queued.store(false, Ordering::SeqCst);
+        builder.clear();
+        let written = self
+            .shared
+            .sink
+            .drain_owner_and_broadcasts_into(owner_tag, builder)
+            .unwrap_or(0);
+        let more_after_drain = self.shared.has_queued.load(Ordering::SeqCst);
         if written == 0 {
-            return (false, more);
+            return (false, more_after_drain);
         }
         let dirtied = app.dispatch_host_events(builder.as_bytes());
+        let more = more_after_drain || self.shared.has_queued.load(Ordering::SeqCst);
         (dirtied, more)
     }
 
@@ -262,12 +263,11 @@ impl RuntimeHostRouter {
     }
 }
 
-/// Safely unbinds (`active = false`, `bind_host(None)`), discards `owner_tag`'s pending records,
-/// drops `old_app`, and ONLY THEN drops `old_binding` so the old app/dylib can never dereference
-/// a freed `OwnerBinding` during teardown.
+/// Safely unbinds (`active = false`, removes generational binding token, `bind_host(None)`),
+/// discards `owner_tag`'s pending records, drops `old_app`, and drops `old_binding`.
 pub(crate) fn unbind_and_drop_app(
     old_app: Option<Box<dyn RuntimeApp>>,
-    old_binding: Option<Box<OwnerBinding>>,
+    old_binding: Option<OwnerBindingHandle>,
     router: &RuntimeHostRouter,
 ) {
     if let Some(ref b) = old_binding {
@@ -286,7 +286,7 @@ pub(crate) fn unbind_and_drop_app(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "C" fn router_invoke(
+pub(super) unsafe extern "C" fn router_invoke(
     host_ctx: *mut c_void,
     service_id: u32,
     method_id: u32,
@@ -300,16 +300,22 @@ unsafe extern "C" fn router_invoke(
         return NveHostStatus::InvalidArg.as_i32();
     }
     let res = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `host_ctx` points to a heap-pinned `OwnerBinding` outliving the bound app.
-        let binding = unsafe { &*(host_ctx as *const OwnerBinding) };
+        let Some(binding) = lookup_owner_binding(host_ctx) else {
+            return NveHostStatus::Cancelled.as_i32();
+        };
+        // SAFETY: Caller guarantees `request` is readable for `request.len` bytes when valid.
+        let Some(req_bytes) = (unsafe { request.try_as_slice() }) else {
+            return NveHostStatus::InvalidArg.as_i32();
+        };
 
-        // Handle `SERVICE_WINDOW::METHOD_WINDOW_REQUEST_FRAME` centrally with 0 locks / 0 allocs.
+        // Handle `SERVICE_WINDOW::METHOD_WINDOW_REQUEST_FRAME` centrally with 0 allocs.
         if service_id == SERVICE_WINDOW && method_id == METHOD_WINDOW_REQUEST_FRAME {
             if !out_len.is_null() {
                 // SAFETY: Caller supplied a writable `out_len` pointer.
                 unsafe { *out_len = 0 };
             }
             if binding.active.load(Ordering::Acquire) {
+                binding.frame_requested.store(true, Ordering::Release);
                 binding.shared.wake.trigger();
             }
             return NveHostStatus::Ok.as_i32();
@@ -319,7 +325,7 @@ unsafe extern "C" fn router_invoke(
             return NveHostStatus::Cancelled.as_i32();
         }
 
-        // Fast-path cached oversized synchronous retry (`BufferTooSmall` retry).
+        // Fast-path cached oversized synchronous retry (`BufferTooSmall` retry for Provider).
         if let Some(cached) = binding
             .shared
             .retry_cache
@@ -348,31 +354,36 @@ unsafe extern "C" fn router_invoke(
             return NveHostStatus::Ok.as_i32();
         }
 
-        let guard = binding
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        match &*guard {
-            HostBackend::None => NveHostStatus::Unsupported.as_i32(),
-            HostBackend::Callbacks(cb) => {
+        // Acquire backend and immediately release `backend.read()` BEFORE running host callbacks so
+        // re-entrant `set_callbacks`/`set_provider` calls never deadlock.
+        match binding.shared.acquire_backend() {
+            AcquiredBackend::None => NveHostStatus::Unsupported.as_i32(),
+            AcquiredBackend::Callbacks(slot_guard) => {
+                let cb = slot_guard.callbacks();
                 let Some(invoke_fn) = cb.invoke else {
                     return NveHostStatus::Unsupported.as_i32();
                 };
-                let Some(host_req_id) = binding.shared.sink.register_in_flight_for_owner(
+                let retry_host_id = binding.shared.callback_retry_ids.take(
                     binding.owner_tag,
                     caller_request_id,
+                    service_id,
+                    method_id,
+                );
+                let Some(host_req_id) = binding.shared.sink.register_in_flight_for_owner_with_id(
+                    binding.owner_tag,
+                    caller_request_id,
+                    retry_host_id,
                     service_id,
                     method_id,
                 ) else {
                     return NveHostStatus::InvalidArg.as_i32();
                 };
+                let mut in_flight = InFlightGuard::new(&binding.shared.sink, host_req_id);
                 if !binding.active.load(Ordering::Acquire) {
-                    binding.shared.sink.finish_sync(host_req_id);
                     return NveHostStatus::Cancelled.as_i32();
                 }
-                // SAFETY: `cb` is held behind the `backend` read lock so `set_callbacks(None)`
-                // waits for this call to return; `request`, `out_buf`, `out_len` satisfy C ABI.
+                // SAFETY: `slot_guard` drains cross-thread `set_callbacks(None)` until this call
+                // returns; `request`, `out_buf`, `out_len` satisfy the C ABI contract.
                 let rc = unsafe {
                     invoke_fn(
                         cb.host_ctx,
@@ -385,12 +396,22 @@ unsafe extern "C" fn router_invoke(
                         out_len,
                     )
                 };
-                if NveHostStatus::from_i32(rc) != NveHostStatus::Pending {
-                    binding.shared.sink.finish_sync(host_req_id);
+                match NveHostStatus::from_i32(rc) {
+                    NveHostStatus::Pending => in_flight.disarm(),
+                    NveHostStatus::BufferTooSmall => {
+                        binding.shared.callback_retry_ids.store(
+                            binding.owner_tag,
+                            caller_request_id,
+                            service_id,
+                            method_id,
+                            host_req_id,
+                        );
+                    }
+                    _ => {}
                 }
                 rc
             }
-            HostBackend::Provider(provider) => {
+            AcquiredBackend::Provider(provider) => {
                 let Some(host_req_id) = binding.shared.sink.register_in_flight_for_owner(
                     binding.owner_tag,
                     caller_request_id,
@@ -399,15 +420,13 @@ unsafe extern "C" fn router_invoke(
                 ) else {
                     return NveHostStatus::InvalidArg.as_i32();
                 };
+                let mut in_flight = InFlightGuard::new(&binding.shared.sink, host_req_id);
                 if !binding.active.load(Ordering::Acquire) {
-                    binding.shared.sink.finish_sync(host_req_id);
                     return NveHostStatus::Cancelled.as_i32();
                 }
-                // SAFETY: Caller guarantees `request` is valid for the synchronous invoke call.
-                let req_bytes = unsafe { request.as_slice() };
                 match provider.invoke_raw_with_id(service_id, method_id, host_req_id, req_bytes) {
                     Ok(InvokeResult::Ready(bytes)) => {
-                        binding.shared.sink.finish_sync(host_req_id);
+                        drop(in_flight);
                         if !out_len.is_null() {
                             // SAFETY: Caller supplied a writable `out_len` pointer.
                             unsafe { *out_len = bytes.len() };
@@ -433,16 +452,14 @@ unsafe extern "C" fn router_invoke(
                         NveHostStatus::Ok.as_i32()
                     }
                     Ok(InvokeResult::Pending { .. }) => {
+                        in_flight.disarm();
                         if !out_len.is_null() {
                             // SAFETY: Caller supplied a writable `out_len` pointer.
                             unsafe { *out_len = 0 };
                         }
                         NveHostStatus::Pending.as_i32()
                     }
-                    Err(err) => {
-                        binding.shared.sink.finish_sync(host_req_id);
-                        err.to_status().as_i32()
-                    }
+                    Err(err) => err.to_status().as_i32(),
                 }
             }
         }
@@ -459,7 +476,7 @@ unsafe extern "C" fn router_invoke(
     }
 }
 
-unsafe extern "C" fn router_channel_publish(
+pub(super) unsafe extern "C" fn router_channel_publish(
     host_ctx: *mut c_void,
     channel_id: u32,
     flags: u32,
@@ -469,28 +486,27 @@ unsafe extern "C" fn router_channel_publish(
         return NveHostStatus::InvalidArg.as_i32();
     }
     let res = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `host_ctx` points to a heap-pinned `OwnerBinding` outliving the bound app.
-        let binding = unsafe { &*(host_ctx as *const OwnerBinding) };
+        let Some(binding) = lookup_owner_binding(host_ctx) else {
+            return NveHostStatus::Cancelled.as_i32();
+        };
+        // SAFETY: Caller guarantees `payload` is readable for `payload.len` bytes when valid.
+        let Some(bytes) = (unsafe { payload.try_as_slice() }) else {
+            return NveHostStatus::InvalidArg.as_i32();
+        };
         if !binding.active.load(Ordering::Acquire) {
             return NveHostStatus::Cancelled.as_i32();
         }
-        let guard = binding
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        match &*guard {
-            HostBackend::None => NveHostStatus::Unsupported.as_i32(),
-            HostBackend::Callbacks(cb) => {
+        match binding.shared.acquire_backend() {
+            AcquiredBackend::None => NveHostStatus::Unsupported.as_i32(),
+            AcquiredBackend::Callbacks(slot_guard) => {
+                let cb = slot_guard.callbacks();
                 let Some(pub_fn) = cb.channel_publish else {
                     return NveHostStatus::Unsupported.as_i32();
                 };
-                // SAFETY: `cb` is held behind the `backend` read lock; `payload` satisfies C ABI.
+                // SAFETY: `slot_guard` drains cross-thread `set_callbacks(None)`; `payload` validated.
                 unsafe { pub_fn(cb.host_ctx, channel_id, flags, payload) }
             }
-            HostBackend::Provider(provider) => {
-                // SAFETY: Caller guarantees `payload` is valid for the synchronous call.
-                let bytes = unsafe { payload.as_slice() };
+            AcquiredBackend::Provider(provider) => {
                 let retain = (flags & NVE_CHANNEL_FLAG_RETAIN) != 0;
                 match provider.channel_publish(channel_id, retain, bytes) {
                     Ok(()) => NveHostStatus::Ok.as_i32(),

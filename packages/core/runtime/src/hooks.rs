@@ -56,8 +56,13 @@ impl IntrinsicSizeNotifier {
         if !self.installed.load(Ordering::Acquire) {
             return;
         }
-        let guard = self.sink.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(cb) = guard.as_ref() {
+        // Clone the callback Arc and release the lock BEFORE invoking so a callback that
+        // re-entrantly clears or replaces itself on the owner thread never self-deadlocks.
+        let cb = {
+            let guard = self.sink.read().unwrap_or_else(|e| e.into_inner());
+            guard.as_ref().map(Arc::clone)
+        };
+        if let Some(cb) = cb {
             cb();
         }
     }

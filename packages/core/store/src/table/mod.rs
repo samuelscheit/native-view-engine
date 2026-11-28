@@ -462,11 +462,11 @@ pub fn desc(slot: TableSlot) -> &'static TableDesc {
     REGISTRY.read().unwrap_or_else(|e| e.into_inner())[slot.0 as usize]
 }
 
-/// Deterministic 64-bit XXH64 digest over an explicit slice of static table descriptors
-/// (sorted and deduplicated by `TableKey` so slice order, duplicate descriptors, and process-global
-/// lazy registration state never affect the hash).
-pub fn tables_schema_hash(descs: &[&'static TableDesc]) -> u64 {
-    let mut pairs: Vec<(u64, u64)> = descs.iter().map(|d| (d.key.0, d.schema_hash)).collect();
+/// Deterministic 64-bit XXH64 digest over an arbitrary iterator of `(TableKey, schema_hash)` pairs
+/// (sorted and deduplicated so iteration order, duplicates, and lazy registration state never
+/// affect the hash).
+pub(crate) fn hash_table_schema_pairs(pairs: impl IntoIterator<Item = (u64, u64)>) -> u64 {
+    let mut pairs: Vec<(u64, u64)> = pairs.into_iter().collect();
     pairs.sort_unstable();
     pairs.dedup();
     let mut hasher = nve_abi::Xxh64Hasher::new(0x4E56_4554_424C_5331); // "NVETBLS1"
@@ -475,4 +475,11 @@ pub fn tables_schema_hash(descs: &[&'static TableDesc]) -> u64 {
         hasher.update(&hash.to_le_bytes());
     }
     hasher.digest()
+}
+
+/// Deterministic 64-bit XXH64 digest over an explicit slice of static table descriptors
+/// (sorted and deduplicated by `TableKey` so slice order, duplicate descriptors, and process-global
+/// lazy registration state never affect the hash).
+pub fn tables_schema_hash(descs: &[&'static TableDesc]) -> u64 {
+    hash_table_schema_pairs(descs.iter().map(|d| (d.key.0, d.schema_hash)))
 }
