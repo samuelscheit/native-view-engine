@@ -505,6 +505,52 @@ fn metal_vs_cpu_skia_whole_frame_parity_gpu_cache_and_context_switch_abandon() {
     drop(sw_a);
 }
 
+#[cfg(all(feature = "skia-metal", target_os = "macos"))]
+#[test]
+fn sync_gpu_context_none_evicts_nonzero_tag_non_gpu_entries_and_retains_cpu_entries() {
+    let cfg = GpuSurfaceConfig {
+        width: 64,
+        height: 64,
+        preferred_backend: GpuBackendKind::Metal,
+        allow_cpu_fallback: false,
+        ..Default::default()
+    };
+    let mut sw = crate::MetalSwapchain::new_offscreen(cfg).expect("MetalSwapchain");
+    let mut caches = crate::gpu::renderer_cache::SkiaRendererCaches::new();
+    let local_imgs = crate::image_cache::ImageCache::new(4, 1024);
+    local_imgs.insert_raw_rgba("k", 2, 2, vec![200u8; 16]).unwrap();
+    let (slot, decoded) = local_imgs.get_or_decode_with_slot("k").unwrap();
+    let slot = slot.expect("cached slot");
+    let (store, empty_reg, mut ev) = (NodeStore::new(), SkiaTableRegistry::new(), EventBatchBuf::new());
+
+    // Seed CPU (`context_tag == 0`) raster image + negative plugin (`painted == 0`) entries.
+    assert!(caches.get_or_upload_image_for_slot(Some(slot), &decoded, 0, None).is_some());
+    assert!(caches
+        .get_or_render_plugin(NodeId::ROOT, 1, 8, 8, 1.0, Rgba::WHITE, &store, &empty_reg, &mut ev, 0, None)
+        .is_none());
+
+    // Activate Metal GPU context -> non-zero `context_tag`, then insert non-`gpu_backed` entries
+    // under that tag (negative `painted == 0` plugin + failed-upload raster fallback).
+    let gpu_tag = {
+        let (_surf, dc) = sw.inner.offscreen_surface_and_context_mut().expect("offscreen");
+        let tag = caches.sync_gpu_context(Some(dc));
+        assert_ne!(tag, 0);
+        assert!(caches
+            .get_or_render_plugin(NodeId::ROOT, 1, 8, 8, 1.0, Rgba::WHITE, &store, &empty_reg, &mut ev, tag, Some(dc))
+            .is_none());
+        tag
+    };
+    assert!(caches.get_or_upload_image_for_slot(Some(slot), &decoded, gpu_tag, None).is_some());
+    assert_eq!((caches.stats().image_entries, caches.stats().plugin_entries), (2, 2));
+
+    // GPU -> CPU switch (`sync_gpu_context(None)`) evicts all `context_tag != 0` entries even
+    // when `gpu_backed == false`, while preserving `context_tag == 0` CPU entries.
+    assert_eq!(caches.sync_gpu_context(None), 0);
+    assert_eq!((caches.stats().image_entries, caches.stats().plugin_entries), (1, 1));
+    assert!(caches.get_cached_image_by_slot(slot, decoded.id(), 0).is_some());
+    assert!(caches.get_cached_image_by_slot(slot, decoded.id(), gpu_tag).is_none());
+}
+
 #[cfg(feature = "skia-vulkan")]
 #[test]
 fn vulkan_vs_cpu_skia_whole_frame_parity_gpu_cache_and_clean_drop() {

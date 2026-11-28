@@ -38,7 +38,13 @@ pub(crate) fn rounded_rect_sdf_with_normal(
     let qy = dy.abs() - (hy - r);
     if qx > 0.0 && qy > 0.0 {
         let len = (qx * qx + qy * qy).sqrt();
-        let inv = if len > 1e-6 { 1.0 / len } else { 0.0 };
+        // At the exact corner-arc center (`len <= 1e-6`) or overflow (`!len.is_finite()`), emit
+        // a zero normal so `device_sdf_from_local` scales the fallback distance by `m_scale`.
+        let inv = if len > 1e-6 && len.is_finite() {
+            1.0 / len
+        } else {
+            0.0
+        };
         (len - r, sx * qx * inv, sy * qy * inv)
     } else if qx > qy {
         (qx - r, sx, 0.0)
