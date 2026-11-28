@@ -769,10 +769,73 @@ fn replica_mirrors_unknown_resource_kinds_as_exact_words() {
     assert!(!store.resources.define_at(crate::ResourceId(0), kind, false, &[], &bytes), "id 0 stays reserved");
     assert!(!store.resources.define_at(crate::ResourceId(3), kind, false, &[], &bytes[..5]), "payload must be whole words");
 
-    // Redefining the slot with a known kind makes it viewable as that type.
+    // Live (`refs > 0`) in-place kind mutation MUST be rejected without altering kind or payload.
     let enc = Shadows(vec![4.0]).to_le_bytes();
-    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &enc));
-    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(vec![4.0]));
+    assert!(
+        !store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &enc),
+        "live refs > 0 resource must reject in-place kind mutation"
+    );
+    assert_eq!(store.resources.kind(crate::ResourceId(1)), Some(kind));
+    assert_eq!(store.resources.payload_bytes(crate::ResourceId(1)), Some(&bytes[..]));
+
+    // After releasing and completing the frame (`end_frame`), slot 1 is recycled (gen bumped to 1)
+    // and can cleanly be redefined with a different kind.
+    store.resources.release(crate::ResourceId(1));
+    store.resources.end_frame();
+    let reused = crate::ResourceId::new(1, 1);
+    assert!(store.resources.define_at(reused, Shadows::KIND, false, &[], &enc));
+    assert_eq!(store.resource::<Shadows>(reused), Some(vec![4.0]));
+}
+
+#[test]
+fn wire_define_resources_rejects_live_in_place_kind_mutation() {
+    use crate::wire::{Op, WireDecoder, WireError, MAGIC, VERSION};
+
+    let mut replica = NodeStore::replica();
+    let rid = crate::ResourceId::new(1, 0);
+    let orig_enc = Shadows(vec![3.5]).to_le_bytes();
+    assert!(replica
+        .resources
+        .define_at(rid, Shadows::KIND, false, &[], &orig_enc));
+    replica.resources.retain(rid);
+    assert_eq!(replica.resource::<Shadows>(rid), Some(vec![3.5]));
+
+    // Craft an NVE2 wire frame attempting to overwrite live slot 1 with a different resource kind.
+    let foreign_kind = nve_abi::Key64::of("nve.res.test_mutated_kind");
+    let mut body = Vec::new();
+    body.extend_from_slice(&rid.0.to_le_bytes());
+    body.extend_from_slice(&foreign_kind.lo().to_le_bytes());
+    body.extend_from_slice(&foreign_kind.hi().to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes()); // flags
+    body.extend_from_slice(&0u32.to_le_bytes()); // child_count
+    body.extend_from_slice(&4u32.to_le_bytes()); // byte_len
+    body.extend_from_slice(&99u32.to_le_bytes()); // payload
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&MAGIC.to_le_bytes());
+    frame.extend_from_slice(&(VERSION as u32).to_le_bytes());
+    frame.extend_from_slice(&1u64.to_le_bytes());
+    frame.extend_from_slice(&1u32.to_le_bytes());
+    frame.extend_from_slice(&((6 + 2 + body.len() / 4) as u32).to_le_bytes());
+    frame.extend_from_slice(&((Op::DefineResources as u32) | (1u32 << 16)).to_le_bytes());
+    frame.extend_from_slice(&((body.len() / 4) as u32).to_le_bytes());
+    frame.extend_from_slice(&body);
+
+    let mut dec = WireDecoder::default();
+    {
+        let mut tx = replica.tx();
+        assert_eq!(
+            dec.apply(&mut tx, &frame),
+            Err(WireError::Resource {
+                id: rid.0,
+                kind: foreign_kind.0,
+            })
+        );
+    }
+
+    // Original kind and payload remain intact.
+    assert_eq!(replica.resources.kind(rid), Some(Shadows::KIND));
+    assert_eq!(replica.resource::<Shadows>(rid), Some(vec![3.5]));
 }
 
 #[test]

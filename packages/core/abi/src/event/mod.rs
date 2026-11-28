@@ -150,6 +150,18 @@ impl EventFlags {
     pub const fn without_internal_framing(self) -> Self {
         Self(self.0 & !Self::INTERNAL_FRAMING_MASK)
     }
+
+    /// Returns `true` iff `bytes` carries a plain UTF-8 text payload (and NOT inline key physical
+    /// `code`, split key `[key, code]`, or `CUSTOM_NAMED` `[name, data]`).
+    #[inline(always)]
+    pub const fn has_utf8_text(self) -> bool {
+        const NON_TEXT_FRAMING: EventFlags = EventFlags(
+            EventFlags::INLINE_KEY_UTF8.0
+                | EventFlags::KEY_SPLIT_BYTES.0
+                | EventFlags::CUSTOM_NAMED.0,
+        );
+        self.contains(Self::UTF8_BYTES) && !self.intersects(NON_TEXT_FRAMING)
+    }
 }
 
 /// Events emitted by the `Interaction` table (`nve.interaction`).
@@ -386,8 +398,16 @@ impl NveEventBatch {
             bytes.len() as u32
         };
         Self {
-            events: events.as_ptr(),
-            bytes: bytes.as_ptr(),
+            events: if event_count == 0 {
+                core::ptr::null()
+            } else {
+                events.as_ptr()
+            },
+            bytes: if bytes_len == 0 {
+                core::ptr::null()
+            } else {
+                bytes.as_ptr()
+            },
             event_count,
             bytes_len: ByteLen(bytes_len),
         }

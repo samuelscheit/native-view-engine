@@ -403,4 +403,78 @@ mod tests {
             "deterministic Frame0SubmitError::Wire / Budget must remove corrupt disk cache"
         );
     }
+
+    #[test]
+    fn frame0_rejects_table_schema_hash_when_only_resource_kind_changes() {
+        use nve_store::{FlatResource, NveTable, Res, ValidatedWords};
+
+        struct KindAlpha;
+        impl FlatResource for KindAlpha {
+            const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.frame0.kind_alpha");
+            type View<'a> = &'a [u32];
+            fn write_words(&self, out: &mut Vec<u32>) -> bool {
+                out.push(1);
+                true
+            }
+            fn validate(w: &[u32]) -> bool {
+                w.len() == 1
+            }
+            fn view(w: ValidatedWords<'_, Self>) -> &[u32] {
+                w.as_slice()
+            }
+        }
+
+        struct KindBeta;
+        impl FlatResource for KindBeta {
+            const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.frame0.kind_beta");
+            type View<'a> = &'a [u32];
+            fn write_words(&self, out: &mut Vec<u32>) -> bool {
+                out.push(2);
+                true
+            }
+            fn validate(w: &[u32]) -> bool {
+                w.len() == 1
+            }
+            fn view(w: ValidatedWords<'_, Self>) -> &[u32] {
+                w.as_slice()
+            }
+        }
+
+        #[allow(dead_code)]
+        #[derive(nve_store::NveTable)]
+        #[nve_table(name = "test.frame0.res_kind_schema", storage = "sparse")]
+        struct SchemaAlpha {
+            #[effect(paint)]
+            payload: Res<KindAlpha>,
+        }
+
+        #[allow(dead_code)]
+        #[derive(nve_store::NveTable)]
+        #[nve_table(name = "test.frame0.res_kind_schema", storage = "sparse")]
+        struct SchemaBeta {
+            #[effect(paint)]
+            payload: Res<KindBeta>,
+        }
+
+        let store = NodeStore::new();
+        let meta_alpha = Frame0Meta {
+            table_schema_hash: nve_store::tables_schema_hash(&[&SchemaAlpha::DESC]),
+            app_build_id: 1,
+            env_hash: 0,
+        };
+        let meta_beta = Frame0Meta {
+            table_schema_hash: nve_store::tables_schema_hash(&[&SchemaBeta::DESC]),
+            app_build_id: 1,
+            env_hash: 0,
+        };
+        assert_ne!(meta_alpha.table_schema_hash, meta_beta.table_schema_hash);
+        let bytes = Frame0File::encode(&store, meta_alpha).expect("encode frame0");
+        assert_eq!(
+            Frame0File::validate_bytes(&bytes, meta_beta).unwrap_err(),
+            Frame0Miss::SchemaMismatch {
+                expected: meta_beta.table_schema_hash,
+                actual: meta_alpha.table_schema_hash,
+            }
+        );
+    }
 }

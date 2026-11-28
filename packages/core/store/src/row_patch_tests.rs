@@ -727,3 +727,146 @@ fn row_patch_unbounded_merge_word_mask_and_view_hardening() {
     assert!(RowPatchView::from_words(&[1, 1, 0, 1, 256, u32::MAX, 1]).is_none());
     assert!(RowPatchView::from_words(&[1, 1, 0, 1, 2u32 << 16, u32::MAX, 1]).is_none());
 }
+
+#[test]
+fn apply_row_patch_inherited_rejected_resource_preserves_parent_and_explicit_mask() {
+    #[derive(Debug, Clone)]
+    struct WrongKindRes(u32);
+    impl FlatResource for WrongKindRes {
+        const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.patch.inherited_wrong_kind");
+        type View<'a> = u32;
+        fn write_words(&self, out: &mut Vec<u32>) -> bool {
+            out.push(self.0);
+            true
+        }
+        fn validate(w: &[u32]) -> bool {
+            w.len() == 1
+        }
+        fn view(w: ValidatedWords<'_, Self>) -> u32 {
+            w[0]
+        }
+    }
+
+    #[allow(dead_code)]
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.patch.inherited_res", storage = "sparse", flags = "publish", inherited)]
+    struct InheritedWithRes {
+        #[effect(paint)]
+        #[default(Rgba::BLACK)]
+        color: Rgba,
+        #[effect(paint)]
+        blob: Res<ChildBlob>,
+    }
+
+    let mut store = NodeStore::new();
+    let (parent, child_only_bad, child_mixed, child_own_res, parent_blob_id, own_blob_id, dead_id, wrong_kind_id) = {
+        let mut tx = store.tx();
+        let parent = tx.create();
+        let child_only_bad = tx.create();
+        let child_mixed = tx.create();
+        let child_own_res = tx.create();
+        tx.set_children(NodeId::ROOT, &[parent]);
+        tx.set_children(parent, &[child_only_bad, child_mixed, child_own_res]);
+
+        tx.edit::<InheritedWithRes>(parent)
+            .color(Rgba::rgb(10, 20, 30))
+            .blob(Some(ChildBlob(vec![111, 222])));
+        let parent_blob_id = tx.store().row::<InheritedWithRes>(parent).blob();
+
+        tx.edit::<InheritedWithRes>(child_own_res)
+            .blob(Some(ChildBlob(vec![333])));
+        let own_blob_id = tx.store().row::<InheritedWithRes>(child_own_res).blob();
+
+        // Create a live resource of the wrong kind, and a dead/stale ChildBlob id.
+        let wrong_kind_id = tx.store_mut().resources.intern(&WrongKindRes(55));
+        let temp_dead = tx.store_mut().resources.intern(&ChildBlob(vec![999]));
+        tx.store_mut().resources.release(temp_dead);
+
+        commit_tx(tx);
+        (
+            parent,
+            child_only_bad,
+            child_mixed,
+            child_own_res,
+            parent_blob_id,
+            own_blob_id,
+            temp_dead,
+            wrong_kind_id,
+        )
+    };
+
+    // Case 1: Standalone inherited patch carrying ONLY a dead or wrong-kind `ResourceId`:
+    // MUST NOT attach the table and MUST preserve parent's inherited resource.
+    for bad_id in [dead_id, wrong_kind_id] {
+        let mut patch = RowPatch::new();
+        patch.set_res_id(InheritedWithRes::BLOB, bad_id);
+        let mut words = Vec::new();
+        assert!(patch.write_words(&mut words));
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_only_bad, RowPatchView::from_words(&words).unwrap());
+        commit_tx(tx);
+
+        assert!(
+            !store.has::<InheritedWithRes>(child_only_bad),
+            "rejected inherited resource op must not spuriously attach table (bad_id={bad_id:?})"
+        );
+        let root_r = ResolvedRow::<InheritedWithRes>::root(&store);
+        let parent_r = ResolvedRow::<InheritedWithRes>::resolve(&store, parent, &root_r);
+        let child_r = ResolvedRow::<InheritedWithRes>::resolve(&store, child_only_bad, &parent_r);
+        assert_eq!(child_r.get().blob(), parent_blob_id);
+        assert_eq!(store.resource::<ChildBlob>(child_r.get().blob()), Some(&[111u32, 222][..]));
+    }
+
+    // Case 2: Mixed patch (valid scalar `color` + rejected wrong-kind `blob`):
+    // `color` MUST apply and set bit 0, while `blob` bit 1 MUST remain unset so parent's
+    // inherited `blob` is NOT overridden with `ResourceId::NONE`.
+    {
+        let mut patch = RowPatch::new();
+        patch
+            .set(InheritedWithRes::COLOR, Rgba::WHITE)
+            .set_res_id(InheritedWithRes::BLOB, wrong_kind_id);
+        let mut words = Vec::new();
+        assert!(patch.write_words(&mut words));
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_mixed, RowPatchView::from_words(&words).unwrap());
+        commit_tx(tx);
+    }
+    let mixed_row = store.row::<InheritedWithRes>(child_mixed);
+    assert!(mixed_row.is_color_explicit(), "valid scalar op must set its explicit bit");
+    assert!(
+        !mixed_row.is_blob_explicit(),
+        "rejected resource op must NOT set word-0 explicit bit"
+    );
+    let root_r = ResolvedRow::<InheritedWithRes>::root(&store);
+    let parent_r = ResolvedRow::<InheritedWithRes>::resolve(&store, parent, &root_r);
+    let mixed_resolved = ResolvedRow::<InheritedWithRes>::resolve(&store, child_mixed, &parent_r);
+    assert_eq!(mixed_resolved.get().color(), Rgba::WHITE);
+    assert_eq!(
+        mixed_resolved.get().blob(),
+        parent_blob_id,
+        "parent's inherited resource must remain intact"
+    );
+
+    // Case 3: Mixed patch on a child that ALREADY explicitly owns a valid resource:
+    // rejected resource op must NOT clobber the child's existing explicit bit or resource!
+    {
+        let mut patch = RowPatch::new();
+        patch
+            .set(InheritedWithRes::COLOR, Rgba::rgb(99, 88, 77))
+            .set_res_id(InheritedWithRes::BLOB, dead_id);
+        let mut words = Vec::new();
+        assert!(patch.write_words(&mut words));
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_own_res, RowPatchView::from_words(&words).unwrap());
+        commit_tx(tx);
+    }
+    let own_row = store.row::<InheritedWithRes>(child_own_res);
+    assert!(own_row.is_color_explicit());
+    assert!(
+        own_row.is_blob_explicit(),
+        "existing explicit resource bit must stay set when incoming resource op is rejected"
+    );
+    assert_eq!(own_row.blob(), own_blob_id);
+
+    store.resources.release(wrong_kind_id);
+}

@@ -528,6 +528,7 @@ impl WireDecoder {
             word_effects: &effects,
             str_words,
             resource_words,
+            resource_kinds: None,
         };
 
         // 1. Check session-scoped dynamic descriptors FIRST so wire-slot mappings stay stable

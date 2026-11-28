@@ -449,3 +449,109 @@ fn validated_events_rejects_adversarial_inputs_and_accepts_foreign_alignment() {
         }
     }
 }
+
+#[test]
+fn validated_event_text_excludes_inline_key_split_key_and_custom_utf8() {
+    let mut buf = EventBatchBuf::new();
+    let s = SurfaceId::ROOT;
+    let n = NodeId::new(4, 1);
+
+    // 1. Inline key event with non-empty physical `code` ("Enter" / "KeyA") carries UTF8_BYTES
+    //    on `bytes` for `code()`; `text()` MUST return "" (never leak physical key code).
+    buf.push_key_down(s, n, TimestampUs(1), "a", "KeyA", EventFlags::EMPTY, 65);
+    buf.push_key_up(s, n, TimestampUs(2), "Enter", "Enter", EventFlags::EMPTY, 13);
+
+    // 2. Split key event (`> 16 B`) carries `[key, code]` in `bytes`; `text()` MUST return "".
+    let long_key = "DeadCombinedVeryLongKeyName🚀";
+    buf.push_key_down(s, n, TimestampUs(3), long_key, "IntlBackslash", EventFlags::EMPTY, 229);
+
+    // 3. Custom named event explicitly flagged with `CUSTOM_NAMED | UTF8_BYTES`: `bytes` holds
+    //    `name + payload`; `text()` MUST return "" (never leak `name + payload`).
+    let custom_utf8 = NveEvent::new(
+        NVE_TABLE_CUSTOM,
+        s,
+        n,
+        TimestampUs(4),
+        EventId(0),
+    )
+    .with_flags(EventFlags::CUSTOM_NAMED.union(EventFlags::UTF8_BYTES))
+    .with_payload([5, 0, 0, 0, 0, 0]);
+    buf.try_push_raw(custom_utf8, b"eventpayload").expect("valid custom utf8 event");
+
+    // 4. Plain text-input / submit / composition events MUST still return their UTF-8 `text()`.
+    buf.push_text_change(s, n, TimestampUs(5), "typed text");
+    buf.push_submit(s, n, TimestampUs(6), "submitted text");
+    buf.push_composition(s, n, TimestampUs(7), TextInputEvent::CompositionEnd, "漢字");
+
+    let view = buf.as_validated();
+    let k_a = view.get(0).unwrap();
+    assert_eq!(k_a.key(), "a");
+    assert_eq!(k_a.code(), "KeyA");
+    assert_eq!(k_a.text(), "", "inline key event must not leak physical key code via text()");
+
+    let k_enter = view.get(1).unwrap();
+    assert_eq!(k_enter.key(), "Enter");
+    assert_eq!(k_enter.code(), "Enter");
+    assert_eq!(k_enter.text(), "", "inline Enter key must not leak code via text()");
+
+    let k_split = view.get(2).unwrap();
+    assert_eq!(k_split.key(), long_key);
+    assert_eq!(k_split.code(), "IntlBackslash");
+    assert_eq!(k_split.text(), "", "split key event must not leak key+code via text()");
+
+    let c_ev = view.get(3).unwrap();
+    assert!(c_ev.is_custom());
+    assert_eq!(c_ev.custom_name(), "event");
+    assert_eq!(c_ev.custom_data(), b"payload");
+    assert_eq!(c_ev.text(), "", "CUSTOM_NAMED | UTF8_BYTES must not leak name+payload via text()");
+
+    assert_eq!(view.get(4).unwrap().text(), "typed text");
+    assert_eq!(view.get(5).unwrap().text(), "submitted text");
+    assert_eq!(view.get(6).unwrap().text(), "漢字");
+}
+
+#[test]
+fn empty_event_batch_slices_emit_null_pointers() {
+    // 1. Both slices empty (`NveEventBatch::from_parts`, `ValidatedEvents::EMPTY`, `EventBatchBuf::new`).
+    let empty_parts = NveEventBatch::from_parts(&[], &[]);
+    assert!(empty_parts.events.is_null());
+    assert!(empty_parts.bytes.is_null());
+    assert_eq!(empty_parts.event_count, 0);
+    assert_eq!(empty_parts.bytes_len, ByteLen::ZERO);
+
+    let empty_val = ValidatedEvents::EMPTY.as_raw_batch();
+    assert!(empty_val.events.is_null());
+    assert!(empty_val.bytes.is_null());
+    assert_eq!(empty_val.event_count, 0);
+    assert_eq!(empty_val.bytes_len, ByteLen::ZERO);
+
+    let empty_buf = EventBatchBuf::new();
+    let empty_buf_raw = empty_buf.as_raw_batch();
+    assert!(empty_buf_raw.events.is_null());
+    assert!(empty_buf_raw.bytes.is_null());
+    let empty_buf_val_raw = empty_buf.as_validated().as_raw_batch();
+    assert!(empty_buf_val_raw.events.is_null());
+    assert!(empty_buf_val_raw.bytes.is_null());
+
+    // 2. Non-empty events with empty bytes -> `events` non-null, `bytes` NULL.
+    let mut press_only = EventBatchBuf::new();
+    press_only.push_press(SurfaceId::ROOT, NodeId::ROOT, TimestampUs(1), 1.0, 2.0);
+    let po_raw = press_only.as_raw_batch();
+    assert!(!po_raw.events.is_null());
+    assert!(po_raw.bytes.is_null());
+    assert_eq!(po_raw.event_count, 1);
+    assert_eq!(po_raw.bytes_len, ByteLen::ZERO);
+    let po_val_raw = press_only.as_validated().as_raw_batch();
+    assert!(!po_val_raw.events.is_null());
+    assert!(po_val_raw.bytes.is_null());
+
+    // 3. Empty events with non-empty bytes -> `events` NULL, `bytes` non-null.
+    let bytes_only = NveEventBatch::from_parts(&[], b"abc");
+    assert!(bytes_only.events.is_null());
+    assert!(!bytes_only.bytes.is_null());
+    assert_eq!(bytes_only.event_count, 0);
+    assert_eq!(bytes_only.bytes_len, ByteLen(3));
+    let val_bytes_only = ValidatedEvents::validate(&[], b"abc").unwrap().as_raw_batch();
+    assert!(val_bytes_only.events.is_null());
+    assert!(!val_bytes_only.bytes.is_null());
+}
