@@ -61,8 +61,9 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     set_tests_properties(nve_host_compile_fail_${_case} PROPERTIES WILL_FAIL TRUE)
   endforeach()
 
-  # Every public header compiles on its own (includes what it uses), warnings as errors. `jni.hpp`
-  # needs a JDK's `jni.h` and is covered by the Android host build.
+  # Every public header compiles on its own (includes what it uses), warnings as errors, with Qt's
+  # keyword macros defined (`slots`, `signals`, `emit`: Qt hosts include these headers after
+  # `<QObject>`). `jni.hpp` needs a JDK's `jni.h` and is covered by the Android host build.
   file(GLOB _nve_host_headers RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
        "${CMAKE_CURRENT_SOURCE_DIR}/include/nve/host/*.hpp")
   list(REMOVE_ITEM _nve_host_headers nve/host/jni.hpp)
@@ -72,6 +73,7 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     file(WRITE "${_header_tu}" "#include <${_header}>\n")
     add_test(NAME nve_host_header_${_header_id}
              COMMAND ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only ${_nve_host_warnings}
+                     "-Dslots=" "-Dsignals=public" "-Demit=" "-Dforeach=qt_foreach"
                      -I${CMAKE_CURRENT_SOURCE_DIR}/include ${_header_tu})
   endforeach()
 

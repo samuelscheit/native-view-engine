@@ -161,6 +161,14 @@ class RetainedTree {
     last_frame_ = 0u;
   }
 
+  /// Every live view (ROOT excluded), attached or not.
+  template <class Visit>
+  void for_each_view(Visit&& visit) {
+    for (Entry& e : entries_) {
+      if (e.live && node_index(e.id) != kRootIndex) visit(e.handle);
+    }
+  }
+
   /// View of packed `NodeId` `id` (generation-checked).
   [[nodiscard]] Handle* find(uint32_t id) noexcept {
     const uint32_t i = node_index(id);

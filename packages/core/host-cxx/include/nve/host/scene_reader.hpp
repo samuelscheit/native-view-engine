@@ -184,11 +184,11 @@ class SceneReader {
       return SceneError::InvalidUtf8;
     }
     // Slots index the 128-bit `table_set` of every row: in range and published once.
-    uint32_t slots[4]{};
+    uint32_t seen[4]{};  // never `slots`: Qt defines it as a macro
     for (uint32_t i = 0u; i < v->table_count; ++i) {
       const uint32_t slot = v->tables[i].slot;
-      if (slot >= 128u || (slots[slot >> 5u] & (uint32_t{1} << (slot & 31u))) != 0u) return SceneError::InvalidTable;
-      slots[slot >> 5u] |= uint32_t{1} << (slot & 31u);
+      if (slot >= 128u || (seen[slot >> 5u] & (uint32_t{1} << (slot & 31u))) != 0u) return SceneError::InvalidTable;
+      seen[slot >> 5u] |= uint32_t{1} << (slot & 31u);
       if (!TableReader::from_view(v->tables[i])) return SceneError::InvalidTable;
     }
     const auto in_range = [cap = v->node_capacity](const uint32_t* p, uint32_t n) noexcept {
