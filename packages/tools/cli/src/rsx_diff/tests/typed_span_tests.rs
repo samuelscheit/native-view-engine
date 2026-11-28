@@ -285,6 +285,16 @@ fn standalone_numeric_and_nve_style_chain_edits_lower_to_binary_row_patch() {
     );
     assert_eq!(
         check(
+            "nve_style: TypedStyle::new().inset_top(Dimension::Points(4.0)),",
+            "nve_style: TypedStyle::new().inset_top(Dimension::Points(-8.0)),",
+            "top",
+            V::LengthPx(-8.0)
+        )
+        .prop(Layout::INSET_TOP),
+        Some(Length::points(-8.0))
+    );
+    assert_eq!(
+        check(
             "nve_style: TypedStyle::new().cursor(CursorKind::Pointer),",
             "nve_style: TypedStyle::new().cursor(CursorKind::NotAllowed),",
             "cursor",
@@ -367,6 +377,49 @@ fn nve_style_chain_patches_literals_beside_theme_tokens_and_guards_merges_and_ov
         4,
     ));
     assert_eq!(rad_msg.prop(Visual::BORDER_RADIUS), Some(8.0));
+
+    // 6. Unknown extension methods (e.g. `StudioStyleExt::{outline, stretch_col}`) fail closed
+    //    regardless of position; allowlisted disjoint `TypedStyle` methods remain Tier-1.
+    for (chain, from, to) in [
+        (
+            "nve_style: TypedStyle::new().padding(8.0).outline(1.0, ColorRgba::WHITE),",
+            ".padding(8.0)",
+            ".padding(12.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().stretch_col().padding(8.0),",
+            ".padding(8.0)",
+            ".padding(12.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().padding_inline_start(8.0).padding_left(12.0),",
+            ".padding_left(12.0)",
+            ".padding_left(20.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().margin_inline_end(8.0).margin_right(12.0),",
+            ".margin_right(12.0)",
+            ".margin_right(20.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().row_gap(4.0).gap(12.0),",
+            ".gap(12.0)",
+            ".gap(20.0)",
+        ),
+    ] {
+        let src = element_with(chain);
+        assert_tier2_reason(&src, &src.replace(from, to), "structural or logic edit");
+    }
+    let allowlisted = element_with(
+        "nve_style: TypedStyle::new().font_family(\"Inter\").rtl().translate(2.0, 4.0).padding_inline_start(8.0).padding_top(6.0).on_hover_with(|s| s.opacity(0.8)),",
+    );
+    let ok_msg = expect_patch(diff_rsx_source(
+        "demo.rs",
+        &allowlisted,
+        &allowlisted.replace(".padding_top(6.0)", ".padding_top(14.0)"),
+        5,
+    ));
+    assert_eq!(ok_msg.prop(Layout::PADDING_TOP), Some(Length::points(14.0)));
 }
 
 #[test]
@@ -566,6 +619,11 @@ fn ill_typed_values_and_unhonoured_integers_rebuild() {
             "nve_style: TypedStyle::new().display(Overflow::Hidden),",
             "nve_style: TypedStyle::new().display(Overflow::Auto),",
             "does not accept Overflow::Auto",
+        ),
+        (
+            "nve_style: TypedStyle::new().position(PositionMode::Relative),",
+            "nve_style: TypedStyle::new().position(PositionMode::Fixed),",
+            "does not accept PositionMode::Fixed",
         ),
     ];
     for (old_attr, new_attr, needle) in cases {

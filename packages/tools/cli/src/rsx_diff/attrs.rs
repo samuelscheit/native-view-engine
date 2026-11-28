@@ -166,8 +166,8 @@ fn eq_ignore_ascii_case_and_dash(variant: &str, keyword: &str) -> bool {
 /// Value domain of an attribute or `TypedStyle` builder argument.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AttrKind {
-    /// Box dimension: `Dimension::*` / `Length::*` (`px`/`%`/`auto`); float literals per `float`.
-    Dimension { float: Option<NumberRule> },
+    /// Box dimension: `Dimension::*` / `Length::*` (`px`/`%`/`auto`); `min` bounds `Points`/`Percent`.
+    Dimension { min: f32 },
     /// Percentage float (`TypedStyle::width_pct(50.0)` -> `Length::percent(v.clamp(0.0, 100.0))`).
     Percent,
     /// Pixel-only length; float literals per `float`.
@@ -202,11 +202,10 @@ impl AttrSpec {
     /// Value classes this attribute accepts.
     pub const fn accepts(&self) -> ValueClasses {
         match self.kind {
-            AttrKind::Dimension { float } => ValueClasses::PX
+            AttrKind::Dimension { .. } => ValueClasses::PX
                 .or(ValueClasses::PCT)
                 .or(ValueClasses::AUTO)
-                .or(ValueClasses::THEME)
-                .or(float_class(float)),
+                .or(ValueClasses::THEME),
             AttrKind::Percent => ValueClasses::FLOAT.or(ValueClasses::THEME),
             AttrKind::Pixels { float } => ValueClasses::PX
                 .or(ValueClasses::THEME)
@@ -287,8 +286,8 @@ keyword_enum!(ALIGN_ITEMS: AlignItems | FlexAlign = nve_tables::tables::AlignIte
 keyword_enum!(ALIGN_SELF: AlignSelf = nve_tables::tables::AlignSelf {
     Auto, Stretch, FlexStart, Center, FlexEnd, Baseline,
 });
-keyword_enum!(POSITION: Position | PositionMode = nve_tables::tables::Position {
-    Relative, Absolute, Sticky, Fixed,
+keyword_enum!(POSITION: PositionMode = nve_tables::tables::Position {
+    Relative, Absolute, Sticky,
 });
 keyword_enum!(OVERFLOW: Overflow = nve_tables::tables::Overflow {
     Visible, Hidden, Scroll, Auto,
@@ -322,8 +321,10 @@ const STANDALONE_PX: AttrKind = AttrKind::StandalonePx { min: 0.0 };
 const STANDALONE_SIGNED: AttrKind = AttrKind::StandalonePx {
     min: f32::NEG_INFINITY,
 };
-const DIM: AttrKind = AttrKind::Dimension { float: None };
-const INSET_DIM: AttrKind = AttrKind::Dimension { float: None };
+const DIM: AttrKind = AttrKind::Dimension { min: 0.0 };
+const INSET_DIM: AttrKind = AttrKind::Dimension {
+    min: f32::NEG_INFINITY,
+};
 const PX: AttrKind = AttrKind::Pixels {
     float: NON_NEGATIVE_PX,
 };
@@ -589,31 +590,6 @@ pub fn lookup_typed_style_arg(method: &str, arg_idx: usize) -> Option<&'static A
         // Interaction
         ("cursor", 0) => Some(const { &spec("cursor", AttrKind::Keyword(&CURSOR), B::CURSOR) }),
         _ => None,
-    }
-}
-
-/// Property slots written by non-patchable `TypedStyle` methods (zero-arg shorthands, `merge*`,
-/// `surface`, `text_style`, `padding_insets`, etc.) so earlier setter calls in the same chain that
-/// they may override are never falsely Tier-1 patched.
-pub(super) fn opaque_typed_style_method_bits(method: &str) -> u64 {
-    use prop_bits as B;
-    match method {
-        "merge" | "merged" | "merge_opt" => B::ALL,
-        "surface" => B::BG | B::BORDER_WIDTH | B::BORDER_COLOR | B::BORDER_RADIUS | B::OPACITY,
-        "text_style" => B::TEXT_COLOR | B::FONT_SIZE | B::FONT_WEIGHT | B::TEXT_ALIGN | B::OPACITY,
-        "width_auto" => B::WIDTH,
-        "height_auto" => B::HEIGHT,
-        "flex_row" | "flex_col" | "flex_row_reverse" | "flex_col_reverse" => B::FLEX_DIR,
-        "flex_1" => B::FLEX_SHORTHAND,
-        "position_relative" | "position_absolute" | "position_sticky" => B::POSITION,
-        "display_grid" => B::DISPLAY,
-        "padding_insets" => B::PAD_ALL,
-        "margin_insets" => B::MAR_ALL,
-        "padding_inline_start" => B::PAD_LEFT,
-        "padding_inline_end" => B::PAD_RIGHT,
-        "margin_inline_start" => B::MAR_LEFT,
-        "margin_inline_end" => B::MAR_RIGHT,
-        _ => 0,
     }
 }
 

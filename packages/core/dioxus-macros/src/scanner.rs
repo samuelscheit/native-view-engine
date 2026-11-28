@@ -61,6 +61,7 @@ pub(crate) fn templates_for_file(
     {
         let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = guard.get(local_path)
+            && entry.mtime.is_some()
             && entry.mtime == mtime
             && entry.len == len
         {

@@ -181,6 +181,21 @@ fn binary_lowering_checks_domains_including_font_size_floor_and_line_height_over
         (standalone("padding"), V::LengthPx(-2.0)),
         (standalone("gap"), V::Int(4)),
         (ts_arg("width", 0), V::LengthPx(1e30)),
+        (ts_arg("width", 0), V::LengthPx(-8.0)),
+        (
+            ts_arg("position", 0),
+            V::Enum {
+                ty: Some("PositionMode".into()),
+                variant: "Fixed".into(),
+            },
+        ),
+        (
+            ts_arg("position", 0),
+            V::Enum {
+                ty: Some("Position".into()),
+                variant: "Relative".into(),
+            },
+        ),
         // `font-size` min is 1.0: `LengthPx(0.0)` and `LengthPx(0.5)` must BOTH be refused!
         (ts_arg("font_size", 0), V::LengthPx(0.0)),
         (ts_arg("font_size", 0), V::LengthPx(0.5)),
@@ -214,6 +229,7 @@ fn binary_lowering_checks_domains_including_font_size_floor_and_line_height_over
 
     let mut rp = RowPatch::new();
     encode_attr_into_row_patch(&mut rp, ts_arg("inset_top_px", 0), &V::Float(-6.5)).unwrap();
+    encode_attr_into_row_patch(&mut rp, ts_arg("inset_top", 0), &V::LengthPx(-8.0)).unwrap();
     encode_attr_into_row_patch(&mut rp, ts_arg("width_pct", 0), &V::Float(75.0)).unwrap();
     encode_attr_into_row_patch(&mut rp, ts_arg("position", 0), &V::Enum {
         ty: Some("PositionMode".into()),
@@ -270,7 +286,7 @@ fn binary_lowering_checks_domains_including_font_size_floor_and_line_height_over
     encode_attr_into_row_patch(&mut rp, standalone("z-index"), &V::Int(i64::MAX)).unwrap();
 
     assert_eq!(rp.get_prop(Layout::WIDTH), Some(Length::percent(75.0)));
-    assert_eq!(rp.get_prop(Layout::INSET_TOP), Some(Length::points(-6.5)));
+    assert_eq!(rp.get_prop(Layout::INSET_TOP), Some(Length::points(-8.0)));
     assert_eq!(rp.get_prop(Layout::POSITION), Some(Position::Absolute));
     assert_eq!(rp.get_prop(Layout::JUSTIFY_CONTENT), Some(JustifyContent::SpaceBetween));
     assert_eq!(rp.get_prop(Layout::ALIGN_ITEMS), Some(AlignItems::Center));

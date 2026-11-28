@@ -687,7 +687,7 @@ fn variable_height_page_up_down_jumps_by_viewport_pixels_and_1m_rows_conserve_u6
 }
 
 #[test]
-fn theme_context_bridge_toast_queue_and_style_buf_invariants() {
+fn theme_context_bridge_toast_queue_and_typed_style_invariants() {
     // ThemeContext accent override keeps the brand hue but forces a maximum-contrast
     // high-contrast solid with an AAA foreground.
     let bright = Theme::from_theme_context(

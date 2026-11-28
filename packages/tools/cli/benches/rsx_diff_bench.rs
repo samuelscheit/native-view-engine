@@ -202,6 +202,14 @@ fn median(mut run: impl FnMut() -> Duration) -> Duration {
 
 /// Classification, allocation and latency guards, printed as a summary table.
 fn verify_and_report(scenarios: &[Scenario]) {
+    // Positive probe: prove `CountingAlloc` observes global heap allocations in this binary.
+    let sanity_before = ALLOC_COUNT.load(Ordering::SeqCst);
+    let probe = black_box(vec![1u8; 64]);
+    black_box(probe.as_ptr());
+    drop(probe);
+    let sanity = ALLOC_COUNT.load(Ordering::SeqCst) - sanity_before;
+    assert!(sanity > 0, "CountingAlloc did not observe heap allocation");
+
     println!(
         "{:<34} {:>6} {:>12} {:>14} {:>12} {:>14} {:>10} {:>10}",
         "scenario",

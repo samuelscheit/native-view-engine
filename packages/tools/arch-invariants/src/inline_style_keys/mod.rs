@@ -91,7 +91,10 @@ impl<'ast> Visit<'ast> for InlineStyleBanVisitor<'_> {
     fn visit_item_struct(&mut self, item: &'ast ItemStruct) {
         if has_props_derive(&item.attrs) {
             for field in &item.fields {
-                if field.ident.as_ref().is_some_and(|id| id == "style")
+                if field
+                    .ident
+                    .as_ref()
+                    .is_some_and(|id| ident_eq_unraw(id, "style"))
                     && type_is_string_like(&field.ty)
                 {
                     let line = field.ident.as_ref().map_or(1, |id| id.span().start().line);
@@ -132,9 +135,14 @@ impl SpanLine for Pat {
     }
 }
 
+fn ident_eq_unraw(id: &syn::Ident, name: &str) -> bool {
+    let raw = id.to_string();
+    raw.strip_prefix("r#").unwrap_or(&raw) == name
+}
+
 fn pat_is_ident(pat: &Pat, name: &str) -> bool {
     match pat {
-        Pat::Ident(pi) => pi.ident == name,
+        Pat::Ident(pi) => ident_eq_unraw(&pi.ident, name),
         _ => false,
     }
 }
@@ -293,16 +301,43 @@ const DOC_C: &str = r#"rsx! { view { style: format!("padding: {}px;", 8) } }"#;
     }
 
     #[test]
+    fn flags_punct_spacing_alternate_delimiters_shorthand_and_raw_prop_bypasses() {
+        let bad = r###"
+#[component]
+pub fn RawProp(r#style: String) -> Element {
+    let style = "width: 100%;";
+    let list = vec![
+        rsx!(view { style:&"width: 100%;" }),
+        rsx![div { style: ::std::format!("padding: {}px;", 4) }],
+        rsx! {
+            rsx!(span { style, })
+            view { r#style, }
+        },
+    ];
+    let _ = (list, style, r#style);
+    rsx! { view {} }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct RawStructProps {
+    r#style: Option<String>,
+}
+"###;
+        let v = violations_for(bad);
+        assert_eq!(v.len(), 6, "expected 6 bypass violations, got: {v:#?}");
+    }
+
+    #[test]
     fn permits_typed_nve_style_component_enum_props_and_struct_literals_in_closures() {
         let ok = r##"
 #[component]
 pub fn Card(#[props(default)] nve_style: Option<TypedStyle>, style: ImpactStyle) -> Element {
     let js = r#"new Intl.NumberFormat(locale, { style: "currency", currency })"#;
     let doc_ok = r#"rsx! { Card { style: ImpactStyle::Medium, nve_style: TypedStyle::new().padding(8.0) } }"#;
-    let _ = (js, doc_ok, style);
+    let _ = (js, doc_ok);
     rsx! {
         Card {
-            style: ImpactStyle::Medium,
+            style,
             view {
                 nve_style: TypedStyle::new().width_pct(100.0).merge_opt(nve_style.as_ref()),
                 onclick: move |_| {
@@ -312,6 +347,7 @@ pub fn Card(#[props(default)] nve_style: Option<TypedStyle>, style: ImpactStyle)
                 text { "clean" }
             }
         }
+        Card { style: ImpactStyle::Medium }
     }
 }
 "##;

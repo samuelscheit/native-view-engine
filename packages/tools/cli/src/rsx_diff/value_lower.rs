@@ -10,11 +10,11 @@ use super::eval::TypedAttrValue;
 
 fn scalar_floor(spec: &AttrSpec) -> f32 {
     match spec.kind {
-        AttrKind::Dimension { float } | AttrKind::Pixels { float } => match float {
+        AttrKind::Dimension { min } | AttrKind::StandalonePx { min } => min,
+        AttrKind::Pixels { float } => match float {
             Some(NumberRule::Px { min }) => min,
             _ => 0.0,
         },
-        AttrKind::StandalonePx { min } => min,
         _ => f32::NEG_INFINITY,
     }
 }
@@ -44,10 +44,7 @@ pub(super) fn eval_length(spec: &AttrSpec, value: &TypedAttrValue) -> Result<Len
             Ok(Length::percent(f))
         }
         (
-            AttrKind::Dimension {
-                float: Some(NumberRule::Px { min }),
-            }
-            | AttrKind::Pixels {
+            AttrKind::Pixels {
                 float: Some(NumberRule::Px { min }),
             }
             | AttrKind::StandalonePx { min },

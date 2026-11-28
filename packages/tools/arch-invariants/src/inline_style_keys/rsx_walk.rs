@@ -19,7 +19,7 @@ pub(super) fn scan_macro_for_nested_rsx(
             && is_ident(&tokens[i], "rsx")
             && is_punct(&tokens[i + 1], '!')
             && let TokenTree::Group(ref g) = tokens[i + 2]
-            && g.delimiter() == Delimiter::Brace
+            && is_rsx_macro_delimiter(g.delimiter())
         {
             let inner: Vec<TokenTree> = g.stream().into_iter().collect();
             scan_rsx_children(rel, raw, &inner, out);
@@ -61,7 +61,7 @@ fn scan_one_rsx_child(
         && is_ident(&tokens[pos], "rsx")
         && is_punct(&tokens[pos + 1], '!')
         && let TokenTree::Group(ref g) = tokens[pos + 2]
-        && g.delimiter() == Delimiter::Brace
+        && is_rsx_macro_delimiter(g.delimiter())
     {
         let inner: Vec<TokenTree> = g.stream().into_iter().collect();
         scan_rsx_children(rel, raw, &inner, out);
@@ -143,11 +143,23 @@ fn scan_rsx_element_body(
             continue;
         }
         if let TokenTree::Ident(ref id) = tokens[pos]
-            && !is_rust_keyword(&id.to_string())
             && tokens.get(pos + 1).is_some_and(|t| is_punct(t, ','))
         {
-            pos += 2;
-            continue;
+            let raw_name = id.to_string();
+            let unraw = raw_name.strip_prefix("r#").unwrap_or(&raw_name);
+            if !(raw_name == unraw && is_rust_keyword(unraw)) {
+                if is_native && unraw == "style" {
+                    let line = id.span().start().line;
+                    out.push(Violation::new(
+                        rel,
+                        line,
+                        line_at(raw, line),
+                        "RSX `style` shorthand attribute is banned (zero runtime CSS parser); use `nve_style: TypedStyle::new()...`",
+                    ));
+                }
+                pos += 2;
+                continue;
+            }
         }
         pos = scan_one_rsx_child(rel, raw, tokens, pos, out);
     }
@@ -197,7 +209,8 @@ fn parse_attr(tokens: &[TokenTree], pos: usize) -> Option<(String, usize, usize,
     let TokenTree::Punct(ref colon) = tokens[pos + 1] else {
         return None;
     };
-    if colon.as_char() != ':' || colon.spacing() != Spacing::Alone || is_punct(&tokens[pos + 2], ':')
+    if colon.as_char() != ':'
+        || (colon.spacing() == Spacing::Joint && is_punct(&tokens[pos + 2], ':'))
     {
         return None;
     }
@@ -243,6 +256,13 @@ fn is_punct(tok: &TokenTree, ch: char) -> bool {
 
 fn is_brace_group(tok: &TokenTree) -> bool {
     matches!(tok, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
+}
+
+fn is_rsx_macro_delimiter(delim: Delimiter) -> bool {
+    matches!(
+        delim,
+        Delimiter::Brace | Delimiter::Parenthesis | Delimiter::Bracket
+    )
 }
 
 fn is_rust_keyword(ident: &str) -> bool {
