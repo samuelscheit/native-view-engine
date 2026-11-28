@@ -57,6 +57,10 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     private boolean needsFrame = true;
     private boolean inFrame;
     private boolean closeAfterFrame;
+    /** A {@link #render} loop is on the stack (a synchronous executor must not nest another). */
+    private boolean rendering;
+    /** Why the last acquired frame was rejected ({@link SceneException}), until one is delivered. */
+    private String frameError;
     /** Events go to an {@code nve pair} server (answered asynchronously), not a local app. */
     private boolean paired;
     private long lastTickNanos;
@@ -84,9 +88,12 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         needsFrame = true;
     }
 
+    /** The runtime's last error, else why the last frame was rejected, else {@code ""}. */
     public String lastError() {
         final long h = handle;
-        return h == 0L ? "" : NativeRuntime.lastError(h);
+        if (h == 0L) return "";
+        final String runtime = NativeRuntime.lastError(h);
+        return runtime.isEmpty() && frameError != null ? frameError : runtime;
     }
 
     private void structural(String what) {
@@ -246,7 +253,9 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
      * Ticks the runtime and hands each changed frame to the consumer, then applies what the
      * consumer deferred (scrolls, events) and delivers the frames those cause, up to
      * {@link #MAX_FRAMES_PER_RENDER} (the rest is posted to the owner thread). Returns {@code true}
-     * when a frame was delivered. Inside {@code onFrame} it only schedules a render.
+     * when a frame was delivered. Inside {@code onFrame} it only schedules a render. A
+     * {@link #close} requested inside {@code onFrame} runs when the frame ends, also when the
+     * consumer throws (the exception then propagates).
      */
     public boolean render() {
         if (handle == 0L) return false;
@@ -255,23 +264,29 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
             return false;
         }
         boolean delivered = false;
-        for (int frames = 0; handle != 0L; frames++) {
-            if (frames == MAX_FRAMES_PER_RENDER) {
-                onWake();  // more work is pending: continue on a later owner-thread turn
-                break;
+        rendering = true;
+        try {
+            for (int frames = 0; handle != 0L; frames++) {
+                if (frames == MAX_FRAMES_PER_RENDER) {
+                    onWake();  // more work is pending: continue on a later owner-thread turn
+                    break;
+                }
+                if (!deliverFrame()) break;
+                delivered = true;
+                if (closeAfterFrame || (!replayDeferred() && !needsFrame)) break;
             }
-            if (!deliverFrame()) break;
-            delivered = true;
-            if (closeAfterFrame) {
-                close();
-                break;
-            }
-            if (!replayDeferred() && !needsFrame) break;
+        } finally {
+            rendering = false;
+            if (closeAfterFrame) close();
         }
         return delivered;
     }
 
-    /** One tick + (when changed) one acquired frame handed to the consumer. */
+    /**
+     * One tick + (when changed) one acquired frame handed to the consumer. A frame the reader
+     * rejects (malformed, e.g. from a broken pairing server) is skipped, not thrown at the host:
+     * {@link #lastError} says why, and the next published frame is read as a gap.
+     */
     private boolean deliverFrame() {
         out[0] = 0;
         final int st = NativeRuntime.tick(handle, tickSeconds(), out);
@@ -279,8 +294,14 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         if (NativeRuntime.acquireScene(handle, header, slabs) != NveRuntimeAbi.STATUS_OK) return false;
         inFrame = true;
         try {
-            reader.attach(header, slabs);
-            needsFrame = false;
+            needsFrame = false;  // retrying a rejected frame would fail the same way
+            try {
+                reader.attach(header, slabs);
+            } catch (SceneException e) {
+                frameError = "rejected a malformed frame: " + e.getMessage();
+                return false;
+            }
+            frameError = null;
             consumer.onFrame(reader, this);
             return true;
         } finally {
@@ -331,15 +352,29 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     }
 
     private void onWake() {
-        if (renderPosted.compareAndSet(false, true)) {
-            ownerThread.execute(() -> {
-                renderPosted.set(false);
-                render();
-            });
-        }
+        if (renderPosted.compareAndSet(false, true)) ownerThread.execute(this::runPostedRender);
     }
 
-    /** Destroys the surface (after the current frame when called inside {@code onFrame}). */
+    /**
+     * The posted {@link #render}. A synchronous executor runs it inline, possibly from inside a
+     * render loop that hit {@link #MAX_FRAMES_PER_RENDER}: nesting would recurse without bound
+     * while frames keep coming, so the remaining frames wait for the next wake / send / render.
+     */
+    private void runPostedRender() {
+        renderPosted.set(false);
+        if (rendering) {
+            needsFrame = true;
+            return;
+        }
+        render();
+    }
+
+    /**
+     * Destroys the surface (after the current frame when called inside {@code onFrame}).
+     *
+     * @throws IllegalStateException off the owner thread: the runtime refuses to free the surface
+     *     under its owner, and it stays open
+     */
     @Override
     public void close() {
         if (handle == 0L) return;
@@ -347,11 +382,13 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
             closeAfterFrame = true;
             return;
         }
-        final long h;
+        closeAfterFrame = false;
         synchronized (handleLock) {
-            h = handle;
+            final int st = NativeRuntime.destroy(handle);
+            if (st != NveRuntimeAbi.STATUS_OK) {
+                throw new IllegalStateException("close refused (status " + st + "): it must run on the surface's owner thread");
+            }
             handle = 0L;
         }
-        NativeRuntime.destroy(h);
     }
 }
