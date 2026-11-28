@@ -455,3 +455,66 @@ fn value_table_attr_compares_by_value_and_detaches_on_clear() {
     a.clear_from(&mut tx, n);
     assert!(!tx.store().has::<Transform>(n), "clearing the attribute detaches its table");
 }
+
+#[test]
+fn third_party_table_event_honors_no_bubble_flag() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use nve_abi::{EventFlags, EventId, Key64};
+
+    #[derive(Clone)]
+    struct Log(Rc<RefCell<Vec<&'static str>>>);
+    impl PartialEq for Log {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+
+    #[component]
+    fn NestedTableEventApp(log: Log) -> Element {
+        let outer_log = Rc::clone(&log.0);
+        let child_log = Rc::clone(&log.0);
+        rsx! {
+            view {
+                test_id: "outer",
+                ontableevent: move |_| outer_log.borrow_mut().push("outer"),
+                view { test_id: "bare-child", onpress: move |_| {} }
+                view {
+                    test_id: "listening-child",
+                    ontableevent: move |_| child_log.borrow_mut().push("child"),
+                }
+            }
+        }
+    }
+
+    let log = Log(Rc::new(RefCell::new(Vec::new())));
+    let mut surface = DioxusSurface::new_with_props(
+        SurfaceId::ROOT,
+        NestedTableEventApp,
+        NestedTableEventAppProps { log: log.clone() },
+    );
+    surface.reconcile(FrameId(1));
+
+    let bare = find_by_test_id(surface.store(), "bare-child");
+    let listening = find_by_test_id(surface.store(), "listening-child");
+    let mod_key = Key64::of("acme.overlay_plugin");
+
+    // Target-only (NO_BUBBLE) on listener-less child: never bubbles to `outer`.
+    let mut evs = EventBatchBuf::new();
+    evs.push_table_event(mod_key, SurfaceId::ROOT, bare, TimestampUs(1), EventId(0), EventFlags::NO_BUBBLE, [0; 6], &[]);
+    assert!(!surface.dispatch_events(evs.as_validated()));
+    assert!(log.0.borrow().is_empty());
+
+    // Target-only (NO_BUBBLE) on listening child: hits child ONLY, never bubbles to `outer`.
+    evs.clear();
+    evs.push_table_event(mod_key, SurfaceId::ROOT, listening, TimestampUs(2), EventId(0), EventFlags::NO_BUBBLE, [0; 6], &[]);
+    assert!(surface.dispatch_events(evs.as_validated()));
+    assert_eq!(log.0.borrow().as_slice(), &["child"]);
+
+    // Control: bubbling table event on listener-less child DOES reach `outer`.
+    evs.clear();
+    evs.push_table_event(mod_key, SurfaceId::ROOT, bare, TimestampUs(3), EventId(0), EventFlags::EMPTY, [0; 6], &[]);
+    assert!(surface.dispatch_events(evs.as_validated()));
+    assert_eq!(log.0.borrow().as_slice(), &["child", "outer"]);
+}

@@ -518,7 +518,8 @@ public struct EventBatchBuilder: Sendable {
     }
 
     public mutating func tryPushCustom(
-        surface: UInt32, node: UInt32, timestamp: UInt64, name: String, data: UnsafeRawBufferPointer
+        surface: UInt32, node: UInt32, timestamp: UInt64, name: String, data: UnsafeRawBufferPointer,
+        flags: EventFlags = []
     ) throws(EventValidationError) {
         try checkRoom()
         var nameCopy = name
@@ -530,20 +531,23 @@ public struct EventBatchBuilder: Sendable {
         }
         appendRecord(EventRecord(
             timestamp: timestamp, table: Key64(nveTableCustom), surface: surface, node: node,
-            event: 0, flags: .customNamed, p0: nlen, bytesOffset: off, bytesLen: len
+            event: 0, flags: flags.withoutInternalFraming.union(.customNamed), p0: nlen,
+            bytesOffset: off, bytesLen: len
         ))
     }
 
     public mutating func pushCustom<Bytes: Collection>(
-        surface: UInt32, node: UInt32, timestamp: UInt64, name: String, data: Bytes
+        surface: UInt32, node: UInt32, timestamp: UInt64, name: String, data: Bytes,
+        flags: EventFlags = []
     ) where Bytes.Element == UInt8 {
         let done: Void? = data.withContiguousStorageIfAvailable {
             try? tryPushCustom(surface: surface, node: node, timestamp: timestamp, name: name,
-                               data: UnsafeRawBufferPointer($0))
+                               data: UnsafeRawBufferPointer($0), flags: flags)
         }
         if done == nil {
             Array(data).withUnsafeBytes {
-                try? tryPushCustom(surface: surface, node: node, timestamp: timestamp, name: name, data: $0)
+                try? tryPushCustom(surface: surface, node: node, timestamp: timestamp, name: name,
+                                   data: $0, flags: flags)
             }
         }
     }

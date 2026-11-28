@@ -61,7 +61,7 @@ pub fn Dialog(
     let mut trap = use_signal(|| {
         FocusTrap::from_ids(focusable_ids.iter().cloned()).with_close_on_escape(close_on_escape)
     });
-    let mut was_open = use_signal(|| false);
+    let latch = use_close_latch(open);
 
     // Sync focusable items and open/close lifecycle without triggering spurious render loops.
     {
@@ -75,8 +75,7 @@ pub fn Dialog(
         );
     }
 
-    if open && !*was_open.peek() {
-        *was_open.write_unchecked() = true;
+    if latch.opened {
         let prev = previous_focus.clone().or_else(current_focused_id);
         let initial_focus = {
             let mut t = trap.write_unchecked();
@@ -88,18 +87,25 @@ pub fn Dialog(
         if let Some(handler) = on_focus_change {
             handler.call(initial_focus);
         }
-    } else if !open && *was_open.peek() {
-        *was_open.write_unchecked() = false;
-        let restored = {
-            let mut t = trap.write_unchecked();
-            t.deactivate()
-        };
-        if let Some(ref fid) = restored {
-            notify_focus_scope(fid);
+    } else if latch.closed {
+        if trap.peek().is_open() {
+            let restored = {
+                let mut t = trap.write_unchecked();
+                t.deactivate()
+            };
+            if let Some(ref fid) = restored {
+                notify_focus_scope(fid);
+            }
+            if let Some(handler) = on_focus_change {
+                handler.call(restored);
+            }
         }
-        if let Some(handler) = on_focus_change {
-            handler.call(restored);
-        }
+    } else if open && !trap.peek().is_open() {
+        // Parent vetoed a dismiss (or omitted callbacks): re-arm the trap silently for the next
+        // `Tab`/`Escape` without firing a spurious `on_focus_change`.
+        let prev = previous_focus.clone().or_else(current_focused_id);
+        let mut t = trap.write_unchecked();
+        let _ = t.activate(prev);
     }
 
     let has_invoker = trigger_label.is_some();
@@ -197,21 +203,24 @@ pub fn Dialog(
         })
         .finish();
 
-    // Every dismissal path (close button, scrim, `Escape`, native `close`) funnels through here.
-    let mut finish_close = move |restored: Option<String>| {
-        was_open.set(false);
+    // Every dismissal path (close button, scrim, `Escape`, native `close`) funnels through here,
+    // gated by `CloseLatch` so same-batch app + native closes fire at most once per open period.
+    let mut dismiss = move |pre_restored: Option<Option<String>>| -> bool {
+        if !latch.is_open() {
+            return false;
+        }
+        let restored = pre_restored.unwrap_or_else(|| trap.write().deactivate());
         if let Some(ref fid) = restored {
             notify_focus_scope(fid);
         }
         if let Some(handler) = on_focus_change {
             handler.call(restored);
         }
-        if let Some(handler) = on_open_change {
-            handler.call(false);
-        }
+        let _ = latch.close(on_open_change);
         if let Some(handler) = on_close {
             handler.call(());
         }
+        true
     };
 
     let active_focus = trap.read().active().map(str::to_owned);
@@ -252,25 +261,30 @@ pub fn Dialog(
             style: style,
             onpress: move |ev: PressEvent| ev.stop_propagation(),
             // Browser-initiated close (native `closedby` backdrop/`Esc`, form `method=dialog`),
-            // delivered target-only like the DOM `close`; app-driven closes already cleared
-            // `was_open`.
+            // delivered target-only like the DOM `close`; gated by `CloseLatch` against same-batch
+            // app-driven closes.
             onclose: move |_: CustomEvent| {
-                if *was_open.peek() {
-                    let restored = trap.write().deactivate();
-                    finish_close(restored);
-                }
+                let _ = dismiss(None);
             },
             onkeydown: move |ev: KeyEvent| {
+                if !latch.is_open() {
+                    return;
+                }
                 let data = ev.data();
                 let action = trap.write().handle_key(&data.key, data.shift);
                 match action {
                     FocusTrapAction::FocusChanged(next_id) => {
+                        ev.stop_propagation();
                         notify_focus_scope(&next_id);
                         if let Some(handler) = on_focus_change {
                             handler.call(Some(next_id));
                         }
                     }
-                    FocusTrapAction::Dismiss { restore_focus } => finish_close(restore_focus),
+                    FocusTrapAction::Dismiss { restore_focus } => {
+                        if dismiss(Some(restore_focus)) {
+                            ev.stop_propagation();
+                        }
+                    }
                     FocusTrapAction::Ignored => {}
                 }
             },
@@ -297,8 +311,7 @@ pub fn Dialog(
                     tab_index: 0,
                     nve_style: trigger_style.clone(),
                     onpress: move |_| {
-                        let restored = trap.write().deactivate();
-                        finish_close(restored);
+                        let _ = dismiss(None);
                     },
                     text {
                         nve_style: trigger_text_style.clone(),
@@ -343,8 +356,7 @@ pub fn Dialog(
             nve_style: backdrop_style,
             onpress: move |_| {
                 if close_on_backdrop {
-                    let restored = trap.write().deactivate();
-                    finish_close(restored);
+                    let _ = dismiss(None);
                 }
             },
             {dialog_el}

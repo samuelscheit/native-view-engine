@@ -14,6 +14,7 @@ use crate::{WebStoreRenderer, WebSystemCommitCtx, WebTableSystem};
 #[derive(Default)]
 struct MockEl {
     attrs: RefCell<Vec<(String, String)>>,
+    inner_html: RefCell<Vec<String>>,
 }
 impl RetagElementSink for MockEl {
     fn set_attr(&self, name: &str, value: &str) {
@@ -21,7 +22,9 @@ impl RetagElementSink for MockEl {
             .borrow_mut()
             .push((name.to_owned(), value.to_owned()));
     }
-    fn set_inner_html(&self, _html: &str) {}
+    fn set_inner_html(&self, html: &str) {
+        self.inner_html.borrow_mut().push(html.to_owned());
+    }
 }
 
 #[allow(dead_code)]
@@ -249,14 +252,21 @@ struct OpenHint {
     value: u32,
 }
 
-/// A second plugin that always mirrors `open="hint"`.
+/// A second plugin that mirrors `open="hint"`, plus optional `inline_css` / `inner_html` when
+/// `value >= 10` (so tests can cover all three mirror channels on retag).
 struct OpenHintSys;
 impl WebTableSystem for OpenHintSys {
     fn slot(&self) -> TableSlot {
         OpenHint::slot()
     }
-    fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, _: &NodeStore, node: NodeId, _: u32) {
+    fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
         ctx.set_attr(node, "open", "hint");
+        if let Some(row) = store.try_row::<OpenHint>(node)
+            && row.value() >= 10
+        {
+            ctx.set_inline_css(node, format!("--v:{};", row.value()));
+            ctx.set_inner_html(node, format!("<span>{}</span>", row.value()));
+        }
     }
 }
 
@@ -353,5 +363,70 @@ fn retag_replay_skips_values_written_by_this_commit() {
     assert!(
         live[&b].attrs.borrow().is_empty(),
         "a value written by this commit is not replayed twice"
+    );
+}
+
+/// Retag replay gates `inline_css` and `inner_html` by `write_seq` alongside `attrs`: older
+/// mirrors replay once onto the fresh element; writes made during the same commit are skipped.
+#[test]
+fn retag_replay_gates_inline_css_and_inner_html_by_write_seq() {
+    static WATCHED: AtomicU32 = AtomicU32::new(0);
+    let mut store = NodeStore::new();
+    let mut renderer = WebStoreRenderer::new()
+        .with_table_system(DisclosureSys {
+            watched_commits: &WATCHED,
+        })
+        .with_table_system(OpenHintSys);
+    let (mut a, mut b) = (NodeId::ROOT, NodeId::ROOT);
+    let changes = frame(&mut store, |tx| {
+        a = tx.create();
+        b = tx.create();
+        tx.set_children(NodeId::ROOT, &[a, b]);
+        for n in [a, b] {
+            tx.edit::<OpenHint>(n).value(10);
+            tx.edit::<Disclosure>(n).open(false);
+        }
+    });
+    renderer.commit(&store, &changes).unwrap();
+
+    // Retag both; only `b` re-writes `OpenHint` (`attr` + `inline_css` + `inner_html`) in this commit.
+    let changes = frame(&mut store, |tx| {
+        tx.edit::<Disclosure>(a).imperative(true);
+        tx.edit::<Disclosure>(b).imperative(true);
+        tx.edit::<OpenHint>(b).value(20);
+    });
+    let mut live: HashMap<NodeId, MockEl> = HashMap::default();
+    live.insert(a, MockEl::default());
+    live.insert(b, MockEl::default());
+    renderer.commit_plugins_active_with(
+        &store,
+        &changes,
+        #[cfg(target_arch = "wasm32")]
+        None,
+        Some(&live),
+        &[a, b],
+        |_, _, _| {},
+    );
+    assert_eq!(
+        *live[&a].attrs.borrow(),
+        [
+            ("open".to_owned(), "hint".to_owned()),
+            ("data-nve-mod-style".to_owned(), "--v:10;".to_owned()),
+        ],
+        "older attr and inline_css replay once on retag"
+    );
+    assert_eq!(
+        *live[&a].inner_html.borrow(),
+        ["<span>10</span>".to_owned()],
+        "older inner_html replays once on retag"
+    );
+    assert!(
+        live[&b].attrs.borrow().is_empty(),
+        "same-commit attr and inline_css must not replay twice"
+    );
+    assert!(
+        live[&b].inner_html.borrow().is_empty(),
+        "same-commit inner_html must not replay twice: {:?}",
+        live[&b].inner_html.borrow()
     );
 }

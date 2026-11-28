@@ -171,33 +171,47 @@ fn registering_a_new_structural_rule_costs_fixed_allocations_independent_of_cach
 #[test]
 fn known_cursor_class_registers_with_zero_allocations() {
     let mut store = NodeStore::new();
-    let (first, twin) = {
+    let (first, twin, auto_node) = {
         let mut tx = store.tx();
-        let mut pointer = || {
+        let mut with_cursor = |cursor| {
             let n = tx.create();
-            tx.edit::<Interaction>(n).cursor(CursorKind::Pointer);
+            tx.edit::<Interaction>(n).cursor(cursor);
             n
         };
-        let pair = (pointer(), pointer());
+        let nodes = (
+            with_cursor(CursorKind::Pointer),
+            with_cursor(CursorKind::Pointer),
+            with_cursor(CursorKind::Auto),
+        );
         tx.commit_into(&mut ChangeSet::default());
-        pair
+        nodes
     };
     let mut cache = StyleSheetCache::new();
     let systems = WebTableRegistry::new();
-    drop(cache.resolve_node(&store, first, &systems));
+    let first_cost = allocations(|| drop(cache.resolve_node(&store, first, &systems)));
     let rules = cache.rule_count();
     let Some((cls, _)) = format_cursor_rule(CursorKind::Pointer) else {
         unreachable!("Pointer has a cursor rule");
     };
     assert!(cache.knows_structural(cls));
 
-    // Baseline: re-resolving the already-registered cursor-only node. A never-seen twin with the
-    // same cursor must cost exactly that (zero registration allocations).
-    let baseline = allocations(|| drop(cache.resolve_node(&store, first, &systems)));
+    // Independent baseline outside the cursor-registration branch: resolve a sibling node with
+    // `CursorKind::Auto` (never enters `cursor_rule`) plus the exact `classes` string push, so
+    // dropping `&& !self.knows_structural(cls)` in `resolve_node` reliably fails this guard.
+    let independent_baseline = allocations(|| {
+        let mut res = cache.resolve_node(&store, auto_node, &systems);
+        res.classes.push(' ');
+        res.classes.push_str(cls);
+        drop(res);
+    });
     let twin_cost = allocations(|| drop(cache.resolve_node(&store, twin, &systems)));
+    assert!(
+        twin_cost < first_cost,
+        "known cursor twin ({twin_cost}) must allocate strictly less than first registration ({first_cost})"
+    );
     assert_eq!(
-        twin_cost, baseline,
-        "known cursor hit must not allocate its declarations"
+        twin_cost, independent_baseline,
+        "known cursor hit must not allocate its declarations (twin={twin_cost}, baseline={independent_baseline})"
     );
     assert_eq!(cache.rule_count(), rules);
 }

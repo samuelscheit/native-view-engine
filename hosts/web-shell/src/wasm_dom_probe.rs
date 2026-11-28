@@ -34,6 +34,15 @@ export function nve_probe_set_move_before(enabled) {
   }
   return typeof proto.moveBefore === 'function';
 }
+export function nve_probe_reset_beforetoggle(el) {
+  if (el.__nveBT === undefined) {
+    el.addEventListener('beforetoggle', () => { el.__nveBT += 1; });
+  }
+  el.__nveBT = 0;
+}
+export function nve_probe_beforetoggle_count(el) {
+  return el.__nveBT || 0;
+}
 ")]
 extern "C" {
     fn nve_probe_native_closedby() -> bool;
@@ -42,6 +51,8 @@ extern "C" {
     /// Hides (`false`) or restores (`true`) `Element.prototype.moveBefore`; returns whether it
     /// is available afterwards.
     fn nve_probe_set_move_before(enabled: bool) -> bool;
+    fn nve_probe_reset_beforetoggle(el: &web_sys::Element);
+    fn nve_probe_beforetoggle_count(el: &web_sys::Element) -> u32;
 }
 
 pub(crate) type ProbeResult = Result<String, String>;
@@ -184,7 +195,13 @@ fn drive_native_overlays(host: &web_sys::Element) -> ProbeResult {
     let mut moves = String::new();
     for state_preserving in [true, false] {
         let available = nve_probe_set_move_before(state_preserving);
-        let result = drive_overlay_resync(&mut web, &mut store, host, &dialog, &popover);
+        let toggled = check(
+            available == state_preserving,
+            &format!("moveBefore toggle mismatch: requested={state_preserving}, available={available}"),
+        );
+        let result = toggled.and_then(|()| {
+            drive_overlay_resync(&mut web, &mut store, host, &dialog, &popover, state_preserving)
+        });
         nve_probe_set_move_before(true);
         result.map_err(|e| format!("{e} (moveBefore={available})"))?;
         moves.push_str(if available {
@@ -225,6 +242,7 @@ fn drive_overlay_resync(
     host: &web_sys::Element,
     dialog: &web_sys::Element,
     popover: &web_sys::Element,
+    state_preserving: bool,
 ) -> Result<(), String> {
     let (dialog_n, popover_n) = (NodeId::new(2, 0), NodeId::new(3, 0));
     commit(web, store, |tx| {
@@ -242,31 +260,60 @@ fn drive_overlay_resync(
         "(a) modal-only edit false->true while open must re-enter :modal",
     )?;
 
+    let (sibling, auto_pop_n) = (NodeId::new(4, 0), NodeId::new(10, 0));
     commit(web, store, |tx| {
         tx.edit::<HtmlSemantics>(popover_n).data_nve_open(true);
-    })?;
-    let sibling = NodeId::new(4, 0);
-    commit(web, store, |tx| {
         let _ = tx.create_at(sibling);
         tx.edit::<TextContent>(sibling).text("sibling");
-        tx.set_children(NodeId::ROOT, &[sibling, dialog_n, popover_n]);
+        let _ = tx.create_at(auto_pop_n);
+        tx.edit::<HtmlSemantics>(auto_pop_n)
+            .popover(Some(PopoverMode::Auto))
+            .data_nve_open(true);
+        tx.set_children(NodeId::ROOT, &[sibling, dialog_n, popover_n, auto_pop_n]);
     })?;
+    let auto_pop = query(host, &format!("[data-nve-id=\"{}\"]", auto_pop_n.raw()))?;
+    check(
+        matches(&auto_pop, ":popover-open"),
+        "(b) canary auto popover must open before moveBefore checks",
+    )?;
+    nve_probe_reset_beforetoggle(popover);
     // The child-order cursor never moves the element it stands on: `dialog` must come first.
-    for (order, label) in [
-        (
-            [dialog_n, sibling, popover_n],
-            "(b) moved open modal <dialog>",
-        ),
-        ([popover_n, dialog_n, sibling], "(b) moved open [popover]"),
+    for (order, label, check_popover_bt) in [
+        ([dialog_n, sibling, popover_n, auto_pop_n], "(b) moved open modal <dialog>", false),
+        ([popover_n, dialog_n, sibling, auto_pop_n], "(b) moved open [popover]", true),
     ] {
         commit(web, store, |tx| tx.set_children(NodeId::ROOT, &order))?;
         check(
             matches(dialog, ":modal") && matches(popover, ":popover-open"),
             &format!("{label}: both must stay in the top layer"),
         )?;
+        if state_preserving {
+            check(
+                matches(&auto_pop, ":popover-open"),
+                &format!("{label}: moveBefore must keep auto popover alive (no fallback showModal)"),
+            )?;
+        }
+        if check_popover_bt {
+            let bt = nve_probe_beforetoggle_count(popover);
+            check(
+                if state_preserving { bt == 0 } else { bt > 0 },
+                &format!("{label}: expected beforetoggle {} (got {bt})", if state_preserving { "== 0" } else { "> 0" }),
+            )?;
+        }
     }
-    drive_ancestor_resync(web, store, host, &[popover_n, dialog_n, sibling])?;
+    drive_ancestor_resync(
+        web,
+        store,
+        host,
+        &[popover_n, dialog_n, sibling, auto_pop_n],
+        &auto_pop,
+        state_preserving,
+    )?;
     commit(web, store, |tx| {
+        tx.edit::<HtmlSemantics>(auto_pop_n).data_nve_open(false);
+    })?;
+    commit(web, store, |tx| {
+        tx.remove(auto_pop_n);
         tx.remove(sibling);
         tx.set_children(NodeId::ROOT, &[dialog_n, popover_n]);
     })?;
@@ -326,10 +373,17 @@ fn drive_ancestor_resync(
     store: &mut NodeStore,
     host: &web_sys::Element,
     roots: &[NodeId],
+    auto_pop: &web_sys::Element,
+    state_preserving: bool,
 ) -> Result<(), String> {
     let (wrapper, inner_dialog, inner_popover) =
         (NodeId::new(7, 0), NodeId::new(8, 0), NodeId::new(9, 0));
+    // Commit 1 builds the wrapper subtree unparented; Commit 2 attaches it with zero edits to the
+    // overlays, proving attaching a disconnected subtree still runs Step-6 connected sync.
     commit(web, store, |tx| {
+        if state_preserving {
+            tx.edit::<HtmlSemantics>(NodeId::new(10, 0)).data_nve_open(false);
+        }
         for n in [wrapper, inner_dialog, inner_popover] {
             let _ = tx.create_at(n);
         }
@@ -343,8 +397,8 @@ fn drive_ancestor_resync(
             .popover(Some(PopoverMode::Manual))
             .data_nve_open(true);
         tx.set_children(wrapper, &[inner_dialog, inner_popover]);
-        tx.append_child(NodeId::ROOT, wrapper);
     })?;
+    commit(web, store, |tx| tx.append_child(NodeId::ROOT, wrapper))?;
     let wrapper_sel = format!("[data-nve-id=\"{}\"]", wrapper.raw());
     let dialog_sel = format!("[data-nve-id=\"{}\"]", inner_dialog.raw());
     let popover_sel = format!("[data-nve-id=\"{}\"]", inner_popover.raw());
@@ -356,11 +410,26 @@ fn drive_ancestor_resync(
             &format!("(d) {what}: nested <dialog> / [popover] must stay in the top layer"),
         )
     };
-    in_top_layer("mounted in a wrapper")?;
+    in_top_layer("attached from unparented subtree")?;
+    let inner_pop_el = query(host, &popover_sel)?;
+    // Re-open the canary auto popover now that `inner_dialog` finished its initial `showModal()`.
+    if state_preserving {
+        commit(web, store, |tx| {
+            tx.edit::<HtmlSemantics>(NodeId::new(10, 0)).data_nve_open(true);
+        })?;
+        check(matches(auto_pop, ":popover-open"), "(d) canary auto popover open")?;
+    }
+    nve_probe_reset_beforetoggle(&inner_pop_el);
     let mut moved = vec![wrapper];
     moved.extend_from_slice(roots);
     commit(web, store, |tx| tx.set_children(NodeId::ROOT, &moved))?;
     in_top_layer("ancestor moved")?;
+    let bt_move = nve_probe_beforetoggle_count(&inner_pop_el);
+    check(
+        if state_preserving { bt_move == 0 && matches(auto_pop, ":popover-open") } else { bt_move > 0 },
+        &format!("(d) ancestor moved: state_preserving={state_preserving} beforetoggle={bt_move}"),
+    )?;
+    nve_probe_reset_beforetoggle(&inner_pop_el);
     commit(web, store, |tx| {
         tx.edit::<HtmlSemantics>(wrapper)
             .element(Some(SemanticElement::Article));
@@ -372,6 +441,11 @@ fn drive_ancestor_resync(
         "(d) wrapper retagged to <article>",
     )?;
     in_top_layer("ancestor retagged")?;
+    let bt_retag = nve_probe_beforetoggle_count(&inner_pop_el);
+    check(
+        if state_preserving { bt_retag == 0 && matches(auto_pop, ":popover-open") } else { bt_retag > 0 },
+        &format!("(d) ancestor retagged: state_preserving={state_preserving} beforetoggle={bt_retag}"),
+    )?;
     commit(web, store, |tx| {
         tx.edit::<HtmlSemantics>(inner_dialog).open(false);
         tx.edit::<HtmlSemantics>(inner_popover).data_nve_open(false);

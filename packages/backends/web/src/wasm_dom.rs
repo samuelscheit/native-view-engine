@@ -178,11 +178,13 @@ impl WebBackend {
                 if cursor.as_ref() == Some(child_el) {
                     cursor = cursor.and_then(|c| c.next_element_sibling());
                 } else {
-                    let was_connected = child_el.is_connected();
                     let ref_node: Option<&web_sys::Node> = cursor.as_deref().map(AsRef::as_ref);
-                    // A fallback move of a connected element removes and reinserts its whole
-                    // subtree (top layer exits); queued syncs run in Step 6.
-                    if !crate::dom_move::place_child(&parent_el, child_el, ref_node) && was_connected {
+                    // A fallback move (removes/reinserts subtree -> top layer exits) or attaching
+                    // a previously unparented subtree into a connected parent needs Step-6 sync
+                    // across the whole subtree so unchanged open overlays enter the top layer.
+                    if !crate::dom_move::place_child(&parent_el, child_el, ref_node)
+                        && parent_el.is_connected()
+                    {
                         self.renderer.queue_connected_sync_subtree(store, cid);
                     }
                 }

@@ -54,7 +54,8 @@ fn dispatch_menu_key(
 ) {
     match ev.data().key.as_str() {
         "Escape" | "Esc" => latch.close_on_escape(ev, on_open_change),
-        "Enter" | " " | "Space" => {
+        "Enter" | " " | "Space" if latch.is_open() => {
+            ev.stop_propagation();
             let selected = roving.read().active_id().map(str::to_owned);
             if let Some(id) = selected {
                 if let Some(handler) = on_select {
@@ -63,9 +64,11 @@ fn dispatch_menu_key(
                 let _ = latch.close(on_open_change);
             }
         }
-        key => {
+        key @ ("ArrowUp" | "ArrowDown" | "Home" | "End") if latch.is_open() => {
+            ev.stop_propagation();
             let _ = roving.write().handle_key(key);
         }
+        _ => {}
     }
 }
 
@@ -326,16 +329,15 @@ pub fn DropdownMenu(
                 onblur: move |_| trigger_focused.set(false),
                 onpress: move |_| latch.toggle(on_open_change),
                 onkeydown: move |ev: KeyEvent| {
-                    match ev.data().key.as_str() {
-                        "ArrowDown" | "Enter" | " " | "Space" if !open => {
+                    if !latch.is_open() {
+                        if matches!(ev.data().key.as_str(), "ArrowDown" | "Enter" | " " | "Space") {
+                            ev.stop_propagation();
                             if let Some(handler) = on_open_change {
                                 handler.call(true);
                             }
                         }
-                        _ if open => {
-                            dispatch_menu_key(&ev, roving, latch, on_select, on_open_change);
-                        }
-                        _ => {}
+                    } else {
+                        dispatch_menu_key(&ev, roving, latch, on_select, on_open_change);
                     }
                 },
                 text {

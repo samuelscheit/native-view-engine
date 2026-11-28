@@ -39,13 +39,14 @@ final class EventRingTest {
                 .pointer(NveAbi.INTERACTION_EVENT_POINTER_DOWN, node(8), 19L, 3.0f, 4.0f, 2,
                         NveAbi.EVENT_FLAG_CAPTURE | EventRingWriter.pointerButtonFlag(1))
                 .wheel(node(9), 20L, 0.0f, -12.5f, NveAbi.EVENT_FLAG_MOD_CTRL)
-                .tableEvent(EventRingVectors.TABLE, 3, node(10), 21L, 0, 1, 2, 3, 4, 5, 6, new byte[] {1, 2});
+                .tableEvent(EventRingVectors.TABLE, 3, node(10), 21L, 0, 1, 2, 3, 4, 5, 6, new byte[] {1, 2})
+                .custom(node(11), 22L, "close", null, NveAbi.EVENT_FLAG_NO_BUBBLE | NveAbi.EVENT_FLAG_UTF8_BYTES);
     }
 
     static void goldenLayoutAndRead(Check c) {
         final EventRingWriter w = golden(new EventRingWriter(ByteBuffer.allocateDirect(1024), EventRingVectors.SURFACE));
         final byte[] expected = EventRingVectors.frame();
-        c.eq(w.count(), 12, "golden count");
+        c.eq(w.count(), 13, "golden count");
         c.eq(w.length(), expected.length, "golden length");
         final byte[] actual = new byte[w.length()];
         final ByteBuffer b = w.buffer().duplicate();
@@ -58,10 +59,10 @@ final class EventRingTest {
         c.eq(mismatch, -1, "first byte differing from Rust golden NVEV v2 frame");
         c.that(java.util.Arrays.equals(expected, actual), "NVEV v2 frame equals nve_abi::EventBatchBuf::to_wire_bytes");
 
-        // Decode the golden frame with EventRingReader and check all 12 events.
+        // Decode the golden frame with EventRingReader and check all 13 events.
         final EventRingReader r = new EventRingReader().attach(expected);
-        c.eq(r.count(), 12, "reader count");
-        c.eq(r.arenaLength(), 61, "reader arena length");
+        c.eq(r.count(), 13, "reader count");
+        c.eq(r.arenaLength(), 66, "reader arena length");
         c.that(r.table(0).equals(NveAbi.TABLE_INTERACTION) && r.event(0) == NveAbi.INTERACTION_EVENT_FOCUS && r.timestamp(0) == 10L, "focus");
         c.that(r.payloadF32(1, 0) == 1.5f && r.payloadF32(1, 1) == -2.0f && r.surface(1) == EventRingVectors.SURFACE, "press");
         c.that(r.table(2).equals(NveAbi.TABLE_SCROLL) && r.payloadF32(2, 3) == 900.0f, "scroll");
@@ -69,6 +70,7 @@ final class EventRingTest {
         c.eq(r.text(4), "\u3042", "composition update utf8");
         c.that(r.table(5).equals(NveAbi.TABLE_LAYOUT) && r.payloadF32(5, 2) == 3.0f && r.payloadF32(5, 3) == 4.0f, "layout");
         c.eq(r.customName(6), "submit", "custom name");
+        c.that(r.bubbles(6), "default custom event bubbles");
         c.that(java.util.Arrays.equals(r.customData(6), new byte[] {9, 8, 7}), "custom data");
         c.eq(r.key(7), "\u00e9", "inline key");
         c.eq(r.code(7), "KeyE", "inline key code");
@@ -83,12 +85,14 @@ final class EventRingTest {
                 && (r.flags(10) & NveAbi.EVENT_FLAG_MOD_CTRL) != 0, "wheel");
         c.that(r.tableBits(11) == EventRingVectors.TABLE && r.event(11) == 3 && r.payloadU32(11, 5) == 6
                 && java.util.Arrays.equals(r.bytes(11), new byte[] {1, 2}), "module table event");
+        c.that("close".equals(r.customName(12)) && r.customData(12).length == 0 && !r.bubbles(12)
+                && r.flags(12) == (NveAbi.EVENT_FLAG_NO_BUBBLE | NveAbi.EVENT_FLAG_CUSTOM_NAMED), "non-bubbling custom event");
 
         // Null / empty arena payloads produce RawEventBytes {0, 0}.
-        w.tableEvent(EventRingVectors.TABLE, 4, node(10), 22L, NveAbi.EVENT_FLAG_UTF8_BYTES | NveAbi.EVENT_FLAG_CUSTOM_NAMED, 0, 0, 0, 0, 0, 0, null);
+        w.tableEvent(EventRingVectors.TABLE, 4, node(10), 23L, NveAbi.EVENT_FLAG_UTF8_BYTES | NveAbi.EVENT_FLAG_CUSTOM_NAMED, 0, 0, 0, 0, 0, 0, null);
         c.eq(w.length(), expected.length + EventRingWriter.EVENT_SIZE, "null table payload adds only 64 bytes");
         r.attach(w.buffer(), w.length());
-        c.that(r.bytesOffset(12) == 0 && r.bytesLen(12) == 0 && r.flags(12) == 0, "internal framing flags stripped & empty bytes = (0,0)");
+        c.that(r.bytesOffset(13) == 0 && r.bytesLen(13) == 0 && r.flags(13) == 0, "internal framing flags stripped & empty bytes = (0,0)");
         w.reset();
         c.that(w.count() == 0 && w.arenaLength() == 0 && w.length() == EventRingWriter.HEADER_SIZE, "reset");
         r.attach(w.buffer(), w.length());

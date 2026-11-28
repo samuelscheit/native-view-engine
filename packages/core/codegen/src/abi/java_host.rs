@@ -38,7 +38,7 @@ pub const VECTOR_TABLE: Key64 = Key64::of("nve.vector_table");
 pub fn golden_events() -> EventBatchBuf {
     let (s, node, ts) = (VECTOR_SURFACE, |i| NodeId::new(i, 1), TimestampUs);
     let mods = EventFlags::MOD_META | EventFlags::MOD_SHIFT;
-    let mut b = EventBatchBuf::with_capacity(12, 128);
+    let mut b = EventBatchBuf::with_capacity(13, 128);
     b.push_focus(s, node(1), ts(10));
     b.push_press(s, node(2), ts(11), 1.5, -2.0);
     b.push_scroll(s, node(3), ts(12), 0.0, 30.0, 300.0, 900.0);
@@ -51,6 +51,7 @@ pub fn golden_events() -> EventBatchBuf {
     b.push_pointer(s, node(8), ts(19), InteractionEvent::PointerDown, 3.0, 4.0, 2, EventFlags::CAPTURE | EventFlags(1 << EventFlags::BUTTON_SHIFT));
     b.push_wheel(s, node(9), ts(20), 0.0, -12.5, EventFlags::MOD_CTRL);
     b.push_table_event(VECTOR_TABLE, s, node(10), ts(21), EventId(3), EventFlags::EMPTY, [1, 2, 3, 4, 5, 6], &[1, 2]);
+    b.push_custom_with_flags(s, node(11), ts(22), "close", &[], EventFlags::NO_BUBBLE);
     b
 }
 
@@ -62,7 +63,7 @@ pub fn java_event_ring_vectors() -> GeneratedFile {
         &mut out,
         "{@code nve_abi::EventBatchBuf} {@code NVEV} v2 frame of the golden events (see abi/java_host.rs): Focus, Press, \
          Scroll, TextChange, CompositionUpdate, Layout, Custom, inline-key KeyDown, split-key KeyUp, PointerDown, Wheel, \
-         and a module-table event.",
+         a module-table event, and a target-only ({@code NO_BUBBLE}) Custom event.",
         "EventRingVectors",
     );
     let _ = writeln!(out, "\n    public static final int SURFACE = 0x{:08X};", VECTOR_SURFACE.raw());
@@ -106,13 +107,18 @@ mod tests {
     #[test]
     fn golden_frame_round_trips_and_covers_every_framing() {
         let events = golden_events();
-        assert_eq!(events.len(), 12, "a push was dropped");
+        assert_eq!(events.len(), 13, "a push was dropped");
         assert_eq!(EventBatchBuf::decode_wire(&events.to_wire_bytes()).unwrap(), events);
         let flags = |i: usize| events.events()[i].flags;
         assert!(flags(3).contains(EventFlags::UTF8_BYTES));
         assert!(flags(7).contains(EventFlags::INLINE_KEY_UTF8));
         assert!(flags(8).contains(EventFlags::KEY_SPLIT_BYTES));
-        assert!(flags(6).contains(EventFlags::CUSTOM_NAMED));
+        assert!(flags(6).contains(EventFlags::CUSTOM_NAMED) && flags(6).bubbles());
+        assert!(
+            flags(12).contains(EventFlags::CUSTOM_NAMED)
+                && flags(12).contains(EventFlags::NO_BUBBLE)
+                && !flags(12).bubbles()
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ public struct EventFlags: OptionSet, Hashable, Sendable {
     public static let modMask = EventFlags(rawValue: 0x1F)
     public static let capture = EventFlags(rawValue: nveEventFlagCapture)
     public static let composing = EventFlags(rawValue: nveEventFlagComposing)
+    public static let noBubble = EventFlags(rawValue: nveEventFlagNoBubble)
     public static let utf8Bytes = EventFlags(rawValue: nveEventFlagUtf8Bytes)
     public static let inlineKeyUtf8 = EventFlags(rawValue: nveEventFlagInlineKeyUtf8)
     public static let customNamed = EventFlags(rawValue: nveEventFlagCustomNamed)
@@ -52,6 +53,10 @@ public struct EventFlags: OptionSet, Hashable, Sendable {
     public var hasPrimaryModifier: Bool { meta || ctrl }
     public var isCapture: Bool { contains(.capture) }
     public var isComposing: Bool { contains(.composing) }
+    public var bubbles: Bool { !contains(.noBubble) }
+    public func withBubbles(_ bubbles: Bool) -> EventFlags {
+        bubbles ? subtracting(.noBubble) : union(.noBubble)
+    }
     public var withoutInternalFraming: EventFlags { EventFlags(rawValue: rawValue & ~Self.internalFramingMask) }
 }
 
@@ -161,6 +166,7 @@ public struct EventRecord: Equatable, Sendable {
     public var scrollEvent: ScrollEventId? { table.value == nveTableScroll ? ScrollEventId(rawValue: event) : nil }
     public var layoutEvent: LayoutEventId? { table.value == nveTableLayout ? LayoutEventId(rawValue: event) : nil }
     public var isCustom: Bool { table.value == nveTableCustom && flags.contains(.customNamed) }
+    public var bubbles: Bool { flags.bubbles }
 
     public func payloadU32(_ index: Int) -> UInt32 {
         switch index {

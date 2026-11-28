@@ -16,6 +16,7 @@ import {
   NVE_EVENT_FLAG_MOD_ALT,
   NVE_EVENT_FLAG_MOD_CTRL,
   NVE_EVENT_FLAG_MOD_META,
+  NVE_EVENT_FLAG_NO_BUBBLE,
   NVE_EVENT_FLAG_UTF8_BYTES,
   NVE_EVENT_LAYOUT,
   NVE_EVENT_SIZE,
@@ -96,6 +97,7 @@ test('EventBatchBuilder + NVEV v2 wire round-trip (inline/split keys, custom, ra
   );
   b.pushWheel(surface, node, new Key64(100, 0), -3.0, 12.0, NVE_EVENT_FLAG_MOD_ALT);
   b.pushCustom(surface, node, tsBig, 'analytics.click', Uint8Array.of(1, 2, 3, 4));
+  b.pushCustom(surface, node, new Key64(110, 0), 'close', undefined, NVE_EVENT_FLAG_NO_BUBBLE | NVE_EVENT_FLAG_UTF8_BYTES);
   const modKey = Key64.of('acme.map_view');
   b.pushTableEvent(
     modKey,
@@ -108,14 +110,14 @@ test('EventBatchBuilder + NVEV v2 wire round-trip (inline/split keys, custom, ra
     Uint8Array.of(0xff, 0xfe),
   );
 
-  assert.equal(b.length, 16);
+  assert.equal(b.length, 17);
   const wire = b.encodeWire();
-  assert.equal(wire.byteLength, NVE_EVENT_WIRE_HEADER_SIZE + 16 * NVE_EVENT_SIZE + b.bytesLen);
+  assert.equal(wire.byteLength, NVE_EVENT_WIRE_HEADER_SIZE + 17 * NVE_EVENT_SIZE + b.bytesLen);
 
   // Both sealed O(1) reader and wire-decoded reader agree completely.
   for (const view of [b.toReader(), EventBatchReader.decodeWire(wire)]) {
-    assert.equal(view.length, 16);
-    assert.equal([...view].length, 16);
+    assert.equal(view.length, 17);
+    assert.equal([...view].length, 17);
 
     const e0 = view.get(0);
     assert.ok(e0.table.equals(NVE_TABLE_INTERACTION));
@@ -172,16 +174,25 @@ test('EventBatchBuilder + NVEV v2 wire round-trip (inline/split keys, custom, ra
     const e14 = view.get(14);
     assert.ok(e14.table.equals(NVE_TABLE_CUSTOM));
     assert.ok(e14.isCustom);
+    assert.ok(e14.bubbles);
     assert.equal(e14.timestamp.toBigInt(), tsBig.toBigInt(), '64-bit timestamp exact');
     assert.equal(e14.customName(), 'analytics.click');
     assert.deepEqual(e14.customData(), Uint8Array.of(1, 2, 3, 4));
 
     const e15 = view.get(15);
-    assert.ok(e15.table.equals(modKey));
-    assert.equal(e15.event, 3);
-    assert.deepEqual(e15.bytes(), Uint8Array.of(0xff, 0xfe));
-    assert.equal(e15.text(), '', 'invalid UTF-8 never exposed as text()');
-    assert.equal(e15.payloadU64(1).toBigInt(), 0x0123_4567_89ab_cdefn);
+    assert.ok(e15.table.equals(NVE_TABLE_CUSTOM));
+    assert.ok(e15.isCustom);
+    assert.equal(e15.bubbles, false);
+    assert.equal(e15.flags, (NVE_EVENT_FLAG_NO_BUBBLE | NVE_EVENT_FLAG_CUSTOM_NAMED) >>> 0);
+    assert.equal(e15.customName(), 'close');
+    assert.equal(e15.customData().byteLength, 0);
+
+    const e16 = view.get(16);
+    assert.ok(e16.table.equals(modKey));
+    assert.equal(e16.event, 3);
+    assert.deepEqual(e16.bytes(), Uint8Array.of(0xff, 0xfe));
+    assert.equal(e16.text(), '', 'invalid UTF-8 never exposed as text()');
+    assert.equal(e16.payloadU64(1).toBigInt(), 0x0123_4567_89ab_cdefn);
   }
 
   // clear() reuses builder cleanly

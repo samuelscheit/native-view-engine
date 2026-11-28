@@ -18,7 +18,7 @@ use crate::value::{NveMapEntry, NveStrSlice};
 /// C spelling of one runtime ABI function-pointer signature.
 ///
 /// [`RUNTIME_CALLBACK_TYPEDEFS`] and [`RUNTIME_API_SLOTS`] are the single source for
-/// [`NVE_RUNTIME_SCHEMA_HASH`] and the generated `nve_runtime_abi.generated.h`; the
+/// [`NVE_RUNTIME_SCHEMA_HASH`](super::NVE_RUNTIME_SCHEMA_HASH) and the generated `nve_runtime_abi.generated.h`; the
 /// `lock_runtime_api_slots!` const block below proves they match [`NveRuntimeApi`] slot for slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeFnSignature {

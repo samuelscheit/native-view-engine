@@ -61,6 +61,12 @@ void runEventBatch(Check c) {
     const RuntimeEvent.layout(18, 4.0, 8.0, 120.0, 48.0, timestampUs: 113),
     const RuntimeEvent.custom(1, 'props', value: {'n': 2, 'ok': true, 'ratio': 0.5}, timestampUs: 114),
     RuntimeEvent.custom(1, 'malformed', data: Uint8List.fromList([0xFF]), timestampUs: 115),
+    const RuntimeEvent.custom(
+      1,
+      'close',
+      flags: nveEventFlagNoBubble | nveEventFlagUtf8Bytes,
+      timestampUs: 116,
+    ),
     RuntimeEvent.table(
       customTable,
       3,
@@ -130,14 +136,22 @@ void runEventBatch(Check c) {
   c.eq((decoded[13].x, decoded[13].y, decoded[13].width, decoded[13].height), (4.0, 8.0, 120.0, 48.0), 'layout fields');
 
   // Custom: valid NveBinValue and invalid NveBinValue (`[0xFF]`).
-  c.that(decoded[14].isCustom && decoded[14].name == 'props', 'custom props');
+  c.that(decoded[14].isCustom && decoded[14].bubbles && decoded[14].name == 'props', 'custom props');
   c.eq((decoded[14].value as Map<String, Object?>)['n'], 2, 'custom BinValue decoded');
-  c.that(decoded[15].isCustom && decoded[15].name == 'malformed', 'custom malformed');
+  c.that(decoded[15].isCustom && decoded[15].bubbles && decoded[15].name == 'malformed', 'custom malformed');
   c.eq(decoded[15].value, null, 'invalid BinValue yields null value');
   c.eq(decoded[15].data?.toList().join(','), '255', 'invalid BinValue raw bytes preserved');
+  c.that(
+    decoded[16].isCustom &&
+        !decoded[16].bubbles &&
+        decoded[16].name == 'close' &&
+        decoded[16].flags == (nveEventFlagNoBubble | nveEventFlagCustomNamed) &&
+        events[16].flags == (nveEventFlagNoBubble | nveEventFlagCustomNamed),
+    'non-bubbling custom event preserves NO_BUBBLE and strips internal framing bits',
+  );
 
   // Generic table event + exact 64-bit timestamp.
-  final gen = decoded[16];
+  final gen = decoded[17];
   c.eq((gen.table, gen.event, gen.surfaceId, gen.nodeId), (customTable, 3, 9, 20), 'generic table event');
   c.eq(gen.timestamp, tsBig, '64-bit timestamp exact above 2^53');
   c.eq(gen.rawPayload?.join(','), '11,22,33,44,55,66', 'raw payload preserved');

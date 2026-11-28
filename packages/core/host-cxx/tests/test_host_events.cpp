@@ -350,6 +350,55 @@ void test_sink_destroying_the_session() {
   CHECK(host == nullptr && batch_ok);
 }
 
+/// `HostSession::dispatch_custom` forwards caller flags (such as `NVE_EVENT_FLAG_NO_BUBBLE`)
+/// while masking out internal framing bits and preserving `NVE_EVENT_FLAG_CUSTOM_NAMED`.
+void test_host_session_dispatch_custom_flags() {
+  struct Recorded {
+    std::string name;
+    uint32_t flags = 0u;
+    bool bubbles = true;
+    std::vector<uint8_t> data;
+  };
+  struct Spy {
+    static std::vector<Recorded>& log() {
+      static std::vector<Recorded> entries;
+      return entries;
+    }
+    static const void* get_interface(uint32_t id) {
+      static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
+      return id == NVE_IFACE_SURFACE ? &kSurface : nullptr;
+    }
+    static NveAppHandle create(uint32_t) { return new Spy(); }
+    static void destroy(NveAppHandle h) { delete static_cast<Spy*>(h); }
+    static NveBufferSlice render(NveAppHandle, uint64_t) { return NveBufferSlice{nullptr, 0u}; }
+    static uint32_t dispatch_events(NveAppHandle, NveEventBatch batch) {
+      for (const NveEvent& ev : batch_events(batch)) {
+        const std::span<const uint8_t> d = event_custom_data(ev, batch);
+        log().push_back({std::string(event_custom_name(ev, batch)), ev.flags, event_bubbles(ev),
+                         std::vector<uint8_t>(d.begin(), d.end())});
+      }
+      return 0u;
+    }
+  };
+  Spy::log().clear();
+  auto host = HostSession::create(RuntimeSession::default_config());
+  CHECK(host != nullptr);
+  if (!host) return;
+  CHECK(host->attach(&Spy::get_interface));
+  const std::array<uint8_t, 2> payload{0xAAu, 0xBBu};
+  (void)host->dispatch_custom(5u, "open", payload);
+  (void)host->dispatch_custom(5u, "close", {}, NVE_EVENT_FLAG_NO_BUBBLE | NVE_EVENT_FLAG_UTF8_BYTES);
+  CHECK(Spy::log().size() == 2u);
+  if (Spy::log().size() == 2u) {
+    CHECK(Spy::log()[0].name == "open" && Spy::log()[0].bubbles &&
+          Spy::log()[0].flags == NVE_EVENT_FLAG_CUSTOM_NAMED &&
+          Spy::log()[0].data == (std::vector<uint8_t>{0xAAu, 0xBBu}));
+    CHECK(Spy::log()[1].name == "close" && !Spy::log()[1].bubbles &&
+          Spy::log()[1].flags == (NVE_EVENT_FLAG_NO_BUBBLE | NVE_EVENT_FLAG_CUSTOM_NAMED) &&
+          Spy::log()[1].data.empty());
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -358,6 +407,7 @@ int main() {
   test_owned_events_reuse_allocates_nothing();
   test_steady_state_pump_allocates_nothing();
   test_sink_destroying_the_session();
+  test_host_session_dispatch_custom_flags();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_events_test: %d failure(s)\n", g_failures);
     return 1;

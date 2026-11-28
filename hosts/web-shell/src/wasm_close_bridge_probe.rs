@@ -266,11 +266,21 @@ pub fn nve_probe_close_bridge_finish() -> String {
             "the bridge never writes app state",
         )?;
 
-        // Pumping the nested `onclose`-less popover's target-only `close` must NOT close Dialog.
-        armed
+        // Pumping the nested `onclose`-less popover's target-only `close` must actually process
+        // the bridged event (`Some(_)`) without reopening the bare popover or closing `Dialog`.
+        let pumped = armed
             .nested_session
             .pump_events()
             .map_err(|e| format!("nested pump: {e:?}"))?;
+        check(
+            pumped.is_some(),
+            "nested bare popover close event must reach nested_session.pump_events()",
+        )?;
+        let bare = query(&armed.nested_host, "[data-testid=\"cb-bare-popover\"]")?;
+        check(
+            !matches(&bare, ":popover-open"),
+            "nested bare popover must remain closed after pump_events()",
+        )?;
         let state = query(&armed.nested_host, "[data-testid=\"cb-dialog-state\"]")?
             .text_content()
             .unwrap_or_default();

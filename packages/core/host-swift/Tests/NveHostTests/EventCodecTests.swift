@@ -43,10 +43,11 @@ final class EventCodecTests: XCTestCase {
         b.pushScroll(surface: 1, node: 16, timestamp: 112, x: 0, y: 240, contentWidth: 320, contentHeight: 1200)
         b.pushLayout(surface: 1, node: 17, timestamp: 113, x: 10, y: 20, width: 300, height: 80)
         b.pushCustom(surface: 1, node: 18, timestamp: 114, name: "my.event", data: [0x00, 0xFF, 0xFE, 0x01])
+        b.pushCustom(surface: 1, node: 19, timestamp: 115, name: "close", data: [UInt8](), flags: [.noBubble, .utf8Bytes])
 
-        XCTAssertEqual(b.count, 15)
+        XCTAssertEqual(b.count, 16)
         let wire = b.toWireBytes()
-        XCTAssertEqual(wire.count, EventWire.headerSize + 15 * 64 + b.bytes.count)
+        XCTAssertEqual(wire.count, EventWire.headerSize + 16 * 64 + b.bytes.count)
         // Verify NVEV v2 header bytes verbatim.
         XCTAssertEqual(Array(wire[0..<6]), [0x4E, 0x56, 0x45, 0x56, 0x02, 0x00])
 
@@ -54,7 +55,7 @@ final class EventCodecTests: XCTestCase {
         XCTAssertEqual(decoded.toWireBytes(), wire)
 
         try EventBatchReader.withValidatedWire(wire) { r in
-            XCTAssertEqual(r.count, 15)
+            XCTAssertEqual(r.count, 16)
             let e0 = try XCTUnwrap(r.record(at: 0))
             XCTAssertEqual(e0.interaction, .press)
             XCTAssertEqual(e0.x, 12.5)
@@ -104,8 +105,16 @@ final class EventCodecTests: XCTestCase {
 
             let e14 = try XCTUnwrap(r.record(at: 14))
             XCTAssertTrue(e14.isCustom)
+            XCTAssertTrue(e14.bubbles)
             XCTAssertEqual(r.customName(at: 14), "my.event")
             XCTAssertEqual(Array(r.customData(at: 14)), [0x00, 0xFF, 0xFE, 0x01])
+
+            let e15 = try XCTUnwrap(r.record(at: 15))
+            XCTAssertTrue(e15.isCustom)
+            XCTAssertFalse(e15.bubbles)
+            XCTAssertEqual(e15.flags, [.noBubble, .customNamed])
+            XCTAssertEqual(r.customName(at: 15), "close")
+            XCTAssertTrue(r.customData(at: 15).isEmpty)
         }
     }
 

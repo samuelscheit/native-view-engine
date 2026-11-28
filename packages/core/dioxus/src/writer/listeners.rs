@@ -37,6 +37,35 @@ impl NveMutationWriter {
         false
     }
 
+    #[inline]
+    fn node_has_table_event_listener(
+        &self,
+        nid: NodeId,
+        slot: Option<nve_store::TableSlot>,
+        bit: u32,
+    ) -> bool {
+        if (self.aux_event_flags.get(nid.index()).copied().unwrap_or(0) & AUX_TABLE_EVENT) != 0 {
+            return true;
+        }
+        slot.is_some_and(|s| (self.store.node_events_mask(s, nid) & bit) != 0)
+    }
+
+    /// Checks whether `node_id` itself carries either a generic `ontableevent` handler or a table's
+    /// own `events_word` subscription bit (target-only check for `EventFlags::NO_BUBBLE`).
+    pub fn has_table_event_listener(
+        &self,
+        node_id: NodeId,
+        table: TableKey,
+        event: EventId,
+    ) -> bool {
+        if !self.store.is_live(node_id) {
+            return false;
+        }
+        let slot = nve_store::slot_of(table);
+        let bit = if event.raw() < 32 { 1u32 << event.raw() } else { 0 };
+        self.node_has_table_event_listener(node_id, slot, bit)
+    }
+
     /// Walks up from `node_id` checking for either a generic `ontableevent` handler or a table's
     /// own `events_word` subscription bit.
     pub fn has_table_event_listener_in_chain(
@@ -52,12 +81,7 @@ impl NveMutationWriter {
             if !self.store.is_live(nid) {
                 break;
             }
-            if (self.aux_event_flags.get(nid.index()).copied().unwrap_or(0) & AUX_TABLE_EVENT) != 0 {
-                return true;
-            }
-            if let Some(s) = slot
-                && (self.store.node_events_mask(s, nid) & bit) != 0
-            {
+            if self.node_has_table_event_listener(nid, slot, bit) {
                 return true;
             }
             cur = self.store.parent(nid);
