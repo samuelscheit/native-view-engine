@@ -591,6 +591,9 @@ fn writer_reset_clears_side_tables_and_same_frame_multi_mutations_converge() {
             ElementId(1),
         );
         mtx.set_attribute("width", None, &AttributeValue::None, ElementId(1));
+        mtx.set_attribute("padding", None, &AttributeValue::Float(12.0), ElementId(1));
+        mtx.set_attribute("border", None, &AttributeValue::Text("1px solid".into()), ElementId(1));
+        mtx.create_event_listener("tableevent", ElementId(1));
         mtx.append_children(ElementId(0), 1);
     });
     let n1 = writer.resolve_el(ElementId(1)).unwrap();
@@ -601,15 +604,25 @@ fn writer_reset_clears_side_tables_and_same_frame_multi_mutations_converge() {
     assert!((vis.opacity() - 0.9).abs() < 1e-6);
     assert_eq!(vis.z_index(), 9);
 
-    // Full writer reset drops all side tables and element bindings back to root-only state.
+    // Prove every side table and aux flag table is non-empty before reset() so assertions below are non-vacuous.
+    assert!(!writer.attached_tables.is_empty());
+    assert!(!writer.typed_styles.is_empty());
+    assert!(!writer.inline_styles.is_empty());
+    assert!(!writer.standalone_style_attrs.is_empty());
+    assert!(!writer.current_color_borders.is_empty());
+    assert!(!writer.aux_event_flags.is_empty());
+
+    // Full writer reset drops and deallocates all side tables and element bindings back to root-only state.
     writer.reset();
     assert_eq!(writer.resolve_el(ElementId(0)), Some(NodeId::ROOT));
+    assert_eq!(writer.element_id_of(NodeId::ROOT), Some(ElementId(0)));
     assert_eq!(writer.resolve_el(ElementId(1)), None);
-    assert!(writer.attached_tables.is_empty());
-    assert!(writer.typed_styles.is_empty());
-    assert!(writer.inline_styles.is_empty());
-    assert!(writer.standalone_style_attrs.is_empty());
-    assert!(writer.current_color_borders.is_empty());
+    assert!(writer.attached_tables.is_empty() && writer.attached_tables.is_deallocated());
+    assert!(writer.typed_styles.is_empty() && writer.typed_styles.is_deallocated());
+    assert!(writer.inline_styles.is_empty() && writer.inline_styles.is_deallocated());
+    assert!(writer.standalone_style_attrs.is_empty() && writer.standalone_style_attrs.is_deallocated());
+    assert!(writer.current_color_borders.is_empty() && writer.current_color_borders.is_deallocated());
+    assert!(writer.aux_event_flags.is_empty() && writer.aux_event_flags.capacity() == 0);
     assert!(writer.store().children(NodeId::ROOT).is_empty());
 
     // Subsequent transactions work cleanly on the reset writer.

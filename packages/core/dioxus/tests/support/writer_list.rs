@@ -82,6 +82,8 @@ pub struct Values {
     pub inner_style: [AttributeValue; 2],
     pub typed_style: [AttributeValue; 2],
     pub table: [AttributeValue; 2],
+    /// Alternates `currentColor` vs explicit border color to exercise `NodeSlotSet` insert + remove.
+    pub border: [AttributeValue; 2],
 }
 
 pub fn values() -> Values {
@@ -115,6 +117,10 @@ pub fn values() -> Values {
             })
             .into_value()
         }),
+        border: [
+            AttributeValue::Text("1px solid".into()),
+            AttributeValue::Text("1px solid #38bdf8".into()),
+        ],
     }
 }
 
@@ -161,15 +167,16 @@ pub fn changed_attributes(writer: &mut NveMutationWriter, v: &Values, frame: usi
     });
 }
 
-/// Alternates `nve_style` (`TypedStyle`), `accent` (`TableAttr`), standalone `padding`, and
-/// inline `style` on all 32 items — exercising all four dense side tables every frame.
-#[allow(dead_code)]
+/// Alternates `nve_style` (`TypedStyle`), standalone `padding` + `border` (`currentColor` toggle),
+/// inline `style`, and `accent` (`TableAttr`) on all 32 items — exercising all five dense side
+/// tables (including `NodeSlotSet` insert + swap-remove churn) every frame.
 pub fn all_side_tables_attributes(writer: &mut NveMutationWriter, v: &Values, frame: usize) {
     let pick = frame % 2;
     writer.with_transaction(|tx| {
         for k in 0..ITEMS {
             tx.set_attribute("nve_style", None, &v.typed_style[pick], item(k));
             tx.set_attribute("padding", None, &v.padding[pick], item(k));
+            tx.set_attribute("border", None, &v.border[pick], item(k));
             tx.set_attribute("style", None, &v.style[pick], item(k));
             tx.set_attribute("accent", None, &v.table[pick], item(k));
         }

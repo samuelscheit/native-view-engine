@@ -103,8 +103,9 @@ impl<T> NodeSlotTable<T> {
             return if entry.owner == node {
                 Some(core::mem::replace(&mut entry.value, value))
             } else {
+                let old = core::mem::replace(&mut entry.value, value);
                 entry.owner = node;
-                entry.value = value;
+                drop(old);
                 None
             };
         }
@@ -129,8 +130,10 @@ impl<T> NodeSlotTable<T> {
         {
             let entry = &mut self.entries[pos as usize];
             if entry.owner != node {
+                let fresh = make();
+                let old = core::mem::replace(&mut entry.value, fresh);
                 entry.owner = node;
-                entry.value = make();
+                drop(old);
             }
             return Some(&mut entry.value);
         }
@@ -157,21 +160,21 @@ impl<T> NodeSlotTable<T> {
         Some(removed.value)
     }
 
-    /// Removes all live entries in `O(k)` while retaining backing allocations for zero-alloc reuse.
-    #[cfg(test)]
-    pub(crate) fn clear(&mut self) {
-        for entry in self.entries.drain(..) {
-            self.slots[entry.owner.node_index()] = EMPTY;
+    /// Drains all live values into `on_remove` and releases all backing `slots` / `entries` memory.
+    ///
+    /// Detaches `slots` and `entries` before invoking `on_remove` so an unwind inside `on_remove`
+    /// or `T::drop` can never leave stale `slots` aliasing newly inserted entries.
+    pub(crate) fn reset_with(&mut self, mut on_remove: impl FnMut(T)) {
+        self.slots = IndexVec::new();
+        let entries = core::mem::take(&mut self.entries);
+        for entry in entries {
+            on_remove(entry.value);
         }
     }
 
-    /// Drains all live values into `on_remove` and releases all backing `slots` / `entries` memory.
-    pub(crate) fn reset_with(&mut self, mut on_remove: impl FnMut(T)) {
-        for entry in self.entries.drain(..) {
-            on_remove(entry.value);
-        }
-        self.slots = IndexVec::new();
-        self.entries = Vec::new();
+    #[cfg(test)]
+    pub(crate) fn is_deallocated(&self) -> bool {
+        self.slots.capacity() == 0 && self.entries.capacity() == 0
     }
 
     /// Drops all live entries and releases all backing `slots` / `entries` memory.
@@ -237,6 +240,11 @@ impl NodeSlotSet {
     #[inline]
     pub(crate) fn reset(&mut self) {
         self.0.reset();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_deallocated(&self) -> bool {
+        self.0.is_deallocated()
     }
 
     #[inline]
@@ -347,30 +355,45 @@ mod tests {
         assert_eq!(table.get(low).map(|a| a[0]), Some(9));
         assert_eq!(table.get(NodeId::new(50_000, 1)), None);
 
-        // `clear` empties in O(k) while retaining capacity for reuse.
-        let slots_cap = table.slots.capacity();
-        let entries_cap = table.entries.capacity();
-        table.clear();
-        assert!(table.is_empty());
-        assert_eq!(table.get(high), None);
-        assert_eq!(table.get(low), None);
-        assert_eq!(table.slots.capacity(), slots_cap);
-        assert_eq!(table.entries.capacity(), entries_cap);
-
-        // Re-inserting after `clear` works cleanly.
-        assert_eq!(table.insert(high, [11; 32]), None);
-        assert_eq!(table.get(high).map(|a| a[0]), Some(11));
-
         // `reset_with` drains values and frees all backing memory.
         let mut drained = 0usize;
         table.reset_with(|v| {
-            assert_eq!(v[0], 11);
+            assert!(v[0] == 7 || v[0] == 9);
             drained += 1;
         });
-        assert_eq!(drained, 1);
+        assert_eq!(drained, 2);
         assert!(table.is_empty());
-        assert_eq!(table.slots.capacity(), 0);
-        assert_eq!(table.entries.capacity(), 0);
+        assert!(table.is_deallocated());
+    }
+
+    #[test]
+    fn unwind_in_get_or_insert_with_and_reset_with_never_leaks_or_aliases() {
+        let g1 = NodeId::new(2, 1);
+        let g2 = NodeId::new(2, 2);
+        let other = NodeId::new(9, 1);
+
+        let mut table = NodeSlotTable::new();
+        table.insert(g1, 111u32);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = table.get_or_insert_with(g2, || panic!("boom"));
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(table.get(g2), None, "g1 payload must never leak under g2");
+        assert_eq!(table.get(g1), Some(&111));
+
+        table.insert(other, 222u32);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            table.reset_with(|_| panic!("boom during reset"));
+        }));
+        assert!(panicked.is_err());
+        assert!(table.is_empty());
+        assert!(table.is_deallocated());
+
+        // Post-unwind inserts at both indices must never alias each other's entries.
+        table.insert(other, 333u32);
+        table.insert(g2, 444u32);
+        assert_eq!(table.get(other), Some(&333));
+        assert_eq!(table.get(g2), Some(&444));
     }
 
     #[test]

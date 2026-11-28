@@ -155,19 +155,17 @@ fn writer_steady_state_mutations_allocate_nothing() {
         |w, i| all_side_tables_attributes(w, &v, i),
     );
     let side_pick = (end - 1) % 2;
+    let expected_bg = [Rgba::rgb(0x1e, 0x29, 0x3b), Rgba::rgb(0x33, 0x41, 0x55)][side_pick];
+    let expected_pad = Length::points([8.0, 12.0][side_pick]);
     for k in 0..ITEMS {
         let node = writer.resolve_el(item(k)).expect("item bound");
         let store = writer.store();
-        assert_eq!(
-            store.try_row::<Layout>(node).map(|l| l.width()),
-            Some(Length::points([120.0, 160.0][side_pick])),
-            "item {k} typed_style width"
-        );
-        assert_eq!(
-            store.try_row::<Visual>(node).map(|vis| vis.border_color()),
-            Some(TABLE_BORDER[side_pick]),
-            "item {k} table_attr border_color"
-        );
+        let lay = store.try_row::<Layout>(node).expect("layout row");
+        assert_eq!(lay.width(), Length::points([120.0, 160.0][side_pick]), "item {k} typed_style width");
+        assert_eq!(lay.padding_top(), expected_pad, "item {k} standalone padding");
+        let vis = store.try_row::<Visual>(node).expect("visual row");
+        assert_eq!(vis.background(), expected_bg, "item {k} inline background");
+        assert_eq!(vis.border_color(), TABLE_BORDER[side_pick], "item {k} table_attr border_color");
     }
 
     let container = writer
