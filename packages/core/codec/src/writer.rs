@@ -514,15 +514,79 @@ impl ByteSink for SliceWriter<'_> {
 }
 
 macro_rules! delegate_slice_sink {
+    () => {
+        #[inline]
+        pub fn write_raw(&mut self, bytes: &[u8]) -> Result<(), $crate::CodecError> {
+            $crate::ByteSink::put_raw(self, bytes)
+        }
+
+        #[inline]
+        pub fn write_zeroes(&mut self, count: usize) -> Result<(), $crate::CodecError> {
+            $crate::ByteSink::put_zeroes(self, count)
+        }
+
+        $crate::writer::delegate_slice_sink!(
+            write_u8 => put_u8 : u8,
+            write_i8 => put_i8 : i8,
+            write_bool => put_bool : bool,
+            write_u16 => put_u16 : u16,
+            write_i16 => put_i16 : i16,
+            write_u32 => put_u32 : u32,
+            write_i32 => put_i32 : i32,
+            write_u64 => put_u64 : u64,
+            write_i64 => put_i64 : i64,
+            write_f32 => put_f32 : f32,
+            write_f32_raw => put_f32_raw : f32,
+            write_f64 => put_f64 : f64,
+            write_f64_raw => put_f64_raw : f64,
+            write_len => put_len : usize,
+            write_bytes => put_bytes : &[u8],
+            write_bytes_u16 => put_bytes_u16 : &[u8],
+            write_bytes_u8 => put_bytes_u8 : &[u8],
+            write_str => put_str : &str,
+            write_str_u16 => put_str_u16 : &str,
+            write_str_u8 => put_str_u8 : &str,
+        );
+
+        #[inline]
+        pub fn write_len_max(&mut self, len: usize, max: usize) -> Result<(), $crate::CodecError> {
+            $crate::ByteSink::put_len_max(self, len, max)
+        }
+
+        #[inline]
+        pub fn write_bytes_max(
+            &mut self,
+            bytes: &[u8],
+            max: usize,
+        ) -> Result<(), $crate::CodecError> {
+            $crate::ByteSink::put_bytes_max(self, bytes, max)
+        }
+
+        #[inline]
+        pub fn write_str_max(&mut self, s: &str, max: usize) -> Result<(), $crate::CodecError> {
+            $crate::ByteSink::put_str_max(self, s, max)
+        }
+
+        #[inline]
+        pub fn write_opt<T>(
+            &mut self,
+            opt: Option<T>,
+            write_some: impl FnOnce(&mut Self, T) -> Result<(), $crate::CodecError>,
+        ) -> Result<(), $crate::CodecError> {
+            $crate::ByteSink::put_opt(self, opt, write_some)
+        }
+    };
     ($($write:ident => $put:ident : $ty:ty),+ $(,)?) => {
         $(
             #[inline]
-            pub fn $write(&mut self, v: $ty) -> Result<(), CodecError> {
-                ByteSink::$put(self, v)
+            pub fn $write(&mut self, v: $ty) -> Result<(), $crate::CodecError> {
+                $crate::ByteSink::$put(self, v)
             }
         )+
     };
 }
+
+pub(crate) use delegate_slice_sink;
 
 impl<'a> SliceWriter<'a> {
     #[inline]
@@ -545,62 +609,7 @@ impl<'a> SliceWriter<'a> {
         &self.buf[..self.pos]
     }
 
-    #[inline]
-    pub fn write_raw(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
-        ByteSink::put_raw(self, bytes)
-    }
-
-    #[inline]
-    pub fn write_zeroes(&mut self, count: usize) -> Result<(), CodecError> {
-        ByteSink::put_zeroes(self, count)
-    }
-
-    delegate_slice_sink!(
-        write_u8 => put_u8 : u8,
-        write_i8 => put_i8 : i8,
-        write_bool => put_bool : bool,
-        write_u16 => put_u16 : u16,
-        write_i16 => put_i16 : i16,
-        write_u32 => put_u32 : u32,
-        write_i32 => put_i32 : i32,
-        write_u64 => put_u64 : u64,
-        write_i64 => put_i64 : i64,
-        write_f32 => put_f32 : f32,
-        write_f32_raw => put_f32_raw : f32,
-        write_f64 => put_f64 : f64,
-        write_f64_raw => put_f64_raw : f64,
-        write_len => put_len : usize,
-        write_bytes => put_bytes : &[u8],
-        write_bytes_u16 => put_bytes_u16 : &[u8],
-        write_bytes_u8 => put_bytes_u8 : &[u8],
-        write_str => put_str : &str,
-        write_str_u16 => put_str_u16 : &str,
-        write_str_u8 => put_str_u8 : &str,
-    );
-
-    #[inline]
-    pub fn write_len_max(&mut self, len: usize, max: usize) -> Result<(), CodecError> {
-        ByteSink::put_len_max(self, len, max)
-    }
-
-    #[inline]
-    pub fn write_bytes_max(&mut self, bytes: &[u8], max: usize) -> Result<(), CodecError> {
-        ByteSink::put_bytes_max(self, bytes, max)
-    }
-
-    #[inline]
-    pub fn write_str_max(&mut self, s: &str, max: usize) -> Result<(), CodecError> {
-        ByteSink::put_str_max(self, s, max)
-    }
-
-    #[inline]
-    pub fn write_opt<T>(
-        &mut self,
-        opt: Option<T>,
-        write_some: impl FnOnce(&mut Self, T) -> Result<(), CodecError>,
-    ) -> Result<(), CodecError> {
-        ByteSink::put_opt(self, opt, write_some)
-    }
+    delegate_slice_sink!();
 
     /// Verifies that the destination slice was filled completely with zero unused trailing bytes.
     #[inline]

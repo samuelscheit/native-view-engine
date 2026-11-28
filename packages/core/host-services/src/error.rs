@@ -104,14 +104,28 @@ impl From<ServiceError> for nve_codec::TransportError {
         match err {
             ServiceError::Unsupported => Self::Unsupported,
             ServiceError::PermissionDenied => Self::PermissionDenied,
-            ServiceError::InvalidArg(msg) | ServiceError::Codec(msg) => Self::Invalid(msg),
+            ServiceError::InvalidArg(msg) => Self::Invalid(msg),
+            ServiceError::Codec(msg) => Self::Internal(format!("binary codec error: {msg}")),
             ServiceError::NotFound => Self::NotFound,
             ServiceError::Cancelled => Self::Cancelled,
             ServiceError::IoError(msg) => Self::Io(msg),
-            ServiceError::BufferTooSmall { required } => Self::BufferOverflow {
-                needed: required,
-                capacity: 0,
-            },
+            ServiceError::BufferTooSmall { required } => {
+                if required > crate::FFI_MAX_RESPONSE_BYTES {
+                    Self::BufferOverflow {
+                        needed: required,
+                        capacity: crate::FFI_MAX_RESPONSE_BYTES,
+                    }
+                } else if required > crate::FFI_STACK_BUF_SIZE {
+                    Self::BufferOverflow {
+                        needed: required,
+                        capacity: crate::FFI_STACK_BUF_SIZE,
+                    }
+                } else {
+                    Self::Internal(format!(
+                        "host output buffer too small (required {required} bytes)"
+                    ))
+                }
+            }
             ServiceError::Pending { .. } => Self::Status(NveHostStatus::Pending.as_i32()),
             ServiceError::InternalError(msg) => Self::Internal(msg),
         }
@@ -168,5 +182,35 @@ mod tests {
             ServiceError::Codec("bad payload".into()).to_status(),
             NveHostStatus::InvalidArg
         );
+
+        // ServiceError -> TransportError preserves Codec vs InvalidArg and BufferTooSmall capacities.
+        assert_eq!(
+            nve_codec::TransportError::from(ServiceError::InvalidArg("bad".into())),
+            nve_codec::TransportError::Invalid("bad".into())
+        );
+        assert_eq!(
+            nve_codec::TransportError::from(ServiceError::Codec("truncated".into())),
+            nve_codec::TransportError::Internal("binary codec error: truncated".into())
+        );
+        assert_eq!(
+            nve_codec::TransportError::from(ServiceError::BufferTooSmall { required: 8192 }),
+            nve_codec::TransportError::BufferOverflow {
+                needed: 8192,
+                capacity: crate::FFI_STACK_BUF_SIZE,
+            }
+        );
+        assert_eq!(
+            nve_codec::TransportError::from(ServiceError::BufferTooSmall {
+                required: crate::FFI_MAX_RESPONSE_BYTES + 1,
+            }),
+            nve_codec::TransportError::BufferOverflow {
+                needed: crate::FFI_MAX_RESPONSE_BYTES + 1,
+                capacity: crate::FFI_MAX_RESPONSE_BYTES,
+            }
+        );
+        assert!(matches!(
+            nve_codec::TransportError::from(ServiceError::BufferTooSmall { required: 0 }),
+            nve_codec::TransportError::Internal(msg) if msg.contains("required 0 bytes")
+        ));
     }
 }

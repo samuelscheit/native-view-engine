@@ -1,50 +1,39 @@
 //! Crash-safe `NVK2` append-only binary KV persistence engine backed by `nve-codec` and `nve-hash`.
 
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::{self, File, OpenOptions};
 #[cfg(not(target_arch = "wasm32"))]
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
-use nve_codec::{ByteReader, ByteWriter, DEFAULT_MAX_BYTES};
-use nve_hash::xxh64;
+use nve_codec::ByteWriter;
 
+pub use crate::wal::{NVK2_COMMIT_MARKER, NVK2_MAGIC, NVK2_VERSION};
+use crate::wal::{
+    encode_file_header, encode_record_frame_into, replay_nvk2_buffer, stream_compacted_entries,
+    HEADER_LEN, KIND_BATCH, KIND_DELETE, KIND_PUT,
+};
 use crate::{
     validate_batch, validate_key, validate_namespace, validate_value, CompactStats, StorageEntry,
     StorageError, StorageOpenInfo, StorageWriteOp, MAX_BATCH_OPS,
 };
-
-/// File magic for the crash-safe append-only KV log.
-pub const NVK2_MAGIC: [u8; 4] = *b"NVK2";
-/// Current binary log wire version.
-pub const NVK2_VERSION: u16 = 1;
-/// Atomic record commit marker placed after the per-record XXH64 checksum.
-pub const NVK2_COMMIT_MARKER: [u8; 4] = *b"NKCM";
-
-const HEADER_LEN: usize = 16;
-const RECORD_HEADER_LEN: usize = 16;
-const RECORD_TRAILER_LEN: usize = 12;
-
-const KIND_PUT: u8 = 1;
-const KIND_DELETE: u8 = 2;
-const KIND_BATCH: u8 = 3;
 
 enum LogBackend {
     Memory(Vec<u8>),
     #[cfg(not(target_arch = "wasm32"))]
     Disk {
         path: PathBuf,
-        file: File,
+        file: Option<File>,
         byte_len: u64,
     },
 }
 
 /// Crash-safe append-only `NVK2` binary KV store supporting both disk and in-memory modes.
 pub struct KvStore {
-    handle: u64,
     next_seq: u64,
     recovered_torn_tail: bool,
     entries: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -52,33 +41,27 @@ pub struct KvStore {
 }
 
 impl KvStore {
-    /// Opens an in-memory `NVK2` KV store with default handle `1`.
+    /// Opens a fresh in-memory `NVK2` KV store.
+    #[must_use]
     pub fn in_memory() -> Self {
-        Self::open_in_memory(1)
-    }
-
-    pub fn open_in_memory(handle: u64) -> Self {
-        let mut buf = Vec::with_capacity(HEADER_LEN);
-        write_file_header(&mut buf);
         Self {
-            handle,
             next_seq: 1,
             recovered_torn_tail: false,
             entries: BTreeMap::new(),
-            backend: LogBackend::Memory(buf),
+            backend: LogBackend::Memory(encode_file_header().to_vec()),
         }
     }
 
-    pub fn open_from_memory_log(handle: u64, mut bytes: Vec<u8>) -> Result<Self, StorageError> {
+    /// Replays and opens an in-memory `NVK2` KV store from an existing WAL byte buffer.
+    pub fn open_from_memory_log(mut bytes: Vec<u8>) -> Result<Self, StorageError> {
         if bytes.is_empty() {
-            return Ok(Self::open_in_memory(handle));
+            return Ok(Self::in_memory());
         }
         let replay = replay_nvk2_buffer(&bytes)?;
         if replay.valid_len < bytes.len() {
             bytes.truncate(replay.valid_len);
         }
         Ok(Self {
-            handle,
             next_seq: replay.last_seq.saturating_add(1),
             recovered_torn_tail: replay.recovered_torn_tail,
             entries: replay.entries,
@@ -89,11 +72,6 @@ impl KvStore {
     /// Opens or creates a crash-safe `NVK2` KV store directly at `path`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        Self::open_file(1, path)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn open_file(handle: u64, path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -112,18 +90,18 @@ impl KvStore {
         file.read_to_end(&mut bytes)?;
 
         if bytes.is_empty() {
-            let mut hdr = Vec::with_capacity(HEADER_LEN);
-            write_file_header(&mut hdr);
+            let hdr = encode_file_header();
             file.write_all(&hdr)?;
             file.sync_all()?;
+            #[cfg(unix)]
+            sync_parent_dir(&path)?;
             return Ok(Self {
-                handle,
                 next_seq: 1,
                 recovered_torn_tail: false,
                 entries: BTreeMap::new(),
                 backend: LogBackend::Disk {
                     path,
-                    file,
+                    file: Some(file),
                     byte_len: HEADER_LEN as u64,
                 },
             });
@@ -138,27 +116,27 @@ impl KvStore {
         file.seek(SeekFrom::End(0))?;
 
         Ok(Self {
-            handle,
             next_seq: replay.last_seq.saturating_add(1),
             recovered_torn_tail: replay.recovered_torn_tail,
             entries: replay.entries,
             backend: LogBackend::Disk {
                 path,
-                file,
+                file: Some(file),
                 byte_len: valid_len,
             },
         })
     }
 
+    #[must_use]
     pub fn open_info(&self) -> StorageOpenInfo {
         StorageOpenInfo {
-            handle: self.handle,
             key_count: self.entries.len() as u64,
             log_bytes: self.log_bytes(),
             recovered_torn_tail: self.recovered_torn_tail,
         }
     }
 
+    #[must_use]
     pub fn log_bytes(&self) -> u64 {
         match &self.backend {
             LogBackend::Memory(buf) => buf.len() as u64,
@@ -167,6 +145,7 @@ impl KvStore {
         }
     }
 
+    #[must_use]
     pub fn memory_log_bytes(&self) -> Option<&[u8]> {
         match &self.backend {
             LogBackend::Memory(buf) => Some(buf),
@@ -175,9 +154,15 @@ impl KvStore {
         }
     }
 
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+    /// Zero-copy borrowed lookup for `key`.
+    pub fn get_ref(&self, key: &[u8]) -> Result<Option<&[u8]>, StorageError> {
         validate_key(key)?;
-        Ok(self.entries.get(key).cloned())
+        Ok(self.entries.get(key).map(Vec::as_slice))
+    }
+
+    /// Owned lookup cloning the stored value for `key`.
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(self.get_ref(key)?.map(ToOwned::to_owned))
     }
 
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
@@ -187,7 +172,8 @@ impl KvStore {
         payload.write_bytes(key)?;
         payload.write_bytes(value)?;
         let seq = self.next_seq;
-        let frame = encode_record_frame(KIND_PUT, seq, payload.as_slice())?;
+        let mut frame = Vec::new();
+        encode_record_frame_into(&mut frame, KIND_PUT, seq, payload.as_slice())?;
         self.append_frame(&frame)?;
         self.next_seq = seq.saturating_add(1);
         self.entries.insert(key.to_vec(), value.to_vec());
@@ -196,27 +182,31 @@ impl KvStore {
 
     pub fn delete(&mut self, key: &[u8]) -> Result<bool, StorageError> {
         validate_key(key)?;
-        let existed = self.entries.contains_key(key);
-        if !existed {
+        if !self.entries.contains_key(key) {
             return Ok(false);
         }
         let mut payload = ByteWriter::with_capacity(4 + key.len());
         payload.write_bytes(key)?;
         let seq = self.next_seq;
-        let frame = encode_record_frame(KIND_DELETE, seq, payload.as_slice())?;
+        let mut frame = Vec::new();
+        encode_record_frame_into(&mut frame, KIND_DELETE, seq, payload.as_slice())?;
         self.append_frame(&frame)?;
         self.next_seq = seq.saturating_add(1);
         self.entries.remove(key);
         Ok(true)
     }
 
+    #[must_use]
     pub fn scan_prefix(&self, prefix: &[u8], limit: u32) -> Vec<StorageEntry> {
         let cap = (limit as usize).min(MAX_BATCH_OPS);
         if cap == 0 {
             return Vec::new();
         }
         let mut out = Vec::new();
-        for (k, v) in self.entries.range(prefix.to_vec()..) {
+        for (k, v) in self
+            .entries
+            .range::<[u8], _>((Bound::Included(prefix), Bound::Unbounded))
+        {
             if !k.starts_with(prefix) {
                 break;
             }
@@ -252,7 +242,8 @@ impl KvStore {
             }
         }
         let seq = self.next_seq;
-        let frame = encode_record_frame(KIND_BATCH, seq, payload.as_slice())?;
+        let mut frame = Vec::new();
+        encode_record_frame_into(&mut frame, KIND_BATCH, seq, payload.as_slice())?;
         self.append_frame(&frame)?;
         self.next_seq = seq.saturating_add(1);
         for op in ops {
@@ -270,22 +261,12 @@ impl KvStore {
 
     pub fn compact(&mut self) -> Result<CompactStats, StorageError> {
         let bytes_before = self.log_bytes();
-        let mut compacted = Vec::with_capacity(HEADER_LEN + self.entries.len() * 32);
-        write_file_header(&mut compacted);
-        let mut seq = 1u64;
-        for (k, v) in &self.entries {
-            let mut payload = ByteWriter::with_capacity(8 + k.len() + v.len());
-            payload.write_bytes(k)?;
-            payload.write_bytes(v)?;
-            let frame = encode_record_frame(KIND_PUT, seq, payload.as_slice())?;
-            compacted.extend_from_slice(&frame);
-            seq = seq.saturating_add(1);
-        }
-        let bytes_after = compacted.len() as u64;
-
-        match &mut self.backend {
+        let (next_seq, bytes_after) = match &mut self.backend {
             LogBackend::Memory(buf) => {
+                let mut compacted = Vec::with_capacity(HEADER_LEN + self.entries.len() * 32);
+                let (seq, written) = stream_compacted_entries(&self.entries, &mut compacted)?;
                 *buf = compacted;
+                (seq, written)
             }
             #[cfg(not(target_arch = "wasm32"))]
             LogBackend::Disk {
@@ -294,24 +275,42 @@ impl KvStore {
                 byte_len,
             } => {
                 let tmp_path = temp_compact_path(path);
-                {
-                    let mut tmp = OpenOptions::new()
-                        .create(true)
-                        .truncate(true)
-                        .write(true)
-                        .open(&tmp_path)?;
-                    tmp.write_all(&compacted)?;
-                    tmp.sync_all()?;
+                let (seq, written) = match write_compacted_temp(&tmp_path, &self.entries) {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        let _ = fs::remove_file(&tmp_path);
+                        return Err(err);
+                    }
+                };
+
+                // Close the live handle BEFORE renaming so Windows does not reject the atomic
+                // replace with a sharing violation and POSIX never keeps writing to an unlinked
+                // old inode if reopen subsequently fails.
+                *file = None;
+
+                if let Err(err) = fs::rename(&tmp_path, &*path) {
+                    let _ = fs::remove_file(&tmp_path);
+                    if let Ok(mut restored) =
+                        OpenOptions::new().read(true).write(true).open(&*path)
+                        && restored.seek(SeekFrom::Start(*byte_len)).is_ok()
+                    {
+                        *file = Some(restored);
+                    }
+                    return Err(err.into());
                 }
-                fs::rename(&tmp_path, &*path)?;
+
+                #[cfg(unix)]
+                sync_parent_dir(path)?;
+
                 let mut reopened = OpenOptions::new().read(true).write(true).open(&*path)?;
                 reopened.seek(SeekFrom::End(0))?;
-                *file = reopened;
-                *byte_len = bytes_after;
+                *file = Some(reopened);
+                *byte_len = written;
+                (seq, written)
             }
-        }
+        };
 
-        self.next_seq = seq;
+        self.next_seq = next_seq;
         self.recovered_torn_tail = false;
 
         Ok(CompactStats {
@@ -328,9 +327,30 @@ impl KvStore {
                 Ok(())
             }
             #[cfg(not(target_arch = "wasm32"))]
-            LogBackend::Disk { file, byte_len, .. } => {
-                file.write_all(frame)?;
-                file.sync_data()?;
+            LogBackend::Disk {
+                path,
+                file,
+                byte_len,
+            } => {
+                let Some(f) = file.as_mut() else {
+                    return Err(StorageError::Io(format!(
+                        "storage file {} is closed after a prior fatal I/O error",
+                        path.display()
+                    )));
+                };
+                if let Err(err) = f.write_all(frame).and_then(|()| f.sync_data()) {
+                    // Roll back any partial/unsynced tail so later writes never append past torn
+                    // bytes and lose committed records on reopen. If rollback itself fails, poison
+                    // the handle (`*file = None`) so subsequent writes fail cleanly instead of
+                    // creating mid-log corruption.
+                    if f.set_len(*byte_len)
+                        .and_then(|()| f.seek(SeekFrom::Start(*byte_len)))
+                        .is_err()
+                    {
+                        *file = None;
+                    }
+                    return Err(err.into());
+                }
                 *byte_len = byte_len.saturating_add(frame.len() as u64);
                 Ok(())
             }
@@ -340,16 +360,15 @@ impl KvStore {
 
 /// Manages named `NVK2` namespaces either in-memory or under a root directory on disk.
 pub struct KvStoreManager {
-    next_handle: u64,
     #[cfg(not(target_arch = "wasm32"))]
     root_dir: Option<PathBuf>,
     stores: BTreeMap<String, KvStore>,
 }
 
 impl KvStoreManager {
+    #[must_use]
     pub fn in_memory() -> Self {
         Self {
-            next_handle: 1,
             #[cfg(not(target_arch = "wasm32"))]
             root_dir: None,
             stores: BTreeMap::new(),
@@ -357,9 +376,9 @@ impl KvStoreManager {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
     pub fn with_root_dir(root_dir: impl Into<PathBuf>) -> Self {
         Self {
-            next_handle: 1,
             root_dir: Some(root_dir.into()),
             stores: BTreeMap::new(),
         }
@@ -370,9 +389,7 @@ impl KvStoreManager {
         if let Some(store) = self.stores.get(namespace) {
             return Ok(store.open_info());
         }
-        let handle = self.next_handle;
-        self.next_handle = self.next_handle.saturating_add(1);
-        let store = self.create_store(handle, namespace)?;
+        let store = self.create_store(namespace)?;
         let info = store.open_info();
         self.stores.insert(namespace.to_owned(), store);
         Ok(info)
@@ -388,202 +405,42 @@ impl KvStoreManager {
             .ok_or_else(|| StorageError::Internal("missing storage namespace".into()))
     }
 
-    fn create_store(&self, handle: u64, namespace: &str) -> Result<KvStore, StorageError> {
+    fn create_store(&self, namespace: &str) -> Result<KvStore, StorageError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(root) = &self.root_dir {
             let path = root.join(format!("{namespace}.nvk2"));
-            return KvStore::open_file(handle, path);
+            return KvStore::open(path);
         }
         let _ = namespace;
-        Ok(KvStore::open_in_memory(handle))
+        Ok(KvStore::in_memory())
     }
 }
 
-fn write_file_header(out: &mut Vec<u8>) {
-    ByteWriter::with_buf(out, |w| {
-        let start = w.len();
-        w.write_raw(&NVK2_MAGIC);
-        w.write_u16(NVK2_VERSION);
-        w.write_u16(0);
-        let checksum = xxh64(&w.as_slice()[start..], 0);
-        w.write_u64(checksum);
-    });
+#[cfg(not(target_arch = "wasm32"))]
+fn write_compacted_temp(
+    tmp_path: &Path,
+    entries: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(u64, u64), StorageError> {
+    let tmp = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(tmp_path)?;
+    let mut buffered = BufWriter::new(tmp);
+    let pair = stream_compacted_entries(entries, &mut buffered)?;
+    buffered.flush()?;
+    let tmp = buffered.into_inner().map_err(|e| e.into_error())?;
+    tmp.sync_all()?;
+    Ok(pair)
 }
 
-fn encode_record_frame(kind: u8, seq_no: u64, payload: &[u8]) -> Result<Vec<u8>, StorageError> {
-    let mut w = ByteWriter::with_capacity(RECORD_HEADER_LEN + payload.len() + RECORD_TRAILER_LEN);
-    w.write_u8(kind);
-    w.write_raw(&[0u8; 3]);
-    w.write_u64(seq_no);
-    w.write_bytes(payload)
-        .map_err(|_| StorageError::InvalidArg("NVK2 record payload exceeds u32::MAX".into()))?;
-    let checksum = xxh64(w.as_slice(), 0);
-    w.write_u64(checksum);
-    w.write_raw(&NVK2_COMMIT_MARKER);
-    Ok(w.into_bytes())
-}
-
-struct ReplayResult {
-    entries: BTreeMap<Vec<u8>, Vec<u8>>,
-    last_seq: u64,
-    valid_len: usize,
-    recovered_torn_tail: bool,
-}
-
-fn replay_nvk2_buffer(bytes: &[u8]) -> Result<ReplayResult, StorageError> {
-    if bytes.len() < HEADER_LEN {
-        return Err(StorageError::Corrupt("NVK2 header truncated".into()));
-    }
-    let mut r = ByteReader::new(bytes);
-    r.expect_magic(&NVK2_MAGIC)
-        .map_err(|_| StorageError::Corrupt("invalid NVK2 file magic".into()))?;
-    let version = r.read_u16()?;
-    if version != NVK2_VERSION {
-        return Err(StorageError::Corrupt(format!(
-            "unsupported NVK2 version {version}"
-        )));
-    }
-    let _reserved = r.read_u16()?;
-    let stored_hdr_crc = r.read_u64()?;
-    if xxh64(&bytes[0..8], 0) != stored_hdr_crc {
-        return Err(StorageError::Corrupt(
-            "corrupt NVK2 file header checksum".into(),
-        ));
-    }
-
-    let mut entries = BTreeMap::new();
-    let mut valid_len = HEADER_LEN;
-    let mut last_seq = 0u64;
-    let mut recovered_torn_tail = false;
-
-    while r.remaining() > 0 {
-        let frame_start = r.pos();
-        if r.remaining() < RECORD_HEADER_LEN + RECORD_TRAILER_LEN {
-            recovered_torn_tail = true;
-            break;
-        }
-        let Ok(kind) = r.read_u8() else {
-            recovered_torn_tail = true;
-            break;
-        };
-        if r.read_exact(3).is_err() {
-            recovered_torn_tail = true;
-            break;
-        }
-        let Ok(seq_no) = r.read_u64() else {
-            recovered_torn_tail = true;
-            break;
-        };
-        let Ok(payload_len) = r.read_u32().map(|v| v as usize) else {
-            recovered_torn_tail = true;
-            break;
-        };
-        if payload_len
-            .checked_add(RECORD_TRAILER_LEN)
-            .is_none_or(|n| n > r.remaining())
-        {
-            recovered_torn_tail = true;
-            break;
-        }
-        let Ok(payload) = r.read_exact(payload_len) else {
-            recovered_torn_tail = true;
-            break;
-        };
-        let payload_end = r.pos();
-        let Ok(stored_crc) = r.read_u64() else {
-            recovered_torn_tail = true;
-            break;
-        };
-        if r.expect_magic(&NVK2_COMMIT_MARKER).is_err() {
-            recovered_torn_tail = true;
-            break;
-        }
-        let computed_crc = xxh64(&bytes[frame_start..payload_end], 0);
-        if stored_crc != computed_crc {
-            recovered_torn_tail = true;
-            break;
-        }
-        if apply_record_payload(kind, payload, &mut entries).is_err() {
-            recovered_torn_tail = true;
-            break;
-        }
-
-        last_seq = last_seq.max(seq_no);
-        valid_len = r.pos();
-    }
-
-    Ok(ReplayResult {
-        entries,
-        last_seq,
-        valid_len,
-        recovered_torn_tail,
-    })
-}
-
-fn apply_record_payload(
-    kind: u8,
-    payload: &[u8],
-    entries: &mut BTreeMap<Vec<u8>, Vec<u8>>,
-) -> Result<(), StorageError> {
-    let mut r = ByteReader::new(payload);
-    match kind {
-        KIND_PUT => {
-            let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
-            let value = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
-            r.finish()?;
-            validate_key(&key)?;
-            validate_value(&value)?;
-            entries.insert(key, value);
-        }
-        KIND_DELETE => {
-            let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
-            r.finish()?;
-            validate_key(&key)?;
-            entries.remove(&key);
-        }
-        KIND_BATCH => {
-            let count = r.read_len(MAX_BATCH_OPS, 5)?;
-            let mut decoded = Vec::with_capacity(count);
-            for _ in 0..count {
-                match r.read_u8()? {
-                    KIND_PUT => {
-                        let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
-                        let value = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
-                        validate_key(&key)?;
-                        validate_value(&value)?;
-                        decoded.push(StorageWriteOp::Put { key, value });
-                    }
-                    KIND_DELETE => {
-                        let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
-                        validate_key(&key)?;
-                        decoded.push(StorageWriteOp::Delete { key });
-                    }
-                    other => {
-                        return Err(StorageError::Corrupt(format!(
-                            "invalid batch op kind {other}"
-                        )));
-                    }
-                }
-            }
-            r.finish()?;
-            for op in decoded {
-                match op {
-                    StorageWriteOp::Put { key, value } => {
-                        entries.insert(key, value);
-                    }
-                    StorageWriteOp::Delete { key } => {
-                        entries.remove(&key);
-                    }
-                }
-            }
-        }
-        other => {
-            return Err(StorageError::Corrupt(format!(
-                "unknown NVK2 record kind {other}"
-            )));
-        }
-    }
-    Ok(())
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    File::open(parent)?.sync_all()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -591,4 +448,75 @@ fn temp_compact_path(path: &Path) -> PathBuf {
     let mut os = path.as_os_str().to_os_string();
     os.push(".compact.tmp");
     PathBuf::from(os)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_frame_poisons_handle_when_rollback_fails_and_recovers_when_rollback_succeeds() {
+        let dir = std::env::temp_dir().join(format!(
+            "nve_storage_engine_rollback_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollback.nvk2");
+
+        // 1. Poison path: swap live writable File with a read-only File so both write_all and
+        // rollback set_len fail -> handle MUST become None and reject subsequent writes.
+        let mut store = KvStore::open(&path).unwrap();
+        store.put(b"k1", b"alpha").unwrap();
+        let clean_len = store.log_bytes();
+        let ro_file = OpenOptions::new().read(true).open(&path).unwrap();
+        if let LogBackend::Disk { file, .. } = &mut store.backend {
+            *file = Some(ro_file);
+        }
+        assert!(matches!(store.put(b"k2", b"beta"), Err(StorageError::Io(_))));
+        assert!(
+            matches!(store.backend, LogBackend::Disk { file: None, .. }),
+            "failed rollback must poison file handle to None"
+        );
+        assert!(matches!(
+            store.put(b"k3", b"gamma"),
+            Err(StorageError::Io(ref msg)) if msg.contains("closed")
+        ));
+        drop(store);
+
+        // Reopening finds k1 intact and uncorrupted at clean_len.
+        let mut reopened = KvStore::open(&path).unwrap();
+        assert_eq!(reopened.log_bytes(), clean_len);
+        assert_eq!(reopened.get_ref(b"k1").unwrap(), Some(b"alpha".as_slice()));
+        assert_eq!(reopened.get_ref(b"k2").unwrap(), None);
+
+        // 2. Rollback-success path: simulate partial tail bytes written past `byte_len`, then
+        // verify rollback truncates/seeks cleanly back to `byte_len` so a subsequent write lands
+        // contiguously and survives reopen.
+        if let LogBackend::Disk {
+            file: Some(f),
+            byte_len,
+            ..
+        } = &mut reopened.backend
+        {
+            f.write_all(b"partial-torn-bytes").unwrap();
+            assert_eq!(fs::metadata(&path).unwrap().len(), *byte_len + 18);
+            f.set_len(*byte_len)
+                .and_then(|()| f.seek(SeekFrom::Start(*byte_len)))
+                .unwrap();
+            assert_eq!(fs::metadata(&path).unwrap().len(), *byte_len);
+        }
+        reopened.put(b"k2", b"survived").unwrap();
+        drop(reopened);
+
+        let final_store = KvStore::open(&path).unwrap();
+        assert!(!final_store.open_info().recovered_torn_tail);
+        assert_eq!(final_store.get_ref(b"k1").unwrap(), Some(b"alpha".as_slice()));
+        assert_eq!(
+            final_store.get_ref(b"k2").unwrap(),
+            Some(b"survived".as_slice())
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

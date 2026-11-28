@@ -20,6 +20,7 @@ mod layout_asserts;
 pub mod num;
 pub mod runtime;
 pub mod schema;
+pub mod sink;
 pub mod style_types;
 pub mod table;
 pub mod value;
@@ -66,12 +67,12 @@ pub use runtime::{
     NVE_MEASURE_FLAG_DRY_RUN, NVE_MEASURE_FLAG_IDEAL, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE,
     NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH, RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,
 };
-pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-#[cfg(feature = "wire")]
-pub use hybrid::{
-    invoke_async_bytes_done, invoke_bytes_sink, sink_bytes, with_bytes_sink, NveAsyncBytesDone,
-    NveBytesSink, SurfaceToken,
+pub use sink::{
+    into_async_bytes_done, invoke_async_bytes_done, invoke_bytes_sink, sink_bytes,
+    try_with_bytes_sink, try_with_bytes_sink_once, with_bytes_sink, with_bytes_sink_once,
+    AsyncBytesDoneGuard, BytesSinkError, NveAsyncBytesDone, NveBytesSink, SurfaceToken,
 };
+pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]
 pub use value::{
     encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinArrayWriter, BinMapIter,

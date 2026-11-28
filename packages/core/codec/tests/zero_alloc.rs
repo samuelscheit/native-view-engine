@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use nve_codec::{
-    call_sync_decode, encode_u32_stack, try_with_stack_writer, with_stack_writer, ByteReader,
+    call_sync_decode, encode_f32_stack, try_with_stack_writer, with_stack_writer, ByteReader,
     ByteTransport, ByteWriter, CodecError, NveCodec, NveDecode, NveEncode, TransportError,
     DEFAULT_MAX_ITEMS,
 };
@@ -246,16 +246,16 @@ fn counting_alloc_positive_probe_and_stack_writer_byte_transport_zero_alloc() {
             .unwrap();
             acc += decoded;
 
-            // Single POD stack helper round-trip.
-            let pod_req = encode_u32_stack(i);
+            // Single primitive + canonical float stack round-trip.
+            let pod_req = encode_f32_stack(i as f32);
             let pod_out = call_sync_decode(&transport, 1, 1, &pod_req, |reply| {
                 let mut r = ByteReader::new(reply);
-                let v = r.read_u32()?;
+                let v = r.read_f32()?;
                 r.finish()?;
                 Ok(v)
             })
             .unwrap();
-            assert_eq!(pod_out, i);
+            assert_eq!(pod_out, i as f32);
         }
         acc
     });

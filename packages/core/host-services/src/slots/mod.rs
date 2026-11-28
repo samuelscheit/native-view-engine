@@ -2,20 +2,30 @@
 //! cached typed handles ([`ServiceHandle`]).
 //!
 //! Replaces per-call `RwLock<BTreeMap<u32, Arc<Arc<dyn Backend>>>>` lookups with direct
-//! dense-index array access over inline fat pointers (`*const T` from `Arc::into_raw`):
-//! - **0 locks** (`RwLock`-free immutable `Arc<[Option<SlotEntry>]>` snapshot)
+//! dense-index array access over split hot/cold storage:
+//! - **0 locks** (immutable `Arc<SlotTable>` snapshot with cached hot slice pointer)
 //! - **0 `BTreeMap` / hash lookups** (indexed directly by validated [`ServiceSlotId`])
-//! - **0 double-`Arc` allocations** (`*const T` stored inline in `MaybeUninit<[*const (); 2]>`)
+//! - **0 double-`Arc` allocations** (`*const T` stored inline in 32-byte `HotSlotEntry`, exact
+//!   half cache line on 64-bit targets with zero cross-cache-line straddling)
 //! - **0 atomic refcount increments** on [`ServiceSlots::get`] (`&T` borrowed directly)
-//! - **O(1) snapshot cloning** (`ServiceSlots::clone` is a single `Arc::clone`) and cheap
-//!   copy-on-write per-surface/test overrides via [`ServiceSlots::with_override`].
+//! - **O(1) snapshot cloning** (`ServiceSlots::clone` is a single `Arc::clone`) and single-pass
+//!   copy-on-write per-surface/test overrides via [`ServiceSlots::with_override`]
+//!
+//! # Single-Binary Safety Boundary
+//! [`ServiceSlots`] and [`ServiceHandle`] store Rust [`core::any::TypeId`]s, `Arc<T>` raw
+//! pointers, and Rust trait object vtables. They are **strictly single-binary / statically linked
+//! Rust-only** and MUST NEVER be passed across `HotAppInstance` `cdylib` / `dlopen` boundaries
+//! (where `TypeId` hashes, allocator instances, and trait vtables are not ABI-stable).
+//! Cross-dylib / foreign host calls must cross the C ABI (`NVE_IFACE_HOST = 5` / `NveBytesSink`).
 
-use core::any::TypeId;
+mod table;
+
 use core::fmt;
-use core::mem::{align_of, size_of, MaybeUninit};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
+
+use table::{HotSlotEntry, OwnedSlot, SlotTable, StagedTable};
 
 /// Maximum number of dense service slots (`0..MAX_SERVICE_SLOTS`).
 pub const MAX_SERVICE_SLOTS: usize = 256;
@@ -36,6 +46,11 @@ impl ServiceSlotId {
     pub const MAX_SLOTS: usize = MAX_SERVICE_SLOTS;
 
     /// Constructs a compile-time validated dense slot ID (`INDEX < MAX_SLOTS`).
+    ///
+    /// Tests working with local [`ServiceSlots`] snapshots should prefer deterministic constants
+    /// such as `ServiceSlotId::from_const::<SLOT_USER_BASE>()` and reserve
+    /// [`Self::alloc_user_slot`] for process-wide dynamic modules.
+    #[must_use]
     #[inline(always)]
     pub const fn from_const<const INDEX: u16>() -> Self {
         const {
@@ -48,6 +63,7 @@ impl ServiceSlotId {
     }
 
     /// Fallible runtime constructor sealing `index < MAX_SLOTS` at ingress.
+    #[must_use]
     #[inline(always)]
     pub const fn try_new(index: u16) -> Option<Self> {
         if (index as usize) < Self::MAX_SLOTS {
@@ -58,7 +74,13 @@ impl ServiceSlotId {
     }
 
     /// Allocates a process-unique dense slot ID in `SLOT_USER_BASE..MAX_SERVICE_SLOTS` for
-    /// dynamic / third-party modules or isolated tests. Returns `None` once exhausted.
+    /// process-wide dynamic / third-party modules. Returns `None` once all 240 dynamic slots are
+    /// exhausted.
+    ///
+    /// Unit tests constructing isolated local snapshots should use
+    /// `ServiceSlotId::from_const::<SLOT_USER_BASE>()` (or explicit test indices) instead of
+    /// consuming process-global dynamic slots.
+    #[must_use]
     pub fn alloc_user_slot() -> Option<Self> {
         let mut cur = NEXT_USER_SLOT.load(Ordering::Relaxed);
         loop {
@@ -77,11 +99,13 @@ impl ServiceSlotId {
         }
     }
 
+    #[must_use]
     #[inline(always)]
     pub const fn raw(self) -> u16 {
         self.0
     }
 
+    #[must_use]
     #[inline(always)]
     pub const fn as_usize(self) -> usize {
         self.0 as usize
@@ -114,16 +138,20 @@ pub trait ServiceSlot: Send + Sync + 'static {
 /// Ideal for dependency injection, component/view state, multi-surface overrides, and unit tests:
 /// subsequent calls dereference directly to `&T` with zero slot lookup, zero `TypeId` comparison,
 /// zero locks, and zero atomic operations.
+///
+/// Strictly single-binary / statically linked Rust-only — never pass across `cdylib`/`dlopen`.
 pub struct ServiceHandle<T: ?Sized + Send + Sync + 'static> {
     inner: Arc<T>,
 }
 
 impl<T: ?Sized + Send + Sync + 'static> ServiceHandle<T> {
+    #[must_use]
     #[inline]
     pub fn new(service: Arc<T>) -> Self {
         Self { inner: service }
     }
 
+    #[must_use]
     #[inline]
     pub fn from_value(service: T) -> Self
     where
@@ -134,21 +162,25 @@ impl<T: ?Sized + Send + Sync + 'static> ServiceHandle<T> {
         }
     }
 
+    #[must_use]
     #[inline]
     pub fn as_arc(&self) -> &Arc<T> {
         &self.inner
     }
 
+    #[must_use]
     #[inline]
     pub fn into_arc(self) -> Arc<T> {
         self.inner
     }
 
+    #[must_use]
     #[inline]
     pub fn strong_count(&self) -> usize {
         Arc::strong_count(&self.inner)
     }
 
+    #[must_use]
     #[inline]
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
@@ -193,129 +225,45 @@ impl<T: ?Sized + Send + Sync + 'static> fmt::Debug for ServiceHandle<T> {
     }
 }
 
-/// Inline type-erased single-`Arc` slot storing `*const T` (thin or fat pointer) directly without
-/// double-`Arc` heap indirection.
-struct SlotEntry {
-    type_id: TypeId,
-    raw_ptr: MaybeUninit<[*const (); 2]>,
-    clone_fn: unsafe fn(&SlotEntry) -> SlotEntry,
-    drop_fn: unsafe fn(&mut SlotEntry),
-}
-
-// SAFETY: `SlotEntry::new` enforces `T: ?Sized + Send + Sync + 'static`, so the owned `Arc<T>`
-// pointer is both `Send` and `Sync` and only yields `&T` or cloned `Arc<T>`.
-unsafe impl Send for SlotEntry {}
-// SAFETY: `SlotEntry::new` enforces `T: ?Sized + Send + Sync + 'static`, so shared `&SlotEntry`
-// access safely yields `&T` and clones `Arc<T>` across threads.
-unsafe impl Sync for SlotEntry {}
-
-impl SlotEntry {
-    fn new<T: ?Sized + Send + Sync + 'static>(service: Arc<T>) -> Self {
-        const {
-            assert!(size_of::<*const T>() <= size_of::<[*const (); 2]>());
-            assert!(align_of::<*const T>() <= align_of::<[*const (); 2]>());
-        }
-        let ptr: *const T = Arc::into_raw(service);
-        let mut raw_ptr = MaybeUninit::<[*const (); 2]>::uninit();
-        // SAFETY: Compile-time asserts above guarantee `raw_ptr` fits `*const T` in size and
-        // alignment; writing `*const T` preserves full pointer provenance (thin or fat).
-        unsafe {
-            raw_ptr.as_mut_ptr().cast::<*const T>().write(ptr);
-        }
-        Self {
-            type_id: TypeId::of::<T>(),
-            raw_ptr,
-            clone_fn: clone_slot_entry::<T>,
-            drop_fn: drop_slot_entry::<T>,
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn read_ptr<T: ?Sized + Send + Sync + 'static>(&self) -> *const T {
-        const {
-            assert!(size_of::<*const T>() <= size_of::<[*const (); 2]>());
-            assert!(align_of::<*const T>() <= align_of::<[*const (); 2]>());
-        }
-        // SAFETY: Caller guarantees `self.type_id == TypeId::of::<T>()`, so `self.raw_ptr` was
-        // initialized via `write::<*const T>` with a live `Arc::into_raw::<T>` pointer.
-        unsafe { self.raw_ptr.as_ptr().cast::<*const T>().read() }
-    }
-
-    #[inline(always)]
-    fn get_ref<T: ?Sized + Send + Sync + 'static>(&self) -> Option<&T> {
-        if self.type_id != TypeId::of::<T>() {
-            return None;
-        }
-        // SAFETY: `type_id` matches `T`; `self` owns a strong `Arc<T>` count keeping `*ptr` valid
-        // for at least `&self`'s borrow lifetime.
-        unsafe { Some(&*self.read_ptr::<T>()) }
-    }
-
-    #[inline]
-    fn clone_arc<T: ?Sized + Send + Sync + 'static>(&self) -> Option<Arc<T>> {
-        if self.type_id != TypeId::of::<T>() {
-            return None;
-        }
-        // SAFETY: `type_id` matches `T`; incrementing the strong count before `Arc::from_raw`
-        // mints an independent owned `Arc<T>` while `self` retains its own strong reference.
-        unsafe {
-            let ptr = self.read_ptr::<T>();
-            Arc::increment_strong_count(ptr);
-            Some(Arc::from_raw(ptr))
-        }
-    }
-}
-
-unsafe fn clone_slot_entry<T: ?Sized + Send + Sync + 'static>(entry: &SlotEntry) -> SlotEntry {
-    // SAFETY: `clone_slot_entry::<T>` is only installed by `SlotEntry::new::<T>`.
-    let ptr: *const T = unsafe { entry.read_ptr::<T>() };
-    // SAFETY: `entry` owns one strong reference to `ptr`.
-    unsafe { Arc::increment_strong_count(ptr) };
-    let mut raw_ptr = MaybeUninit::<[*const (); 2]>::uninit();
-    // SAFETY: Size/align checked at compile time in `SlotEntry::new::<T>` and `read_ptr::<T>`.
-    unsafe {
-        raw_ptr.as_mut_ptr().cast::<*const T>().write(ptr);
-    }
-    SlotEntry {
-        type_id: entry.type_id,
-        raw_ptr,
-        clone_fn: entry.clone_fn,
-        drop_fn: entry.drop_fn,
-    }
-}
-
-unsafe fn drop_slot_entry<T: ?Sized + Send + Sync + 'static>(entry: &mut SlotEntry) {
-    // SAFETY: `drop_slot_entry::<T>` is only installed by `SlotEntry::new::<T>` and runs once in
-    // `Drop::drop`.
-    let ptr: *const T = unsafe { entry.read_ptr::<T>() };
-    // SAFETY: Reclaims the single strong reference surrendered by `Arc::into_raw`.
-    drop(unsafe { Arc::from_raw(ptr) });
-}
-
-impl Clone for SlotEntry {
-    #[inline]
-    fn clone(&self) -> Self {
-        // SAFETY: `self.clone_fn` matches the exact `T` stored in `self.raw_ptr`.
-        unsafe { (self.clone_fn)(self) }
-    }
-}
-
-impl Drop for SlotEntry {
-    #[inline]
-    fn drop(&mut self) {
-        // SAFETY: `self.drop_fn` matches the exact `T` stored in `self.raw_ptr` and runs once.
-        unsafe { (self.drop_fn)(self) }
-    }
-}
-
 /// Immutable, snapshot-friendly dense slot table for lock-free O(1) typed service lookup.
 ///
 /// Cloning `ServiceSlots` is an O(1) `Arc::clone`. Per-surface overrides or unit-test mocks
 /// produce a new immutable snapshot via [`Self::with_override`] or [`Self::to_builder`] without
 /// mutating sibling surfaces or taking any locks on the read path.
-#[derive(Clone, Default)]
+///
+/// Strictly single-binary / statically linked Rust-only — never pass across `cdylib`/`dlopen`.
 pub struct ServiceSlots {
-    slots: Option<Arc<[Option<SlotEntry>]>>,
+    /// Cached slice pointer into `table.hot` so `get()` uses one indirection directly onto 32-byte
+    /// cache-line-aligned entries without touching `table.cold`.
+    hot: *const [HotSlotEntry],
+    table: Option<Arc<SlotTable>>,
+}
+
+// SAFETY: `hot` points either to an empty slice (`&[]`) or into immutable `SlotTable::hot` owned
+// by `table: Option<Arc<SlotTable>>` (`SlotTable` is `Send`), and is only dereferenced while
+// `self` keeps `table` alive.
+unsafe impl Send for ServiceSlots {}
+
+// SAFETY: `hot` points either to an empty slice (`&[]`) or into immutable `SlotTable::hot` owned
+// by `table: Option<Arc<SlotTable>>` (`SlotTable` is `Sync`), so concurrent reads safely yield
+// `&T` / cloned `Arc<T>`.
+unsafe impl Sync for ServiceSlots {}
+
+impl Clone for ServiceSlots {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            hot: self.hot,
+            table: self.table.clone(),
+        }
+    }
+}
+
+impl Default for ServiceSlots {
+    #[inline]
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 impl fmt::Debug for ServiceSlots {
@@ -329,13 +277,31 @@ impl fmt::Debug for ServiceSlots {
 
 impl ServiceSlots {
     /// Empty zero-allocation slot table.
-    pub const EMPTY: Self = Self { slots: None };
+    pub const EMPTY: Self = Self {
+        hot: &[] as *const [HotSlotEntry],
+        table: None,
+    };
 
+    fn from_staged(staged: StagedTable) -> Self {
+        match staged.into_arc() {
+            None => Self::EMPTY,
+            Some(table) => {
+                let hot: *const [HotSlotEntry] = &*table.hot;
+                Self {
+                    hot,
+                    table: Some(table),
+                }
+            }
+        }
+    }
+
+    #[must_use]
     #[inline]
     pub const fn empty() -> Self {
         Self::EMPTY
     }
 
+    #[must_use]
     #[inline]
     pub fn builder() -> ServiceSlotsBuilder {
         ServiceSlotsBuilder::new()
@@ -343,42 +309,115 @@ impl ServiceSlots {
 
     /// Creates a mutable builder pre-populated with shallow clones of this snapshot's slots
     /// (bumps each occupied service's `Arc` refcount; never clones underlying services).
+    #[must_use]
     pub fn to_builder(&self) -> ServiceSlotsBuilder {
-        ServiceSlotsBuilder {
-            slots: self.as_slice().to_vec(),
+        let Some(table) = &self.table else {
+            return ServiceSlotsBuilder::new();
+        };
+        let mut slots = Vec::with_capacity(table.hot.len());
+        for (hot, cold) in table.hot.iter().zip(table.cold.iter()) {
+            match cold {
+                Some(vt) => {
+                    // SAFETY: `vt` matches the exact `T` stored in `hot`.
+                    let cloned = unsafe { (vt.clone_fn)(hot) };
+                    slots.push(Some(OwnedSlot {
+                        hot: cloned,
+                        vtable: vt,
+                    }));
+                }
+                None => slots.push(None),
+            }
         }
+        ServiceSlotsBuilder { slots }
     }
 
-    /// Returns a new immutable snapshot with `T::SLOT` replaced by `service` (leaving `self`
-    /// untouched for sibling surfaces or parallel tests).
+    /// Returns a new immutable snapshot with `T::SLOT` replaced by `service` in one pass (leaving
+    /// `self` untouched and never bumping/dropping the replaced slot's `Arc`).
+    #[must_use]
     pub fn with_override<T: ServiceSlot + ?Sized>(&self, service: Arc<T>) -> Self {
-        self.to_builder().set(service).build()
+        self.with_override_at::<T>(T::SLOT, service)
     }
 
-    /// Returns a new immutable snapshot with `slot` replaced by `service`.
+    /// Returns a new immutable snapshot with `slot` replaced by `service` in one pass (without
+    /// intermediate builder allocation or bumping/dropping the replaced slot's `Arc`).
+    #[must_use]
     pub fn with_override_at<T: ?Sized + Send + Sync + 'static>(
         &self,
         slot: ServiceSlotId,
         service: Arc<T>,
     ) -> Self {
-        self.to_builder().set_at(slot, service).build()
+        let idx = slot.as_usize();
+        let new_len = self.slot_capacity().max(idx + 1);
+        let mut staged = StagedTable::with_capacity(new_len);
+        let old_table = self.table.as_deref();
+        let mut new_slot = Some(HotSlotEntry::new::<T>(service));
+        for i in 0..new_len {
+            if i == idx {
+                if let Some((hot, vt)) = new_slot.take() {
+                    staged.push_slot(hot, vt);
+                }
+            } else if let Some(tbl) = old_table
+                && i < tbl.hot.len()
+                && let Some(vt) = tbl.cold[i]
+            {
+                // SAFETY: `vt` matches the exact `T` stored in `tbl.hot[i]`.
+                let cloned = unsafe { (vt.clone_fn)(&tbl.hot[i]) };
+                staged.push_slot(cloned, vt);
+            } else {
+                staged.push_empty();
+            }
+        }
+        Self::from_staged(staged)
     }
 
-    /// Returns a new immutable snapshot with `slot` cleared.
+    /// Returns a new immutable snapshot with `slot` cleared in one pass (O(1) clone with zero
+    /// allocations when `slot` is already empty, trimming trailing empty entries back to
+    /// [`Self::EMPTY`] when all slots are removed).
+    #[must_use]
     pub fn without_slot(&self, slot: ServiceSlotId) -> Self {
-        self.to_builder().without(slot).build()
+        let idx = slot.as_usize();
+        let Some(tbl) = self.table.as_deref() else {
+            return Self::EMPTY;
+        };
+        if idx >= tbl.cold.len() || tbl.cold[idx].is_none() {
+            return self.clone();
+        }
+        let mut new_len = tbl.cold.len();
+        while new_len > 0 {
+            let last = new_len - 1;
+            if last != idx && tbl.cold[last].is_some() {
+                break;
+            }
+            new_len -= 1;
+        }
+        if new_len == 0 {
+            return Self::EMPTY;
+        }
+        let mut staged = StagedTable::with_capacity(new_len);
+        for i in 0..new_len {
+            if i != idx
+                && let Some(vt) = tbl.cold[i]
+            {
+                // SAFETY: `vt` matches the exact `T` stored in `tbl.hot[i]`.
+                let cloned = unsafe { (vt.clone_fn)(&tbl.hot[i]) };
+                staged.push_slot(cloned, vt);
+            } else {
+                staged.push_empty();
+            }
+        }
+        Self::from_staged(staged)
     }
 
     #[inline(always)]
-    fn as_slice(&self) -> &[Option<SlotEntry>] {
-        match &self.slots {
-            Some(arc) => arc,
-            None => &[],
-        }
+    fn as_hot_slice(&self) -> &[HotSlotEntry] {
+        // SAFETY: `self.hot` is either `&[]` (when `table` is `None`) or points to immutable
+        // `SlotTable::hot` kept live by `self.table` for at least `&self`'s borrow lifetime.
+        unsafe { &*self.hot }
     }
 
     /// Lock-free O(1) typed borrow at `T::SLOT` with **0 locks, 0 hashing, 0 atomic refcount
     /// increments, and 0 heap allocations**.
+    #[must_use]
     #[inline(always)]
     pub fn get<T: ServiceSlot + ?Sized>(&self) -> Option<&T> {
         self.get_at::<T>(T::SLOT)
@@ -386,22 +425,22 @@ impl ServiceSlots {
 
     /// Lock-free O(1) typed borrow at an explicit dense [`ServiceSlotId`] with **0 locks,
     /// 0 hashing, 0 atomic refcount increments, and 0 heap allocations**.
+    #[must_use]
     #[inline(always)]
     pub fn get_at<T: ?Sized + Send + Sync + 'static>(&self, slot: ServiceSlotId) -> Option<&T> {
-        self.as_slice()
-            .get(slot.as_usize())?
-            .as_ref()?
-            .get_ref::<T>()
+        self.as_hot_slice().get(slot.as_usize())?.get_ref::<T>()
     }
 
     /// Resolves a cached [`ServiceHandle<T>`] once from `T::SLOT` (bumps the single `Arc<T>`
     /// refcount once; subsequent calls through the handle perform 0 lookups and 0 atomic ops).
+    #[must_use]
     #[inline]
     pub fn handle<T: ServiceSlot + ?Sized>(&self) -> Option<ServiceHandle<T>> {
         self.handle_at::<T>(T::SLOT)
     }
 
     /// Resolves a cached [`ServiceHandle<T>`] once from an explicit dense [`ServiceSlotId`].
+    #[must_use]
     #[inline]
     pub fn handle_at<T: ?Sized + Send + Sync + 'static>(
         &self,
@@ -411,6 +450,7 @@ impl ServiceSlots {
     }
 
     /// Resolves an owned `Arc<T>` from `T::SLOT` without double-`Arc` indirection.
+    #[must_use]
     #[inline]
     pub fn get_arc<T: ServiceSlot + ?Sized>(&self) -> Option<Arc<T>> {
         self.get_arc_at::<T>(T::SLOT)
@@ -418,51 +458,54 @@ impl ServiceSlots {
 
     /// Resolves an owned `Arc<T>` from an explicit dense [`ServiceSlotId`] without double-`Arc`
     /// indirection.
+    #[must_use]
     #[inline]
     pub fn get_arc_at<T: ?Sized + Send + Sync + 'static>(
         &self,
         slot: ServiceSlotId,
     ) -> Option<Arc<T>> {
-        self.as_slice()
-            .get(slot.as_usize())?
-            .as_ref()?
-            .clone_arc::<T>()
+        self.as_hot_slice().get(slot.as_usize())?.clone_arc::<T>()
     }
 
     /// Returns `true` if `slot` currently holds any service.
+    #[must_use]
     #[inline]
     pub fn contains(&self, slot: ServiceSlotId) -> bool {
-        self.as_slice()
+        self.as_hot_slice()
             .get(slot.as_usize())
-            .is_some_and(Option::is_some)
+            .is_some_and(|e| !e.is_empty())
     }
 
     /// Number of occupied service slots in this snapshot.
+    #[must_use]
     #[inline]
     pub fn len(&self) -> usize {
-        self.as_slice().iter().filter(|e| e.is_some()).count()
+        self.as_hot_slice().iter().filter(|e| !e.is_empty()).count()
     }
 
-    /// Returns `true` if no service slots are populated.
-    #[inline]
+    /// O(1) check returning `true` iff no service slots are populated.
+    #[must_use]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.table.is_none()
     }
 
     /// Dense array length allocated for this snapshot (`<= MAX_SERVICE_SLOTS`).
-    #[inline]
+    #[must_use]
+    #[inline(always)]
     pub fn slot_capacity(&self) -> usize {
-        self.as_slice().len()
+        self.as_hot_slice().len()
     }
 }
 
 /// Mutable builder producing an immutable [`ServiceSlots`] snapshot.
 #[derive(Default)]
 pub struct ServiceSlotsBuilder {
-    slots: Vec<Option<SlotEntry>>,
+    slots: Vec<Option<OwnedSlot>>,
 }
 
 impl ServiceSlotsBuilder {
+    #[must_use]
     #[inline]
     pub fn new() -> Self {
         Self { slots: Vec::new() }
@@ -484,7 +527,7 @@ impl ServiceSlotsBuilder {
         if idx >= self.slots.len() {
             self.slots.resize_with(idx + 1, || None);
         }
-        self.slots[idx] = Some(SlotEntry::new::<T>(service));
+        self.slots[idx] = Some(OwnedSlot::new::<T>(service));
         self
     }
 
@@ -505,6 +548,7 @@ impl ServiceSlotsBuilder {
     }
 
     /// Builder-style variant of [`Self::insert`].
+    #[must_use]
     #[inline]
     pub fn set<T: ServiceSlot + ?Sized>(mut self, service: Arc<T>) -> Self {
         self.insert::<T>(service);
@@ -512,6 +556,7 @@ impl ServiceSlotsBuilder {
     }
 
     /// Builder-style variant of [`Self::insert_at`].
+    #[must_use]
     #[inline]
     pub fn set_at<T: ?Sized + Send + Sync + 'static>(
         mut self,
@@ -523,6 +568,7 @@ impl ServiceSlotsBuilder {
     }
 
     /// Builder-style variant of [`Self::insert_value`].
+    #[must_use]
     #[inline]
     pub fn set_value<T: ServiceSlot + Sized>(mut self, service: T) -> Self {
         self.insert_value::<T>(service);
@@ -530,6 +576,7 @@ impl ServiceSlotsBuilder {
     }
 
     /// Builder-style variant of [`Self::insert_value_at`].
+    #[must_use]
     #[inline]
     pub fn set_value_at<T: Send + Sync + 'static>(
         mut self,
@@ -550,6 +597,7 @@ impl ServiceSlotsBuilder {
     }
 
     /// Builder-style variant of [`Self::remove`].
+    #[must_use]
     #[inline]
     pub fn without(mut self, slot: ServiceSlotId) -> Self {
         self.remove(slot);
@@ -557,6 +605,7 @@ impl ServiceSlotsBuilder {
     }
 
     /// Freezes the registered slots into an immutable, lock-free [`ServiceSlots`] snapshot.
+    #[must_use]
     pub fn build(mut self) -> ServiceSlots {
         while self.slots.last().is_some_and(Option::is_none) {
             let _ = self.slots.pop();
@@ -564,8 +613,16 @@ impl ServiceSlotsBuilder {
         if self.slots.is_empty() {
             return ServiceSlots::EMPTY;
         }
-        ServiceSlots {
-            slots: Some(Arc::from(self.slots.into_boxed_slice())),
+        let mut staged = StagedTable::with_capacity(self.slots.len());
+        for entry in self.slots {
+            match entry {
+                Some(owned) => {
+                    let (hot, vt) = owned.into_parts();
+                    staged.push_slot(hot, vt);
+                }
+                None => staged.push_empty(),
+            }
         }
+        ServiceSlots::from_staged(staged)
     }
 }

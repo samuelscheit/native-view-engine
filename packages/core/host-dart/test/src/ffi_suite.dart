@@ -33,6 +33,7 @@ void runFfi(Check c) {
     'NveIntrinsicSize': ffi.sizeOf<NveIntrinsicSize>(),
     'NveHostCallbacks': ffi.sizeOf<NveHostCallbacks>(),
     'NveTableView': ffi.sizeOf<NveTableView>(),
+    'NveSurfaceToken': ffi.sizeOf<NveSurfaceToken>(),
   };
   // A record added to the ABI must be measured here too.
   c.eq(measured.length, nveAbiRecordSizes.length, 'every ABI record is measured');

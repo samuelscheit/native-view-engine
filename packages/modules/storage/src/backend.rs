@@ -3,7 +3,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::engine::KvStoreManager;
 use crate::{CompactStats, StorageEntry, StorageError, StorageOpenInfo, StorageWriteOp, MAX_KEY_LEN};
@@ -24,84 +24,61 @@ pub trait StorageBackend: Send + Sync {
     fn compact(&self, namespace: &str) -> Result<CompactStats, StorageError>;
 }
 
-macro_rules! impl_kv_storage_backend {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl StorageBackend for $ty {
-                fn open(&self, namespace: &str) -> Result<StorageOpenInfo, StorageError> {
-                    self.kv.lock().unwrap_or_else(|e| e.into_inner()).open(namespace)
-                }
+struct LockedKvStorage(Mutex<KvStoreManager>);
 
-                fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-                    self.kv
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get_or_open(namespace)?
-                        .get(key)
-                }
+impl LockedKvStorage {
+    fn new(manager: KvStoreManager) -> Self {
+        Self(Mutex::new(manager))
+    }
 
-                fn put(&self, namespace: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
-                    self.kv
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get_or_open(namespace)?
-                        .put(key, value)
-                }
+    fn lock(&self) -> MutexGuard<'_, KvStoreManager> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
 
-                fn delete(&self, namespace: &str, key: &[u8]) -> Result<bool, StorageError> {
-                    self.kv
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get_or_open(namespace)?
-                        .delete(key)
-                }
+impl StorageBackend for LockedKvStorage {
+    fn open(&self, namespace: &str) -> Result<StorageOpenInfo, StorageError> {
+        self.lock().open(namespace)
+    }
 
-                fn scan_prefix(
-                    &self,
-                    namespace: &str,
-                    prefix: &[u8],
-                    limit: u32,
-                ) -> Result<Vec<StorageEntry>, StorageError> {
-                    if prefix.len() > MAX_KEY_LEN {
-                        return Err(StorageError::InvalidArg(
-                            "storage prefix exceeds MAX_KEY_LEN".into(),
-                        ));
-                    }
-                    Ok(self
-                        .kv
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get_or_open(namespace)?
-                        .scan_prefix(prefix, limit))
-                }
+    fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        self.lock().get_or_open(namespace)?.get(key)
+    }
 
-                fn commit_batch(
-                    &self,
-                    namespace: &str,
-                    ops: &[StorageWriteOp],
-                ) -> Result<(), StorageError> {
-                    self.kv
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get_or_open(namespace)?
-                        .commit_batch(ops)
-                }
+    fn put(&self, namespace: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
+        self.lock().get_or_open(namespace)?.put(key, value)
+    }
 
-                fn compact(&self, namespace: &str) -> Result<CompactStats, StorageError> {
-                    self.kv
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get_or_open(namespace)?
-                        .compact()
-                }
-            }
-        )+
-    };
+    fn delete(&self, namespace: &str, key: &[u8]) -> Result<bool, StorageError> {
+        self.lock().get_or_open(namespace)?.delete(key)
+    }
+
+    fn scan_prefix(
+        &self,
+        namespace: &str,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<StorageEntry>, StorageError> {
+        if prefix.len() > MAX_KEY_LEN {
+            return Err(StorageError::InvalidArg(
+                "storage prefix exceeds MAX_KEY_LEN".into(),
+            ));
+        }
+        Ok(self.lock().get_or_open(namespace)?.scan_prefix(prefix, limit))
+    }
+
+    fn commit_batch(&self, namespace: &str, ops: &[StorageWriteOp]) -> Result<(), StorageError> {
+        self.lock().get_or_open(namespace)?.commit_batch(ops)
+    }
+
+    fn compact(&self, namespace: &str) -> Result<CompactStats, StorageError> {
+        self.lock().get_or_open(namespace)?.compact()
+    }
 }
 
 /// Thread-safe file-backed (or in-memory) `NVK2` [`StorageBackend`].
 pub struct NativeStorage {
-    kv: Mutex<KvStoreManager>,
+    inner: LockedKvStorage,
 }
 
 impl Default for NativeStorage {
@@ -111,23 +88,25 @@ impl Default for NativeStorage {
 }
 
 impl NativeStorage {
+    #[must_use]
     pub fn in_memory() -> Self {
         Self {
-            kv: Mutex::new(KvStoreManager::in_memory()),
+            inner: LockedKvStorage::new(KvStoreManager::in_memory()),
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
     pub fn with_root_dir(root_dir: impl Into<PathBuf>) -> Self {
         Self {
-            kv: Mutex::new(KvStoreManager::with_root_dir(root_dir)),
+            inner: LockedKvStorage::new(KvStoreManager::with_root_dir(root_dir)),
         }
     }
 }
 
 /// Deterministic in-memory `NVK2` [`StorageBackend`] ideal for parallel unit tests and `wasm32`.
 pub struct MemoryStorage {
-    kv: Mutex<KvStoreManager>,
+    inner: LockedKvStorage,
 }
 
 impl Default for MemoryStorage {
@@ -137,11 +116,57 @@ impl Default for MemoryStorage {
 }
 
 impl MemoryStorage {
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            kv: Mutex::new(KvStoreManager::in_memory()),
+            inner: LockedKvStorage::new(KvStoreManager::in_memory()),
         }
     }
 }
 
-impl_kv_storage_backend!(NativeStorage, MemoryStorage);
+macro_rules! delegate_storage_backend {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl StorageBackend for $ty {
+                fn open(&self, namespace: &str) -> Result<StorageOpenInfo, StorageError> {
+                    self.inner.open(namespace)
+                }
+
+                fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+                    self.inner.get(namespace, key)
+                }
+
+                fn put(&self, namespace: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
+                    self.inner.put(namespace, key, value)
+                }
+
+                fn delete(&self, namespace: &str, key: &[u8]) -> Result<bool, StorageError> {
+                    self.inner.delete(namespace, key)
+                }
+
+                fn scan_prefix(
+                    &self,
+                    namespace: &str,
+                    prefix: &[u8],
+                    limit: u32,
+                ) -> Result<Vec<StorageEntry>, StorageError> {
+                    self.inner.scan_prefix(namespace, prefix, limit)
+                }
+
+                fn commit_batch(
+                    &self,
+                    namespace: &str,
+                    ops: &[StorageWriteOp],
+                ) -> Result<(), StorageError> {
+                    self.inner.commit_batch(namespace, ops)
+                }
+
+                fn compact(&self, namespace: &str) -> Result<CompactStats, StorageError> {
+                    self.inner.compact(namespace)
+                }
+            }
+        )+
+    };
+}
+
+delegate_storage_backend!(NativeStorage, MemoryStorage);

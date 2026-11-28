@@ -8,7 +8,7 @@ Zero-copy `#[repr(C)]` C ABI and binary wire definitions (`packages/core/abi`, *
 - `runtime::{NveRuntimeApi, NveSceneView, NveNodeRow, NveLayoutRect, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH}`: the one scene ABI every host reads (`scene_acquire` / `scene_release`)
 - `table::{NveTableView, NVE_PRIMARY_SLOT_NONE, TableDesc, FieldDesc, FieldKind, compute_table_schema_hash}`
 - `event::{NveEvent, NveEventBatch, RawEventBytes, EventEnum, EventSet, ValidatedEvents, EventBatchBuf}`
-- `value::{NveValue, NveValueRef, BinValueView}`, `hybrid::{SurfaceToken, NveBytesSink, NveAsyncBytesDone, with_bytes_sink, invoke_bytes_sink}`, `schema`, `NveAbi`
+- `value::{NveValue, NveValueRef, BinValueView}`, `sink::{SurfaceToken, NveBytesSink, NveAsyncBytesDone, BytesSinkError, AsyncBytesDoneGuard, with_bytes_sink, try_with_bytes_sink, invoke_bytes_sink}`, `schema`, `NveAbi`
 
 ```rust
 use core::mem::{offset_of, size_of};

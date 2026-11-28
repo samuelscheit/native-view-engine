@@ -71,7 +71,8 @@ The root `Cargo.toml` defines 33 workspace members split into core runtime (`pac
 | `nve-backend-web` | `packages/backends/web` | `wasm32` DOM + CSS Flexbox backend, structural CSS class cache, `<canvas>` `nve.res.draw_list` renderer (`nve-canvas-web`), semantic HTML5 SSR (`render_ssr`), and progressive DOM hydration (`hydrate_into`). |
 | `nve-cli` | `packages/tools/cli` | Developer CLI (`cargo nve`): `doctor`, `inspect`, `bench`, `dev`, `pair`, and `codegen`. |
 | `nve-bench` | `packages/tools/bench` | Criterion `0.8.2` statistical benchmark suite covering ABI, scene, value, layout, Skia, Web, Dioxus, and interop hot paths. |
-| `nve-clipboard` .. `nve-system-env` | `packages/modules/*` | 7 standalone OS capability modules (`clipboard`, `filesystem`, `secure-store`, `linking`, `system-env`, `haptics`, `storage`) with direct typed in-process backends, OS drivers, and `NVE_IFACE_HOST = 5` cross-language codecs. |
+| `nve-clipboard` .. `nve-system-env` | `packages/modules/*` | 6 standalone OS host-capability modules (`clipboard`, `filesystem`, `secure-store`, `linking`, `system-env`, `haptics`) with direct typed in-process backends, OS drivers, and `NVE_IFACE_HOST = 5` cross-language codecs. |
+| `nve-storage` | `packages/modules/storage` | Standalone pure-Rust crash-safe `NVK2` binary KV store (`KvStore`, `KvStoreManager`, `StorageBackend`, `NativeStorage`, `MemoryStorage`) depending only on `nve-codec` and `nve-hash` (zero `nve-host-services` dependency). |
 | `nve-camera` | `packages/modules/camera` | Optional VisionCamera v5 adapter and typed `CameraPreview` `NativeViewSpec` (`NVNP`/`NVNC`/`NVCF`, 40B `#[repr(C)]` `CameraFrameWireLayout`). |
 | `nve-tv` | `packages/modules/tv` | Opt-in TV spatial focus engine, remote action mapper onto direct `NativeEventKind::KeyDown`, and title-safe overscan calculator. |
 
