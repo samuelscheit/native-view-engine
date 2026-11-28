@@ -3,10 +3,13 @@
 
 use std::path::Path;
 
+use nve_store::{Length, Rgba};
+use nve_tables::tables::{FlexDirection, Layout, Visual};
+
 use super::super::DiffOutcome;
 use super::super::cache::Baseline;
 use super::super::fixture::{replace_last, synthetic_rsx_source};
-use super::{assert_tier2, assert_tier2_reason, diff_rsx_source, expect_patch, expect_tier1};
+use super::{assert_tier2, diff_rsx_source, expect_patch, expect_tier1};
 
 const UI_CHROME: &str = "examples/studio-workspace/src/ui_chrome.rs";
 
@@ -19,51 +22,28 @@ fn ui_chrome_source() -> String {
 }
 
 #[test]
-fn real_ui_chrome_text_edits_patch_and_untargetable_or_logic_edits_rebuild() {
+fn real_ui_chrome_text_edits_patch_and_logic_edits_rebuild() {
     let original = ui_chrome_source();
 
     // 1. Static text edit inside `rsx!`.
     let edited_text = original.replacen("\"LOCAL-FIRST | NVE\"", "\"LOCAL-FIRST | LIVE\"", 1);
     let text_patch = expect_patch(diff_rsx_source(UI_CHROME, &original, &edited_text, 2));
-    assert!(text_patch.attr_updates.is_empty());
+    assert!(text_patch.row_patch_words.is_empty());
     assert_eq!(
         text_patch.text_replacements,
         vec![("LOCAL-FIRST | NVE".into(), "LOCAL-FIRST | LIVE".into())]
     );
 
-    // 2. Static style edit on a `view` without a `test_id`: no safe target before template
-    //    identity, so it rebuilds instead of styling every node.
-    assert_tier2_reason(
-        &original,
-        &original.replacen(
-            "style: \"flex-direction: row; align-items: center; gap: 8px;\"",
-            "style: \"flex-direction: row; align-items: center; gap: 12px;\"",
-            1,
-        ),
-        "without a static `test_id`",
-    );
-
-    // 3. String data outside `rsx!` is Rust logic.
+    // 2. String data outside `rsx!` is Rust logic.
     assert_tier2(&original, &original.replacen("\"Close\"", "\"Hide\"", 1));
 
-    // 4. Interpolated `style` (`{s.t.text.link.hex()}`) edits need Rust.
-    assert_tier2_reason(
-        &original,
-        &original.replacen(
-            "font-size: 15px;\", \"AETHER\"",
-            "font-size: 16px;\", \"AETHER\"",
-            1,
-        ),
-        "interpolated",
-    );
-
-    // 5. Component prop (`Card { padding: Some(8.0) }`) is not a native element attribute.
+    // 3. Component prop (`Card { padding: Some(8.0) }`) is not a native element attribute.
     assert_tier2(
         &original,
         &original.replacen("padding: Some(8.0),", "padding: Some(10.0),", 1),
     );
 
-    // 6. Comment edits are no-ops.
+    // 4. Comment edits are no-ops.
     let commented = original.replacen("rsx! {", "rsx! { // hot reload probe\n", 1);
     assert_eq!(
         diff_rsx_source(UI_CHROME, &original, &commented, 4),
@@ -90,8 +70,8 @@ fn synthetic_5k_line_file_typed_edits_in_last_component_target_it_exactly() {
     assert_eq!(change.target.template.ordinal as usize, 3 * last);
     assert_eq!(change.target.node_path, vec![0]);
     assert_eq!(
-        messages[0].attr_updates,
-        vec![("padding".into(), "0px".into())]
+        messages[0].prop(Layout::PADDING_TOP),
+        Some(Length::points(0.0))
     );
 
     let multi = replace_last(
@@ -111,11 +91,12 @@ fn synthetic_5k_line_file_typed_edits_in_last_component_target_it_exactly() {
         Some(format!("card-{last}-cta").as_str())
     );
     assert_eq!(
-        messages[1].attr_updates,
-        vec![
-            ("background-color".into(), "#0f17cc".into()),
-            ("flex-direction".into(), "column".into()),
-        ]
+        messages[1].prop(Visual::BACKGROUND),
+        Some(Rgba::rgb(15, 23, 204))
+    );
+    assert_eq!(
+        messages[1].prop(Layout::FLEX_DIRECTION),
+        Some(FlexDirection::Column)
     );
 
     // A logic edit at the very end reports its line.

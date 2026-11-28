@@ -2,9 +2,9 @@
 //! `ThemeProvider`, `FocusScopeProvider`, `ToastProvider`, and synced `KitchenSinkState` store.
 
 use dioxus_core::EventHandler;
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, FocusScopeProvider, Input,
     Separator, ThemeProvider, ToastProvider,
 };
@@ -129,14 +129,15 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
 
     let toolbar_controls_style = TypedStyle::new()
         .flex_row()
-        .align_items(nve_abi::FlexAlign::Center)
-        .justify_content(nve_abi::FlexJustify::FlexEnd)
+        .flex_wrap(FlexWrap::Wrap)
+        .align_items(FlexAlign::Center)
+        .justify_content(FlexJustify::FlexEnd)
         .gap(8.0)
         .flex_grow(1.0)
         .min_width_px(0.0)
         .at(
             MediaQuery::max_width(899),
-            RowPatch::new().justify_content(nve_abi::FlexJustify::FlexStart),
+            RowPatch::new().justify_content(FlexJustify::FlexStart),
         );
 
     let title_text = copy("NVE Kitchen Sink", pseudo);
@@ -157,44 +158,66 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
         copy("Reduced Motion: OFF", pseudo)
     };
 
-    let bg_surface = theme.surface.base.hex();
-    let bg_elevated = theme.surface.raised.hex();
-    let border_col = theme.border.default.hex();
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
-    let accent_fill = theme.status.accent.solid.hex();
-    let accent_ink = theme.status.accent.on_solid.hex();
+    let bg_surface = theme.surface.base;
+    let bg_elevated = theme.surface.raised;
+    let border_col = theme.border.default;
+    let text_primary = theme.text.primary;
+    let text_muted = theme.text.tertiary;
+    let accent_ink = theme.status.accent.on_solid;
+
+    let wrap_row_4 = TypedStyle::new()
+        .flex_row()
+        .flex_wrap(FlexWrap::Wrap)
+        .align_items(FlexAlign::Center)
+        .gap(4.0);
 
     rsx! {
         view {
             test_id: "kitchen-sink-root",
-            style: "width: 100%; height: 100%; flex-direction: column; background-color: {bg_surface}; overflow: hidden;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .height_pct(100.0)
+                .flex_col()
+                .bg(bg_surface)
+                .overflow_mode(Overflow::Hidden),
 
             // Top live controls toolbar
             view {
                 test_id: "ks-toolbar",
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-horizontal: 16px; padding-vertical: 10px; background-color: {bg_elevated}; flex-shrink: 0;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_row()
+                    .flex_wrap(FlexWrap::Wrap)
+                    .align_items(FlexAlign::Center)
+                    .justify_content(FlexJustify::SpaceBetween)
+                    .gap(10.0)
+                    .padding_xy(16.0, 10.0)
+                    .bg(bg_elevated)
+                    .flex_shrink(0.0),
 
                 // Brand & title
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 10px;",
+                    nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(10.0),
                     view {
-                        style: "padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {accent_fill};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(8.0, 4.0)
+                            .radius(6.0)
+                            .bg(theme.status.accent.solid),
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {accent_ink};",
+                            nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(accent_ink),
                             "NVE"
                         }
                     }
                     view {
-                        style: "flex-direction: column; gap: 1px;",
+                        nve_style: TypedStyle::new().flex_col().gap(1.0),
                         text {
                             test_id: "ks-brand-title",
-                            style: "font-size: 16px; font-weight: 700; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(16.0).font_weight(700).color(text_primary),
                             "{title_text}"
                         }
                         text {
                             nve_show_on: ShowOn(MediaQuery::min_width(640)),
-                            style: "font-size: 11px; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(11.0).color(text_muted),
                             "{subtitle_text}"
                         }
                     }
@@ -203,7 +226,6 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                 // Live search + Theme / Density / Locale / Pseudo / Reduced Motion controls
                 view {
                     nve_style: toolbar_controls_style,
-                    style: "flex-wrap: wrap;",
 
                     view {
                         nve_style: search_wrap_style,
@@ -229,7 +251,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                     // Density selector (Compact / Comfortable / Spacious)
                     view {
                         test_id: "ks-density-group",
-                        style: "flex-direction: row; align-items: center; gap: 4px; flex-wrap: wrap;",
+                        nve_style: wrap_row_4.clone(),
                         for preset in DensityPreset::ALL {
                             Button {
                                 key: "{preset.id()}",
@@ -251,7 +273,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                     // Locale switcher (en-US / de-DE / ar-EG / ja-JP) + PseudoLocalizer
                     view {
                         test_id: "ks-locale-group",
-                        style: "flex-direction: row; align-items: center; gap: 4px; flex-wrap: wrap;",
+                        nve_style: wrap_row_4,
                         for loc in LocalePreset::ALL {
                             Button {
                                 key: "{loc.tag()}",
@@ -307,7 +329,14 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
             view {
                 test_id: "ks-mobile-nav",
                 nve_show_on: ShowOn(MediaQuery::max_width(899)),
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px; padding-horizontal: 12px; padding-vertical: 10px; background-color: {bg_elevated}; flex-shrink: 0;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_row()
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(6.0)
+                    .padding_xy(12.0, 10.0)
+                    .bg(bg_elevated)
+                    .flex_shrink(0.0),
                 for sec in GallerySection::ALL {
                     Button {
                         key: "{sec.id()}",
@@ -335,11 +364,24 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                 view {
                     test_id: "ks-desktop-sidebar",
                     nve_show_on: ShowOn(MediaQuery::min_width(900)),
-                    style: "width: 248px; flex-shrink: 0; flex-direction: column; justify-content: space-between; padding: 14px; gap: 12px; background-color: {bg_elevated}; border-width: 1px; border-color: {border_col}; overflow: auto;",
+                    nve_style: TypedStyle::new()
+                        .width_px(248.0)
+                        .flex_shrink(0.0)
+                        .flex_col()
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .padding(14.0)
+                        .gap(12.0)
+                        .bg(bg_elevated)
+                        .border(1.0, border_col)
+                        .overflow_mode(Overflow::Auto),
                     view {
-                        style: "flex-direction: column; gap: 6px; width: 100%;",
+                        nve_style: TypedStyle::new().flex_col().gap(6.0).width_pct(100.0),
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {text_muted}; padding-horizontal: 8px; padding-vertical: 4px;",
+                            nve_style: TypedStyle::new()
+                                .font_size(11.0)
+                                .font_weight(700)
+                                .color(text_muted)
+                                .padding_xy(8.0, 4.0),
                             "{copy(\"SECTIONS\", pseudo)}"
                         }
                         for sec in GallerySection::ALL {
@@ -359,17 +401,23 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                     // Live State Snapshot Summary
                     view {
                         test_id: "ks-sidebar-summary",
-                        style: "flex-direction: column; gap: 6px; padding: 12px; border-radius: 10px; background-color: {bg_surface}; border-width: 1px; border-color: {border_col};",
+                        nve_style: TypedStyle::new()
+                            .flex_col()
+                            .gap(6.0)
+                            .padding(12.0)
+                            .radius(10.0)
+                            .bg(bg_surface)
+                            .border(1.0, border_col),
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(text_muted),
                             "{copy(\"LIVE SESSION STATE\", pseudo)}"
                         }
                         text {
-                            style: "font-size: 12px; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(text_primary),
                             "Theme: {snap.theme_mode.label()} · {snap.density.label()}"
                         }
                         text {
-                            style: "font-size: 12px; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                             "Locale: {snap.locale.tag()} · Count: {snap.counter}"
                         }
                         Badge {
@@ -382,16 +430,31 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                 // Main scrollable showcase surface
                 scrollview {
                     test_id: "ks-main-scroll",
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; min-height: 0;",
+                    nve_style: TypedStyle::new()
+                        .flex_grow(1.0)
+                        .flex_shrink(1.0)
+                        .flex_basis_pct(0.0)
+                        .min_width_px(0.0)
+                        .min_height_px(0.0),
                     view {
                         nve_style: main_pad_style,
 
                         if !query.is_empty() {
                             view {
                                 test_id: "ks-search-banner",
-                                style: "width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-radius: 10px; background-color: {bg_elevated}; border-width: 1px; border-color: {border_col};",
+                                nve_style: TypedStyle::new()
+                                    .width_pct(100.0)
+                                    .flex_row()
+                                    .flex_wrap(FlexWrap::Wrap)
+                                    .align_items(FlexAlign::Center)
+                                    .justify_content(FlexJustify::SpaceBetween)
+                                    .gap(8.0)
+                                    .padding(12.0)
+                                    .radius(10.0)
+                                    .bg(bg_elevated)
+                                    .border(1.0, border_col),
                                 text {
-                                    style: "font-size: 13px; font-weight: 600; color: {text_primary};",
+                                    nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(text_primary),
                                     "Filter: \"{search_query}\" ({matching_sections.len()} matching section(s))"
                                 }
                                 Button {
@@ -407,13 +470,20 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                         if matching_sections.is_empty() {
                             view {
                                 test_id: "ks-search-empty",
-                                style: "width: 100%; padding: 28px; border-radius: 12px; background-color: {bg_elevated}; border-width: 1px; border-color: {border_col}; align-items: center; gap: 8px;",
+                                nve_style: TypedStyle::new()
+                                    .width_pct(100.0)
+                                    .padding(28.0)
+                                    .radius(12.0)
+                                    .bg(bg_elevated)
+                                    .border(1.0, border_col)
+                                    .align_items(FlexAlign::Center)
+                                    .gap(8.0),
                                 text {
-                                    style: "font-size: 16px; font-weight: 700; color: {text_primary};",
+                                    nve_style: TypedStyle::new().font_size(16.0).font_weight(700).color(text_primary),
                                     "{copy(\"No matching components\", pseudo)}"
                                 }
                                 text {
-                                    style: "font-size: 13px; color: {text_muted};",
+                                    nve_style: TypedStyle::new().font_size(13.0).color(text_muted),
                                     "{copy(\"Try searching for button, combobox, datepicker, dialog, virtuallist, canvas, or errorboundary.\", pseudo)}"
                                 }
                             }
@@ -455,16 +525,16 @@ fn SidebarNavItem(
         theme.surface.subtle
     };
     let fg = if active {
-        theme.status.accent.on_solid.hex()
+        theme.status.accent.on_solid
     } else {
-        theme.text.primary.hex()
+        theme.text.primary
     };
 
     let nav_style = TypedStyle::new()
         .width_pct(100.0)
         .flex_row()
-        .align_items(nve_abi::FlexAlign::Center)
-        .justify_content(nve_abi::FlexJustify::SpaceBetween)
+        .align_items(FlexAlign::Center)
+        .justify_content(FlexJustify::SpaceBetween)
         .padding_xy(10.0, 9.0)
         .radius(8.0)
         .bg(bg)
@@ -480,7 +550,13 @@ fn SidebarNavItem(
             nve_style: nav_style,
             onpress: move |_| on_select.call(()),
             text {
-                style: "font-size: 13px; font-weight: 600; color: {fg}; text-align: left; flex-shrink: 1; min-width: 0;",
+                nve_style: TypedStyle::new()
+                    .font_size(13.0)
+                    .font_weight(600)
+                    .color(fg)
+                    .text_align(TextAlign::Left)
+                    .flex_shrink(1.0)
+                    .min_width_px(0.0),
                 "{copy(section.label(), pseudo)}"
             }
             Badge {

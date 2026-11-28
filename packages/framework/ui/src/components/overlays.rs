@@ -15,7 +15,7 @@ use crate::components::overlay_close::use_close_latch;
 use crate::positioning::{
     compute_overlay_position, ComputedPosition, PositionOptions, Rect, Size, Viewport,
 };
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::{use_theme, Layer};
 
 #[inline]
@@ -54,7 +54,7 @@ pub fn Dialog(
     #[props(default)] on_focus_change: Option<EventHandler<Option<String>>>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] accessibility_label: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -126,7 +126,7 @@ pub fn Dialog(
         _ => "none",
     };
 
-    let trigger_style = TypedStyleBuilder::new()
+    let trigger_style = TypedStyle::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
@@ -137,19 +137,16 @@ pub fn Dialog(
             border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
-    let trigger_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.body.size,
-            font_weight: "500",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+        });
+    let trigger_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.body.size,
+        font_weight: 500,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
-    let backdrop_style = TypedStyleBuilder::new()
+    let backdrop_style = TypedStyle::new()
         .width_pct(100.0)
         .height_pct(100.0)
         .justify_content(FlexJustify::Center)
@@ -163,10 +160,9 @@ pub fn Dialog(
             border_radius: 0.0,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let panel_style = TypedStyleBuilder::new()
+    let panel_style = TypedStyle::new()
         .flex_col()
         .min_width_px(320.0)
         .max_width_px(560.0)
@@ -181,27 +177,23 @@ pub fn Dialog(
             opacity: 1.0,
             box_shadow: theme.elevation.overlay,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let title_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.title.size,
-            font_weight: "700",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let title_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.title.size,
+        font_weight: 700,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
-    let desc_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.secondary,
-            font_size: theme.typography.ui.size,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let desc_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.secondary,
+        font_size: theme.typography.ui.size,
+        font_weight: 400,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     // Every dismissal path (close button, scrim, `Escape`, native `close`) funnels through here,
     // gated by `CloseLatch` so same-batch app + native closes fire at most once per open period.
@@ -258,7 +250,6 @@ pub fn Dialog(
             aria_controls: active_focus,
             tab_index: -1,
             nve_style: panel_style,
-            style: style,
             onpress: move |ev: PressEvent| ev.stop_propagation(),
             // Browser-initiated close (native `closedby` backdrop/`Esc`, form `method=dialog`),
             // delivered target-only like the DOM `close`; gated by `CloseLatch` against same-batch
@@ -383,7 +374,7 @@ pub fn Popover(
     #[props(default)] viewport: Option<Viewport>,
     #[props(default)] position_options: Option<PositionOptions>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -402,12 +393,12 @@ pub fn Popover(
         Size::new(240.0, 140.0),
     );
 
-    let wrap_style = TypedStyleBuilder::new()
+    let wrap_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.xs)
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let trigger_style = TypedStyleBuilder::new()
+    let trigger_style = TypedStyle::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
@@ -422,20 +413,17 @@ pub fn Popover(
             border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let trigger_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.body.size,
-            font_weight: "500",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+    let trigger_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.body.size,
+        font_weight: 500,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
-    let mut panel_builder = TypedStyleBuilder::new()
+    let mut panel_style = TypedStyle::new()
         .flex_col()
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
@@ -450,13 +438,12 @@ pub fn Popover(
         });
     if let Some(pos) = computed {
         if let Some(mw) = pos.max_width {
-            panel_builder = panel_builder.max_width_px(mw);
+            panel_style = panel_style.max_width_px(mw);
         }
         if let Some(mh) = pos.max_height {
-            panel_builder = panel_builder.max_height_px(mh);
+            panel_style = panel_style.max_height_px(mh);
         }
     }
-    let panel_style = panel_builder.finish();
 
     let pos_placement = computed.map(|p| p.placement.as_str().to_owned());
     let pos_x = computed.map(|p| format!("{:.2}", p.x));
@@ -506,7 +493,6 @@ pub fn Popover(
         view {
             test_id: "{base_id}",
             nve_style: wrap_style,
-            style: style,
             pressable {
                 test_id: "{trigger_id}",
                 nve_table: popover_trigger_invoker,

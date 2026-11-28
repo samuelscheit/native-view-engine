@@ -2,17 +2,26 @@
 
 use std::sync::Arc;
 
-use nve_abi::Dimension;
+use nve_abi::{Dimension, FlexDirection};
+use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
 use nve_tables::interaction::{CursorKind, StateStyleRule};
 use nve_tables::layout_ext::{LayoutDirection, PositionMode};
 use nve_tables::media::ResponsiveRule;
 use nve_tables::tables::{
-    BackgroundFillRes, BoxShadows, Direction, Display, GridItem, GridLayout, GridTracks, Image,
-    ImageFit, Interaction, Layout, Overflow, Position, Responsive, ResponsiveRules, StateRules,
-    TextAlign, Transform, Typography, Visual,
+    AlignItems, AlignSelf, BackgroundFillRes, BoxShadows, Direction, Display, FlexWrap, GridItem,
+    GridLayout, GridTracks, Image, ImageFit, Interaction, JustifyContent, Layout, Overflow,
+    Position, Responsive, ResponsiveRules, StateRules, Transform, Typography, Visual,
 };
-use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
 
+use super::merge::{
+    E_ASPECT_RATIO, E_COL_GAP, E_DIRECTION, E_DISPLAY, E_FLEX_BASIS, E_INSET_BOTTOM, E_INSET_LEFT,
+    E_INSET_RIGHT, E_INSET_TOP, E_MAR_INLINE, E_PAD_INLINE, E_POSITION, E_ROW_GAP, L_ALIGN_ITEMS,
+    L_ALIGN_SELF, L_FLEX_DIR, L_FLEX_GROW, L_FLEX_SHRINK, L_GAP, L_HEIGHT, L_JUSTIFY, L_MAR_BOTTOM,
+    L_MAR_LEFT, L_MAR_RIGHT, L_MAR_TOP, L_MAX_HEIGHT, L_MAX_WIDTH, L_MIN_HEIGHT, L_MIN_WIDTH,
+    L_PAD_BOTTOM, L_PAD_LEFT, L_PAD_RIGHT, L_PAD_TOP, L_WIDTH, OV_X, OV_Y, S_BG, S_BORDER_COLOR,
+    S_BORDER_RADIUS, S_BORDER_WIDTH, S_FONT_SIZE, S_OPACITY, S_TEXT_COLOR, S_VISUAL_BITS,
+    S_Z_INDEX,
+};
 use super::{pack_media_query, PendingStylePatch, TypedStyle};
 
 impl TypedStyle {
@@ -20,142 +29,188 @@ impl TypedStyle {
     /// without touching unselected style tables or unrelated tables (`Transform`, `Motion`, etc.).
     pub fn apply_style_layers_to_tx(&self, tx: &mut Transaction<'_>, node: NodeId, layers: u8) {
         if layers & nve_tables::STYLE_LAYER_LAYOUT != 0 {
-            if self.has_layout {
-                let l = &self.layout;
-                tx.edit::<Layout>(node)
-                    .width(dim_to_length(l.width))
-                    .height(dim_to_length(l.height))
-                    .min_width(dim_to_length(l.min_width))
-                    .min_height(dim_to_length(l.min_height))
-                    .max_width(dim_to_length(l.max_width))
-                    .max_height(dim_to_length(l.max_height))
-                    .flex_direction(l.flex_direction)
-                    .justify_content(l.justify_content.into())
-                    .align_items(l.align_items.into())
-                    .align_self(l.align_self)
-                    .flex_grow(l.flex_grow)
-                    .flex_shrink(l.flex_shrink)
-                    .row_gap(Length::points(l.gap))
-                    .column_gap(Length::points(l.gap))
-                    .padding_top(Length::points(l.padding.top))
-                    .padding_right(Length::points(l.padding.right))
-                    .padding_bottom(Length::points(l.padding.bottom))
-                    .padding_left(Length::points(l.padding.left))
-                    .margin_top(Length::points(l.margin.top))
-                    .margin_right(Length::points(l.margin.right))
-                    .margin_bottom(Length::points(l.margin.bottom))
-                    .margin_left(Length::points(l.margin.left));
-            }
-            if let Some(ref ext) = self.layout_ext {
-                let mut row = tx
-                    .edit::<Layout>(node)
-                    .display(ext.display)
-                    .position(match ext.position {
-                        PositionMode::Relative => Position::Relative,
-                        PositionMode::Absolute => Position::Absolute,
-                        PositionMode::Sticky => Position::Sticky,
-                    })
-                    .flex_basis(dim_to_length(ext.flex_basis))
-                    .inset_top(dim_to_length(ext.insets.top))
-                    .inset_right(dim_to_length(ext.insets.right))
-                    .inset_bottom(dim_to_length(ext.insets.bottom))
-                    .inset_left(dim_to_length(ext.insets.left));
-                if let Some(ar) = ext.aspect_ratio {
-                    row = row.aspect_ratio(Some(ar));
-                }
-                if let Some(dir) = ext.direction {
-                    row = row.direction(match dir {
-                        LayoutDirection::Ltr => Direction::Ltr,
-                        LayoutDirection::Rtl => Direction::Rtl,
-                    });
-                }
-                if ext.padding_inline.start.is_some() || ext.padding_inline.end.is_some() {
-                    row = row.padding_inline_logical(true);
-                    if let Some(v) = ext.padding_inline.start {
-                        row = row.padding_left(Length::points(v));
-                    }
-                    if let Some(v) = ext.padding_inline.end {
-                        row = row.padding_right(Length::points(v));
-                    }
-                }
-                if ext.margin_inline.start.is_some() || ext.margin_inline.end.is_some() {
-                    row = row.margin_inline_logical(true);
-                    if let Some(v) = ext.margin_inline.start {
-                        row = row.margin_left(Length::points(v));
-                    }
-                    if let Some(v) = ext.margin_inline.end {
-                        row = row.margin_right(Length::points(v));
-                    }
-                }
-                if let Some(ref g) = ext.grid {
-                    if let Some(cg) = g.column_gap {
-                        row = row.column_gap(Length::points(cg));
-                    }
-                    if let Some(rg) = g.row_gap {
-                        row = row.row_gap(Length::points(rg));
-                    }
-                }
-                let _ = row;
-            }
+            self.apply_layout_layer(tx, node);
         }
-
         if layers & nve_tables::STYLE_LAYER_VISUAL != 0 {
-            if self.has_style {
-                let s = &self.style;
-                tx.edit::<Visual>(node)
-                    .background(Rgba(s.background.to_u32()))
-                    .border_color(Rgba(s.border_color.to_u32()))
-                    .border_width(s.border_width)
-                    .border_radius(s.border_radius)
-                    .opacity(s.opacity)
-                    .z_index(s.z_index);
-            }
-            if let Some(ref shadows) = self.box_shadows {
-                tx.edit::<Visual>(node)
-                    .box_shadows((!shadows.is_empty()).then(|| BoxShadows(Arc::clone(shadows))));
-            }
-            if let Some(ref ov) = self.overflow {
-                let mode = match ov.trim() {
-                    "hidden" => Overflow::Hidden,
-                    "scroll" => Overflow::Scroll,
-                    "auto" => Overflow::Auto,
-                    _ => Overflow::Visible,
-                };
-                tx.edit::<Visual>(node).overflow_x(mode).overflow_y(mode);
-            }
-            if let Some(ref fill) = self.background_fill {
-                tx.edit::<Visual>(node)
-                    .background_fill(Some(BackgroundFillRes(fill.clone())));
-            }
+            self.apply_visual_layer(tx, node);
         }
-
         if layers & nve_tables::STYLE_LAYER_TYPOGRAPHY != 0 {
-            if self.has_style {
-                let s = &self.style;
-                if s.text_color.a > 0 || s.font_size > 0.0 {
-                    let mut typo = tx.edit::<Typography>(node);
-                    if s.text_color.a > 0 {
-                        typo = typo.color(Rgba(s.text_color.to_u32()));
-                    }
-                    if s.font_size > 0.0 {
-                        typo.font_size(s.font_size);
-                    }
+            self.apply_typography_layer(tx, node);
+        }
+    }
+
+    fn apply_layout_layer(&self, tx: &mut Transaction<'_>, node: NodeId) {
+        let lm = self.layout_mask.bits();
+        if lm != 0 || self.flex_wrap.is_some() {
+            let l = &self.layout;
+            let mut row = tx.edit::<Layout>(node);
+            if lm & L_WIDTH != 0 { row = row.width(dim_to_length(l.width)); }
+            if lm & L_HEIGHT != 0 { row = row.height(dim_to_length(l.height)); }
+            if lm & L_MIN_WIDTH != 0 { row = row.min_width(dim_to_length(l.min_width)); }
+            if lm & L_MIN_HEIGHT != 0 { row = row.min_height(dim_to_length(l.min_height)); }
+            if lm & L_MAX_WIDTH != 0 { row = row.max_width(dim_to_length(l.max_width)); }
+            if lm & L_MAX_HEIGHT != 0 { row = row.max_height(dim_to_length(l.max_height)); }
+            if lm & L_FLEX_DIR != 0 { row = row.flex_direction(l.flex_direction); }
+            if lm & L_JUSTIFY != 0 { row = row.justify_content(l.justify_content.into()); }
+            if lm & L_ALIGN_ITEMS != 0 { row = row.align_items(l.align_items.into()); }
+            if lm & L_ALIGN_SELF != 0 { row = row.align_self(l.align_self); }
+            if lm & L_FLEX_GROW != 0 { row = row.flex_grow(l.flex_grow); }
+            if lm & L_FLEX_SHRINK != 0 { row = row.flex_shrink(l.flex_shrink); }
+            if lm & L_GAP != 0 {
+                let g = Length::points(l.gap);
+                row = row.row_gap(g).column_gap(g);
+            }
+            if lm & L_PAD_TOP != 0 { row = row.padding_top(Length::points(l.padding.top)); }
+            if lm & L_PAD_RIGHT != 0 { row = row.padding_right(Length::points(l.padding.right)); }
+            if lm & L_PAD_BOTTOM != 0 { row = row.padding_bottom(Length::points(l.padding.bottom)); }
+            if lm & L_PAD_LEFT != 0 { row = row.padding_left(Length::points(l.padding.left)); }
+            if lm & L_MAR_TOP != 0 { row = row.margin_top(Length::points(l.margin.top)); }
+            if lm & L_MAR_RIGHT != 0 { row = row.margin_right(Length::points(l.margin.right)); }
+            if lm & L_MAR_BOTTOM != 0 { row = row.margin_bottom(Length::points(l.margin.bottom)); }
+            if lm & L_MAR_LEFT != 0 { row = row.margin_left(Length::points(l.margin.left)); }
+            if let Some(fw) = self.flex_wrap {
+                row = row.flex_wrap(fw);
+            }
+            let _ = row;
+        }
+        if let Some(ref ext) = self.layout_ext {
+            let em = self.effective_ext_mask();
+            let mut row = tx.edit::<Layout>(node);
+            if em & E_DISPLAY != 0 {
+                row = row.display(ext.display);
+            }
+            if em & E_POSITION != 0 {
+                row = row.position(match ext.position {
+                    PositionMode::Relative => Position::Relative,
+                    PositionMode::Absolute => Position::Absolute,
+                    PositionMode::Sticky => Position::Sticky,
+                });
+            }
+            if em & E_FLEX_BASIS != 0 {
+                row = row.flex_basis(dim_to_length(ext.flex_basis));
+            }
+            if em & E_INSET_TOP != 0 { row = row.inset_top(dim_to_length(ext.insets.top)); }
+            if em & E_INSET_RIGHT != 0 { row = row.inset_right(dim_to_length(ext.insets.right)); }
+            if em & E_INSET_BOTTOM != 0 { row = row.inset_bottom(dim_to_length(ext.insets.bottom)); }
+            if em & E_INSET_LEFT != 0 { row = row.inset_left(dim_to_length(ext.insets.left)); }
+            if em & E_ASPECT_RATIO != 0
+                && let Some(ar) = ext.aspect_ratio
+            {
+                row = row.aspect_ratio(Some(ar));
+            }
+            if em & E_DIRECTION != 0
+                && let Some(dir) = ext.direction
+            {
+                row = row.direction(match dir {
+                    LayoutDirection::Ltr => Direction::Ltr,
+                    LayoutDirection::Rtl => Direction::Rtl,
+                });
+            }
+            if em & E_PAD_INLINE != 0
+                && (ext.padding_inline.start.is_some() || ext.padding_inline.end.is_some())
+            {
+                row = row.padding_inline_logical(true);
+                if let Some(v) = ext.padding_inline.start {
+                    row = row.padding_left(Length::points(v));
+                }
+                if let Some(v) = ext.padding_inline.end {
+                    row = row.padding_right(Length::points(v));
                 }
             }
-            if let Some(ref fw) = self.font_weight {
-                let w = nve_tables::parse_font_weight(fw);
-                tx.edit::<Typography>(node).font_weight(w);
+            if em & E_MAR_INLINE != 0
+                && (ext.margin_inline.start.is_some() || ext.margin_inline.end.is_some())
+            {
+                row = row.margin_inline_logical(true);
+                if let Some(v) = ext.margin_inline.start {
+                    row = row.margin_left(Length::points(v));
+                }
+                if let Some(v) = ext.margin_inline.end {
+                    row = row.margin_right(Length::points(v));
+                }
             }
-            if let Some(ref ta) = self.text_align {
-                let align = match ta.trim() {
-                    "center" => TextAlign::Center,
-                    "right" | "end" => TextAlign::Right,
-                    "justify" => TextAlign::Justify,
-                    _ => TextAlign::Left,
-                };
-                tx.edit::<Typography>(node).text_align(align);
+            if let Some(ref g) = ext.grid {
+                if em & E_COL_GAP != 0
+                    && let Some(cg) = g.column_gap
+                {
+                    row = row.column_gap(Length::points(cg));
+                }
+                if em & E_ROW_GAP != 0
+                    && let Some(rg) = g.row_gap
+                {
+                    row = row.row_gap(Length::points(rg));
+                }
             }
+            let _ = row;
         }
+    }
+
+    fn apply_visual_layer(&self, tx: &mut Transaction<'_>, node: NodeId) {
+        let vm = self.style_mask.bits() & S_VISUAL_BITS;
+        if vm != 0 {
+            let s = &self.style;
+            let mut vis = tx.edit::<Visual>(node);
+            if vm & S_BG != 0 { vis = vis.background(Rgba(s.background.to_u32())); }
+            if vm & S_BORDER_COLOR != 0 { vis = vis.border_color(Rgba(s.border_color.to_u32())); }
+            if vm & S_BORDER_WIDTH != 0 { vis = vis.border_width(s.border_width); }
+            if vm & S_BORDER_RADIUS != 0 { vis = vis.border_radius(s.border_radius); }
+            if vm & S_OPACITY != 0 { vis = vis.opacity(s.opacity); }
+            if vm & S_Z_INDEX != 0 { vis = vis.z_index(s.z_index); }
+            let _ = vis;
+        }
+        if let Some(ref shadows) = self.box_shadows {
+            tx.edit::<Visual>(node)
+                .box_shadows((!shadows.is_empty()).then(|| BoxShadows(Arc::clone(shadows))));
+        }
+        if let Some((ox, oy)) = self.overflow {
+            let axes = self.effective_overflow_axes();
+            let mut vis = tx.edit::<Visual>(node);
+            if axes & OV_X != 0 { vis = vis.overflow_x(ox); }
+            if axes & OV_Y != 0 { vis = vis.overflow_y(oy); }
+            let _ = vis;
+        }
+        if let Some(ref fill) = self.background_fill {
+            tx.edit::<Visual>(node)
+                .background_fill(Some(BackgroundFillRes(fill.clone())));
+        }
+    }
+
+    fn apply_typography_layer(&self, tx: &mut Transaction<'_>, node: NodeId) {
+        if !self.any_typography() {
+            return;
+        }
+        let mut typo = tx.edit::<Typography>(node);
+        let sm = self.style_mask.bits();
+        if sm & S_TEXT_COLOR != 0 {
+            typo = typo.color(Rgba(self.style.text_color.to_u32()));
+        }
+        if sm & S_FONT_SIZE != 0 {
+            typo = typo.font_size(self.style.font_size);
+        }
+        if let Some(ref ff) = self.font_family {
+            typo = typo.font_family(ff);
+        }
+        if let Some(lh) = self.line_height {
+            typo = typo.line_height(lh);
+        }
+        if let Some(w) = self.font_weight {
+            typo = typo.font_weight(w);
+        }
+        if let Some(fs) = self.font_style {
+            typo = typo.font_style(fs);
+        }
+        if let Some(align) = self.text_align {
+            typo = typo.text_align(align);
+        }
+        if let Some(ws) = self.white_space {
+            typo = typo.white_space(ws);
+        }
+        if let Some(ow) = self.overflow_wrap {
+            typo = typo.overflow_wrap(ow);
+        }
+        if let Some(td) = self.text_decoration {
+            typo = typo.text_decoration(td);
+        }
+        let _ = typo;
     }
 
     /// Writes this [`TypedStyle`] directly into `node`'s `NodeStore` word tables with zero CSS
@@ -165,14 +220,16 @@ impl TypedStyle {
 
         if let Some(ref ext) = self.layout_ext {
             if let Some(ref g) = ext.grid {
-                let mut gl = tx.edit::<GridLayout>(node);
-                if !g.template_columns.is_empty() {
-                    gl = gl.template_columns(Some(GridTracks(g.template_columns.clone().into())));
+                if !g.template_columns.is_empty() || !g.template_rows.is_empty() {
+                    let mut gl = tx.edit::<GridLayout>(node);
+                    if !g.template_columns.is_empty() {
+                        gl = gl.template_columns(Some(GridTracks(g.template_columns.clone().into())));
+                    }
+                    if !g.template_rows.is_empty() {
+                        gl = gl.template_rows(Some(GridTracks(g.template_rows.clone().into())));
+                    }
+                    let _ = gl;
                 }
-                if !g.template_rows.is_empty() {
-                    gl = gl.template_rows(Some(GridTracks(g.template_rows.clone().into())));
-                }
-                let _ = gl;
             }
             if !ext.grid_item.column.is_auto() || !ext.grid_item.row.is_auto() {
                 tx.edit::<GridItem>(node)
@@ -183,15 +240,8 @@ impl TypedStyle {
             }
         }
 
-        if let Some(ref fit) = self.object_fit {
-            let mode = match fit.trim() {
-                "contain" => ImageFit::Contain,
-                "fill" | "stretch" => ImageFit::Fill,
-                "none" | "center" => ImageFit::None,
-                "scale-down" => ImageFit::ScaleDown,
-                _ => ImageFit::Cover,
-            };
-            tx.edit::<Image>(node).fit(mode);
+        if let Some(fit) = self.object_fit {
+            tx.edit::<Image>(node).fit(fit);
         }
 
         if let Some(tf) = self.transform {
@@ -275,78 +325,15 @@ impl TypedStyle {
         tx: &mut Transaction<'_>,
         node: NodeId,
     ) {
-        if self.has_layout && next.is_none_or(|n| !n.has_layout) {
-            tx.detach::<Layout>(node);
-        }
-        if self.layout_ext.is_some() && next.is_none_or(|n| n.layout_ext.is_none()) {
-            tx.detach::<GridLayout>(node);
-            tx.detach::<GridItem>(node);
-            if next.is_some_and(|n| n.has_layout) {
-                tx.edit::<Layout>(node)
-                    .display(Display::Flex)
-                    .position(Position::Relative)
-                    .flex_basis(Length::AUTO)
-                    .inset_top(Length::AUTO)
-                    .inset_right(Length::AUTO)
-                    .inset_bottom(Length::AUTO)
-                    .inset_left(Length::AUTO)
-                    .aspect_ratio(None)
-                    .direction(Direction::Inherit)
-                    .padding_inline_logical(false)
-                    .margin_inline_logical(false);
-            } else if !self.has_layout {
-                tx.detach::<Layout>(node);
-            }
-        }
-        if self.has_style && next.is_none_or(|n| !n.has_style) {
-            tx.detach::<Visual>(node);
-            tx.detach::<Typography>(node);
-        } else if self.has_style {
-            let clear_color =
-                self.style.text_color.a > 0 && next.is_none_or(|n| n.style.text_color.a == 0);
-            let clear_size =
-                self.style.font_size > 0.0 && next.is_none_or(|n| n.style.font_size <= 0.0);
-            if (clear_color || clear_size) && tx.store().has::<Typography>(node) {
-                let mut typo = tx.edit::<Typography>(node);
-                if clear_color {
-                    typo = typo.clear_color();
-                }
-                if clear_size {
-                    typo.clear_font_size();
-                }
-            }
-        }
-        if self.font_weight.is_some()
-            && next.is_none_or(|n| n.font_weight.is_none())
-            && tx.store().has::<Typography>(node)
+        self.clear_layout_diff(next, tx, node);
+        self.clear_visual_diff(next, tx, node);
+        self.clear_typography_diff(next, tx, node);
+
+        if self.object_fit.is_some()
+            && next.is_none_or(|n| n.object_fit.is_none())
+            && tx.store().has::<Image>(node)
         {
-            tx.edit::<Typography>(node).clear_font_weight();
-        }
-        if self.text_align.is_some()
-            && next.is_none_or(|n| n.text_align.is_none())
-            && tx.store().has::<Typography>(node)
-        {
-            tx.edit::<Typography>(node).clear_text_align();
-        }
-        if self.box_shadows.is_some()
-            && next.is_none_or(|n| n.box_shadows.is_none())
-            && tx.store().has::<Visual>(node)
-        {
-            tx.edit::<Visual>(node).box_shadows(None);
-        }
-        if self.overflow.is_some()
-            && next.is_none_or(|n| n.overflow.is_none())
-            && tx.store().has::<Visual>(node)
-        {
-            tx.edit::<Visual>(node)
-                .overflow_x(Overflow::Visible)
-                .overflow_y(Overflow::Visible);
-        }
-        if self.background_fill.is_some()
-            && next.is_none_or(|n| n.background_fill.is_none())
-            && tx.store().has::<Visual>(node)
-        {
-            tx.edit::<Visual>(node).background_fill(None);
+            tx.edit::<Image>(node).fit(ImageFit::Cover);
         }
         if self.transform.is_some() && next.is_none_or(|n| n.transform.is_none()) {
             tx.detach::<Transform>(node);
@@ -377,6 +364,138 @@ impl TypedStyle {
         {
             tx.edit::<Responsive>(node).rules(None);
         }
+    }
+
+    fn clear_layout_diff(&self, next: Option<&TypedStyle>, tx: &mut Transaction<'_>, node: NodeId) {
+        if self.layout_ext.is_some() && next.is_none_or(|n| n.layout_ext.is_none()) {
+            tx.detach::<GridLayout>(node);
+            tx.detach::<GridItem>(node);
+        }
+        if self.any_layout() && next.is_none_or(|n| !n.any_layout()) {
+            tx.detach::<Layout>(node);
+            return;
+        }
+        let Some(next) = next else { return };
+        let dropped = self.layout_mask.bits() & !next.layout_mask.bits();
+        let dropped_wrap = self.flex_wrap.is_some() && next.flex_wrap.is_none();
+        let dropped_ext = self.effective_ext_mask() & !next.effective_ext_mask();
+        if dropped == 0 && !dropped_wrap && dropped_ext == 0 {
+            return;
+        }
+        let mut row = tx.edit::<Layout>(node);
+        if dropped & L_WIDTH != 0 { row = row.width(Length::AUTO); }
+        if dropped & L_HEIGHT != 0 { row = row.height(Length::AUTO); }
+        if dropped & L_MIN_WIDTH != 0 { row = row.min_width(Length::AUTO); }
+        if dropped & L_MIN_HEIGHT != 0 { row = row.min_height(Length::AUTO); }
+        if dropped & L_MAX_WIDTH != 0 { row = row.max_width(Length::AUTO); }
+        if dropped & L_MAX_HEIGHT != 0 { row = row.max_height(Length::AUTO); }
+        if dropped & L_FLEX_DIR != 0 { row = row.flex_direction(FlexDirection::Column); }
+        if dropped & L_JUSTIFY != 0 { row = row.justify_content(JustifyContent::FlexStart); }
+        if dropped & L_ALIGN_ITEMS != 0 { row = row.align_items(AlignItems::Stretch); }
+        if dropped & L_ALIGN_SELF != 0 { row = row.align_self(AlignSelf::Auto); }
+        if dropped & L_FLEX_GROW != 0 { row = row.flex_grow(0.0); }
+        if dropped & L_FLEX_SHRINK != 0 { row = row.flex_shrink(1.0); }
+        if dropped & L_GAP != 0 { row = row.row_gap(Length::ZERO).column_gap(Length::ZERO); }
+        if dropped & L_PAD_TOP != 0 { row = row.padding_top(Length::ZERO); }
+        if dropped & L_PAD_RIGHT != 0 { row = row.padding_right(Length::ZERO); }
+        if dropped & L_PAD_BOTTOM != 0 { row = row.padding_bottom(Length::ZERO); }
+        if dropped & L_PAD_LEFT != 0 { row = row.padding_left(Length::ZERO); }
+        if dropped & L_MAR_TOP != 0 { row = row.margin_top(Length::ZERO); }
+        if dropped & L_MAR_RIGHT != 0 { row = row.margin_right(Length::ZERO); }
+        if dropped & L_MAR_BOTTOM != 0 { row = row.margin_bottom(Length::ZERO); }
+        if dropped & L_MAR_LEFT != 0 { row = row.margin_left(Length::ZERO); }
+        if dropped_wrap { row = row.flex_wrap(FlexWrap::NoWrap); }
+        if dropped_ext & E_DISPLAY != 0 { row = row.display(Display::Flex); }
+        if dropped_ext & E_POSITION != 0 { row = row.position(Position::Relative); }
+        if dropped_ext & E_FLEX_BASIS != 0 { row = row.flex_basis(Length::AUTO); }
+        if dropped_ext & E_INSET_TOP != 0 { row = row.inset_top(Length::AUTO); }
+        if dropped_ext & E_INSET_RIGHT != 0 { row = row.inset_right(Length::AUTO); }
+        if dropped_ext & E_INSET_BOTTOM != 0 { row = row.inset_bottom(Length::AUTO); }
+        if dropped_ext & E_INSET_LEFT != 0 { row = row.inset_left(Length::AUTO); }
+        if dropped_ext & E_ASPECT_RATIO != 0 { row = row.aspect_ratio(None); }
+        if dropped_ext & E_DIRECTION != 0 { row = row.direction(Direction::Inherit); }
+        if dropped_ext & E_PAD_INLINE != 0 { row = row.padding_inline_logical(false); }
+        if dropped_ext & E_MAR_INLINE != 0 { row = row.margin_inline_logical(false); }
+        let _ = row;
+    }
+
+    fn clear_visual_diff(&self, next: Option<&TypedStyle>, tx: &mut Transaction<'_>, node: NodeId) {
+        if self.any_visual() && next.is_none_or(|n| !n.any_visual()) {
+            tx.detach::<Visual>(node);
+            return;
+        }
+        let Some(next) = next else { return };
+        if !tx.store().has::<Visual>(node) {
+            return;
+        }
+        let dropped =
+            (self.style_mask.bits() & S_VISUAL_BITS) & !(next.style_mask.bits() & S_VISUAL_BITS);
+        let dropped_ov = self.effective_overflow_axes() & !next.effective_overflow_axes();
+        let drop_shadows = self.box_shadows.is_some() && next.box_shadows.is_none();
+        let drop_fill = self.background_fill.is_some() && next.background_fill.is_none();
+        if dropped == 0 && dropped_ov == 0 && !drop_shadows && !drop_fill {
+            return;
+        }
+        let mut vis = tx.edit::<Visual>(node);
+        if dropped & S_BG != 0 { vis = vis.background(Rgba::TRANSPARENT); }
+        if dropped & S_BORDER_COLOR != 0 { vis = vis.border_color(Rgba::TRANSPARENT); }
+        if dropped & S_BORDER_WIDTH != 0 { vis = vis.border_width(0.0); }
+        if dropped & S_BORDER_RADIUS != 0 { vis = vis.border_radius(0.0); }
+        if dropped & S_OPACITY != 0 { vis = vis.opacity(1.0); }
+        if dropped & S_Z_INDEX != 0 { vis = vis.z_index(0); }
+        if dropped_ov & OV_X != 0 { vis = vis.overflow_x(Overflow::Visible); }
+        if dropped_ov & OV_Y != 0 { vis = vis.overflow_y(Overflow::Visible); }
+        if drop_shadows { vis = vis.box_shadows(None); }
+        if drop_fill { vis = vis.background_fill(None); }
+        let _ = vis;
+    }
+
+    fn clear_typography_diff(
+        &self,
+        next: Option<&TypedStyle>,
+        tx: &mut Transaction<'_>,
+        node: NodeId,
+    ) {
+        if self.any_typography() && next.is_none_or(|n| !n.any_typography()) {
+            tx.detach::<Typography>(node);
+            return;
+        }
+        let Some(next) = next else { return };
+        if !tx.store().has::<Typography>(node) {
+            return;
+        }
+        let mut typo = tx.edit::<Typography>(node);
+        if self.style_mask.bits() & S_TEXT_COLOR != 0 && next.style_mask.bits() & S_TEXT_COLOR == 0 {
+            typo = typo.clear_color();
+        }
+        if self.style_mask.bits() & S_FONT_SIZE != 0 && next.style_mask.bits() & S_FONT_SIZE == 0 {
+            typo = typo.clear_font_size();
+        }
+        if self.font_family.is_some() && next.font_family.is_none() {
+            typo = typo.clear_font_family();
+        }
+        if self.line_height.is_some() && next.line_height.is_none() {
+            typo = typo.clear_line_height();
+        }
+        if self.font_weight.is_some() && next.font_weight.is_none() {
+            typo = typo.clear_font_weight();
+        }
+        if self.font_style.is_some() && next.font_style.is_none() {
+            typo = typo.clear_font_style();
+        }
+        if self.text_align.is_some() && next.text_align.is_none() {
+            typo = typo.clear_text_align();
+        }
+        if self.white_space.is_some() && next.white_space.is_none() {
+            typo = typo.clear_white_space();
+        }
+        if self.overflow_wrap.is_some() && next.overflow_wrap.is_none() {
+            typo = typo.clear_overflow_wrap();
+        }
+        if self.text_decoration.is_some() && next.text_decoration.is_none() {
+            typo = typo.clear_text_decoration();
+        }
+        let _ = typo;
     }
 }
 

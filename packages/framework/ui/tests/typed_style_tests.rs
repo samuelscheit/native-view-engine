@@ -1,9 +1,8 @@
 //! Deep tests for `nve-ui` direct `TypedStyle` emission:
-//! - `parse_color_rgba` parsing of the remaining Phase-0 `style:` strings
-//! - `StyleBuf::into_typed()` parity with `TypedStyleBuilder`
-//! - `nve-ui` components merging user `style: Option<String>` overrides deterministically on top
-//!   of `nve_style`, plus state-transition resets (`disabled`, `focused`, `checked`, `error`)
-//!   with zero stale styles and zero leaked `"style"` raw props.
+//! - `SurfaceStyleExt` full-surface/full-text helpers & `TypedStyle::merge`/`merge_opt`
+//! - `nve-ui` components merging user `nve_style: Option<TypedStyle>` overrides deterministically
+//!   on top of base component styles, plus state-transition resets (`disabled`, `focused`,
+//!   `checked`, `error`) with zero stale styles and zero leaked `"style"` raw props.
 
 #[allow(dead_code)]
 mod common;
@@ -14,49 +13,8 @@ use nve_dioxus::prelude::*;
 use nve_ui::prelude::*;
 
 #[test]
-fn parse_color_rgba_parses_hex_and_keywords() {
-    assert_eq!(parse_color_rgba("#0f172a"), Some(ColorRgba::rgb(0x0f, 0x17, 0x2a)));
-    assert_eq!(parse_color_rgba("#0f172a80"), Some(ColorRgba::rgba(0x0f, 0x17, 0x2a, 0x80)));
-    assert_eq!(parse_color_rgba("#fff"), Some(ColorRgba::WHITE));
-    assert_eq!(parse_color_rgba("#0f8c"), Some(ColorRgba::rgba(0x00, 0xff, 0x88, 0xcc)));
-    assert_eq!(parse_color_rgba("transparent"), Some(ColorRgba::TRANSPARENT));
-    assert_eq!(parse_color_rgba("WHITE"), Some(ColorRgba::WHITE));
-    assert_eq!(parse_color_rgba("black"), Some(ColorRgba::BLACK));
-    assert_eq!(parse_color_rgba("not-a-color"), None);
-
-}
-
-#[test]
-fn style_buf_into_typed_matches_typed_style_builder_identically() {
-    let mut sb = StyleBuf::new();
-    sb.width_pct(100.0)
-        .height_px(44.0)
-        .flex_direction("row")
-        .justify_content("space-between")
-        .align_items("center")
-        .gap(8.0)
-        .padding_xy(14.0, 6.0)
-        .margin(4.0)
-        .z_index(50)
-        .overflow("hidden")
-        .surface(SurfaceStyle {
-            background: "#1e293b",
-            border_width: 2.0,
-            border_color: "#60a5fa",
-            border_radius: 10.0,
-            opacity: 0.75,
-            box_shadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
-        })
-        .text_style(TextStyle {
-            color: "#f8fafc",
-            font_size: 16.0,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 0.75,
-        });
-
-    let from_buf = sb.into_typed();
-    let direct = TypedStyleBuilder::new()
+fn typed_style_surface_and_merge_preserve_unset_base_fields() {
+    let base = TypedStyle::new()
         .width_pct(100.0)
         .height_px(44.0)
         .flex_row()
@@ -66,7 +24,7 @@ fn style_buf_into_typed_matches_typed_style_builder_identically() {
         .padding_xy(14.0, 6.0)
         .margin(4.0)
         .z_index(50)
-        .overflow("hidden")
+        .overflow_mode(Overflow::Hidden)
         .surface(TypedSurfaceStyle {
             background: ColorRgba::rgb(0x1e, 0x29, 0x3b),
             border_width: 2.0,
@@ -83,16 +41,36 @@ fn style_buf_into_typed_matches_typed_style_builder_identically() {
         .text_style(TypedTextStyle {
             color: ColorRgba::rgb(0xf8, 0xfa, 0xfc),
             font_size: 16.0,
-            font_weight: "600",
-            text_align: "center",
+            font_weight: 600,
+            text_align: TextAlign::Center,
             opacity: 0.75,
-        })
-        .finish();
+        });
 
-    assert_eq!(from_buf, direct);
-    assert_eq!(from_buf.layout().width, Dimension::Percent(100.0));
-    assert_eq!(from_buf.layout().flex_direction, FlexDirection::Row);
-    assert_eq!(from_buf.layout().padding, EdgeInsets::symmetric(6.0, 14.0));
+    let override_style = TypedStyle::new()
+        .padding(20.0)
+        .radius(22.0)
+        .overflow_x(Overflow::Auto)
+        .flex_wrap(FlexWrap::Wrap)
+        .font_family("monospace")
+        .line_height_ratio(1.5)
+        .white_space(WhiteSpace::PreWrap)
+        .overflow_wrap(OverflowWrap::BreakWord)
+        .text_decoration(TextDecoration::UNDERLINE);
+
+    let merged = base.clone().merge_opt(Some(&override_style));
+    assert_eq!(merged.layout().width, Dimension::Percent(100.0));
+    assert_eq!(merged.layout().flex_direction, FlexDirection::Row);
+    assert_eq!(merged.layout().padding, EdgeInsets::all(20.0));
+    assert_eq!(merged.style().border_radius, 22.0);
+    assert_eq!(merged.style().background, ColorRgba::rgb(0x1e, 0x29, 0x3b));
+    assert_eq!(merged.overflow, Some((Overflow::Auto, Overflow::Hidden)));
+    assert_eq!(merged.flex_wrap, Some(FlexWrap::Wrap));
+    assert_eq!(merged.font_family.as_deref(), Some("monospace"));
+    assert_eq!(merged.line_height, Some(Length::percent(150.0)));
+    assert_eq!(merged.white_space, Some(WhiteSpace::PreWrap));
+    assert_eq!(merged.overflow_wrap, Some(OverflowWrap::BreakWord));
+    assert_eq!(merged.text_decoration, Some(TextDecoration::UNDERLINE));
+    assert_eq!(base.clone().merge_opt(None), base);
 }
 
 fn emerald() -> Accent {
@@ -118,7 +96,7 @@ fn OverrideAndStateResetApp() -> Element {
     }
 
     let btn_override = if use_override() {
-        Some("padding: 20px; border-radius: 22px;".to_owned())
+        Some(TypedStyle::new().padding(20.0).radius(22.0))
     } else {
         None
     };
@@ -133,7 +111,7 @@ fn OverrideAndStateResetApp() -> Element {
                     test_id: "styled-btn",
                     variant: ButtonVariant::Primary,
                     disabled: disabled(),
-                    style: btn_override,
+                    nve_style: btn_override,
                     "Action"
                 }
                 Checkbox {

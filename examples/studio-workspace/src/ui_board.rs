@@ -8,16 +8,18 @@
 
 use nve_dioxus::prelude::*;
 use nve_ui::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Input,
-    TabList, TabTrigger, TabsRoot,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Input, TabList,
+    TabTrigger, TabsRoot,
 };
 
 use crate::assets::avatar_for_author;
 use crate::routes::StudioRoute;
 use crate::state::{BoardFilter, Priority, TaskItem, TaskStatus, filter_tasks};
-use crate::theme::{STRETCH_COL, task_status_tone};
+use crate::theme::task_status_tone;
 use crate::ui::store::use_studio;
-use crate::ui::style::{StudioStyle, use_studio_style};
+use crate::ui::style::{
+    StudioStyle, StudioStyleExt, fixed_dims, row_between, row_center, text_style, use_studio_style,
+};
 
 fn filter_key(filter: BoardFilter) -> &'static str {
     match filter {
@@ -43,13 +45,13 @@ fn priority_badge_variant(priority: Priority) -> BadgeVariant {
     }
 }
 
-/// Inline style of a 34px board action button.
-fn board_button_style(s: &StudioStyle, width: u32, active: bool) -> String {
-    format!(
-        "width: {width}px; height: 34px; min-height: 34px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: {}px; {}",
-        s.control_bg(active),
+/// Typed style of a 34px board action button.
+fn board_button_style(s: &StudioStyle, width: u32, active: bool) -> TypedStyle {
+    s.compact_control(
+        fixed_dims(width as f32, 34.0),
+        2,
         s.m.button_radius,
-        s.control(active)
+        Some(active),
     )
 }
 
@@ -62,9 +64,9 @@ fn BoardComposer() -> Element {
     let draft = store.board_draft.read().new_task_draft.clone();
     rsx! {
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
+            nve_style: row_center(5.0).width_pct(100.0).flex_shrink(0.0),
             view {
-                style: "flex: 1;",
+                nve_style: TypedStyle::new().flex_1(),
                 Input {
                     test_id: Some("board-new-task-input".into()),
                     placeholder: Some("New custom issue title...".into()),
@@ -80,7 +82,7 @@ fn BoardComposer() -> Element {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("board-new-task-submit".into()),
-                style: Some(board_button_style(&s, 56, true)),
+                nve_style: Some(board_button_style(&s, 56, true)),
                 on_press: move |_| store.update(|st| {
                     let _ = st.submit_new_task_draft();
                 }),
@@ -116,14 +118,23 @@ pub(crate) fn BoardView() -> Element {
         TabsRoot {
             value: Some(filter_key(filter).to_string()),
             id_prefix: Some("board-filter".into()),
-            style: Some("width: 100%; flex-shrink: 0; gap: 0px;".into()),
+            nve_style: Some(TypedStyle::new().width_pct(100.0).flex_shrink(0.0).gap(0.0)),
             on_change: move |next: String| {
                 let flt = parse_filter(&next);
                 store.update(|st| st.set_board_filter(flt));
             },
             TabList {
                 accessibility_label: Some("Board issue filter".into()),
-                style: Some(format!("width: 100%; flex-shrink: 0; gap: 6px; padding: 0px; background-color: transparent; border-radius: 0px; {row}")),
+                nve_style: Some(
+                    TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_shrink(0.0)
+                        .gap(6.0)
+                        .padding(0.0)
+                        .bg(ColorRgba::TRANSPARENT)
+                        .radius(0.0)
+                        .outline(row),
+                ),
                 for (flt, tid, lbl, pill_w) in [
                     (BoardFilter::All, "filter-all", format!("All ({total})"), 68u32),
                     (BoardFilter::Active, "filter-active", format!("Active ({})", total - done), 78u32),
@@ -133,12 +144,21 @@ pub(crate) fn BoardView() -> Element {
                         key: "{tid}",
                         value: filter_key(flt).to_string(),
                         test_id: Some(tid.into()),
-                        style: Some(format!(
-                            "width: {pill_w}px; height: 26px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: {}px; {}",
-                            if filter == flt { s.t.status.accent.subtle.hex() } else { s.t.surface.base.hex() },
-                            s.m.pill_radius,
-                            s.control(filter == flt)
-                        )),
+                        nve_style: Some(
+                            TypedStyle::new()
+                                .width_px(pill_w as f32)
+                                .height_px(26.0)
+                                .flex_shrink(0.0)
+                                .stretch_col()
+                                .padding_xy(2.0, 0.0)
+                                .bg(if filter == flt {
+                                    s.t.status.accent.subtle
+                                } else {
+                                    s.t.surface.base
+                                })
+                                .radius(s.m.pill_radius as f32)
+                                .outline(s.control(filter == flt)),
+                        ),
                         "{lbl}"
                     }
                 }
@@ -146,11 +166,16 @@ pub(crate) fn BoardView() -> Element {
         }
 
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; {row}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_col()
+                .gap(5.0)
+                .outline(row),
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; align-items: center;",
+                nve_style: row_center(5.0).width_pct(100.0).flex_shrink(0.0),
                 view {
-                    style: "flex: 1;",
+                    nve_style: TypedStyle::new().flex_1(),
                     Input {
                         test_id: Some("board-search-input".into()),
                         placeholder: Some("Filter issues...".into()),
@@ -164,7 +189,7 @@ pub(crate) fn BoardView() -> Element {
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some("board-search-clear".into()),
-                        style: Some(board_button_style(&s, 48, false)),
+                        nve_style: Some(board_button_style(&s, 48, false)),
                         on_press: move |_| store.update(|st| st.set_board_search_query("")),
                         "Clear"
                     }
@@ -174,7 +199,12 @@ pub(crate) fn BoardView() -> Element {
         }
 
         scrollview {
-            style: "width: 100%; flex: 1; flex-direction: column; gap: {s.m.list_gap}px; {row}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_1()
+                .flex_col()
+                .gap(s.m.list_gap as f32)
+                .outline(row),
             for task in visible {
                 TaskCard { key: "task-{task.id}", focused: focused == Some(task.id), task }
             }
@@ -191,77 +221,83 @@ fn TaskCard(task: TaskItem, focused: bool) -> Element {
     let tid = task.id;
     let card = s.card();
     let (border_w, border_c) = if focused {
-        (2, s.t.status.accent.text)
+        (2.0, s.t.status.accent.text)
     } else {
-        (card.width, card.color)
+        (card.width as f32, card.color)
     };
-    let card_style = format!(
-        "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {}; border-radius: {}px; border-width: {border_w}px; border-color: {};",
-        s.m.card_pad,
-        s.m.card_gap,
-        s.t.surface.raised.hex(),
-        s.m.card_radius,
-        border_c.hex()
-    );
-    let p_style = format!(
-        "width: 30px; height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; border-radius: {}px;",
-        s.m.pill_radius
-    );
+    let card_style = TypedStyle::new()
+        .width_pct(100.0)
+        .flex_shrink(0.0)
+        .padding(s.m.card_pad as f32)
+        .gap(s.m.card_gap as f32)
+        .bg(s.t.surface.raised)
+        .radius(s.m.card_radius as f32)
+        .border(border_w, border_c);
+    let p_style = TypedStyle::new()
+        .width_px(30.0)
+        .height_px(20.0)
+        .flex_shrink(0.0)
+        .stretch_col()
+        .padding_xy(2.0, 0.0)
+        .radius(s.m.pill_radius as f32);
     // Status pill: tinted tone fill + tone border; X-Ray outlines it like any row.
     let tone = task_status_tone(&s.t, task.status);
     let st_border = if s.xray() { s.row().color } else { tone.border };
-    let st_btn_style = format!(
-        "width: 92px; height: 24px; min-height: 24px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: {}px; border-width: 1px; border-color: {};",
-        tone.subtle.hex(),
-        s.m.pill_radius,
-        st_border.hex()
-    );
+    let st_btn_style = s
+        .compact_control(fixed_dims(92.0, 24.0), 2, s.m.pill_radius, None)
+        .bg(tone.subtle)
+        .border(1.0, st_border);
     let meta_line = format!("{} | {}", task.assignee, task.tag);
     let avatar_src = avatar_for_author(&task.assignee);
-    let muted = s.t.text.tertiary.hex();
+    let muted = s.t.text.tertiary;
 
     rsx! {
         Card {
             variant: CardVariant::Elevated,
             padding: Some(s.m.card_pad as f32),
             gap: Some(s.m.card_gap as f32),
-            style: Some(card_style),
+            nve_style: Some(card_style),
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; {s.row()}",
+                nve_style: row_between().outline(s.row()),
                 pressable {
                     test_id: "task-open-{tid}",
-                    style: "flex-direction: row; align-items: center; gap: 6px;",
+                    nve_style: row_center(6.0),
                     onpress: move |_| store.update(|st| {
                         let _ = st.navigate_to(StudioRoute::Task { id: tid });
                     }),
                     Badge {
                         label: task.priority.label().to_string(),
                         variant: priority_badge_variant(task.priority),
-                        style: Some(p_style),
+                        nve_style: Some(p_style),
                     }
-                    text { style: "color: {muted}; font-size: 11px;", "{task.key}" }
+                    text { nve_style: text_style(muted, 11.0), "{task.key}" }
                 }
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some(format!("task-status-{tid}")),
-                    style: Some(st_btn_style),
+                    nve_style: Some(st_btn_style),
                     on_press: move |_| store.update(|st| st.cycle_task_status(tid)),
                     "{task.status.label()}"
                 }
             }
-            text { style: "color: {s.t.text.primary.hex()}; font-size: 12px;", "{task.title}" }
+            text { nve_style: text_style(s.t.text.primary, 12.0), "{task.title}" }
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 6px;",
+                nve_style: row_center(6.0).width_pct(100.0).flex_shrink(0.0),
                 image {
                     test_id: "task-avatar-{tid}",
                     src: "{avatar_src}",
                     alt: "{task.assignee}",
                     resize_mode: "cover",
                     accessibility_label: "Assignee avatar {task.assignee}",
-                    style: "width: 18px; height: 18px; flex-shrink: 0; border-radius: 9px; border-width: 1px; border-color: {s.t.border.default.hex()};",
+                    nve_style: TypedStyle::new()
+                        .width_px(18.0)
+                        .height_px(18.0)
+                        .flex_shrink(0.0)
+                        .radius(9.0)
+                        .border(1.0, s.t.border.default),
                 }
-                text { style: "color: {muted}; font-size: 11px;", "{meta_line}" }
+                text { nve_style: text_style(muted, 11.0), "{meta_line}" }
             }
         }
     }

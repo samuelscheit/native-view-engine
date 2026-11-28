@@ -10,7 +10,7 @@ mod native {
 
     use criterion::{criterion_group, Criterion};
     use dioxus_core::Element;
-    use dioxus_core_macro::rsx;
+    use nve_dioxus::rsx;
     use nve_abi::{FrameId, SurfaceId};
     use nve_dioxus::prelude::*;
     use nve_dioxus::DioxusSurface;

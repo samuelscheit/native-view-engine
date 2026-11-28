@@ -6,7 +6,7 @@ use nve_tables::tables::{
     ResponsiveRules, StateRules, TextContent, Transform, Typography, Visual,
 };
 use nve_tables::{RowPatch, StylePatchExt};
-use nve_engine::{HotPatchMsg, StoreBackend};
+use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 use crate::{SsrDocumentOptions, WebBackend};
@@ -107,23 +107,20 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
         );
     }
 
-    // Tier-1 hot-patch updates text directly in NodeStore!
-    let patched = web.apply_template_patch(
-        &mut store,
-        &HotPatchMsg::TemplatePatch {
-            generation: 1,
-            template_id: "hero-title".into(),
-            attr_updates: vec![("letter-spacing".into(), "1px".into())],
-            text_updates: vec![],
-            target_test_id: Some("hero-title".into()),
-            node_path: vec![],
-            text_replacements: vec![("Hello NVE2 Web".into(), "Patched NVE2 Web".into())],
-        },
-    );
-    assert!(patched >= 1);
-    let after = web.render_html(&store);
-    assert!(after.contains("Patched NVE2 Web"));
-    assert!(after.contains("letter-spacing:1px;"));
+    // Binary `RowPatch` updates NodeStore tables directly and re-renders through the single store path.
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(Typography::LETTER_SPACING, 1.0);
+    let mut words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut words));
+    let view = nve_store::RowPatchView::from_words(&words).unwrap();
+    let mut tx = store.tx();
+    tx.apply_row_patch(heading, view);
+    tx.edit::<TextContent>(heading).text("Patched NVE2 Web");
+    tx.commit_into(&mut changes);
+    web.commit(&store, &changes).unwrap();
+    let after = web.render_ssr(&store);
+    assert!(after.html.contains("Patched NVE2 Web"));
+    assert!(after.style_css.contains("letter-spacing:1px;"));
 }
 
 #[cfg(feature = "hydrate")]

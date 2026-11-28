@@ -178,8 +178,18 @@ fn watch_classifier_forwards_one_message_per_changed_element_for_typed_edits() {
     let updates: Vec<_> = messages
         .iter()
         .map(|msg| match msg {
-            HotPatchMsg::TemplatePatch { attr_updates, target_test_id, .. } => {
-                (target_test_id.clone(), attr_updates.clone())
+            HotPatchMsg::TemplatePatch {
+                row_patch_words,
+                target_test_id,
+                ..
+            } => {
+                let view = nve_store::RowPatchView::from_words(row_patch_words)
+                    .expect("valid binary RowPatch");
+                (
+                    target_test_id.clone(),
+                    view.get_prop(nve_tables::tables::Layout::PADDING_TOP),
+                    view.get_prop(nve_tables::tables::Visual::OPACITY),
+                )
             }
             other => panic!("unexpected {other:?}"),
         })
@@ -187,8 +197,12 @@ fn watch_classifier_forwards_one_message_per_changed_element_for_typed_edits() {
     assert_eq!(
         updates,
         vec![
-            (Some("a".to_owned()), vec![("padding".to_owned(), "12.5px".to_owned())]),
-            (Some("b".to_owned()), vec![("opacity".to_owned(), "0.75".to_owned())]),
+            (
+                Some("a".to_owned()),
+                Some(nve_store::Length::points(12.5)),
+                None
+            ),
+            (Some("b".to_owned()), None, Some(0.75)),
         ]
     );
 

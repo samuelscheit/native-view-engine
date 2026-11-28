@@ -6,7 +6,7 @@ use dioxus_core_macro::Props;
 use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::components::roles::toast_tone;
 use crate::theme::{use_theme, Layer};
 
@@ -277,33 +277,28 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
 
     let base_id = test_id.as_deref().unwrap_or("nve-toast-viewport");
 
-    let stack_style = TypedStyleBuilder::new()
+    let stack_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.sm)
         .padding(theme.spacing.md)
-        .z_index(Layer::Toast.z())
-        .finish();
+        .z_index(Layer::Toast.z());
 
     let body_col_style = TypedStyle::new().flex_col().gap(2.0);
-    let title_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.ui.size,
-            font_weight: "600",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
-    let desc_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.secondary,
-            font_size: theme.typography.caption.size,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
-    let dismiss_style = TypedStyleBuilder::new()
+    let title_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.ui.size,
+        font_weight: 600,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
+    let desc_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.secondary,
+        font_size: theme.typography.caption.size,
+        font_weight: 400,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
+    let dismiss_style = TypedStyle::new()
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
         .surface(TypedSurfaceStyle {
             background: theme.surface.subtle,
@@ -312,23 +307,20 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
             border_radius: theme.radius.sm,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
-    let dismiss_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.caption.size,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+        });
+    let dismiss_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.caption.size,
+        font_weight: 600,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
     let mut rendered = Vec::with_capacity(items.len());
     for item in items {
         let accent = toast_tone(&theme, item.variant).text;
 
-        let card_style = TypedStyleBuilder::new()
+        let card_style = TypedStyle::new()
             .flex_row()
             .justify_content(FlexJustify::SpaceBetween)
             .align_items(FlexAlign::Center)
@@ -341,8 +333,7 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
                 border_radius: theme.radius.md,
                 opacity: 1.0,
                 box_shadow: theme.elevation.overlay,
-            })
-            .finish();
+            });
 
         let id = item.id;
         let live_str = item.live.as_str();

@@ -5,7 +5,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexDirection};
 use nve_dioxus::prelude::*;
 
 use crate::focus::Orientation;
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle};
 use crate::theme::use_theme;
 
 /// Visual elevation and border style for [`Card`].
@@ -25,12 +25,12 @@ pub fn Stack(
     #[props(default)] padding: Option<f32>,
     #[props(default)] align: Option<String>,
     #[props(default)] justify: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] test_id: Option<String>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
-    let mut sb = TypedStyleBuilder::new()
+    let mut sb = TypedStyle::new()
         .flex_direction(match direction {
             Orientation::Horizontal => FlexDirection::Row,
             Orientation::Vertical => FlexDirection::Column,
@@ -50,8 +50,7 @@ pub fn Stack(
     rsx! {
         view {
             test_id: test_id,
-            nve_style: sb.finish(),
-            style: style,
+            nve_style: sb.merge_opt(nve_style.as_ref()),
             {children}
         }
     }
@@ -64,12 +63,12 @@ pub fn Row(
     #[props(default)] padding: Option<f32>,
     #[props(default)] align: Option<String>,
     #[props(default)] justify: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] test_id: Option<String>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
-    let mut sb = TypedStyleBuilder::new()
+    let mut sb = TypedStyle::new()
         .flex_row()
         .gap(gap.unwrap_or(theme.spacing.sm));
     sb = match align.as_deref() {
@@ -87,8 +86,7 @@ pub fn Row(
     rsx! {
         view {
             test_id: test_id,
-            nve_style: sb.finish(),
-            style: style,
+            nve_style: sb.merge_opt(nve_style.as_ref()),
             {children}
         }
     }
@@ -101,12 +99,12 @@ pub fn Col(
     #[props(default)] padding: Option<f32>,
     #[props(default)] align: Option<String>,
     #[props(default)] justify: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] test_id: Option<String>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
-    let mut sb = TypedStyleBuilder::new()
+    let mut sb = TypedStyle::new()
         .flex_col()
         .gap(gap.unwrap_or(theme.spacing.sm));
 
@@ -123,8 +121,7 @@ pub fn Col(
     rsx! {
         view {
             test_id: test_id,
-            nve_style: sb.finish(),
-            style: style,
+            nve_style: sb.merge_opt(nve_style.as_ref()),
             {children}
         }
     }
@@ -135,13 +132,13 @@ pub fn Col(
 pub fn Separator(
     #[props(default)] orientation: Orientation,
     #[props(default)] margin: Option<f32>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] test_id: Option<String>,
 ) -> Element {
     let theme = use_theme();
     let mut sb = match orientation {
-        Orientation::Horizontal => TypedStyleBuilder::new().width_pct(100.0).height_px(1.0),
-        Orientation::Vertical => TypedStyleBuilder::new().width_px(1.0).align_self(AlignSelf::Stretch),
+        Orientation::Horizontal => TypedStyle::new().width_pct(100.0).height_px(1.0),
+        Orientation::Vertical => TypedStyle::new().width_px(1.0).align_self(AlignSelf::Stretch),
     };
     if let Some(m) = margin {
         sb = sb.margin(m);
@@ -155,14 +152,13 @@ pub fn Separator(
             opacity: 1.0,
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
     rsx! {
         view {
             test_id: test_id,
             accessibility_role: "separator",
             nve_style: sep_style,
-            style: style,
         }
     }
 }
@@ -173,7 +169,7 @@ pub fn Card(
     #[props(default)] variant: CardVariant,
     #[props(default)] padding: Option<f32>,
     #[props(default)] gap: Option<f32>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] test_id: Option<String>,
     children: Element,
 ) -> Element {
@@ -203,7 +199,7 @@ pub fn Card(
         ),
     };
 
-    let card_style = TypedStyleBuilder::new()
+    let card_style = TypedStyle::new()
         .flex_col()
         .padding(padding.unwrap_or(theme.spacing.lg))
         .gap(gap.unwrap_or(theme.spacing.sm))
@@ -215,13 +211,12 @@ pub fn Card(
             opacity: 1.0,
             box_shadow: shadow,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
     rsx! {
         view {
             test_id: test_id,
             nve_style: card_style,
-            style: style,
             {children}
         }
     }

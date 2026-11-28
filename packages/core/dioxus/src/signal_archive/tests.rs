@@ -322,7 +322,7 @@ fn corrupt_and_truncated_archives_are_rejected() {
 #[test]
 fn live_dioxus_signal_registers_snapshots_and_hydrates() {
     use dioxus_core::Element;
-    use dioxus_core_macro::rsx;
+    use crate::rsx;
     use std::sync::Mutex;
 
     static CAPTURED: Mutex<Option<Vec<u8>>> = Mutex::new(None);

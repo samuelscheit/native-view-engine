@@ -202,7 +202,7 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
                         style: "width: 100%; padding: 16px; border-radius: 10px; border: 1px solid {danger_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
                         Row {
                             justify: Some("space-between".to_owned()),
-                            style: Some("flex-wrap: wrap; gap: 8px;".to_owned()),
+                            nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap).gap(8.0)),
                             Col {
                                 gap: Some(4.0),
                                 align: Some("flex-start".to_owned()),

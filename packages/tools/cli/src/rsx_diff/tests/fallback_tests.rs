@@ -125,11 +125,6 @@ fn non_constant_or_ill_typed_values_rebuild_with_a_reason() {
         ),
         ("opacity: 0.5,", "opacity: true,", "value shape changed"),
         (
-            "style: \"gap: 1px;\",",
-            "style: 8.0,",
-            "value shape changed",
-        ),
-        (
             "font_family: \"Inter\",",
             "font_family: FontFamily::Mono,",
             "value shape changed",

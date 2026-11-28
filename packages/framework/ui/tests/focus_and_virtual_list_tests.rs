@@ -1,5 +1,5 @@
 //! Deep unit & edge-case tests for `FocusScope`, `FocusTrap`, `RovingFocus`, `FenwickHeightTree`,
-//! `VirtualListState`, `Theme::from_theme_context`, `ToastQueue`, and `StyleBuf`.
+//! `VirtualListState`, `Theme::from_theme_context`, `ToastQueue`, and `TypedStyle`/`SurfaceStyleExt`.
 
 use std::collections::BTreeMap;
 
@@ -718,24 +718,24 @@ fn theme_context_bridge_toast_queue_and_style_buf_invariants() {
     assert_eq!(q.items().len(), 1);
     assert_eq!(q.items()[0].id, id3);
 
-    // StyleBuf sanitizes non-finite numbers and always emits full visual property sets.
-    let mut sb = StyleBuf::new();
-    sb.width_px(f32::NAN)
+    // TypedStyle + SurfaceStyleExt sanitizes non-finite numbers and emits full visual property sets.
+    let st = nve_dioxus::TypedStyle::new()
+        .width_px(f32::NAN)
         .height_px(f32::INFINITY)
-        .surface(SurfaceStyle {
-            background: "#ffffff",
+        .surface(TypedSurfaceStyle {
+            background: ColorRgba::WHITE,
             border_width: 0.0,
-            border_color: "transparent",
+            border_color: ColorRgba::TRANSPARENT,
             border_radius: 8.0,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         });
-    let css = sb.finish();
-    assert!(!css.contains("NaN"));
-    assert!(!css.contains("inf"));
-    assert!(css.contains("background-color: #ffffff;"));
-    assert!(css.contains("border-width: 0px;"));
-    assert!(css.contains("border-color: transparent;"));
-    assert!(css.contains("opacity: 1;"));
-    assert!(css.contains("box-shadow: none;"));
+    assert_eq!(st.layout().width, nve_abi::Dimension::Points(0.0));
+    assert_eq!(st.layout().height, nve_abi::Dimension::Points(0.0));
+    assert_eq!(st.style().background, ColorRgba::WHITE);
+    assert_eq!(st.style().border_width, 0.0);
+    assert_eq!(st.style().border_color, ColorRgba::TRANSPARENT);
+    assert_eq!(st.style().border_radius, 8.0);
+    assert_eq!(st.style().opacity, 1.0);
+    assert_eq!(st.box_shadows.as_deref(), Some(&[][..]));
 }

@@ -2,7 +2,8 @@
 //! and `RovingFocus`) for accessible dialogs, popovers, tabs, menus, and toolbars.
 
 use dioxus_core::{provide_context, try_consume_context, use_hook, Element};
-use dioxus_core_macro::{component, rsx, Props};
+use dioxus_core_macro::{component, Props};
+use nve_dioxus::rsx;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 
 /// Axis orientation for roving keyboard navigation and layout primitives.

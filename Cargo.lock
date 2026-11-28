@@ -3097,12 +3097,17 @@ dependencies = [
  "dioxus-signals",
  "nve-abi",
  "nve-codec",
+ "nve-dioxus-macros",
  "nve-engine",
  "nve-interop",
  "nve-runtime",
  "nve-store",
  "nve-tables",
 ]
+
+[[package]]
+name = "nve-dioxus-macros"
+version = "0.1.0"
 
 [[package]]
 name = "nve-docs"

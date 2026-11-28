@@ -1,9 +1,10 @@
 //! Section 3: Selection & Dates — searchable single/multi `Combobox`, locale-aware `DatePicker`
 //! and `DateRangePicker` bound to the topbar `nve-i18n` locale switcher, plus live ICU readout.
 
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 use nve_i18n::CalendarDate;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     use_theme, Badge, BadgeVariant, Card, CardVariant, Combobox, ComboboxOption, DatePicker,
     DateRange, DateRangePicker, Separator,
 };
@@ -46,10 +47,10 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
         .unwrap_or_else(|| CalendarDate::new(2026, 11, 25).expect("valid static date"));
     let readout = compute_locale_readout(snap.locale, active_date, snap.counter);
 
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
-    let surface_subtle = theme.surface.subtle.hex();
-    let border = theme.border.default.hex();
+    let text_primary = theme.text.primary;
+    let text_muted = theme.text.tertiary;
+    let surface_subtle = theme.surface.subtle;
+    let border = theme.border.default;
 
     let single_selected = if snap.combobox_single.is_empty() {
         Vec::new()
@@ -60,7 +61,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
     rsx! {
         view {
             test_id: "section-selection",
-            style: "width: 100%; flex-direction: column; gap: 16px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(16.0),
 
             SectionHeader {
                 title: copy("Selection & Dates", pseudo),
@@ -80,7 +81,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(10.0),
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                             "{copy(\"Single-Select Combobox\", pseudo)}"
                         }
                         Combobox {
@@ -97,7 +98,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                         }
                         text {
                             test_id: "ks-combobox-single-value",
-                            style: "font-size: 12px; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                             "Selected runtime: {snap.combobox_single}"
                         }
                     }
@@ -111,7 +112,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(10.0),
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                             "{copy(\"Multi-Select Combobox (Tags)\", pseudo)}"
                         }
                         Combobox {
@@ -126,7 +127,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                             },
                         }
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             for tag in snap.combobox_multi.iter() {
                                 Badge {
                                     key: "{tag}",
@@ -151,11 +152,11 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(10.0),
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                             "{copy(\"Locale-Aware DatePicker\", pseudo)}"
                         }
                         text {
-                            style: "font-size: 12px; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                             "{snap.locale.week_note()}"
                         }
                         for loc_key in [locale_tag] {
@@ -182,11 +183,11 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(10.0),
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                             "{copy(\"Locale-Aware DateRangePicker\", pseudo)}"
                         }
                         text {
-                            style: "font-size: 12px; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                             "Automatically flips week start & direction per locale"
                         }
                         for loc_key in [locale_tag] {
@@ -213,9 +214,14 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(10.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .gap(8.0),
                     text {
-                        style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                         "{copy(\"Live nve-i18n ICU Readout\", pseudo)}"
                     }
                     Badge {
@@ -225,54 +231,58 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                 }
                 Separator {}
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 10px; width: 100%;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .gap(10.0)
+                        .width_pct(100.0),
                     ReadoutTile {
                         label: "First Day of Week".to_owned(),
                         value: readout.first_weekday.to_owned(),
-                        surface_subtle: surface_subtle.to_owned(),
-                        border: border.to_owned(),
-                        text_primary: text_primary.to_owned(),
-                        text_muted: text_muted.to_owned(),
+                        surface_subtle,
+                        border,
+                        text_primary,
+                        text_muted,
                     }
                     ReadoutTile {
                         label: "Date (Short / Medium / Long)".to_owned(),
                         value: format!("{} · {} · {}", readout.date_short, readout.date_medium, readout.date_long),
-                        surface_subtle: surface_subtle.to_owned(),
-                        border: border.to_owned(),
-                        text_primary: text_primary.to_owned(),
-                        text_muted: text_muted.to_owned(),
+                        surface_subtle,
+                        border,
+                        text_primary,
+                        text_muted,
                     }
                     ReadoutTile {
                         label: "Currency".to_owned(),
                         value: readout.currency_formatted,
-                        surface_subtle: surface_subtle.to_owned(),
-                        border: border.to_owned(),
-                        text_primary: text_primary.to_owned(),
-                        text_muted: text_muted.to_owned(),
+                        surface_subtle,
+                        border,
+                        text_primary,
+                        text_muted,
                     }
                     ReadoutTile {
                         label: "Decimal Grouping".to_owned(),
                         value: readout.number_formatted,
-                        surface_subtle: surface_subtle.to_owned(),
-                        border: border.to_owned(),
-                        text_primary: text_primary.to_owned(),
-                        text_muted: text_muted.to_owned(),
+                        surface_subtle,
+                        border,
+                        text_primary,
+                        text_muted,
                     }
                     ReadoutTile {
                         label: "Relative Time".to_owned(),
                         value: format!("{} / {}", readout.relative_past, readout.relative_future),
-                        surface_subtle: surface_subtle.to_owned(),
-                        border: border.to_owned(),
-                        text_primary: text_primary.to_owned(),
-                        text_muted: text_muted.to_owned(),
+                        surface_subtle,
+                        border,
+                        text_primary,
+                        text_muted,
                     }
                     ReadoutTile {
                         label: "CLDR Plural (Counter)".to_owned(),
                         value: readout.plural_label,
-                        surface_subtle: surface_subtle.to_owned(),
-                        border: border.to_owned(),
-                        text_primary: text_primary.to_owned(),
-                        text_muted: text_muted.to_owned(),
+                        surface_subtle,
+                        border,
+                        text_primary,
+                        text_muted,
                     }
                 }
             }
@@ -284,20 +294,28 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
 fn ReadoutTile(
     label: String,
     value: String,
-    surface_subtle: String,
-    border: String,
-    text_primary: String,
-    text_muted: String,
+    surface_subtle: ColorRgba,
+    border: ColorRgba,
+    text_primary: ColorRgba,
+    text_muted: ColorRgba,
 ) -> Element {
     rsx! {
         view {
-            style: "flex-grow: 1; flex-basis: 210px; min-width: 0; padding: 10px; border-radius: 8px; background-color: {surface_subtle}; border-width: 1px; border-color: {border}; gap: 4px;",
+            nve_style: TypedStyle::new()
+                .flex_grow(1.0)
+                .flex_basis_px(210.0)
+                .min_width_px(0.0)
+                .padding(10.0)
+                .radius(8.0)
+                .bg(surface_subtle)
+                .border(1.0, border)
+                .gap(4.0),
             text {
-                style: "font-size: 11px; font-weight: 600; color: {text_muted};",
+                nve_style: TypedStyle::new().font_size(11.0).font_weight(600).color(text_muted),
                 "{label}"
             }
             text {
-                style: "font-size: 13px; font-weight: 700; color: {text_primary};",
+                nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(text_primary),
                 "{value}"
             }
         }

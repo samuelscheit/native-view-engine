@@ -150,14 +150,22 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
         WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
 
-    // Tier-1 TemplatePatch over binary NVP1 wire frame.
+    // Tier-1 TemplatePatch over binary NVP1 v2 wire frame.
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(
+        nve_tables::tables::Visual::BORDER_COLOR,
+        nve_store::Rgba::rgb(56, 189, 248),
+    );
+    let mut words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut words));
+    let tpl_key = nve_engine::hot_patch_template_key("examples/kitchen-sink/src/shell.rs", 1);
     let tpl = HotPatchMsg::TemplatePatch {
         generation: 3,
-        template_id: "KitchenSinkApp".into(),
-        attr_updates: vec![("border-color".into(), "#38bdf8".into())],
-        text_updates: vec![(0, "NVE LIVE PATCHED".into())],
+        template_key: tpl_key,
+        node_path: vec![0, 0, 0, 0],
         target_test_id: None,
-        node_path: vec![],
+        row_patch_words: words,
+        text_updates: vec![(0, "NVE LIVE PATCHED".into())],
         text_replacements: vec![],
     };
     let act1 = session
@@ -166,11 +174,11 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     match act1 {
         HotReloadAction::TemplatePatched {
             generation,
-            template_id,
+            template_key,
             mutations,
         } => {
             assert_eq!(generation, 3);
-            assert_eq!(template_id, "KitchenSinkApp");
+            assert_eq!(template_key, tpl_key);
             assert!(mutations > 0);
         }
         other => panic!("unexpected action: {other:?}"),
@@ -180,6 +188,9 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     assert!(store.live_nodes().any(|id| store
         .try_row::<TextContent>(id)
         .is_some_and(|t| t.text() == "NVE LIVE PATCHED")));
+    assert!(store.live_nodes().any(|id| store
+        .try_row::<nve_tables::tables::Visual>(id)
+        .is_some_and(|v| v.border_color() == nve_store::Rgba::rgb(56, 189, 248))));
 
     // Tier-2 DylibReload over a binary NVP1 frame.
     let reload = HotPatchMsg::DylibReload {

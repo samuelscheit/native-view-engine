@@ -10,13 +10,16 @@
 use nve_dioxus::prelude::*;
 use nve_router::Routable;
 use nve_ui::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Separator,
 };
 
 use crate::state::{ActiveView, HOST_SURFACES};
-use crate::theme::{STRETCH_COL, badge_min_w};
+use crate::theme::badge_min_w;
 use crate::ui::store::{NavCounts, use_studio};
-use crate::ui::style::{StudioStyle, use_studio_style};
+use crate::ui::style::{
+    StudioStyle, StudioStyleExt, badge_dims, fixed_dims, min_w_dims, row_between, row_center,
+    text_style, use_studio_style,
+};
 
 struct NavItem {
     view: ActiveView,
@@ -74,11 +77,12 @@ fn nav_items(c: &NavCounts) -> [NavItem; 8] {
     ]
 }
 
-fn count_badge_style(s: &StudioStyle, label: &str) -> String {
-    format!(
-        "min-width: {}px; height: 18px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; border-radius: {}px;",
-        badge_min_w(label),
-        s.m.pill_radius
+fn count_badge_style(s: &StudioStyle, label: &str) -> TypedStyle {
+    s.compact_control(
+        badge_dims(badge_min_w(label) as f32, 18.0),
+        4,
+        s.m.pill_radius,
+        None,
     )
 }
 
@@ -106,10 +110,15 @@ fn NavTab(
             test_id: "{test_id}",
             accessibility_role: "tab",
             aria_selected: if active { "true" } else { "false" },
-            style: "width: 100%; height: 28px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: {padding}px; background-color: {s.control_bg(active)}; border-radius: {s.m.button_radius}px; {s.control(active)}",
+            nve_style: row_between()
+                .height_px(28.0)
+                .padding_x(padding as f32)
+                .bg(s.control_bg(active))
+                .radius(s.m.button_radius as f32)
+                .outline(s.control(active)),
             onpress: move |_| store.update(|st| st.select_view(view)),
-            text { style: "color: {s.control_fg(active)}; font-size: 11px;", "{label}" }
-            Badge { label: count, variant: bvar, style: Some(badge_style) }
+            text { nve_style: text_style(s.control_fg(active), 11.0), "{label}" }
+            Badge { label: count, variant: bvar, nve_style: Some(badge_style) }
         }
     }
 }
@@ -146,14 +155,9 @@ pub(crate) fn MobileChrome() -> Element {
     let (nav_open, studio_open) = (nav.mobile_nav_open, nav.mobile_studio_open);
     drop(nav);
 
-    let pill = |w: u32, active: Option<bool>| {
-        let paint = active.map_or_else(String::new, |a| {
-            format!("background-color: {}; {}", s.control_bg(a), s.control(a))
-        });
-        format!(
-            "min-width: {w}px; height: 26px; min-height: 26px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 8px; padding-vertical: 0px; white-space: nowrap; border-radius: {}px; {paint}",
-            s.m.pill_radius
-        )
+    let pill = |w: f32, active: Option<bool>| {
+        s.compact_control(min_w_dims(w, 26.0), 8, s.m.pill_radius, active)
+            .white_space(WhiteSpace::NoWrap)
     };
     let mnav_lbl = if nav_open { "Close" } else { "Menu" };
     let mstudio_lbl = if studio_open {
@@ -165,26 +169,30 @@ pub(crate) fn MobileChrome() -> Element {
     rsx! {
         view {
             test_id: "mobile-top-bar",
-            style: "width: 100%; height: 42px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 10px; background-color: {s.t.surface.base.hex()}; {s.panel()}",
+            nve_style: row_between()
+                .height_px(42.0)
+                .padding_x(10.0)
+                .bg(s.t.surface.base)
+                .outline(s.panel()),
             view {
-                style: "flex-direction: row; align-items: center; gap: 8px;",
+                nve_style: row_center(8.0),
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("mobile-toggle-nav".into()),
-                    style: Some(pill(52, Some(nav_open))),
+                    nve_style: Some(pill(52.0, Some(nav_open))),
                     on_press: move |_| store.update(|st| st.toggle_mobile_nav()),
                     "{mnav_lbl}"
                 }
-                text { style: "color: {s.t.text.link.hex()}; font-size: 13px;", "AETHER" }
+                text { nve_style: text_style(s.t.text.link, 13.0), "AETHER" }
             }
             view {
-                style: "flex-direction: row; align-items: center; gap: 6px;",
+                nve_style: row_center(6.0),
                 Button {
                     variant: ButtonVariant::Primary,
                     size: ButtonSize::Sm,
                     test_id: Some("btn-new-task".into()),
-                    style: Some(pill(58, None)),
+                    nve_style: Some(pill(58.0, None)),
                     on_press: move |_| store.update(|st| st.create_new_task()),
                     "+ Task"
                 }
@@ -192,7 +200,7 @@ pub(crate) fn MobileChrome() -> Element {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("btn-toggle-studio".into()),
-                    style: Some(pill(72, Some(studio_open))),
+                    nve_style: Some(pill(72.0, Some(studio_open))),
                     on_press: move |_| store.update(|st| st.toggle_studio_panel()),
                     "{mstudio_lbl}"
                 }
@@ -205,7 +213,13 @@ pub(crate) fn MobileChrome() -> Element {
                 test_id: Some("mobile-nav-drawer".into()),
                 padding: Some(8.0),
                 gap: Some(5.0),
-                style: Some(format!("width: 100%; flex-shrink: 0; border-radius: 0px; {}", s.card())),
+                nve_style: Some(
+                    TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_shrink(0.0)
+                        .radius(0.0)
+                        .outline(s.card()),
+                ),
                 NavTabList { padding: 10 }
             }
         }
@@ -229,13 +243,18 @@ fn StudioPanelToggle() -> Element {
     rsx! {
         pressable {
             test_id: "btn-toggle-studio",
-            style: "width: 100%; height: 30px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 9px; background-color: {s.control_bg(studio_open)}; border-radius: {s.m.button_radius}px; {s.control(studio_open)}",
+            nve_style: row_between()
+                .height_px(30.0)
+                .padding_x(9.0)
+                .bg(s.control_bg(studio_open))
+                .radius(s.m.button_radius as f32)
+                .outline(s.control(studio_open)),
             onpress: move |_| store.update(|st| st.toggle_studio_panel()),
-            text { style: "color: {s.t.text.primary.hex()}; font-size: 11px;", "NVE Studio" }
+            text { nve_style: text_style(s.t.text.primary, 11.0), "NVE Studio" }
             Badge {
                 label: studio_badge_text.to_string(),
                 variant: studio_badge_variant,
-                style: Some(studio_badge_style),
+                nve_style: Some(studio_badge_style),
             }
         }
     }
@@ -247,48 +266,68 @@ pub(crate) fn DesktopSidebar() -> Element {
     nve_dioxus::render_probe::record_render("DesktopSidebar");
     let store = use_studio();
     let s = use_studio_style();
-    let new_task_style = format!(
-        "width: 100%; height: 30px; min-height: 30px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 6px; padding-vertical: 0px; border-radius: {}px; {}",
-        s.m.button_radius,
-        s.row()
-    );
+    let new_task_style = s
+        .compact_control(
+            TypedStyle::new()
+                .width_pct(100.0)
+                .height_px(30.0)
+                .min_height_px(30.0)
+                .flex_shrink(0.0),
+            6,
+            s.m.button_radius,
+            None,
+        )
+        .outline(s.row());
 
     rsx! {
         view {
             test_id: "desktop-sidebar",
-            style: "width: 172px; height: 100%; flex-shrink: 0; flex-direction: column; padding: 12px; gap: 8px; background-color: {s.t.surface.base.hex()}; {s.panel()}",
+            nve_style: TypedStyle::new()
+                .width_px(172.0)
+                .height_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_col()
+                .padding(12.0)
+                .gap(8.0)
+                .bg(s.t.surface.base)
+                .outline(s.panel()),
 
             Card {
                 variant: CardVariant::Subtle,
                 padding: Some(8.0),
                 gap: Some(2.0),
-                style: Some(format!(
-                    "width: 100%; flex-shrink: 0; padding: 8px; gap: 2px; background-color: {}; border-radius: {}px; {}",
-                    s.t.surface.sunken.hex(),
-                    s.m.button_radius,
-                    s.card()
-                )),
-                text { style: "color: {s.t.text.link.hex()}; font-size: 15px;", "AETHER" }
-                text { style: "color: {s.t.text.tertiary.hex()}; font-size: 10px;", "LOCAL-FIRST | NVE" }
+                nve_style: Some(s.card_surface(8, 2, s.t.surface.sunken, s.m.button_radius)),
+                text { nve_style: text_style(s.t.text.link, 15.0), "AETHER" }
+                text { nve_style: text_style(s.t.text.tertiary, 10.0), "LOCAL-FIRST | NVE" }
             }
 
             view {
                 accessibility_role: "tablist",
-                style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 5px; {s.row()}",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_shrink(0.0)
+                    .flex_col()
+                    .gap(5.0)
+                    .outline(s.row()),
                 NavTabList { padding: 9 }
             }
 
-            view { style: "width: 100%; flex: 1;" }
+            view { nve_style: TypedStyle::new().width_pct(100.0).flex_1() }
 
             Separator {}
 
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 6px; {s.row()}",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_shrink(0.0)
+                    .flex_col()
+                    .gap(6.0)
+                    .outline(s.row()),
                 Button {
                     variant: ButtonVariant::Primary,
                     size: ButtonSize::Sm,
                     test_id: Some("btn-new-task".into()),
-                    style: Some(new_task_style),
+                    nve_style: Some(new_task_style),
                     on_press: move |_| store.update(|st| st.create_new_task()),
                     "+ New Task"
                 }
@@ -314,33 +353,35 @@ pub(crate) fn RouteNavBar(compact_header: bool) -> Element {
 
     let card = s.card();
     let step_style = |enabled: bool| {
-        format!(
-            "width: 22px; height: 20px; min-height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 0px; padding-vertical: 0px; background-color: {}; border-radius: {}px; border-width: 1px; border-color: {}; opacity: {};",
-            s.t.surface.subtle.hex(),
-            s.t.radius.sm,
-            card.color.hex(),
-            if enabled { "1.0" } else { "0.35" }
-        )
+        s.compact_control(fixed_dims(22.0, 20.0), 0, s.t.radius.sm as u32, None)
+            .bg(s.t.surface.subtle)
+            .border(1.0, card.color)
+            .opacity(if enabled { 1.0 } else { 0.35 })
     };
     let copy_url_lbl = if compact_header { "URL" } else { "Copy URL" };
-    let copy_url_w = if compact_header { 34 } else { 58 };
-    let copy_url_style = format!(
-        "min-width: {copy_url_w}px; height: 20px; min-height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 6px; padding-vertical: 0px; white-space: nowrap; background-color: {}; border-radius: {}px; {}",
-        s.t.surface.subtle.hex(),
-        s.m.pill_radius,
-        s.control(true)
-    );
+    let copy_url_w = if compact_header { 34.0 } else { 58.0 };
+    let copy_url_style = s
+        .compact_control(min_w_dims(copy_url_w, 20.0), 6, s.m.pill_radius, None)
+        .white_space(WhiteSpace::NoWrap)
+        .bg(s.t.surface.subtle)
+        .outline(s.control(true));
 
     rsx! {
         view {
             test_id: "route-nav-bar",
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 4px; padding-horizontal: 6px; padding-vertical: 3px; background-color: {s.t.surface.sunken.hex()}; border-radius: {s.m.button_radius}px; {card}",
+            nve_style: row_center(4.0)
+                .width_pct(100.0)
+                .flex_shrink(0.0)
+                .padding_xy(6.0, 3.0)
+                .bg(s.t.surface.sunken)
+                .radius(s.m.button_radius as f32)
+                .outline(card),
             Button {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("nav-back".into()),
                 accessibility_label: Some("Navigate back".into()),
-                style: Some(step_style(can_back)),
+                nve_style: Some(step_style(can_back)),
                 on_press: move |_| store.update(|st| {
                     let _ = st.navigate_back();
                 }),
@@ -351,7 +392,7 @@ pub(crate) fn RouteNavBar(compact_header: bool) -> Element {
                 size: ButtonSize::Sm,
                 test_id: Some("nav-forward".into()),
                 accessibility_label: Some("Navigate forward".into()),
-                style: Some(step_style(can_forward)),
+                nve_style: Some(step_style(can_forward)),
                 on_press: move |_| store.update(|st| {
                     let _ = st.navigate_forward();
                 }),
@@ -359,7 +400,7 @@ pub(crate) fn RouteNavBar(compact_header: bool) -> Element {
             }
             text {
                 test_id: "route-current-path",
-                style: "flex: 1; color: {s.t.text.secondary.hex()}; font-size: 10px;",
+                nve_style: text_style(s.t.text.secondary, 10.0).flex_1(),
                 "{route_bar_text}"
             }
             Button {
@@ -367,7 +408,7 @@ pub(crate) fn RouteNavBar(compact_header: bool) -> Element {
                 size: ButtonSize::Sm,
                 test_id: Some("btn-copy-route-url".into()),
                 accessibility_label: Some("Copy deep-link route URL".into()),
-                style: Some(copy_url_style),
+                nve_style: Some(copy_url_style),
                 on_press: move |_| {
                     let services = store.services();
                     store.update(|st| {

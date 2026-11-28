@@ -20,7 +20,7 @@ pub fn NveStreamSlot(
     slot_id: String,
     #[props(default = StreamSlotRole::Output)] role: StreamSlotRole,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let role_attr = role.as_attr();
@@ -29,7 +29,7 @@ pub fn NveStreamSlot(
             test_id: test_id,
             "data-nve-stream-slot": "{slot_id}",
             "data-nve-slot-role": role_attr,
-            style: style,
+            nve_style: nve_style,
             {children}
         }
     }

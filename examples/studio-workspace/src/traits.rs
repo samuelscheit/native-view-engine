@@ -14,7 +14,7 @@ use nve_system_env::{ContrastLevel, LocaleSnapshot, ThemeSnapshot};
 
 use crate::sdk::StudioSystemEnv;
 use crate::state::{AccentTheme, DensityMode, WorkspaceSnapshot};
-use nve_ui::{ColorHex, use_theme};
+use nve_ui::use_theme;
 
 use crate::theme::LayoutMetrics;
 use crate::ui::style::data_attrs;
@@ -246,13 +246,31 @@ pub fn StudioTraitPreviewChip(#[props(default)] test_id: Option<String>) -> Elem
                 ("trait-accent", accent_lbl.to_owned()),
                 ("trait-compact-scope", compact_attr.to_owned()),
             ]),
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; gap: 6px; padding-horizontal: 5px; padding-vertical: 3px; background-color: {theme.surface.subtle.hex()}; border-radius: {theme.radius.sm}px; border-width: 1px; border-color: {theme.border.default.hex()};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_row()
+                .justify_content(FlexJustify::SpaceBetween)
+                .align_items(FlexAlign::Center)
+                .gap(6.0)
+                .padding_xy(5.0, 3.0)
+                .bg(theme.surface.subtle)
+                .radius(theme.radius.sm)
+                .border(1.0, theme.border.default),
             text {
-                style: "flex-shrink: 1; min-width: 0px; color: {theme.text.link.hex()}; font-size: 9px;",
+                nve_style: TypedStyle::new()
+                    .flex_shrink(1.0)
+                    .min_width_px(0.0)
+                    .color(theme.text.link)
+                    .font_size(9.0),
                 "{summary}"
             }
             text {
-                style: "flex-shrink: 0; white-space: nowrap; color: {theme.text.tertiary.hex()}; font-size: 8px;",
+                nve_style: TypedStyle::new()
+                    .flex_shrink(0.0)
+                    .white_space(WhiteSpace::NoWrap)
+                    .color(theme.text.tertiary)
+                    .font_size(8.0),
                 "{mode_tag}"
             }
         }

@@ -9,8 +9,8 @@ pub use nve_dioxus::{
 };
 
 use crate::components::{Button, ButtonSize, ButtonVariant, Card, CardVariant};
-use crate::style_buf::{TypedStyleBuilder, TypedTextStyle};
 use crate::components::roles::error_text;
+use crate::surface::{SurfaceStyleExt, TypedTextStyle};
 use crate::theme::use_theme;
 
 /// Theme-aware subtree [`ErrorBoundary`] isolating render `Result` errors and panics.
@@ -76,25 +76,21 @@ fn DefaultErrorFallbackView(
     let msg_id = format!("{base_id}-message");
     let retry_id = format!("{base_id}-retry");
 
-    let title_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: error_text(&theme),
-            font_size: theme.typography.body.size,
-            font_weight: "600",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let title_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: error_text(&theme),
+        font_size: theme.typography.body.size,
+        font_weight: 600,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
-    let message_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.secondary,
-            font_size: theme.typography.ui.size,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let message_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.secondary,
+        font_size: theme.typography.ui.size,
+        font_weight: 400,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     rsx! {
         view {

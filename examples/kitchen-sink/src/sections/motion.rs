@@ -2,7 +2,7 @@
 //! `bouncy`/`stiff`) + `TransitionSpec` respecting `ReducedMotion`, live `Canvas` (`NVE_DRAW1`)
 //! sparkline & bar chart, and live `UiErrorBoundary` subtree error catch + Retry recovery.
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_canvas::{Canvas, DrawList};
 use nve_motion::{
     write_transitions, EasingCurve, Motion, MotionClock, MotionKey, MotionPreference,
@@ -10,7 +10,7 @@ use nve_motion::{
 };
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     ui_error, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
     CardVariant, ErrorBoundary as UiErrorBoundary, ErrorBoundaryReset, ErrorFallback,
     UiErrorReport,
@@ -85,10 +85,10 @@ pub fn MotionSection(handle: AppHandle) -> Element {
     let armed_error = use_signal(|| false);
     let mut recovery_count = use_signal(|| 0u32);
 
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
-    let surface_subtle = theme.surface.subtle.hex();
-    let border = theme.border.default.hex();
+    let text_primary = theme.text.primary;
+    let text_muted = theme.text.tertiary;
+    let surface_subtle = theme.surface.subtle;
+    let border = theme.border.default;
 
     let (t80, t200, t500) = sample_spring_curve(snap.spring_preset, snap.reduced_motion);
     let spec = snap.spring_preset.spec();
@@ -156,7 +156,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
     rsx! {
         view {
             test_id: "section-motion",
-            style: "width: 100%; flex-direction: column; gap: 16px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(16.0),
 
             SectionHeader {
                 title: copy("Motion, Graphics & Resilience", pseudo),
@@ -176,9 +176,14 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(12.0),
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px;",
+                            nve_style: TypedStyle::new()
+                                .flex_row()
+                                .flex_wrap(FlexWrap::Wrap)
+                                .align_items(FlexAlign::Center)
+                                .justify_content(FlexJustify::SpaceBetween)
+                                .gap(6.0),
                             text {
-                                style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                                nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                                 "{copy(\"SpringSpec & TransitionSpec\", pseudo)}"
                             }
                             Badge {
@@ -188,7 +193,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                         }
 
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             for preset in SpringPreset::ALL {
                                 Button {
                                     key: "{preset.id()}",
@@ -209,12 +214,17 @@ pub fn MotionSection(handle: AppHandle) -> Element {
 
                         text {
                             test_id: "ks-spring-metrics",
-                            style: "font-size: 12px; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                             "k={spec.stiffness:.0}, c={spec.damping:.0}, m={spec.mass:.1} · 80ms={t80:.1}% · 200ms={t200:.1}% · 500ms={t500:.1}%"
                         }
 
                         view {
-                            style: "width: 100%; padding: 8px; border-radius: 10px; background-color: {surface_subtle}; border-width: 1px; border-color: {border};",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0)
+                                .padding(8.0)
+                                .radius(10.0)
+                                .bg(surface_subtle)
+                                .border(1.0, border),
                             view {
                                 test_id: "ks-motion-pill",
                                 nve_style: motion_pill_style,
@@ -223,7 +233,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                                     |tx, node, specs| write_transitions(tx, node, specs),
                                 ),
                                 text {
-                                    style: "font-size: 12px; font-weight: 700; color: {text_primary};",
+                                    nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(text_primary),
                                     if snap.motion_toggled { "Expanded Target State" } else { "Compact Rest State" }
                                 }
                             }
@@ -250,9 +260,14 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(12.0),
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px;",
+                            nve_style: TypedStyle::new()
+                                .flex_row()
+                                .flex_wrap(FlexWrap::Wrap)
+                                .align_items(FlexAlign::Center)
+                                .justify_content(FlexJustify::SpaceBetween)
+                                .gap(6.0),
                             text {
-                                style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                                nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                                 "{copy(\"Canvas (NVE_DRAW1)\", pseudo)}"
                             }
                             Badge {
@@ -266,11 +281,11 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                             accessibility_label: "Live NVE_DRAW1 telemetry visualization",
                             accessibility_role: "image",
                             nve_table: canvas_table,
-                            style: "width: 100%; height: 100px; border-radius: 8px;",
+                            nve_style: TypedStyle::new().width_pct(100.0).height_px(100.0).radius(8.0),
                         }
 
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 8px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0),
                             Button {
                                 test_id: Some("ks-canvas-mode".to_owned()),
                                 variant: ButtonVariant::Primary,
@@ -299,9 +314,14 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(12.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .gap(8.0),
                     text {
-                        style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                         "{copy(\"UiErrorBoundary Subtree Isolation\", pseudo)}"
                     }
                     Badge {
@@ -310,7 +330,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                     }
                 }
                 text {
-                    style: "font-size: 12px; color: {text_muted};",
+                    nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                     "Triggering a render error inside the isolated subtree catches the UiErrorReport with source location while keeping the rest of the gallery live."
                 }
 
@@ -333,19 +353,26 @@ fn IsolatedWidgetSubtree(mut armed_error: Signal<bool>) -> Element {
         return Err(ui_error("Simulated render failure inside isolated Kitchen Sink subtree").into());
     }
     let theme = use_theme();
-    let text_primary = theme.text.primary.hex();
-    let surface_subtle = theme.surface.subtle.hex();
-    let border = theme.border.default.hex();
 
     rsx! {
         view {
             test_id: "ks-error-subtree-healthy",
-            style: "width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border-radius: 8px; background-color: {surface_subtle}; border-width: 1px; border-color: {border};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_row()
+                .flex_wrap(FlexWrap::Wrap)
+                .align_items(FlexAlign::Center)
+                .justify_content(FlexJustify::SpaceBetween)
+                .gap(10.0)
+                .padding(12.0)
+                .radius(8.0)
+                .bg(theme.surface.subtle)
+                .border(1.0, theme.border.default),
             view {
-                style: "flex-direction: row; align-items: center; gap: 8px;",
+                nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(8.0),
                 Badge { label: "Healthy".to_owned(), variant: BadgeVariant::Success }
                 text {
-                    style: "font-size: 13px; color: {text_primary};",
+                    nve_style: TypedStyle::new().font_size(13.0).color(theme.text.primary),
                     "Protected subtree is mounted and operational."
                 }
             }
@@ -369,36 +396,44 @@ fn ErrorFallbackCard(
     reset: ErrorBoundaryReset,
 ) -> Element {
     let theme = use_theme();
-    let danger = theme.status.danger.text.hex();
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
-    let surface_subtle = theme.surface.subtle.hex();
+    let danger = theme.status.danger.text;
 
     rsx! {
         view {
             test_id: "ks-error-boundary-fallback",
             accessibility_role: "alert",
             aria_live: "assertive",
-            style: "width: 100%; flex-direction: column; gap: 8px; padding: 14px; border-radius: 10px; background-color: {surface_subtle}; border-width: 1px; border-color: {danger};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_col()
+                .gap(8.0)
+                .padding(14.0)
+                .radius(10.0)
+                .bg(theme.surface.subtle)
+                .border(1.0, danger),
             view {
-                style: "flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px;",
+                nve_style: TypedStyle::new()
+                    .flex_row()
+                    .flex_wrap(FlexWrap::Wrap)
+                    .align_items(FlexAlign::Center)
+                    .gap(8.0),
                 Badge { label: "Subtree Error Caught".to_owned(), variant: BadgeVariant::Danger }
                 text {
-                    style: "font-size: 13px; font-weight: 700; color: {danger};",
+                    nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(danger),
                     "{report_msg}"
                 }
             }
             text {
                 test_id: "ks-error-source-location",
-                style: "font-size: 12px; color: {text_muted};",
+                nve_style: TypedStyle::new().font_size(12.0).color(theme.text.tertiary),
                 "Origin: {loc_text} (previous resets: {reset_count})"
             }
             text {
-                style: "font-size: 12px; color: {text_primary};",
+                nve_style: TypedStyle::new().font_size(12.0).color(theme.text.primary),
                 "Sibling controls and the rest of Kitchen Sink remain completely unaffected."
             }
             view {
-                style: "flex-direction: row; gap: 8px;",
+                nve_style: TypedStyle::new().flex_row().gap(8.0),
                 Button {
                     test_id: Some("ks-error-boundary-retry".to_owned()),
                     variant: ButtonVariant::Primary,

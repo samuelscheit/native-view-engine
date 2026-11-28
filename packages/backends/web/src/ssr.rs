@@ -217,7 +217,7 @@ impl WebBackend {
             write_attr("class", &resolved.classes, out);
         }
 
-        // Inline style: compositor properties + fallback + plugin inline CSS + hot-patch CSS
+        // Inline style: compositor properties + fallback + plugin inline CSS
         let mut inline = String::new();
         if !resolved.inline_fallback.is_empty() {
             inline.push_str(&resolved.inline_fallback);
@@ -227,9 +227,6 @@ impl WebBackend {
             if store.has_slot(id, sys.slot()) {
                 sys.write_inline_css(store, id, &mut inline);
             }
-        }
-        if let Some(patch) = self.patch_css.get(&id) {
-            inline.push_str(patch);
         }
         if !inline.is_empty() {
             write_attr("style", &inline, out);

@@ -25,7 +25,10 @@ pub use store_backend::{StoreBackend, StoreWireReplica};
 pub use wake::{WakeBridge, WakeCallback, WakeToken};
 pub use tracker::InteractionTracker;
 
-pub use hotreload::HotPatchMsg;
+pub use hotreload::{
+    hot_patch_template_key, HotPatchDecodeError, HotPatchMsg, HOT_PATCH_VERSION,
+    HOT_PATCH_WIRE_MAGIC,
+};
 pub use persistence::{
     write_file_atomic, Frame0File, Frame0Footer, Frame0Meta, Frame0Miss, PersistenceError,
     StateFile, StateRecoveryStats, StateSaveOutcome, DEFAULT_FRAME0_FILE_NAME,

@@ -9,7 +9,7 @@ use nve_dioxus::prelude::*;
 
 use crate::components::overlays::resolve_anchored_position;
 use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::{use_theme, Layer};
 
 /// Accessible tooltip (`accessibilityRole="tooltip"`, `aria-expanded`, `aria-describedby`,
@@ -25,7 +25,7 @@ pub fn Tooltip(
     #[props(default)] viewport: Option<Viewport>,
     #[props(default)] position_options: Option<PositionOptions>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -49,12 +49,12 @@ pub fn Tooltip(
         Size::new(160.0, 32.0),
     );
 
-    let wrap_style = TypedStyleBuilder::new()
+    let wrap_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.xs)
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let mut tip_builder = TypedStyleBuilder::new()
+    let mut tip_style = TypedStyle::new()
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
         .z_index(Layer::Tooltip.z())
         .surface(TypedSurfaceStyle {
@@ -71,13 +71,12 @@ pub fn Tooltip(
         });
     if let Some(pos) = computed {
         if let Some(mw) = pos.max_width {
-            tip_builder = tip_builder.max_width_px(mw);
+            tip_style = tip_style.max_width_px(mw);
         }
         if let Some(mh) = pos.max_height {
-            tip_builder = tip_builder.max_height_px(mh);
+            tip_style = tip_style.max_height_px(mh);
         }
     }
-    let tip_style = tip_builder.finish();
 
     let pos_placement = computed.map(|p| p.placement.as_str().to_owned());
     let pos_x = computed.map(|p| format!("{:.2}", p.x));
@@ -87,15 +86,13 @@ pub fn Tooltip(
     let pos_arrow_x = computed.and_then(|p| p.arrow_x).map(|v| format!("{v:.2}"));
     let pos_arrow_y = computed.and_then(|p| p.arrow_y).map(|v| format!("{v:.2}"));
 
-    let tip_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.surface.base,
-            font_size: theme.typography.caption.size,
-            font_weight: "500",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let tip_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.surface.base,
+        font_size: theme.typography.caption.size,
+        font_weight: 500,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     let aria_expanded = if is_open { "true" } else { "false" };
     let described_by = if is_open {
@@ -108,7 +105,6 @@ pub fn Tooltip(
         view {
             test_id: "{base_id}",
             nve_style: wrap_style,
-            style: style,
             pressable {
                 test_id: "{trigger_id}",
                 tab_index: 0,

@@ -9,7 +9,7 @@ use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::focus::Orientation;
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle};
 use crate::theme::use_theme;
 
 /// Size constraint expressed either in logical pixels or as a fraction (`0.0..=1.0`) of the
@@ -375,7 +375,7 @@ pub fn SplitPane(
     #[props(default)] on_change: Option<EventHandler<f32>>,
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     primary: Element,
     secondary: Element,
 ) -> Element {
@@ -422,56 +422,51 @@ pub fn SplitPane(
     let aria_orientation = if is_horiz { "vertical" } else { "horizontal" };
     let a11y_label = accessibility_label.unwrap_or_else(|| "Resize split pane".to_owned());
 
-    let root_style = if is_horiz {
-        TypedStyleBuilder::new()
+    let root_style = (if is_horiz {
+        TypedStyle::new()
             .flex_row()
             .width_px(container_size)
             .height_pct(100.0)
-            .finish()
     } else {
-        TypedStyleBuilder::new()
+        TypedStyle::new()
             .flex_col()
             .width_pct(100.0)
             .height_px(container_size)
-            .finish()
-    };
+    })
+    .merge_opt(nve_style.as_ref());
 
     let primary_style = if is_horiz {
-        TypedStyleBuilder::new()
+        TypedStyle::new()
             .width_px(primary_px)
             .height_pct(100.0)
-            .overflow("hidden")
-            .finish()
+            .overflow_mode(Overflow::Hidden)
     } else {
-        TypedStyleBuilder::new()
+        TypedStyle::new()
             .width_pct(100.0)
             .height_px(primary_px)
-            .overflow("hidden")
-            .finish()
+            .overflow_mode(Overflow::Hidden)
     };
 
     let secondary_style = if is_horiz {
-        TypedStyleBuilder::new()
+        TypedStyle::new()
             .width_px(secondary_px)
             .height_pct(100.0)
             .flex_grow(1.0)
-            .overflow("hidden")
-            .finish()
+            .overflow_mode(Overflow::Hidden)
     } else {
-        TypedStyleBuilder::new()
+        TypedStyle::new()
             .width_pct(100.0)
             .height_px(secondary_px)
             .flex_grow(1.0)
-            .overflow("hidden")
-            .finish()
+            .overflow_mode(Overflow::Hidden)
     };
 
     let divider_base = if is_horiz {
-        TypedStyleBuilder::new()
+        TypedStyle::new()
             .width_px(divider_size)
             .height_pct(100.0)
     } else {
-        TypedStyleBuilder::new()
+        TypedStyle::new()
             .width_pct(100.0)
             .height_px(divider_size)
     };
@@ -489,8 +484,7 @@ pub fn SplitPane(
             border_radius: 0.0,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
     let collapsed_attr = if is_collapsed { "true" } else { "false" };
 
@@ -498,7 +492,6 @@ pub fn SplitPane(
         view {
             test_id: "{base_id}",
             nve_style: root_style,
-            style: style,
             view {
                 test_id: "{primary_id}",
                 nve_table: super::html_tables::html_data_attrs(vec![("collapsed".to_owned(), collapsed_attr.to_owned())]),

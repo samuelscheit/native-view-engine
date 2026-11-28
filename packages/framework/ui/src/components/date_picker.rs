@@ -46,7 +46,7 @@ pub fn DatePicker(
     #[props(default)] on_change: Option<EventHandler<Option<CalendarDate>>>,
     #[props(default)] on_open_change: Option<EventHandler<bool>>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut trigger_focused = use_signal(|| false);
@@ -102,6 +102,7 @@ pub fn DatePicker(
     );
     let (wrap_style, label_style, trigger_style, trigger_text_style) =
         build_trigger_styles(&theme, trigger_focused(), disabled, has_value);
+    let wrap_style = wrap_style.merge_opt(nve_style.as_ref());
 
     let aria_expanded = if is_open { "true" } else { "false" };
     let aria_dis = if disabled { "true" } else { "false" };
@@ -142,7 +143,6 @@ pub fn DatePicker(
         view {
             test_id: "{base_id}",
             nve_style: wrap_style,
-            style: style,
             if let Some(ref lbl) = label {
                 text { test_id: label_id.clone(), nve_style: label_style, "{lbl}" }
             }
@@ -223,7 +223,7 @@ pub fn DateRangePicker(
     #[props(default)] on_change: Option<EventHandler<Option<DateRange>>>,
     #[props(default)] on_open_change: Option<EventHandler<bool>>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut trigger_focused = use_signal(|| false);
@@ -286,6 +286,7 @@ pub fn DateRangePicker(
     );
     let (wrap_style, label_style, trigger_style, trigger_text_style) =
         build_trigger_styles(&theme, trigger_focused(), disabled, has_value);
+    let wrap_style = wrap_style.merge_opt(nve_style.as_ref());
 
     let aria_expanded = if is_open { "true" } else { "false" };
     let aria_dis = if disabled { "true" } else { "false" };
@@ -326,7 +327,6 @@ pub fn DateRangePicker(
         view {
             test_id: "{base_id}",
             nve_style: wrap_style,
-            style: style,
             if let Some(ref lbl) = label {
                 text { test_id: label_id.clone(), nve_style: label_style, "{lbl}" }
             }

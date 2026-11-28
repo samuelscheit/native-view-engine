@@ -20,7 +20,7 @@ pub mod spatial_focus {
         SpatialFocusEngine, SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
     };
 }
-pub mod style_buf;
+pub mod surface;
 pub mod theme;
 
 #[cfg(feature = "virtual-list")]
@@ -68,10 +68,7 @@ pub use positioning::{
 #[cfg(feature = "spatial-focus")]
 pub use spatial_focus::*;
 pub use nve_dioxus::TypedStyle;
-pub use style_buf::{
-    parse_color_rgba, StyleBuf, SurfaceStyle, TextStyle, TypedStyleBuilder, TypedSurfaceStyle,
-    TypedTextStyle,
-};
+pub use surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 pub use components::roles::{
     accent_indicator, badge_colors, button_colors, calendar_day_colors, checkbox_colors, error_indicator, error_text,
     selected_text, switch_colors, tab_colors, toast_tone, ControlColors,
@@ -132,10 +129,7 @@ pub mod prelude {
     };
     #[cfg(feature = "spatial-focus")]
     pub use crate::spatial_focus::*;
-    pub use crate::style_buf::{
-        parse_color_rgba, StyleBuf, SurfaceStyle, TextStyle, TypedStyleBuilder, TypedSurfaceStyle,
-        TypedTextStyle,
-    };
+    pub use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
     pub use crate::theme::{
         use_theme, use_theme_signal, Accent, AppBrand, Appearance, ColorHex, Theme, ThemeConfig,
         ThemeMode, ThemeProvider,

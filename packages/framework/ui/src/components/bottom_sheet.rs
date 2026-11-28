@@ -6,7 +6,7 @@ use dioxus_core_macro::Props;
 use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::{use_theme, Layer};
 
 const EPS: f32 = 1e-4;
@@ -397,7 +397,7 @@ pub fn BottomSheet(
     #[props(default)] on_dismiss: Option<EventHandler<()>>,
     #[props(default)] on_detent_change: Option<EventHandler<SheetDetent>>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -442,7 +442,7 @@ pub fn BottomSheet(
         )
     };
 
-    let backdrop_style = TypedStyleBuilder::new()
+    let backdrop_style = TypedStyle::new()
         .width_pct(100.0)
         .height_px(viewport_height)
         .flex_col()
@@ -456,10 +456,9 @@ pub fn BottomSheet(
             border_radius: 0.0,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let sheet_style = TypedStyleBuilder::new()
+    let sheet_style = TypedStyle::new()
         .width_pct(100.0)
         .height_px(sheet_h)
         .flex_col()
@@ -474,16 +473,15 @@ pub fn BottomSheet(
             opacity: 1.0,
             box_shadow: theme.elevation.overlay,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let handle_wrap_style = TypedStyleBuilder::new()
+    let handle_wrap_style = TypedStyle::new()
         .width_pct(100.0)
         .padding_xy(0.0, theme.spacing.xs)
         .justify_content(FlexJustify::Center)
-        .align_items(FlexAlign::Center)
-        .finish();
+        .align_items(FlexAlign::Center);
 
-    let handle_bar_style = TypedStyleBuilder::new()
+    let handle_bar_style = TypedStyle::new()
         .width_px(40.0)
         .height_px(4.0)
         .surface(TypedSurfaceStyle {
@@ -497,24 +495,20 @@ pub fn BottomSheet(
             border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let title_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.title.size,
-            font_weight: "700",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let title_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.title.size,
+        font_weight: 700,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
-    let scroll_style = TypedStyleBuilder::new()
+    let scroll_style = TypedStyle::new()
         .flex_grow(1.0)
         .width_pct(100.0)
-        .overflow("scroll")
-        .finish();
+        .overflow_mode(Overflow::Scroll);
 
     let frac_attr = format!("{frac:.2}");
 
@@ -538,7 +532,6 @@ pub fn BottomSheet(
                 aria_labelledby: title_id.clone(),
                 nve_table: super::html_tables::html_data_attrs(vec![("detent-fraction".to_owned(), frac_attr.clone())]),
                 nve_style: sheet_style,
-                style: style,
                 onpress: move |ev: PressEvent| ev.stop_propagation(),
                 pressable {
                     test_id: "{handle_id}",

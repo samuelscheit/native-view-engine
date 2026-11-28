@@ -374,12 +374,16 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     let direct_props = unsafe { NvePropsRef::from_slice(&direct_entries) };
     assert!(app.set_props(direct_props));
     let _ = app.render(FrameId(1));
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(nve_tables::tables::Visual::OPACITY, 0.95);
+    let mut words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut words));
     let patch = HotPatchMsg::TemplatePatch {
         generation: 1,
-        template_id: "studio".into(),
+        template_key: 0,
+        node_path: vec![0],
         target_test_id: None,
-        node_path: vec![],
-        attr_updates: vec![("opacity".into(), "0.95".into())],
+        row_patch_words: words,
         text_updates: vec![],
         text_replacements: vec![],
     };

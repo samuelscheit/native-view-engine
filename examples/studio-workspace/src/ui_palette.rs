@@ -3,15 +3,15 @@
 //! accent themes, layout engines, and time-travel snapshots.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, ColorHex, Dialog, Input, Separator,
-};
+use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Dialog, Input, Separator};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{AccentTheme, ActiveView, LayoutEngineMode, WorkspaceState};
 use crate::theme::badge_min_w;
 use crate::ui::store::use_studio;
-use crate::ui::style::use_studio_style;
+use crate::ui::style::{
+    StudioStyleExt, badge_dims, fixed_dims, row_between, row_center, text_style, use_studio_style,
+};
 
 /// Maximum number of filtered palette results rendered concurrently so the overlay remains compact.
 pub const MAX_VISIBLE_PALETTE_ITEMS: usize = 7;
@@ -346,10 +346,13 @@ pub(crate) fn CommandPalette() -> Element {
         .into_iter()
         .chain((0..visible.len()).map(|idx| format!("palette-item-{idx}")))
         .collect();
-    let dialog_style = format!(
-        "width: 100%; min-width: 0px; max-width: 100%; padding: 8px; gap: 6px; border-radius: {}px;",
-        s.m.card_radius
-    );
+    let dialog_style = TypedStyle::new()
+        .width_pct(100.0)
+        .min_width_px(0.0)
+        .max_width_pct(100.0)
+        .padding(8.0)
+        .gap(6.0)
+        .radius(s.m.card_radius as f32);
 
     rsx! {
         Dialog {
@@ -359,22 +362,22 @@ pub(crate) fn CommandPalette() -> Element {
             focusable_ids,
             close_on_escape: true,
             close_on_backdrop: true,
-            style: Some(dialog_style),
+            nve_style: Some(dialog_style),
             on_close: move |_| store.update(|st| st.close_palette()),
 
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center;",
+                nve_style: row_between(),
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 6px;",
-                    text { style: "color: {t.text.link.hex()}; font-size: 11px;", "CMD+K PALETTE" }
-                    text { style: "color: {t.text.tertiary.hex()}; font-size: 10px;", "{total} matches" }
+                    nve_style: row_center(6.0),
+                    text { nve_style: text_style(t.text.link, 11.0), "CMD+K PALETTE" }
+                    text { nve_style: text_style(t.text.tertiary, 10.0), "{total} matches" }
                 }
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("palette-close".into()),
                     accessibility_label: Some("Close command palette".into()),
-                    style: Some(s.compact_control("width: 42px; height: 20px; min-height: 20px;", 2, s.m.pill_radius, Some(false))),
+                    nve_style: Some(s.compact_control(fixed_dims(42.0, 20.0), 2, s.m.pill_radius, Some(false))),
                     on_press: move |_| store.update(|st| st.close_palette()),
                     "Esc"
                 }
@@ -397,12 +400,18 @@ pub(crate) fn CommandPalette() -> Element {
             if visible.is_empty() {
                 view {
                     test_id: "palette-empty",
-                    style: "width: 100%; height: 26px; justify-content: center; align-items: center; background-color: {t.surface.sunken.hex()}; border-radius: {s.m.pill_radius}px;",
-                    text { style: "color: {t.text.tertiary.hex()}; font-size: 10px;", "No matching commands" }
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .height_px(26.0)
+                        .justify_content(FlexJustify::Center)
+                        .align_items(FlexAlign::Center)
+                        .bg(t.surface.sunken)
+                        .radius(s.m.pill_radius as f32),
+                    text { nve_style: text_style(t.text.tertiary, 10.0), "No matching commands" }
                 }
             } else {
                 view {
-                    style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 4px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_shrink(0.0).flex_col().gap(4.0),
                     for (idx, item) in visible.into_iter().enumerate() {
                         {
                             let is_sel = idx == selected;
@@ -411,26 +420,31 @@ pub(crate) fn CommandPalette() -> Element {
                                 pressable {
                                     key: "pal-{idx}",
                                     test_id: "palette-item-{idx}",
-                                    style: "width: 100%; height: 26px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 8px; background-color: {bg.hex()}; border-radius: {s.m.pill_radius}px; {s.control(is_sel)}",
+                                    nve_style: row_between()
+                                        .height_px(26.0)
+                                        .padding_x(8.0)
+                                        .bg(bg)
+                                        .radius(s.m.pill_radius as f32)
+                                        .outline(s.control(is_sel)),
                                     onpress: move |_| store.update(|st| {
                                         let _ = st.execute_palette_at(idx);
                                     }),
                                     view {
-                                        style: "flex-direction: row; align-items: center; gap: 6px; flex: 1;",
+                                        nve_style: row_center(6.0).flex_1(),
                                         Badge {
                                             label: item.category.to_string(),
                                             variant: BadgeVariant::Neutral,
-                                            style: Some(s.compact_control(
-                                                &format!("min-width: {}px; height: 16px;", badge_min_w(item.category)),
+                                            nve_style: Some(s.compact_control(
+                                                badge_dims(badge_min_w(item.category) as f32, 16.0),
                                                 3,
                                                 t.radius.sm as u32,
                                                 None,
                                             )),
                                         }
-                                        text { style: "color: {s.control_fg(is_sel)}; font-size: 10px;", "{item.label}" }
+                                        text { nve_style: text_style(s.control_fg(is_sel), 10.0), "{item.label}" }
                                     }
                                     if is_sel {
-                                        text { style: "color: {t.text.link.hex()}; font-size: 9px;", "Enter" }
+                                        text { nve_style: text_style(t.text.link, 9.0), "Enter" }
                                     }
                                 }
                             }

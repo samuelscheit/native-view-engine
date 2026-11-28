@@ -1,6 +1,6 @@
 //! Registry of patchable native-element style attributes: the typed value classes each accepts
-//! (for `TypedRsxPatch`), the keyword enum behind keyword attributes, and whether today's string
-//! `TemplatePatch` path (`nve_tables::css`) applies the attribute at all.
+//! (for `TypedRsxPatch`) and the `#[repr(u8)]` keyword enum discriminants for direct binary
+//! `RowPatch` word lowering (zero CSS string emission).
 //!
 //! Identity (`test_id`, `key`), event handlers (`on*`), content props and every unknown attribute
 //! are deliberately absent: an edit to them is a logic/structure change that needs a Tier-2 build.
@@ -37,7 +37,7 @@ impl ValueClasses {
 }
 
 /// How a compiled float literal reaches the store on the typed attribute path (`nve-dioxus`
-/// `apply_numeric_attr`), mirrored so the lowered CSS string lands on the same value.
+/// `apply_numeric_attr`), mirrored so binary `RowPatch` lowering lands on the exact same value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NumberRule {
     /// `Length::points(v.max(min))`.
@@ -48,39 +48,65 @@ pub enum NumberRule {
     ZIndex,
 }
 
-/// A keyword attribute's real Rust enum and the CSS keyword of each variant (`None`: the string
-/// CSS path cannot express that variant faithfully).
+/// A keyword attribute's real `#[repr(u8)]` Rust enum and its `(VariantName, discriminant)` table.
 #[derive(Debug, PartialEq, Eq)]
 pub struct KeywordEnum {
     pub ty: &'static str,
-    pub variants: &'static [(&'static str, Option<&'static str>)],
+    pub variants: &'static [(&'static str, u8)],
 }
 
 impl KeywordEnum {
-    /// The CSS keyword of `variant`, when the enum has it: `Some(None)` = no faithful CSS form.
-    pub fn css(&self, variant: &str) -> Option<Option<&'static str>> {
+    /// Returns the `u8` discriminant of `variant` when it belongs to this enum.
+    pub fn discriminant(&self, variant: &str) -> Option<u8> {
         self.variants
             .iter()
             .find(|(v, _)| *v == variant)
-            .map(|(_, css)| *css)
+            .map(|(_, d)| *d)
+    }
+
+    /// Matches a kebab-case or lowercase keyword string (e.g. `"space-between"`, `"nowrap"`)
+    /// case-insensitively with `-` ignored against this enum's Rust variant names.
+    pub fn from_keyword_str(&self, raw: &str) -> Option<u8> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        self.variants.iter().find_map(|&(name, disc)| {
+            eq_ignore_ascii_case_and_dash(name, trimmed).then_some(disc)
+        })
+    }
+}
+
+fn eq_ignore_ascii_case_and_dash(variant: &str, keyword: &str) -> bool {
+    let mut a = variant.bytes();
+    let mut b = keyword.bytes().filter(|&c| c != b'-' && c != b'_');
+    loop {
+        match (a.next(), b.next()) {
+            (Some(x), Some(y)) if x.eq_ignore_ascii_case(&y) => {}
+            (None, None) => return true,
+            _ => return false,
+        }
     }
 }
 
 /// Value domain of an attribute.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AttrKind {
-    /// Static strings only (`style`, `box-shadow`, `font-family`, the `border` shorthand).
+    /// Non-scalar or shorthand text attributes (`box-shadow`, `font-family`, `border`): cannot be
+    /// encoded into scalar `RowPatch` words and fall back cleanly to Tier-2.
     Text,
     /// Box dimension: `px`/`%`/`auto` lengths; float literals per `float`.
-    Dimension {
-        float: Option<NumberRule>,
-    },
+    Dimension { float: Option<NumberRule> },
     /// Pixel-only length; float literals per `float`.
-    Pixels {
-        float: Option<NumberRule>,
-    },
+    Pixels { float: Option<NumberRule> },
     /// Unitless number.
     Number(NumberRule),
+    /// Font weight (`"bold"`, `"semibold"`, `"600"` or numeric `1..=1000`).
+    FontWeight,
+    /// Line height (`Length::points`, `Length::percent`, `Length::AUTO`, unitless ratio or string).
+    LineHeight,
+    /// `text-decoration-line` bitflags (`"none"`, `"underline"`, `"line-through"`, `"overline"`).
+    TextDecoration,
     Color,
     Keyword(&'static KeywordEnum),
 }
@@ -88,12 +114,9 @@ pub enum AttrKind {
 /// A patchable attribute.
 #[derive(Debug, PartialEq)]
 pub struct AttrSpec {
-    /// Canonical kebab-case NVE/CSS name.
+    /// Canonical kebab-case NVE name.
     pub name: &'static str,
     pub kind: AttrKind,
-    /// `nve_tables::css_key_bits` (or `style`) recognizes it: today's string
-    /// `TemplatePatch` path applies it. Typed-only attributes wait for `RowPatch` lowering.
-    pub css: bool,
 }
 
 impl AttrSpec {
@@ -101,7 +124,7 @@ impl AttrSpec {
     pub const fn accepts(&self) -> ValueClasses {
         let s = ValueClasses::STRING;
         match self.kind {
-            AttrKind::Text => s,
+            AttrKind::Text | AttrKind::TextDecoration => s,
             AttrKind::Dimension { float } => s
                 .or(ValueClasses::PX)
                 .or(ValueClasses::PCT)
@@ -114,6 +137,12 @@ impl AttrSpec {
                 .or(float_class(float)),
             AttrKind::Number(NumberRule::ZIndex) => s.or(ValueClasses::FLOAT).or(ValueClasses::INT),
             AttrKind::Number(_) => s.or(ValueClasses::FLOAT).or(ValueClasses::THEME),
+            AttrKind::FontWeight => s.or(ValueClasses::INT),
+            AttrKind::LineHeight => s
+                .or(ValueClasses::PX)
+                .or(ValueClasses::PCT)
+                .or(ValueClasses::AUTO)
+                .or(ValueClasses::FLOAT),
             AttrKind::Color => s.or(ValueClasses::COLOR).or(ValueClasses::THEME),
             AttrKind::Keyword(_) => s.or(ValueClasses::KEYWORD),
         }
@@ -127,7 +156,7 @@ impl AttrSpec {
         }
         match (self.kind, value) {
             (AttrKind::Keyword(kw), TypedAttrValue::Enum { ty, variant }) => {
-                ty.as_deref().is_none_or(|t| t == kw.ty) && kw.css(variant).is_some()
+                ty.as_deref().is_none_or(|t| t == kw.ty) && kw.discriminant(variant).is_some()
             }
             _ => true,
         }
@@ -141,94 +170,72 @@ const fn float_class(rule: Option<NumberRule>) -> ValueClasses {
     }
 }
 
-/// Declares a keyword enum table and compile-checks that every variant exists on the real type.
+/// Declares a keyword enum table pulling compile-checked `#[repr(u8)]` discriminants directly
+/// from the real table enum (zero CSS strings, zero duplicated enum match arms).
 macro_rules! keyword_enum {
-    ($name:ident: $ty:ident = $($seg:ident)::+ { $($variant:ident => $css:expr),* $(,)? }) => {
+    ($name:ident: $ty:ident = $enum_ty:ty { $($variant:ident),* $(,)? }) => {
         pub const $name: KeywordEnum = KeywordEnum {
             ty: stringify!($ty),
-            variants: &[$((stringify!($variant), $css)),*],
-        };
-        const _: () = {
-            use $($seg)::+ as Real;
-            let _: &[Real] = &[$(Real::$variant),*];
+            variants: &[$((stringify!($variant), <$enum_ty>::$variant as u8)),*],
         };
     };
 }
 
 keyword_enum!(DISPLAY: Display = nve_tables::tables::Display {
-    Flex => Some("flex"), None => Some("none"), Grid => Some("grid"), Block => Some("block"),
-    Inline => Some("inline"), InlineBlock => Some("inline-block"),
-    InlineFlex => Some("inline-flex"), Contents => Some("contents"),
+    Flex, None, Grid, Block, Inline, InlineBlock, InlineFlex, Contents,
 });
 keyword_enum!(FLEX_DIRECTION: FlexDirection = nve_tables::tables::FlexDirection {
-    Column => Some("column"), Row => Some("row"),
-    ColumnReverse => Some("column-reverse"), RowReverse => Some("row-reverse"),
+    Column, Row, ColumnReverse, RowReverse,
 });
 keyword_enum!(FLEX_WRAP: FlexWrap = nve_tables::tables::FlexWrap {
-    NoWrap => Some("nowrap"), Wrap => Some("wrap"), WrapReverse => Some("wrap-reverse"),
+    NoWrap, Wrap, WrapReverse,
 });
 keyword_enum!(JUSTIFY_CONTENT: JustifyContent = nve_tables::tables::JustifyContent {
-    FlexStart => Some("flex-start"), Center => Some("center"), FlexEnd => Some("flex-end"),
-    SpaceBetween => Some("space-between"), SpaceAround => Some("space-around"),
-    SpaceEvenly => Some("space-evenly"),
+    FlexStart, Center, FlexEnd, SpaceBetween, SpaceAround, SpaceEvenly,
 });
 keyword_enum!(ALIGN_ITEMS: AlignItems = nve_tables::tables::AlignItems {
-    Stretch => Some("stretch"), FlexStart => Some("flex-start"), Center => Some("center"),
-    FlexEnd => Some("flex-end"), Baseline => Some("baseline"),
+    Stretch, FlexStart, Center, FlexEnd, Baseline,
 });
 keyword_enum!(ALIGN_SELF: AlignSelf = nve_tables::tables::AlignSelf {
-    Auto => Some("auto"), Stretch => Some("stretch"), FlexStart => Some("flex-start"),
-    Center => Some("center"), FlexEnd => Some("flex-end"), Baseline => Some("baseline"),
+    Auto, Stretch, FlexStart, Center, FlexEnd, Baseline,
 });
 keyword_enum!(POSITION: Position = nve_tables::tables::Position {
-    Relative => Some("relative"), Absolute => Some("absolute"), Sticky => Some("sticky"),
-    Fixed => Some("fixed"),
+    Relative, Absolute, Sticky, Fixed,
 });
 keyword_enum!(BOX_SIZING: BoxSizing = nve_tables::tables::BoxSizing {
-    BorderBox => Some("border-box"), ContentBox => Some("content-box"),
+    BorderBox, ContentBox,
 });
 keyword_enum!(VISIBILITY: Visibility = nve_tables::tables::Visibility {
-    Inherit => Some("inherit"), Visible => Some("visible"), Hidden => Some("hidden"),
+    Inherit, Visible, Hidden,
 });
 keyword_enum!(OVERFLOW: Overflow = nve_tables::tables::Overflow {
-    Visible => Some("visible"), Hidden => Some("hidden"), Scroll => Some("scroll"),
-    Auto => Some("auto"),
+    Visible, Hidden, Scroll, Auto,
 });
 keyword_enum!(OVERFLOW_WRAP: OverflowWrap = nve_tables::tables::OverflowWrap {
-    Normal => Some("normal"), Anywhere => Some("anywhere"), BreakWord => Some("break-word"),
+    Normal, Anywhere, BreakWord,
 });
 keyword_enum!(WORD_BREAK: WordBreak = nve_tables::tables::WordBreak {
-    Normal => Some("normal"), BreakAll => Some("break-all"), KeepAll => Some("keep-all"),
-    BreakWord => Some("break-word"),
+    Normal, BreakAll, KeepAll, BreakWord,
 });
-// `css.rs` has no `break-spaces`.
 keyword_enum!(WHITE_SPACE: WhiteSpace = nve_tables::tables::WhiteSpace {
-    Normal => Some("normal"), NoWrap => Some("nowrap"), Pre => Some("pre"),
-    PreWrap => Some("pre-wrap"), PreLine => Some("pre-line"), BreakSpaces => None,
+    Normal, NoWrap, Pre, PreWrap, PreLine, BreakSpaces,
 });
-// `css.rs` maps the strings `start`/`end` to `Left`/`Right`, not to these variants.
 keyword_enum!(TEXT_ALIGN: TextAlign = nve_tables::tables::TextAlign {
-    Start => None, End => None, Left => Some("left"), Right => Some("right"),
-    Center => Some("center"), Justify => Some("justify"),
+    Start, End, Left, Right, Center, Justify,
 });
 keyword_enum!(FONT_STYLE: FontStyle = nve_tables::tables::FontStyle {
-    Normal => Some("normal"), Italic => Some("italic"), Oblique => Some("oblique"),
+    Normal, Italic, Oblique,
 });
 keyword_enum!(VERTICAL_ALIGN: VerticalAlign = nve_tables::tables::VerticalAlign {
-    Baseline => Some("baseline"), Top => Some("top"), Middle => Some("middle"),
-    Bottom => Some("bottom"), Sub => Some("sub"), Super => Some("super"),
-    TextTop => Some("text-top"), TextBottom => Some("text-bottom"),
+    Baseline, Top, Middle, Bottom, Sub, Super, TextTop, TextBottom,
 });
 keyword_enum!(CURSOR: CursorKind = nve_tables::CursorKind {
-    Auto => Some("auto"), Default => Some("default"), Pointer => Some("pointer"),
-    Text => Some("text"), Grab => Some("grab"), Grabbing => Some("grabbing"),
-    NotAllowed => Some("not-allowed"), ColResize => Some("col-resize"),
-    RowResize => Some("row-resize"), Move => Some("move"), Crosshair => Some("crosshair"),
-    Progress => Some("progress"), Wait => Some("wait"),
+    Auto, Default, Pointer, Text, Grab, Grabbing, NotAllowed,
+    ColResize, RowResize, Move, Crosshair, Progress, Wait,
 });
 
-const fn spec(name: &'static str, kind: AttrKind, css: bool) -> AttrSpec {
-    AttrSpec { name, kind, css }
+const fn spec(name: &'static str, kind: AttrKind) -> AttrSpec {
+    AttrSpec { name, kind }
 }
 
 const NON_NEGATIVE_PX: Option<NumberRule> = Some(NumberRule::Px { min: 0.0 });
@@ -249,10 +256,10 @@ const GROW: AttrKind = AttrKind::Number(NumberRule::Unitless {
 });
 
 macro_rules! attr_table {
-    ($($name:literal => $kind:expr, $css:literal;)*) => {
+    ($($name:literal => $kind:expr;)*) => {
         fn lookup_canonical(name: &str) -> Option<&'static AttrSpec> {
             match name {
-                $($name => Some(const { &spec($name, $kind, $css) }),)*
+                $($name => Some(const { &spec($name, $kind) }),)*
                 _ => None,
             }
         }
@@ -264,64 +271,63 @@ macro_rules! attr_table {
 }
 
 attr_table! {
-    "style" => AttrKind::Text, true;
     // Box sizing.
-    "width" => DIM, true; "height" => DIM, true;
-    "min-width" => DIM, true; "min-height" => DIM, true;
-    "max-width" => DIM, true; "max-height" => DIM, true;
-    "box-sizing" => AttrKind::Keyword(&BOX_SIZING), false;
-    "aspect-ratio" => AttrKind::Number(NumberRule::Unitless { min: 0.0, max: f32::INFINITY }), false;
+    "width" => DIM; "height" => DIM;
+    "min-width" => DIM; "min-height" => DIM;
+    "max-width" => DIM; "max-height" => DIM;
+    "box-sizing" => AttrKind::Keyword(&BOX_SIZING);
+    "aspect-ratio" => AttrKind::Number(NumberRule::Unitless { min: 0.0, max: f32::INFINITY });
     // Flex layout.
-    "display" => AttrKind::Keyword(&DISPLAY), true;
-    "position" => AttrKind::Keyword(&POSITION), false;
-    "flex-direction" => AttrKind::Keyword(&FLEX_DIRECTION), true;
-    "flex-wrap" => AttrKind::Keyword(&FLEX_WRAP), true;
-    "justify-content" => AttrKind::Keyword(&JUSTIFY_CONTENT), true;
-    "align-items" => AttrKind::Keyword(&ALIGN_ITEMS), true;
-    "align-self" => AttrKind::Keyword(&ALIGN_SELF), false;
-    "flex" => GROW, true; "flex-grow" => GROW, true; "flex-shrink" => GROW, true;
-    "flex-basis" => AttrKind::Dimension { float: NON_NEGATIVE_PX }, true;
-    "gap" => PX, true; "row-gap" => PX, true; "column-gap" => PX, true;
-    "top" => INSET, false; "right" => INSET, false; "bottom" => INSET, false; "left" => INSET, false;
+    "display" => AttrKind::Keyword(&DISPLAY);
+    "position" => AttrKind::Keyword(&POSITION);
+    "flex-direction" => AttrKind::Keyword(&FLEX_DIRECTION);
+    "flex-wrap" => AttrKind::Keyword(&FLEX_WRAP);
+    "justify-content" => AttrKind::Keyword(&JUSTIFY_CONTENT);
+    "align-items" => AttrKind::Keyword(&ALIGN_ITEMS);
+    "align-self" => AttrKind::Keyword(&ALIGN_SELF);
+    "flex" => GROW; "flex-grow" => GROW; "flex-shrink" => GROW;
+    "flex-basis" => AttrKind::Dimension { float: NON_NEGATIVE_PX };
+    "gap" => PX; "row-gap" => PX; "column-gap" => PX;
+    "top" => INSET; "right" => INSET; "bottom" => INSET; "left" => INSET;
     // Spacing.
-    "padding" => PX, true; "padding-horizontal" => PX, true; "padding-vertical" => PX, true;
-    // Numeric `padding-{top,right,bottom,left}` aren't in `apply_numeric_attr` yet; string & `Length::points` lower cleanly.
-    "padding-top" => AttrKind::Pixels { float: None }, true;
-    "padding-right" => AttrKind::Pixels { float: None }, true;
-    "padding-bottom" => AttrKind::Pixels { float: None }, true;
-    "padding-left" => AttrKind::Pixels { float: None }, true;
-    "margin" => SIGNED, true;
-    "margin-top" => SIGNED, true; "margin-right" => SIGNED, true;
-    "margin-bottom" => SIGNED, true; "margin-left" => SIGNED, true;
+    "padding" => PX; "padding-horizontal" => PX; "padding-vertical" => PX;
+    "padding-top" => AttrKind::Pixels { float: None };
+    "padding-right" => AttrKind::Pixels { float: None };
+    "padding-bottom" => AttrKind::Pixels { float: None };
+    "padding-left" => AttrKind::Pixels { float: None };
+    "margin" => SIGNED;
+    "margin-top" => SIGNED; "margin-right" => SIGNED;
+    "margin-bottom" => SIGNED; "margin-left" => SIGNED;
     // Visual.
-    "background" => AttrKind::Color, true; "background-color" => AttrKind::Color, true;
-    "color" => AttrKind::Color, true; "border-color" => AttrKind::Color, true;
-    "border" => AttrKind::Text, true;
-    "border-width" => PX, true;
-    "border-top-width" => PX, false; "border-right-width" => PX, false;
-    "border-bottom-width" => PX, false; "border-left-width" => PX, false;
-    "border-radius" => PX, true;
-    "box-shadow" => AttrKind::Text, false;
-    "opacity" => AttrKind::Number(NumberRule::Unitless { min: 0.0, max: 1.0 }), true;
-    "z-index" => AttrKind::Number(NumberRule::ZIndex), true;
-    "visibility" => AttrKind::Keyword(&VISIBILITY), true;
-    "overflow" => AttrKind::Keyword(&OVERFLOW), true;
-    "overflow-x" => AttrKind::Keyword(&OVERFLOW), true;
-    "overflow-y" => AttrKind::Keyword(&OVERFLOW), true;
-    // Typography. `line-height` / `font-weight` numbers are not honoured by the typed path.
-    "font-family" => AttrKind::Text, true;
-    "font-size" => AttrKind::Pixels { float: Some(NumberRule::Px { min: 1.0 }) }, true;
-    "font-weight" => AttrKind::Text, true;
-    "font-style" => AttrKind::Keyword(&FONT_STYLE), true;
-    "line-height" => AttrKind::Text, true;
-    "text-align" => AttrKind::Keyword(&TEXT_ALIGN), true;
-    "text-decoration" => AttrKind::Text, true;
-    "white-space" => AttrKind::Keyword(&WHITE_SPACE), true;
-    "overflow-wrap" => AttrKind::Keyword(&OVERFLOW_WRAP), true;
-    "word-break" => AttrKind::Keyword(&WORD_BREAK), true;
-    "vertical-align" => AttrKind::Keyword(&VERTICAL_ALIGN), false;
+    "background" => AttrKind::Color; "background-color" => AttrKind::Color;
+    "color" => AttrKind::Color; "border-color" => AttrKind::Color;
+    "border" => AttrKind::Text;
+    "border-width" => PX;
+    "border-top-width" => PX; "border-right-width" => PX;
+    "border-bottom-width" => PX; "border-left-width" => PX;
+    "border-radius" => PX;
+    "box-shadow" => AttrKind::Text;
+    "opacity" => AttrKind::Number(NumberRule::Unitless { min: 0.0, max: 1.0 });
+    "z-index" => AttrKind::Number(NumberRule::ZIndex);
+    "visibility" => AttrKind::Keyword(&VISIBILITY);
+    "overflow" => AttrKind::Keyword(&OVERFLOW);
+    "overflow-x" => AttrKind::Keyword(&OVERFLOW);
+    "overflow-y" => AttrKind::Keyword(&OVERFLOW);
+    // Typography.
+    "font-family" => AttrKind::Text;
+    "font-size" => AttrKind::Pixels { float: Some(NumberRule::Px { min: 1.0 }) };
+    "font-weight" => AttrKind::FontWeight;
+    "font-style" => AttrKind::Keyword(&FONT_STYLE);
+    "line-height" => AttrKind::LineHeight;
+    "letter-spacing" => SIGNED;
+    "text-align" => AttrKind::Keyword(&TEXT_ALIGN);
+    "text-decoration" => AttrKind::TextDecoration;
+    "white-space" => AttrKind::Keyword(&WHITE_SPACE);
+    "overflow-wrap" => AttrKind::Keyword(&OVERFLOW_WRAP);
+    "word-break" => AttrKind::Keyword(&WORD_BREAK);
+    "vertical-align" => AttrKind::Keyword(&VERTICAL_ALIGN);
     // Interaction.
-    "cursor" => AttrKind::Keyword(&CURSOR), false;
+    "cursor" => AttrKind::Keyword(&CURSOR);
 }
 
 /// Longest canonical attribute name (`border-bottom-width`), bounding the normalization buffer.

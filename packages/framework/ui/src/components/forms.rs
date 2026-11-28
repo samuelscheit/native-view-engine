@@ -5,8 +5,8 @@ use dioxus_core_macro::Props;
 use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::components::roles::{checkbox_colors, error_indicator, error_text, switch_colors};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::use_theme;
 
 /// Accessible text input with optional label, helper/error text (`aria-describedby`),
@@ -34,7 +34,7 @@ pub fn Input(
     #[props(default)] test_id: Option<String>,
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] accessibility_role: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut focused = use_signal(|| false);
@@ -69,13 +69,13 @@ pub fn Input(
         theme.surface.base
     };
 
-    let wrapper_style = TypedStyleBuilder::new()
+    let wrapper_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.xs)
         .width_pct(100.0)
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let input_style = TypedStyleBuilder::new()
+    let input_style = TypedStyle::new()
         .width_pct(100.0)
         .min_height_px(if multiline { 88.0 } else { 38.0 })
         .padding_xy(theme.spacing.md, theme.spacing.sm)
@@ -90,35 +90,30 @@ pub fn Input(
         .text_style(TypedTextStyle {
             color: theme.text.primary,
             font_size: theme.typography.body.size,
-            font_weight: "400",
-            text_align: "left",
+            font_weight: 400,
+            text_align: TextAlign::Left,
             opacity: if disabled { 0.55 } else { 1.0 },
-        })
-        .finish();
+        });
 
-    let label_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.ui.size,
-            font_weight: "600",
-            text_align: "left",
-            opacity: if disabled { 0.6 } else { 1.0 },
-        })
-        .finish();
+    let label_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.ui.size,
+        font_weight: 600,
+        text_align: TextAlign::Left,
+        opacity: if disabled { 0.6 } else { 1.0 },
+    });
 
-    let desc_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: if has_error {
-                error_text(&theme)
-            } else {
-                theme.text.tertiary
-            },
-            font_size: theme.typography.caption.size,
-            font_weight: if has_error { "500" } else { "400" },
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let desc_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: if has_error {
+            error_text(&theme)
+        } else {
+            theme.text.tertiary
+        },
+        font_size: theme.typography.caption.size,
+        font_weight: if has_error { 500 } else { 400 },
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     let tab_index = if disabled { -1 } else { 0 };
     let a11y_label = accessibility_label.or_else(|| label.clone());
@@ -127,7 +122,6 @@ pub fn Input(
     rsx! {
         view {
             nve_style: wrapper_style,
-            style: style,
             if let Some(ref lbl) = label {
                 text {
                     test_id: label_id.clone(),
@@ -203,7 +197,7 @@ pub fn Checkbox(
     #[props(default)] on_change: Option<EventHandler<bool>>,
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut focused = use_signal(|| false);
@@ -217,7 +211,7 @@ pub fn Checkbox(
     };
     let active_fill = checked || indeterminate;
 
-    let row_style = TypedStyleBuilder::new()
+    let row_style = TypedStyle::new()
         .flex_row()
         .align_items(FlexAlign::Center)
         .gap(theme.spacing.sm)
@@ -229,11 +223,11 @@ pub fn Checkbox(
             opacity: if disabled { 0.5 } else { 1.0 },
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
     let boxc = checkbox_colors(&theme, active_fill, focused() && !disabled);
 
-    let box_style = TypedStyleBuilder::new()
+    let box_style = TypedStyle::new()
         .width_px(20.0)
         .height_px(20.0)
         .justify_content(FlexJustify::Center)
@@ -245,28 +239,23 @@ pub fn Checkbox(
             border_radius: theme.radius.sm,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let mark_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: boxc.fg,
-            font_size: theme.typography.ui.size,
-            font_weight: "700",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+    let mark_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: boxc.fg,
+        font_size: theme.typography.ui.size,
+        font_weight: 700,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
-    let lbl_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.body.size,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let lbl_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.body.size,
+        font_weight: 400,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     // Check / minus marks (U+2713, U+2212), not ASCII letters: every host's system UI font covers them.
     let glyph = if indeterminate {
@@ -288,7 +277,6 @@ pub fn Checkbox(
             disabled: disabled,
             tab_index: tab_index,
             nve_style: row_style,
-            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -329,14 +317,14 @@ pub fn Switch(
     #[props(default)] on_change: Option<EventHandler<bool>>,
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut focused = use_signal(|| false);
 
     let aria_checked = if checked { "true" } else { "false" };
 
-    let row_style = TypedStyleBuilder::new()
+    let row_style = TypedStyle::new()
         .flex_row()
         .align_items(FlexAlign::Center)
         .gap(theme.spacing.sm)
@@ -348,11 +336,11 @@ pub fn Switch(
             opacity: if disabled { 0.5 } else { 1.0 },
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
     let (track, thumb) = switch_colors(&theme, checked, focused() && !disabled);
 
-    let track_style = TypedStyleBuilder::new()
+    let track_style = TypedStyle::new()
         .width_px(44.0)
         .height_px(24.0)
         .padding(3.0)
@@ -370,10 +358,9 @@ pub fn Switch(
             border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let thumb_style = TypedStyleBuilder::new()
+    let thumb_style = TypedStyle::new()
         .width_px(18.0)
         .height_px(18.0)
         .surface(TypedSurfaceStyle {
@@ -383,18 +370,15 @@ pub fn Switch(
             border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let lbl_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.body.size,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let lbl_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.body.size,
+        font_weight: 400,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     let tab_index = if disabled { -1 } else { 0 };
     let a11y_label = accessibility_label.or_else(|| label.clone());
@@ -408,7 +392,6 @@ pub fn Switch(
             disabled: disabled,
             tab_index: tab_index,
             nve_style: row_style,
-            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {

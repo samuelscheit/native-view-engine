@@ -15,7 +15,6 @@ pub mod event_replay;
 pub mod events;
 #[cfg(target_arch = "wasm32")]
 mod events_dom;
-mod hot_patch;
 pub mod html;
 #[cfg(feature = "hydrate")]
 pub mod hydrate;
@@ -77,8 +76,11 @@ use std::rc::Rc;
 /// Optional host callback invoked when a live browser event is pushed.
 pub type RenderCallback = Rc<dyn Fn()>;
 
+#[cfg(target_arch = "wasm32")]
 use nve_abi::hash::HashMap;
-use nve_abi::{EventBatchBuf, NodeId, SurfaceId};
+#[cfg(target_arch = "wasm32")]
+use nve_abi::NodeId;
+use nve_abi::{EventBatchBuf, SurfaceId};
 use nve_tables::keyboard::KeyboardInsets;
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend, Viewport};
 use nve_store::{ChangeSet, NodeStore};
@@ -154,7 +156,6 @@ pub struct WebBackend {
     pub(crate) viewport: Viewport,
     pub(crate) renderer: WebStoreRenderer,
     pub(crate) stylesheet: StyleSheetCache,
-    pub(crate) patch_css: HashMap<NodeId, String>,
     pub(crate) pending_events: Rc<RefCell<EventBatchBuf>>,
     pub(crate) event_state: Rc<RefCell<WebEventState>>,
     pub(crate) input_sync: Rc<RefCell<InputSyncTracker>>,
@@ -204,7 +205,6 @@ impl WebBackend {
             viewport: Viewport::default(),
             renderer: WebStoreRenderer::new(),
             stylesheet: StyleSheetCache::new(),
-            patch_css: HashMap::default(),
             pending_events: Rc::new(RefCell::new(EventBatchBuf::new())),
             event_state: Rc::new(RefCell::new(WebEventState::new())),
             input_sync: Rc::new(RefCell::new(InputSyncTracker::new())),
@@ -413,9 +413,6 @@ impl StoreBackend for WebBackend {
         store: &NodeStore,
         changes: &ChangeSet,
     ) -> Result<BackendApplyStats, BackendError> {
-        for &removed in &changes.removed {
-            self.patch_css.remove(&removed);
-        }
         #[cfg(feature = "hydrate")]
         let hydration = self.pair_pending_hydration(store);
 
@@ -478,7 +475,6 @@ impl StoreBackend for WebBackend {
     fn reset(&mut self) {
         self.renderer.reset();
         self.stylesheet.clear();
-        self.patch_css.clear();
         self.pending_events.borrow_mut().clear();
         self.event_state.borrow_mut().reset();
         self.sync_dom_listeners();

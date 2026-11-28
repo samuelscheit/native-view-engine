@@ -424,7 +424,7 @@ fn no_banned_legacy_4_letter_acronyms_ratchet() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "Zero banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
-        429,
+        424,
         &purity::check_banned_4_letter_acronyms(idx),
     );
 }

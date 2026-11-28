@@ -292,6 +292,49 @@ fn bench_rsx_diff(c: &mut Criterion) {
             b.iter(|| black_box(diff(&mut baseline, s)));
         });
     }
+    // Dedicated benchmark for `TypedRsxPatch -> RowPatch` binary flat word encoding.
+    let multi = &scenarios[3];
+    let mut multi_baseline = Baseline::new(multi.old.clone());
+    let DiffOutcome::Tier1Patch {
+        patch: sample_patch,
+        ..
+    } = multi_baseline.classify("bench.rs", &multi.new, 1).0
+    else {
+        panic!("expected Tier1Patch for multi_edit_last");
+    };
+    let (encoded, enc_allocs) = {
+        let c0 = ALLOC_COUNT.load(Ordering::SeqCst);
+        let b0 = ALLOC_BYTES.load(Ordering::SeqCst);
+        let msgs = sample_patch
+            .to_template_patches("bench.rs", 2)
+            .expect("RowPatch word encode");
+        (
+            msgs,
+            (
+                ALLOC_COUNT.load(Ordering::SeqCst) - c0,
+                ALLOC_BYTES.load(Ordering::SeqCst) - b0,
+            ),
+        )
+    };
+    assert!(
+        !encoded.is_empty() && enc_allocs.0 <= 24 && enc_allocs.1 <= 4096,
+        "RowPatch word encode budget exceeded: {} allocs / {} B",
+        enc_allocs.0,
+        enc_allocs.1
+    );
+    println!(
+        "{:<34} {:>6} {:>12} {:>14}",
+        "row_patch_encode/multi_edit", "Tier1", enc_allocs.0, enc_allocs.1
+    );
+    group.bench_function("row_patch_encode/multi_edit", |b| {
+        b.iter(|| {
+            black_box(
+                sample_patch
+                    .to_template_patches(black_box("bench.rs"), black_box(2))
+                    .expect("RowPatch word encode"),
+            )
+        });
+    });
     group.finish();
 }
 

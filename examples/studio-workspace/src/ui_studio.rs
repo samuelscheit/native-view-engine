@@ -8,35 +8,28 @@
 //! [`StudioPanel`] subscribes to the `studio` domain; [`SyncCard`] to `sync` and
 //! [`TimeTravelCard`] to `inspector`, so telemetry ticks and history scrubs repaint only their card.
 
+use dioxus_core::EventHandler;
 use nve_dioxus::prelude::*;
 use nve_dioxus::traits::TraitScope;
 use nve_ui::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Separator,
 };
 
 use crate::state::{AccentTheme, CornerRadiusMode, DensityMode, LayoutEngineMode, WorkspaceState};
 use crate::theme::badge_min_w;
 use crate::traits::{StudioTraitPreviewChip, studio_compact_override};
 use crate::ui::store::{StudioStore, use_studio};
-use crate::ui::style::{StudioStyle, data_attrs, use_studio_style};
-use dioxus_core::EventHandler;
+use crate::ui::style::{
+    StudioStyle, StudioStyleExt, badge_dims, data_attrs, flex_dims, min_w_dims, row_between,
+    text_style, use_studio_style,
+};
 
-fn section_style(s: &StudioStyle) -> String {
-    format!(
-        "width: 100%; flex-shrink: 0; padding: 5px; gap: 3px; background-color: {}; border-radius: {}px; {}",
-        s.t.surface.sunken.hex(),
-        s.m.button_radius,
-        s.card()
-    )
+fn section_style(s: &StudioStyle) -> TypedStyle {
+    s.card_surface(5, 3, s.t.surface.sunken, s.m.button_radius)
 }
 
-fn segment_style(s: &StudioStyle, selected: bool) -> String {
-    s.compact_control(
-        "flex: 1; height: 20px; min-height: 20px;",
-        2,
-        s.m.pill_radius,
-        Some(selected),
-    )
+fn segment_style(s: &StudioStyle, selected: bool) -> TypedStyle {
+    s.compact_control(flex_dims(20.0), 2, s.m.pill_radius, Some(selected))
 }
 
 /// One radio group of mutually exclusive Studio options (the checked one exposes `aria-checked`
@@ -51,16 +44,16 @@ fn OptionRow(
     rsx! {
         view {
             accessibility_role: "radiogroup",
-            style: "width: 100%; flex-direction: row; gap: 4px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_row().gap(4.0),
             for (idx, (tid, label, selected)) in options.into_iter().enumerate() {
                 pressable {
                     key: "{tid}",
                     test_id: "{tid}",
                     accessibility_role: "radio",
                     aria_checked: if selected { "true" } else { "false" },
-                    style: "{segment_style(&s, selected)}",
+                    nve_style: segment_style(&s, selected),
                     onpress: move |_| apply.call(idx),
-                    text { style: "color: {s.control_fg(selected)}; font-size: 11px;", "{label}" }
+                    text { nve_style: text_style(s.control_fg(selected), 11.0), "{label}" }
                 }
             }
         }
@@ -118,29 +111,36 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
     let t = s.t;
     let config = store.style.read().config;
     let engine = config.layout_engine;
-    let size = if mobile {
-        "width: 100%;"
+    let panel_base = if mobile {
+        TypedStyle::new().width_pct(100.0)
     } else {
-        "width: 210px; height: 100%;"
+        TypedStyle::new().width_px(210.0).height_pct(100.0)
     };
+    let panel_style = panel_base
+        .flex_shrink(0.0)
+        .flex_col()
+        .padding(7.0)
+        .gap(5.0)
+        .bg(t.surface.base)
+        .outline(s.panel());
     let section = section_style(&s);
-    let caption = t.text.tertiary.hex();
+    let caption = t.text.tertiary;
     let xray = config.xray;
 
     rsx! {
         view {
             test_id: "studio-panel",
             nve_table: data_attrs([("layout-engine", engine.as_str().to_owned())]),
-            style: "{size} flex-shrink: 0; flex-direction: column; padding: 7px; gap: 5px; background-color: {t.surface.base.hex()}; {s.panel()}",
+            nve_style: panel_style,
 
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; {s.row()}",
-                text { style: "color: {t.text.primary.hex()}; font-size: 12px;", "NVE STUDIO" }
+                nve_style: row_between().outline(s.row()),
+                text { nve_style: text_style(t.text.primary, 12.0), "NVE STUDIO" }
                 Badge {
                     label: "LIVE SELF-EDIT".to_string(),
                     variant: BadgeVariant::Accent,
-                    style: Some(s.compact_control(
-                        &format!("min-width: {}px; height: 17px;", badge_min_w("LIVE SELF-EDIT")),
+                    nve_style: Some(s.compact_control(
+                        badge_dims(badge_min_w("LIVE SELF-EDIT") as f32, 17.0),
                         4,
                         s.m.pill_radius,
                         None,
@@ -161,8 +161,8 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
                 variant: CardVariant::Subtle,
                 padding: Some(5.0),
                 gap: Some(3.0),
-                style: Some(section.clone()),
-                text { style: "color: {caption}; font-size: 9px;", "ACCENT" }
+                nve_style: Some(section.clone()),
+                text { nve_style: text_style(caption, 9.0), "ACCENT" }
                 OptionRow {
                     options: options(&ACCENTS[..2], config.accent),
                     apply: move |idx| apply_choice(store, ACCENTS, idx, WorkspaceState::set_accent),
@@ -177,13 +177,13 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
                 variant: CardVariant::Subtle,
                 padding: Some(5.0),
                 gap: Some(3.0),
-                style: Some(section.clone()),
-                text { style: "color: {caption}; font-size: 9px;", "RADIUS (0 / 12 / 18)" }
+                nve_style: Some(section.clone()),
+                text { nve_style: text_style(caption, 9.0), "RADIUS (0 / 12 / 18)" }
                 OptionRow {
                     options: options(RADII, config.radius),
                     apply: move |idx| apply_choice(store, RADII, idx, WorkspaceState::set_radius),
                 }
-                text { style: "color: {caption}; font-size: 9px;", "DENSITY" }
+                text { nve_style: text_style(caption, 9.0), "DENSITY" }
                 OptionRow {
                     options: options(DENSITIES, config.density),
                     apply: move |idx| apply_choice(store, DENSITIES, idx, WorkspaceState::set_density),
@@ -194,8 +194,8 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
                 variant: CardVariant::Subtle,
                 padding: Some(5.0),
                 gap: Some(3.0),
-                style: Some(section),
-                text { style: "color: {caption}; font-size: 9px;", "LAYOUT ENGINE" }
+                nve_style: Some(section),
+                text { nve_style: text_style(caption, 9.0), "LAYOUT ENGINE" }
                 OptionRow {
                     options: options(ENGINES, engine),
                     apply: move |idx| apply_choice(store, ENGINES, idx, WorkspaceState::set_layout_engine),
@@ -203,8 +203,8 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
                 view {
                     test_id: "layout-engine-readout",
                     nve_table: data_attrs([("layout-engine", engine.as_str().to_owned())]),
-                    style: "width: 100%; flex-shrink: 0;",
-                    text { style: "color: {t.text.link.hex()}; font-size: 9px;", "{engine.readout_label()}" }
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_shrink(0.0),
+                    text { nve_style: text_style(t.text.link, 9.0), "{engine.readout_label()}" }
                 }
             }
 
@@ -212,7 +212,12 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("toggle-xray".into()),
-                style: Some(s.compact_control("width: 100%; height: 24px; min-height: 24px;", 4, s.m.button_radius, Some(xray))),
+                nve_style: Some(s.compact_control(
+                    TypedStyle::new().width_pct(100.0).height_px(24.0).min_height_px(24.0).flex_shrink(0.0),
+                    4,
+                    s.m.button_radius,
+                    Some(xray),
+                )),
                 on_press: move |_| store.update(|st| st.toggle_xray()),
                 if xray { "X-Ray HUD: ON" } else { "X-Ray HUD: OFF" }
             }
@@ -253,6 +258,11 @@ fn SyncCard() -> Element {
     let split = sync.crdt_partitioned;
     let status_lbl = if split { "SPLIT" } else { "MESH" };
     let transport = sync.transport.label();
+    let between = TypedStyle::new()
+        .width_pct(100.0)
+        .flex_row()
+        .justify_content(FlexJustify::SpaceBetween)
+        .align_items(FlexAlign::Center);
 
     rsx! {
         Card {
@@ -260,18 +270,18 @@ fn SyncCard() -> Element {
             test_id: Some("studio-sync-telemetry".into()),
             padding: Some(5.0),
             gap: Some(3.0),
-            style: Some(section_style(&s)),
+            nve_style: Some(section_style(&s)),
             view {
                 nve_table: data_attrs([("sync-transport", sync.transport.as_str().to_owned())]),
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
-                text { style: "color: {t.text.tertiary.hex()}; font-size: 9px;", "LIVE SYNC" }
+                nve_style: between.clone(),
+                text { nve_style: text_style(t.text.tertiary, 9.0), "LIVE SYNC" }
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("sync-transport-cycle".into()),
                     accessibility_label: Some("Cycle live sync transport mode".into()),
-                    style: Some(s.compact_control(
-                        &format!("min-width: {}px; height: 17px; min-height: 17px;", badge_min_w(transport)),
+                    nve_style: Some(s.compact_control(
+                        min_w_dims(badge_min_w(transport) as f32, 17.0),
                         4,
                         s.m.pill_radius,
                         Some(true),
@@ -281,20 +291,20 @@ fn SyncCard() -> Element {
                 }
             }
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
-                text { style: "color: {t.text.primary.hex()}; font-size: 9px;", "{peers}" }
-                text { style: "color: {t.text.secondary.hex()}; font-size: 9px;", "{metrics}" }
+                nve_style: between.clone(),
+                text { nve_style: text_style(t.text.primary, 9.0), "{peers}" }
+                text { nve_style: text_style(t.text.secondary, 9.0), "{metrics}" }
             }
             Separator {}
             view {
                 test_id: "studio-crdt-metrics",
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
-                text { style: "color: {t.text.link.hex()}; font-size: 9px;", "{crdt_summary}" }
+                nve_style: between,
+                text { nve_style: text_style(t.text.link, 9.0), "{crdt_summary}" }
                 Badge {
                     label: status_lbl.to_string(),
                     variant: if split { BadgeVariant::Danger } else { BadgeVariant::Success },
-                    style: Some(s.compact_control(
-                        &format!("min-width: {}px; height: 15px;", badge_min_w(status_lbl)),
+                    nve_style: Some(s.compact_control(
+                        badge_dims(badge_min_w(status_lbl) as f32, 15.0),
                         3,
                         s.m.pill_radius,
                         None,
@@ -302,13 +312,13 @@ fn SyncCard() -> Element {
                 }
             }
             view {
-                style: "width: 100%; flex-direction: row; gap: 4px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_row().gap(4.0),
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("crdt-sync-now".into()),
                     accessibility_label: Some("Sync binary CRDT deltas now".into()),
-                    style: Some(segment_style(&s, true)),
+                    nve_style: Some(segment_style(&s, true)),
                     on_press: move |_| store.update(|st| st.sync_crdt_now()),
                     "Sync Now"
                 }
@@ -317,7 +327,7 @@ fn SyncCard() -> Element {
                     size: ButtonSize::Sm,
                     test_id: Some("crdt-toggle-partition".into()),
                     accessibility_label: Some("Simulate or heal CRDT network partition".into()),
-                    style: Some(s.compact_control("flex: 1; height: 20px; min-height: 20px;", 2, s.m.pill_radius, None)),
+                    nve_style: Some(s.compact_control(flex_dims(20.0), 2, s.m.pill_radius, None)),
                     on_press: move |_| store.update(|st| st.toggle_crdt_partition()),
                     if split { "Heal Mesh" } else { "Partition" }
                 }
@@ -336,30 +346,27 @@ fn TimeTravelCard() -> Element {
     let i = store.inspector.read().clone();
     let step = |enabled: bool| {
         let style = segment_style(&s, false);
-        if enabled {
-            style
-        } else {
-            format!("{style} opacity: 0.4;")
-        }
+        if enabled { style } else { style.opacity(0.4) }
     };
     let (undo_style, redo_style) = (step(i.can_undo), step(i.can_redo));
+    let btn_row = TypedStyle::new().width_pct(100.0).flex_row().gap(4.0);
 
     rsx! {
         Card {
             variant: CardVariant::Subtle,
             padding: Some(5.0),
             gap: Some(3.0),
-            style: Some(section_style(&s)),
-            text { style: "color: {t.text.tertiary.hex()}; font-size: 9px;", "TIME TRAVEL" }
-            text { style: "color: {t.text.primary.hex()}; font-size: 10px;", "Snapshot {i.snapshot_index} / {i.history_len}" }
-            text { style: "color: {t.text.link.hex()}; font-size: 9px;", "{i.action_label}" }
+            nve_style: Some(section_style(&s)),
+            text { nve_style: text_style(t.text.tertiary, 9.0), "TIME TRAVEL" }
+            text { nve_style: text_style(t.text.primary, 10.0), "Snapshot {i.snapshot_index} / {i.history_len}" }
+            text { nve_style: text_style(t.text.link, 9.0), "{i.action_label}" }
             view {
-                style: "width: 100%; flex-direction: row; gap: 4px;",
+                nve_style: btn_row.clone(),
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("tt-first".into()),
-                    style: Some(undo_style.clone()),
+                    nve_style: Some(undo_style.clone()),
                     on_press: move |_| store.update(|st| st.scrub_first()),
                     "<< #1"
                 }
@@ -367,18 +374,18 @@ fn TimeTravelCard() -> Element {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("tt-undo".into()),
-                    style: Some(undo_style),
+                    nve_style: Some(undo_style),
                     on_press: move |_| store.update(|st| st.scrub_undo()),
                     "< Undo"
                 }
             }
             view {
-                style: "width: 100%; flex-direction: row; gap: 4px;",
+                nve_style: btn_row,
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("tt-redo".into()),
-                    style: Some(redo_style.clone()),
+                    nve_style: Some(redo_style.clone()),
                     on_press: move |_| store.update(|st| st.scrub_redo()),
                     "Redo >"
                 }
@@ -386,7 +393,7 @@ fn TimeTravelCard() -> Element {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("tt-live".into()),
-                    style: Some(redo_style),
+                    nve_style: Some(redo_style),
                     on_press: move |_| store.update(|st| st.scrub_live()),
                     "Live >>"
                 }

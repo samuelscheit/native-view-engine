@@ -18,8 +18,8 @@ use nve_dioxus::prelude::*;
 use crate::components::actions::{Button, ButtonSize, ButtonVariant};
 use crate::components::forms::Input;
 use crate::form_draft::FormController;
-use crate::style_buf::{TypedStyleBuilder, TypedTextStyle};
 use crate::components::roles::error_text;
+use crate::surface::{SurfaceStyleExt, TypedTextStyle};
 use crate::theme::use_theme;
 
 /// HTTP submission method emitted on `<form method="...">`.
@@ -91,7 +91,7 @@ pub fn Form(
     #[props(default = true)] clear_draft_on_submit: bool,
     #[props(default)] id: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -137,20 +137,18 @@ pub fn Form(
         provide_context(ctx);
     });
 
-    let form_style = TypedStyleBuilder::new()
+    let form_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.md)
         .width_pct(100.0)
-        .finish();
-    let form_err_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: error_text(&theme),
-            font_size: theme.typography.ui.size,
-            font_weight: "500",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+        .merge_opt(nve_style.as_ref());
+    let form_err_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: error_text(&theme),
+        font_size: theme.typography.ui.size,
+        font_weight: 500,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     let ctrl_read = active_ctrl.read();
     let form_table = super::html_tables::html_form_table(
@@ -171,7 +169,6 @@ pub fn Form(
             nve_table: form_table,
             accessibility_role: "form",
             nve_style: form_style,
-            style: style,
             onsubmit: move |_: SubmitEvent| {
                 dispatch_form_submit(ctx);
             },
@@ -207,7 +204,7 @@ pub fn FormField(
     #[props(default)] autocomplete: Option<AutofillHint>,
     #[props(default)] input_mode: Option<InputMode>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let ctx = try_consume_context::<FormSubmitContext>();
     let active_ctrl = ctx.map(|c| *c.controller.read());
@@ -243,7 +240,7 @@ pub fn FormField(
             read_only: read_only,
             autocomplete: autocomplete,
             input_mode: input_mode,
-            style: style,
+            nve_style: nve_style,
             on_change: move |next: String| {
                 if let Some(mut ctrl) = ctx.map(|x| *x.controller.peek()) {
                     ctrl.write().set_text(&name_change, next);
@@ -299,7 +296,7 @@ pub fn FormSubmitButton(
     #[props(default)] name: Option<String>,
     #[props(default)] value: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     #[cfg(not(target_arch = "wasm32"))]
@@ -315,7 +312,7 @@ pub fn FormSubmitButton(
             name: name,
             value: value,
             test_id: test_id,
-            style: style,
+            nve_style: nve_style,
             on_press: move |_| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(c) = ctx {

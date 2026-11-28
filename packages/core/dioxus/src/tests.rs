@@ -35,7 +35,7 @@ fn CounterApp() -> Element {
         .radius(12.0)
         .color(ColorRgba::WHITE)
         .font_size(18.0)
-        .font_weight("bold")
+        .font_weight(700)
         .cursor(CursorKind::Pointer);
 
     rsx! {
@@ -180,16 +180,19 @@ fn targeted_hot_patch_updates_only_addressed_node_and_text() {
     let beta = find_by_test_id(surface.store(), "card-beta");
     let beta_bg = surface.store().try_row::<Visual>(beta).unwrap().background();
 
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
+    rp.set(Visual::BORDER_RADIUS, 16.0);
+    let mut row_patch_words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut row_patch_words));
+
     assert!(surface.apply_hot_patch(&HotPatchMsg::TemplatePatch {
         generation: 2,
-        template_id: "ui.rs".into(),
-        attr_updates: vec![(
-            "style".into(),
-            "background-color: #2563eb; border-radius: 16px;".into(),
-        )],
-        text_updates: vec![],
-        target_test_id: Some("card-alpha".into()),
+        template_key: 0,
         node_path: vec![0, 0],
+        target_test_id: Some("card-alpha".into()),
+        row_patch_words,
+        text_updates: vec![],
         text_replacements: vec![("# engineering".into(), "# runtime".into())],
     }));
     surface.reconcile(FrameId(2));

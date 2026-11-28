@@ -10,8 +10,8 @@ use nve_dioxus::prelude::*;
 pub use crate::components::combobox_state::{
     default_combobox_filter, ComboboxAction, ComboboxOption, ComboboxState,
 };
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::components::roles::selected_text;
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::{use_theme, Layer};
 
 /// Accessible searchable single-select & multi-select combobox component with `role="combobox"`,
@@ -31,7 +31,7 @@ pub fn Combobox(
     #[props(default)] on_change: Option<EventHandler<Vec<String>>>,
     #[props(default)] on_query_change: Option<EventHandler<String>>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut focused = use_signal(|| false);
@@ -70,13 +70,13 @@ pub fn Combobox(
         )
     };
 
-    let wrap_style = TypedStyleBuilder::new()
+    let wrap_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.xs)
         .width_pct(100.0)
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let input_style = TypedStyleBuilder::new()
+    let input_style = TypedStyle::new()
         .width_pct(100.0)
         .min_height_px(38.0)
         .padding_xy(theme.spacing.md, theme.spacing.sm)
@@ -99,13 +99,12 @@ pub fn Combobox(
         .text_style(TypedTextStyle {
             color: theme.text.primary,
             font_size: theme.typography.body.size,
-            font_weight: "400",
-            text_align: "left",
+            font_weight: 400,
+            text_align: TextAlign::Left,
             opacity: if disabled { 0.55 } else { 1.0 },
-        })
-        .finish();
+        });
 
-    let listbox_style = TypedStyleBuilder::new()
+    let listbox_style = TypedStyle::new()
         .flex_col()
         .padding(theme.spacing.xs)
         .gap(2.0)
@@ -117,37 +116,32 @@ pub fn Combobox(
             border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: theme.elevation.overlay,
-        })
-        .finish();
+        });
 
-    let label_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.ui.size,
-            font_weight: "600",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let label_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.ui.size,
+        font_weight: 600,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
-    let muted_style = TypedStyleBuilder::new()
+    let muted_style = TypedStyle::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .text_style(TypedTextStyle {
             color: theme.text.tertiary,
             font_size: theme.typography.ui.size,
-            font_weight: "400",
-            text_align: "left",
+            font_weight: 400,
+            text_align: TextAlign::Left,
             opacity: 1.0,
-        })
-        .finish();
+        });
 
-    let tags_row_style = TypedStyleBuilder::new()
+    let tags_row_style = TypedStyle::new()
         .flex_row()
         .gap(theme.spacing.xs)
-        .align_items(FlexAlign::Center)
-        .finish();
+        .align_items(FlexAlign::Center);
 
-    let tag_style = TypedStyleBuilder::new()
+    let tag_style = TypedStyle::new()
         .flex_row()
         .align_items(FlexAlign::Center)
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
@@ -158,18 +152,15 @@ pub fn Combobox(
             border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let tag_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.caption.size,
-            font_weight: "500",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let tag_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.caption.size,
+        font_weight: 500,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     let rendered_tags: Vec<Element> = if multi {
         selected_vals
@@ -219,7 +210,7 @@ pub fn Combobox(
             let opt_label = opt.label.clone();
             let opt_disabled = opt.disabled;
 
-            let opt_style = TypedStyleBuilder::new()
+            let opt_style = TypedStyle::new()
                 .flex_row()
                 .justify_content(FlexJustify::SpaceBetween)
                 .align_items(FlexAlign::Center)
@@ -239,22 +230,19 @@ pub fn Combobox(
                     border_radius: theme.radius.sm,
                     opacity: if opt_disabled { 0.45 } else { 1.0 },
                     box_shadow: None,
-                })
-                .finish();
+                });
 
-            let opt_text_style = TypedStyleBuilder::new()
-                .text_style(TypedTextStyle {
-                    color: if is_sel {
-                        selected_text(&theme)
-                    } else {
-                        theme.text.primary
-                    },
-                    font_size: theme.typography.ui.size,
-                    font_weight: if is_sel || is_hl { "600" } else { "400" },
-                    text_align: "left",
-                    opacity: 1.0,
-                })
-                .finish();
+            let opt_text_style = TypedStyle::new().text_style(TypedTextStyle {
+                color: if is_sel {
+                    selected_text(&theme)
+                } else {
+                    theme.text.primary
+                },
+                font_size: theme.typography.ui.size,
+                font_weight: if is_sel || is_hl { 600 } else { 400 },
+                text_align: TextAlign::Left,
+                opacity: 1.0,
+            });
 
             let aria_sel = if is_sel { "true" } else { "false" };
             rsx! {
@@ -293,7 +281,6 @@ pub fn Combobox(
         view {
             test_id: "{base_id}",
             nve_style: wrap_style,
-            style: style,
             if let Some(ref lbl) = label {
                 text {
                     test_id: label_id.clone(),

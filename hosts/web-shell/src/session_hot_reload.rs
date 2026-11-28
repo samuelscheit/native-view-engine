@@ -1,17 +1,16 @@
-//! Dev-only `NVP1` binary hot-reload action types and `WebAppSession::handle_hot_patch*` methods.
+//! Dev-only v2 binary hot-reload action types and `WebAppSession::handle_hot_patch*` methods.
 
 use nve_engine::HotPatchMsg;
-use nve_store::ChangeSet;
 
 use super::WebAppSession;
 
 /// Outcome of handling one `nve dev` WebSocket `HotPatchMsg`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotReloadAction {
-    /// Tier-1 template/style patch applied live without reloading the page.
+    /// Tier-1 binary `RowPatch` / text patch applied live without reloading the page.
     TemplatePatched {
         generation: u64,
-        template_id: String,
+        template_key: u64,
         mutations: u32,
     },
     /// Tier-2 dylib/WASM rebuild finished; browser shell should log and reload cleanly.
@@ -25,32 +24,31 @@ pub enum HotReloadAction {
 }
 
 impl WebAppSession {
-    /// Decodes and applies one binary `NVP1` hot-patch frame from `nve dev`.
+    /// Decodes and applies one binary v2 hot-patch frame from `nve dev`.
     pub fn handle_hot_patch_frame(&mut self, raw: &[u8]) -> Result<HotReloadAction, String> {
         let msg = HotPatchMsg::from_bytes(raw).map_err(|e| format!("invalid NVP1 frame: {e}"))?;
         self.handle_hot_patch(msg)
     }
 
-    /// Applies one decoded `HotPatchMsg` from `nve dev`.
+    /// Applies one decoded `HotPatchMsg` from `nve dev` through the unified `app.apply_hot_patch`
+    /// -> `render_and_submit()` path (identical to desktop Skia and native hosts).
     pub fn handle_hot_patch(&mut self, msg: HotPatchMsg) -> Result<HotReloadAction, String> {
         match msg {
             ref msg @ HotPatchMsg::TemplatePatch {
                 generation,
-                ref template_id,
+                template_key,
                 ..
             } => {
-                let template_id = template_id.clone();
-                let mut patch_changes = ChangeSet::default();
-                let mutations = self.backend.apply_template_patch_into(
-                    self.app.store_mut(),
-                    msg,
-                    &mut patch_changes,
-                );
-                let next_frame = self.frame_id.next();
-                self.frame_id = next_frame;
+                let mut mutations = 0u32;
+                if self.app.apply_hot_patch(msg) {
+                    let timing = self
+                        .render_and_submit()
+                        .map_err(|e| format!("failed to commit hot patch: {e}"))?;
+                    mutations = timing.mutation_count;
+                }
                 Ok(HotReloadAction::TemplatePatched {
                     generation,
-                    template_id,
+                    template_key,
                     mutations,
                 })
             }

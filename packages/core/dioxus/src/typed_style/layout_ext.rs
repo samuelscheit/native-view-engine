@@ -8,6 +8,11 @@ use nve_tables::layout_ext::{
 use nve_tables::tables::Display;
 use nve_tables::transform::Transform2D;
 
+use super::merge::{
+    E_ASPECT_RATIO, E_COL_GAP, E_DIRECTION, E_DISPLAY, E_FLEX_BASIS, E_GRID_COLS, E_GRID_ITEM,
+    E_GRID_ROWS, E_INSET_BOTTOM, E_INSET_LEFT, E_INSET_RIGHT, E_INSET_TOP, E_MAR_INLINE,
+    E_PAD_INLINE, E_POSITION, E_ROW_GAP,
+};
 use super::TypedStyle;
 
 impl TypedStyle {
@@ -16,6 +21,7 @@ impl TypedStyle {
     #[inline]
     pub fn flex_basis(mut self, dim: Dimension) -> Self {
         self.ext_mut().flex_basis = dim;
+        self.layout_ext_mask |= E_FLEX_BASIS;
         self
     }
 
@@ -33,6 +39,7 @@ impl TypedStyle {
     pub fn aspect_ratio(mut self, ratio: f32) -> Self {
         if ratio.is_finite() && ratio > 0.0 {
             self.ext_mut().aspect_ratio = Some(ratio);
+            self.layout_ext_mask |= E_ASPECT_RATIO;
         }
         self
     }
@@ -42,6 +49,7 @@ impl TypedStyle {
     #[inline]
     pub fn position(mut self, mode: PositionMode) -> Self {
         self.ext_mut().position = mode;
+        self.layout_ext_mask |= E_POSITION;
         self
     }
 
@@ -63,6 +71,7 @@ impl TypedStyle {
     #[inline]
     pub fn inset_top(mut self, dim: Dimension) -> Self {
         self.ext_mut().insets.top = dim;
+        self.layout_ext_mask |= E_INSET_TOP;
         self
     }
 
@@ -74,6 +83,7 @@ impl TypedStyle {
     #[inline]
     pub fn inset_right(mut self, dim: Dimension) -> Self {
         self.ext_mut().insets.right = dim;
+        self.layout_ext_mask |= E_INSET_RIGHT;
         self
     }
 
@@ -85,6 +95,7 @@ impl TypedStyle {
     #[inline]
     pub fn inset_bottom(mut self, dim: Dimension) -> Self {
         self.ext_mut().insets.bottom = dim;
+        self.layout_ext_mask |= E_INSET_BOTTOM;
         self
     }
 
@@ -96,6 +107,7 @@ impl TypedStyle {
     #[inline]
     pub fn inset_left(mut self, dim: Dimension) -> Self {
         self.ext_mut().insets.left = dim;
+        self.layout_ext_mask |= E_INSET_LEFT;
         self
     }
 
@@ -109,6 +121,7 @@ impl TypedStyle {
     #[inline]
     pub fn display(mut self, display: Display) -> Self {
         self.ext_mut().display = display;
+        self.layout_ext_mask |= E_DISPLAY;
         self
     }
 
@@ -120,36 +133,42 @@ impl TypedStyle {
     #[inline]
     pub fn grid_cols(mut self, tracks: impl Into<Vec<GridTrack>>) -> Self {
         self.ext_mut().grid_mut().template_columns = tracks.into();
+        self.layout_ext_mask |= E_GRID_COLS;
         self
     }
 
     #[inline]
     pub fn grid_rows(mut self, tracks: impl Into<Vec<GridTrack>>) -> Self {
         self.ext_mut().grid_mut().template_rows = tracks.into();
+        self.layout_ext_mask |= E_GRID_ROWS;
         self
     }
 
     #[inline]
     pub fn column_gap(mut self, v: f32) -> Self {
         self.ext_mut().grid_mut().column_gap = Some(Self::sanitize(v).max(0.0));
+        self.layout_ext_mask |= E_COL_GAP;
         self
     }
 
     #[inline]
     pub fn row_gap(mut self, v: f32) -> Self {
         self.ext_mut().grid_mut().row_gap = Some(Self::sanitize(v).max(0.0));
+        self.layout_ext_mask |= E_ROW_GAP;
         self
     }
 
     #[inline]
     pub fn grid_column(mut self, placement: GridTrackPlacement) -> Self {
         self.ext_mut().grid_item.column = placement;
+        self.layout_ext_mask |= E_GRID_ITEM;
         self
     }
 
     #[inline]
     pub fn grid_row(mut self, placement: GridTrackPlacement) -> Self {
         self.ext_mut().grid_item.row = placement;
+        self.layout_ext_mask |= E_GRID_ITEM;
         self
     }
 
@@ -168,6 +187,7 @@ impl TypedStyle {
     #[inline]
     pub fn direction(mut self, dir: LayoutDirection) -> Self {
         self.ext_mut().direction = Some(dir);
+        self.layout_ext_mask |= E_DIRECTION;
         self
     }
 
@@ -184,24 +204,28 @@ impl TypedStyle {
     #[inline]
     pub fn padding_inline_start(mut self, v: f32) -> Self {
         self.ext_mut().padding_inline.start = Some(Self::sanitize(v).max(0.0));
+        self.layout_ext_mask |= E_PAD_INLINE;
         self
     }
 
     #[inline]
     pub fn padding_inline_end(mut self, v: f32) -> Self {
         self.ext_mut().padding_inline.end = Some(Self::sanitize(v).max(0.0));
+        self.layout_ext_mask |= E_PAD_INLINE;
         self
     }
 
     #[inline]
     pub fn margin_inline_start(mut self, v: f32) -> Self {
         self.ext_mut().margin_inline.start = Some(Self::sanitize(v));
+        self.layout_ext_mask |= E_MAR_INLINE;
         self
     }
 
     #[inline]
     pub fn margin_inline_end(mut self, v: f32) -> Self {
         self.ext_mut().margin_inline.end = Some(Self::sanitize(v));
+        self.layout_ext_mask |= E_MAR_INLINE;
         self
     }
 

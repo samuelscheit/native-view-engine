@@ -11,6 +11,7 @@ mod surface_tests;
 mod typed_span_tests;
 
 use nve_engine::HotPatchMsg;
+use nve_store::{NveTable, Prop, RowPatchView, ScalarField};
 
 use super::DiffOutcome;
 use super::cache::Baseline;
@@ -22,15 +23,15 @@ use super::patch::TypedRsxPatch;
 
 /// Cold diff of two sources (fresh baseline).
 fn diff_rsx_source(
-    template_id: &str,
+    rel_file: &str,
     old_src: &str,
     new_src: &str,
     generation: u64,
 ) -> DiffOutcome {
-    Baseline::new(old_src.to_owned()).diff(template_id, new_src, generation)
+    Baseline::new(old_src.to_owned()).diff(rel_file, new_src, generation)
 }
 
-/// The typed patch of two sources, independent of string lowering.
+/// The typed patch of two sources, independent of binary `RowPatch` lowering.
 fn typed_patch(old_src: &str, new_src: &str) -> Result<Option<TypedRsxPatch>, String> {
     let old_tokens = tokenize(old_src).map_err(|e| e.as_str().to_owned())?;
     let new_tokens = tokenize(new_src).map_err(|e| e.as_str().to_owned())?;
@@ -42,31 +43,41 @@ fn typed_patch(old_src: &str, new_src: &str) -> Result<Option<TypedRsxPatch>, St
 #[derive(Debug)]
 struct PatchView {
     generation: u64,
-    template_id: String,
-    attr_updates: Vec<(String, String)>,
-    text_updates: Vec<(usize, String)>,
+    template_key: u64,
+    node_path: Vec<u16>,
     target_test_id: Option<String>,
-    node_path: Vec<usize>,
+    row_patch_words: Vec<u32>,
+    text_updates: Vec<(usize, String)>,
     text_replacements: Vec<(String, String)>,
+}
+
+impl PatchView {
+    fn row_patch(&self) -> RowPatchView<'_> {
+        RowPatchView::from_words(&self.row_patch_words).expect("valid binary RowPatch words")
+    }
+
+    fn prop<T: NveTable, V: ScalarField>(&self, prop: Prop<T, V>) -> Option<V> {
+        self.row_patch().get_prop(prop)
+    }
 }
 
 fn view(msg: HotPatchMsg) -> PatchView {
     match msg {
         HotPatchMsg::TemplatePatch {
             generation,
-            template_id,
-            attr_updates,
-            text_updates,
-            target_test_id,
+            template_key,
             node_path,
+            target_test_id,
+            row_patch_words,
+            text_updates,
             text_replacements,
         } => PatchView {
             generation,
-            template_id,
-            attr_updates,
-            text_updates,
-            target_test_id,
+            template_key,
             node_path,
+            target_test_id,
+            row_patch_words,
+            text_updates,
             text_replacements,
         },
         other => panic!("expected TemplatePatch, got {other:?}"),

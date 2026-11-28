@@ -16,7 +16,7 @@ use dioxus_signals::{CopyValue, ReadSignal};
 use nve_abi::{ColorRgba, FlexAlign};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle};
 use crate::theme::use_theme;
 use engine::{clamp_scroll, sanitize_extent};
 use state::compute_handle_key;
@@ -56,7 +56,7 @@ pub fn VirtualList(
     #[props(default)] on_select: Option<EventHandler<usize>>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] accessibility_label: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let sanitized_vp = sanitize_extent(f64::from(viewport_height));
@@ -134,7 +134,7 @@ pub fn VirtualList(
             let row_tid = format!("{base_id}-row-{idx}");
             let aria_selected = if is_selected { "true" } else { "false" };
 
-            let row_style = TypedStyleBuilder::new()
+            let row_style = TypedStyle::new()
                 .width_pct(100.0)
                 .height_px(row_h)
                 .flex_shrink(0.0)
@@ -155,8 +155,7 @@ pub fn VirtualList(
                     border_radius: 0.0,
                     opacity: 1.0,
                     box_shadow: None,
-                })
-                .finish();
+                });
 
             let content = render_row.call((idx, is_selected));
             rows.push(rsx! {
@@ -183,11 +182,11 @@ pub fn VirtualList(
         (slice, rows)
     };
 
-    let scroll_style = TypedStyleBuilder::new()
+    let scroll_style = TypedStyle::new()
         .width_pct(100.0)
         .height_px(sanitized_vp.max(1.0) as f32)
         .flex_col()
-        .overflow("hidden")
+        .overflow_mode(Overflow::Hidden)
         .surface(TypedSurfaceStyle {
             background: theme.surface.base,
             border_width: 1.0,
@@ -196,19 +195,17 @@ pub fn VirtualList(
             opacity: 1.0,
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let top_style = TypedStyleBuilder::new()
+    let top_style = TypedStyle::new()
         .width_pct(100.0)
         .height_px(slice.top_spacer_px as f32)
-        .flex_shrink(0.0)
-        .finish();
+        .flex_shrink(0.0);
 
-    let bottom_style = TypedStyleBuilder::new()
+    let bottom_style = TypedStyle::new()
         .width_pct(100.0)
         .height_px(slice.bottom_spacer_px as f32)
-        .flex_shrink(0.0)
-        .finish();
+        .flex_shrink(0.0);
 
     rsx! {
         scrollview {
@@ -217,7 +214,6 @@ pub fn VirtualList(
             accessibility_label: accessibility_label,
             tab_index: 0,
             nve_style: scroll_style,
-            style: style,
             onscroll: move |ev: ScrollEvent| {
                 let y = f64::from(ev.data().y);
                 let next = {

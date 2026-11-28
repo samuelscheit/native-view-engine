@@ -35,7 +35,7 @@ pub fn KeyboardAvoidingView(
     #[props(default)] os_adjusts_resize: bool,
     #[props(default = true)] include_safe_area: bool,
     #[props(default)] extra_bottom_padding: f32,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] test_id: Option<String>,
     children: Element,
 ) -> Element {
@@ -60,13 +60,13 @@ pub fn KeyboardAvoidingView(
             right: 0.0,
             bottom,
             left: 0.0,
-        });
+        })
+        .merge_opt(nve_style.as_ref());
 
     rsx! {
         view {
             test_id: test_id,
             nve_style: container_style,
-            style: style,
             {children}
         }
     }

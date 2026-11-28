@@ -134,3 +134,76 @@ fn lowered_patches_match_a_fresh_render_and_touch_only_the_target() {
     assert_eq!(snapshot(patched.store(), "sibling"), sibling_before);
     assert_eq!(snapshot(fresh.store(), "sibling"), sibling_before);
 }
+
+fn untagged_live_app() -> Element {
+    rsx! {
+        view {
+            view {
+                padding: 8.0,
+                opacity: 1.0,
+                text { "Untagged Live" }
+            }
+            for idx in 0..3 {
+                view {
+                    key: "{idx}",
+                    padding: 4.0,
+                    text { "Item {idx}" }
+                }
+            }
+            view {
+                padding: 6.0,
+                text { "Untagged Sibling" }
+            }
+        }
+    }
+}
+
+#[test]
+fn end_to_end_rsx_diff_binary_row_patch_hits_untagged_element_and_for_loop() {
+    let source = include_str!("surface_tests.rs");
+    let edited = source
+        .replacen("padding: 8.0,\n                opacity: 1.0,", "padding: 22.0,\n                opacity: 0.6,", 1)
+        .replacen("padding: 4.0,", "padding: 16.0,", 1)
+        .replacen("padding: 6.0,", "padding: 28.0,", 1)
+        .replacen("\"Untagged Live\"", "\"Untagged Patched\"", 1);
+    let DiffOutcome::Tier1Patch { messages, .. } =
+        diff_rsx_source(file!(), source, &edited, 3)
+    else {
+        panic!("expected Tier1Patch for real untagged surface_tests.rs edit");
+    };
+    assert_eq!(messages.len(), 4, "1 text + 3 untagged element RowPatches");
+
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, untagged_live_app);
+    surface.reconcile(FrameId(1));
+    for msg in &messages {
+        assert!(surface.apply_hot_patch(msg));
+    }
+    surface.reconcile(FrameId(2));
+
+    let root = surface.store().children(NodeId::ROOT)[0];
+    let kids = surface.store().children(root);
+    assert_eq!(kids.len(), 5, "1 header + 3 loop items + 1 footer");
+    let header = kids[0];
+    let footer = kids[4];
+    assert_eq!(
+        surface.store().try_row::<Layout>(header).unwrap().padding_top(),
+        nve_store::Length::points(22.0)
+    );
+    assert!((surface.store().try_row::<Visual>(header).unwrap().opacity() - 0.6).abs() < 1e-5);
+    for &loop_item in &kids[1..4] {
+        assert_eq!(
+            surface.store().try_row::<Layout>(loop_item).unwrap().padding_top(),
+            nve_store::Length::points(16.0)
+        );
+    }
+    assert_eq!(
+        surface.store().try_row::<Layout>(footer).unwrap().padding_top(),
+        nve_store::Length::points(28.0)
+    );
+    let header_text_el = surface.store().children(header)[0];
+    let header_text_leaf = surface.store().children(header_text_el)[0];
+    assert_eq!(
+        surface.store().try_row::<TextContent>(header_text_leaf).unwrap().text(),
+        "Untagged Patched"
+    );
+}

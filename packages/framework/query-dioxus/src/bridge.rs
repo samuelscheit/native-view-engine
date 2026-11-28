@@ -10,7 +10,8 @@ use dioxus_core::{
     current_scope_id, provide_context, spawn, try_consume_context, use_drop, use_hook, Element,
     Runtime, ScopeId, Task,
 };
-use dioxus_core_macro::{component, rsx, Props};
+use dioxus_core_macro::{component, Props};
+use nve_dioxus::rsx;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use nve_query::{Clock, QueryClient, QueryClientConfig, QueryHandle, QuerySlotId, Shared};
 use nve_rpc::{BoxFuture, CborCodec, RawCall, RawReply, Transport, TransportError};

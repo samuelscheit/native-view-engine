@@ -13,7 +13,7 @@ use nve_abi::{FlexAlign, FlexDirection, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::components::roles::{tab_colors, ControlColors};
 use crate::theme::use_theme;
 
@@ -75,7 +75,7 @@ pub fn TabsRoot(
     #[props(default)] id_prefix: Option<String>,
     #[props(default)] on_change: Option<EventHandler<String>>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let initial = value.clone().unwrap_or_else(|| default_value.clone());
@@ -98,20 +98,19 @@ pub fn TabsRoot(
         ctx.active.set(controlled.clone());
     }
 
-    let root_style = TypedStyleBuilder::new()
+    let root_style = TypedStyle::new()
         .flex_direction(match orientation {
             Orientation::Horizontal => FlexDirection::Column,
             Orientation::Vertical => FlexDirection::Row,
         })
         .gap(8.0)
         .width_pct(100.0)
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
     rsx! {
         view {
             test_id: test_id,
             nve_style: root_style,
-            style: style,
             {children}
         }
     }
@@ -122,7 +121,7 @@ pub fn TabsRoot(
 pub fn TabList(
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -130,7 +129,7 @@ pub fn TabList(
         .map(|c| c.orientation)
         .unwrap_or(Orientation::Horizontal);
 
-    let list_style = TypedStyleBuilder::new()
+    let list_style = TypedStyle::new()
         .flex_direction(match orientation {
             Orientation::Horizontal => FlexDirection::Row,
             Orientation::Vertical => FlexDirection::Column,
@@ -145,7 +144,7 @@ pub fn TabList(
             opacity: 1.0,
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
     rsx! {
         view {
@@ -153,7 +152,6 @@ pub fn TabList(
             accessibility_role: "tablist",
             accessibility_label: accessibility_label,
             nve_style: list_style,
-            style: style,
             {children}
         }
     }
@@ -166,7 +164,7 @@ pub fn TabTrigger(
     value: String,
     #[props(default)] disabled: bool,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -193,7 +191,7 @@ pub fn TabTrigger(
     let ControlColors { bg, fg, border_width: bw, border: bc } =
         tab_colors(&theme, is_selected, focused() && !disabled);
 
-    let trigger_style = TypedStyleBuilder::new()
+    let trigger_style = TypedStyle::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
@@ -205,17 +203,15 @@ pub fn TabTrigger(
             opacity: if disabled { 0.45 } else { 1.0 },
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: fg,
-            font_size: theme.typography.ui.size,
-            font_weight: if is_selected { "600" } else { "500" },
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+    let text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: fg,
+        font_size: theme.typography.ui.size,
+        font_weight: if is_selected { 600 } else { 500 },
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
     let aria_selected = if is_selected { "true" } else { "false" };
     let tab_index = if is_selected && !disabled { 0 } else { -1 };
@@ -234,7 +230,6 @@ pub fn TabTrigger(
             disabled: disabled,
             tab_index: tab_index,
             nve_style: trigger_style,
-            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -265,7 +260,7 @@ pub fn TabTrigger(
 pub fn TabPanel(
     value: String,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -288,7 +283,7 @@ pub fn TabPanel(
             .unwrap_or_else(|| format!("tabs-panel-{value}"))
     });
 
-    let panel_style = TypedStyleBuilder::new()
+    let panel_style = TypedStyle::new()
         .flex_col()
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
@@ -300,7 +295,7 @@ pub fn TabPanel(
             opacity: 1.0,
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
     rsx! {
         view {
@@ -309,7 +304,6 @@ pub fn TabPanel(
             aria_labelledby: "{labelled_by}",
             tab_index: 0,
             nve_style: panel_style,
-            style: style,
             {children}
         }
     }

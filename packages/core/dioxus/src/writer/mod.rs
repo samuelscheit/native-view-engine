@@ -8,7 +8,7 @@ mod element_map;
 mod identity_attrs;
 mod listeners;
 mod mutations;
-mod node_slot_table;
+pub(crate) mod node_slot_table;
 mod standalone_style;
 #[cfg(test)]
 mod style_tests;
@@ -23,6 +23,7 @@ use nve_tables::tables::{
 };
 use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
 
+use crate::hot_patch::{HotPatchIndex, NVE_TEMPLATE_ATTR};
 use crate::typed_style::TypedStyle;
 use element_map::ElementMap;
 use node_slot_table::{NodeSlotSet, NodeSlotTable};
@@ -56,6 +57,8 @@ pub struct NveMutationWriter {
     pub(crate) buffer_pool: BufferPool,
     /// Dense node-index flags for non-table Dioxus listeners (bit 0 = `ontableevent`, bit 1 = custom).
     pub(crate) aux_event_flags: Vec<u8>,
+    /// Live template anchor index (`__nve_tpl`) and zero-alloc hot-patch scratch buffers.
+    pub(crate) hot_patch: HotPatchIndex,
     #[cfg(test)]
     pub(crate) standalone_replay_count: usize,
     #[cfg(test)]
@@ -82,6 +85,7 @@ impl NveMutationWriter {
             current_color_borders: NodeSlotSet::new(),
             buffer_pool: BufferPool::default(),
             aux_event_flags: Vec::new(),
+            hot_patch: HotPatchIndex::new(),
             #[cfg(test)]
             standalone_replay_count: 0,
             #[cfg(test)]
@@ -140,6 +144,7 @@ impl NveMutationWriter {
             .reset_with(|list| pool.recycle_list(list));
         self.current_color_borders.reset();
         self.aux_event_flags = Vec::new();
+        self.hot_patch.reset();
         #[cfg(test)]
         {
             self.standalone_replay_count = 0;
@@ -167,6 +172,7 @@ impl NveMutationWriter {
             current_color_borders,
             buffer_pool,
             aux_event_flags,
+            hot_patch,
             #[cfg(test)]
             standalone_replay_count,
             #[cfg(test)]
@@ -189,6 +195,7 @@ impl NveMutationWriter {
                 current_color_borders,
                 buffer_pool,
                 aux_event_flags,
+                hot_patch,
                 #[cfg(test)]
                 standalone_replay_count,
                 #[cfg(test)]
@@ -202,6 +209,11 @@ impl NveMutationWriter {
         };
         tx.commit_into(changes);
         out
+    }
+    /// Applies one Tier-1 hot patch directly in a single [`Transaction`] with zero steady-state
+    /// heap allocations.
+    pub fn apply_hot_patch(&mut self, patch: &nve_engine::HotPatchMsg) -> bool {
+        self.with_transaction(|mtx| mtx.apply_hot_patch(patch))
     }
 }
 
@@ -219,6 +231,7 @@ pub struct StoreMutationTx<'s, 'a> {
     pub(crate) current_color_borders: &'a mut NodeSlotSet,
     pub(crate) buffer_pool: &'a mut BufferPool,
     pub(crate) aux_event_flags: &'a mut Vec<u8>,
+    pub(crate) hot_patch: &'a mut HotPatchIndex,
     #[cfg(test)]
     pub(crate) standalone_replay_count: &'a mut usize,
     #[cfg(test)]
@@ -483,7 +496,11 @@ impl StoreMutationTx<'_, '_> {
                 self.attach_tag_defaults(node, tag);
                 for attr in *attrs {
                     if let TemplateAttribute::Static { name, value, .. } = attr {
-                        self.apply_str_attr(node, name, value);
+                        if *name == NVE_TEMPLATE_ATTR {
+                            self.hot_patch.register_tag(node, value);
+                        } else {
+                            self.apply_str_attr(node, name, value);
+                        }
                     }
                 }
                 if !children.is_empty() {
@@ -535,6 +552,7 @@ impl StoreMutationTx<'_, '_> {
             };
             self.stack.extend_from_slice(self.tx.store().children(nid));
             self.elements.unbind_node(nid);
+            self.hot_patch.unbind_node(nid);
             if let Some(list) = self.attached_tables.remove(nid) {
                 self.buffer_pool.recycle_table_list(list);
             }

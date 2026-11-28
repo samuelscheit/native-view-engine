@@ -61,21 +61,30 @@ fn bench_dioxus(c: &mut Criterion) {
     let mut generation = 1u64;
     let mut pframe = FrameId(1);
 
+    let mut words_a = Vec::new();
+    let mut rp_a = nve_store::RowPatch::new();
+    rp_a.set(nve_tables::tables::Visual::OPACITY, 0.85);
+    assert!(nve_store::FlatResource::write_words(&rp_a, &mut words_a));
+    let mut words_b = Vec::new();
+    let mut rp_b = nve_store::RowPatch::new();
+    rp_b.set(nve_tables::tables::Visual::OPACITY, 0.95);
+    assert!(nve_store::FlatResource::write_words(&rp_b, &mut words_b));
+
     group.bench_function("tier1_hot_patch_apply", |b| {
         b.iter(|| {
             generation += 1;
             pframe = pframe.next();
-            let opacity = if generation.is_multiple_of(2) {
-                "0.85"
+            let words = if generation.is_multiple_of(2) {
+                &words_a
             } else {
-                "0.95"
+                &words_b
             };
             let patch = HotPatchMsg::TemplatePatch {
                 generation,
-                template_id: "bench_counter".into(),
+                template_key: 0,
+                node_path: vec![0],
                 target_test_id: None,
-                node_path: vec![],
-                attr_updates: vec![("opacity".into(), opacity.into())],
+                row_patch_words: words.clone(),
                 text_updates: vec![(0, format!("Hot Patch Gen {generation}"))],
                 text_replacements: vec![],
             };

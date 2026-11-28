@@ -157,7 +157,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 // Header row
                 Row {
                     justify: Some("space-between".to_owned()),
-                    style: Some("flex-wrap: wrap; gap: 12px;".to_owned()),
+                    nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap).gap(12.0)),
                     Row {
                         gap: Some(10.0),
                         text {
@@ -197,7 +197,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 // Filter tabs
                 Row {
                     gap: Some(8.0),
-                    style: Some("flex-wrap: wrap;".to_owned()),
+                    nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap)),
                     for tab in FilterTab::ALL {
                         Button {
                             key: "{tab.test_id()}",
@@ -240,7 +240,11 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                         Row {
                             gap: Some(10.0),
                             align: Some("flex-start".to_owned()),
-                            style: Some("flex-wrap: wrap; width: 100%;".to_owned()),
+                            nve_style: Some(
+                                TypedStyle::new()
+                                    .flex_wrap(FlexWrap::Wrap)
+                                    .width_pct(100.0),
+                            ),
                             view {
                                 style: "flex: 1 1 280px; min-width: 200px;",
                                 FormField {
@@ -248,7 +252,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                                     test_id: "create-title-input".to_owned(),
                                     placeholder: "New issue title...".to_owned(),
                                     required: true,
-                                    style: Some("width: 100%;".to_owned()),
+                                    nve_style: Some(TypedStyle::new().width_pct(100.0)),
                                 }
                             }
                             FormSubmitButton {
@@ -422,10 +426,16 @@ fn IssueRowItem(
             Col {
                 gap: Some(6.0),
                 align: Some("flex-start".to_owned()),
-                style: Some("flex: 1 1 260px; min-width: 0;".to_owned()),
+                nve_style: Some(
+                    TypedStyle::new()
+                        .flex_grow(1.0)
+                        .flex_shrink(1.0)
+                        .flex_basis(Dimension::Points(260.0))
+                        .min_width_px(0.0),
+                ),
                 Row {
                     gap: Some(8.0),
-                    style: Some("flex-wrap: wrap;".to_owned()),
+                    nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap)),
                     text {
                         style: "font-size: 12px; font-weight: 600; color: {muted_hex};",
                         "#{id_num}"

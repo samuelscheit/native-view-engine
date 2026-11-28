@@ -166,9 +166,9 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
         "clearing `style` must drop inline-only Visual table"
     );
 
-    // TypedStyle with `has_layout == false` and `layout_ext.is_some()` detaches Layout when cleared.
+    // TypedStyle with `layout_mask == 0` and `layout_ext.is_some()` detaches Layout when cleared.
     let ext_only = TypedStyle::new().position_absolute();
-    assert!(!ext_only.has_layout && ext_only.layout_ext.is_some());
+    assert!(ext_only.layout_mask.is_empty() && ext_only.layout_ext.is_some());
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(2));
         mtx.set_attribute(
