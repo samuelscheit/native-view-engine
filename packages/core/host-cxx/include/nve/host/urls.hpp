@@ -21,6 +21,7 @@
 #include <nve/host/ascii.hpp>
 
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace nve::host {
@@ -121,6 +122,143 @@ namespace url_detail {
 /// local (no UNC / NT / device prefix), no control characters.
 [[nodiscard]] inline bool local_decoded_path(std::string_view path) noexcept {
   return !url_detail::has_control_chars(path) && url_detail::rooted_local_path(path);
+}
+
+namespace url_detail {
+[[nodiscard]] inline std::string_view trim_ascii_spaces(std::string_view s) noexcept {
+  while (!s.empty() && s.front() == ' ') s.remove_prefix(1u);
+  while (!s.empty() && s.back() == ' ') s.remove_suffix(1u);
+  return s;
+}
+
+/// Removes any `transport=...` query parameters from `query` (without leading `?`), preserving
+/// all other query parameters in order.
+[[nodiscard]] inline std::string strip_transport_query(std::string_view query) {
+  std::string out;
+  size_t pos = 0u;
+  while (pos < query.size()) {
+    const size_t amp = query.find('&', pos);
+    const std::string_view pair =
+        amp == std::string_view::npos ? query.substr(pos) : query.substr(pos, amp - pos);
+    pos = amp == std::string_view::npos ? query.size() : amp + 1u;
+    if (pair.empty()) continue;
+    const size_t eq = pair.find('=');
+    const std::string_view key = eq == std::string_view::npos ? pair : pair.substr(0u, eq);
+    if (ascii_iequals(key, "transport")) continue;
+    if (!out.empty()) out.push_back('&');
+    out.append(pair);
+  }
+  return out;
+}
+}  // namespace url_detail
+
+/// Canonical transport identifier matching `nve_wire_core::NveWireTransportKind::parse`:
+/// `"auto"`, `"quic"`, `"webtransport"`, `"wss"`, or `"ws"`; `std::nullopt` for unknown values.
+[[nodiscard]] inline std::optional<std::string_view> canonical_pair_transport(std::string_view raw) noexcept {
+  if (url_detail::has_control_chars(raw)) return std::nullopt;
+  const std::string_view s = url_detail::trim_ascii_spaces(raw);
+  if (s.empty() || ascii_iequals(s, "auto") || ascii_iequals(s, "happy-eyeballs")) return "auto";
+  if (ascii_iequals(s, "quic") || ascii_iequals(s, "udp")) return "quic";
+  if (ascii_iequals(s, "wt") || ascii_iequals(s, "webtransport") || ascii_iequals(s, "h3")) return "webtransport";
+  if (ascii_iequals(s, "wss") || ascii_iequals(s, "tls")) return "wss";
+  if (ascii_iequals(s, "ws") || ascii_iequals(s, "tcp") || ascii_iequals(s, "websocket")) return "ws";
+  return std::nullopt;
+}
+
+/// Applies `--pair-transport` override `transport` to pairing `uri`, producing a canonical wire
+/// URI accepted by `nve_wire_core::parse_wire_uri`. Rejects control characters, unknown transport
+/// names, and unsupported `scheme://` prefixes.
+[[nodiscard]] inline std::optional<std::string> apply_pair_transport(std::string_view uri,
+                                                                     std::string_view transport) {
+  if (url_detail::has_control_chars(uri) || url_detail::has_control_chars(transport)) return std::nullopt;
+  const std::string_view trimmed = url_detail::trim_ascii_spaces(uri);
+  if (trimmed.empty()) return std::nullopt;
+  const std::string_view tr_raw = url_detail::trim_ascii_spaces(transport);
+
+  const size_t hash_pos = trimmed.find('#');
+  const std::string_view main_part =
+      hash_pos == std::string_view::npos ? trimmed : trimmed.substr(0u, hash_pos);
+  const std::string_view fragment =
+      hash_pos == std::string_view::npos ? std::string_view{} : trimmed.substr(hash_pos);
+  if (main_part.empty()) return std::nullopt;
+
+  const auto normalize_known_scheme = [](std::string_view s) noexcept -> std::string_view {
+    if (ascii_iequals(s, "nve")) return "nve";
+    if (ascii_iequals(s, "quic")) return "quic";
+    if (ascii_iequals(s, "wt")) return "wt";
+    if (ascii_iequals(s, "https")) return "https";
+    if (ascii_iequals(s, "wss")) return "wss";
+    if (ascii_iequals(s, "ws")) return "ws";
+    return {};
+  };
+
+  // Detect `scheme://` only before `/` or `?` so embedded URLs inside query values stay schemeless.
+  const size_t delim = main_part.find_first_of("/?");
+  const size_t sep = main_part.find("://");
+  const bool has_scheme = sep != std::string_view::npos && (delim == std::string_view::npos || sep < delim);
+
+  std::string_view scheme_norm;
+  std::string_view rest = main_part;
+  if (has_scheme) {
+    const std::string_view s = url_detail::scheme(main_part);
+    if (s.empty() || s.size() != sep) return std::nullopt;
+    scheme_norm = normalize_known_scheme(s);
+    if (scheme_norm.empty()) return std::nullopt;
+    rest = main_part.substr(sep + 3u);
+    if (rest.empty()) return std::nullopt;
+  }
+
+  if (tr_raw.empty()) {
+    if (!scheme_norm.empty()) {
+      std::string out(scheme_norm);
+      out.append("://");
+      out.append(rest);
+      out.append(fragment);
+      return out;
+    }
+    return std::string(trimmed);
+  }
+
+  const std::optional<std::string_view> canonical = canonical_pair_transport(tr_raw);
+  if (!canonical) return std::nullopt;
+
+  const auto scheme_prefix = [](std::string_view kind) noexcept -> std::string_view {
+    if (kind == "quic") return "quic://";
+    if (kind == "webtransport") return "wt://";
+    if (kind == "wss") return "wss://";
+    if (kind == "ws") return "ws://";
+    return {};
+  };
+
+  const size_t qpos = rest.find('?');
+  const std::string_view head = qpos == std::string_view::npos ? rest : rest.substr(0u, qpos);
+  if (head.empty()) return std::nullopt;
+  std::string query = qpos == std::string_view::npos ? std::string() : url_detail::strip_transport_query(rest.substr(qpos + 1u));
+
+  if (scheme_norm == "nve") {
+    if (*canonical != "auto") {
+      if (!query.empty()) query.push_back('&');
+      query.append("transport=");
+      query.append(*canonical);
+    }
+    std::string out("nve://");
+    out.append(head);
+    if (!query.empty()) {
+      out.push_back('?');
+      out.append(query);
+    }
+    out.append(fragment);
+    return out;
+  }
+
+  std::string out(scheme_prefix(*canonical));
+  out.append(head);
+  if (!query.empty()) {
+    out.push_back('?');
+    out.append(query);
+  }
+  out.append(fragment);
+  return out;
 }
 
 }  // namespace nve::host

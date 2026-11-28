@@ -6,8 +6,10 @@
 
 #include <nve/canvas/draw_list_encoder.hpp>
 #include <nve/host/core_resources.hpp>
+#include <nve/host/testing/scratch_dir.hpp>
 
 #include <algorithm>
+#include <fstream>
 
 namespace {
 
@@ -315,10 +317,123 @@ void test_typography_and_accessibility() {
   NVE_CHECK(root->child(2) == slider);  // surviving interfaces are kept
 }
 
+void test_quick_relations_live_modal_keys_and_frame0() {
+  constexpr uint32_t kDialog = 2u, kTitle = 3u, kDesc = 4u, kList = 5u, kOpt = 6u, kLive = 7u, kBtn = 8u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.create(kDialog);
+  size_node(w, kDialog, 200.0f, 160.0f);
+  w.set(kDialog, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_DIALOG);
+  w.set_bool(kDialog, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_MODAL, true);
+  w.define_resource(90u, h::kAriaRelationsKind,
+                    h::encode_aria_relations(h::AriaRelations{"q-list", "q-title", "q-desc", ""}));
+  w.set(kDialog, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_RELATIONS, 90u);
+
+  text_node(w, kTitle, "Title");
+  (void)w.set_str(kTitle, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "q-title");
+  text_node(w, kDesc, "Details");
+  (void)w.set_str(kDesc, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "q-desc");
+
+  w.create(kList);
+  size_node(w, kList, 100.0f, 40.0f);
+  (void)w.set_str(kList, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "q-list");
+  w.set(kList, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_LIST_BOX);
+  w.define_resource(91u, h::kAriaRelationsKind, h::encode_aria_relations(h::AriaRelations{"", "", "", "q-opt"}));
+  w.set(kList, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_RELATIONS, 91u);
+  text_node(w, kOpt, "Item 1");
+  (void)w.set_str(kOpt, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "q-opt");
+
+  text_node(w, kLive, "Working");
+  w.set(kLive, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LIVE, NVE_ARIA_LIVE_POLITE);
+
+  w.create(kBtn);
+  size_node(w, kBtn, 40.0f, 24.0f);
+  w.set_bool(kBtn, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  subscribe(w, kBtn, {NVE_INTERACTION_EVENT_KEY_DOWN, NVE_INTERACTION_EVENT_KEY_UP});
+
+  const uint32_t list_kids[] = {kOpt};
+  w.set_children(kList, list_kids);
+  const uint32_t dlg_kids[] = {kTitle, kDesc, kList, kLive, kBtn};
+  w.set_children(kDialog, dlg_kids);
+  const uint32_t root_kids[] = {kDialog};
+  w.set_children(1u, root_kids);
+
+  A11yRecorder recorder;
+  QuickHarness q(QSize(240, 200));
+  ProbeItem& item = *q.item;
+  NVE_CHECK(item.host().attach_interface(&ScriptedApp::get_interface));
+
+  QAccessibleInterface* root = QAccessible::queryAccessibleInterface(&item);
+  QAccessibleInterface* dlg = root->child(0);
+  QAccessibleInterface* title = dlg->child(0);
+  QAccessibleInterface* desc = dlg->child(1);
+  QAccessibleInterface* list = dlg->child(2);
+  QAccessibleInterface* opt = list->child(0);
+  NVE_CHECK(dlg->state().modal);
+  const auto rels = dlg->relations();
+  const auto has_rel = [&](QAccessibleInterface* target, QAccessible::RelationFlag flag) {
+    for (const auto& [peer, r] : rels) {
+      if (peer == target && (r & flag) != 0) return true;
+    }
+    return false;
+  };
+  NVE_CHECK(has_rel(title, QAccessible::Labelled));
+  NVE_CHECK(has_rel(desc, QAccessible::Described));
+  NVE_CHECK(has_rel(list, QAccessible::Controller));
+  NVE_CHECK(list->focusChild() == opt);
+
+  // Live announcement event on text change.
+  (void)w.set_str(kLive, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "Complete");
+  flush(item.host());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+  NVE_CHECK(A11yRecorder::count(QAccessible::Announcement, QStringLiteral("Complete")) == 1u);
+#endif
+
+  // KeyDown + KeyUp dispatch on focused Quick node.
+  q.click(q.center(kBtn));
+  QKeyEvent kd(QEvent::KeyPress, Qt::Key_P, Qt::AltModifier, QStringLiteral("p"));
+  QKeyEvent ku(QEvent::KeyRelease, Qt::Key_P, Qt::AltModifier, QStringLiteral("p"));
+  QCoreApplication::sendEvent(&item, &kd);
+  QCoreApplication::sendEvent(&item, &ku);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_KEY_DOWN, kBtn) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_KEY_UP, kBtn) == 1u);
+  NVE_CHECK(app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->key() == "p");
+  NVE_CHECK((app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->ev.flags & NVE_EVENT_FLAG_MOD_ALT) != 0u);
+
+  // ABI v6 Frame-0 save + instant cold boot (file & bytes) + mismatch/corrupt rejection + focus reset.
+  const h::testing::ScratchDir scratch("nve-qt-quick-frame0");
+  const std::string f0 = scratch.file("frame0.nve2");
+  NVE_CHECK(item.host().save_frame0_file(f0, 77u, 88u));
+  std::ifstream in_f0(f0, std::ios::binary);
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in_f0)), std::istreambuf_iterator<char>());
+  NVE_CHECK(!bytes.empty());
+
+  // Attached surface refuses Frame-0 boot; unattached `cold_q` boots from file & bytes, rejects
+  // corrupt / build_id-mismatched envelopes, and clears stale focus on Frame-0 re-boot.
+  NVE_CHECK(!item.host().boot_frame0_bytes(bytes, 77u, 88u));
+  QuickHarness cold_q(QSize(240, 200));
+  NVE_CHECK(cold_q.item->host().boot_frame0_file(f0, 77u, 88u));
+  NVE_CHECK(cold_q.item->nodeCount() == item.nodeCount());
+  NVE_CHECK(cold_q.item->accessibilityInfoForNodeId(kDialog)->modal);
+  NVE_CHECK(cold_q.item->nodeText(kLive) == "Complete");
+
+  cold_q.window.requestActivate();
+  cold_q.click(cold_q.center(kBtn));
+  NVE_CHECK(cold_q.item->focusedNodeId() == kBtn);
+  const uint8_t corrupt[] = {0x4E, 0x56, 0x00, 0xFF};
+  NVE_CHECK(!cold_q.item->host().boot_frame0_bytes(corrupt, 77u, 88u));
+  NVE_CHECK(!cold_q.item->host().boot_frame0_bytes(bytes, 76u, 88u));
+  NVE_CHECK(cold_q.item->host().boot_frame0_bytes(bytes, 77u, 88u));
+  NVE_CHECK(cold_q.item->focusedNodeId() == 0u);
+  NVE_CHECK(cold_q.item->accessibilityInfoForNodeId(kDialog)->modal);
+}
+
 }  // namespace
 
 void nve_test_qt_quick_media_canvas_a11y() {
   test_images_and_canvas();
   test_moves_and_republished_resources();
   test_typography_and_accessibility();
+  test_quick_relations_live_modal_keys_and_frame0();
 }

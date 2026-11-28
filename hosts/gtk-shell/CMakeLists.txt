@@ -15,6 +15,7 @@ set(_nve_gtk_warnings -Wall -Wextra -Werror)
 
 add_library(nve_gtk_shell_lib STATIC
   NveGtkHost.cpp
+  NveGtkInput.cpp
   NveGtkMedia.cpp
   NveGtkStyleA11y.cpp
   NveGtkReconciler.cpp
@@ -35,6 +36,7 @@ add_executable(nve_gtk_shell_test
   tests/gtk_shell_test.cpp
   tests/gtk_shell_a11y_media_test.cpp
   tests/gtk_shell_canvas_pair_test.cpp
+  tests/gtk_shell_input_parity_test.cpp
   tests/gtk_shell_reconcile_test.cpp
   tests/gtk_window_manager_test.cpp
 )

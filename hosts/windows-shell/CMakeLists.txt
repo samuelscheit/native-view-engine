@@ -26,7 +26,100 @@ add_library(nve_windows_shell_lib STATIC
   NveWinWindowManager.cpp
 )
 if(WIN32)
-  # Win32 window, Direct2D / DirectWrite / WIC painting, native EDIT overlays.
+  # Build / import the Windows UI Automation (AccessKit) C-ABI cdylib (`nve-accessibility-windows`).
+  # Built as a DLL (`cdylib`) instead of a second Rust `staticlib` so MSVC/MinGW never sees
+  # duplicate Rust std / allocator symbols alongside `libnve_runtime`.
+  get_filename_component(_nve_win_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+  set(NVE_A11Y_WIN_PREBUILT_DLL "" CACHE FILEPATH "Optional prebuilt nve_accessibility_windows.dll path")
+  set(NVE_A11Y_WIN_PREBUILT_IMPLIB "" CACHE FILEPATH "Optional prebuilt nve_accessibility_windows import library path")
+  set(_nve_a11y_dll_name "nve_accessibility_windows.dll")
+  if(MSVC)
+    set(_nve_a11y_implib_name "nve_accessibility_windows.dll.lib")
+  else()
+    set(_nve_a11y_implib_name "libnve_accessibility_windows.dll.a")
+  endif()
+  if(NVE_A11Y_WIN_PREBUILT_DLL AND NVE_A11Y_WIN_PREBUILT_IMPLIB)
+    set(_nve_a11y_dll_path "${NVE_A11Y_WIN_PREBUILT_DLL}")
+    set(_nve_a11y_implib_path "${NVE_A11Y_WIN_PREBUILT_IMPLIB}")
+    set(_nve_a11y_is_multiconfig FALSE)
+  else()
+    find_program(_nve_a11y_cargo_bin cargo
+      HINTS "$ENV{CARGO_HOME}/bin" "$ENV{HOME}/.cargo/bin" "$ENV{USERPROFILE}/.cargo/bin")
+    if(DEFINED ENV{CARGO_TARGET_DIR} AND NOT "$ENV{CARGO_TARGET_DIR}" STREQUAL "")
+      set(_nve_a11y_target_dir "$ENV{CARGO_TARGET_DIR}")
+    else()
+      set(_nve_a11y_target_dir "${_nve_win_repo_root}/target")
+    endif()
+    set(_nve_a11y_cargo_args rustc --locked -p nve-accessibility-windows --lib --crate-type cdylib)
+    if(NVE_RUNTIME_CARGO_TARGET)
+      list(APPEND _nve_a11y_cargo_args --target "${NVE_RUNTIME_CARGO_TARGET}")
+      set(_nve_a11y_target_prefix "${_nve_a11y_target_dir}/${NVE_RUNTIME_CARGO_TARGET}")
+    else()
+      set(_nve_a11y_target_prefix "${_nve_a11y_target_dir}")
+    endif()
+    if("${NVE_RUNTIME_PROFILE}" STREQUAL "" AND CMAKE_CONFIGURATION_TYPES)
+      set(_nve_a11y_is_multiconfig TRUE)
+      set(_nve_a11y_debug_dll "${_nve_a11y_target_prefix}/debug/${_nve_a11y_dll_name}")
+      set(_nve_a11y_debug_implib "${_nve_a11y_target_prefix}/debug/${_nve_a11y_implib_name}")
+      set(_nve_a11y_release_dll "${_nve_a11y_target_prefix}/release/${_nve_a11y_dll_name}")
+      set(_nve_a11y_release_implib "${_nve_a11y_target_prefix}/release/${_nve_a11y_implib_name}")
+      add_custom_target(nve_a11y_win_cargo_build
+        COMMAND "${_nve_a11y_cargo_bin}" ${_nve_a11y_cargo_args} $<$<NOT:$<CONFIG:Debug>>:--release>
+        WORKING_DIRECTORY "${_nve_win_repo_root}"
+        BYPRODUCTS "${_nve_a11y_debug_dll}" "${_nve_a11y_debug_implib}"
+                   "${_nve_a11y_release_dll}" "${_nve_a11y_release_implib}"
+        COMMENT "Building nve-accessibility-windows cdylib ($<CONFIG>)"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+      )
+    else()
+      set(_nve_a11y_is_multiconfig FALSE)
+      string(TOLOWER "${CMAKE_BUILD_TYPE}" _nve_a11y_bt)
+      if("${NVE_RUNTIME_PROFILE}" STREQUAL "release" OR
+         ("${NVE_RUNTIME_PROFILE}" STREQUAL "" AND (_nve_a11y_bt STREQUAL "release" OR _nve_a11y_bt STREQUAL "relwithdebinfo" OR _nve_a11y_bt STREQUAL "minsizerel")))
+        set(_nve_a11y_profile "release")
+        list(APPEND _nve_a11y_cargo_args --release)
+      else()
+        set(_nve_a11y_profile "debug")
+      endif()
+      set(_nve_a11y_dll_path "${_nve_a11y_target_prefix}/${_nve_a11y_profile}/${_nve_a11y_dll_name}")
+      set(_nve_a11y_implib_path "${_nve_a11y_target_prefix}/${_nve_a11y_profile}/${_nve_a11y_implib_name}")
+      add_custom_target(nve_a11y_win_cargo_build
+        COMMAND "${_nve_a11y_cargo_bin}" ${_nve_a11y_cargo_args}
+        WORKING_DIRECTORY "${_nve_win_repo_root}"
+        BYPRODUCTS "${_nve_a11y_dll_path}" "${_nve_a11y_implib_path}"
+        COMMENT "Building nve-accessibility-windows cdylib (${_nve_a11y_profile})"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+      )
+    endif()
+  endif()
+  add_library(nve_accessibility_windows SHARED IMPORTED GLOBAL)
+  if(_nve_a11y_is_multiconfig)
+    set_target_properties(nve_accessibility_windows PROPERTIES
+      IMPORTED_CONFIGURATIONS "DEBUG;RELEASE;RELWITHDEBINFO;MINSIZEREL"
+      IMPORTED_LOCATION_DEBUG "${_nve_a11y_debug_dll}"
+      IMPORTED_IMPLIB_DEBUG "${_nve_a11y_debug_implib}"
+      IMPORTED_LOCATION_RELEASE "${_nve_a11y_release_dll}"
+      IMPORTED_IMPLIB_RELEASE "${_nve_a11y_release_implib}"
+      IMPORTED_LOCATION_RELWITHDEBINFO "${_nve_a11y_release_dll}"
+      IMPORTED_IMPLIB_RELWITHDEBINFO "${_nve_a11y_release_implib}"
+      IMPORTED_LOCATION_MINSIZEREL "${_nve_a11y_release_dll}"
+      IMPORTED_IMPLIB_MINSIZEREL "${_nve_a11y_release_implib}"
+      INTERFACE_INCLUDE_DIRECTORIES "${_nve_win_repo_root}/packages/modules/accessibility/windows/include"
+    )
+  else()
+    set_target_properties(nve_accessibility_windows PROPERTIES
+      IMPORTED_LOCATION "${_nve_a11y_dll_path}"
+      IMPORTED_IMPLIB "${_nve_a11y_implib_path}"
+      INTERFACE_INCLUDE_DIRECTORIES "${_nve_win_repo_root}/packages/modules/accessibility/windows/include"
+    )
+  endif()
+  if(TARGET nve_a11y_win_cargo_build)
+    add_dependencies(nve_accessibility_windows nve_a11y_win_cargo_build)
+  endif()
+
+  # Win32 window, Direct2D / DirectWrite / WIC painting, native EDIT overlays + IME + UIA.
   target_sources(nve_windows_shell_lib PRIVATE
     NveWinHostWindow.cpp
     NveWinTextInputs.cpp
@@ -34,8 +127,9 @@ if(WIN32)
     NveWinD2DMedia.cpp
   )
   target_compile_definitions(nve_windows_shell_lib PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-  target_link_libraries(nve_windows_shell_lib PUBLIC d2d1 dwrite windowscodecs ole32 user32 gdi32 comctl32 shell32
-                                                     shlwapi crypt32)
+  target_link_libraries(nve_windows_shell_lib PUBLIC d2d1 dwrite windowscodecs ole32 oleaut32 user32 gdi32 comctl32
+                                                     shell32 shlwapi crypt32 imm32 uiautomationcore
+                                                     nve_accessibility_windows)
 endif()
 target_include_directories(nve_windows_shell_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(nve_windows_shell_lib PRIVATE ${_nve_win_warnings})
@@ -67,6 +161,12 @@ if(WIN32)
     target_link_options(nve_windows_shell PRIVATE -municode)
   endif()
   target_link_libraries(nve_windows_shell PRIVATE nve_windows_shell_lib)
+  add_custom_command(TARGET nve_windows_shell POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:nve_accessibility_windows>"
+      "$<TARGET_FILE_DIR:nve_windows_shell>"
+    COMMENT "Staging nve_accessibility_windows.dll next to nve_windows_shell"
+  )
 endif()
 
 enable_testing()
@@ -76,9 +176,16 @@ add_executable(nve_windows_shell_test
   tests/windows_shell_test.cpp
   tests/windows_shell_media_test.cpp
   tests/windows_shell_canvas_scroll_test.cpp
+  tests/windows_shell_parity_test.cpp
 )
 if(WIN32)
   target_sources(nve_windows_shell_test PRIVATE tests/windows_shell_d2d_test.cpp)
+  add_custom_command(TARGET nve_windows_shell_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:nve_accessibility_windows>"
+      "$<TARGET_FILE_DIR:nve_windows_shell_test>"
+    COMMENT "Staging nve_accessibility_windows.dll next to nve_windows_shell_test"
+  )
 endif()
 target_compile_options(nve_windows_shell_test PRIVATE ${_nve_win_warnings})
 nve_use_app_module_fixtures(nve_windows_shell_test nve_win_fixture)

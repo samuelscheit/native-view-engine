@@ -141,7 +141,8 @@ void test_controlled_text_inputs() {
   type(reject, Qt::Key_T, QStringLiteral("t"));
   NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "fixedt" && reject->text() == "fixed");
 
-  // IME: composition is neither dispatched nor clobbered by an app update; the commit is.
+  // IME: composition emits CompositionStart/Update/End, is never clobbered by app updates,
+  // commits cleanly, and clears composing_ on focusOutEvent (never gets stuck).
   spin();  // window activation is asynchronous
   echo->setFocus();
   spin();
@@ -151,6 +152,9 @@ void test_controlled_text_inputs() {
   QInputMethodEvent preedit(QStringLiteral("ni"), {});
   QApplication::sendEvent(echo, &preedit);
   NVE_CHECK(echo->composing() && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == before_ime);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_START, kEcho) == 1u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, kEcho) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE)->text == "ni");
   (void)w.set_str(kEcho, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "app-wins?");
   flush(host);
   NVE_CHECK(echo->text() == "reset");  // composing: untouched
@@ -158,7 +162,21 @@ void test_controlled_text_inputs() {
   commit.setCommitString(QStringLiteral("你"));
   QApplication::sendEvent(echo, &commit);
   NVE_CHECK(!echo->composing() && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "reset你");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == before_ime + 1u);  // single CHANGE, no double-fire
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEcho) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_END)->text == "你");
   NVE_CHECK(echo->text() == "reset你");
+
+  // Starting a second composition then blurring clears `composing_` and emits `CompositionEnd`.
+  QInputMethodEvent preedit2(QStringLiteral("ha"), {});
+  QApplication::sendEvent(echo, &preedit2);
+  NVE_CHECK(echo->composing());
+  echo->clearFocus();
+  spin();
+  NVE_CHECK(!echo->composing());
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEcho) == 2u);
+  echo->setFocus();
+  spin();
 
   // Multi-line: edits dispatch, host writes do not, max length is enforced by the host.
   notes->moveCursor(QTextCursor::End);
@@ -171,6 +189,32 @@ void test_controlled_text_inputs() {
   (void)w.set_str(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "x\ny");
   flush(host);
   NVE_CHECK(notes->toPlainText() == "x\ny" && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNotes) == notes_edits);
+
+  // Multi-line (`NveQtTextEdit`) IME: Start/Update/End, single CHANGE on commit, zero CHANGE on cancel.
+  notes->setFocus();
+  spin();
+  notes->moveCursor(QTextCursor::End);
+  QInputMethodEvent m_preedit(QStringLiteral("ka"), {});
+  QApplication::sendEvent(notes, &m_preedit);
+  NVE_CHECK(notes->composing() && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNotes) == notes_edits);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_START, kNotes) == 1u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, kNotes) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE)->text == "ka");
+  QInputMethodEvent m_commit;
+  m_commit.setCommitString(QStringLiteral("漢"));
+  QApplication::sendEvent(notes, &m_commit);
+  NVE_CHECK(!notes->composing() && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNotes) == notes_edits + 1u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kNotes) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_END)->text == "漢");
+  NVE_CHECK(notes->toPlainText() == "x\ny漢");
+  QInputMethodEvent m_cancel_start(QStringLiteral("yo"), {});
+  QApplication::sendEvent(notes, &m_cancel_start);
+  QInputMethodEvent m_cancel_end;
+  QApplication::sendEvent(notes, &m_cancel_end);
+  NVE_CHECK(!notes->composing() && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNotes) == notes_edits + 1u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kNotes) == 2u);
+  echo->setFocus();
+  spin();
 
   // Focus / blur round-trip.
   reject->setFocus(Qt::MouseFocusReason);

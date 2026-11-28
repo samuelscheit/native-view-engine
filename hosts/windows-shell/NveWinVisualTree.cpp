@@ -389,6 +389,7 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
   v.scroll = node.scroll;
   v.interaction = node.interaction;
   v.layout_events = node.layout_events;
+  v.modal = node.a11y.modal;
   v.href.assign(node.href);
   v.synced = true;
 }

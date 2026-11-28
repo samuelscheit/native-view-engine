@@ -46,6 +46,17 @@ struct GtkNodeSemantics {
   bool secure = false;
   bool multiline = false;
   bool read_only = false;
+  bool modal = false;
+  std::optional<uint8_t> live;
+  bool invalid = false;
+  bool busy = false;
+  bool multiselectable = false;
+  std::optional<uint8_t> orientation;
+  std::optional<uint8_t> autocomplete;
+  std::string controls;
+  std::string labelled_by;
+  std::string described_by;
+  std::string active_descendant;
 
   friend bool operator==(const GtkNodeSemantics& a, const GtkNodeSemantics& b) noexcept;
 };
@@ -143,6 +154,10 @@ class NveGtkHost {
   bool restore_state(std::string_view path, uint32_t schema_version);
   /// Deletes the state file (cold start, `--reset-state`).
   bool clear_state(std::string_view path);
+  /// ABI v6 zero-unsafe `Frame0File` (`frame0.nve2`) capture and instant boot.
+  bool save_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   void set_event_callback(EventCallback callback);
@@ -153,10 +168,18 @@ class NveGtkHost {
   // --- Input --------------------------------------------------------------------------------
   bool simulate_press(uint32_t node_id, float x = 0.0f, float y = 0.0f);
   bool dispatch_text_change(uint32_t node_id, std::string_view text);
+  bool dispatch_composition(uint32_t node_id, NveTextInputEvent kind, std::string_view text);
+  bool dispatch_key(uint32_t node_id, NveInteractionEvent kind, std::string_view key, std::string_view code = {},
+                    uint32_t flags = 0u, uint32_t key_code = 0u);
+  /// Processes a GDK key press/release (`GtkEventControllerKey` entry point; also callable in tests).
+  bool handle_gdk_key(bool pressed, guint keyval, guint keycode, GdkModifierType state);
+  /// Moves focus to `node_id` (`0` blurs), syncing GTK focus and dispatching Blur/Focus events.
+  bool set_focused_node(uint32_t node_id);
   /// The entry / text view `view` changed: a user edit dispatches `TextChange`, and an
   /// in-process app's transformed or rejected answer is written back (`dispatch_controlled_edit`).
   /// May destroy `view` (and this host).
   void edit_text(GtkNodeView& view);
+  void on_widget_focus_change(GtkNodeView& view, bool focused);
   bool dispatch_submit(uint32_t node_id, std::string_view text);
   bool dispatch_focus(uint32_t node_id, bool focused);
   bool dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width, float content_height);
@@ -174,7 +197,14 @@ class NveGtkHost {
 
   // --- Introspection ------------------------------------------------------------------------
   [[nodiscard]] std::optional<GtkNodeSemantics> accessibility_info_for_node_id(uint32_t node_id) const;
+  [[nodiscard]] std::vector<GtkWidget*> accessible_relation_targets(uint32_t node_id,
+                                                                    GtkAccessibleRelation rel) const;
   [[nodiscard]] GtkWidget* widget_for_node_id(uint32_t node_id) const noexcept;
+  [[nodiscard]] GtkIMContext* im_context_for_node_id(uint32_t node_id) const noexcept;
+  [[nodiscard]] bool is_composing_node(uint32_t node_id) const noexcept;
+  [[nodiscard]] uint32_t focused_node_id() const noexcept { return focused_node_id_; }
+  [[nodiscard]] uint64_t live_announcement_count() const noexcept { return live_announcement_count_; }
+  [[nodiscard]] const std::string& last_live_announcement() const noexcept { return last_live_announcement_; }
   [[nodiscard]] GtkWidget* root_widget() const noexcept { return root_widget_; }
   [[nodiscard]] GtkWidget* host_widget() const noexcept { return viewport_widget_; }
   [[nodiscard]] size_t view_count() const noexcept { return tree_.size(); }
@@ -235,11 +265,32 @@ class NveGtkHost {
   void update_text_input(GtkNodeView& view, const host::NodeData& node);
   void update_press(GtkNodeView& view, const host::NodeData& node);
   void update_scroll_extents();
+  void sync_aria_relations();
+  void announce_live_region(GtkWidget* widget, const GtkNodeSemantics& before, const GtkNodeSemantics& after,
+                            bool initial);
+  void attach_im_context(GtkNodeView& view);
+  void detach_im_context(GtkNodeView& view);
+  void on_im_preedit_start(GtkNodeView& view);
+  void on_im_preedit_changed(GtkNodeView& view);
+  void on_im_preedit_end(GtkNodeView& view);
+  void on_im_commit(GtkNodeView& view, const char* text);
+  void flush_pending_preedit_end(uint32_t node_id);
+  [[nodiscard]] bool step_tab_focus(bool reverse);
+  [[nodiscard]] uint32_t find_key_target(uint32_t start_id, NveInteractionEvent kind) const noexcept;
   void set_css_rule(uint32_t node_id, std::string rule);
   void flush_css();
   void detach_window_resize();
   [[nodiscard]] std::string scoped_class(uint32_t node_id) const;
 
+  static void on_im_preedit_start_cb(GtkIMContext* im, gpointer user_data);
+  static void on_im_preedit_changed_cb(GtkIMContext* im, gpointer user_data);
+  static void on_im_preedit_end_cb(GtkIMContext* im, gpointer user_data);
+  static void on_im_commit_cb(GtkIMContext* im, const char* text, gpointer user_data);
+  static void on_input_realize_cb(GtkWidget* widget, gpointer user_data);
+  static gboolean on_key_pressed(GtkEventControllerKey* ctrl, guint keyval, guint keycode, GdkModifierType state,
+                                 gpointer user_data);
+  static void on_key_released(GtkEventControllerKey* ctrl, guint keyval, guint keycode, GdkModifierType state,
+                              gpointer user_data);
   static gboolean on_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data);
   static void on_window_size_notify(GObject* object, GParamSpec* pspec, gpointer user_data);
   static void on_window_destroy(GtkWidget* widget, gpointer user_data);
@@ -268,11 +319,18 @@ class NveGtkHost {
 
   GtkWidget* viewport_widget_ = nullptr;
   GtkWidget* root_widget_ = nullptr;
+  GtkEventController* key_controller_ = nullptr;
   /// Reused by every `measure_text` (created on first use from `root_widget_`'s Pango context).
   mutable PangoLayout* measure_layout_ = nullptr;
   GdkDisplay* display_ = nullptr;
   GtkCssProvider* css_provider_ = nullptr;
   guint tick_id_ = 0u;
+  uint32_t focused_node_id_ = 0u;
+  uint32_t pending_blur_id_ = 0u;
+  uint32_t pending_compose_end_id_ = 0u;
+  bool relations_dirty_ = false;
+  uint64_t live_announcement_count_ = 0u;
+  std::string last_live_announcement_;
   int observed_w_ = 0;
   int observed_h_ = 0;
   int observed_scale_ = 0;

@@ -1,9 +1,11 @@
 // NVE host runtime: decoders (and encoders, for C++ apps / fixtures) of the core `FlatResource`
 // kinds a native view host renders, word-identical to `nve_tables::tables::resources`:
 //
-//   nve.res.image_src   u32 tag (0 = Url, 1 = EncodedBytes) | u32 byte_len | payload padded to 4 B
-//   nve.res.box_shadows u32 count (<= 4096); per shadow 6 u32 words:
-//                       f32 offset_x, offset_y, blur, spread, u32 RGBA, u32 inset (0 | 1)
+//   nve.res.image_src       u32 tag (0 = Url, 1 = EncodedBytes) | u32 byte_len | payload padded to 4 B
+//   nve.res.box_shadows     u32 count (<= 4096); per shadow 6 u32 words:
+//                           f32 offset_x, offset_y, blur, spread, u32 RGBA, u32 inset (0 | 1)
+//   nve.res.aria_relations  4 u32 byte lengths (controls, labelled_by, described_by, active_descendant)
+//                           followed by concatenated UTF-8 bytes, zero-padded to 4 B
 //
 // Decoders return views into the given bytes (no allocation except the shadow list) and reject
 // unaligned lengths, trailing bytes, over-limit counts, and invalid UTF-8 exactly like Rust.
@@ -28,6 +30,7 @@ namespace nve::host {
 
 inline constexpr Key64 kImageSrcKind = Key64::of("nve.res.image_src");
 inline constexpr Key64 kBoxShadowsKind = Key64::of("nve.res.box_shadows");
+inline constexpr Key64 kAriaRelationsKind = Key64::of("nve.res.aria_relations");
 
 namespace detail {
 class ResourceCursor {
@@ -174,6 +177,67 @@ struct BoxShadow {
     detail::put_u32(out, s.color);
     detail::put_u32(out, s.inset ? 1u : 0u);
   }
+  return out;
+}
+
+/// Decoded `AriaRelations` (`nve.res.aria_relations`): views into the resource payload bytes.
+/// Each field is a space-separated list of target `debug_id.id` tokens (or a single id for
+/// `active_descendant`), matching ARIA IDREF(S) semantics and `nve_tables::AriaRelations`.
+struct AriaRelations {
+  std::string_view controls;
+  std::string_view labelled_by;
+  std::string_view described_by;
+  std::string_view active_descendant;
+
+  [[nodiscard]] constexpr bool empty() const noexcept {
+    return controls.empty() && labelled_by.empty() && described_by.empty() && active_descendant.empty();
+  }
+  friend bool operator==(const AriaRelations&, const AriaRelations&) noexcept = default;
+};
+
+[[nodiscard]] inline std::optional<AriaRelations> decode_aria_relations(std::span<const uint8_t> bytes) noexcept {
+  constexpr uint32_t kMaxString = 256u * 1024u;
+  if ((bytes.size() & 3u) != 0u) return std::nullopt;
+  detail::ResourceCursor r(bytes);
+  const auto n_controls = r.count(kMaxString);
+  const auto n_labelled = r.count(kMaxString);
+  const auto n_described = r.count(kMaxString);
+  const auto n_active = r.count(kMaxString);
+  if (!n_controls || !n_labelled || !n_described || !n_active) return std::nullopt;
+  const size_t total = static_cast<size_t>(*n_controls) + static_cast<size_t>(*n_labelled) +
+                       static_cast<size_t>(*n_described) + static_cast<size_t>(*n_active);
+  const size_t padded = (total + 3u) & ~size_t{3u};
+  const auto raw = r.take(padded);
+  if (!raw || !r.done()) return std::nullopt;
+  for (const uint8_t pad : raw->subspan(total)) {
+    if (pad != 0u) return std::nullopt;
+  }
+  size_t off = 0u;
+  const auto slice = [&](uint32_t len, std::string_view& out) noexcept -> bool {
+    const std::span<const uint8_t> s = raw->subspan(off, len);
+    off += len;
+    if (!s.empty() && nve_utf8_valid(s.data(), s.size()) == 0) return false;
+    out = std::string_view(reinterpret_cast<const char*>(s.data()), s.size());
+    return true;
+  };
+  AriaRelations rel;
+  if (!slice(*n_controls, rel.controls) || !slice(*n_labelled, rel.labelled_by) ||
+      !slice(*n_described, rel.described_by) || !slice(*n_active, rel.active_descendant)) {
+    return std::nullopt;
+  }
+  return rel;
+}
+
+[[nodiscard]] inline std::vector<uint8_t> encode_aria_relations(const AriaRelations& rel) {
+  std::vector<uint8_t> out;
+  detail::put_u32(out, static_cast<uint32_t>(rel.controls.size()));
+  detail::put_u32(out, static_cast<uint32_t>(rel.labelled_by.size()));
+  detail::put_u32(out, static_cast<uint32_t>(rel.described_by.size()));
+  detail::put_u32(out, static_cast<uint32_t>(rel.active_descendant.size()));
+  for (const std::string_view s : {rel.controls, rel.labelled_by, rel.described_by, rel.active_descendant}) {
+    out.insert(out.end(), s.begin(), s.end());
+  }
+  detail::pad4(out);
   return out;
 }
 

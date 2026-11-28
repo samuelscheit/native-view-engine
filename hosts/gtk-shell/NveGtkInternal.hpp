@@ -28,9 +28,16 @@ struct GtkNodeView {
   GtkNodeSemantics sem;
   std::string href;
 
-  // Press / link activation.
+  // Press / link activation / keyboard & focus.
   GtkGesture* click = nullptr;
   bool wants_press = false;
+  bool wants_key_down = false;
+  bool wants_key_up = false;
+  bool focusable = false;
+  std::optional<int16_t> tab_index;
+  std::string dom_id;
+  uint32_t aria_relations_res = 0u;
+  std::unordered_map<int, std::vector<GtkWidget*>> applied_relations;
 
   // Scroll.
   gulong h_handler = 0u;
@@ -39,11 +46,17 @@ struct GtkNodeView {
   float requested_y = NAN;
   bool scrolling_programmatically = false;
 
-  // Text input (`GtkEntry` / `GtkTextView` buffer).
+  // Text input (`GtkEntry` / `GtkTextView` buffer) & IME preedit.
   gulong changed_handler = 0u;
   gulong activate_handler = 0u;
+  gulong realize_handler = 0u;
   GtkEventController* focus = nullptr;
+  GtkIMContext* im_context = nullptr;
   host::ControlledText text;
+  std::string preedit;
+  bool composing = false;
+  bool pending_change_after_compose = false;
+  bool preedit_ended_awaiting_commit = false;
   bool synced = false;
 
   // Image / canvas: the resource ids applied (kept per `RetainedTree::resource_unchanged`).
@@ -59,11 +72,23 @@ struct GtkNodeView {
 
 namespace gtk_internal {
 
+struct MappedKey {
+  std::string key;
+  std::string code;
+  uint32_t flags = 0u;
+  uint32_t key_code = 0u;
+};
+
 [[nodiscard]] WidgetKind widget_kind(const host::NodeData& node, bool has_canvas) noexcept;
 /// Construct-only in GTK4: part of the view tag, so a role change recreates the widget.
 [[nodiscard]] GtkAccessibleRole accessible_role(const host::NodeData& node) noexcept;
-[[nodiscard]] GtkNodeSemantics node_semantics(const host::NodeData& node);
+[[nodiscard]] GtkNodeSemantics node_semantics(const host::NodeData& node,
+                                              std::optional<host::AriaRelations> relations = std::nullopt);
 void apply_accessibility(GtkWidget* widget, const GtkNodeSemantics& sem);
+void set_accessible_relation(GtkAccessible* acc, GtkAccessibleRelation rel, const std::vector<GtkWidget*>& targets);
+[[nodiscard]] std::vector<std::string_view> split_idrefs(std::string_view raw);
+[[nodiscard]] MappedKey map_gdk_key(guint keyval, guint keycode, GdkModifierType state);
+[[nodiscard]] GtkIMContext* find_widget_im_context(GtkWidget* widget, WidgetKind kind) noexcept;
 [[nodiscard]] std::string build_css_rule(const std::string& selector, const host::NodeData& node,
                                          WidgetKind kind, std::span<const host::BoxShadow> shadows);
 [[nodiscard]] std::string css_rgba(uint32_t rgba);

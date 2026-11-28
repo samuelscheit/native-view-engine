@@ -2,6 +2,8 @@
 // API, and the scene-graph entry points (`updatePaintNode` -> NveQtSGBuilder.cpp).
 #include "NveQtQuickInternal.hpp"
 
+#include <nve/host/urls.hpp>
+
 #include <QQuickWindow>
 #include <QtQml/qqml.h>
 
@@ -35,6 +37,16 @@ QuickNodeView* NveQtQuickItem::Impl::find(uint32_t id) noexcept {
 
 const QuickNodeView* NveQtQuickItem::Impl::find(uint32_t id) const noexcept {
   return const_cast<Impl*>(this)->find(id);
+}
+
+QuickNodeView* NveQtQuickItem::Impl::find_by_dom_id(std::string_view dom_id) noexcept {
+  if (dom_id.empty()) return nullptr;
+  if (root_.dom_id == dom_id) return &root_;
+  QuickNodeView* found = nullptr;
+  tree_.for_each_view([&](QuickNodeView*& v) {
+    if (found == nullptr && v != nullptr && v->dom_id == dom_id) found = v;
+  });
+  return found;
 }
 
 namespace {
@@ -187,17 +199,25 @@ void NveQtQuickItem::Impl::Adapter::move(QuickNodeView*& v, const host::NodeGeom
 
 void NveQtQuickItem::Impl::Adapter::update_root(const host::NodeData& node) {
   QuickNodeView& r = host->root_;
+  const bool was_synced = r.synced;
   const QColor bg = qcolor(node.visual.background);
-  if (bg != r.paint.visual.background || !r.synced) {
+  if (bg != r.paint.visual.background || !was_synced) {
     r.paint.visual.background = bg;
     r.synced = true;
     host->bump_paint(r);
   }
-  NodeSemantics sem = node_semantics(node);
-  if (!(sem == r.sem)) {
+  r.interaction_events = node.interaction.events;
+  r.disabled = node.interaction.disabled;
+  r.dom_id.assign(node.debug_id.id);
+  std::optional<host::AriaRelations> rels;
+  if (node.a11y.relations != 0u) {
+    rels = host::decode_aria_relations(host->scene_resource(node.a11y.relations, host::kAriaRelationsKind));
+  }
+  NodeSemantics sem = node_semantics(node, rels);
+  if (!was_synced || !(sem == r.sem)) {
     const NodeSemantics before = std::move(r.sem);
     r.sem = std::move(sem);
-    host->a11y_semantics_changed(r, before);
+    if (was_synced) host->a11y_semantics_changed(r, before);
   }
 }
 
@@ -314,11 +334,19 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
 
   v.interaction_events = node.interaction.events;
   v.wants_press = node.wants(NVE_INTERACTION_EVENT_PRESS);
+  v.dom_id.assign(node.debug_id.id);
   v.href.assign(node.href);
   v.disabled = node.interaction.disabled;
-  v.focusable = !v.disabled && (node.interaction.focusable || v.is_input);
+  v.tab_index = node.interaction.tab_index;
+  v.focusable = !v.disabled && (node.interaction.focusable || v.is_input ||
+                                (v.tab_index.has_value() && *v.tab_index >= 0) ||
+                                v.wants_press || host::openable_link(v.href));
   v.cursor = node.interaction.cursor;
-  NodeSemantics sem = node_semantics(node);
+  std::optional<host::AriaRelations> rels;
+  if (node.a11y.relations != 0u) {
+    rels = host::decode_aria_relations(scene_resource(node.a11y.relations, host::kAriaRelationsKind));
+  }
+  NodeSemantics sem = node_semantics(node, rels);
   if (!v.synced || !(sem == v.sem)) {
     const NodeSemantics before = std::move(v.sem);
     v.sem = std::move(sem);
@@ -332,6 +360,13 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
   }
 }
 
+void NveQtQuickItem::Impl::on_frame0_booted() {
+  focused_ = 0u;
+  pressed_ = 0u;
+  hovered_.clear();
+  root_.synced = false;
+}
+
 void NveQtQuickItem::Impl::update_input(QuickNodeView& v, const host::NodeData& node) {
   QuickInput& in = v.input;
   in.multiline = node.input.multiline;
@@ -340,7 +375,7 @@ void NveQtQuickItem::Impl::update_input(QuickNodeView& v, const host::NodeData& 
   in.max_length = node.input.max_length;
   in.placeholder = scene_string(node.input.placeholder);
   v.paint.style = text_style(node.text_style);
-  if (!in.preedit.isEmpty()) return;  // never clobber a live IME composition
+  if (in.composing || !in.preedit.isEmpty()) return;  // never clobber a live IME composition
   const std::string shown = in.edit.toStdString();
   if (in.control.app_published(node.input.value, shown)) {
     const auto write = in.control.host_write();

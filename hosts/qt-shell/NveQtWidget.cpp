@@ -26,10 +26,58 @@ QtNodeView* NveQtWidget::Impl::find(uint32_t id) noexcept {
   return v != nullptr ? *v : nullptr;
 }
 
+QtNodeView* NveQtWidget::Impl::find_by_dom_id(std::string_view dom_id) noexcept {
+  if (dom_id.empty()) return nullptr;
+  QtNodeView* found = nullptr;
+  tree_.for_each_view([&](QtNodeView*& v) {
+    if (found == nullptr && v != nullptr && v->dom_id == dom_id) found = v;
+  });
+  return found;
+}
+
+QList<QPair<QAccessibleInterface*, QAccessible::Relation>> NveQtWidget::Impl::accessible_relations_for(
+    const QtNodeView& view, QAccessible::Relation match) const {
+  QList<QPair<QAccessibleInterface*, QAccessible::Relation>> out;
+  auto* self = const_cast<Impl*>(this);
+  const auto add_targets = [&](std::string_view idrefs, QAccessible::RelationFlag rel) {
+    if ((match & rel) == 0 || idrefs.empty()) return;
+    for (const std::string_view token : split_aria_idrefs(idrefs)) {
+      if (QtNodeView* target = self->find_by_dom_id(token); target != nullptr && target->widget != nullptr) {
+        if (QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(target->widget)) {
+          out.emplace_back(iface, rel);
+        }
+      }
+    }
+  };
+  add_targets(view.sem.labelled_by, QAccessible::Labelled);
+  add_targets(view.sem.described_by, QAccessible::Described);
+  add_targets(view.sem.controls, QAccessible::Controller);
+  return out;
+}
+
+QAccessibleInterface* NveQtWidget::Impl::active_descendant_for(const QtNodeView& view) const {
+  if (view.sem.active_descendant.empty()) return nullptr;
+  auto* self = const_cast<Impl*>(this);
+  for (const std::string_view token : split_aria_idrefs(view.sem.active_descendant)) {
+    if (QtNodeView* target = self->find_by_dom_id(token); target != nullptr && target->widget != nullptr) {
+      return QAccessible::queryAccessibleInterface(target->widget);
+    }
+  }
+  return nullptr;
+}
+
 void NveQtWidget::Impl::clear_views() {
   tree_.clear(adapter_);
   restack_.clear();
   scroll_dirty_.clear();
+  root_synced_ = false;
+}
+
+void NveQtWidget::Impl::on_frame0_booted() {
+  if (QWidget* fw = owner_->focusWidget(); fw != nullptr && owner_->isAncestorOf(fw)) {
+    fw->clearFocus();
+  }
+  root_synced_ = false;
 }
 
 size_t NveQtWidget::Impl::sync_views(const host::RuntimeSceneGuard& scene) {

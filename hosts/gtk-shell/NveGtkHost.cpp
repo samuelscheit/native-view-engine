@@ -64,6 +64,12 @@ NveGtkHost::NveGtkHost(GtkHostConfig config)
   gtk_widget_set_vexpand(viewport_widget_, TRUE);
   gtk_scrolled_window_set_child(sw, root_widget_);
 
+  key_controller_ = gtk_event_controller_key_new();
+  gtk_event_controller_set_propagation_phase(key_controller_, GTK_PHASE_CAPTURE);
+  g_signal_connect(key_controller_, "key-pressed", gtk_detail::to_gcallback(&NveGtkHost::on_key_pressed), this);
+  g_signal_connect(key_controller_, "key-released", gtk_detail::to_gcallback(&NveGtkHost::on_key_released), this);
+  gtk_widget_add_controller(viewport_widget_, key_controller_);
+
   css_provider_ = gtk_css_provider_new();
   display_ = gdk_display_get_default();
   if (display_ != nullptr) {
@@ -82,6 +88,11 @@ NveGtkHost::~NveGtkHost() {
   session_->set_wake_poster({});
   session_->set_event_sink({});
   detach_window_resize();
+  if (key_controller_ != nullptr) {
+    g_signal_handlers_disconnect_by_data(key_controller_, this);
+    gtk_widget_remove_controller(viewport_widget_, key_controller_);
+    key_controller_ = nullptr;
+  }
   if (tick_id_ != 0u) gtk_widget_remove_tick_callback(viewport_widget_, tick_id_);
   syncing_ = true;
   tree_.clear(adapter_);
@@ -170,6 +181,28 @@ bool NveGtkHost::restore_state(std::string_view path, uint32_t schema_version) {
 
 bool NveGtkHost::clear_state(std::string_view path) { return session_->clear_state_file(path); }
 
+bool NveGtkHost::save_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  return session_->save_frame0_file(path, app_build_id, env_hash);
+}
+
+bool NveGtkHost::boot_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_file(path, app_build_id, env_hash)) return false;
+  focused_node_id_ = 0u;
+  pending_blur_id_ = 0u;
+  pending_compose_end_id_ = 0u;
+  (void)pump();
+  return true;
+}
+
+bool NveGtkHost::boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_bytes(envelope, app_build_id, env_hash)) return false;
+  focused_node_id_ = 0u;
+  pending_blur_id_ = 0u;
+  pending_compose_end_id_ = 0u;
+  (void)pump();
+  return true;
+}
+
 bool NveGtkHost::apply_props(std::span<const NveMapEntry> props) {
   const bool ok = session_->set_props(props);
   sync_views();
@@ -207,8 +240,19 @@ void NveGtkHost::sync_views() {
     }
   }
   update_scroll_extents();
+  sync_aria_relations();
   flush_css();
   syncing_ = false;
+  const uint32_t end_compose = std::exchange(pending_compose_end_id_, 0u);
+  const uint32_t blur_id = std::exchange(pending_blur_id_, 0u);
+  if (end_compose != 0u || blur_id != 0u) {
+    const auto alive = alive_;
+    if (end_compose != 0u) {
+      (void)dispatch_composition(end_compose, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+      if (!alive->load(std::memory_order_acquire)) return;
+    }
+    if (blur_id != 0u) (void)dispatch_focus(blur_id, false);
+  }
 }
 
 // --- Input -------------------------------------------------------------------------------------
@@ -237,6 +281,20 @@ bool NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
 
 bool NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
   return dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_CHANGE, text);
+}
+
+bool NveGtkHost::dispatch_composition(uint32_t node_id, NveTextInputEvent kind, std::string_view text) {
+  return dispatch_text(node_id, kind, text);
+}
+
+bool NveGtkHost::dispatch_key(uint32_t node_id, NveInteractionEvent kind, std::string_view key, std::string_view code,
+                              uint32_t flags, uint32_t key_code) {
+  if (syncing_) return false;
+  const auto alive = alive_;
+  const bool changed = session_->dispatch_key(node_id, kind, key, code, flags, key_code);
+  if (!alive->load(std::memory_order_acquire)) return changed;
+  sync_views();
+  return changed;
 }
 
 bool NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {

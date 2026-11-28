@@ -1,5 +1,8 @@
 #include "NveWinD2DInternal.hpp"
+#include "NveWinKeyMap.hpp"
+#include "NveWinTextOffsets.hpp"
 
+#include <nve_a11y_win.h>
 #include <nve/host/urls.hpp>
 
 #include <shellapi.h>
@@ -7,6 +10,27 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
+
+extern "C" {
+
+static int nve_win_scene_resource_lookup(void* ctx, uint32_t resource_id, uint64_t expected_kind,
+                                         const uint8_t** out_ptr, size_t* out_len) {
+  if (ctx == nullptr || out_ptr == nullptr || out_len == nullptr || resource_id == 0u) return 0;
+  const auto* guard = static_cast<const nve::host::RuntimeSceneGuard*>(ctx);
+  const auto res = guard->resource(resource_id);
+  if (!res || res->kind.value != expected_kind) return 0;
+  *out_ptr = res->bytes.data();
+  *out_len = res->bytes.size();
+  return 1;
+}
+
+static void nve_win_a11y_action_cb(void* ctx, const NveA11yWinAction* action) {
+  if (ctx == nullptr || action == nullptr) return;
+  static_cast<nve::win::NveWinHostWindow*>(ctx)->enqueue_a11y_action(*action);
+}
+
+}  // extern "C"
 
 namespace nve::win {
 
@@ -46,12 +70,15 @@ LPCWSTR system_cursor(uint8_t kind) noexcept {
 NveWinHostWindow::NveWinHostWindow(WinHostWindowOptions options) : options_(std::move(options)) {}
 
 NveWinHostWindow::~NveWinHostWindow() {
+  alive_->store(false, std::memory_order_release);
   on_destroy_ = {};
   wake_hwnd_.store(nullptr, std::memory_order_release);
   if (host_ != nullptr) {
     host_->set_wake_poster({});  // drains in-flight wakes
     host_->set_on_change({});
+    host_->set_on_scene_sync({});
   }
+  destroy_a11y();
   inputs_.detach();
   discard_render_target();
   if (hwnd_ != nullptr && ::IsWindow(hwnd_)) ::DestroyWindow(hwnd_);
@@ -97,6 +124,8 @@ bool NveWinHostWindow::create(HINSTANCE instance, std::string* error) {
     wake_hwnd_.store(nullptr, std::memory_order_release);  // WM_NCCREATE may have published it
     return fail("CreateWindowExW failed");
   }
+  // Initialize UIA adapter before `show()` (never inside `WM_GETOBJECT`).
+  a11y_ = nve_a11y_win_create(hwnd_, ::GetFocus() == hwnd_ ? 1 : 0, &nve_win_a11y_action_cb, this);
   // Wakes fire on any thread, also inline inside attach / restore_state: always queue them.
   host_->set_wake_poster([this] {
     if (HWND target = wake_hwnd_.load(std::memory_order_acquire); target != nullptr) {
@@ -104,7 +133,17 @@ bool NveWinHostWindow::create(HINSTANCE instance, std::string* error) {
     }
   });
   host_->set_on_change([this] { on_change(); });
+  host_->set_on_scene_sync([this](const host::RuntimeSceneGuard& g) { sync_a11y_with_guard(g); });
   inputs_.attach(hwnd_, host_.get());
+  inputs_.set_on_tab([this](bool reverse) {
+    const auto alive = alive_;
+    if (host_ == nullptr) return;
+    const uint32_t next = host_->step_tab_focus(reverse);
+    if (!alive->load(std::memory_order_acquire)) return;
+    sync_native_focus(next);
+    if (!alive->load(std::memory_order_acquire)) return;
+    sync_a11y_now();
+  });
   sync_surface_size();
   return true;
 }
@@ -250,6 +289,203 @@ void NveWinHostWindow::on_wheel(WPARAM wparam, LPARAM lparam, bool horizontal) {
   (void)host_->wheel_at(dip(pt.x), dip(pt.y), horizontal ? step : 0.0f, horizontal ? 0.0f : -step);
 }
 
+void NveWinHostWindow::sync_native_focus(uint32_t focused_node) {
+  if (hwnd_ == nullptr) return;
+  if (HWND edit = inputs_.control_for_node(focused_node); edit != nullptr && ::IsWindow(edit)) {
+    ::SetFocus(edit);
+  } else {
+    ::SetFocus(hwnd_);
+  }
+}
+
+void NveWinHostWindow::on_key(WPARAM wparam, LPARAM lparam, bool pressed) {
+  const auto alive = alive_;
+  const MappedWinKey mk = map_win32_key(wparam, lparam, pressed);
+  const uint32_t prev_focus = host_->focused_node();
+  const KeyResult r = host_->handle_key(pressed, mk.key, mk.code, mk.flags, mk.key_code, false);
+  if (!alive->load(std::memory_order_acquire)) return;
+  if (!r.href.empty()) open_link(r.href);
+  if (r.focused_node != prev_focus) {
+    sync_native_focus(r.focused_node);
+    if (!alive->load(std::memory_order_acquire)) return;
+    sync_a11y_now();
+  }
+}
+
+void NveWinHostWindow::sync_a11y_with_guard(const host::RuntimeSceneGuard& guard) {
+  if (a11y_ == nullptr || !nve_a11y_win_is_active(a11y_)) return;
+  (void)nve_a11y_win_sync_scene(a11y_, &guard.raw(), &nve_win_scene_resource_lookup,
+                                const_cast<host::RuntimeSceneGuard*>(&guard), host_->focused_node(), dpi_scale(),
+                                options_.title.c_str());
+}
+
+void NveWinHostWindow::sync_a11y_now() {
+  if (a11y_ == nullptr || host_ == nullptr || !nve_a11y_win_is_active(a11y_)) return;
+  auto guard = host_->session().runtime().acquire_scene();
+  if (guard) sync_a11y_with_guard(*guard);
+}
+
+void NveWinHostWindow::destroy_a11y() noexcept {
+  NveA11yWinHandle* h = std::exchange(a11y_, nullptr);
+  if (h != nullptr) nve_a11y_win_destroy(h);
+  std::lock_guard<std::mutex> lock(a11y_mu_);
+  a11y_actions_.clear();
+}
+
+void NveWinHostWindow::enqueue_a11y_action(const NveA11yWinAction& action) {
+  QueuedA11yAction q;
+  q.node_id = action.node_id;
+  q.kind = action.kind;
+  q.x = action.x;
+  q.y = action.y;
+  q.numeric_value = action.numeric_value;
+  q.anchor_char = action.anchor_char;
+  q.focus_char = action.focus_char;
+  if (action.text_ptr != nullptr && action.text_len > 0u) {
+    q.text.assign(reinterpret_cast<const char*>(action.text_ptr), action.text_len);
+  }
+  // Always enqueue + post to the UI thread: `ActionBridge::dispatch` holds its callback-teardown
+  // lock, so executing synchronously here could self-deadlock on window destruction or re-enter UIA.
+  {
+    std::lock_guard<std::mutex> lock(a11y_mu_);
+    a11y_actions_.push_back(std::move(q));
+  }
+  if (HWND target = wake_hwnd_.load(std::memory_order_acquire); target != nullptr) {
+    (void)::PostMessageW(target, WM_APP_A11Y_ACTION, 0, 0);
+  }
+}
+
+void NveWinHostWindow::execute_a11y_action(const QueuedA11yAction& action) {
+  const auto alive = alive_;
+  if (host_ == nullptr || action.node_id == 0u) return;
+  const uint32_t id = action.node_id;
+  const WinNodeVisual* v = host_->visual_tree().find(id);
+  if (v == nullptr) return;
+  const bool disabled = host_->is_node_disabled(id);
+  const auto dispatch_target_key = [&](std::string_view key, uint32_t vk) {
+    if (disabled) return;
+    if (host_->focused_node() != id) {
+      (void)host_->set_focused_node(id);
+      if (!alive->load(std::memory_order_acquire)) return;
+    }
+    (void)host_->dispatch_key(id, NVE_INTERACTION_EVENT_KEY_DOWN, key, key, 0u, vk);
+  };
+  switch (action.kind) {
+    case NVE_A11Y_WIN_ACTION_CLICK:
+    case NVE_A11Y_WIN_ACTION_EXPAND:
+    case NVE_A11Y_WIN_ACTION_COLLAPSE:
+      if (disabled) break;
+      if (action.kind == NVE_A11Y_WIN_ACTION_CLICK && !v->wants(NVE_INTERACTION_EVENT_PRESS) &&
+          host::openable_link(v->href)) {
+        open_link(v->href);
+      } else {
+        (void)host_->simulate_press(id, v->local.width * 0.5f, v->local.height * 0.5f);
+      }
+      break;
+    case NVE_A11Y_WIN_ACTION_FOCUS:
+      if (disabled) break;
+      (void)host_->set_focused_node(id);
+      if (!alive->load(std::memory_order_acquire)) return;
+      sync_native_focus(host_->focused_node());
+      if (!alive->load(std::memory_order_acquire)) return;
+      sync_a11y_now();
+      break;
+    case NVE_A11Y_WIN_ACTION_BLUR:
+      if (host_->focused_node() == id) {
+        (void)host_->set_focused_node(0u);
+        if (!alive->load(std::memory_order_acquire)) return;
+        sync_native_focus(0u);
+        if (!alive->load(std::memory_order_acquire)) return;
+        sync_a11y_now();
+      }
+      break;
+    case NVE_A11Y_WIN_ACTION_SET_VALUE:
+      if (disabled || (v->kind == host::NodeKind::TextInput && v->input.read_only)) break;
+      (void)host_->dispatch_text_change(id, (v->kind == host::NodeKind::TextInput && !v->input.multiline)
+                                                ? sanitize_single_line(action.text)
+                                                : action.text);
+      break;
+    case NVE_A11Y_WIN_ACTION_SET_NUMERIC_VALUE:
+      if (!disabled) {
+        if (const std::string formatted = format_numeric_value(action.numeric_value); !formatted.empty()) {
+          (void)host_->dispatch_text_change(id, formatted);
+        }
+      }
+      break;
+    case NVE_A11Y_WIN_ACTION_REPLACE_SELECTED_TEXT: {
+      if (disabled || v->kind != host::NodeKind::TextInput || v->input.read_only) break;
+      const bool multiline = v->input.multiline;
+      const std::string replacement = multiline ? action.text : sanitize_single_line(action.text);
+      const std::wstring wcur = wide(v->input.value);
+      size_t lo = wcur.size(), hi = wcur.size();
+      if (HWND edit = inputs_.control_for_node(id); edit != nullptr && ::IsWindow(edit)) {
+        DWORD s0 = 0u, s1 = 0u;
+        ::SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&s0), reinterpret_cast<LPARAM>(&s1));
+        const size_t raw_lo = std::min(s0, s1), raw_hi = std::max(s0, s1);
+        lo = std::min(multiline ? lf_utf16_offset_from_crlf(v->input.value, raw_lo) : raw_lo, wcur.size());
+        hi = std::min(multiline ? lf_utf16_offset_from_crlf(v->input.value, raw_hi) : raw_hi, wcur.size());
+      }
+      std::wstring wnext;
+      wnext.append(wcur.data(), lo);
+      wnext.append(wide(replacement));
+      wnext.append(wcur.data() + hi, wcur.size() - hi);
+      if (host_->focused_node() != id) {
+        (void)host_->set_focused_node(id);
+        if (!alive->load(std::memory_order_acquire)) return;
+        sync_native_focus(host_->focused_node());
+        if (!alive->load(std::memory_order_acquire)) return;
+      }
+      (void)host_->dispatch_text_change(id, narrow(wnext));
+      break;
+    }
+    case NVE_A11Y_WIN_ACTION_SET_TEXT_SELECTION: {
+      if (disabled || v->kind != host::NodeKind::TextInput) break;
+      const size_t a16_lf = utf16_offset_for_char_index(v->input.value, action.anchor_char);
+      const size_t f16_lf = utf16_offset_for_char_index(v->input.value, action.focus_char);
+      const size_t a16 = v->input.multiline ? crlf_utf16_offset_from_lf(v->input.value, a16_lf) : a16_lf;
+      const size_t f16 = v->input.multiline ? crlf_utf16_offset_from_lf(v->input.value, f16_lf) : f16_lf;
+      if (host_->focused_node() != id) {
+        (void)host_->set_focused_node(id);
+        if (!alive->load(std::memory_order_acquire)) return;
+        sync_native_focus(host_->focused_node());
+        if (!alive->load(std::memory_order_acquire)) return;
+      }
+      if (HWND edit = inputs_.control_for_node(id); edit != nullptr && ::IsWindow(edit)) {
+        ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(std::min(a16, f16)),
+                       static_cast<LPARAM>(std::max(a16, f16)));
+      }
+      sync_a11y_now();
+      break;
+    }
+    case NVE_A11Y_WIN_ACTION_SCROLL_INTO_VIEW:
+      if (host_->scroll_into_view(id) && alive->load(std::memory_order_acquire)) sync_a11y_now();
+      break;
+    case NVE_A11Y_WIN_ACTION_SET_SCROLL_OFFSET:
+      (void)host_->dispatch_scroll(id, action.x, action.y);
+      break;
+    case NVE_A11Y_WIN_ACTION_SCROLL_BY:
+      (void)host_->dispatch_scroll(id, v->scroll_x + action.x, v->scroll_y + action.y);
+      break;
+    case NVE_A11Y_WIN_ACTION_INCREMENT: dispatch_target_key("ArrowUp", VK_UP); break;
+    case NVE_A11Y_WIN_ACTION_DECREMENT: dispatch_target_key("ArrowDown", VK_DOWN); break;
+    case NVE_A11Y_WIN_ACTION_SHOW_CONTEXT_MENU: dispatch_target_key("ContextMenu", VK_APPS); break;
+    default: break;
+  }
+}
+
+void NveWinHostWindow::drain_a11y_actions() {
+  const auto alive = alive_;
+  std::vector<QueuedA11yAction> batch;
+  {
+    std::lock_guard<std::mutex> lock(a11y_mu_);
+    batch.swap(a11y_actions_);
+  }
+  for (const QueuedA11yAction& action : batch) {
+    if (!alive->load(std::memory_order_acquire) || hwnd_ == nullptr) break;
+    execute_a11y_action(action);
+  }
+}
+
 LRESULT CALLBACK NveWinHostWindow::static_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   NveWinHostWindow* self = nullptr;
   if (msg == WM_NCCREATE) {
@@ -281,14 +517,56 @@ LRESULT NveWinHostWindow::handle_message(HWND hwnd, UINT msg, WPARAM wparam, LPA
       input_sync_posted_ = false;
       inputs_.sync(dpi_scale());
       return 0;
-    case WM_LBUTTONDOWN:
-      ::SetFocus(hwnd_);    // clicking the surface blurs a focused text input
+    case WM_APP_A11Y_ACTION: drain_a11y_actions(); return 0;
+    case WM_GETOBJECT:
+      if (a11y_ != nullptr && nve_a11y_win_wants_wm_getobject(static_cast<intptr_t>(lparam))) {
+        if (!nve_a11y_win_is_active(a11y_)) {
+          nve_a11y_win_activate(a11y_);
+          sync_a11y_now();
+        }
+        intptr_t res = 0;
+        if (nve_a11y_win_handle_wm_getobject(a11y_, static_cast<uintptr_t>(wparam), static_cast<intptr_t>(lparam),
+                                             &res)) {
+          return static_cast<LRESULT>(res);
+        }
+      }
+      break;
+    case WM_SETFOCUS:
+    case WM_EXITMENULOOP:
+    case WM_EXITSIZEMOVE:
+      if (a11y_ != nullptr) nve_a11y_win_set_window_focus(a11y_, 1);
+      break;
+    case WM_KILLFOCUS:
+      // Moving focus to a child native `EDIT` control keeps focus inside this top-level window.
+      if (wparam != 0 && ::IsChild(hwnd_, reinterpret_cast<HWND>(wparam))) break;
+      if (a11y_ != nullptr) nve_a11y_win_set_window_focus(a11y_, 0);
+      break;
+    case WM_ENTERMENULOOP:
+    case WM_ENTERSIZEMOVE:
+      if (a11y_ != nullptr) nve_a11y_win_set_window_focus(a11y_, 0);
+      break;
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: on_key(wparam, lparam, true); return 0;
+    case WM_KEYUP:
+    case WM_SYSKEYUP: on_key(wparam, lparam, false); return 0;
+    case WM_LBUTTONDOWN: {
+      const auto alive = alive_;
+      const float x = dip(GET_X_LPARAM(lparam)), y = dip(GET_Y_LPARAM(lparam));
+      ::SetFocus(hwnd_);    // clicking the surface blurs a focused text input (may destroy `this`)
+      if (!alive->load(std::memory_order_acquire)) return 0;
       ::SetCapture(hwnd_);  // the release arrives here even outside the window
-      (void)host_->pointer_down(dip(GET_X_LPARAM(lparam)), dip(GET_Y_LPARAM(lparam)));
+      const uint32_t focus_id = host_->focus_target(x, y);
+      const bool focus_changed = host_->set_focused_node(focus_id);
+      if (!alive->load(std::memory_order_acquire)) return 0;
+      if (focus_changed) sync_a11y_now();
+      (void)host_->pointer_down(x, y);
       return 0;
+    }
     case WM_LBUTTONUP: {
+      const auto alive = alive_;
       ::ReleaseCapture();
       const PressResult r = host_->pointer_up(dip(GET_X_LPARAM(lparam)), dip(GET_Y_LPARAM(lparam)));
+      if (!alive->load(std::memory_order_acquire)) return 0;
       if (!r.href.empty()) open_link(r.href);
       return 0;
     }
@@ -327,9 +605,12 @@ LRESULT NveWinHostWindow::handle_message(HWND hwnd, UINT msg, WPARAM wparam, LPA
       if (!on_close_request_ || on_close_request_(options_.surface_id)) ::DestroyWindow(hwnd_);
       return 0;
     case WM_DESTROY: {
+      alive_->store(false, std::memory_order_release);
       wake_hwnd_.store(nullptr, std::memory_order_release);  // later wakes are dropped
-      host_->set_on_change({});  // no repaint / overlay resync from here on
-      inputs_.detach();          // destroying EDITs raises EN_KILLFOCUS: ignored once detached
+      host_->set_on_change({});      // no repaint / overlay resync from here on
+      host_->set_on_scene_sync({});  // no UIA sync during teardown
+      destroy_a11y();                // detach UIA action callbacks before destroying HWND
+      inputs_.detach();              // destroying EDITs raises EN_KILLFOCUS: ignored once detached
       discard_render_target();
       hwnd_ = nullptr;
       // `on_destroy` may delete `this` (window manager): detach it from the HWND first so the

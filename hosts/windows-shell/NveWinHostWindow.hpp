@@ -18,12 +18,16 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 struct IWICImagingFactory;
+struct NveA11yWinHandle;
+struct NveA11yWinAction;
 
 namespace nve::win {
 
@@ -31,6 +35,8 @@ namespace nve::win {
 inline constexpr UINT WM_APP_WAKE = WM_APP + 1u;
 /// Re-place the native `EDIT` overlays after the visual tree changed (coalesced, never inline).
 inline constexpr UINT WM_APP_SYNC_INPUTS = WM_APP + 2u;
+/// UIA assistive-technology action marshaled from a COM worker thread onto the UI thread.
+inline constexpr UINT WM_APP_A11Y_ACTION = WM_APP + 3u;
 
 struct WinHostWindowOptions {
   std::string title{"NVE Windows Host Shell"};
@@ -141,8 +147,21 @@ class NveWinHostWindow {
   [[nodiscard]] NveWinHost& host() noexcept { return *host_; }
   [[nodiscard]] const NveWinHost& host() const noexcept { return *host_; }
   [[nodiscard]] const WinTextInputs& text_inputs() const noexcept { return inputs_; }
+  /// Called by the C-ABI UIA action callback (may run on a COM worker thread).
+  void enqueue_a11y_action(const NveA11yWinAction& action);
 
  private:
+  struct QueuedA11yAction {
+    uint32_t node_id = 0u;
+    uint32_t kind = 0u;
+    float x = 0.0f;
+    float y = 0.0f;
+    double numeric_value = 0.0;
+    size_t anchor_char = 0u;
+    size_t focus_char = 0u;
+    std::string text;
+  };
+
   static LRESULT CALLBACK static_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT handle_message(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
@@ -151,8 +170,15 @@ class NveWinHostWindow {
   void on_paint();
   void sync_surface_size();
   void on_wheel(WPARAM wparam, LPARAM lparam, bool horizontal);
+  void on_key(WPARAM wparam, LPARAM lparam, bool pressed);
+  void sync_native_focus(uint32_t focused_node);
   void on_change();
   void schedule_input_sync();
+  void sync_a11y_with_guard(const host::RuntimeSceneGuard& guard);
+  void sync_a11y_now();
+  void execute_a11y_action(const QueuedA11yAction& action);
+  void drain_a11y_actions();
+  void destroy_a11y() noexcept;
   void open_link(const std::string& href);
   [[nodiscard]] float dip(int device_px) const noexcept { return static_cast<float>(device_px) / dpi_scale(); }
   [[nodiscard]] RECT outer_rect(int width_dips, int height_dips) const noexcept;
@@ -163,6 +189,11 @@ class NveWinHostWindow {
   D2DPaintCache cache_;
   HWND hwnd_ = nullptr;
   std::atomic<HWND> wake_hwnd_{nullptr};  // read by wake posters on any thread; null once destroyed
+  /// Cleared on destruction / `WM_DESTROY` so callbacks that destroy `this` stop touching members.
+  std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
+  NveA11yWinHandle* a11y_ = nullptr;
+  std::mutex a11y_mu_;
+  std::vector<QueuedA11yAction> a11y_actions_;
   ID2D1Factory* d2d_factory_ = nullptr;
   ID2D1HwndRenderTarget* render_target_ = nullptr;
   bool tracking_leave_ = false;

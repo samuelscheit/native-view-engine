@@ -16,7 +16,11 @@ bool operator==(const NodeSemantics& a, const NodeSemantics& b) noexcept {
          a.expanded == b.expanded && a.pressed == b.pressed && same(a.value_now, b.value_now) &&
          same(a.value_min, b.value_min) && same(a.value_max, b.value_max) && a.disabled == b.disabled &&
          a.hidden == b.hidden && a.focusable == b.focusable && a.activatable == b.activatable &&
-         a.secure == b.secure && a.multiline == b.multiline && a.read_only == b.read_only && a.search == b.search;
+         a.secure == b.secure && a.multiline == b.multiline && a.read_only == b.read_only && a.search == b.search &&
+         a.modal == b.modal && a.live == b.live && a.invalid == b.invalid && a.busy == b.busy &&
+         a.multiselectable == b.multiselectable && a.orientation == b.orientation &&
+         a.autocomplete == b.autocomplete && a.controls == b.controls && a.labelled_by == b.labelled_by &&
+         a.described_by == b.described_by && a.active_descendant == b.active_descendant;
 }
 
 namespace {
@@ -121,7 +125,24 @@ class NveQtAccessibleWidget final : public QAccessibleWidget, public SemanticsIn
     st.passwordEdit = own.passwordEdit;
     st.searchEdit = own.searchEdit;
     st.editable = own.editable;
+    st.modal = own.modal;
+    st.busy = own.busy;
+    st.multiSelectable = own.multiSelectable;
+    st.supportsAutoCompletion = own.supportsAutoCompletion;
     return st;
+  }
+
+  QList<QPair<QAccessibleInterface*, QAccessible::Relation>> relations(
+      QAccessible::Relation match = QAccessible::AllRelations) const override {
+    QList<QPair<QAccessibleInterface*, QAccessible::Relation>> out = QAccessibleWidget::relations(match);
+    const auto extra = carrier_->accessible_relations(match);
+    out.append(extra);
+    return out;
+  }
+
+  QAccessibleInterface* focusChild() const override {
+    if (QAccessibleInterface* active = carrier_->active_descendant_interface()) return active;
+    return QAccessibleWidget::focusChild();
   }
 
   QStringList actionNames() const override { return press_action_names(carrier_->semantics()); }
@@ -168,18 +189,41 @@ QVariant SemanticsInterfaces::maximumValue() const { return finite_or_null(acces
 QVariant SemanticsInterfaces::minimumValue() const { return finite_or_null(accessible_semantics().value_min); }
 
 QList<QAccessible::Attribute> SemanticsInterfaces::attributeKeys() const {
-  return accessible_semantics().level != 0u ? QList<QAccessible::Attribute>{QAccessible::Attribute::Level}
-                                            : QList<QAccessible::Attribute>{};
+  QList<QAccessible::Attribute> keys;
+  const NodeSemantics& s = accessible_semantics();
+  if (s.level != 0u) keys.push_back(QAccessible::Attribute::Level);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+  if (s.orientation.has_value()) keys.push_back(QAccessible::Attribute::Orientation);
+#endif
+  return keys;
 }
 
 QVariant SemanticsInterfaces::attributeValue(QAccessible::Attribute key) const {
-  const uint8_t level = accessible_semantics().level;
-  return key == QAccessible::Attribute::Level && level != 0u ? QVariant(static_cast<int>(level)) : QVariant();
+  const NodeSemantics& s = accessible_semantics();
+  if (key == QAccessible::Attribute::Level && s.level != 0u) return QVariant(static_cast<int>(s.level));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+  if (key == QAccessible::Attribute::Orientation && s.orientation.has_value()) {
+    return QVariant::fromValue(*s.orientation == NVE_ARIA_ORIENTATION_VERTICAL ? Qt::Vertical : Qt::Horizontal);
+  }
+#endif
+  return QVariant();
 }
 
 QAccessible::Role accessible_role(const host::NodeData& node) noexcept { return qt_role(host::aria_role(node)); }
 
-NodeSemantics node_semantics(const host::NodeData& node) {
+std::vector<std::string_view> split_aria_idrefs(std::string_view raw) {
+  std::vector<std::string_view> out;
+  size_t i = 0u;
+  while (i < raw.size()) {
+    while (i < raw.size() && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n' || raw[i] == '\r')) ++i;
+    const size_t start = i;
+    while (i < raw.size() && raw[i] != ' ' && raw[i] != '\t' && raw[i] != '\n' && raw[i] != '\r') ++i;
+    if (i > start) out.push_back(raw.substr(start, i - start));
+  }
+  return out;
+}
+
+NodeSemantics node_semantics(const host::NodeData& node, std::optional<host::AriaRelations> relations) {
   NodeSemantics s;
   s.role = accessible_role(node);
   const host::AccessibilityData& a = node.a11y;
@@ -205,6 +249,19 @@ NodeSemantics node_semantics(const host::NodeData& node) {
   s.read_only = node.input.read_only;
   s.search = node.input.input_kind == NVE_INPUT_KIND_SEARCH ||
              (a.present && a.role == static_cast<uint8_t>(NVE_ARIA_ROLE_SEARCH_BOX));
+  s.modal = a.modal;
+  s.live = a.live;
+  s.invalid = a.invalid;
+  s.busy = a.busy;
+  s.multiselectable = a.multiselectable;
+  s.orientation = a.orientation;
+  s.autocomplete = a.autocomplete;
+  if (relations) {
+    s.controls.assign(relations->controls);
+    s.labelled_by.assign(relations->labelled_by);
+    s.described_by.assign(relations->described_by);
+    s.active_descendant.assign(relations->active_descendant);
+  }
   return s;
 }
 
@@ -228,6 +285,10 @@ QAccessible::State accessible_state(const NodeSemantics& s) noexcept {
   st.multiLine = editable && s.multiline;
   st.passwordEdit = editable && s.secure;
   st.searchEdit = editable && s.search;
+  st.modal = s.modal;
+  st.busy = s.busy;
+  st.multiSelectable = s.multiselectable;
+  st.supportsAutoCompletion = s.autocomplete.has_value() && *s.autocomplete != NVE_ARIA_AUTO_COMPLETE_NONE;
   return st;
 }
 
@@ -260,11 +321,29 @@ void notify_semantics_change(QAccessibleInterface* target, const NodeSemantics& 
   changed.expanded = a.expanded != b.expanded || a.collapsed != b.collapsed;
   changed.pressed = a.pressed != b.pressed;
   changed.readOnly = a.readOnly != b.readOnly;
+  changed.modal = a.modal != b.modal;
+  changed.busy = a.busy != b.busy;
+  changed.multiSelectable = a.multiSelectable != b.multiSelectable;
   if (changed.disabled || changed.invisible || changed.checked || changed.selected || changed.expanded ||
-      changed.pressed || changed.readOnly) {
+      changed.pressed || changed.readOnly || changed.modal || changed.busy || changed.multiSelectable) {
     QAccessibleStateChangeEvent ev(target, changed);
     QAccessible::updateAccessibility(&ev);
   }
+  if (before.active_descendant != after.active_descendant && !after.active_descendant.empty()) {
+    post(QAccessible::ActiveDescendantChanged);
+  }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+  if (after.live.has_value() && *after.live != NVE_ARIA_LIVE_OFF && !after.hidden) {
+    const QString msg = !after.label.isEmpty() ? after.label : accessible_value(after);
+    const QString prev = !before.label.isEmpty() ? before.label : accessible_value(before);
+    if (!msg.isEmpty() && (msg != prev || before.live != after.live)) {
+      QAccessibleAnnouncementEvent ev(target, msg);
+      ev.setPoliteness(*after.live == NVE_ARIA_LIVE_ASSERTIVE ? QAccessible::AnnouncementPoliteness::Assertive
+                                                              : QAccessible::AnnouncementPoliteness::Polite);
+      QAccessible::updateAccessibility(&ev);
+    }
+  }
+#endif
 }
 
 void install_accessible_factory() {

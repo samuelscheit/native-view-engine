@@ -45,6 +45,10 @@ void set_editable_text(GtkNodeView& v, const std::string& text) {
 
 void on_text_changed(GtkNodeView* v) {
   if (v->text.writing()) return;
+  if (v->composing || v->preedit_ended_awaiting_commit) {
+    v->pending_change_after_compose = true;
+    return;
+  }
   v->host->edit_text(*v);  // may destroy `v`
 }
 
@@ -65,12 +69,12 @@ void on_entry_activate(GtkEntry*, gpointer data) {
 
 void on_focus_enter(GtkEventControllerFocus*, gpointer data) {
   auto* v = static_cast<GtkNodeView*>(data);
-  (void)v->host->dispatch_focus(v->id, true);
+  v->host->on_widget_focus_change(*v, true);
 }
 
 void on_focus_leave(GtkEventControllerFocus*, gpointer data) {
   auto* v = static_cast<GtkNodeView*>(data);
-  (void)v->host->dispatch_focus(v->id, false);
+  v->host->on_widget_focus_change(*v, false);
 }
 
 void on_click_released(GtkGestureClick*, gint, gdouble x, gdouble y, gpointer data) {
@@ -193,6 +197,7 @@ GtkNodeView* NveGtkHost::Adapter::create(const host::NodeData& node) {
       g_signal_connect(v->focus, "enter", gtk_detail::to_gcallback(&on_focus_enter), v);
       g_signal_connect(v->focus, "leave", gtk_detail::to_gcallback(&on_focus_leave), v);
       gtk_widget_add_controller(v->widget, v->focus);
+      host->attach_im_context(*v);
       break;
     }
     case WidgetKind::Canvas:
@@ -244,6 +249,10 @@ void NveGtkHost::Adapter::update(GtkNodeView*& v, const host::NodeData& node) {
     case WidgetKind::Fixed: break;
   }
   v->href.assign(node.href);
+  if (v->dom_id != node.debug_id.id) {
+    v->dom_id.assign(node.debug_id.id);
+    host->relations_dirty_ = true;
+  }
   host->update_press(*v, node);
   host->apply_semantics(*v, node);
   host->apply_css(*v, node);
@@ -270,6 +279,8 @@ void NveGtkHost::Adapter::update_root(const host::NodeData& node) {
 
 void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
   if (v == nullptr) return;
+  if (host->focused_node_id_ == v->id) host->focused_node_id_ = 0u;
+  if (!v->dom_id.empty() || v->aria_relations_res != 0u) host->relations_dirty_ = true;
   host->css_dirty_ = host->css_rules_.erase(id) > 0u || host->css_dirty_;
   if (v->extents_dirty) std::erase(host->dirty_scroll_extents_, v);
   host->mark_scroll_extents(gtk_widget_get_parent(v->widget));
@@ -284,13 +295,17 @@ void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
   } else if (v->kind == WidgetKind::Fixed) {
     gtk_internal::unparent_children(v->content);
   } else if (v->kind == WidgetKind::Entry || v->kind == WidgetKind::TextView) {
+    host->detach_im_context(*v);
     GObject* source = v->kind == WidgetKind::Entry ? G_OBJECT(v->widget)
                                                    : G_OBJECT(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v->widget)));
     g_signal_handler_disconnect(source, v->changed_handler);
     if (v->activate_handler != 0u) g_signal_handler_disconnect(v->widget, v->activate_handler);
-    remove_controller(*v, v->focus);
   } else if (v->kind == WidgetKind::Canvas) {
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(v->widget), nullptr, nullptr, nullptr);
+  }
+  if (v->focus != nullptr) {
+    remove_controller(*v, v->focus);
+    v->focus = nullptr;
   }
   if (v->click != nullptr) remove_controller(*v, GTK_EVENT_CONTROLLER(v->click));
   gtk_internal::detach_from_parent(v->widget);
@@ -329,6 +344,9 @@ void NveGtkHost::Adapter::set_children(const host::NodeGeometry&, GtkNodeView** 
 
 void NveGtkHost::update_press(GtkNodeView& v, const host::NodeData& node) {
   v.wants_press = node.wants(NVE_INTERACTION_EVENT_PRESS);
+  v.wants_key_down = node.wants(NVE_INTERACTION_EVENT_KEY_DOWN);
+  v.wants_key_up = node.wants(NVE_INTERACTION_EVENT_KEY_UP);
+  v.tab_index = node.interaction.tab_index;
   const bool needs = !node.interaction.disabled && (v.wants_press || !v.href.empty());
   if (v.kind == WidgetKind::Label) gtk_widget_set_can_target(v.widget, needs ? TRUE : FALSE);  // text buttons
   if (needs && v.click == nullptr) {
@@ -340,8 +358,33 @@ void NveGtkHost::update_press(GtkNodeView& v, const host::NodeData& node) {
     remove_controller(v, GTK_EVENT_CONTROLLER(v.click));
     v.click = nullptr;
   }
-  gtk_widget_set_focusable(v.widget, (node.interaction.focusable || v.kind == WidgetKind::Entry ||
-                                      v.kind == WidgetKind::TextView) ? TRUE : FALSE);
+  const bool is_input = v.kind == WidgetKind::Entry || v.kind == WidgetKind::TextView;
+  v.focusable = !node.interaction.disabled &&
+                (node.interaction.focusable || is_input ||
+                 (v.tab_index.has_value() && *v.tab_index >= 0) ||
+                 v.wants_press || host::openable_link(v.href));
+  gtk_widget_set_focusable(v.widget, v.focusable ? TRUE : FALSE);
+  if (v.focusable && v.focus == nullptr) {
+    v.focus = gtk_event_controller_focus_new();
+    g_signal_connect(v.focus, "enter", gtk_detail::to_gcallback(&on_focus_enter), &v);
+    g_signal_connect(v.focus, "leave", gtk_detail::to_gcallback(&on_focus_leave), &v);
+    gtk_widget_add_controller(v.widget, v.focus);
+  } else if (!v.focusable && !is_input && v.focus != nullptr) {
+    remove_controller(v, v.focus);
+    v.focus = nullptr;
+  }
+  const bool lost_focus = !v.focusable && focused_node_id_ == v.id;
+  if (lost_focus) {
+    focused_node_id_ = 0u;
+    pending_blur_id_ = v.id;
+  }
+  if (lost_focus || node.interaction.disabled || node.input.read_only) {
+    if (std::exchange(v.composing, false) || std::exchange(v.preedit_ended_awaiting_commit, false)) {
+      pending_compose_end_id_ = v.id;
+    }
+    v.pending_change_after_compose = false;
+    v.preedit.clear();
+  }
 }
 
 void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {
@@ -417,7 +460,9 @@ void NveGtkHost::update_text_input(GtkNodeView& v, const host::NodeData& node) {
   } else {
     gtk_text_view_set_editable(GTK_TEXT_VIEW(v.widget), node.input.read_only ? FALSE : TRUE);
   }
-  // Controlled value: adopt the app's value unless it merely echoes what the user is typing.
+  // Controlled value: adopt the app's value unless it merely echoes what the user is typing
+  // or the widget is actively in an IME preedit / preedit-end-to-commit handoff.
+  if (v.composing || v.preedit_ended_awaiting_commit) return;
   const std::string value(node.input.value);
   if (v.text.app_published(value, editable_text(v))) set_editable_text(v, value);
 }

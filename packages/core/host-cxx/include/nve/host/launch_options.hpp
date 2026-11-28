@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app_state.hpp"
+#include "urls.hpp"
 #include "utf16.hpp"
 
 namespace nve::host {
@@ -29,6 +30,7 @@ struct LaunchOptions {
   std::string dylib_path;
   std::string pair_uri;
   std::string pair_token;
+  std::string pair_transport;
   std::string state_path;
   uint32_t schema_version = 1u;
   bool no_state = false;
@@ -39,6 +41,7 @@ struct LaunchOptions {
 
 inline constexpr std::string_view kLaunchUsage =
     "[--dylib <app cdylib>] [--pair <nve://|quic://|wt://|ws(s)://...>] [--pair-token <token>]"
+    " [--pair-transport <auto|quic|wt|wss|ws>]"
     " [--state <file>] [--no-state] [--reset-state] [--schema <ver>] [--width W] [--height H]";
 inline constexpr std::string_view kLaunchEnvUsage = "Env: NVE_STATE_DISABLE=1, NVE_STATE_PATH=<file>, NVE_RESET_STATE=1";
 
@@ -94,6 +97,17 @@ template <class T>
       ok = text(o.pair_uri);
     } else if (flag == "--pair-token") {
       ok = text(o.pair_token);
+    } else if (flag == "--pair-transport") {
+      std::string raw;
+      ok = text(raw);
+      if (ok) {
+        const std::optional<std::string_view> canonical = canonical_pair_transport(raw);
+        if (canonical) {
+          o.pair_transport.assign(*canonical);
+        } else {
+          ok = false;
+        }
+      }
     } else if (flag == "--state") {
       ok = text(o.state_path);
     } else if (flag == "--schema") {
@@ -110,6 +124,11 @@ template <class T>
     if (!ok) return fail("'" + std::string(flag) + "' needs a valid value");
   }
   if (!o.dylib_path.empty() && !o.pair_uri.empty()) return fail("--dylib and --pair are exclusive");
+  if (!o.pair_uri.empty() && !o.pair_transport.empty()) {
+    const std::optional<std::string> resolved = apply_pair_transport(o.pair_uri, o.pair_transport);
+    if (!resolved) return fail("invalid --pair URI for --pair-transport");
+    o.pair_uri = *resolved;
+  }
   return LaunchParse::Run;
 }
 

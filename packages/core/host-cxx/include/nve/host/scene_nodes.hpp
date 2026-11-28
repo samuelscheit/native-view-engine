@@ -176,6 +176,20 @@ struct AccessibilityData {
   float value_now = NAN;
   float value_min = NAN;
   float value_max = NAN;
+  bool modal = false;
+  std::optional<uint8_t> live;          // `NVE_ARIA_LIVE_*` when set
+  std::optional<uint8_t> orientation;   // `NVE_ARIA_ORIENTATION_*` when set
+  std::optional<uint8_t> autocomplete;  // `NVE_ARIA_AUTO_COMPLETE_*` when set
+  bool invalid = false;
+  bool multiselectable = false;
+  bool busy = false;
+  uint32_t relations = 0u;  // `ResourceId` (`nve.res.aria_relations`), 0 = none
+};
+
+struct DebugIdData {
+  std::string_view test_id;
+  std::string_view id;
+  std::string_view slot_name;
 };
 
 /// Identity and geometry of one live node: all a geometry-only `move` needs.
@@ -203,6 +217,7 @@ struct NodeData : NodeGeometry {
   ScrollData scroll;
   InteractionData interaction;
   AccessibilityData a11y;
+  DebugIdData debug_id;
   std::string_view href;
 
   [[nodiscard]] bool is_root() const noexcept { return index == kRootIndex; }
@@ -254,7 +269,7 @@ struct NodeData : NodeGeometry {
 
 /// Every core table a retained-view host renders, bound to one scene.
 struct SceneTables {
-  BoundTable layout, visual, typography, text, image, text_input, scroll, accessibility, interaction, link;
+  BoundTable layout, visual, typography, text, image, text_input, scroll, accessibility, interaction, link, debug_id;
 
   void bind(const SceneReader& scene) {
     layout.bind(scene, NVE_TABLE_LAYOUT_DESC);
@@ -267,6 +282,7 @@ struct SceneTables {
     accessibility.bind(scene, NVE_TABLE_ACCESSIBILITY_DESC);
     interaction.bind(scene, NVE_TABLE_INTERACTION_DESC);
     link.bind(scene, NVE_TABLE_LINK_DESC);
+    debug_id.bind(scene, NVE_TABLE_DEBUG_ID_DESC);
   }
 
   [[nodiscard]] NodeKind kind_of(uint8_t primary_slot) const noexcept {
@@ -483,7 +499,20 @@ inline void read_geometry_row(const SceneReader& scene, const SceneTables& t, ui
                                r.str(NVE_TABLE_ACCESSIBILITY_VALUE_TEXT, scene),
                                detail::opt_finite_or_nan(r, NVE_TABLE_ACCESSIBILITY_VALUE_NOW),
                                detail::opt_finite_or_nan(r, NVE_TABLE_ACCESSIBILITY_VALUE_MIN),
-                               detail::opt_finite_or_nan(r, NVE_TABLE_ACCESSIBILITY_VALUE_MAX)};
+                               detail::opt_finite_or_nan(r, NVE_TABLE_ACCESSIBILITY_VALUE_MAX),
+                               r.boolean(NVE_TABLE_ACCESSIBILITY_MODAL),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_LIVE),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_ORIENTATION),
+                               detail::opt_u8(r, NVE_TABLE_ACCESSIBILITY_AUTOCOMPLETE),
+                               r.boolean(NVE_TABLE_ACCESSIBILITY_INVALID),
+                               r.boolean(NVE_TABLE_ACCESSIBILITY_MULTISELECTABLE),
+                               r.boolean(NVE_TABLE_ACCESSIBILITY_BUSY),
+                               r.bits(NVE_TABLE_ACCESSIBILITY_RELATIONS)};
+  }
+  if (t.debug_id.has(index)) {
+    const RowRef r = t.debug_id.at(index);
+    n.debug_id = DebugIdData{r.str(NVE_TABLE_DEBUG_ID_TEST_ID, scene), r.str(NVE_TABLE_DEBUG_ID_ID, scene),
+                             r.str(NVE_TABLE_DEBUG_ID_SLOT, scene)};
   }
   n.href = t.link.at(index).str(NVE_TABLE_LINK_HREF, scene);
   return n;

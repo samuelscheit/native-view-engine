@@ -23,9 +23,19 @@
 #include <string_view>
 #include <utility>
 
+class QKeyEvent;
 class QObject;
 
 namespace nve::qt {
+
+struct MappedQtKey {
+  std::string key;
+  std::string code;
+  uint32_t flags = 0u;
+  uint32_t key_code = 0u;
+};
+
+[[nodiscard]] MappedQtKey map_qt_key(const QKeyEvent& event, bool composing = false);
 
 /// Resource ids a view last decoded (kept per `QtHost::resource_unchanged`), plus the image tint.
 struct AppliedResources {
@@ -70,6 +80,10 @@ class QtHost {
   bool restore_state(std::string_view path, uint32_t schema_version);
   /// Deletes the state file (`--reset-state`); `true` when it is gone (also when it never existed).
   bool clear_state(std::string_view path);
+  /// ABI v6 zero-unsafe `Frame0File` (`frame0.nve2`) capture and instant boot.
+  bool save_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
   [[nodiscard]] std::string last_error() const { return session_->last_error(); }
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
@@ -85,8 +99,11 @@ class QtHost {
   bool dispatch(NveEventBatch batch);
   bool simulate_press(uint32_t node_id, float x = 0.0f, float y = 0.0f);
   bool dispatch_text_change(uint32_t node_id, std::string_view text);
+  bool dispatch_composition(uint32_t node_id, NveTextInputEvent kind, std::string_view text);
   bool dispatch_submit(uint32_t node_id, std::string_view text);
   bool dispatch_focus(uint32_t node_id, bool focused);
+  bool dispatch_key(uint32_t node_id, NveInteractionEvent kind, std::string_view key, std::string_view code = {},
+                    uint32_t flags = 0u, uint32_t key_code = 0u);
   /// Moves the runtime's scroll offset of `node_id` to the native one, then dispatches Scroll.
   bool dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width, float content_height);
   /// `NVE_INTERACTION_EVENT_POINTER_*` at a node-local point.
@@ -126,6 +143,8 @@ class QtHost {
                                                      uint32_t applied) const noexcept = 0;
   /// Runs after each sync with the scene released (may dispatch / pump again).
   virtual void after_sync() {}
+  /// Runs right after `boot_frame0_*` replaces the scene so hosts clear stale focus/input state.
+  virtual void on_frame0_booted() {}
 
   /// Payload of published resource `id` of `kind` (empty when absent); valid only in `sync_views`.
   [[nodiscard]] std::span<const uint8_t> scene_resource(uint32_t id, host::Key64 kind) const noexcept;

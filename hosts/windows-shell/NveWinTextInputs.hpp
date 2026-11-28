@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -38,6 +39,9 @@ class WinTextInputs {
     parent_ = parent;
     host_ = host;
   }
+  /// Invoked when Tab / Shift+Tab is pressed inside a native `EDIT` control so the parent window
+  /// can advance NVE focus cleanly.
+  void set_on_tab(std::function<void(bool reverse)> callback) { on_tab_ = std::move(callback); }
   /// Creates, places, restyles, and destroys controls to match the visual tree (`scale`: DPI / 96).
   void sync(float scale);
   /// Destroys every control.
@@ -71,6 +75,8 @@ class WinTextInputs {
     bool clipped = false;
     bool multiline = false;
     bool secure = false;
+    bool composing = false;
+    bool pending_change_after_compose = false;
     host::ControlledText text;
   };
 
@@ -89,6 +95,7 @@ class WinTextInputs {
 
   static LRESULT CALLBACK control_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR node_id,
                                        DWORD_PTR self);
+  void flush_controlled_change(uint32_t id, HWND control);
   [[nodiscard]] uint32_t node_of(HWND control) const noexcept;
   void create(uint32_t node_id, Field& f, const WinNodeVisual& v);
   void update(Field& f, const WinNodeVisual& v, const PaintFrame& frame, float scale);
@@ -97,6 +104,7 @@ class WinTextInputs {
 
   HWND parent_ = nullptr;
   NveWinHost* host_ = nullptr;
+  std::function<void(bool)> on_tab_;
   std::unordered_map<uint32_t, Field> fields_;  // packed `NodeId` -> control
   UINT next_control_id_ = 0x4E00u;
   bool busy_ = false;
