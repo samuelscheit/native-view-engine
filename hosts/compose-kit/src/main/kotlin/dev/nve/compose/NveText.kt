@@ -101,7 +101,7 @@ class NveComposeTextMeasurer(private val measurer: TextMeasurer, private val den
 internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceController, enabled: Boolean) {
     val input = node.input ?: return
     var text by remember(node.id) { mutableStateOf(input.value) }
-    // Values sent while paired and not yet echoed, oldest first.
+    // Values sent while paired and not yet echoed, oldest first (capped at 32 like host-cxx `ControlledText`).
     val inFlight = remember(node.id) { ArrayDeque<String>() }
     LaunchedEffect(node.id, input.value) {
         val echoed = inFlight.indexOf(input.value)
@@ -124,6 +124,7 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
                 controller.textChanged(node.id, typed)
                 text = controller.scene[node.id]?.input?.value ?: typed
             } else {
+                if (inFlight.size >= MAX_IN_FLIGHT_ECHOES) inFlight.removeFirst()
                 inFlight.addLast(typed)
                 text = typed
                 controller.textChanged(node.id, typed)
@@ -153,6 +154,8 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
         },
     )
 }
+
+private const val MAX_IN_FLIGHT_ECHOES = 32
 
 internal fun keyboardType(input: NveInput): KeyboardType = when {
     input.secure || input.inputKind == NveTables.Values.InputKind.PASSWORD -> KeyboardType.Password

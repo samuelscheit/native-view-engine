@@ -22,19 +22,35 @@ class NveDrawListPainter : DrawList.Sink {
     private var scale = 1f
     private var bytes: ByteArray? = null
     private var buffer: ByteBuffer? = null
+    private var validationError: DrawList.Error? = null
     private var stroke: Stroke? = null
     private var strokeWidth = Float.NaN
 
     /**
-     * Paints [list] in dp units scaled by [scale] (default: the scope's density). A malformed list
-     * paints nothing and returns its [DrawList.Error]; clips are always restored.
+     * Paints [list] in dp units scaled by [scale] (default: the scope's density). Validation is
+     * cached per [ByteArray] reference so repeated repaints of an unchanged list stream directly
+     * through [DrawList.streamValidated]. A malformed list paints nothing and returns its
+     * [DrawList.Error]; clips are always restored.
      */
     fun draw(scope: DrawScope, list: ByteArray, scale: Float = scope.density): DrawList.Error? {
-        val buf = if (list === bytes) buffer!! else ByteBuffer.wrap(list).also { bytes = list; buffer = it }
+        val buf: ByteBuffer
+        val error: DrawList.Error?
+        if (list === bytes) {
+            buf = buffer!!
+            error = validationError
+        } else {
+            buf = ByteBuffer.wrap(list)
+            error = DrawList.validate(buf, 0, list.size)
+            bytes = list
+            buffer = buf
+            validationError = error
+        }
+        if (error != null) return error
         this.scope = scope
         this.scale = if (scale.isFinite() && scale > 0f) scale else 1f
         try {
-            return DrawList.decode(buf, 0, list.size, this)
+            DrawList.streamValidated(buf, 0, this)
+            return null
         } finally {
             this.scope = null
         }

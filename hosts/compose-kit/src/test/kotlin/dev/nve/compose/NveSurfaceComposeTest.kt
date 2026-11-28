@@ -323,4 +323,63 @@ class NveSurfaceComposeTest {
         compose.waitForIdle()
         assertEquals(settled, HashMap(counts))
     }
+
+    @Test
+    fun scrollContainerDoesNotRecomposeWhenChildChangesTextOnly() {
+        val s = TestScene()
+            .node(2, 1, 0f, 0f, 300f, 400f)
+            .node(3, 2, 0f, 0f, 300f, 100f)
+            .node(4, 3, 0f, 0f, 300f, 180f)
+        val scroll = s.table(NveTables.Scroll.KEY, NveTables.Scroll.WORDS)
+        s.set(scroll, 3, NveTables.Scroll.AXES, NveTables.Values.ScrollAxes.VERTICAL)
+        val text = s.table(NveTables.Text.KEY, NveTables.Text.WORDS)
+        s.set(text, 4, NveTables.Text.TEXT, "initial")
+        val host = FakeRuntimeHost(s)
+        val controller = NveSurfaceController(host)
+        controller.start(NveSource.App("/libnve_app.so"))
+        val counts = HashMap<Int, Int>()
+        compose.setContent {
+            CompositionLocalProvider(LocalNodeCompositions provides { id: Int -> counts[id] = (counts[id] ?: 0) + 1 }) {
+                NveSurface(controller, Modifier.size(300.dp, 400.dp))
+            }
+        }
+        compose.waitForIdle()
+        val before = HashMap(counts)
+
+        // Child 4 updates text without changing geometry: scroll container 3 must NOT recompose.
+        s.set(text, 4, NveTables.Text.TEXT, "updated")
+        s.dirty = intArrayOf(4)
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        compose.onNodeWithText("updated").assertIsDisplayed()
+        val delta = counts.mapValues { (id, n) -> n - (before[id] ?: 0) }.filterValues { it != 0 }
+        assertEquals("only the child recomposed, not its scroll parent: $delta", mapOf(0x1000004 to 1), delta)
+    }
+
+    @Test
+    fun pairedFieldCapsInFlightEchoQueueAt32Entries() {
+        val host = FakeRuntimeHost(fieldScene("v0"))
+        val controller = NveSurfaceController(host)
+        controller.start(NveSource.Paired("ws://pair.example.test:9000/nve-wire"))
+        compose.setContent { NveSurface(controller, Modifier.size(300.dp, 400.dp)) }
+
+        // Type 35 distinct values without echoes: entries v1..v3 are evicted, v4..v35 stay in-flight.
+        for (k in 1..35) {
+            compose.onNodeWithTag("field").performTextReplacement("v$k")
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("v35")
+
+        // v4 is the oldest retained entry (32nd from the end): a late echo of v4 is ignored.
+        host.scene = fieldScene("v4", intArrayOf(3))
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("v35")
+
+        // v1 was evicted when the queue hit 32: receiving v1 is treated as an app rewrite.
+        host.scene = fieldScene("v1", intArrayOf(3))
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("v1")
+    }
 }

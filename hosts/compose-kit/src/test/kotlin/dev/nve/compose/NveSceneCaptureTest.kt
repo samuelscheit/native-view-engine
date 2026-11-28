@@ -109,6 +109,7 @@ class NveSceneCaptureTest {
         assertEquals(NveNodeKind.SCROLL, scroll.kind)
         assertEquals(NveTables.Values.ScrollAxes.HORIZONTAL, scroll.scrollAxes)
         assertTrue(scroll.scrollsHorizontally && !scroll.scrollsVertically)
+        assertEquals(200f to 150f, scroll.scrollContentWidth to scroll.scrollContentHeight)
         val row = snap.at(0x1000007)
         assertEquals(0f to 0f, row.x to row.y, "scroll content is relative to the scroll container")
         assertTrue(row.semantics.hidden)
@@ -261,6 +262,30 @@ class NveSceneCaptureTest {
         assertEquals(NveScrollOffset(0f, 45f), state.at(0x1000006).scrollOffset, "a clean container follows its new offset")
         capture(showcase(TestScene(frameId = 4)).also { it.dirty = intArrayOf() }, res, state)
         assertEquals(NveScrollOffset.ZERO, state.at(0x1000006).scrollOffset, "scrolled back to the origin")
+    }
+
+    @Test
+    fun scrollContentExtentUpdatesOnlyWhenChildOrContainerGeometryChanges() {
+        val res = Resources(imageSourceBytes(0, "x".toByteArray()), ByteBuffer.allocate(0))
+        val state = capture(showcase(TestScene(frameId = 1)), res)
+        val initialScroll = state.at(0x1000006)
+        assertEquals(200f to 150f, initialScroll.scrollContentWidth to initialScroll.scrollContentHeight)
+
+        // Child row 7 changes text only (same geometry): scroll container slot stays untouched.
+        val textOnly = showcase(TestScene(frameId = 2))
+        textOnly.set(textOnly.table(NveTables.Text.KEY, NveTables.Text.WORDS), 7, NveTables.Text.TEXT, "Row updated")
+        textOnly.dirty = intArrayOf(7)
+        capture(textOnly, res, state)
+        assertSame(initialScroll, state.at(0x1000006), "content-only child edit keeps scroll slot unchanged")
+
+        // Child row 7 grows taller via `moved`: scroll container precomputed extent updates.
+        val taller = showcase(TestScene(frameId = 3))
+        taller.node(7, 6, 10f, 170f, 260f, 240f)
+        taller.dirty = intArrayOf()
+        taller.moved = intArrayOf(7)
+        capture(taller, res, state)
+        val grown = state.at(0x1000006)
+        assertEquals(260f to 240f, grown.scrollContentWidth to grown.scrollContentHeight)
     }
 
     @Test

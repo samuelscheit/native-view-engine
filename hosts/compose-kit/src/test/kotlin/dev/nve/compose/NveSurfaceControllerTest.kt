@@ -25,6 +25,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
     val scrolls = ArrayList<Triple<Int, Float, Float>>()
     var measurer: NativeRuntime.TextMeasurer? = null
     var closed = false
+    var synchronous = true
     private var listener: ((SceneReader, NveResourceLookup) -> Unit)? = null
 
     override fun setFrameListener(listener: (SceneReader, NveResourceLookup) -> Unit) {
@@ -33,6 +34,7 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
 
     override fun start(source: NveSource): Int {
         started.add(source)
+        if (startStatus == NveRuntimeAbi.STATUS_OK) synchronous = source is NveSource.App
         return startStatus
     }
 
@@ -69,6 +71,8 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
         return NveRuntimeAbi.STATUS_OK
     }
 
+    override val dispatchIsSynchronous: Boolean get() = synchronous
+
     override val lastError: String get() = "app library missing"
 
     override fun close() {
@@ -103,6 +107,18 @@ class NveSurfaceControllerTest {
         assertEquals("start failed (6): app library missing", c.error)
         assertEquals(0L, c.scene.frameId)
         assertEquals(0, c.scene.size)
+        assertTrue(c.dispatchIsSynchronous, "failed pair start keeps synchronous flag unchanged")
+    }
+
+    @Test
+    fun dispatchIsSynchronousDelegatesToHost() {
+        val host = FakeRuntimeHost(scene())
+        val c = NveSurfaceController(host)
+        assertTrue(c.dispatchIsSynchronous)
+        assertTrue(c.start(NveSource.Paired("ws://pair.example.test:9000/nve-wire")))
+        assertFalse(c.dispatchIsSynchronous)
+        host.synchronous = true
+        assertTrue(c.dispatchIsSynchronous, "delegates live to host rather than caching locally")
     }
 
     @Test

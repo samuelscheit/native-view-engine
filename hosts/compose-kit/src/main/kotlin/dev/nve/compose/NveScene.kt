@@ -92,6 +92,9 @@ data class NveNode(
     val scrollAxes: Int = NveTables.Values.ScrollAxes.NONE,
     /** Runtime scroll offset (dp, `scroll_offsets`) of a scroll container; `(0, 0)` when not scrolled. */
     val scrollOffset: NveScrollOffset = NveScrollOffset.ZERO,
+    /** Precomputed scroll content extent (dp) for `SCROLL` nodes so `NveScrollContainer` reads only its own slot. */
+    val scrollContentWidth: Float = width,
+    val scrollContentHeight: Float = height,
 ) {
     val scrollsHorizontally: Boolean
         get() = scrollAxes == NveTables.Values.ScrollAxes.HORIZONTAL || scrollAxes == NveTables.Values.ScrollAxes.BOTH
@@ -246,7 +249,12 @@ object NveSceneCapture {
         var rootDirty = !chained
         if (chained) {
             for (k in 0 until s.removedCount()) into.remove(s.removedId(k))
-            val rebuilt = HashSet<Int>(s.dirtyCount())
+            val rebuilt = HashSet<Int>(s.dirtyCount() + s.movedCount())
+            val scrollParents = HashSet<Int>()
+            fun markScrollParent(i: Int) {
+                val parentId = s.parent(i)
+                if (parentId != 0 && into[parentId]?.kind == NveNodeKind.SCROLL) scrollParents.add(parentId)
+            }
             for (d in 0 until s.dirtyCount()) {
                 val i = s.dirtyIndex(d)
                 if (i == root) {
@@ -256,12 +264,16 @@ object NveSceneCapture {
                 val id = s.nodeId(i)
                 into.put(node(s, t, i, resources, into[id], reusable, style))
                 rebuilt.add(id)
+                markScrollParent(i)
             }
             for (m in 0 until s.movedCount()) {
                 val i = s.movedIndex(m)
                 if (i == root) continue
-                val prev = into[s.nodeId(i)]
+                val id = s.nodeId(i)
+                val prev = into[id]
                 into.put(prev?.let { geometry(s, i, it) } ?: node(s, t, i, resources, null, reusable, style))
+                rebuilt.add(id)
+                markScrollParent(i)
             }
             // A resource rewritten in place leaves its users' rows clean: rebuild them from the index.
             for (k in 0 until s.dirtyResourceCount()) {
@@ -269,6 +281,19 @@ object NveSceneCapture {
                     val i = s.resolve(id)
                     if (i <= root || !rebuilt.add(id)) continue
                     into.put(node(s, t, i, resources, into[id], reusable, style))
+                }
+            }
+            // Recompute precomputed scroll extent only for clean scroll parents whose children changed,
+            // writing the slot only when `(scrollContentWidth, scrollContentHeight)` actually changed.
+            for (parentId in scrollParents) {
+                if (parentId in rebuilt) continue
+                val parent = into[parentId] ?: continue
+                if (parent.kind != NveNodeKind.SCROLL) continue
+                val p = s.resolve(parentId)
+                if (p <= root) continue
+                val extent = scrollContent(s, p, parent.width, parent.height)
+                if (extent[0] != parent.scrollContentWidth || extent[1] != parent.scrollContentHeight) {
+                    into.put(parent.copy(scrollContentWidth = extent[0], scrollContentHeight = extent[1]))
                 }
             }
         } else {
@@ -305,10 +330,37 @@ object NveSceneCapture {
         )
     }
 
+    /** Precomputed `(contentW, contentH)` of scroll container [i] from its live children's rects. */
+    private fun scrollContent(s: SceneReader, i: Int, width: Float, height: Float): FloatArray {
+        var contentW = width
+        var contentH = height
+        val sx = s.x(i)
+        val sy = s.y(i)
+        val count = s.childCount(i)
+        for (k in 0 until count) {
+            val c = s.resolve(s.childId(i, k))
+            if (c <= SceneSemantics.ROOT_INDEX) continue
+            val cx = SceneSemantics.finite(s.x(c) - sx, 0f)
+            val cy = SceneSemantics.finite(s.y(c) - sy, 0f)
+            val cw = maxOf(0f, SceneSemantics.finite(s.width(c), 0f))
+            val ch = maxOf(0f, SceneSemantics.finite(s.height(c), 0f))
+            contentW = maxOf(contentW, cx + cw)
+            contentH = maxOf(contentH, cy + ch)
+        }
+        return floatArrayOf(contentW, contentH)
+    }
+
     /** [prev] with node [i]'s new geometry (a moved node's content is unchanged). */
     private fun geometry(s: SceneReader, i: Int, prev: NveNode): NveNode {
         val g = parentRelative(s, i)
-        return prev.copy(x = g[0], y = g[1], width = g[2], height = g[3])
+        if (prev.kind != NveNodeKind.SCROLL) {
+            return prev.copy(x = g[0], y = g[1], width = g[2], height = g[3])
+        }
+        val extent = scrollContent(s, i, g[2], g[3])
+        return prev.copy(
+            x = g[0], y = g[1], width = g[2], height = g[3],
+            scrollContentWidth = extent[0], scrollContentHeight = extent[1],
+        )
     }
 
     private fun node(
@@ -332,6 +384,8 @@ object NveSceneCapture {
         var drawListResource = 0
         var scrollAxes = NveTables.Values.ScrollAxes.NONE
         var scrollOffset = NveScrollOffset.ZERO
+        var scrollContentWidth = g[2]
+        var scrollContentHeight = g[3]
         when (kind) {
             NveNodeKind.TEXT -> {
                 text = s.text(t.text, s.rowOf(t.text, i), NveTables.Text.TEXT)
@@ -372,6 +426,9 @@ object NveSceneCapture {
                 scrollAxes = t.scroll!!.u32(s.rowOf(t.scroll, i), NveTables.Scroll.AXES)
                 val id = s.nodeId(i)
                 scrollOffset = NveScrollOffset(s.scrollX(id), s.scrollY(id))
+                val extent = scrollContent(s, i, g[2], g[3])
+                scrollContentWidth = extent[0]
+                scrollContentHeight = extent[1]
             }
             NveNodeKind.CONTAINER -> Unit
         }
@@ -381,7 +438,7 @@ object NveSceneCapture {
             pressable = SceneSemantics.pressable(s, t, i), children = children(s, i),
             text = text, textStyle = textStyle, input = input, image = image, imageFit = imageFit,
             imageResource = imageResource, drawList = drawList, drawListResource = drawListResource, scrollAxes = scrollAxes,
-            scrollOffset = scrollOffset,
+            scrollOffset = scrollOffset, scrollContentWidth = scrollContentWidth, scrollContentHeight = scrollContentHeight,
         )
     }
 

@@ -41,6 +41,9 @@ interface NveRuntimeHost : AutoCloseable {
 
     fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int
 
+    /** `true` when dispatched events render synchronously (local app); `false` while paired. */
+    val dispatchIsSynchronous: Boolean
+
     val lastError: String
 }
 
@@ -73,6 +76,8 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
 
     override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int = surface.scrollBy(nodeId, dxDp, dyDp)
 
+    override val dispatchIsSynchronous: Boolean get() = surface.dispatchesSynchronously()
+
     override val lastError: String get() = surface.lastError()
 
     override fun close() = surface.close()
@@ -96,9 +101,9 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
      * `true` while a local app renders: a dispatched event's frame is applied before
      * [textChanged] returns, so a controlled field can show the app's verdict at once. `false`
      * while paired: the echo arrives later (or never), so fields keep the user's typing.
+     * Delegated to [NveRuntimeHost.dispatchIsSynchronous] (`RuntimeSurface.dispatchesSynchronously`).
      */
-    var dispatchIsSynchronous: Boolean = true
-        private set
+    val dispatchIsSynchronous: Boolean get() = host.dispatchIsSynchronous
 
     /** Last start / runtime failure, `null` while healthy. */
     var error: String? by mutableStateOf(null)
@@ -118,7 +123,6 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
             return false
         }
         error = null
-        dispatchIsSynchronous = source is NveSource.App
         host.render()
         return true
     }

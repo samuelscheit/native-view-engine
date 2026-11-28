@@ -66,6 +66,41 @@ class NveDrawListPainterTest {
     }
 
     @Test
+    fun cachesValidationPerByteArrayRefAcrossRepaintsAndSwitches() {
+        val painter = NveDrawListPainter()
+        val good = DrawListBytes().fillRect(0f, 0f, 4f, 4f, red).build()
+        val bad = good + 0.toByte()
+        fun runDraw(image: ImageBitmap, list: ByteArray, scale: Float = 1f): DrawList.Error? {
+            var error: DrawList.Error? = null
+            CanvasDrawScope().draw(Density(1f), LayoutDirection.Ltr, Canvas(image), Size(16f, 16f)) {
+                error = painter.draw(this, list, scale)
+            }
+            return error
+        }
+
+        val first = ImageBitmap(16, 16)
+        assertNull(runDraw(first, good, scale = 1f))
+        assertEquals(androidx.compose.ui.graphics.Color.Red, first.toPixelMap()[2, 2])
+        assertEquals(0f, first.toPixelMap()[6, 6].alpha)
+
+        // Same `ByteArray` ref streams via `DrawList.streamValidated` at a new scale.
+        val second = ImageBitmap(16, 16)
+        assertNull(runDraw(second, good, scale = 2f))
+        assertEquals(androidx.compose.ui.graphics.Color.Red, second.toPixelMap()[6, 6])
+
+        // Switching to a malformed ref returns the error; repeating the same bad ref hits the cached error.
+        val third = ImageBitmap(16, 16)
+        assertEquals(DrawList.Error.TRAILING_BYTES, runDraw(third, bad))
+        assertEquals(DrawList.Error.TRAILING_BYTES, runDraw(third, bad))
+        assertEquals(0f, third.toPixelMap()[2, 2].alpha)
+
+        // Switching back to a valid ref validates and paints again.
+        val fourth = ImageBitmap(16, 16)
+        assertNull(runDraw(fourth, good, scale = 1f))
+        assertEquals(androidx.compose.ui.graphics.Color.Red, fourth.toPixelMap()[2, 2])
+    }
+
+    @Test
     fun composeKitSourcesContainZeroOrgJsonUsage() {
         val kotlinFiles = File("src/main/kotlin").walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
         assertFalse(kotlinFiles.isEmpty())

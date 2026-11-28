@@ -125,14 +125,8 @@ private fun NveNodeContent(scene: NveSceneState, id: Int, controller: NveSurface
 private fun NveScrollContainer(scene: NveSceneState, node: NveNode, base: Modifier, controller: NveSurfaceController, visible: Boolean) {
     val across = rememberScrollState()
     val down = rememberScrollState()
-    var contentW = node.width
-    var contentH = node.height
-    for (child in node.children) {
-        scene[child]?.let {
-            contentW = maxOf(contentW, it.x + it.width)
-            contentH = maxOf(contentH, it.y + it.height)
-        }
-    }
+    val contentW = node.scrollContentWidth
+    val contentH = node.scrollContentHeight
     val density = LocalDensity.current.density
     // The collector outlives recompositions: it must read the latest content size, not the first.
     val content by rememberUpdatedState(floatArrayOf(contentW, contentH))
