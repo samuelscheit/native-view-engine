@@ -59,7 +59,8 @@ const statsTileStyleJs = `(() => {
 })()`;
 
 function assertStyledStatsTile(tile, where) {
-  const want = { border: "1px solid", radius: "10px", bg: "rgb(15, 23, 42)", basis: "110px", padding: "12px 14px" };
+  // `Theme::DARK.surface.base` (`#0f0f12` -> `rgb(15, 15, 18)`).
+  const want = { border: "1px solid", radius: "10px", bg: "rgb(15, 15, 18)", basis: "110px", padding: "12px 14px" };
   assert(tile, `${where}: no adopted stats-total tile`);
   for (const [k, v] of Object.entries(want)) {
     assert(tile[k] === v, `${where}: stats-total ${k}=${tile[k]} (want ${v}) ${JSON.stringify(tile)}`);
