@@ -1,6 +1,6 @@
 ---
 title: "Host Capabilities (packages/modules)"
-description: "Modular zero-serialization host capabilities on nve-host-services: Clipboard, Filesystem, Secure Store, Linking, live Theme/Locale NVT2/NVL1, Haptics, Storage, CameraPreview VisionCamera adapter, and TV spatial focus."
+description: "Modular zero-serialization host capabilities on nve-host-services (Clipboard, Filesystem, Secure Store, Linking, live Theme/Locale NVT2/NVL1, Haptics) plus standalone pure-Rust nve-storage, CameraPreview VisionCamera adapter, and TV spatial focus."
 order: 4
 ---
 
@@ -26,7 +26,7 @@ Native platform capabilities are decomposed into a tiny shared core (`packages/c
 
 ## Composing Only What You Need
 
-Every module's client borrows `&dyn HostServiceProvider` — backed by `FfiHostServices` in hosted `NveApp` modules, `HostServiceRegistry` on desktop, or `MemoryHostServices` in tests:
+Each host-service module's client (`nve-clipboard` .. `nve-haptics`) borrows `&dyn HostServiceProvider` — backed by `FfiHostServices` in hosted `NveApp` modules, `HostServiceRegistry` on desktop, or `MemoryHostServices` in tests (while `nve-storage` is used directly via `KvStore` / `StorageBackend` with zero `nve-host-services` dependency):
 
 ```rust title="Direct typed clients from standalone capability crates" highlight="1-5,8-18"
 use nve_clipboard::ClipboardClient;

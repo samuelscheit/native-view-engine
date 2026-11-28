@@ -599,11 +599,10 @@ fn completion_sink_caps_depth_and_byte_budget_and_request_table_rejects_dup_and_
 
     // 3. RequestTable duplicate rejection + interleaved bind(None) during sync invoke leaves 0 slots.
     let mut tbl = nve_host_services::RequestTable::new();
-    assert!(tbl.register_pending(7, None));
-    assert!(!tbl.register_pending(7, None));
-    let (cancelled, cbs) = tbl.cancel_all_pending();
+    assert!(tbl.register_pending(7));
+    assert!(!tbl.register_pending(7));
+    let cancelled = tbl.cancel_all_pending();
     assert_eq!(cancelled, 1);
-    assert!(cbs.is_empty());
     assert_eq!(tbl.total_slot_count(), 0);
 
     let ffi_race = Arc::new(FfiHostServices::new());
@@ -879,14 +878,13 @@ fn over_ffi_max_response_not_cached_and_cancel_all_pending_clears_completed_slot
     // 2. RequestTable::cancel_all_pending clears uncollected Completed slots so inline slots free up.
     let mut tbl = nve_host_services::RequestTable::new();
     for id in 1..=10u64 {
-        assert!(tbl.register_pending(id, None));
-        let _ = tbl.resolve(id, Ok(vec![id as u8]));
+        assert!(tbl.register_pending(id));
+        tbl.resolve(id, Ok(vec![id as u8]));
     }
     assert_eq!(tbl.pending_count(), 0);
     assert_eq!(tbl.total_slot_count(), 10);
-    let (cancelled, cbs) = tbl.cancel_all_pending();
+    let cancelled = tbl.cancel_all_pending();
     assert_eq!(cancelled, 0);
-    assert!(cbs.is_empty());
     assert_eq!(
         tbl.total_slot_count(),
         0,

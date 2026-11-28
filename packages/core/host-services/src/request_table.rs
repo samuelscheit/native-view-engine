@@ -4,8 +4,46 @@
 use std::collections::BTreeMap;
 
 use crate::error::ServiceError;
+use crate::provider::ResponseBuf;
 
-pub(crate) type AsyncCallback = Box<dyn FnOnce(Result<Vec<u8>, ServiceError>) + Send + 'static>;
+/// Type-erased async completion callback avoiding double-boxing and `ResponseBuf::Inline` heap
+/// copies when delivering replies through [`nve_codec::ByteTransport::call_async`].
+pub(crate) enum AsyncCallback {
+    Owned(Box<dyn FnOnce(Result<Vec<u8>, ServiceError>) + Send + 'static>),
+    Transport(nve_codec::TransportDoneFn),
+}
+
+impl AsyncCallback {
+    #[inline]
+    pub(crate) fn invoke_vec(self, res: Result<Vec<u8>, ServiceError>) {
+        match self {
+            Self::Owned(cb) => cb(res),
+            Self::Transport(cb) => match res {
+                Ok(bytes) => cb(Ok(&bytes)),
+                Err(err) => cb(Err(err.into())),
+            },
+        }
+    }
+
+    #[inline]
+    pub(crate) fn invoke_buf(self, res: Result<ResponseBuf, ServiceError>) {
+        match self {
+            Self::Owned(cb) => cb(res.map(ResponseBuf::into_vec)),
+            Self::Transport(cb) => match res {
+                Ok(buf) => cb(Ok(buf.as_slice())),
+                Err(err) => cb(Err(err.into())),
+            },
+        }
+    }
+
+    #[inline]
+    pub(crate) fn invoke_err(self, err: ServiceError) {
+        match self {
+            Self::Owned(cb) => cb(Err(err)),
+            Self::Transport(cb) => cb(Err(err.into())),
+        }
+    }
+}
 
 const INLINE_REQUEST_SLOTS: usize = 8;
 
@@ -31,6 +69,7 @@ impl Default for RequestTable {
 }
 
 impl RequestTable {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             inline: [const { None }; INLINE_REQUEST_SLOTS],
@@ -38,29 +77,26 @@ impl RequestTable {
         }
     }
 
-    /// Returns `true` if `request_id` is currently tracked (either `Pending` or `Completed`).
-    pub fn contains(&self, request_id: u64) -> bool {
-        self.inline
-            .iter()
-            .any(|slot| matches!(slot, Some((id, _)) if *id == request_id))
-            || (!self.overflow.is_empty() && self.overflow.contains_key(&request_id))
-    }
-
     /// Registers a `Pending` slot for `request_id`.
     ///
-    /// Returns `false` without overwriting if `request_id` already exists (either `Pending` or
-    /// `Completed`).
-    pub fn register_pending(&mut self, request_id: u64, callback: Option<AsyncCallback>) -> bool {
+    /// Returns `Err(callback)` without overwriting if `request_id` already exists (either
+    /// `Pending` or `Completed`), returning ownership of `callback` to the caller without extra
+    /// lookup passes.
+    pub(crate) fn register_pending_callback(
+        &mut self,
+        request_id: u64,
+        callback: Option<AsyncCallback>,
+    ) -> Result<(), Option<AsyncCallback>> {
         let mut free_idx: Option<usize> = None;
         for (idx, slot) in self.inline.iter().enumerate() {
             match slot {
-                Some((id, _)) if *id == request_id => return false,
+                Some((id, _)) if *id == request_id => return Err(callback),
                 None if free_idx.is_none() => free_idx = Some(idx),
                 _ => {}
             }
         }
         if !self.overflow.is_empty() && self.overflow.contains_key(&request_id) {
-            return false;
+            return Err(callback);
         }
         let next = RequestSlot::Pending { callback };
         if let Some(idx) = free_idx {
@@ -68,13 +104,20 @@ impl RequestTable {
         } else {
             self.overflow.insert(request_id, next);
         }
-        true
+        Ok(())
+    }
+
+    /// Registers a polled `Pending` slot for `request_id` (without a callback).
+    ///
+    /// Returns `false` without overwriting if `request_id` already exists.
+    pub fn register_pending(&mut self, request_id: u64) -> bool {
+        self.register_pending_callback(request_id, None).is_ok()
     }
 
     /// Unconditionally removes `request_id` after a synchronous completion or error, even if a
     /// racing `cancel_all_pending` transitioned or removed it mid-call (prevents leaked inline
     /// slots from ever breaking the 0-alloc sync fast path).
-    pub fn remove_sync_slot(&mut self, request_id: u64) -> Option<AsyncCallback> {
+    pub(crate) fn remove_sync_slot(&mut self, request_id: u64) -> Option<AsyncCallback> {
         for slot in &mut self.inline {
             if let Some((id, _)) = slot
                 && *id == request_id
@@ -97,7 +140,7 @@ impl RequestTable {
     /// Resolves `request_id` from a completed async host response **exactly once**.
     /// Returns any registered callback so the caller can invoke it outside the mutex lock.
     /// Duplicate or unknown `request_id` completions are ignored cleanly.
-    pub fn resolve(
+    pub(crate) fn resolve_callback(
         &mut self,
         request_id: u64,
         result: Result<Vec<u8>, ServiceError>,
@@ -138,11 +181,18 @@ impl RequestTable {
         }
     }
 
+    /// Resolves a polled `Pending` slot `request_id` **exactly once**.
+    pub fn resolve(&mut self, request_id: u64, result: Result<Vec<u8>, ServiceError>) {
+        if let Some((cb, res)) = self.resolve_callback(request_id, result) {
+            cb.invoke_vec(res);
+        }
+    }
+
     /// Clears every slot (both `Pending` and uncollected `Completed` entries) so unbind /
     /// reload / drop never leaks zombie entries or permanently spills inline slots into
     /// `overflow`, returning `(pending_cancelled_count, callbacks)` for lock-free
     /// `ServiceError::Cancelled` invocation.
-    pub fn cancel_all_pending(&mut self) -> (usize, Vec<AsyncCallback>) {
+    pub(crate) fn cancel_all_pending_callbacks(&mut self) -> (usize, Vec<AsyncCallback>) {
         let mut total = 0usize;
         let mut callbacks = Vec::new();
         for slot in &mut self.inline {
@@ -167,6 +217,15 @@ impl RequestTable {
         (total, callbacks)
     }
 
+    /// Clears every slot and returns the count of pending requests cancelled.
+    pub fn cancel_all_pending(&mut self) -> usize {
+        let (total, cbs) = self.cancel_all_pending_callbacks();
+        for cb in cbs {
+            cb.invoke_err(ServiceError::Cancelled);
+        }
+        total
+    }
+
     pub fn take_completed(&mut self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
         for slot in &mut self.inline {
             if let Some((id, RequestSlot::Completed(_))) = slot
@@ -186,6 +245,7 @@ impl RequestTable {
         None
     }
 
+    #[must_use]
     pub fn pending_count(&self) -> usize {
         let inline_pending = self
             .inline
@@ -200,6 +260,7 @@ impl RequestTable {
                 .count()
     }
 
+    #[must_use]
     pub fn total_slot_count(&self) -> usize {
         self.inline.iter().filter(|s| s.is_some()).count() + self.overflow.len()
     }

@@ -22,6 +22,7 @@ use crate::runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeConfig, NveRuntimeMetrics, NveRuntimeStatus,
     NveSceneView, NveScrollOffset, NveSurfaceMeasure, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
 };
+use crate::sink::SurfaceToken;
 use crate::value::{
     NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveStrSlice, NveValue,
     NveValueArray, NveValueData, NveValueMap, NveValueTag,
@@ -69,6 +70,11 @@ const _: () = {
     assert!(align_of::<NveIntrinsicSize>() == 4);
     assert!(offset_of!(NveIntrinsicSize, width) == 0);
     assert!(offset_of!(NveIntrinsicSize, height) == 4);
+
+    assert!(size_of::<SurfaceToken>() == 8);
+    assert!(align_of::<SurfaceToken>() == 4);
+    assert!(offset_of!(SurfaceToken, surface_id) == 0);
+    assert!(offset_of!(SurfaceToken, reload_gen) == 4);
 
     // ---- Core modular interface vtables (ffi.rs) ----
     assert!(size_of::<NveSurfaceApi>() == 4 * PTR_SIZE);

@@ -97,8 +97,19 @@ fn core_and_scene_view_descriptors_reflect_real_rustc_layouts() {
     assert_eq!(core.aliases[5].name, "NveDurationUs");
     assert_eq!(core.aliases[10].name, "NveInterfaceId");
     assert_eq!(core.enums.len(), 6);
-    assert_eq!(core.records.len(), 17);
+    assert_eq!(core.records.len(), 18);
     assert_eq!(core.modules.len(), 5);
+
+    let tok_schema = <nve_abi::SurfaceToken as NveStructSchema>::SCHEMA;
+    assert_eq!(tok_schema.name, "NveSurfaceToken");
+    assert_eq!(tok_schema.size, 8);
+    assert_eq!(tok_schema.fields.len(), 2);
+    assert_eq!(tok_schema.fields[0].abi_type(), "NveSurfaceId");
+    assert_eq!(tok_schema.fields[1].offset, 4);
+    assert!(core
+        .records
+        .iter()
+        .any(|r| matches!(r, AbiRecordDescriptor::Struct(s) if s.name == "NveSurfaceToken")));
 
     let ev_schema = <NveEvent as NveStructSchema>::SCHEMA;
     assert_eq!(ev_schema.size, 64);

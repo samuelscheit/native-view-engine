@@ -296,6 +296,7 @@ const CORE_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveIntrinsicSize as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveHostCallbacks as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<crate::table::NveTableView as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<crate::sink::SurfaceToken as NveStructSchema>::SCHEMA),
 ];
 
 const CORE_MODULES: &[AbiModuleDescriptor] = &[

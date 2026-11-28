@@ -8,13 +8,15 @@
 
 pub mod backend;
 pub mod engine;
+mod wal;
 
 use core::fmt;
 
 use nve_codec::{CodecError, DEFAULT_MAX_ITEMS};
 
 pub use backend::{MemoryStorage, NativeStorage, StorageBackend};
-pub use engine::{KvStore, KvStoreManager, NVK2_COMMIT_MARKER, NVK2_MAGIC, NVK2_VERSION};
+pub use engine::{KvStore, KvStoreManager};
+pub use wal::{NVK2_COMMIT_MARKER, NVK2_MAGIC, NVK2_VERSION};
 
 /// Maximum allowed namespace identifier length in bytes.
 pub const MAX_NAMESPACE_LEN: usize = 128;
@@ -83,7 +85,6 @@ pub struct StorageEntry {
 /// Metadata returned when opening or recovering a storage namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageOpenInfo {
-    pub handle: u64,
     pub key_count: u64,
     pub log_bytes: u64,
     pub recovered_torn_tail: bool,
@@ -97,7 +98,31 @@ pub struct CompactStats {
     pub bytes_after: u64,
 }
 
-/// Validates a storage namespace name (safe single filename component, no traversal).
+fn is_windows_reserved_name(stem: &str) -> bool {
+    let b = stem.as_bytes();
+    match b.len() {
+        3 => {
+            let up = [
+                b[0].to_ascii_uppercase(),
+                b[1].to_ascii_uppercase(),
+                b[2].to_ascii_uppercase(),
+            ];
+            matches!(&up, b"CON" | b"PRN" | b"AUX" | b"NUL")
+        }
+        4 => {
+            let up = [
+                b[0].to_ascii_uppercase(),
+                b[1].to_ascii_uppercase(),
+                b[2].to_ascii_uppercase(),
+            ];
+            matches!(&up, b"COM" | b"LPT") && matches!(b[3], b'1'..=b'9')
+        }
+        _ => false,
+    }
+}
+
+/// Validates a storage namespace name (cross-platform safe single filename component, no
+/// traversal, no trailing `.`, and no Windows reserved device names).
 pub fn validate_namespace(namespace: &str) -> Result<(), StorageError> {
     if namespace.is_empty() || namespace.len() > MAX_NAMESPACE_LEN {
         return Err(StorageError::InvalidArg(format!(
@@ -109,6 +134,11 @@ pub fn validate_namespace(namespace: &str) -> Result<(), StorageError> {
             "storage namespace must not contain path traversal segments".into(),
         ));
     }
+    if namespace.ends_with('.') {
+        return Err(StorageError::InvalidArg(
+            "storage namespace must not end with '.'".into(),
+        ));
+    }
     if !namespace
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
@@ -116,6 +146,12 @@ pub fn validate_namespace(namespace: &str) -> Result<(), StorageError> {
         return Err(StorageError::InvalidArg(
             "storage namespace must contain only ASCII [A-Za-z0-9._-]".into(),
         ));
+    }
+    let stem = namespace.split('.').next().unwrap_or(namespace);
+    if is_windows_reserved_name(stem) {
+        return Err(StorageError::InvalidArg(format!(
+            "storage namespace '{namespace}' uses a Windows reserved device name"
+        )));
     }
     Ok(())
 }

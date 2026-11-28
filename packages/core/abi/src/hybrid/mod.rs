@@ -6,7 +6,6 @@
 
 mod args;
 mod codec;
-pub mod sink;
 #[cfg(test)]
 mod tests;
 mod value;
@@ -18,14 +17,16 @@ use nve_abi_macros::NveAbi;
 
 use crate::DecodeError;
 
+pub use crate::sink;
 pub use args::{buffer_arg, decode_array, decode_bool, decode_opt};
 pub use codec::{
     HybridCodec, HybridElem, HybridFields, HybridStruct, decode_bin_arg, decode_enum,
     decode_struct_bin, decode_struct_value_ref, encode_struct, encode_to_vec,
 };
-pub use sink::{
-    invoke_async_bytes_done, invoke_bytes_sink, sink_bytes, with_bytes_sink, NveAsyncBytesDone,
-    NveBytesSink, SurfaceToken,
+pub use crate::sink::{
+    into_async_bytes_done, invoke_async_bytes_done, invoke_bytes_sink, sink_bytes,
+    try_with_bytes_sink, try_with_bytes_sink_once, with_bytes_sink, with_bytes_sink_once,
+    AsyncBytesDoneGuard, BytesSinkError, NveAsyncBytesDone, NveBytesSink, SurfaceToken,
 };
 pub use value::NveHybridValue;
 
