@@ -18,6 +18,7 @@ use nve_engine::{AppFrame, CapabilityUnsupported, HotPatchMsg, RuntimeApp, WakeB
 use nve_host_services::FfiHostServices;
 use nve_store::NodeStore;
 
+use crate::signal_archive::SignalArchiveError;
 use crate::DioxusSurface;
 
 /// Embedding-host props snapshot provided in `ScopeId::ROOT` context by [`DioxusRuntimeApp`].
@@ -158,6 +159,7 @@ pub struct DioxusRuntimeApp {
     event_emitter: HostEventEmitter,
     emitted_drain: EventBatchBuf,
     state_scratch: Vec<u8>,
+    last_state_error: Option<SignalArchiveError>,
     host_services: Arc<FfiHostServices>,
 }
 
@@ -184,8 +186,16 @@ impl DioxusRuntimeApp {
             event_emitter,
             emitted_drain: EventBatchBuf::new(),
             state_scratch: Vec::new(),
+            last_state_error: None,
             host_services,
         }
+    }
+
+    /// Last signal snapshot/hydration error observed by [`RuntimeApp::snapshot_state`] or
+    /// [`RuntimeApp::restore_state`] (`None` after a clean call).
+    #[inline]
+    pub fn last_state_error(&self) -> Option<&SignalArchiveError> {
+        self.last_state_error.as_ref()
     }
 
     #[inline]
@@ -288,34 +298,54 @@ impl RuntimeApp for DioxusRuntimeApp {
     fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {
         self.state_scratch.clear();
         if self.surface.signal_registry().is_empty() {
+            self.last_state_error = None;
             return Ok(&[]);
         }
-        if let Ok(bytes) = self.surface.snapshot_signals() {
-            self.state_scratch = bytes;
+        match self.surface.snapshot_signals() {
+            Ok(bytes) => {
+                self.state_scratch = bytes;
+                self.last_state_error = None;
+            }
+            Err(err) => {
+                self.last_state_error = Some(err);
+            }
         }
         Ok(&self.state_scratch)
     }
 
     fn restore_state(&mut self, state: &[u8]) -> Result<(), CapabilityUnsupported> {
         if state.is_empty() {
+            self.last_state_error = None;
             return Ok(());
         }
-        let _ = self.surface.hydrate_signals(state);
-        if self.mounted {
-            self.surface.vdom.mark_dirty(ScopeId::APP);
+        match self.surface.hydrate_signals(state) {
+            Ok(report) => {
+                self.last_state_error = None;
+                if self.mounted && report.hydrated_slots > 0 {
+                    self.surface.vdom.mark_dirty(ScopeId::APP);
+                }
+            }
+            Err(err) => {
+                self.last_state_error = Some(err);
+            }
         }
         Ok(())
     }
 
     fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
-        self.host_services.bind(callbacks);
+        let host_services = Arc::clone(&self.host_services);
+        // `FfiHostServices::bind` synchronously invokes `Cancelled` callbacks on unbind/rebind,
+        // which may mutate live `dioxus_signals::Signal<T>` handles.
+        self.surface.in_root_scope(|| host_services.bind(callbacks));
     }
 
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
         if batch.is_empty() {
             return false;
         }
-        match self.host_services.ingest_batch(batch) {
+        let host_services = Arc::clone(&self.host_services);
+        // Completion and `TypedEventBus` callbacks may read/write live `Signal<T>` handles.
+        match self.surface.in_root_scope(|| host_services.ingest_batch(batch)) {
             Ok(stats) if stats.total() > 0 => {
                 if self.mounted {
                     self.surface.vdom.mark_dirty(ScopeId::APP);

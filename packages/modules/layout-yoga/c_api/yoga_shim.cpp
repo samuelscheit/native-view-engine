@@ -604,6 +604,73 @@ void nve_yg_node_calculate_layout(YGNodeRef root, float avail_width, float avail
       root, sanitize_non_neg(avail_width), sanitize_non_neg(avail_height), YGDirectionLTR);
 }
 
+NveYogaRect nve_yg_node_measure_layout(
+    YGNodeRef root,
+    float min_w,
+    float max_w,
+    float min_h,
+    float max_h,
+    uint8_t ideal) noexcept {
+  if (!root) {
+    return NveYogaRect{0.0f, 0.0f, 0.0f, 0.0f};
+  }
+  if (ideal != 0u) {
+    YGNodeCalculateLayout(root, YGUndefined, YGUndefined, YGDirectionLTR);
+  } else {
+    float avail_w = YGUndefined;
+    float avail_h = YGUndefined;
+    const bool finite_max_w = std::isfinite(max_w);
+    const bool finite_max_h = std::isfinite(max_h);
+    if (finite_max_w && std::fabs(max_w - min_w) <= 1e-6f) {
+      YGNodeStyleSetWidth(root, min_w);
+      YGNodeStyleSetMinWidth(root, min_w);
+      YGNodeStyleSetMaxWidth(root, max_w);
+      avail_w = max_w;
+    } else {
+      if (min_w > 0.0f) {
+        const YGValue cur = YGNodeStyleGetMinWidth(root);
+        const float eff =
+            (cur.unit == YGUnitPoint && std::isfinite(cur.value)) ? std::fmax(cur.value, min_w) : min_w;
+        YGNodeStyleSetMinWidth(root, eff);
+      }
+      if (finite_max_w) {
+        const YGValue cur = YGNodeStyleGetMaxWidth(root);
+        const float eff =
+            (cur.unit == YGUnitPoint && std::isfinite(cur.value)) ? std::fmin(cur.value, max_w) : max_w;
+        YGNodeStyleSetMaxWidth(root, std::fmax(eff, min_w));
+        avail_w = max_w;
+      }
+    }
+    if (finite_max_h && std::fabs(max_h - min_h) <= 1e-6f) {
+      YGNodeStyleSetHeight(root, min_h);
+      YGNodeStyleSetMinHeight(root, min_h);
+      YGNodeStyleSetMaxHeight(root, max_h);
+      avail_h = max_h;
+    } else {
+      if (min_h > 0.0f) {
+        const YGValue cur = YGNodeStyleGetMinHeight(root);
+        const float eff =
+            (cur.unit == YGUnitPoint && std::isfinite(cur.value)) ? std::fmax(cur.value, min_h) : min_h;
+        YGNodeStyleSetMinHeight(root, eff);
+      }
+      if (finite_max_h) {
+        const YGValue cur = YGNodeStyleGetMaxHeight(root);
+        const float eff =
+            (cur.unit == YGUnitPoint && std::isfinite(cur.value)) ? std::fmin(cur.value, max_h) : max_h;
+        YGNodeStyleSetMaxHeight(root, std::fmax(eff, min_h));
+        avail_h = max_h;
+      }
+    }
+    YGNodeCalculateLayout(root, avail_w, avail_h, YGDirectionLTR);
+    const float computed_w = YGNodeLayoutGetWidth(root);
+    if (min_w > 0.0f && std::isfinite(computed_w) && computed_w < min_w - 1e-5f) {
+      YGNodeStyleSetWidth(root, min_w);
+      YGNodeCalculateLayout(root, min_w, avail_h, YGDirectionLTR);
+    }
+  }
+  return nve_yg_node_get_layout_rect(root);
+}
+
 NveYogaRect nve_yg_node_get_layout_rect(YGNodeConstRef node) noexcept {
   if (!node) {
     return NveYogaRect{0.0f, 0.0f, 0.0f, 0.0f};

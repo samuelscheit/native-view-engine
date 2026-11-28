@@ -380,5 +380,13 @@ unsafe extern "C" {
     pub fn nve_yg_node_apply_layout_ext(node: YGNodeRef, ext: *const NveYogaLayoutExt);
     pub fn nve_yg_node_set_fixed_size(node: YGNodeRef, width: f32, height: f32);
     pub fn nve_yg_node_calculate_layout(root: YGNodeRef, avail_width: f32, avail_height: f32);
+    pub fn nve_yg_node_measure_layout(
+        root: YGNodeRef,
+        min_w: f32,
+        max_w: f32,
+        min_h: f32,
+        max_h: f32,
+        ideal: u8,
+    ) -> NveYogaRect;
     pub fn nve_yg_node_get_layout_rect(node: YGNodeRef) -> NveYogaRect;
 }

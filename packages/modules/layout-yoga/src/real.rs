@@ -27,11 +27,11 @@ use crate::measure::{
 
 /// Real React Native Yoga C++20 implementation of [`StoreLayoutEngine`].
 pub struct YogaLayoutEngine {
-    config: YGConfigRef,
-    nodes: HashMap<NodeId, YogaNodeEntry>,
+    pub(crate) config: YGConfigRef,
+    pub(crate) nodes: HashMap<NodeId, YogaNodeEntry>,
     computed_rects: HashMap<NodeId, LayoutRect>,
-    text_measurer: Arc<dyn TextMeasurer>,
-    measurer_panicked: Arc<AtomicBool>,
+    pub(crate) text_measurer: Arc<dyn TextMeasurer>,
+    pub(crate) measurer_panicked: Arc<AtomicBool>,
     child_scratch: Vec<YGNodeRef>,
     /// Reusable stack for inherited typography propagation `(node_id, style, depth)`.
     typo_stack: Vec<(NodeId, ResolvedTextStyle, usize)>,
@@ -44,12 +44,12 @@ pub struct YogaLayoutEngine {
     /// Whether the active root's full subtree has been synced after `new` / `reset`.
     tree_seeded: bool,
     /// Set when structure or layout/measure `Typography` changed so text nodes refresh metrics.
-    typo_dirty: bool,
+    pub(crate) typo_dirty: bool,
     /// `StoreLayoutEngine::compute_layout` self-gate: set by every layout-affecting change,
     /// measurer swap, caught panic, and reset; cleared only after a clean completed pass.
     layout_dirty: bool,
     /// `(root, width, height, scale)` of the last completed pass.
-    last_pass: Option<(NodeId, f32, f32, f32)>,
+    pub(crate) last_pass: Option<(NodeId, f32, f32, f32)>,
 }
 
 // SAFETY: `YogaLayoutEngine` exclusively owns its `YGConfigRef`, all `YGNodeRef`s, and every
@@ -234,7 +234,7 @@ impl YogaLayoutEngine {
 
     /// Propagates inherited `Typography` (every measure-affecting field) from `root` down into
     /// every text node's Yoga measure payload via shared [`resolve_inherited_text`].
-    fn propagate_typography(&mut self, store: &NodeStore, root: NodeId) {
+    pub(crate) fn propagate_typography(&mut self, store: &NodeStore, root: NodeId) {
         if !self.typo_dirty {
             return;
         }
@@ -320,7 +320,7 @@ impl YogaLayoutEngine {
     }
 
     /// Iteratively seeds `root` and all live descendants up to [`MAX_TREE_DEPTH`].
-    fn sync_subtree_if_unseen(&mut self, store: &NodeStore, root: NodeId) {
+    pub(crate) fn sync_subtree_if_unseen(&mut self, store: &NodeStore, root: NodeId) {
         let epoch = self.next_sync_epoch();
         self.sync_stack.clear();
         self.sync_stack.push((root, 0, false));
@@ -583,29 +583,14 @@ impl StoreLayoutEngine for YogaLayoutEngine {
         true
     }
 
-    fn measure_root(&mut self, store: &NodeStore, root: NodeId, constraints: SizeConstraints, ideal: bool) -> SurfaceMeasure {
-        let empty = SurfaceMeasure { width: 0.0, height: 0.0, first_baseline: f32::NAN, last_baseline: f32::NAN };
-        if !store.is_live(root) { return empty; }
-        if !self.tree_seeded || !self.nodes.contains_key(&root) {
-            self.sync_subtree_if_unseen(store, root);
-            self.tree_seeded = true;
-            self.typo_dirty = true;
-        }
-        self.propagate_typography(store, root);
-        self.sync_node_props(store, root, 0);
-        let Some(root_yg) = self.nodes.get(&root).map(|e| e.yg_node) else { return empty; };
-        let avail = |m: f32| if !ideal && m.is_finite() && m >= 0.0 { m } else { f32::NAN };
-        // SAFETY: `root_yg` is live; `computed_rects` stay untouched.
-        let raw = unsafe { nve_yg_node_calculate_layout(root_yg, avail(constraints.max_w), avail(constraints.max_h)); nve_yg_node_get_layout_rect(root_yg) };
-        self.layout_dirty = true;
-        let clamp = |v: f32, lo: f32, hi: f32| {
-            let f = if v.is_finite() && v >= 0.0 { v } else { 0.0 };
-            if ideal { f } else {
-                let min_v = if lo.is_finite() && lo > 0.0 { lo } else { 0.0 };
-                (if hi.is_finite() && hi >= 0.0 { f.min(hi.max(min_v)) } else { f }).max(min_v)
-            }
-        };
-        SurfaceMeasure { width: clamp(raw.width, constraints.min_w, constraints.max_w), height: clamp(raw.height, constraints.min_h, constraints.max_h), first_baseline: f32::NAN, last_baseline: f32::NAN }
+    fn measure_root(
+        &mut self,
+        store: &NodeStore,
+        root: NodeId,
+        constraints: SizeConstraints,
+        ideal: bool,
+    ) -> SurfaceMeasure {
+        crate::measure_root::measure_root_dry_run(self, store, root, constraints, ideal)
     }
 
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
