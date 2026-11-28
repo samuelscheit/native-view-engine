@@ -1,0 +1,8 @@
+{
+  "name": "EmptyCanvas",
+  "backend": "skia",
+  "android_package": "dev.nve.components",
+  "props": [],
+  "events": [],
+  "commands": []
+}

@@ -316,15 +316,26 @@ fn export_rn_generates_valid_four_file_package_and_roundtrips_through_import_rn(
     assert!(mm.contains("- (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload"));
     assert_balanced_delimiters("NveCounterCardComponentView.generated.mm", mm);
 
-    // 4. Android Kotlin assertions (binary NveBinValue wrapping `dev.nve.host.NveNativeBridge`)
+    // 4. Android Kotlin assertions (binary `BinWriter`/`BinReader`/`EventRingReader` wrapping `NveSurfaceController` + `NveSurface`)
     let kt = &out.android_view_manager_kt.content;
     assert!(kt.contains("package dev.nve.components"));
-    assert!(kt.contains("import dev.nve.host.NveNativeBridge"));
-    assert!(kt.contains("import dev.nve.compose.NveBinValue"));
-    assert!(kt.contains("import dev.nve.compose.NveBinValueView"));
+    assert!(kt.contains("import dev.nve.host.BinWriter"));
+    assert!(kt.contains("import dev.nve.host.BinReader"));
+    assert!(kt.contains("import dev.nve.host.BinTag"));
+    assert!(kt.contains("import dev.nve.host.EventRingReader"));
+    assert!(kt.contains("import dev.nve.compose.NveSurfaceController"));
+    assert!(kt.contains("import dev.nve.compose.NativeRuntimeHost"));
+    assert!(kt.contains("import dev.nve.compose.NveSource"));
+    assert!(kt.contains("import dev.nve.compose.NveSurface"));
+    assert!(!kt.contains("NveNativeBridge"));
+    assert!(!kt.contains("NveBinValue"));
+    assert!(!kt.contains("NveRenderBackend"));
     assert!(!kt.contains("JSONObject"));
     assert!(!kt.contains("org.json"));
-    assert!(kt.contains("NveNativeBridge.nativeCreateHost"));
+    assert!(kt.contains("ComposeView(context)"));
+    assert!(kt.contains("override fun onAfterUpdateTransaction"));
+    assert!(kt.contains("view.flushProps()"));
+    assert!(kt.contains("fun measureSurface("));
     assert!(kt.contains("@ReactProp(name = \"initialCount\", defaultInt = 0)"));
     assert!(kt.contains("@ReactProp(name = \"accentColor\", customType = \"Color\")"));
     assert!(kt.contains("getExportedCustomDirectEventTypeConstants"));

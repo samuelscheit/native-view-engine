@@ -1,0 +1,71 @@
+{
+  "name": "NveCounterCard",
+  "backend": "fabric",
+  "rust_vtable_symbol": "nve_counter_card_vtable",
+  "android_package": "dev.nve.components",
+  "doc": "Interactive counter card rendered natively by NVE.",
+  "props": [
+    {
+      "name": "initialCount",
+      "prop_type": { "kind": "int32" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "int", "value": 0 },
+      "doc": "Initial counter value."
+    },
+    {
+      "name": "accentColor",
+      "prop_type": { "kind": "color" },
+      "optional": true,
+      "nullable": true,
+      "doc": "Optional accent tint color."
+    },
+    {
+      "name": "variant",
+      "prop_type": { "kind": "string_enum", "variants": ["solid", "outline", "ghost"] },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "string", "value": "solid" }
+    },
+    {
+      "name": "stepScale",
+      "prop_type": { "kind": "float" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "float", "value": 1.0 }
+    },
+    {
+      "name": "disabled",
+      "prop_type": { "kind": "bool" },
+      "optional": true,
+      "nullable": false,
+      "default_value": { "kind": "bool", "value": false }
+    }
+  ],
+  "events": [
+    {
+      "name": "onCountChange",
+      "bubbling": "direct",
+      "optional": true,
+      "payload": [
+        { "name": "count", "field_type": { "kind": "int32" }, "optional": false, "nullable": false },
+        { "name": "delta", "field_type": { "kind": "int32" }, "optional": false, "nullable": false }
+      ],
+      "payload_type_name": "CountChangeEvent"
+    },
+    {
+      "name": "onReset",
+      "bubbling": "bubbling",
+      "optional": true,
+      "payload": []
+    }
+  ],
+  "commands": [
+    {
+      "name": "setCount",
+      "params": [
+        { "name": "value", "param_type": { "kind": "int32" }, "optional": false }
+      ]
+    }
+  ]
+}
