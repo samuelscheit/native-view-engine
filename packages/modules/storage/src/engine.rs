@@ -1,4 +1,4 @@
-//! Zero-dependency crash-safe `NVK2` append-only binary KV persistence engine.
+//! Crash-safe `NVK2` append-only binary KV persistence engine backed by `nve-codec` and `nve-hash`.
 
 use std::collections::BTreeMap;
 
@@ -9,12 +9,12 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
+use nve_codec::{ByteReader, ByteWriter, DEFAULT_MAX_BYTES};
 use nve_hash::xxh64;
-use nve_host_services::{ByteReader, ByteWriter, ServiceError, MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS};
 
 use crate::{
     validate_batch, validate_key, validate_namespace, validate_value, CompactStats, StorageEntry,
-    StorageOpenInfo, StorageWriteOp,
+    StorageError, StorageOpenInfo, StorageWriteOp, MAX_BATCH_OPS,
 };
 
 /// File magic for the crash-safe append-only KV log.
@@ -52,6 +52,11 @@ pub struct KvStore {
 }
 
 impl KvStore {
+    /// Opens an in-memory `NVK2` KV store with default handle `1`.
+    pub fn in_memory() -> Self {
+        Self::open_in_memory(1)
+    }
+
     pub fn open_in_memory(handle: u64) -> Self {
         let mut buf = Vec::with_capacity(HEADER_LEN);
         write_file_header(&mut buf);
@@ -64,11 +69,11 @@ impl KvStore {
         }
     }
 
-    pub fn open_from_memory_log(handle: u64, mut bytes: Vec<u8>) -> Result<Self, ServiceError> {
+    pub fn open_from_memory_log(handle: u64, mut bytes: Vec<u8>) -> Result<Self, StorageError> {
         if bytes.is_empty() {
             return Ok(Self::open_in_memory(handle));
         }
-        let replay = replay_nvk1_buffer(&bytes)?;
+        let replay = replay_nvk2_buffer(&bytes)?;
         if replay.valid_len < bytes.len() {
             bytes.truncate(replay.valid_len);
         }
@@ -81,8 +86,14 @@ impl KvStore {
         })
     }
 
+    /// Opens or creates a crash-safe `NVK2` KV store directly at `path`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn open_file(handle: u64, path: impl AsRef<Path>) -> Result<Self, ServiceError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        Self::open_file(1, path)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_file(handle: u64, path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -118,7 +129,7 @@ impl KvStore {
             });
         }
 
-        let replay = replay_nvk1_buffer(&bytes)?;
+        let replay = replay_nvk2_buffer(&bytes)?;
         let valid_len = replay.valid_len as u64;
         if replay.recovered_torn_tail {
             file.set_len(valid_len)?;
@@ -164,12 +175,12 @@ impl KvStore {
         }
     }
 
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, ServiceError> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         validate_key(key)?;
         Ok(self.entries.get(key).cloned())
     }
 
-    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), ServiceError> {
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
         validate_key(key)?;
         validate_value(value)?;
         let mut payload = ByteWriter::with_capacity(8 + key.len() + value.len());
@@ -183,7 +194,7 @@ impl KvStore {
         Ok(())
     }
 
-    pub fn delete(&mut self, key: &[u8]) -> Result<bool, ServiceError> {
+    pub fn delete(&mut self, key: &[u8]) -> Result<bool, StorageError> {
         validate_key(key)?;
         let existed = self.entries.contains_key(key);
         if !existed {
@@ -200,7 +211,7 @@ impl KvStore {
     }
 
     pub fn scan_prefix(&self, prefix: &[u8], limit: u32) -> Vec<StorageEntry> {
-        let cap = (limit as usize).min(MAX_SEQ_ITEMS);
+        let cap = (limit as usize).min(MAX_BATCH_OPS);
         if cap == 0 {
             return Vec::new();
         }
@@ -220,7 +231,7 @@ impl KvStore {
         out
     }
 
-    pub fn commit_batch(&mut self, ops: &[StorageWriteOp]) -> Result<(), ServiceError> {
+    pub fn commit_batch(&mut self, ops: &[StorageWriteOp]) -> Result<(), StorageError> {
         validate_batch(ops)?;
         if ops.is_empty() {
             return Ok(());
@@ -257,7 +268,7 @@ impl KvStore {
         Ok(())
     }
 
-    pub fn compact(&mut self) -> Result<CompactStats, ServiceError> {
+    pub fn compact(&mut self) -> Result<CompactStats, StorageError> {
         let bytes_before = self.log_bytes();
         let mut compacted = Vec::with_capacity(HEADER_LEN + self.entries.len() * 32);
         write_file_header(&mut compacted);
@@ -310,7 +321,7 @@ impl KvStore {
         })
     }
 
-    fn append_frame(&mut self, frame: &[u8]) -> Result<(), ServiceError> {
+    fn append_frame(&mut self, frame: &[u8]) -> Result<(), StorageError> {
         match &mut self.backend {
             LogBackend::Memory(buf) => {
                 buf.extend_from_slice(frame);
@@ -354,7 +365,7 @@ impl KvStoreManager {
         }
     }
 
-    pub fn open(&mut self, namespace: &str) -> Result<StorageOpenInfo, ServiceError> {
+    pub fn open(&mut self, namespace: &str) -> Result<StorageOpenInfo, StorageError> {
         validate_namespace(namespace)?;
         if let Some(store) = self.stores.get(namespace) {
             return Ok(store.open_info());
@@ -367,20 +378,20 @@ impl KvStoreManager {
         Ok(info)
     }
 
-    pub fn get_or_open(&mut self, namespace: &str) -> Result<&mut KvStore, ServiceError> {
+    pub fn get_or_open(&mut self, namespace: &str) -> Result<&mut KvStore, StorageError> {
         validate_namespace(namespace)?;
         if !self.stores.contains_key(namespace) {
             self.open(namespace)?;
         }
         self.stores
             .get_mut(namespace)
-            .ok_or_else(|| ServiceError::InternalError("missing storage namespace".into()))
+            .ok_or_else(|| StorageError::Internal("missing storage namespace".into()))
     }
 
-    fn create_store(&self, handle: u64, namespace: &str) -> Result<KvStore, ServiceError> {
+    fn create_store(&self, handle: u64, namespace: &str) -> Result<KvStore, StorageError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(root) = &self.root_dir {
-            let path = root.join(format!("{namespace}.nvk1"));
+            let path = root.join(format!("{namespace}.nvk2"));
             return KvStore::open_file(handle, path);
         }
         let _ = namespace;
@@ -399,13 +410,13 @@ fn write_file_header(out: &mut Vec<u8>) {
     });
 }
 
-fn encode_record_frame(kind: u8, seq_no: u64, payload: &[u8]) -> Result<Vec<u8>, ServiceError> {
+fn encode_record_frame(kind: u8, seq_no: u64, payload: &[u8]) -> Result<Vec<u8>, StorageError> {
     let mut w = ByteWriter::with_capacity(RECORD_HEADER_LEN + payload.len() + RECORD_TRAILER_LEN);
     w.write_u8(kind);
     w.write_raw(&[0u8; 3]);
     w.write_u64(seq_no);
     w.write_bytes(payload)
-        .map_err(|_| ServiceError::InvalidArg("NVK2 record payload exceeds u32::MAX".into()))?;
+        .map_err(|_| StorageError::InvalidArg("NVK2 record payload exceeds u32::MAX".into()))?;
     let checksum = xxh64(w.as_slice(), 0);
     w.write_u64(checksum);
     w.write_raw(&NVK2_COMMIT_MARKER);
@@ -419,23 +430,23 @@ struct ReplayResult {
     recovered_torn_tail: bool,
 }
 
-fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
+fn replay_nvk2_buffer(bytes: &[u8]) -> Result<ReplayResult, StorageError> {
     if bytes.len() < HEADER_LEN {
-        return Err(ServiceError::Codec("NVK2 header truncated".into()));
+        return Err(StorageError::Corrupt("NVK2 header truncated".into()));
     }
     let mut r = ByteReader::new(bytes);
     r.expect_magic(&NVK2_MAGIC)
-        .map_err(|_| ServiceError::Codec("invalid NVK2 file magic".into()))?;
+        .map_err(|_| StorageError::Corrupt("invalid NVK2 file magic".into()))?;
     let version = r.read_u16()?;
     if version != NVK2_VERSION {
-        return Err(ServiceError::Codec(format!(
+        return Err(StorageError::Corrupt(format!(
             "unsupported NVK2 version {version}"
         )));
     }
     let _reserved = r.read_u16()?;
     let stored_hdr_crc = r.read_u64()?;
     if xxh64(&bytes[0..8], 0) != stored_hdr_crc {
-        return Err(ServiceError::Codec(
+        return Err(StorageError::Corrupt(
             "corrupt NVK2 file header checksum".into(),
         ));
     }
@@ -513,42 +524,42 @@ fn apply_record_payload(
     kind: u8,
     payload: &[u8],
     entries: &mut BTreeMap<Vec<u8>, Vec<u8>>,
-) -> Result<(), ServiceError> {
+) -> Result<(), StorageError> {
     let mut r = ByteReader::new(payload);
     match kind {
         KIND_PUT => {
-            let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-            let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+            let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
+            let value = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
             r.finish()?;
             validate_key(&key)?;
             validate_value(&value)?;
             entries.insert(key, value);
         }
         KIND_DELETE => {
-            let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+            let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
             r.finish()?;
             validate_key(&key)?;
             entries.remove(&key);
         }
         KIND_BATCH => {
-            let count = r.read_len(MAX_SEQ_ITEMS, 5)?;
+            let count = r.read_len(MAX_BATCH_OPS, 5)?;
             let mut decoded = Vec::with_capacity(count);
             for _ in 0..count {
                 match r.read_u8()? {
                     KIND_PUT => {
-                        let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-                        let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+                        let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
+                        let value = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
                         validate_key(&key)?;
                         validate_value(&value)?;
                         decoded.push(StorageWriteOp::Put { key, value });
                     }
                     KIND_DELETE => {
-                        let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+                        let key = r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec();
                         validate_key(&key)?;
                         decoded.push(StorageWriteOp::Delete { key });
                     }
                     other => {
-                        return Err(ServiceError::Codec(format!(
+                        return Err(StorageError::Corrupt(format!(
                             "invalid batch op kind {other}"
                         )));
                     }
@@ -567,7 +578,7 @@ fn apply_record_payload(
             }
         }
         other => {
-            return Err(ServiceError::Codec(format!(
+            return Err(StorageError::Corrupt(format!(
                 "unknown NVK2 record kind {other}"
             )));
         }

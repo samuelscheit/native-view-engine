@@ -3,11 +3,11 @@ name = "nve-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Standalone opt-in NVE crash-safe NVK2 binary KV store capability module (SERVICE_STORAGE = 0x0020)"
+description = "Standalone pure-Rust crash-safe NVK2 binary KV store library"
 
 [dependencies]
+nve-codec = { workspace = true }
 nve-hash = { workspace = true }
-nve-host-services = { workspace = true }
 
 [lints]
 workspace = true

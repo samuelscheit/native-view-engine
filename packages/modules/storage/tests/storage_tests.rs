@@ -3,15 +3,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nve_host_services::{
-    FfiHostServices, HostCallbackBridge, MemoryHostServices, HostServiceRegistry, ServiceError,
-    FFI_STACK_BUF_SIZE,
-};
 use nve_storage::{
-    decode_commit_batch_request, decode_compact_response, decode_get_response, decode_key_request,
-    decode_open_request, decode_open_response, decode_put_request, decode_scan_prefix_request,
-    decode_scan_prefix_response, KvStore, MemoryStorage, NativeStorage, StorageClient,
-    StorageEntry, StorageWriteOp, NVK2_MAGIC,
+    KvStore, MemoryStorage, NativeStorage, StorageBackend, StorageEntry, StorageError,
+    StorageWriteOp, NVK2_MAGIC,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
@@ -28,71 +22,82 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 #[test]
-fn nvk1_storage_persistence_atomic_batch_rollback_prefix_scan_and_compaction() {
+fn nvk2_storage_persistence_atomic_batch_rollback_prefix_scan_and_compaction() {
     let root = unique_temp_dir("kv_persist");
 
     {
-        let native = HostServiceRegistry::new().with_handler(NativeStorage::with_root_dir(&root));
-        let client = StorageClient::new(&native);
-        let store = client.open("app_state").unwrap();
-        assert_eq!(store.namespace(), "app_state");
+        let native = NativeStorage::with_root_dir(&root);
+        let backend: &dyn StorageBackend = &native;
+        let info = backend.open("app_state").unwrap();
+        assert_eq!(info.key_count, 0);
 
         assert!(matches!(
-            client.open("../escape"),
-            Err(ServiceError::InvalidArg(_))
+            backend.open("../escape"),
+            Err(StorageError::InvalidArg(_))
         ));
-        assert!(matches!(client.open(""), Err(ServiceError::InvalidArg(_))));
+        assert!(matches!(backend.open(""), Err(StorageError::InvalidArg(_))));
         assert!(matches!(
-            store.put(b"", b"v"),
-            Err(ServiceError::InvalidArg(_))
+            backend.put("app_state", b"", b"v"),
+            Err(StorageError::InvalidArg(_))
         ));
-        assert!(matches!(store.get(b""), Err(ServiceError::InvalidArg(_))));
+        assert!(matches!(
+            backend.get("app_state", b""),
+            Err(StorageError::InvalidArg(_))
+        ));
 
-        store.put(b"user:02", b"bob").unwrap();
-        store.put(b"user:01", b"alice_v1").unwrap();
-        store.put(b"user:01", b"alice_v2").unwrap();
-        store.put(b"user:03", b"charlie").unwrap();
-        store.put(b"meta:ver", &[0x00, 0xFF, 0x10, 0x20]).unwrap();
-        assert!(store.delete(b"user:03").unwrap());
-        assert!(!store.delete(b"user:03").unwrap());
+        backend.put("app_state", b"user:02", b"bob").unwrap();
+        backend.put("app_state", b"user:01", b"alice_v1").unwrap();
+        backend.put("app_state", b"user:01", b"alice_v2").unwrap();
+        backend.put("app_state", b"user:03", b"charlie").unwrap();
+        backend
+            .put("app_state", b"meta:ver", &[0x00, 0xFF, 0x10, 0x20])
+            .unwrap();
+        assert!(backend.delete("app_state", b"user:03").unwrap());
+        assert!(!backend.delete("app_state", b"user:03").unwrap());
 
-        store
-            .commit_batch(&[
-                StorageWriteOp::Put {
-                    key: b"user:04".to_vec(),
-                    value: b"diana".to_vec(),
-                },
-                StorageWriteOp::Put {
-                    key: b"user:05".to_vec(),
-                    value: b"eve".to_vec(),
-                },
-                StorageWriteOp::Delete {
-                    key: b"user:02".to_vec(),
-                },
-            ])
+        backend
+            .commit_batch(
+                "app_state",
+                &[
+                    StorageWriteOp::Put {
+                        key: b"user:04".to_vec(),
+                        value: b"diana".to_vec(),
+                    },
+                    StorageWriteOp::Put {
+                        key: b"user:05".to_vec(),
+                        value: b"eve".to_vec(),
+                    },
+                    StorageWriteOp::Delete {
+                        key: b"user:02".to_vec(),
+                    },
+                ],
+            )
             .unwrap();
 
-        let err = store.commit_batch(&[
-            StorageWriteOp::Put {
-                key: b"user:99".to_vec(),
-                value: b"should_not_persist".to_vec(),
-            },
-            StorageWriteOp::Delete {
-                key: b"user:01".to_vec(),
-            },
-            StorageWriteOp::Put {
-                key: Vec::new(),
-                value: b"bad".to_vec(),
-            },
-        ]);
-        assert!(matches!(err, Err(ServiceError::InvalidArg(_))));
-        assert_eq!(store.get(b"user:99").unwrap(), None);
+        let err = backend.commit_batch(
+            "app_state",
+            &[
+                StorageWriteOp::Put {
+                    key: b"user:99".to_vec(),
+                    value: b"should_not_persist".to_vec(),
+                },
+                StorageWriteOp::Delete {
+                    key: b"user:01".to_vec(),
+                },
+                StorageWriteOp::Put {
+                    key: Vec::new(),
+                    value: b"bad".to_vec(),
+                },
+            ],
+        );
+        assert!(matches!(err, Err(StorageError::InvalidArg(_))));
+        assert_eq!(backend.get("app_state", b"user:99").unwrap(), None);
         assert_eq!(
-            store.get(b"user:01").unwrap().as_deref(),
+            backend.get("app_state", b"user:01").unwrap().as_deref(),
             Some(b"alice_v2".as_slice())
         );
 
-        let all_users = store.scan_prefix(b"user:", 100).unwrap();
+        let all_users = backend.scan_prefix("app_state", b"user:", 100).unwrap();
         assert_eq!(
             all_users,
             vec![
@@ -110,45 +115,51 @@ fn nvk1_storage_persistence_atomic_batch_rollback_prefix_scan_and_compaction() {
                 },
             ]
         );
-        assert_eq!(store.scan_prefix(b"user:", 2).unwrap().len(), 2);
-        assert!(store.scan_prefix(b"user:", 0).unwrap().is_empty());
+        assert_eq!(
+            backend.scan_prefix("app_state", b"user:", 2).unwrap().len(),
+            2
+        );
+        assert!(backend
+            .scan_prefix("app_state", b"user:", 0)
+            .unwrap()
+            .is_empty());
 
         for i in 0u32..40 {
-            store.put(b"hot:counter", &i.to_le_bytes()).unwrap();
+            backend
+                .put("app_state", b"hot:counter", &i.to_le_bytes())
+                .unwrap();
         }
-        let stats = store.compact().unwrap();
+        let stats = backend.compact("app_state").unwrap();
         assert_eq!(stats.live_keys, 5);
         assert!(stats.bytes_after < stats.bytes_before);
-        assert!(!root.join("app_state.nvk1.compact.tmp").exists());
+        assert!(!root.join("app_state.nvk2.compact.tmp").exists());
     }
 
-    let raw = fs::read(root.join("app_state.nvk1")).unwrap();
+    let raw = fs::read(root.join("app_state.nvk2")).unwrap();
     assert_eq!(&raw[0..4], &NVK2_MAGIC);
 
     {
-        let native = HostServiceRegistry::new().with_handler(NativeStorage::with_root_dir(&root));
-        let (store, info) = StorageClient::new(&native)
-            .open_with_info("app_state")
-            .unwrap();
+        let native = NativeStorage::with_root_dir(&root);
+        let info = native.open("app_state").unwrap();
         assert_eq!(info.key_count, 5);
         assert!(!info.recovered_torn_tail);
         assert_eq!(
-            store.get(b"user:01").unwrap().as_deref(),
+            native.get("app_state", b"user:01").unwrap().as_deref(),
             Some(b"alice_v2".as_slice())
         );
-        assert_eq!(store.get(b"user:02").unwrap(), None);
+        assert_eq!(native.get("app_state", b"user:02").unwrap(), None);
     }
 
     let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
-fn nvk1_crash_recovery_torn_tail_checksum_corruption_c_abi_and_fuzz() {
+fn nvk2_direct_kv_open_crash_recovery_torn_tail_checksum_memory_and_fuzz() {
     let root = unique_temp_dir("kv_crash");
-    let log_path = root.join("wal.nvk1");
+    let log_path = root.join("wal.nvk2");
 
     {
-        let mut store = KvStore::open_file(1, &log_path).unwrap();
+        let mut store = KvStore::open(&log_path).unwrap();
         store.put(b"k1", b"alpha").unwrap();
         store.put(b"k2", b"beta").unwrap();
         let bad = store.commit_batch(&[
@@ -158,7 +169,7 @@ fn nvk1_crash_recovery_torn_tail_checksum_corruption_c_abi_and_fuzz() {
             },
             StorageWriteOp::Delete { key: Vec::new() },
         ]);
-        assert!(matches!(bad, Err(ServiceError::InvalidArg(_))));
+        assert!(matches!(bad, Err(StorageError::InvalidArg(_))));
         assert_eq!(store.get(b"rolled_back").unwrap(), None);
     }
     let clean_len = fs::metadata(&log_path).unwrap().len();
@@ -170,12 +181,12 @@ fn nvk1_crash_recovery_torn_tail_checksum_corruption_c_abi_and_fuzz() {
     }
 
     {
-        let native = HostServiceRegistry::new().with_handler(NativeStorage::with_root_dir(&root));
-        let (store, info) = StorageClient::new(&native).open_with_info("wal").unwrap();
+        let native = NativeStorage::with_root_dir(&root);
+        let info = native.open("wal").unwrap();
         assert!(info.recovered_torn_tail);
         assert_eq!(info.key_count, 2);
         assert_eq!(info.log_bytes, clean_len);
-        store.put(b"k3", b"gamma").unwrap();
+        native.put("wal", b"k3", b"gamma").unwrap();
     }
 
     {
@@ -199,19 +210,19 @@ fn nvk1_crash_recovery_torn_tail_checksum_corruption_c_abi_and_fuzz() {
         assert_eq!(store.get(b"k3").unwrap(), None);
     }
 
-    let bad_hdr_path = root.join("bad_hdr.nvk1");
+    let bad_hdr_path = root.join("bad_hdr.nvk2");
     fs::write(
         &bad_hdr_path,
         b"NOPE\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
     )
     .unwrap();
     assert!(matches!(
-        KvStore::open_file(3, &bad_hdr_path),
-        Err(ServiceError::Codec(_))
+        KvStore::open(&bad_hdr_path),
+        Err(StorageError::Corrupt(_))
     ));
 
-    // In-memory recovery + C-ABI >4 KiB retry.
-    let mut mem_store = KvStore::open_in_memory(4);
+    // In-memory WAL recovery + large value round-trip via MemoryStorage.
+    let mut mem_store = KvStore::in_memory();
     mem_store.put(b"m1", b"one").unwrap();
     let mut corrupted = mem_store.memory_log_bytes().unwrap().to_vec();
     let valid_len = corrupted.len();
@@ -220,17 +231,16 @@ fn nvk1_crash_recovery_torn_tail_checksum_corruption_c_abi_and_fuzz() {
     assert!(recovered.open_info().recovered_torn_tail);
     assert_eq!(recovered.log_bytes() as usize, valid_len);
 
-    let mem = MemoryHostServices::new().with_handler(MemoryStorage::new());
-    let bridge = HostCallbackBridge::new(mem);
-    let ffi = FfiHostServices::with_callbacks(bridge.callbacks());
-    let store = StorageClient::new(&ffi).open("session").unwrap();
-    let large_val = vec![0xABu8; FFI_STACK_BUF_SIZE * 2 + 123];
-    store.put(b"blob:large", &large_val).unwrap();
+    let mem = MemoryStorage::new();
+    mem.open("session").unwrap();
+    let large_val = vec![0xABu8; 8192 + 123];
+    mem.put("session", b"blob:large", &large_val).unwrap();
     assert_eq!(
-        store.get(b"blob:large").unwrap().as_deref(),
+        mem.get("session", b"blob:large").unwrap().as_deref(),
         Some(large_val.as_slice())
     );
 
+    // Deterministic WAL replay fuzzing never panics on malformed/random inputs.
     let mut seed: u64 = 0x5704_A6E0_5EED_0008;
     let mut next_u8 = || {
         seed ^= seed << 13;
@@ -241,15 +251,6 @@ fn nvk1_crash_recovery_torn_tail_checksum_corruption_c_abi_and_fuzz() {
     for i in 0..256 {
         let len = i % 64;
         let buf: Vec<u8> = (0..len).map(|_| next_u8()).collect();
-        let _ = decode_open_request(&buf);
-        let _ = decode_open_response(&buf);
-        let _ = decode_key_request(&buf);
-        let _ = decode_put_request(&buf);
-        let _ = decode_get_response(&buf);
-        let _ = decode_scan_prefix_request(&buf);
-        let _ = decode_scan_prefix_response(&buf);
-        let _ = decode_commit_batch_request(&buf);
-        let _ = decode_compact_response(&buf);
         let _ = KvStore::open_from_memory_log(99, buf);
     }
 

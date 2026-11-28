@@ -1,32 +1,20 @@
-//! Embedded crash-safe binary KV / record store capability (`SERVICE_STORAGE = 0x0020`)
-//! with direct zero-serialization in-process dispatch ([`StorageBackend`]), `NVK2` on-disk
-//! WAL persistence, and cross-language `NVE_IFACE_HOST` C ABI codecs.
+//! Standalone embedded crash-safe binary KV / record store (`NVK2` append-only WAL) with
+//! direct [`KvStore`], [`KvStoreManager`], [`StorageBackend`], [`NativeStorage`], and
+//! [`MemoryStorage`] APIs.
+//!
+//! Pure Rust library with zero dependency on `nve-engine`, `nve-store`, or `nve-host-services`.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+pub mod backend;
 pub mod engine;
-pub mod handler;
 
-use std::borrow::Cow;
+use core::fmt;
 
-use nve_host_services::{
-    resolve_typed, ByteReader, ByteWriter, HostServiceProvider, ServiceError, MAX_PAYLOAD_BYTES,
-    MAX_SEQ_ITEMS,
-};
+use nve_codec::{CodecError, DEFAULT_MAX_ITEMS};
 
+pub use backend::{MemoryStorage, NativeStorage, StorageBackend};
 pub use engine::{KvStore, KvStoreManager, NVK2_COMMIT_MARKER, NVK2_MAGIC, NVK2_VERSION};
-pub use handler::{dispatch_storage_wire, MemoryStorage, NativeStorage, StorageBackend};
-
-/// Built-in service ID for the embedded crash-safe binary KV store.
-pub const SERVICE_STORAGE: u32 = 0x0020;
-
-pub const METHOD_OPEN: u32 = 1;
-pub const METHOD_GET: u32 = 2;
-pub const METHOD_PUT: u32 = 3;
-pub const METHOD_DELETE: u32 = 4;
-pub const METHOD_SCAN_PREFIX: u32 = 5;
-pub const METHOD_COMMIT_BATCH: u32 = 6;
-pub const METHOD_COMPACT: u32 = 7;
 
 /// Maximum allowed namespace identifier length in bytes.
 pub const MAX_NAMESPACE_LEN: usize = 128;
@@ -34,15 +22,58 @@ pub const MAX_NAMESPACE_LEN: usize = 128;
 pub const MAX_KEY_LEN: usize = 64 * 1024;
 /// Maximum allowed value length in bytes (16 MiB).
 pub const MAX_VALUE_LEN: usize = 16 * 1024 * 1024;
+/// Maximum number of operations permitted in a single atomic batch or prefix scan.
+pub const MAX_BATCH_OPS: usize = DEFAULT_MAX_ITEMS;
 
-/// Single mutation operation inside an atomic [`StorageClient::commit_batch`] call.
+/// Error returned by [`KvStore`], [`KvStoreManager`], and [`StorageBackend`] operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageError {
+    /// Caller supplied an invalid namespace, key, value, prefix, or batch.
+    InvalidArg(String),
+    /// Underlying filesystem I/O error.
+    Io(String),
+    /// Corrupt or malformed `NVK2` WAL header or record payload.
+    Corrupt(String),
+    /// Internal storage manager failure.
+    Internal(String),
+}
+
+impl From<std::io::Error> for StorageError {
+    #[inline]
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err.to_string())
+    }
+}
+
+impl From<CodecError> for StorageError {
+    #[inline]
+    fn from(err: CodecError) -> Self {
+        Self::Corrupt(err.to_string())
+    }
+}
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidArg(msg) => write!(f, "invalid storage argument: {msg}"),
+            Self::Io(msg) => write!(f, "storage I/O error: {msg}"),
+            Self::Corrupt(msg) => write!(f, "corrupt NVK2 storage log: {msg}"),
+            Self::Internal(msg) => write!(f, "internal storage error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for StorageError {}
+
+/// Single mutation operation inside an atomic [`KvStore::commit_batch`] /
+/// [`StorageBackend::commit_batch`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageWriteOp {
     Put { key: Vec<u8>, value: Vec<u8> },
     Delete { key: Vec<u8> },
 }
 
-/// Key/value pair returned by [`StorageClient::scan_prefix`].
+/// Key/value pair returned by [`KvStore::scan_prefix`] / [`StorageBackend::scan_prefix`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageEntry {
     pub key: Vec<u8>,
@@ -58,7 +89,7 @@ pub struct StorageOpenInfo {
     pub recovered_torn_tail: bool,
 }
 
-/// Statistics returned by [`StorageClient::compact`].
+/// Statistics returned by [`KvStore::compact`] / [`StorageBackend::compact`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactStats {
     pub live_keys: u64,
@@ -67,14 +98,14 @@ pub struct CompactStats {
 }
 
 /// Validates a storage namespace name (safe single filename component, no traversal).
-pub fn validate_namespace(namespace: &str) -> Result<(), ServiceError> {
+pub fn validate_namespace(namespace: &str) -> Result<(), StorageError> {
     if namespace.is_empty() || namespace.len() > MAX_NAMESPACE_LEN {
-        return Err(ServiceError::InvalidArg(format!(
+        return Err(StorageError::InvalidArg(format!(
             "storage namespace length must be 1..={MAX_NAMESPACE_LEN}"
         )));
     }
     if namespace == "." || namespace == ".." || namespace.contains("..") {
-        return Err(ServiceError::InvalidArg(
+        return Err(StorageError::InvalidArg(
             "storage namespace must not contain path traversal segments".into(),
         ));
     }
@@ -82,7 +113,7 @@ pub fn validate_namespace(namespace: &str) -> Result<(), ServiceError> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
     {
-        return Err(ServiceError::InvalidArg(
+        return Err(StorageError::InvalidArg(
             "storage namespace must contain only ASCII [A-Za-z0-9._-]".into(),
         ));
     }
@@ -90,14 +121,14 @@ pub fn validate_namespace(namespace: &str) -> Result<(), ServiceError> {
 }
 
 /// Validates a non-empty binary KV key.
-pub fn validate_key(key: &[u8]) -> Result<(), ServiceError> {
+pub fn validate_key(key: &[u8]) -> Result<(), StorageError> {
     if key.is_empty() {
-        return Err(ServiceError::InvalidArg(
+        return Err(StorageError::InvalidArg(
             "storage key must not be empty".into(),
         ));
     }
     if key.len() > MAX_KEY_LEN {
-        return Err(ServiceError::InvalidArg(format!(
+        return Err(StorageError::InvalidArg(format!(
             "storage key exceeds maximum length of {MAX_KEY_LEN} bytes"
         )));
     }
@@ -105,20 +136,20 @@ pub fn validate_key(key: &[u8]) -> Result<(), ServiceError> {
 }
 
 /// Validates a binary KV value slice.
-pub fn validate_value(value: &[u8]) -> Result<(), ServiceError> {
+pub fn validate_value(value: &[u8]) -> Result<(), StorageError> {
     if value.len() > MAX_VALUE_LEN {
-        return Err(ServiceError::InvalidArg(format!(
+        return Err(StorageError::InvalidArg(format!(
             "storage value exceeds maximum length of {MAX_VALUE_LEN} bytes"
         )));
     }
     Ok(())
 }
 
-/// Validates every write operation in a batch prior to encoding or execution.
-pub fn validate_batch(ops: &[StorageWriteOp]) -> Result<(), ServiceError> {
-    if ops.len() > MAX_SEQ_ITEMS {
-        return Err(ServiceError::InvalidArg(format!(
-            "storage batch length {} exceeds limit {MAX_SEQ_ITEMS}",
+/// Validates every write operation in a batch prior to execution.
+pub fn validate_batch(ops: &[StorageWriteOp]) -> Result<(), StorageError> {
+    if ops.len() > MAX_BATCH_OPS {
+        return Err(StorageError::InvalidArg(format!(
+            "storage batch length {} exceeds limit {MAX_BATCH_OPS}",
             ops.len()
         )));
     }
@@ -134,413 +165,4 @@ pub fn validate_batch(ops: &[StorageWriteOp]) -> Result<(), ServiceError> {
         }
     }
     Ok(())
-}
-
-pub fn encode_open_request(namespace: &str) -> Result<Vec<u8>, ServiceError> {
-    validate_namespace(namespace)?;
-    let mut w = ByteWriter::with_capacity(4 + namespace.len());
-    w.write_str(namespace)?;
-    Ok(w.into_bytes())
-}
-
-pub fn decode_open_request(bytes: &[u8]) -> Result<String, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
-    r.finish()?;
-    validate_namespace(&namespace)?;
-    Ok(namespace)
-}
-
-pub fn encode_open_response(info: StorageOpenInfo) -> Vec<u8> {
-    let mut w = ByteWriter::with_capacity(25);
-    w.write_u64(info.handle);
-    w.write_u64(info.key_count);
-    w.write_u64(info.log_bytes);
-    w.write_bool(info.recovered_torn_tail);
-    w.into_bytes()
-}
-
-pub fn decode_open_response(bytes: &[u8]) -> Result<StorageOpenInfo, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let handle = r.read_u64()?;
-    let key_count = r.read_u64()?;
-    let log_bytes = r.read_u64()?;
-    let recovered_torn_tail = r.read_bool()?;
-    r.finish()?;
-    Ok(StorageOpenInfo {
-        handle,
-        key_count,
-        log_bytes,
-        recovered_torn_tail,
-    })
-}
-
-pub fn encode_key_request(namespace: &str, key: &[u8]) -> Result<Vec<u8>, ServiceError> {
-    validate_namespace(namespace)?;
-    validate_key(key)?;
-    let mut w = ByteWriter::with_capacity(8 + namespace.len() + key.len());
-    w.write_str(namespace)?;
-    w.write_bytes(key)?;
-    Ok(w.into_bytes())
-}
-
-pub fn decode_key_request(bytes: &[u8]) -> Result<(String, Vec<u8>), ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
-    let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-    r.finish()?;
-    validate_namespace(&namespace)?;
-    validate_key(&key)?;
-    Ok((namespace, key))
-}
-
-pub fn encode_put_request(
-    namespace: &str,
-    key: &[u8],
-    value: &[u8],
-) -> Result<Vec<u8>, ServiceError> {
-    validate_namespace(namespace)?;
-    validate_key(key)?;
-    validate_value(value)?;
-    let mut w = ByteWriter::with_capacity(12 + namespace.len() + key.len() + value.len());
-    w.write_str(namespace)?;
-    w.write_bytes(key)?;
-    w.write_bytes(value)?;
-    Ok(w.into_bytes())
-}
-
-pub fn decode_put_request(bytes: &[u8]) -> Result<(String, Vec<u8>, Vec<u8>), ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
-    let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-    let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-    r.finish()?;
-    validate_namespace(&namespace)?;
-    validate_key(&key)?;
-    validate_value(&value)?;
-    Ok((namespace, key, value))
-}
-
-pub fn encode_get_response(value: Option<&[u8]>) -> Result<Vec<u8>, ServiceError> {
-    let mut w = ByteWriter::with_capacity(value.map_or(1, |v| 5 + v.len()));
-    w.write_opt(value, ByteWriter::write_bytes)?;
-    Ok(w.into_bytes())
-}
-
-pub fn decode_get_response(bytes: &[u8]) -> Result<Option<Vec<u8>>, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let val = r.read_opt(|r| Ok(r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec()))?;
-    r.finish()?;
-    Ok(val)
-}
-
-pub fn encode_delete_response(deleted: bool) -> Vec<u8> {
-    vec![u8::from(deleted)]
-}
-
-pub fn decode_delete_response(bytes: &[u8]) -> Result<bool, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let deleted = r.read_bool()?;
-    r.finish()?;
-    Ok(deleted)
-}
-
-pub fn encode_scan_prefix_request(
-    namespace: &str,
-    prefix: &[u8],
-    limit: u32,
-) -> Result<Vec<u8>, ServiceError> {
-    validate_namespace(namespace)?;
-    if prefix.len() > MAX_KEY_LEN {
-        return Err(ServiceError::InvalidArg(
-            "storage prefix exceeds MAX_KEY_LEN".into(),
-        ));
-    }
-    let mut w = ByteWriter::with_capacity(12 + namespace.len() + prefix.len());
-    w.write_str(namespace)?;
-    w.write_bytes(prefix)?;
-    w.write_u32(limit);
-    Ok(w.into_bytes())
-}
-
-pub fn decode_scan_prefix_request(bytes: &[u8]) -> Result<(String, Vec<u8>, u32), ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
-    let prefix = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-    let limit = r.read_u32()?;
-    r.finish()?;
-    validate_namespace(&namespace)?;
-    if prefix.len() > MAX_KEY_LEN {
-        return Err(ServiceError::InvalidArg(
-            "storage prefix exceeds MAX_KEY_LEN".into(),
-        ));
-    }
-    Ok((namespace, prefix, limit))
-}
-
-pub fn encode_scan_prefix_response(entries: &[StorageEntry]) -> Result<Vec<u8>, ServiceError> {
-    let count = u32::try_from(entries.len())
-        .map_err(|_| ServiceError::InvalidArg("scan response exceeds u32::MAX".into()))?;
-    let mut w = ByteWriter::with_capacity(4 + entries.len() * 16);
-    w.write_u32(count);
-    for entry in entries {
-        w.write_bytes(&entry.key)?;
-        w.write_bytes(&entry.value)?;
-    }
-    Ok(w.into_bytes())
-}
-
-pub fn decode_scan_prefix_response(bytes: &[u8]) -> Result<Vec<StorageEntry>, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let count = r.read_len(MAX_SEQ_ITEMS, 8)?;
-    let mut entries = Vec::with_capacity(count);
-    for _ in 0..count {
-        let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-        let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-        entries.push(StorageEntry { key, value });
-    }
-    r.finish()?;
-    Ok(entries)
-}
-
-pub fn encode_commit_batch_request(
-    namespace: &str,
-    ops: &[StorageWriteOp],
-) -> Result<Vec<u8>, ServiceError> {
-    validate_namespace(namespace)?;
-    validate_batch(ops)?;
-    let mut w = ByteWriter::with_capacity(8 + namespace.len() + ops.len() * 16);
-    w.write_str(namespace)?;
-    w.write_u32(ops.len() as u32);
-    for op in ops {
-        match op {
-            StorageWriteOp::Put { key, value } => {
-                w.write_u8(1);
-                w.write_bytes(key)?;
-                w.write_bytes(value)?;
-            }
-            StorageWriteOp::Delete { key } => {
-                w.write_u8(2);
-                w.write_bytes(key)?;
-            }
-        }
-    }
-    Ok(w.into_bytes())
-}
-
-pub fn decode_commit_batch_request(
-    bytes: &[u8],
-) -> Result<(String, Vec<StorageWriteOp>), ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
-    let count = r.read_len(MAX_SEQ_ITEMS, 5)?;
-    let mut ops = Vec::with_capacity(count);
-    for _ in 0..count {
-        match r.read_u8()? {
-            1 => {
-                let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-                let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-                ops.push(StorageWriteOp::Put { key, value });
-            }
-            2 => {
-                let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
-                ops.push(StorageWriteOp::Delete { key });
-            }
-            other => {
-                return Err(ServiceError::Codec(format!(
-                    "invalid StorageWriteOp tag {other}"
-                )));
-            }
-        }
-    }
-    r.finish()?;
-    validate_namespace(&namespace)?;
-    validate_batch(&ops)?;
-    Ok((namespace, ops))
-}
-
-pub fn encode_compact_response(stats: CompactStats) -> Vec<u8> {
-    let mut w = ByteWriter::with_capacity(24);
-    w.write_u64(stats.live_keys);
-    w.write_u64(stats.bytes_before);
-    w.write_u64(stats.bytes_after);
-    w.into_bytes()
-}
-
-pub fn decode_compact_response(bytes: &[u8]) -> Result<CompactStats, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let live_keys = r.read_u64()?;
-    let bytes_before = r.read_u64()?;
-    let bytes_after = r.read_u64()?;
-    r.finish()?;
-    Ok(CompactStats {
-        live_keys,
-        bytes_before,
-        bytes_after,
-    })
-}
-
-/// Typed ergonomic client for the embedded crash-safe binary KV store.
-#[derive(Debug, Clone)]
-pub struct StorageClient<'a, P: HostServiceProvider + ?Sized> {
-    provider: &'a P,
-    namespace: Cow<'a, str>,
-}
-
-impl<'a, P: HostServiceProvider + ?Sized> StorageClient<'a, P> {
-    /// Creates a client bound to the `"default"` storage namespace.
-    pub const fn new(provider: &'a P) -> Self {
-        Self {
-            provider,
-            namespace: Cow::Borrowed("default"),
-        }
-    }
-
-    pub fn namespace(&self) -> &str {
-        &self.namespace
-    }
-
-    pub fn open(&self, namespace: &str) -> Result<Self, ServiceError> {
-        let (client, _) = self.open_with_info(namespace)?;
-        Ok(client)
-    }
-
-    pub fn open_with_info(&self, namespace: &str) -> Result<(Self, StorageOpenInfo), ServiceError> {
-        validate_namespace(namespace)?;
-        let info = if let Some(backend) =
-            resolve_typed::<dyn StorageBackend>(self.provider, SERVICE_STORAGE, METHOD_OPEN)
-        {
-            backend.open(namespace)?
-        } else {
-            let req = encode_open_request(namespace)?;
-            let resp = self
-                .provider
-                .invoke_sync(SERVICE_STORAGE, METHOD_OPEN, &req)?;
-            decode_open_response(&resp)?
-        };
-        Ok((
-            Self {
-                provider: self.provider,
-                namespace: Cow::Owned(namespace.to_owned()),
-            },
-            info,
-        ))
-    }
-
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, ServiceError> {
-        validate_namespace(&self.namespace)?;
-        validate_key(key)?;
-        if let Some(backend) =
-            resolve_typed::<dyn StorageBackend>(self.provider, SERVICE_STORAGE, METHOD_GET)
-        {
-            return match backend.get(&self.namespace, key) {
-                Ok(val) => Ok(val),
-                Err(ServiceError::NotFound) => Ok(None),
-                Err(err) => Err(err),
-            };
-        }
-        let req = encode_key_request(&self.namespace, key)?;
-        match self.provider.invoke_sync(SERVICE_STORAGE, METHOD_GET, &req) {
-            Ok(resp) => decode_get_response(&resp),
-            Err(ServiceError::NotFound) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), ServiceError> {
-        validate_namespace(&self.namespace)?;
-        validate_key(key)?;
-        validate_value(value)?;
-        if let Some(backend) =
-            resolve_typed::<dyn StorageBackend>(self.provider, SERVICE_STORAGE, METHOD_PUT)
-        {
-            return backend.put(&self.namespace, key, value);
-        }
-        let req = encode_put_request(&self.namespace, key, value)?;
-        let resp = self
-            .provider
-            .invoke_sync(SERVICE_STORAGE, METHOD_PUT, &req)?;
-        if !resp.is_empty() {
-            return Err(ServiceError::Codec(
-                "unexpected non-empty storage::put response".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn delete(&self, key: &[u8]) -> Result<bool, ServiceError> {
-        validate_namespace(&self.namespace)?;
-        validate_key(key)?;
-        if let Some(backend) =
-            resolve_typed::<dyn StorageBackend>(self.provider, SERVICE_STORAGE, METHOD_DELETE)
-        {
-            return match backend.delete(&self.namespace, key) {
-                Ok(deleted) => Ok(deleted),
-                Err(ServiceError::NotFound) => Ok(false),
-                Err(err) => Err(err),
-            };
-        }
-        let req = encode_key_request(&self.namespace, key)?;
-        match self
-            .provider
-            .invoke_sync(SERVICE_STORAGE, METHOD_DELETE, &req)
-        {
-            Ok(resp) => decode_delete_response(&resp),
-            Err(ServiceError::NotFound) => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-
-    pub fn scan_prefix(&self, prefix: &[u8], limit: u32) -> Result<Vec<StorageEntry>, ServiceError> {
-        validate_namespace(&self.namespace)?;
-        if prefix.len() > MAX_KEY_LEN {
-            return Err(ServiceError::InvalidArg(
-                "storage prefix exceeds MAX_KEY_LEN".into(),
-            ));
-        }
-        if let Some(backend) =
-            resolve_typed::<dyn StorageBackend>(self.provider, SERVICE_STORAGE, METHOD_SCAN_PREFIX)
-        {
-            return backend.scan_prefix(&self.namespace, prefix, limit);
-        }
-        let req = encode_scan_prefix_request(&self.namespace, prefix, limit)?;
-        let resp = self
-            .provider
-            .invoke_sync(SERVICE_STORAGE, METHOD_SCAN_PREFIX, &req)?;
-        decode_scan_prefix_response(&resp)
-    }
-
-    pub fn commit_batch(&self, ops: &[StorageWriteOp]) -> Result<(), ServiceError> {
-        validate_namespace(&self.namespace)?;
-        validate_batch(ops)?;
-        if let Some(backend) =
-            resolve_typed::<dyn StorageBackend>(self.provider, SERVICE_STORAGE, METHOD_COMMIT_BATCH)
-        {
-            return backend.commit_batch(&self.namespace, ops);
-        }
-        let req = encode_commit_batch_request(&self.namespace, ops)?;
-        let resp = self
-            .provider
-            .invoke_sync(SERVICE_STORAGE, METHOD_COMMIT_BATCH, &req)?;
-        if !resp.is_empty() {
-            return Err(ServiceError::Codec(
-                "unexpected non-empty storage::commit_batch response".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn compact(&self) -> Result<CompactStats, ServiceError> {
-        validate_namespace(&self.namespace)?;
-        if let Some(backend) =
-            resolve_typed::<dyn StorageBackend>(self.provider, SERVICE_STORAGE, METHOD_COMPACT)
-        {
-            return backend.compact(&self.namespace);
-        }
-        let req = encode_open_request(&self.namespace)?;
-        let resp = self
-            .provider
-            .invoke_sync(SERVICE_STORAGE, METHOD_COMPACT, &req)?;
-        decode_compact_response(&resp)
-    }
 }
