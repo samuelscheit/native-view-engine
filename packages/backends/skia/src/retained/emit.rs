@@ -14,8 +14,8 @@ use nve_tables::transform::Transform2D;
 
 use super::chunks::{ChunkArenas, LocalPaintOp, NodeChunkMeta, ResolvedChunkText};
 use super::property_tree::{
-    ClipNode, EffectNode, ScrollPropIdx, ScrollPropertyNode, TransformNode, TF_HAS_TRANSFORM,
-    TF_IS_STICKY,
+    ClipNode, EffectNode, ScrollPropIdx, ScrollPropertyNode, TransformNode, TF_BACKDROP_SCRIM,
+    TF_HAS_TRANSFORM, TF_IS_STICKY, TF_IS_TOP_LAYER,
 };
 use crate::display_list::{effective_background_fill_res, should_clip_children};
 use crate::frame_hook::SkiaFrameHooks;
@@ -75,21 +75,33 @@ impl<L: StoreLayoutEngine> SceneSyncEnv<'_, L> {
         effect_node: &mut EffectNode,
         scrolls: &mut Vec<ScrollPropertyNode>,
     ) {
-        let (stx, sty) = self.layout_tree.compute_sticky_delta(self.store, id);
+        let resolved_overlay = self.layout_tree.scene().resolved_overlay(id);
+        let (stx, sty, eff_w, eff_h, is_sticky) = if let Some(ro) = resolved_overlay {
+            (
+                ro.origin_x - base_rect.x,
+                ro.origin_y - base_rect.y,
+                ro.width,
+                ro.height,
+                false,
+            )
+        } else {
+            let (sx, sy) = self.layout_tree.compute_sticky_delta(self.store, id);
+            let sticky = self
+                .store
+                .try_row::<Layout>(id)
+                .is_some_and(|l| l.position() == Position::Sticky);
+            (sx, sy, base_rect.width, base_rect.height, sticky)
+        };
         let effective_tf = self
             .frame_hooks
             .resolve_transform(id, self.layout_tree.effective_transform(self.store, id));
-        let is_sticky = self
-            .store
-            .try_row::<Layout>(id)
-            .is_some_and(|l| l.position() == Position::Sticky);
 
         let scroll_idx = if self.store.has::<Scroll>(id) {
             let (scroll_shift_x, scroll_shift_y) =
                 self.layout_tree.scene().visual_scroll_shift(self.store, id);
             let (scroll_raw_x, scroll_raw_y) = self.layout_tree.scene().scroll_offset(id);
             let (content_w, content_h) = compute_scroll_content_size(self.store, self.layout_tree, id)
-                .unwrap_or((base_rect.width, base_rect.height));
+                .unwrap_or((eff_w, eff_h));
             let idx = ScrollPropIdx(scrolls.len() as u32);
             scrolls.push(ScrollPropertyNode {
                 scroll_shift_x,
@@ -106,8 +118,8 @@ impl<L: StoreLayoutEngine> SceneSyncEnv<'_, L> {
 
         tf_node.base_x = base_rect.x;
         tf_node.base_y = base_rect.y;
-        tf_node.width = base_rect.width;
-        tf_node.height = base_rect.height;
+        tf_node.width = eff_w;
+        tf_node.height = eff_h;
         tf_node.sticky_x = stx;
         tf_node.sticky_y = sty;
         tf_node.scroll_idx = scroll_idx;
@@ -122,6 +134,12 @@ impl<L: StoreLayoutEngine> SceneSyncEnv<'_, L> {
         }
         if is_sticky {
             tf_node.flags |= TF_IS_STICKY;
+        }
+        if let Some(ro) = resolved_overlay {
+            tf_node.flags |= TF_IS_TOP_LAYER;
+            if ro.has_backdrop_scrim {
+                tf_node.flags |= TF_BACKDROP_SCRIM;
+            }
         }
 
         clip_node.clips_children = should_clip_children(self.store, id);

@@ -17,7 +17,7 @@ use crate::snapshots::{
 };
 use crate::tables::{
     AlignItems, Direction, Display, FlexWrap, GridItem, GridLayout, Interaction, JustifyContent,
-    Layout, Overflow, Position, TextAlign, Transform, Typography, Visual,
+    Layout, Overflow, TextAlign, Transform, Typography, Visual,
 };
 use crate::transform::Transform2D;
 
@@ -287,12 +287,7 @@ pub trait StylePatchExt: Sized {
     }
     #[inline]
     fn position(mut self, mode: PositionMode) -> Self {
-        let p = match mode {
-            PositionMode::Relative => Position::Relative,
-            PositionMode::Absolute => Position::Absolute,
-            PositionMode::Sticky => Position::Sticky,
-        };
-        self.row_patch_mut().set(Layout::POSITION, p);
+        self.row_patch_mut().set(Layout::POSITION, mode);
         self
     }
     #[inline]

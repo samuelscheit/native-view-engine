@@ -104,7 +104,9 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
     );
 
     // Mouse press near start + drag to far right forms a non-empty range selection.
-    session.handle_click_logical(r10.x + 10.0, mid_y).unwrap();
+    session
+        .handle_pointer_down_logical(r10.x + 10.0, mid_y, 0, none)
+        .unwrap();
     assert_eq!(session.backend().focus_state().caret_byte_index, 0);
     assert!(session.handle_pointer_move_logical(r10.x + 220.0, mid_y).unwrap());
     let drag_range = session

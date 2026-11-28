@@ -581,21 +581,22 @@ void test_resource_codecs() {
 void test_event_bits() {
   static_assert(event_set_bit(NVE_INTERACTION_EVENT_PRESS) == NVE_INTERACTION_EVENT_SET_PRESS);
   static_assert(event_set_bit(NVE_INTERACTION_EVENT_WHEEL) == NVE_INTERACTION_EVENT_SET_WHEEL);
+  static_assert(event_set_bit(NVE_INTERACTION_EVENT_POINTER_CANCEL) == NVE_INTERACTION_EVENT_SET_POINTER_CANCEL);
   static_assert(event_set_bit(NVE_TEXT_INPUT_EVENT_CHANGE) == NVE_TEXT_INPUT_EVENT_SET_CHANGE);
   static_assert(event_set_bit(NVE_TEXT_INPUT_EVENT_COMPOSITION_END) == NVE_TEXT_INPUT_EVENT_SET_COMPOSITION_END);
   static_assert(event_set_bit(NVE_SCROLL_EVENT_SCROLL) == NVE_SCROLL_EVENT_SET_SCROLL);
   static_assert(event_set_bit(NVE_LAYOUT_EVENT_LAYOUT) == NVE_LAYOUT_EVENT_SET_LAYOUT);
-  CHECK(event_set_bit(static_cast<NveInteractionEvent>(12)) == 0u);
+  CHECK(event_set_bit(static_cast<NveInteractionEvent>(13)) == 0u);
   CHECK(event_set_bit(static_cast<NveTextInputEvent>(5)) == 0u);
   CHECK(event_set_bit(static_cast<NveScrollEvent>(1)) == 0u);
   CHECK(event_set_bit(static_cast<NveLayoutEvent>(1)) == 0u);
   uint32_t all_int = 0u;
-  for (uint32_t k = 0u; k <= static_cast<uint32_t>(NVE_INTERACTION_EVENT_WHEEL); ++k) {
+  for (uint32_t k = 0u; k <= static_cast<uint32_t>(NVE_INTERACTION_EVENT_POINTER_CANCEL); ++k) {
     const uint32_t bit = event_set_bit(static_cast<NveInteractionEvent>(k));
     CHECK(bit != 0u && (bit & (bit - 1u)) == 0u);
     all_int |= bit;
   }
-  CHECK(all_int == (1u << 12u) - 1u);
+  CHECK(all_int == (1u << 13u) - 1u);
   uint32_t all_ti = 0u;
   for (uint32_t k = 0u; k <= static_cast<uint32_t>(NVE_TEXT_INPUT_EVENT_COMPOSITION_END); ++k) {
     all_ti |= event_set_bit(static_cast<NveTextInputEvent>(k));

@@ -1,25 +1,18 @@
 //! Extended zero-serialization layout primitives (`LayoutExt`): `flex-basis`, `aspect-ratio`,
-//! `PositionMode` (`relative` / `absolute` / `sticky`) + edge insets, CSS Grid containers & item
-//! placement, RTL logical layout (`LayoutDirection` + `LogicalInlineEdges`), and deterministic
-//! `position: sticky` clamping math shared across native backends.
+//! `PositionMode` (`relative` / `absolute` / `sticky` / `fixed`) + edge insets, CSS Grid containers
+//! & item placement, RTL logical layout (`LayoutDirection` + `LogicalInlineEdges`), and
+//! deterministic `position: sticky` clamping math shared across native backends.
 
 use nve_abi::{Dimension, EdgeInsets};
 
 use crate::tables::Display;
 
+/// Strictly typed CSS `position` mode (`#[repr(u8)]`), aliasing canonical [`crate::tables::Position`].
+pub use crate::tables::Position as PositionMode;
+
 #[inline]
 fn sanitize(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
-}
-
-/// Strictly typed CSS `position` mode (`#[repr(u8)]`).
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum PositionMode {
-    #[default]
-    Relative = 0,
-    Absolute = 1,
-    Sticky = 2,
 }
 
 /// Optional CSS positioning edge insets (`top`, `right`, `bottom`, `left`).

@@ -26,9 +26,9 @@ mod writer;
 
 pub use elements::{
     ComponentView, CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent,
-    KeyEventData, NveEventData, PressEvent, PressEventData, RawNveEvent, ScrollEvent,
-    ScrollEventData, SubmitEvent, SubmitEventData, TableEvent, TableEventData, TextEvent,
-    TextEventData,
+    KeyEventData, NveEventData, PointerEvent, PointerEventData, PointerId, PressEvent,
+    PressEventData, RawNveEvent, ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData,
+    TableEvent, TableEventData, TextEvent, TextEventData,
 };
 pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
@@ -47,7 +47,10 @@ pub use nve_tables::media::{
     MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, MEDIA_FLAG_HAS_MAX_WIDTH,
     MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
-pub use nve_tables::tables::{Display, FlexWrap, Overflow, TextAlign};
+pub use nve_tables::tables::{
+    Alignment, Display, FlexWrap, Overflow, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement,
+    PointerCaptureMode, Side, TextAlign,
+};
 pub use nve_tables::{LayoutSnapshot, StylePatchExt, VisualSnapshot};
 pub use nve_store::RowPatch;
 pub use nve_engine::InteractionTracker;
@@ -114,9 +117,9 @@ pub mod prelude {
     pub use crate::dioxus_elements;
     pub use crate::elements::{
         events::*, ComponentView, CompositionEvent, CompositionEventData, FocusEvent,
-        FocusEventData, KeyEvent, KeyEventData, NveEventData, PressEvent, PressEventData,
-        RawNveEvent, ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData, TableEvent,
-        TableEventData, TextEvent, TextEventData,
+        FocusEventData, KeyEvent, KeyEventData, NveEventData, PointerEvent, PointerEventData,
+        PressEvent, PressEventData, RawNveEvent, ScrollEvent, ScrollEventData, SubmitEvent,
+        SubmitEventData, TableEvent, TableEventData, TextEvent, TextEventData,
     };
     pub use crate::error_boundary::{
         throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
@@ -156,7 +159,10 @@ pub mod prelude {
         PositionMode,
     };
     pub use nve_tables::media::{MediaQuery, ResponsiveRule};
-    pub use nve_tables::tables::Display;
+    pub use nve_tables::tables::{
+        Alignment, Display, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement,
+        PointerCaptureMode, Side,
+    };
     pub use nve_tables::StylePatchExt;
     pub use nve_store::RowPatch;
     pub use nve_tables::input_hints::{AutofillHint, InputMode};

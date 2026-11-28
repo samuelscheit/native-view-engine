@@ -8,6 +8,7 @@
 
 mod hit_test;
 mod interaction;
+mod overlay_scene;
 mod scroll;
 mod snapshot;
 
@@ -21,6 +22,7 @@ use nve_store::{ChangeSet, NodeId, NodeStore};
 
 use crate::{HeuristicTextMeasurer, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 
+pub use overlay_scene::{OverlayState, ResolvedOverlay, is_overlay_closed};
 pub use scroll::{ScrollOffsets, compute_scroll_content_size};
 pub use snapshot::{layout_snapshot_of, length_to_dim, visual_snapshot_of};
 
@@ -33,6 +35,7 @@ pub struct LaidOutScene<L: StoreLayoutEngine = TaffyStoreLayout> {
     text_measurer: Arc<dyn TextMeasurer>,
     pub(crate) interaction: InteractionTracker,
     pub(crate) scroll: ScrollOffsets,
+    pub(crate) overlays: OverlayState,
     /// `(z, index)` sort keys reused across hit-test queries (mixed-`z_index` sibling lists
     /// longer than the walk's stack buffer); keeps its high-water capacity. A `Cell` suffices:
     /// a query never re-enters, and `&mut self` is required for mutations.
@@ -60,6 +63,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             text_measurer,
             interaction: InteractionTracker::new(),
             scroll: ScrollOffsets::default(),
+            overlays: OverlayState::default(),
             hit_scratch: Cell::new(Vec::new()),
         }
     }
@@ -111,6 +115,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             text_measurer: self.text_measurer,
             interaction: self.interaction,
             scroll: self.scroll,
+            overlays: self.overlays,
             hit_scratch: self.hit_scratch,
         }
     }
@@ -151,7 +156,9 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     /// Returns whether a layout pass ran.
     pub fn commit(&mut self, store: &NodeStore, changes: &ChangeSet) -> bool {
         self.sync_changes(store, changes);
-        self.recompute_layout(store)
+        let ran = self.recompute_layout(store);
+        self.reconcile_overlays(store);
+        ran
     }
 
     /// Runs the engine's self-gated layout pass for the store root at the current viewport.
@@ -159,11 +166,12 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         self.layout.compute_layout(store, NodeId::ROOT, self.viewport)
     }
 
-    /// Clears layout, interaction, and scroll state (keeps viewport and text measurer).
+    /// Clears layout, interaction, scroll, and overlay state (keeps viewport and text measurer).
     pub fn reset(&mut self) {
         self.layout.reset();
         self.interaction.clear();
         self.scroll.clear();
+        self.overlays.clear();
     }
 
     /// Current length and high-water capacity of the reusable hit-test sort scratch buffer.

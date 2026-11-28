@@ -8,6 +8,7 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+pub mod aria;
 pub mod css;
 #[cfg(target_arch = "wasm32")]
 mod dom_move;
@@ -29,6 +30,7 @@ pub mod input_attrs;
 pub mod key_events;
 pub mod layout_ext_css;
 pub mod media_css;
+pub mod overlay_anchor;
 #[cfg(all(feature = "hydrate", any(test, feature = "parity-fixtures")))]
 pub mod select_parity;
 #[cfg(target_arch = "wasm32")]
@@ -38,6 +40,10 @@ pub mod native_events;
 #[cfg(all(not(target_arch = "wasm32"), test))]
 mod native_events;
 pub mod patch_css;
+#[cfg(target_arch = "wasm32")]
+mod pointer_dom;
+#[cfg(target_arch = "wasm32")]
+mod scroll_dom;
 pub mod sanitize;
 #[cfg(feature = "ssr")]
 pub mod snapshot;
@@ -83,6 +89,7 @@ use nve_tables::keyboard::KeyboardInsets;
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend, Viewport};
 use nve_store::{ChangeSet, NodeStore};
 
+pub use aria::{visit_accessibility_attrs, ALL_ACCESSIBILITY_ATTRS};
 pub use css::{canonical_f32_bits, write_compositor_css, write_store_node_css, NVE_BASE_RESET_CSS};
 pub use event_replay::{
     drain_valid_pre_hydration_events, pre_hydration_replay_script_tag, push_pre_hydration_event,
@@ -90,7 +97,7 @@ pub use event_replay::{
 };
 pub use events::{
     is_hard_nav_anchor, should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker,
-    WebEventState, NODE_KIND_INPUT, NODE_KIND_LINK,
+    WebEventState, NODE_KIND_CAPTURE_PRIMARY, NODE_KIND_INPUT, NODE_KIND_LINK,
 };
 pub use html::push_attr_escaped;
 #[cfg(feature = "ssr")]
@@ -189,6 +196,14 @@ pub struct WebBackend {
     pub(crate) created_scratch: nve_abi::hash::HashSet<NodeId>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) retagged_scratch: Vec<NodeId>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) last_requested_scroll_seq: Vec<u32>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) pending_scroll_sync: Vec<NodeId>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) programmatic_scroll_guard: Rc<RefCell<HashMap<NodeId, (i32, i32)>>>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) overlay_anchors: overlay_anchor::OverlayAnchorFallbackManager,
 }
 
 impl Default for WebBackend {
@@ -239,6 +254,14 @@ impl WebBackend {
             created_scratch: nve_abi::hash::HashSet::default(),
             #[cfg(target_arch = "wasm32")]
             retagged_scratch: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            last_requested_scroll_seq: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            pending_scroll_sync: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            programmatic_scroll_guard: Rc::new(RefCell::new(HashMap::default())),
+            #[cfg(target_arch = "wasm32")]
+            overlay_anchors: overlay_anchor::OverlayAnchorFallbackManager::default(),
         }
     }
 

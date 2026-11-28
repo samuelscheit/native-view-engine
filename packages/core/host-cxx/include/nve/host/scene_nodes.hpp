@@ -36,7 +36,7 @@ enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 /// Listener bit of one per-table event in its table's `EventSet` word (`1u << event_id`).
 [[nodiscard]] constexpr uint32_t event_set_bit(NveInteractionEvent ev) noexcept {
   const auto id = static_cast<uint32_t>(ev);
-  return id <= static_cast<uint32_t>(NVE_INTERACTION_EVENT_WHEEL) ? (uint32_t{1} << id) : 0u;
+  return id <= static_cast<uint32_t>(NVE_INTERACTION_EVENT_POINTER_CANCEL) ? (uint32_t{1} << id) : 0u;
 }
 [[nodiscard]] constexpr uint32_t event_set_bit(NveTextInputEvent ev) noexcept {
   const auto id = static_cast<uint32_t>(ev);

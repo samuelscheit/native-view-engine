@@ -13,6 +13,7 @@ pub mod input;
 mod keyboard;
 pub mod multi_window;
 pub mod pair_client;
+mod pointer;
 pub mod session;
 pub mod text_edit;
 mod window_commands;
@@ -34,6 +35,8 @@ mod input_tests;
 mod multi_window_tests;
 #[cfg(test)]
 mod pair_tests;
+#[cfg(test)]
+mod pointer_focus_tests;
 #[cfg(test)]
 mod scroll_keydown_tests;
 #[cfg(test)]

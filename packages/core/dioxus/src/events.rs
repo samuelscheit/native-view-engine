@@ -13,8 +13,8 @@ use nve_abi::{
 use nve_tables::tables::{Interaction, Layout, Scroll, TextInput};
 
 use crate::elements::{
-    CompositionEventData, FocusEventData, KeyEventData, NveEventData, PressEventData,
-    ScrollEventData, SubmitEventData, TableEventData, TextEventData,
+    CompositionEventData, FocusEventData, KeyEventData, NveEventData, PointerEventData,
+    PressEventData, ScrollEventData, SubmitEventData, TableEventData, TextEventData,
 };
 use crate::surface::DioxusSurface;
 use crate::CustomEventData;
@@ -27,6 +27,7 @@ use crate::CustomEventData;
 /// `Rc::get_mut` transparently allocates a fresh `Rc` without mutating the retained value.
 pub(crate) struct EventSlots {
     press: Rc<PressEventData>,
+    pointer: Rc<PointerEventData>,
     text: Rc<TextEventData>,
     scroll: Rc<ScrollEventData>,
     focus: Rc<FocusEventData>,
@@ -42,6 +43,7 @@ impl EventSlots {
     pub(crate) fn new() -> Self {
         Self {
             press: Rc::new(PressEventData::default()),
+            pointer: Rc::new(PointerEventData::default()),
             text: Rc::new(TextEventData::default()),
             scroll: Rc::new(ScrollEventData::default()),
             focus: Rc::new(FocusEventData),
@@ -73,6 +75,7 @@ const fn pointer_event_meta(kind: InteractionEvent) -> Option<(&'static str, boo
         InteractionEvent::PointerDown => Some(("pointerdown", true)),
         InteractionEvent::PointerMove => Some(("pointermove", true)),
         InteractionEvent::PointerUp => Some(("pointerup", true)),
+        InteractionEvent::PointerCancel => Some(("pointercancel", true)),
         InteractionEvent::PointerEnter => Some(("pointerenter", false)),
         InteractionEvent::PointerLeave => Some(("pointerleave", false)),
         _ => None,
@@ -134,19 +137,32 @@ impl DioxusSurface {
                             .handle_event("longpress", Event::new(data, true), el_id);
                         handled = true;
                     }
-                    Some(kind)
-                        if pointer_event_meta(kind).is_some()
-                            && self.writer.has_listener_in_chain::<Interaction>(node, kind) =>
-                    {
-                        if let Some((name, bubbles)) = pointer_event_meta(kind) {
-                            let data = EventSlots::reuse(&mut self.event_slots.press, |d| {
-                                d.x = ev.x();
-                                d.y = ev.y();
-                            });
-                            self.vdom
-                                .runtime()
-                                .handle_event(name, Event::new(data, bubbles), el_id);
-                            handled = true;
+                    Some(kind) if pointer_event_meta(kind).is_some() => {
+                        if let Some((name, default_bubbles)) = pointer_event_meta(kind) {
+                            let bubbles = default_bubbles && ev.bubbles();
+                            let has_listener = if bubbles {
+                                self.writer.has_listener_in_chain::<Interaction>(node, kind)
+                            } else {
+                                self.writer.has_listener::<Interaction>(node, kind)
+                            };
+                            if has_listener {
+                                let data = EventSlots::reuse(&mut self.event_slots.pointer, |d| {
+                                    d.x = ev.x();
+                                    d.y = ev.y();
+                                    d.pointer_id = crate::dioxus_elements::PointerId(ev.pointer_id());
+                                    d.button = ev.pointer_button();
+                                    d.buttons = ev.pointer_buttons();
+                                    d.captured = ev.is_capture();
+                                    d.shift = ev.shift();
+                                    d.ctrl = ev.ctrl();
+                                    d.alt = ev.alt();
+                                    d.meta = ev.meta();
+                                });
+                                self.vdom
+                                    .runtime()
+                                    .handle_event(name, Event::new(data, bubbles), el_id);
+                                handled = true;
+                            }
                         }
                     }
                     Some(InteractionEvent::Wheel)

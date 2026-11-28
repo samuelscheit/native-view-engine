@@ -73,6 +73,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                     .set_scroll_offset_clamped(store, node_id, x, y)
             };
         if changed {
+            if !self.layout_tree.scene().open_overlays().is_empty() {
+                self.layout_tree.scene_mut().reconcile_overlays(store);
+            }
             self.update_scene_scroll(store, node_id, clamped_x, clamped_y);
         }
         (clamped_x, clamped_y)
@@ -214,10 +217,11 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         store: &NodeStore,
         changes: &ChangeSet,
         needs_layout: bool,
-    ) {
+    ) -> usize {
         self.layout_tree
             .scene_mut()
-            .reconcile_scroll_offsets_if_needed(store, changes, needs_layout);
+            .reconcile_scroll_offsets_if_needed(store, changes, needs_layout)
+            .len()
     }
 }
 

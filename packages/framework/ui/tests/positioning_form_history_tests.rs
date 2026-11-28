@@ -177,7 +177,7 @@ fn positioning_tiny_viewport_picks_most_space_and_auto_sizes() {
 fn positioning_property_sweep_invariants() {
     let vp = Viewport::new(640.0, 480.0);
     let pad = 8.0;
-    for &placement in &Placement::ALL {
+    for &placement in Placement::ALL {
         for ax in [0.0, 40.0, 300.0, 590.0] {
             for ay in [0.0, 30.0, 220.0, 440.0] {
                 let anchor = Rect::new(ax, ay, 40.0, 28.0);

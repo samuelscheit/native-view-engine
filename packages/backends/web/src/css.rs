@@ -49,6 +49,9 @@ pub const NVE_BASE_RESET_CSS: &str = concat!(
     ":where(pre.nve>code){display:flex;flex-direction:column;width:100%;min-width:0}",
     ":where(a.nve){color:inherit;text-decoration:none}",
     ":where(button.nve){background:none;border:none;padding:0;font-family:inherit;color:inherit;text-align:inherit;cursor:pointer}",
+    ":where(button.nve:disabled,.nve[aria-disabled=\"true\"]){cursor:not-allowed}",
+    ":where([data-nve-capture=\"primary\"]){touch-action:none;user-select:none}",
+    ":where(dialog.nve,.nve[popover]){margin:0;padding:0;border:none;background:transparent;color:inherit;inset:auto;max-width:none;max-height:none;overflow:visible}",
     ":where(input.nve,textarea.nve){font-family:inherit;color:inherit;background:transparent;border:none;outline:none}",
     ":where(table.nve){display:table;border-collapse:collapse;border-style:hidden}",
     ":where(thead.nve){display:table-header-group}",
@@ -176,11 +179,10 @@ pub fn write_store_node_css(
             out.push_str(l.display().keyword());
             out.push(';');
         }
-        match l.position() {
-            Position::Relative => {}
-            Position::Absolute => out.push_str("position:absolute;"),
-            Position::Sticky => out.push_str("position:sticky;"),
-            Position::Fixed => out.push_str("position:fixed;"),
+        if l.position() != Position::Relative {
+            out.push_str("position:");
+            out.push_str(l.position().keyword());
+            out.push(';');
         }
         if l.box_sizing() == BoxSizing::ContentBox {
             out.push_str("box-sizing:content-box;");
@@ -421,4 +423,5 @@ pub fn write_store_node_css(
     }
 
     paint::write_visual_and_typography_css(store, id, include_compositor, out);
+    crate::overlay_anchor::write_overlay_anchor_css(store, id, out);
 }

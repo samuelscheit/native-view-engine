@@ -3,6 +3,7 @@
 //! mirroring, zero `Box<NodeExtras>`, zero `ComponentKind`, and zero `set_raw_prop`.
 
 mod attributes;
+mod attributes_num;
 mod current_color;
 mod element_map;
 mod identity_attrs;
@@ -578,7 +579,7 @@ fn replay_one_standalone_entry(
     }
     match val {
         StandaloneStyleVal::Float(f) => {
-            let _ = attributes::apply_numeric_attr_untracked(tx, node, k, *f);
+            let _ = attributes_num::apply_numeric_attr_untracked(tx, node, k, *f);
         }
         StandaloneStyleVal::Int(i) => {
             tx.edit::<tables::Visual>(node)

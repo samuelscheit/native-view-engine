@@ -518,3 +518,112 @@ fn third_party_table_event_honors_no_bubble_flag() {
     assert!(surface.dispatch_events(evs.as_validated()));
     assert_eq!(log.0.borrow().as_slice(), &["child", "outer"]);
 }
+
+#[test]
+fn pointer_event_data_cancel_capture_fixed_and_controlled_scroll_seq() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use nve_abi::{EventFlags, InteractionEvent, NVE_POINTER_TYPE_MOUSE};
+    use nve_tables::tables::{Interaction, Layout, PointerCaptureMode, Position, Scroll};
+
+    type PointerLog = Vec<(u32, u8, u16, bool, bool)>;
+
+    #[derive(Clone)]
+    struct Rec(Rc<RefCell<PointerLog>>);
+    impl PartialEq for Rec {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+
+    #[component]
+    fn PointerScrollApp(rec: Rec) -> Element {
+        let on_move = Rc::clone(&rec.0);
+        let on_cancel = Rc::clone(&rec.0);
+        let thumb_style = TypedStyle::new()
+            .capture_on_primary_down()
+            .position_fixed();
+        rsx! {
+            scrollview {
+                test_id: "sc",
+                requested_scroll_x: 12.5,
+                requested_scroll_y: 80.0,
+                requested_scroll_seq: 3u32,
+                view {
+                    test_id: "thumb",
+                    style: thumb_style,
+                    onpointermove: move |e: PointerEvent| {
+                        let d = e.data();
+                        on_move.borrow_mut().push((
+                            d.pointer_id.0,
+                            d.button,
+                            d.buttons,
+                            d.captured,
+                            d.shift,
+                        ));
+                    },
+                    onpointercancel: move |e: PointerEvent| {
+                        let d = e.data();
+                        on_cancel.borrow_mut().push((
+                            d.pointer_id.0,
+                            d.button,
+                            d.buttons,
+                            d.captured,
+                            d.ctrl,
+                        ));
+                    },
+                }
+            }
+        }
+    }
+
+    let rec = Rec(Rc::new(RefCell::new(Vec::new())));
+    let mut surface = DioxusSurface::new_with_props(
+        SurfaceId::ROOT,
+        PointerScrollApp,
+        PointerScrollAppProps { rec: rec.clone() },
+    );
+    surface.reconcile(FrameId(1));
+
+    let sc = find_by_test_id(surface.store(), "sc");
+    let scroll_row = surface.store().row::<Scroll>(sc);
+    assert_eq!(scroll_row.requested_scroll_x(), Some(12.5));
+    assert_eq!(scroll_row.requested_scroll_y(), Some(80.0));
+    assert_eq!(scroll_row.requested_scroll_seq(), 3);
+
+    let thumb = find_by_test_id(surface.store(), "thumb");
+    assert_eq!(
+        surface.store().row::<Interaction>(thumb).capture_mode(),
+        PointerCaptureMode::OnPrimaryDown
+    );
+    assert_eq!(surface.store().row::<Layout>(thumb).position(), Position::Fixed);
+
+    let mut evs = EventBatchBuf::new();
+    evs.push_pointer_ex(
+        SurfaceId::ROOT,
+        thumb,
+        TimestampUs(10),
+        InteractionEvent::PointerMove,
+        40.0,
+        20.0,
+        7,
+        1,
+        NVE_POINTER_TYPE_MOUSE,
+        EventFlags::CAPTURE.union(EventFlags::NO_BUBBLE).union(EventFlags::MOD_SHIFT),
+    );
+    evs.push_pointer_cancel(
+        SurfaceId::ROOT,
+        thumb,
+        TimestampUs(11),
+        40.0,
+        20.0,
+        7,
+        EventFlags::CAPTURE.union(EventFlags::NO_BUBBLE),
+    );
+    assert!(surface.dispatch_events(evs.as_validated()));
+    assert_eq!(
+        rec.0.borrow().as_slice(),
+        &[(7, 0, 1, true, true), (7, 0, 0, true, false)]
+    );
+}

@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use nve_abi::Dimension;
 use nve_tables::interaction::{CursorKind, StateStyleRule};
-use nve_tables::layout_ext::{LayoutDirection, PositionMode};
+use nve_tables::layout_ext::LayoutDirection;
 use nve_tables::media::ResponsiveRule;
 use nve_tables::tables::{
     BackgroundFillRes, BoxShadows, Direction, Display, GridItem, GridLayout, GridTracks, Image,
-    ImageFit, Interaction, Layout, Overflow, Position, Responsive, ResponsiveRules, StateRules,
-    TextAlign, Transform, Typography, Visual,
+    ImageFit, Interaction, Layout, Overflow, PointerCaptureMode, Position, Responsive,
+    ResponsiveRules, StateRules, TextAlign, Transform, Typography, Visual,
 };
 use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
 
@@ -50,11 +50,7 @@ impl TypedStyle {
                 let mut row = tx
                     .edit::<Layout>(node)
                     .display(ext.display)
-                    .position(match ext.position {
-                        PositionMode::Relative => Position::Relative,
-                        PositionMode::Absolute => Position::Absolute,
-                        PositionMode::Sticky => Position::Sticky,
-                    })
+                    .position(ext.position)
                     .flex_basis(dim_to_length(ext.flex_basis))
                     .inset_top(dim_to_length(ext.insets.top))
                     .inset_right(dim_to_length(ext.insets.right))
@@ -205,9 +201,12 @@ impl TypedStyle {
                 .origin_y(tf.origin_y);
         }
 
-        if self.cursor.is_some() || !self.state_rules.is_empty() {
+        if self.cursor.is_some() || self.capture_mode.is_some() || !self.state_rules.is_empty() {
             if let Some(c) = self.cursor {
                 tx.edit::<Interaction>(node).cursor(c);
+            }
+            if let Some(cm) = self.capture_mode {
+                tx.edit::<Interaction>(node).capture_mode(cm);
             }
             if !self.state_rules.is_empty() {
                 if self.state_rules.iter().any(|r| r.patch.has_pending_resources()) {
@@ -356,6 +355,13 @@ impl TypedStyle {
             && tx.store().has::<Interaction>(node)
         {
             tx.edit::<Interaction>(node).cursor(CursorKind::Auto);
+        }
+        if self.capture_mode.is_some()
+            && next.is_none_or(|n| n.capture_mode.is_none())
+            && tx.store().has::<Interaction>(node)
+        {
+            tx.edit::<Interaction>(node)
+                .capture_mode(PointerCaptureMode::None);
         }
         if !self.state_rules.is_empty()
             && next.is_none_or(|n| n.state_rules.is_empty())

@@ -6,7 +6,17 @@ pub use crate::interaction::CursorKind;
 
 use super::resources::{AriaRelations, StateRules};
 
-/// Interactive subscriptions, pointer cursor, focusability, and pseudo-state style rules.
+/// Declarative synchronous pointer-capture policy honored on `pointerdown` without an async round-trip.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum PointerCaptureMode {
+    #[default]
+    None = 0,
+    /// Automatically capture the pointer on primary button press (slider thumb, splitter, scrubber).
+    OnPrimaryDown = 1,
+}
+
+/// Interactive subscriptions, pointer cursor, focusability, capture policy, and pseudo-state style rules.
 #[derive(NveTable)]
 #[nve_table(
     name = "nve.interaction",
@@ -24,9 +34,17 @@ pub struct Interaction {
     /// Optional explicit tab index (`None` = natural tab order).
     #[effect(semantics, events)]
     pub tab_index: Option<i16>,
+    #[effect(semantics, events)]
+    pub capture_mode: PointerCaptureMode,
     #[effect(paint)]
     pub state_rules: Res<StateRules>,
 }
+
+const _: () = {
+    // `capture_mode` (1 bit) packs into the existing `semantics|events` word alongside
+    // `focusable` (1 bit) and `tab_index` (17 bits) — 0 extra words (5 words total).
+    assert!(Interaction::DESC.defaults.len() == 5);
+};
 
 /// Closed cross-platform accessibility role enum covering WAI-ARIA, Apple NSAccessibility,
 /// Android AccessibilityNodeInfo, GTK4, and Flutter Semantics; wrap in `Option<AriaRole>` for unset.

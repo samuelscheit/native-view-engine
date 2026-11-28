@@ -5,10 +5,13 @@
 use nve_abi::{
     EventBatchBuf, EventFlags, InteractionEvent, NodeId, TextInputEvent, TimestampUs, ROOT_NODE_ID,
 };
+use nve_backend_skia::FocusModality;
+use nve_layout::is_overlay_closed;
 use nve_store::NodeStore;
-use nve_tables::tables::Interaction;
-use winit::keyboard::{Key, ModifiersState};
+use nve_tables::tables::{is_node_display_none, Interaction};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use super::input::is_focusable;
 use super::session::{now_us, DesktopSession, ShellSkiaBackend};
 use super::text_edit::{
     classify_focused_key, classify_unfocused_keydown, delete_backward, delete_forward,
@@ -60,6 +63,39 @@ fn has_any_keydown_listener(store: &NodeStore) -> bool {
     store.live_nodes().any(|id| has_keydown_listener(store, id))
 }
 
+fn collect_tab_order(store: &NodeStore, root: NodeId) -> Vec<NodeId> {
+    let mut positive: Vec<(i16, usize, NodeId)> = Vec::new();
+    let mut natural: Vec<NodeId> = Vec::new();
+    let mut stack = vec![root];
+    let mut seq = 0usize;
+    while let Some(id) = stack.pop() {
+        if !store.is_live(id) || is_node_display_none(store, id) || is_overlay_closed(store, id) {
+            continue;
+        }
+        if is_focusable(store, id) {
+            let ti = store
+                .try_row::<Interaction>(id)
+                .and_then(|i| i.tab_index());
+            match ti {
+                Some(n) if n < 0 => {}
+                Some(n) if n > 0 => {
+                    positive.push((n, seq, id));
+                    seq += 1;
+                }
+                _ => natural.push(id),
+            }
+        }
+        for &cid in store.children(id).iter().rev() {
+            stack.push(cid);
+        }
+    }
+    positive.sort_by_key(|&(ti, order, _)| (ti, order));
+    let mut ordered = Vec::with_capacity(positive.len() + natural.len());
+    ordered.extend(positive.into_iter().map(|(_, _, id)| id));
+    ordered.extend(natural);
+    ordered
+}
+
 fn move_caret_visual(backend: &ShellSkiaBackend, text: &str, caret: usize, delta: i32) -> usize {
     let shaped = backend.text_engine().shape_single_line(
         text,
@@ -103,10 +139,35 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(handled)
     }
 
-    /// Handles a `winit` keyboard press: focused `TextInput` UAX #29 editing, BiDi visual
-    /// caret movement, `Shift+Arrow`/`Shift+Home`/`Shift+End` selection,
-    /// clipboard (`Ctrl/Cmd+C/X/V`), `Cmd/Ctrl+A`, `Enter` -> `"submit"`, and `Escape` ->
-    /// cancel preedit or blur/keydown.
+    fn handle_tab_focus(&mut self, reverse: bool) -> Result<bool, DesktopHostError> {
+        let scope_root = self
+            .replica
+            .backend()
+            .layout_tree()
+            .scene()
+            .open_overlays()
+            .iter()
+            .rev()
+            .find(|ro| ro.is_modal)
+            .map_or(NodeId::ROOT, |ro| ro.node);
+        let order = collect_tab_order(self.replica.store(), scope_root);
+        if order.is_empty() {
+            return Ok(false);
+        }
+        let cur = self.replica.backend().focused_node();
+        let next = match cur.and_then(|id| order.iter().position(|&n| n == id)) {
+            Some(idx) if reverse => order[(idx + order.len() - 1) % order.len()],
+            Some(idx) => order[(idx + 1) % order.len()],
+            None if reverse => order[order.len() - 1],
+            None => order[0],
+        };
+        self.focus_node_with_modality(Some(next), FocusModality::Keyboard)
+    }
+
+    /// Handles a `winit` keyboard press: `Tab`/`Shift+Tab` keyboard-modality focus traversal,
+    /// focused `TextInput` UAX #29 editing, BiDi visual caret movement,
+    /// `Shift+Arrow`/`Shift+Home`/`Shift+End` selection, clipboard (`Ctrl/Cmd+C/X/V`),
+    /// `Cmd/Ctrl+A`, `Enter` -> `"submit"`, and `Escape` -> cancel preedit or blur/keydown.
     pub fn handle_keyboard_input(
         &mut self,
         key: &Key,
@@ -118,6 +179,10 @@ impl<A: DesktopApp> DesktopSession<A> {
         let ctrl = modifiers.control_key();
         let shift = modifiers.shift_key();
         let alt = modifiers.alt_key();
+
+        if matches!(key, Key::Named(NamedKey::Tab)) && !meta && !ctrl && !alt {
+            return self.handle_tab_focus(shift);
+        }
 
         let Some(focused_id) = self
             .replica

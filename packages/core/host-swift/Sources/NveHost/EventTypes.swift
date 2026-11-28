@@ -64,6 +64,7 @@ public struct EventFlags: OptionSet, Hashable, Sendable {
 public enum InteractionEventId: UInt32, Sendable, CaseIterable {
     case press = 0, longPress = 1, focus = 2, blur = 3, keyDown = 4, keyUp = 5
     case pointerDown = 6, pointerMove = 7, pointerUp = 8, pointerEnter = 9, pointerLeave = 10, wheel = 11
+    case pointerCancel = 12
 
     /// Corresponding bit in `NveTables.Interaction.eventsWord` (`NveInteractionEventSet`).
     public var eventBit: UInt32 { UInt32(1) << rawValue }

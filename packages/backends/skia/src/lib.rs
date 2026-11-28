@@ -360,29 +360,10 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         &mut self.layout_tree
     }
 
-    /// Computes the visual (scroll-shifted + sticky-clamped) layout rectangle of `node_id` in
-    /// logical viewport coordinates.
+    /// Computes the visual (scroll-shifted, sticky-clamped, top-layer-adjusted) layout rectangle
+    /// of `node_id` in logical viewport coordinates.
     pub fn visual_rect_of(&self, store: &NodeStore, node_id: NodeId) -> Option<LayoutRect> {
-        let mut rect = self.layout_tree.layout_of(node_id)?;
-        let (own_sx, own_sy) = self.layout_tree.compute_sticky_delta(store, node_id);
-        rect.x += own_sx;
-        rect.y += own_sy;
-        let mut ancestor = store.parent(node_id);
-        let mut depth = 0usize;
-        while let Some(pid) = ancestor {
-            if depth > MAX_HIT_TEST_DEPTH {
-                break;
-            }
-            depth += 1;
-            let (sx, sy) = self.visual_scroll_shift(store, pid);
-            rect.x -= sx;
-            rect.y -= sy;
-            let (stx, sty) = self.layout_tree.compute_sticky_delta(store, pid);
-            rect.x += stx;
-            rect.y += sty;
-            ancestor = store.parent(pid);
-        }
-        Some(rect)
+        self.layout_tree.scene().visual_rect_of(store, node_id)
     }
 
     /// Compiles a fresh ground-truth [`DisplayList`] directly from `store` (test oracle only).
@@ -492,7 +473,8 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         let mut stats = self.layout_tree.commit(store, changes)?;
         self.viewport_dirty = false;
         let t_mount = Instant::now();
-        self.reconcile_scroll_offsets(store, changes, needs_layout);
+        let scroll_changed = self.reconcile_scroll_offsets(store, changes, needs_layout);
+        self.layout_tree.scene_mut().reconcile_overlays(store);
         self.reconcile_focus_state(store);
         self.frame_hooks_after_commit(store, changes);
 
@@ -559,7 +541,7 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         stats.mount_us = t_mount.elapsed().as_micros() as u64;
         stats.mutation_count = match dirty_kind {
             SceneDirtyKind::None => 0,
-            SceneDirtyKind::CompositeOnly => changes.touched.len() as u32,
+            SceneDirtyKind::CompositeOnly => (changes.touched.len().max(scroll_changed)) as u32,
             SceneDirtyKind::PaintOnly | SceneDirtyKind::LayoutOrTree => {
                 chunks_delta.max(changes.removed.len() as u64) as u32
             }

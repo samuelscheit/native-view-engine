@@ -20,7 +20,7 @@ use nve_tables::interaction::CursorKind;
 use nve_tables::layout_ext::LayoutExt;
 use nve_tables::media::MediaQuery;
 use nve_tables::paint::BackgroundFill;
-use nve_tables::tables::BoxShadow;
+use nve_tables::tables::{BoxShadow, PointerCaptureMode};
 use nve_tables::transform::Transform2D;
 use nve_tables::{LayoutSnapshot, VisualSnapshot};
 
@@ -72,6 +72,7 @@ pub struct TypedStyle {
     pub show_on: Option<MediaQuery>,
     pub responsive: Vec<PendingResponsiveRule>,
     pub cursor: Option<CursorKind>,
+    pub capture_mode: Option<PointerCaptureMode>,
     pub state_rules: Vec<PendingStateRule>,
 }
 
@@ -104,6 +105,7 @@ impl TypedStyle {
             show_on: None,
             responsive: Vec::new(),
             cursor: None,
+            capture_mode: None,
             state_rules: Vec::new(),
         }
     }

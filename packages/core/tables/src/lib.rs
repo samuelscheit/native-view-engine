@@ -60,7 +60,10 @@ pub use snapshots::{
     transform_from_patch, transform_from_patch_view, LayoutSnapshot, VisualSnapshot,
 };
 pub use style_ext::StylePatchExt;
-pub use tables::{Display, FlexWrap, Overflow, TextAlign};
+pub use tables::{
+    Alignment, Display, FlexWrap, Overflow, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement,
+    PointerCaptureMode, Side, TextAlign,
+};
 pub use transform::{affine_concat, affine_inverse_map_point, affine_map_point, Transform2D};
 
 pub use css::{

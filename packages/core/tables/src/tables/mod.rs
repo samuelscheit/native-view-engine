@@ -9,6 +9,7 @@ pub mod box_shadow;
 pub mod interaction;
 pub mod layout;
 pub mod media;
+pub mod overlay;
 pub mod resources;
 pub mod visual;
 
@@ -19,8 +20,8 @@ pub use box_shadow::BoxShadow;
 pub use interaction::{
     Accessibility, AccessibilityMut, AccessibilityRef, AriaAutoComplete, AriaLive, AriaOrientation,
     AriaRole, AriaTriState, CursorKind, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
-    InteractionRef, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
-    StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
+    InteractionRef, PointerCaptureMode, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR,
+    NVE_SUSPENSE_ATTR, StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
 };
 pub use layout::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, Direction, Display, FlexDirection, FlexWrap,
@@ -30,6 +31,9 @@ pub use layout::{
 pub use media::{
     Image, ImageFit, ImageMut, ImageRef, InputKind, Link, LinkMut, LinkRef, LinkRel, LinkTarget,
     Scroll, ScrollAxes, ScrollMut, ScrollRef, Scrollbars, TextInput, TextInputMut, TextInputRef,
+};
+pub use overlay::{
+    Alignment, Overlay, OverlayFlags, OverlayLayer, OverlayMut, OverlayPlacement, OverlayRef, Side,
 };
 pub use resources::{
     AriaRelations, AriaRelationsView, BackgroundFillRes, BackgroundFillView, BoxShadows,
@@ -84,6 +88,7 @@ define_core_tables!(
     Scroll,
     Image,
     TextInput,
+    Overlay,
 );
 
 /// Deterministic 64-bit XXH64 schema digest over [`CORE_TABLE_DESCS`].

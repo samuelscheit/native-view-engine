@@ -278,11 +278,20 @@ impl CompositorScene {
             || !changes.created.is_empty()
             || !changes.removed.is_empty()
             || !changes.children.is_empty()
-            || changes.effects_union() & (effect::LAYOUT | effect::MEASURE) != 0
+            || changes.effects_union() & (effect::LAYOUT | effect::MEASURE | effect::REALIZE) != 0
             || changes.table(Responsive::slot()).is_some()
-            || changes.table(Scroll::slot()).is_some()
         {
             return SceneDirtyKind::LayoutOrTree;
+        }
+        if let Some(tc) = changes.table(Scroll::slot()) {
+            let needs_tree_rebuild = !tc.detached.is_empty()
+                || tc.nodes.iter().any(|&id| {
+                    self.live_chunk_idx(id)
+                        .is_none_or(|cidx| self.props.transforms[cidx.index()].scroll_idx.is_none())
+                });
+            if needs_tree_rebuild {
+                return SceneDirtyKind::LayoutOrTree;
+            }
         }
 
         if changes.is_empty() {
@@ -343,13 +352,22 @@ impl CompositorScene {
         self.stats.last_dirty_kind = Some(kind);
 
         match kind {
-            SceneDirtyKind::None => {}
+            SceneDirtyKind::None => {
+                if !env.layout_tree.scene().last_reconciled_scroll_nodes().is_empty() {
+                    self.sync_reconciled_scrolls(env);
+                    self.stats.last_dirty_kind = Some(SceneDirtyKind::CompositeOnly);
+                }
+            }
             SceneDirtyKind::CompositeOnly => {
                 self.stats.composite_fast_paths += 1;
                 self.sync_composite_from_changes(env, changes);
+                self.sync_reconciled_scrolls(env);
             }
             SceneDirtyKind::PaintOnly => {
                 self.sync_paint_from_changes(env, changes, plugin_dirty_nodes);
+                if self.stats.last_dirty_kind != Some(SceneDirtyKind::LayoutOrTree) {
+                    self.sync_reconciled_scrolls(env);
+                }
             }
             SceneDirtyKind::LayoutOrTree => {
                 self.stats.layout_tree_syncs += 1;
@@ -402,6 +420,18 @@ impl CompositorScene {
                 let stf = &mut self.props.transforms[scidx.index()];
                 stf.sticky_x = stx;
                 stf.sticky_y = sty;
+            }
+        }
+        for i in 0..self.props.top_layer_chunks.len() {
+            let tcidx = self.props.top_layer_chunks[i];
+            if let Some(meta) = self.chunks.get(tcidx.index())
+                && meta.is_live()
+                && let Some(ro) = env.layout_tree.scene().resolved_overlay(meta.node_id)
+                && let Some(base) = env.layout_tree.layout_of(meta.node_id)
+            {
+                let tf = &mut self.props.transforms[tcidx.index()];
+                tf.sticky_x = ro.origin_x - base.x;
+                tf.sticky_y = ro.origin_y - base.y;
             }
         }
         self.stats.last_dirty_kind = Some(SceneDirtyKind::CompositeOnly);

@@ -48,7 +48,7 @@ mod live {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use nve_backend_web::NativeEventBridge;
-    use nve_tables::tables::Accessibility;
+    use nve_tables::tables::{Accessibility, Overlay, OverlayFlags, OverlayLayer};
     use nve_store::{NodeId, NodeStore};
     use nve_web_html::HtmlSemantics;
     use wasm_bindgen::JsCast;
@@ -114,18 +114,26 @@ export function nve_toggle_event_closed(ev) {
         .then_some(CLOSE_EVENT)
     }
 
-    /// Applies `node`'s `HtmlSemantics` open state to its live `<dialog>` / `[popover]` element.
+    /// Applies `node`'s `HtmlSemantics` + `Overlay` open/modal state to its live `<dialog>` /
+    /// `[popover]` element.
     pub(crate) fn sync_overlay_state(store: &NodeStore, node: NodeId, el: &web_sys::Element) {
         let Some(row) = store.try_row::<HtmlSemantics>(node) else {
             return;
         };
+        let overlay = store.try_row::<Overlay>(node);
+        let overlay_open = overlay
+            .as_ref()
+            .map(|ov| ov.options().contains(OverlayFlags::OPEN));
         if let Some(dialog) = el.dyn_ref::<web_sys::HtmlDialogElement>() {
             let modal = store
                 .try_row::<Accessibility>(node)
-                .is_some_and(|a| a.modal());
-            sync_dialog_open_state(dialog, row.open(), modal);
+                .is_some_and(|a| a.modal())
+                || overlay
+                    .as_ref()
+                    .is_some_and(|ov| ov.layer() == OverlayLayer::Modal);
+            sync_dialog_open_state(dialog, overlay_open.unwrap_or(row.open()), modal);
         } else if row.popover().is_some() {
-            nve_sync_popover_state(el, row.data_nve_open());
+            nve_sync_popover_state(el, overlay_open.unwrap_or(row.data_nve_open()));
         }
     }
 
