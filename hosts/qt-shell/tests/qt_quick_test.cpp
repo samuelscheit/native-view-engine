@@ -485,6 +485,41 @@ void test_shadow_bounds() {
     NVE_CHECK(t.pixelColor(15, 25).red() == 0);    // below box: shadow painted at exact 1:1 offset
   }
 
+  // Inset `ShadowCache::paint(..., /*inset=*/true)` clips to `box` so `ceil`-padded fractional
+  // canvases (at dpr 1.0 and 1.5) and clamped 100000x10 canvases never bleed outside `box`.
+  {
+    const h::BoxShadow inset_solid[] = {{0.0f, 0.0f, 4.0f, 20.0f, h::rgba(0, 0, 0, 255), true}};
+    const auto assert_inset_clipped = [&](QSize dev_size, qreal dpr, const QRectF& box, bool expect_inside_dark) {
+      QImage t(dev_size, QImage::Format_ARGB32_Premultiplied);
+      t.setDevicePixelRatio(dpr);
+      t.fill(Qt::white);
+      {
+        QPainter p(&t);
+        ShadowCache cache;
+        cache.paint(p, box, 0.0, inset_solid, true);
+      }
+      int inside_dark = 0, outside_painted = 0;
+      for (int py = 0; py < t.height(); ++py) {
+        const qreal ly = (py + 0.5) / dpr;
+        for (int px = 0; px < t.width(); ++px) {
+          const qreal lx = (px + 0.5) / dpr;
+          const bool painted = t.pixelColor(px, py) != Qt::white;
+          if (box.contains(QPointF(lx, ly))) {
+            if (painted) ++inside_dark;
+          } else if (painted) {
+            ++outside_painted;
+          }
+        }
+      }
+      NVE_CHECK(outside_painted == 0);
+      if (expect_inside_dark) NVE_CHECK(inside_dark > 0);
+    };
+    assert_inset_clipped(QSize(32, 32), 1.0, QRectF(10.0, 10.0, 10.1, 10.1), true);
+    assert_inset_clipped(QSize(48, 48), 1.5, QRectF(10.0, 10.0, 10.1, 10.1), true);
+    assert_inset_clipped(QSize(64, 48), 1.0, QRectF(-50000.0 + 32.0, 10.0, 100000.0, 10.0), false);
+    assert_inset_clipped(QSize(64, 48), 1.0, QRectF(-50000.0 + 32.0, 10.0, 100000.0, 20.0), true);
+  }
+
   // Qt Quick rasterizes outer-only shadow boxes with 1:1 `shadow_rect` and the solid-rect fast path
   // (both clamped high-aspect-ratio boxes from layout and fractional logical sizes).
   {

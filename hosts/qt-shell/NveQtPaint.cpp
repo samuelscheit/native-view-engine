@@ -232,6 +232,7 @@ void ShadowCache::paint(QPainter& p, const QRectF& box, qreal radius, std::span<
     area_ = logical;
   }
   p.save();
+  if (inset) p.setClipPath(rounded_path(box, radius), Qt::IntersectClip);
   p.setRenderHint(QPainter::SmoothPixmapTransform, true);
   p.drawImage(area_.translated(box.topLeft()), image_);
   p.restore();
