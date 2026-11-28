@@ -334,12 +334,25 @@ void test_text_inputs_keys_ime_and_focus() {
   QCoreApplication::sendEvent(&item, &del_only);
   NVE_CHECK(item.nodeText(kEcho) == "reset" && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "reset");
 
-  // Focus blur during active composition emits CompositionEnd and never leaves composing stuck.
+  // Focus blur during active composition emits CompositionEnd and never leaves composing stuck;
+  // Tab during active IME composition must NOT steal focus from the composing input.
   QInputMethodEvent preedit2(QStringLiteral("ha"), {});
   QCoreApplication::sendEvent(&item, &preedit2);
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_START, kEcho) == 2u);
+  q.key(Qt::Key_Tab);
+  NVE_CHECK(item.focusedNodeId() == kEcho);  // IME owns Tab while composing
+  // Simultaneous commit + next preedit retains committed text without mid-composition TextChange,
+  // then flushes cleanly when composition cancels/ends.
+  const size_t before_simul = app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho);
+  QInputMethodEvent simul(QStringLiteral("ma"), {});
+  simul.setCommitString(QStringLiteral("漢"));
+  QCoreApplication::sendEvent(&item, &simul);
+  NVE_CHECK(item.nodeText(kEcho) == "reset漢");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == before_simul);  // deferred while composing
   q.click(q.center(kUpper));
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEcho) == 2u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == before_simul + 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "reset漢");
 
   // Transforming and rejecting apps.
   q.type(QStringLiteral("qw"));

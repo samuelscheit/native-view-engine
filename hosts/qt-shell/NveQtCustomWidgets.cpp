@@ -213,7 +213,11 @@ void NveQtLineEdit::inputMethodEvent(QInputMethodEvent* event) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, commit.toStdString());
     if (self.isNull()) return;
   }
-  if (commits && !composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
+  if (commits && composing_) {
+    pending_change_after_compose_ = true;
+  } else if (!composing_ && (commits || std::exchange(pending_change_after_compose_, false)) && view_ != nullptr) {
+    view_->host->on_text_edited(*view_);
+  }
 }
 
 void NveQtLineEdit::keyPressEvent(QKeyEvent* event) {
@@ -238,10 +242,15 @@ void NveQtLineEdit::focusInEvent(QFocusEvent* event) {
 void NveQtLineEdit::focusOutEvent(QFocusEvent* event) {
   const QPointer<NveQtLineEdit> self(this);
   const bool was_composing = std::exchange(composing_, false);
+  const bool flush_pending = std::exchange(pending_change_after_compose_, false);
   QLineEdit::focusOutEvent(event);
   if (self.isNull()) return;
   if (was_composing && view_ != nullptr) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+    if (self.isNull()) return;
+  }
+  if (flush_pending && view_ != nullptr) {
+    view_->host->on_text_edited(*view_);
     if (self.isNull()) return;
   }
   view_focus(view_, false);
@@ -290,7 +299,11 @@ void NveQtTextEdit::inputMethodEvent(QInputMethodEvent* event) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, commit.toStdString());
     if (self.isNull()) return;
   }
-  if (commits && !composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
+  if (commits && composing_) {
+    pending_change_after_compose_ = true;
+  } else if (!composing_ && (commits || std::exchange(pending_change_after_compose_, false)) && view_ != nullptr) {
+    view_->host->on_text_edited(*view_);
+  }
 }
 
 void NveQtTextEdit::keyPressEvent(QKeyEvent* event) {
@@ -315,10 +328,15 @@ void NveQtTextEdit::focusInEvent(QFocusEvent* event) {
 void NveQtTextEdit::focusOutEvent(QFocusEvent* event) {
   const QPointer<NveQtTextEdit> self(this);
   const bool was_composing = std::exchange(composing_, false);
+  const bool flush_pending = std::exchange(pending_change_after_compose_, false);
   QPlainTextEdit::focusOutEvent(event);
   if (self.isNull()) return;
   if (was_composing && view_ != nullptr) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+    if (self.isNull()) return;
+  }
+  if (flush_pending && view_ != nullptr) {
+    view_->host->on_text_edited(*view_);
     if (self.isNull()) return;
   }
   view_focus(view_, false);

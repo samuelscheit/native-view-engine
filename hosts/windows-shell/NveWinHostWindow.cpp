@@ -1,5 +1,6 @@
 #include "NveWinD2DInternal.hpp"
 #include "NveWinKeyMap.hpp"
+#include "NveWinTextOffsets.hpp"
 
 #include <nve_a11y_win.h>
 #include <nve/host/urls.hpp>
@@ -8,7 +9,6 @@
 #include <windowsx.h>
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <utility>
 
@@ -47,34 +47,6 @@ UINT wheel_units(bool horizontal) noexcept {
 }
 
 LONG px(float dips, float scale) noexcept { return static_cast<LONG>(std::lround(dips * scale)); }
-
-std::string format_numeric_value(double v) {
-  if (!std::isfinite(v)) return {};
-  char buf[64]{};
-  const auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v);
-  return ec == std::errc{} ? std::string(buf, static_cast<size_t>(ptr - buf)) : std::string{};
-}
-
-std::string sanitize_single_line(std::string_view raw) {
-  std::string out;
-  out.reserve(raw.size());
-  for (const char c : raw) {
-    if (c != '\r' && c != '\n') out.push_back(c);
-  }
-  return out;
-}
-
-size_t utf16_offset_for_char_index(std::string_view utf8, size_t target_chars) noexcept {
-  size_t i = 0u, chars = 0u, u16 = 0u;
-  while (i < utf8.size() && chars < target_chars) {
-    const auto lead = static_cast<unsigned char>(utf8[i]);
-    const size_t step = (lead & 0x80u) == 0u ? 1u : (lead & 0xE0u) == 0xC0u ? 2u : (lead & 0xF0u) == 0xE0u ? 3u : 4u;
-    u16 += step == 4u ? 2u : 1u;
-    i += std::min(step, utf8.size() - i);
-    ++chars;
-  }
-  return u16;
-}
 
 }  // namespace
 
@@ -169,6 +141,7 @@ bool NveWinHostWindow::create(HINSTANCE instance, std::string* error) {
     const uint32_t next = host_->step_tab_focus(reverse);
     if (!alive->load(std::memory_order_acquire)) return;
     sync_native_focus(next);
+    if (!alive->load(std::memory_order_acquire)) return;
     sync_a11y_now();
   });
   sync_surface_size();
@@ -334,6 +307,7 @@ void NveWinHostWindow::on_key(WPARAM wparam, LPARAM lparam, bool pressed) {
   if (!r.href.empty()) open_link(r.href);
   if (r.focused_node != prev_focus) {
     sync_native_focus(r.focused_node);
+    if (!alive->load(std::memory_order_acquire)) return;
     sync_a11y_now();
   }
 }
@@ -413,11 +387,14 @@ void NveWinHostWindow::execute_a11y_action(const QueuedA11yAction& action) {
       (void)host_->set_focused_node(id);
       if (!alive->load(std::memory_order_acquire)) return;
       sync_native_focus(host_->focused_node());
+      if (!alive->load(std::memory_order_acquire)) return;
       sync_a11y_now();
       break;
     case NVE_A11Y_WIN_ACTION_BLUR:
       if (host_->focused_node() == id) {
         (void)host_->set_focused_node(0u);
+        if (!alive->load(std::memory_order_acquire)) return;
+        sync_native_focus(0u);
         if (!alive->load(std::memory_order_acquire)) return;
         sync_a11y_now();
       }
@@ -429,19 +406,25 @@ void NveWinHostWindow::execute_a11y_action(const QueuedA11yAction& action) {
                                                 : action.text);
       break;
     case NVE_A11Y_WIN_ACTION_SET_NUMERIC_VALUE:
-      if (!disabled) (void)host_->dispatch_text_change(id, format_numeric_value(action.numeric_value));
+      if (!disabled) {
+        if (const std::string formatted = format_numeric_value(action.numeric_value); !formatted.empty()) {
+          (void)host_->dispatch_text_change(id, formatted);
+        }
+      }
       break;
     case NVE_A11Y_WIN_ACTION_REPLACE_SELECTED_TEXT: {
       if (disabled || v->kind != host::NodeKind::TextInput || v->input.read_only) break;
       const bool multiline = v->input.multiline;
       const std::string replacement = multiline ? action.text : sanitize_single_line(action.text);
       const std::wstring wcur = wide(v->input.value);
-      DWORD s0 = static_cast<DWORD>(wcur.size()), s1 = static_cast<DWORD>(wcur.size());
+      size_t lo = wcur.size(), hi = wcur.size();
       if (HWND edit = inputs_.control_for_node(id); edit != nullptr && ::IsWindow(edit)) {
+        DWORD s0 = 0u, s1 = 0u;
         ::SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&s0), reinterpret_cast<LPARAM>(&s1));
+        const size_t raw_lo = std::min(s0, s1), raw_hi = std::max(s0, s1);
+        lo = std::min(multiline ? lf_utf16_offset_from_crlf(v->input.value, raw_lo) : raw_lo, wcur.size());
+        hi = std::min(multiline ? lf_utf16_offset_from_crlf(v->input.value, raw_hi) : raw_hi, wcur.size());
       }
-      const size_t lo = std::min<size_t>(std::min(s0, s1), wcur.size());
-      const size_t hi = std::min<size_t>(std::max(s0, s1), wcur.size());
       std::wstring wnext;
       wnext.append(wcur.data(), lo);
       wnext.append(wide(replacement));
@@ -450,18 +433,22 @@ void NveWinHostWindow::execute_a11y_action(const QueuedA11yAction& action) {
         (void)host_->set_focused_node(id);
         if (!alive->load(std::memory_order_acquire)) return;
         sync_native_focus(host_->focused_node());
+        if (!alive->load(std::memory_order_acquire)) return;
       }
       (void)host_->dispatch_text_change(id, narrow(wnext));
       break;
     }
     case NVE_A11Y_WIN_ACTION_SET_TEXT_SELECTION: {
       if (disabled || v->kind != host::NodeKind::TextInput) break;
-      const size_t a16 = utf16_offset_for_char_index(v->input.value, action.anchor_char);
-      const size_t f16 = utf16_offset_for_char_index(v->input.value, action.focus_char);
+      const size_t a16_lf = utf16_offset_for_char_index(v->input.value, action.anchor_char);
+      const size_t f16_lf = utf16_offset_for_char_index(v->input.value, action.focus_char);
+      const size_t a16 = v->input.multiline ? crlf_utf16_offset_from_lf(v->input.value, a16_lf) : a16_lf;
+      const size_t f16 = v->input.multiline ? crlf_utf16_offset_from_lf(v->input.value, f16_lf) : f16_lf;
       if (host_->focused_node() != id) {
         (void)host_->set_focused_node(id);
         if (!alive->load(std::memory_order_acquire)) return;
         sync_native_focus(host_->focused_node());
+        if (!alive->load(std::memory_order_acquire)) return;
       }
       if (HWND edit = inputs_.control_for_node(id); edit != nullptr && ::IsWindow(edit)) {
         ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(std::min(a16, f16)),
@@ -565,7 +552,8 @@ LRESULT NveWinHostWindow::handle_message(HWND hwnd, UINT msg, WPARAM wparam, LPA
     case WM_LBUTTONDOWN: {
       const auto alive = alive_;
       const float x = dip(GET_X_LPARAM(lparam)), y = dip(GET_Y_LPARAM(lparam));
-      ::SetFocus(hwnd_);    // clicking the surface blurs a focused text input
+      ::SetFocus(hwnd_);    // clicking the surface blurs a focused text input (may destroy `this`)
+      if (!alive->load(std::memory_order_acquire)) return 0;
       ::SetCapture(hwnd_);  // the release arrives here even outside the window
       const uint32_t focus_id = host_->focus_target(x, y);
       const bool focus_changed = host_->set_focused_node(focus_id);
@@ -575,8 +563,10 @@ LRESULT NveWinHostWindow::handle_message(HWND hwnd, UINT msg, WPARAM wparam, LPA
       return 0;
     }
     case WM_LBUTTONUP: {
+      const auto alive = alive_;
       ::ReleaseCapture();
       const PressResult r = host_->pointer_up(dip(GET_X_LPARAM(lparam)), dip(GET_Y_LPARAM(lparam)));
+      if (!alive->load(std::memory_order_acquire)) return 0;
       if (!r.href.empty()) open_link(r.href);
       return 0;
     }

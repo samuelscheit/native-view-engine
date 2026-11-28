@@ -45,7 +45,7 @@ void set_editable_text(GtkNodeView& v, const std::string& text) {
 
 void on_text_changed(GtkNodeView* v) {
   if (v->text.writing()) return;
-  if (v->composing) {
+  if (v->composing || v->preedit_ended_awaiting_commit) {
     v->pending_change_after_compose = true;
     return;
   }
@@ -461,8 +461,8 @@ void NveGtkHost::update_text_input(GtkNodeView& v, const host::NodeData& node) {
     gtk_text_view_set_editable(GTK_TEXT_VIEW(v.widget), node.input.read_only ? FALSE : TRUE);
   }
   // Controlled value: adopt the app's value unless it merely echoes what the user is typing
-  // or the widget is actively in an IME preedit session (never clobber composition / jump caret).
-  if (v.composing) return;
+  // or the widget is actively in an IME preedit / preedit-end-to-commit handoff.
+  if (v.composing || v.preedit_ended_awaiting_commit) return;
   const std::string value(node.input.value);
   if (v.text.app_published(value, editable_text(v))) set_editable_text(v, value);
 }

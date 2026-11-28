@@ -34,6 +34,7 @@ struct QuickInput {
   int caret = 0;    // in UTF-16 units of `edit`
   QString preedit;  // live IME composition (painted, never dispatched)
   bool composing = false;
+  bool pending_change_after_compose = false;
   host::ControlledText control;
 };
 

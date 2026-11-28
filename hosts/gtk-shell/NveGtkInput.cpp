@@ -302,12 +302,24 @@ void NveGtkHost::detach_im_context(GtkNodeView& view) {
   view.preedit.clear();
 }
 
+void NveGtkHost::flush_pending_preedit_end(uint32_t node_id) {
+  GtkNodeView* const* found = tree_.find(node_id);
+  if (found == nullptr || *found == nullptr || !std::exchange((*found)->preedit_ended_awaiting_commit, false)) return;
+  const bool flush_edit = std::exchange((*found)->pending_change_after_compose, false);
+  const auto alive = alive_;
+  (void)dispatch_composition(node_id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+  if (!flush_edit || !alive->load(std::memory_order_acquire)) return;
+  if (GtkNodeView* const* cur = tree_.find(node_id); cur != nullptr && *cur != nullptr) {
+    edit_text(**cur);
+  }
+}
+
 void NveGtkHost::on_im_preedit_start(GtkNodeView& view) {
   if (view.composing || view.sem.disabled || view.sem.read_only) return;
   const uint32_t id = view.id;
   const auto alive = alive_;
-  if (std::exchange(view.preedit_ended_awaiting_commit, false)) {
-    (void)dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+  if (view.preedit_ended_awaiting_commit) {
+    flush_pending_preedit_end(id);
     if (!alive->load(std::memory_order_acquire)) return;
     GtkNodeView* const* found = tree_.find(id);
     if (found == nullptr || *found == nullptr) return;
@@ -333,8 +345,8 @@ void NveGtkHost::on_im_preedit_changed(GtkNodeView& view) {
   const uint32_t id = view.id;
   const auto alive = alive_;
   if (!preedit.empty() && !view.composing) {
-    if (std::exchange(view.preedit_ended_awaiting_commit, false)) {
-      (void)dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+    if (view.preedit_ended_awaiting_commit) {
+      flush_pending_preedit_end(id);
       if (!alive->load(std::memory_order_acquire)) return;
       GtkNodeView* const* found0 = tree_.find(id);
       if (found0 == nullptr || *found0 == nullptr) return;
@@ -361,10 +373,10 @@ void NveGtkHost::on_im_preedit_changed(GtkNodeView& view) {
 void NveGtkHost::on_im_preedit_end(GtkNodeView& view) {
   if (!view.composing) return;
   // IBus / Wayland fire `preedit-end` synchronously right before `commit` on the same keypress.
-  // Defer emitting empty `COMPOSITION_END` to an idle tick (or focus-leave / next key) so an
-  // immediately following `commit` produces a single `COMPOSITION_END(committed)` + `TextChange`.
+  // Defer emitting empty `COMPOSITION_END` (and any pending `TextChange`) to an idle tick or
+  // focus-leave/next-key so an immediately following `commit` emits `COMPOSITION_END(committed)`
+  // strictly before `TextChange` and app updates cannot clobber the widget mid-handoff.
   const uint32_t id = view.id;
-  const bool flush_edit = std::exchange(view.pending_change_after_compose, false);
   view.composing = false;
   view.preedit_ended_awaiting_commit = true;
   view.preedit.clear();
@@ -378,23 +390,10 @@ void NveGtkHost::on_im_preedit_end(GtkNodeView& view) {
       G_PRIORITY_HIGH_IDLE,
       [](gpointer data) -> gboolean {
         auto* p = static_cast<PendingCancel*>(data);
-        if (p->alive->load(std::memory_order_acquire)) {
-          if (GtkNodeView* const* found = p->host->tree_.find(p->node_id);
-              found != nullptr && *found != nullptr &&
-              std::exchange((*found)->preedit_ended_awaiting_commit, false)) {
-            (void)p->host->dispatch_composition(p->node_id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
-          }
-        }
+        if (p->alive->load(std::memory_order_acquire)) p->host->flush_pending_preedit_end(p->node_id);
         return G_SOURCE_REMOVE;
       },
       pending, [](gpointer data) { delete static_cast<PendingCancel*>(data); });
-  if (!flush_edit) return;
-  const auto alive = alive_;
-  if (alive->load(std::memory_order_acquire)) {
-    if (GtkNodeView* const* found = tree_.find(id); found != nullptr && *found != nullptr) {
-      edit_text(**found);
-    }
-  }
 }
 
 void NveGtkHost::on_im_commit(GtkNodeView& view, const char* text) {
@@ -436,12 +435,18 @@ void NveGtkHost::on_widget_focus_change(GtkNodeView& view, bool focused) {
   }
   const bool was_composing =
       std::exchange(view.composing, false) || std::exchange(view.preedit_ended_awaiting_commit, false);
-  view.pending_change_after_compose = false;
+  const bool flush_edit = std::exchange(view.pending_change_after_compose, false);
   view.preedit.clear();
   if (focused_node_id_ == id) focused_node_id_ = 0u;
   if (was_composing) {
     (void)dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
     if (!alive->load(std::memory_order_acquire)) return;
+    if (flush_edit) {
+      if (GtkNodeView* const* cur = tree_.find(id); cur != nullptr && *cur != nullptr) {
+        edit_text(**cur);
+        if (!alive->load(std::memory_order_acquire)) return;
+      }
+    }
   }
   (void)dispatch_focus(id, false);
 }
@@ -575,8 +580,8 @@ bool NveGtkHost::handle_gdk_key(bool pressed, guint keyval, guint keycode, GdkMo
     return step_tab_focus((flags & NVE_EVENT_FLAG_MOD_SHIFT) != 0u);
   }
 
-  if (focused != nullptr && std::exchange(focused->preedit_ended_awaiting_commit, false)) {
-    (void)dispatch_composition(focused->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+  if (focused != nullptr && focused->preedit_ended_awaiting_commit) {
+    flush_pending_preedit_end(focused->id);
     if (!alive->load(std::memory_order_acquire)) return true;
     focused = nullptr;
     if (focused_node_id_ != 0u) {

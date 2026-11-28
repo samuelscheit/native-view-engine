@@ -274,6 +274,7 @@ class NveGtkHost {
   void on_im_preedit_changed(GtkNodeView& view);
   void on_im_preedit_end(GtkNodeView& view);
   void on_im_commit(GtkNodeView& view, const char* text);
+  void flush_pending_preedit_end(uint32_t node_id);
   [[nodiscard]] bool step_tab_focus(bool reverse);
   [[nodiscard]] uint32_t find_key_target(uint32_t start_id, NveInteractionEvent kind) const noexcept;
   void set_css_rule(uint32_t node_id, std::string rule);

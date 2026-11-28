@@ -182,9 +182,13 @@ void NveQtQuickItem::Impl::set_focus(uint32_t id) {
   if (id == focused_) return;
   const uint32_t before = std::exchange(focused_, id);
   bool end_comp = false;
+  bool flush_pending = false;
   for (const uint32_t changed : {before, id}) {
     if (QuickNodeView* v = find(changed); v != nullptr && changed != 0u && v->is_input) {
-      if (changed == before && v->input.composing) end_comp = true;
+      if (changed == before) {
+        if (v->input.composing || !v->input.preedit.isEmpty()) end_comp = true;
+        flush_pending = std::exchange(v->input.pending_change_after_compose, false);
+      }
       v->input.composing = false;
       v->input.preedit.clear();
       bump_paint(*v);  // caret
@@ -195,6 +199,11 @@ void NveQtQuickItem::Impl::set_focus(uint32_t id) {
   if (id != 0u) a11y_focused(id);
   if (end_comp && before != 0u && find(before) != nullptr) {
     (void)dispatch_composition(before, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+  }
+  if (flush_pending && before != 0u) {
+    if (QuickNodeView* prev = find(before); prev != nullptr && prev->is_input) {
+      edit_input(*prev, prev->input.edit, prev->input.caret);
+    }
   }
   if (before != 0u && find(before) != nullptr) (void)dispatch_focus(before, false);
   if (id != 0u && find(id) != nullptr) (void)dispatch_focus(id, true);
@@ -247,6 +256,8 @@ bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
     }
   }
   const int k = event.key();
+  // Never hijack Tab/Enter/Space/text edits while an IME composition is active (matches GTK4 & Win32).
+  if (composing) return false;
   if (k == Qt::Key_Tab || k == Qt::Key_Backtab) {  // focus traversal (positive tab_index, then DFS; modal-scoped)
     QuickNodeView* modal = nullptr;
     const auto find_modal = [&](auto&& self, QuickNodeView& cur) -> void {
@@ -379,18 +390,37 @@ void NveQtQuickItem::Impl::ime(QInputMethodEvent& event) {
     f = find(id);
     if (f == nullptr || !f->is_input) return;
   }
-  if (!commits) {
-    bump_paint(*f);
+  if (commits) {
+    QString text = f->input.edit;
+    const int len = static_cast<int>(text.size());
+    const int caret = std::clamp(f->input.caret, 0, len);
+    const int repl_start = std::clamp(caret + repl_start_rel, 0, len);
+    const int repl_len = std::clamp(repl_len_raw, 0, len - repl_start);
+    if (repl_len > 0) text.remove(repl_start, repl_len);
+    text.insert(repl_start, commit);
+    if (f->input.max_length > 0u && static_cast<uint32_t>(text.size()) > f->input.max_length) {
+      text.truncate(static_cast<qsizetype>(f->input.max_length));
+    }
+    const int next_caret = std::clamp(repl_start + static_cast<int>(commit.size()), 0, static_cast<int>(text.size()));
+    if (now_composing) {
+      // Simultaneous commit + next preedit: retain committed text locally, suppress mid-composition
+      // `TextChange`, and flush once composition ends (matches `NveQtCustomWidgets`).
+      f->input.edit = text;
+      f->input.caret = next_caret;
+      f->input.pending_change_after_compose = true;
+      bump_paint(*f);
+      QGuiApplication::inputMethod()->update(Qt::ImSurroundingText | Qt::ImCursorPosition);
+      return;
+    }
+    f->input.pending_change_after_compose = false;
+    edit_input(*f, text, next_caret);
     return;
   }
-  QString text = f->input.edit;
-  const int len = static_cast<int>(text.size());
-  const int caret = std::clamp(f->input.caret, 0, len);
-  const int repl_start = std::clamp(caret + repl_start_rel, 0, len);
-  const int repl_len = std::clamp(repl_len_raw, 0, len - repl_start);
-  if (repl_len > 0) text.remove(repl_start, repl_len);
-  text.insert(repl_start, commit);
-  edit_input(*f, text, repl_start + static_cast<int>(commit.size()));
+  if (!now_composing && std::exchange(f->input.pending_change_after_compose, false)) {
+    edit_input(*f, f->input.edit, f->input.caret);
+    return;
+  }
+  bump_paint(*f);
 }
 
 QVariant NveQtQuickItem::Impl::ime_query(Qt::InputMethodQuery query) const {

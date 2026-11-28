@@ -2,12 +2,15 @@
 // Shift+Tab focus traversal with positive `tab_index` + modal scoping, Enter / Space activation
 // respecting `disabled` / `TextInput`, IME composition events, `set_on_scene_sync`, and ABI v6
 // Frame-0 file + bytes cold boot.
+#include "NveWinTextOffsets.hpp"
 #include "windows_test_helpers.hpp"
 
 #include <nve/host/demo_counter_app.hpp>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -241,10 +244,44 @@ void test_frame0_file_and_bytes_boot() {
   }
 }
 
+void test_multiline_crlf_utf16_offsets_and_numeric_formatting() {
+  // Multiline LF <-> CRLF UTF-16 offset round-trip across lines 1, 2, and 3 (including a 4-byte emoji).
+  const std::string text = "a\xF0\x9F\x98\x80\nbc\ndef";  // LF u16: a(0) emoji(1..2) \n(3) b(4) c(5) \n(6) d(7) e(8) f(9)
+  // CRLF u16: a(0) emoji(1..2) \r(3) \n(4) b(5) c(6) \r(7) \n(8) d(9) e(10) f(11)
+  NVE_CHECK(utf16_offset_for_char_index(text, 0u) == 0u);
+  NVE_CHECK(utf16_offset_for_char_index(text, 2u) == 3u);  // after `a😀`, before line-1 `\n`
+  NVE_CHECK(utf16_offset_for_char_index(text, 3u) == 4u);  // line 2 start (`b`)
+  NVE_CHECK(utf16_offset_for_char_index(text, 6u) == 7u);  // line 3 start (`d`)
+  NVE_CHECK(utf16_offset_for_char_index(text, 9u) == 10u); // end of line 3
+
+  NVE_CHECK(crlf_utf16_offset_from_lf(text, 0u) == 0u);
+  NVE_CHECK(crlf_utf16_offset_from_lf(text, 3u) == 3u);   // end of line 1 (before `\r\n`)
+  NVE_CHECK(crlf_utf16_offset_from_lf(text, 4u) == 5u);   // start of line 2 (`b`)
+  NVE_CHECK(crlf_utf16_offset_from_lf(text, 6u) == 7u);   // end of line 2 (before 2nd `\r\n`)
+  NVE_CHECK(crlf_utf16_offset_from_lf(text, 7u) == 9u);   // start of line 3 (`d`)
+  NVE_CHECK(crlf_utf16_offset_from_lf(text, 10u) == 12u); // end of line 3
+
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 0u) == 0u);
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 3u) == 3u);   // before line-1 `\r\n`
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 4u) == 3u);   // between `\r` and `\n` snaps before `\n`
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 5u) == 4u);   // line 2 `b`
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 7u) == 6u);   // before line-2 `\r\n`
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 8u) == 6u);   // between 2nd `\r` and `\n` snaps before `\n`
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 9u) == 7u);   // line 3 `d`
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 12u) == 10u); // end of line 3
+  NVE_CHECK(lf_utf16_offset_from_crlf(text, 99u) == 10u); // clamped past end
+
+  NVE_CHECK(format_numeric_value(42.5) == "42.5");
+  NVE_CHECK(format_numeric_value(std::numeric_limits<double>::quiet_NaN()).empty());
+  NVE_CHECK(format_numeric_value(std::numeric_limits<double>::infinity()).empty());
+  NVE_CHECK(sanitize_single_line("a\r\nb\nc") == "abc");
+}
+
 }  // namespace
 
 void nve_test_win_keyboard_ime_and_frame0() {
   test_keyboard_focus_tab_modal_and_activation();
   test_scroll_into_view_and_key_destroy_safety();
+  test_multiline_crlf_utf16_offsets_and_numeric_formatting();
   test_frame0_file_and_bytes_boot();
 }

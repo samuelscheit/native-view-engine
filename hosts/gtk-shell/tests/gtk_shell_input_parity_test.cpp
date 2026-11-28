@@ -146,13 +146,18 @@ void test_ime_preedit_and_controlled_text_guard() {
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 1u);
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "hi漢");
 
-  // Second composition (IBus/Wayland order: `preedit-end` fires right before `commit`) must still
-  // deliver a single `COMPOSITION_END(committed)` and flush `TextChange` without dropping the text.
+  // Second composition (IBus/Wayland order: `preedit-end` fires right before `commit`) must guard
+  // against mid-handoff app clobbering AND emit `COMPOSITION_END(committed)` strictly before `CHANGE`.
   g_signal_emit_by_name(im, "preedit-start");
   g_signal_emit_by_name(im, "preedit-changed");
   NVE_CHECK(host.is_composing_node(kEntry));
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, kEntry) >= 1u);
+  const size_t ev_before_ibus = app.events.size();
   g_signal_emit_by_name(im, "preedit-end");
+  // App update arriving between `preedit-end` and `commit` must NOT clobber the widget.
+  (void)app.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "mid-handoff-stale");
+  flush(host);
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "hi漢");
   g_signal_emit_by_name(im, "commit", "字");
   while (g_main_context_iteration(nullptr, FALSE)) {}
   NVE_CHECK(!host.is_composing_node(kEntry));
@@ -160,6 +165,12 @@ void test_ime_preedit_and_controlled_text_guard() {
   NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_END)->text == "字");
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 2u);
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "hi漢字");
+  size_t end_idx = app.events.size(), change_idx = app.events.size();
+  for (size_t i = ev_before_ibus; i < app.events.size(); ++i) {
+    if (h::is_text_input_event(app.events[i].ev, NVE_TEXT_INPUT_EVENT_COMPOSITION_END)) end_idx = i;
+    if (h::is_text_input_event(app.events[i].ev, NVE_TEXT_INPUT_EVENT_CHANGE)) change_idx = i;
+  }
+  NVE_CHECK(end_idx < change_idx && change_idx < app.events.size());
 
   // Third composition cancelled via `preedit-end` (no `commit`) emits empty `COMPOSITION_END`.
   g_signal_emit_by_name(im, "preedit-start");

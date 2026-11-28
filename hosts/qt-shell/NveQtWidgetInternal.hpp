@@ -128,6 +128,7 @@ class NveQtLineEdit final : public QLineEdit {
   QtNodeView* view_;
   bool composing_ = false;
   bool in_ime_ = false;
+  bool pending_change_after_compose_ = false;
 };
 
 /// Multi-line text input.
@@ -150,6 +151,7 @@ class NveQtTextEdit final : public QPlainTextEdit {
   QtNodeView* view_;
   bool composing_ = false;
   bool in_ime_ = false;
+  bool pending_change_after_compose_ = false;
 };
 
 /// One retained node view: its widgets and every binding it owns (no side tables).
