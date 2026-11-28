@@ -1,12 +1,13 @@
 // NVE host runtime: reverse index resource id -> retained views that read it.
 //
 // Each view owns `kSlots` fixed link slots (one per resource it may depend on: image source, box
-// shadows, background fill, one adapter-specific id). A link sits in an intrusive doubly-linked
-// list per resource id; list heads live in an open-addressed (linear probing, backward-shift
-// delete) map holding only ids some view references, so memory is O(views + referenced ids) for
-// any id value. Re-pointing a slot and finding a list are O(1) expected; visiting every user of a
-// resource whose bytes changed (`NveSceneView::dirty_resources`) is O(users). Storage grows
-// only with node capacity and the number of referenced ids: steady state allocates nothing.
+// shadows, background fill, aria relations, one adapter-specific id). A link sits in an intrusive
+// doubly-linked list per resource id; list heads live in an open-addressed (linear probing,
+// backward-shift delete) map holding only ids some view references, so memory is O(views +
+// referenced ids) for any id value. Re-pointing a slot and finding a list are O(1) expected;
+// visiting every user of a resource whose bytes changed (`NveSceneView::dirty_resources`) is
+// O(users). Storage grows only with node capacity and the number of referenced ids: steady state
+// allocates nothing.
 #pragma once
 
 #include <algorithm>
@@ -20,7 +21,7 @@ namespace nve::host {
 
 class ResourceUsers {
  public:
-  static constexpr uint32_t kSlots = 4u;
+  static constexpr uint32_t kSlots = 5u;
   using Ids = std::array<uint32_t, kSlots>;
 
   /// Makes room for `views` view slots (never shrinks).

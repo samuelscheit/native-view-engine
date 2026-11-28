@@ -33,6 +33,7 @@ struct QuickInput {
   QString edit;     // shown text
   int caret = 0;    // in UTF-16 units of `edit`
   QString preedit;  // live IME composition (painted, never dispatched)
+  bool composing = false;
   host::ControlledText control;
 };
 
@@ -77,6 +78,7 @@ struct QuickNodeView {
   bool focusable = false;
   bool disabled = false;
   uint8_t cursor = NVE_CURSOR_KIND_AUTO;
+  std::string dom_id;
   std::string href;
   NodeSemantics sem;
   bool synced = false;
@@ -124,6 +126,7 @@ class NveQtQuickItem::Impl final : public QtHost {
 
   [[nodiscard]] QuickNodeView* find(uint32_t id) noexcept;
   [[nodiscard]] const QuickNodeView* find(uint32_t id) const noexcept;
+  [[nodiscard]] QuickNodeView* find_by_dom_id(std::string_view dom_id) noexcept;
   /// Marks `v` for the next `updatePaintNode` and schedules it (polish first: O(1), queued once).
   void mark_dirty(QuickNodeView& v);
   void bump_paint(QuickNodeView& v);
@@ -147,6 +150,7 @@ class NveQtQuickItem::Impl final : public QtHost {
   void hover(QPointF pos, bool inside);
   bool wheel(QPointF pos, QPointF delta);
   bool key(QKeyEvent& event);
+  bool key_release(QKeyEvent& event);
   void ime(QInputMethodEvent& event);
   [[nodiscard]] QVariant ime_query(Qt::InputMethodQuery query) const;
   void set_focus(uint32_t id);

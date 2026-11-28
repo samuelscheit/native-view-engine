@@ -420,6 +420,7 @@ void test_live_kitchen_sink_if_configured() {
 
 void nve_test_gtk_a11y_and_media();
 void nve_test_gtk_canvas_scroll_and_pair();
+void nve_test_gtk_input_parity();
 void nve_test_gtk_window_manager();
 void nve_test_gtk_reconcile();
 
@@ -431,6 +432,7 @@ int main() {
   test_live_kitchen_sink_if_configured();
   nve_test_gtk_a11y_and_media();
   nve_test_gtk_canvas_scroll_and_pair();
+  nve_test_gtk_input_parity();
   nve_test_gtk_window_manager();
   nve_test_gtk_reconcile();
   std::cout << "nve_gtk_shell_test: ok\n";

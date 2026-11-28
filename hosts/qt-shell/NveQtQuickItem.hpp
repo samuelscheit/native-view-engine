@@ -115,6 +115,7 @@ class NveQtQuickItem : public QQuickItem {
   void hoverLeaveEvent(QHoverEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
+  void keyReleaseEvent(QKeyEvent* event) override;
   void inputMethodEvent(QInputMethodEvent* event) override;
   void focusOutEvent(QFocusEvent* event) override;
 

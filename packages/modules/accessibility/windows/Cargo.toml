@@ -1,0 +1,35 @@
+[package]
+name = "nve-accessibility-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Windows UI Automation (AccessKit) C-ABI bridge and NveSceneView mirror for hosts/windows-shell"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = []
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-codec = { workspace = true }
+nve-hash = { workspace = true }
+nve-store = { workspace = true }
+nve-tables = { workspace = true }
+nve-engine = { workspace = true }
+nve-accessibility = { workspace = true }
+accesskit = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+accesskit_windows = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "win_a11y_bench"
+harness = false
+
+[lints]
+workspace = true

@@ -111,6 +111,26 @@ void view_focus(QtNodeView* view, bool focused) {
   (void)view->host->dispatch_focus(view->id, focused);
 }
 
+void view_key(QtNodeView* view, NveInteractionEvent kind, const QKeyEvent& event, bool composing) {
+  if (view == nullptr || view->sem.disabled) return;
+  const MappedQtKey mapped = map_qt_key(event, composing);
+  if (mapped.key.empty()) return;
+  const uint32_t bit = host::event_set_bit(kind);
+  uint32_t target = 0u;
+  for (QWidget* w = view->widget; w != nullptr; w = w->parentWidget()) {
+    const QVariant prop = w->property(kNodeIdProperty);
+    if (!prop.isValid()) continue;
+    if (QtNodeView* candidate = view->host->find(static_cast<uint32_t>(prop.toULongLong()))) {
+      if (!candidate->sem.disabled && (candidate->interaction_events & bit) != 0u) {
+        target = candidate->id;
+        break;
+      }
+    }
+  }
+  if (target == 0u) return;
+  (void)view->host->dispatch_key(target, kind, mapped.key, mapped.code, mapped.flags, mapped.key_code);
+}
+
 void NveQtWidget::Impl::on_text_edited(QtNodeView& v) {
   std::string current = editable_text(v);
   if (v.text_edit != nullptr && v.max_length > 0u) {
@@ -199,6 +219,7 @@ void NveQtWidget::Impl::Adapter::update(QtNodeView*& v, const host::NodeData& no
   if (v->frame != nullptr) host->update_content(*v, node);
   if (v->line != nullptr || v->text_edit != nullptr) host->update_text_input(*v, node);
   if (v->scroll != nullptr) host->update_scroll(*v, node);
+  v->dom_id.assign(node.debug_id.id);
   host->update_interaction(*v, node);
   host->apply_semantics(*v, node);
   v->synced = true;
@@ -461,7 +482,11 @@ void NveQtWidget::Impl::update_interaction(QtNodeView& v, const host::NodeData& 
 }
 
 void NveQtWidget::Impl::apply_semantics(QtNodeView& v, const host::NodeData& node) {
-  NodeSemantics sem = node_semantics(node);
+  std::optional<host::AriaRelations> rels;
+  if (node.a11y.relations != 0u) {
+    rels = host::decode_aria_relations(scene_resource(node.a11y.relations, host::kAriaRelationsKind));
+  }
+  NodeSemantics sem = node_semantics(node, rels);
   if (v.synced && sem == v.sem) return;
   notify_semantics_change(v.widget, v.sem, sem);
   v.sem = std::move(sem);

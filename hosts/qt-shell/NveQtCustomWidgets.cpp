@@ -7,6 +7,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QRegion>
 
 #include <algorithm>
@@ -51,6 +52,16 @@ const NodeSemantics& NveQtNodeWidget::semantics() const noexcept {
 
 void NveQtNodeWidget::activate() {
   if (view_ != nullptr) view_activate(view_, QPointF(width() * 0.5, height() * 0.5));
+}
+
+QList<QPair<QAccessibleInterface*, QAccessible::Relation>> NveQtNodeWidget::accessible_relations(
+    QAccessible::Relation match) const {
+  return view_ != nullptr ? view_->host->accessible_relations_for(*view_, match)
+                          : QList<QPair<QAccessibleInterface*, QAccessible::Relation>>{};
+}
+
+QAccessibleInterface* NveQtNodeWidget::active_descendant_interface() const {
+  return view_ != nullptr ? view_->host->active_descendant_for(*view_) : nullptr;
 }
 
 void NveQtNodeWidget::update_mask() {
@@ -121,6 +132,9 @@ void NveQtNodeWidget::focusOutEvent(QFocusEvent* event) {
 }
 
 void NveQtNodeWidget::keyPressEvent(QKeyEvent* event) {
+  const QPointer<NveQtNodeWidget> self(this);
+  if (view_ != nullptr) view_key(view_, NVE_INTERACTION_EVENT_KEY_DOWN, *event, false);
+  if (self.isNull()) return;
   const bool activation_key =
       event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space;
   if (activation_key && view_ != nullptr && view_->sem.activatable && !view_->sem.disabled) {
@@ -129,6 +143,13 @@ void NveQtNodeWidget::keyPressEvent(QKeyEvent* event) {
     return;
   }
   QWidget::keyPressEvent(event);
+}
+
+void NveQtNodeWidget::keyReleaseEvent(QKeyEvent* event) {
+  const QPointer<NveQtNodeWidget> self(this);
+  if (view_ != nullptr) view_key(view_, NVE_INTERACTION_EVENT_KEY_UP, *event, false);
+  if (self.isNull()) return;
+  QWidget::keyReleaseEvent(event);
 }
 
 // --- NveQtShadowWidget -------------------------------------------------------------------------
@@ -169,10 +190,42 @@ NveQtLineEdit::NveQtLineEdit(QtNodeView* view, QWidget* parent) : QLineEdit(pare
 }
 
 void NveQtLineEdit::inputMethodEvent(QInputMethodEvent* event) {
-  composing_ = !event->preeditString().isEmpty();
-  const bool commits = !event->commitString().isEmpty() || event->replacementLength() > 0;
+  const QPointer<NveQtLineEdit> self(this);
+  const bool was_composing = composing_;
+  const QString preedit = event->preeditString();
+  const QString commit = event->commitString();
+  const bool now_composing = !preedit.isEmpty();
+  const bool commits = !commit.isEmpty() || event->replacementLength() > 0;
+  composing_ = now_composing;
+  if (!was_composing && now_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_START, {});
+    if (self.isNull()) return;
+  }
+  if (now_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, preedit.toStdString());
+    if (self.isNull()) return;
+  }
   QLineEdit::inputMethodEvent(event);
+  if (self.isNull()) return;
+  if (was_composing && !now_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, commit.toStdString());
+    if (self.isNull()) return;
+  }
   if (commits && !composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
+}
+
+void NveQtLineEdit::keyPressEvent(QKeyEvent* event) {
+  const QPointer<NveQtLineEdit> self(this);
+  if (view_ != nullptr) view_key(view_, NVE_INTERACTION_EVENT_KEY_DOWN, *event, composing_);
+  if (self.isNull()) return;
+  QLineEdit::keyPressEvent(event);
+}
+
+void NveQtLineEdit::keyReleaseEvent(QKeyEvent* event) {
+  const QPointer<NveQtLineEdit> self(this);
+  if (view_ != nullptr) view_key(view_, NVE_INTERACTION_EVENT_KEY_UP, *event, composing_);
+  if (self.isNull()) return;
+  QLineEdit::keyReleaseEvent(event);
 }
 
 void NveQtLineEdit::focusInEvent(QFocusEvent* event) {
@@ -181,7 +234,14 @@ void NveQtLineEdit::focusInEvent(QFocusEvent* event) {
 }
 
 void NveQtLineEdit::focusOutEvent(QFocusEvent* event) {
+  const QPointer<NveQtLineEdit> self(this);
+  const bool was_composing = std::exchange(composing_, false);
   QLineEdit::focusOutEvent(event);
+  if (self.isNull()) return;
+  if (was_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+    if (self.isNull()) return;
+  }
   view_focus(view_, false);
 }
 
@@ -205,9 +265,41 @@ NveQtTextEdit::NveQtTextEdit(QtNodeView* view, QWidget* parent) : QPlainTextEdit
 }
 
 void NveQtTextEdit::inputMethodEvent(QInputMethodEvent* event) {
-  composing_ = !event->preeditString().isEmpty();
+  const QPointer<NveQtTextEdit> self(this);
+  const bool was_composing = composing_;
+  const QString preedit = event->preeditString();
+  const QString commit = event->commitString();
+  const bool now_composing = !preedit.isEmpty();
+  composing_ = now_composing;
+  if (!was_composing && now_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_START, {});
+    if (self.isNull()) return;
+  }
+  if (now_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, preedit.toStdString());
+    if (self.isNull()) return;
+  }
   QPlainTextEdit::inputMethodEvent(event);
+  if (self.isNull()) return;
+  if (was_composing && !now_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, commit.toStdString());
+    if (self.isNull()) return;
+  }
   if (!composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
+}
+
+void NveQtTextEdit::keyPressEvent(QKeyEvent* event) {
+  const QPointer<NveQtTextEdit> self(this);
+  if (view_ != nullptr) view_key(view_, NVE_INTERACTION_EVENT_KEY_DOWN, *event, composing_);
+  if (self.isNull()) return;
+  QPlainTextEdit::keyPressEvent(event);
+}
+
+void NveQtTextEdit::keyReleaseEvent(QKeyEvent* event) {
+  const QPointer<NveQtTextEdit> self(this);
+  if (view_ != nullptr) view_key(view_, NVE_INTERACTION_EVENT_KEY_UP, *event, composing_);
+  if (self.isNull()) return;
+  QPlainTextEdit::keyReleaseEvent(event);
 }
 
 void NveQtTextEdit::focusInEvent(QFocusEvent* event) {
@@ -216,7 +308,14 @@ void NveQtTextEdit::focusInEvent(QFocusEvent* event) {
 }
 
 void NveQtTextEdit::focusOutEvent(QFocusEvent* event) {
+  const QPointer<NveQtTextEdit> self(this);
+  const bool was_composing = std::exchange(composing_, false);
   QPlainTextEdit::focusOutEvent(event);
+  if (self.isNull()) return;
+  if (was_composing && view_ != nullptr) {
+    (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+    if (self.isNull()) return;
+  }
   view_focus(view_, false);
 }
 

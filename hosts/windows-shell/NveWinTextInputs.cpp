@@ -1,7 +1,9 @@
 #include "NveWinTextInputs.hpp"
+#include "NveWinKeyMap.hpp"
 #include "NveWinTextMeasurer.hpp"
 
 #include <commctrl.h>
+#include <imm.h>
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +13,23 @@
 namespace nve::win {
 
 namespace {
+
+std::string read_ime_string(HWND hwnd, DWORD index) {
+  HIMC himc = ::ImmGetContext(hwnd);
+  if (himc == nullptr) return {};
+  const LONG bytes = ::ImmGetCompositionStringW(himc, index, nullptr, 0);
+  std::string out;
+  if (bytes > 0) {
+    std::wstring buf(static_cast<size_t>(bytes) / sizeof(wchar_t), L'\0');
+    const LONG got = ::ImmGetCompositionStringW(himc, index, buf.data(), static_cast<DWORD>(bytes));
+    if (got > 0) {
+      buf.resize(static_cast<size_t>(got) / sizeof(wchar_t));
+      out = narrow(buf);
+    }
+  }
+  ::ImmReleaseContext(hwnd, himc);
+  return out;
+}
 
 COLORREF colorref(uint32_t rgba) noexcept {
   return RGB(rgba & 0xFFu, (rgba >> 8u) & 0xFFu, (rgba >> 16u) & 0xFFu);
@@ -72,6 +91,7 @@ void WinTextInputs::clear() {
 
 void WinTextInputs::detach() {
   clear();
+  on_tab_ = {};
   host_ = nullptr;
   parent_ = nullptr;
 }
@@ -122,8 +142,9 @@ void WinTextInputs::create(uint32_t node_id, Field& f, const WinNodeVisual& v) {
 }
 
 void WinTextInputs::update(Field& f, const WinNodeVisual& v, const PaintFrame& frame, float scale) {
-  // Controlled value: adopt the app's value unless it merely echoes what the user is typing.
-  if (f.text.app_published(v.input.value, control_text(f.hwnd))) {
+  // Controlled value: adopt the app's value unless it merely echoes what the user is typing or an
+  // active IME preedit composition is in flight.
+  if (!f.composing && f.text.app_published(v.input.value, control_text(f.hwnd))) {
     const auto write = f.text.host_write();
     ::SetWindowTextW(f.hwnd, to_control_text(v.input.value).c_str());
   }
@@ -204,6 +225,31 @@ void WinTextInputs::place(Field& f, const PaintFrame& frame, float scale) {
   f.clipped = clipped;
 }
 
+void WinTextInputs::flush_controlled_change(uint32_t id, HWND control) {
+  if (host_ == nullptr) return;
+  const auto it = fields_.find(id);
+  if (it == fields_.end() || it->second.text.writing()) return;
+  // The shared edit path: the dispatch may remove the field (re-found by id) or destroy the
+  // window owning these inputs (`alive`, checked before `this` is touched again); a transformed or
+  // rejected answer of an in-process app is shown now (a rejecting app republishes nothing).
+  NveWinHost* const host = host_;
+  (void)host::dispatch_controlled_edit<Field>(
+      it->second.text, control_text(control),
+      [host, id](std::string_view sent) { return host->dispatch_text_change(id, sent); },  // overlay re-sync is posted
+      [this, id, alive = alive_]() -> host::ControlledAnswer<Field> {
+        if (!alive->load(std::memory_order_acquire) || host_ == nullptr) return {};
+        const auto cur = fields_.find(id);
+        const WinNodeVisual* v = host_->is_paired() ? nullptr : host_->visual_tree().find(id);
+        if (cur == fields_.end() || cur->second.hwnd == nullptr || v == nullptr) return {};
+        return {&cur->second, &cur->second.text, v->input.value};
+      },
+      [](Field& field, std::string_view value) {
+        ::SetWindowTextW(field.hwnd, to_control_text(value).c_str());
+        const int end = ::GetWindowTextLengthW(field.hwnd);  // caret after the answer
+        ::SendMessageW(field.hwnd, EM_SETSEL, static_cast<WPARAM>(end), static_cast<LPARAM>(end));
+      });
+}
+
 bool WinTextInputs::on_command(WPARAM wparam, LPARAM lparam) {
   const auto control = reinterpret_cast<HWND>(lparam);
   const uint32_t id = control != nullptr ? node_of(control) : 0u;
@@ -211,32 +257,24 @@ bool WinTextInputs::on_command(WPARAM wparam, LPARAM lparam) {
   if (busy_) return true;  // our own sync / teardown, not the user
   Field& f = fields_.at(id);
   switch (HIWORD(wparam)) {
-    case EN_CHANGE: {
+    case EN_CHANGE:
       if (f.text.writing()) return true;  // a host write
-      // The shared edit path: the dispatch may remove the field (re-found by id) or destroy the
-      // window owning these inputs (`alive`, checked before `this` is touched again); a
-      // transformed or rejected answer of an in-process app is shown now (a rejecting app
-      // republishes nothing).
-      NveWinHost* const host = host_;
-      (void)host::dispatch_controlled_edit<Field>(
-          f.text, control_text(control),
-          [host, id](std::string_view sent) { return host->dispatch_text_change(id, sent); },  // overlay re-sync is posted
-          [this, id, alive = alive_]() -> host::ControlledAnswer<Field> {
-            if (!alive->load(std::memory_order_acquire) || host_ == nullptr) return {};
-            const auto it = fields_.find(id);
-            const WinNodeVisual* v = host_->is_paired() ? nullptr : host_->visual_tree().find(id);
-            if (it == fields_.end() || it->second.hwnd == nullptr || v == nullptr) return {};
-            return {&it->second, &it->second.text, v->input.value};
-          },
-          [](Field& field, std::string_view value) {
-            ::SetWindowTextW(field.hwnd, to_control_text(value).c_str());
-            const int end = ::GetWindowTextLengthW(field.hwnd);  // caret after the answer
-            ::SendMessageW(field.hwnd, EM_SETSEL, static_cast<WPARAM>(end), static_cast<LPARAM>(end));
-          });
+      if (f.composing) {
+        f.pending_change_after_compose = true;
+        return true;
+      }
+      flush_controlled_change(id, control);
       return true;
-    }
     case EN_SETFOCUS: (void)host_->dispatch_focus(id, true); return true;
-    case EN_KILLFOCUS: (void)host_->dispatch_focus(id, false); return true;
+    case EN_KILLFOCUS:
+      if (f.composing) {
+        f.composing = false;
+        f.pending_change_after_compose = false;
+        (void)host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+        if (!alive_->load(std::memory_order_acquire) || host_ == nullptr) return true;
+      }
+      (void)host_->dispatch_focus(id, false);
+      return true;
     default: return false;
   }
 }
@@ -254,17 +292,95 @@ LRESULT CALLBACK WinTextInputs::control_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                              DWORD_PTR self_ptr) {
   auto* self = reinterpret_cast<WinTextInputs*>(self_ptr);
   const auto id = static_cast<uint32_t>(node_id);
+  const auto alive = self->alive_;
   const auto it = self->fields_.find(id);
   const bool single_line = it != self->fields_.end() && !it->second.multiline;
   switch (msg) {
+    case WM_IME_STARTCOMPOSITION:
+      if (it != self->fields_.end() && self->host_ != nullptr) {
+        it->second.composing = true;
+        it->second.pending_change_after_compose = false;
+        (void)self->host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_START, {});
+      }
+      break;
+    case WM_IME_COMPOSITION:
+      if (it != self->fields_.end() && self->host_ != nullptr) {
+        if ((lparam & GCS_COMPSTR) != 0) {
+          it->second.composing = true;
+          const std::string preedit = read_ime_string(hwnd, GCS_COMPSTR);
+          (void)self->host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, preedit);
+          if (!alive->load(std::memory_order_acquire) || self->host_ == nullptr) return 0;
+        }
+        if ((lparam & GCS_RESULTSTR) != 0) {
+          const std::string committed = read_ime_string(hwnd, GCS_RESULTSTR);
+          const LRESULT res = ::DefSubclassProc(hwnd, msg, wparam, lparam);
+          if (!alive->load(std::memory_order_acquire) || self->host_ == nullptr) return res;
+          if (const auto cur = self->fields_.find(id); cur != self->fields_.end()) {
+            cur->second.composing = false;
+            const bool pending = std::exchange(cur->second.pending_change_after_compose, false);
+            (void)self->host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, committed);
+            if (alive->load(std::memory_order_acquire) && self->host_ != nullptr &&
+                (pending || !committed.empty())) {
+              self->flush_controlled_change(id, hwnd);
+            }
+          }
+          return res;
+        }
+      }
+      break;
+    case WM_IME_ENDCOMPOSITION: {
+      const LRESULT res = ::DefSubclassProc(hwnd, msg, wparam, lparam);
+      if (!alive->load(std::memory_order_acquire) || self->host_ == nullptr) return res;
+      if (const auto cur = self->fields_.find(id); cur != self->fields_.end() && cur->second.composing) {
+        cur->second.composing = false;
+        const bool pending = std::exchange(cur->second.pending_change_after_compose, false);
+        (void)self->host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+        if (alive->load(std::memory_order_acquire) && self->host_ != nullptr && pending) {
+          self->flush_controlled_change(id, hwnd);
+        }
+      }
+      return res;
+    }
     case WM_KEYDOWN:
-      if (wparam == VK_RETURN && single_line && self->host_ != nullptr) {
-        (void)self->host_->dispatch_submit(id, control_text(hwnd));
-        return 0;
+    case WM_SYSKEYDOWN: {
+      if (self->host_ != nullptr) {
+        const MappedWinKey mk = map_win32_key(wparam, lparam, true);
+        const bool composing = it != self->fields_.end() && it->second.composing;
+        const uint32_t flags = mk.flags | (composing ? NVE_EVENT_FLAG_COMPOSING : 0u);
+        const bool no_cmd =
+            (flags & (NVE_EVENT_FLAG_MOD_CTRL | NVE_EVENT_FLAG_MOD_ALT | NVE_EVENT_FLAG_MOD_META)) == 0u;
+        if (wparam == VK_TAB && no_cmd && !composing && self->on_tab_) {
+          (void)self->host_->dispatch_key(id, NVE_INTERACTION_EVENT_KEY_DOWN, mk.key, mk.code, flags, mk.key_code);
+          if (alive->load(std::memory_order_acquire) && self->on_tab_) {
+            self->on_tab_((flags & NVE_EVENT_FLAG_MOD_SHIFT) != 0u);
+          }
+          return 0;
+        }
+        if (wparam == VK_RETURN && single_line && !composing) {
+          (void)self->host_->dispatch_key(id, NVE_INTERACTION_EVENT_KEY_DOWN, mk.key, mk.code, flags, mk.key_code);
+          if (alive->load(std::memory_order_acquire) && self->host_ != nullptr) {
+            (void)self->host_->dispatch_submit(id, control_text(hwnd));
+          }
+          return 0;
+        }
+        (void)self->host_->dispatch_key(id, NVE_INTERACTION_EVENT_KEY_DOWN, mk.key, mk.code, flags, mk.key_code);
+        if (!alive->load(std::memory_order_acquire)) return 0;
+      }
+      break;
+    }
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+      if (self->host_ != nullptr) {
+        const MappedWinKey mk = map_win32_key(wparam, lparam, false);
+        const bool composing = it != self->fields_.end() && it->second.composing;
+        const uint32_t flags = mk.flags | (composing ? NVE_EVENT_FLAG_COMPOSING : 0u);
+        (void)self->host_->dispatch_key(id, NVE_INTERACTION_EVENT_KEY_UP, mk.key, mk.code, flags, mk.key_code);
+        if (!alive->load(std::memory_order_acquire)) return 0;
       }
       break;
     case WM_CHAR:
       if (wparam == L'\r' && single_line) return 0;  // no "invalid key" beep after a submit
+      if (wparam == L'\t' && self->on_tab_) return 0;
       break;
     case WM_NCDESTROY: ::RemoveWindowSubclass(hwnd, &WinTextInputs::control_proc, node_id); break;
     default: break;

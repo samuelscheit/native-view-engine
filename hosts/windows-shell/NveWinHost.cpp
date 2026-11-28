@@ -2,8 +2,10 @@
 
 #include <nve/host/urls.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
+#include <vector>
 
 namespace nve::win {
 
@@ -13,6 +15,20 @@ float positive_or(float v, float fallback) noexcept { return std::isfinite(v) &&
 
 bool hover_target(const WinNodeVisual& v) noexcept {
   return v.wants(NVE_INTERACTION_EVENT_POINTER_ENTER) || v.wants(NVE_INTERACTION_EVENT_POINTER_LEAVE);
+}
+
+bool is_tab_focusable(const WinNodeVisual& v) noexcept {
+  const int16_t ti = v.interaction.tab_index.value_or(0);
+  if (v.interaction.disabled || ti < 0) return false;
+  return v.kind == host::NodeKind::TextInput || v.interaction.focusable ||
+         (v.interaction.tab_index.has_value() && *v.interaction.tab_index >= 0) ||
+         v.wants(NVE_INTERACTION_EVENT_PRESS) || v.wants(NVE_INTERACTION_EVENT_FOCUS) ||
+         v.wants(NVE_INTERACTION_EVENT_KEY_DOWN) || v.wants(NVE_INTERACTION_EVENT_KEY_UP) ||
+         host::openable_link(v.href);
+}
+
+bool is_node_shown(const WinNodeVisual& v) noexcept {
+  return v.visual.visibility != NVE_VISIBILITY_HIDDEN && v.visual.opacity > 0.0f;
 }
 
 }  // namespace
@@ -45,6 +61,7 @@ NveWinHost::~NveWinHost() {
   session_->set_wake_poster({});
   session_->set_event_sink({});
   on_change_ = {};
+  on_scene_sync_ = {};
   syncing_ = true;
   tree_.clear();
   (void)session_->runtime().clear_text_measurer();
@@ -54,7 +71,7 @@ NveWinHost::~NveWinHost() {
 // --- App sources -------------------------------------------------------------------------------
 
 void NveWinHost::source_changed() {
-  hovered_ = pressed_ = 0u;  // hover / press targets belong to the previous source's nodes
+  hovered_ = pressed_ = focused_ = 0u;  // hover / press / focus targets belong to the previous source's nodes
   (void)pump();
 }
 
@@ -109,6 +126,24 @@ bool NveWinHost::restore_state(std::string_view path, uint32_t schema_version) {
 
 bool NveWinHost::clear_state(std::string_view path) { return session_->clear_state_file(path); }
 
+bool NveWinHost::save_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  return session_->save_frame0_file(path, app_build_id, env_hash);
+}
+
+bool NveWinHost::boot_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_file(path, app_build_id, env_hash)) return false;
+  hovered_ = pressed_ = focused_ = 0u;
+  sync_views();
+  return true;
+}
+
+bool NveWinHost::boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_bytes(envelope, app_build_id, env_hash)) return false;
+  hovered_ = pressed_ = focused_ = 0u;
+  sync_views();
+  return true;
+}
+
 bool NveWinHost::apply_props(std::span<const NveMapEntry> props) {
   const bool ok = session_->set_props(props);
   sync_views();
@@ -141,7 +176,11 @@ void NveWinHost::sync_views() {
   const uint64_t before = tree_.revision();
   {
     auto guard = session_->runtime().acquire_scene();
-    if (guard) (void)tree_.sync(*guard);
+    if (guard) {
+      (void)tree_.sync(*guard);
+      if (focused_ != 0u && tree_.find(focused_) == nullptr) focused_ = 0u;
+      if (on_scene_sync_) on_scene_sync_(*guard);
+    }
   }
   syncing_ = false;
   notify_if_changed(before);
@@ -308,8 +347,173 @@ bool NveWinHost::dispatch_submit(uint32_t node_id, std::string_view text) {
   return dispatch_text(node_id, NVE_TEXT_INPUT_EVENT_SUBMIT, text);
 }
 
+bool NveWinHost::dispatch_composition(uint32_t node_id, NveTextInputEvent kind, std::string_view text) {
+  return dispatch_text(node_id, kind, text);
+}
+
 bool NveWinHost::dispatch_focus(uint32_t node_id, bool focused) {
+  if (focused) {
+    focused_ = node_id;
+  } else if (focused_ == node_id) {
+    focused_ = 0u;
+  }
   return dispatch(session_->events().focus(node_id, focused));
+}
+
+bool NveWinHost::dispatch_key(uint32_t node_id, NveInteractionEvent kind, std::string_view key, std::string_view code,
+                              uint32_t flags, uint32_t key_code) {
+  if (syncing_ || node_id == 0u) return false;
+  const auto alive = alive_;
+  const bool changed = session_->dispatch_key(node_id, kind, key, code, flags, key_code);
+  if (alive->load(std::memory_order_acquire)) sync_views();
+  return changed;
+}
+
+bool NveWinHost::is_node_disabled(uint32_t node_id) const noexcept {
+  for (const WinNodeVisual* v = tree_.find(node_id); v != nullptr; v = tree_.find(v->parent)) {
+    if (v->interaction.disabled) return true;
+  }
+  return false;
+}
+
+uint32_t NveWinHost::key_target(uint32_t start_id, NveInteractionEvent kind) const noexcept {
+  if (start_id != 0u) {
+    if (is_node_disabled(start_id)) return 0u;
+    for (const WinNodeVisual* v = tree_.find(start_id); v != nullptr; v = tree_.find(v->parent)) {
+      if (v->wants(kind)) return v->id;
+    }
+    return start_id;
+  }
+  return tree_.root_id();
+}
+
+bool NveWinHost::set_focused_node(uint32_t node_id) {
+  if (syncing_) return false;
+  if (node_id != 0u && (tree_.find(node_id) == nullptr || is_node_disabled(node_id))) return false;
+  if (focused_ == node_id) return false;
+  const uint32_t prev = std::exchange(focused_, node_id);
+  const auto alive = alive_;
+  bool changed = false;
+  if (prev != 0u) {
+    if (const WinNodeVisual* pv = tree_.find(prev); pv != nullptr && pv->wants(NVE_INTERACTION_EVENT_BLUR)) {
+      changed |= dispatch(session_->events().focus(prev, false));
+      if (!alive->load(std::memory_order_acquire)) return changed;
+    }
+  }
+  if (focused_ != 0u) {
+    if (const WinNodeVisual* nv = tree_.find(focused_); nv != nullptr && nv->wants(NVE_INTERACTION_EVENT_FOCUS)) {
+      changed |= dispatch(session_->events().focus(focused_, true));
+    }
+  }
+  return changed;
+}
+
+uint32_t NveWinHost::step_tab_focus(bool reverse) {
+  // Scope traversal to the topmost visible modal subtree when one is mounted.
+  uint32_t modal_root = 0u;
+  std::function<void(std::span<const uint32_t>, bool)> find_modal = [&](std::span<const uint32_t> ids, bool visible) {
+    for (const uint32_t id : ids) {
+      const WinNodeVisual* v = tree_.find(id);
+      if (v == nullptr || v->interaction.disabled) continue;
+      const bool v_vis = v->visual.visibility == NVE_VISIBILITY_HIDDEN    ? false
+                         : v->visual.visibility == NVE_VISIBILITY_VISIBLE ? true
+                                                                          : visible;
+      if (!v_vis || v->visual.opacity <= 0.0f) continue;
+      if (v->modal) modal_root = id;
+      find_modal(v->children, v_vis);
+    }
+  };
+  find_modal(tree_.root_children(), true);
+
+  struct Entry {
+    uint32_t id = 0u;
+    int16_t tab_index = 0;
+    size_t order = 0u;
+  };
+  std::vector<Entry> candidates;
+  std::function<void(std::span<const uint32_t>, bool)> collect = [&](std::span<const uint32_t> ids, bool visible) {
+    for (const uint32_t id : ids) {
+      const WinNodeVisual* v = tree_.find(id);
+      if (v == nullptr || v->interaction.disabled) continue;
+      const bool v_vis = v->visual.visibility == NVE_VISIBILITY_HIDDEN    ? false
+                         : v->visual.visibility == NVE_VISIBILITY_VISIBLE ? true
+                                                                          : visible;
+      if (!v_vis || !is_node_shown(*v)) continue;
+      if (is_tab_focusable(*v)) {
+        candidates.push_back(Entry{id, v->interaction.tab_index.value_or(0), candidates.size()});
+      }
+      collect(v->children, v_vis);
+    }
+  };
+  if (modal_root != 0u) {
+    const uint32_t single[] = {modal_root};
+    collect(single, true);
+  } else {
+    collect(tree_.root_children(), true);
+  }
+  if (candidates.empty()) return 0u;
+
+  std::stable_sort(candidates.begin(), candidates.end(), [](const Entry& a, const Entry& b) {
+    const bool a_pos = a.tab_index > 0;
+    const bool b_pos = b.tab_index > 0;
+    if (a_pos != b_pos) return a_pos;
+    if (a_pos && a.tab_index != b.tab_index) return a.tab_index < b.tab_index;
+    return a.order < b.order;
+  });
+
+  size_t next_idx = reverse ? candidates.size() - 1u : 0u;
+  for (size_t i = 0u; i < candidates.size(); ++i) {
+    if (candidates[i].id == focused_) {
+      next_idx = reverse ? (i == 0u ? candidates.size() - 1u : i - 1u) : ((i + 1u) % candidates.size());
+      break;
+    }
+  }
+  const uint32_t next = candidates[next_idx].id;
+  (void)set_focused_node(next);
+  return next;
+}
+
+KeyResult NveWinHost::handle_key(bool pressed, std::string_view key, std::string_view code, uint32_t flags,
+                                 uint32_t key_code, bool from_text_input) {
+  KeyResult r;
+  r.focused_node = focused_;
+  if (syncing_) return r;
+
+  const NveInteractionEvent kind = pressed ? NVE_INTERACTION_EVENT_KEY_DOWN : NVE_INTERACTION_EVENT_KEY_UP;
+  const uint32_t target = key_target(focused_, kind);
+  if (target != 0u) {
+    const WinNodeVisual* tv = tree_.find(target);
+    const bool listened = tv != nullptr && tv->wants(kind);
+    r.changed = dispatch_key(target, kind, key, code, flags, key_code) || r.changed;
+    r.dispatched = true;
+    r.handled = r.handled || listened || r.changed;
+  }
+
+  const bool no_cmd =
+      (flags & (NVE_EVENT_FLAG_MOD_CTRL | NVE_EVENT_FLAG_MOD_ALT | NVE_EVENT_FLAG_MOD_META)) == 0u;
+  if (pressed && no_cmd && key == "Tab") {
+    const uint32_t next = step_tab_focus((flags & NVE_EVENT_FLAG_MOD_SHIFT) != 0u);
+    r.focused_node = next;
+    r.handled = r.handled || next != 0u;
+    return r;
+  }
+
+  if (pressed && !from_text_input && no_cmd && (key == "Enter" || key == " ") && focused_ != 0u &&
+      !is_node_disabled(focused_)) {
+    const WinNodeVisual* fv = tree_.find(focused_);
+    if (fv != nullptr && fv->kind != host::NodeKind::TextInput) {
+      if (fv->wants(NVE_INTERACTION_EVENT_PRESS)) {
+        r.changed = simulate_press(fv->id, fv->local.width * 0.5f, fv->local.height * 0.5f) || r.changed;
+        r.dispatched = true;
+        r.handled = true;
+      } else if (host::openable_link(fv->href)) {
+        r.href = fv->href;
+        r.handled = true;
+      }
+    }
+  }
+  r.focused_node = focused_;
+  return r;
 }
 
 // --- Surface -----------------------------------------------------------------------------------

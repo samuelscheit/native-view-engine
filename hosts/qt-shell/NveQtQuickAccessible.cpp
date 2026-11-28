@@ -59,12 +59,38 @@ class RecordAccessible : public QAccessibleInterface,
   }
   QAccessibleInterface* focusChild() const override {
     Impl* host = impl();
+    const QuickNodeView* v = record();
+    if (host != nullptr && v != nullptr && !v->sem.active_descendant.empty()) {
+      for (const std::string_view token : split_aria_idrefs(v->sem.active_descendant)) {
+        if (const QuickNodeView* target = host->find_by_dom_id(token)) return host->a11y_node(target->id);
+      }
+    }
     const QuickNodeView* f = host != nullptr ? host->find(host->focused_) : nullptr;
     if (f == nullptr || host->focused_ == 0u) return nullptr;
     for (const QuickNodeView* p = f->parent; p != nullptr; p = p->parent) {  // descendants only
-      if (p == record()) return host->a11y_node(f->id);
+      if (p == v) return host->a11y_node(f->id);
     }
     return nullptr;
+  }
+
+  QList<QPair<QAccessibleInterface*, QAccessible::Relation>> relations(
+      QAccessible::Relation match = QAccessible::AllRelations) const override {
+    QList<QPair<QAccessibleInterface*, QAccessible::Relation>> out;
+    Impl* host = impl();
+    const QuickNodeView* v = record();
+    if (host == nullptr || v == nullptr) return out;
+    const auto add_targets = [&](std::string_view idrefs, QAccessible::RelationFlag rel) {
+      if ((match & rel) == 0 || idrefs.empty()) return;
+      for (const std::string_view token : split_aria_idrefs(idrefs)) {
+        if (const QuickNodeView* target = host->find_by_dom_id(token)) {
+          if (QAccessibleInterface* iface = host->a11y_node(target->id)) out.emplace_back(iface, rel);
+        }
+      }
+    };
+    add_targets(v->sem.labelled_by, QAccessible::Labelled);
+    add_targets(v->sem.described_by, QAccessible::Described);
+    add_targets(v->sem.controls, QAccessible::Controller);
+    return out;
   }
 
   QString text(QAccessible::Text t) const override {

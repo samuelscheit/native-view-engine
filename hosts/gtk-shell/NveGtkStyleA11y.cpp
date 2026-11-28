@@ -15,7 +15,10 @@ bool operator==(const GtkNodeSemantics& a, const GtkNodeSemantics& b) noexcept {
          a.selected == b.selected && a.expanded == b.expanded && a.pressed == b.pressed &&
          same_f(a.value_now, b.value_now) && same_f(a.value_min, b.value_min) && same_f(a.value_max, b.value_max) &&
          a.disabled == b.disabled && a.hidden == b.hidden && a.secure == b.secure && a.multiline == b.multiline &&
-         a.read_only == b.read_only;
+         a.read_only == b.read_only && a.modal == b.modal && a.live == b.live && a.invalid == b.invalid &&
+         a.busy == b.busy && a.multiselectable == b.multiselectable && a.orientation == b.orientation &&
+         a.autocomplete == b.autocomplete && a.controls == b.controls && a.labelled_by == b.labelled_by &&
+         a.described_by == b.described_by && a.active_descendant == b.active_descendant;
 }
 
 namespace {
@@ -125,7 +128,7 @@ WidgetKind widget_kind(const host::NodeData& node, bool has_canvas) noexcept {
   return node.scrollable() ? WidgetKind::Scrolled : WidgetKind::Fixed;
 }
 
-GtkNodeSemantics node_semantics(const host::NodeData& node) {
+GtkNodeSemantics node_semantics(const host::NodeData& node, std::optional<host::AriaRelations> relations) {
   GtkNodeSemantics s;
   s.role = accessible_role(node);
   const host::AccessibilityData& a = node.a11y;
@@ -146,6 +149,19 @@ GtkNodeSemantics node_semantics(const host::NodeData& node) {
   s.secure = node.input.secure || node.input.input_kind == NVE_INPUT_KIND_PASSWORD;
   s.multiline = node.input.multiline;
   s.read_only = node.input.read_only;
+  s.modal = a.modal;
+  s.live = a.live;
+  s.invalid = a.invalid;
+  s.busy = a.busy;
+  s.multiselectable = a.multiselectable;
+  s.orientation = a.orientation;
+  s.autocomplete = a.autocomplete;
+  if (relations) {
+    s.controls.assign(relations->controls);
+    s.labelled_by.assign(relations->labelled_by);
+    s.described_by.assign(relations->described_by);
+    s.active_descendant.assign(relations->active_descendant);
+  }
   return s;
 }
 
@@ -164,9 +180,30 @@ void apply_accessibility(GtkWidget* widget, const GtkNodeSemantics& s) {
     gtk_accessible_reset_property(acc, GTK_ACCESSIBLE_PROPERTY_LEVEL);
   }
   gtk_accessible_update_property(acc, GTK_ACCESSIBLE_PROPERTY_MULTI_LINE, s.multiline ? TRUE : FALSE,
-                                 GTK_ACCESSIBLE_PROPERTY_READ_ONLY, s.read_only ? TRUE : FALSE, -1);
+                                 GTK_ACCESSIBLE_PROPERTY_READ_ONLY, s.read_only ? TRUE : FALSE,
+                                 GTK_ACCESSIBLE_PROPERTY_MODAL, s.modal ? TRUE : FALSE,
+                                 GTK_ACCESSIBLE_PROPERTY_MULTI_SELECTABLE, s.multiselectable ? TRUE : FALSE, -1);
+  if (s.orientation.has_value()) {
+    const GtkOrientation orient = *s.orientation == NVE_ARIA_ORIENTATION_VERTICAL ? GTK_ORIENTATION_VERTICAL
+                                                                                  : GTK_ORIENTATION_HORIZONTAL;
+    gtk_accessible_update_property(acc, GTK_ACCESSIBLE_PROPERTY_ORIENTATION, orient, -1);
+  } else {
+    gtk_accessible_reset_property(acc, GTK_ACCESSIBLE_PROPERTY_ORIENTATION);
+  }
+  if (s.autocomplete.has_value()) {
+    const GtkAccessibleAutocomplete ac =
+        *s.autocomplete == NVE_ARIA_AUTO_COMPLETE_INLINE ? GTK_ACCESSIBLE_AUTOCOMPLETE_INLINE
+        : *s.autocomplete == NVE_ARIA_AUTO_COMPLETE_LIST ? GTK_ACCESSIBLE_AUTOCOMPLETE_LIST
+                                                         : GTK_ACCESSIBLE_AUTOCOMPLETE_NONE;
+    gtk_accessible_update_property(acc, GTK_ACCESSIBLE_PROPERTY_AUTOCOMPLETE, ac, -1);
+  } else {
+    gtk_accessible_reset_property(acc, GTK_ACCESSIBLE_PROPERTY_AUTOCOMPLETE);
+  }
   gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_DISABLED, s.disabled ? TRUE : FALSE,
-                              GTK_ACCESSIBLE_STATE_HIDDEN, s.hidden ? TRUE : FALSE, -1);
+                              GTK_ACCESSIBLE_STATE_HIDDEN, s.hidden ? TRUE : FALSE,
+                              GTK_ACCESSIBLE_STATE_BUSY, s.busy ? TRUE : FALSE,
+                              GTK_ACCESSIBLE_STATE_INVALID,
+                              s.invalid ? GTK_ACCESSIBLE_INVALID_TRUE : GTK_ACCESSIBLE_INVALID_FALSE, -1);
   if (s.checked.has_value()) {
     gtk_accessible_update_state(acc, GTK_ACCESSIBLE_STATE_CHECKED, tristate(*s.checked), -1);
   } else {
@@ -190,6 +227,52 @@ void apply_accessibility(GtkWidget* widget, const GtkNodeSemantics& s) {
     gtk_accessible_reset_state(acc, GTK_ACCESSIBLE_STATE_EXPANDED);
   }
   gtk_widget_set_sensitive(widget, s.disabled ? FALSE : TRUE);
+}
+
+std::vector<std::string_view> split_idrefs(std::string_view raw) {
+  std::vector<std::string_view> out;
+  size_t i = 0u;
+  while (i < raw.size()) {
+    while (i < raw.size() && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n' || raw[i] == '\r')) ++i;
+    const size_t start = i;
+    while (i < raw.size() && raw[i] != ' ' && raw[i] != '\t' && raw[i] != '\n' && raw[i] != '\r') ++i;
+    if (i > start) out.push_back(raw.substr(start, i - start));
+  }
+  return out;
+}
+
+void set_accessible_relation(GtkAccessible* acc, GtkAccessibleRelation rel, const std::vector<GtkWidget*>& targets) {
+  if (targets.empty()) {
+    gtk_accessible_reset_relation(acc, rel);
+    return;
+  }
+  GValue value = G_VALUE_INIT;
+  gtk_accessible_relation_init_value(rel, &value);
+  if (G_VALUE_HOLDS(&value, GTK_TYPE_ACCESSIBLE)) {
+    g_value_set_object(&value, GTK_ACCESSIBLE(targets.front()));
+    gtk_accessible_update_relation_value(acc, 1, &rel, &value);
+  } else {
+#if GTK_CHECK_VERSION(4, 14, 0)
+    if (G_VALUE_HOLDS(&value, GTK_ACCESSIBLE_LIST)) {
+      std::vector<GtkAccessible*> accs;
+      accs.reserve(targets.size());
+      for (GtkWidget* w : targets) accs.push_back(GTK_ACCESSIBLE(w));
+      GtkAccessibleList* list = gtk_accessible_list_new_from_array(accs.data(), accs.size());
+      g_value_take_boxed(&value, list);
+      gtk_accessible_update_relation_value(acc, 1, &rel, &value);
+    } else
+#endif
+    {
+      GList* glist = nullptr;
+      for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
+        glist = g_list_prepend(glist, GTK_ACCESSIBLE(*it));
+      }
+      g_value_set_pointer(&value, glist);
+      gtk_accessible_update_relation_value(acc, 1, &rel, &value);
+      g_list_free(glist);
+    }
+  }
+  g_value_unset(&value);
 }
 
 std::string css_float(double value) {
@@ -380,11 +463,83 @@ std::optional<GtkNodeSemantics> NveGtkHost::accessibility_info_for_node_id(uint3
   return (*view)->sem;
 }
 
+std::vector<GtkWidget*> NveGtkHost::accessible_relation_targets(uint32_t node_id,
+                                                                GtkAccessibleRelation rel) const {
+  auto& tree = const_cast<host::RetainedTree<Adapter>&>(tree_);
+  GtkNodeView* const* view = tree.find(node_id);
+  if (view == nullptr || *view == nullptr) return {};
+  const auto it = (*view)->applied_relations.find(static_cast<int>(rel));
+  return it != (*view)->applied_relations.end() ? it->second : std::vector<GtkWidget*>{};
+}
+
+void NveGtkHost::announce_live_region(GtkWidget* widget, const GtkNodeSemantics& before,
+                                      const GtkNodeSemantics& after, bool initial) {
+  if (!after.live.has_value() || *after.live == NVE_ARIA_LIVE_OFF || after.hidden) return;
+  const std::string& msg = !after.label.empty() ? after.label : after.value_text;
+  if (msg.empty()) return;
+  const std::string& prev_msg = !before.label.empty() ? before.label : before.value_text;
+  if (!initial && msg == prev_msg && before.live == after.live) return;
+  ++live_announcement_count_;
+  last_live_announcement_ = msg;
+#if GTK_CHECK_VERSION(4, 14, 0)
+  const GtkAccessibleAnnouncementPriority prio = *after.live == NVE_ARIA_LIVE_ASSERTIVE
+                                                     ? GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_HIGH
+                                                     : GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM;
+  gtk_accessible_announce(GTK_ACCESSIBLE(widget), msg.c_str(), prio);
+#else
+  (void)widget;
+#endif
+}
+
 void NveGtkHost::apply_semantics(GtkNodeView& view, const host::NodeData& node) {
-  GtkNodeSemantics sem = gtk_internal::node_semantics(node);
+  std::optional<host::AriaRelations> rels;
+  if (node.a11y.relations != 0u) {
+    rels = host::decode_aria_relations(scene_resource(node.a11y.relations, host::kAriaRelationsKind));
+  }
+  if (view.aria_relations_res != node.a11y.relations) {
+    view.aria_relations_res = node.a11y.relations;
+    relations_dirty_ = true;
+  }
+  GtkNodeSemantics sem = gtk_internal::node_semantics(node, rels);
   if (sem == view.sem && view.synced) return;
+  const bool rels_changed = !view.synced || sem.controls != view.sem.controls ||
+                            sem.labelled_by != view.sem.labelled_by || sem.described_by != view.sem.described_by ||
+                            sem.active_descendant != view.sem.active_descendant;
+  if (rels_changed) relations_dirty_ = true;
+  const GtkNodeSemantics prev = std::move(view.sem);
   view.sem = std::move(sem);
   gtk_internal::apply_accessibility(view.widget, view.sem);
+  announce_live_region(view.widget, prev, view.sem, !view.synced);
+}
+
+void NveGtkHost::sync_aria_relations() {
+  if (!relations_dirty_) return;
+  relations_dirty_ = false;
+  std::unordered_map<std::string_view, GtkWidget*> by_id;
+  tree_.for_each_view([&](GtkNodeView* v) {
+    if (v != nullptr && !v->dom_id.empty()) by_id.emplace(v->dom_id, v->widget);
+  });
+  const auto resolve_and_apply = [&](GtkNodeView* v, GtkAccessibleRelation rel, std::string_view idrefs, bool single) {
+    std::vector<GtkWidget*> targets;
+    for (const std::string_view token : gtk_internal::split_idrefs(idrefs)) {
+      if (const auto it = by_id.find(token); it != by_id.end()) {
+        targets.push_back(it->second);
+        if (single) break;
+      }
+    }
+    const int key = static_cast<int>(rel);
+    auto& prev = v->applied_relations[key];
+    if (prev == targets) return;
+    prev = std::move(targets);
+    gtk_internal::set_accessible_relation(GTK_ACCESSIBLE(v->widget), rel, prev);
+  };
+  tree_.for_each_view([&](GtkNodeView* v) {
+    if (v == nullptr) return;
+    resolve_and_apply(v, GTK_ACCESSIBLE_RELATION_LABELLED_BY, v->sem.labelled_by, false);
+    resolve_and_apply(v, GTK_ACCESSIBLE_RELATION_DESCRIBED_BY, v->sem.described_by, false);
+    resolve_and_apply(v, GTK_ACCESSIBLE_RELATION_CONTROLS, v->sem.controls, false);
+    resolve_and_apply(v, GTK_ACCESSIBLE_RELATION_ACTIVE_DESCENDANT, v->sem.active_descendant, true);
+  });
 }
 
 void NveGtkHost::apply_css(GtkNodeView& view, const host::NodeData& node) {

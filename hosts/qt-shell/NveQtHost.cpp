@@ -5,6 +5,7 @@
 #include <nve/host/urls.hpp>
 
 #include <QDesktopServices>
+#include <QKeyEvent>
 #include <QMetaObject>
 #include <QObject>
 #include <QUrl>
@@ -22,6 +23,130 @@ namespace {
 float positive_or(float v, float fallback) noexcept { return std::isfinite(v) && v > 0.0f ? v : fallback; }
 
 }  // namespace
+
+MappedQtKey map_qt_key(const QKeyEvent& event, bool composing) {
+  MappedQtKey out;
+  out.key_code = static_cast<uint32_t>(event.key());
+  const Qt::KeyboardModifiers mods = event.modifiers();
+  if ((mods & Qt::MetaModifier) != 0) out.flags |= NVE_EVENT_FLAG_MOD_META;
+  if ((mods & Qt::ControlModifier) != 0) out.flags |= NVE_EVENT_FLAG_MOD_CTRL;
+  if ((mods & Qt::ShiftModifier) != 0) out.flags |= NVE_EVENT_FLAG_MOD_SHIFT;
+  if ((mods & Qt::AltModifier) != 0) out.flags |= NVE_EVENT_FLAG_MOD_ALT;
+  if (event.isAutoRepeat()) out.flags |= NVE_EVENT_FLAG_MOD_REPEAT;
+  if (composing) out.flags |= NVE_EVENT_FLAG_COMPOSING;
+
+  switch (event.key()) {
+    case Qt::Key_Tab:
+      out.key = "Tab";
+      out.code = "Tab";
+      return out;
+    case Qt::Key_Backtab:
+      out.key = "Tab";
+      out.code = "Tab";
+      out.flags |= NVE_EVENT_FLAG_MOD_SHIFT;
+      return out;
+    case Qt::Key_Return:
+      out.key = "Enter";
+      out.code = "Enter";
+      return out;
+    case Qt::Key_Enter:
+      out.key = "Enter";
+      out.code = "NumpadEnter";
+      return out;
+    case Qt::Key_Escape:
+      out.key = "Escape";
+      out.code = "Escape";
+      return out;
+    case Qt::Key_Backspace:
+      out.key = "Backspace";
+      out.code = "Backspace";
+      return out;
+    case Qt::Key_Delete:
+      out.key = "Delete";
+      out.code = "Delete";
+      return out;
+    case Qt::Key_Space:
+      out.key = " ";
+      out.code = "Space";
+      return out;
+    case Qt::Key_Left:
+      out.key = "ArrowLeft";
+      out.code = "ArrowLeft";
+      return out;
+    case Qt::Key_Right:
+      out.key = "ArrowRight";
+      out.code = "ArrowRight";
+      return out;
+    case Qt::Key_Up:
+      out.key = "ArrowUp";
+      out.code = "ArrowUp";
+      return out;
+    case Qt::Key_Down:
+      out.key = "ArrowDown";
+      out.code = "ArrowDown";
+      return out;
+    case Qt::Key_Home:
+      out.key = "Home";
+      out.code = "Home";
+      return out;
+    case Qt::Key_End:
+      out.key = "End";
+      out.code = "End";
+      return out;
+    case Qt::Key_PageUp:
+      out.key = "PageUp";
+      out.code = "PageUp";
+      return out;
+    case Qt::Key_PageDown:
+      out.key = "PageDown";
+      out.code = "PageDown";
+      return out;
+    case Qt::Key_Insert:
+      out.key = "Insert";
+      out.code = "Insert";
+      return out;
+    case Qt::Key_Shift:
+      out.key = "Shift";
+      out.code = "ShiftLeft";
+      return out;
+    case Qt::Key_Control:
+      out.key = "Control";
+      out.code = "ControlLeft";
+      return out;
+    case Qt::Key_Alt:
+      out.key = "Alt";
+      out.code = "AltLeft";
+      return out;
+    case Qt::Key_Meta:
+      out.key = "Meta";
+      out.code = "MetaLeft";
+      return out;
+    default: break;
+  }
+  if (event.key() >= Qt::Key_F1 && event.key() <= Qt::Key_F12) {
+    const std::string fn = "F" + std::to_string((event.key() - Qt::Key_F1) + 1);
+    out.key = fn;
+    out.code = fn;
+    return out;
+  }
+  if (event.key() >= Qt::Key_A && event.key() <= Qt::Key_Z) {
+    const char upper = static_cast<char>('A' + (event.key() - Qt::Key_A));
+    out.code = std::string("Key") + upper;
+  } else if (event.key() >= Qt::Key_0 && event.key() <= Qt::Key_9) {
+    const char digit = static_cast<char>('0' + (event.key() - Qt::Key_0));
+    out.code = std::string("Digit") + digit;
+  }
+  const QString text = event.text();
+  if (!text.isEmpty() && text[0].isPrint()) {
+    out.key = text.toStdString();
+  } else if (event.key() >= Qt::Key_A && event.key() <= Qt::Key_Z) {
+    const bool shift = (mods & Qt::ShiftModifier) != 0;
+    out.key.assign(1u, static_cast<char>((shift ? 'A' : 'a') + (event.key() - Qt::Key_A)));
+  } else if (event.key() >= Qt::Key_0 && event.key() <= Qt::Key_9) {
+    out.key.assign(1u, static_cast<char>('0' + (event.key() - Qt::Key_0)));
+  }
+  return out;
+}
 
 QtHost::QtHost(QObject* ui, QtHostConfig config) : ui_(ui), config_(config) {
   config_.surface_id = config_.surface_id != 0u ? config_.surface_id : 1u;
@@ -126,6 +251,22 @@ bool QtHost::restore_state(std::string_view path, uint32_t schema_version) {
 
 bool QtHost::clear_state(std::string_view path) { return session_->clear_state_file(path); }
 
+bool QtHost::save_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version) {
+  return session_->runtime().save_frame0_file(path, schema_version, app_version) == NVE_RUNTIME_OK;
+}
+
+bool QtHost::boot_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version) {
+  if (session_->runtime().boot_frame0_file(path, schema_version, app_version) != NVE_RUNTIME_OK) return false;
+  (void)pump();
+  return true;
+}
+
+bool QtHost::boot_frame0_bytes(std::span<const uint8_t> bytes, uint32_t schema_version, uint32_t app_version) {
+  if (session_->runtime().boot_frame0_bytes(bytes, schema_version, app_version) != NVE_RUNTIME_OK) return false;
+  (void)pump();
+  return true;
+}
+
 bool QtHost::apply_props(std::span<const NveMapEntry> props) {
   const bool ok = session_->set_props(props);
   (void)sync();
@@ -203,6 +344,14 @@ bool QtHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
   return changed;
 }
 
+bool QtHost::dispatch_composition(uint32_t node_id, NveTextInputEvent kind, std::string_view text) {
+  if (syncing_) return false;
+  const auto alive = alive_;
+  const bool changed = session_->dispatch_text(node_id, kind, text);
+  if (alive->load(std::memory_order_acquire)) (void)sync();
+  return changed;
+}
+
 bool QtHost::dispatch_submit(uint32_t node_id, std::string_view text) {
   if (syncing_) return false;
   const auto alive = alive_;
@@ -213,6 +362,15 @@ bool QtHost::dispatch_submit(uint32_t node_id, std::string_view text) {
 
 bool QtHost::dispatch_focus(uint32_t node_id, bool focused) {
   return dispatch(session_->events().focus(node_id, focused));
+}
+
+bool QtHost::dispatch_key(uint32_t node_id, NveInteractionEvent kind, std::string_view key, std::string_view code,
+                          uint32_t flags, uint32_t key_code) {
+  if (syncing_) return false;
+  const auto alive = alive_;
+  const bool changed = session_->dispatch_key(node_id, kind, key, code, flags, key_code);
+  if (alive->load(std::memory_order_acquire)) (void)sync();
+  return changed;
 }
 
 bool QtHost::dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width,

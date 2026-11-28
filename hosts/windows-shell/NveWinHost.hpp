@@ -33,6 +33,15 @@ struct PressResult {
   std::string href;       // a link nobody intercepts that may open natively (`host::openable_link`)
 };
 
+/// Outcome of surface-level keyboard handling (`handle_key`).
+struct KeyResult {
+  bool handled = false;
+  bool dispatched = false;
+  bool changed = false;
+  uint32_t focused_node = 0u;  // active focused node after handling (e.g. Tab traversal)
+  std::string href;            // openable link activated via Enter / Space
+};
+
 /// One `libnve_runtime` surface (`HostSession`) mirrored into the portable `NveWinVisualTree`:
 /// app sources (in-process, `cdylib` with state-preserving hot reload, paired `nve dev`), app-state
 /// files, props / hot patches, and surface-level input (press / link, wheel scroll, hover, cursor,
@@ -44,6 +53,7 @@ class NveWinHost {
  public:
   using EventCallback = host::HostSession::EventSink;
   using ChangeCallback = std::function<void()>;
+  using SceneSyncCallback = std::function<void(const host::RuntimeSceneGuard&)>;
 
   /// A surface over the linked `libnve_runtime` (plus, on Windows, the DirectWrite measurer);
   /// `nullptr` with `error` set when the runtime or DirectWrite is unavailable.
@@ -70,6 +80,10 @@ class NveWinHost {
   bool restore_state(std::string_view path, uint32_t schema_version);
   /// Deletes the state file (cold start, `--reset-state`).
   bool clear_state(std::string_view path);
+  /// ABI v6 Frame-0 persistence & instant cold-start boot (`frame0.nve2`).
+  bool save_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   void set_event_callback(EventCallback callback);
@@ -78,6 +92,8 @@ class NveWinHost {
   void set_wake_poster(host::HostSession::WakePoster poster);
   /// Called on the UI thread whenever the visual tree changed (repaint, resync overlays).
   void set_on_change(ChangeCallback callback) { on_change_ = std::move(callback); }
+  /// Called on the UI thread while `sync_views` holds a live `RuntimeSceneGuard` (UIA sync).
+  void set_on_scene_sync(SceneSyncCallback callback) { on_scene_sync_ = std::move(callback); }
 
   /// Ticks the runtime and mirrors the scene; returns the views created or updated.
   size_t pump();
@@ -107,7 +123,17 @@ class NveWinHost {
   [[nodiscard]] uint8_t cursor_at(float x, float y) const;
   bool dispatch_text_change(uint32_t node_id, std::string_view text);
   bool dispatch_submit(uint32_t node_id, std::string_view text);
+  bool dispatch_composition(uint32_t node_id, NveTextInputEvent kind, std::string_view text);
   bool dispatch_focus(uint32_t node_id, bool focused);
+  bool dispatch_key(uint32_t node_id, NveInteractionEvent kind, std::string_view key, std::string_view code = {},
+                    uint32_t flags = 0u, uint32_t key_code = 0u);
+  /// Moves logical focus to `node_id` (0 clears focus), emitting `Blur`/`Focus` transitions.
+  bool set_focused_node(uint32_t node_id);
+  /// Advances focus in tab order (positive `tab_index` ascending, then scene DFS; modal-scoped).
+  uint32_t step_tab_focus(bool reverse);
+  /// Surface-level key dispatch with Tab/Shift+Tab focus traversal and Enter/Space activation.
+  KeyResult handle_key(bool pressed, std::string_view key, std::string_view code = {}, uint32_t flags = 0u,
+                       uint32_t key_code = 0u, bool from_text_input = false);
   /// Scrolls `node_id` to the absolute offset (runtime-clamped) and reports it to the app.
   bool dispatch_scroll(uint32_t node_id, float offset_x, float offset_y);
 
@@ -125,6 +151,7 @@ class NveWinHost {
   /// The runtime's message for the last failed call on this thread.
   [[nodiscard]] std::string last_error() const { return session_->last_error(); }
   [[nodiscard]] uint32_t hovered_node() const noexcept { return hovered_; }
+  [[nodiscard]] uint32_t focused_node() const noexcept { return focused_; }
   [[nodiscard]] host::HostSession& session() noexcept { return *session_; }
 #if defined(_WIN32)
   [[nodiscard]] const DirectWriteTextMeasurer& text_measurer() const noexcept { return measurer_; }
@@ -143,6 +170,8 @@ class NveWinHost {
   bool scrolled(const WinNodeVisual& node, float x, float y);
   /// `kind` at surface `(x, y)` to `node`, in its local coordinates.
   bool dispatch_pointer(uint32_t node, NveInteractionEvent kind, float x, float y);
+  [[nodiscard]] bool is_node_disabled(uint32_t node_id) const noexcept;
+  [[nodiscard]] uint32_t key_target(uint32_t start_id, NveInteractionEvent kind) const noexcept;
 
   WinHostConfig config_;
 #if defined(_WIN32)
@@ -151,8 +180,10 @@ class NveWinHost {
   std::unique_ptr<host::HostSession> session_;
   NveWinVisualTree tree_;
   ChangeCallback on_change_;
+  SceneSyncCallback on_scene_sync_;
   uint32_t hovered_ = 0u;
   uint32_t pressed_ = 0u;  // `pointer_down` target
+  uint32_t focused_ = 0u;  // logical keyboard / UIA focus target
   bool syncing_ = false;
   /// False once destruction began: a pump / dispatch whose event sink destroyed the host stops
   /// before touching it again.

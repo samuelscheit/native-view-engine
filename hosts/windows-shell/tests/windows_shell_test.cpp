@@ -349,6 +349,7 @@ void test_damage_follows_reparented_subtree() {
 
 void nve_test_win_media_and_input();
 void nve_test_win_canvas_scroll_and_windows();
+void nve_test_win_keyboard_ime_and_frame0();
 #if defined(_WIN32)
 void nve_test_win_direct2d();
 #endif
@@ -361,6 +362,7 @@ int main() {
   test_damage_follows_reparented_subtree();
   nve_test_win_media_and_input();
   nve_test_win_canvas_scroll_and_windows();
+  nve_test_win_keyboard_ime_and_frame0();
 #if defined(_WIN32)
   nve_test_win_direct2d();
 #endif

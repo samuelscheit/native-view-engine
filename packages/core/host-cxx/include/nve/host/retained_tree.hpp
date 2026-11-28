@@ -69,13 +69,14 @@ concept SyncHooksAdapter = requires(Adapter& a, const SceneReader& scene, bool i
   a.finish_sync();
 };
 
-/// Resource ids live node `n`'s views read: image source, box shadows, background fill, and the
-/// adapter's `module_resource`.
+/// Resource ids live node `n`'s views read: image source, box shadows, background fill, aria
+/// relations, and the adapter's `module_resource`.
 template <class Adapter>
 [[nodiscard]] ResourceUsers::Ids node_resources(Adapter& adapter, const NodeData& n) {
   uint32_t module = 0u;
   if constexpr (ModuleResourceAdapter<Adapter>) module = adapter.module_resource(n);
-  return {n.kind == NodeKind::Image ? n.image.src : 0u, n.visual.box_shadows, n.visual.background_fill, module};
+  return {n.kind == NodeKind::Image ? n.image.src : 0u, n.visual.box_shadows, n.visual.background_fill,
+          n.a11y.relations, module};
 }
 
 template <class Adapter>

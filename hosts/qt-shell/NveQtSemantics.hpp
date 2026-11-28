@@ -2,14 +2,20 @@
 // node kind) mapped onto Qt's accessibility model, shared by the Widgets and Quick hosts.
 #pragma once
 
+#include <nve/host/core_resources.hpp>
 #include <nve/host/scene_nodes.hpp>
 
 #include <QAccessible>
+#include <QList>
+#include <QPair>
 #include <QString>
 
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 class QObject;
 
@@ -37,13 +43,26 @@ struct NodeSemantics {
   bool multiline = false;
   bool read_only = false;
   bool search = false;
+  bool modal = false;
+  std::optional<uint8_t> live;
+  bool invalid = false;
+  bool busy = false;
+  bool multiselectable = false;
+  std::optional<uint8_t> orientation;
+  std::optional<uint8_t> autocomplete;
+  std::string controls;
+  std::string labelled_by;
+  std::string described_by;
+  std::string active_descendant;
 
   friend bool operator==(const NodeSemantics& a, const NodeSemantics& b) noexcept;
 };
 
 /// Qt role of `host::aria_role(node)` (explicit role, else the node kind's native role).
 [[nodiscard]] QAccessible::Role accessible_role(const host::NodeData& node) noexcept;
-[[nodiscard]] NodeSemantics node_semantics(const host::NodeData& node);
+[[nodiscard]] NodeSemantics node_semantics(const host::NodeData& node,
+                                           std::optional<host::AriaRelations> relations = std::nullopt);
+[[nodiscard]] std::vector<std::string_view> split_aria_idrefs(std::string_view raw);
 
 [[nodiscard]] QAccessible::State accessible_state(const NodeSemantics& s) noexcept;
 /// Accessible value: `value_text`, else `value_now` when finite, else empty.
@@ -61,6 +80,13 @@ class SemanticsCarrier {
   [[nodiscard]] virtual const NodeSemantics& semantics() const noexcept = 0;
   /// The accessible press action (no-op when the node has none).
   virtual void activate() {}
+  /// ARIA relations resolved to live `QAccessibleInterface*` peers.
+  [[nodiscard]] virtual QList<QPair<QAccessibleInterface*, QAccessible::Relation>> accessible_relations(
+      QAccessible::Relation) const {
+    return {};
+  }
+  /// Resolved `aria-activedescendant` interface when present, else nullptr.
+  [[nodiscard]] virtual QAccessibleInterface* active_descendant_interface() const { return nullptr; }
 };
 
 /// The press action while `s` is activatable and enabled.

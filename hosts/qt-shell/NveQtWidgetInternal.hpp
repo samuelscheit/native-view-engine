@@ -35,6 +35,8 @@ inline constexpr const char* kScrollOwnerProperty = "nveScrollOwner";
 // --- Hooks the node widgets call (NveQtWidgetReconciler.cpp) -----------------------------------
 void view_hover(QtNodeView* view, NveInteractionEvent kind, QPointF pos);
 void view_focus(QtNodeView* view, bool focused);
+/// Dispatches `KeyDown` / `KeyUp` from `view` (walking up to key-subscribed ancestors); may destroy `view`.
+void view_key(QtNodeView* view, NveInteractionEvent kind, const QKeyEvent& event, bool composing);
 /// Press / link activation (node-local point); may destroy the view: touch nothing afterwards.
 void view_activate(QtNodeView* view, QPointF pos);
 
@@ -62,6 +64,9 @@ class NveQtNodeWidget final : public QWidget, public SemanticsCarrier {
 
   [[nodiscard]] const NodeSemantics& semantics() const noexcept override;
   void activate() override;
+  [[nodiscard]] QList<QPair<QAccessibleInterface*, QAccessible::Relation>> accessible_relations(
+      QAccessible::Relation match) const override;
+  [[nodiscard]] QAccessibleInterface* active_descendant_interface() const override;
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -74,6 +79,7 @@ class NveQtNodeWidget final : public QWidget, public SemanticsCarrier {
   void focusInEvent(QFocusEvent* event) override;
   void focusOutEvent(QFocusEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
+  void keyReleaseEvent(QKeyEvent* event) override;
 
  private:
   void update_mask();
@@ -111,6 +117,8 @@ class NveQtLineEdit final : public QLineEdit {
 
  protected:
   void inputMethodEvent(QInputMethodEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
+  void keyReleaseEvent(QKeyEvent* event) override;
   void focusInEvent(QFocusEvent* event) override;
   void focusOutEvent(QFocusEvent* event) override;
   void enterEvent(QEnterEvent* event) override;
@@ -130,6 +138,8 @@ class NveQtTextEdit final : public QPlainTextEdit {
 
  protected:
   void inputMethodEvent(QInputMethodEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
+  void keyReleaseEvent(QKeyEvent* event) override;
   void focusInEvent(QFocusEvent* event) override;
   void focusOutEvent(QFocusEvent* event) override;
   void enterEvent(QEnterEvent* event) override;
@@ -158,6 +168,7 @@ struct QtNodeView {
   uint32_t order = 0u;  // index in the parent's scene children
   bool visible = true;
   NodeSemantics sem;
+  std::string dom_id;
   std::string href;
   uint32_t interaction_events = 0u;
   bool wants_press = false;
@@ -205,6 +216,10 @@ class NveQtWidget::Impl final : public QtHost {
   };
 
   [[nodiscard]] QtNodeView* find(uint32_t id) noexcept;
+  [[nodiscard]] QtNodeView* find_by_dom_id(std::string_view dom_id) noexcept;
+  [[nodiscard]] QList<QPair<QAccessibleInterface*, QAccessible::Relation>> accessible_relations_for(
+      const QtNodeView& view, QAccessible::Relation match) const;
+  [[nodiscard]] QAccessibleInterface* active_descendant_for(const QtNodeView& view) const;
   void on_native_scroll(QtNodeView& view);
   void on_text_edited(QtNodeView& view);
   void on_submit(QtNodeView& view);

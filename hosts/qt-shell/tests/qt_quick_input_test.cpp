@@ -306,10 +306,14 @@ void test_text_inputs_keys_ime_and_focus() {
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_SUBMIT, kEcho) == 1u &&
             app.last(NVE_TEXT_INPUT_EVENT_SUBMIT)->text == "reset");
 
-  // IME: composition is not dispatched nor clobbered by app updates; the commit is.
+  // IME: composition emits CompositionStart/Update/End, is not clobbered by app updates, commits,
+  // and aborts cleanly on focus change.
   QInputMethodEvent preedit(QStringLiteral("ni"), {});
   QCoreApplication::sendEvent(&item, &preedit);
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEcho) == edits);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_START, kEcho) == 1u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, kEcho) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE)->text == "ni");
   (void)w.set_str(kEcho, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "app?");
   flush(item.host());
   NVE_CHECK(item.nodeText(kEcho) == "reset");
@@ -317,9 +321,17 @@ void test_text_inputs_keys_ime_and_focus() {
   commit.setCommitString(QStringLiteral("你"));
   QCoreApplication::sendEvent(&item, &commit);
   NVE_CHECK(item.nodeText(kEcho) == "reset你" && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "reset你");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEcho) == 1u &&
+            app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_END)->text == "你");
+
+  // Focus blur during active composition emits CompositionEnd and never leaves composing stuck.
+  QInputMethodEvent preedit2(QStringLiteral("ha"), {});
+  QCoreApplication::sendEvent(&item, &preedit2);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_START, kEcho) == 2u);
+  q.click(q.center(kUpper));
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEcho) == 2u);
 
   // Transforming and rejecting apps.
-  q.click(q.center(kUpper));
   q.type(QStringLiteral("qw"));
   NVE_CHECK(item.nodeText(kUpper) == "QW" && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "Qw");
   q.click(q.center(kReject));

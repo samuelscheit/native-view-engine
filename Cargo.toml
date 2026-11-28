@@ -36,6 +36,7 @@ members = [
     "packages/tools/arch-invariants",
     "packages/tools/bench",
     "packages/modules/accessibility",
+    "packages/modules/accessibility/windows",
     "packages/modules/blur",
     "packages/modules/blur/web",
     "packages/modules/camera",
@@ -130,6 +131,7 @@ nve-backend-headless = { version = "0.1.0", path = "packages/backends/headless" 
 nve-backend-skia = { version = "0.1.0", path = "packages/backends/skia" }
 nve-backend-web = { version = "0.1.0", path = "packages/backends/web" }
 nve-accessibility = { version = "0.1.0", path = "packages/modules/accessibility" }
+nve-accessibility-windows = { version = "0.1.0", path = "packages/modules/accessibility/windows" }
 nve-blur = { version = "0.1.0", path = "packages/modules/blur" }
 nve-blur-web = { version = "0.1.0", path = "packages/modules/blur/web" }
 nve-camera = { version = "0.1.0", path = "packages/modules/camera" }
@@ -213,6 +215,7 @@ unicode-segmentation = "1.13.3"
 winit = "0.30.13"
 accesskit = "0.25.2"
 accesskit_winit = "0.34.2"
+accesskit_windows = "0.35.2"
 softbuffer = "0.4.8"
 wasm-bindgen = "0.2.130"
 js-sys = "0.3.107"

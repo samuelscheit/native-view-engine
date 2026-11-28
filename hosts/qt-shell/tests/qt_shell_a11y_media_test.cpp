@@ -291,9 +291,117 @@ void test_url_policy() {
   }
 }
 
+void test_a11y_relations_live_modal_keys_and_frame0() {
+  constexpr uint32_t kDialog = 2u, kTitle = 3u, kDesc = 4u, kList = 5u, kOpt = 6u, kLive = 7u, kBtn = 8u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.create(kDialog);
+  a11y(w, kDialog, NVE_ARIA_ROLE_DIALOG, "Confirm");
+  w.set_bool(kDialog, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_MODAL, true);
+  w.define_resource(90u, h::kAriaRelationsKind,
+                    h::encode_aria_relations(h::AriaRelations{"list-1", "title-1", "desc-1", ""}));
+  w.set(kDialog, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_RELATIONS, 90u);
+
+  text_node(w, kTitle, "Delete?");
+  (void)w.set_str(kTitle, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "title-1");
+  text_node(w, kDesc, "Permanent action");
+  (void)w.set_str(kDesc, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "desc-1");
+
+  w.create(kList);
+  (void)w.set_str(kList, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "list-1");
+  a11y(w, kList, NVE_ARIA_ROLE_LIST_BOX, "Choices");
+  w.set(kList, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ORIENTATION, NVE_ARIA_ORIENTATION_VERTICAL);
+  w.define_resource(91u, h::kAriaRelationsKind, h::encode_aria_relations(h::AriaRelations{"", "", "", "opt-1"}));
+  w.set(kList, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_RELATIONS, 91u);
+
+  text_node(w, kOpt, "Proceed");
+  (void)w.set_str(kOpt, NVE_TABLE_DEBUG_ID_DESC, NVE_TABLE_DEBUG_ID_ID, "opt-1");
+  a11y(w, kOpt, NVE_ARIA_ROLE_OPTION, "Proceed");
+
+  text_node(w, kLive, "Idle");
+  w.set(kLive, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LIVE, NVE_ARIA_LIVE_ASSERTIVE);
+
+  w.create(kBtn);
+  size_node(w, kBtn, 40.0f, 24.0f);
+  w.set_bool(kBtn, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  subscribe(w, kBtn, {NVE_INTERACTION_EVENT_PRESS, NVE_INTERACTION_EVENT_KEY_DOWN, NVE_INTERACTION_EVENT_KEY_UP});
+
+  const uint32_t list_kids[] = {kOpt};
+  w.set_children(kList, list_kids);
+  const uint32_t dlg_kids[] = {kTitle, kDesc, kList, kLive, kBtn};
+  w.set_children(kDialog, dlg_kids);
+  const uint32_t root_kids[] = {kDialog};
+  w.set_children(1u, root_kids);
+
+  NveQtWidget widget(QtHostConfig{.width = 320.0f, .height = 240.0f});
+  QtHost& host = widget.host();
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  widget.show();
+
+  const auto iface = [&](uint32_t id) { return QAccessible::queryAccessibleInterface(widget.nativeWidgetForNodeId(id)); };
+  QAccessibleInterface* dlg = iface(kDialog);
+  NVE_CHECK(dlg != nullptr && dlg->state().modal);
+  const auto rels = dlg->relations();
+  const auto has_rel = [&](QAccessibleInterface* target, QAccessible::RelationFlag flag) {
+    for (const auto& [peer, r] : rels) {
+      if (peer == target && (r & flag) != 0) return true;
+    }
+    return false;
+  };
+  NVE_CHECK(has_rel(iface(kTitle), QAccessible::Labelled));
+  NVE_CHECK(has_rel(iface(kDesc), QAccessible::Described));
+  NVE_CHECK(has_rel(iface(kList), QAccessible::Controller));
+  QAccessibleInterface* list_if = iface(kList);
+  NVE_CHECK(list_if != nullptr && list_if->focusChild() == iface(kOpt));
+  auto* attrs = static_cast<QAccessibleAttributesInterface*>(list_if->interface_cast(QAccessible::AttributesInterface));
+  NVE_CHECK(attrs != nullptr && attrs->attributeValue(QAccessible::Attribute::Orientation).value<Qt::Orientation>() == Qt::Vertical);
+
+  // Live region posts QAccessible::Announcement on text change.
+  QAccessible::installUpdateHandler(&record_update);
+  QAccessible::installRootObjectHandler(&record_root);
+  QAccessible::setActive(true);
+  g_events.clear();
+  (void)w.set_str(kLive, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "Done!");
+  flush(host);
+  QAccessible::installUpdateHandler(nullptr);
+  QAccessible::installRootObjectHandler(nullptr);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+  NVE_CHECK(std::count(g_events.begin(), g_events.end(), QAccessible::Announcement) == 1);
+#endif
+
+  // KeyDown / KeyUp dispatch through NveQtNodeWidget with modifiers.
+  QWidget* btn = widget.nativeWidgetForNodeId(kBtn);
+  QKeyEvent kd(QEvent::KeyPress, Qt::Key_K, Qt::ControlModifier, QStringLiteral("k"));
+  QKeyEvent ku(QEvent::KeyRelease, Qt::Key_K, Qt::ControlModifier, QStringLiteral("k"));
+  QApplication::sendEvent(btn, &kd);
+  QApplication::sendEvent(btn, &ku);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_KEY_DOWN, kBtn) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_KEY_UP, kBtn) == 1u);
+  NVE_CHECK(app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->key() == "k");
+  NVE_CHECK((app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->ev.flags & NVE_EVENT_FLAG_MOD_CTRL) != 0u);
+
+  // ABI v6 Frame-0 file save + instant boot (file & bytes).
+  const nve::host::testing::ScratchDir scratch("nve-qt-frame0");
+  const std::string f0 = scratch.file("frame0.nve2");
+  NVE_CHECK(host.save_frame0_file(f0, 1u, 1u));
+  NveQtWidget cold_file;
+  NVE_CHECK(cold_file.host().boot_frame0_file(f0, 1u, 1u));
+  NVE_CHECK(cold_file.viewCount() == widget.viewCount());
+  NVE_CHECK(cold_file.accessibilityInfoForNodeId(kDialog)->modal);
+
+  std::ifstream in(f0, std::ios::binary);
+  std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  NveQtWidget cold_bytes;
+  NVE_CHECK(cold_bytes.host().boot_frame0_bytes(raw, 1u, 1u));
+  NVE_CHECK(cold_bytes.viewCount() == widget.viewCount());
+  widget.hide();
+}
+
 }  // namespace
 
 void nve_test_qt_a11y_and_media() {
   test_a11y_images_and_visuals();
   test_url_policy();
+  test_a11y_relations_live_modal_keys_and_frame0();
 }

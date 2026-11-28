@@ -2846,6 +2846,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-accessibility-windows"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "accesskit_windows",
+ "criterion",
+ "nve-abi",
+ "nve-accessibility",
+ "nve-codec",
+ "nve-engine",
+ "nve-hash",
+ "nve-store",
+ "nve-tables",
+]
+
+[[package]]
 name = "nve-arch-invariants"
 version = "0.1.0"
 dependencies = [

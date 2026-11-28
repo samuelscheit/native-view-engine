@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "check.h"
+#include "nve/host/core_resources.hpp"
 #include "nve/host/launch_options.hpp"
 #include "nve/host/urls.hpp"
 
@@ -106,13 +107,28 @@ void test_launch_args() {
         o.height == 600 && o.reset_state && !o.no_state);
   LaunchOptions p;
   CHECK(parse({"--pair", "nve://h:1", "--pair-token", "t", "--no-state"}, p) == LaunchParse::Run);
-  CHECK(p.pair_uri == "nve://h:1" && p.pair_token == "t" && p.no_state);
+  CHECK(p.pair_uri == "nve://h:1" && p.pair_token == "t" && p.no_state && p.pair_transport.empty());
+  LaunchOptions pt;
+  CHECK(parse({"--pair", "NVE://pair?host=127.0.0.1&quic=8091&wss=8092&transport=ws", "--pair-transport", "wt"},
+              pt) == LaunchParse::Run);
+  CHECK(pt.pair_transport == "webtransport");
+  CHECK(pt.pair_uri == "nve://pair?host=127.0.0.1&quic=8091&wss=8092&transport=webtransport");
+  LaunchOptions pt_auto;
+  CHECK(parse({"--pair", "nve://pair?host=127.0.0.1&quic=8091&transport=wss", "--pair-transport", "auto"},
+              pt_auto) == LaunchParse::Run);
+  CHECK(pt_auto.pair_transport == "auto");
+  CHECK(pt_auto.pair_uri == "nve://pair?host=127.0.0.1&quic=8091");
+  LaunchOptions pt_scheme;
+  CHECK(parse({"--pair", "wss://127.0.0.1:8092/nve-wire?token=t", "--pair-transport", "quic"}, pt_scheme) ==
+        LaunchParse::Run);
+  CHECK(pt_scheme.pair_uri == "quic://127.0.0.1:8092/nve-wire?token=t");
   LaunchOptions h;
   CHECK(parse({"--width", "10", "-h", "--bogus"}, h) == LaunchParse::Help);
-  // Errors: unknown flag, missing / invalid / out-of-range values, exclusive sources.
+  // Errors: unknown flag, missing / invalid / out-of-range values, exclusive sources, bad pair transport.
   for (const std::vector<const char*>& bad : std::vector<std::vector<const char*>>{
            {"--bogus"}, {"--dylib"}, {"--width", "0"}, {"--width", "12px"}, {"--height", "-3"}, {"--schema", "x"},
-           {"--dylib", "a", "--pair", "nve://x"}}) {
+           {"--dylib", "a", "--pair", "nve://x"}, {"--pair-transport"}, {"--pair-transport", "gopher"},
+           {"--pair", "ftp://127.0.0.1:21", "--pair-transport", "quic"}}) {
     LaunchOptions e;
     error.clear();
     CHECK(parse(bad, e, &error) == LaunchParse::Error && !error.empty());
@@ -188,6 +204,48 @@ void test_launch_state() {
   set_env("NVE_STATE_PATH", nullptr);
 }
 
+void test_pair_transport_and_aria_relations() {
+  CHECK(canonical_pair_transport("auto").value_or("") == "auto");
+  CHECK(canonical_pair_transport("HAPPY-EYEBALLS").value_or("") == "auto");
+  CHECK(canonical_pair_transport("udp").value_or("") == "quic");
+  CHECK(canonical_pair_transport("h3").value_or("") == "webtransport");
+  CHECK(canonical_pair_transport("TLS").value_or("") == "wss");
+  CHECK(canonical_pair_transport("tcp").value_or("") == "ws");
+  CHECK(!canonical_pair_transport("sctp").has_value());
+  CHECK(!canonical_pair_transport("quic\n").has_value());
+
+  CHECK(apply_pair_transport("127.0.0.1:8091", "wss").value_or("") == "wss://127.0.0.1:8091");
+  CHECK(apply_pair_transport("[::1]:8091", "wt").value_or("") == "wt://[::1]:8091");
+  CHECK(apply_pair_transport("quic://127.0.0.1:8091/nve-wire", "auto").value_or("") == "127.0.0.1:8091/nve-wire");
+  CHECK(apply_pair_transport("NVE://pair?host=h&quic=1", "").value_or("") == "nve://pair?host=h&quic=1");
+  CHECK(!apply_pair_transport("http://127.0.0.1:80", "ws").has_value());
+  CHECK(!apply_pair_transport("nve://pair?host=h\x07", "quic").has_value());
+  CHECK(!apply_pair_transport("", "quic").has_value());
+
+  // `AriaRelations` resource kind matches generated `nve.res.aria_relations` hash.
+  CHECK(kAriaRelationsKind.value == 0x099DBC073D018263ULL);
+  const AriaRelations src{"panel-1", "lbl-a lbl-b", "desc-1", "opt-2"};
+  const std::vector<uint8_t> encoded = encode_aria_relations(src);
+  CHECK((encoded.size() & 3u) == 0u);
+  const std::optional<AriaRelations> decoded = decode_aria_relations(encoded);
+  CHECK(decoded.has_value() && *decoded == src && !decoded->empty());
+
+  const std::optional<AriaRelations> empty = decode_aria_relations(encode_aria_relations(AriaRelations{}));
+  CHECK(empty.has_value() && empty->empty());
+
+  // Reject unaligned bytes, non-zero padding, truncated payload, trailing bytes, and bad UTF-8.
+  CHECK(!decode_aria_relations(std::span<const uint8_t>(encoded.data(), encoded.size() - 1u)).has_value());
+  std::vector<uint8_t> bad_pad = encode_aria_relations(AriaRelations{"a", "", "", ""});
+  CHECK(bad_pad.size() == 20u);
+  bad_pad.back() = 1u;
+  CHECK(!decode_aria_relations(bad_pad).has_value());
+  std::vector<uint8_t> trailing = encoded;
+  trailing.insert(trailing.end(), 4u, 0u);
+  CHECK(!decode_aria_relations(trailing).has_value());
+  std::vector<uint8_t> bad_utf8 = encode_aria_relations(AriaRelations{"\xFF", "", "", ""});
+  CHECK(!decode_aria_relations(bad_utf8).has_value());
+}
+
 }  // namespace
 
 int main() {
@@ -196,6 +254,7 @@ int main() {
   test_policies_are_locale_independent();
   test_launch_args();
   test_launch_state();
+  test_pair_transport_and_aria_relations();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_policy_test: %d failure(s)\n", g_failures);
     return 1;

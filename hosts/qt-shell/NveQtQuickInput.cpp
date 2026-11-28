@@ -189,8 +189,11 @@ bool NveQtQuickItem::Impl::wheel(QPointF pos, QPointF delta) {
 void NveQtQuickItem::Impl::set_focus(uint32_t id) {
   if (id == focused_) return;
   const uint32_t before = std::exchange(focused_, id);
+  bool end_comp = false;
   for (const uint32_t changed : {before, id}) {
     if (QuickNodeView* v = find(changed); v != nullptr && changed != 0u && v->is_input) {
+      if (changed == before && v->input.composing) end_comp = true;
+      v->input.composing = false;
       v->input.preedit.clear();
       bump_paint(*v);  // caret
     }
@@ -198,6 +201,9 @@ void NveQtQuickItem::Impl::set_focus(uint32_t id) {
   if (id != 0u && !owner_->hasActiveFocus()) owner_->forceActiveFocus(Qt::MouseFocusReason);
   QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
   if (id != 0u) a11y_focused(id);
+  if (end_comp && before != 0u && find(before) != nullptr) {
+    (void)dispatch_composition(before, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+  }
   if (before != 0u && find(before) != nullptr) (void)dispatch_focus(before, false);
   if (id != 0u && find(id) != nullptr) (void)dispatch_focus(id, true);
 }
@@ -233,29 +239,42 @@ void NveQtQuickItem::Impl::edit_input(QuickNodeView& v, const QString& text, int
 bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
   QuickNodeView* f = find(focused_);
   if (f == nullptr || focused_ == 0u) f = nullptr;
+  const bool composing = f != nullptr && f->is_input && f->input.composing;
+  const MappedQtKey mapped = map_qt_key(event, composing);
+  bool key_dispatched = false;
+  if (!mapped.key.empty()) {
+    QuickNodeView* listener =
+        nearest(f, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_KEY_DOWN); });
+    if (listener != nullptr) {
+      key_dispatched = dispatch_key(listener->id, NVE_INTERACTION_EVENT_KEY_DOWN, mapped.key, mapped.code,
+                                    mapped.flags, mapped.key_code);
+      f = find(focused_);
+      if (f == nullptr || focused_ == 0u) f = nullptr;
+    }
+  }
   const int k = event.key();
   if (k == Qt::Key_Tab || k == Qt::Key_Backtab) {  // focus traversal in tree order, wrapping
     std::vector<QuickNodeView*> order;
     collect(root_, order);
     std::erase_if(order, [](const QuickNodeView* v) { return !v->focusable || !v->visible; });
-    if (order.empty()) return false;
+    if (order.empty()) return key_dispatched;
     const auto at = std::find(order.begin(), order.end(), f);
     const ptrdiff_t n = static_cast<ptrdiff_t>(order.size());
     const ptrdiff_t i = at == order.end() ? (k == Qt::Key_Tab ? -1 : 0) : at - order.begin();
     set_focus(order[static_cast<size_t>(((i + (k == Qt::Key_Tab ? 1 : -1)) % n + n) % n)]->id);
     return true;
   }
-  if (f == nullptr) return false;
+  if (f == nullptr) return key_dispatched;
   if (!f->is_input) {
     if ((k == Qt::Key_Space || k == Qt::Key_Return || k == Qt::Key_Enter) && f->activatable()) {
       (void)activate(f->id, f->wants_press, f->href, static_cast<float>(f->local.width() * 0.5),
                      static_cast<float>(f->local.height() * 0.5));
       return true;
     }
-    return false;
+    return key_dispatched;
   }
   QuickInput& in = f->input;
-  if (in.read_only || f->disabled) return k != Qt::Key_Escape;
+  if (in.read_only || f->disabled) return k != Qt::Key_Escape || key_dispatched;
   QString text = in.edit;
   int caret = std::clamp(in.caret, 0, static_cast<int>(text.size()));
   switch (k) {
@@ -285,17 +304,49 @@ bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
     default: break;
   }
   const QString typed = scene_string(event.text().toStdString());
-  if (typed.isEmpty()) return false;
+  if (typed.isEmpty()) return key_dispatched;
   text.insert(caret, typed);
   edit_input(*f, text, caret + static_cast<int>(typed.size()));
   return true;
 }
 
+bool NveQtQuickItem::Impl::key_release(QKeyEvent& event) {
+  QuickNodeView* f = find(focused_);
+  if (f == nullptr || focused_ == 0u) return false;
+  const MappedQtKey mapped = map_qt_key(event, f->is_input && f->input.composing);
+  if (mapped.key.empty()) return false;
+  QuickNodeView* listener =
+      nearest(f, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_KEY_UP); });
+  if (listener == nullptr) return false;
+  return dispatch_key(listener->id, NVE_INTERACTION_EVENT_KEY_UP, mapped.key, mapped.code, mapped.flags,
+                      mapped.key_code);
+}
+
 void NveQtQuickItem::Impl::ime(QInputMethodEvent& event) {
   QuickNodeView* f = find(focused_);
-  if (f == nullptr || focused_ == 0u || !f->is_input || f->input.read_only) return;
-  f->input.preedit = event.preeditString();
+  if (f == nullptr || focused_ == 0u || !f->is_input || f->input.read_only || f->disabled) return;
+  const uint32_t id = f->id;
+  const bool was_composing = f->input.composing;
+  const QString preedit = event.preeditString();
   const QString commit = scene_string(event.commitString().toStdString(), f->input.multiline);
+  const bool now_composing = !preedit.isEmpty();
+  f->input.preedit = preedit;
+  f->input.composing = now_composing;
+  if (!was_composing && now_composing) {
+    (void)dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_START, {});
+    f = find(id);
+    if (f == nullptr || !f->is_input) return;
+  }
+  if (now_composing) {
+    (void)dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, preedit.toStdString());
+    f = find(id);
+    if (f == nullptr || !f->is_input) return;
+  }
+  if (was_composing && !now_composing) {
+    (void)dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, commit.toStdString());
+    f = find(id);
+    if (f == nullptr || !f->is_input) return;
+  }
   if (commit.isEmpty()) {
     bump_paint(*f);
     return;
@@ -362,6 +413,10 @@ void NveQtQuickItem::wheelEvent(QWheelEvent* event) {
 
 void NveQtQuickItem::keyPressEvent(QKeyEvent* event) {
   if (!impl_->key(*event)) QQuickItem::keyPressEvent(event);
+}
+
+void NveQtQuickItem::keyReleaseEvent(QKeyEvent* event) {
+  if (!impl_->key_release(*event)) QQuickItem::keyReleaseEvent(event);
 }
 
 void NveQtQuickItem::inputMethodEvent(QInputMethodEvent* event) {

@@ -159,9 +159,10 @@ void test_scroll_containers() {
   NVE_CHECK(host.wheel_at(ox, oy, 100.0f, 0.0f) && approx(node(host, kOverflow).scroll_x, 100.0, 0.5));
   NVE_CHECK(approx(abs_rect(host, kWide).x, -100.0, 0.5));
 
-  // Programmatic scroll is applied by the runtime and not echoed as a user Scroll event.
+  // Programmatic scroll (seq > 0) is applied by the runtime and not echoed as a user Scroll event.
   const size_t scrolls = app.count(NVE_SCROLL_EVENT_SCROLL, kScroll);
   w.set_f32(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 80.0f);
+  w.set(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_SEQ, 1u);
   flush(host);
   NVE_CHECK(approx(node(host, kScroll).scroll_y, 80.0, 0.5) && app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == scrolls);
   NVE_CHECK(host.dispatch_scroll(kScroll, 0.0f, 10.0f));  // the user scrolls away; an unrelated frame keeps it

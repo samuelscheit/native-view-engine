@@ -37,6 +37,16 @@ const QuickNodeView* NveQtQuickItem::Impl::find(uint32_t id) const noexcept {
   return const_cast<Impl*>(this)->find(id);
 }
 
+QuickNodeView* NveQtQuickItem::Impl::find_by_dom_id(std::string_view dom_id) noexcept {
+  if (dom_id.empty()) return nullptr;
+  if (root_.dom_id == dom_id) return &root_;
+  QuickNodeView* found = nullptr;
+  tree_.for_each_view([&](QuickNodeView*& v) {
+    if (found == nullptr && v != nullptr && v->dom_id == dom_id) found = v;
+  });
+  return found;
+}
+
 namespace {
 
 /// Queues `v` for the scene-graph builder once (O(1); `destroy` tombstones its slot).
@@ -193,7 +203,12 @@ void NveQtQuickItem::Impl::Adapter::update_root(const host::NodeData& node) {
     r.synced = true;
     host->bump_paint(r);
   }
-  NodeSemantics sem = node_semantics(node);
+  r.dom_id.assign(node.debug_id.id);
+  std::optional<host::AriaRelations> rels;
+  if (node.a11y.relations != 0u) {
+    rels = host::decode_aria_relations(host->scene_resource(node.a11y.relations, host::kAriaRelationsKind));
+  }
+  NodeSemantics sem = node_semantics(node, rels);
   if (!(sem == r.sem)) {
     const NodeSemantics before = std::move(r.sem);
     r.sem = std::move(sem);
@@ -314,11 +329,16 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
 
   v.interaction_events = node.interaction.events;
   v.wants_press = node.wants(NVE_INTERACTION_EVENT_PRESS);
+  v.dom_id.assign(node.debug_id.id);
   v.href.assign(node.href);
   v.disabled = node.interaction.disabled;
   v.focusable = !v.disabled && (node.interaction.focusable || v.is_input);
   v.cursor = node.interaction.cursor;
-  NodeSemantics sem = node_semantics(node);
+  std::optional<host::AriaRelations> rels;
+  if (node.a11y.relations != 0u) {
+    rels = host::decode_aria_relations(scene_resource(node.a11y.relations, host::kAriaRelationsKind));
+  }
+  NodeSemantics sem = node_semantics(node, rels);
   if (!v.synced || !(sem == v.sem)) {
     const NodeSemantics before = std::move(v.sem);
     v.sem = std::move(sem);
@@ -340,7 +360,7 @@ void NveQtQuickItem::Impl::update_input(QuickNodeView& v, const host::NodeData& 
   in.max_length = node.input.max_length;
   in.placeholder = scene_string(node.input.placeholder);
   v.paint.style = text_style(node.text_style);
-  if (!in.preedit.isEmpty()) return;  // never clobber a live IME composition
+  if (in.composing || !in.preedit.isEmpty()) return;  // never clobber a live IME composition
   const std::string shown = in.edit.toStdString();
   if (in.control.app_published(node.input.value, shown)) {
     const auto write = in.control.host_write();

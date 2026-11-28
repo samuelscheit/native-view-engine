@@ -125,6 +125,7 @@ struct WinNodeVisual {
   host::ScrollData scroll;
   host::InteractionData interaction;
   uint32_t layout_events = 0u;  // `NVE_LAYOUT_EVENT_SET_*` bits
+  bool modal = false;           // `nve.accessibility.modal` (scopes Tab traversal)
   std::string href;
   std::vector<uint32_t> children;     // packed `NodeId`s, scene order
   std::vector<uint32_t> paint_order;  // `children` stable-sorted by `z_index`
