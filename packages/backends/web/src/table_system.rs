@@ -73,8 +73,11 @@ pub struct WebStoreRenderer {
     #[cfg(any(target_arch = "wasm32", test))]
     retag_committed_scratch: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
     /// `(slot, node)` pairs queued by [`WebSystemCommitCtx::request_connected_sync`] or subtree sync.
-    #[cfg(any(target_arch = "wasm32", test))]
     connected_sync: Vec<(TableSlot, NodeId)>,
+    /// Native-only opt-in switch enabling `connected_sync` queueing in headless/cross-crate tests
+    /// (off by default so SSR commits never accumulate undrained entries).
+    #[cfg(not(target_arch = "wasm32"))]
+    track_connected_sync: bool,
     /// Reusable drain-time dedupe set for `connected_sync`.
     #[cfg(any(target_arch = "wasm32", test))]
     connected_seen: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
@@ -129,6 +132,18 @@ impl WebStoreRenderer {
 
     pub fn plugin_inline_css(&self, id: NodeId) -> Option<&str> {
         self.plugin_inline_css.get(&id).map(String::as_str)
+    }
+
+    /// Enables or disables recording [`WebSystemCommitCtx::request_connected_sync`] calls on
+    /// non-wasm32 targets (for native plugin tests simulating a mounted DOM).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_track_connected_sync(&mut self, enabled: bool) {
+        self.track_connected_sync = enabled;
+    }
+
+    /// Drains any pending `(slot, node)` connected-sync requests queued during commits.
+    pub fn drain_connected_sync_requests(&mut self) -> Vec<(TableSlot, NodeId)> {
+        std::mem::take(&mut self.connected_sync)
     }
 }
 
@@ -248,6 +263,7 @@ impl WebStoreRenderer {
                 let slot = sys.slot();
                 let mut ctx = self.commit_ctx(
                     slot,
+                    false,
                     #[cfg(target_arch = "wasm32")]
                     live_elements.and_then(|m| m.get(&id)),
                 );
@@ -266,6 +282,7 @@ impl WebStoreRenderer {
     fn commit_ctx<'a>(
         &'a mut self,
         current_slot: TableSlot,
+        is_retagged: bool,
         #[cfg(target_arch = "wasm32")] live_element: Option<&'a web_sys::Element>,
     ) -> WebSystemCommitCtx<'a> {
         WebSystemCommitCtx {
@@ -281,7 +298,9 @@ impl WebStoreRenderer {
             write_seq: &mut self.write_seq,
             #[cfg(target_arch = "wasm32")]
             live_element,
-            #[cfg(any(target_arch = "wasm32", test))]
+            is_retagged,
+            #[cfg(not(target_arch = "wasm32"))]
+            track_connected_sync: self.track_connected_sync,
             connected_sync: &mut self.connected_sync,
         }
     }
@@ -301,6 +320,7 @@ impl WebStoreRenderer {
                 for &nid in &tc.detached {
                     let mut ctx = self.commit_ctx(
                         tc.slot,
+                        false,
                         #[cfg(target_arch = "wasm32")]
                         live_elements.and_then(|m| m.get(&nid)),
                     );
@@ -318,9 +338,11 @@ impl WebStoreRenderer {
         &mut self,
         store: &NodeStore,
         changes: &ChangeSet,
-        #[cfg(any(target_arch = "wasm32", test))] record_committed: bool,
+        #[cfg(any(target_arch = "wasm32", test))] retagged: &[NodeId],
         #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<NodeId, web_sys::Element>>,
     ) -> u32 {
+        #[cfg(any(target_arch = "wasm32", test))]
+        let record_committed = !retagged.is_empty();
         #[cfg(any(target_arch = "wasm32", test))]
         if record_committed {
             self.retag_committed_scratch.clear();
@@ -365,8 +387,13 @@ impl WebStoreRenderer {
                     if record_committed {
                         self.retag_committed_scratch.insert((slot, nid));
                     }
+                    #[cfg(any(target_arch = "wasm32", test))]
+                    let is_retagged = record_committed && retagged.contains(&nid);
+                    #[cfg(not(any(target_arch = "wasm32", test)))]
+                    let is_retagged = false;
                     let mut ctx = self.commit_ctx(
                         slot,
+                        is_retagged,
                         #[cfg(target_arch = "wasm32")]
                         live_elements.and_then(|m| m.get(&nid)),
                     );
@@ -390,6 +417,7 @@ impl WebStoreRenderer {
             if let Some(sys) = self.registry.get(cmd.table).cloned() {
                 let mut ctx = self.commit_ctx(
                     cmd.table,
+                    false,
                     #[cfg(target_arch = "wasm32")]
                     live_elements.and_then(|m| m.get(&cmd.node)),
                 );
@@ -420,11 +448,11 @@ impl WebStoreRenderer {
             changes,
             #[cfg(target_arch = "wasm32")] live_dom,
         );
-        let has_retag = !retagged.is_empty() && retag_live.is_some();
+        let active_retagged: &[NodeId] = if retag_live.is_some() { retagged } else { &[] };
         mutations += self.commit_plugins_step2(
             store,
             changes,
-            has_retag,
+            active_retagged,
             #[cfg(target_arch = "wasm32")] live_dom,
         );
         if let Some(live) = retag_live
@@ -459,7 +487,7 @@ impl WebStoreRenderer {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut mutations = self.detach_plugins_step1(changes);
-            mutations += self.commit_plugins_step2(store, changes, #[cfg(test)] false);
+            mutations += self.commit_plugins_step2(store, changes, #[cfg(test)] &[]);
             mutations + self.dispatch_commands_step3(store, changes)
         }
     }
@@ -520,6 +548,7 @@ impl StoreBackend for WebStoreRenderer {
     }
 
     fn reset(&mut self) {
+        self.registry.reset();
         self.realized.clear();
         self.plugin_attrs.clear();
         self.plugin_inner_html.clear();
@@ -530,7 +559,6 @@ impl StoreBackend for WebStoreRenderer {
         self.write_seq = 0;
         #[cfg(any(target_arch = "wasm32", test))]
         self.retag_committed_scratch.clear();
-        #[cfg(any(target_arch = "wasm32", test))]
         self.connected_sync.clear();
         #[cfg(any(target_arch = "wasm32", test))]
         self.connected_seen.clear();

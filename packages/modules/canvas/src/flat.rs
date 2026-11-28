@@ -1,5 +1,6 @@
-//! Flat 4-byte-aligned [`FlatResource`] implementation for [`DrawList`] and zero-copy
-//! [`DrawListView`] / [`CanvasOpRef`] / [`PolylinePoints`] slab readers.
+//! Flat 4-byte-aligned [`FlatResource`] implementation for [`DrawList`], raw `CanvasOp` wire
+//! encoding, and zero-copy [`DrawListView`] / [`CanvasOpRef`] slab readers + single canonical
+//! [`DrawListView::replay`].
 
 use nve_abi::{ColorRgba, Key64};
 use nve_codec::FloatConstraint;
@@ -9,69 +10,9 @@ use crate::desc::{
     DRAW_LIST_CODEC_DESC, OP_CLEAR, OP_CLIP_RECT, OP_FILL_CIRCLE, OP_FILL_RECT,
     OP_FILL_ROUNDED_RECT, OP_RESTORE_CLIP, OP_STROKE_LINE, OP_STROKE_POLYLINE,
 };
+use crate::painter::CanvasPainter;
+use crate::polyline::PolylinePoints;
 use crate::{CanvasOp, DrawList, MAX_DRAW_OPS, MAX_POLYLINE_POINTS};
-
-/// Zero-copy borrowed view over flat `(x, y)` `f32` vertex pairs inside a `StrokePolyline` op.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PolylinePoints<'a>(&'a [u32]);
-
-impl<'a> PolylinePoints<'a> {
-    #[inline(always)]
-    pub const fn len(self) -> usize {
-        self.0.len() / 2
-    }
-
-    #[inline(always)]
-    pub const fn is_empty(self) -> bool {
-        self.len() == 0
-    }
-
-    #[inline]
-    pub fn get(self, index: usize) -> Option<(f32, f32)> {
-        let b = index.checked_mul(2)?;
-        let x = *self.0.get(b)?;
-        let y = *self.0.get(b + 1)?;
-        Some((f32::from_bits(x), f32::from_bits(y)))
-    }
-
-    #[inline]
-    pub fn iter(self) -> PolylinePointsIter<'a> {
-        PolylinePointsIter {
-            view: self,
-            idx: 0,
-            end: self.len(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PolylinePointsIter<'a> {
-    view: PolylinePoints<'a>,
-    idx: usize,
-    end: usize,
-}
-
-impl Iterator for PolylinePointsIter<'_> {
-    type Item = (f32, f32);
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.end {
-            return None;
-        }
-        let pt = self.view.get(self.idx);
-        self.idx += 1;
-        pt
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let rem = self.end - self.idx;
-        (rem, Some(rem))
-    }
-}
-
-impl ExactSizeIterator for PolylinePointsIter<'_> {}
 
 /// Zero-copy borrowed drawing operation yielded by [`DrawListView::ops`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,16 +68,52 @@ impl CanvasOpRef<'_> {
         match self {
             Self::Clear { color } => CanvasOp::Clear { color },
             Self::FillRect { x, y, w, h, color } => CanvasOp::FillRect { x, y, w, h, color },
-            Self::FillRoundedRect { x, y, w, h, radius, color } => {
-                CanvasOp::FillRoundedRect { x, y, w, h, radius, color }
-            }
-            Self::FillCircle { cx, cy, radius, color } => {
-                CanvasOp::FillCircle { cx, cy, radius, color }
-            }
-            Self::StrokeLine { x0, y0, x1, y1, width, color } => {
-                CanvasOp::StrokeLine { x0, y0, x1, y1, width, color }
-            }
-            Self::StrokePolyline { points, width, color } => CanvasOp::StrokePolyline {
+            Self::FillRoundedRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            } => CanvasOp::FillRoundedRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            },
+            Self::FillCircle {
+                cx,
+                cy,
+                radius,
+                color,
+            } => CanvasOp::FillCircle {
+                cx,
+                cy,
+                radius,
+                color,
+            },
+            Self::StrokeLine {
+                x0,
+                y0,
+                x1,
+                y1,
+                width,
+                color,
+            } => CanvasOp::StrokeLine {
+                x0,
+                y0,
+                x1,
+                y1,
+                width,
+                color,
+            },
+            Self::StrokePolyline {
+                points,
+                width,
+                color,
+            } => CanvasOp::StrokePolyline {
                 points: points.iter().collect(),
                 width,
                 color,
@@ -152,6 +129,17 @@ impl CanvasOpRef<'_> {
 pub struct DrawListView<'a>(&'a [u32]);
 
 impl<'a> DrawListView<'a> {
+    #[inline(always)]
+    pub(crate) const fn from_validated_slice(words: &'a [u32]) -> Self {
+        Self(words)
+    }
+
+    /// Underlying flat `u32` word stream (`[op_count, (opcode, args...)*]`).
+    #[inline(always)]
+    pub const fn words(self) -> &'a [u32] {
+        self.0
+    }
+
     #[inline(always)]
     pub const fn len(self) -> usize {
         if self.0.is_empty() { 0 } else { self.0[0] as usize }
@@ -171,8 +159,51 @@ impl<'a> DrawListView<'a> {
         }
     }
 
+    /// Replays every operation in this validated word stream directly into `painter` with zero
+    /// heap allocations. Single canonical `CanvasOpRef` dispatcher shared by all backends.
+    #[inline]
+    pub fn replay(self, painter: &mut (impl CanvasPainter + ?Sized)) {
+        for op in self.ops() {
+            match op {
+                CanvasOpRef::Clear { color } => painter.clear(color),
+                CanvasOpRef::FillRect { x, y, w, h, color } => painter.fill_rect(x, y, w, h, color),
+                CanvasOpRef::FillRoundedRect {
+                    x,
+                    y,
+                    w,
+                    h,
+                    radius,
+                    color,
+                } => painter.fill_rounded_rect(x, y, w, h, radius, color),
+                CanvasOpRef::FillCircle {
+                    cx,
+                    cy,
+                    radius,
+                    color,
+                } => painter.fill_circle(cx, cy, radius, color),
+                CanvasOpRef::StrokeLine {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    width,
+                    color,
+                } => painter.stroke_line(x0, y0, x1, y1, width, color),
+                CanvasOpRef::StrokePolyline {
+                    points,
+                    width,
+                    color,
+                } => painter.stroke_polyline_points(points, width, color),
+                CanvasOpRef::ClipRect { x, y, w, h } => painter.clip_rect(x, y, w, h),
+                CanvasOpRef::RestoreClip => painter.restore_clip(),
+            }
+        }
+    }
+
+    /// Copies the sealed flat words directly into an owned [`DrawList`] via a single `memcpy`.
+    #[inline]
     pub fn to_owned(self) -> DrawList {
-        DrawList::from_ops(self.ops().map(CanvasOpRef::to_owned).collect())
+        DrawList::from_validated_words(self.0)
     }
 }
 
@@ -254,7 +285,7 @@ impl<'a> Iterator for DrawListOpsIter<'a> {
                 let pts = self.words.get(pts_start..pts_end)?;
                 self.pos = pts_end;
                 CanvasOpRef::StrokePolyline {
-                    points: PolylinePoints(pts),
+                    points: PolylinePoints::from_words(pts),
                     width: f32::from_bits(hdr[0]),
                     color: ColorRgba::from_u32(hdr[1]),
                 }
@@ -297,149 +328,162 @@ fn word_non_negative(word: u32) -> bool {
     FloatConstraint::NonNegative.check(f32::from_bits(word))
 }
 
+/// Validates and encodes a raw slice of [`CanvasOp`] into canonical flat `nve.res.draw_list` words.
+/// Rolls `out` back to its initial length and returns `false` if any operation violates wire bounds.
+pub(crate) fn encode_ops_into(ops: &[CanvasOp], out: &mut Vec<u32>) -> bool {
+    if ops.len() > MAX_DRAW_OPS {
+        return false;
+    }
+    let start = out.len();
+    out.push(ops.len() as u32);
+    for op in ops {
+        match op {
+            CanvasOp::Clear { color } => out.extend_from_slice(&[OP_CLEAR, color.to_u32()]),
+            CanvasOp::FillRect { x, y, w, h, color } => {
+                if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+                    out.truncate(start);
+                    return false;
+                }
+                out.extend_from_slice(&[
+                    OP_FILL_RECT,
+                    x.to_bits(),
+                    y.to_bits(),
+                    w.to_bits(),
+                    h.to_bits(),
+                    color.to_u32(),
+                ]);
+            }
+            CanvasOp::FillRoundedRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            } => {
+                if !x.is_finite()
+                    || !y.is_finite()
+                    || !w.is_finite()
+                    || !h.is_finite()
+                    || !FloatConstraint::NonNegative.check(*radius)
+                {
+                    out.truncate(start);
+                    return false;
+                }
+                out.extend_from_slice(&[
+                    OP_FILL_ROUNDED_RECT,
+                    x.to_bits(),
+                    y.to_bits(),
+                    w.to_bits(),
+                    h.to_bits(),
+                    radius.to_bits(),
+                    color.to_u32(),
+                ]);
+            }
+            CanvasOp::FillCircle {
+                cx,
+                cy,
+                radius,
+                color,
+            } => {
+                if !cx.is_finite()
+                    || !cy.is_finite()
+                    || !FloatConstraint::NonNegative.check(*radius)
+                {
+                    out.truncate(start);
+                    return false;
+                }
+                out.extend_from_slice(&[
+                    OP_FILL_CIRCLE,
+                    cx.to_bits(),
+                    cy.to_bits(),
+                    radius.to_bits(),
+                    color.to_u32(),
+                ]);
+            }
+            CanvasOp::StrokeLine {
+                x0,
+                y0,
+                x1,
+                y1,
+                width,
+                color,
+            } => {
+                if !x0.is_finite()
+                    || !y0.is_finite()
+                    || !x1.is_finite()
+                    || !y1.is_finite()
+                    || !FloatConstraint::NonNegative.check(*width)
+                {
+                    out.truncate(start);
+                    return false;
+                }
+                out.extend_from_slice(&[
+                    OP_STROKE_LINE,
+                    x0.to_bits(),
+                    y0.to_bits(),
+                    x1.to_bits(),
+                    y1.to_bits(),
+                    width.to_bits(),
+                    color.to_u32(),
+                ]);
+            }
+            CanvasOp::StrokePolyline {
+                points,
+                width,
+                color,
+            } => {
+                if points.len() > MAX_POLYLINE_POINTS
+                    || !FloatConstraint::NonNegative.check(*width)
+                {
+                    out.truncate(start);
+                    return false;
+                }
+                out.reserve(4 + points.len() * 2);
+                out.push(OP_STROKE_POLYLINE);
+                out.push(width.to_bits());
+                out.push(color.to_u32());
+                out.push(points.len() as u32);
+                for &(px, py) in points {
+                    if !px.is_finite() || !py.is_finite() {
+                        out.truncate(start);
+                        return false;
+                    }
+                    out.push(px.to_bits());
+                    out.push(py.to_bits());
+                }
+            }
+            CanvasOp::ClipRect { x, y, w, h } => {
+                if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+                    out.truncate(start);
+                    return false;
+                }
+                out.extend_from_slice(&[
+                    OP_CLIP_RECT,
+                    x.to_bits(),
+                    y.to_bits(),
+                    w.to_bits(),
+                    h.to_bits(),
+                ]);
+            }
+            CanvasOp::RestoreClip => out.push(OP_RESTORE_CLIP),
+        }
+    }
+    true
+}
+
 impl FlatResource for DrawList {
     const KIND: Key64 = Key64::of(DRAW_LIST_CODEC_DESC.kind_name);
     type View<'a> = DrawListView<'a>;
 
+    /// Copies the pre-encoded flat word stream in one `memcpy` (zero re-encoding pass).
+    #[inline]
     fn write_words(&self, out: &mut Vec<u32>) -> bool {
-        if self.ops().len() > MAX_DRAW_OPS {
+        let words = self.words();
+        if words.is_empty() {
             return false;
         }
-        let start = out.len();
-        out.push(self.ops().len() as u32);
-        for op in self.ops() {
-            match op {
-                CanvasOp::Clear { color } => out.extend_from_slice(&[OP_CLEAR, color.to_u32()]),
-                CanvasOp::FillRect { x, y, w, h, color } => {
-                    if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
-                        out.truncate(start);
-                        return false;
-                    }
-                    out.extend_from_slice(&[
-                        OP_FILL_RECT,
-                        x.to_bits(),
-                        y.to_bits(),
-                        w.to_bits(),
-                        h.to_bits(),
-                        color.to_u32(),
-                    ]);
-                }
-                CanvasOp::FillRoundedRect {
-                    x,
-                    y,
-                    w,
-                    h,
-                    radius,
-                    color,
-                } => {
-                    if !x.is_finite()
-                        || !y.is_finite()
-                        || !w.is_finite()
-                        || !h.is_finite()
-                        || !FloatConstraint::NonNegative.check(*radius)
-                    {
-                        out.truncate(start);
-                        return false;
-                    }
-                    out.extend_from_slice(&[
-                        OP_FILL_ROUNDED_RECT,
-                        x.to_bits(),
-                        y.to_bits(),
-                        w.to_bits(),
-                        h.to_bits(),
-                        radius.to_bits(),
-                        color.to_u32(),
-                    ]);
-                }
-                CanvasOp::FillCircle {
-                    cx,
-                    cy,
-                    radius,
-                    color,
-                } => {
-                    if !cx.is_finite()
-                        || !cy.is_finite()
-                        || !FloatConstraint::NonNegative.check(*radius)
-                    {
-                        out.truncate(start);
-                        return false;
-                    }
-                    out.extend_from_slice(&[
-                        OP_FILL_CIRCLE,
-                        cx.to_bits(),
-                        cy.to_bits(),
-                        radius.to_bits(),
-                        color.to_u32(),
-                    ]);
-                }
-                CanvasOp::StrokeLine {
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    width,
-                    color,
-                } => {
-                    if !x0.is_finite()
-                        || !y0.is_finite()
-                        || !x1.is_finite()
-                        || !y1.is_finite()
-                        || !FloatConstraint::NonNegative.check(*width)
-                    {
-                        out.truncate(start);
-                        return false;
-                    }
-                    out.extend_from_slice(&[
-                        OP_STROKE_LINE,
-                        x0.to_bits(),
-                        y0.to_bits(),
-                        x1.to_bits(),
-                        y1.to_bits(),
-                        width.to_bits(),
-                        color.to_u32(),
-                    ]);
-                }
-                CanvasOp::StrokePolyline {
-                    points,
-                    width,
-                    color,
-                } => {
-                    if points.len() > MAX_POLYLINE_POINTS
-                        || !FloatConstraint::NonNegative.check(*width)
-                    {
-                        out.truncate(start);
-                        return false;
-                    }
-                    out.reserve(4 + points.len() * 2);
-                    out.push(OP_STROKE_POLYLINE);
-                    out.push(width.to_bits());
-                    out.push(color.to_u32());
-                    out.push(points.len() as u32);
-                    for &(px, py) in points {
-                        if !px.is_finite() || !py.is_finite() {
-                            out.truncate(start);
-                            return false;
-                        }
-                        out.push(px.to_bits());
-                        out.push(py.to_bits());
-                    }
-                }
-                CanvasOp::ClipRect { x, y, w, h } => {
-                    if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
-                        out.truncate(start);
-                        return false;
-                    }
-                    out.extend_from_slice(&[
-                        OP_CLIP_RECT,
-                        x.to_bits(),
-                        y.to_bits(),
-                        w.to_bits(),
-                        h.to_bits(),
-                    ]);
-                }
-                CanvasOp::RestoreClip => out.push(OP_RESTORE_CLIP),
-            }
-        }
+        out.extend_from_slice(words);
         true
     }
 

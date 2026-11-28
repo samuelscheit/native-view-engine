@@ -119,6 +119,8 @@ pub use raster::{
     rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, PixelBuffer,
 };
 pub use retained::{CompositorScene, SceneDirtyKind, SceneSyncStats};
+#[cfg(feature = "skia")]
+pub use table_system::NativeSkiaSurface;
 pub use table_system::{SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
 pub use text_bidi::{ShapedLineLayout, VisualGraphemeCluster};
@@ -231,6 +233,7 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) motion_scratch: Vec<NodeId>,
     pub(crate) motion_paint_scratch: Vec<NodeId>,
     pub(crate) plugin_dirty_scratch: Vec<NodeId>,
+    pub(crate) plugin_scratch: PixelBuffer,
 }
 
 impl Default for SkiaBackend<TaffyStoreLayout> {
@@ -272,6 +275,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             motion_scratch: Vec::new(),
             motion_paint_scratch: Vec::new(),
             plugin_dirty_scratch: Vec::new(),
+            plugin_scratch: PixelBuffer::new_transparent_rgba(0, 0),
         }
     }
 
@@ -342,6 +346,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             motion_scratch: self.motion_scratch,
             motion_paint_scratch: self.motion_paint_scratch,
             plugin_dirty_scratch: self.plugin_dirty_scratch,
+            plugin_scratch: self.plugin_scratch,
         }
     }
 
@@ -487,7 +492,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         buffer: &mut PixelBuffer,
         clear_color: ColorRgba,
     ) {
-        self.scene.rasterize_with_plugins(
+        self.scene.rasterize_with_plugins_and_scratch(
             buffer,
             self.viewport.scale_factor,
             clear_color,
@@ -495,6 +500,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             store,
             &self.table_registry,
             &mut self.table_events,
+            &mut self.plugin_scratch,
         );
     }
 }
@@ -539,6 +545,9 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
                 self.bump_plugin_epoch(id);
                 plugin_dirty.push(id);
             }
+            for &id in &changes.removed {
+                self.table_registry.remove_node(id);
+            }
             let slots_len = self.table_registry.iter().len();
             let total_res_changed =
                 changes.resources_defined.len() + changes.resources_released.len();
@@ -557,6 +566,9 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
                     for &id in tc.nodes.iter().chain(tc.detached.iter()) {
                         self.bump_plugin_epoch(id);
                         plugin_dirty.push(id);
+                    }
+                    for &id in &tc.detached {
+                        self.table_registry.iter()[i].remove_node(id);
                     }
                 }
                 if total_res_changed > 0 {
@@ -622,9 +634,11 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         self.viewport_dirty = true;
         self.focus = TextFocusState::default();
         self.frame_hooks.reset();
+        self.table_registry.reset();
         self.table_events.clear();
         self.plugin_epochs.clear();
         self.base_plugin_epoch = next_plugin_epoch();
         self.plugin_base_epoch_dirty = false;
+        self.plugin_scratch.shrink_if_capacity_exceeds(0);
     }
 }

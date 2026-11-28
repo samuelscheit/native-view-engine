@@ -23,6 +23,7 @@ pub const FRAME0_FOOTER_SIZE: usize = 40;
 pub const MAX_FRAME0_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 const FRAME0_XXH64_SEED: u64 = 0x4E56_4546_524D_3032;
+#[cfg(not(target_arch = "wasm32"))]
 const NVE2_MAGIC_BYTES: [u8; 4] = *b"NVE2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

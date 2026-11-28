@@ -20,7 +20,7 @@ pub mod wasm;
 /// browser hydration.
 pub fn register_web_systems(registry: &mut nve_backend_web::WebTableRegistry) {
     nve_web_html_web::register_web_html_systems(registry);
-    registry.register(nve_canvas_web::CanvasWebSystem);
+    registry.register(nve_canvas_web::CanvasWebSystem::new());
 }
 
 use std::sync::Arc;

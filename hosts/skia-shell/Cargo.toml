@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 default = []
 # CPU-backed Skia canvas + raster surface
-skia = ["nve-backend-skia/skia"]
+skia = ["nve-backend-skia/skia", "nve-canvas-skia/skia"]
 # Apple Metal hardware GPU swapchain & offscreen context (macOS / iOS)
 skia-metal = ["skia", "nve-backend-skia/skia-metal"]
 # Cross-platform Vulkan hardware GPU swapchain & offscreen context (Linux / Android / Windows / MoltenVK)

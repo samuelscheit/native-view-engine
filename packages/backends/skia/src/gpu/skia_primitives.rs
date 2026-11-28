@@ -506,6 +506,9 @@ pub(crate) fn draw_plugin_cached(
     if !rect_is_valid(rect) || !scale.is_finite() || scale <= 0.0 {
         return;
     }
+    if registry.try_paint_skia_canvas(store, node_id, canvas, rect, scale) {
+        return;
+    }
     let max_dim = (rect.width * scale).max(rect.height * scale);
     let eff_scale = if max_dim > 4096.0 {
         scale * (4096.0 / max_dim)

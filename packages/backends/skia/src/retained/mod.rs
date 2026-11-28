@@ -230,7 +230,15 @@ impl CompositorScene {
         clear_color: ColorRgba,
         text_engine: &CosmicTextEngine,
     ) {
-        rasterize_scene_inner(self, buffer, scale_factor, clear_color, Some(text_engine), None);
+        rasterize_scene_inner(
+            self,
+            buffer,
+            scale_factor,
+            clear_color,
+            Some(text_engine),
+            None,
+            None,
+        );
     }
 
     /// Software-rasterizes this scene including registered [`SkiaTableRegistry`] plugins.
@@ -252,6 +260,32 @@ impl CompositorScene {
             clear_color,
             Some(text_engine),
             Some((store, registry, events)),
+            None,
+        );
+    }
+
+    /// Software-rasterizes this scene with registered plugins reusing a caller-owned RGBA scratch
+    /// buffer (zero allocations on steady-state frames).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rasterize_with_plugins_and_scratch(
+        &self,
+        buffer: &mut PixelBuffer,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        text_engine: &CosmicTextEngine,
+        store: &NodeStore,
+        registry: &SkiaTableRegistry,
+        events: &mut EventBatchBuf,
+        plugin_scratch: &mut PixelBuffer,
+    ) {
+        rasterize_scene_inner(
+            self,
+            buffer,
+            scale_factor,
+            clear_color,
+            Some(text_engine),
+            Some((store, registry, events)),
+            Some(plugin_scratch),
         );
     }
 
@@ -262,7 +296,7 @@ impl CompositorScene {
         scale_factor: f32,
         clear_color: ColorRgba,
     ) {
-        rasterize_scene_inner(self, buffer, scale_factor, clear_color, None, None);
+        rasterize_scene_inner(self, buffer, scale_factor, clear_color, None, None, None);
     }
 
     /// Classifies the minimal sync tier needed for `changes`.
@@ -524,5 +558,57 @@ impl CompositorScene {
         self.stats.last_dirty_kind = Some(SceneDirtyKind::PaintOnly);
         self.stats.paint_incremental_paths += 1;
         self.reemit_dirty_nodes_with_inheritance(env);
+    }
+
+    /// Zero-allocation fast path for plugin-only repaints (e.g. 120 Hz direct `Canvas::generation`
+    /// invalidations): patches `NodeChunkMeta::plugin_epoch` and its trailing `LocalPaintOp::Plugin`
+    /// in-place instead of retiring and re-appending arena ops every frame.
+    pub(super) fn try_update_plugin_epochs_in_place<L: StoreLayoutEngine>(
+        &mut self,
+        env: &SceneSyncEnv<'_, L>,
+        changes: &ChangeSet,
+    ) -> bool {
+        if !changes.resources_defined.is_empty()
+            || !changes.resources_released.is_empty()
+            || !changes.commands.is_empty()
+            || env.frame_hooks.watches_changes(changes)
+            || !changes
+                .tables()
+                .iter()
+                .all(|tc| tc.detached.is_empty() && env.table_registry.get(tc.slot).is_some())
+        {
+            return false;
+        }
+        for &id in &self.dirty_nodes_scratch {
+            let Some(cidx) = self.live_chunk_idx(id) else {
+                return false;
+            };
+            let meta = self.chunks[cidx.index()];
+            let Some(last) = meta
+                .op_len
+                .checked_sub(1)
+                .and_then(|d| self.arenas.ops.get(meta.op_start as usize + d as usize))
+            else {
+                return false;
+            };
+            if !matches!(*last, LocalPaintOp::Plugin { node_id, .. } if node_id == id) {
+                return false;
+            }
+        }
+        for i in 0..self.dirty_nodes_scratch.len() {
+            let id = self.dirty_nodes_scratch[i];
+            let Some(cidx) = self.live_chunk_idx(id) else {
+                continue;
+            };
+            let epoch = env.plugin_epoch_of(id);
+            let meta = &mut self.chunks[cidx.index()];
+            meta.plugin_epoch = epoch;
+            let op_idx = meta.op_start as usize + meta.op_len as usize - 1;
+            if let LocalPaintOp::Plugin { plugin_epoch, .. } = &mut self.arenas.ops[op_idx] {
+                *plugin_epoch = epoch;
+            }
+            self.stats.chunks_emitted += 1;
+        }
+        true
     }
 }

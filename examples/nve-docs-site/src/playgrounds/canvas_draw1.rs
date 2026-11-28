@@ -1,31 +1,44 @@
-//! Interactive `"canvas-draw1"` demo compiling flat `DrawList` (`nve.res.draw_list`) streams
-//! rendered by `<skia_canvas>` across Skia GPU, HTML5 Canvas2D, CoreGraphics, and Flutter/Compose.
+//! Interactive `"canvas-draw1"` demo driving one shared `CanvasPainter` via `write_canvas` (direct
+//! in-process or flat `DrawList` `nve.res.draw_list` streams) across Skia, HTML5 Canvas2D,
+//! CoreGraphics, and Flutter/Compose.
+
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use nve_abi::ColorRgba;
-use nve_canvas::{Canvas, DrawList};
+use nve_canvas::{
+    write_canvas, Canvas, CanvasPaintSize, CanvasPainter, DirectCanvasRegistry, DrawList,
+};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
-use nve_store::FlatResource;
 use nve_ui::{
     Accent, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, ColorHex, Theme, use_theme,
     with_alpha,
 };
 
-pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_dioxus::prelude::*;
-use nve_ui::{use_theme, with_alpha};
+static DEMO_RECORDED_GEN: AtomicU32 = AtomicU32::new(1);
+
+pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_canvas::{write_canvas, CanvasPaintSize, CanvasPainter, DirectCanvasRegistry};
+use nve_dioxus::prelude::*;
+use nve_dioxus::table_attr_fn;
+use nve_ui::{Theme, use_theme, with_alpha};
+
+fn paint_scene(p: &mut (impl CanvasPainter + ?Sized), size: CanvasPaintSize, theme: &Theme) {
+    p.clear(theme.surface.sunken);
+    p.fill_rounded_rect(18.0, 20.0, (size.width - 36.0).max(40.0), 74.0, 12.0, with_alpha(theme.status.accent.solid, 44));
+    p.stroke_polyline(&[(24.0, 118.0), (110.0, 76.0), (210.0, 96.0), (320.0, 42.0)], 2.5, theme.status.accent.text);
+    p.fill_circle(320.0, 42.0, 7.0, theme.status.info.text);
+}
 
 let theme = use_theme();
-let mut dl = DrawList::builder();
-dl.clear(theme.surface.sunken)
-  .fill_rounded_rect(18.0, 20.0, 140.0, 74.0, 12.0, with_alpha(theme.status.accent.solid, 44))
-  .stroke_polyline(&[(24.0, 118.0), (110.0, 76.0), (210.0, 96.0), (320.0, 42.0)], 2.5, theme.status.accent.text)
-  .fill_circle(320.0, 42.0, 7.0, theme.status.info.text);
-
-let list = dl.finish();
+let direct = try_consume_context::<DirectCanvasRegistry>();
 rsx! {
-    skia_canvas {
-        draw_list: CanvasDrawList(list),
-        style: "width: 100%; height: 156px; border-radius: 8px;",
+    view {
+        nve_table: table_attr_fn(move |tx, node| {
+            write_canvas(tx, node, direct.as_ref(), CanvasPaintSize::new(536.0, 152.0, 1.0), move |p, size| {
+                paint_scene(p, size, &theme);
+            });
+        }),
+        style: "width: 100%; height: 152px; border-radius: 8px;",
     }
 }"#;
 
@@ -34,6 +47,17 @@ enum SceneMode {
     Sparkline,
     Bars,
     Geometry,
+}
+
+impl SceneMode {
+    /// Exact draw-op count emitted by [`paint_demo_scene`] (1 clear + 3 grid lines + scene ops).
+    const fn op_count(self) -> u32 {
+        match self {
+            Self::Sparkline => 16,
+            Self::Bars => 22,
+            Self::Geometry => 9,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,22 +94,26 @@ impl PaletteChoice {
     }
 }
 
-fn build_scene_draw_list(
+/// Shared scene painter driving both in-process direct painting (`write_canvas`) and recorded
+/// `DrawList::record` output from one single implementation.
+fn paint_demo_scene(
+    p: &mut (impl CanvasPainter + ?Sized),
+    size: CanvasPaintSize,
     theme: &Theme,
     mode: SceneMode,
     palette: PaletteChoice,
     stroke_width: f32,
-) -> (DrawList, u32, usize) {
+) {
     let (primary, secondary, tint) = palette.colors(theme);
     let bg = theme.surface.sunken;
     let grid = theme.border.subtle;
 
-    let mut dl = DrawList::with_capacity(24);
-    dl.clear(bg);
+    p.clear(bg);
 
-    // Subtle baseline grid lines
+    // Subtle baseline grid lines adapting to live logical width.
+    let right = (size.width - 14.0).max(14.0);
     for y in [36.0f32, 76.0, 116.0] {
-        dl.stroke_line(14.0, y, 520.0, y, 1.0, grid);
+        p.stroke_line(14.0, y, right, y, 1.0, grid);
     }
 
     match mode {
@@ -102,10 +130,10 @@ fn build_scene_draw_list(
                 (468.0, 38.0),
                 (510.0, 22.0),
             ];
-            dl.fill_rounded_rect(18.0, 18.0, 158.0, 42.0, 8.0, tint);
-            dl.stroke_polyline(&pts, stroke_width, primary);
+            p.fill_rounded_rect(18.0, 18.0, 158.0, 42.0, 8.0, tint);
+            p.stroke_polyline(&pts, stroke_width, primary);
             for &(x, y) in &pts {
-                dl.fill_circle(x, y, stroke_width + 2.0, secondary);
+                p.fill_circle(x, y, stroke_width + 2.0, secondary);
             }
         }
         SceneMode::Bars => {
@@ -114,15 +142,15 @@ fn build_scene_draw_list(
                 let x = 24.0 + (idx as f32) * 54.0;
                 let y = 134.0 - h;
                 let color = if idx % 2 == 0 { primary } else { secondary };
-                dl.fill_rounded_rect(x, y, 36.0, h, 6.0, color);
-                dl.stroke_line(x, y, x + 36.0, y, stroke_width, theme.surface.base);
+                p.fill_rounded_rect(x, y, 36.0, h, 6.0, color);
+                p.stroke_line(x, y, x + 36.0, y, stroke_width, theme.surface.base);
             }
         }
         SceneMode::Geometry => {
-            dl.fill_rounded_rect(26.0, 26.0, 144.0, 96.0, 16.0, tint);
-            dl.fill_circle(236.0, 76.0, 44.0, primary);
-            dl.fill_circle(272.0, 76.0, 30.0, secondary);
-            dl.stroke_polyline(
+            p.fill_rounded_rect(26.0, 26.0, 144.0, 96.0, 16.0, tint);
+            p.fill_circle(236.0, 76.0, 44.0, primary);
+            p.fill_circle(272.0, 76.0, 30.0, secondary);
+            p.stroke_polyline(
                 &[
                     (336.0, 118.0),
                     (388.0, 26.0),
@@ -132,30 +160,51 @@ fn build_scene_draw_list(
                 stroke_width,
                 primary,
             );
-            dl.fill_rounded_rect(462.0, 32.0, 44.0, 88.0, 10.0, secondary);
+            p.fill_rounded_rect(462.0, 32.0, 44.0, 88.0, 10.0, secondary);
         }
     }
-
-    let list = dl.finish();
-    let op_count = list.op_count();
-    let mut words = Vec::new();
-    let raw_len = if list.write_words(&mut words) {
-        words.len() * 4
-    } else {
-        0
-    };
-    (list, op_count, raw_len)
 }
 
 #[component]
 pub fn CanvasDraw1Demo() -> Element {
     let theme = use_theme();
+    let direct = try_consume_context::<DirectCanvasRegistry>();
     let mut mode = use_signal(|| SceneMode::Sparkline);
     let mut palette = use_signal(|| PaletteChoice::Cyan);
     let mut stroke_w = use_signal(|| 2.5f32);
 
-    let (draw_list, op_count, byte_len) = build_scene_draw_list(&theme, mode(), palette(), stroke_w());
-    let palette_name = palette().label();
+    let cur_mode = mode();
+    let cur_pal = palette();
+    let cur_stroke = stroke_w();
+    let fallback = CanvasPaintSize::new(536.0, 152.0, 1.0);
+    let is_direct = direct.is_some();
+    let recorded_list = (!is_direct).then(|| {
+        DrawList::record(|p| {
+            paint_demo_scene(p, fallback, &theme, cur_mode, cur_pal, cur_stroke);
+        })
+    });
+    let (op_count, byte_len) = match &recorded_list {
+        Some(list) => (list.op_count(), list.byte_len()),
+        None => (cur_mode.op_count(), 0usize),
+    };
+    let ops_badge = if is_direct {
+        format!("Direct Ops: {op_count}")
+    } else {
+        format!("DrawList Ops: {op_count}")
+    };
+    let ir_badge = if is_direct {
+        "Direct In-Process (0 B IR)".to_string()
+    } else {
+        format!("Binary IR: {byte_len} B")
+    };
+    let stream_caption = if is_direct {
+        "Direct CanvasPainter (zero IR)"
+    } else {
+        "Binary vector stream"
+    };
+    let palette_name = cur_pal.label();
+    let theme_for_draw = theme;
+    let direct_for_write = direct;
 
     rsx! {
         view {
@@ -169,12 +218,12 @@ pub fn CanvasDraw1Demo() -> Element {
                     style: "flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
                     Badge {
                         test_id: Some("pg-canvas-ops".to_string()),
-                        label: format!("DrawList Ops: {op_count}"),
+                        label: ops_badge,
                         variant: BadgeVariant::Accent,
                     }
                     Badge {
                         test_id: Some("pg-canvas-bytes".to_string()),
-                        label: format!("Binary IR: {byte_len} B"),
+                        label: ir_badge,
                         variant: BadgeVariant::Success,
                     }
                     Badge {
@@ -185,7 +234,7 @@ pub fn CanvasDraw1Demo() -> Element {
                 }
                 text {
                     style: "font-size: 11px; color: {theme.text.tertiary.hex()};",
-                    "Binary vector stream"
+                    "{stream_caption}"
                 }
             }
 
@@ -194,7 +243,33 @@ pub fn CanvasDraw1Demo() -> Element {
                 test_id: "pg-canvas-surface",
                 accessibility_label: "Interactive DrawList vector canvas",
                 nve_table: table_attr_fn(move |tx, node| {
-                    tx.edit::<Canvas>(node).draw_list_ephemeral(draw_list.clone());
+                    if let Some(list) = recorded_list.as_ref() {
+                        // Reuse the already-recorded `DrawList` (O(1) `Arc::clone`, zero second pass).
+                        let next_gen = DEMO_RECORDED_GEN
+                            .fetch_add(1, Ordering::Relaxed)
+                            .wrapping_add(1)
+                            .max(1);
+                        tx.edit::<Canvas>(node)
+                            .draw_list_ephemeral(list.clone())
+                            .generation(next_gen);
+                    } else {
+                        write_canvas(
+                            tx,
+                            node,
+                            direct_for_write.as_ref(),
+                            fallback,
+                            move |p, size| {
+                                paint_demo_scene(
+                                    p,
+                                    size,
+                                    &theme_for_draw,
+                                    cur_mode,
+                                    cur_pal,
+                                    cur_stroke,
+                                );
+                            },
+                        );
+                    }
                 }),
                 style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.sunken.hex()};",
             }

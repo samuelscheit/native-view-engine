@@ -10,5 +10,12 @@ nve-codec = { workspace = true }
 nve-hash = { workspace = true }
 nve-store = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "canvas_dispatch_bench"
+harness = false
+
 [lints]
 workspace = true

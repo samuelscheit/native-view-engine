@@ -257,6 +257,9 @@ impl CompositorScene {
         }
 
         self.stats.paint_incremental_paths += 1;
+        if self.try_update_plugin_epochs_in_place(env, changes) {
+            return;
+        }
         self.reemit_dirty_nodes_with_inheritance(env);
     }
 

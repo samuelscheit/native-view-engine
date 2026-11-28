@@ -80,10 +80,10 @@ impl MultiBackendHarness {
         };
         let mut headless = HeadlessBackend::new();
         let mut skia = SkiaBackend::new();
-        skia.register_table_system(CanvasSkiaSystem);
+        skia.register_table_system(CanvasSkiaSystem::new());
         let mut web = WebBackend::new();
         register_web_html_systems(web.table_registry_mut());
-        web.register_table_system(CanvasWebSystem);
+        web.register_table_system(CanvasWebSystem::new());
         headless.set_viewport(SurfaceId::ROOT, viewport);
         skia.set_viewport(SurfaceId::ROOT, viewport);
         web.set_viewport(SurfaceId::ROOT, viewport);

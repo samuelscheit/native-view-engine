@@ -449,7 +449,7 @@ fn benchmarks_and_counting_alloc_coverage() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "All non-proc-macro packages/* crates ship colocated benchmarks",
-        28,
+        26,
         &report.all_crate_benches,
     );
     assert_staged_ratchet(

@@ -70,6 +70,9 @@ pub trait WebTableSystem: Send + Sync + 'static {
     /// Cleans up resources when `node` detaches this table or is removed.
     fn remove_node(&self, _ctx: &mut WebSystemCommitCtx<'_>, _node: NodeId) {}
 
+    /// Clears all per-node plugin state when the owning renderer is reset.
+    fn reset(&self) {}
+
     /// Re-synchronizes imperative live DOM state (e.g. repainting a freshly created `<canvas>`)
     /// after an element's tag was replaced without changing this table's row.
     #[cfg(target_arch = "wasm32")]
@@ -140,6 +143,13 @@ impl WebTableRegistry {
     #[inline]
     pub fn iter(&self) -> &[Arc<dyn WebTableSystem>] {
         &self.systems
+    }
+
+    /// Notifies every registered plugin that the owning renderer has been reset.
+    pub fn reset(&self) {
+        for sys in &self.systems {
+            sys.reset();
+        }
     }
 
     /// Resolves the element tag & optional namespace for `node` across registered plugins first,

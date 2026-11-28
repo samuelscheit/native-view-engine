@@ -177,7 +177,9 @@ pub struct WebSystemCommitCtx<'a> {
     pub(crate) write_seq: &'a mut u64,
     #[cfg(target_arch = "wasm32")]
     pub live_element: Option<&'a web_sys::Element>,
-    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) is_retagged: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) track_connected_sync: bool,
     pub(crate) connected_sync: &'a mut Vec<(TableSlot, NodeId)>,
 }
 
@@ -204,6 +206,22 @@ impl WebSystemCommitCtx<'_> {
             }
         }
         best.map(|(v, seq)| (v.to_owned(), seq))
+    }
+
+    #[inline]
+    fn has_newer_other_slot_attr(&self, node: NodeId, name: &str, owned_seq: u64) -> bool {
+        for sys in self.registry.iter() {
+            let slot = sys.slot();
+            if slot == self.current_slot {
+                continue;
+            }
+            if let Some(list) = self.slot_attrs.get(&(node, slot))
+                && list.iter().any(|e| e.name == name && e.seq > owned_seq)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     #[inline]
@@ -292,6 +310,29 @@ impl WebSystemCommitCtx<'_> {
     }
 
     pub fn set_attr(&mut self, node: NodeId, name: &str, value: &str) {
+        // Short-circuit unchanged steady-state writes ONLY for NVE-owned `data-*` attributes on
+        // non-retagged elements when this slot already holds the newest `OwnedAttr::seq` for
+        // `name` (never skip browser-mutable HTML attributes like `open`, and preserve multi-slot
+        // `seq` ordering whenever another slot wrote `name` more recently).
+        if !self.is_retagged
+            && name.starts_with("data-")
+            && let Some(owned_seq) = self
+                .slot_attrs
+                .get(&(node, self.current_slot))
+                .and_then(|owned| {
+                    owned
+                        .iter()
+                        .find(|e| e.name == name && e.value == value)
+                        .map(|e| e.seq)
+                })
+            && self
+                .attrs
+                .get(&node)
+                .is_some_and(|list| list.iter().any(|(k, v)| k == name && v == value))
+            && !self.has_newer_other_slot_attr(node, name, owned_seq)
+        {
+            return;
+        }
         let seq = self.next_seq();
         self.write_effective_attr(node, name, value);
         let owned = self.slot_attrs.entry((node, self.current_slot)).or_default();
@@ -396,9 +437,16 @@ impl WebSystemCommitCtx<'_> {
     /// Queues [`super::WebTableSystem::sync_connected`] for `node` (current slot), run in Step 6
     /// once child reconciliation has connected and placed every element (a Step-5 move would
     /// otherwise evict state applied earlier, e.g. `:modal`). Duplicate requests coalesce at
-    /// drain time.
-    #[cfg(any(target_arch = "wasm32", test))]
+    /// drain time. No-op when no live DOM element is mounted (prevents unbounded queue growth).
     pub fn request_connected_sync(&mut self, node: NodeId) {
+        #[cfg(target_arch = "wasm32")]
+        if self.live_element.is_none() {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.track_connected_sync {
+            return;
+        }
         self.connected_sync.push((self.current_slot, node));
     }
 
@@ -509,6 +557,11 @@ impl crate::table_system::WebStoreRenderer {
                 el.set_inner_html(html);
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn latest_attr_seq_for_test(&self, node: NodeId, name: &str) -> u64 {
+        self.latest_attr_seq(node, name)
     }
 
     fn latest_attr_seq(&self, node: NodeId, name: &str) -> u64 {
