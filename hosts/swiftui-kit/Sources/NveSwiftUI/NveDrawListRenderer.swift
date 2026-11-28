@@ -10,8 +10,6 @@ public enum NveDrawListConstants {
     public static let maxOps: Int = 65_536
     public static let maxPolylinePoints: Int = 16_384
     public static let maxClipDepth: Int = 64
-    public static let attrPrefix: String = "nve-draw1;b64,"
-    public static let attrPrefixBytes: [UInt8] = Array("nve-draw1;b64,".utf8)
 }
 
 /// Decoded header of a flat `nve.res.draw_list` `u32`-word draw-list buffer.
@@ -31,7 +29,6 @@ public enum NveDrawListError: Error, Equatable, Sendable {
     case unknownOpcode(UInt32)
     case nonFiniteFloat
     case trailingBytes(Int)
-    case invalidBase64
 }
 
 /// Zero-copy `FlatResource` (`nve.res.draw_list`) binary vector draw-list validator & SwiftUI
@@ -173,22 +170,8 @@ public enum NveDrawListRenderer {
         }
     }
 
-    /// Decodes a `nve-draw1;b64,...` or bare base64 string into validated flat `nve.res.draw_list` word bytes.
-    public static func decodeAttrString(_ raw: String) throws -> Data {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let b64: String
-        if trimmed.hasPrefix(NveDrawListConstants.attrPrefix) {
-            b64 = String(trimmed.dropFirst(NveDrawListConstants.attrPrefix.count))
-        } else {
-            b64 = trimmed
-        }
-        let decoded = try decodeBase64(b64)
-        _ = try validate(decoded)
-        return decoded
-    }
-
-    /// Zero-copy validates and renders flat `nve.res.draw_list` word bytes (or `nve-draw1;b64,...`
-    /// base64 attribute payload) onto a SwiftUI `GraphicsContext` within `bounds`.
+    /// Zero-copy validates and renders flat `nve.res.draw_list` word bytes onto a SwiftUI
+    /// `GraphicsContext` within `bounds`.
     @discardableResult
     public static func draw(
         _ raw: UnsafeRawBufferPointer,
@@ -196,17 +179,6 @@ public enum NveDrawListRenderer {
         in bounds: CGRect,
         cornerRadius: CGFloat = 0
     ) throws -> Int {
-        if hasAttrPrefix(raw) {
-            let b64Slice = UnsafeRawBufferPointer(
-                rebasing: raw[NveDrawListConstants.attrPrefixBytes.count ..< raw.count]
-            )
-            guard let b64Str = String(bytes: b64Slice, encoding: .utf8) else {
-                throw NveDrawListError.invalidBase64
-            }
-            let decoded = try decodeBase64(b64Str)
-            return try draw(decoded, into: &context, in: bounds, cornerRadius: cornerRadius)
-        }
-
         let header = try validate(raw)
         guard bounds.width > 0 && bounds.height > 0 else {
             return Int(header.opCount)
@@ -375,23 +347,4 @@ public enum NveDrawListRenderer {
         }
     }
 
-    private static func decodeBase64(_ raw: String) throws -> Data {
-        let compact = String(raw.filter { !$0.isWhitespace })
-        guard !compact.isEmpty,
-              let decoded = Data(base64Encoded: compact),
-              !decoded.isEmpty
-        else {
-            throw NveDrawListError.invalidBase64
-        }
-        return decoded
-    }
-
-    private static func hasAttrPrefix(_ raw: UnsafeRawBufferPointer) -> Bool {
-        let prefix = NveDrawListConstants.attrPrefixBytes
-        guard raw.count >= prefix.count else { return false }
-        for i in 0 ..< prefix.count {
-            if raw[i] != prefix[i] { return false }
-        }
-        return true
-    }
 }

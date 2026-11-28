@@ -58,6 +58,30 @@ class NveDrawListPainterTest {
     }
 
     @Test
+    fun clipDepthCapsAt64WithOverflowTracking() {
+        val b = DrawListBytes()
+        repeat(DrawList.MAX_CLIP_DEPTH - 1) { b.clip(0f, 0f, 40f, 40f) }
+        // Clip #64 restricts to [0..10); clips #65 and #66 overflow.
+        b.clip(0f, 0f, 10f, 10f)
+            .clip(0f, 0f, 4f, 4f)
+            .clip(0f, 0f, 2f, 2f)
+            .restore()
+            .restore()
+            .fillRect(0f, 0f, 40f, 40f, red)
+            .restore()
+            .fillRect(20f, 20f, 10f, 10f, blue)
+        val image = ImageBitmap(40, 40)
+        val canvas = Canvas(image)
+        val saves = canvas.nativeCanvas.saveCount
+        assertNull(paint(canvas, b.build()))
+        assertEquals("all 64 saves restored", saves, canvas.nativeCanvas.saveCount)
+        val px = image.toPixelMap()
+        assertEquals("inside clip #64", androidx.compose.ui.graphics.Color.Red, px[5, 5])
+        assertEquals("clip #64 stays active after 2 overflow restores", 0f, px[35, 35].alpha)
+        assertEquals("3rd restore pops clip #64", androidx.compose.ui.graphics.Color.Blue, px[25, 25])
+    }
+
+    @Test
     fun aMalformedListPaintsNothing() {
         val good = DrawListBytes().fillRect(0f, 0f, 8f, 8f, red).build()
         val image = ImageBitmap(8, 8)
@@ -126,7 +150,7 @@ class NveDrawListPainterTest {
     private fun rgba(r: Int, g: Int, b: Int, a: Int = 255) = r or (g shl 8) or (b shl 16) or (a shl 24)
 
     private class DrawListBytes {
-        private val ops = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN)
+        private val ops = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN)
         private var count = 0
 
         private fun op(code: Int, vararg floats: Float): DrawListBytes {

@@ -293,23 +293,27 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
         XCTAssertEqual(afterRestore.0, 56, accuracy: 3)
         XCTAssertEqual(afterRestore.2, 248, accuracy: 3)
 
-        // Verify `nve-draw1;b64,` base64 attribute decoding into flat words and direct draw fallback
-        let attrStr = NveDrawListConstants.attrPrefix + drawData.base64EncodedString()
-        let decoded = try NveDrawListRenderer.decodeAttrString(attrStr)
-        XCTAssertEqual(decoded, drawData)
-        var b64ExecutedOps = 0
-        let b64Canvas = Canvas { ctx, size in
-            b64ExecutedOps = (try? NveDrawListRenderer.draw(
-                Data(attrStr.utf8),
-                into: &ctx,
-                in: CGRect(origin: .zero, size: size)
-            )) ?? -1
+        // Verify zero-copy `UnsafeBufferPointer<UInt8>` flat `nve.res.draw_list` rendering and
+        // rejection of retired `nve-draw1;b64,` strings.
+        var ptrExecutedOps = 0
+        let ptrCanvas = Canvas { ctx, size in
+            drawData.withUnsafeBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                ptrExecutedOps = (try? NveDrawListRenderer.draw(
+                    bytes,
+                    into: &ctx,
+                    in: CGRect(origin: .zero, size: size)
+                )) ?? -1
+            }
         }.frame(width: 96, height: 96)
-        let b64Renderer = ImageRenderer(content: b64Canvas)
-        b64Renderer.scale = 1.0
-        let b64Cg = try XCTUnwrap(b64Renderer.cgImage)
-        XCTAssertEqual(b64ExecutedOps, 10)
-        XCTAssertEqual(rgbaPixel(in: b64Cg, x: 16, y: 16).0, 220, accuracy: 3)
+        let ptrRenderer = ImageRenderer(content: ptrCanvas)
+        ptrRenderer.scale = 1.0
+        let ptrCg = try XCTUnwrap(ptrRenderer.cgImage)
+        XCTAssertEqual(ptrExecutedOps, 10)
+        XCTAssertEqual(rgbaPixel(in: ptrCg, x: 16, y: 16).0, 220, accuracy: 3)
+
+        let retiredAttr = Data(("nve-draw1;b64," + drawData.base64EncodedString()).utf8)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(retiredAttr))
 
         // Verify empty flat draw list (single zero word = 4 bytes) and unbalanced clip balancing
         let emptyFlat = DrawListBuilder().finish()
@@ -454,12 +458,8 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
             XCTAssertEqual(err as? NveDrawListError, .trailingBytes(1))
         }
 
-        // Invalid base64 attribute strings
-        for badAttr in ["", NveDrawListConstants.attrPrefix, "\(NveDrawListConstants.attrPrefix)!!!invalid!!!"] {
-            XCTAssertThrowsError(try NveDrawListRenderer.decodeAttrString(badAttr)) { err in
-                XCTAssertEqual(err as? NveDrawListError, .invalidBase64)
-            }
-        }
+        // Retired `nve-draw1;b64,` strings are never accepted as flat `nve.res.draw_list` bytes.
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(Data("nve-draw1;b64,AAAAAA==".utf8)))
     }
 
     func testImageCacheDecodesPngRgbaFileUrisEnforcesLruAndComputesAll4ResizeModes() throws {
