@@ -47,17 +47,19 @@ void NveQtQuickItem::Impl::rasterize(QuickNodeView& v, qreal dpr) {
   const bool empty = size.width() <= 0.0 || size.height() <= 0.0;
   const BoxVisual& visual = v.paint.visual;
   r.shadow = QImage();
+  r.shadow_rect = QRectF();
   if (!empty && visual.has_outer_shadow()) {
     const QMarginsF m = outer_shadow_margins(visual.shadows);
-    r.shadow_rect = QRectF(QPointF(), size).marginsAdded(m);
-    ShadowCanvas c = shadow_canvas(r.shadow_rect.size(), dpr);  // bounded; null when unallocatable
+    const QRectF area = QRectF(QPointF(), size).marginsAdded(m);
+    ShadowCanvas c = shadow_canvas(area.size(), dpr);  // bounded; null when unallocatable
     if (!c.image.isNull()) {
       QPainter p(&c.image);
       p.setRenderHint(QPainter::Antialiasing, true);
       p.scale(c.scale, c.scale);
       paint_outer_shadows(p, QRectF(QPointF(m.left(), m.top()), size), visual.radius, visual.shadows);
+      r.shadow_rect = c.logical_rect(area.topLeft());
+      r.shadow = std::move(c.image);  // uploaded into `shadow_rect` (1:1 logical coverage)
     }
-    r.shadow = std::move(c.image);  // uploaded into `shadow_rect`
   }
   if (empty || (!v.is_input && v.paint.paints_only_background())) {
     r.painted = QImage();

@@ -524,6 +524,24 @@ void test_containers_release_every_child() {
   for (const uint32_t id : q_kids) NVE_CHECK(widget.nativeWidgetForNodeId(id)->isVisible());
 }
 
+void test_shadow_alignment_and_fast_paths() {
+  namespace h = nve::host;
+  NodePaint np;
+  np.visual.shadows = {{300.0f, 300.0f, 100.0f, 40.0f, h::rgba(0, 0, 0, 0), false},
+                       {2.0f, 5.0f, 0.0f, 0.0f, h::rgba(0, 0, 0, 255), false}};
+  NVE_CHECK(np.paints_only_background());
+  NVE_CHECK(outer_shadow_margins(np.visual.shadows) == QMarginsF(0.0, 0.0, 2.0, 5.0));
+  np.visual.shadows.push_back({0.0f, 0.0f, 4.0f, 0.0f, h::rgba(0, 0, 0, 255), true});
+  NVE_CHECK(!np.paints_only_background());
+
+  const ShadowCanvas frac = shadow_canvas(QSizeF(10.1, 10.1), 1.0);
+  NVE_CHECK(frac.logical_rect(QPointF(2.0, 3.0)) == QRectF(2.0, 3.0, 11.0, 11.0));
+  const ShadowCanvas clamped = shadow_canvas(QSizeF(100000.0, 10.0), 1.0);
+  const QRectF cr = clamped.logical_rect(QPointF());
+  NVE_CHECK(std::abs(cr.width() * clamped.scale - clamped.image.width()) < 1e-6 &&
+            std::abs(cr.height() * clamped.scale - clamped.image.height()) < 1e-6);
+}
+
 int main(int argc, char** argv) {
   QApplication qapp(argc, argv);
   test_counter_widgets_measurement_and_events();
@@ -533,6 +551,7 @@ int main(int argc, char** argv) {
   test_queued_wakes_never_outlive_the_host();
   test_live_kitchen_sink_if_configured();
   test_containers_release_every_child();
+  test_shadow_alignment_and_fast_paths();
   nve_test_qt_input_and_scroll();
   nve_test_qt_a11y_and_media();
   nve_test_qt_canvas_and_pair();

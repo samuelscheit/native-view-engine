@@ -46,6 +46,12 @@ struct BoxVisual {
 struct ShadowCanvas {
   QImage image;       // null when `size` is empty or the allocation fails
   qreal scale = 0.0;  // device pixels per logical unit, at most `dpr`
+
+  /// Exact 1:1 logical rect covered by `image` when anchored at `top_left` (never stretches
+  /// `ceil`-padded edge pixels into a smaller logical box).
+  [[nodiscard]] QRectF logical_rect(QPointF top_left) const noexcept {
+    return scale > 0.0 ? QRectF(top_left, QSizeF(image.width() / scale, image.height() / scale)) : QRectF();
+  }
 };
 [[nodiscard]] ShadowCanvas shadow_canvas(QSizeF size, qreal dpr);
 
@@ -130,7 +136,7 @@ struct NodePaint {
   mutable TextLayoutCache text_layout;
 
   [[nodiscard]] bool paints_only_background() const noexcept {
-    return content == NodeContent::None && !visual.has_border() && visual.shadows.empty() && visual.radius <= 0.0;
+    return content == NodeContent::None && !visual.has_border() && !visual.has_inset_shadow() && visual.radius <= 0.0;
   }
 };
 

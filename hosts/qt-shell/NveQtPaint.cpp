@@ -81,10 +81,10 @@ qreal device_ratio(const QPainter& p) noexcept {
   return std::isfinite(scale) && scale > 0.0 ? scale : 1.0;
 }
 
-/// Blurred image of `area` (logical; draw it into `area`) after `draw` paints into it (null when
-/// it cannot be allocated).
+/// Blurred canvas of `area` (logical; draw at `c.logical_rect(area.topLeft())`) after `draw`
+/// paints into it (null image when it cannot be allocated).
 template <class Draw>
-QImage blurred(const QRectF& area, qreal blur, qreal dpr, Draw&& draw) {
+ShadowCanvas blurred(const QRectF& area, qreal blur, qreal dpr, Draw&& draw) {
   ShadowCanvas c = shadow_canvas(area.size(), dpr);
   if (c.image.isNull()) return {};
   {
@@ -95,7 +95,7 @@ QImage blurred(const QRectF& area, qreal blur, qreal dpr, Draw&& draw) {
     draw(ip);
   }
   gaussian_blur(c.image, blur * 0.5 * c.scale);
-  return std::move(c.image);
+  return c;
 }
 
 void paint_inset_shadows(QPainter& p, const QRectF& box, qreal radius, std::span<const host::BoxShadow> shadows) {
@@ -109,17 +109,18 @@ void paint_inset_shadows(QPainter& p, const QRectF& box, qreal radius, std::span
     const qreal hole_radius = radius > 0.0 ? std::max(0.0, radius - spread) : 0.0;
     const qreal pad = blur + std::abs(dx) + std::abs(dy) + 1.0;
     const QRectF area = box.adjusted(-pad, -pad, pad, pad);
-    const QImage img = blurred(area, blur, device_ratio(p), [&](QPainter& ip) {
+    const ShadowCanvas c = blurred(area, blur, device_ratio(p), [&](QPainter& ip) {
       ip.fillRect(area, color);
       if (hole.width() > 0.0 && hole.height() > 0.0) {
         ip.setCompositionMode(QPainter::CompositionMode_Clear);
         ip.fillPath(rounded_path(hole, hole_radius), Qt::black);
       }
     });
+    if (c.image.isNull()) continue;
     p.save();
     p.setClipPath(clip, Qt::IntersectClip);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    p.drawImage(area, img);
+    p.drawImage(c.logical_rect(area.topLeft()), c.image);
     p.restore();
   }
 }
@@ -217,6 +218,7 @@ void ShadowCache::paint(QPainter& p, const QRectF& box, qreal radius, std::span<
     const QRectF local(QPointF(), size_);
     const QRectF area = inset ? local : local.marginsAdded(outer_shadow_margins(shadows));
     ShadowCanvas c = shadow_canvas(area.size(), dpr);
+    const QRectF logical = c.logical_rect(area.topLeft());
     image_ = std::move(c.image);
     if (image_.isNull()) return;  // retried on the next paint
     QPainter ip(&image_);
@@ -227,7 +229,7 @@ void ShadowCache::paint(QPainter& p, const QRectF& box, qreal radius, std::span<
     } else {
       paint_outer_shadows(ip, local, radius, shadows);
     }
-    area_ = area;
+    area_ = logical;
   }
   p.save();
   p.setRenderHint(QPainter::SmoothPixmapTransform, true);
@@ -252,7 +254,7 @@ void paint_box_border(QPainter& p, const QRectF& box, const BoxVisual& v) {
 QMarginsF outer_shadow_margins(std::span<const host::BoxShadow> shadows) noexcept {
   QMarginsF m;
   for (const host::BoxShadow& s : shadows) {
-    if (s.inset) continue;
+    if (!paints_shadow(s, false)) continue;
     const auto [blur, spread, ox, oy] = shadow_shape(s);
     const qreal reach = blur + spread;
     m.setLeft(std::max(m.left(), reach - ox));
@@ -284,10 +286,13 @@ void paint_outer_shadows(QPainter& p, const QRectF& box, qreal radius, std::span
     if (blur <= 0.0) {
       p.fillPath(rounded_path(shape, shape_radius), color);
     } else {
-      p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-      p.drawImage(area, blurred(area, blur, device_ratio(p), [&](QPainter& ip) {
-                    ip.fillPath(rounded_path(shape, shape_radius), color);
-                  }));
+      const ShadowCanvas c = blurred(area, blur, device_ratio(p), [&](QPainter& ip) {
+        ip.fillPath(rounded_path(shape, shape_radius), color);
+      });
+      if (!c.image.isNull()) {
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        p.drawImage(c.logical_rect(area.topLeft()), c.image);
+      }
     }
     p.restore();
   }

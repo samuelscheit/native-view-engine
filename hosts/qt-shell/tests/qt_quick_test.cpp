@@ -438,15 +438,84 @@ void test_shadow_bounds() {
   BoxVisual v;
   v.shadows = {{2.0f, 2.0f, 8.0f, 0.0f, h::rgba(0, 0, 0, 0), false}, {0.0f, 0.0f, 8.0f, 0.0f, h::rgba(0, 0, 0, 0), true}};
   NVE_CHECK(!v.has_outer_shadow() && !v.has_inset_shadow());
+  NVE_CHECK(outer_shadow_margins(v.shadows) == QMarginsF(0.0, 0.0, 0.0, 0.0));
+  NodePaint np;
+  np.visual = v;
+  NVE_CHECK(np.paints_only_background());  // transparent shadows never force offscreen box raster
   v.shadows.push_back({0.0f, 0.0f, 8.0f, 0.0f, h::rgba(0, 0, 0, 1), false});
   NVE_CHECK(v.has_outer_shadow() && !v.has_inset_shadow());
+  // Zero-alpha outer shadows with huge blur/offset are ignored by `outer_shadow_margins`.
+  const h::BoxShadow mixed_alpha[] = {{500.0f, 500.0f, 200.0f, 50.0f, h::rgba(0, 0, 0, 0), false},
+                                      {4.0f, 6.0f, 0.0f, 0.0f, h::rgba(0, 0, 0, 255), false}};
+  NVE_CHECK(outer_shadow_margins(mixed_alpha) == QMarginsF(0.0, 0.0, 4.0, 6.0));
+  np.visual.shadows = {mixed_alpha[1]};
+  NVE_CHECK(np.paints_only_background());  // outer-only shadows keep the solid-rect fast path
+  np.visual.shadows.push_back({0.0f, 0.0f, 4.0f, 0.0f, h::rgba(0, 0, 0, 255), true});
+  NVE_CHECK(!np.paints_only_background());  // opaque inset shadow requires box rasterization
 
   const ShadowCanvas normal = shadow_canvas(QSizeF(100.0, 50.0), 2.0);
   NVE_CHECK(normal.image.size() == QSize(200, 100) && normal.scale == 2.0);
+  NVE_CHECK(normal.logical_rect(QPointF(3.0, 4.0)) == QRectF(3.0, 4.0, 100.0, 50.0));
+  // Fractional and clamped high-aspect-ratio canvases map 1:1 to logical space (no ceil stretch).
+  const ShadowCanvas frac = shadow_canvas(QSizeF(10.1, 10.1), 1.0);
+  NVE_CHECK(frac.image.size() == QSize(11, 11) && frac.scale == 1.0);
+  NVE_CHECK(frac.logical_rect(QPointF(5.0, 7.0)) == QRectF(5.0, 7.0, 11.0, 11.0));
+  const ShadowCanvas skinny = shadow_canvas(QSizeF(100000.0, 10.0), 1.0);
+  NVE_CHECK(!skinny.image.isNull() && skinny.image.width() == 4096 && skinny.image.height() == 1);
+  const QRectF skinny_rect = skinny.logical_rect(QPointF(0.0, 0.0));
+  NVE_CHECK(std::abs(skinny_rect.width() * skinny.scale - skinny.image.width()) < 1e-6);
+  NVE_CHECK(std::abs(skinny_rect.height() * skinny.scale - skinny.image.height()) < 1e-6);
+  NVE_CHECK(skinny_rect.height() > 20.0);  // 1px at scale ~0.04096 covers ~24.4 logical units, not 10
   const ShadowCanvas huge = shadow_canvas(QSizeF(100000.0, 50.0), 2.0);
   NVE_CHECK(!huge.image.isNull() && huge.image.width() <= 4096 && huge.image.height() >= 1);
   NVE_CHECK(std::abs(huge.image.width() / huge.scale - 100000.0) < 50.0);  // same logical size
   NVE_CHECK(shadow_canvas(QSizeF(0.0, 50.0), 2.0).image.isNull() && shadow_canvas(QSizeF(10.0, 10.0), NAN).image.isNull());
+
+  // Fractional box through `ShadowCache`: 1:1 mapping prevents shadow bleeding back into the box.
+  {
+    const h::BoxShadow hard[] = {{0.0f, 10.0f, 0.0f, 0.0f, h::rgba(0, 0, 0, 255), false}};
+    QImage t(32, 48, QImage::Format_ARGB32_Premultiplied);
+    t.fill(Qt::white);
+    {
+      QPainter p(&t);
+      ShadowCache cache;
+      cache.paint(p, QRectF(10.0, 10.0, 10.1, 10.1), 0.0, hard, false);
+    }
+    NVE_CHECK(t.pixelColor(15, 19).red() == 255);  // inside box (y=19 < 20.1): must stay untouched
+    NVE_CHECK(t.pixelColor(15, 25).red() == 0);    // below box: shadow painted at exact 1:1 offset
+  }
+
+  // Qt Quick rasterizes outer-only shadow boxes with 1:1 `shadow_rect` and the solid-rect fast path
+  // (both clamped high-aspect-ratio boxes from layout and fractional logical sizes).
+  {
+    ScriptedApp app;
+    h::Nve2Writer& w = app.w;
+    w.create(1u);
+    w.create(2u);
+    size_node(w, 2u, 100000.0f, 10.0f);
+    w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 0, 0));
+    const h::BoxShadow s[] = {{0.0f, 10.0f, 0.0f, 0.0f, h::rgba(0, 0, 0, 255), false}};
+    w.define_resource(41u, h::kBoxShadowsKind, h::encode_box_shadows(s));
+    w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BOX_SHADOWS, 41u);
+    const uint32_t kids[] = {2u};
+    w.set_children(1u, kids);
+    QuickHarness q(QSize(64, 64));
+    NVE_CHECK(q.item->host().attach_interface(&ScriptedApp::get_interface));
+    (void)q.grab();
+    QuickNodeView* view = q.item->impl()->find(2u);
+    NVE_CHECK(view != nullptr && view->raster.solid && view->raster.painted.isNull());
+    NVE_CHECK(!view->raster.shadow.isNull() && view->raster.shadow.width() == 4096 && view->raster.shadow.height() == 1);
+    const ShadowCanvas expected_clamped = shadow_canvas(QSizeF(100000.0, 20.0), view->raster.dpr);
+    NVE_CHECK(view->raster.shadow_rect == expected_clamped.logical_rect(QPointF(0.0, 0.0)));
+    NVE_CHECK(view->raster.shadow_rect.height() > 20.0);
+
+    // Fractional logical size at dpr = 1.0: `ceil(10.1) = 11`, `ceil(20.1) = 21` -> 1:1 `11x21`.
+    view->local = QRectF(0.0, 0.0, 10.1, 10.1);
+    q.item->impl()->bump_paint(*view);
+    q.item->impl()->rasterize_dirty(1.0);
+    NVE_CHECK(view->raster.shadow.size() == QSize(11, 21));
+    NVE_CHECK(view->raster.shadow_rect == QRectF(0.0, 0.0, 11.0, 21.0));
+  }
 
   // Boxes up to 100000px wide with a big blur paint, bounded, through the widget cache (0), the
   // plain outer path (1) and the inset path (2): the spread shadow darkens below the box (outer)
