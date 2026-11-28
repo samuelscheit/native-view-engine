@@ -258,6 +258,23 @@ fn lex_until(bytes: &[u8], pos: &mut usize, end: Option<u8>) -> Vec<Tok> {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let start = *pos;
+                if b == b'b' && bytes.get(*pos + 1) == Some(&b'"') {
+                    *pos += 2;
+                    while *pos < bytes.len() {
+                        if bytes[*pos] == b'\\' {
+                            *pos += 2;
+                        } else if bytes[*pos] == b'"' {
+                            *pos += 1;
+                            break;
+                        } else {
+                            *pos += 1;
+                        }
+                    }
+                    out.push(Tok::Literal(
+                        std::str::from_utf8(&bytes[start..*pos]).unwrap().to_owned(),
+                    ));
+                    continue;
+                }
                 if b == b'r' && bytes.get(*pos + 1) == Some(&b'#') {
                     *pos += 2;
                 }

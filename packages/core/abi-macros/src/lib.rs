@@ -1,24 +1,33 @@
-//! Zero-dependency proc-macro crate implementing `#[derive(NveAbi)]` for single-source-of-truth
-//! C ABI metadata and compile-time layout assertions (`size_of`, `align_of`, `offset_of!`).
+//! Zero-dependency proc-macro crate implementing `#[derive(NveAbi)]`, `#[derive(ReprEnum)]`,
+//! `abi_consts!`, `abi_aliases!`, `abi_callbacks!`, `#[derive(NveTable)]`, `#[derive(NveCodec)]`,
+//! `#[derive(WordEnum)]`, and `#[derive(EventEnum)]`.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 extern crate proc_macro;
 
+mod abi_items;
 mod codec;
 mod emit;
 mod event_enum;
+mod fn_sig;
+mod lit;
 mod parse;
+mod repr_enum;
 mod table;
 mod tok;
 mod word_enum;
 
 use proc_macro::{Group, LexError, Span, TokenStream, TokenTree};
 
+use crate::fn_sig::ParsedFnSig;
+
 pub(crate) enum ParsedItem {
     Struct(ParsedRecord),
     Union(ParsedRecord),
     Enum(ParsedEnum),
+    Vtable(ParsedVtable),
+    Alias(ParsedAlias),
 }
 
 pub(crate) struct ParsedRecord {
@@ -59,13 +68,86 @@ pub(crate) struct ParsedVariant {
     pub doc: Option<String>,
 }
 
-/// Derives `NveStructSchema` / `NveUnionSchema` / `NveEnumSchema` (plus `NveSchema`) and
-/// compile-time layout assertions on `#[repr(C)]` structs/unions and `#[repr(u8|u16|u32|i32)]` enums.
+pub(crate) struct ParsedVtable {
+    pub rust_ident: String,
+    pub abi_name: String,
+    pub module_name: Option<String>,
+    pub interface_id: Option<String>,
+    pub slots_offset: Option<usize>,
+    pub doc: Option<String>,
+    pub crate_path: String,
+    pub header_fields: Vec<ParsedField>,
+    pub methods: Vec<ParsedVtableMethod>,
+}
+
+pub(crate) struct ParsedVtableMethod {
+    pub rust_ident: String,
+    pub abi_name: String,
+    pub doc: Option<String>,
+    pub sig: ParsedFnSig,
+}
+
+pub(crate) struct ParsedAlias {
+    pub rust_ident: String,
+    pub abi_name: String,
+    pub rust_target: String,
+    pub abi_target: String,
+    pub doc: Option<String>,
+    pub crate_path: String,
+}
+
+/// Derives `NveStructSchema` / `NveUnionSchema` / `NveEnumSchema` / `NveVtableSchema` /
+/// `NveAliasSchema` (plus `NveSchema`) and compile-time layout assertions on `#[repr(C)]`
+/// structs/unions/vtables, `#[repr(transparent)]` handle newtypes, and `#[repr(u8|u16|u32|i32)]`
+/// enums.
 #[proc_macro_derive(NveAbi, attributes(nve_abi))]
 pub fn derive_nve_abi(input: TokenStream) -> TokenStream {
     match parse::parse_item(input) {
         Ok(item) => parse_at_call_site(&emit::emit_item(&item))
             .unwrap_or_else(|e| compile_error(&format!("nve-abi-macros emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Declares ABI constants verbatim alongside a `const` `&[AbiConstDescriptor]` slice.
+#[proc_macro]
+pub fn abi_consts(input: TokenStream) -> TokenStream {
+    match abi_items::expand_consts(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("abi_consts! emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Declares ABI `pub type` aliases verbatim alongside a `const` `&[AbiAliasDescriptor]` slice.
+#[proc_macro]
+pub fn abi_aliases(input: TokenStream) -> TokenStream {
+    match abi_items::expand_aliases(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("abi_aliases! emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Declares ABI `extern "C" fn` callback typedefs verbatim alongside a `const`
+/// `&[AbiCallbackDescriptor]` slice.
+#[proc_macro]
+pub fn abi_callbacks(input: TokenStream) -> TokenStream {
+    match abi_items::expand_callbacks(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("abi_callbacks! emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Zero-dependency derive for unit-only `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]` enums emitting
+/// `COUNT`, `ALL`, `as_<repr>`, `try_from_<repr>`, and (only with `#[repr_enum(fallback = V)]`)
+/// `from_<repr>`.
+#[proc_macro_derive(ReprEnum, attributes(repr_enum))]
+pub fn derive_repr_enum(input: TokenStream) -> TokenStream {
+    match repr_enum::derive(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("ReprEnum emit error: {e}"))),
         Err(msg) => compile_error(&msg),
     }
 }

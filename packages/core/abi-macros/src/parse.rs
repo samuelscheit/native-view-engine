@@ -1,8 +1,19 @@
-//! Zero-dependency `proc_macro::TokenStream` parser for `#[derive(NveAbi)]`.
+//! Zero-dependency `Tok`-based parser for `#[derive(NveAbi)]` supporting `#[repr(C)]` structs,
+//! unions, vtables (`#[nve_abi(interface = ...)]` / `#[nve_abi(vtable)]`), `#[repr(transparent)]`
+//! handle newtypes, and `#[repr(u8|u16|u32|i32)]` enums.
 
-use proc_macro::{Delimiter, Spacing, TokenStream, TokenTree};
+use proc_macro::TokenStream;
 
-use crate::{ParsedEnum, ParsedField, ParsedItem, ParsedRecord, ParsedVariant};
+use crate::fn_sig::{format_type, is_fn_ptr_type, parse_fn_ptr_sig, strip_raw};
+pub(crate) use crate::lit::{parse_i128_literal, parse_string_literal, parse_usize_literal};
+use crate::tok::{
+    expect_ident, from_stream, is_colon2, is_ident, is_punct, paren_inner, render_tokens,
+    skip_vis, Delim, Tok,
+};
+use crate::{
+    ParsedAlias, ParsedEnum, ParsedField, ParsedItem, ParsedRecord, ParsedVariant, ParsedVtable,
+    ParsedVtableMethod,
+};
 
 const DEFAULT_CRATE_PATH: &str = "::nve_abi::schema";
 
@@ -11,6 +22,7 @@ struct Attrs {
     doc_override: Option<String>,
     doc_lines: Vec<String>,
     repr_c: bool,
+    repr_transparent: bool,
     repr_align: Option<usize>,
     repr_int: Option<String>,
     kvs: Vec<(String, Kv)>,
@@ -18,309 +30,592 @@ struct Attrs {
 
 impl Attrs {
     fn doc(self) -> Option<String> {
-        self.doc_override.or_else(|| (!self.doc_lines.is_empty()).then(|| self.doc_lines.join("\n")))
+        self.doc_override
+            .or_else(|| (!self.doc_lines.is_empty()).then(|| self.doc_lines.join("\n")))
     }
 }
 
-enum Kv { Str(String), Usize(usize) }
+enum Kv {
+    Flag,
+    Str(String),
+    Usize(usize),
+    Path(String),
+}
+
 impl Kv {
-    fn str(self, k: &str) -> Result<String, String> { match self { Self::Str(s) => Ok(s), _ => Err(format!("expected string for `{k}`")) } }
-    fn usize(self, k: &str) -> Result<usize, String> { match self { Self::Usize(u) => Ok(u), _ => Err(format!("expected integer for `{k}`")) } }
+    fn str(self, k: &str) -> Result<String, String> {
+        match self {
+            Self::Str(s) => Ok(s),
+            _ => Err(format!("expected string literal for `{k}`")),
+        }
+    }
+
+    fn usize(self, k: &str) -> Result<usize, String> {
+        match self {
+            Self::Usize(u) => Ok(u),
+            _ => Err(format!("expected integer literal for `{k}`")),
+        }
+    }
+
+    fn path(self, k: &str) -> Result<String, String> {
+        match self {
+            Self::Path(p) => Ok(p),
+            _ => Err(format!("expected path expression for `{k}`")),
+        }
+    }
+
+    fn flag(self, k: &str) -> Result<(), String> {
+        match self {
+            Self::Flag => Ok(()),
+            _ => Err(format!("`{k}` does not take a value")),
+        }
+    }
 }
 
 pub(crate) fn parse_item(input: TokenStream) -> Result<ParsedItem, String> {
-    let tokens: Vec<TokenTree> = input.into_iter().collect();
-    let mut pos = 0;
-    let mut a = collect_attrs(&tokens, &mut pos, true)?;
-    skip_vis(&tokens, &mut pos);
+    parse_item_tokens(&from_stream(input))
+}
 
-    let kw = expect_ident(&tokens, &mut pos, "struct, union, or enum")?;
-    let rust_ident = expect_ident(&tokens, &mut pos, "type name")?;
-    if is_punct(&tokens, pos, '<') { return Err(format!("#[derive(NveAbi)] does not support generics on `{rust_ident}`")); }
-    let Some(TokenTree::Group(body)) = tokens.get(pos).filter(|t| is_delim(t, Delimiter::Brace)) else {
-        return Err(format!("#[derive(NveAbi)] requires a braced body on `{rust_ident}`"));
-    };
+pub(crate) fn parse_item_tokens(tokens: &[Tok]) -> Result<ParsedItem, String> {
+    let mut pos = 0usize;
+    let mut a = collect_attrs(tokens, &mut pos, true)?;
+    skip_vis(tokens, &mut pos);
 
-    let (mut name, mut cp, mut size, mut size_64, mut align, mut c_prefix, mut dart_fb) = (None, None, None, None, None, None, None);
+    let kw = expect_ident(tokens, &mut pos, "struct, union, or enum")?;
+    let rust_ident = expect_ident(tokens, &mut pos, "type name")?;
+    if is_punct(tokens, pos, '<') {
+        return Err(format!(
+            "#[derive(NveAbi)] does not support generics on `{rust_ident}`"
+        ));
+    }
+    if is_ident(tokens, pos, "where") {
+        return Err(format!(
+            "#[derive(NveAbi)] does not support `where` clauses on `{rust_ident}`"
+        ));
+    }
+
+    let (
+        mut name,
+        mut cp,
+        mut size,
+        mut size_64,
+        mut align,
+        mut c_prefix,
+        mut dart_fb,
+        mut iface_id,
+        mut module_name,
+        mut is_vtable,
+        mut slots_offset,
+    ) = (None, None, None, None, None, None, None, None, None, false, None);
+
     for (k, v) in core::mem::take(&mut a.kvs) {
         match k.as_str() {
-            "name" => name = Some(v.str(&k)?), "doc" => a.doc_override = Some(v.str(&k)?),
-            "crate_path" => cp = Some(v.str(&k)?), "c_prefix" => c_prefix = Some(v.str(&k)?),
-            "dart_fallback" => dart_fb = Some(v.str(&k)?), "size" => size = Some(v.usize(&k)?),
-            "size_64" => size_64 = Some(v.usize(&k)?), "align" => align = Some(v.usize(&k)?),
+            "name" => name = Some(v.str(&k)?),
+            "doc" => a.doc_override = Some(v.str(&k)?),
+            "crate_path" => cp = Some(v.str(&k)?),
+            "c_prefix" => c_prefix = Some(v.str(&k)?),
+            "dart_fallback" => dart_fb = Some(v.str(&k)?),
+            "size" => size = Some(v.usize(&k)?),
+            "size_64" => size_64 = Some(v.usize(&k)?),
+            "align" => align = Some(v.usize(&k)?),
+            "interface" => iface_id = Some(v.path(&k)?),
+            "module_name" => module_name = Some(v.str(&k)?),
+            "vtable" => {
+                v.flag(&k)?;
+                is_vtable = true;
+            }
+            "slots_offset" => slots_offset = Some(v.usize(&k)?),
             other => return Err(format!("unknown #[nve_abi] item key `{other}`")),
         }
     }
+
     let abi_name = name.unwrap_or_else(|| strip_raw(&rust_ident));
     let crate_path = cp.unwrap_or_else(|| DEFAULT_CRATE_PATH.to_owned());
-    let (repr_c, repr_align, repr_int) = (a.repr_c, a.repr_align, a.repr_int.take());
+    let (repr_c, repr_transparent, repr_align, repr_int) = (
+        a.repr_c,
+        a.repr_transparent,
+        a.repr_align,
+        a.repr_int.take(),
+    );
     let doc = a.doc();
+
+    if kw == "struct" && repr_transparent {
+        if repr_c
+            || size.is_some()
+            || size_64.is_some()
+            || align.is_some()
+            || c_prefix.is_some()
+            || dart_fb.is_some()
+            || iface_id.is_some()
+            || is_vtable
+            || module_name.is_some()
+            || slots_offset.is_some()
+        {
+            return Err(format!(
+                "#[derive(NveAbi)] on `#[repr(transparent)]` `{rust_ident}` only supports `name`/`doc`/`crate_path`"
+            ));
+        }
+        let Some(Tok::Group(Delim::Paren, inner)) = tokens.get(pos) else {
+            return Err(format!(
+                "#[derive(NveAbi)] on `#[repr(transparent)]` `{rust_ident}` requires a single-field tuple struct"
+            ));
+        };
+        let (rust_target, abi_target) = parse_single_tuple_field(inner, &rust_ident)?;
+        return Ok(ParsedItem::Alias(ParsedAlias {
+            rust_ident,
+            abi_name,
+            rust_target,
+            abi_target,
+            doc,
+            crate_path,
+        }));
+    }
+
+    let Some(Tok::Group(Delim::Brace, body)) = tokens.get(pos) else {
+        return Err(format!(
+            "#[derive(NveAbi)] requires a braced body on `{rust_ident}`"
+        ));
+    };
+
+    if kw == "struct" && (iface_id.is_some() || is_vtable) {
+        if !repr_c {
+            return Err(format!(
+                "#[derive(NveAbi)] vtable `{rust_ident}` requires #[repr(C)]"
+            ));
+        }
+        if size.is_some()
+            || size_64.is_some()
+            || align.is_some()
+            || c_prefix.is_some()
+            || dart_fb.is_some()
+        {
+            return Err(format!(
+                "vtable `{rust_ident}` does not support `size`/`size_64`/`align`/`c_prefix`/`dart_fallback`"
+            ));
+        }
+        let resolved_module = if iface_id.is_some() {
+            if slots_offset.is_some() {
+                return Err(format!(
+                    "`slots_offset` is not valid on `#[nve_abi(interface = ...)]` vtable `{rust_ident}`"
+                ));
+            }
+            let inferred = match module_name {
+                Some(m) => m,
+                None => abi_name
+                    .strip_prefix("Nve")
+                    .and_then(|s| s.strip_suffix("Api"))
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        format!(
+                            "#[derive(NveAbi)] on `{rust_ident}` cannot infer `module_name` from `{abi_name}` (expected `Nve<Name>Api` or explicit `module_name = \"...\"`)"
+                        )
+                    })?,
+            };
+            Some(inferred)
+        } else {
+            module_name
+        };
+        let (header_fields, methods) =
+            parse_vtable_body(body, &rust_ident, iface_id.is_some())?;
+        return Ok(ParsedItem::Vtable(ParsedVtable {
+            rust_ident,
+            abi_name,
+            module_name: resolved_module,
+            interface_id: iface_id,
+            slots_offset,
+            doc,
+            crate_path,
+            header_fields,
+            methods,
+        }));
+    }
+
+    if iface_id.is_some() || is_vtable || module_name.is_some() || slots_offset.is_some() {
+        return Err(format!(
+            "`interface`/`vtable`/`module_name`/`slots_offset` are struct-only (`{rust_ident}`)"
+        ));
+    }
 
     match kw.as_str() {
         "struct" | "union" => {
-            if !repr_c { return Err(format!("#[derive(NveAbi)] on `{rust_ident}` requires #[repr(C)]")); }
-            if c_prefix.is_some() || dart_fb.is_some() { return Err(format!("`c_prefix`/`dart_fallback` are enum-only (`{rust_ident}`)")); }
+            if !repr_c {
+                return Err(format!(
+                    "#[derive(NveAbi)] on `{rust_ident}` requires #[repr(C)]"
+                ));
+            }
+            if c_prefix.is_some() || dart_fb.is_some() {
+                return Err(format!(
+                    "`c_prefix`/`dart_fallback` are enum-only (`{rust_ident}`)"
+                ));
+            }
             let rec = ParsedRecord {
-                rust_ident, abi_name, doc, crate_path, explicit_align: align.or(repr_align),
-                expected_size: size, expected_size_64: size_64, fields: parse_fields(body.stream())?,
+                rust_ident,
+                abi_name,
+                doc,
+                crate_path,
+                explicit_align: align.or(repr_align),
+                expected_size: size,
+                expected_size_64: size_64,
+                fields: parse_fields(body)?,
             };
-            Ok(if kw == "union" { ParsedItem::Union(rec) } else { ParsedItem::Struct(rec) })
+            Ok(if kw == "union" {
+                ParsedItem::Union(rec)
+            } else {
+                ParsedItem::Struct(rec)
+            })
         }
         "enum" => {
-            let repr = repr_int.ok_or_else(|| format!("#[derive(NveAbi)] on `{rust_ident}` requires #[repr(u8|u16|u32|i32)]"))?;
-            if size.is_some() || size_64.is_some() || align.is_some() { return Err(format!("`size`/`size_64`/`align` are struct/union-only (`{rust_ident}`)")); }
+            let repr = repr_int.ok_or_else(|| {
+                format!("#[derive(NveAbi)] on `{rust_ident}` requires #[repr(u8|u16|u32|i32)]")
+            })?;
+            if size.is_some() || size_64.is_some() || align.is_some() {
+                return Err(format!(
+                    "`size`/`size_64`/`align` are struct/union-only (`{rust_ident}`)"
+                ));
+            }
             Ok(ParsedItem::Enum(ParsedEnum {
-                variants: parse_variants(body.stream(), &rust_ident)?,
-                rust_ident, abi_name, repr, doc, crate_path, c_prefix, dart_fallback: dart_fb,
+                variants: parse_variants(body, &rust_ident)?,
+                rust_ident,
+                abi_name,
+                repr,
+                doc,
+                crate_path,
+                c_prefix,
+                dart_fallback: dart_fb,
             }))
         }
-        other => Err(format!("#[derive(NveAbi)] expects struct/union/enum; found `{other}`")),
+        other => Err(format!(
+            "#[derive(NveAbi)] expects struct/union/enum; found `{other}`"
+        )),
     }
 }
 
-fn collect_attrs(tokens: &[TokenTree], pos: &mut usize, read_repr: bool) -> Result<Attrs, String> {
+struct RawField<'a> {
+    rust_ident: String,
+    ty_toks: &'a [Tok],
+    doc: Option<String>,
+    c_type: Option<String>,
+    expected_offset: Option<usize>,
+    expected_offset_64: Option<usize>,
+}
+
+fn parse_raw_fields(tokens: &[Tok]) -> Result<Vec<RawField<'_>>, String> {
+    let (mut pos, mut out) = (0usize, Vec::new());
+    while pos < tokens.len() {
+        let mut a = collect_attrs(tokens, &mut pos, false)?;
+        if pos >= tokens.len() {
+            break;
+        }
+        let (mut off, mut off64, mut c_type) = (None, None, None);
+        for (k, v) in core::mem::take(&mut a.kvs) {
+            match k.as_str() {
+                "offset" => off = Some(v.usize(&k)?),
+                "offset64" => off64 = Some(v.usize(&k)?),
+                "c_type" => c_type = Some(v.str(&k)?),
+                "doc" => a.doc_override = Some(v.str(&k)?),
+                other => return Err(format!("unknown #[nve_abi] field key `{other}`")),
+            }
+        }
+        skip_vis(tokens, &mut pos);
+        let rust_ident = expect_ident(tokens, &mut pos, "field name")?;
+        if !is_punct(tokens, pos, ':') {
+            return Err(format!("expected `:` after `{rust_ident}`"));
+        }
+        pos += 1;
+        let (start, mut depth) = (pos, 0usize);
+        while pos < tokens.len() {
+            match tokens[pos] {
+                Tok::Punct('<', _) => depth += 1,
+                Tok::Punct('>', _) => depth = depth.saturating_sub(1),
+                Tok::Punct(',', _) if depth == 0 => break,
+                _ => {}
+            }
+            pos += 1;
+        }
+        if pos == start {
+            return Err(format!("missing type for `{rust_ident}`"));
+        }
+        let ty_toks = &tokens[start..pos];
+        if is_punct(tokens, pos, ',') {
+            pos += 1;
+        }
+        out.push(RawField {
+            rust_ident,
+            ty_toks,
+            doc: a.doc(),
+            c_type,
+            expected_offset: off,
+            expected_offset_64: off64,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_fields(tokens: &[Tok]) -> Result<Vec<ParsedField>, String> {
+    Ok(parse_raw_fields(tokens)?
+        .into_iter()
+        .map(|f| ParsedField {
+            abi_name: strip_raw(&f.rust_ident),
+            rust_ident: f.rust_ident,
+            ty: format_type(f.ty_toks),
+            c_type: f.c_type,
+            doc: f.doc,
+            expected_offset: f.expected_offset,
+            expected_offset_64: f.expected_offset_64,
+        })
+        .collect())
+}
+
+fn parse_vtable_body(
+    body: &[Tok],
+    vtable_name: &str,
+    is_interface: bool,
+) -> Result<(Vec<ParsedField>, Vec<ParsedVtableMethod>), String> {
+    let mut header_fields = Vec::new();
+    let mut methods = Vec::new();
+    let mut seen_fn = false;
+
+    for f in parse_raw_fields(body)? {
+        if is_fn_ptr_type(f.ty_toks) {
+            if f.expected_offset.is_some() || f.expected_offset_64.is_some() || f.c_type.is_some() {
+                return Err(format!(
+                    "vtable slot `{vtable_name}::{}` does not accept `offset`/`offset64`/`c_type`",
+                    f.rust_ident
+                ));
+            }
+            seen_fn = true;
+            let sig =
+                parse_fn_ptr_sig(f.ty_toks, true, &format!("{vtable_name}::{}", f.rust_ident))?;
+            methods.push(ParsedVtableMethod {
+                abi_name: strip_raw(&f.rust_ident),
+                rust_ident: f.rust_ident,
+                doc: f.doc,
+                sig,
+            });
+        } else {
+            if is_interface {
+                return Err(format!(
+                    "#[nve_abi(interface = ...)] vtable `{vtable_name}` cannot contain data header field `{}`",
+                    f.rust_ident
+                ));
+            }
+            if seen_fn {
+                return Err(format!(
+                    "#[nve_abi(vtable)] data field `{}` cannot appear after function-pointer slots on `{vtable_name}`",
+                    f.rust_ident
+                ));
+            }
+            header_fields.push(ParsedField {
+                abi_name: strip_raw(&f.rust_ident),
+                rust_ident: f.rust_ident,
+                ty: format_type(f.ty_toks),
+                c_type: f.c_type,
+                doc: f.doc,
+                expected_offset: f.expected_offset,
+                expected_offset_64: f.expected_offset_64,
+            });
+        }
+    }
+
+    if methods.is_empty() {
+        return Err(format!(
+            "#[derive(NveAbi)] vtable `{vtable_name}` must declare at least one function-pointer slot"
+        ));
+    }
+    Ok((header_fields, methods))
+}
+
+fn parse_single_tuple_field(inner: &[Tok], struct_name: &str) -> Result<(String, String), String> {
+    let mut pos = 0usize;
+    let mut fields = Vec::new();
+    while pos < inner.len() {
+        let _ = collect_attrs(inner, &mut pos, false)?;
+        if pos >= inner.len() {
+            break;
+        }
+        skip_vis(inner, &mut pos);
+        let start = pos;
+        let mut depth = 0usize;
+        while pos < inner.len() {
+            match inner[pos] {
+                Tok::Punct('<', _) => depth += 1,
+                Tok::Punct('>', _) => depth = depth.saturating_sub(1),
+                Tok::Punct(',', _) if depth == 0 => break,
+                _ => {}
+            }
+            pos += 1;
+        }
+        if pos == start {
+            return Err(format!(
+                "missing inner type on `#[repr(transparent)]` `{struct_name}`"
+            ));
+        }
+        fields.push((
+            render_tokens(&inner[start..pos]),
+            format_type(&inner[start..pos]),
+        ));
+        if is_punct(inner, pos, ',') {
+            pos += 1;
+        }
+    }
+    if fields.len() != 1 {
+        return Err(format!(
+            "#[derive(NveAbi)] on `#[repr(transparent)]` `{struct_name}` requires exactly 1 field, found {}",
+            fields.len()
+        ));
+    }
+    Ok(fields.remove(0))
+}
+
+fn collect_attrs(tokens: &[Tok], pos: &mut usize, read_repr: bool) -> Result<Attrs, String> {
     let mut out = Attrs::default();
     while is_punct(tokens, *pos, '#') {
-        let Some(TokenTree::Group(g)) = tokens.get(*pos + 1).filter(|t| is_delim(t, Delimiter::Bracket)) else {
+        let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(*pos + 1) else {
             return Err("expected `[...]` after `#`".to_owned());
         };
         *pos += 2;
-        let inner: Vec<_> = g.stream().into_iter().collect();
-        let (mut i, mut name) = (0, String::new());
-        while let Some(TokenTree::Ident(id)) = inner.get(i) {
-            name = id.to_string(); i += 1;
-            if is_colon2(&inner, i) { i += 2; } else { break; }
+        let (mut i, mut name) = (0usize, String::new());
+        while let Some(Tok::Ident(id)) = inner.get(i) {
+            name = id.clone();
+            i += 1;
+            if is_colon2(inner, i) {
+                i += 2;
+            } else {
+                break;
+            }
         }
         let rest = &inner[i..];
         match name.as_str() {
-            "doc" if is_punct(rest, 0, '=') => if let Some(TokenTree::Literal(lit)) = rest.get(1) {
-                let s = parse_string_literal(&lit.to_string())?;
-                out.doc_lines.push(s.strip_prefix(' ').unwrap_or(&s).to_owned());
-            },
-            "repr" if read_repr => parse_repr(paren_inner(rest, "repr")?, &mut out)?,
-            "nve_abi" => out.kvs.extend(parse_kvs(paren_inner(rest, "nve_abi")?)?),
+            "doc" if is_punct(rest, 0, '=') => {
+                if let Some(Tok::Literal(lit)) = rest.get(1) {
+                    let s = parse_string_literal(lit)?;
+                    out.doc_lines
+                        .push(s.strip_prefix(' ').unwrap_or(&s).to_owned());
+                }
+            }
+            "repr" if read_repr => {
+                let args = paren_inner(rest).ok_or("expected `#[repr(...)]`")?;
+                parse_repr(args, &mut out)?;
+            }
+            "nve_abi" => {
+                let args = paren_inner(rest).ok_or("expected `#[nve_abi(...)]`")?;
+                out.kvs.extend(parse_kvs(args)?);
+            }
             _ => {}
         }
     }
     Ok(out)
 }
 
-fn parse_repr(inner: Vec<TokenTree>, out: &mut Attrs) -> Result<(), String> {
+fn parse_repr(inner: &[Tok], out: &mut Attrs) -> Result<(), String> {
     let mut i = 0;
     while i < inner.len() {
-        if let TokenTree::Ident(id) = &inner[i] {
-            let s = id.to_string(); i += 1;
+        if let Tok::Ident(s) = &inner[i] {
+            i += 1;
             match s.as_str() {
                 "C" => out.repr_c = true,
-                "u8" | "u16" | "u32" | "i32" => out.repr_int = Some(s),
-                "align" => if let Some(TokenTree::Group(g)) = inner.get(i) {
-                    i += 1;
-                    let args: Vec<_> = g.stream().into_iter().collect();
-                    let [TokenTree::Literal(lit)] = args.as_slice() else { return Err("expected integer in `repr(align(...))`".to_owned()); };
-                    out.repr_align = Some(parse_usize_literal(&lit.to_string())?);
-                },
-                _ => if matches!(inner.get(i), Some(TokenTree::Group(_))) { i += 1; },
+                "transparent" => out.repr_transparent = true,
+                "u8" | "u16" | "u32" | "i32" => out.repr_int = Some(s.clone()),
+                "align" => {
+                    if let Some(Tok::Group(Delim::Paren, args)) = inner.get(i) {
+                        i += 1;
+                        let [Tok::Literal(lit)] = args.as_slice() else {
+                            return Err("expected integer in `repr(align(...))`".to_owned());
+                        };
+                        out.repr_align = Some(parse_usize_literal(lit)?);
+                    }
+                }
+                _ => {
+                    if matches!(inner.get(i), Some(Tok::Group(_, _))) {
+                        i += 1;
+                    }
+                }
             }
-        } else { i += 1; }
-        if is_punct(&inner, i, ',') { i += 1; }
+        } else {
+            i += 1;
+        }
+        if is_punct(inner, i, ',') {
+            i += 1;
+        }
     }
     Ok(())
 }
 
-fn parse_fields(body: TokenStream) -> Result<Vec<ParsedField>, String> {
-    let tokens: Vec<TokenTree> = body.into_iter().collect();
-    let (mut pos, mut out) = (0, Vec::new());
+fn parse_variants(tokens: &[Tok], enum_name: &str) -> Result<Vec<ParsedVariant>, String> {
+    let (mut pos, mut out) = (0usize, Vec::new());
     while pos < tokens.len() {
-        let mut a = collect_attrs(&tokens, &mut pos, false)?;
-        if pos >= tokens.len() { break; }
-        let (mut off, mut off64, mut c_type) = (None, None, None);
+        let mut a = collect_attrs(tokens, &mut pos, false)?;
+        if pos >= tokens.len() {
+            break;
+        }
         for (k, v) in core::mem::take(&mut a.kvs) {
-            match k.as_str() {
-                "offset" => off = Some(v.usize(&k)?), "offset64" => off64 = Some(v.usize(&k)?),
-                "c_type" => c_type = Some(v.str(&k)?), "doc" => a.doc_override = Some(v.str(&k)?),
-                other => return Err(format!("unknown #[nve_abi] field key `{other}`")),
+            if k == "doc" {
+                a.doc_override = Some(v.str(&k)?);
+            } else {
+                return Err(format!("unknown #[nve_abi] variant key `{k}`"));
             }
         }
-        skip_vis(&tokens, &mut pos);
-        let rust_ident = expect_ident(&tokens, &mut pos, "field name")?;
-        if !is_punct(&tokens, pos, ':') { return Err(format!("expected `:` after `{rust_ident}`")); }
-        pos += 1;
-        let (start, mut depth) = (pos, 0usize);
-        while pos < tokens.len() {
-            if let TokenTree::Punct(p) = &tokens[pos] {
-                match p.as_char() { '<' => depth += 1, '>' => depth = depth.saturating_sub(1), ',' if depth == 0 => break, _ => {} }
+        let rust_ident = expect_ident(tokens, &mut pos, "enum variant")?;
+        if matches!(
+            tokens.get(pos),
+            Some(Tok::Group(Delim::Paren | Delim::Brace, _))
+        ) {
+            return Err(format!(
+                "#[derive(NveAbi)] enum `{enum_name}::{rust_ident}` must be unit-only"
+            ));
+        }
+        if is_punct(tokens, pos, '=') {
+            pos += 1;
+            while pos < tokens.len() && !is_punct(tokens, pos, ',') {
+                pos += 1;
             }
+        }
+        if is_punct(tokens, pos, ',') {
             pos += 1;
         }
-        if pos == start { return Err(format!("missing type for `{rust_ident}`")); }
-        let ty = format_type(&tokens[start..pos]);
-        if is_punct(&tokens, pos, ',') { pos += 1; }
-        out.push(ParsedField { abi_name: strip_raw(&rust_ident), rust_ident, ty, c_type, doc: a.doc(), expected_offset: off, expected_offset_64: off64 });
+        out.push(ParsedVariant {
+            abi_name: strip_raw(&rust_ident),
+            rust_ident,
+            doc: a.doc(),
+        });
     }
     Ok(out)
 }
 
-fn parse_variants(body: TokenStream, enum_name: &str) -> Result<Vec<ParsedVariant>, String> {
-    let tokens: Vec<TokenTree> = body.into_iter().collect();
-    let (mut pos, mut out) = (0, Vec::new());
+fn parse_kvs(tokens: &[Tok]) -> Result<Vec<(String, Kv)>, String> {
+    let (mut pos, mut out) = (0usize, Vec::new());
     while pos < tokens.len() {
-        let mut a = collect_attrs(&tokens, &mut pos, false)?;
-        if pos >= tokens.len() { break; }
-        for (k, v) in core::mem::take(&mut a.kvs) {
-            if k == "doc" { a.doc_override = Some(v.str(&k)?); } else { return Err(format!("unknown #[nve_abi] variant key `{k}`")); }
+        let k = expect_ident(tokens, &mut pos, "attribute key")?;
+        if !is_punct(tokens, pos, '=') {
+            out.push((k, Kv::Flag));
+            if is_punct(tokens, pos, ',') {
+                pos += 1;
+            }
+            continue;
         }
-        let rust_ident = expect_ident(&tokens, &mut pos, "enum variant")?;
-        if matches!(tokens.get(pos), Some(t) if is_delim(t, Delimiter::Parenthesis) || is_delim(t, Delimiter::Brace)) {
-            return Err(format!("#[derive(NveAbi)] enum `{enum_name}::{rust_ident}` must be unit-only"));
-        }
-        if is_punct(&tokens, pos, '=') { pos += 1; while pos < tokens.len() && !is_punct(&tokens, pos, ',') { pos += 1; } }
-        if is_punct(&tokens, pos, ',') { pos += 1; }
-        out.push(ParsedVariant { abi_name: strip_raw(&rust_ident), rust_ident, doc: a.doc() });
-    }
-    Ok(out)
-}
-
-fn parse_kvs(tokens: Vec<TokenTree>) -> Result<Vec<(String, Kv)>, String> {
-    let (mut pos, mut out) = (0, Vec::new());
-    while pos < tokens.len() {
-        let k = expect_ident(&tokens, &mut pos, "attribute key")?;
-        if !is_punct(&tokens, pos, '=') { return Err(format!("expected `=` after `{k}`")); }
         pos += 1;
-        let Some(TokenTree::Literal(lit)) = tokens.get(pos) else { return Err(format!("expected literal for `#[nve_abi({k} = ...)]`")); };
-        pos += 1;
-        let raw = lit.to_string();
-        let v = if raw.starts_with('"') || raw.starts_with('r') { Kv::Str(parse_string_literal(&raw)?) } else { Kv::Usize(parse_usize_literal(&raw)?) };
+        let v = match tokens.get(pos) {
+            Some(Tok::Literal(raw)) => {
+                pos += 1;
+                if raw.starts_with('"') || raw.starts_with('r') {
+                    Kv::Str(parse_string_literal(raw)?)
+                } else {
+                    Kv::Usize(parse_usize_literal(raw)?)
+                }
+            }
+            Some(_) => {
+                let start = pos;
+                while pos < tokens.len() && !is_punct(tokens, pos, ',') {
+                    pos += 1;
+                }
+                Kv::Path(render_tokens(&tokens[start..pos]))
+            }
+            None => return Err(format!("expected value for `#[nve_abi({k} = ...)]`")),
+        };
         out.push((k, v));
-        if is_punct(&tokens, pos, ',') { pos += 1; }
-    }
-    Ok(out)
-}
-
-fn paren_inner(rest: &[TokenTree], name: &str) -> Result<Vec<TokenTree>, String> {
-    match rest.first() { Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => Ok(g.stream().into_iter().collect()), _ => Err(format!("expected `#[{name}(...)]`")) }
-}
-
-fn format_type(tokens: &[TokenTree]) -> String {
-    let (mut out, mut i) = (String::new(), 0);
-    while i < tokens.len() {
-        match &tokens[i] {
-            TokenTree::Punct(p) if p.as_char() == '*' => {
-                out.push('*'); i += 1;
-                if let Some(TokenTree::Ident(kw)) = tokens.get(i) { out.push_str(&kw.to_string()); out.push(' '); i += 1; }
-            }
-            TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => {
-                let inner: Vec<_> = g.stream().into_iter().collect();
-                out.push('[');
-                if let Some(s) = inner.iter().position(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ';')) {
-                    out.push_str(&format_type(&inner[..s])); out.push_str("; "); out.push_str(&format_type(&inner[s + 1..]));
-                } else { out.push_str(&format_type(&inner)); }
-                out.push(']'); i += 1;
-            }
-            TokenTree::Ident(id) => {
-                let mut last = id.to_string(); i += 1;
-                while is_colon2(tokens, i) { i += 2; if let Some(TokenTree::Ident(seg)) = tokens.get(i) { last = seg.to_string(); i += 1; } }
-                out.push_str(&last);
-            }
-            TokenTree::Punct(p) => { out.push(p.as_char()); if p.as_char() == ',' { out.push(' '); } i += 1; }
-            other => { out.push_str(&other.to_string()); i += 1; }
-        }
-    }
-    out.trim().to_owned()
-}
-
-pub(crate) fn is_delim(t: &TokenTree, d: Delimiter) -> bool { matches!(t, TokenTree::Group(g) if g.delimiter() == d) }
-pub(crate) fn is_punct(tokens: &[TokenTree], i: usize, ch: char) -> bool { matches!(tokens.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ch) }
-fn is_colon2(tokens: &[TokenTree], i: usize) -> bool { matches!(tokens.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ':' && p.spacing() == Spacing::Joint) && is_punct(tokens, i + 1, ':') }
-pub(crate) fn skip_vis(tokens: &[TokenTree], pos: &mut usize) {
-    if matches!(tokens.get(*pos), Some(TokenTree::Ident(id)) if id.to_string() == "pub") {
-        *pos += 1; if matches!(tokens.get(*pos), Some(t) if is_delim(t, Delimiter::Parenthesis)) { *pos += 1; }
-    }
-}
-pub(crate) fn expect_ident(tokens: &[TokenTree], pos: &mut usize, desc: &str) -> Result<String, String> {
-    match tokens.get(*pos) { Some(TokenTree::Ident(id)) => { *pos += 1; Ok(id.to_string()) } other => Err(format!("expected {desc}, found {other:?}")) }
-}
-fn strip_raw(s: &str) -> String { s.strip_prefix("r#").unwrap_or(s).to_owned() }
-
-pub(crate) fn parse_usize_literal(raw: &str) -> Result<usize, String> {
-    let c = raw.replace('_', "");
-    let t = c.trim_end_matches("usize").trim_end_matches("u64").trim_end_matches("u32").trim_end_matches("u16").trim_end_matches("u8");
-    let (r, d) = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) { (16, h) }
-        else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) { (2, b) }
-        else if let Some(o) = t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")) { (8, o) }
-        else { (10, t) };
-    usize::from_str_radix(d, r).map_err(|_| format!("invalid integer `{raw}`"))
-}
-
-pub(crate) fn parse_i128_literal(raw: &str, neg: bool) -> Result<i128, String> {
-    let c = raw.replace('_', "");
-    let (t, unsigned_suffix) = if let Some(s) = c
-        .strip_suffix("u128")
-        .or_else(|| c.strip_suffix("usize"))
-        .or_else(|| c.strip_suffix("u64"))
-        .or_else(|| c.strip_suffix("u32"))
-        .or_else(|| c.strip_suffix("u16"))
-        .or_else(|| c.strip_suffix("u8"))
-    {
-        (s, true)
-    } else if let Some(s) = c
-        .strip_suffix("i128")
-        .or_else(|| c.strip_suffix("isize"))
-        .or_else(|| c.strip_suffix("i64"))
-        .or_else(|| c.strip_suffix("i32"))
-        .or_else(|| c.strip_suffix("i16"))
-        .or_else(|| c.strip_suffix("i8"))
-    {
-        (s, false)
-    } else {
-        (c.as_str(), false)
-    };
-    if neg && unsigned_suffix {
-        return Err(format!("negative integer literal `-{raw}` cannot have unsigned suffix"));
-    }
-    let (radix, digits) = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        (16, h)
-    } else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
-        (2, b)
-    } else if let Some(o) = t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")) {
-        (8, o)
-    } else {
-        (10, t)
-    };
-    let mag = u128::from_str_radix(digits, radix).map_err(|_| format!("invalid integer `{raw}`"))?;
-    if !neg {
-        i128::try_from(mag).map_err(|_| format!("integer literal `{raw}` overflows i128"))
-    } else if mag == (i128::MAX as u128) + 1 {
-        Ok(i128::MIN)
-    } else {
-        i128::try_from(mag)
-            .map(|v| -v)
-            .map_err(|_| format!("integer literal `-{raw}` underflows i128"))
-    }
-}
-
-pub(crate) fn parse_string_literal(raw: &str) -> Result<String, String> {
-    if let Some(rest) = raw.strip_prefix('r') {
-        let n = rest.bytes().take_while(|&b| b == b'#').count();
-        let body = rest[n..].strip_prefix('"').ok_or_else(|| format!("malformed raw string `{raw}`"))?;
-        return body.strip_suffix(&format!("\"{}", "#".repeat(n))).map(str::to_owned).ok_or_else(|| format!("unterminated raw string `{raw}`"));
-    }
-    let inner = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')).ok_or_else(|| format!("expected string, found `{raw}`"))?;
-    let (mut out, mut chars) = (String::with_capacity(inner.len()), inner.chars());
-    while let Some(c) = chars.next() {
-        if c != '\\' { out.push(c); continue; }
-        match chars.next() {
-            Some('n') => out.push('\n'), Some('r') => out.push('\r'), Some('t') => out.push('\t'),
-            Some('\\') => out.push('\\'), Some('"') => out.push('"'), Some('\'') => out.push('\''), Some('0') => out.push('\0'),
-            Some('x') => {
-                let hex = format!("{}{}", chars.next().ok_or("bad \\x")?, chars.next().ok_or("bad \\x")?);
-                out.push(u8::from_str_radix(&hex, 16).map_err(|_| format!("bad \\x{hex}"))? as char);
-            }
-            Some('u') if chars.next() == Some('{') => {
-                let hex: String = chars.by_ref().take_while(|&ch| ch != '}').filter(|&ch| ch != '_').collect();
-                out.push(char::from_u32(u32::from_str_radix(&hex, 16).map_err(|_| format!("bad \\u{{{hex}}}"))?).ok_or("invalid Unicode")?);
-            }
-            Some('\n') => while matches!(chars.clone().next(), Some(' ' | '\t' | '\r' | '\n')) { chars.next(); },
-            other => return Err(format!("unsupported escape `\\{other:?}`")),
+        if is_punct(tokens, pos, ',') {
+            pos += 1;
         }
     }
     Ok(out)
