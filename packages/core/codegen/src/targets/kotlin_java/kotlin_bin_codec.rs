@@ -326,7 +326,7 @@ pub(super) fn emit_rn_write_prop_value(
             );
         }
         PropType::Object { .. } | PropType::Point | PropType::EdgeInsets => {
-            writeln!(out, "{indent}writeReadableMap({w}, {val_expr}, 0)");
+            writeln!(out, "{indent}writeReadableMap({w}, {val_expr}, {depth})");
         }
         PropType::Array { item } => {
             let arr = format!("_arr{depth}");
@@ -387,7 +387,7 @@ pub(super) fn emit_rn_write_readable_array_elem(
         PropType::Object { .. } | PropType::Point | PropType::EdgeInsets => {
             writeln!(
                 out,
-                "{indent}writeReadableMap({w}, {arr_expr}.getMap({idx_expr}), 0)"
+                "{indent}writeReadableMap({w}, {arr_expr}.getMap({idx_expr}), {depth})"
             );
         }
         PropType::Array { .. } => {

@@ -619,7 +619,6 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
             return false;
         }
         if (NativeRuntime.acquireScene(handle, header, slabs) != NveRuntimeAbi.STATUS_OK) {
-            drainEmittedIfListening();
             return false;
         }
         inFrame = true;

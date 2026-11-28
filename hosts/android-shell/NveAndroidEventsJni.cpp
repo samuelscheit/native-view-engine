@@ -489,22 +489,26 @@ JNIEXPORT jbyteArray JNICALL Java_dev_nve_host_NativeRuntime_drainEmittedEvents(
   }
   env->SetByteArrayRegion(out, 0, static_cast<jsize>(nve::host::kEventWireHeaderSize),
                           reinterpret_cast<const jbyte*>(hdr));
-  if (!clear_exception(env)) {
-    env->SetByteArrayRegion(out, static_cast<jsize>(nve::host::kEventWireHeaderSize), static_cast<jsize>(ev_bytes),
-                            reinterpret_cast<const jbyte*>(batch.events));
-  } else {
+  if (clear_exception(env)) {
     s->last_error = "failed writing emitted events header";
     write_out(env, out_status, NVE_RUNTIME_ERROR);
     return nullptr;
   }
-  if (!clear_exception(env) && batch.bytes_len > 0u) {
-    env->SetByteArrayRegion(out, static_cast<jsize>(nve::host::kEventWireHeaderSize + ev_bytes),
-                            static_cast<jsize>(batch.bytes_len), reinterpret_cast<const jbyte*>(batch.bytes));
-  }
+  env->SetByteArrayRegion(out, static_cast<jsize>(nve::host::kEventWireHeaderSize), static_cast<jsize>(ev_bytes),
+                          reinterpret_cast<const jbyte*>(batch.events));
   if (clear_exception(env)) {
-    s->last_error = "failed writing emitted events payload";
+    s->last_error = "failed writing emitted events records";
     write_out(env, out_status, NVE_RUNTIME_ERROR);
     return nullptr;
+  }
+  if (batch.bytes_len > 0u) {
+    env->SetByteArrayRegion(out, static_cast<jsize>(nve::host::kEventWireHeaderSize + ev_bytes),
+                            static_cast<jsize>(batch.bytes_len), reinterpret_cast<const jbyte*>(batch.bytes));
+    if (clear_exception(env)) {
+      s->last_error = "failed writing emitted events payload";
+      write_out(env, out_status, NVE_RUNTIME_ERROR);
+      return nullptr;
+    }
   }
   return out;
 }

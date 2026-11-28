@@ -111,7 +111,8 @@ val generateExportKotlinFixtures by tasks.registering {
         val buildRc = buildProc.waitFor()
         check(buildRc == 0) { "cargo build -p nve-cli failed ($buildRc):\n$buildOut" }
 
-        val targetDir = System.getenv("CARGO_TARGET_DIR")?.takeIf { it.isNotBlank() }?.let(::File)
+        val targetDir = System.getenv("CARGO_TARGET_DIR")?.takeIf { it.isNotBlank() }
+            ?.let { raw -> File(raw).let { if (it.isAbsolute) it else nveRepoRoot.resolve(raw) } }
             ?: nveRepoRoot.resolve("target")
         val exeName = if (System.getProperty("os.name").lowercase().contains("win")) "nve.exe" else "nve"
         val nveBin = targetDir.resolve("debug").resolve(exeName)

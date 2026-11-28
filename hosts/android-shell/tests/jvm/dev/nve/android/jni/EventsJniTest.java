@@ -716,8 +716,12 @@ public final class EventsJniTest {
         holder[0] = sf;
         c.eq(sf.attachApp(showcaseApp.toString(), false), NveRuntimeAbi.STATUS_OK, "deadlock test attach");
 
+        final long h = sf.handle();
         final Thread worker = new Thread(() -> {
-            sf.pushHostEvent(0x0010, 99, new byte[] {7});
+            // Bypass `RuntimeSurface.pushHostEvent`'s `handleLock` (matching a native/pairing
+            // background thread) so `worker` acquires `WakeBridge.read -> handleLock` while the
+            // owner thread runs `close()`, honestly exercising AB-BA lock inversion.
+            NativeRuntime.pushHostEvent(h, 0x0010, 99, new byte[] {7});
         });
         worker.start();
 
