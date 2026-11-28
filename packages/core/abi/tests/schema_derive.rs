@@ -10,7 +10,7 @@ use nve_abi::schema::{
 };
 use nve_abi::{
     InteractionEvent, NodeId, NveAbi, NveBufferSlice, NveEvent, NveRuntimeApi, NveSceneView,
-    NveSurfaceApi, NveValueData,
+    NveSurfaceApi, NveValueData, ReprEnum,
 };
 
 /// Custom aligned POD struct exercising all `#[nve_abi(...)]` struct & field options.
@@ -177,4 +177,75 @@ fn core_and_scene_view_descriptors_reflect_real_rustc_layouts() {
         <InteractionEvent as NveSchema>::ITEM,
         AbiItemDescriptor::Enum(<InteractionEvent as NveEnumSchema>::SCHEMA)
     );
+}
+
+#[repr(i8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ReprEnum)]
+enum MinI8 {
+    Min = -128,
+    Zero = 0,
+    Max = 127,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ReprEnum)]
+enum MinI32 {
+    Min = -2147483648,
+    NegOne = -1,
+    Max = 2147483647,
+}
+
+#[repr(i64)]
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ReprEnum)]
+#[repr_enum(fallback = r#type)]
+enum MinI64Raw {
+    Min = -9223372036854775808,
+    r#type = 0,
+    r#match = 9223372036854775807,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, NveAbi)]
+#[nve_abi(vtable)]
+struct RawIdentVtable {
+    pub r#match: Option<unsafe extern "C" fn(r#type: u32, r#fn: *const u8) -> i32>,
+}
+
+#[test]
+fn repr_enum_signed_min_boundaries_and_raw_idents_round_trip() {
+    assert_eq!(MinI8::COUNT, 3);
+    assert_eq!(MinI8::ALL, [MinI8::Min, MinI8::Zero, MinI8::Max]);
+    assert_eq!(MinI8::Min.as_i8(), i8::MIN);
+    assert_eq!(MinI8::try_from_i8(i8::MIN), Some(MinI8::Min));
+    assert_eq!(MinI8::try_from_i8(i8::MAX), Some(MinI8::Max));
+    assert_eq!(MinI8::try_from_i8(1), None);
+
+    assert_eq!(MinI32::Min.as_i32(), i32::MIN);
+    assert_eq!(MinI32::try_from_i32(i32::MIN), Some(MinI32::Min));
+    assert_eq!(MinI32::try_from_i32(-1), Some(MinI32::NegOne));
+    assert_eq!(MinI32::try_from_i32(i32::MAX), Some(MinI32::Max));
+    assert_eq!(MinI32::try_from_i32(42), None);
+
+    assert_eq!(MinI64Raw::COUNT, 3);
+    assert_eq!(
+        MinI64Raw::ALL,
+        [MinI64Raw::Min, MinI64Raw::r#type, MinI64Raw::r#match]
+    );
+    assert_eq!(MinI64Raw::Min.as_i64(), i64::MIN);
+    assert_eq!(MinI64Raw::try_from_i64(i64::MIN), Some(MinI64Raw::Min));
+    assert_eq!(MinI64Raw::try_from_i64(0), Some(MinI64Raw::r#type));
+    assert_eq!(MinI64Raw::try_from_i64(i64::MAX), Some(MinI64Raw::r#match));
+    assert_eq!(MinI64Raw::try_from_i64(99), None);
+    assert_eq!(MinI64Raw::from_i64(99), MinI64Raw::r#type);
+
+    let vt = <RawIdentVtable as NveVtableSchema>::SCHEMA;
+    assert_eq!(vt.methods.len(), 1);
+    assert_eq!(vt.methods[0].name, "match");
+    assert_eq!(vt.methods[0].params.len(), 2);
+    assert_eq!(vt.methods[0].params[0].name, "type");
+    assert_eq!(vt.methods[0].params[0].ty, "u32");
+    assert_eq!(vt.methods[0].params[1].name, "fn");
+    assert_eq!(vt.methods[0].params[1].ty, "*const u8");
+    assert_eq!(vt.methods[0].return_type, "i32");
 }

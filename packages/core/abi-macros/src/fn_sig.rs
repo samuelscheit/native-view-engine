@@ -2,7 +2,7 @@
 //! signatures used by `#[derive(NveAbi)]`, `abi_consts!`, `abi_aliases!`, and `abi_callbacks!`.
 
 use crate::parse::parse_string_literal;
-use crate::tok::{is_colon2, is_ident, is_punct, Delim, Tok};
+use crate::tok::{is_arrow, is_colon2, is_ident, is_punct, Delim, Tok};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedParam {
@@ -107,14 +107,19 @@ pub(crate) fn format_type(tokens: &[Tok]) -> String {
 }
 
 fn find_top_level_punct(tokens: &[Tok], ch: char) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, t) in tokens.iter().enumerate() {
-        match t {
+    let (mut i, mut depth) = (0usize, 0usize);
+    while i < tokens.len() {
+        if is_arrow(tokens, i) {
+            i += 2;
+            continue;
+        }
+        match tokens[i] {
             Tok::Punct('<', _) => depth += 1,
             Tok::Punct('>', _) => depth = depth.saturating_sub(1),
-            Tok::Punct(c, _) if *c == ch && depth == 0 => return Some(i),
+            Tok::Punct(c, _) if c == ch && depth == 0 => return Some(i),
             _ => {}
         }
+        i += 1;
     }
     None
 }
@@ -143,6 +148,10 @@ pub(crate) fn unwrap_option_type(tokens: &[Tok]) -> Option<&[Tok]> {
     let mut depth = 1usize;
     let mut i = start;
     while i < tokens.len() && depth > 0 {
+        if is_arrow(tokens, i) {
+            i += 2;
+            continue;
+        }
         match tokens[i] {
             Tok::Punct('<', _) => depth += 1,
             Tok::Punct('>', _) => depth -= 1,
@@ -289,6 +298,10 @@ fn parse_fn_params(tokens: &[Tok], ctx: &str) -> Result<Vec<ParsedParam>, String
             if depth == 0 && is_variadic_dots(tokens, pos) {
                 return Err(format!("`{ctx}`: variadic functions are unsupported"));
             }
+            if is_arrow(tokens, pos) {
+                pos += 2;
+                continue;
+            }
             match &tokens[pos] {
                 Tok::Punct('<', _) => depth += 1,
                 Tok::Punct('>', _) => depth = depth.saturating_sub(1),
@@ -334,10 +347,16 @@ mod tests {
         assert_eq!(s.params[0].ty, "NodeId");
         assert_eq!(s.params[1].ty, "Option<WakeFn>");
 
-        let opt = parse_fn_ptr_sig(&lex("Option<unsafe extern \"C\" fn()>"), true, "opt").unwrap();
+        let opt = parse_fn_ptr_sig(
+            &lex("Option<unsafe extern \"C\" fn(r#type: u32) -> i32>"),
+            true,
+            "opt",
+        )
+        .unwrap();
         assert!(opt.optional);
-        assert_eq!(opt.return_type, "()");
-        assert!(opt.params.is_empty());
+        assert_eq!(opt.return_type, "i32");
+        assert_eq!(opt.params.len(), 1);
+        assert_eq!(opt.params[0].abi_name, "type");
 
         for (src, needle) in [
             ("extern \"C\" fn(u32)", "parameter must be named"),

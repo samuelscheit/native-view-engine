@@ -343,7 +343,7 @@ fn check_converter_fn(
             ln,
             line_at(raw, ln),
             format!(
-                "Manual internal enum/discriminant converter `fn {name}`; use canonical `#[derive(WordEnum)]` type directly"
+                "Manual internal enum/discriminant converter `fn {name}`; use canonical `#[derive(ReprEnum)]` / `#[derive(WordEnum)]` / `#[derive(NveCodec)]` type directly"
             ),
         ));
     }

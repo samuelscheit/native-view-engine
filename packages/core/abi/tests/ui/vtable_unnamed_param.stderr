@@ -1,0 +1,7 @@
+error: `BadUnnamed::ping`: parameter must be named (`name: Type`)
+ --> tests/ui/vtable_unnamed_param.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

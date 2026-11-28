@@ -1,0 +1,7 @@
+error: #[nve_abi(interface = ...)] vtable `NveBadApi` cannot contain data header field `header`
+ --> tests/ui/vtable_interface_with_header.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -2826,6 +2826,7 @@ dependencies = [
  "nve-hash",
  "rustc-hash",
  "serde",
+ "trybuild",
 ]
 
 [[package]]

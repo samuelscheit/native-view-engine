@@ -7,8 +7,8 @@ use proc_macro::TokenStream;
 use crate::fn_sig::{format_type, is_fn_ptr_type, parse_fn_ptr_sig, strip_raw};
 pub(crate) use crate::lit::{parse_i128_literal, parse_string_literal, parse_usize_literal};
 use crate::tok::{
-    expect_ident, from_stream, is_colon2, is_ident, is_punct, paren_inner, render_tokens,
-    skip_vis, Delim, Tok,
+    expect_ident, from_stream, is_arrow, is_colon2, is_ident, is_punct, paren_inner,
+    render_tokens, skip_vis, Delim, Tok,
 };
 use crate::{
     ParsedAlias, ParsedEnum, ParsedField, ParsedItem, ParsedRecord, ParsedVariant, ParsedVtable,
@@ -325,6 +325,10 @@ fn parse_raw_fields(tokens: &[Tok]) -> Result<Vec<RawField<'_>>, String> {
         pos += 1;
         let (start, mut depth) = (pos, 0usize);
         while pos < tokens.len() {
+            if is_arrow(tokens, pos) {
+                pos += 2;
+                continue;
+            }
             match tokens[pos] {
                 Tok::Punct('<', _) => depth += 1,
                 Tok::Punct('>', _) => depth = depth.saturating_sub(1),
@@ -438,6 +442,10 @@ fn parse_single_tuple_field(inner: &[Tok], struct_name: &str) -> Result<(String,
         let start = pos;
         let mut depth = 0usize;
         while pos < inner.len() {
+            if is_arrow(inner, pos) {
+                pos += 2;
+                continue;
+            }
             match inner[pos] {
                 Tok::Punct('<', _) => depth += 1,
                 Tok::Punct('>', _) => depth = depth.saturating_sub(1),

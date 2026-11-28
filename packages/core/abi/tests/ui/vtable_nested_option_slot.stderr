@@ -1,0 +1,7 @@
+error: `BadNestedOption::ping`: nested `Option<Option<...>>` vtable slots are unsupported
+ --> tests/ui/vtable_nested_option_slot.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

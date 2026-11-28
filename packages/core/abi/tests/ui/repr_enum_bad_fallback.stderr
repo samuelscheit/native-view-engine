@@ -1,0 +1,7 @@
+error: #[derive(ReprEnum)] on `BadFallback`: `fallback = Missing` does not match any variant
+ --> tests/ui/repr_enum_bad_fallback.rs:4:10
+  |
+4 | #[derive(ReprEnum)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)

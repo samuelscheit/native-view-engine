@@ -1,0 +1,15 @@
+error: `BadBareFn::a` requires `extern "C"` calling convention
+ --> tests/ui/vtable_non_c_abi.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: `BadRustAbi::b` requires `extern "C"` calling convention, found `extern "Rust"`
+  --> tests/ui/vtable_non_c_abi.rs:11:10
+   |
+11 | #[derive(NveAbi)]
+   |          ^^^^^^
+   |
+   = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,7 @@
+error: #[derive(NveAbi)] on `Foo` cannot infer `module_name` from `Foo` (expected `Nve<Name>Api` or explicit `module_name = "..."`)
+ --> tests/ui/vtable_bad_module_name.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

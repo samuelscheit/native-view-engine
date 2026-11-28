@@ -1,0 +1,7 @@
+error: #[derive(NveAbi)] on `#[repr(transparent)]` `BadTransparent` requires exactly 1 field, found 2
+ --> tests/ui/transparent_multi_field.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

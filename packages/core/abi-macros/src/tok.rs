@@ -60,7 +60,12 @@ pub(crate) fn expect_ident(tokens: &[Tok], pos: &mut usize, desc: &str) -> Resul
 pub(crate) fn skip_vis(tokens: &[Tok], pos: &mut usize) {
     if is_ident(tokens, *pos, "pub") {
         *pos += 1;
-        if matches!(tokens.get(*pos), Some(Tok::Group(Delim::Paren, _))) {
+        if let Some(Tok::Group(Delim::Paren, inner)) = tokens.get(*pos)
+            && matches!(
+                inner.first(),
+                Some(Tok::Ident(k)) if matches!(k.as_str(), "crate" | "self" | "super" | "in")
+            )
+        {
             *pos += 1;
         }
     }
@@ -68,6 +73,10 @@ pub(crate) fn skip_vis(tokens: &[Tok], pos: &mut usize) {
 
 pub(crate) fn is_colon2(tokens: &[Tok], i: usize) -> bool {
     matches!(tokens.get(i), Some(Tok::Punct(':', true))) && is_punct(tokens, i + 1, ':')
+}
+
+pub(crate) fn is_arrow(tokens: &[Tok], i: usize) -> bool {
+    matches!(tokens.get(i), Some(Tok::Punct('-', true))) && is_punct(tokens, i + 1, '>')
 }
 
 pub(crate) fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {

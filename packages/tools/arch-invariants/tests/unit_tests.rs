@@ -1093,3 +1093,95 @@ fn unit_platform_purity_flags_css_html_formatters_and_motion_in_core_only() {
         assert!(scan("packages/core/tables/src/a.rs", good).is_empty(), "allowed: {good}");
     }
 }
+
+#[test]
+fn unit_no_manual_repr_enum_converters_positive_and_negative() {
+    let bad_src = r#"
+        #[repr(u8)]
+        pub enum PubU8 { A = 0, B = 1 }
+        impl PubU8 {
+            pub const fn from_u8(v: u8) -> Option<Self> {
+                match v { 0 => Some(Self::A), 1 => Some(Self::B), _ => None }
+            }
+        }
+        #[repr(i32)]
+        enum PrivI32 { Ok = 0, Err = -1, Bad = -2 }
+        impl PrivI32 {
+            const fn from_raw(code: i32) -> Self {
+                match code { 0 => Self::Ok, -1 => Self::Err, -2 => Self::Bad, _ => Self::Err }
+            }
+        }
+        const fn helper_decode(v: u8) -> Option<PubU8> {
+            match v { 0 => Some(PubU8::A), 1 => Some(PubU8::B), _ => None }
+        }
+    "#;
+    let cross_file_bad = r#"
+        fn cross_decode(raw: u8) -> Option<PubU8> {
+            match raw { 0 => Some(PubU8::A), 1 => Some(PubU8::B), _ => None }
+        }
+    "#;
+    let good_src = r#"
+        #[repr(u8)]
+        pub enum ColorScheme { Light = 1, Dark = 2 }
+        impl ColorScheme {
+            pub const fn opt_from_u8(raw: u8) -> Result<Option<Self>, u8> {
+                if raw == 0 {
+                    Ok(None)
+                } else {
+                    match Self::try_from_u8(raw) {
+                        Some(s) => Ok(Some(s)),
+                        None => Err(raw),
+                    }
+                }
+            }
+        }
+        #[repr(u8)]
+        pub enum CameraFacing { Unknown = 0, Back = 1, Front = 2 }
+        impl CameraFacing {
+            pub const fn from_preview_u8(v: u8) -> Option<Self> {
+                match Self::try_from_word(v as u32) {
+                    Some(Self::Unknown) | None => None,
+                    some => some,
+                }
+            }
+        }
+        pub enum RemoteAction { Move(u8), Digit(u8) }
+        impl RemoteAction {
+            pub fn from_code(v: u32) -> Option<Self> {
+                match v { 1 => Some(Self::Move(1)), 2 => Some(Self::Digit(2)), _ => None }
+            }
+        }
+        pub struct ColorRgba(pub u32);
+        impl ColorRgba {
+            pub const fn from_u32(v: u32) -> Self { Self(v) }
+        }
+    "#;
+
+    let ast_bad = syn::parse_file(bad_src).unwrap();
+    let ast_cross = syn::parse_file(cross_file_bad).unwrap();
+    let ast_good = syn::parse_file(good_src).unwrap();
+
+    let mut v_bad = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(
+        &[
+            ("packages/a/src/lib.rs".into(), bad_src, &ast_bad),
+            ("packages/b/src/lib.rs".into(), cross_file_bad, &ast_cross),
+        ],
+        &mut v_bad,
+    );
+    assert_eq!(
+        v_bad.len(),
+        4,
+        "expected pub from_u8 + private signed from_raw + same-file helper + cross-file helper: {v_bad:?}"
+    );
+
+    let mut v_good = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(
+        &[("packages/c/src/lib.rs".into(), good_src, &ast_good)],
+        &mut v_good,
+    );
+    assert!(
+        v_good.is_empty(),
+        "delegators, non-unit enums, and structs must not false-positive: {v_good:?}"
+    );
+}

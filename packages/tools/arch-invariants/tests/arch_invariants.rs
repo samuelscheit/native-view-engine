@@ -117,6 +117,24 @@ fn no_duplicate_enum_match_arms_workspace_wide() {
     );
 }
 
+/// Enforces [INV:no-manual-repr-enum-converters].
+#[test]
+fn no_manual_repr_enum_converters() {
+    let idx = repo_index();
+    let all_owned = ast_enums::collect_workspace_prod_rs(idx);
+    let all_refs: Vec<_> = all_owned
+        .iter()
+        .map(|f| (f.rel.clone(), f.parsed.raw.as_str(), &f.parsed.ast))
+        .collect();
+    assert!(!all_refs.is_empty());
+    let mut violations = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(&all_refs, &mut violations);
+    assert_no_violations(
+        "Zero hand-written integer-to-enum converters for #[repr(<int>)] unit enums (derive ReprEnum / WordEnum / NveCodec)",
+        &violations,
+    );
+}
+
 #[test]
 fn cross_file_enums_converters_and_match_tables() {
     let idx = repo_index();
@@ -139,7 +157,7 @@ fn cross_file_enums_converters_and_match_tables() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "Cross-file duplicate enums, redundant NVE->NVE converters, discriminant matches, core str tables",
-        100,
+        67,
         &violations,
     );
 }
