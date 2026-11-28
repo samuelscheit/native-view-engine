@@ -192,16 +192,20 @@ QList<QAccessible::Attribute> SemanticsInterfaces::attributeKeys() const {
   QList<QAccessible::Attribute> keys;
   const NodeSemantics& s = accessible_semantics();
   if (s.level != 0u) keys.push_back(QAccessible::Attribute::Level);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
   if (s.orientation.has_value()) keys.push_back(QAccessible::Attribute::Orientation);
+#endif
   return keys;
 }
 
 QVariant SemanticsInterfaces::attributeValue(QAccessible::Attribute key) const {
   const NodeSemantics& s = accessible_semantics();
   if (key == QAccessible::Attribute::Level && s.level != 0u) return QVariant(static_cast<int>(s.level));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
   if (key == QAccessible::Attribute::Orientation && s.orientation.has_value()) {
     return QVariant::fromValue(*s.orientation == NVE_ARIA_ORIENTATION_VERTICAL ? Qt::Vertical : Qt::Horizontal);
   }
+#endif
   return QVariant();
 }
 

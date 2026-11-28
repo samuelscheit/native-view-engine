@@ -127,6 +127,7 @@ class NveQtLineEdit final : public QLineEdit {
  private:
   QtNodeView* view_;
   bool composing_ = false;
+  bool in_ime_ = false;
 };
 
 /// Multi-line text input.
@@ -148,6 +149,7 @@ class NveQtTextEdit final : public QPlainTextEdit {
  private:
   QtNodeView* view_;
   bool composing_ = false;
+  bool in_ime_ = false;
 };
 
 /// One retained node view: its widgets and every binding it owns (no side tables).
@@ -234,6 +236,7 @@ class NveQtWidget::Impl final : public QtHost {
   std::unordered_set<QtNodeView*> scroll_dirty_;
   std::unordered_set<QWidget*> restack_;
   NodeSemantics root_sem_;
+  bool root_synced_ = false;
   QColor root_background_{Qt::transparent};
   uint64_t reconcile_update_count_ = 0u;
   uint64_t reconcile_move_count_ = 0u;
@@ -247,6 +250,7 @@ class NveQtWidget::Impl final : public QtHost {
     return tree_.resource_unchanged(scene, id, applied);
   }
   void after_sync() override;
+  void on_frame0_booted() override;
 
  private:
   friend struct Adapter;

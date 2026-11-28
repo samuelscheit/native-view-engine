@@ -5,6 +5,7 @@
 pub mod action;
 pub mod bridge;
 pub mod ffi;
+mod geo;
 mod table_sync;
 
 pub use action::{with_ffi_action, NveA11yWinAction, NveA11yWinActionKind};

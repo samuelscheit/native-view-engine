@@ -28,7 +28,51 @@ bool is_tab_focusable(const WinNodeVisual& v) noexcept {
 }
 
 bool is_node_shown(const WinNodeVisual& v) noexcept {
-  return v.visual.visibility != NVE_VISIBILITY_HIDDEN && v.visual.opacity > 0.0f;
+  return v.visual.visibility != NVE_VISIBILITY_HIDDEN && v.visual.opacity > 0.001f;
+}
+
+bool is_click_focusable(const WinNodeVisual& v) noexcept {
+  if (v.interaction.disabled) return false;
+  return v.kind == host::NodeKind::TextInput || v.interaction.focusable || v.interaction.tab_index.has_value() ||
+         v.wants(NVE_INTERACTION_EVENT_PRESS) || v.wants(NVE_INTERACTION_EVENT_FOCUS) ||
+         v.wants(NVE_INTERACTION_EVENT_KEY_DOWN) || v.wants(NVE_INTERACTION_EVENT_KEY_UP) ||
+         host::openable_link(v.href);
+}
+
+struct TabEntry {
+  uint32_t id = 0u;
+  int16_t tab_index = 0;
+  size_t order = 0u;
+};
+
+void find_topmost_modal(const NveWinVisualTree& tree, std::span<const uint32_t> ids, bool visible,
+                        uint32_t& modal_root) noexcept {
+  for (const uint32_t id : ids) {
+    const WinNodeVisual* v = tree.find(id);
+    if (v == nullptr || v->interaction.disabled) continue;
+    const bool v_vis = v->visual.visibility == NVE_VISIBILITY_HIDDEN    ? false
+                       : v->visual.visibility == NVE_VISIBILITY_VISIBLE ? true
+                                                                        : visible;
+    if (!v_vis || v->visual.opacity <= 0.001f) continue;
+    if (v->modal) modal_root = id;
+    find_topmost_modal(tree, v->children, v_vis, modal_root);
+  }
+}
+
+void collect_tab_candidates(const NveWinVisualTree& tree, std::span<const uint32_t> ids, bool visible,
+                            std::vector<TabEntry>& out) {
+  for (const uint32_t id : ids) {
+    const WinNodeVisual* v = tree.find(id);
+    if (v == nullptr || v->interaction.disabled) continue;
+    const bool v_vis = v->visual.visibility == NVE_VISIBILITY_HIDDEN    ? false
+                       : v->visual.visibility == NVE_VISIBILITY_VISIBLE ? true
+                                                                        : visible;
+    if (!v_vis || !is_node_shown(*v)) continue;
+    if (is_tab_focusable(*v)) {
+      out.push_back(TabEntry{id, v->interaction.tab_index.value_or(0), out.size()});
+    }
+    collect_tab_candidates(tree, v->children, v_vis, out);
+  }
 }
 
 }  // namespace
@@ -227,6 +271,60 @@ uint32_t NveWinHost::press_target(float x, float y) const {
   return target;
 }
 
+uint32_t NveWinHost::focus_target(float x, float y) const {
+  uint32_t target = 0u;
+  for (const WinNodeVisual* v = tree_.hit_test(x, y); v != nullptr; v = tree_.find(v->parent)) {
+    if (v->interaction.disabled) return 0u;
+    if (target == 0u && is_click_focusable(*v)) target = v->id;
+  }
+  return target;
+}
+
+bool NveWinHost::scroll_into_view(uint32_t node_id) {
+  if (syncing_ || node_id == 0u || tree_.find(node_id) == nullptr) return false;
+  const auto alive = alive_;
+  std::vector<uint32_t> ancestors;
+  for (const WinNodeVisual* cur = tree_.find(node_id); cur != nullptr; cur = tree_.find(cur->parent)) {
+    if (cur->parent == 0u) break;
+    if (const WinNodeVisual* p = tree_.find(cur->parent); p != nullptr && p->scrollable()) {
+      ancestors.push_back(p->id);
+    }
+  }
+  bool any_scrolled = false;
+  for (const uint32_t sc_id : ancestors) {
+    if (!alive->load(std::memory_order_acquire)) return any_scrolled;
+    const WinNodeVisual* sc = tree_.find(sc_id);
+    const auto sc_frame = tree_.frame_of(sc_id);
+    const auto tgt_frame = tree_.frame_of(node_id);
+    if (sc == nullptr || !sc_frame || !tgt_frame) continue;
+    const Rect& vp = sc_frame->rect;
+    const Rect& tr = tgt_frame->rect;
+    float dx = 0.0f, dy = 0.0f;
+    if (tr.x < vp.x) {
+      dx = tr.x - vp.x;
+    } else if (tr.right() > vp.right()) {
+      dx = std::min(tr.right() - vp.right(), tr.x - vp.x);
+    }
+    if (tr.y < vp.y) {
+      dy = tr.y - vp.y;
+    } else if (tr.bottom() > vp.bottom()) {
+      dy = std::min(tr.bottom() - vp.bottom(), tr.y - vp.y);
+    }
+    if (std::abs(dx) > 1e-3f || std::abs(dy) > 1e-3f) {
+      const float prev_x = sc->scroll_x, prev_y = sc->scroll_y;
+      if (dispatch_scroll(sc_id, prev_x + dx, prev_y + dy)) {
+        if (!alive->load(std::memory_order_acquire)) return true;
+        if (const WinNodeVisual* after = tree_.find(sc_id);
+            after != nullptr &&
+            (std::abs(after->scroll_x - prev_x) > 1e-4f || std::abs(after->scroll_y - prev_y) > 1e-4f)) {
+          any_scrolled = true;
+        }
+      }
+    }
+  }
+  return any_scrolled;
+}
+
 uint32_t NveWinHost::pointer_down(float x, float y) {
   pressed_ = press_target(x, y);
   return pressed_;
@@ -352,12 +450,21 @@ bool NveWinHost::dispatch_composition(uint32_t node_id, NveTextInputEvent kind, 
 }
 
 bool NveWinHost::dispatch_focus(uint32_t node_id, bool focused) {
+  if (syncing_) return false;
+  const auto alive = alive_;
+  bool changed = false;
   if (focused) {
-    focused_ = node_id;
+    const uint32_t prev = std::exchange(focused_, node_id);
+    if (prev != 0u && prev != node_id) {
+      if (const WinNodeVisual* pv = tree_.find(prev); pv != nullptr && pv->wants(NVE_INTERACTION_EVENT_BLUR)) {
+        changed |= dispatch(session_->events().focus(prev, false));
+        if (!alive->load(std::memory_order_acquire)) return changed;
+      }
+    }
   } else if (focused_ == node_id) {
     focused_ = 0u;
   }
-  return dispatch(session_->events().focus(node_id, focused));
+  return dispatch(session_->events().focus(node_id, focused)) || changed;
 }
 
 bool NveWinHost::dispatch_key(uint32_t node_id, NveInteractionEvent kind, std::string_view key, std::string_view code,
@@ -408,52 +515,27 @@ bool NveWinHost::set_focused_node(uint32_t node_id) {
   return changed;
 }
 
-uint32_t NveWinHost::step_tab_focus(bool reverse) {
+uint32_t NveWinHost::step_tab_focus(bool reverse) { return step_tab_focus_inner(reverse, nullptr); }
+
+uint32_t NveWinHost::step_tab_focus_inner(bool reverse, bool* modal_trapped) {
+  if (modal_trapped != nullptr) *modal_trapped = false;
   // Scope traversal to the topmost visible modal subtree when one is mounted.
   uint32_t modal_root = 0u;
-  std::function<void(std::span<const uint32_t>, bool)> find_modal = [&](std::span<const uint32_t> ids, bool visible) {
-    for (const uint32_t id : ids) {
-      const WinNodeVisual* v = tree_.find(id);
-      if (v == nullptr || v->interaction.disabled) continue;
-      const bool v_vis = v->visual.visibility == NVE_VISIBILITY_HIDDEN    ? false
-                         : v->visual.visibility == NVE_VISIBILITY_VISIBLE ? true
-                                                                          : visible;
-      if (!v_vis || v->visual.opacity <= 0.0f) continue;
-      if (v->modal) modal_root = id;
-      find_modal(v->children, v_vis);
-    }
-  };
-  find_modal(tree_.root_children(), true);
+  find_topmost_modal(tree_, tree_.root_children(), true, modal_root);
 
-  struct Entry {
-    uint32_t id = 0u;
-    int16_t tab_index = 0;
-    size_t order = 0u;
-  };
-  std::vector<Entry> candidates;
-  std::function<void(std::span<const uint32_t>, bool)> collect = [&](std::span<const uint32_t> ids, bool visible) {
-    for (const uint32_t id : ids) {
-      const WinNodeVisual* v = tree_.find(id);
-      if (v == nullptr || v->interaction.disabled) continue;
-      const bool v_vis = v->visual.visibility == NVE_VISIBILITY_HIDDEN    ? false
-                         : v->visual.visibility == NVE_VISIBILITY_VISIBLE ? true
-                                                                          : visible;
-      if (!v_vis || !is_node_shown(*v)) continue;
-      if (is_tab_focusable(*v)) {
-        candidates.push_back(Entry{id, v->interaction.tab_index.value_or(0), candidates.size()});
-      }
-      collect(v->children, v_vis);
-    }
-  };
+  std::vector<TabEntry> candidates;
   if (modal_root != 0u) {
     const uint32_t single[] = {modal_root};
-    collect(single, true);
+    collect_tab_candidates(tree_, single, true, candidates);
   } else {
-    collect(tree_.root_children(), true);
+    collect_tab_candidates(tree_, tree_.root_children(), true, candidates);
   }
-  if (candidates.empty()) return 0u;
+  if (candidates.empty()) {
+    if (modal_root != 0u && modal_trapped != nullptr) *modal_trapped = true;
+    return 0u;
+  }
 
-  std::stable_sort(candidates.begin(), candidates.end(), [](const Entry& a, const Entry& b) {
+  std::stable_sort(candidates.begin(), candidates.end(), [](const TabEntry& a, const TabEntry& b) {
     const bool a_pos = a.tab_index > 0;
     const bool b_pos = b.tab_index > 0;
     if (a_pos != b_pos) return a_pos;
@@ -478,6 +560,7 @@ KeyResult NveWinHost::handle_key(bool pressed, std::string_view key, std::string
   KeyResult r;
   r.focused_node = focused_;
   if (syncing_) return r;
+  const auto alive = alive_;
 
   const NveInteractionEvent kind = pressed ? NVE_INTERACTION_EVENT_KEY_DOWN : NVE_INTERACTION_EVENT_KEY_UP;
   const uint32_t target = key_target(focused_, kind);
@@ -487,14 +570,17 @@ KeyResult NveWinHost::handle_key(bool pressed, std::string_view key, std::string
     r.changed = dispatch_key(target, kind, key, code, flags, key_code) || r.changed;
     r.dispatched = true;
     r.handled = r.handled || listened || r.changed;
+    if (!alive->load(std::memory_order_acquire)) return r;
   }
 
   const bool no_cmd =
       (flags & (NVE_EVENT_FLAG_MOD_CTRL | NVE_EVENT_FLAG_MOD_ALT | NVE_EVENT_FLAG_MOD_META)) == 0u;
   if (pressed && no_cmd && key == "Tab") {
-    const uint32_t next = step_tab_focus((flags & NVE_EVENT_FLAG_MOD_SHIFT) != 0u);
-    r.focused_node = next;
-    r.handled = r.handled || next != 0u;
+    bool trapped = false;
+    const uint32_t next = step_tab_focus_inner((flags & NVE_EVENT_FLAG_MOD_SHIFT) != 0u, &trapped);
+    if (!alive->load(std::memory_order_acquire)) return r;
+    r.focused_node = next != 0u ? next : focused_;
+    r.handled = r.handled || next != 0u || trapped;
     return r;
   }
 
@@ -506,7 +592,8 @@ KeyResult NveWinHost::handle_key(bool pressed, std::string_view key, std::string
         r.changed = simulate_press(fv->id, fv->local.width * 0.5f, fv->local.height * 0.5f) || r.changed;
         r.dispatched = true;
         r.handled = true;
-      } else if (host::openable_link(fv->href)) {
+        if (!alive->load(std::memory_order_acquire)) return r;
+      } else if (key == "Enter" && host::openable_link(fv->href)) {
         r.href = fv->href;
         r.handled = true;
       }

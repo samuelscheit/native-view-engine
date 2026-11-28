@@ -251,18 +251,20 @@ bool QtHost::restore_state(std::string_view path, uint32_t schema_version) {
 
 bool QtHost::clear_state(std::string_view path) { return session_->clear_state_file(path); }
 
-bool QtHost::save_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version) {
-  return session_->runtime().save_frame0_file(path, schema_version, app_version) == NVE_RUNTIME_OK;
+bool QtHost::save_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  return session_->save_frame0_file(path, app_build_id, env_hash);
 }
 
-bool QtHost::boot_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version) {
-  if (session_->runtime().boot_frame0_file(path, schema_version, app_version) != NVE_RUNTIME_OK) return false;
+bool QtHost::boot_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_file(path, app_build_id, env_hash)) return false;
+  on_frame0_booted();
   (void)pump();
   return true;
 }
 
-bool QtHost::boot_frame0_bytes(std::span<const uint8_t> bytes, uint32_t schema_version, uint32_t app_version) {
-  if (session_->runtime().boot_frame0_bytes(bytes, schema_version, app_version) != NVE_RUNTIME_OK) return false;
+bool QtHost::boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_bytes(envelope, app_build_id, env_hash)) return false;
+  on_frame0_booted();
   (void)pump();
   return true;
 }

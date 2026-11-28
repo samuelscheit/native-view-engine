@@ -112,6 +112,12 @@ class NveWinHost {
   /// presses or is an openable link; 0 when none, or when any node on its ancestor chain is
   /// disabled (a disabled container disables its contents).
   [[nodiscard]] uint32_t press_target(float x, float y) const;
+  /// Focus target at `(x, y)`: the nearest non-disabled focusable ancestor-or-self, or 0.
+  [[nodiscard]] uint32_t focus_target(float x, float y) const;
+  /// True when `node_id` or any of its ancestors is disabled.
+  [[nodiscard]] bool is_node_disabled(uint32_t node_id) const noexcept;
+  /// Scrolls ancestor scroll container(s) minimally so `node_id` is inside each viewport.
+  bool scroll_into_view(uint32_t node_id);
   /// Scrolls the innermost scroll container under `(x, y)` that can still move by `(dx, dy)`
   /// (chaining outwards at its edges); `true` when one moved.
   bool wheel_at(float x, float y, float dx, float dy);
@@ -170,7 +176,7 @@ class NveWinHost {
   bool scrolled(const WinNodeVisual& node, float x, float y);
   /// `kind` at surface `(x, y)` to `node`, in its local coordinates.
   bool dispatch_pointer(uint32_t node, NveInteractionEvent kind, float x, float y);
-  [[nodiscard]] bool is_node_disabled(uint32_t node_id) const noexcept;
+  uint32_t step_tab_focus_inner(bool reverse, bool* modal_trapped);
   [[nodiscard]] uint32_t key_target(uint32_t start_id, NveInteractionEvent kind) const noexcept;
 
   WinHostConfig config_;

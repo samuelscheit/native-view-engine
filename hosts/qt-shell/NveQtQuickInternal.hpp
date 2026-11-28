@@ -77,6 +77,7 @@ struct QuickNodeView {
   bool wants_press = false;
   bool focusable = false;
   bool disabled = false;
+  std::optional<int16_t> tab_index;
   uint8_t cursor = NVE_CURSOR_KIND_AUTO;
   std::string dom_id;
   std::string href;
@@ -192,6 +193,7 @@ class NveQtQuickItem::Impl final : public QtHost {
     return tree_.resource_unchanged(scene, id, applied);
   }
   void after_sync() override;
+  void on_frame0_booted() override;
 
  private:
   void move_record(QuickNodeView& v, const host::NodeGeometry& node);

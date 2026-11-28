@@ -70,6 +70,14 @@ void NveQtWidget::Impl::clear_views() {
   tree_.clear(adapter_);
   restack_.clear();
   scroll_dirty_.clear();
+  root_synced_ = false;
+}
+
+void NveQtWidget::Impl::on_frame0_booted() {
+  if (QWidget* fw = owner_->focusWidget(); fw != nullptr && owner_->isAncestorOf(fw)) {
+    fw->clearFocus();
+  }
+  root_synced_ = false;
 }
 
 size_t NveQtWidget::Impl::sync_views(const host::RuntimeSceneGuard& scene) {

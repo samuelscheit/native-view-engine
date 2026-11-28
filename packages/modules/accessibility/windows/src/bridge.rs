@@ -5,16 +5,13 @@
 
 use accesskit::{ActionRequest, NodeId as AccessKitNodeId, TreeUpdate};
 use nve_abi::{
-    NveLayoutRect, NveNodeRow, NveSceneView, NveScrollOffset, NVE_NODE_ROW_FLAG_LIVE,
-    NVE_RUNTIME_SCHEMA_HASH,
+    NveLayoutRect, NveNodeRow, NveSceneView, NVE_NODE_ROW_FLAG_LIVE, NVE_RUNTIME_SCHEMA_HASH,
 };
-use nve_accessibility::{
-    A11yGeometryProvider, AccessKitTreeBridge, ResolvedA11yAction, StoreEpoch,
-};
-use nve_engine::LayoutRect;
-use nve_store::{ChangeSet, NodeId, NodeIndex, NodeStore, NveTable};
-use nve_tables::tables::{core_realization_order, Accessibility, Scroll};
+use nve_accessibility::{AccessKitTreeBridge, ResolvedA11yAction, StoreEpoch};
+use nve_store::{ChangeSet, NodeId, NodeIndex, NodeStore};
+use nve_tables::tables::core_realization_order;
 
+use crate::geo::SceneGeo;
 use crate::table_sync::{
     raw_slice, sync_all_tables, sync_aria_relations, sync_children, BoundA11yTables,
 };
@@ -35,62 +32,12 @@ impl ResourceReader for NoopResources {
     }
 }
 
-struct SceneGeo {
-    rects: Vec<LayoutRect>,
-    scroll_offsets: Vec<NveScrollOffset>,
-    scroll_content: Vec<(u32, f32, f32)>,
-    focused_node: Option<NodeId>,
-    scale_factor: f32,
-}
-
-impl Default for SceneGeo {
-    fn default() -> Self {
-        Self {
-            rects: Vec::new(),
-            scroll_offsets: Vec::new(),
-            scroll_content: Vec::new(),
-            focused_node: None,
-            scale_factor: 1.0,
-        }
-    }
-}
-
-impl A11yGeometryProvider for SceneGeo {
-    #[inline]
-    fn scale_factor(&self) -> f32 {
-        self.scale_factor
-    }
-
-    #[inline]
-    fn layout_rect(&self, id: NodeId) -> Option<LayoutRect> {
-        self.rects.get(id.index()).copied()
-    }
-
-    #[inline]
-    fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
-        self.scroll_offsets
-            .binary_search_by_key(&id.raw(), |s| s.node_id)
-            .map_or((0.0, 0.0), |i| {
-                (self.scroll_offsets[i].x, self.scroll_offsets[i].y)
-            })
-    }
-
-    #[inline]
-    fn scroll_content_size(&self, id: NodeId) -> Option<(f32, f32)> {
-        self.scroll_content
-            .binary_search_by_key(&id.raw(), |&(nid, _, _)| nid)
-            .ok()
-            .map(|i| (self.scroll_content[i].1, self.scroll_content[i].2))
-    }
-
-    #[inline]
-    fn focused_node(&self) -> Option<NodeId> {
-        self.focused_node
-    }
-}
-
 /// Platform-independent incremental mirror from flat C-ABI [`NveSceneView`] snapshots to
 /// [`AccessKitTreeBridge`].
+///
+/// Preconditions on [`NveSceneView`] (guaranteed by `nve-runtime`):
+/// - `scroll_offsets` is sorted ascending by `node_id`.
+/// - `dirty_resources` is sorted ascending by resource id.
 pub struct WinA11yBridge {
     store: NodeStore,
     changes: ChangeSet,
@@ -102,8 +49,15 @@ pub struct WinA11yBridge {
     has_synced_scene: bool,
     patch_words: Vec<u32>,
     child_scratch: Vec<NodeId>,
-    scroll_dirty: Vec<NodeId>,
+    extra_dirty: Vec<NodeId>,
     res_words: Vec<u32>,
+    /// Live nodes currently referencing a non-zero `Accessibility::RELATIONS` scene resource id.
+    aria_rel_owners: Vec<(NodeId, u32)>,
+    /// Reusable DFS buffers for propagating updated absolute rects across moved/shifted subtrees.
+    shifted_indices: Vec<u32>,
+    walk_stack: Vec<NodeId>,
+    visit_marks: Vec<u32>,
+    visit_gen: u32,
 }
 
 impl Default for WinA11yBridge {
@@ -128,8 +82,13 @@ impl WinA11yBridge {
             has_synced_scene: false,
             patch_words: Vec::new(),
             child_scratch: Vec::new(),
-            scroll_dirty: Vec::new(),
+            extra_dirty: Vec::new(),
             res_words: Vec::new(),
+            aria_rel_owners: Vec::new(),
+            shifted_indices: Vec::new(),
+            walk_stack: Vec::new(),
+            visit_marks: Vec::new(),
+            visit_gen: 0,
         }
     }
 
@@ -216,13 +175,13 @@ impl WinA11yBridge {
                 &self.geo,
                 &self.window_title,
             )),
-            MirrorResult::Incremental { force_full_diff } => self.bridge.sync_changes_with_dirty(
+            MirrorResult::Incremental => self.bridge.sync_changes_with_dirty(
                 &self.store,
                 &self.changes,
                 &self.geo,
                 &self.window_title,
-                &self.scroll_dirty,
-                force_full_diff,
+                &self.extra_dirty,
+                false,
             ),
         }
     }
@@ -312,30 +271,42 @@ impl WinA11yBridge {
             };
         // SAFETY: `tables_slice` belongs to the validated `scene`.
         let bound = unsafe { BoundA11yTables::bind(tables_slice) };
-        let full_rebuild = !self.has_synced_scene || scene.scene_epoch != self.last_scene_epoch;
+        let epoch_changed = self.has_synced_scene && scene.scene_epoch != self.last_scene_epoch;
+        // Delta slices (`dirty_indices`/`moved_indices`/`removed_ids`) describe only the single
+        // step from `frame_id - 1` -> `frame_id`; any skipped/non-consecutive frame requires a
+        // full resync so unmirrored edits are never missed.
+        let full_rebuild = !self.has_synced_scene
+            || epoch_changed
+            || scene.frame_id != self.last_frame_id.wrapping_add(1);
 
         self.update_meta(focused, scale, window_title);
-        self.scroll_dirty.clear();
+        self.extra_dirty.clear();
 
         if full_rebuild {
-            if self.has_synced_scene {
+            if epoch_changed {
                 self.bridge.advance_epoch();
             }
             self.store = NodeStore::replica();
             self.store.set_realization_order(core_realization_order());
-            self.sync_rects_full(rects);
+            self.geo.sync_rects_full(rects);
             self.geo.scroll_offsets.clear();
             self.geo.scroll_offsets.extend_from_slice(scrolls);
             self.mirror_full_store(rows, text_slab, children_slab, &bound, resources);
-            self.rebuild_scroll_content();
+            self.geo.rebuild_scroll_content(&self.store);
             self.last_scene_epoch = scene.scene_epoch;
             self.last_frame_id = scene.frame_id;
             self.has_synced_scene = true;
             return MirrorResult::Full;
         }
 
-        self.sync_rects_incremental(rects, dirty, moved);
-        self.sync_scroll_offsets(scrolls);
+        self.geo.resize_rects_to(rects);
+        self.shifted_indices.clear();
+        for &raw_idx in dirty {
+            if self.geo.sync_one_rect(raw_idx as usize, rects) {
+                self.shifted_indices.push(raw_idx);
+            }
+        }
+        self.geo.sync_scroll_offsets(scrolls, &mut self.extra_dirty);
         self.mirror_incremental_store(
             rows,
             text_slab,
@@ -346,11 +317,17 @@ impl WinA11yBridge {
             dirty_res,
             resources,
         );
-        self.rebuild_scroll_content();
-        self.last_frame_id = scene.frame_id;
-        MirrorResult::Incremental {
-            force_full_diff: !moved.is_empty(),
+        // `NveSceneView::moved_indices` (and dirtied containers whose origin shifted) omit
+        // descendants whose parent-relative box did not change even though their absolute
+        // `rects` shifted. Propagate both `geo.rects` and `extra_dirty` across those subtrees.
+        if !moved.is_empty() || !self.shifted_indices.is_empty() {
+            self.sync_moved_subtrees(rects, moved);
         }
+        if !dirty.is_empty() || !moved.is_empty() || !removed.is_empty() {
+            self.geo.rebuild_scroll_content(&self.store);
+        }
+        self.last_frame_id = scene.frame_id;
+        MirrorResult::Incremental
     }
 
     fn update_meta(&mut self, focused: Option<NodeId>, scale: f32, window_title: &str) {
@@ -362,103 +339,59 @@ impl WinA11yBridge {
         }
     }
 
-    fn sync_rects_full(&mut self, rects: &[NveLayoutRect]) {
-        self.geo.rects.clear();
-        self.geo.rects.reserve(rects.len());
-        for r in rects {
-            self.geo.rects.push(LayoutRect {
-                x: r.x,
-                y: r.y,
-                width: r.width,
-                height: r.height,
-            });
+    fn bump_visit_gen(&mut self, needed: usize) -> u32 {
+        if self.visit_marks.len() < needed {
+            self.visit_marks.resize(needed, 0);
+        }
+        self.visit_gen = self.visit_gen.wrapping_add(1);
+        if self.visit_gen == 0 {
+            self.visit_marks.fill(0);
+            self.visit_gen = 1;
+        }
+        self.visit_gen
+    }
+
+    fn sync_moved_subtrees(&mut self, rects: &[NveLayoutRect], moved: &[u32]) {
+        let mark = self.bump_visit_gen(rects.len());
+        self.walk_stack.clear();
+        for &raw_idx in moved.iter().chain(self.shifted_indices.iter()) {
+            if let Some(id) = self.store.id_at(raw_idx as usize) {
+                self.walk_stack.push(id);
+            }
+        }
+        while let Some(id) = self.walk_stack.pop() {
+            let idx = id.index();
+            if idx >= self.visit_marks.len() || self.visit_marks[idx] == mark {
+                continue;
+            }
+            self.visit_marks[idx] = mark;
+            let _ = self.geo.sync_one_rect(idx, rects);
+            self.extra_dirty.push(id);
+            for &child in self.store.children(id) {
+                self.walk_stack.push(child);
+            }
         }
     }
 
-    fn sync_rects_incremental(
-        &mut self,
-        rects: &[NveLayoutRect],
-        dirty: &[u32],
-        moved: &[u32],
-    ) {
-        if self.geo.rects.len() < rects.len() {
-            let old = self.geo.rects.len();
-            self.geo.rects.resize(
-                rects.len(),
-                LayoutRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                },
-            );
-            for (dst, src) in self.geo.rects[old..].iter_mut().zip(&rects[old..]) {
-                *dst = LayoutRect {
-                    x: src.x,
-                    y: src.y,
-                    width: src.width,
-                    height: src.height,
-                };
-            }
+    fn set_aria_rel_owner(owners: &mut Vec<(NodeId, u32)>, id: NodeId, rid: u32) {
+        if rid == 0 {
+            Self::remove_aria_rel_owner(owners, id);
+            return;
+        }
+        if let Some(slot) = owners.iter_mut().find(|(nid, _)| *nid == id) {
+            slot.1 = rid;
         } else {
-            self.geo.rects.truncate(rects.len());
-        }
-        for &raw_idx in dirty.iter().chain(moved.iter()) {
-            let idx = raw_idx as usize;
-            if let (Some(dst), Some(src)) = (self.geo.rects.get_mut(idx), rects.get(idx)) {
-                *dst = LayoutRect {
-                    x: src.x,
-                    y: src.y,
-                    width: src.width,
-                    height: src.height,
-                };
-            }
+            owners.push((id, rid));
         }
     }
 
-    fn sync_scroll_offsets(&mut self, next: &[NveScrollOffset]) {
-        let prev = &self.geo.scroll_offsets;
-        let (mut i, mut j) = (0usize, 0usize);
-        while i < prev.len() && j < next.len() {
-            let a = prev[i];
-            let b = next[j];
-            if a.node_id == b.node_id {
-                if (a.x - b.x).abs() > 1e-6 || (a.y - b.y).abs() > 1e-6 {
-                    let nid = NodeId::from_raw_or_null(a.node_id);
-                    if !nid.is_null() {
-                        self.scroll_dirty.push(nid);
-                    }
-                }
-                i += 1;
-                j += 1;
-            } else if a.node_id < b.node_id {
-                let nid = NodeId::from_raw_or_null(a.node_id);
-                if !nid.is_null() {
-                    self.scroll_dirty.push(nid);
-                }
-                i += 1;
-            } else {
-                let nid = NodeId::from_raw_or_null(b.node_id);
-                if !nid.is_null() {
-                    self.scroll_dirty.push(nid);
-                }
-                j += 1;
-            }
+    fn remove_aria_rel_owner(owners: &mut Vec<(NodeId, u32)>, id: NodeId) {
+        if owners.is_empty() {
+            return;
         }
-        for a in &prev[i..] {
-            let nid = NodeId::from_raw_or_null(a.node_id);
-            if !nid.is_null() {
-                self.scroll_dirty.push(nid);
-            }
+        if let Some(pos) = owners.iter().position(|&(nid, _)| nid == id) {
+            owners.swap_remove(pos);
         }
-        for b in &next[j..] {
-            let nid = NodeId::from_raw_or_null(b.node_id);
-            if !nid.is_null() {
-                self.scroll_dirty.push(nid);
-            }
-        }
-        self.geo.scroll_offsets.clear();
-        self.geo.scroll_offsets.extend_from_slice(next);
     }
 
     fn mirror_full_store(
@@ -469,6 +402,7 @@ impl WinA11yBridge {
         bound: &BoundA11yTables<'_>,
         resources: &dyn ResourceReader,
     ) {
+        self.aria_rel_owners.clear();
         let mut tx = self.store.tx();
         for (idx, row) in rows.iter().enumerate().skip(1) {
             if (row.flags & NVE_NODE_ROW_FLAG_LIVE) != 0 {
@@ -482,7 +416,7 @@ impl WinA11yBridge {
             }
             let id = NodeId::from_index(NodeIndex(idx as u32), row.generation);
             sync_children(&mut tx, id, row, children_slab, &mut self.child_scratch);
-            sync_all_tables(
+            let rid = sync_all_tables(
                 &mut tx,
                 id,
                 idx,
@@ -493,6 +427,9 @@ impl WinA11yBridge {
                 &mut self.patch_words,
                 &mut self.res_words,
             );
+            if rid != 0 {
+                self.aria_rel_owners.push((id, rid));
+            }
         }
         tx.commit_into(&mut self.changes);
     }
@@ -512,8 +449,11 @@ impl WinA11yBridge {
         let mut tx = self.store.tx();
         for &raw in removed {
             let nid = NodeId::from_raw_or_null(raw);
-            if !nid.is_null() && tx.store().is_live(nid) {
-                tx.remove(nid);
+            if !nid.is_null() {
+                Self::remove_aria_rel_owner(&mut self.aria_rel_owners, nid);
+                if tx.store().is_live(nid) {
+                    tx.remove(nid);
+                }
             }
         }
         // Pass 1: realize every created/recycled dirty slot before wiring child lists.
@@ -530,12 +470,14 @@ impl WinA11yBridge {
                 if let Some(old_id) = tx.store().id_at(idx)
                     && old_id != new_id
                 {
+                    Self::remove_aria_rel_owner(&mut self.aria_rel_owners, old_id);
                     tx.remove(old_id);
                 }
                 if !tx.store().is_live(new_id) {
                     let _ = tx.create_at(new_id);
                 }
             } else if let Some(old_id) = tx.store().id_at(idx) {
+                Self::remove_aria_rel_owner(&mut self.aria_rel_owners, old_id);
                 tx.remove(old_id);
             }
         }
@@ -550,7 +492,7 @@ impl WinA11yBridge {
             }
             let id = NodeId::from_index(NodeIndex(idx as u32), row.generation);
             sync_children(&mut tx, id, row, children_slab, &mut self.child_scratch);
-            sync_all_tables(
+            let rid = sync_all_tables(
                 &mut tx,
                 id,
                 idx,
@@ -561,55 +503,18 @@ impl WinA11yBridge {
                 &mut self.patch_words,
                 &mut self.res_words,
             );
+            Self::set_aria_rel_owner(&mut self.aria_rel_owners, id, rid);
         }
-        // Pass 3: refresh in-place republished `AriaRelations` resources on untouched nodes.
-        if !dirty_res.is_empty()
-            && let Some(a11y_tbl) = bound.accessibility
-        {
-            let rel_word = Accessibility::RELATIONS.word() as usize;
-            for r in 0..a11y_tbl.row_count {
-                let Some(&owner) = a11y_tbl.owners.get(r) else {
-                    continue;
-                };
-                if !tx.store().is_live(owner) {
-                    continue;
-                }
-                let start = r * a11y_tbl.words;
-                let Some(words) = a11y_tbl.rows.get(start..start + a11y_tbl.words) else {
-                    continue;
-                };
-                let rid = words.get(rel_word).copied().unwrap_or(0);
-                if rid != 0 && dirty_res.binary_search(&rid).is_ok() {
+        // Pass 3: refresh in-place republished `AriaRelations` resources only on tracked owners
+        // (avoids scanning every `Accessibility` row when unrelated resources are dirty).
+        if !dirty_res.is_empty() && !self.aria_rel_owners.is_empty() {
+            for &(owner, rid) in &self.aria_rel_owners {
+                if dirty_res.binary_search(&rid).is_ok() && tx.store().is_live(owner) {
                     sync_aria_relations(&mut tx, owner, rid, resources, &mut self.res_words);
                 }
             }
         }
         tx.commit_into(&mut self.changes);
-    }
-
-    fn rebuild_scroll_content(&mut self) {
-        self.geo.scroll_content.clear();
-        let Some(storage) = self.store.table_storage(Scroll::slot()) else {
-            return;
-        };
-        for &owner in storage.owners {
-            if !self.store.is_live(owner) {
-                continue;
-            }
-            let Some(parent_rect) = self.geo.rects.get(owner.index()).copied() else {
-                continue;
-            };
-            let mut max_w = parent_rect.width.max(0.0);
-            let mut max_h = parent_rect.height.max(0.0);
-            for &child in self.store.children(owner) {
-                if let Some(cr) = self.geo.rects.get(child.index()) {
-                    max_w = max_w.max((cr.x + cr.width) - parent_rect.x);
-                    max_h = max_h.max((cr.y + cr.height) - parent_rect.y);
-                }
-            }
-            self.geo.scroll_content.push((owner.raw(), max_w, max_h));
-        }
-        self.geo.scroll_content.sort_unstable_by_key(|&(nid, _, _)| nid);
     }
 }
 
@@ -617,5 +522,5 @@ enum MirrorResult {
     Unchanged,
     MetadataOnly,
     Full,
-    Incremental { force_full_diff: bool },
+    Incremental,
 }

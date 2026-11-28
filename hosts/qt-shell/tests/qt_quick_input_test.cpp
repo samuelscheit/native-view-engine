@@ -324,6 +324,16 @@ void test_text_inputs_keys_ime_and_focus() {
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEcho) == 1u &&
             app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_END)->text == "你");
 
+  // IME `replacementStart` / `replacementLength` replaces surrounding text (and deletes when commit is empty).
+  QInputMethodEvent repl;
+  repl.setCommitString(QStringLiteral("好"), -1, 1);  // replaces trailing "你" with "好"
+  QCoreApplication::sendEvent(&item, &repl);
+  NVE_CHECK(item.nodeText(kEcho) == "reset好" && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "reset好");
+  QInputMethodEvent del_only;
+  del_only.setCommitString(QString(), -1, 1);  // deletes trailing "好" without inserting text
+  QCoreApplication::sendEvent(&item, &del_only);
+  NVE_CHECK(item.nodeText(kEcho) == "reset" && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "reset");
+
   // Focus blur during active composition emits CompositionEnd and never leaves composing stuck.
   QInputMethodEvent preedit2(QStringLiteral("ha"), {});
   QCoreApplication::sendEvent(&item, &preedit2);
@@ -382,12 +392,91 @@ void test_text_inputs_keys_ime_and_focus() {
   NVE_CHECK(item.sceneGraphStats().textRasterizations == text_rasters + 1u);
 }
 
+void test_quick_tab_index_modal_trap_root_keys_and_links() {
+  constexpr uint32_t kBtnA = 2u, kBtnB = 3u, kSkip = 4u, kLink = 5u, kModal = 6u, kModalBtn = 7u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  subscribe(w, 1u, {NVE_INTERACTION_EVENT_KEY_DOWN, NVE_INTERACTION_EVENT_KEY_UP});
+  w.create(kBtnA);
+  size_node(w, kBtnA, 60.0f, 24.0f);
+  w.set_bool(kBtnA, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  w.set(kBtnA, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_TAB_INDEX, 0u);
+  w.create(kBtnB);
+  size_node(w, kBtnB, 60.0f, 24.0f);
+  w.set_bool(kBtnB, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  w.set(kBtnB, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_TAB_INDEX, 1u);  // positive: visited first
+  w.create(kSkip);
+  size_node(w, kSkip, 60.0f, 24.0f);
+  w.set_bool(kSkip, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  w.set(kSkip, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_TAB_INDEX,
+        static_cast<uint32_t>(static_cast<uint16_t>(static_cast<int16_t>(-1))));
+  w.create(kLink);
+  size_node(w, kLink, 60.0f, 24.0f);
+  (void)w.set_str(kLink, NVE_TABLE_LINK_DESC, NVE_TABLE_LINK_HREF, "https://nve.dev/quick");
+  const uint32_t kids[] = {kBtnA, kBtnB, kSkip, kLink};
+  w.set_children(1u, kids);
+
+  QuickHarness q(QSize(240, 200));
+  ProbeItem& item = *q.item;
+  NVE_CHECK(item.host().attach_interface(&ScriptedApp::get_interface));
+  q.window.requestActivate();
+  item.forceActiveFocus();
+  spin();
+
+  // Unfocused root key listener receives KeyDown / KeyUp when `focused_ == 0`.
+  NVE_CHECK(item.focusedNodeId() == 0u);
+  QKeyEvent rkd(QEvent::KeyPress, Qt::Key_R, Qt::NoModifier, QStringLiteral("r"));
+  QKeyEvent rku(QEvent::KeyRelease, Qt::Key_R, Qt::NoModifier, QStringLiteral("r"));
+  QCoreApplication::sendEvent(&item, &rkd);
+  QCoreApplication::sendEvent(&item, &rku);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_KEY_DOWN, 1u) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_KEY_UP, 1u) == 1u);
+
+  // Positive `tab_index` visited first, negative `-1` skipped, link focusable, Space does NOT activate link.
+  q.key(Qt::Key_Tab);
+  NVE_CHECK(item.focusedNodeId() == kBtnB);
+  q.key(Qt::Key_Tab);
+  NVE_CHECK(item.focusedNodeId() == kBtnA);
+  q.key(Qt::Key_Tab);
+  NVE_CHECK(item.focusedNodeId() == kLink);
+  QKeyEvent sp(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier, QStringLiteral(" "));
+  sp.setAccepted(false);
+  QCoreApplication::sendEvent(&item, &sp);
+  NVE_CHECK(!sp.isAccepted());  // link ignores Space
+
+  // Empty modal traps and consumes Tab without escaping to background buttons.
+  w.create(kModal);
+  size_node(w, kModal, 180.0f, 120.0f);
+  w.set_bool(kModal, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_MODAL, true);
+  const uint32_t with_modal[] = {kBtnA, kBtnB, kSkip, kLink, kModal};
+  w.set_children(1u, with_modal);
+  flush(item.host());
+  QKeyEvent tab_empty(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+  tab_empty.setAccepted(false);
+  QCoreApplication::sendEvent(&item, &tab_empty);
+  NVE_CHECK(tab_empty.isAccepted() && item.focusedNodeId() == kLink);
+
+  // Populated modal scopes Tab strictly inside the modal subtree.
+  w.create(kModalBtn);
+  size_node(w, kModalBtn, 60.0f, 24.0f);
+  w.set_bool(kModalBtn, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  const uint32_t mkids[] = {kModalBtn};
+  w.set_children(kModal, mkids);
+  flush(item.host());
+  q.key(Qt::Key_Tab);
+  NVE_CHECK(item.focusedNodeId() == kModalBtn);
+  q.key(Qt::Key_Tab);
+  NVE_CHECK(item.focusedNodeId() == kModalBtn);
+}
+
 }  // namespace
 
 void nve_test_qt_quick_input() {
   test_pointer_hover_links_and_picking();
   test_wheel_and_programmatic_scroll();
   test_text_inputs_keys_ime_and_focus();
+  test_quick_tab_index_modal_trap_root_keys_and_links();
 }
 
 #include "qt_quick_input_test.moc"

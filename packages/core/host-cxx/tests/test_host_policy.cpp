@@ -218,7 +218,21 @@ void test_pair_transport_and_aria_relations() {
   CHECK(apply_pair_transport("[::1]:8091", "wt").value_or("") == "wt://[::1]:8091");
   CHECK(apply_pair_transport("quic://127.0.0.1:8091/nve-wire", "auto").value_or("") == "127.0.0.1:8091/nve-wire");
   CHECK(apply_pair_transport("NVE://pair?host=h&quic=1", "").value_or("") == "nve://pair?host=h&quic=1");
+  CHECK(apply_pair_transport("QUIC://127.0.0.1:8091", "").value_or("") == "quic://127.0.0.1:8091");
+  CHECK(apply_pair_transport("WSS://127.0.0.1:8091/wire#top", "").value_or("") == "wss://127.0.0.1:8091/wire#top");
+  CHECK(apply_pair_transport("WT://127.0.0.1:8091", "").value_or("") == "wt://127.0.0.1:8091");
+  CHECK(apply_pair_transport("HTTPS://127.0.0.1:8091/wt", "").value_or("") == "https://127.0.0.1:8091/wt");
+  CHECK(apply_pair_transport("WS://127.0.0.1:8091", "").value_or("") == "ws://127.0.0.1:8091");
+  // Query value containing `://` must not be misparsed as a URI scheme; `#fragment` stays after query.
+  CHECK(apply_pair_transport("127.0.0.1:8091?next=https://foo#sec", "wss").value_or("") ==
+        "wss://127.0.0.1:8091?next=https://foo#sec");
+  CHECK(apply_pair_transport("nve://pair?host=h&transport=ws#top", "quic").value_or("") ==
+        "nve://pair?host=h&transport=quic#top");
+  CHECK(apply_pair_transport("nve://pair?host=h&transport=ws#top", "auto").value_or("") ==
+        "nve://pair?host=h#top");
   CHECK(!apply_pair_transport("http://127.0.0.1:80", "ws").has_value());
+  CHECK(!apply_pair_transport("http://127.0.0.1:80", "").has_value());
+  CHECK(!apply_pair_transport("#onlyfrag", "ws").has_value());
   CHECK(!apply_pair_transport("nve://pair?host=h\x07", "quic").has_value());
   CHECK(!apply_pair_transport("", "quic").has_value());
 

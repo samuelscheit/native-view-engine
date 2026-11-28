@@ -238,8 +238,13 @@ void NveQtWidget::Impl::Adapter::update_root(const host::NodeData& node) {
     host->owner_->update();
   }
   NodeSemantics sem = node_semantics(node);
-  notify_semantics_change(host->owner_, host->root_sem_, sem);
-  host->root_sem_ = std::move(sem);
+  const bool was_synced = host->root_synced_;
+  if (!was_synced || !(sem == host->root_sem_)) {
+    const NodeSemantics before = std::move(host->root_sem_);
+    host->root_sem_ = std::move(sem);
+    host->root_synced_ = true;
+    if (was_synced) notify_semantics_change(host->owner_, before, host->root_sem_);
+  }
 }
 
 void NveQtWidget::Impl::Adapter::destroy(uint32_t, QtNodeView*& v) {
@@ -487,9 +492,11 @@ void NveQtWidget::Impl::apply_semantics(QtNodeView& v, const host::NodeData& nod
     rels = host::decode_aria_relations(scene_resource(node.a11y.relations, host::kAriaRelationsKind));
   }
   NodeSemantics sem = node_semantics(node, rels);
-  if (v.synced && sem == v.sem) return;
-  notify_semantics_change(v.widget, v.sem, sem);
+  const bool was_synced = v.synced;
+  if (was_synced && sem == v.sem) return;
+  const NodeSemantics before = std::move(v.sem);
   v.sem = std::move(sem);
+  if (was_synced) notify_semantics_change(v.widget, before, v.sem);
   v.widget->setEnabled(!v.sem.disabled);
   if (v.frame == nullptr) {  // inputs keep Qt's own accessible text interface
     v.widget->setAccessibleName(v.sem.label);

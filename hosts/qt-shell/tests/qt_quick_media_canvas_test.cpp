@@ -6,8 +6,10 @@
 
 #include <nve/canvas/draw_list_encoder.hpp>
 #include <nve/host/core_resources.hpp>
+#include <nve/host/testing/scratch_dir.hpp>
 
 #include <algorithm>
+#include <fstream>
 
 namespace {
 
@@ -398,6 +400,33 @@ void test_quick_relations_live_modal_keys_and_frame0() {
   NVE_CHECK(app.count(NVE_INTERACTION_EVENT_KEY_UP, kBtn) == 1u);
   NVE_CHECK(app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->key() == "p");
   NVE_CHECK((app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->ev.flags & NVE_EVENT_FLAG_MOD_ALT) != 0u);
+
+  // ABI v6 Frame-0 save + instant cold boot (file & bytes) + mismatch/corrupt rejection + focus reset.
+  const h::testing::ScratchDir scratch("nve-qt-quick-frame0");
+  const std::string f0 = scratch.file("frame0.nve2");
+  NVE_CHECK(item.host().save_frame0_file(f0, 77u, 88u));
+  std::ifstream in_f0(f0, std::ios::binary);
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in_f0)), std::istreambuf_iterator<char>());
+  NVE_CHECK(!bytes.empty());
+
+  // Attached surface refuses Frame-0 boot; unattached `cold_q` boots from file & bytes, rejects
+  // corrupt / build_id-mismatched envelopes, and clears stale focus on Frame-0 re-boot.
+  NVE_CHECK(!item.host().boot_frame0_bytes(bytes, 77u, 88u));
+  QuickHarness cold_q(QSize(240, 200));
+  NVE_CHECK(cold_q.item->host().boot_frame0_file(f0, 77u, 88u));
+  NVE_CHECK(cold_q.item->nodeCount() == item.nodeCount());
+  NVE_CHECK(cold_q.item->accessibilityInfoForNodeId(kDialog)->modal);
+  NVE_CHECK(cold_q.item->nodeText(kLive) == "Complete");
+
+  cold_q.window.requestActivate();
+  cold_q.click(cold_q.center(kBtn));
+  NVE_CHECK(cold_q.item->focusedNodeId() == kBtn);
+  const uint8_t corrupt[] = {0x4E, 0x56, 0x00, 0xFF};
+  NVE_CHECK(!cold_q.item->host().boot_frame0_bytes(corrupt, 77u, 88u));
+  NVE_CHECK(!cold_q.item->host().boot_frame0_bytes(bytes, 76u, 88u));
+  NVE_CHECK(cold_q.item->host().boot_frame0_bytes(bytes, 77u, 88u));
+  NVE_CHECK(cold_q.item->focusedNodeId() == 0u);
+  NVE_CHECK(cold_q.item->accessibilityInfoForNodeId(kDialog)->modal);
 }
 
 }  // namespace

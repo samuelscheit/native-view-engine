@@ -146,12 +146,94 @@ void test_ime_preedit_and_controlled_text_guard() {
   NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 1u);
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "hi漢");
 
-  // Second composition aborted by blur emits CompositionEnd and never leaves composing stuck.
+  // Second composition (IBus/Wayland order: `preedit-end` fires right before `commit`) must still
+  // deliver a single `COMPOSITION_END(committed)` and flush `TextChange` without dropping the text.
+  g_signal_emit_by_name(im, "preedit-start");
+  g_signal_emit_by_name(im, "preedit-changed");
+  NVE_CHECK(host.is_composing_node(kEntry));
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, kEntry) >= 1u);
+  g_signal_emit_by_name(im, "preedit-end");
+  g_signal_emit_by_name(im, "commit", "字");
+  while (g_main_context_iteration(nullptr, FALSE)) {}
+  NVE_CHECK(!host.is_composing_node(kEntry));
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEntry) == 2u);
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_END)->text == "字");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 2u);
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "hi漢字");
+
+  // Third composition cancelled via `preedit-end` (no `commit`) emits empty `COMPOSITION_END`.
+  g_signal_emit_by_name(im, "preedit-start");
+  g_signal_emit_by_name(im, "preedit-end");
+  while (g_main_context_iteration(nullptr, FALSE)) {}
+  NVE_CHECK(!host.is_composing_node(kEntry));
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEntry) == 3u);
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_COMPOSITION_END)->text.empty());
+
+  // Fourth composition aborted by blur emits `COMPOSITION_END` and never leaves composing stuck.
   g_signal_emit_by_name(im, "preedit-start");
   NVE_CHECK(host.is_composing_node(kEntry));
   NVE_CHECK(host.set_focused_node(0u));
   NVE_CHECK(!host.is_composing_node(kEntry));
-  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEntry) == 2u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEntry) == 4u);
+
+  // Disabling a focused/composing input clears focus + composing and flushes `COMPOSITION_END` + `BLUR`.
+  NVE_CHECK(host.set_focused_node(kEntry));
+  g_signal_emit_by_name(im, "preedit-start");
+  NVE_CHECK(host.is_composing_node(kEntry));
+  const size_t blurs_before = app.count(NVE_INTERACTION_EVENT_BLUR, kEntry);
+  w.set_bool(kEntry, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
+  flush(host);
+  NVE_CHECK(host.focused_node_id() == 0u && !host.is_composing_node(kEntry));
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kEntry) == 5u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_BLUR, kEntry) == blurs_before + 1u);
+}
+
+void test_tab_index_order_and_modal_trap() {
+  constexpr uint32_t kBtnA = 2u, kBtnB = 3u, kSkip = 4u, kModal = 5u, kModalBtn = 6u;
+  ScriptedApp app;
+  auto& w = app.w;
+  w.create(1u);
+  w.create(kBtnA);
+  w.set_bool(kBtnA, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  w.set(kBtnA, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_TAB_INDEX, 0u);
+  w.create(kBtnB);
+  w.set_bool(kBtnB, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  w.set(kBtnB, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_TAB_INDEX, 1u);
+  w.create(kSkip);
+  w.set_bool(kSkip, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  w.set(kSkip, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_TAB_INDEX,
+        static_cast<uint32_t>(static_cast<uint16_t>(static_cast<int16_t>(-1))));
+  const uint32_t kids[] = {kBtnA, kBtnB, kSkip};
+  w.set_children(1u, kids);
+
+  NveGtkHost host;
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  NVE_CHECK(host.handle_gdk_key(true, GDK_KEY_Tab, 0u, static_cast<GdkModifierType>(0)));
+  NVE_CHECK(host.focused_node_id() == kBtnB);  // positive tab_index first
+  NVE_CHECK(host.handle_gdk_key(true, GDK_KEY_Tab, 0u, static_cast<GdkModifierType>(0)));
+  NVE_CHECK(host.focused_node_id() == kBtnA);  // negative tab_index skipped
+  NVE_CHECK(host.handle_gdk_key(true, GDK_KEY_Tab, 0u, static_cast<GdkModifierType>(0)));
+  NVE_CHECK(host.focused_node_id() == kBtnB);
+
+  // Empty modal traps & consumes Tab without escaping to background buttons.
+  w.create(kModal);
+  w.set_bool(kModal, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_MODAL, true);
+  const uint32_t with_empty_modal[] = {kBtnA, kBtnB, kSkip, kModal};
+  w.set_children(1u, with_empty_modal);
+  flush(host);
+  NVE_CHECK(host.handle_gdk_key(true, GDK_KEY_Tab, 0u, static_cast<GdkModifierType>(0)));
+  NVE_CHECK(host.focused_node_id() == kBtnB);
+
+  // Populated modal scopes Tab strictly inside the modal subtree.
+  w.create(kModalBtn);
+  w.set_bool(kModalBtn, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  const uint32_t mkids[] = {kModalBtn};
+  w.set_children(kModal, mkids);
+  flush(host);
+  NVE_CHECK(host.handle_gdk_key(true, GDK_KEY_Tab, 0u, static_cast<GdkModifierType>(0)));
+  NVE_CHECK(host.focused_node_id() == kModalBtn);
+  NVE_CHECK(host.handle_gdk_key(true, GDK_KEY_Tab, 0u, static_cast<GdkModifierType>(0)));
+  NVE_CHECK(host.focused_node_id() == kModalBtn);
 }
 
 void test_a11y_relations_live_modal_and_frame0() {
@@ -214,25 +296,32 @@ void test_a11y_relations_live_modal_and_frame0() {
   flush(host);
   NVE_CHECK(host.live_announcement_count() == 2u && host.last_live_announcement() == "Saved!");
 
-  // ABI v6 Frame-0 file save + instant boot (file & bytes) into a fresh host without an app attached.
+  // ABI v6 Frame-0 file save + instant boot (file & bytes) + mismatch/corrupt refusal.
   const ScratchDir scratch("nve-gtk-frame0");
   const std::string f0_path = scratch.file("frame0.nve2");
-  NVE_CHECK(host.save_frame0_file(f0_path, 1u, 1u));
+  NVE_CHECK(host.save_frame0_file(f0_path, 42u, 99u));
   NVE_CHECK(std::filesystem::exists(f0_path));
-
-  NveGtkHost cold_file;
-  NVE_CHECK(cold_file.boot_frame0_file(f0_path, 1u, 1u));
-  NVE_CHECK(cold_file.view_count() == host.view_count());
-  NVE_CHECK(label_text(cold_file.widget_for_node_id(kLive)) == "Saved!");
-  NVE_CHECK(cold_file.accessibility_info_for_node_id(kDialog)->modal);
 
   std::ifstream in(f0_path, std::ios::binary);
   std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   NVE_CHECK(!raw.empty());
+
+  NveGtkHost cold_file;
+  NVE_CHECK(cold_file.boot_frame0_file(f0_path, 42u, 99u));
+  NVE_CHECK(cold_file.view_count() == host.view_count());
+  NVE_CHECK(label_text(cold_file.widget_for_node_id(kLive)) == "Saved!");
+  NVE_CHECK(cold_file.accessibility_info_for_node_id(kDialog)->modal);
+
   NveGtkHost cold_bytes;
-  NVE_CHECK(cold_bytes.boot_frame0_bytes(raw, 1u, 1u));
+  const uint8_t corrupt[] = {0x4E, 0x56, 0x00, 0xFF};
+  NVE_CHECK(!cold_bytes.boot_frame0_bytes(corrupt, 42u, 99u));
+  NVE_CHECK(!cold_bytes.boot_frame0_bytes(raw, 41u, 99u));
+  NVE_CHECK(cold_bytes.boot_frame0_bytes(raw, 42u, 99u));
   NVE_CHECK(cold_bytes.view_count() == host.view_count());
   NVE_CHECK(label_text(cold_bytes.widget_for_node_id(kTitle)) == "Confirm");
+
+  NveGtkHost mismatch_file;
+  NVE_CHECK(!mismatch_file.boot_frame0_file(f0_path, 41u, 99u));
 }
 
 }  // namespace
@@ -240,5 +329,6 @@ void test_a11y_relations_live_modal_and_frame0() {
 void nve_test_gtk_input_parity() {
   test_keyboard_focus_activation_and_readonly();
   test_ime_preedit_and_controlled_text_guard();
+  test_tab_index_order_and_modal_trap();
   test_a11y_relations_live_modal_and_frame0();
 }

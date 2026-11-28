@@ -1,17 +1,23 @@
-//! Zero-allocation guards for `nve-accessibility-windows::WinA11yBridge`:
-//! - Inactive mirrors perform 0 heap allocations per `sync_scene` call.
+//! Zero-allocation guards for `nve-accessibility-windows` (`WinA11yBridge` + C ABI):
+//! - Inactive mirrors perform 0 heap allocations per `sync_scene` / `mirror_only` / FFI call.
 //! - Active mirrors on an unchanged `(scene_epoch, frame_id, focus, scale, title)` perform 0 heap
-//!   allocations.
+//!   allocations (including with `scroll_offsets` and `AriaRelations` present).
 
+use core::ffi::c_char;
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use nve_abi::{NveLayoutRect, NveSceneView};
+use nve_abi::{NveLayoutRect, NveSceneView, NveScrollOffset};
+use nve_accessibility_windows::ffi::{
+    nve_a11y_win_activate, nve_a11y_win_create, nve_a11y_win_destroy, nve_a11y_win_sync_scene,
+};
 use nve_accessibility_windows::{NoopResources, WinA11yBridge};
 use nve_store::{ChangeSet, NodeId, NodeStore};
-use nve_tables::tables::{core_realization_order, Accessibility, AriaRole};
+use nve_tables::tables::{
+    core_realization_order, Accessibility, AriaRelations, AriaRole, DebugId, Scroll, ScrollAxes,
+};
 
 struct CountingAlloc;
 
@@ -65,25 +71,35 @@ fn counting_alloc_positive_probe() {
 }
 
 #[test]
-fn inactive_and_unchanged_scene_sync_allocate_zero_times() {
+fn inactive_and_unchanged_scene_sync_and_c_abi_allocate_zero_times() {
     let _serial = SERIAL_TEST.lock().unwrap_or_else(|e| e.into_inner());
 
     let mut store = NodeStore::new();
     store.set_realization_order(core_realization_order());
     let mut changes = ChangeSet::default();
-    let focus = {
+    let (focus, scroller) = {
         let mut tx = store.tx();
+        let scroller = tx.create();
+        tx.edit::<Scroll>(scroller).axes(ScrollAxes::Vertical);
+        tx.edit::<DebugId>(scroller).id("main-scroll");
         let mut children = Vec::with_capacity(128);
         for i in 0..128usize {
             let n = tx.create();
             tx.edit::<Accessibility>(n)
                 .role(Some(AriaRole::Button))
                 .label(&format!("Action {i}"));
+            if i == 0 {
+                tx.edit::<Accessibility>(n).relations(Some(AriaRelations {
+                    controls: "main-scroll".into(),
+                    ..AriaRelations::default()
+                }));
+            }
             children.push(n);
         }
-        tx.set_children(NodeId::ROOT, &children);
+        tx.set_children(scroller, &children);
+        tx.set_children(NodeId::ROOT, &[scroller]);
         tx.commit_into(&mut changes);
-        children[4]
+        (children[4], scroller)
     };
 
     let mut tables = Vec::new();
@@ -99,6 +115,11 @@ fn inactive_and_unchanged_scene_sync_allocate_zero_times() {
         };
         rows.len()
     ];
+    let scrolls = [NveScrollOffset {
+        node_id: scroller.raw(),
+        x: 0.0,
+        y: 16.0,
+    }];
     let scene = NveSceneView {
         frame_id: 1,
         scene_epoch: 1,
@@ -111,6 +132,8 @@ fn inactive_and_unchanged_scene_sync_allocate_zero_times() {
         children_slab_len: store.children_slab().len() as u32,
         tables: tables.as_ptr(),
         table_count: tables.len() as u32,
+        scroll_offsets: scrolls.as_ptr(),
+        scroll_count: scrolls.len() as u32,
         ..NveSceneView::default()
     };
 
@@ -122,6 +145,10 @@ fn inactive_and_unchanged_scene_sync_allocate_zero_times() {
                 inactive.sync_scene(&scene, &NoopResources, focus.raw(), 1.0, "ZeroAlloc")
             };
             assert!(upd.is_none());
+            // SAFETY: `scene` references live local slices for this call.
+            assert!(!unsafe {
+                inactive.mirror_only(&scene, &NoopResources, focus.raw(), 1.0, "ZeroAlloc")
+            });
         }
     });
     assert_eq!(inactive_allocs, 0, "inactive WinA11yBridge must allocate 0 times");
@@ -139,10 +166,75 @@ fn inactive_and_unchanged_scene_sync_allocate_zero_times() {
                 active.sync_scene(&scene, &NoopResources, focus.raw(), 1.0, "ZeroAlloc")
             };
             assert!(upd.is_none());
+            // SAFETY: `scene` references live local slices for this call.
+            assert!(!unsafe {
+                active.mirror_only(&scene, &NoopResources, focus.raw(), 1.0, "ZeroAlloc")
+            });
         }
     });
     assert_eq!(
         unchanged_allocs, 0,
         "unchanged active WinA11yBridge frame must allocate 0 times"
     );
+
+    // C-ABI entry point (`nve_a11y_win_sync_scene`) zero-alloc check for both inactive & warm unchanged.
+    let title = b"ZeroAlloc\0";
+    // SAFETY: portable test handle creation.
+    let handle = unsafe { nve_a11y_win_create(core::ptr::null_mut(), 1, None, core::ptr::null_mut()) };
+    assert!(!handle.is_null());
+    let ffi_inactive_allocs = measure_allocs(|| {
+        for _ in 0..50 {
+            // SAFETY: `handle` and `scene` are live.
+            let r = unsafe {
+                nve_a11y_win_sync_scene(
+                    handle,
+                    &scene,
+                    None,
+                    core::ptr::null_mut(),
+                    focus.raw(),
+                    1.0,
+                    title.as_ptr().cast::<c_char>(),
+                )
+            };
+            assert_eq!(r, 0);
+        }
+    });
+    assert_eq!(ffi_inactive_allocs, 0, "inactive C-ABI sync must allocate 0 times");
+
+    // SAFETY: `handle` and `scene` are live.
+    unsafe {
+        nve_a11y_win_activate(handle);
+        let _ = nve_a11y_win_sync_scene(
+            handle,
+            &scene,
+            None,
+            core::ptr::null_mut(),
+            focus.raw(),
+            1.0,
+            title.as_ptr().cast::<c_char>(),
+        );
+    }
+    let ffi_unchanged_allocs = measure_allocs(|| {
+        for _ in 0..50 {
+            // SAFETY: `handle` and `scene` are live.
+            let r = unsafe {
+                nve_a11y_win_sync_scene(
+                    handle,
+                    &scene,
+                    None,
+                    core::ptr::null_mut(),
+                    focus.raw(),
+                    1.0,
+                    title.as_ptr().cast::<c_char>(),
+                )
+            };
+            assert_eq!(r, 0);
+        }
+    });
+    assert_eq!(
+        ffi_unchanged_allocs, 0,
+        "warm unchanged C-ABI sync must allocate 0 times"
+    );
+    // SAFETY: `handle` is owned and destroyed once.
+    unsafe { nve_a11y_win_destroy(handle) };
 }

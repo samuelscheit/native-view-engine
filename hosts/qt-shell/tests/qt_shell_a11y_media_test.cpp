@@ -355,7 +355,10 @@ void test_a11y_relations_live_modal_keys_and_frame0() {
   QAccessibleInterface* list_if = iface(kList);
   NVE_CHECK(list_if != nullptr && list_if->focusChild() == iface(kOpt));
   auto* attrs = static_cast<QAccessibleAttributesInterface*>(list_if->interface_cast(QAccessible::AttributesInterface));
-  NVE_CHECK(attrs != nullptr && attrs->attributeValue(QAccessible::Attribute::Orientation).value<Qt::Orientation>() == Qt::Vertical);
+  NVE_CHECK(attrs != nullptr);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+  NVE_CHECK(attrs->attributeValue(QAccessible::Attribute::Orientation).value<Qt::Orientation>() == Qt::Vertical);
+#endif
 
   // Live region posts QAccessible::Announcement on text change.
   QAccessible::installUpdateHandler(&record_update);
@@ -381,20 +384,27 @@ void test_a11y_relations_live_modal_keys_and_frame0() {
   NVE_CHECK(app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->key() == "k");
   NVE_CHECK((app.last(NVE_INTERACTION_EVENT_KEY_DOWN)->ev.flags & NVE_EVENT_FLAG_MOD_CTRL) != 0u);
 
-  // ABI v6 Frame-0 file save + instant boot (file & bytes).
+  // ABI v6 Frame-0 file save + instant boot (file & bytes) + build_id/corrupt rejection.
   const nve::host::testing::ScratchDir scratch("nve-qt-frame0");
   const std::string f0 = scratch.file("frame0.nve2");
-  NVE_CHECK(host.save_frame0_file(f0, 1u, 1u));
+  NVE_CHECK(host.save_frame0_file(f0, 42u, 99u));
+  std::ifstream in_f0(f0, std::ios::binary);
+  const std::vector<uint8_t> f0_bytes((std::istreambuf_iterator<char>(in_f0)), std::istreambuf_iterator<char>());
+  NVE_CHECK(!f0_bytes.empty());
+
   NveQtWidget cold_file;
-  NVE_CHECK(cold_file.host().boot_frame0_file(f0, 1u, 1u));
+  NVE_CHECK(cold_file.host().boot_frame0_file(f0, 42u, 99u));
   NVE_CHECK(cold_file.viewCount() == widget.viewCount());
   NVE_CHECK(cold_file.accessibilityInfoForNodeId(kDialog)->modal);
-
-  std::ifstream in(f0, std::ios::binary);
-  std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   NveQtWidget cold_bytes;
-  NVE_CHECK(cold_bytes.host().boot_frame0_bytes(raw, 1u, 1u));
+  const uint8_t corrupt[] = {0x4E, 0x56, 0x00, 0xFF};
+  NVE_CHECK(!cold_bytes.host().boot_frame0_bytes(corrupt, 42u, 99u));
+  NVE_CHECK(!cold_bytes.host().boot_frame0_bytes(f0_bytes, 41u, 99u));
+  NVE_CHECK(cold_bytes.host().boot_frame0_bytes(f0_bytes, 42u, 99u));
   NVE_CHECK(cold_bytes.viewCount() == widget.viewCount());
+  NVE_CHECK(cold_bytes.accessibilityInfoForNodeId(kDialog)->modal);
+  NveQtWidget mismatch_file;
+  NVE_CHECK(!mismatch_file.host().boot_frame0_file(f0, 41u, 99u));
   widget.hide();
 }
 

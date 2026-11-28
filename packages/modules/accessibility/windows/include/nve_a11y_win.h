@@ -41,7 +41,10 @@ typedef struct NveA11yWinAction {
   size_t text_len;
 } NveA11yWinAction;
 
-/* May be invoked from a UIA worker thread on Windows; copy `text_ptr[0..text_len]` if posting. */
+/* Invoked while the internal callback-teardown lock is held (and potentially from a COM MTA worker
+ * thread on Windows). Implementations MUST copy `text_ptr[0..text_len]` and enqueue/post to the UI
+ * thread; they MUST NOT synchronously call back into any `nve_a11y_win_*` function or destroy the
+ * owning window/handle. */
 typedef void (*NveA11yWinActionCallback)(void* ctx, const NveA11yWinAction* action);
 
 /* Borrows resource bytes from the caller's live scene guard for the duration of `sync_scene`. */
@@ -69,7 +72,9 @@ int nve_a11y_win_is_active(const NveA11yWinHandle* handle);
 /* Marks the bridge active so the next `sync_scene` mirrors the scene ahead of `handle_wm_getobject`. */
 void nve_a11y_win_activate(NveA11yWinHandle* handle);
 
-/* Mirrors `scene` when active and pushes any incremental UIA update. Returns 1 if an update fired. */
+/* Mirrors `scene` when active and pushes any incremental UIA update. Returns 1 if an update fired.
+ * Preconditions (guaranteed by `nve-runtime`): `scene->scroll_offsets` is sorted ascending by
+ * `node_id` and `scene->dirty_resources` is sorted ascending by resource id. */
 int nve_a11y_win_sync_scene(NveA11yWinHandle* handle,
                             const struct NveSceneView* scene,
                             NveA11yResourceLookupFn res_lookup,

@@ -181,18 +181,24 @@ bool NveGtkHost::restore_state(std::string_view path, uint32_t schema_version) {
 
 bool NveGtkHost::clear_state(std::string_view path) { return session_->clear_state_file(path); }
 
-bool NveGtkHost::save_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version) {
-  return session_->runtime().save_frame0_file(path, schema_version, app_version) == NVE_RUNTIME_OK;
+bool NveGtkHost::save_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  return session_->save_frame0_file(path, app_build_id, env_hash);
 }
 
-bool NveGtkHost::boot_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version) {
-  if (session_->runtime().boot_frame0_file(path, schema_version, app_version) != NVE_RUNTIME_OK) return false;
+bool NveGtkHost::boot_frame0_file(std::string_view path, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_file(path, app_build_id, env_hash)) return false;
+  focused_node_id_ = 0u;
+  pending_blur_id_ = 0u;
+  pending_compose_end_id_ = 0u;
   (void)pump();
   return true;
 }
 
-bool NveGtkHost::boot_frame0_bytes(std::span<const uint8_t> bytes, uint32_t schema_version, uint32_t app_version) {
-  if (session_->runtime().boot_frame0_bytes(bytes, schema_version, app_version) != NVE_RUNTIME_OK) return false;
+bool NveGtkHost::boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id, uint64_t env_hash) {
+  if (!session_->boot_frame0_bytes(envelope, app_build_id, env_hash)) return false;
+  focused_node_id_ = 0u;
+  pending_blur_id_ = 0u;
+  pending_compose_end_id_ = 0u;
   (void)pump();
   return true;
 }
@@ -237,6 +243,16 @@ void NveGtkHost::sync_views() {
   sync_aria_relations();
   flush_css();
   syncing_ = false;
+  const uint32_t end_compose = std::exchange(pending_compose_end_id_, 0u);
+  const uint32_t blur_id = std::exchange(pending_blur_id_, 0u);
+  if (end_compose != 0u || blur_id != 0u) {
+    const auto alive = alive_;
+    if (end_compose != 0u) {
+      (void)dispatch_composition(end_compose, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
+      if (!alive->load(std::memory_order_acquire)) return;
+    }
+    if (blur_id != 0u) (void)dispatch_focus(blur_id, false);
+  }
 }
 
 // --- Input -------------------------------------------------------------------------------------

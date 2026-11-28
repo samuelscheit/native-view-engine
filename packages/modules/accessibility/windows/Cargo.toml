@@ -6,7 +6,7 @@ license.workspace = true
 description = "Windows UI Automation (AccessKit) C-ABI bridge and NveSceneView mirror for hosts/windows-shell"
 
 [lib]
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []

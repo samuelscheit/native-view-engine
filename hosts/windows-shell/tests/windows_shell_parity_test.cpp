@@ -86,9 +86,18 @@ void test_keyboard_focus_tab_modal_and_activation() {
   NVE_CHECK(host.handle_key(true, "Tab", "Tab", NVE_EVENT_FLAG_MOD_SHIFT, 9u).focused_node == kInput);
   NVE_CHECK(host.handle_key(true, "Tab", "Tab", NVE_EVENT_FLAG_MOD_SHIFT, 9u).focused_node == kLink);
 
-  // Enter / Space on focused link opens href; on button dispatches Press; on TextInput does not press.
+  // Enter on focused link opens href; Space does NOT open link; on button dispatches Press.
+  const KeyResult link_space = host.handle_key(true, " ", "Space", 0u, 32u);
+  NVE_CHECK(link_space.href.empty());
   const KeyResult link_act = host.handle_key(true, "Enter", "Enter", 0u, 13u);
   NVE_CHECK(link_act.handled && link_act.href == "https://nve.dev/docs");
+
+  // `dispatch_focus(kInput, true)` while `kBtnA` is focused must emit Blur to `kBtnA` first.
+  NVE_CHECK(host.set_focused_node(kBtnA) || host.focused_node() == kBtnA);
+  app.events.clear();
+  (void)host.dispatch_focus(kInput, true);
+  NVE_CHECK(host.focused_node() == kInput);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_BLUR, kBtnA) == 1u);
 
   NVE_CHECK(host.set_focused_node(kBtnA) || host.focused_node() == kBtnA);
   app.events.clear();
@@ -119,20 +128,74 @@ void test_keyboard_focus_tab_modal_and_activation() {
   NVE_CHECK(cu != nullptr && cu->ev.node == kInput && cu->text == "にほ");
   NVE_CHECK(ce != nullptr && ce->ev.node == kInput && ce->text == "日本");
 
-  // Modal dialog traps Tab traversal inside the modal subtree.
+  // Modal dialog traps Tab traversal inside the modal subtree (including an empty modal).
   w.create(kModal);
   sized(w, kModal, 240.0f, 160.0f);
   w.set_bool(kModal, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_MODAL, true);
+  const uint32_t with_empty_modal[] = {kBtnA, kBtnB, kLink, kInput, kModal};
+  w.set_children(1u, with_empty_modal);
+  flush(host);
+  const KeyResult empty_tab = host.handle_key(true, "Tab", "Tab", 0u, 9u);
+  NVE_CHECK(empty_tab.handled && host.focused_node() == kBtnA);
+
   make_btn(kModalBtn, 0, false);
   const uint32_t modal_kids[] = {kModalBtn};
   w.set_children(kModal, modal_kids);
-  const uint32_t with_modal[] = {kBtnA, kBtnB, kLink, kInput, kModal};
-  w.set_children(1u, with_modal);
   flush(host);
   NVE_CHECK(host.visual_tree().find(kModal) != nullptr && host.visual_tree().find(kModal)->modal);
   NVE_CHECK(host.step_tab_focus(false) == kModalBtn);
   NVE_CHECK(host.step_tab_focus(false) == kModalBtn);
   NVE_CHECK(host.step_tab_focus(true) == kModalBtn);
+}
+
+void test_scroll_into_view_and_key_destroy_safety() {
+  constexpr uint32_t kScroll = 2u;
+  constexpr uint32_t kTop = 3u;
+  constexpr uint32_t kBottom = 4u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.create(kScroll);
+  sized(w, kScroll, 200.0f, 100.0f);
+  w.set(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_AXES, NVE_SCROLL_AXES_VERTICAL);
+  w.set_events(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_EVENTS_WORD, NVE_SCROLL_EVENT_SET_SCROLL);
+  w.create(kTop);
+  sized(w, kTop, 180.0f, 220.0f);
+  w.create(kBottom);
+  sized(w, kBottom, 180.0f, 40.0f);
+  const uint32_t skids[] = {kTop, kBottom};
+  w.set_children(kScroll, skids);
+  const uint32_t rkids[] = {kScroll};
+  w.set_children(1u, rkids);
+
+  auto host_owner = make_host();
+  NVE_CHECK(host_owner->attach_interface(&ScriptedApp::get_interface));
+  NVE_CHECK(host_owner->scroll_into_view(kBottom));
+  NVE_CHECK(host_owner->visual_tree().find(kScroll)->scroll_y > 100.0f);
+  NVE_CHECK(host_owner->scroll_into_view(kTop));
+  NVE_CHECK(host_owner->visual_tree().find(kScroll)->scroll_y < 1.0f);
+
+  // Destroying `NveWinHost` synchronously inside a key-driven change callback must not UAF.
+  w.set_bool(kBottom, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
+  w.set_events(kBottom, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENTS_WORD,
+               NVE_INTERACTION_EVENT_SET_KEY_DOWN | NVE_INTERACTION_EVENT_SET_PRESS);
+  flush(*host_owner);
+  (void)host_owner->set_focused_node(kBottom);
+  NVE_CHECK(host_owner->focused_node() == kBottom);
+  bool destroyed = false;
+  app.on_event = [&](ScriptedApp& a, const h::testing::RecordedEvent& e) {
+    if (e.ev.table == NVE_TABLE_INTERACTION_KEY && e.ev.event == NVE_INTERACTION_EVENT_KEY_DOWN) {
+      a.w.set(kBottom, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(10, 20, 30));
+    }
+  };
+  host_owner->set_on_change([&]() {
+    if (host_owner != nullptr) {
+      destroyed = true;
+      host_owner.reset();
+    }
+  });
+  (void)host_owner->handle_key(true, "Enter", "Enter", 0u, 13u);
+  NVE_CHECK(destroyed && host_owner == nullptr);
 }
 
 void test_frame0_file_and_bytes_boot() {
@@ -182,5 +245,6 @@ void test_frame0_file_and_bytes_boot() {
 
 void nve_test_win_keyboard_ime_and_frame0() {
   test_keyboard_focus_tab_modal_and_activation();
+  test_scroll_into_view_and_key_destroy_safety();
   test_frame0_file_and_bytes_boot();
 }

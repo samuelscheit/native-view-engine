@@ -20,10 +20,14 @@ std::string read_ime_string(HWND hwnd, DWORD index) {
   const LONG bytes = ::ImmGetCompositionStringW(himc, index, nullptr, 0);
   std::string out;
   if (bytes > 0) {
-    std::wstring buf(static_cast<size_t>(bytes) / sizeof(wchar_t), L'\0');
-    const LONG got = ::ImmGetCompositionStringW(himc, index, buf.data(), static_cast<DWORD>(bytes));
+    // Round up for odd byte counts returned by quirky IMEs, pass exact byte capacity, and clamp.
+    const size_t wchar_count = (static_cast<size_t>(bytes) + sizeof(wchar_t) - 1u) / sizeof(wchar_t);
+    std::wstring buf(wchar_count, L'\0');
+    const DWORD buf_bytes = static_cast<DWORD>(buf.size() * sizeof(wchar_t));
+    const LONG got = ::ImmGetCompositionStringW(himc, index, buf.data(), buf_bytes);
     if (got > 0) {
-      buf.resize(static_cast<size_t>(got) / sizeof(wchar_t));
+      const size_t clamped = std::min<size_t>(static_cast<size_t>(got), buf.size() * sizeof(wchar_t));
+      buf.resize(clamped / sizeof(wchar_t));
       out = narrow(buf);
     }
   }
@@ -255,6 +259,7 @@ bool WinTextInputs::on_command(WPARAM wparam, LPARAM lparam) {
   const uint32_t id = control != nullptr ? node_of(control) : 0u;
   if (id == 0u || host_ == nullptr) return false;
   if (busy_) return true;  // our own sync / teardown, not the user
+  const auto alive = alive_;  // event dispatch may synchronously destroy the owning window
   Field& f = fields_.at(id);
   switch (HIWORD(wparam)) {
     case EN_CHANGE:
@@ -271,7 +276,7 @@ bool WinTextInputs::on_command(WPARAM wparam, LPARAM lparam) {
         f.composing = false;
         f.pending_change_after_compose = false;
         (void)host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, {});
-        if (!alive_->load(std::memory_order_acquire) || host_ == nullptr) return true;
+        if (!alive->load(std::memory_order_acquire) || host_ == nullptr) return true;
       }
       (void)host_->dispatch_focus(id, false);
       return true;
@@ -316,9 +321,11 @@ LRESULT CALLBACK WinTextInputs::control_proc(HWND hwnd, UINT msg, WPARAM wparam,
           const LRESULT res = ::DefSubclassProc(hwnd, msg, wparam, lparam);
           if (!alive->load(std::memory_order_acquire) || self->host_ == nullptr) return res;
           if (const auto cur = self->fields_.find(id); cur != self->fields_.end()) {
-            cur->second.composing = false;
+            const bool was_composing = std::exchange(cur->second.composing, false);
             const bool pending = std::exchange(cur->second.pending_change_after_compose, false);
-            (void)self->host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, committed);
+            if (was_composing) {
+              (void)self->host_->dispatch_composition(id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, committed);
+            }
             if (alive->load(std::memory_order_acquire) && self->host_ != nullptr &&
                 (pending || !committed.empty())) {
               self->flush_controlled_change(id, hwnd);
@@ -380,7 +387,11 @@ LRESULT CALLBACK WinTextInputs::control_proc(HWND hwnd, UINT msg, WPARAM wparam,
       break;
     case WM_CHAR:
       if (wparam == L'\r' && single_line) return 0;  // no "invalid key" beep after a submit
-      if (wparam == L'\t' && self->on_tab_) return 0;
+      if (wparam == L'\t' && self->on_tab_ &&
+          ((::GetKeyState(VK_CONTROL) | ::GetKeyState(VK_MENU) | ::GetKeyState(VK_LWIN) | ::GetKeyState(VK_RWIN)) &
+           0x8000) == 0) {
+        return 0;
+      }
       break;
     case WM_NCDESTROY: ::RemoveWindowSubclass(hwnd, &WinTextInputs::control_proc, node_id); break;
     default: break;

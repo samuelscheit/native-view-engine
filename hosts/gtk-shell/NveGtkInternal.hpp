@@ -56,6 +56,7 @@ struct GtkNodeView {
   std::string preedit;
   bool composing = false;
   bool pending_change_after_compose = false;
+  bool preedit_ended_awaiting_commit = false;
   bool synced = false;
 
   // Image / canvas: the resource ids applied (kept per `RetainedTree::resource_unchanged`).

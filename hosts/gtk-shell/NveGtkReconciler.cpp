@@ -359,7 +359,10 @@ void NveGtkHost::update_press(GtkNodeView& v, const host::NodeData& node) {
     v.click = nullptr;
   }
   const bool is_input = v.kind == WidgetKind::Entry || v.kind == WidgetKind::TextView;
-  v.focusable = !node.interaction.disabled && (node.interaction.focusable || is_input);
+  v.focusable = !node.interaction.disabled &&
+                (node.interaction.focusable || is_input ||
+                 (v.tab_index.has_value() && *v.tab_index >= 0) ||
+                 v.wants_press || host::openable_link(v.href));
   gtk_widget_set_focusable(v.widget, v.focusable ? TRUE : FALSE);
   if (v.focusable && v.focus == nullptr) {
     v.focus = gtk_event_controller_focus_new();
@@ -370,7 +373,18 @@ void NveGtkHost::update_press(GtkNodeView& v, const host::NodeData& node) {
     remove_controller(v, v.focus);
     v.focus = nullptr;
   }
-  if (!v.focusable && focused_node_id_ == v.id) focused_node_id_ = 0u;
+  const bool lost_focus = !v.focusable && focused_node_id_ == v.id;
+  if (lost_focus) {
+    focused_node_id_ = 0u;
+    pending_blur_id_ = v.id;
+  }
+  if (lost_focus || node.interaction.disabled || node.input.read_only) {
+    if (std::exchange(v.composing, false) || std::exchange(v.preedit_ended_awaiting_commit, false)) {
+      pending_compose_end_id_ = v.id;
+    }
+    v.pending_change_after_compose = false;
+    v.preedit.clear();
+  }
 }
 
 void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {

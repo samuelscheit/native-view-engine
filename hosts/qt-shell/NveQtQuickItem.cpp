@@ -2,6 +2,8 @@
 // API, and the scene-graph entry points (`updatePaintNode` -> NveQtSGBuilder.cpp).
 #include "NveQtQuickInternal.hpp"
 
+#include <nve/host/urls.hpp>
+
 #include <QQuickWindow>
 #include <QtQml/qqml.h>
 
@@ -197,22 +199,25 @@ void NveQtQuickItem::Impl::Adapter::move(QuickNodeView*& v, const host::NodeGeom
 
 void NveQtQuickItem::Impl::Adapter::update_root(const host::NodeData& node) {
   QuickNodeView& r = host->root_;
+  const bool was_synced = r.synced;
   const QColor bg = qcolor(node.visual.background);
-  if (bg != r.paint.visual.background || !r.synced) {
+  if (bg != r.paint.visual.background || !was_synced) {
     r.paint.visual.background = bg;
     r.synced = true;
     host->bump_paint(r);
   }
+  r.interaction_events = node.interaction.events;
+  r.disabled = node.interaction.disabled;
   r.dom_id.assign(node.debug_id.id);
   std::optional<host::AriaRelations> rels;
   if (node.a11y.relations != 0u) {
     rels = host::decode_aria_relations(host->scene_resource(node.a11y.relations, host::kAriaRelationsKind));
   }
   NodeSemantics sem = node_semantics(node, rels);
-  if (!(sem == r.sem)) {
+  if (!was_synced || !(sem == r.sem)) {
     const NodeSemantics before = std::move(r.sem);
     r.sem = std::move(sem);
-    host->a11y_semantics_changed(r, before);
+    if (was_synced) host->a11y_semantics_changed(r, before);
   }
 }
 
@@ -332,7 +337,10 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
   v.dom_id.assign(node.debug_id.id);
   v.href.assign(node.href);
   v.disabled = node.interaction.disabled;
-  v.focusable = !v.disabled && (node.interaction.focusable || v.is_input);
+  v.tab_index = node.interaction.tab_index;
+  v.focusable = !v.disabled && (node.interaction.focusable || v.is_input ||
+                                (v.tab_index.has_value() && *v.tab_index >= 0) ||
+                                v.wants_press || host::openable_link(v.href));
   v.cursor = node.interaction.cursor;
   std::optional<host::AriaRelations> rels;
   if (node.a11y.relations != 0u) {
@@ -350,6 +358,13 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
   } else {
     mark_dirty(v);  // transform / opacity / clip / visibility
   }
+}
+
+void NveQtQuickItem::Impl::on_frame0_booted() {
+  focused_ = 0u;
+  pressed_ = 0u;
+  hovered_.clear();
+  root_.synced = false;
 }
 
 void NveQtQuickItem::Impl::update_input(QuickNodeView& v, const host::NodeData& node) {

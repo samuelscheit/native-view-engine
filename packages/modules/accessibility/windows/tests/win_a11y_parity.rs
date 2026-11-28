@@ -55,6 +55,8 @@ struct PublishedScene {
     scrolls: Vec<NveScrollOffset>,
     dirty_indices: Vec<u32>,
     removed_ids: Vec<u32>,
+    moved_indices: Vec<u32>,
+    dirty_resources: Vec<u32>,
     frame_id: u64,
     scene_epoch: u32,
 }
@@ -96,6 +98,8 @@ impl PublishedScene {
             scrolls,
             dirty_indices,
             removed_ids,
+            moved_indices: Vec::new(),
+            dirty_resources: Vec::new(),
             frame_id,
             scene_epoch,
         }
@@ -109,6 +113,8 @@ impl PublishedScene {
             node_capacity: rows.len() as u32,
             dirty_count: self.dirty_indices.len() as u32,
             removed_count: self.removed_ids.len() as u32,
+            moved_count: self.moved_indices.len() as u32,
+            dirty_resource_count: self.dirty_resources.len() as u32,
             text_slab_len: store.text_slab().len() as u32,
             children_slab_len: store.children_slab().len() as u32,
             table_count: self.tables.len() as u32,
@@ -119,6 +125,8 @@ impl PublishedScene {
             children_slab: store.children_slab().as_ptr().cast(),
             dirty_indices: self.dirty_indices.as_ptr(),
             removed_ids: self.removed_ids.as_ptr(),
+            moved_indices: self.moved_indices.as_ptr(),
+            dirty_resources: self.dirty_resources.as_ptr(),
             tables: self.tables.as_ptr(),
             scroll_offsets: self.scrolls.as_ptr(),
             ..NveSceneView::default()
@@ -395,4 +403,133 @@ fn c_abi_lifecycle_wm_getobject_and_action_dispatch() {
     // SAFETY: `handle` was created by `nve_a11y_win_create` and is destroyed once.
     unsafe { nve_a11y_win_destroy(handle) };
     let _ = (0 as c_int, lres);
+}
+
+#[test]
+fn moved_container_updates_descendant_bounds_and_skipped_frame_rebuilds() {
+    let mut store = NodeStore::new();
+    store.set_realization_order(core_realization_order());
+    let mut changes = ChangeSet::default();
+
+    let (container, child, alt_title, rel_id) = {
+        let mut tx = store.tx();
+        let container = tx.create();
+        tx.edit::<Accessibility>(container)
+            .role(Some(AriaRole::Region))
+            .relations(Some(AriaRelations {
+                labelled_by: "orig-lbl".into(),
+                ..AriaRelations::default()
+            }));
+        let child = tx.create();
+        tx.edit::<DebugId>(child).id("orig-lbl");
+        tx.edit::<TextContent>(child).text("Nested Item");
+        let alt_title = tx.create();
+        tx.edit::<DebugId>(alt_title).id("new-lbl");
+        tx.edit::<TextContent>(alt_title).text("New Label");
+        tx.set_children(container, &[child]);
+        tx.set_children(NodeId::ROOT, &[container, alt_title]);
+        tx.commit_into(&mut changes);
+        let rel_id = store
+            .try_row::<Accessibility>(container)
+            .map_or(ResourceId::NONE, |a| a.relations());
+        (container, child, alt_title, rel_id)
+    };
+
+    let mut resources = MapResources::from_store(&store, &[(rel_id, AriaRelations::KIND.0)]);
+    let pub1 = PublishedScene::build(&store, &changes, 1, 1, vec![]);
+    let view1 = pub1.view(&store);
+
+    let mut mirror = WinA11yBridge::new();
+    mirror.activate();
+    // SAFETY: `view1` references live local slices.
+    let upd1 = unsafe { mirror.sync_scene(&view1, &resources, 0, 1.0, "MoveTest") };
+    assert!(upd1.is_some());
+
+    // Frame 2: only `container` is in `moved_indices`, while BOTH `container` and `child` shift
+    // down by +120px in `rects` (matching `nve-runtime`'s parent-relative `moved_indices` contract).
+    let empty_changes = ChangeSet::default();
+    let mut pub2 = PublishedScene::build(&store, &empty_changes, 2, 1, vec![]);
+    pub2.rects[container.index()].y += 120.0;
+    pub2.rects[child.index()].y += 120.0;
+    pub2.moved_indices = vec![container.index() as u32];
+    let expected_child_y0 = f64::from(pub2.rects[child.index()].y);
+    let view2 = pub2.view(&store);
+
+    // SAFETY: `view2` references live local slices.
+    let upd2 = unsafe { mirror.sync_scene(&view2, &resources, 0, 1.0, "MoveTest") };
+    let child_ak = mirror.encode_store_node_id(child);
+    let container_ak = mirror.encode_store_node_id(container);
+    let alt_ak = mirror.encode_store_node_id(alt_title);
+    assert!(upd2.is_some(), "moved container must emit incremental bounds update");
+    if let Some(u) = upd2 {
+        assert!(u.tree.is_none(), "moved subtree update should stay incremental");
+        let child_node = u.nodes.iter().find(|(id, _)| *id == child_ak).map(|(_, n)| n);
+        assert!(
+            child_node.is_some(),
+            "descendant of moved container must be re-emitted with updated bounds"
+        );
+        if let Some(cn) = child_node {
+            let bounds = cn.bounds().unwrap_or_default();
+            assert!((bounds.y0 - expected_child_y0).abs() < 1e-3);
+        }
+    }
+
+    // Frame 3: in-place `dirty_resources` update on `AriaRelations` refreshes `container` even
+    // though `dirty_indices` is empty.
+    let mut temp_store = NodeStore::new();
+    temp_store.set_realization_order(core_realization_order());
+    let mut temp_changes = ChangeSet::default();
+    let new_rel_bytes = {
+        let mut tx = temp_store.tx();
+        let n = tx.create();
+        tx.edit::<Accessibility>(n).relations(Some(AriaRelations {
+            labelled_by: "new-lbl".into(),
+            ..AriaRelations::default()
+        }));
+        tx.commit_into(&mut temp_changes);
+        let temp_rid = temp_store
+            .try_row::<Accessibility>(n)
+            .map_or(ResourceId::NONE, |a| a.relations());
+        let mut bytes = Vec::new();
+        if let Some(words) = temp_store.resources().raw_words(temp_rid) {
+            for &w in words {
+                bytes.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        bytes
+    };
+    resources.0.insert(rel_id.0, (AriaRelations::KIND.0, new_rel_bytes));
+    let mut pub3 = PublishedScene::build(&store, &empty_changes, 3, 1, vec![]);
+    pub3.dirty_resources = vec![rel_id.0];
+    let view3 = pub3.view(&store);
+    // SAFETY: `view3` references live local slices.
+    let upd3 = unsafe { mirror.sync_scene(&view3, &resources, 0, 1.0, "MoveTest") };
+    assert!(upd3.is_some(), "dirty_resources AriaRelations update must emit TreeUpdate");
+    if let Some(u) = upd3 {
+        let cn = u.nodes.iter().find(|(id, _)| *id == container_ak).map(|(_, n)| n);
+        assert!(cn.is_some());
+        if let Some(cn) = cn {
+            assert_eq!(cn.labelled_by(), &[alt_ak]);
+        }
+    }
+
+    // Frame 6 (skipped frames 4 & 5, empty dirty_indices): forces full rebuild so mutations
+    // performed during skipped frames are reflected without losing synchronization.
+    {
+        let mut tx = store.tx();
+        tx.edit::<TextContent>(child).text("Updated After Skip");
+        tx.commit_into(&mut changes);
+    }
+    let pub_skip = PublishedScene::build(&store, &empty_changes, 6, 1, vec![]);
+    let view_skip = pub_skip.view(&store);
+    // SAFETY: `view_skip` references live local slices.
+    let upd_skip = unsafe { mirror.sync_scene(&view_skip, &resources, 0, 1.0, "MoveTest") };
+    assert!(upd_skip.is_some(), "skipped frame_id must trigger full rebuild");
+    if let Some(u) = upd_skip {
+        assert!(u.tree.is_some(), "skipped frame_id must emit a full TreeInfo update");
+        assert!(u
+            .nodes
+            .iter()
+            .any(|(id, n)| *id == child_ak && n.value() == Some("Updated After Skip") || n.label() == Some("Updated After Skip")));
+    }
 }

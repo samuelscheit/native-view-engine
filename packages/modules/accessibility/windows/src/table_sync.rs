@@ -323,7 +323,7 @@ pub(crate) fn sync_all_tables(
     resources: &dyn ResourceReader,
     patch_words: &mut Vec<u32>,
     res_words: &mut Vec<u32>,
-) {
+) -> u32 {
     let _ = sync_table_scalars::<Layout>(tx, id, node_idx, row, bound.layout, patch_words);
     let _ = sync_table_scalars::<Visual>(tx, id, node_idx, row, bound.visual, patch_words);
     let _ = sync_table_scalars::<Transform>(tx, id, node_idx, row, bound.transform, patch_words);
@@ -331,6 +331,7 @@ pub(crate) fn sync_all_tables(
     let _ =
         sync_table_scalars::<Interaction>(tx, id, node_idx, row, bound.interaction, patch_words);
 
+    let mut aria_rel_rid = 0u32;
     if let Some(w) =
         sync_table_scalars::<Accessibility>(tx, id, node_idx, row, bound.accessibility, patch_words)
     {
@@ -341,6 +342,7 @@ pub(crate) fn sync_all_tables(
             .get(Accessibility::RELATIONS.word() as usize)
             .copied()
             .unwrap_or(0);
+        aria_rel_rid = rid;
         sync_aria_relations(tx, id, rid, resources, res_words);
     }
     if let Some(w) =
@@ -368,4 +370,5 @@ pub(crate) fn sync_all_tables(
     if let Some(w) = sync_table_scalars::<Image>(tx, id, node_idx, row, bound.image, patch_words) {
         sync_str_prop(tx, id, text_slab, w, Image::ALT);
     }
+    aria_rel_rid
 }

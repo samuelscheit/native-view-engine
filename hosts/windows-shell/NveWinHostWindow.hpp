@@ -189,7 +189,8 @@ class NveWinHostWindow {
   D2DPaintCache cache_;
   HWND hwnd_ = nullptr;
   std::atomic<HWND> wake_hwnd_{nullptr};  // read by wake posters on any thread; null once destroyed
-  DWORD ui_thread_id_ = 0u;
+  /// Cleared on destruction / `WM_DESTROY` so callbacks that destroy `this` stop touching members.
+  std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
   NveA11yWinHandle* a11y_ = nullptr;
   std::mutex a11y_mu_;
   std::vector<QueuedA11yAction> a11y_actions_;

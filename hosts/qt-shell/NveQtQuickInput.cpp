@@ -65,14 +65,6 @@ Qt::CursorShape cursor_shape(uint8_t cursor) noexcept {
   }
 }
 
-/// Records in tree (tab) order.
-void collect(QuickNodeView& v, std::vector<QuickNodeView*>& out) {
-  for (QuickNodeView* c : v.children) {
-    out.push_back(c);
-    collect(*c, out);
-  }
-}
-
 }  // namespace
 
 QuickNodeView* NveQtQuickItem::Impl::pick(QPointF item_pos) { return pick_in(root_, item_pos); }
@@ -244,7 +236,9 @@ bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
   bool key_dispatched = false;
   if (!mapped.key.empty()) {
     QuickNodeView* listener =
-        nearest(f, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_KEY_DOWN); });
+        f != nullptr ? nearest(f, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_KEY_DOWN); })
+                     : nullptr;
+    if (listener == nullptr && root_.wants(NVE_INTERACTION_EVENT_KEY_DOWN)) listener = &root_;
     if (listener != nullptr) {
       key_dispatched = dispatch_key(listener->id, NVE_INTERACTION_EVENT_KEY_DOWN, mapped.key, mapped.code,
                                     mapped.flags, mapped.key_code);
@@ -253,11 +247,43 @@ bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
     }
   }
   const int k = event.key();
-  if (k == Qt::Key_Tab || k == Qt::Key_Backtab) {  // focus traversal in tree order, wrapping
+  if (k == Qt::Key_Tab || k == Qt::Key_Backtab) {  // focus traversal (positive tab_index, then DFS; modal-scoped)
+    QuickNodeView* modal = nullptr;
+    const auto find_modal = [&](auto&& self, QuickNodeView& cur) -> void {
+      std::vector<QuickNodeView*> kids = cur.children;
+      std::sort(kids.begin(), kids.end(), [](const QuickNodeView* a, const QuickNodeView* b) { return a->order < b->order; });
+      for (QuickNodeView* c : kids) {
+        if (!c->visible || c->disabled || c->sem.hidden) continue;
+        if (c->sem.modal) modal = c;
+        self(self, *c);
+      }
+    };
+    find_modal(find_modal, root_);
+
     std::vector<QuickNodeView*> order;
-    collect(root_, order);
-    std::erase_if(order, [](const QuickNodeView* v) { return !v->focusable || !v->visible; });
-    if (order.empty()) return key_dispatched;
+    const auto collect_tab = [&](auto&& self, QuickNodeView& cur, bool include_self) -> void {
+      if (include_self) {
+        if (!cur.visible || cur.disabled || cur.sem.hidden) return;
+        if (cur.focusable && !(cur.tab_index.has_value() && *cur.tab_index < 0)) order.push_back(&cur);
+      }
+      std::vector<QuickNodeView*> kids = cur.children;
+      std::sort(kids.begin(), kids.end(), [](const QuickNodeView* a, const QuickNodeView* b) { return a->order < b->order; });
+      for (QuickNodeView* c : kids) self(self, *c, true);
+    };
+    if (modal != nullptr) {
+      collect_tab(collect_tab, *modal, true);
+    } else {
+      collect_tab(collect_tab, root_, false);
+    }
+    if (order.empty()) return modal != nullptr || key_dispatched;
+
+    std::stable_sort(order.begin(), order.end(), [](const QuickNodeView* a, const QuickNodeView* b) {
+      const bool a_pos = a->tab_index.has_value() && *a->tab_index > 0;
+      const bool b_pos = b->tab_index.has_value() && *b->tab_index > 0;
+      if (a_pos != b_pos) return a_pos;
+      if (a_pos && *a->tab_index != *b->tab_index) return *a->tab_index < *b->tab_index;
+      return false;
+    });
     const auto at = std::find(order.begin(), order.end(), f);
     const ptrdiff_t n = static_cast<ptrdiff_t>(order.size());
     const ptrdiff_t i = at == order.end() ? (k == Qt::Key_Tab ? -1 : 0) : at - order.begin();
@@ -266,7 +292,8 @@ bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
   }
   if (f == nullptr) return key_dispatched;
   if (!f->is_input) {
-    if ((k == Qt::Key_Space || k == Qt::Key_Return || k == Qt::Key_Enter) && f->activatable()) {
+    const bool is_enter = k == Qt::Key_Return || k == Qt::Key_Enter;
+    if (f->activatable() && (is_enter || (k == Qt::Key_Space && f->wants_press))) {
       (void)activate(f->id, f->wants_press, f->href, static_cast<float>(f->local.width() * 0.5),
                      static_cast<float>(f->local.height() * 0.5));
       return true;
@@ -312,11 +339,13 @@ bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
 
 bool NveQtQuickItem::Impl::key_release(QKeyEvent& event) {
   QuickNodeView* f = find(focused_);
-  if (f == nullptr || focused_ == 0u) return false;
-  const MappedQtKey mapped = map_qt_key(event, f->is_input && f->input.composing);
+  if (f == nullptr || focused_ == 0u) f = nullptr;
+  const MappedQtKey mapped = map_qt_key(event, f != nullptr && f->is_input && f->input.composing);
   if (mapped.key.empty()) return false;
   QuickNodeView* listener =
-      nearest(f, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_KEY_UP); });
+      f != nullptr ? nearest(f, [](const QuickNodeView& v) { return v.wants(NVE_INTERACTION_EVENT_KEY_UP); })
+                   : nullptr;
+  if (listener == nullptr && root_.wants(NVE_INTERACTION_EVENT_KEY_UP)) listener = &root_;
   if (listener == nullptr) return false;
   return dispatch_key(listener->id, NVE_INTERACTION_EVENT_KEY_UP, mapped.key, mapped.code, mapped.flags,
                       mapped.key_code);
@@ -330,6 +359,9 @@ void NveQtQuickItem::Impl::ime(QInputMethodEvent& event) {
   const QString preedit = event.preeditString();
   const QString commit = scene_string(event.commitString().toStdString(), f->input.multiline);
   const bool now_composing = !preedit.isEmpty();
+  const int repl_start_rel = event.replacementStart();
+  const int repl_len_raw = event.replacementLength();
+  const bool commits = !commit.isEmpty() || repl_len_raw > 0;
   f->input.preedit = preedit;
   f->input.composing = now_composing;
   if (!was_composing && now_composing) {
@@ -347,14 +379,18 @@ void NveQtQuickItem::Impl::ime(QInputMethodEvent& event) {
     f = find(id);
     if (f == nullptr || !f->is_input) return;
   }
-  if (commit.isEmpty()) {
+  if (!commits) {
     bump_paint(*f);
     return;
   }
   QString text = f->input.edit;
-  const int caret = std::clamp(f->input.caret, 0, static_cast<int>(text.size()));
-  text.insert(caret, commit);
-  edit_input(*f, text, caret + static_cast<int>(commit.size()));
+  const int len = static_cast<int>(text.size());
+  const int caret = std::clamp(f->input.caret, 0, len);
+  const int repl_start = std::clamp(caret + repl_start_rel, 0, len);
+  const int repl_len = std::clamp(repl_len_raw, 0, len - repl_start);
+  if (repl_len > 0) text.remove(repl_start, repl_len);
+  text.insert(repl_start, commit);
+  edit_input(*f, text, repl_start + static_cast<int>(commit.size()));
 }
 
 QVariant NveQtQuickItem::Impl::ime_query(Qt::InputMethodQuery query) const {

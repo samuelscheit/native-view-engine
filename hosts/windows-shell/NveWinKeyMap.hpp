@@ -27,7 +27,7 @@ struct MappedWinKey {
   if ((::GetKeyState(VK_CONTROL) & 0x8000) != 0) flags |= NVE_EVENT_FLAG_MOD_CTRL;
   if ((::GetKeyState(VK_MENU) & 0x8000) != 0) flags |= NVE_EVENT_FLAG_MOD_ALT;
   if (((::GetKeyState(VK_LWIN) | ::GetKeyState(VK_RWIN)) & 0x8000) != 0) flags |= NVE_EVENT_FLAG_MOD_META;
-  if (pressed && ((lparam >> 30) & 1) != 0) flags |= NVE_EVENT_FLAG_MOD_REPEAT;
+  if (pressed && ((static_cast<uintptr_t>(lparam) >> 30u) & 1u) != 0u) flags |= NVE_EVENT_FLAG_MOD_REPEAT;
   return flags;
 }
 
@@ -37,7 +37,7 @@ struct MappedWinKey {
   out.flags = win32_modifier_flags(lparam, pressed);
   out.key_code = static_cast<uint32_t>(vk);
 
-  const bool extended = ((lparam >> 24) & 1) != 0;
+  const bool extended = ((static_cast<uintptr_t>(lparam) >> 24u) & 1u) != 0u;
   switch (vk) {
     case VK_TAB: out.key = "Tab"; out.code = "Tab"; return out;
     case VK_RETURN: out.key = "Enter"; out.code = extended ? "NumpadEnter" : "Enter"; return out;
@@ -96,7 +96,7 @@ struct MappedWinKey {
   BYTE kb[256]{};
   if (::GetKeyboardState(kb)) {
     wchar_t buf[8]{};
-    const UINT sc = static_cast<UINT>((lparam >> 16) & 0xFF);
+    const UINT sc = static_cast<UINT>((static_cast<uintptr_t>(lparam) >> 16u) & 0xFFu);
     const int n = ::ToUnicode(vk, sc, kb, buf, 8, 0x4u);
     if (n > 0) {
       const int utf8_len = ::WideCharToMultiByte(CP_UTF8, 0, buf, n, nullptr, 0, nullptr, nullptr);

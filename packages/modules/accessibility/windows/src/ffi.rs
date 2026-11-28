@@ -76,6 +76,8 @@ impl ActionBridge {
             with_ffi_action(&resolved, |payload| {
                 // SAFETY: `ctx_addr` is guaranteed valid until `nve_a11y_win_destroy` calls
                 // `detach()` while holding `self.sink`; `payload` lives for this callback call.
+                // Per `nve_a11y_win.h`, `cb` only copies/enqueues asynchronously and never
+                // re-enters `nve_a11y_win_*`, so holding `self.sink` cannot self-deadlock.
                 unsafe { cb(ctx_addr as *mut c_void, payload) };
             });
         }

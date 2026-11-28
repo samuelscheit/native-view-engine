@@ -481,6 +481,50 @@ void test_destroy_window_during_en_change_dispatch() {
   NVE_CHECK(destroyed_in_callback && window == nullptr && !::IsWindow(edit));
 }
 
+/// Exercises `WM_GETOBJECT` (UIA root + `OBJID_CLIENT` + `OBJID_SYSMENU`) and `WM_IME_*` message
+/// handling on a live Win32 `NveWinHostWindow` (including async UIA action draining).
+void test_window_uia_and_ime_messages() {
+  constexpr uint32_t kInput = 2u;
+  constexpr uint32_t kBtn = 3u;
+  ScriptedApp app;
+  app.w.create(1u);
+  app.w.create(kInput);
+  (void)app.w.set_str(kInput, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "init");
+  events(app.w, kInput,
+         {NVE_TEXT_INPUT_EVENT_CHANGE, NVE_TEXT_INPUT_EVENT_COMPOSITION_START,
+          NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, NVE_TEXT_INPUT_EVENT_COMPOSITION_END});
+  sized(app.w, kInput, 160.0f, 24.0f);
+  app.w.create(kBtn);
+  sized(app.w, kBtn, 100.0f, 28.0f);
+  events(app.w, kBtn, {NVE_INTERACTION_EVENT_PRESS, NVE_INTERACTION_EVENT_FOCUS, NVE_INTERACTION_EVENT_KEY_DOWN});
+  const uint32_t kids[] = {kInput, kBtn};
+  app.w.set_children(1u, kids);
+
+  NveWinHostWindow window(WinHostWindowOptions{.title = "uia-ime", .width = 320, .height = 200, .quit_on_destroy = false});
+  std::string error;
+  NVE_CHECK(window.create(::GetModuleHandleW(nullptr), &error));
+  NVE_CHECK(window.host().attach_interface(&ScriptedApp::get_interface));
+  pump_messages();
+
+  // `WM_GETOBJECT` with UiaRootObjectId (-25) activates the UIA provider; OBJID_SYSMENU (-1) falls through.
+  const LRESULT uia_res = ::SendMessageW(window.hwnd(), WM_GETOBJECT, 0, static_cast<LPARAM>(-25));
+  NVE_CHECK(uia_res != 0);
+  (void)::SendMessageW(window.hwnd(), WM_GETOBJECT, 0, static_cast<LPARAM>(-4));
+  (void)::SendMessageW(window.hwnd(), WM_GETOBJECT, 0, static_cast<LPARAM>(-1));
+
+  // Child EDIT focus keeps top-level window focus intact; IME messages emit Start/End cleanly.
+  HWND edit = window.text_inputs().control_for_node(kInput);
+  NVE_CHECK(edit != nullptr);
+  ::SendMessageW(edit, WM_IME_STARTCOMPOSITION, 0, 0);
+  ::SendMessageW(edit, WM_IME_ENDCOMPOSITION, 0, 0);
+  pump_messages();
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_START, kInput) == 1u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_COMPOSITION_END, kInput) == 1u);
+
+  window.close();
+  pump_messages();
+}
+
 }  // namespace
 
 void nve_test_win_direct2d() {
@@ -491,5 +535,6 @@ void nve_test_win_direct2d() {
   test_screenshot_bmp();
   test_window_inputs_and_wakes();
   test_destroy_window_during_en_change_dispatch();
+  test_window_uia_and_ime_messages();
   test_window_manager_windows();
 }

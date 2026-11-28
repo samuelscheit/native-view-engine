@@ -81,9 +81,9 @@ class QtHost {
   /// Deletes the state file (`--reset-state`); `true` when it is gone (also when it never existed).
   bool clear_state(std::string_view path);
   /// ABI v6 zero-unsafe `Frame0File` (`frame0.nve2`) capture and instant boot.
-  bool save_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version = 1u);
-  bool boot_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version = 1u);
-  bool boot_frame0_bytes(std::span<const uint8_t> bytes, uint32_t schema_version, uint32_t app_version = 1u);
+  bool save_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
   [[nodiscard]] std::string last_error() const { return session_->last_error(); }
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
@@ -143,6 +143,8 @@ class QtHost {
                                                      uint32_t applied) const noexcept = 0;
   /// Runs after each sync with the scene released (may dispatch / pump again).
   virtual void after_sync() {}
+  /// Runs right after `boot_frame0_*` replaces the scene so hosts clear stale focus/input state.
+  virtual void on_frame0_booted() {}
 
   /// Payload of published resource `id` of `kind` (empty when absent); valid only in `sync_views`.
   [[nodiscard]] std::span<const uint8_t> scene_resource(uint32_t id, host::Key64 kind) const noexcept;

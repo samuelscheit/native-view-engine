@@ -155,9 +155,9 @@ class NveGtkHost {
   /// Deletes the state file (cold start, `--reset-state`).
   bool clear_state(std::string_view path);
   /// ABI v6 zero-unsafe `Frame0File` (`frame0.nve2`) capture and instant boot.
-  bool save_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version = 1u);
-  bool boot_frame0_file(std::string_view path, uint32_t schema_version, uint32_t app_version = 1u);
-  bool boot_frame0_bytes(std::span<const uint8_t> bytes, uint32_t schema_version, uint32_t app_version = 1u);
+  bool save_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_file(std::string_view path, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
+  bool boot_frame0_bytes(std::span<const uint8_t> envelope, uint64_t app_build_id = 0u, uint64_t env_hash = 0u);
   bool apply_props(std::span<const NveMapEntry> props);
   bool apply_hot_patch(std::span<const uint8_t> patch_nvp1);
   void set_event_callback(EventCallback callback);
@@ -325,6 +325,8 @@ class NveGtkHost {
   GtkCssProvider* css_provider_ = nullptr;
   guint tick_id_ = 0u;
   uint32_t focused_node_id_ = 0u;
+  uint32_t pending_blur_id_ = 0u;
+  uint32_t pending_compose_end_id_ = 0u;
   bool relations_dirty_ = false;
   uint64_t live_announcement_count_ = 0u;
   std::string last_live_announcement_;

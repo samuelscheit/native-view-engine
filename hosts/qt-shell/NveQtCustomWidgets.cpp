@@ -182,7 +182,7 @@ NveQtLineEdit::NveQtLineEdit(QtNodeView* view, QWidget* parent) : QLineEdit(pare
   setAttribute(Qt::WA_InputMethodEnabled, true);
   setFrame(false);
   connect(this, &QLineEdit::textEdited, this, [this](const QString&) {
-    if (view_ != nullptr && !composing_) view_->host->on_text_edited(*view_);
+    if (view_ != nullptr && !composing_ && !in_ime_) view_->host->on_text_edited(*view_);
   });
   connect(this, &QLineEdit::returnPressed, this, [this] {
     if (view_ != nullptr && !composing_) view_->host->on_submit(*view_);
@@ -205,8 +205,10 @@ void NveQtLineEdit::inputMethodEvent(QInputMethodEvent* event) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, preedit.toStdString());
     if (self.isNull()) return;
   }
+  in_ime_ = true;
   QLineEdit::inputMethodEvent(event);
   if (self.isNull()) return;
+  in_ime_ = false;
   if (was_composing && !now_composing && view_ != nullptr) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, commit.toStdString());
     if (self.isNull()) return;
@@ -260,7 +262,7 @@ NveQtTextEdit::NveQtTextEdit(QtNodeView* view, QWidget* parent) : QPlainTextEdit
   setFrameShape(QFrame::NoFrame);
   setLineWrapMode(QPlainTextEdit::WidgetWidth);
   connect(this, &QPlainTextEdit::textChanged, this, [this] {
-    if (view_ != nullptr && !composing_ && !view_->text.writing()) view_->host->on_text_edited(*view_);
+    if (view_ != nullptr && !composing_ && !in_ime_ && !view_->text.writing()) view_->host->on_text_edited(*view_);
   });
 }
 
@@ -270,6 +272,7 @@ void NveQtTextEdit::inputMethodEvent(QInputMethodEvent* event) {
   const QString preedit = event->preeditString();
   const QString commit = event->commitString();
   const bool now_composing = !preedit.isEmpty();
+  const bool commits = !commit.isEmpty() || event->replacementLength() > 0;
   composing_ = now_composing;
   if (!was_composing && now_composing && view_ != nullptr) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_START, {});
@@ -279,13 +282,15 @@ void NveQtTextEdit::inputMethodEvent(QInputMethodEvent* event) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE, preedit.toStdString());
     if (self.isNull()) return;
   }
+  in_ime_ = true;
   QPlainTextEdit::inputMethodEvent(event);
   if (self.isNull()) return;
+  in_ime_ = false;
   if (was_composing && !now_composing && view_ != nullptr) {
     (void)view_->host->dispatch_composition(view_->id, NVE_TEXT_INPUT_EVENT_COMPOSITION_END, commit.toStdString());
     if (self.isNull()) return;
   }
-  if (!composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
+  if (commits && !composing_ && view_ != nullptr) view_->host->on_text_edited(*view_);
 }
 
 void NveQtTextEdit::keyPressEvent(QKeyEvent* event) {
