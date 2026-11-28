@@ -35,7 +35,10 @@ macro_rules! impl_host_status_mapping {
     (
         unit: { $($unit_status:ident <=> $unit_err:ident),* $(,)? }
         payload: {
-            $($p_status:ident => $p_make:expr ; $p_pat:pat => $p_back:ident),* $(,)?
+            $($p_status:ident => $p_make:expr ; $p_pat:pat),* $(,)?
+        }
+        extra_to_status: {
+            $($extra_pat:pat => $extra_status:ident),* $(,)?
         }
     ) => {
         impl ServiceError {
@@ -54,7 +57,8 @@ macro_rules! impl_host_status_mapping {
             pub const fn to_status(&self) -> NveHostStatus {
                 match self {
                     $(Self::$unit_err => NveHostStatus::$unit_status,)*
-                    $($p_pat => NveHostStatus::$p_back,)*
+                    $($p_pat => NveHostStatus::$p_status,)*
+                    $($extra_pat => NveHostStatus::$extra_status,)*
                 }
             }
         }
@@ -69,11 +73,14 @@ impl_host_status_mapping! {
         Cancelled <=> Cancelled,
     }
     payload: {
-        Pending => Self::Pending { request_id: 0 }; Self::Pending { .. } => Pending,
-        BufferTooSmall => Self::BufferTooSmall { required: 0 }; Self::BufferTooSmall { .. } => BufferTooSmall,
-        InvalidArg => Self::InvalidArg("invalid argument".into()); Self::InvalidArg(_) | Self::Codec(_) => InvalidArg,
-        IoError => Self::IoError("host I/O error".into()); Self::IoError(_) => IoError,
-        InternalError => Self::InternalError("host internal error".into()); Self::InternalError(_) => InternalError,
+        Pending => Self::Pending { request_id: 0 }; Self::Pending { .. },
+        BufferTooSmall => Self::BufferTooSmall { required: 0 }; Self::BufferTooSmall { .. },
+        InvalidArg => Self::InvalidArg("invalid argument".into()); Self::InvalidArg(_),
+        IoError => Self::IoError("host I/O error".into()); Self::IoError(_),
+        InternalError => Self::InternalError("host internal error".into()); Self::InternalError(_),
+    }
+    extra_to_status: {
+        Self::Codec(_) => InvalidArg,
     }
 }
 
@@ -114,3 +121,33 @@ impl fmt::Display for ServiceError {
 }
 
 impl std::error::Error for ServiceError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_mapping_roundtrips_bidirectionally() {
+        for status in [
+            NveHostStatus::Pending,
+            NveHostStatus::BufferTooSmall,
+            NveHostStatus::Unsupported,
+            NveHostStatus::PermissionDenied,
+            NveHostStatus::InvalidArg,
+            NveHostStatus::NotFound,
+            NveHostStatus::Cancelled,
+            NveHostStatus::IoError,
+            NveHostStatus::InternalError,
+        ] {
+            assert_eq!(ServiceError::from_status(status).to_status(), status);
+        }
+        assert_eq!(
+            ServiceError::from_status(NveHostStatus::Ok).to_status(),
+            NveHostStatus::InternalError
+        );
+        assert_eq!(
+            ServiceError::Codec("bad payload".into()).to_status(),
+            NveHostStatus::InvalidArg
+        );
+    }
+}
