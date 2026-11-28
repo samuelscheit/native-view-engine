@@ -20,6 +20,7 @@ pub mod provider;
 pub mod reentrant_slab;
 pub mod registry;
 pub mod request_table;
+pub mod slots;
 #[cfg(target_os = "windows")]
 pub mod win32_str;
 
@@ -45,3 +46,8 @@ pub use provider::{
 };
 pub use reentrant_slab::ReentrantSlotSlab;
 pub use registry::HostServiceRegistry;
+pub use slots::{
+    ServiceHandle, ServiceSlot, ServiceSlotId, ServiceSlots, ServiceSlotsBuilder,
+    MAX_SERVICE_SLOTS, SLOT_CLIPBOARD, SLOT_FILESYSTEM, SLOT_HAPTICS, SLOT_LINKING,
+    SLOT_NOTIFICATIONS, SLOT_SECURE_STORE, SLOT_SYSTEM_ENV, SLOT_USER_BASE,
+};

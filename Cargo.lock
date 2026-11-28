@@ -3624,8 +3624,8 @@ dependencies = [
 name = "nve-storage"
 version = "0.1.0"
 dependencies = [
+ "nve-codec",
  "nve-hash",
- "nve-host-services",
 ]
 
 [[package]]

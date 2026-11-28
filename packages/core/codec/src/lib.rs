@@ -12,6 +12,7 @@
 
 mod flat_op;
 mod reader;
+pub mod transport;
 mod writer;
 
 #[cfg(test)]
@@ -125,7 +126,13 @@ pub use flat_op::{
 };
 pub use nve_abi_macros::NveCodec;
 pub use reader::{ByteReader, DEFAULT_MAX_DEPTH};
-pub use writer::{write_fixed, write_fixed_into, ByteSink, ByteWriter, SliceWriter};
+pub use transport::{
+    call_sync_decode, encode_bool_stack, encode_f32_stack, encode_f64_stack, encode_i16_stack,
+    encode_i32_stack, encode_i64_stack, encode_i8_stack, encode_pod_stack, encode_u16_stack,
+    encode_u32_stack, encode_u64_stack, encode_u8_stack, try_with_stack_writer, with_stack_writer,
+    ByteTransport, StackWriter, TransportDoneFn, TransportError,
+};
+pub use writer::{try_write_fixed, write_fixed, write_fixed_into, ByteSink, ByteWriter, SliceWriter};
 
 /// Default upper bound on element counts encoded/decoded by `NveEncode`/`NveDecode` for `Vec<T>`.
 pub const DEFAULT_MAX_ITEMS: usize = 65_536;

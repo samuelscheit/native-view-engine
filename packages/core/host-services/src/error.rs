@@ -99,6 +99,25 @@ impl From<nve_codec::CodecError> for ServiceError {
     }
 }
 
+impl From<ServiceError> for nve_codec::TransportError {
+    fn from(err: ServiceError) -> Self {
+        match err {
+            ServiceError::Unsupported => Self::Unsupported,
+            ServiceError::PermissionDenied => Self::PermissionDenied,
+            ServiceError::InvalidArg(msg) | ServiceError::Codec(msg) => Self::Invalid(msg),
+            ServiceError::NotFound => Self::NotFound,
+            ServiceError::Cancelled => Self::Cancelled,
+            ServiceError::IoError(msg) => Self::Io(msg),
+            ServiceError::BufferTooSmall { required } => Self::BufferOverflow {
+                needed: required,
+                capacity: 0,
+            },
+            ServiceError::Pending { .. } => Self::Status(NveHostStatus::Pending.as_i32()),
+            ServiceError::InternalError(msg) => Self::Internal(msg),
+        }
+    }
+}
+
 impl fmt::Display for ServiceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

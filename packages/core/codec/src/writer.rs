@@ -72,6 +72,101 @@ pub trait ByteSink {
     fn put_f64_raw(&mut self, v: f64) -> Result<(), CodecError> {
         self.put_raw(&v.to_bits().to_le_bytes())
     }
+
+    #[inline]
+    fn put_len(&mut self, len: usize) -> Result<(), CodecError> {
+        self.put_len_max(len, u32::MAX as usize)
+    }
+
+    #[inline]
+    fn put_len_max(&mut self, len: usize, max: usize) -> Result<(), CodecError> {
+        let limit = max.min(u32::MAX as usize);
+        if len > limit {
+            return Err(CodecError::LenOverflow { len, max: limit });
+        }
+        self.put_u32(len as u32)
+    }
+
+    #[inline]
+    fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
+        self.put_bytes_max(bytes, u32::MAX as usize)
+    }
+
+    #[inline]
+    fn put_bytes_max(&mut self, bytes: &[u8], max: usize) -> Result<(), CodecError> {
+        self.put_len_max(bytes.len(), max)?;
+        self.put_raw(bytes)
+    }
+
+    #[inline]
+    fn put_bytes_u16(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
+        let raw = u16::try_from(bytes.len()).map_err(|_| CodecError::LenOverflow {
+            len: bytes.len(),
+            max: usize::from(u16::MAX),
+        })?;
+        self.put_u16(raw)?;
+        self.put_raw(bytes)
+    }
+
+    #[inline]
+    fn put_bytes_u8(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
+        let raw = u8::try_from(bytes.len()).map_err(|_| CodecError::LenOverflow {
+            len: bytes.len(),
+            max: usize::from(u8::MAX),
+        })?;
+        self.put_u8(raw)?;
+        self.put_raw(bytes)
+    }
+
+    #[inline]
+    fn put_str(&mut self, s: &str) -> Result<(), CodecError> {
+        self.put_bytes(s.as_bytes())
+    }
+
+    #[inline]
+    fn put_str_max(&mut self, s: &str, max: usize) -> Result<(), CodecError> {
+        self.put_bytes_max(s.as_bytes(), max)
+    }
+
+    #[inline]
+    fn put_str_u16(&mut self, s: &str) -> Result<(), CodecError> {
+        self.put_bytes_u16(s.as_bytes())
+    }
+
+    #[inline]
+    fn put_str_u8(&mut self, s: &str) -> Result<(), CodecError> {
+        self.put_bytes_u8(s.as_bytes())
+    }
+
+    #[inline]
+    fn put_opt<T>(
+        &mut self,
+        opt: Option<T>,
+        write_some: impl FnOnce(&mut Self, T) -> Result<(), CodecError>,
+    ) -> Result<(), CodecError>
+    where
+        Self: Sized,
+    {
+        match opt {
+            Some(v) => {
+                self.put_bool(true)?;
+                write_some(self, v)
+            }
+            None => self.put_bool(false),
+        }
+    }
+}
+
+/// Fallible zero-allocation helper for fixed-size wire layouts (`N` bytes exact).
+#[inline]
+pub fn try_write_fixed<const N: usize>(
+    write: impl FnOnce(&mut SliceWriter<'_>) -> Result<(), CodecError>,
+) -> Result<[u8; N], CodecError> {
+    let mut out = [0u8; N];
+    let mut w = SliceWriter::new(&mut out);
+    write(&mut w)?;
+    w.finish()?;
+    Ok(out)
 }
 
 /// Zero-allocation helper for infallible fixed-size wire layouts (`N` bytes exact).
@@ -474,7 +569,38 @@ impl<'a> SliceWriter<'a> {
         write_f32_raw => put_f32_raw : f32,
         write_f64 => put_f64 : f64,
         write_f64_raw => put_f64_raw : f64,
+        write_len => put_len : usize,
+        write_bytes => put_bytes : &[u8],
+        write_bytes_u16 => put_bytes_u16 : &[u8],
+        write_bytes_u8 => put_bytes_u8 : &[u8],
+        write_str => put_str : &str,
+        write_str_u16 => put_str_u16 : &str,
+        write_str_u8 => put_str_u8 : &str,
     );
+
+    #[inline]
+    pub fn write_len_max(&mut self, len: usize, max: usize) -> Result<(), CodecError> {
+        ByteSink::put_len_max(self, len, max)
+    }
+
+    #[inline]
+    pub fn write_bytes_max(&mut self, bytes: &[u8], max: usize) -> Result<(), CodecError> {
+        ByteSink::put_bytes_max(self, bytes, max)
+    }
+
+    #[inline]
+    pub fn write_str_max(&mut self, s: &str, max: usize) -> Result<(), CodecError> {
+        ByteSink::put_str_max(self, s, max)
+    }
+
+    #[inline]
+    pub fn write_opt<T>(
+        &mut self,
+        opt: Option<T>,
+        write_some: impl FnOnce(&mut Self, T) -> Result<(), CodecError>,
+    ) -> Result<(), CodecError> {
+        ByteSink::put_opt(self, opt, write_some)
+    }
 
     /// Verifies that the destination slice was filled completely with zero unused trailing bytes.
     #[inline]
