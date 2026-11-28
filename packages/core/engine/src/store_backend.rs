@@ -59,6 +59,7 @@ pub struct StoreWireReplica<B: StoreBackend> {
     decoder: WireDecoder,
     changes: ChangeSet,
     needs_keyframe: bool,
+    reset_epoch: u64,
     backend: B,
 }
 
@@ -73,8 +74,16 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             decoder: WireDecoder::default(),
             changes: ChangeSet::default(),
             needs_keyframe: false,
+            reset_epoch: 0,
             backend,
         }
+    }
+
+    /// Monotonically increasing counter incremented every time [`Self::reset`] clears the replica
+    /// store (e.g. on `frame == 1`, explicit `submit_nve2_keyframe`, or mid-frame decode error).
+    #[inline]
+    pub fn reset_epoch(&self) -> u64 {
+        self.reset_epoch
     }
 
     /// Returns `true` after a mid-frame decode failure reset the replica; subsequent deltas are
@@ -255,6 +264,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             decoder: self.decoder,
             changes: self.changes,
             needs_keyframe: self.needs_keyframe,
+            reset_epoch: self.reset_epoch,
             backend: f(self.backend),
         }
     }
@@ -267,6 +277,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         self.decoder = WireDecoder::default();
         self.changes = ChangeSet::default();
         self.needs_keyframe = false;
+        self.reset_epoch = self.reset_epoch.wrapping_add(1);
         self.backend.reset();
     }
 }
@@ -334,6 +345,26 @@ mod tests {
         replica.submit_nve2_frame(&frame1).expect("frame 1");
         assert!(replica.store().is_live(child));
         assert_eq!(replica.backend().commits, 1);
+        let epoch_after_f1 = replica.reset_epoch();
+        assert_eq!(epoch_after_f1, 0, "initial frame must not bump reset_epoch");
+
+        // Normal delta frame (`frame == 2`) must NOT bump reset_epoch.
+        let mut delta_ok = Vec::new();
+        {
+            let mut tx = src.tx();
+            tx.edit::<TestTag>(child).val(43);
+            tx.commit_into(&mut changes);
+        }
+        enc.encode(&src, &changes, &mut delta_ok);
+        replica.submit_nve2_frame(&delta_ok).expect("delta frame 2");
+        assert_eq!(replica.reset_epoch(), epoch_after_f1, "delta frame must not bump reset_epoch");
+        // Re-submitting the same cached delta frame must NOT bump reset_epoch either.
+        replica.submit_nve2_frame(&delta_ok).expect("repeated cached frame 2");
+        assert_eq!(
+            replica.reset_epoch(),
+            epoch_after_f1,
+            "repeated frame number must not bump reset_epoch"
+        );
 
         // Corrupt magic claiming frame 1 must fail header validation BEFORE resetting live replica.
         let mut bad_hdr = frame1.clone();
@@ -344,6 +375,7 @@ mod tests {
             "corrupt header must not wipe live replica"
         );
         assert_eq!(replica.backend().resets, 0);
+        assert_eq!(replica.reset_epoch(), epoch_after_f1);
 
         // Valid header (`frame == 2`, total_words == 7) with truncated op body fails mid-apply
         // and resets cleanly so partial uncommitted state never leaks.
@@ -362,6 +394,7 @@ mod tests {
         ));
         assert!(replica.needs_keyframe());
         assert_eq!(replica.backend().resets, 1);
+        assert_eq!(replica.reset_epoch(), epoch_after_f1 + 1);
         assert!(!replica.store().is_live(child));
 
         // Subsequent delta frame (`frame == 3`) must be rejected until a fresh keyframe arrives.
@@ -379,12 +412,13 @@ mod tests {
             Err(BackendError::NeedsKeyframe(None))
         ));
         assert!(replica.needs_keyframe());
-        assert_eq!(replica.backend().commits, 1);
+        assert_eq!(replica.backend().commits, 3);
 
         // Fresh keyframe (`frame == 1`) clears `needs_keyframe` and restores live state.
         replica.submit_nve2_frame(&frame1).expect("keyframe resync");
         assert!(!replica.needs_keyframe());
         assert!(replica.store().is_live(child));
-        assert_eq!(replica.backend().commits, 2);
+        assert_eq!(replica.backend().commits, 4);
+        assert_eq!(replica.reset_epoch(), epoch_after_f1 + 2);
     }
 }

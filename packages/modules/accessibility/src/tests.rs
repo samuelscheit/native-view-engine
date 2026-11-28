@@ -10,7 +10,7 @@ use nve_engine::LayoutRect;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 use nve_tables::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
-    AriaTriState, DebugId, Display, Image, InputKind, Interaction, Layout, Link, Scroll,
+    AriaTriState, DebugId, Display, Image, InputKind, Interaction, Layout, Link, Position, Scroll,
     ScrollAxes, TextContent, TextInput, Transform, Visual,
 };
 
@@ -26,10 +26,12 @@ struct MapGeo {
     rects: HashMap<NodeId, LayoutRect>,
     scroll_offsets: HashMap<NodeId, (f32, f32)>,
     scroll_contents: HashMap<NodeId, (f32, f32)>,
+    sticky_deltas: HashMap<NodeId, (f32, f32)>,
     focused: Option<NodeId>,
     values: HashMap<NodeId, String>,
     selections: HashMap<NodeId, (usize, usize)>,
     display_none: HashMap<NodeId, bool>,
+    display_contents: HashMap<NodeId, bool>,
 }
 
 impl MapGeo {
@@ -54,6 +56,9 @@ impl A11yGeometryProvider for MapGeo {
     fn scroll_content_size(&self, id: NodeId) -> Option<(f32, f32)> {
         self.scroll_contents.get(&id).copied()
     }
+    fn sticky_delta(&self, id: NodeId) -> (f32, f32) {
+        self.sticky_deltas.get(&id).copied().unwrap_or((0.0, 0.0))
+    }
     fn focused_node(&self) -> Option<NodeId> {
         self.focused
     }
@@ -65,6 +70,9 @@ impl A11yGeometryProvider for MapGeo {
     }
     fn is_display_none(&self, id: NodeId) -> bool {
         self.display_none.get(&id).copied().unwrap_or(false)
+    }
+    fn is_display_contents(&self, id: NodeId) -> bool {
+        self.display_contents.get(&id).copied().unwrap_or(false)
     }
 }
 
@@ -550,4 +558,332 @@ fn epoch_advancement_rejects_stale_actions_and_translates_all_action_types() {
     assert_eq!(char_index_to_byte_offset(s, 2), 4);
     assert_eq!(char_index_to_byte_offset(s, 3), 8);
     assert_eq!(char_index_to_byte_offset(s, 99), s.len());
+}
+
+#[test]
+fn secure_text_input_never_leaks_plaintext_with_explicit_non_textbox_aria_roles() {
+    let explicit_roles = [
+        AriaRole::SearchBox,
+        AriaRole::ComboBox,
+        AriaRole::Group,
+        AriaRole::Presentation,
+    ];
+    let secret = "S3cr3t!Pass";
+    let expected_mask = "•".repeat(secret.chars().count());
+
+    for &explicit_role in &explicit_roles {
+        for use_input_kind in [false, true] {
+            let mut store = NodeStore::new();
+            let mut changes = ChangeSet::default();
+            let pw = {
+                let mut tx = store.tx();
+                let id = tx.create();
+                tx.edit::<Accessibility>(id).role(Some(explicit_role));
+                let ti = tx.edit::<TextInput>(id);
+                if use_input_kind {
+                    ti.input_kind(InputKind::Password).value(secret);
+                } else {
+                    ti.secure(true).value(secret);
+                }
+                tx.set_children(NodeId::ROOT, &[id]);
+                tx.commit_into(&mut changes);
+                id
+            };
+
+            assert_eq!(
+                crate::resolve_node_role(&store, pw),
+                Role::PasswordInput,
+                "secure TextInput must keep Role::PasswordInput even with {explicit_role:?}"
+            );
+
+            let mut geo = MapGeo::new(1.0);
+            geo.rects.insert(
+                pw,
+                LayoutRect { x: 0.0, y: 0.0, width: 160.0, height: 32.0 },
+            );
+            geo.values.insert(pw, secret.to_owned());
+
+            let mut bridge = AccessKitTreeBridge::new();
+            let update = bridge.build_full_tree_update(&store, &geo, "Login");
+            let by_id: HashMap<_, _> = update.nodes.into_iter().collect();
+            let node = &by_id[&bridge.encode_store_node_id(pw)];
+            assert_eq!(node.role(), Role::PasswordInput);
+            assert_eq!(node.value(), Some(expected_mask.as_str()));
+            assert_ne!(node.value(), Some(secret));
+
+            let run_id = encode_text_run_id(bridge.epoch(), pw);
+            let run = &by_id[&run_id];
+            assert_eq!(run.role(), Role::TextRun);
+            assert_eq!(run.value(), Some(expected_mask.as_str()));
+            assert_ne!(run.value(), Some(secret));
+        }
+    }
+}
+
+#[test]
+fn display_contents_subtrees_flatten_transparently_and_respect_aria_hidden() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (outer_wrap, inner_wrap, btn_a, btn_b, hidden_wrap, hidden_btn) = {
+        let mut tx = store.tx();
+        let outer = tx.create();
+        tx.edit::<Layout>(outer).display(Display::Contents);
+        let inner = tx.create();
+        tx.edit::<Layout>(inner).display(Display::Contents);
+        let a = tx.create();
+        tx.edit::<Accessibility>(a).role(Some(AriaRole::Button)).label("Visible A");
+        let b = tx.create();
+        tx.edit::<Accessibility>(b).role(Some(AriaRole::Button)).label("Visible B");
+        tx.set_children(inner, &[a]);
+        tx.set_children(outer, &[inner, b]);
+
+        let h_wrap = tx.create();
+        tx.edit::<Layout>(h_wrap).display(Display::Contents);
+        tx.edit::<Accessibility>(h_wrap).hidden(true);
+        let h_btn = tx.create();
+        tx.edit::<Accessibility>(h_btn).role(Some(AriaRole::Button)).label("Hidden");
+        tx.set_children(h_wrap, &[h_btn]);
+
+        tx.set_children(NodeId::ROOT, &[outer, h_wrap]);
+        tx.commit_into(&mut changes);
+        (outer, inner, a, b, h_wrap, h_btn)
+    };
+
+    let mut geo = MapGeo::new(1.0);
+    geo.rects.insert(NodeId::ROOT, LayoutRect { x: 0.0, y: 0.0, width: 300.0, height: 200.0 });
+    geo.rects.insert(btn_a, LayoutRect { x: 10.0, y: 10.0, width: 80.0, height: 32.0 });
+    geo.rects.insert(btn_b, LayoutRect { x: 100.0, y: 10.0, width: 80.0, height: 32.0 });
+    geo.display_contents.insert(outer_wrap, true);
+    geo.display_contents.insert(inner_wrap, true);
+    geo.display_contents.insert(hidden_wrap, true);
+
+    let mut bridge = AccessKitTreeBridge::new();
+    let full = bridge.build_full_tree_update(&store, &geo, "Contents Demo");
+    let by_id: HashMap<_, _> = full.nodes.into_iter().collect();
+    let root = &by_id[&bridge.encode_store_node_id(NodeId::ROOT)];
+    assert_eq!(
+        root.children(),
+        &[bridge.encode_store_node_id(btn_a), bridge.encode_store_node_id(btn_b)]
+    );
+    assert!(!by_id.contains_key(&bridge.encode_store_node_id(outer_wrap)));
+    assert!(!by_id.contains_key(&bridge.encode_store_node_id(inner_wrap)));
+    assert!(!by_id.contains_key(&bridge.encode_store_node_id(hidden_wrap)));
+    assert!(!by_id.contains_key(&bridge.encode_store_node_id(hidden_btn)));
+
+    // Toggling aria-hidden on the transparent display:contents wrapper removes flattened children!
+    {
+        let mut tx = store.tx();
+        tx.edit::<Accessibility>(outer_wrap).hidden(true);
+        tx.commit_into(&mut changes);
+    }
+    let inc = bridge
+        .sync_changes(&store, &changes, &geo, "Contents Demo", false)
+        .expect("aria-hidden toggle on display:contents wrapper must update root");
+    let root_upd = inc
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == bridge.encode_store_node_id(NodeId::ROOT))
+        .expect("root updated");
+    assert!(root_upd.1.children().is_empty());
+}
+
+#[test]
+fn aria_relations_exclude_detached_and_ancestor_hidden_debug_ids() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (target, visible_dup) = {
+        let mut tx = store.tx();
+        // Detached node (never attached to ROOT).
+        let detached = tx.create();
+        tx.edit::<DebugId>(detached).id("detached-id");
+
+        // Ancestor aria-hidden subtree.
+        let hidden_a11y = tx.create();
+        tx.edit::<Accessibility>(hidden_a11y).hidden(true);
+        let hidden_a11y_child = tx.create();
+        tx.edit::<DebugId>(hidden_a11y_child).id("hidden-a11y-id");
+        let hidden_dup = tx.create();
+        tx.edit::<DebugId>(hidden_dup).id("shared-label");
+        tx.set_children(hidden_a11y, &[hidden_a11y_child, hidden_dup]);
+
+        // Ancestor display:none subtree.
+        let hidden_disp = tx.create();
+        tx.edit::<Layout>(hidden_disp).display(Display::None);
+        let hidden_disp_child = tx.create();
+        tx.edit::<DebugId>(hidden_disp_child).id("hidden-disp-id");
+        tx.set_children(hidden_disp, &[hidden_disp_child]);
+
+        // Visible node sharing the same DebugId as `hidden_dup` MUST win!
+        let vis = tx.create();
+        tx.edit::<DebugId>(vis).id("shared-label");
+        tx.edit::<TextContent>(vis).text("Real Label");
+
+        let tgt = tx.create();
+        tx.edit::<Accessibility>(tgt)
+            .role(Some(AriaRole::Button))
+            .relations(Some(AriaRelations {
+                labelled_by: "detached-id shared-label hidden-a11y-id".into(),
+                described_by: "hidden-a11y-id".into(),
+                controls: "hidden-disp-id".into(),
+                active_descendant: "detached-id".into(),
+            }));
+
+        tx.set_children(NodeId::ROOT, &[hidden_a11y, hidden_disp, vis, tgt]);
+        tx.commit_into(&mut changes);
+        (tgt, vis)
+    };
+
+    let geo = MapGeo::new(1.0);
+    let mut bridge = AccessKitTreeBridge::new();
+    let full = bridge.build_full_tree_update(&store, &geo, "Relations");
+    let by_id: HashMap<_, _> = full.nodes.into_iter().collect();
+    let t = &by_id[&bridge.encode_store_node_id(target)];
+    assert_eq!(t.labelled_by(), &[bridge.encode_store_node_id(visible_dup)]);
+    assert!(t.described_by().is_empty());
+    assert!(t.controls().is_empty());
+    assert_eq!(t.active_descendant(), None);
+}
+
+#[test]
+fn targeted_dirty_sync_updates_scroll_and_text_input_in_o1_on_large_tree() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (scroll, input) = {
+        let mut tx = store.tx();
+        let scroll = tx.create();
+        tx.edit::<Scroll>(scroll).axes(ScrollAxes::Vertical);
+        let mut rows = Vec::with_capacity(280);
+        for i in 0..280u32 {
+            let row = tx.create();
+            tx.edit::<TextContent>(row).text(&format!("Item {i}"));
+            rows.push(row);
+        }
+        tx.set_children(scroll, &rows);
+        let input = tx.create();
+        tx.edit::<TextInput>(input).value("initial");
+        tx.set_children(NodeId::ROOT, &[scroll, input]);
+        tx.commit_into(&mut changes);
+        (scroll, input)
+    };
+
+    let mut geo = MapGeo::new(1.0);
+    geo.rects.insert(NodeId::ROOT, LayoutRect { x: 0.0, y: 0.0, width: 400.0, height: 300.0 });
+    geo.rects.insert(scroll, LayoutRect { x: 0.0, y: 0.0, width: 400.0, height: 240.0 });
+    geo.rects.insert(input, LayoutRect { x: 0.0, y: 250.0, width: 200.0, height: 32.0 });
+    geo.scroll_contents.insert(scroll, (400.0, 2800.0));
+    geo.values.insert(input, "initial".into());
+
+    let mut bridge = AccessKitTreeBridge::new();
+    let full = bridge.build_full_tree_update(&store, &geo, "Large");
+    assert!(full.nodes.len() > 280);
+
+    geo.scroll_offsets.insert(scroll, (0.0, 144.0));
+    let scroll_upd = bridge
+        .sync_scroll_node(&store, &geo, "Large", scroll)
+        .expect("targeted scroll update");
+    assert_eq!(bridge.last_sync_nodes_built(), 1, "scroll sync must be O(1)");
+    assert_eq!(scroll_upd.nodes.len(), 1);
+    assert_eq!(scroll_upd.nodes[0].1.scroll_y(), Some(144.0));
+
+    geo.focused = Some(input);
+    geo.values.insert(input, "edited".into());
+    geo.selections.insert(input, (2, 6));
+    let text_upd = bridge
+        .sync_text_input_node(&store, &geo, "Large", input)
+        .expect("targeted text input update");
+    assert_eq!(bridge.last_sync_nodes_built(), 1, "text input sync must be O(1)");
+    let by_id: HashMap<_, _> = text_upd.nodes.into_iter().collect();
+    assert_eq!(by_id[&bridge.encode_store_node_id(input)].value(), Some("edited"));
+}
+
+#[test]
+fn virtualized_scroll_and_sticky_descendant_transforms_align_coordinates() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (scroll, sticky_hdr, sticky_btn) = {
+        let mut tx = store.tx();
+        let scroll = tx.create();
+        tx.edit::<Scroll>(scroll)
+            .axes(ScrollAxes::Vertical)
+            .virtual_top_spacer(Some(960.0));
+        let hdr = tx.create();
+        tx.edit::<Layout>(hdr).position(Position::Sticky);
+        let btn = tx.create();
+        tx.edit::<Accessibility>(btn).role(Some(AriaRole::Button)).label("Pin");
+        tx.set_children(hdr, &[btn]);
+
+        let mut children = vec![hdr];
+        for i in 0..100u32 {
+            let row = tx.create();
+            tx.edit::<TextContent>(row).text(&format!("Row {i}"));
+            children.push(row);
+        }
+        tx.set_children(scroll, &children);
+        tx.set_children(NodeId::ROOT, &[scroll]);
+        tx.commit_into(&mut changes);
+        (scroll, hdr, btn)
+    };
+
+    let mut geo = MapGeo::new(1.0);
+    geo.rects.insert(NodeId::ROOT, LayoutRect { x: 0.0, y: 0.0, width: 320.0, height: 240.0 });
+    geo.rects.insert(scroll, LayoutRect { x: 0.0, y: 0.0, width: 320.0, height: 200.0 });
+    geo.rects.insert(sticky_hdr, LayoutRect { x: 0.0, y: 100.0, width: 320.0, height: 32.0 });
+    geo.rects.insert(sticky_btn, LayoutRect { x: 12.0, y: 106.0, width: 64.0, height: 20.0 });
+    geo.scroll_contents.insert(scroll, (320.0, 4000.0));
+    geo.scroll_offsets.insert(scroll, (0.0, 1000.0));
+    geo.sticky_deltas.insert(sticky_hdr, (0.0, 40.0));
+
+    let mut bridge = AccessKitTreeBridge::new();
+    let full = bridge.build_full_tree_update(&store, &geo, "VirtSticky");
+    let by_id: HashMap<_, _> = full.nodes.into_iter().collect();
+    let sc = &by_id[&bridge.encode_store_node_id(scroll)];
+    // Absolute scroll_y reported as 1000.0, while visual shift is 1000.0 - 960.0 = 40.0!
+    assert_eq!(sc.scroll_y(), Some(1000.0));
+    assert_eq!(sc.transform(), Some(&Affine::translate((0.0, -40.0))));
+    assert_eq!(sc.bounds(), Some(Rect { x0: 0.0, y0: 40.0, x1: 320.0, y1: 240.0 }));
+
+    // Sticky delta lives in transform(), leaving sticky header bounds unmutated so child inherits it.
+    let hdr_node = &by_id[&bridge.encode_store_node_id(sticky_hdr)];
+    assert_eq!(hdr_node.bounds(), Some(Rect { x0: 0.0, y0: 100.0, x1: 320.0, y1: 132.0 }));
+    assert_eq!(hdr_node.transform(), Some(&Affine::translate((0.0, 40.0))));
+
+    // Advancing scroll updates BOTH scroll container and sticky header in O(1 + sticky_count).
+    geo.scroll_offsets.insert(scroll, (0.0, 1020.0));
+    geo.sticky_deltas.insert(sticky_hdr, (0.0, 60.0));
+    let inc = bridge
+        .sync_scroll_node(&store, &geo, "VirtSticky", scroll)
+        .expect("scroll + sticky update");
+    assert_eq!(bridge.last_sync_nodes_built(), 2, "must rebuild only scroll + sticky node");
+    let inc_map: HashMap<_, _> = inc.nodes.into_iter().collect();
+    assert_eq!(
+        inc_map[&bridge.encode_store_node_id(scroll)].transform(),
+        Some(&Affine::translate((0.0, -60.0)))
+    );
+    assert_eq!(
+        inc_map[&bridge.encode_store_node_id(sticky_hdr)].transform(),
+        Some(&Affine::translate((0.0, 60.0)))
+    );
+}
+
+#[test]
+fn set_text_selection_rejects_mismatched_text_run_owner() {
+    let bridge = AccessKitTreeBridge::new();
+    let node_a = NodeId::new(10, 0);
+    let node_b = NodeId::new(11, 0);
+    let run_a = encode_text_run_id(bridge.epoch(), node_a);
+    let run_b = encode_text_run_id(bridge.epoch(), node_b);
+    let req = ActionRequest {
+        action: Action::SetTextSelection,
+        target_tree: TreeId::ROOT,
+        target_node: run_a,
+        data: Some(ActionData::SetTextSelection(TextSelection {
+            anchor: TextPosition { node: run_b, character_index: 0 },
+            focus: TextPosition { node: run_b, character_index: 3 },
+        })),
+    };
+    assert_eq!(
+        bridge.translate_action(&req),
+        None,
+        "SetTextSelection targeting TextRun(A) with positions on TextRun(B) must be rejected"
+    );
 }

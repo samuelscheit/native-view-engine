@@ -85,17 +85,25 @@ pub fn text_input_role(ti: TextInputRef<'_>) -> Role {
     }
 }
 
-/// Resolves the final [`accesskit::Role`] for `id` in `store`, preferring explicit
-/// `Accessibility::role` (while preserving `PasswordInput` masking and `MultilineTextInput`) and
-/// falling back to implicit component tables (`TextInput`, `Link`, `Image`, `Scroll`,
-/// `TextContent`, pressable `Interaction`, root `Window`, or `GenericContainer`).
+/// Resolves the final [`accesskit::Role`] for `id` in `store`, ALWAYS preserving
+/// `Role::PasswordInput` for secure/password `TextInput`s (even when an explicit `Accessibility::role`
+/// is attached), otherwise preferring explicit `Accessibility::role` (preserving
+/// `MultilineTextInput` on explicit `AriaRole::TextBox`) and falling back to implicit component
+/// tables (`TextInput`, `Link`, `Image`, `Scroll`, `TextContent`, pressable `Interaction`, root
+/// `Window`, or `GenericContainer`).
 pub fn resolve_node_role(store: &NodeStore, id: NodeId) -> Role {
+    let text_input = store.try_row::<TextInput>(id);
+    if let Some(ti) = text_input
+        && (ti.secure() || ti.input_kind() == InputKind::Password)
+    {
+        return Role::PasswordInput;
+    }
     if let Some(a11y) = store.try_row::<Accessibility>(id)
         && let Some(aria_role) = a11y.role()
     {
         let explicit = aria_role_to_accesskit(aria_role);
         if explicit == Role::TextInput
-            && let Some(ti) = store.try_row::<TextInput>(id)
+            && let Some(ti) = text_input
         {
             return text_input_role(ti);
         }
@@ -104,7 +112,7 @@ pub fn resolve_node_role(store: &NodeStore, id: NodeId) -> Role {
     if id == NodeId::ROOT {
         return Role::Window;
     }
-    if let Some(ti) = store.try_row::<TextInput>(id) {
+    if let Some(ti) = text_input {
         return text_input_role(ti);
     }
     if store.has::<Link>(id) {

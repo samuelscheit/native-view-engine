@@ -72,6 +72,18 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     /// viewport (accounting for `virtual_top_spacer` and rejecting `display: none` subtrees).
     /// Returns `true` if any scroll offset changed.
     pub fn scroll_into_view(&mut self, store: &NodeStore, node_id: NodeId) -> bool {
+        self.scroll_into_view_collecting(store, node_id, None)
+    }
+
+    /// Like [`Self::scroll_into_view`], optionally pushing every scrolled ancestor container
+    /// [`NodeId`] into `scrolled_containers` so hosts can emit `ScrollEvent::Scroll` and update
+    /// AccessKit in O(1).
+    pub fn scroll_into_view_collecting(
+        &mut self,
+        store: &NodeStore,
+        node_id: NodeId,
+        mut scrolled_containers: Option<&mut Vec<NodeId>>,
+    ) -> bool {
         if !store.is_live(node_id)
             || is_subtree_display_none_effective(store, &self.layout_tree, node_id)
         {
@@ -137,6 +149,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                     let next = self.set_scroll_offset(store, pid, target_x, target_y);
                     if (sx - next.0).abs() > 1e-4 || (sy - next.1).abs() > 1e-4 {
                         changed = true;
+                        if let Some(out) = scrolled_containers.as_deref_mut() {
+                            out.push(pid);
+                        }
                     }
                 }
                 let (new_shift_x, new_shift_y) = self.visual_scroll_shift(store, pid);
@@ -151,7 +166,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     #[inline]
-    pub(crate) fn visual_scroll_shift(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
+    pub fn visual_scroll_shift(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
         self.layout_tree.scene().visual_scroll_shift(store, id)
     }
 

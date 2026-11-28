@@ -262,9 +262,29 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         Some(style)
     }
 
+    /// Effective 2D transform of `node` including any in-flight animated transform override.
+    #[inline]
+    pub fn effective_transform(&self, store: &NodeStore, node: NodeId) -> Option<Transform2D> {
+        let base = self.layout_tree.scene().effective_transform(store, node);
+        self.frame_hooks
+            .resolve_transform(node, base)
+            .filter(|tf| !tf.is_identity())
+    }
+
     /// Advances every hook by `dt_s`, applying zero-alloc composite or incremental paint updates
     /// when values changed; returns whether another frame is needed.
     pub fn advance_animations(&mut self, store: &NodeStore, dt_s: f32) -> bool {
+        self.advance_animations_tracking(store, dt_s, None).0
+    }
+
+    /// Like [`Self::advance_animations`], optionally recording nodes whose transform/bounds may
+    /// have changed into `transform_dirty` and returning `(still_animating, needs_full_sync)`.
+    pub fn advance_animations_tracking(
+        &mut self,
+        store: &NodeStore,
+        dt_s: f32,
+        transform_dirty: Option<&mut Vec<NodeId>>,
+    ) -> (bool, bool) {
         let mut composite_dirty = std::mem::take(&mut self.motion_scratch);
         let mut paint_dirty = std::mem::take(&mut self.motion_paint_scratch);
         composite_dirty.clear();
@@ -274,11 +294,21 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             &mut composite_dirty,
             &mut paint_dirty,
         );
+        let still_animating = self.frame_hooks.needs_next_frame();
         if stepped {
             if needs_full {
                 self.sync_full_scene(store);
             } else {
                 if !composite_dirty.is_empty() {
+                    if let Some(out) = transform_dirty {
+                        for &id in &composite_dirty {
+                            if self.effective_transform(store, id).is_some()
+                                || store.has::<nve_tables::tables::Transform>(id)
+                            {
+                                out.push(id);
+                            }
+                        }
+                    }
                     self.update_scene_composite_nodes(store, &composite_dirty);
                 }
                 if !paint_dirty.is_empty() {
@@ -288,7 +318,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         }
         self.motion_scratch = composite_dirty;
         self.motion_paint_scratch = paint_dirty;
-        self.frame_hooks.needs_next_frame()
+        (still_animating, stepped && needs_full)
     }
 
     pub(crate) fn sync_frame_hooks(&mut self, store: &NodeStore, dirty: &[NodeId]) {

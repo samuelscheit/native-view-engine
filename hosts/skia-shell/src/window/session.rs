@@ -107,6 +107,8 @@ pub struct DesktopSession<A: DesktopApp> {
     frame_counter: FrameId,
     store_generation: u32,
     pub(super) a11y_synced_wire_frame: u64,
+    pub(super) a11y_dirty_nodes: Vec<NodeId>,
+    pub(super) a11y_needs_full_sync: bool,
     last_telemetry: Option<FrameTelemetry>,
     /// Wall-clock instant of the previous animation tick (`None` while idle).
     last_animation_tick: Option<Instant>,
@@ -205,6 +207,8 @@ impl<A: DesktopApp> DesktopSession<A> {
             frame_counter: FrameId::ZERO,
             store_generation: 1,
             a11y_synced_wire_frame: 0,
+            a11y_dirty_nodes: Vec::new(),
+            a11y_needs_full_sync: false,
             last_telemetry: None,
             last_animation_tick: None,
             #[cfg(feature = "skia")]
@@ -431,6 +435,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.pixel_buffer.resize(pw, ph);
 
         let app_handled_resize = self.notify_viewport_resize();
+        self.a11y_needs_full_sync = true;
 
         if app_handled_resize || self.last_frame_bytes.is_empty() {
             self.render_and_rasterize()?;
@@ -454,7 +459,11 @@ impl<A: DesktopApp> DesktopSession<A> {
             .replace(now)
             .map_or(0.0, |prev| now.duration_since(prev).as_secs_f32().min(0.1));
         let (store, backend) = self.replica.store_and_backend_mut();
-        let animating = backend.advance_animations(store, dt_s);
+        let (animating, needs_full) =
+            backend.advance_animations_tracking(store, dt_s, Some(&mut self.a11y_dirty_nodes));
+        if needs_full {
+            self.a11y_needs_full_sync = true;
+        }
         self.rasterize_current();
         if !animating {
             self.last_animation_tick = None;
@@ -470,7 +479,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             if bytes.is_empty() {
                 continue;
             }
-            let prev_wire_frame = self.replica.last_changes().frame;
+            let prev_reset_epoch = self.replica.reset_epoch();
             let res = if is_keyframe {
                 self.replica.submit_nve2_keyframe(&bytes)
             } else {
@@ -478,8 +487,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             };
             match res {
                 Ok(_) => {
-                    let next_wire_frame = self.replica.last_changes().frame;
-                    if is_keyframe || (prev_wire_frame > 0 && next_wire_frame <= prev_wire_frame) {
+                    if self.replica.reset_epoch() != prev_reset_epoch {
                         self.store_generation = self.store_generation.wrapping_add(1).max(1);
                         self.a11y_synced_wire_frame = 0;
                     }
@@ -497,10 +505,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.next_frame_id = self.next_frame_id.next();
             let bytes = self.app.render(frame_id);
             if !bytes.is_empty() {
-                let prev_wire_frame = self.replica.last_changes().frame;
+                let prev_reset_epoch = self.replica.reset_epoch();
                 self.replica.submit_nve2_frame(bytes)?;
-                let next_wire_frame = self.replica.last_changes().frame;
-                if prev_wire_frame > 0 && next_wire_frame <= prev_wire_frame {
+                if self.replica.reset_epoch() != prev_reset_epoch {
                     self.store_generation = self.store_generation.wrapping_add(1).max(1);
                     self.a11y_synced_wire_frame = 0;
                 }
@@ -555,11 +562,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let elapsed_us = t0.elapsed().as_micros() as u64;
         self.frame_counter = self.frame_counter.next();
         self.last_telemetry = Some(FrameTelemetry {
-            backend: if painted_via_skia {
-                active_kind
-            } else {
-                GpuBackendKind::Softbuffer
-            },
+            backend: if painted_via_skia { active_kind } else { GpuBackendKind::Softbuffer },
             frame_index: self.frame_counter.raw(),
             width: self.pixel_buffer.width(),
             height: self.pixel_buffer.height(),
@@ -591,20 +594,24 @@ impl<A: DesktopApp> DesktopSession<A> {
                 }
                 Ok(true)
             }
-            HotPatchMsg::DylibReload {
-                generation,
-                dylib_path,
-                build_ms,
-            } => {
+            HotPatchMsg::DylibReload { generation, dylib_path, build_ms } => {
                 let t0 = Instant::now();
                 let resolved = resolve_dylib_path(dylib_path);
+                let layout = match self.layout_choice.build_layout_engine() {
+                    Ok(layout) => layout,
+                    Err(err) => {
+                        self.status_banner = Some(format!("Reload gen #{generation} failed: {err}"));
+                        self.rasterize_current();
+                        return Err(err);
+                    }
+                };
                 match self.app.reload(&resolved, self.surface_id) {
                     Ok(new_gen) => {
-                        let layout = self.layout_choice.build_layout_engine()?;
-                        self.replica =
-                            new_shell_skia_replica_with_layout(self.surface_id, self.viewport, layout);
+                        self.replica = new_shell_skia_replica_with_layout(self.surface_id, self.viewport, layout);
                         self.store_generation = self.store_generation.wrapping_add(1).max(1);
                         self.a11y_synced_wire_frame = 0;
+                        self.a11y_dirty_nodes.clear();
+                        self.a11y_needs_full_sync = false;
                         self.last_frame_bytes.clear();
                         let swap_ms = t0.elapsed().as_millis();
                         self.status_banner = Some(format!(
@@ -614,22 +621,18 @@ impl<A: DesktopApp> DesktopSession<A> {
                         Ok(true)
                     }
                     Err(err) => {
-                        self.status_banner =
-                            Some(format!("Reload gen #{generation} failed: {err}"));
+                        self.status_banner = Some(format!("Reload gen #{generation} failed: {err}"));
                         self.rasterize_current();
                         Err(err)
                     }
                 }
             }
-            HotPatchMsg::DevStatus {
-                message,
-                latency_ms,
-            } => {
-                self.status_banner = if *latency_ms > 0 {
-                    Some(format!("{message} ({latency_ms}ms)"))
+            HotPatchMsg::DevStatus { message, latency_ms } => {
+                self.status_banner = Some(if *latency_ms > 0 {
+                    format!("{message} ({latency_ms}ms)")
                 } else {
-                    Some(message.clone())
-                };
+                    message.clone()
+                });
                 self.rasterize_current();
                 Ok(true)
             }

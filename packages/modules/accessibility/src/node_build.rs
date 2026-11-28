@@ -13,7 +13,8 @@ use nve_hash::Xxh64Hasher;
 use nve_store::{NodeId, NodeStore};
 use nve_tables::tables::{
     node_clips_overflow, Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations,
-    AriaTriState, DebugId, Image, Interaction, Link, Scroll, ScrollAxes, TextContent, TextInput,
+    AriaTriState, DebugId, Image, InputKind, Interaction, Link, Scroll, ScrollAxes, TextContent,
+    TextInput,
 };
 
 use crate::action::byte_offset_to_char_index;
@@ -84,14 +85,32 @@ pub(crate) fn build_a11y_node(
     let mut node = Node::new(role);
     hash_u32(&mut h, role as u32);
 
-    // 1. Bounds, HiDPI root transform, and O(1) scroll transform.
-    let is_scroll = store.has::<Scroll>(id);
+    // 1. Bounds, HiDPI root scale, sticky offset, effective transform, and O(1) visual scroll shift.
+    let scroll_row = store.try_row::<Scroll>(id);
+    let is_scroll = scroll_row.is_some();
     let (scroll_x, scroll_y) = if is_scroll {
         let (sx, sy) = geo.scroll_offset(id);
         (
             if sx.is_finite() { sx.max(0.0) } else { 0.0 },
             if sy.is_finite() { sy.max(0.0) } else { 0.0 },
         )
+    } else {
+        (0.0, 0.0)
+    };
+    let (shift_x, shift_y) = if is_scroll {
+        if let Some((vx, vy)) = geo.visual_scroll_shift(id) {
+            (
+                if vx.is_finite() { vx.max(0.0) } else { 0.0 },
+                if vy.is_finite() { vy.max(0.0) } else { 0.0 },
+            )
+        } else if let Some(top_spacer) = scroll_row
+            .and_then(|s| s.virtual_top_spacer())
+            .filter(|&v| v.is_finite() && v > 0.0)
+        {
+            (scroll_x, (scroll_y - top_spacer).max(0.0))
+        } else {
+            (scroll_x, scroll_y)
+        }
     } else {
         (0.0, 0.0)
     };
@@ -106,11 +125,13 @@ pub(crate) fn build_a11y_node(
         && r.width.is_finite()
         && r.height.is_finite()
     {
-        // Scroll containers carry `Affine::translate((-scroll_x, -scroll_y))` so scrolling only
-        // mutates the scroll node itself (not its 1,000 children); compensating the scroll node's
-        // own bounds by `(+scroll_x, +scroll_y)` keeps its transformed viewport rect stationary.
-        let x0 = f64::from(r.x + sx_delta + scroll_x);
-        let y0 = f64::from(r.y + sy_delta + scroll_y);
+        // Scroll containers carry `Affine::translate((-shift_x, -shift_y))` (where `shift_y`
+        // accounts for `virtual_top_spacer`) so scrolling mutates only the scroll node itself;
+        // compensating the scroll node's own bounds by `(+shift_x, +shift_y)` keeps its viewport
+        // rect stationary, while `sticky_delta` is applied via `transform` so sticky descendants
+        // move together with their sticky container.
+        let x0 = f64::from(r.x + shift_x);
+        let y0 = f64::from(r.y + shift_y);
         let x1 = x0 + f64::from(r.width.max(0.0));
         let y1 = y0 + f64::from(r.height.max(0.0));
         let bounds = Rect { x0, y0, x1, y1 };
@@ -130,23 +151,31 @@ pub(crate) fn build_a11y_node(
     } else {
         1.0
     };
-    if id == NodeId::ROOT && (safe_scale - 1.0).abs() > 1e-6 {
-        let tf = if is_scroll && (scroll_x != 0.0 || scroll_y != 0.0) {
-            Affine::scale(safe_scale) * Affine::translate((-f64::from(scroll_x), -f64::from(scroll_y)))
-        } else {
-            Affine::scale(safe_scale)
-        };
+    let has_scale = id == NodeId::ROOT && (safe_scale - 1.0).abs() > 1e-6;
+    let has_sticky = sx_delta != 0.0 || sy_delta != 0.0;
+    let has_scroll_shift = is_scroll && (shift_x != 0.0 || shift_y != 0.0);
+    let node_affine = geo
+        .node_affine(id)
+        .filter(|tf| tf.as_coeffs().iter().all(|c| c.is_finite()));
+    if has_scale || has_sticky || has_scroll_shift || node_affine.is_some() {
+        let mut tf = Affine::IDENTITY;
+        if has_scale {
+            tf *= Affine::scale(safe_scale);
+        }
+        if has_sticky {
+            tf *= Affine::translate((f64::from(sx_delta), f64::from(sy_delta)));
+        }
+        if let Some(local) = node_affine {
+            tf *= local;
+        }
+        if has_scroll_shift {
+            tf *= Affine::translate((-f64::from(shift_x), -f64::from(shift_y)));
+        }
         node.set_transform(tf);
         h.write(&[2]);
         for c in tf.as_coeffs() {
             hash_f64(&mut h, c);
         }
-    } else if is_scroll && (scroll_x != 0.0 || scroll_y != 0.0) {
-        let tf = Affine::translate((-f64::from(scroll_x), -f64::from(scroll_y)));
-        node.set_transform(tf);
-        h.write(&[3]);
-        hash_f64(&mut h, f64::from(scroll_x));
-        hash_f64(&mut h, f64::from(scroll_y));
     }
 
     if node_clips_overflow(store, id) {
@@ -155,7 +184,7 @@ pub(crate) fn build_a11y_node(
     }
 
     // 2. Scroll metadata & scroll actions.
-    if let Some(scroll) = store.try_row::<Scroll>(id) {
+    if let Some(scroll) = scroll_row {
         node.set_clips_children();
         let axes = scroll.axes();
         let (vw, vh) = geo
@@ -476,7 +505,8 @@ pub(crate) fn build_a11y_node(
         let raw_val = geo
             .text_input_value(id)
             .unwrap_or_else(|| Cow::Borrowed(ti.value()));
-        let is_password = role == Role::PasswordInput;
+        let is_password =
+            role == Role::PasswordInput || ti.secure() || ti.input_kind() == InputKind::Password;
         let masked: String;
         let exposed_val: &str = if is_password {
             masked = "•".repeat(raw_val.chars().count());

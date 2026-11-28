@@ -343,7 +343,14 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 let Some(sw) = self.windows.get_mut(&window_id) else { return };
                 let scale = sw.session.viewport().scale_factor.max(0.001);
                 match sw.session.handle_pointer_move_logical(position.x as f32 / scale, position.y as f32 / scale) {
-                    Ok(true) => { sw.sync_ime_state(); sw.sync_cursor_state(); sw.window.request_redraw(); }
+                    Ok(true) => {
+                        sw.sync_ime_state();
+                        sw.sync_cursor_state();
+                        if sw.session.has_pending_a11y_dirty() {
+                            sw.sync_a11y_state(false);
+                        }
+                        sw.window.request_redraw();
+                    }
                     Ok(false) => sw.sync_cursor_state(),
                     Err(err) => eprintln!("[nve-skia-shell] pointer move error: {err}"),
                 }
@@ -368,7 +375,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             reschedule = exhausted;
                             sw.sync_ime_state();
                             sw.sync_cursor_state();
-                            sw.sync_a11y_state(true);
+                            sw.sync_a11y_state(false);
                             sw.window.request_redraw();
                         }
                         Ok(false) => sw.sync_cursor_state(),
@@ -408,7 +415,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             let (_, exhausted) = Self::pump_window_async(sw, false);
                             reschedule = exhausted;
                             sw.sync_ime_state();
-                            sw.sync_a11y_state(true);
+                            sw.sync_a11y_state(false);
                             sw.window.request_redraw();
                         }
                         Ok(false) => {}
@@ -429,7 +436,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             let (_, exhausted) = Self::pump_window_async(sw, false);
                             reschedule = exhausted;
                             sw.sync_ime_state();
-                            sw.sync_a11y_state(true);
+                            sw.sync_a11y_state(false);
                             sw.window.request_redraw();
                         }
                         Ok(false) => {}
@@ -449,7 +456,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             let (_, exhausted) = Self::pump_window_async(sw, false);
                             reschedule = exhausted;
                             sw.sync_ime_state();
-                            sw.sync_a11y_state(true);
+                            sw.sync_a11y_state(false);
                             sw.window.request_redraw();
                         }
                         Ok(false) => {}
@@ -466,6 +473,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 self.process_app_wakes();
                 if let Some(sw) = self.windows.get_mut(&window_id) {
                     let animating = sw.session.tick_animations();
+                    if sw.session.has_pending_a11y_dirty() {
+                        sw.sync_a11y_state(false);
+                    }
                     sw.present_pixels();
                     if animating {
                         sw.window.request_redraw();

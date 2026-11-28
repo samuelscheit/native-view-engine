@@ -346,6 +346,20 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         &mut self.layout_tree
     }
 
+    /// Returns `true` if `id` itself is effectively `display: none` (including `StateRules`
+    /// overrides and `InputKind::Hidden`).
+    #[inline]
+    pub fn is_node_display_none_effective(&self, store: &NodeStore, id: NodeId) -> bool {
+        display_list::is_node_display_none_effective(store, &self.layout_tree, id)
+    }
+
+    /// Returns `true` if `id` itself is effectively `display: contents` (including `StateRules`
+    /// overrides) and is neither root nor `InputKind::Hidden`.
+    #[inline]
+    pub fn is_node_display_contents_effective(&self, store: &NodeStore, id: NodeId) -> bool {
+        display_list::is_node_display_contents_effective(store, &self.layout_tree, id)
+    }
+
     /// Computes the visual (scroll-shifted + sticky-clamped) layout rectangle of `node_id` in
     /// logical viewport coordinates.
     pub fn visual_rect_of(&self, store: &NodeStore, node_id: NodeId) -> Option<LayoutRect> {

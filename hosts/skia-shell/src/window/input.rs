@@ -24,12 +24,18 @@ pub(super) fn is_focusable(store: &NodeStore, id: NodeId) -> bool {
     if !store.is_live(id) || is_subtree_display_none(store, id) {
         return false;
     }
+    if store.try_row::<Interaction>(id).is_some_and(|i| i.disabled()) {
+        return false;
+    }
     if store.has::<TextInput>(id) {
         return true;
     }
     store.try_row::<Interaction>(id).is_some_and(|i| {
         let l = i.listeners();
-        l.contains(InteractionEvent::Focus) || l.contains(InteractionEvent::Blur)
+        i.focusable()
+            || i.tab_index().is_some()
+            || l.contains(InteractionEvent::Focus)
+            || l.contains(InteractionEvent::Blur)
     })
 }
 
@@ -226,6 +232,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 self.replica.backend().focus_state().caret_byte_index,
             );
             if next_sel != prev_sel {
+                self.mark_a11y_dirty(text_id);
                 visual_changed = true;
             }
         } else {
@@ -280,6 +287,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 let anchor = self.replica.backend().focus_state().selection_anchor;
                 let (store, backend) = self.replica.store_and_backend_mut();
                 backend.set_caret_and_selection(store, next_caret, anchor);
+                self.mark_a11y_dirty(node_id);
                 visual_changed = true;
             }
         }
@@ -348,6 +356,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         let (content_width, content_height) = backend
             .scroll_content_size(store, scroll_node_id)
             .unwrap_or((self.viewport.width, self.viewport.height));
+        if offset_changed {
+            self.mark_a11y_dirty(scroll_node_id);
+        }
 
         let mut batch = EventBatchBuf::with_capacity(1, 0);
         batch.push_scroll(
