@@ -59,7 +59,11 @@ NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, schema_hash) == 8u, "NveRuntimeApi.sch
 {%- for f in m.slots %}
 NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, {{ f.name }}) == 16u + {{ loop.index0 }}u * sizeof(void*), "NveRuntimeApi.{{ f.name }} slot");
 {%- endfor %}
-NVE_STATIC_ASSERT(sizeof(NveRuntimeApi) == 16u + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*), "NveRuntimeApi size");
+NVE_STATIC_ASSERT(
+    sizeof(NveRuntimeApi) ==
+        ((16u + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*) + NVE_ALIGNOF(NveRuntimeApi) - 1u) &
+         ~(NVE_ALIGNOF(NveRuntimeApi) - 1u)),
+    "NveRuntimeApi size");
 
 /*
  * Threading, wake-callback, and borrowed-view lifetime contracts:

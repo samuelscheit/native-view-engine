@@ -175,3 +175,152 @@ pub struct NveWireServerMetrics {
     pub wire_bytes_rx: u64,
     pub rejected_handshakes: u64,
 }
+
+/// Validates a pairing hostname or bracketed IPv6 literal.
+#[cfg(feature = "client")]
+pub fn is_valid_pair_host(host: &str) -> bool {
+    if host.is_empty() || host.bytes().any(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    if bare.is_empty() {
+        return false;
+    }
+    if host.starts_with('[') || host.ends_with(']') || bare.contains(':') {
+        return bare.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    bare.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && !bare.starts_with('.')
+        && !bare.ends_with('.')
+        && !bare.starts_with('-')
+        && !bare.ends_with('-')
+}
+
+/// Shared pairing URI parser and validator used by both `nve-runtime` and desktop/native shells.
+///
+/// Parses `addr` via [`parse_wire_uri`], applies optional transport/token/cert/path overrides,
+/// validates host, non-zero port, non-empty Bearer token, and (when `require_cert_pin` is set)
+/// TLS SHA-256 certificate pinning for encrypted transports.
+#[cfg(feature = "client")]
+pub fn resolve_pair_uri(
+    addr: &str,
+    token_override: &str,
+    transport_override: Option<NveWireTransportKind>,
+    cert_sha256_override: Option<[u8; 32]>,
+    default_ws_path: Option<&str>,
+    require_cert_pin: bool,
+) -> Result<NveWireUri, NveWireTransportError> {
+    let trimmed_addr = addr.trim();
+    if trimmed_addr.is_empty() {
+        return Err(NveWireTransportError::Connect(
+            "pairing URI must not be empty".to_owned(),
+        ));
+    }
+    let mut uri = parse_wire_uri(trimmed_addr)?;
+    if let Some(transport) = transport_override
+        && transport != NveWireTransportKind::Auto
+    {
+        uri.transport = transport;
+    }
+    if !is_valid_pair_host(&uri.host) {
+        return Err(NveWireTransportError::Connect(
+            "invalid pairing URI host".to_owned(),
+        ));
+    }
+    if uri.quic_port == Some(0) || uri.wss_port == Some(0) {
+        return Err(NveWireTransportError::Connect(
+            "pairing URI port must be non-zero".to_owned(),
+        ));
+    }
+    if uri.quic_port.is_none() && uri.wss_port.is_none() {
+        return Err(NveWireTransportError::Connect(
+            "pairing URI must specify host and port".to_owned(),
+        ));
+    }
+    let trimmed_token = token_override.trim();
+    if !trimmed_token.is_empty() {
+        uri.token = trimmed_token.to_owned();
+    }
+    if uri.token.trim().is_empty() {
+        return Err(NveWireTransportError::Auth(
+            "missing pairing token".to_owned(),
+        ));
+    }
+    if let Some(hash) = cert_sha256_override {
+        uri.cert_sha256 = Some(hash);
+    }
+    if uri.path.is_empty()
+        && let Some(path) = default_ws_path
+    {
+        uri.path = path.to_owned();
+    }
+    let requires_pin = matches!(
+        uri.transport,
+        NveWireTransportKind::Quic
+            | NveWireTransportKind::WebTransport
+            | NveWireTransportKind::Wss
+            | NveWireTransportKind::Auto
+    );
+    if require_cert_pin && requires_pin && uri.cert_sha256.is_none() {
+        return Err(NveWireTransportError::Tls(
+            "TLS-pinned pairing transport requires cert_sha256".to_owned(),
+        ));
+    }
+    Ok(uri)
+}
+
+/// Connection parameters for live thin-client pairing mode (`--pair-connect`).
+#[cfg(feature = "client")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairConnectConfig {
+    /// Target `nve://pair?...` URI, `quic://`, `https://`, `wss://`, `ws://`, or `host:port`.
+    pub addr: String,
+    /// Shared Bearer token printed by `nve pair`.
+    pub token: String,
+    /// Wire transport protocol (`auto`, `quic`, `webtransport`, `wss`, or `ws`).
+    pub transport: NveWireTransportKind,
+    /// Optional pinned SHA-256 leaf certificate digest (auto-parsed from `nve://pair?...`).
+    pub cert_sha256: Option<[u8; 32]>,
+    /// WebSocket / WebTransport path.
+    pub ws_path: String,
+    /// Maximum time to wait for Frame 1 on initial connect / `--screenshot`.
+    pub initial_frame_timeout: Duration,
+}
+
+#[cfg(feature = "client")]
+impl PairConnectConfig {
+    pub fn new(
+        addr: impl Into<String>,
+        token: impl Into<String>,
+        transport: NveWireTransportKind,
+    ) -> Self {
+        Self {
+            addr: addr.into(),
+            token: token.into(),
+            transport,
+            cert_sha256: None,
+            ws_path: DEFAULT_WIRE_WSS_PATH.to_owned(),
+            initial_frame_timeout: Duration::from_secs(5),
+        }
+    }
+
+    pub fn with_cert_sha256(mut self, sha256: [u8; 32]) -> Self {
+        self.cert_sha256 = Some(sha256);
+        self
+    }
+
+    pub fn resolve_uri(&self) -> Result<NveWireUri, NveWireTransportError> {
+        resolve_pair_uri(
+            &self.addr,
+            &self.token,
+            Some(self.transport),
+            self.cert_sha256,
+            Some(&self.ws_path),
+            false,
+        )
+    }
+}

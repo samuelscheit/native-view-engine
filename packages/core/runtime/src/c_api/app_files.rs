@@ -1,11 +1,11 @@
-//! App-file entry points: staged `cdylib` app modules and `StateFile` app-state persistence
-//! (`UNSUPPORTED` on wasm32, which has neither dynamic libraries nor a filesystem).
+//! App-file & Frame-0 C ABI entry points: staged `cdylib` app modules, `StateFile` persistence,
+//! and `Frame0File` save/boot (`boot_frame0_bytes` also works on `wasm32`).
 
 use std::path::Path;
 
-use nve_abi::{NveRuntimeHandle, NveStrSlice};
+use nve_abi::{NveBufferSlice, NveRuntimeHandle, NveStrSlice};
 
-use super::with_runtime;
+use super::{host_bytes, with_runtime};
 use crate::builder::RuntimeError;
 use crate::surface::SurfaceRuntime;
 
@@ -25,25 +25,6 @@ unsafe fn with_path(
             .map_err(|_| RuntimeError::InvalidArg("path is not a valid UTF-8 NveStrSlice"))?;
         f(rt, Path::new(path))
     })
-}
-
-/// wasm32 has neither dynamic libraries nor a filesystem (`crate::app_files` is native-only).
-#[cfg(target_arch = "wasm32")]
-impl SurfaceRuntime {
-    const NO_FILES: RuntimeError = RuntimeError::Unsupported("app files need a native filesystem");
-
-    fn load_app_module_shared(&self, _: &Path, _: bool) -> Result<(), RuntimeError> {
-        Err(Self::NO_FILES)
-    }
-    fn save_state_file_shared(&self, _: &Path, _: u32) -> Result<(), RuntimeError> {
-        Err(Self::NO_FILES)
-    }
-    fn restore_state_file_shared(&self, _: &Path, _: u32) -> Result<(), RuntimeError> {
-        Err(Self::NO_FILES)
-    }
-    fn clear_state_file_shared(&self, _: &Path) -> Result<(), RuntimeError> {
-        Err(Self::NO_FILES)
-    }
 }
 
 pub(super) unsafe extern "C" fn rt_load_app_module(
@@ -95,4 +76,45 @@ pub(super) unsafe extern "C" fn rt_clear_state_file(
             rt.clear_state_file_shared(path)
         })
     }
+}
+
+pub(super) unsafe extern "C" fn rt_save_frame0_file(
+    handle: NveRuntimeHandle,
+    utf8_path: NveStrSlice,
+    app_build_id: u64,
+    env_hash: u64,
+) -> i32 {
+    // SAFETY: Forwarded caller contract for `utf8_path`.
+    unsafe {
+        with_path("nve_runtime::save_frame0_file", handle, utf8_path, |rt, path| {
+            rt.save_frame0_file_shared(path, app_build_id, env_hash)
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn rt_boot_frame0_file(
+    handle: NveRuntimeHandle,
+    utf8_path: NveStrSlice,
+    app_build_id: u64,
+    env_hash: u64,
+) -> i32 {
+    // SAFETY: Forwarded caller contract for `utf8_path`.
+    unsafe {
+        with_path("nve_runtime::boot_frame0_file", handle, utf8_path, |rt, path| {
+            rt.boot_frame0_file_shared(path, app_build_id, env_hash)
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn rt_boot_frame0_bytes(
+    handle: NveRuntimeHandle,
+    envelope: NveBufferSlice,
+    app_build_id: u64,
+    env_hash: u64,
+) -> i32 {
+    with_runtime("nve_runtime::boot_frame0_bytes", handle, |rt| {
+        // SAFETY: Caller guarantees `envelope` is readable for `envelope.len` bytes when valid.
+        let bytes = unsafe { host_bytes(envelope, "invalid frame0 envelope NveBufferSlice") }?;
+        rt.boot_frame0_bytes_shared(bytes, app_build_id, env_hash)
+    })
 }

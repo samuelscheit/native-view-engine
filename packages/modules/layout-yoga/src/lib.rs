@@ -63,7 +63,7 @@ mod unavailable_impl {
     use std::sync::Arc;
 
     use nve_engine::{LayoutRect, Viewport};
-    use nve_layout::{StoreLayoutEngine, TextMeasurer};
+    use nve_layout::{SizeConstraints, StoreLayoutEngine, SurfaceMeasure, TextMeasurer};
     use nve_store::{ChangeSet, NodeId, NodeStore};
 
     use crate::YogaUnavailableError;
@@ -104,6 +104,16 @@ mod unavailable_impl {
             _root: NodeId,
             _viewport: Viewport,
         ) -> bool {
+            match self._uninhabited {}
+        }
+
+        fn measure_root(
+            &mut self,
+            _store: &NodeStore,
+            _root: NodeId,
+            _constraints: SizeConstraints,
+            _ideal: bool,
+        ) -> SurfaceMeasure {
             match self._uninhabited {}
         }
 

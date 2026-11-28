@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nve_tables::tables::{Layout, Scroll, TextContent, Typography, Visual};
 use nve_engine::{LayoutRect, Viewport};
 use nve_layout::{
-    HeuristicTextMeasurer, MAX_TREE_DEPTH, ResolvedTextStyle, StoreLayoutEngine, TextMeasurer,
-    resolve_inherited_text,
+    HeuristicTextMeasurer, MAX_TREE_DEPTH, ResolvedTextStyle, SizeConstraints, StoreLayoutEngine,
+    SurfaceMeasure, TextMeasurer, resolve_inherited_text,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableSlot};
 
@@ -581,6 +581,31 @@ impl StoreLayoutEngine for YogaLayoutEngine {
             self.layout_dirty = false;
         }
         true
+    }
+
+    fn measure_root(&mut self, store: &NodeStore, root: NodeId, constraints: SizeConstraints, ideal: bool) -> SurfaceMeasure {
+        let empty = SurfaceMeasure { width: 0.0, height: 0.0, first_baseline: f32::NAN, last_baseline: f32::NAN };
+        if !store.is_live(root) { return empty; }
+        if !self.tree_seeded || !self.nodes.contains_key(&root) {
+            self.sync_subtree_if_unseen(store, root);
+            self.tree_seeded = true;
+            self.typo_dirty = true;
+        }
+        self.propagate_typography(store, root);
+        self.sync_node_props(store, root, 0);
+        let Some(root_yg) = self.nodes.get(&root).map(|e| e.yg_node) else { return empty; };
+        let avail = |m: f32| if !ideal && m.is_finite() && m >= 0.0 { m } else { f32::NAN };
+        // SAFETY: `root_yg` is live; `computed_rects` stay untouched.
+        let raw = unsafe { nve_yg_node_calculate_layout(root_yg, avail(constraints.max_w), avail(constraints.max_h)); nve_yg_node_get_layout_rect(root_yg) };
+        self.layout_dirty = true;
+        let clamp = |v: f32, lo: f32, hi: f32| {
+            let f = if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+            if ideal { f } else {
+                let min_v = if lo.is_finite() && lo > 0.0 { lo } else { 0.0 };
+                (if hi.is_finite() && hi >= 0.0 { f.min(hi.max(min_v)) } else { f }).max(min_v)
+            }
+        };
+        SurfaceMeasure { width: clamp(raw.width, constraints.min_w, constraints.max_w), height: clamp(raw.height, constraints.min_h, constraints.max_h), first_baseline: f32::NAN, last_baseline: f32::NAN }
     }
 
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {

@@ -19,8 +19,8 @@ use nve_tables::tables::{
 use nve_engine::{LayoutRect, Viewport};
 
 use crate::{
-    HeuristicTextMeasurer, ResolvedTextStyle, StoreLayoutEngine, TextMeasurer,
-    resolve_inherited_text,
+    HeuristicTextMeasurer, ResolvedTextStyle, SizeConstraints, StoreLayoutEngine, SurfaceMeasure,
+    TextMeasurer, resolve_inherited_text,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 
@@ -424,6 +424,8 @@ impl TaffyStoreLayout {
         let mut view = LayoutView {
             store,
             root_index: root.index() as u32,
+            root_fills_viewport: true,
+            dry_run: false,
             viewport: (viewport.width, viewport.height),
             resolved_rtl: &self.resolved_rtl,
             resolved_text: &self.resolved_text,
@@ -501,6 +503,43 @@ impl TaffyStoreLayout {
         true
     }
 
+    /// Measures `root` under `constraints` (or unconstrained intrinsic sizing when `ideal` is
+    /// `true`) using Taffy `RunMode::ComputeSize`, without mutating committed boxes, rects,
+    /// hoisted out-of-flow lists, `last_viewport`, or `layout_dirty`.
+    pub fn measure_root(
+        &mut self,
+        store: &NodeStore,
+        root: NodeId,
+        constraints: SizeConstraints,
+        ideal: bool,
+    ) -> SurfaceMeasure {
+        if !store.is_live(root) {
+            return SurfaceMeasure {
+                width: 0.0,
+                height: 0.0,
+                first_baseline: f32::NAN,
+                last_baseline: f32::NAN,
+            };
+        }
+        self.ensure_capacity(store.capacity());
+        self.propagate_inheritance(store, root);
+        let mut view = LayoutView {
+            store,
+            root_index: root.index() as u32,
+            root_fills_viewport: false,
+            dry_run: true,
+            viewport: (0.0, 0.0),
+            resolved_rtl: &self.resolved_rtl,
+            resolved_text: &self.resolved_text,
+            caches: &mut self.caches,
+            boxes: &mut self.boxes,
+            hoisted: &mut self.hoisted,
+            box_children: &self.box_children,
+            measurer: &*self.measurer,
+        };
+        view.measure_root_dry_run(root, constraints, ideal)
+    }
+
     #[inline]
     pub fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
         let idx = id.index();
@@ -540,6 +579,16 @@ impl StoreLayoutEngine for TaffyStoreLayout {
 
     fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool {
         TaffyStoreLayout::compute_layout(self, store, root, viewport)
+    }
+
+    fn measure_root(
+        &mut self,
+        store: &NodeStore,
+        root: NodeId,
+        constraints: SizeConstraints,
+        ideal: bool,
+    ) -> SurfaceMeasure {
+        TaffyStoreLayout::measure_root(self, store, root, constraints, ideal)
     }
 
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {

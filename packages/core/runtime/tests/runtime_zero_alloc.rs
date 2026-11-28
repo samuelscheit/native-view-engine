@@ -2,14 +2,16 @@
 //! `scene_acquire`/`scene_release` verification with positive + cross-thread `CountingAlloc`
 //! isolation proofs.
 
+use std::ffi::c_void;
 use std::hint::{black_box, spin_loop};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    FrameId, InteractionEvent, NveRuntimeStatus, SurfaceId, ValidatedEvents,
-    NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
+    FrameId, HostServiceId, InteractionEvent, NveBufferSlice, NveHostCallbacks, NveHostStatus,
+    NveRuntimeStatus, NveSizeConstraints, SurfaceId, ValidatedEvents, METHOD_WINDOW_REQUEST_FRAME,
+    NVE_MEASURE_FLAG_DRY_RUN, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH, SERVICE_WINDOW,
 };
 use nve_tables::tables::{Interaction, Layout, Scroll, TextContent, Visual};
 use nve_engine::Viewport;
@@ -371,5 +373,188 @@ fn direct_app_frame_tick_hook_propagates_changes_is_zero_alloc_and_enforces_scen
         Err(RuntimeError::InvalidArg(
             "cannot submit NVE2 wire frames while an app is attached"
         ))
+    );
+}
+
+struct HostBoundDirectApp {
+    store: NodeStore,
+    changes: ChangeSet,
+    dirty: bool,
+    host: Option<NveHostCallbacks>,
+    dispatched_batches: usize,
+}
+
+impl RuntimeApp for HostBoundDirectApp {
+    fn render_frame(&mut self, _frame_id: FrameId) -> AppFrame<'_> {
+        if !self.dirty {
+            return AppFrame::Clean;
+        }
+        self.dirty = false;
+        AppFrame::Direct {
+            changes: &self.changes,
+        }
+    }
+
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
+        false
+    }
+
+    fn direct_store(&self) -> Option<&NodeStore> {
+        Some(&self.store)
+    }
+
+    fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+        Some(&mut self.store)
+    }
+
+    fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+        self.host = callbacks;
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        if !batch.is_empty() {
+            self.dispatched_batches += 1;
+        }
+        false
+    }
+}
+
+unsafe extern "C" fn noop_host_invoke(
+    _ctx: *mut c_void,
+    _service_id: u32,
+    _method_id: u32,
+    _request_id: u64,
+    _request: NveBufferSlice,
+    _out_buf: *mut u8,
+    _out_cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    if !out_len.is_null() {
+        // SAFETY: Test stub writes 0 length.
+        unsafe { *out_len = 0 };
+    }
+    NveHostStatus::Ok.as_i32()
+}
+
+#[test]
+fn v6_warm_measure_surface_and_idle_host_router_are_zero_alloc() {
+    // Positive probe so running this single test still proves `CountingAlloc` is active.
+    let (_, probe) = count_allocs(|| black_box(Vec::<u8>::with_capacity(64)));
+    assert!(probe >= 1, "CountingAlloc positive probe must observe >= 1 allocation");
+
+    let (store, changes, _) = build_sample_nve2_frame();
+    let app_host_slot: Arc<std::sync::Mutex<Option<NveHostCallbacks>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    struct CapturingApp {
+        inner: HostBoundDirectApp,
+        slot: Arc<std::sync::Mutex<Option<NveHostCallbacks>>>,
+    }
+    impl RuntimeApp for CapturingApp {
+        fn render_frame(&mut self, frame_id: FrameId) -> AppFrame<'_> {
+            self.inner.render_frame(frame_id)
+        }
+        fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+            self.inner.dispatch_events(events)
+        }
+        fn direct_store(&self) -> Option<&NodeStore> {
+            self.inner.direct_store()
+        }
+        fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+            self.inner.direct_store_mut()
+        }
+        fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+            *self.slot.lock().expect("slot lock") = callbacks;
+            self.inner.bind_host(callbacks);
+        }
+        fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+            self.inner.dispatch_host_events(batch)
+        }
+    }
+
+    let mut rt = RuntimeBuilder::new()
+        .viewport(Viewport {
+            width: 400.0,
+            height: 300.0,
+            scale_factor: 1.0,
+        })
+        .app(Box::new(CapturingApp {
+            inner: HostBoundDirectApp {
+                store,
+                changes,
+                dirty: true,
+                host: None,
+                dispatched_batches: 0,
+            },
+            slot: Arc::clone(&app_host_slot),
+        }))
+        .build();
+    rt.set_host_callbacks(Some(NveHostCallbacks {
+        host_ctx: std::ptr::null_mut(),
+        invoke: Some(noop_host_invoke),
+        channel_publish: None,
+    }))
+    .expect("set_host_callbacks");
+
+    // Warm mount + one host push drain + one dry-run measure so steady-state buffers are primed.
+    assert!(rt.tick(1.0 / 60.0).expect("warm mount tick"));
+    rt.push_host_event(HostServiceId(0x1001), 1, b"warm")
+        .expect("warm push");
+    assert!(!rt.tick(1.0 / 60.0).expect("warm drain tick"));
+    let constraints = NveSizeConstraints::loose(320.0, 240.0);
+    let warm_m = rt
+        .measure_surface(constraints, NVE_MEASURE_FLAG_DRY_RUN)
+        .expect("warm measure");
+    assert!(warm_m.width >= 200.0 && warm_m.height >= 80.0);
+
+    // 1. Warm `measure_surface(DRY_RUN)` MUST perform 0 heap allocations.
+    let (_, measure_allocs) = count_allocs(|| {
+        for _ in 0..32 {
+            let m = rt
+                .measure_surface(constraints, NVE_MEASURE_FLAG_DRY_RUN)
+                .expect("steady-state measure_surface");
+            black_box(m);
+        }
+    });
+    assert_eq!(
+        measure_allocs, 0,
+        "warm measure_surface(DRY_RUN) must perform 0 heap allocations"
+    );
+
+    // 2. Idle `RuntimeHostRouter::drain_into_app` + steady-state `tick()` MUST perform 0 allocs.
+    let (_, idle_tick_allocs) = count_allocs(|| {
+        for _ in 0..32 {
+            assert!(!rt.tick(1.0 / 60.0).expect("steady-state idle tick"));
+        }
+    });
+    assert_eq!(
+        idle_tick_allocs, 0,
+        "idle RuntimeHostRouter::drain_into_app + steady-state tick() must perform 0 allocs"
+    );
+
+    // 3. `SERVICE_WINDOW::METHOD_WINDOW_REQUEST_FRAME` routed through `RuntimeHostRouter` = 0 allocs.
+    let cb = app_host_slot.lock().expect("slot lock").expect("bound host callbacks");
+    let invoke = cb.invoke.expect("invoke fn");
+    let (_, req_frame_allocs) = count_allocs(|| {
+        let mut out_len = 0usize;
+        for i in 1..=32u64 {
+            // SAFETY: Bound host callbacks outlive `rt` while app stays attached.
+            let rc = unsafe {
+                invoke(
+                    cb.host_ctx,
+                    SERVICE_WINDOW,
+                    METHOD_WINDOW_REQUEST_FRAME,
+                    i,
+                    NveBufferSlice::EMPTY,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(rc, NveHostStatus::Ok.as_i32());
+        }
+    });
+    assert_eq!(
+        req_frame_allocs, 0,
+        "SERVICE_WINDOW::METHOD_WINDOW_REQUEST_FRAME must perform 0 heap allocations"
     );
 }

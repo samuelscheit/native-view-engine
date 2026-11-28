@@ -58,12 +58,12 @@ pub use host::{
 pub use table::NVE_PRIMARY_SLOT_NONE;
 pub use runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
-    NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics, NveSceneView,
-    NveRuntimeTextStyle, NveScrollOffset, NVE_LINE_HEIGHT_AUTO, NVE_LINE_HEIGHT_PERCENT,
-    NVE_LINE_HEIGHT_POINTS,
-    NveRuntimeStatus, NveRuntimeWakeFn, RuntimeFnSignature, NVE_LAYOUT_RECT_SIZE,
-    NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
-    RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,
+    NveRuntimeHandle, NveRuntimeIntrinsicSizeInvalidatedFn, NveRuntimeMeasureTextFn,
+    NveRuntimeMetrics, NveRuntimeStatus, NveRuntimeTextStyle, NveRuntimeWakeFn, NveSceneView,
+    NveScrollOffset, NveSurfaceMeasure, RuntimeFnSignature, NVE_LAYOUT_RECT_SIZE,
+    NVE_LINE_HEIGHT_AUTO, NVE_LINE_HEIGHT_PERCENT, NVE_LINE_HEIGHT_POINTS,
+    NVE_MEASURE_FLAG_DRY_RUN, NVE_MEASURE_FLAG_IDEAL, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE,
+    NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH, RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,
 };
 pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]

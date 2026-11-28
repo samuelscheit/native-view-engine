@@ -3,8 +3,9 @@
 
 use nve_abi::{
     FrameId, InterfaceId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
-    NveGetInterfaceFn, NvePropsRef, NveSurfaceApi, SurfaceId, ValidatedEvents,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_SURFACE,
+    NveGetInterfaceFn, NveHostApi, NveHostCallbacks, NveLayoutApi, NvePropsRef, NveSizeConstraints,
+    NveSurfaceApi, NveSurfaceMeasure, SurfaceId, ValidatedEvents, NVE_IFACE_COMPONENT,
+    NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE, NVE_MEASURE_FLAG_IDEAL,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use nve_engine::loader::StagedDylib;
@@ -77,14 +78,24 @@ impl<A: NveApp> RuntimeApp for NveAppAdapter<A> {
         self.app.restore_state(state);
         Ok(())
     }
+
+    fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+        self.app.bind_host(callbacks);
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        self.app.dispatch_host_events(batch)
+    }
 }
 
 /// Adapts a foreign or statically linked C ABI `nve_get_interface` module to [`RuntimeApp`].
 pub struct CAbiAppAdapter {
     handle: NveAppHandle,
     surface_api: NveSurfaceApi,
+    layout_api: Option<NveLayoutApi>,
     component_api: Option<NveComponentApi>,
     dev_api: Option<NveDevApi>,
+    host_api: Option<NveHostApi>,
     patch_scratch: Vec<u8>,
     /// The staged `cdylib` backing every pointer above; declared last so it unloads only after
     /// `Drop` destroyed the app handle.
@@ -145,10 +156,14 @@ impl CAbiAppAdapter {
                 ),
             )?;
         // SAFETY: As above.
+        let layout_api = unsafe { query_interface::<NveLayoutApi>(get_iface, NVE_IFACE_LAYOUT) };
+        // SAFETY: As above.
         let component_api =
             unsafe { query_interface::<NveComponentApi>(get_iface, NVE_IFACE_COMPONENT) };
         // SAFETY: As above.
         let dev_api = unsafe { query_interface::<NveDevApi>(get_iface, NVE_IFACE_DEV) };
+        // SAFETY: As above.
+        let host_api = unsafe { query_interface::<NveHostApi>(get_iface, NVE_IFACE_HOST) };
 
         // SAFETY: `surface_api.create` returns a freshly allocated opaque app handle or null.
         let handle = unsafe { (surface_api.create)(surface_id) };
@@ -158,8 +173,10 @@ impl CAbiAppAdapter {
         Ok(Self {
             handle,
             surface_api,
+            layout_api,
             component_api,
             dev_api,
+            host_api,
             patch_scratch: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             module: None,
@@ -255,5 +272,54 @@ impl RuntimeApp for CAbiAppAdapter {
         // SAFETY: `self.handle` is live and `state` stays borrowed for the synchronous call.
         unsafe { (dev.restore_state)(self.handle, NveBufferSlice::from_slice(state)) };
         Ok(())
+    }
+
+    fn measure_surface(
+        &mut self,
+        constraints: NveSizeConstraints,
+        flags: u32,
+    ) -> Option<NveSurfaceMeasure> {
+        let layout = self.layout_api?;
+        let effective = if (flags & NVE_MEASURE_FLAG_IDEAL) != 0 {
+            NveSizeConstraints::loose(f32::INFINITY, f32::INFINITY)
+        } else {
+            constraints
+        };
+        // SAFETY: `self.handle` is live; `layout.measure` is a synchronous scalar call.
+        let sz = unsafe { (layout.measure)(self.handle, effective) };
+        let non_neg = |v: f32| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+        Some(NveSurfaceMeasure {
+            width: non_neg(sz.width),
+            height: non_neg(sz.height),
+            first_baseline: f32::NAN,
+            last_baseline: f32::NAN,
+        })
+    }
+
+    fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+        let Some(host) = self.host_api else {
+            return;
+        };
+        match callbacks {
+            Some(cb) => {
+                // SAFETY: `self.handle` is live and `cb` is copied by value inside `bind_host`.
+                unsafe { (host.bind_host)(self.handle, &raw const cb) };
+            }
+            None => {
+                // SAFETY: `self.handle` is live; NULL unbinds host callbacks.
+                unsafe { (host.bind_host)(self.handle, std::ptr::null()) };
+            }
+        }
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        let Some(host) = self.host_api else {
+            return false;
+        };
+        if batch.is_empty() {
+            return false;
+        }
+        // SAFETY: `self.handle` is live and `batch` stays borrowed for the synchronous call.
+        unsafe { (host.dispatch_host_events)(self.handle, NveBufferSlice::from_slice(batch)) != 0 }
     }
 }

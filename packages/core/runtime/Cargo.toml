@@ -19,6 +19,7 @@ wire = ["dep:nve-wire"]
 nve-abi = { workspace = true }
 nve-tables = { workspace = true }
 nve-engine = { workspace = true }
+nve-host-services = { workspace = true }
 nve-layout = { workspace = true }
 nve-store = { workspace = true }
 

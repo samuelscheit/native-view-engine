@@ -49,7 +49,7 @@ impl OversizedRetryCache {
     }
 
     #[inline]
-    fn take(&self, request_id: u64, service_id: u32, method_id: u32) -> Option<ResponseBuf> {
+    pub fn take(&self, request_id: u64, service_id: u32, method_id: u32) -> Option<ResponseBuf> {
         if !self.has_entries.load(Ordering::Acquire) {
             return None;
         }
@@ -64,7 +64,7 @@ impl OversizedRetryCache {
         Some(entry.payload)
     }
 
-    fn store(&self, request_id: u64, service_id: u32, method_id: u32, payload: ResponseBuf) {
+    pub fn store(&self, request_id: u64, service_id: u32, method_id: u32, payload: ResponseBuf) {
         let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|e| {
             !(e.request_id == request_id && e.service_id == service_id && e.method_id == method_id)

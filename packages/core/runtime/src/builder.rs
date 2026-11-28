@@ -7,7 +7,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use nve_abi::{
-    FrameId, NveRuntimeMetrics, NveSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
+    FrameId, NveHostEventBatchBuilder, NveRuntimeMetrics, NveRuntimeStatus, NveSceneView,
+    SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_tables::tables::{core_realization_order, register_core_tables};
 use nve_engine::Viewport;
@@ -17,6 +18,8 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::delta::SceneDelta;
+use crate::hooks::IntrinsicSizeNotifier;
+use crate::host_router::RuntimeHostRouter;
 use crate::lock::SceneLock;
 use crate::state::{PublishedResources, RuntimeInner, SurfaceState};
 use crate::surface::SurfaceRuntime;
@@ -186,11 +189,18 @@ impl RuntimeBuilder {
         replica_store.set_realization_order(realization_order.clone());
 
         let wake = Arc::new(WakeBridge::new());
+        let host_router = RuntimeHostRouter::new(Arc::clone(&wake));
         let mut app = self.app;
-        if let Some(ref mut a) = app
-            && a.install_wake_bridge(Arc::clone(&wake))
-        {
-            wake.trigger();
+        let mut host_binding = None;
+        let mut active_host_owner_tag = 0u64;
+        if let Some(ref mut a) = app {
+            let binding = host_router.new_owner_binding();
+            active_host_owner_tag = binding.owner_tag();
+            a.bind_host(Some(binding.callbacks()));
+            host_binding = Some(binding);
+            if a.install_wake_bridge(Arc::clone(&wake)) {
+                wake.trigger();
+            }
         }
         let layout_engine_name = scene.layout_engine_name();
 
@@ -198,12 +208,15 @@ impl RuntimeBuilder {
             surface_id: self.surface_id,
             lock: SceneLock::new(),
             wake,
+            intrinsic_size: IntrinsicSizeNotifier::new(),
+            host_router,
             pair_connected: Arc::new(AtomicBool::new(false)),
             #[cfg(not(target_arch = "wasm32"))]
             owner_thread: std::thread::current().id(),
             poisoned: AtomicBool::new(false),
             inner: UnsafeCell::new(RuntimeInner {
                 app,
+                host_binding,
                 pair: None,
                 replica_store,
                 state: SurfaceState {
@@ -231,6 +244,9 @@ impl RuntimeBuilder {
                         ..NveSceneView::default()
                     },
                     metrics: NveRuntimeMetrics::default(),
+                    host_batch_builder: NveHostEventBatchBuilder::new(),
+                    active_host_owner_tag,
+                    intrinsic_size_dirty: false,
                     needs_render: true,
                     needs_publish: true,
                 },

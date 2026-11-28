@@ -26,6 +26,7 @@ pub(super) struct StyleView<'a> {
     pub(super) store: &'a NodeStore,
     pub(super) id: NodeId,
     pub(super) is_root: bool,
+    pub(super) root_fills_viewport: bool,
     pub(super) viewport: (f32, f32),
     pub(super) rtl: bool,
 }
@@ -291,7 +292,7 @@ impl CoreStyle for StyleView<'_> {
 
     #[inline]
     fn size(&self) -> Size<Dimension> {
-        if self.is_root {
+        if self.is_root && self.root_fills_viewport {
             return Size {
                 width: Dimension::length(self.viewport.0),
                 height: Dimension::length(self.viewport.1),
