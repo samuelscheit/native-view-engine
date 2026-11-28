@@ -83,12 +83,12 @@ void native_text_measure(void *ctx, NveStrSlice text, const NveRuntimeTextStyle 
         __block CGFloat widest = 0.0;
         NSMutableSet<NSString *> *seen = [NSMutableSet set];
         if (probe == host::TextWrap::Anywhere || probe == host::TextWrap::BreakAll) {
-          NSCharacterSet *nonWs = NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet;
+          static NSCharacterSet *const kNonWhitespace = NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet;
           [str enumerateSubstringsInRange:NSMakeRange(0u, str.length)
                                   options:NSStringEnumerationByComposedCharacterSequences
                                usingBlock:^(NSString *cluster, NSRange, NSRange, BOOL *) {
                                  if (cluster.length == 0u ||
-                                     [cluster rangeOfCharacterFromSet:nonWs].location == NSNotFound ||
+                                     [cluster rangeOfCharacterFromSet:kNonWhitespace].location == NSNotFound ||
                                      [seen containsObject:cluster]) {
                                    return;
                                  }
