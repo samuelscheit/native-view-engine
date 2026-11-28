@@ -283,7 +283,7 @@ fn eval_nodes<B: I18nBackend + ?Sized, A: ArgLookup + ?Sized>(
             MessageNode::Apostrophe => out.push('\''),
             MessageNode::Pound => match plural_ctx {
                 Some(PluralNumberContext::Int(v)) => {
-                    out.push_str(&backend.format_integer(locale, v));
+                    backend.format_integer_into(locale, v, out);
                 }
                 Some(PluralNumberContext::Float {
                     value,
@@ -297,7 +297,7 @@ fn eval_nodes<B: I18nBackend + ?Sized, A: ArgLookup + ?Sized>(
                         },
                         None => NumberFormatOptions::default(),
                     };
-                    out.push_str(&backend.format_number(locale, value, opts));
+                    backend.format_number_into(locale, value, opts, out);
                 }
                 None => out.push('#'),
             },
@@ -364,7 +364,7 @@ fn write_value_plain<B: I18nBackend + ?Sized>(
             let _ = write!(out, "{v}");
         }
         MessageValue::Float(v) => {
-            out.push_str(&backend.format_number(locale, v, NumberFormatOptions::default()));
+            backend.format_number_into(locale, v, NumberFormatOptions::default(), out);
         }
         MessageValue::FixedFloat {
             value,
@@ -375,7 +375,7 @@ fn write_value_plain<B: I18nBackend + ?Sized>(
                 max_fraction_digits: Some(fraction_digits),
                 ..NumberFormatOptions::default()
             };
-            out.push_str(&backend.format_number(locale, value, opts));
+            backend.format_number_into(locale, value, opts, out);
         }
         MessageValue::DecimalStr(s) => out.push_str(s),
     }
@@ -398,15 +398,15 @@ fn write_value_number<B: I18nBackend + ?Sized>(
         },
     };
     match value {
-        MessageValue::Int(v) => out.push_str(&backend.format_integer(locale, v)),
+        MessageValue::Int(v) => backend.format_integer_into(locale, v, out),
         MessageValue::UInt(v) => {
             if let Ok(iv) = i64::try_from(v) {
-                out.push_str(&backend.format_integer(locale, iv));
+                backend.format_integer_into(locale, iv, out);
             } else {
-                out.push_str(&backend.format_number(locale, v as f64, opts));
+                backend.format_number_into(locale, v as f64, opts, out);
             }
         }
-        MessageValue::Float(v) => out.push_str(&backend.format_number(locale, v, opts)),
+        MessageValue::Float(v) => backend.format_number_into(locale, v, opts, out),
         MessageValue::FixedFloat {
             value,
             fraction_digits,
@@ -419,13 +419,13 @@ fn write_value_number<B: I18nBackend + ?Sized>(
                     ..NumberFormatOptions::default()
                 },
             };
-            out.push_str(&backend.format_number(locale, value, eff_opts));
+            backend.format_number_into(locale, value, eff_opts, out);
         }
         MessageValue::DecimalStr(s) => {
             let parsed = s.trim().parse::<f64>().map_err(|_| I18nError::InvalidNumber {
                 input: s.to_owned(),
             })?;
-            out.push_str(&backend.format_number(locale, parsed, opts));
+            backend.format_number_into(locale, parsed, opts, out);
         }
         MessageValue::Str(_) => {
             return Err(I18nError::InvalidArgumentValue {

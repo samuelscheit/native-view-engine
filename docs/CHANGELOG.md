@@ -4,6 +4,13 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
+## `nve-i18n` Native OS Upgrade (L1 → L2)
+
+- **BCP-47 `-u-` extensions, zero-dep Apple `CoreFoundation` ICU, cached `Intl.Locale`, zero-alloc & Criterion bench (`packages/framework/i18n`, `nve-ui`, `nve-arch-invariants`)**:
+  - Replaced heap-allocated `LocaleId` subtags with fixed-capacity inline `InlineSubtag<N>` storage and added full UTS #35 `-u-` Unicode extension support (`ca`, `fw`, `hc`, `nu`, canonical ordering & extension-first `parent()` stripping) with 0 heap allocations on parse/match/catalog lookup (`14.9 ns` simple parse).
+  - Linked `CoreFoundation.framework` directly under `macos`/`ios` (zero new crates, RAII `CfRef`, bounded 32-entry thread-local FIFO cache) for real OS ICU `CFLocale`, `CFNumberFormatter`, `CFDateFormatter`, and `CFCalendar` (`first_day_of_week` cached at `17.5 ns`, `de-DE` number `460.7 ns`, `ja-JP-u-ca-japanese` date `881.8 ns`, verified across 10 non-builtin locales + 10k stress loop).
+  - Cached `Intl.Locale` week-info lookups in `wasm32` (`_cached("w|" + locale, ...)`), added `CalendarTime`/`TimeStyle`/`NumberStyle`/`RoundingMode`/`format_*_into`, added per-thread `CountingAlloc` guard + `i18n_bench`, and lowered 4 shrink-only `arch-invariants` ceilings (`all_crate_benches` `32 → 31`, `alloc_guards` `8 → 7`, `allowlisted_duplicates` `22 → 20`, `cross_file_enums` `101 → 100`).
+
 ## `DrawList` Askama Codegen & Retired `NVE_DRAW1` Deletion
 
 - **Schema-driven flat word-op stream codegen (`nve-codec`, `nve-canvas`, `nve-codegen`, `nve-cli`, all 5 static `host-*` runtimes & native hosts)**:

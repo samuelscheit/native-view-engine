@@ -1,24 +1,31 @@
-//! Locale-aware number, currency, calendar date, first-day-of-week, and
-//! relative-time formatting.
+//! Locale-aware number, currency, calendar date/time, first-day-of-week,
+//! regional metadata, and relative-time formatting.
 //!
 //! Top-level helper functions delegate to [`NativeI18nBackend`] (browser
-//! `Intl.*` on `wasm32`, [`crate::BuiltinI18nBackend`] on native/SSR/fallback).
+//! `Intl.*` on `wasm32`, `CoreFoundation` on Apple macOS/iOS,
+//! [`crate::BuiltinI18nBackend`] on other native targets / fallback).
 
 pub(crate) mod calendar;
 #[cfg(feature = "builtin-fallback")]
 pub(crate) mod calendar_data;
 pub(crate) mod number;
+pub(crate) mod number_types;
 pub(crate) mod relative;
 
 use crate::backend::{I18nBackend, NativeI18nBackend};
 use crate::locale::LocaleId;
 
-pub use calendar::{CalendarDate, DateStyle, NameWidth, Weekday, ordered_weekdays};
+pub use calendar::{
+    CalendarDate, CalendarTime, DateStyle, NameWidth, TimeStyle, Weekday, effective_hour_cycle,
+    ordered_weekdays,
+};
 #[cfg(feature = "builtin-fallback")]
 pub use calendar::{month_name, weekday_name};
 #[cfg(feature = "builtin-fallback")]
 pub use number::{NumberSymbols, format_currency_minor};
-pub use number::{Currency, NumberFormatOptions};
+pub use number::{
+    Currency, LocaleMetadata, MeasurementSystem, NumberFormatOptions, NumberStyle, RoundingMode,
+};
 pub use relative::RelativeUnit;
 #[cfg(feature = "builtin-fallback")]
 pub use relative::format_relative_time_auto;
@@ -53,10 +60,22 @@ pub fn format_date(locale: &LocaleId, date: CalendarDate, style: DateStyle) -> S
     NativeI18nBackend.format_date(locale, date, style)
 }
 
+/// Formats a wall-clock [`CalendarTime`] using `style` via [`NativeI18nBackend`].
+#[inline]
+pub fn format_time(locale: &LocaleId, time: CalendarTime, style: TimeStyle) -> String {
+    NativeI18nBackend.format_time(locale, time, style)
+}
+
 /// Returns the locale's conventional first day of the week via [`NativeI18nBackend`].
 #[inline]
 pub fn first_day_of_week(locale: &LocaleId) -> Weekday {
     NativeI18nBackend.first_day_of_week(locale)
+}
+
+/// Returns resolved decimal/grouping separators, currency hints, and measurement system.
+#[inline]
+pub fn locale_metadata(locale: &LocaleId) -> LocaleMetadata {
+    NativeI18nBackend.locale_metadata(locale)
 }
 
 /// Formats a relative time offset (negative = past, positive = future) via [`NativeI18nBackend`].

@@ -1,10 +1,17 @@
-//! BCP-47 locale parsing, canonicalization, RTL detection, selective icon
-//! mirroring, and deterministic locale fallback chains.
+//! BCP-47 locale parsing, canonicalization, `-u-` Unicode extension support,
+//! RTL detection, selective icon mirroring, and zero-alloc fallback matching.
+
+mod unicode_ext;
 
 use std::fmt;
 use std::str::FromStr;
 
 use crate::error::I18nError;
+use crate::format::Weekday;
+
+pub use unicode_ext::{UnicodeExtensions, UnicodeHourCycle};
+
+use unicode_ext::{InlineSubtag, parse_unicode_extensions};
 
 /// Base inline text and layout reading direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -57,31 +64,43 @@ pub enum IconMirrorPolicy {
 /// Returns `true` when an icon should be horizontally mirrored for `direction`.
 #[inline]
 pub const fn should_mirror_icon(direction: TextDirection, semantic: IconMirrorPolicy) -> bool {
-    matches!((direction, semantic), (TextDirection::Rtl, IconMirrorPolicy::Directional))
+    matches!(
+        (direction, semantic),
+        (TextDirection::Rtl, IconMirrorPolicy::Directional)
+    )
 }
 
-/// Canonical BCP-47 locale identifier (`language[-Script][-REGION][-variant]*`).
+/// Canonical BCP-47 locale identifier
+/// (`language[-Script][-REGION][-variant]*[-u-ca-...-fw-...-hc-...-nu-...]`).
 ///
-/// Subtags are normalized on parse:
-/// - `language`: lowercase ISO 639 (`en`, `zh`, `ar`, `ckb`)
-/// - `script`: TitleCase ISO 15924 (`Hans`, `Hant`, `Arab`, `Latn`)
-/// - `region`: UPPERCASE ISO 3166-1 alpha-2 or 3-digit UN M.49 (`US`, `CN`, `419`)
+/// Subtags are normalized on parse with zero heap allocations for all locales
+/// without variant subtags (including locales carrying `-u-` extensions):
+/// - `language`: lowercase ISO 639 (`en`, `zh`, `ar`, `ckb`) — stored inline
+/// - `script`: TitleCase ISO 15924 (`Hans`, `Hant`, `Arab`, `Latn`) — stored inline
+/// - `region`: UPPERCASE ISO 3166-1 alpha-2 or 3-digit UN M.49 (`US`, `CN`, `419`) — stored inline
 /// - `variants`: lowercase BCP-47 variant subtags (`1901`, `valencia`)
+/// - `unicode_extensions`: canonical `-u-` subtags (`ca`, `fw`, `hc`, `nu`) — stored inline
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LocaleId {
-    language: String,
-    script: Option<String>,
-    region: Option<String>,
+    language: InlineSubtag<3>,
+    script: Option<InlineSubtag<4>>,
+    region: Option<InlineSubtag<3>>,
     variants: Vec<String>,
+    unicode_ext: UnicodeExtensions,
 }
 
 impl LocaleId {
-    /// Parses and canonicalizes a BCP-47 locale tag (`-` or `_` separators).
+    /// Parses and canonicalizes a BCP-47 locale tag (`-` or `_` separators),
+    /// including `-u-` Unicode extension subtags (`ca`, `fw`, `hc`, `nu`).
+    ///
+    /// Performs zero heap allocations on valid locales without variant subtags.
     ///
     /// # Examples
     /// - `"en-us"` / `"en_US"` -> `en-US`
     /// - `"ZH-hans-cn"` -> `zh-Hans-CN`
     /// - `"es-419"` -> `es-419`
+    /// - `"ja-JP-u-ca-japanese"` -> `ja-JP-u-ca-japanese`
+    /// - `"en-US-u-hc-H23-fw-MON"` -> `en-US-u-fw-mon-hc-h23`
     pub fn parse(input: &str) -> Result<Self, I18nError> {
         if input.is_empty() {
             return Err(I18nError::InvalidLocale {
@@ -98,17 +117,19 @@ impl LocaleId {
                 reason: "primary language subtag must be 2-3 ASCII letters",
             });
         }
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "BCP-47 canonical locale owns normalized lowercase language subtag"
-        )]
-        let language = lang_raw.to_ascii_lowercase();
+        let Some(language) = InlineSubtag::from_ascii_lower(lang_raw) else {
+            return Err(I18nError::InvalidLocale {
+                input: input.to_owned(),
+                reason: "primary language subtag must be 2-3 ASCII letters",
+            });
+        };
 
-        let mut script: Option<String> = None;
-        let mut region: Option<String> = None;
+        let mut script: Option<InlineSubtag<4>> = None;
+        let mut region: Option<InlineSubtag<3>> = None;
         let mut variants: Vec<String> = Vec::new();
+        let mut unicode_ext = UnicodeExtensions::EMPTY;
 
-        for subtag in parts {
+        while let Some(subtag) = parts.next() {
             if subtag.is_empty() {
                 return Err(I18nError::InvalidLocale {
                     input: input.to_owned(),
@@ -122,17 +143,28 @@ impl LocaleId {
                 });
             }
 
+            if subtag.len() == 1 {
+                if subtag.eq_ignore_ascii_case("u") {
+                    unicode_ext = parse_unicode_extensions(&mut parts, input)?;
+                    break;
+                }
+                return Err(I18nError::InvalidLocale {
+                    input: input.to_owned(),
+                    reason: "unsupported extension singleton (only '-u-' is supported)",
+                });
+            }
+
             if script.is_none()
                 && region.is_none()
                 && variants.is_empty()
                 && is_valid_script(subtag)
             {
-                script = Some(title_case_ascii(subtag));
+                script = InlineSubtag::from_ascii_title(subtag);
                 continue;
             }
 
             if region.is_none() && variants.is_empty() && is_valid_region(subtag) {
-                region = Some(subtag.to_ascii_uppercase());
+                region = InlineSubtag::from_ascii_upper(subtag);
                 continue;
             }
 
@@ -163,45 +195,50 @@ impl LocaleId {
             script,
             region,
             variants,
+            unicode_ext,
         })
     }
 
-    /// Convenience constructor for `en`.
-    pub fn en() -> Self {
+    /// Zero-allocation convenience constructor for `en`.
+    #[inline]
+    pub const fn en() -> Self {
         Self {
-            language: "en".to_owned(),
+            language: InlineSubtag::from_ascii_static(b"en"),
             script: None,
             region: None,
             variants: Vec::new(),
+            unicode_ext: UnicodeExtensions::EMPTY,
         }
     }
 
-    /// Convenience constructor for `en-US`.
-    pub fn en_us() -> Self {
+    /// Zero-allocation convenience constructor for `en-US`.
+    #[inline]
+    pub const fn en_us() -> Self {
         Self {
-            language: "en".to_owned(),
+            language: InlineSubtag::from_ascii_static(b"en"),
             script: None,
-            region: Some("US".to_owned()),
+            region: Some(InlineSubtag::from_ascii_static(b"US")),
             variants: Vec::new(),
+            unicode_ext: UnicodeExtensions::EMPTY,
         }
     }
 
     /// Lowercase primary language subtag (e.g. `"en"`, `"zh"`, `"ar"`).
     #[inline]
     pub fn language(&self) -> &str {
-        &self.language
+        self.language.as_str()
     }
 
     /// Optional TitleCase script subtag (e.g. `Some("Hans")`, `Some("Arab")`).
     #[inline]
     pub fn script(&self) -> Option<&str> {
-        self.script.as_deref()
+        self.script.as_ref().map(InlineSubtag::as_str)
     }
 
     /// Optional UPPERCASE region subtag (e.g. `Some("US")`, `Some("CN")`, `Some("419")`).
     #[inline]
     pub fn region(&self) -> Option<&str> {
-        self.region.as_deref()
+        self.region.as_ref().map(InlineSubtag::as_str)
     }
 
     /// Optional lowercase variant subtags.
@@ -210,9 +247,87 @@ impl LocaleId {
         &self.variants
     }
 
-    /// Returns the canonical hyphen-separated BCP-47 tag (e.g. `"zh-Hans-CN"`).
+    /// Parsed BCP-47 `-u-` Unicode extension subtags (`ca`, `fw`, `hc`, `nu`).
+    #[inline]
+    pub const fn unicode_extensions(&self) -> &UnicodeExtensions {
+        &self.unicode_ext
+    }
+
+    /// Returns `true` when any BCP-47 `-u-` Unicode extension override is present.
+    #[inline]
+    pub const fn has_extensions(&self) -> bool {
+        !self.unicode_ext.is_empty()
+    }
+
+    /// Optional `-u-ca-*` calendar override (e.g. `Some("japanese")`, `Some("gregory")`).
+    #[inline]
+    pub fn calendar(&self) -> Option<&str> {
+        self.unicode_ext.calendar()
+    }
+
+    /// Optional `-u-fw-*` first day of week override (e.g. `Some(Weekday::Monday)`).
+    #[inline]
+    pub const fn first_day_of_week_override(&self) -> Option<Weekday> {
+        self.unicode_ext.first_day_of_week()
+    }
+
+    /// Optional `-u-hc-*` hour-cycle override (e.g. `Some(UnicodeHourCycle::H12)`).
+    #[inline]
+    pub const fn hour_cycle(&self) -> Option<UnicodeHourCycle> {
+        self.unicode_ext.hour_cycle()
+    }
+
+    /// Optional `-u-nu-*` numbering system override (e.g. `Some("arab")`, `Some("latn")`).
+    #[inline]
+    pub fn numbering_system(&self) -> Option<&str> {
+        self.unicode_ext.numbering_system()
+    }
+
+    /// Writes the canonical hyphen-separated BCP-47 tag directly into `out`
+    /// (zero allocations when `out` has sufficient capacity).
+    pub fn write_canonical_tag(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        out.write_str(self.language.as_str())?;
+        if let Some(script) = &self.script {
+            out.write_str("-")?;
+            out.write_str(script.as_str())?;
+        }
+        if let Some(region) = &self.region {
+            out.write_str("-")?;
+            out.write_str(region.as_str())?;
+        }
+        for variant in &self.variants {
+            out.write_str("-")?;
+            out.write_str(variant)?;
+        }
+        self.unicode_ext.fmt_bcp47(out)
+    }
+
+    /// Writes the ICU identifier (`lang[_Script][_REGION][_VAR][@calendar=...;fw=...;hours=...;numbers=...]`)
+    /// for Apple `CoreFoundation` `CFLocaleCreate`.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub(crate) fn write_icu_identifier(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        out.write_str(self.language.as_str())?;
+        if let Some(script) = &self.script {
+            out.write_str("_")?;
+            out.write_str(script.as_str())?;
+        }
+        if let Some(region) = &self.region {
+            out.write_str("_")?;
+            out.write_str(region.as_str())?;
+        }
+        for variant in &self.variants {
+            out.write_str("_")?;
+            out.write_str(variant)?;
+        }
+        self.unicode_ext.fmt_icu_keywords(out)
+    }
+
+    /// Returns the canonical hyphen-separated BCP-47 tag (e.g. `"zh-Hans-CN"`,
+    /// `"ja-JP-u-ca-japanese"`).
     pub fn canonical_tag(&self) -> String {
-        self.to_string()
+        let mut out = String::with_capacity(24);
+        let _ = self.write_canonical_tag(&mut out);
+        out
     }
 
     /// Returns `true` if this locale uses a right-to-left script or language.
@@ -220,10 +335,10 @@ impl LocaleId {
     /// When an explicit script subtag is present, it takes precedence over the
     /// primary language (so `ar-Latn` is LTR while `ks-Arab` is RTL).
     pub fn is_rtl(&self) -> bool {
-        if let Some(script) = self.script.as_deref() {
+        if let Some(script) = self.script() {
             return is_rtl_script(script);
         }
-        is_rtl_language(&self.language)
+        is_rtl_language(self.language())
     }
 
     /// Returns [`TextDirection::Rtl`] or [`TextDirection::Ltr`] for this locale.
@@ -242,14 +357,21 @@ impl LocaleId {
         should_mirror_icon(self.text_direction(), semantic)
     }
 
-    /// Returns the immediate parent locale by stripping the most specific subtag,
-    /// or `None` if only the primary language remains.
+    /// Returns the immediate parent locale by stripping the most specific subtag
+    /// (`-u-` extensions -> variants -> region -> script), or `None` if only the
+    /// primary language remains.
     ///
-    /// Examples:
-    /// - `zh-Hans-CN` -> `Some(zh-Hans)`
-    /// - `zh-Hans` -> `Some(zh)`
-    /// - `zh` -> `None`
+    /// Performs zero heap allocations when `self.variants` is empty.
     pub fn parent(&self) -> Option<Self> {
+        if !self.unicode_ext.is_empty() {
+            return Some(Self {
+                language: self.language,
+                script: self.script,
+                region: self.region,
+                variants: self.variants.clone(),
+                unicode_ext: UnicodeExtensions::EMPTY,
+            });
+        }
         if !self.variants.is_empty() {
             let mut next = self.clone();
             next.variants.pop();
@@ -257,19 +379,37 @@ impl LocaleId {
         }
         if self.region.is_some() {
             return Some(Self {
-                language: self.language.clone(),
-                script: self.script.clone(),
+                language: self.language,
+                script: self.script,
                 region: None,
                 variants: Vec::new(),
+                unicode_ext: UnicodeExtensions::EMPTY,
             });
         }
         if self.script.is_some() {
             return Some(Self {
-                language: self.language.clone(),
+                language: self.language,
                 script: None,
                 region: None,
                 variants: Vec::new(),
+                unicode_ext: UnicodeExtensions::EMPTY,
             });
+        }
+        None
+    }
+
+    /// Visits `self` followed by each parent in order without allocating a `Vec`.
+    /// Stops early and returns `Some(T)` on the first match.
+    pub(crate) fn find_in_ancestry<T>(&self, mut f: impl FnMut(&LocaleId) -> Option<T>) -> Option<T> {
+        if let Some(hit) = f(self) {
+            return Some(hit);
+        }
+        let mut current = self.parent();
+        while let Some(loc) = current {
+            if let Some(hit) = f(&loc) {
+                return Some(hit);
+            }
+            current = loc.parent();
         }
         None
     }
@@ -290,21 +430,23 @@ impl LocaleId {
 
     /// Resolves the best available locale from `available` using this locale's
     /// fallback chain (exact chain hit first, then same language+script, then
-    /// same primary language).
+    /// same primary language), with zero heap allocations for locales without variants.
     pub fn best_match<'a>(&self, available: &'a [LocaleId]) -> Option<&'a LocaleId> {
-        for candidate in self.fallback_chain(None) {
-            if let Some(found) = available.iter().find(|loc| **loc == candidate) {
-                return Some(found);
-            }
-        }
-        if let Some(script) = self.script.as_deref()
-            && let Some(found) = available
-                .iter()
-                .find(|loc| loc.language == self.language && loc.script.as_deref() == Some(script))
+        if let Some(found) =
+            self.find_in_ancestry(|cand| available.iter().find(|loc| **loc == *cand))
         {
             return Some(found);
         }
-        available.iter().find(|loc| loc.language == self.language)
+        if let Some(script) = self.script()
+            && let Some(found) = available
+                .iter()
+                .find(|loc| loc.language() == self.language() && loc.script() == Some(script))
+        {
+            return Some(found);
+        }
+        available
+            .iter()
+            .find(|loc| loc.language() == self.language())
     }
 }
 
@@ -324,20 +466,7 @@ impl FromStr for LocaleId {
 
 impl fmt::Display for LocaleId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.language)?;
-        if let Some(script) = &self.script {
-            f.write_str("-")?;
-            f.write_str(script)?;
-        }
-        if let Some(region) = &self.region {
-            f.write_str("-")?;
-            f.write_str(region)?;
-        }
-        for variant in &self.variants {
-            f.write_str("-")?;
-            f.write_str(variant)?;
-        }
-        Ok(())
+        self.write_canonical_tag(f)
     }
 }
 
@@ -370,21 +499,7 @@ fn is_valid_region(s: &str) -> bool {
 #[inline]
 fn is_valid_variant(s: &str) -> bool {
     let bytes = s.as_bytes();
-    (5..=8).contains(&bytes.len())
-        || (bytes.len() == 4 && bytes[0].is_ascii_digit())
-}
-
-fn title_case_ascii(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for (idx, b) in s.bytes().enumerate() {
-        let c = if idx == 0 {
-            b.to_ascii_uppercase()
-        } else {
-            b.to_ascii_lowercase()
-        };
-        out.push(c as char);
-    }
-    out
+    (5..=8).contains(&bytes.len()) || (bytes.len() == 4 && bytes[0].is_ascii_digit())
 }
 
 /// Returns `true` if `script` (TitleCase ISO 15924) is right-to-left.

@@ -7,7 +7,10 @@ use std::sync::Mutex;
 
 use crate::backend::{I18nBackend, NativeI18nBackend};
 use crate::error::{I18nError, MissingKeyDiagnostic};
-use crate::format::{CalendarDate, DateStyle, NumberFormatOptions, RelativeUnit, Weekday};
+use crate::format::{
+    CalendarDate, CalendarTime, DateStyle, LocaleMetadata, NumberFormatOptions, RelativeUnit,
+    TimeStyle, Weekday,
+};
 use crate::locale::{IconMirrorPolicy, LocaleId, TextDirection};
 use crate::message::{ArgLookup, format_message_with_backend, parse_message};
 use crate::plural::{PluralCategory, PluralKind, PluralOperands};
@@ -80,38 +83,33 @@ impl MessageCatalog {
         self.bundles.keys()
     }
 
-    /// Resolves `key` for `locale` by walking `locale.fallback_chain(Some(default_locale))`.
+    /// Resolves `key` for `locale` by walking `locale` and `default_locale` ancestry
+    /// with zero heap allocations for locales without variant subtags.
     pub fn lookup<'a>(&'a self, locale: &LocaleId, key: &str) -> Option<(&'a LocaleId, &'a str)> {
-        let chain = locale.fallback_chain(Some(&self.default_locale));
-        for candidate in &chain {
-            if let Some((stored_locale, entries)) = self.bundles.get_key_value(candidate)
-                && let Some(template) = entries.get(key)
-            {
-                return Some((stored_locale, template.as_str()));
-            }
-        }
-        None
+        let lookup_one = |candidate: &LocaleId| -> Option<(&'a LocaleId, &'a str)> {
+            let (stored_locale, entries) = self.bundles.get_key_value(candidate)?;
+            let template = entries.get(key)?;
+            Some((stored_locale, template.as_str()))
+        };
+        locale
+            .find_in_ancestry(lookup_one)
+            .or_else(|| self.default_locale.find_in_ancestry(lookup_one))
     }
 
     /// Resolves `key` for `locale` or returns a structured [`MissingKeyDiagnostic`]
-    /// recording the exact fallback chain searched.
+    /// recording the exact fallback chain searched. Zero heap allocations on cache hit.
     pub fn lookup_with_trace<'a>(
         &'a self,
         locale: &LocaleId,
         key: &str,
     ) -> Result<(&'a LocaleId, &'a str), Box<MissingKeyDiagnostic>> {
-        let chain = locale.fallback_chain(Some(&self.default_locale));
-        for candidate in &chain {
-            if let Some((stored_locale, entries)) = self.bundles.get_key_value(candidate)
-                && let Some(template) = entries.get(key)
-            {
-                return Ok((stored_locale, template.as_str()));
-            }
+        if let Some(hit) = self.lookup(locale, key) {
+            return Ok(hit);
         }
         Err(Box::new(MissingKeyDiagnostic {
             key: key.to_owned(),
             requested_locale: locale.clone(),
-            tried_locales: chain,
+            tried_locales: locale.fallback_chain(Some(&self.default_locale)),
         }))
     }
 
@@ -350,6 +348,12 @@ impl<B: I18nBackend> Translator<B> {
         self.backend.format_date(&self.locale, date, style)
     }
 
+    /// Formats a wall-clock time for the active locale via `self.backend`.
+    #[inline]
+    pub fn format_time(&self, time: CalendarTime, style: TimeStyle) -> String {
+        self.backend.format_time(&self.locale, time, style)
+    }
+
     /// Formats a relative time offset for the active locale via `self.backend`.
     #[inline]
     pub fn format_relative_time(&self, value: i64, unit: RelativeUnit) -> String {
@@ -360,5 +364,11 @@ impl<B: I18nBackend> Translator<B> {
     #[inline]
     pub fn first_day_of_week(&self) -> Weekday {
         self.backend.first_day_of_week(&self.locale)
+    }
+
+    /// Returns regional locale metadata for the active locale via `self.backend`.
+    #[inline]
+    pub fn locale_metadata(&self) -> LocaleMetadata {
+        self.backend.locale_metadata(&self.locale)
     }
 }

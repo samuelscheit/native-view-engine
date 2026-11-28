@@ -69,6 +69,7 @@ pub fn compute_locale_readout(
             use_grouping: true,
             min_fraction_digits: Some(2),
             max_fraction_digits: Some(2),
+            ..NumberFormatOptions::default()
         },
     );
     let relative_past = format_relative_time(&loc, -3, RelativeUnit::Day);

@@ -3349,6 +3349,7 @@ dependencies = [
 name = "nve-i18n"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "wasm-bindgen",
 ]
 

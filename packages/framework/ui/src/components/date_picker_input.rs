@@ -536,8 +536,15 @@ pub enum HourCycle {
 }
 
 impl HourCycle {
-    /// Derives the conventional clock hour cycle for `locale`.
+    /// Derives the conventional clock hour cycle for `locale` (honoring `-u-hc-*`).
     pub fn from_locale(locale: &LocaleId) -> Self {
+        if let Some(hc) = locale.hour_cycle() {
+            return if hc.is_12_hour() {
+                Self::H12
+            } else {
+                Self::H24
+            };
+        }
         let lang = locale.language();
         let region = locale.region();
         if matches!(

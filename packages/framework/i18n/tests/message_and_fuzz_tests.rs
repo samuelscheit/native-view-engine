@@ -2,10 +2,10 @@
 //! error/recursion-bound tests, and zero-panic adversarial fuzz tests.
 
 use nve_i18n::{
-    CalendarDate, DateStyle, I18nBackend, I18nError, LocaleId, MAX_NESTING_DEPTH, MessageArgs,
-    MessageValue, NumberFormatOptions, PluralCategory, PluralKind, PluralOperands, RelativeUnit,
-    Weekday, format_message, format_message_into, format_message_with_backend, parse_message,
-    pseudo_localize,
+    BuiltinI18nBackend, CalendarDate, DateStyle, I18nBackend, I18nError, LocaleId,
+    MAX_NESTING_DEPTH, MessageArgs, MessageValue, NumberFormatOptions, PluralCategory, PluralKind,
+    PluralOperands, RelativeUnit, Weekday, format_message, format_message_into,
+    format_message_with_backend, parse_message, pseudo_localize,
 };
 
 fn loc(tag: &str) -> LocaleId {
@@ -60,14 +60,37 @@ fn icu_plural_exact_offset_and_locale_number_replacement() {
 
 #[test]
 fn icu_plural_arabic_six_categories_and_polish_russian() {
+    // Use BuiltinI18nBackend for exact deterministic Western digits on `ar-EG`, and
+    // verify `ar-EG-u-nu-latn` produces Western digits on the native OS backend as well.
     let ar = loc("ar-EG");
+    let ar_latn = loc("ar-EG-u-nu-latn");
     let ar_tpl = "{n, plural, zero {لا عناصر} one {عنصر واحد} two {عنصران} few {# عناصر} many {# عنصرًا} other {# عنصر}}";
-    assert_eq!(format_message(&ar, ar_tpl, &[("n", 0.into())]).unwrap(), "لا عناصر");
-    assert_eq!(format_message(&ar, ar_tpl, &[("n", 1.into())]).unwrap(), "عنصر واحد");
-    assert_eq!(format_message(&ar, ar_tpl, &[("n", 2.into())]).unwrap(), "عنصران");
-    assert_eq!(format_message(&ar, ar_tpl, &[("n", 5.into())]).unwrap(), "5 عناصر");
-    assert_eq!(format_message(&ar, ar_tpl, &[("n", 15.into())]).unwrap(), "15 عنصرًا");
-    assert_eq!(format_message(&ar, ar_tpl, &[("n", 100.into())]).unwrap(), "100 عنصر");
+    assert_eq!(
+        format_message_with_backend(&BuiltinI18nBackend, &ar, ar_tpl, &[("n", 0.into())]).unwrap(),
+        "لا عناصر"
+    );
+    assert_eq!(
+        format_message_with_backend(&BuiltinI18nBackend, &ar, ar_tpl, &[("n", 1.into())]).unwrap(),
+        "عنصر واحد"
+    );
+    assert_eq!(
+        format_message_with_backend(&BuiltinI18nBackend, &ar, ar_tpl, &[("n", 2.into())]).unwrap(),
+        "عنصران"
+    );
+    assert_eq!(
+        format_message_with_backend(&BuiltinI18nBackend, &ar, ar_tpl, &[("n", 5.into())]).unwrap(),
+        "5 عناصر"
+    );
+    assert_eq!(
+        format_message_with_backend(&BuiltinI18nBackend, &ar, ar_tpl, &[("n", 15.into())]).unwrap(),
+        "15 عنصرًا"
+    );
+    assert_eq!(
+        format_message_with_backend(&BuiltinI18nBackend, &ar, ar_tpl, &[("n", 100.into())])
+            .unwrap(),
+        "100 عنصر"
+    );
+    assert_eq!(format_message(&ar_latn, ar_tpl, &[("n", 5.into())]).unwrap(), "5 عناصر");
 
     let pl = loc("pl-PL");
     let pl_tpl = "{n, plural, one {# plik} few {# pliki} many {# plików} other {# pliku}}";
