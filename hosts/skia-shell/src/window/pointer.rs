@@ -74,13 +74,17 @@ fn find_capture_target(store: &NodeStore, start: NodeId) -> Option<NodeId> {
     None
 }
 
+#[inline]
+fn has_direct_listener(store: &NodeStore, id: NodeId, ev: InteractionEvent) -> bool {
+    store
+        .try_row::<Interaction>(id)
+        .is_some_and(|i| i.listeners().contains(ev))
+}
+
 fn has_ancestor_listener(store: &NodeStore, start: NodeId, ev: InteractionEvent) -> bool {
     let mut cur = start;
     for _ in 0..256 {
-        if store
-            .try_row::<Interaction>(cur)
-            .is_some_and(|i| i.listeners().contains(ev))
-        {
+        if has_direct_listener(store, cur, ev) {
             return true;
         }
         let Some(parent) = store.parent(cur) else {
@@ -95,10 +99,56 @@ fn has_ancestor_listener(store: &NodeStore, start: NodeId, ev: InteractionEvent)
 }
 
 impl<A: DesktopApp> DesktopSession<A> {
-    /// Handles pointer button press at logical `(x, y)`: emits `PointerDown`, activates declarative
-    /// synchronous capture (`PointerCaptureMode::OnPrimaryDown`), moves pointer-modality focus,
-    /// and updates `TextInput` caret/multi-click/drag selection. Does NOT emit `Press` (emitted on
-    /// release by [`Self::handle_pointer_up_logical_ex`]).
+    fn push_hover_transitions(
+        &self,
+        events: &mut EventBatchBuf,
+        ts: TimestampUs,
+        x: f32,
+        y: f32,
+        buttons: u16,
+        modifiers: ModifiersState,
+    ) {
+        let store = self.replica.store();
+        let tracker = self.replica.backend().interaction_tracker();
+        let nb_flags = pointer_flags(modifiers, 0, EventFlags::NO_BUBBLE);
+        for &ex_id in tracker.exited() {
+            if has_direct_listener(store, ex_id, InteractionEvent::PointerLeave) {
+                events.push_pointer_ex(
+                    self.surface_id,
+                    ex_id,
+                    ts,
+                    InteractionEvent::PointerLeave,
+                    x,
+                    y,
+                    PRIMARY_POINTER_ID,
+                    buttons,
+                    NVE_POINTER_TYPE_MOUSE,
+                    nb_flags,
+                );
+            }
+        }
+        for &en_id in tracker.entered() {
+            if has_direct_listener(store, en_id, InteractionEvent::PointerEnter) {
+                events.push_pointer_ex(
+                    self.surface_id,
+                    en_id,
+                    ts,
+                    InteractionEvent::PointerEnter,
+                    x,
+                    y,
+                    PRIMARY_POINTER_ID,
+                    buttons,
+                    NVE_POINTER_TYPE_MOUSE,
+                    nb_flags,
+                );
+            }
+        }
+    }
+
+    /// Handles pointer button press at logical `(x, y)`: emits `PointerDown` (gated on listeners),
+    /// activates primary declarative synchronous capture (`button == 0` + `OnPrimaryDown`), moves
+    /// pointer-modality focus, and updates `TextInput` caret/multi-click/drag selection. Non-primary
+    /// chorded buttons never clobber primary `:active` or primary pointer capture.
     pub fn handle_pointer_down_logical(
         &mut self,
         x: f32,
@@ -110,29 +160,73 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.modifiers = modifiers;
         self.pointer_buttons |= button_mask(button);
 
+        let ts = TimestampUs(now_us());
+        let mut events = EventBatchBuf::with_capacity(6, 0);
+        let existing_capture = self.replica.backend().captured_node();
+
+        if button != 0 {
+            if let Some(cap_id) = existing_capture {
+                if has_direct_listener(self.replica.store(), cap_id, InteractionEvent::PointerDown) {
+                    events.push_pointer_ex(
+                        self.surface_id,
+                        cap_id,
+                        ts,
+                        InteractionEvent::PointerDown,
+                        x,
+                        y,
+                        PRIMARY_POINTER_ID,
+                        self.pointer_buttons,
+                        NVE_POINTER_TYPE_MOUSE,
+                        pointer_flags(modifiers, button, EventFlags::CAPTURE | EventFlags::NO_BUBBLE),
+                    );
+                }
+            } else {
+                let hit = self
+                    .replica
+                    .backend()
+                    .hit_test_interaction(self.replica.store(), x, y)
+                    .or_else(|| self.replica.backend().hit_test(self.replica.store(), x, y));
+                if let Some(node_id) = hit
+                    && has_ancestor_listener(
+                        self.replica.store(),
+                        node_id,
+                        InteractionEvent::PointerDown,
+                    )
+                {
+                    events.push_pointer_ex(
+                        self.surface_id,
+                        node_id,
+                        ts,
+                        InteractionEvent::PointerDown,
+                        x,
+                        y,
+                        PRIMARY_POINTER_ID,
+                        self.pointer_buttons,
+                        NVE_POINTER_TYPE_MOUSE,
+                        pointer_flags(modifiers, button, EventFlags::EMPTY),
+                    );
+                }
+            }
+            return self.finalize_input_turn(&events, false);
+        }
+
         let prev_focus = self.replica.backend().focused_node();
         let had_preedit = self.replica.backend().focus_state().ime_preedit.is_some();
-        let next_focus = if button == 0 {
-            hit_test_focusable(self.replica.store(), self.replica.backend(), x, y)
-        } else {
-            prev_focus
-        };
+        let next_focus = hit_test_focusable(self.replica.store(), self.replica.backend(), x, y);
         let hit = self
             .replica
             .backend()
             .hit_test_interaction(self.replica.store(), x, y)
             .or_else(|| self.replica.backend().hit_test(self.replica.store(), x, y));
 
-        let ts = TimestampUs(now_us());
-        let mut events = EventBatchBuf::with_capacity(6, 0);
         let mut visual_changed = {
             let (store, backend) = self.replica.store_and_backend_mut();
             backend.pointer_down(store, x, y)
         };
+        self.push_hover_transitions(&mut events, ts, x, y, self.pointer_buttons, modifiers);
 
         let mut captured_id = None;
-        if button == 0
-            && let Some(hit_id) = hit
+        if let Some(hit_id) = hit
             && let Some(cap_id) = find_capture_target(self.replica.store(), hit_id)
         {
             self.replica
@@ -141,7 +235,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             captured_id = Some(cap_id);
         }
 
-        if let Some(node_id) = hit {
+        if let Some(node_id) = hit
+            && has_ancestor_listener(self.replica.store(), node_id, InteractionEvent::PointerDown)
+        {
             let extra = if captured_id.is_some() {
                 EventFlags::CAPTURE
             } else {
@@ -161,38 +257,36 @@ impl<A: DesktopApp> DesktopSession<A> {
             );
         }
 
-        if button == 0 {
-            if prev_focus != next_focus
-                || (next_focus.is_some()
-                    && self.replica.backend().interaction_tracker().focus_modality()
-                        != FocusModality::Pointer)
-            {
-                let (store, backend) = self.replica.store_and_backend_mut();
-                backend.set_focused_node_with_modality(store, next_focus, FocusModality::Pointer);
-                visual_changed = true;
-            }
-            let resolved_next = self.replica.backend().focused_node();
-            if resolved_next != prev_focus {
-                visual_changed = true;
-                if let Some(old_id) = prev_focus {
-                    if had_preedit {
-                        self.push_composition_event(
-                            &mut events,
-                            old_id,
-                            ts,
-                            TextInputEvent::CompositionEnd,
-                            "",
-                        );
-                    }
-                    events.push_blur(self.surface_id, old_id, ts);
+        if prev_focus != next_focus
+            || (next_focus.is_some()
+                && self.replica.backend().interaction_tracker().focus_modality()
+                    != FocusModality::Pointer)
+        {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.set_focused_node_with_modality(store, next_focus, FocusModality::Pointer);
+            visual_changed = true;
+        }
+        let resolved_next = self.replica.backend().focused_node();
+        if resolved_next != prev_focus {
+            visual_changed = true;
+            if let Some(old_id) = prev_focus {
+                if had_preedit {
+                    self.push_composition_event(
+                        &mut events,
+                        old_id,
+                        ts,
+                        TextInputEvent::CompositionEnd,
+                        "",
+                    );
                 }
-                if let Some(new_id) = resolved_next {
-                    events.push_focus(self.surface_id, new_id, ts);
-                }
+                events.push_blur(self.surface_id, old_id, ts);
             }
-            if self.update_text_click_selection(x, y, next_focus) {
-                visual_changed = true;
+            if let Some(new_id) = resolved_next {
+                events.push_focus(self.surface_id, new_id, ts);
             }
+        }
+        if self.update_text_click_selection(x, y, next_focus) {
+            visual_changed = true;
         }
 
         self.finalize_input_turn(&events, visual_changed)
@@ -208,7 +302,8 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     /// Updates hover/drag state at logical `(x, y)`, emitting non-bubbling `PointerLeave` /
-    /// `PointerEnter` transitions and captured or listened `PointerMove` events.
+    /// `PointerEnter` transitions and captured or listened `PointerMove` events. While pointer
+    /// capture is active, background hit-testing is bypassed so hover never leaks mid-drag.
     pub fn handle_pointer_move_logical_with_mods(
         &mut self,
         x: f32,
@@ -217,83 +312,50 @@ impl<A: DesktopApp> DesktopSession<A> {
     ) -> Result<bool, DesktopHostError> {
         self.cursor_logical = (x, y);
         self.modifiers = modifiers;
-        let mut visual_changed = {
+        let captured = self.replica.backend().captured_node();
+        let mut visual_changed = if captured.is_some() {
+            false
+        } else {
             let (store, backend) = self.replica.store_and_backend_mut();
             backend.pointer_move(store, x, y)
         };
 
         let ts = TimestampUs(now_us());
         let mut events = EventBatchBuf::with_capacity(8, 0);
-        let store = self.replica.store();
-        let tracker = self.replica.backend().interaction_tracker();
-        let nb_flags = pointer_flags(modifiers, 0, EventFlags::NO_BUBBLE);
-
-        for &ex_id in tracker.exited() {
-            if store
-                .try_row::<Interaction>(ex_id)
-                .is_some_and(|i| i.listeners().contains(InteractionEvent::PointerLeave))
-            {
+        if let Some(cap_id) = captured {
+            if has_direct_listener(self.replica.store(), cap_id, InteractionEvent::PointerMove) {
                 events.push_pointer_ex(
                     self.surface_id,
-                    ex_id,
+                    cap_id,
                     ts,
-                    InteractionEvent::PointerLeave,
+                    InteractionEvent::PointerMove,
                     x,
                     y,
                     PRIMARY_POINTER_ID,
                     self.pointer_buttons,
                     NVE_POINTER_TYPE_MOUSE,
-                    nb_flags,
+                    pointer_flags(modifiers, 0, EventFlags::CAPTURE | EventFlags::NO_BUBBLE),
                 );
             }
-        }
-        for &en_id in tracker.entered() {
-            if store
-                .try_row::<Interaction>(en_id)
-                .is_some_and(|i| i.listeners().contains(InteractionEvent::PointerEnter))
+        } else {
+            self.push_hover_transitions(&mut events, ts, x, y, self.pointer_buttons, modifiers);
+            let store = self.replica.store();
+            if let Some(hit_id) = self.replica.backend().interaction_tracker().hovered()
+                && has_ancestor_listener(store, hit_id, InteractionEvent::PointerMove)
             {
                 events.push_pointer_ex(
                     self.surface_id,
-                    en_id,
+                    hit_id,
                     ts,
-                    InteractionEvent::PointerEnter,
+                    InteractionEvent::PointerMove,
                     x,
                     y,
                     PRIMARY_POINTER_ID,
                     self.pointer_buttons,
                     NVE_POINTER_TYPE_MOUSE,
-                    nb_flags,
+                    pointer_flags(modifiers, 0, EventFlags::EMPTY),
                 );
             }
-        }
-        if let Some(cap_id) = tracker.captured_node() {
-            events.push_pointer_ex(
-                self.surface_id,
-                cap_id,
-                ts,
-                InteractionEvent::PointerMove,
-                x,
-                y,
-                PRIMARY_POINTER_ID,
-                self.pointer_buttons,
-                NVE_POINTER_TYPE_MOUSE,
-                pointer_flags(modifiers, 0, EventFlags::CAPTURE | EventFlags::NO_BUBBLE),
-            );
-        } else if let Some(hit_id) = tracker.hovered()
-            && has_ancestor_listener(store, hit_id, InteractionEvent::PointerMove)
-        {
-            events.push_pointer_ex(
-                self.surface_id,
-                hit_id,
-                ts,
-                InteractionEvent::PointerMove,
-                x,
-                y,
-                PRIMARY_POINTER_ID,
-                self.pointer_buttons,
-                NVE_POINTER_TYPE_MOUSE,
-                pointer_flags(modifiers, 0, EventFlags::EMPTY),
-            );
         }
 
         if let Some(node_id) = self.dragging_text_node {
@@ -336,33 +398,13 @@ impl<A: DesktopApp> DesktopSession<A> {
         };
         let ts = TimestampUs(now_us());
         let mut events = EventBatchBuf::with_capacity(4, 0);
-        let store = self.replica.store();
-        let nb_flags = pointer_flags(self.modifiers, 0, EventFlags::NO_BUBBLE);
-        for &ex_id in self.replica.backend().interaction_tracker().exited() {
-            if store
-                .try_row::<Interaction>(ex_id)
-                .is_some_and(|i| i.listeners().contains(InteractionEvent::PointerLeave))
-            {
-                events.push_pointer_ex(
-                    self.surface_id,
-                    ex_id,
-                    ts,
-                    InteractionEvent::PointerLeave,
-                    x,
-                    y,
-                    PRIMARY_POINTER_ID,
-                    self.pointer_buttons,
-                    NVE_POINTER_TYPE_MOUSE,
-                    nb_flags,
-                );
-            }
-        }
+        self.push_hover_transitions(&mut events, ts, x, y, self.pointer_buttons, self.modifiers);
         self.finalize_input_turn(&events, visual_changed)
             .unwrap_or(visual_changed)
     }
 
     /// Cancels active pointer capture and hover on OS window blur (`WindowEvent::Focused(false)`),
-    /// emitting `PointerCancel` (`CAPTURE | NO_BUBBLE`) to the captured node.
+    /// emitting `PointerCancel` (`CAPTURE | NO_BUBBLE`) to the captured node when subscribed.
     pub fn handle_window_blur(&mut self) -> Result<bool, DesktopHostError> {
         let (x, y) = self.cursor_logical;
         self.dragging_text_node = None;
@@ -374,7 +416,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         };
         let ts = TimestampUs(now_us());
         let mut events = EventBatchBuf::with_capacity(4, 0);
-        if let Some(cap_id) = captured {
+        if let Some(cap_id) = captured
+            && has_direct_listener(self.replica.store(), cap_id, InteractionEvent::PointerCancel)
+        {
             events.push_pointer_cancel(
                 self.surface_id,
                 cap_id,
@@ -389,32 +433,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                 ),
             );
         }
-        let store = self.replica.store();
-        let nb_flags = pointer_flags(self.modifiers, 0, EventFlags::NO_BUBBLE);
-        for &ex_id in self.replica.backend().interaction_tracker().exited() {
-            if store
-                .try_row::<Interaction>(ex_id)
-                .is_some_and(|i| i.listeners().contains(InteractionEvent::PointerLeave))
-            {
-                events.push_pointer_ex(
-                    self.surface_id,
-                    ex_id,
-                    ts,
-                    InteractionEvent::PointerLeave,
-                    x,
-                    y,
-                    PRIMARY_POINTER_ID,
-                    0,
-                    NVE_POINTER_TYPE_MOUSE,
-                    nb_flags,
-                );
-            }
-        }
+        self.push_hover_transitions(&mut events, ts, x, y, 0, self.modifiers);
         self.finalize_input_turn(&events, visual_changed)
     }
 
-    /// Releases a pointer button, emitting `PointerUp` (routed to the captured node if captured)
-    /// and `Press` on primary button release when `pointer_up_clicked` resolves a target.
+    /// Releases a pointer button, emitting `PointerUp` (routed to the captured node if captured
+    /// and gated on listeners) and `Press` on primary button release when `pointer_up_clicked`
+    /// resolves a target. Non-primary releases never abort primary `:active` or primary capture.
     pub fn handle_pointer_up_logical_ex(
         &mut self,
         x: f32,
@@ -425,9 +450,58 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.cursor_logical = (x, y);
         self.modifiers = modifiers;
         self.pointer_buttons &= !button_mask(button);
-        self.dragging_text_node = None;
 
+        let ts = TimestampUs(now_us());
+        let mut events = EventBatchBuf::with_capacity(6, 0);
         let captured = self.replica.backend().captured_node();
+
+        if button != 0 {
+            if let Some(cap_id) = captured {
+                if has_direct_listener(self.replica.store(), cap_id, InteractionEvent::PointerUp) {
+                    events.push_pointer_ex(
+                        self.surface_id,
+                        cap_id,
+                        ts,
+                        InteractionEvent::PointerUp,
+                        x,
+                        y,
+                        PRIMARY_POINTER_ID,
+                        self.pointer_buttons,
+                        NVE_POINTER_TYPE_MOUSE,
+                        pointer_flags(modifiers, button, EventFlags::CAPTURE | EventFlags::NO_BUBBLE),
+                    );
+                }
+            } else {
+                let hit = self
+                    .replica
+                    .backend()
+                    .hit_test_interaction(self.replica.store(), x, y)
+                    .or_else(|| self.replica.backend().hit_test(self.replica.store(), x, y));
+                if let Some(target_id) = hit
+                    && has_ancestor_listener(
+                        self.replica.store(),
+                        target_id,
+                        InteractionEvent::PointerUp,
+                    )
+                {
+                    events.push_pointer_ex(
+                        self.surface_id,
+                        target_id,
+                        ts,
+                        InteractionEvent::PointerUp,
+                        x,
+                        y,
+                        PRIMARY_POINTER_ID,
+                        self.pointer_buttons,
+                        NVE_POINTER_TYPE_MOUSE,
+                        pointer_flags(modifiers, button, EventFlags::EMPTY),
+                    );
+                }
+            }
+            return self.finalize_input_turn(&events, false);
+        }
+
+        self.dragging_text_node = None;
         let hit = self
             .replica
             .backend()
@@ -437,27 +511,30 @@ impl<A: DesktopApp> DesktopSession<A> {
             let (store, backend) = self.replica.store_and_backend_mut();
             backend.pointer_up_clicked(store, x, y)
         };
+        self.push_hover_transitions(&mut events, ts, x, y, self.pointer_buttons, modifiers);
 
-        let ts = TimestampUs(now_us());
-        let mut events = EventBatchBuf::with_capacity(4, 0);
         if let Some(cap_id) = captured {
-            events.push_pointer_ex(
-                self.surface_id,
-                cap_id,
-                ts,
-                InteractionEvent::PointerUp,
-                x,
-                y,
-                PRIMARY_POINTER_ID,
-                self.pointer_buttons,
-                NVE_POINTER_TYPE_MOUSE,
-                pointer_flags(
-                    modifiers,
-                    button,
-                    EventFlags::CAPTURE | EventFlags::NO_BUBBLE,
-                ),
-            );
-        } else if let Some(target_id) = hit {
+            if has_direct_listener(self.replica.store(), cap_id, InteractionEvent::PointerUp) {
+                events.push_pointer_ex(
+                    self.surface_id,
+                    cap_id,
+                    ts,
+                    InteractionEvent::PointerUp,
+                    x,
+                    y,
+                    PRIMARY_POINTER_ID,
+                    self.pointer_buttons,
+                    NVE_POINTER_TYPE_MOUSE,
+                    pointer_flags(
+                        modifiers,
+                        button,
+                        EventFlags::CAPTURE | EventFlags::NO_BUBBLE,
+                    ),
+                );
+            }
+        } else if let Some(target_id) = hit
+            && has_ancestor_listener(self.replica.store(), target_id, InteractionEvent::PointerUp)
+        {
             events.push_pointer_ex(
                 self.surface_id,
                 target_id,
@@ -471,9 +548,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 pointer_flags(modifiers, button, EventFlags::EMPTY),
             );
         }
-        if button == 0
-            && let Some(clicked_id) = clicked
-        {
+        if let Some(clicked_id) = clicked {
             events.push_press(self.surface_id, clicked_id, ts, x, y);
         }
         self.finalize_input_turn(&events, visual_changed)

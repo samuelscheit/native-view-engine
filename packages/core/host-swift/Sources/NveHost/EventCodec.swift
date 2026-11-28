@@ -453,11 +453,13 @@ public struct EventBatchBuilder: Sendable {
 
     public mutating func pushPointer(
         surface: UInt32, node: UInt32, timestamp: UInt64, event: InteractionEventId,
-        x: Float, y: Float, pointerId: UInt32 = 0, flags: EventFlags = []
+        x: Float, y: Float, pointerId: UInt32 = 0, flags: EventFlags = [],
+        buttons: UInt16 = 0, pointerType: UInt8 = 0
     ) {
+        let p3 = UInt32(buttons) | (UInt32(pointerType) << 16)
         pushTableEvent(
             table: Key64(nveTableInteraction), surface: surface, node: node, timestamp: timestamp,
-            event: event.rawValue, flags: flags, p0: x.bitPattern, p1: y.bitPattern, p2: pointerId
+            event: event.rawValue, flags: flags, p0: x.bitPattern, p1: y.bitPattern, p2: pointerId, p3: p3
         )
     }
 

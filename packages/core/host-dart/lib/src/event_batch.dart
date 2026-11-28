@@ -145,6 +145,7 @@ final class EventBatch {
             p0 = f32ToBits(e.x);
             p1 = f32ToBits(e.y);
             p2 = e.pointerId & 0xFFFFFFFF;
+            p3 = (e.pointerButtons & 0xFFFF) | ((e.pointerType & 0xFF) << 16);
           case NveInteractionEvent.focus:
           case NveInteractionEvent.blur:
           case NveInteractionEvent.keyDown:
@@ -344,7 +345,7 @@ final class EventBatch {
       final hasCustom = (flags & nveEventFlagCustomNamed) != 0;
 
       var x = 0.0, y = 0.0, width = 0.0, height = 0.0;
-      var pointerId = 0, keyCode = 0;
+      var pointerId = 0, pointerButtons = 0, pointerType = 0, keyCode = 0;
       var key = '', code = '', text = '', name = '';
       Uint8List? data;
       Object? value;
@@ -391,6 +392,8 @@ final class EventBatch {
             x = f32FromBits(p0);
             y = f32FromBits(p1);
             pointerId = p2;
+            pointerButtons = p3 & 0xFFFF;
+            pointerType = (p3 >>> 16) & 0xFF;
           case NveInteractionEvent.focus:
           case NveInteractionEvent.blur:
           case NveInteractionEvent.keyDown:
@@ -418,6 +421,8 @@ final class EventBatch {
         width: width,
         height: height,
         pointerId: pointerId,
+        pointerButtons: pointerButtons,
+        pointerType: pointerType,
         keyCode: keyCode,
         key: key,
         code: code,

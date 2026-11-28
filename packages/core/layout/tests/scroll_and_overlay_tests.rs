@@ -12,12 +12,12 @@ use nve_engine::Viewport;
 use nve_layout::overlay::{
     Placement, PositionOptions, Rect, Size, Viewport as OverlayViewport, compute_overlay_position,
 };
-use nve_layout::{LaidOutScene, TaffyStoreLayout};
+use nve_layout::{LaidOutScene, TaffyStoreLayout, is_subtree_closed_overlay};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 use nve_tables::interaction::CursorKind;
 use nve_tables::tables::{
     DebugId, FlexDirection, Interaction, Layout, Overflow, Overlay, OverlayFlags, OverlayLayer,
-    OverlayPlacement, Position, Scroll, Visual, register_core_tables,
+    OverlayPlacement, Position, Scroll, Transform, Visual, register_core_tables,
 };
 
 struct CountingAlloc;
@@ -149,7 +149,14 @@ fn requested_scroll_seq_supports_repeat_jump_to_zero_preserves_user_scroll_and_i
     assert_eq!(scene.reconcile_scroll_offsets(&store), &[scroller]);
     assert_eq!(scene.scroll_offset(scroller), (0.0, 0.0));
 
-    // 5. Steady-state zero-allocation guard for reconcile_scroll_offsets.
+    // 5. Positive probe proving `CountingAlloc` is active + steady-state zero-alloc guard.
+    let (probe_box, probe_allocs) = count_allocs(|| std::hint::black_box(Box::new(42u64)));
+    assert!(
+        probe_allocs >= 1,
+        "CountingAlloc positive probe must observe >= 1 allocation, saw {probe_allocs}"
+    );
+    drop(probe_box);
+
     let (_, allocs) = count_allocs(|| {
         for _ in 0..100 {
             let _ = scene.reconcile_scroll_offsets(&store);
@@ -159,6 +166,117 @@ fn requested_scroll_seq_supports_repeat_jump_to_zero_preserves_user_scroll_and_i
         allocs, 0,
         "steady-state reconcile_scroll_offsets must perform 0 heap allocations, saw {allocs}"
     );
+}
+
+#[test]
+fn scroll_seq_handles_wrap_reset_single_axis_and_recycled_generation() {
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let scroller = {
+        let mut tx = store.tx();
+        let sc = tx.create();
+        let child = tx.create();
+        tx.edit::<Layout>(sc)
+            .width(Length::points(100.0))
+            .height(Length::points(100.0));
+        tx.edit::<Scroll>(sc);
+        tx.edit::<Layout>(child)
+            .flex_shrink(0.0)
+            .width(Length::points(400.0))
+            .height(Length::points(400.0));
+        tx.set_children(sc, &[child]);
+        tx.set_children(NodeId::ROOT, &[sc]);
+        tx.commit_into(&mut changes);
+        sc
+    };
+    let mut scene = LaidOutScene::new(TaffyStoreLayout::new());
+    scene.set_viewport(Viewport {
+        width: 200.0,
+        height: 200.0,
+        scale_factor: 1.0,
+    });
+    scene.commit(&store, &changes);
+
+    // 1. u32::MAX -> 1 wrap must trigger.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Scroll>(scroller)
+            .requested_scroll_y(Some(120.0))
+            .requested_scroll_seq(u32::MAX);
+        tx.commit_into(&mut changes);
+    }
+    scene.commit(&store, &changes);
+    assert_eq!(scene.reconcile_scroll_offsets(&store), &[scroller]);
+    assert_eq!(scene.scroll_offset(scroller), (0.0, 120.0));
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<Scroll>(scroller)
+            .requested_scroll_y(Some(50.0))
+            .requested_scroll_seq(1);
+        tx.commit_into(&mut changes);
+    }
+    scene.commit(&store, &changes);
+    assert_eq!(scene.reconcile_scroll_offsets(&store), &[scroller]);
+    assert_eq!(scene.scroll_offset(scroller), (0.0, 50.0));
+
+    // 2. 1 -> 0 -> 1 reset must re-trigger seq == 1 after clearing to 0!
+    {
+        let mut tx = store.tx();
+        tx.edit::<Scroll>(scroller).requested_scroll_seq(0);
+        tx.commit_into(&mut changes);
+    }
+    scene.commit(&store, &changes);
+    assert!(scene.reconcile_scroll_offsets(&store).is_empty());
+    scene.set_scroll_offset_clamped(&store, scroller, 10.0, 180.0);
+    {
+        let mut tx = store.tx();
+        tx.edit::<Scroll>(scroller)
+            .requested_scroll_x(Some(75.0))
+            .requested_scroll_y(None)
+            .requested_scroll_seq(1);
+        tx.commit_into(&mut changes);
+    }
+    scene.commit(&store, &changes);
+    assert_eq!(scene.reconcile_scroll_offsets(&store), &[scroller]);
+    // 3. Single-axis (Some(75.0), None) MUST preserve existing Y=180.0!
+    assert_eq!(scene.scroll_offset(scroller), (75.0, 180.0));
+
+    // 4. Recycled NodeId slot (same index, bumped generation) with seq == 1 MUST trigger!
+    // Commit removal first so `NodeStore` returns `old_idx` to its free-list (without forwarding
+    // `rm_changes` to `scene.scroll`, proving `SeqSlot` rejects stale generations at `old_idx`).
+    let old_idx = scroller.index();
+    {
+        let mut tx = store.tx();
+        tx.remove(scroller);
+        tx.commit_into(&mut changes);
+    }
+    let recycled = {
+        let mut tx = store.tx();
+        let a = tx.create();
+        let b = tx.create();
+        let (next, child2) = if a.index() == old_idx { (a, b) } else { (b, a) };
+        tx.edit::<Layout>(next)
+            .width(Length::points(100.0))
+            .height(Length::points(100.0));
+        tx.edit::<Scroll>(next)
+            .requested_scroll_y(Some(90.0))
+            .requested_scroll_seq(1);
+        tx.edit::<Layout>(child2)
+            .flex_shrink(0.0)
+            .width(Length::points(200.0))
+            .height(Length::points(400.0));
+        tx.set_children(next, &[child2]);
+        tx.set_children(NodeId::ROOT, &[next]);
+        tx.commit_into(&mut changes);
+        next
+    };
+    assert_eq!(recycled.index(), old_idx, "expected recycled NodeId index");
+    assert_ne!(recycled, scroller);
+    scene.commit(&store, &changes);
+    assert_eq!(scene.reconcile_scroll_offsets(&store), &[recycled]);
+    assert_eq!(scene.scroll_offset(recycled), (0.0, 90.0));
 }
 
 #[test]
@@ -336,12 +454,141 @@ fn cursor_inherits_from_ancestors_and_converts_disabled_pointer_to_not_allowed()
         "Auto cursor on child must inherit Pointer from ancestor"
     );
 
-    // Disable parent -> hovering child must resolve NotAllowed.
+    // Disable parent AND set explicit Pointer cursor on child -> ancestor disabled MUST win!
     {
         let mut tx = store.tx();
         tx.edit::<Interaction>(parent_btn).disabled(true);
+        tx.edit::<Interaction>(child_label).cursor(CursorKind::Pointer);
         tx.commit_into(&mut changes);
     }
     scene.commit(&store, &changes);
     assert_eq!(scene.current_cursor(&store), CursorKind::NotAllowed);
+}
+
+#[test]
+fn overlay_tracks_transformed_scrolled_anchor_handles_missing_detach_and_explicit_insets() {
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (scroller, anchor, ov, ov_child, explicit_modal) = {
+        let mut tx = store.tx();
+        let sc = tx.create();
+        tx.edit::<Layout>(sc)
+            .position(Position::Absolute)
+            .inset_left(Length::points(0.0))
+            .inset_top(Length::points(0.0))
+            .width(Length::points(300.0))
+            .height(Length::points(200.0))
+            .flex_direction(FlexDirection::Column);
+        tx.edit::<Scroll>(sc);
+
+        let spacer = tx.create();
+        tx.edit::<Layout>(spacer)
+            .flex_shrink(0.0)
+            .width(Length::points(300.0))
+            .height(Length::points(100.0));
+
+        let anc = tx.create();
+        tx.edit::<Layout>(anc)
+            .flex_shrink(0.0)
+            .width(Length::points(40.0))
+            .height(Length::points(20.0));
+        tx.edit::<Transform>(anc).translate_x(30.0).translate_y(15.0);
+        tx.edit::<DebugId>(anc).id("tf-anchor");
+
+        let tall = tx.create();
+        tx.edit::<Layout>(tall)
+            .flex_shrink(0.0)
+            .width(Length::points(300.0))
+            .height(Length::points(400.0));
+
+        let ov = tx.create();
+        tx.edit::<Layout>(ov)
+            .position(Position::Fixed)
+            .width(Length::points(80.0))
+            .height(Length::points(40.0));
+        tx.edit::<Overlay>(ov)
+            .layer(OverlayLayer::Popover)
+            .anchor_id("tf-anchor")
+            .placement(OverlayPlacement::BottomStart)
+            .offset_px(4.0)
+            .options(OverlayFlags::OPEN);
+
+        let ov_child = tx.create();
+        tx.edit::<Layout>(ov_child)
+            .width(Length::points(40.0))
+            .height(Length::points(20.0));
+
+        let explicit_modal = tx.create();
+        tx.edit::<Layout>(explicit_modal)
+            .position(Position::Fixed)
+            .inset_right(Length::points(20.0))
+            .inset_bottom(Length::points(16.0))
+            .width(Length::points(100.0))
+            .height(Length::points(50.0));
+        tx.edit::<Overlay>(explicit_modal)
+            .layer(OverlayLayer::Modal)
+            .options(OverlayFlags::OPEN);
+
+        tx.set_children(ov, &[ov_child]);
+        tx.set_children(sc, &[spacer, anc, tall]);
+        tx.set_children(NodeId::ROOT, &[sc, ov, explicit_modal]);
+        tx.commit_into(&mut changes);
+        (sc, anc, ov, ov_child, explicit_modal)
+    };
+
+    let mut scene = LaidOutScene::new(TaffyStoreLayout::new());
+    scene.set_viewport(Viewport {
+        width: 400.0,
+        height: 300.0,
+        scale_factor: 1.0,
+    });
+    scene.commit(&store, &changes);
+
+    // Anchor layout is (0, 100, 40, 20), plus translate (30, 15) -> visual rect (30, 115, 40, 20).
+    // BottomStart + offset 4 -> (30, 139).
+    let ro = scene.resolved_overlay(ov).expect("anchored overlay resolved");
+    assert!((ro.origin_x - 30.0).abs() < 1e-3, "got {}", ro.origin_x);
+    assert!((ro.origin_y - 139.0).abs() < 1e-3, "got {}", ro.origin_y);
+
+    // Scrolling scroller by y=50 moves anchor visual rect to y=65 -> overlay origin_y = 65 + 20 + 4 = 89!
+    scene.set_scroll_offset_clamped(&store, scroller, 0.0, 50.0);
+    scene.reconcile_overlays(&store);
+    let ro_scrolled = scene.resolved_overlay(ov).expect("scrolled overlay");
+    assert!((ro_scrolled.origin_y - 89.0).abs() < 1e-3, "got {}", ro_scrolled.origin_y);
+
+    // Explicit inset_right=20, inset_bottom=16 on unanchored modal must NOT viewport-center it!
+    // Viewport 400x300, box 100x50 -> x=280, y=234 (not centered 150, 125).
+    let em = scene.resolved_overlay(explicit_modal).expect("explicit modal");
+    assert!((em.origin_x - 280.0).abs() < 1e-3, "got {}", em.origin_x);
+    assert!((em.origin_y - 234.0).abs() < 1e-3, "got {}", em.origin_y);
+
+    // Missing anchor_id falls back cleanly without panicking; detaching Overlay clears resolution;
+    // is_subtree_closed_overlay tracks closed overlay descendants.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Overlay>(ov).anchor_id("does-not-exist");
+        tx.edit::<Overlay>(explicit_modal).options(OverlayFlags::NONE);
+        tx.commit_into(&mut changes);
+    }
+    scene.commit(&store, &changes);
+    assert!(scene.resolved_overlay(ov).is_some());
+    assert!(is_subtree_closed_overlay(&store, explicit_modal));
+    assert!(!is_subtree_closed_overlay(&store, ov_child));
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<Overlay>(ov).options(OverlayFlags::NONE);
+        tx.commit_into(&mut changes);
+    }
+    assert!(is_subtree_closed_overlay(&store, ov_child));
+
+    {
+        let mut tx = store.tx();
+        tx.detach::<Overlay>(ov);
+        tx.commit_into(&mut changes);
+    }
+    scene.commit(&store, &changes);
+    assert!(scene.resolved_overlay(ov).is_none());
+    let _ = anchor;
 }

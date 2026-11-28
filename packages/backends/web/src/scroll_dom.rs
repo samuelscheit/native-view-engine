@@ -1,6 +1,7 @@
 //! `wasm32` 120 Hz compositor-only CSSOM fast lane (`apply_compositor_properties_live`) and
 //! exact controlled scroll sync (`sync_requested_scroll`).
 
+use nve_abi::ScrollEvent;
 use nve_store::{NodeId, NodeStore};
 use nve_tables::tables::{Scroll, Transform, Visual};
 use wasm_bindgen::JsCast;
@@ -12,7 +13,7 @@ impl WebBackend {
     pub(crate) fn clear_scroll_seq(&mut self, id: NodeId) {
         let idx = id.index();
         if idx < self.last_requested_scroll_seq.len() {
-            self.last_requested_scroll_seq[idx] = 0;
+            self.last_requested_scroll_seq[idx] = (NodeId::NULL, 0);
         }
         self.programmatic_scroll_guard.borrow_mut().remove(&id);
     }
@@ -31,11 +32,19 @@ impl WebBackend {
             return;
         };
         let seq = sc.requested_scroll_seq();
+        let idx = id.index();
         if seq == 0 {
+            if idx < self.last_requested_scroll_seq.len() {
+                self.last_requested_scroll_seq[idx] = (NodeId::NULL, 0);
+            }
             return;
         }
-        let idx = id.index();
-        let prev = self.last_requested_scroll_seq.get(idx).copied().unwrap_or(0);
+        let prev = self
+            .last_requested_scroll_seq
+            .get(idx)
+            .copied()
+            .filter(|&(nid, _)| nid == id)
+            .map_or(0, |(_, s)| s);
         if seq == prev {
             return;
         }
@@ -46,9 +55,10 @@ impl WebBackend {
             return;
         }
         if idx >= self.last_requested_scroll_seq.len() {
-            self.last_requested_scroll_seq.resize(idx + 1, 0);
+            self.last_requested_scroll_seq
+                .resize(idx + 1, (NodeId::NULL, 0));
         }
-        self.last_requested_scroll_seq[idx] = seq;
+        self.last_requested_scroll_seq[idx] = (id, seq);
 
         let cur_x = el.scroll_left();
         let cur_y = el.scroll_top();
@@ -69,7 +79,14 @@ impl WebBackend {
         }
         if wrote {
             let after = (el.scroll_left(), el.scroll_top());
-            self.programmatic_scroll_guard.borrow_mut().insert(id, after);
+            if after != (cur_x, cur_y)
+                && self
+                    .event_state
+                    .borrow()
+                    .listens::<Scroll>(id, ScrollEvent::Scroll)
+            {
+                self.programmatic_scroll_guard.borrow_mut().insert(id, after);
+            }
         }
     }
 }

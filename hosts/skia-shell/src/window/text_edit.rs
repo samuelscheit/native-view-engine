@@ -241,6 +241,7 @@ pub fn classify_focused_key(
             }
         }
         Key::Named(NamedKey::Escape) => FocusedKeyAction::Escape,
+        Key::Named(NamedKey::Tab) => FocusedKeyAction::ForwardKeydown("Tab"),
         Key::Named(NamedKey::ArrowUp) => FocusedKeyAction::ForwardKeydown("ArrowUp"),
         Key::Named(NamedKey::ArrowDown) => FocusedKeyAction::ForwardKeydown("ArrowDown"),
         Key::Named(NamedKey::Space) => {
@@ -297,6 +298,7 @@ pub fn classify_unfocused_keydown(key: &Key, mods: ModifiersState) -> Option<&'s
         Key::Named(NamedKey::ArrowDown) => Some("ArrowDown"),
         Key::Named(NamedKey::Enter) => Some("Enter"),
         Key::Named(NamedKey::Escape) => Some("Escape"),
+        Key::Named(NamedKey::Tab) => Some("Tab"),
         Key::Character(s) if s.eq_ignore_ascii_case("k") && primary => Some("k"),
         _ => None,
     }

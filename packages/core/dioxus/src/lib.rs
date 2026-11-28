@@ -118,8 +118,8 @@ pub mod prelude {
     pub use crate::elements::{
         events::*, ComponentView, CompositionEvent, CompositionEventData, FocusEvent,
         FocusEventData, KeyEvent, KeyEventData, NveEventData, PointerEvent, PointerEventData,
-        PressEvent, PressEventData, RawNveEvent, ScrollEvent, ScrollEventData, SubmitEvent,
-        SubmitEventData, TableEvent, TableEventData, TextEvent, TextEventData,
+        PointerId, PressEvent, PressEventData, RawNveEvent, ScrollEvent, ScrollEventData,
+        SubmitEvent, SubmitEventData, TableEvent, TableEventData, TextEvent, TextEventData,
     };
     pub use crate::error_boundary::{
         throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,

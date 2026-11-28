@@ -21,7 +21,8 @@ pub use measure::{
 };
 pub use scene::{
     LaidOutScene, OverlayState, ResolvedOverlay, ScrollOffsets, compute_scroll_content_size,
-    is_overlay_closed, layout_snapshot_of, length_to_dim, visual_snapshot_of,
+    is_overlay_closed, is_subtree_closed_overlay, layout_snapshot_of, length_to_dim,
+    visual_snapshot_of,
 };
 pub use taffy_store::TaffyStoreLayout;
 

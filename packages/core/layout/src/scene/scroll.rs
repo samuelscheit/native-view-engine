@@ -11,11 +11,23 @@ use crate::StoreLayoutEngine;
 
 use super::LaidOutScene;
 
-/// Per-surface scroll offset map plus dense `requested_scroll_seq` deduplication (0-alloc steady state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SeqSlot {
+    node: NodeId,
+    seq: u32,
+}
+
+const EMPTY_SEQ_SLOT: SeqSlot = SeqSlot {
+    node: NodeId::NULL,
+    seq: 0,
+};
+
+/// Per-surface scroll offset map plus generation-safe dense `requested_scroll_seq` deduplication
+/// (0-alloc steady state).
 #[derive(Debug, Default, Clone)]
 pub struct ScrollOffsets {
     offsets: HashMap<NodeId, (f32, f32)>,
-    last_requested_seq: Vec<u32>,
+    last_requested_seq: Vec<SeqSlot>,
     reconcile_scratch: Vec<ScrollReconcileEntry>,
     changed_scratch: Vec<NodeId>,
 }
@@ -39,7 +51,11 @@ impl ScrollOffsets {
 
     #[inline]
     pub fn last_requested_seq(&self, id: NodeId) -> u32 {
-        self.last_requested_seq.get(id.index()).copied().unwrap_or(0)
+        self.last_requested_seq
+            .get(id.index())
+            .copied()
+            .filter(|slot| slot.node == id)
+            .map_or(0, |slot| slot.seq)
     }
 
     #[inline]
@@ -47,14 +63,14 @@ impl ScrollOffsets {
         let idx = id.index();
         if seq == 0 {
             if idx < self.last_requested_seq.len() {
-                self.last_requested_seq[idx] = 0;
+                self.last_requested_seq[idx] = EMPTY_SEQ_SLOT;
             }
             return;
         }
         if idx >= self.last_requested_seq.len() {
-            self.last_requested_seq.resize(idx + 1, 0);
+            self.last_requested_seq.resize(idx + 1, EMPTY_SEQ_SLOT);
         }
-        self.last_requested_seq[idx] = seq;
+        self.last_requested_seq[idx] = SeqSlot { node: id, seq };
     }
 
     /// Nodes whose effective scroll offset changed during the most recent reconciliation pass.
@@ -73,14 +89,14 @@ impl ScrollOffsets {
         self.offsets.remove(&id);
         let idx = id.index();
         if idx < self.last_requested_seq.len() {
-            self.last_requested_seq[idx] = 0;
+            self.last_requested_seq[idx] = EMPTY_SEQ_SLOT;
         }
     }
 
     #[inline]
     pub fn clear(&mut self) {
         self.offsets.clear();
-        self.last_requested_seq.fill(0);
+        self.last_requested_seq.fill(EMPTY_SEQ_SLOT);
         self.reconcile_scratch.clear();
         self.changed_scratch.clear();
     }
@@ -254,16 +270,10 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             self.scroll.offsets.retain(|&id, _| {
                 let keep = store.is_live(id) && store.has::<Scroll>(id);
                 if !keep && id.index() < last_seq.len() {
-                    last_seq[id.index()] = 0;
+                    last_seq[id.index()] = EMPTY_SEQ_SLOT;
                 }
                 keep
             });
-        }
-        // Clear any non-zero seq whose node died or had its `Scroll` row detached.
-        for (idx, slot) in self.scroll.last_requested_seq.iter_mut().enumerate() {
-            if *slot != 0 && store.id_at(idx).is_none_or(|id| !store.has::<Scroll>(id)) {
-                *slot = 0;
-            }
         }
 
         let Some(nve_store::TableStorage {

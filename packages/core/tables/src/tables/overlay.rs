@@ -135,6 +135,26 @@ impl OverlayPlacement {
     }
 }
 
+impl core::fmt::Display for OverlayPlacement {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let s = match self {
+            Self::Top => "top",
+            Self::TopStart => "top-start",
+            Self::TopEnd => "top-end",
+            Self::Bottom => "bottom",
+            Self::BottomStart => "bottom-start",
+            Self::BottomEnd => "bottom-end",
+            Self::Left => "left",
+            Self::LeftStart => "left-start",
+            Self::LeftEnd => "left-end",
+            Self::Right => "right",
+            Self::RightStart => "right-start",
+            Self::RightEnd => "right-end",
+        };
+        f.write_str(s)
+    }
+}
+
 word_flags! {
     /// Floating overlay behavioral flags packed into 5 bits.
     pub struct OverlayFlags(u8) {

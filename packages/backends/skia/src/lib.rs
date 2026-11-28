@@ -410,8 +410,43 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             None,
             &mut self.sort_scratch,
             &mut self.display_list.ops,
+            None,
             NodeId::ROOT,
         );
+        let overlay_count = self.layout_tree.scene().open_overlays().len();
+        for i in 0..overlay_count {
+            let ro = self.layout_tree.scene().open_overlays()[i];
+            if display_list::is_node_display_none_effective(store, &self.layout_tree, ro.node) {
+                continue;
+            }
+            if ro.has_backdrop_scrim {
+                self.display_list.ops.push(PaintOp::FillRoundedRect {
+                    rect: clip_bounds,
+                    radius: 0.0,
+                    color: retained::replay::OVERLAY_BACKDROP_SCRIM_COLOR,
+                });
+            }
+            emit_node_into(
+                store,
+                &self.layout_tree,
+                &self.focus,
+                &self.frame_hooks,
+                &self.table_registry,
+                &self.plugin_epochs,
+                self.base_plugin_epoch,
+                self.viewport.scale_factor,
+                self.text_engine.as_ref(),
+                clip_bounds,
+                (0.0, 0.0),
+                false,
+                false,
+                None,
+                &mut self.sort_scratch,
+                &mut self.display_list.ops,
+                Some(ro),
+                ro.node,
+            );
+        }
         &self.display_list
     }
 
@@ -484,16 +519,21 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
     ) -> Result<BackendApplyStats, BackendError> {
         let vp_dirty = self.viewport_dirty;
         let needs_layout = vp_dirty || changes.needs_layout();
-        let mut stats = self.layout_tree.commit(store, changes)?;
+        let mut stats = self.layout_tree.commit_without_overlays(store, changes)?;
         self.viewport_dirty = false;
         let t_mount = Instant::now();
         let scroll_changed = self.reconcile_scroll_offsets(store, changes, needs_layout);
-        self.layout_tree.scene_mut().reconcile_overlays(store);
-        self.reconcile_focus_state(store);
+        self.layout_tree
+            .scene_mut()
+            .reconcile_overlays_if_needed(store, changes, needs_layout || scroll_changed > 0);
+        let focus_blurred = self.reconcile_focus_state(store);
         self.frame_hooks_after_commit(store, changes);
 
         let mut plugin_dirty = std::mem::take(&mut self.plugin_dirty_scratch);
         plugin_dirty.clear();
+        if let Some(blurred) = focus_blurred {
+            plugin_dirty.push(blurred);
+        }
         if !self.table_registry.iter().is_empty() {
             for &id in changes.created.iter().chain(changes.removed.iter()) {
                 self.bump_plugin_epoch(id);

@@ -170,9 +170,10 @@ impl InteractionTracker {
             return;
         };
         for _ in 0..MAX_CHAIN_DEPTH {
-            if !self.next_chain_scratch.contains(&cur) {
-                self.next_chain_scratch.push(cur);
+            if self.next_chain_scratch.contains(&cur) {
+                break;
             }
+            self.next_chain_scratch.push(cur);
             match parent_of(cur) {
                 Some(p) if p != cur => cur = p,
                 _ => break,

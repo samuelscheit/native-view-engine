@@ -228,8 +228,10 @@ impl<A: DesktopApp> DesktopSession<A> {
         let shift = modifiers.shift_key();
         let alt = modifiers.alt_key();
 
-        if matches!(key, Key::Named(NamedKey::Tab)) && !meta && !ctrl && !alt {
-            return self.handle_tab_focus(shift);
+        if matches!(key, Key::Named(NamedKey::Tab)) && !meta && !ctrl && !alt
+            && self.handle_tab_focus(shift)?
+        {
+            return Ok(true);
         }
 
         let Some(focused_id) = self

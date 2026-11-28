@@ -7,32 +7,10 @@ use nve_backend_headless::HeadlessBackend;
 use nve_layout::StoreLayoutEngine;
 use nve_store::{ChangeSet, NodeStore};
 use nve_tables::tables::Scroll;
-use nve_tables::transform::affine_map_point;
+use nve_tables::transform::affine_map_aabb;
 
 use crate::display_list::is_subtree_display_none_effective;
 use crate::{SkiaBackend, MAX_HIT_TEST_DEPTH};
-
-#[inline]
-fn map_rect_aabb(m: &[f32; 6], x0: f32, y0: f32, x1: f32, y1: f32) -> (f32, f32, f32, f32) {
-    let corners = [
-        affine_map_point(m, x0, y0),
-        affine_map_point(m, x1, y0),
-        affine_map_point(m, x1, y1),
-        affine_map_point(m, x0, y1),
-    ];
-    let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
-    let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for (cx, cy) in corners {
-        if !cx.is_finite() || !cy.is_finite() {
-            return (x0, y0, x1, y1);
-        }
-        min_x = min_x.min(cx);
-        min_y = min_y.min(cy);
-        max_x = max_x.max(cx);
-        max_y = max_y.max(cy);
-    }
-    (min_x, min_y, max_x, max_y)
-}
 
 impl<L: StoreLayoutEngine> SkiaBackend<L> {
     #[inline]
@@ -130,7 +108,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             && !tf.is_identity()
         {
             let m = tf.to_surface_matrix_2d(cur_x0, cur_y0, target_rect.width, target_rect.height);
-            (cur_x0, cur_y0, cur_x1, cur_y1) = map_rect_aabb(&m, cur_x0, cur_y0, cur_x1, cur_y1);
+            (cur_x0, cur_y0, cur_x1, cur_y1) = affine_map_aabb(&m, cur_x0, cur_y0, cur_x1, cur_y1);
         }
 
         let mut ancestor = store.parent(node_id);
@@ -214,7 +192,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                     p_rect.width,
                     p_rect.height,
                 );
-                (cur_x0, cur_y0, cur_x1, cur_y1) = map_rect_aabb(&m, cur_x0, cur_y0, cur_x1, cur_y1);
+                (cur_x0, cur_y0, cur_x1, cur_y1) = affine_map_aabb(&m, cur_x0, cur_y0, cur_x1, cur_y1);
             }
             ancestor = store.parent(pid);
         }

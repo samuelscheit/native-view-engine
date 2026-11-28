@@ -10,7 +10,7 @@ use nve_store::{NodeStore, ResolvedRow, ResourceId, Rgba};
 use nve_tables::snapshots::VisualSnapshot;
 #[cfg(test)]
 use nve_tables::tables::{
-    BackgroundFillRes, BoxShadows, Image, ImageSrc, ImageSrcView, TextContent, TextInput,
+    BackgroundFillRes, BoxShadows, Image, ImageSrc, ImageSrcView, Overlay, TextContent, TextInput,
 };
 use nve_tables::tables::{
     is_hidden_text_input, Display, Layout, Overflow, Scroll, TextAlign, Typography, Visual,
@@ -329,19 +329,29 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     parent_text: Option<ResolvedChunkText>,
     sort_scratch: &mut Vec<NodeId>,
     ops: &mut Vec<PaintOp>,
+    active_overlay: Option<nve_layout::ResolvedOverlay>,
     id: NodeId,
 ) {
-    if is_node_display_none_effective(store, layout_tree, id) {
+    if is_node_display_none_effective(store, layout_tree, id)
+        || (active_overlay.is_none() && store.has::<Overlay>(id))
+        || (active_overlay.is_some() && nve_layout::is_overlay_closed(store, id))
+    {
         return;
     }
     let effective_hidden = store
         .try_row::<Visual>(id)
         .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
 
-    let Some(base_rect) = layout_tree.layout_of(id) else {
+    let Some(mut base_rect) = layout_tree.layout_of(id) else {
         return;
     };
-    let (stx, sty) = layout_tree.compute_sticky_delta(store, id);
+    let (stx, sty) = if let Some(ro) = active_overlay {
+        base_rect.width = ro.width;
+        base_rect.height = ro.height;
+        (ro.origin_x - base_rect.x, ro.origin_y - base_rect.y)
+    } else {
+        layout_tree.compute_sticky_delta(store, id)
+    };
     let node_offset = (offset.0 + stx, offset.1 + sty);
     let rect = offset_rect(base_rect, node_offset);
 
@@ -553,46 +563,18 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                 for i in start..end {
                     let cid = sort_scratch[i];
                     emit_node_into(
-                        store,
-                        layout_tree,
-                        focus,
-                        frame_hooks,
-                        table_registry,
-                        plugin_epochs,
-                        base_plugin_epoch,
-                        scale_factor,
-                        text_engine,
-                        child_clip,
-                        child_offset,
-                        any_tf,
-                        effective_hidden,
-                        Some(resolved_text),
-                        sort_scratch,
-                        ops,
-                        cid,
+                        store, layout_tree, focus, frame_hooks, table_registry, plugin_epochs,
+                        base_plugin_epoch, scale_factor, text_engine, child_clip, child_offset,
+                        any_tf, effective_hidden, Some(resolved_text), sort_scratch, ops, None, cid,
                     );
                 }
                 sort_scratch.truncate(start);
             } else {
                 for &cid in children {
                     emit_node_into(
-                        store,
-                        layout_tree,
-                        focus,
-                        frame_hooks,
-                        table_registry,
-                        plugin_epochs,
-                        base_plugin_epoch,
-                        scale_factor,
-                        text_engine,
-                        child_clip,
-                        child_offset,
-                        any_tf,
-                        effective_hidden,
-                        Some(resolved_text),
-                        sort_scratch,
-                        ops,
-                        cid,
+                        store, layout_tree, focus, frame_hooks, table_registry, plugin_epochs,
+                        base_plugin_epoch, scale_factor, text_engine, child_clip, child_offset,
+                        any_tf, effective_hidden, Some(resolved_text), sort_scratch, ops, None, cid,
                     );
                 }
             }

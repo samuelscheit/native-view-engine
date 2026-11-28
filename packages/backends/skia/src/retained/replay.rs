@@ -13,7 +13,7 @@ use crate::{DisplayList, PaintOp};
 
 const INLINE_REPLAY_DEPTH: usize = 64;
 /// Translucent viewport backdrop scrim painted behind modal / `BACKDROP_SCRIM` top-layer overlays.
-const OVERLAY_BACKDROP_SCRIM_COLOR: ColorRgba = ColorRgba::rgba(15, 23, 42, 140);
+pub(crate) const OVERLAY_BACKDROP_SCRIM_COLOR: ColorRgba = ColorRgba::rgba(15, 23, 42, 140);
 
 #[inline]
 pub(super) fn translate_rect(local: LayoutRect, wx: f32, wy: f32) -> LayoutRect {

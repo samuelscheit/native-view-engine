@@ -49,20 +49,34 @@ fn on_root(
     DomListenerGuard::attach(root.clone().into(), name, false, cb)
 }
 
-/// Attaches core delegated pointer listeners (`pointerdown`, `pointermove`, `pointerup`,
-/// `pointercancel`, `lostpointercapture`) on `root`.
+#[inline]
+fn is_dom_disabled(el: &web_sys::Element) -> bool {
+    el.has_attribute("disabled") || el.get_attribute("aria-disabled").as_deref() == Some("true")
+}
+
+/// Attaches core delegated pointer listeners (`pointerdown`, `pointerup`, `pointercancel`,
+/// `lostpointercapture`) on `root`.
 pub(crate) fn attach_pointer_core(
     root: &web_sys::Element,
     sinks: &EventSinks,
     active_capture: &Rc<RefCell<Option<(i32, NodeId)>>>,
-) -> [DomListenerGuard; 5] {
+) -> [DomListenerGuard; 4] {
     [
         attach_pointerdown(root, sinks, active_capture),
-        attach_pointermove(root, sinks, active_capture),
         attach_pointerup(root, sinks, active_capture),
         attach_pointercancel(root, sinks, active_capture),
         attach_lostpointercapture(root, sinks, active_capture),
     ]
+}
+
+/// Attaches lazy `pointermove` listener on `root` (only installed when a `PointerMove`
+/// subscriber is active on the surface).
+pub(crate) fn attach_pointer_move(
+    root: &web_sys::Element,
+    sinks: &EventSinks,
+    active_capture: &Rc<RefCell<Option<(i32, NodeId)>>>,
+) -> DomListenerGuard {
+    attach_pointermove(root, sinks, active_capture)
 }
 
 /// Attaches `pointerover` + `pointerout` on `root` to synthesize non-bubbling W3C `PointerLeave`
@@ -93,16 +107,19 @@ fn attach_pointerdown(
         let Some(&(target_id, _)) = chain.first() else { return };
 
         let mut captured = false;
-        if pe.button() == 0 {
+        if pe.button() == 0 && !is_dom_disabled(&el) {
             let cap_match = {
                 let st = sinks.state.borrow();
                 chain.iter().find(|(id, node_el)| {
-                    st.has_capture_primary(*id)
-                        || node_el.get_attribute("data-nve-capture").as_deref() == Some("primary")
+                    !is_dom_disabled(node_el)
+                        && (st.has_capture_primary(*id)
+                            || node_el.get_attribute("data-nve-capture").as_deref()
+                                == Some("primary"))
                 })
             };
-            if let Some((cap_id, cap_el)) = cap_match {
-                let _ = cap_el.set_pointer_capture(pe.pointer_id());
+            if let Some((cap_id, cap_el)) = cap_match
+                && cap_el.set_pointer_capture(pe.pointer_id()).is_ok()
+            {
                 *capture.borrow_mut() = Some((pe.pointer_id(), *cap_id));
                 captured = true;
             }
@@ -159,8 +176,23 @@ fn attach_pointermove(
             .filter(|&(pid, _)| pid == pe.pointer_id())
             .map(|(_, id)| id);
         let (target_id, extra) = if let Some(cap_id) = cap_target {
+            if !sinks
+                .state
+                .borrow()
+                .listens::<Interaction>(cap_id, InteractionEvent::PointerMove)
+            {
+                return;
+            }
             (cap_id, EventFlags::CAPTURE | EventFlags::NO_BUBBLE)
         } else {
+            if !sinks
+                .state
+                .borrow()
+                .tracker
+                .has_active_of::<Interaction>(InteractionEvent::PointerMove)
+            {
+                return;
+            }
             let Some(el) = target_to_element(ev.target()) else { return };
             let chain = collect_ancestors(&el, &r);
             let Some(&(leaf_id, _)) = chain.first() else { return };
@@ -207,17 +239,29 @@ fn attach_pointerup(
     let capture = Rc::clone(active_capture);
     on_root(root, "pointerup", move |ev| {
         let Some(pe) = ev.dyn_ref::<web_sys::PointerEvent>() else { return };
+        let release_primary = pe.button() == 0 || pe.buttons() == 0;
         let cap_target = {
             let mut slot = capture.borrow_mut();
             if slot.is_some_and(|(pid, _)| pid == pe.pointer_id()) {
-                slot.take().map(|(_, id)| id)
+                if release_primary {
+                    slot.take().map(|(_, id)| id)
+                } else {
+                    slot.map(|(_, id)| id)
+                }
             } else {
                 None
             }
         };
         let (target_id, extra) = if let Some(cap_id) = cap_target {
-            if let Some(el) = target_to_element(ev.target()) {
+            if release_primary && let Some(el) = target_to_element(ev.target()) {
                 let _ = el.release_pointer_capture(pe.pointer_id());
+            }
+            if !sinks
+                .state
+                .borrow()
+                .listens::<Interaction>(cap_id, InteractionEvent::PointerUp)
+            {
+                return;
             }
             (cap_id, EventFlags::CAPTURE | EventFlags::NO_BUBBLE)
         } else {
@@ -276,6 +320,13 @@ fn attach_pointercancel(
             }
         };
         let (target_id, extra) = if let Some(cap_id) = cap_target {
+            if !sinks
+                .state
+                .borrow()
+                .listens::<Interaction>(cap_id, InteractionEvent::PointerCancel)
+            {
+                return;
+            }
             (cap_id, EventFlags::CAPTURE | EventFlags::NO_BUBBLE)
         } else {
             let Some(el) = target_to_element(ev.target()) else { return };
@@ -330,6 +381,13 @@ fn attach_lostpointercapture(
             }
         };
         let Some(cap_id) = cap_id else { return };
+        if !sinks
+            .state
+            .borrow()
+            .listens::<Interaction>(cap_id, InteractionEvent::PointerCancel)
+        {
+            return;
+        }
         let (x, y) = (pe.client_x() as f32, pe.client_y() as f32);
         let pid = pe.pointer_id().max(0) as u32;
         let ptype = pointer_type_code(pe);

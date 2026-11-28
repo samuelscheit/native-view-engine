@@ -25,6 +25,8 @@ final class RuntimeEvent {
     this.width = 0,
     this.height = 0,
     this.pointerId = 0,
+    this.pointerButtons = 0,
+    this.pointerType = 0,
     this.keyCode = 0,
     this.key = '',
     this.code = '',
@@ -96,7 +98,9 @@ final class RuntimeEvent {
           timestamp: timestamp,
         );
 
-  /// Pointer down / move / up / enter / leave; [button] is `0..=7` (bits 8..=10 of `flags`).
+  /// Pointer down / move / up / enter / leave / cancel; [button] is `0..=7` (bits 8..=10 of
+  /// `flags`), [pointerButtons] is the pressed-button bitmask (`payload[3]` low 16 bits), and
+  /// [pointerType] is `0 = mouse`, `1 = pen`, `2 = touch` (`payload[3]` bits 16..=23).
   RuntimeEvent.pointer(
     NveInteractionEvent kind,
     int nodeId,
@@ -104,6 +108,8 @@ final class RuntimeEvent {
     double y, {
     int pointerId = 0,
     int button = 0,
+    int pointerButtons = 0,
+    int pointerType = 0,
     int modifiers = 0,
     bool capture = false,
     int surfaceId = 0,
@@ -117,6 +123,8 @@ final class RuntimeEvent {
           x: x,
           y: y,
           pointerId: pointerId,
+          pointerButtons: pointerButtons & 0xFFFF,
+          pointerType: pointerType & 0xFF,
           flags: (modifiers & _modMask) |
               (((button & 7) << nveEventFlagButtonShift) & nveEventFlagButtonMask) |
               (capture ? nveEventFlagCapture : 0),
@@ -286,6 +294,8 @@ final class RuntimeEvent {
   final int flags;
   final double x, y, width, height;
   final int pointerId;
+  final int pointerButtons;
+  final int pointerType;
   final int keyCode;
   final String key;
   final String code;

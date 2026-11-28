@@ -28,6 +28,7 @@ struct PointerAndFocusApp {
     initialized: bool,
     frame_buf: Vec<u8>,
     log: Vec<(NodeId, InteractionEvent, bool, bool)>,
+    pointer_buttons_log: Vec<(NodeId, InteractionEvent, u8, u16)>,
 }
 
 impl PointerAndFocusApp {
@@ -40,6 +41,7 @@ impl PointerAndFocusApp {
             initialized: false,
             frame_buf: Vec::new(),
             log: Vec::new(),
+            pointer_buttons_log: Vec::new(),
         }
     }
 }
@@ -119,6 +121,15 @@ impl DesktopApp for PointerAndFocusApp {
             if let Some(ie) = ev.interaction() {
                 self.log
                     .push((ev.node(), ie, ev.is_capture(), ev.bubbles()));
+                if matches!(
+                    ie,
+                    InteractionEvent::PointerDown
+                        | InteractionEvent::PointerMove
+                        | InteractionEvent::PointerUp
+                ) {
+                    self.pointer_buttons_log
+                        .push((ev.node(), ie, ev.pointer_button(), ev.pointer_buttons()));
+                }
                 handled = true;
             }
         }
@@ -281,4 +292,156 @@ fn tab_traversal_honors_tab_index_skips_disabled_and_sets_keyboard_focus_visible
     let st14 = session.backend().interaction_state(n14);
     assert!(st14.contains(InteractionState::FOCUS));
     assert!(!st14.contains(InteractionState::FOCUS_VISIBLE));
+}
+
+#[test]
+fn non_primary_chord_preserves_primary_active_and_capture_and_isolates_hover() {
+    let vp = Viewport {
+        width: 300.0,
+        height: 240.0,
+        scale_factor: 1.0,
+    };
+    let mut session = DesktopSession::new(
+        PointerAndFocusApp::new(),
+        SurfaceId::ROOT,
+        vp,
+        ColorRgba::BLACK,
+        false,
+    );
+    session.render_and_rasterize().unwrap();
+
+    let n10 = NodeId::new(10, 0);
+    let n11 = NodeId::new(11, 0);
+    let r10 = session.layout_of(n10).unwrap();
+    let r11 = session.layout_of(n11).unwrap();
+    let none = ModifiersState::empty();
+
+    // 1. Non-primary button down/up on n10 must NOT activate :active, focus, or fire Press.
+    session
+        .handle_pointer_down_logical(r10.x + 10.0, r10.y + 10.0, 2, none)
+        .unwrap();
+    assert!(!session.backend().interaction_state(n10).contains(InteractionState::ACTIVE));
+    assert_eq!(session.focused_node(), None);
+    session
+        .handle_pointer_up_logical_ex(r10.x + 10.0, r10.y + 10.0, 2, none)
+        .unwrap();
+    assert!(
+        !session
+            .app()
+            .log
+            .iter()
+            .any(|&(_, ev, _, _)| ev == InteractionEvent::Press),
+        "right-click must never emit Press"
+    );
+
+    // 2. Primary capture on n11 isolates hover (moving over n10 does NOT hover n10) AND survives
+    //    chorded right-button down+up without clobbering primary :active or capture!
+    session.app_mut().log.clear();
+    session.app_mut().pointer_buttons_log.clear();
+    session
+        .handle_pointer_down_logical(r11.x + 15.0, r11.y + 15.0, 0, none)
+        .unwrap();
+    assert_eq!(session.backend().captured_node(), Some(n11));
+    assert!(session.backend().interaction_state(n11).contains(InteractionState::ACTIVE));
+
+    session
+        .handle_pointer_move_logical(r10.x + 15.0, r10.y + 15.0)
+        .unwrap();
+    assert!(
+        !session.backend().interaction_state(n10).contains(InteractionState::HOVER),
+        "active pointer capture on n11 must not hover background node n10"
+    );
+
+    session
+        .handle_pointer_down_logical(r10.x + 15.0, r10.y + 15.0, 2, none)
+        .unwrap();
+    assert_eq!(session.backend().captured_node(), Some(n11));
+    assert!(session.backend().interaction_state(n11).contains(InteractionState::ACTIVE));
+
+    session
+        .handle_pointer_up_logical_ex(r10.x + 15.0, r10.y + 15.0, 2, none)
+        .unwrap();
+    assert_eq!(session.backend().captured_node(), Some(n11));
+    assert!(session.backend().interaction_state(n11).contains(InteractionState::ACTIVE));
+    assert!(session.app().pointer_buttons_log.contains(&(n11, InteractionEvent::PointerDown, 2, 3)));
+    assert!(session.app().pointer_buttons_log.contains(&(n11, InteractionEvent::PointerUp, 2, 1)));
+
+    // 3. Releasing primary button releases capture and clears :active.
+    session
+        .handle_pointer_up_logical_ex(r10.x + 15.0, r10.y + 15.0, 0, none)
+        .unwrap();
+    assert_eq!(session.backend().captured_node(), None);
+    assert!(!session.backend().interaction_state(n11).contains(InteractionState::ACTIVE));
+}
+
+#[test]
+fn unhandled_tab_falls_through_to_keydown_when_no_focusable_nodes() {
+    struct NoFocusableApp {
+        store: NodeStore,
+        encoder: WireEncoder,
+        changes: ChangeSet,
+        init: bool,
+        buf: Vec<u8>,
+        keys: Vec<String>,
+    }
+    impl DesktopApp for NoFocusableApp {
+        fn generation(&self) -> u64 {
+            1
+        }
+        fn render(&mut self, _: FrameId) -> &[u8] {
+            let mut tx = self.store.tx();
+            if !self.init {
+                tx.edit::<Interaction>(NodeId::ROOT)
+                    .listeners(EventSet::one(InteractionEvent::KeyDown));
+                self.init = true;
+            }
+            tx.commit_into(&mut self.changes);
+            self.buf.clear();
+            self.encoder.encode(&self.store, &self.changes, &mut self.buf);
+            &self.buf
+        }
+        fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+            let mut any = false;
+            for ev in events.iter() {
+                if ev.interaction() == Some(InteractionEvent::KeyDown) {
+                    self.keys.push(ev.key().to_owned());
+                    any = true;
+                }
+            }
+            any
+        }
+        fn apply_hot_patch(&mut self, _: &[u8]) -> bool {
+            false
+        }
+        fn reload(&mut self, _: &Path, _: SurfaceId) -> Result<u64, DesktopHostError> {
+            Ok(1)
+        }
+    }
+
+    register_core_tables();
+    let app = NoFocusableApp {
+        store: NodeStore::new(),
+        encoder: WireEncoder::default(),
+        changes: ChangeSet::default(),
+        init: false,
+        buf: Vec::new(),
+        keys: Vec::new(),
+    };
+    let mut session = DesktopSession::new(
+        app,
+        SurfaceId::ROOT,
+        Viewport {
+            width: 200.0,
+            height: 100.0,
+            scale_factor: 1.0,
+        },
+        ColorRgba::BLACK,
+        false,
+    );
+    session.render_and_rasterize().unwrap();
+    let handled = session
+        .handle_keyboard_input(&Key::Named(NamedKey::Tab), None, ModifiersState::empty())
+        .unwrap();
+    assert!(handled, "Tab with zero focusable nodes must fall through to KeyDown");
+    assert_eq!(session.app().keys.as_slice(), &["Tab"]);
 }

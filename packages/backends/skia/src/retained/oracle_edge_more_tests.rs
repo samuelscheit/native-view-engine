@@ -11,7 +11,8 @@ use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba, TableSlot}
 use nve_tables::paint::{BackgroundFill, GradientStop};
 use nve_tables::snapshots::VisualSnapshot;
 use nve_tables::tables::{
-    BackgroundFillRes, BoxShadow, BoxShadows, FlexDirection, Image, ImageFit, ImageSrc, Layout,
+    BackgroundFillRes, BoxShadow, BoxShadows, DebugId, FlexDirection, Image, ImageFit, ImageSrc,
+    Layout, Overflow, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement, Position,
     TextContent, Typography, Visibility, Visual,
 };
 use nve_tables::transform::Transform2D;
@@ -484,6 +485,91 @@ fn in_place_resource_redef_gradient_shadow_frame_hook_and_recycled_node_id_aba()
 
     // Keep physical_dims helper explicitly exercised.
     assert_eq!(physical_dims(180, 120, 1.5), (270, 180));
+}
+
+#[test]
+fn top_layer_overlay_and_modal_scrim_match_fresh_display_list_oracle() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut backend = SkiaBackend::new();
+    backend.set_viewport(
+        SurfaceId::ROOT,
+        Viewport {
+            width: 240.0,
+            height: 160.0,
+            scale_factor: 1.0,
+        },
+    );
+
+    let ov = {
+        let mut tx = store.tx();
+        let bg = tx.create();
+        tx.edit::<Layout>(bg)
+            .position(Position::Absolute)
+            .inset_left(Length::points(10.0))
+            .inset_top(Length::points(10.0))
+            .width(Length::points(80.0))
+            .height(Length::points(40.0));
+        tx.edit::<Visual>(bg).background(Rgba::rgb(37, 99, 235));
+
+        let clipper = tx.create();
+        tx.edit::<Layout>(clipper)
+            .position(Position::Absolute)
+            .inset_left(Length::points(110.0))
+            .inset_top(Length::points(20.0))
+            .width(Length::points(40.0))
+            .height(Length::points(20.0));
+        tx.edit::<Visual>(clipper)
+            .overflow_x(Overflow::Hidden)
+            .overflow_y(Overflow::Hidden)
+            .background(Rgba::rgb(71, 85, 105));
+        tx.edit::<DebugId>(clipper).id("oracle-anchor");
+
+        let ov = tx.create();
+        tx.edit::<Layout>(ov)
+            .position(Position::Fixed)
+            .width(Length::points(90.0))
+            .height(Length::points(50.0));
+        tx.edit::<Visual>(ov).background(Rgba::rgb(16, 185, 129));
+        tx.edit::<Overlay>(ov)
+            .layer(OverlayLayer::Popover)
+            .anchor_id("oracle-anchor")
+            .placement(OverlayPlacement::BottomStart)
+            .offset_px(6.0)
+            .options(OverlayFlags::NONE);
+
+        tx.set_children(clipper, &[ov]);
+        tx.set_children(NodeId::ROOT, &[bg, clipper]);
+        tx.commit_into(&mut changes);
+        ov
+    };
+
+    backend.commit(&store, &changes).expect("closed init");
+    assert_scene_matches_fresh_display_list(&mut backend, &store, 240, 160, "overlay closed");
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<Overlay>(ov).options(OverlayFlags::OPEN | OverlayFlags::FLIP | OverlayFlags::SHIFT);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).expect("open popover");
+    assert_scene_matches_fresh_display_list(&mut backend, &store, 240, 160, "overlay popover");
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<Overlay>(ov).layer(OverlayLayer::Modal);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).expect("modal overlay");
+    assert_scene_matches_fresh_display_list(&mut backend, &store, 240, 160, "overlay modal scrim");
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<Overlay>(ov).options(OverlayFlags::NONE);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).expect("re-closed");
+    assert_scene_matches_fresh_display_list(&mut backend, &store, 240, 160, "overlay re-closed");
 }
 
 fn encode_base64(bytes: &[u8]) -> String {

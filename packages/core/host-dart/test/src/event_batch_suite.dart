@@ -27,6 +27,8 @@ void runEventBatch(Check c) {
       60.5,
       pointerId: 7,
       button: 2,
+      pointerButtons: 5,
+      pointerType: 2,
       modifiers: nveEventFlagModShift | nveEventFlagModMeta,
       capture: true,
       timestampUs: 104,
@@ -104,7 +106,11 @@ void runEventBatch(Check c) {
   // Pointer.
   final ptr = decoded[4];
   c.eq(ptr.interaction, NveInteractionEvent.pointerDown, 'pointerDown');
-  c.eq((ptr.x, ptr.y, ptr.pointerId, ptr.pointerButton, ptr.isCapture), (50.5, 60.5, 7, 2, true), 'pointer fields');
+  c.eq(
+    (ptr.x, ptr.y, ptr.pointerId, ptr.pointerButton, ptr.pointerButtons, ptr.pointerType, ptr.isCapture),
+    (50.5, 60.5, 7, 2, 5, 2, true),
+    'pointer fields',
+  );
   c.eq(ptr.modifiers, nveEventFlagModShift | nveEventFlagModMeta, 'pointer modifiers');
 
   // Wheel.

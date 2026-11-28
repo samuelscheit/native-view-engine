@@ -152,6 +152,7 @@ impl DioxusSurface {
                                     d.pointer_id = crate::dioxus_elements::PointerId(ev.pointer_id());
                                     d.button = ev.pointer_button();
                                     d.buttons = ev.pointer_buttons();
+                                    d.pointer_type = ev.pointer_type();
                                     d.captured = ev.is_capture();
                                     d.shift = ev.shift();
                                     d.ctrl = ev.ctrl();

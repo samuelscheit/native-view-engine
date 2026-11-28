@@ -35,7 +35,7 @@ final class EventCodecTests: XCTestCase {
         b.pushKeyDown(surface: 1, node: 13, timestamp: 106, key: "MediaTrackPreviousLongKey", code: "MediaTrackPrevious")
         // Pointer + button + capture + modifiers.
         let pFlags = EventFlags.fromModifiers(ctrl: true, alt: true).withPointerButton(2).union(.capture)
-        b.pushPointer(surface: 1, node: 14, timestamp: 107, event: .pointerMove, x: 5.5, y: 6.5, pointerId: 7, flags: pFlags)
+        b.pushPointer(surface: 1, node: 14, timestamp: 107, event: .pointerMove, x: 5.5, y: 6.5, pointerId: 7, flags: pFlags, buttons: 0x0005, pointerType: 2)
         b.pushWheel(surface: 1, node: 14, timestamp: 108, deltaX: -1.5, deltaY: 12.0, flags: .modShift)
         b.pushTextChange(surface: 1, node: 15, timestamp: 109, text: "hello 世界")
         b.pushSubmit(surface: 1, node: 15, timestamp: 110, text: "done")
@@ -84,6 +84,8 @@ final class EventCodecTests: XCTestCase {
             let e7 = try XCTUnwrap(r.record(at: 7))
             XCTAssertEqual(e7.interaction, .pointerMove)
             XCTAssertEqual(e7.pointerId, 7)
+            XCTAssertEqual(e7.pointerButtons, 0x0005)
+            XCTAssertEqual(e7.pointerType, 2)
             XCTAssertEqual(e7.flags.pointerButton, 2)
             XCTAssertTrue(e7.flags.isCapture && e7.flags.ctrl && e7.flags.alt && e7.flags.hasPrimaryModifier)
 

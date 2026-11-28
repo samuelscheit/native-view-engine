@@ -75,8 +75,10 @@ pub(crate) struct RootEventDelegator {
     /// Window `keydown` + the root `focusin` that routes body-targeted keys to this surface.
     keydown: Option<[DomListenerGuard; 2]>,
     submit: Option<DomListenerGuard>,
-    /// `pointerdown`, `pointermove`, `pointerup`, `pointercancel`, `lostpointercapture`.
-    pointer_core: Option<[DomListenerGuard; 5]>,
+    /// `pointerdown`, `pointerup`, `pointercancel`, `lostpointercapture`.
+    pointer_core: Option<[DomListenerGuard; 4]>,
+    /// Lazy `pointermove` listener attached only while a `PointerMove` subscriber exists.
+    pointer_move: Option<DomListenerGuard>,
     /// `pointerover` + `pointerout` synthesizing non-bubbling `PointerLeave`/`PointerEnter`.
     pointer_hover: Option<[DomListenerGuard; 2]>,
 }
@@ -112,6 +114,7 @@ impl RootEventDelegator {
             keydown: None,
             submit: None,
             pointer_core: None,
+            pointer_move: None,
             pointer_hover: None,
         }
     }
@@ -119,6 +122,25 @@ impl RootEventDelegator {
     pub(crate) fn clear_pointer_state(&mut self) {
         *self.active_capture.borrow_mut() = None;
         self.entered_chain.borrow_mut().clear();
+    }
+
+    /// Prunes removed or capture-ineligible nodes from `active_capture` and `entered_chain`.
+    /// Returns `(pointer_id, node_id)` if an active capture was invalidated so the caller can
+    /// release browser pointer capture before detaching the element.
+    pub(crate) fn prune_pointer_state(
+        &mut self,
+        store: &nve_store::NodeStore,
+        st: &WebEventState,
+    ) -> Option<(i32, NodeId)> {
+        self.entered_chain.borrow_mut().retain(|&id| store.is_live(id));
+        let mut cap = self.active_capture.borrow_mut();
+        if let Some((pid, cap_id)) = *cap
+            && (!store.is_live(cap_id) || !st.has_capture_primary(cap_id))
+        {
+            *cap = None;
+            return Some((pid, cap_id));
+        }
+        None
     }
 
     /// Synchronizes DOM listener attachment against the tracker's refcounts and the registered
@@ -140,9 +162,10 @@ impl RootEventDelegator {
             || has_hooks(self.key_interceptors.try_borrow().map(|h| h.is_empty()));
         let want_pointer_core = st.capture_count > 0
             || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerDown)
-            || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerMove)
             || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerUp)
             || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerCancel);
+        let want_pointer_move =
+            st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerMove);
         let want_pointer_hover =
             st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerEnter)
                 || st.tracker.has_active_of::<Interaction>(InteractionEvent::PointerLeave);
@@ -179,6 +202,11 @@ impl RootEventDelegator {
             self.pointer_core,
             want_pointer_core,
             crate::pointer_dom::attach_pointer_core(&self.root, &self.sinks, &self.active_capture)
+        );
+        toggle_slot!(
+            self.pointer_move,
+            want_pointer_move,
+            crate::pointer_dom::attach_pointer_move(&self.root, &self.sinks, &self.active_capture)
         );
         if !want_pointer_hover {
             self.entered_chain.borrow_mut().clear();
