@@ -513,3 +513,110 @@ fn direct_props_reject_corrupt_keys_instead_of_skipping_them() {
     let keys: Vec<_> = map.try_iter().map(|e| e.map(|(k, _)| k)).collect();
     assert_eq!(keys, [Ok("ok"), Err(DecodeError::InvalidUtf8)]);
 }
+
+#[test]
+fn surface_token_layout_reload_safety_and_packing() {
+    use core::mem::{align_of, offset_of, size_of};
+    use crate::id::SurfaceId;
+
+    assert_eq!(size_of::<SurfaceToken>(), 8);
+    assert_eq!(align_of::<SurfaceToken>(), 4);
+    assert_eq!(offset_of!(SurfaceToken, surface_id), 0);
+    assert_eq!(offset_of!(SurfaceToken, reload_gen), 4);
+
+    assert!(SurfaceToken::NULL.is_null());
+    assert!(!SurfaceToken::NULL.is_live_for(SurfaceToken::NULL));
+
+    let s1 = SurfaceId::new(1, 3);
+    let tok_v1 = SurfaceToken::new(s1, 1);
+    let tok_v2 = tok_v1.next_reload();
+    assert_eq!(tok_v2.surface_id, s1);
+    assert_eq!(tok_v2.reload_gen, 2);
+    assert!(tok_v1.is_live_for(tok_v1));
+    assert!(!tok_v1.is_live_for(tok_v2));
+
+    // Roundtrip through u64 owner tag & canonicalize bogus index-0 generation.
+    assert_eq!(SurfaceToken::from_u64(tok_v2.to_u64()), tok_v2);
+    let bogus_raw = (0x7Fu64 << 24) | (9u64 << 32);
+    let canon = SurfaceToken::from_u64(bogus_raw);
+    assert!(canon.is_null());
+    assert_eq!(canon.surface_id, SurfaceId::NULL);
+    assert_eq!(canon.reload_gen, 9);
+}
+
+#[test]
+fn bytes_sink_and_async_bytes_done_helpers_are_sound_and_panic_safe() {
+    use core::ffi::c_void;
+
+    // 1. Happy path round-trip through with_bytes_sink + invoke_bytes_sink (non-empty and empty).
+    let mut captured = Vec::new();
+    let delivered = with_bytes_sink(
+        |slice| captured.push(slice.to_vec()),
+        |sink, ctx| {
+            // SAFETY: `sink` and `ctx` are provided by `with_bytes_sink` for this call.
+            unsafe {
+                let a = invoke_bytes_sink(Some(sink), ctx, b"hello-direct-ffi");
+                let b = invoke_bytes_sink(Some(sink), ctx, &[]);
+                let c = invoke_bytes_sink(None, ctx, b"ignored");
+                // Corrupt slices (null + non-zero len, huge len) are rejected safely without UB.
+                sink(ctx, std::ptr::null(), 128);
+                sink(ctx, b"x".as_ptr(), isize::MAX as usize + 1);
+                sink(std::ptr::null_mut(), b"x".as_ptr(), 1);
+                (a, b, c)
+            }
+        },
+    );
+    assert_eq!(delivered, (true, true, false));
+    assert_eq!(captured, vec![b"hello-direct-ffi".to_vec(), Vec::new()]);
+
+    // 2. Panic inside sink callback is caught across extern "C" and resumed after FFI returns.
+    let panic_res = std::panic::catch_unwind(|| {
+        with_bytes_sink(
+            |_slice| panic!("sink callback panic"),
+            |sink, ctx| {
+                // SAFETY: Valid sink from `with_bytes_sink`.
+                unsafe {
+                    invoke_bytes_sink(Some(sink), ctx, b"boom");
+                    // Subsequent calls after panic are skipped safely.
+                    invoke_bytes_sink(Some(sink), ctx, b"second");
+                }
+            },
+        );
+    });
+    assert!(panic_res.is_err());
+
+    // 3. invoke_async_bytes_done normalizes empty slices to NULL and forwards non-empty payloads.
+    struct AsyncCapture {
+        calls: Vec<(u64, i32, bool, Vec<u8>)>,
+    }
+    unsafe extern "C" fn capture_done(
+        user_ctx: *mut c_void,
+        request_id: u64,
+        status: i32,
+        ptr: *const u8,
+        len: usize,
+    ) {
+        // SAFETY: Test passes pinned `&mut AsyncCapture` and valid `(ptr, len)` from `invoke_async_bytes_done`.
+        unsafe {
+            let cap = &mut *(user_ctx as *mut AsyncCapture);
+            let bytes = sink_bytes(ptr, len).unwrap_or(&[]);
+            cap.calls.push((request_id, status, ptr.is_null(), bytes.to_vec()));
+        }
+    }
+
+    let mut async_cap = AsyncCapture { calls: Vec::new() };
+    let ctx = (&mut async_cap as *mut AsyncCapture).cast::<c_void>();
+    // SAFETY: `ctx` points to live `async_cap` for these synchronous calls.
+    unsafe {
+        assert!(invoke_async_bytes_done(Some(capture_done), ctx, 42, 0, b"done-bytes"));
+        assert!(invoke_async_bytes_done(Some(capture_done), ctx, 43, -6, &[]));
+        assert!(!invoke_async_bytes_done(None, ctx, 44, 0, b"nope"));
+    }
+    assert_eq!(
+        async_cap.calls,
+        vec![
+            (42, 0, false, b"done-bytes".to_vec()),
+            (43, -6, true, Vec::new()),
+        ]
+    );
+}

@@ -6,6 +6,7 @@
 
 mod args;
 mod codec;
+pub mod sink;
 #[cfg(test)]
 mod tests;
 mod value;
@@ -21,6 +22,10 @@ pub use args::{buffer_arg, decode_array, decode_bool, decode_opt};
 pub use codec::{
     HybridCodec, HybridElem, HybridFields, HybridStruct, decode_bin_arg, decode_enum,
     decode_struct_bin, decode_struct_value_ref, encode_struct, encode_to_vec,
+};
+pub use sink::{
+    invoke_async_bytes_done, invoke_bytes_sink, sink_bytes, with_bytes_sink, NveAsyncBytesDone,
+    NveBytesSink, SurfaceToken,
 };
 pub use value::NveHybridValue;
 

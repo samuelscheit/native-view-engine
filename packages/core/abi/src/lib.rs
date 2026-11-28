@@ -68,6 +68,11 @@ pub use runtime::{
 };
 pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]
+pub use hybrid::{
+    invoke_async_bytes_done, invoke_bytes_sink, sink_bytes, with_bytes_sink, NveAsyncBytesDone,
+    NveBytesSink, SurfaceToken,
+};
+#[cfg(feature = "wire")]
 pub use value::{
     encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinArrayWriter, BinMapIter,
     BinMapWriter, BinValueView, BinWriter, NveValueTree, NVE_BIN_VALUE_MAX_DEPTH,
