@@ -38,7 +38,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let dirty = self.layout_tree.interaction_tracker_mut_move(hit);
         if !dirty.is_empty() {
             self.sync_frame_hooks(store, &dirty);
-            self.rebuild_display_list(store);
+            self.update_scene_paint_nodes(store, &dirty);
             true
         } else {
             false
@@ -49,7 +49,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let dirty = self.layout_tree.dispatch_pointer_leave();
         if !dirty.is_empty() {
             self.sync_frame_hooks(store, &dirty);
-            self.rebuild_display_list(store);
+            self.update_scene_paint_nodes(store, &dirty);
             true
         } else {
             false
@@ -61,7 +61,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let dirty = self.layout_tree.interaction_tracker_mut_down(hit);
         if !dirty.is_empty() {
             self.sync_frame_hooks(store, &dirty);
-            self.rebuild_display_list(store);
+            self.update_scene_paint_nodes(store, &dirty);
             true
         } else {
             false
@@ -73,7 +73,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let dirty = self.layout_tree.interaction_tracker_mut_up(hit);
         if !dirty.is_empty() {
             self.sync_frame_hooks(store, &dirty);
-            self.rebuild_display_list(store);
+            self.update_scene_paint_nodes(store, &dirty);
             true
         } else {
             false
@@ -89,7 +89,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let dirty = self.layout_tree.dispatch_focus(node_id, modality);
         if !dirty.is_empty() {
             self.sync_frame_hooks(store, &dirty);
-            self.rebuild_display_list(store);
+            self.update_scene_paint_nodes(store, &dirty);
             true
         } else {
             false

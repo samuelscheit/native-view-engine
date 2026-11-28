@@ -199,9 +199,9 @@ impl BackgroundFill {
     }
 }
 
-/// Clamps stop offsets to `0.0..=1.0` and stably sorts them in ascending offset order.
-pub fn normalize_stops(mut stops: Vec<GradientStop>) -> Vec<GradientStop> {
-    for s in &mut stops {
+/// Clamps stop offsets to `0.0..=1.0` and stably sorts them in ascending offset order in place.
+pub fn normalize_stops_in_place(stops: &mut [GradientStop]) {
+    for s in stops.iter_mut() {
         s.offset = if s.offset.is_finite() {
             s.offset.clamp(0.0, 1.0)
         } else {
@@ -209,6 +209,11 @@ pub fn normalize_stops(mut stops: Vec<GradientStop>) -> Vec<GradientStop> {
         };
     }
     stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+}
+
+/// Clamps stop offsets to `0.0..=1.0` and stably sorts them in ascending offset order.
+pub fn normalize_stops(mut stops: Vec<GradientStop>) -> Vec<GradientStop> {
+    normalize_stops_in_place(&mut stops);
     stops
 }
 
@@ -392,5 +397,29 @@ mod tests {
         let (p0, p1) = g180.endpoints(0.0, 0.0, 100.0, 200.0);
         assert!((p0.0 - 50.0).abs() < 1e-3 && (p0.1 - 0.0).abs() < 1e-3);
         assert!((p1.0 - 50.0).abs() < 1e-3 && (p1.1 - 200.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn normalize_stops_in_place_clamps_sanitizes_and_stably_sorts() {
+        let red = ColorRgba::rgb(255, 0, 0);
+        let green = ColorRgba::rgb(0, 255, 0);
+        let blue = ColorRgba::rgb(0, 0, 255);
+        let yellow = ColorRgba::rgb(255, 255, 0);
+        let mut stops = [
+            GradientStop { offset: 1.5, color: blue },
+            GradientStop { offset: 0.5, color: red },
+            GradientStop { offset: f32::NAN, color: yellow },
+            GradientStop { offset: 0.5, color: green },
+            GradientStop { offset: -0.25, color: red },
+        ];
+        let via_vec = normalize_stops(stops.to_vec());
+        normalize_stops_in_place(&mut stops);
+        assert_eq!(stops.as_slice(), via_vec.as_slice());
+        assert_eq!(stops[0], GradientStop { offset: 0.0, color: yellow });
+        assert_eq!(stops[1], GradientStop { offset: 0.0, color: red });
+        assert_eq!(stops[2], GradientStop { offset: 0.5, color: red });
+        assert_eq!(stops[3], GradientStop { offset: 0.5, color: green });
+        assert_eq!(stops[4], GradientStop { offset: 1.0, color: blue });
+        assert!(stops_are_normalized(&stops));
     }
 }

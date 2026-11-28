@@ -10,15 +10,16 @@
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 
-use nve_abi::NveHostCallbacks;
+use nve_abi::{NveHostBatchError, NveHostCallbacks, SERVICE_SYSTEM_ENV};
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_host_services::{
-    FfiHostServices, HostEvent, HostServiceProvider, InvokeResult, MemoryHostServices,
-    ServiceError, TypedEventBus,
+    FfiHostServices, HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider, InvokeResult,
+    MemoryHostServices, ServiceError, TypedEventBus,
 };
 use nve_system_env::{
-    ColorScheme, LocaleSnapshot, MemorySystemEnv, NativeSystemEnv, SystemEnvBackend,
-    SystemEnvBridge, SystemEnvClient, SystemEnvEvent, ThemeSnapshot,
+    unpack_locale_ffi, ColorScheme, LocaleSnapshot, MemorySystemEnv, NativeSystemEnv,
+    SystemEnvBackend, SystemEnvBridge, SystemEnvClient, SystemEnvEvent, ThemeSnapshot,
+    EVENT_LOCALE_CHANGED, EVENT_THEME_CHANGED,
 };
 
 /// Synchronized host system environment snapshot (theme + locale) sourced via [`SystemEnvClient`].
@@ -44,6 +45,7 @@ impl Default for StudioSystemEnv {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostEventSyncReport {
     pub processed_events: usize,
+    pub non_cancelled_responses: usize,
     pub updated_theme: Option<ThemeSnapshot>,
     pub updated_locale: Option<LocaleSnapshot>,
 }
@@ -188,6 +190,50 @@ impl StudioHostServices {
         report
     }
 
+    /// Ingests a canonical `NveHostEventBatch` (`NVHB` v1) through `FfiHostServices`, routing
+    /// `Response` completions, `Channel` messages, and `SERVICE_SYSTEM_ENV` `Push` updates
+    /// without dropping unrelated push events (such as `SERVICE_LINKING` deep links).
+    pub fn ingest_host_batch(&self, batch: &[u8]) -> Result<HostEventSyncReport, NveHostBatchError> {
+        let stats = self.ffi.ingest_batch(batch)?;
+        let pushes = self
+            .ffi
+            .typed_events()
+            .drain_typed_where::<HostPushEvent, _>(|ev| ev.service_id == SERVICE_SYSTEM_ENV);
+        let _ = self
+            .ffi
+            .typed_events()
+            .drain_typed::<HostChannelEvent>();
+        let mut report = HostEventSyncReport {
+            processed_events: stats.total(),
+            non_cancelled_responses: stats.non_cancelled_responses(),
+            ..HostEventSyncReport::default()
+        };
+        let bus = self.typed_event_bus();
+        for ev in pushes {
+            match ev.event_id {
+                EVENT_THEME_CHANGED => {
+                    if let Ok(theme) = ThemeSnapshot::from_repr_c_bytes(&ev.payload) {
+                        report.updated_theme = Some(theme);
+                        if let Some(bus) = bus {
+                            let _ = bus.publish_retained_notify(SystemEnvEvent::ThemeChanged(theme));
+                        }
+                    }
+                }
+                EVENT_LOCALE_CHANGED => {
+                    if let Ok(locale) = unpack_locale_ffi(&ev.payload) {
+                        report.updated_locale = Some(locale.clone());
+                        if let Some(bus) = bus {
+                            let _ =
+                                bus.publish_retained_notify(SystemEnvEvent::LocaleChanged(locale));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(report)
+    }
+
     /// Drains any queued typed [`SystemEnvEvent`]s from the active [`TypedEventBus`].
     pub fn drain_system_env_events(&self) -> HostEventSyncReport {
         let events = self.system_env().drain_events();
@@ -208,16 +254,46 @@ impl StudioHostServices {
 }
 
 impl HostServiceProvider for StudioHostServices {
-    fn invoke_raw(
+    fn invoke_raw_with_id(
         &self,
         service_id: u32,
         method_id: u32,
+        request_id: u64,
         request: &[u8],
     ) -> Result<InvokeResult, ServiceError> {
         if self.ffi.is_bound() {
-            self.ffi.invoke_raw(service_id, method_id, request)
+            self.ffi
+                .invoke_raw_with_id(service_id, method_id, request_id, request)
         } else {
-            self.fallback.invoke_raw(service_id, method_id, request)
+            self.fallback
+                .invoke_raw_with_id(service_id, method_id, request_id, request)
+        }
+    }
+
+    fn invoke_raw_with_id_for_owner(
+        &self,
+        owner_tag: u64,
+        service_id: u32,
+        method_id: u32,
+        request_id: u64,
+        request: &[u8],
+    ) -> Result<InvokeResult, ServiceError> {
+        if self.ffi.is_bound() {
+            self.ffi.invoke_raw_with_id_for_owner(
+                owner_tag,
+                service_id,
+                method_id,
+                request_id,
+                request,
+            )
+        } else {
+            self.fallback.invoke_raw_with_id_for_owner(
+                owner_tag,
+                service_id,
+                method_id,
+                request_id,
+                request,
+            )
         }
     }
 
@@ -250,6 +326,14 @@ impl HostServiceProvider for StudioHostServices {
         }
     }
 
+    fn host_completion_sink(&self) -> Option<&nve_host_services::CompletionSink> {
+        if self.ffi.is_bound() {
+            self.ffi.host_completion_sink()
+        } else {
+            self.fallback.host_completion_sink()
+        }
+    }
+
     fn typed_service(
         &self,
         service_id: u32,
@@ -260,6 +344,38 @@ impl HostServiceProvider for StudioHostServices {
             None
         } else {
             self.fallback.typed_service(service_id, method_id, type_id)
+        }
+    }
+
+    fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
+        if self.ffi.is_bound() {
+            self.ffi.take_async_response(request_id)
+        } else {
+            self.fallback.take_async_response(request_id)
+        }
+    }
+
+    fn cancel_pending(&self) -> usize {
+        if self.ffi.is_bound() {
+            self.ffi.cancel_pending()
+        } else {
+            self.fallback.cancel_pending()
+        }
+    }
+
+    fn discard_pending(&self) -> usize {
+        if self.ffi.is_bound() {
+            self.ffi.discard_pending()
+        } else {
+            self.fallback.discard_pending()
+        }
+    }
+
+    fn discard_pending_for_owner(&self, owner_tag: u64) -> usize {
+        if self.ffi.is_bound() {
+            self.ffi.discard_pending_for_owner(owner_tag)
+        } else {
+            self.fallback.discard_pending_for_owner(owner_tag)
         }
     }
 }

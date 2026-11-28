@@ -43,8 +43,15 @@ pub use ffi::{
     NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 pub use host::{
-    NveHostApi, NveHostCallbacks, NveHostChannelPublishFn, NveHostInvokeFn, NveHostStatus,
-    METHOD_WINDOW_REQUEST_FRAME, NVE_CHANNEL_FLAG_RETAIN, SERVICE_CHANNEL, SERVICE_CLIPBOARD,
+    align8_payload_len, encode_single_push_into, host_batch_padded_record_len,
+    single_record_batch_len, HostRequestId, HostServiceId, NveHostApi, NveHostBatchError,
+    NveHostCallbacks,
+    NveHostChannelPublishFn, NveHostEventBatchBuilder, NveHostEventBatchHeader,
+    NveHostEventBatchIter, NveHostEventBatchRef, NveHostEventKind, NveHostEventRecord,
+    NveHostEventRecordHeader, NveHostInvokeFn, NveHostStatus, METHOD_WINDOW_REQUEST_FRAME,
+    NVE_CHANNEL_FLAG_RETAIN, NVE_HOST_BATCH_ALIGN, NVE_HOST_BATCH_HEADER_LEN, NVE_HOST_BATCH_MAGIC,
+    NVE_HOST_BATCH_MAX_BYTES, NVE_HOST_BATCH_MAX_PAYLOAD, NVE_HOST_BATCH_VERSION,
+    NVE_HOST_RECORD_FLAG_RETAIN, NVE_HOST_RECORD_HEADER_LEN, SERVICE_CHANNEL, SERVICE_CLIPBOARD,
     SERVICE_FILESYSTEM, SERVICE_HAPTICS, SERVICE_LINKING, SERVICE_NOTIFICATIONS,
     SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };

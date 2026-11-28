@@ -12,6 +12,10 @@ compile_error!(
 #[global_allocator]
 static ALLOC: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
+#[cfg(feature = "web-host-services")]
+pub mod host_services;
+#[cfg(all(test, feature = "web-host-services"))]
+mod host_services_tests;
 pub mod hydrate;
 #[cfg(feature = "multi-window")]
 pub mod multi_window;
@@ -65,6 +69,8 @@ mod wasm_wake;
 #[cfg(target_arch = "wasm32")]
 mod wasm_appearance;
 
+#[cfg(feature = "web-host-services")]
+pub use host_services::WebHostServices;
 pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec};
 
 /// Plugin set for dev sessions rendering arbitrary remote apps (pairing, probes): `nve-web-html`,

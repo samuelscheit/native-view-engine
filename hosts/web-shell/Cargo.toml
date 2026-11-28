@@ -14,8 +14,14 @@ crate-type = ["rlib"]
 # Production bundles (hosts/web-shell/build.sh): `--no-default-features --features app-studio`
 # (or `app-kitchen-sink`): exactly one app, no hot reload, pairing, popups or scene mirror.
 default = ["app-studio", "app-kitchen-sink", "dev", "multi-window"]
-app-studio = ["dep:nve-studio-workspace", "nve-studio-workspace/web"]
-app-kitchen-sink = ["dep:nve-example-kitchen-sink", "nve-example-kitchen-sink/web"]
+web-host-services = [
+    "dep:nve-clipboard-web",
+    "dep:nve-haptics-web",
+    "dep:nve-linking-web",
+    "dep:nve-system-env-web",
+]
+app-studio = ["dep:nve-studio-workspace", "nve-studio-workspace/web", "web-host-services"]
+app-kitchen-sink = ["dep:nve-example-kitchen-sink", "nve-example-kitchen-sink/web", "web-host-services"]
 app-issues = [
     "nve-example-issues-client/web",
     "dep:base64",
@@ -34,7 +40,7 @@ app-issues = [
 issues-probes = ["app-issues", "dep:nve-ui", "dep:dioxus-core-macro", "dep:nve-tv-web", "nve-backend-web/parity-fixtures"]
 # `nve dev` Tier-1/2 hot-reload WebSocket (binary NVP1), the `NveWebHost` NVT1/NVD1 pairing client
 # and the semantic-style hydration probe used by the E2E suite.
-dev = ["dep:nve-canvas", "dep:nve-canvas-web"]
+dev = ["dep:nve-canvas", "dep:nve-canvas-web", "web-host-services"]
 # Popup windows + `NVW1` `BroadcastChannel` window sync (`nve-interop` WindowManager).
 multi-window = []
 
@@ -51,7 +57,12 @@ nve-web-html-web = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-backend-web = { workspace = true }
+nve-clipboard-web = { workspace = true, optional = true }
+nve-haptics-web = { workspace = true, optional = true }
+nve-host-services = { workspace = true }
 nve-interop = { workspace = true }
+nve-linking-web = { workspace = true, optional = true }
+nve-system-env-web = { workspace = true, optional = true }
 nve-wire-core = { workspace = true }
 nve-example-kitchen-sink = { workspace = true, optional = true }
 nve-studio-workspace = { workspace = true, optional = true }

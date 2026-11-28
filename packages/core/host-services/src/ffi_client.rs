@@ -4,105 +4,56 @@
 //! retries once with an exact-sized heap buffer on `NVE_HOST_BUFFER_TOO_SMALL`, and resolves
 //! async requests and host events directly via [`RequestTable`] and [`TypedEventBus`].
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use nve_abi::{NveBufferSlice, NveHostCallbacks, NveHostStatus, NVE_CHANNEL_FLAG_RETAIN};
+use nve_abi::{
+    NveBufferSlice, NveHostBatchError, NveHostCallbacks, NveHostEventBatchRef, NveHostEventKind,
+    NveHostStatus, NVE_CHANNEL_FLAG_RETAIN,
+};
 use nve_interop::{ChannelPayload, NveChannelBus, PayloadEncoding};
 
 use crate::error::ServiceError;
 use crate::events::TypedEventBus;
 use crate::provider::{
-    HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider, InvokeResult, ResponseBuf,
+    next_host_request_id, HostChannelEvent, HostEvent, HostPushEvent, HostServiceProvider,
+    InvokeResult, ResponseBuf,
 };
 pub use crate::provider::FFI_STACK_BUF_SIZE;
+pub use crate::request_table::RequestTable;
 
 /// Defensive cap (64 MiB) against a buggy or hostile host requesting unbounded retry allocation.
 pub const FFI_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
-type AsyncCallback = Box<dyn FnOnce(Result<Vec<u8>, ServiceError>) + Send + 'static>;
-
-enum RequestSlot {
-    Pending { callback: Option<AsyncCallback> },
-    Completed(Result<Vec<u8>, ServiceError>),
+/// Summary returned by [`FfiHostServices::ingest_batch`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BatchIngestStats {
+    pub responses: usize,
+    pub cancelled_responses: usize,
+    pub pushes: usize,
+    pub channels: usize,
 }
 
-/// Tracks in-flight and resolved async `NVE_HOST_PENDING` requests.
-#[derive(Default)]
-pub struct RequestTable {
-    slots: BTreeMap<u64, RequestSlot>,
-}
-
-impl RequestTable {
-    pub fn new() -> Self {
-        Self::default()
+impl BatchIngestStats {
+    #[inline]
+    pub const fn total(&self) -> usize {
+        self.responses + self.pushes + self.channels
     }
 
-    pub fn register_pending(&mut self, request_id: u64, callback: Option<AsyncCallback>) {
-        if matches!(self.slots.get(&request_id), Some(RequestSlot::Completed(_))) {
-            return;
-        }
-        self.slots
-            .insert(request_id, RequestSlot::Pending { callback });
-    }
-
-    /// Removes a pre-registered pending slot after synchronous completion or error, returning any
-    /// uninvoked callback so the caller can fire it outside the lock.
-    pub fn cancel_pending(&mut self, request_id: u64) -> Option<AsyncCallback> {
-        match self.slots.remove(&request_id) {
-            Some(RequestSlot::Pending { callback }) => callback,
-            Some(RequestSlot::Completed(_)) | None => None,
-        }
-    }
-
-    /// Resolves `request_id` from a completed async host response.
-    /// Returns any registered callback so the caller can invoke it outside the mutex lock.
-    pub fn resolve(
-        &mut self,
-        request_id: u64,
-        result: Result<Vec<u8>, ServiceError>,
-    ) -> Option<(AsyncCallback, Result<Vec<u8>, ServiceError>)> {
-        match self.slots.remove(&request_id) {
-            Some(RequestSlot::Pending { callback: Some(cb) }) => Some((cb, result)),
-            Some(RequestSlot::Pending { callback: None })
-            | Some(RequestSlot::Completed(_))
-            | None => {
-                self.slots
-                    .insert(request_id, RequestSlot::Completed(result));
-                None
-            }
-        }
-    }
-
-    pub fn take_completed(&mut self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
-        if matches!(self.slots.get(&request_id), Some(RequestSlot::Completed(_)))
-            && let Some(RequestSlot::Completed(res)) = self.slots.remove(&request_id)
-        {
-            return Some(res);
-        }
-        None
-    }
-
-    pub fn pending_count(&self) -> usize {
-        self.slots
-            .values()
-            .filter(|s| matches!(s, RequestSlot::Pending { .. }))
-            .count()
+    #[inline]
+    pub const fn non_cancelled_responses(&self) -> usize {
+        self.responses.saturating_sub(self.cancelled_responses)
     }
 }
 
 struct FfiClientState {
     callbacks: Option<NveHostCallbacks>,
     requests: RequestTable,
-    events: VecDeque<HostEvent>,
     channel_bus: Option<Arc<Mutex<NveChannelBus>>>,
 }
 
 /// C-ABI host capability client wrapping [`NveHostCallbacks`] with an optional in-process
 /// [`TypedEventBus`] and `NveHostApi::dispatch_host_events` bridge.
 pub struct FfiHostServices {
-    next_request_id: AtomicU64,
     typed_events: Arc<TypedEventBus>,
     state: Mutex<FfiClientState>,
 }
@@ -116,12 +67,10 @@ impl Default for FfiHostServices {
 impl FfiHostServices {
     pub fn new() -> Self {
         Self {
-            next_request_id: AtomicU64::new(1),
             typed_events: Arc::new(TypedEventBus::new()),
             state: Mutex::new(FfiClientState {
                 callbacks: None,
                 requests: RequestTable::new(),
-                events: VecDeque::new(),
                 channel_bus: None,
             }),
         }
@@ -138,9 +87,79 @@ impl FfiHostServices {
     }
 
     /// Binds or unbinds the host callback table supplied via `NveHostApi::bind_host`.
+    ///
+    /// Flushes any in-flight pending async requests as [`ServiceError::Cancelled`] whenever
+    /// unbinding or replacing an active host binding (e.g., on Tier-2 hot reload or teardown).
     pub fn bind(&self, callbacks: Option<NveHostCallbacks>) {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        guard.callbacks = callbacks;
+        let cancelled = {
+            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let should_cancel = callbacks.is_none() || guard.callbacks.is_some();
+            guard.callbacks = callbacks;
+            if should_cancel {
+                guard.requests.cancel_all_pending().1
+            } else {
+                Vec::new()
+            }
+        };
+        for cb in cancelled {
+            cb(Err(ServiceError::Cancelled));
+        }
+    }
+
+    /// Cancels all in-flight pending requests (both callback-bearing and polled) as
+    /// [`ServiceError::Cancelled`], returning the total count cancelled.
+    pub fn cancel_all_pending(&self) -> usize {
+        let (total, cancelled) = {
+            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            guard.requests.cancel_all_pending()
+        };
+        for cb in cancelled {
+            cb(Err(ServiceError::Cancelled));
+        }
+        total
+    }
+
+    /// Validates and routes a canonical `NveHostEventBatch` (`NVHB` v1) byte slice over a single
+    /// unified delivery path:
+    /// - `Response` → [`RequestTable::resolve`] (invoking callbacks outside the lock)
+    /// - `Push` → [`TypedEventBus`] (`HostPushEvent`)
+    /// - `Channel` → attached [`NveChannelBus`] directly, or [`TypedEventBus`] (`HostChannelEvent`)
+    ///   when no channel bus is attached
+    pub fn ingest_batch(&self, batch: &[u8]) -> Result<BatchIngestStats, NveHostBatchError> {
+        let parsed = NveHostEventBatchRef::parse(batch)?;
+        let mut stats = BatchIngestStats::default();
+        for rec in parsed.iter() {
+            match rec.kind {
+                NveHostEventKind::Response => {
+                    self.resolve_async_response(
+                        rec.request_id.raw(),
+                        rec.status,
+                        rec.payload.to_vec(),
+                    );
+                    stats.responses += 1;
+                    if rec.status == NveHostStatus::Cancelled {
+                        stats.cancelled_responses += 1;
+                    }
+                }
+                NveHostEventKind::Push => {
+                    self.push_host_event(
+                        rec.service_id.raw(),
+                        rec.method_or_event_or_channel,
+                        rec.payload.to_vec(),
+                    );
+                    stats.pushes += 1;
+                }
+                NveHostEventKind::Channel => {
+                    self.push_channel_message(
+                        rec.method_or_event_or_channel,
+                        rec.is_retained(),
+                        rec.payload.to_vec(),
+                    );
+                    stats.channels += 1;
+                }
+            }
+        }
+        Ok(stats)
     }
 
     /// Returns `true` if a host callback table is currently bound.
@@ -160,6 +179,12 @@ impl FfiHostServices {
     pub fn pending_request_count(&self) -> usize {
         let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.requests.pending_count()
+    }
+
+    /// Total number of slots currently occupied in [`RequestTable`] (pending + uncollected completed).
+    pub fn total_request_slot_count(&self) -> usize {
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.requests.total_slot_count()
     }
 
     /// Invokes a host method and registers `on_complete` for async resolution.
@@ -183,9 +208,14 @@ impl FfiHostServices {
         // `resolve_async_response` can never race ahead and be overwritten.
         {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            guard
+            if !guard
                 .requests
-                .register_pending(request_id, Some(Box::new(on_complete)));
+                .register_pending(request_id, Some(Box::new(on_complete)))
+            {
+                return Err(ServiceError::InvalidArg(format!(
+                    "duplicate pending request_id {request_id}"
+                )));
+            }
         }
 
         match self.exec_invoke_with_retry(
@@ -199,7 +229,7 @@ impl FfiHostServices {
             Ok(InvokeResult::Ready(bytes)) => {
                 let callback = {
                     let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                    guard.requests.cancel_pending(request_id)
+                    guard.requests.remove_sync_slot(request_id)
                 };
                 if let Some(cb) = callback {
                     cb(Ok(bytes.into_vec()));
@@ -210,7 +240,7 @@ impl FfiHostServices {
             Err(err) => {
                 let callback = {
                     let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                    guard.requests.cancel_pending(request_id)
+                    guard.requests.remove_sync_slot(request_id)
                 };
                 if let Some(cb) = callback {
                     cb(Err(err.clone()));
@@ -241,25 +271,21 @@ impl FfiHostServices {
         }
     }
 
-    /// Enqueues a host push event directly without intermediate batch encoding.
+    /// Publishes a host push event onto [`TypedEventBus`] (single unified delivery path).
     pub fn push_host_event(&self, service_id: u32, event_id: u32, payload: Vec<u8>) {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        guard.events.push_back(HostEvent::Push(HostPushEvent {
+        let _ = self.typed_events.publish(HostPushEvent {
             service_id,
             event_id,
             payload,
-        }));
+        });
     }
 
-    /// Enqueues a channel message and forwards it to any attached [`NveChannelBus`].
+    /// Routes an inbound channel message directly to the attached [`NveChannelBus`] with zero
+    /// extra clones, or publishes [`HostChannelEvent`] onto [`TypedEventBus`] when no channel bus
+    /// is attached.
     pub fn push_channel_message(&self, channel_id: u32, retain: bool, payload: Vec<u8>) {
         let attached_bus = {
-            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            guard.events.push_back(HostEvent::Channel(HostChannelEvent {
-                channel_id,
-                retain,
-                payload: payload.clone(),
-            }));
+            let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
             guard.channel_bus.clone()
         };
         if let Some(bus_arc) = attached_bus {
@@ -271,14 +297,24 @@ impl FfiHostServices {
                 ChannelPayload::from_vec(payload),
                 retain,
             );
+        } else {
+            let _ = self.typed_events.publish(HostChannelEvent {
+                channel_id,
+                retain,
+                payload,
+            });
         }
     }
 
     fn prepare_invoke(&self) -> Result<(NveHostCallbacks, u64), ServiceError> {
         let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let cb = guard.callbacks.ok_or(ServiceError::Unsupported)?;
-        let req_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        Ok((cb, req_id))
+        Ok((cb, next_host_request_id()))
+    }
+
+    fn current_callbacks(&self) -> Result<NveHostCallbacks, ServiceError> {
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.callbacks.ok_or(ServiceError::Unsupported)
     }
 
     fn exec_invoke_with_retry(
@@ -367,20 +403,39 @@ impl FfiHostServices {
     }
 }
 
+impl Drop for FfiHostServices {
+    fn drop(&mut self) {
+        let (_, cancelled) = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .requests
+            .cancel_all_pending();
+        for cb in cancelled {
+            cb(Err(ServiceError::Cancelled));
+        }
+    }
+}
+
 impl HostServiceProvider for FfiHostServices {
-    fn invoke_raw(
+    fn invoke_raw_with_id(
         &self,
         service_id: u32,
         method_id: u32,
+        request_id: u64,
         request: &[u8],
     ) -> Result<InvokeResult, ServiceError> {
-        let (cb, request_id) = self.prepare_invoke()?;
+        let cb = self.current_callbacks()?;
         let Some(invoke_fn) = cb.invoke else {
             return Err(ServiceError::Unsupported);
         };
         {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            guard.requests.register_pending(request_id, None);
+            if !guard.requests.register_pending(request_id, None) {
+                return Err(ServiceError::InvalidArg(format!(
+                    "duplicate pending request_id {request_id}"
+                )));
+            }
         }
         let res = self.exec_invoke_with_retry(
             cb.host_ctx,
@@ -392,7 +447,7 @@ impl HostServiceProvider for FfiHostServices {
         );
         if !matches!(res, Ok(InvokeResult::Pending { .. })) {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = guard.requests.cancel_pending(request_id);
+            let _ = guard.requests.remove_sync_slot(request_id);
         }
         res
     }
@@ -429,8 +484,18 @@ impl HostServiceProvider for FfiHostServices {
     }
 
     fn poll_host_events(&self) -> Vec<HostEvent> {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        guard.events.drain(..).collect()
+        self.typed_events
+            .drain_matching(|ev| ev.is::<HostPushEvent>() || ev.is::<HostChannelEvent>())
+            .into_iter()
+            .filter_map(|ev| {
+                if let Some(push) = ev.downcast_arc::<HostPushEvent>() {
+                    Some(HostEvent::Push((*push).clone()))
+                } else {
+                    ev.downcast_arc::<HostChannelEvent>()
+                        .map(|ch| HostEvent::Channel((*ch).clone()))
+                }
+            })
+            .collect()
     }
 
     fn typed_event_bus(&self) -> Option<&TypedEventBus> {
@@ -440,5 +505,9 @@ impl HostServiceProvider for FfiHostServices {
     fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.requests.take_completed(request_id)
+    }
+
+    fn cancel_pending(&self) -> usize {
+        self.cancel_all_pending()
     }
 }

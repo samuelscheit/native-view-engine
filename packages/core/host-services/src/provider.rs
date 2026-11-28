@@ -4,12 +4,22 @@
 use std::any::{Any, TypeId};
 use std::fmt;
 use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use nve_codec::{NveCodec, NveDecode};
 
+use crate::completion::{CompletionSink, HandlerReply};
 use crate::error::ServiceError;
 use crate::events::TypedEventBus;
+
+static NEXT_PROVIDER_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocates a process-wide monotonically increasing host-service `request_id` (`>= 1`).
+#[inline]
+pub fn next_host_request_id() -> u64 {
+    NEXT_PROVIDER_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// 4 KiB inline response buffer capacity avoiding heap allocation on the synchronous FFI fast path.
 pub const FFI_STACK_BUF_SIZE: usize = 4096;
@@ -46,6 +56,22 @@ impl ResponseBuf {
     #[inline]
     pub fn from_vec(bytes: Vec<u8>) -> Self {
         Self::Heap(bytes)
+    }
+
+    /// Copies `bytes` into an inline stack buffer when `<= 4096` bytes (zero heap allocation),
+    /// or allocates a `Vec<u8>` otherwise.
+    #[inline]
+    pub fn from_slice_or_vec(bytes: &[u8]) -> Self {
+        if bytes.len() <= FFI_STACK_BUF_SIZE {
+            let mut buf = [0u8; FFI_STACK_BUF_SIZE];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            Self::Inline {
+                buf,
+                len: bytes.len(),
+            }
+        } else {
+            Self::Heap(bytes.to_vec())
+        }
     }
 
     #[inline]
@@ -214,7 +240,16 @@ pub trait HostServiceHandler: Send + Sync {
     fn service_id(&self) -> u32;
 
     /// Dispatches one binary `method_id` invocation across the cross-language C ABI boundary.
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError>;
+    ///
+    /// Return [`HandlerReply::Ready`] for synchronous completion or [`HandlerReply::Pending`]
+    /// when completing asynchronously via `done` (guaranteed to resolve `request_id` exactly once).
+    fn handle(
+        &self,
+        method_id: u32,
+        request_id: u64,
+        request: &[u8],
+        done: &CompletionSink,
+    ) -> Result<HandlerReply, ServiceError>;
 
     /// Optional zero-serialization in-process typed backend hook called once on registration.
     ///
@@ -255,14 +290,40 @@ pub fn resolve_typed<B: ?Sized + Send + Sync + 'static>(
 /// Unified binary host capability transport implemented by FFI, registry, in-memory mock,
 /// and OS backends.
 pub trait HostServiceProvider: Send + Sync {
-    /// Invokes `service_id::method_id` with a binary `request` slice (used across the
-    /// cross-language `NVE_IFACE_HOST = 5` C ABI boundary and for fault injection).
+    /// Invokes `service_id::method_id` preserving a caller-assigned `request_id` (used by
+    /// [`crate::HostCallbackBridge`] so asynchronous `HandlerReply::Pending` completions match
+    /// the caller's [`crate::RequestTable`] ID).
+    fn invoke_raw_with_id(
+        &self,
+        service_id: u32,
+        method_id: u32,
+        request_id: u64,
+        request: &[u8],
+    ) -> Result<InvokeResult, ServiceError>;
+
+    /// Invokes `service_id::method_id` preserving both a caller-assigned `request_id` and a
+    /// per-slot `owner_tag` (used by multi-window / hot-reloadable hosts so cancelling or
+    /// discarding one window's pending requests never affects sibling windows).
+    fn invoke_raw_with_id_for_owner(
+        &self,
+        _owner_tag: u64,
+        service_id: u32,
+        method_id: u32,
+        request_id: u64,
+        request: &[u8],
+    ) -> Result<InvokeResult, ServiceError> {
+        self.invoke_raw_with_id(service_id, method_id, request_id, request)
+    }
+
+    /// Invokes `service_id::method_id` with a freshly allocated monotonic `request_id`.
     fn invoke_raw(
         &self,
         service_id: u32,
         method_id: u32,
         request: &[u8],
-    ) -> Result<InvokeResult, ServiceError>;
+    ) -> Result<InvokeResult, ServiceError> {
+        self.invoke_raw_with_id(service_id, method_id, next_host_request_id(), request)
+    }
 
     /// Convenience helper requiring a synchronous response payload.
     fn invoke_sync(
@@ -306,20 +367,55 @@ pub trait HostServiceProvider: Send + Sync {
         None
     }
 
+    /// Returns the provider's [`CompletionSink`] when backed by a host-side async sink.
+    fn host_completion_sink(&self) -> Option<&CompletionSink> {
+        None
+    }
+
     /// Consumes a completed async response for `request_id` if one has arrived.
     fn take_async_response(&self, _request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
         None
     }
+
+    /// Cancels all in-flight asynchronous requests owned by this provider, queuing `Cancelled`
+    /// responses for the currently bound caller, and returning the count.
+    fn cancel_pending(&self) -> usize {
+        0
+    }
+
+    /// Drops all in-flight asynchronous requests and any queued `Response` records without
+    /// enqueuing `Cancelled` records (used across Tier-2 dylib reloads so generation N+1 never
+    /// receives stale generation N responses).
+    fn discard_pending(&self) -> usize {
+        0
+    }
+
+    /// Drops only in-flight requests and queued `Response` records belonging to `owner_tag`.
+    fn discard_pending_for_owner(&self, _owner_tag: u64) -> usize {
+        0
+    }
 }
 
 impl<T: HostServiceProvider + ?Sized> HostServiceProvider for &T {
-    fn invoke_raw(
+    fn invoke_raw_with_id(
         &self,
         service_id: u32,
         method_id: u32,
+        request_id: u64,
         request: &[u8],
     ) -> Result<InvokeResult, ServiceError> {
-        (**self).invoke_raw(service_id, method_id, request)
+        (**self).invoke_raw_with_id(service_id, method_id, request_id, request)
+    }
+
+    fn invoke_raw_with_id_for_owner(
+        &self,
+        owner_tag: u64,
+        service_id: u32,
+        method_id: u32,
+        request_id: u64,
+        request: &[u8],
+    ) -> Result<InvokeResult, ServiceError> {
+        (**self).invoke_raw_with_id_for_owner(owner_tag, service_id, method_id, request_id, request)
     }
 
     fn typed_service(
@@ -348,19 +444,47 @@ impl<T: HostServiceProvider + ?Sized> HostServiceProvider for &T {
         (**self).typed_event_bus()
     }
 
+    fn host_completion_sink(&self) -> Option<&CompletionSink> {
+        (**self).host_completion_sink()
+    }
+
     fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
         (**self).take_async_response(request_id)
+    }
+
+    fn cancel_pending(&self) -> usize {
+        (**self).cancel_pending()
+    }
+
+    fn discard_pending(&self) -> usize {
+        (**self).discard_pending()
+    }
+
+    fn discard_pending_for_owner(&self, owner_tag: u64) -> usize {
+        (**self).discard_pending_for_owner(owner_tag)
     }
 }
 
 impl<T: HostServiceProvider + ?Sized> HostServiceProvider for Arc<T> {
-    fn invoke_raw(
+    fn invoke_raw_with_id(
         &self,
         service_id: u32,
         method_id: u32,
+        request_id: u64,
         request: &[u8],
     ) -> Result<InvokeResult, ServiceError> {
-        (**self).invoke_raw(service_id, method_id, request)
+        (**self).invoke_raw_with_id(service_id, method_id, request_id, request)
+    }
+
+    fn invoke_raw_with_id_for_owner(
+        &self,
+        owner_tag: u64,
+        service_id: u32,
+        method_id: u32,
+        request_id: u64,
+        request: &[u8],
+    ) -> Result<InvokeResult, ServiceError> {
+        (**self).invoke_raw_with_id_for_owner(owner_tag, service_id, method_id, request_id, request)
     }
 
     fn typed_service(
@@ -389,7 +513,23 @@ impl<T: HostServiceProvider + ?Sized> HostServiceProvider for Arc<T> {
         (**self).typed_event_bus()
     }
 
+    fn host_completion_sink(&self) -> Option<&CompletionSink> {
+        (**self).host_completion_sink()
+    }
+
     fn take_async_response(&self, request_id: u64) -> Option<Result<Vec<u8>, ServiceError>> {
         (**self).take_async_response(request_id)
+    }
+
+    fn cancel_pending(&self) -> usize {
+        (**self).cancel_pending()
+    }
+
+    fn discard_pending(&self) -> usize {
+        (**self).discard_pending()
+    }
+
+    fn discard_pending_for_owner(&self, owner_tag: u64) -> usize {
+        (**self).discard_pending_for_owner(owner_tag)
     }
 }

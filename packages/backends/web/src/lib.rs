@@ -32,6 +32,8 @@ pub mod media_css;
 #[cfg(all(feature = "hydrate", any(test, feature = "parity-fixtures")))]
 pub mod select_parity;
 #[cfg(target_arch = "wasm32")]
+pub mod microtask;
+#[cfg(target_arch = "wasm32")]
 pub mod native_events;
 #[cfg(all(not(target_arch = "wasm32"), test))]
 mod native_events;

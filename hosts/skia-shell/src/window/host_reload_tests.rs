@@ -206,10 +206,20 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
 
         unsafe extern "C" fn dispatch_host_events(h: *mut c_void, payload: NveBufferSlice) -> u32 {
             let app = unsafe { &mut *(h as *mut LiveHostCdylib) };
-            // Direct 12-byte #[repr(C)] ThemeSnapshot payload (zero binary batch codecs).
-            if payload.len == 12 && !payload.ptr.is_null() {
-                app.theme_updates += 1;
-                return 1;
+            // Canonical NveHostEventBatch ("NVHB" v1) carrying a SERVICE_SYSTEM_ENV Push record.
+            if payload.len >= 40 && !payload.ptr.is_null() {
+                let bytes = unsafe { std::slice::from_raw_parts(payload.ptr, payload.len) };
+                if &bytes[0..4] == b"NVHB"
+                    && u16::from_le_bytes([bytes[4], bytes[5]]) == 1
+                    && u16::from_le_bytes([bytes[6], bytes[7]]) >= 1
+                    && bytes[8] == 2
+                    && u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) == 0x0014
+                    && u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) == 1
+                    && u32::from_le_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]) == 12
+                {
+                    app.theme_updates += 1;
+                    return 1;
+                }
             }
             0
         }
@@ -263,4 +273,343 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
     assert!(slot.bind_host_services(Some(Arc::clone(&services))));
     drop(slot);
     assert_eq!(Arc::strong_count(&services), 1);
+}
+
+#[test]
+fn skia_host_services_distinct_request_ids_take_async_panic_guard_and_rebind_cancel() {
+    use nve_abi::SERVICE_CLIPBOARD;
+    use nve_host_services::{
+        CompletionSink, FfiHostServices, HandlerReply, HostServiceHandler, HostServiceProvider,
+        HostServiceRegistry, InvokeResult, ServiceError,
+    };
+
+    struct PendingOrPanicHandler;
+    impl HostServiceHandler for PendingOrPanicHandler {
+        fn service_id(&self) -> u32 {
+            SERVICE_CLIPBOARD
+        }
+        fn handle(
+            &self,
+            method_id: u32,
+            _request_id: u64,
+            _request: &[u8],
+            _done: &CompletionSink,
+        ) -> Result<HandlerReply, ServiceError> {
+            match method_id {
+                1 => Ok(HandlerReply::Pending),
+                9 => panic!("skia handler panic across extern C"),
+                _ => Err(ServiceError::Unsupported),
+            }
+        }
+    }
+
+    let reg = Arc::new(HostServiceRegistry::new().with_handler(PendingOrPanicHandler));
+    let svc = crate::host_services::SkiaHostServices::with_provider(
+        Arc::clone(&reg) as Arc<dyn HostServiceProvider>
+    );
+
+    // invoke_raw MUST allocate distinct non-zero request IDs and forward take_async_response.
+    let InvokeResult::Pending { request_id: id1 } =
+        svc.invoke_raw(SERVICE_CLIPBOARD, 1, &[]).unwrap()
+    else {
+        panic!("expected Pending 1");
+    };
+    let InvokeResult::Pending { request_id: id2 } =
+        svc.invoke_raw(SERVICE_CLIPBOARD, 1, &[]).unwrap()
+    else {
+        panic!("expected Pending 2");
+    };
+    assert_ne!(id1, 0);
+    assert_ne!(id2, 0);
+    assert_ne!(id1, id2);
+
+    assert!(reg.completion_sink().complete_ok(id1, b"resp-1".to_vec()));
+    assert!(reg.completion_sink().complete_ok(id2, b"resp-2".to_vec()));
+    assert_eq!(svc.take_async_response(id1), Some(Ok(b"resp-1".to_vec())));
+    assert_eq!(svc.take_async_response(id2), Some(Ok(b"resp-2".to_vec())));
+
+    // Panicking handler over SkiaHostServices::callbacks() converts to InternalError (no unwind).
+    let ffi = FfiHostServices::with_callbacks(svc.callbacks());
+    assert!(matches!(
+        ffi.invoke_sync(SERVICE_CLIPBOARD, 9, &[]),
+        Err(ServiceError::InternalError(_))
+    ));
+    assert_eq!(reg.completion_sink().in_flight_count(), 0);
+
+    // Pending request on host cancels cleanly via SkiaHostServices::cancel_pending().
+    let InvokeResult::Pending { request_id: id3 } =
+        svc.invoke_raw(SERVICE_CLIPBOARD, 1, &[]).unwrap()
+    else {
+        panic!("expected Pending 3");
+    };
+    assert_eq!(svc.cancel_pending(), 1);
+    assert_eq!(
+        svc.take_async_response(id3),
+        Some(Err(ServiceError::Cancelled))
+    );
+}
+
+#[test]
+fn hot_app_slot_async_delivery_transactional_reload_no_double_bind_and_sibling_isolation() {
+    use std::sync::atomic::AtomicUsize;
+
+    use nve_abi::{ColorRgba, NveHostEventBatchBuilder, SERVICE_CLIPBOARD};
+    use nve_engine::Viewport;
+    use nve_host_services::{
+        CompletionSink, HandlerReply, HostServiceHandler, HostServiceProvider, HostServiceRegistry,
+        ServiceError,
+    };
+
+    use super::{DesktopPreviewOptions, DesktopSession, DesktopWindowHost};
+
+    // Mock cdylib that initiates a Pending SERVICE_CLIPBOARD call (request_id = 1) inside
+    // `bind_host`, counts how many times `bind_host` was invoked per instance, and records every
+    // delivered Response record `(req_id, status, payload)` from `dispatch_host_events`.
+    let dir = TempDirGuard::new("skia-async-reload");
+    let cdylib_src = r#"
+        use std::ffi::c_void;
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveBufferSlice { pub ptr: *const u8, pub len: usize }
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveHostCallbacks {
+            pub host_ctx: *mut c_void,
+            pub invoke: Option<unsafe extern "C" fn(*mut c_void, u32, u32, u64, NveBufferSlice, *mut u8, usize, *mut usize) -> i32>,
+            pub channel_publish: Option<unsafe extern "C" fn(*mut c_void, u32, u32, NveBufferSlice) -> i32>,
+        }
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveEventBatch {
+            pub events: *const c_void,
+            pub bytes: *const u8,
+            pub event_count: u32,
+            pub bytes_len: u32,
+        }
+
+        #[repr(C)]
+        pub struct NveSurfaceApi {
+            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
+            pub destroy: unsafe extern "C" fn(*mut c_void),
+            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
+            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveEventBatch) -> u32,
+        }
+
+        #[repr(C)]
+        pub struct NveHostApi {
+            pub bind_host: unsafe extern "C" fn(*mut c_void, *const NveHostCallbacks),
+            pub dispatch_host_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+        }
+
+        struct AsyncCdylib {
+            bind_calls: u32,
+            resp_count: u32,
+            cancelled_count: u32,
+            last_payload: String,
+            frame_buf: Vec<u8>,
+        }
+
+        unsafe extern "C" fn create(_: u32) -> *mut c_void {
+            Box::into_raw(Box::new(AsyncCdylib {
+                bind_calls: 0,
+                resp_count: 0,
+                cancelled_count: 0,
+                last_payload: String::new(),
+                frame_buf: Vec::new(),
+            })) as *mut c_void
+        }
+
+        unsafe extern "C" fn destroy(h: *mut c_void) {
+            if !h.is_null() {
+                unsafe { drop(Box::from_raw(h as *mut AsyncCdylib)); }
+            }
+        }
+
+        unsafe extern "C" fn render(h: *mut c_void, _: u64) -> NveBufferSlice {
+            let app = unsafe { &mut *(h as *mut AsyncCdylib) };
+            app.frame_buf = format!(
+                "binds={};resps={};cancels={};last={}",
+                app.bind_calls, app.resp_count, app.cancelled_count, app.last_payload
+            )
+            .into_bytes();
+            NveBufferSlice { ptr: app.frame_buf.as_ptr(), len: app.frame_buf.len() }
+        }
+
+        unsafe extern "C" fn dispatch_events(_: *mut c_void, _: NveEventBatch) -> u32 { 0 }
+
+        unsafe extern "C" fn bind_host(h: *mut c_void, cb: *const NveHostCallbacks) {
+            let app = unsafe { &mut *(h as *mut AsyncCdylib) };
+            if cb.is_null() {
+                return;
+            }
+            app.bind_calls += 1;
+            let c = unsafe { *cb };
+            if let Some(invoke) = c.invoke {
+                let mut out_len = 0usize;
+                // Always starts Pending call with caller request_id = 1 (simulates per-dylib static reset).
+                let _ = unsafe {
+                    invoke(
+                        c.host_ctx,
+                        0x0010,
+                        1,
+                        1,
+                        NveBufferSlice { ptr: std::ptr::null(), len: 0 },
+                        std::ptr::null_mut(),
+                        0,
+                        &mut out_len,
+                    )
+                };
+            }
+        }
+
+        unsafe extern "C" fn dispatch_host_events(h: *mut c_void, payload: NveBufferSlice) -> u32 {
+            let app = unsafe { &mut *(h as *mut AsyncCdylib) };
+            if payload.len < 8 || payload.ptr.is_null() {
+                return 0;
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(payload.ptr, payload.len) };
+            if &bytes[0..4] != b"NVHB" {
+                return 0;
+            }
+            let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
+            let mut off = 8usize;
+            let mut handled = 0u32;
+            for _ in 0..count {
+                if off + 32 > bytes.len() { break; }
+                let kind = bytes[off];
+                let status = i32::from_le_bytes([bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7]]);
+                let plen = u32::from_le_bytes([bytes[off + 24], bytes[off + 25], bytes[off + 26], bytes[off + 27]]) as usize;
+                let pstart = off + 32;
+                let pend = pstart + plen;
+                if pend > bytes.len() { break; }
+                if kind == 1 {
+                    app.resp_count += 1;
+                    if status == -6 {
+                        app.cancelled_count += 1;
+                    } else if status == 0 {
+                        app.last_payload = String::from_utf8_lossy(&bytes[pstart..pend]).into_owned();
+                    }
+                    handled = 1;
+                }
+                off = (pend + 7) & !7;
+            }
+            handled
+        }
+
+        static SURFACE_API: NveSurfaceApi = NveSurfaceApi { create, destroy, render, dispatch_events };
+        static HOST_API: NveHostApi = NveHostApi { bind_host, dispatch_host_events };
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {
+            match id {
+                1 => &SURFACE_API as *const NveSurfaceApi as *const c_void,
+                5 => &HOST_API as *const NveHostApi as *const c_void,
+                _ => std::ptr::null(),
+            }
+        }
+    "#;
+    let dylib = compile_test_cdylib(dir.path(), "skia_async_reload_app", cdylib_src);
+
+    struct CapturePendingHandler {
+        ids: std::sync::Mutex<Vec<u64>>,
+    }
+    impl HostServiceHandler for CapturePendingHandler {
+        fn service_id(&self) -> u32 {
+            SERVICE_CLIPBOARD
+        }
+        fn handle(
+            &self,
+            _: u32,
+            request_id: u64,
+            _: &[u8],
+            _: &CompletionSink,
+        ) -> Result<HandlerReply, ServiceError> {
+            self.ids.lock().unwrap().push(request_id);
+            Ok(HandlerReply::Pending)
+        }
+    }
+
+    let handler = Arc::new(CapturePendingHandler {
+        ids: std::sync::Mutex::new(Vec::new()),
+    });
+    let reg = Arc::new(HostServiceRegistry::new().with_handler_arc(handler.clone()));
+    let svc = crate::host_services::SkiaHostServices::with_provider(
+        Arc::clone(&reg) as Arc<dyn HostServiceProvider>
+    );
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wakes_c = Arc::clone(&wakes);
+    svc.attach_wake_sink(Arc::new(move || {
+        wakes_c.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // 1. Primary + secondary slots share one SkiaHostServices; both initiate request_id=1 on bind.
+    let mut primary = HotAppSlot::load(&dylib, SurfaceId::ROOT).expect("load primary");
+    assert!(primary.bind_host_services(Some(Arc::clone(&svc))));
+    let mut secondary = HotAppSlot::load(&dylib, SurfaceId::new(2, 0)).expect("load secondary");
+    assert!(secondary.bind_host_services(Some(Arc::clone(&svc))));
+    assert_eq!(reg.completion_sink().in_flight_count(), 2);
+    let (primary_host_id, secondary_host_id) = {
+        let ids = handler.ids.lock().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        (ids[0], ids[1])
+    };
+
+    // Dropping secondary discards ONLY secondary's pending request; primary stays alive!
+    drop(secondary);
+    assert_eq!(reg.completion_sink().in_flight_count(), 1);
+    assert!(!reg.completion_sink().complete_ok(secondary_host_id, b"stale-sec".to_vec()));
+
+    // Failed transactional reload leaves Gen 1 alive with its in-flight request completely intact!
+    assert!(primary.reload(&dir.path().join("missing.dylib"), SurfaceId::ROOT).is_err());
+    assert_eq!(reg.completion_sink().in_flight_count(), 1);
+
+    // Complete primary's pending request -> wake fires -> DesktopWindowHost drains and delivers!
+    assert!(reg.completion_sink().complete_ok(primary_host_id, b"gen1-ok".to_vec()));
+    assert!(wakes.load(Ordering::SeqCst) >= 1);
+    let session = DesktopSession::new(
+        primary,
+        SurfaceId::ROOT,
+        Viewport { width: 320.0, height: 240.0, scale_factor: 1.0 },
+        ColorRgba::BLACK,
+        false,
+    );
+    let mut host = DesktopWindowHost::from_primary_session_with_host_services(
+        DesktopPreviewOptions::default(),
+        session,
+        Arc::clone(&svc),
+    );
+    assert!(host.drain_host_service_batches());
+    assert_eq!(
+        host.session_mut().app_mut().render(FrameId(1)),
+        b"binds=1;resps=1;cancels=0;last=gen1-ok"
+    );
+
+    // 2. Successful Tier-2 reload: bind_host called ONCE on Gen 2 (binds=1), Gen 1 pending
+    //    discarded silently (no Cancelled delivered to Gen 2), and Gen 2's own Pending succeeds!
+    assert!(host.session_mut().app_mut().bind_host_services(Some(Arc::clone(&svc))));
+    let gen1_rebound_id = *handler.ids.lock().unwrap().last().unwrap();
+    assert_eq!(reg.completion_sink().in_flight_count(), 1);
+
+    let gen2 = host.session_mut().app_mut().reload(&dylib, SurfaceId::ROOT).expect("reload gen 2");
+    assert_eq!(gen2, 2);
+    // Gen 1's old request was discarded without queuing Cancelled; only Gen 2's new request lives.
+    assert_eq!(reg.completion_sink().in_flight_count(), 1);
+    assert_eq!(reg.completion_sink().queued_count(), 0);
+    assert!(!reg.completion_sink().complete_ok(gen1_rebound_id, b"late-gen1".to_vec()));
+
+    let gen2_host_id = *handler.ids.lock().unwrap().last().unwrap();
+    assert_ne!(gen2_host_id, gen1_rebound_id);
+    assert!(reg.completion_sink().complete_ok(gen2_host_id, b"gen2-clean".to_vec()));
+    let mut b = NveHostEventBatchBuilder::new();
+    let owner = host.session().host_owner_tag();
+    assert_eq!(svc.drain_batch_for_owner_into(owner, &mut b), 1);
+    assert!(host.session_mut().dispatch_host_batch(b.as_bytes()));
+    assert_eq!(
+        host.session_mut().app_mut().render(FrameId(2)),
+        b"binds=1;resps=1;cancels=0;last=gen2-clean"
+    );
 }

@@ -13,12 +13,15 @@ use skia_safe::{
     ImageInfo, Surface,
 };
 
-use super::skia_renderer::{read_surface_to_pixel_buffer, to_skia_color, SkiaCanvasRenderer};
+use super::skia_renderer::{
+    read_surface_to_pixel_buffer, to_skia_color, RendererCacheStats, SkiaCanvasRenderer,
+};
 use super::{
     FrameLifecycleState, FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceError,
     SkiaPluginContext, SwapchainExtent,
 };
 use crate::raster::PixelBuffer;
+use crate::retained::CompositorScene;
 use crate::DisplayList;
 
 /// Platform-specific Skia Ganesh swapchain & offscreen render-target hooks driven by
@@ -33,9 +36,6 @@ pub trait NativeSwapchain {
 
     /// Returns `true` when presenting directly to a native window surface.
     fn is_window_attached(&self) -> bool;
-
-    /// Mutable access to the underlying Skia Ganesh [`DirectContext`].
-    fn direct_context_mut(&mut self) -> &mut DirectContext;
 
     /// Returns the offscreen GPU [`Surface`] and [`DirectContext`] when offscreen, or `None` when
     /// attached to a native window.
@@ -62,8 +62,10 @@ pub trait NativeSwapchain {
         recreations: &mut u64,
     ) -> Result<(), GpuSurfaceError>;
 
-    /// Returns the active [`Surface`] to record Skia draw commands into.
-    fn active_surface_mut(&mut self) -> Result<&mut Surface, GpuSurfaceError>;
+    /// Returns the active [`Surface`] and [`DirectContext`] to record Skia draw commands into.
+    fn active_surface_and_context_mut(
+        &mut self,
+    ) -> Result<(&mut Surface, &mut DirectContext), GpuSurfaceError>;
 
     /// Flushes and submits recorded GPU commands for the current frame.
     fn submit_native_frame(&mut self) -> Result<(), GpuSurfaceError>;
@@ -102,8 +104,10 @@ pub(crate) fn create_ganesh_offscreen_surface(
 
 /// Shared Skia Ganesh frame presenter parameterized over a platform [`NativeSwapchain`].
 pub struct GaneshPresenter<S: NativeSwapchain> {
-    pub(super) inner: S,
+    // Drop order invariant: `renderer` owns GPU-backed `skia_safe::Image` textures tied to
+    // `inner`'s `DirectContext` and MUST drop (and evict GPU caches) strictly BEFORE `inner`.
     pub(super) renderer: SkiaCanvasRenderer,
+    pub(super) inner: S,
     extent: SwapchainExtent,
     state: FrameLifecycleState,
     frame_index: u64,
@@ -116,12 +120,18 @@ pub struct GaneshPresenter<S: NativeSwapchain> {
     readback_rgba: Vec<u8>,
 }
 
+impl<S: NativeSwapchain> Drop for GaneshPresenter<S> {
+    fn drop(&mut self) {
+        self.renderer.evict_gpu_caches();
+    }
+}
+
 impl<S: NativeSwapchain> GaneshPresenter<S> {
     /// Wraps a constructed platform [`NativeSwapchain`] with lifecycle state & telemetry tracking.
     pub fn new(inner: S, extent: SwapchainExtent) -> Self {
         Self {
-            inner,
             renderer: SkiaCanvasRenderer::new(),
+            inner,
             extent,
             state: FrameLifecycleState::Idle,
             frame_index: 0,
@@ -139,26 +149,27 @@ impl<S: NativeSwapchain> GaneshPresenter<S> {
         self.inner.is_window_attached()
     }
 
-    pub fn direct_context_mut(&mut self) -> &mut DirectContext {
-        self.inner.direct_context_mut()
+    #[cfg(all(test, feature = "skia-vulkan"))]
+    pub(crate) fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner
     }
 
-    /// Direct helper for [`crate::gpu::GpuSurface`] (`GpuSurfaceBackend::render_display_list`) on
-    /// an offscreen GPU render target, falling back to a full frame on window-attached swapchains.
-    pub fn render_with_renderer(
-        &mut self,
-        renderer: &SkiaCanvasRenderer,
-        display_list: &DisplayList,
-        scale_factor: f32,
-        clear_color: ColorRgba,
-    ) -> Result<(), GpuSurfaceError> {
-        self.render_with_renderer_plugins(renderer, display_list, scale_factor, clear_color, None)
+    pub fn cache_stats(&self) -> RendererCacheStats {
+        self.renderer.cache_stats()
     }
 
-    /// Plugin-aware variant of [`Self::render_with_renderer`].
-    pub fn render_with_renderer_plugins(
+    pub fn reset_cache_stats(&self) {
+        self.renderer.reset_cache_stats();
+    }
+
+    pub fn evict_gpu_caches(&self) {
+        self.renderer.evict_gpu_caches();
+    }
+
+    /// Renders `display_list` using this presenter's owned GPU-cached [`SkiaCanvasRenderer`] and
+    /// `DirectContext` (uploading images and plugins to VRAM once and reusing across warm frames).
+    pub fn render_cached_with_plugins(
         &mut self,
-        renderer: &SkiaCanvasRenderer,
         display_list: &DisplayList,
         scale_factor: f32,
         clear_color: ColorRgba,
@@ -167,13 +178,48 @@ impl<S: NativeSwapchain> GaneshPresenter<S> {
         if let Some((surface, direct_context)) = self.inner.offscreen_surface_and_context_mut() {
             let canvas = surface.canvas();
             canvas.clear(to_skia_color(clear_color));
-            renderer.paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
+            self.renderer.paint_display_list_with_gpu_context(
+                display_list,
+                canvas,
+                scale_factor,
+                plugins,
+                Some(direct_context),
+            );
             direct_context
                 .flush_and_submit_surface(surface, SyncCpu::Yes)
                 .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))?;
             Ok(())
         } else {
             self.execute_frame_with_plugins(display_list, scale_factor, clear_color, None, plugins)
+                .map(|_| ())
+        }
+    }
+
+    /// Renders `scene` directly using this presenter's owned GPU-cached [`SkiaCanvasRenderer`]
+    /// and `DirectContext` with zero intermediate `DisplayList` allocation.
+    pub fn render_scene_cached_with_plugins(
+        &mut self,
+        scene: &CompositorScene,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        if let Some((surface, direct_context)) = self.inner.offscreen_surface_and_context_mut() {
+            let canvas = surface.canvas();
+            canvas.clear(to_skia_color(clear_color));
+            self.renderer.paint_scene_with_gpu_context(
+                scene,
+                canvas,
+                scale_factor,
+                plugins,
+                Some(direct_context),
+            );
+            direct_context
+                .flush_and_submit_surface(surface, SyncCpu::Yes)
+                .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))?;
+            Ok(())
+        } else {
+            self.execute_scene_with_plugins(scene, scale_factor, clear_color, None, plugins)
                 .map(|_| ())
         }
     }
@@ -303,11 +349,49 @@ impl<S: NativeSwapchain> GpuFramePresenter for GaneshPresenter<S> {
             });
         }
         let t0 = Instant::now();
-        let surface = self.inner.active_surface_mut()?;
+        let (surface, direct_context) = self.inner.active_surface_and_context_mut()?;
         let canvas = surface.canvas();
         canvas.clear(to_skia_color(clear_color));
-        self.renderer
-            .paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
+        self.renderer.paint_display_list_with_gpu_context(
+            display_list,
+            canvas,
+            scale_factor,
+            plugins,
+            Some(direct_context),
+        );
+        if let Some(banner) = hud_banner {
+            self.renderer.paint_hud_banner(canvas, scale_factor, banner);
+        }
+        self.record_us = t0.elapsed().as_micros() as u64;
+        self.state = FrameLifecycleState::Rendered;
+        Ok(())
+    }
+
+    fn render_scene_with_plugins(
+        &mut self,
+        scene: &CompositorScene,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        if self.state != FrameLifecycleState::Begun {
+            return Err(GpuSurfaceError::InvalidFrameState {
+                expected: FrameLifecycleState::Begun.as_str(),
+                actual: self.state.as_str(),
+            });
+        }
+        let t0 = Instant::now();
+        let (surface, direct_context) = self.inner.active_surface_and_context_mut()?;
+        let canvas = surface.canvas();
+        canvas.clear(to_skia_color(clear_color));
+        self.renderer.paint_scene_with_gpu_context(
+            scene,
+            canvas,
+            scale_factor,
+            plugins,
+            Some(direct_context),
+        );
         if let Some(banner) = hud_banner {
             self.renderer.paint_hud_banner(canvas, scale_factor, banner);
         }

@@ -142,6 +142,38 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
         "live theme/locale events must repaint in place:\n{tree}"
     );
 
+    // Canonical NveHostEventBatch Push(SERVICE_SYSTEM_ENV, EVENT_THEME_CHANGED) updates Studio,
+    // while a raw non-batch 12-byte ThemeSnapshot slice is cleanly rejected (no repr-sniffing).
+    let light_push = ThemeSnapshot {
+        color_scheme: Some(ColorScheme::Light),
+        contrast: ContrastLevel::Standard,
+        reduced_motion: false,
+        reduced_transparency: false,
+        accent_rgba: 0x38BD_F8FF,
+        font_scale_x1000: 1000,
+        scale_factor_x100: 200,
+    };
+    let raw_12 = light_push.to_repr_c_bytes();
+    assert!(
+        !module.dispatch_host_events(&raw_12),
+        "raw 12-byte slice without NVHB magic must not be sniffed as ThemeSnapshot"
+    );
+    assert_eq!(module.state_snapshot().color_scheme(), ColorScheme::Dark);
+
+    let mut stack_batch = [0u8; 56];
+    let batch_slice = nve_abi::encode_single_push_into(
+        &mut stack_batch,
+        nve_abi::SERVICE_SYSTEM_ENV,
+        nve_system_env::EVENT_THEME_CHANGED,
+        &raw_12,
+    )
+    .expect("encode theme push batch");
+    assert!(
+        module.dispatch_host_events(batch_slice),
+        "canonical NVHB theme Push batch must update Studio"
+    );
+    assert_eq!(module.state_snapshot().color_scheme(), ColorScheme::Light);
+
     // Unbinding restores clean fallback to `MemoryHostServices`.
     module.bind_host(None);
     assert!(!module.host_services().is_ffi_bound());

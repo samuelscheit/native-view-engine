@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_FILESYSTEM;
 use nve_host_services::{
-    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
-    NveCodec, NveDecode, NveEncode, ServiceError, MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, CompletionSink, HandlerReply,
+    HostServiceHandler, HostServiceProvider, NveCodec, NveDecode, NveEncode, ServiceError,
+    MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS,
 };
 
 pub use native::{native_standard_path, NativeFilesystem};
@@ -371,8 +372,14 @@ impl HostServiceHandler for MemoryFilesystem {
         SERVICE_FILESYSTEM
     }
 
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_filesystem_wire(self, method_id, request)
+    fn handle(
+        &self,
+        method_id: u32,
+        _request_id: u64,
+        request: &[u8],
+        _done: &CompletionSink,
+    ) -> Result<HandlerReply, ServiceError> {
+        dispatch_filesystem_wire(self, method_id, request).map(HandlerReply::ready)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

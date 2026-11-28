@@ -13,7 +13,7 @@ use nve_backend_skia::raster::{draw_hud_banner, PixelBuffer};
 #[cfg(feature = "skia")]
 use nve_backend_skia::gpu::GpuSurfaceConfig;
 #[cfg(feature = "skia")]
-use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
+use nve_backend_skia::{GpuSurface, GpuSurfaceBackend};
 use nve_backend_skia::{CursorKind, SkiaBackend};
 use nve_canvas_skia::CanvasSkiaSystem;
 use nve_tables::tables::{core_realization_order, register_core_tables};
@@ -105,11 +105,11 @@ pub struct DesktopSession<A: DesktopApp> {
     show_hud: bool,
     last_frame_bytes: Vec<u8>,
     frame_counter: FrameId,
+    store_generation: u32,
+    pub(super) a11y_synced_wire_frame: u64,
     last_telemetry: Option<FrameTelemetry>,
     /// Wall-clock instant of the previous animation tick (`None` while idle).
     last_animation_tick: Option<Instant>,
-    #[cfg(feature = "skia")]
-    skia_renderer: SkiaCanvasRenderer,
     #[cfg(feature = "skia")]
     gpu_surface: Option<GpuSurface>,
 }
@@ -203,13 +203,18 @@ impl<A: DesktopApp> DesktopSession<A> {
             show_hud,
             last_frame_bytes,
             frame_counter: FrameId::ZERO,
+            store_generation: 1,
+            a11y_synced_wire_frame: 0,
             last_telemetry: None,
             last_animation_tick: None,
             #[cfg(feature = "skia")]
-            skia_renderer: SkiaCanvasRenderer::new(),
-            #[cfg(feature = "skia")]
             gpu_surface,
         }
+    }
+
+    #[inline]
+    pub fn store_generation(&self) -> u32 {
+        self.store_generation
     }
 
     pub fn app(&self) -> &A {
@@ -334,6 +339,16 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.app.dispatch_host_event(event)
     }
 
+    /// Dispatches a canonical `NveHostEventBatch` (`NVHB` v1) drained from `CompletionSink`.
+    pub fn dispatch_host_batch(&mut self, batch: &[u8]) -> bool {
+        self.app.dispatch_host_batch(batch)
+    }
+
+    /// Returns this session's active host-services owner tag (0 when unbound).
+    pub fn host_owner_tag(&self) -> u64 {
+        self.app.host_owner_tag()
+    }
+
     /// Writes the current rasterized [`PixelBuffer`] to a binary `P6` PPM file.
     #[cfg(test)]
     pub fn write_screenshot_ppm(&self, path: &Path) -> Result<(), DesktopHostError> {
@@ -363,7 +378,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.app.dispatch_events(batch.as_validated())
     }
 
-    /// Presents the current retained `DisplayList` directly through a hardware or offscreen
+    /// Presents the current retained `CompositorScene` directly through a hardware or offscreen
     /// [`GpuSwapchain`] without touching the CPU software `PixelBuffer`.
     pub fn present_to_swapchain(
         &mut self,
@@ -375,9 +390,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             None
         };
         let (store, backend) = self.replica.store_and_backend_mut();
-        let (dl, registry, events) = backend.paint_parts_mut();
-        let telemetry = swapchain.execute_frame_with_plugins(
-            dl,
+        let (scene, registry, events) = backend.scene_paint_parts_mut();
+        let telemetry = swapchain.execute_scene_with_plugins(
+            scene,
             self.viewport.scale_factor,
             self.clear_color,
             hud,
@@ -455,6 +470,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             if bytes.is_empty() {
                 continue;
             }
+            let prev_wire_frame = self.replica.last_changes().frame;
             let res = if is_keyframe {
                 self.replica.submit_nve2_keyframe(&bytes)
             } else {
@@ -462,6 +478,11 @@ impl<A: DesktopApp> DesktopSession<A> {
             };
             match res {
                 Ok(_) => {
+                    let next_wire_frame = self.replica.last_changes().frame;
+                    if is_keyframe || (prev_wire_frame > 0 && next_wire_frame <= prev_wire_frame) {
+                        self.store_generation = self.store_generation.wrapping_add(1).max(1);
+                        self.a11y_synced_wire_frame = 0;
+                    }
                     self.app.on_queued_wire_frame_applied(is_keyframe);
                     self.last_frame_bytes = bytes;
                 }
@@ -476,7 +497,13 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.next_frame_id = self.next_frame_id.next();
             let bytes = self.app.render(frame_id);
             if !bytes.is_empty() {
+                let prev_wire_frame = self.replica.last_changes().frame;
                 self.replica.submit_nve2_frame(bytes)?;
+                let next_wire_frame = self.replica.last_changes().frame;
+                if prev_wire_frame > 0 && next_wire_frame <= prev_wire_frame {
+                    self.store_generation = self.store_generation.wrapping_add(1).max(1);
+                    self.a11y_synced_wire_frame = 0;
+                }
                 self.last_frame_bytes.clear();
                 self.last_frame_bytes.extend_from_slice(bytes);
             }
@@ -493,12 +520,11 @@ impl<A: DesktopApp> DesktopSession<A> {
                 let pw = self.pixel_buffer.width();
                 let ph = self.pixel_buffer.height();
                 let (store, backend) = self.replica.store_and_backend_mut();
-                let (dl, registry, events) = backend.paint_parts_mut();
+                let (scene, registry, events) = backend.scene_paint_parts_mut();
                 let ok = surface.resize(pw, ph).is_ok()
                     && surface
-                        .render_display_list_with_plugins(
-                            &self.skia_renderer,
-                            dl,
+                        .render_scene_cached_with_plugins(
+                            scene,
                             self.viewport.scale_factor,
                             self.clear_color,
                             Some((store, registry, events)),
@@ -577,6 +603,8 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let layout = self.layout_choice.build_layout_engine()?;
                         self.replica =
                             new_shell_skia_replica_with_layout(self.surface_id, self.viewport, layout);
+                        self.store_generation = self.store_generation.wrapping_add(1).max(1);
+                        self.a11y_synced_wire_frame = 0;
                         self.last_frame_bytes.clear();
                         let swap_ms = t0.elapsed().as_millis();
                         self.status_banner = Some(format!(

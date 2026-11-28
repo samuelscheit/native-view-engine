@@ -106,6 +106,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 {
                     sw.base_title = title;
                     sw.sync_title();
+                    sw.sync_a11y_state(false);
                 }
             }
             WindowCommand::SetBounds { handle, bounds } => {
@@ -206,6 +207,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(sw) = self.windows.get_mut(&window_id) {
+            sw.a11y_adapter.process_event(&sw.window, &event);
+        }
         match event {
             WindowEvent::CloseRequested => {
                 let Some((handle_id, surface_id)) =
@@ -288,6 +292,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
                 let handle_id = sw.handle_id;
                 sw.sync_ime_state();
+                sw.sync_a11y_state(true);
                 sw.window.request_redraw();
                 let cur = self.window_manager.get(handle_id).map(|w| w.descriptor.bounds).unwrap_or_default();
                 let _ = self.window_manager.set_bounds_with_scale(
@@ -312,6 +317,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
                 let handle_id = sw.handle_id;
                 sw.sync_ime_state();
+                sw.sync_a11y_state(true);
                 sw.window.request_redraw();
                 let cur = self.window_manager.get(handle_id).map(|w| w.descriptor.bounds).unwrap_or_default();
                 let _ = self.window_manager.set_bounds_with_scale(
@@ -362,6 +368,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             reschedule = exhausted;
                             sw.sync_ime_state();
                             sw.sync_cursor_state();
+                            sw.sync_a11y_state(true);
                             sw.window.request_redraw();
                         }
                         Ok(false) => sw.sync_cursor_state(),
@@ -401,6 +408,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             let (_, exhausted) = Self::pump_window_async(sw, false);
                             reschedule = exhausted;
                             sw.sync_ime_state();
+                            sw.sync_a11y_state(true);
                             sw.window.request_redraw();
                         }
                         Ok(false) => {}
@@ -421,6 +429,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             let (_, exhausted) = Self::pump_window_async(sw, false);
                             reschedule = exhausted;
                             sw.sync_ime_state();
+                            sw.sync_a11y_state(true);
                             sw.window.request_redraw();
                         }
                         Ok(false) => {}
@@ -440,6 +449,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             let (_, exhausted) = Self::pump_window_async(sw, false);
                             reschedule = exhausted;
                             sw.sync_ime_state();
+                            sw.sync_a11y_state(true);
                             sw.window.request_redraw();
                         }
                         Ok(false) => {}

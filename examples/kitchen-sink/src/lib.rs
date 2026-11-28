@@ -22,14 +22,15 @@ pub fn register_web_systems(registry: &mut nve_backend_web::WebTableRegistry) {
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    ColorScheme, FrameId, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
-    SurfaceId, ValidatedEvents,
+    ColorScheme, FrameId, NveGestureDisposition, NveHostCallbacks, NveIntrinsicSize, NvePropsRef,
+    NveSizeConstraints, SurfaceId, ValidatedEvents, SERVICE_SYSTEM_ENV,
 };
 use nve_dioxus::prelude::{Signal, WritableExt};
-use nve_system_env::ThemeSnapshot;
-use nve_ui::Appearance;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
+use nve_host_services::{FfiHostServices, HostChannelEvent, HostPushEvent};
+use nve_system_env::{ThemeSnapshot, EVENT_THEME_CHANGED};
+use nve_ui::Appearance;
 
 pub use shell::KitchenSinkApp;
 pub use state::{
@@ -61,6 +62,7 @@ pub struct KitchenSinkModule {
     surface: DioxusSurface,
     mounted: bool,
     last_state_buf: Vec<u8>,
+    host_services: FfiHostServices,
 }
 
 impl KitchenSinkModule {
@@ -107,6 +109,12 @@ impl KitchenSinkModule {
         } else {
             self.surface.commit_to_timed(frame_id, backend)
         }
+    }
+
+    /// Returns the `NVE_IFACE_HOST = 5` FFI host services facade bound to this module.
+    #[inline]
+    pub fn host_services(&self) -> &FfiHostServices {
+        &self.host_services
     }
 
     /// Returns the interactive counter value inside the Overview gallery.
@@ -156,6 +164,7 @@ impl NveApp for KitchenSinkModule {
             surface: create_surface(surface_id),
             mounted: false,
             last_state_buf,
+            host_services: FfiHostServices::new(),
         }
     }
 
@@ -175,14 +184,37 @@ impl NveApp for KitchenSinkModule {
         self.surface.dispatch_events(events)
     }
 
+    fn bind_host(&mut self, callbacks: Option<NveHostCallbacks>) {
+        self.host_services.bind(callbacks);
+    }
+
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        let Ok(theme) = ThemeSnapshot::from_repr_c_bytes(batch) else {
+        let Ok(stats) = self.host_services.ingest_batch(batch) else {
             return false;
         };
-        self.set_os_appearance(Appearance {
-            scheme: theme.color_scheme.unwrap_or(ColorScheme::Dark),
-            contrast: theme.contrast,
-        })
+        // Drain push and channel records consumed by this app so repeated host pushes never
+        // accumulate unboundedly; apply canonical `SERVICE_SYSTEM_ENV` theme pushes in place.
+        let pushes = self
+            .host_services
+            .typed_events()
+            .drain_typed::<HostPushEvent>();
+        let _ = self
+            .host_services
+            .typed_events()
+            .drain_typed::<HostChannelEvent>();
+        let mut appearance_changed = false;
+        for ev in pushes {
+            if ev.service_id == SERVICE_SYSTEM_ENV
+                && ev.event_id == EVENT_THEME_CHANGED
+                && let Ok(theme) = ThemeSnapshot::from_repr_c_bytes(&ev.payload)
+            {
+                appearance_changed |= self.set_os_appearance(Appearance {
+                    scheme: theme.color_scheme.unwrap_or(ColorScheme::Dark),
+                    contrast: theme.contrast,
+                });
+            }
+        }
+        appearance_changed || stats.non_cancelled_responses() > 0
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {

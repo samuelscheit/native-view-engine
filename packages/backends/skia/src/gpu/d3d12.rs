@@ -81,7 +81,7 @@ mod imp {
 
     enum D3D12Target {
         Window(D3D12WindowState),
-        Offscreen { surface: Option<Surface> },
+        Offscreen { surface: Surface },
     }
 
     /// Platform-specific Direct3D 12 swapchain resources managed by [`GaneshPresenter`].
@@ -95,15 +95,15 @@ mod imp {
     impl Drop for D3D12NativeSwapchain {
         fn drop(&mut self) {
             let _ = self.direct_context.flush_submit_and_sync_cpu();
-            match &mut self.target {
-                D3D12Target::Window(win) => {
-                    win.buffers.clear();
-                    win.active_index = None;
-                }
-                D3D12Target::Offscreen { surface } => {
-                    surface.take();
-                }
+            if let D3D12Target::Window(win) = &mut self.target {
+                // Window surfaces wrap DXGI swapchain backbuffers and must release COM refs
+                // BEFORE `release_resources_and_abandon()` and swapchain destruction.
+                win.buffers.clear();
+                win.active_index = None;
             }
+            // Note: `D3D12Target::Offscreen { surface }` owns a Skia-managed D3D12 texture;
+            // Rust drops `target` right after `Drop::drop` (before `direct_context` and
+            // `_backend_context`), and Skia safely releases offscreen surfaces after abandon.
             self.direct_context.release_resources_and_abandon();
         }
     }
@@ -120,18 +120,12 @@ mod imp {
             matches!(self.target, D3D12Target::Window(_))
         }
 
-        fn direct_context_mut(&mut self) -> &mut DirectContext {
-            &mut self.direct_context
-        }
-
         fn offscreen_surface_and_context_mut(
             &mut self,
         ) -> Option<(&mut Surface, &mut DirectContext)> {
             match &mut self.target {
-                D3D12Target::Offscreen {
-                    surface: Some(surface),
-                } => Some((surface, &mut self.direct_context)),
-                _ => None,
+                D3D12Target::Offscreen { surface } => Some((surface, &mut self.direct_context)),
+                D3D12Target::Window(_) => None,
             }
         }
 
@@ -196,11 +190,11 @@ mod imp {
                         return Ok(false);
                     }
                     let _ = self.direct_context.flush_submit_and_sync_cpu();
-                    *surface = Some(create_ganesh_offscreen_surface(
+                    *surface = create_ganesh_offscreen_surface(
                         &mut self.direct_context,
                         next,
                         "D3D12",
-                    )?);
+                    )?;
                     Ok(true)
                 }
             }
@@ -231,19 +225,18 @@ mod imp {
             Ok(())
         }
 
-        fn active_surface_mut(&mut self) -> Result<&mut Surface, GpuSurfaceError> {
-            match &mut self.target {
+        fn active_surface_and_context_mut(
+            &mut self,
+        ) -> Result<(&mut Surface, &mut DirectContext), GpuSurfaceError> {
+            let s = match &mut self.target {
                 D3D12Target::Window(win) => {
                     let idx = win.active_index.ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    win.buffers
-                        .get_mut(idx)
-                        .map(|(surface, _)| surface)
-                        .ok_or(GpuSurfaceError::DrawableUnavailable)
+                    win.buffers.get_mut(idx).map(|(surface, _)| surface)
                 }
-                D3D12Target::Offscreen { surface } => surface
-                    .as_mut()
-                    .ok_or(GpuSurfaceError::DrawableUnavailable),
+                D3D12Target::Offscreen { surface } => Some(surface),
             }
+            .ok_or(GpuSurfaceError::DrawableUnavailable)?;
+            Ok((s, &mut self.direct_context))
         }
 
         fn submit_native_frame(&mut self) -> Result<(), GpuSurfaceError> {
@@ -268,15 +261,11 @@ mod imp {
                     }
                     Ok(())
                 }
-                D3D12Target::Offscreen { surface } => {
-                    let surface = surface
-                        .as_mut()
-                        .ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    self.direct_context
-                        .flush_and_submit_surface(surface, SyncCpu::Yes)
-                        .map(|_| ())
-                        .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))
-                }
+                D3D12Target::Offscreen { surface } => self
+                    .direct_context
+                    .flush_and_submit_surface(surface, SyncCpu::Yes)
+                    .map(|_| ())
+                    .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string())),
             }
         }
 
@@ -319,9 +308,7 @@ mod imp {
             };
             Ok(Self::new(
                 D3D12NativeSwapchain {
-                    target: D3D12Target::Offscreen {
-                        surface: Some(surface),
-                    },
+                    target: D3D12Target::Offscreen { surface },
                     direct_context,
                     _backend_context: backend_context,
                 },

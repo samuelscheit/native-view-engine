@@ -1,0 +1,24 @@
+[package]
+name = "nve-clipboard-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Browser Web Clipboard provider (SERVICE_CLIPBOARD) with shadow buffer, copy/paste listeners, and async navigator.clipboard.readText() completion"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-clipboard = { workspace = true }
+nve-host-services = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "clipboard_web_bench"
+harness = false
+
+[lints]
+workspace = true

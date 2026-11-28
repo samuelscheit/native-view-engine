@@ -2,7 +2,10 @@
 //! browser, native module), the user's mode shared with the host across rebuilds, appearance-correct
 //! static SSR, and rendered text contrast on real pages in all four polarities.
 
-use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
+use nve_abi::{
+    encode_single_push_into, EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs,
+    SERVICE_SYSTEM_ENV,
+};
 use nve_backend_headless::HeadlessBackend;
 use nve_tables::tables::DebugId;
 use nve_dioxus::DioxusSurface;
@@ -13,7 +16,7 @@ use nve_docs_site::{
     render_docs_ssr,
 };
 use nve_engine::NveApp;
-use nve_system_env::{ColorScheme, ContrastLevel, ThemeSnapshot};
+use nve_system_env::{ColorScheme, ContrastLevel, ThemeSnapshot, EVENT_THEME_CHANGED};
 use nve_ui::audit::text_contrast_violations;
 use nve_ui::{AppBrand, Appearance, ColorHex, Polarity, Theme, ThemeMode};
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
@@ -138,14 +141,24 @@ fn native_module_follows_host_theme_events_without_rebuilding() {
     .into_iter()
     .enumerate()
     {
-        let payload = os_theme(scheme, contrast).to_repr_c_bytes();
-        assert!(module.dispatch_host_events(&payload), "{polarity:?} payload accepted");
+        let raw = os_theme(scheme, contrast).to_repr_c_bytes();
+        let mut batch = [0u8; 56];
+        let payload = encode_single_push_into(
+            &mut batch,
+            SERVICE_SYSTEM_ENV,
+            EVENT_THEME_CHANGED,
+            &raw,
+        )
+        .expect("canonical 56B theme push batch");
+        assert!(module.dispatch_host_events(payload), "{polarity:?} payload accepted");
         let _ = module.render(FrameId(frame as u64 + 2));
         assert_eq!(rendered_root_attr(module.surface(), "theme").as_deref(), Some(attr), "{polarity:?}");
         assert_eq!(find(module.surface(), "docs-root"), root, "{polarity:?}: re-themed in place, not rebuilt");
         assert_eq!(module.host().theme(), Theme::preset(polarity, AppBrand::Docs), "{polarity:?}");
     }
     assert!(!module.dispatch_host_events(b"not a theme"), "foreign payloads are ignored");
+    let raw_unframed = os_theme(ColorScheme::Dark, ContrastLevel::Standard).to_repr_c_bytes();
+    assert!(!module.dispatch_host_events(&raw_unframed), "unframed legacy 12B theme payload is rejected");
 }
 
 /// Static pages paint the visitor's appearance before hydration: every non-base appearance

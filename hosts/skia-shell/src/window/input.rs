@@ -65,7 +65,6 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     /// Programmatically moves focus to `next_focus` (or blurs when `None`), emitting balanced
     /// `CompositionEnd` (when blurring mid-composition) + `Blur`/`Focus` events and re-rendering.
-    #[cfg(test)]
     pub fn focus_node(&mut self, next_focus: Option<NodeId>) -> Result<bool, DesktopHostError> {
         let prev_focus = self.replica.backend().focused_node();
         let had_preedit = self.replica.backend().focus_state().ime_preedit.is_some();

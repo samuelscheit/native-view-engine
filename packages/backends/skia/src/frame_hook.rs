@@ -41,11 +41,44 @@ pub trait SkiaFrameHook: Send + 'static {
     /// Advances by `dt_s` seconds; returns `true` when painted values changed.
     fn advance(&mut self, dt_s: f32) -> bool;
 
+    /// Advances by `dt_s` seconds, pushing nodes whose compositor-only properties (`opacity`,
+    /// `transform`) changed into `composite_dirty` and nodes whose painted properties (`background`,
+    /// `color`, `border`, `border_radius`) changed into `paint_dirty`. Returns `true` when any
+    /// painted value changed.
+    ///
+    /// Hooks that return `true` while leaving both dirty slices unchanged trigger a conservative
+    /// full-scene resync.
+    fn advance_collecting(
+        &mut self,
+        dt_s: f32,
+        _composite_dirty: &mut Vec<NodeId>,
+        _paint_dirty: &mut Vec<NodeId>,
+    ) -> bool {
+        self.advance(dt_s)
+    }
+
     /// Whether another frame must be scheduled (`false` lets display links sleep).
     fn needs_next_frame(&self) -> bool;
 
     /// Applies the user's reduced-motion preference; returns `true` when painted values changed.
     fn set_reduced_motion(&mut self, reduced: bool) -> bool;
+
+    /// Applies the user's reduced-motion preference, collecting affected nodes as in
+    /// [`Self::advance_collecting`]. Returns `true` when any painted value changed.
+    fn set_reduced_motion_collecting(
+        &mut self,
+        reduced: bool,
+        _composite_dirty: &mut Vec<NodeId>,
+        _paint_dirty: &mut Vec<NodeId>,
+    ) -> bool {
+        self.set_reduced_motion(reduced)
+    }
+
+    /// Returns `true` when `changes` mutates a table watched by this hook (e.g. `Motion`) that
+    /// requires paint-tier scene classification even without a `Visual` paint effect.
+    fn watches_changes(&self, _changes: &ChangeSet) -> bool {
+        false
+    }
 
     /// Overrides `style` with in-flight animated values of `node`.
     fn apply_visual(&self, _node: NodeId, _style: &mut VisualSnapshot) {}
@@ -92,18 +125,59 @@ impl SkiaFrameHooks {
         }
     }
 
-    pub(crate) fn advance(&mut self, dt_s: f32) -> bool {
-        self.hooks.iter_mut().fold(false, |changed, h| h.advance(dt_s) | changed)
+    /// Advances every hook, collecting composite-dirty and paint-dirty nodes.
+    /// Returns `(any_changed, needs_full_sync)`.
+    pub(crate) fn advance_collecting(
+        &mut self,
+        dt_s: f32,
+        composite_dirty: &mut Vec<NodeId>,
+        paint_dirty: &mut Vec<NodeId>,
+    ) -> (bool, bool) {
+        let mut any_changed = false;
+        let mut needs_full_sync = false;
+        for h in &mut self.hooks {
+            let c_before = composite_dirty.len();
+            let p_before = paint_dirty.len();
+            if h.advance_collecting(dt_s, composite_dirty, paint_dirty) {
+                any_changed = true;
+                if composite_dirty.len() == c_before && paint_dirty.len() == p_before {
+                    needs_full_sync = true;
+                }
+            }
+        }
+        (any_changed, needs_full_sync)
     }
 
     pub(crate) fn needs_next_frame(&self) -> bool {
         self.hooks.iter().any(|h| h.needs_next_frame())
     }
 
-    pub(crate) fn set_reduced_motion(&mut self, reduced: bool) -> bool {
-        self.hooks
-            .iter_mut()
-            .fold(false, |changed, h| h.set_reduced_motion(reduced) | changed)
+    /// Applies reduced-motion preference to every hook, collecting dirty nodes.
+    /// Returns `(any_changed, needs_full_sync)`.
+    pub(crate) fn set_reduced_motion_collecting(
+        &mut self,
+        reduced: bool,
+        composite_dirty: &mut Vec<NodeId>,
+        paint_dirty: &mut Vec<NodeId>,
+    ) -> (bool, bool) {
+        let mut any_changed = false;
+        let mut needs_full_sync = false;
+        for h in &mut self.hooks {
+            let c_before = composite_dirty.len();
+            let p_before = paint_dirty.len();
+            if h.set_reduced_motion_collecting(reduced, composite_dirty, paint_dirty) {
+                any_changed = true;
+                if composite_dirty.len() == c_before && paint_dirty.len() == p_before {
+                    needs_full_sync = true;
+                }
+            }
+        }
+        (any_changed, needs_full_sync)
+    }
+
+    #[inline]
+    pub(crate) fn watches_changes(&self, changes: &ChangeSet) -> bool {
+        self.hooks.iter().any(|h| h.watches_changes(changes))
     }
 
     #[inline]
@@ -150,11 +224,32 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         self.frame_hooks.needs_next_frame()
     }
 
-    /// Applies the reduced-motion preference to every hook, repainting when values changed.
+    /// Applies the reduced-motion preference to every hook, incrementally updating the retained
+    /// scene when values changed.
     pub fn set_reduced_motion(&mut self, store: &NodeStore, reduced: bool) {
-        if self.frame_hooks.set_reduced_motion(reduced) {
-            self.rebuild_display_list(store);
+        let mut composite_dirty = std::mem::take(&mut self.motion_scratch);
+        let mut paint_dirty = std::mem::take(&mut self.motion_paint_scratch);
+        composite_dirty.clear();
+        paint_dirty.clear();
+        let (changed, needs_full) = self.frame_hooks.set_reduced_motion_collecting(
+            reduced,
+            &mut composite_dirty,
+            &mut paint_dirty,
+        );
+        if changed {
+            if needs_full {
+                self.sync_full_scene(store);
+            } else {
+                if !composite_dirty.is_empty() {
+                    self.update_scene_composite_nodes(store, &composite_dirty);
+                }
+                if !paint_dirty.is_empty() {
+                    self.update_scene_paint_nodes(store, &paint_dirty);
+                }
+            }
         }
+        self.motion_scratch = composite_dirty;
+        self.motion_paint_scratch = paint_dirty;
     }
 
     /// Effective visual of `node` including in-flight animated values.
@@ -167,12 +262,32 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         Some(style)
     }
 
-    /// Advances every hook by `dt_s`, repainting when values changed; returns whether another
-    /// frame is needed.
+    /// Advances every hook by `dt_s`, applying zero-alloc composite or incremental paint updates
+    /// when values changed; returns whether another frame is needed.
     pub fn advance_animations(&mut self, store: &NodeStore, dt_s: f32) -> bool {
-        if self.frame_hooks.advance(dt_s) {
-            self.rebuild_display_list(store);
+        let mut composite_dirty = std::mem::take(&mut self.motion_scratch);
+        let mut paint_dirty = std::mem::take(&mut self.motion_paint_scratch);
+        composite_dirty.clear();
+        paint_dirty.clear();
+        let (stepped, needs_full) = self.frame_hooks.advance_collecting(
+            dt_s,
+            &mut composite_dirty,
+            &mut paint_dirty,
+        );
+        if stepped {
+            if needs_full {
+                self.sync_full_scene(store);
+            } else {
+                if !composite_dirty.is_empty() {
+                    self.update_scene_composite_nodes(store, &composite_dirty);
+                }
+                if !paint_dirty.is_empty() {
+                    self.update_scene_paint_nodes(store, &paint_dirty);
+                }
+            }
         }
+        self.motion_scratch = composite_dirty;
+        self.motion_paint_scratch = paint_dirty;
         self.frame_hooks.needs_next_frame()
     }
 

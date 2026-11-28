@@ -14,9 +14,13 @@ use wasm_bindgen::prelude::*;
 use crate::wasm_hydrate::SsrRenderResult;
 #[cfg(feature = "dev")]
 use crate::wasm_hotreload::{connect_hot_reload, HotReloadSocket};
+#[cfg(feature = "web-host-services")]
+use crate::host_services::{wasm_drain::WebHostRuntimeGuard, WebHostServices};
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
+use crate::wasm_appearance::dispatch_appearance;
+#[cfg(not(feature = "web-host-services"))]
 use crate::wasm_appearance::{
-    browser_theme_snapshot, dispatch_appearance, install_appearance_listener, AppearanceListener,
+    browser_theme_snapshot, install_appearance_listener, AppearanceListener,
 };
 #[cfg(feature = "multi-window")]
 use crate::wasm_popup::{
@@ -51,10 +55,20 @@ struct ActiveShell {
     #[cfg(feature = "dev")]
     _hot_reload: Option<HotReloadSocket>,
     _resize_listener: Option<WindowResizeListener>,
+    #[cfg(not(feature = "web-host-services"))]
     _appearance_listener: Option<AppearanceListener>,
     _snapshot_guard: Option<SnapshotPersistenceGuard>,
+    #[cfg(feature = "web-host-services")]
+    _host_guard: WebHostRuntimeGuard,
     #[cfg(feature = "app-issues")]
     _async_wake: WebAsyncWakeGuard,
+}
+
+fn teardown_active_shell(shell: ActiveShell) {
+    if let Ok(mut guard) = shell.session.try_borrow_mut() {
+        guard.unbind_host();
+    }
+    drop(shell);
 }
 
 /// Pumps async Dioxus tasks/effects for `(surface_id, generation)`. Returns [`PumpNext::Microtask`]
@@ -144,9 +158,18 @@ pub(crate) fn primary_surface_id_if_mounted() -> Option<SurfaceId> {
 
 #[cfg(feature = "multi-window")]
 pub(crate) fn remove_active_shell(surface_id: SurfaceId) {
-    ACTIVE_SHELLS.with(|shells| {
-        shells.borrow_mut().remove(&surface_id);
-    });
+    let removed = ACTIVE_SHELLS.with(|shells| shells.borrow_mut().remove(&surface_id));
+    if let Some(shell) = removed {
+        teardown_active_shell(shell);
+    }
+}
+
+#[cfg(all(feature = "dev", feature = "web-host-services"))]
+pub(crate) fn teardown_surface_reentrant(surface_id: SurfaceId) {
+    let removed = ACTIVE_SHELLS.with(|shells| shells.borrow_mut().remove(&surface_id));
+    if let Some(shell) = removed {
+        teardown_active_shell(shell);
+    }
 }
 
 #[wasm_bindgen]
@@ -157,6 +180,14 @@ pub fn active_surface_ids() -> Vec<u32> {
 #[wasm_bindgen]
 pub fn active_shell_count() -> usize {
     ACTIVE_SHELLS.with(|shells| shells.borrow().len())
+}
+
+#[cfg(all(feature = "dev", feature = "web-host-services"))]
+pub(crate) fn with_active_host_guard<R>(
+    surface_id: SurfaceId,
+    f: impl FnOnce(&WebHostRuntimeGuard) -> R,
+) -> Option<R> {
+    ACTIVE_SHELLS.with(|shells| shells.borrow().get(&surface_id).map(|a| f(&a._host_guard)))
 }
 
 #[wasm_bindgen]
@@ -218,36 +249,17 @@ impl WebAppController {
     }
 
     pub fn hydration_reconciled_dirty_controls(&self) -> usize {
-        self.session
-            .borrow()
-            .backend()
-            .hydration_report()
-            .reconciled_dirty_controls as usize
+        self.session.borrow().backend().hydration_report().reconciled_dirty_controls as usize
     }
-
-    pub fn restored_from_snapshot(&self) -> bool {
-        self.restored_from_snapshot
-    }
-
+    pub fn restored_from_snapshot(&self) -> bool { self.restored_from_snapshot }
     pub fn save_snapshot_now(&self) -> bool {
-        self.snapshot_trigger
-            .as_ref()
-            .is_some_and(|t| t.flush_now(true))
+        self.snapshot_trigger.as_ref().is_some_and(|t| t.flush_now(true))
     }
-
     pub fn clear_snapshot(&self) {
-        if let Some(t) = self.snapshot_trigger.as_ref() {
-            t.clear();
-        }
+        if let Some(t) = self.snapshot_trigger.as_ref() { t.clear(); }
     }
-
-    pub fn keyboard_inset_height(&self) -> f32 {
-        self.session.borrow().backend().keyboard_insets().height
-    }
-
-    pub fn keyboard_visible(&self) -> bool {
-        self.session.borrow().backend().keyboard_insets().visible
-    }
+    pub fn keyboard_inset_height(&self) -> f32 { self.session.borrow().backend().keyboard_insets().height }
+    pub fn keyboard_visible(&self) -> bool { self.session.borrow().backend().keyboard_insets().visible }
 
     pub fn dispatch_viewport_resize(&self, width: f32, height: f32) -> Result<bool, JsValue> {
         let scale_factor = web_sys::window()
@@ -283,11 +295,12 @@ impl WebAppController {
                 None
             }
         });
-        if let Some(_shell) = removed {
+        if let Some(shell) = removed {
             #[cfg(feature = "multi-window")]
-            if let Some(handle) = _shell.window_handle {
+            if let Some(handle) = shell.window_handle {
                 unregister_surface_window(handle);
             }
+            teardown_active_shell(shell);
             if let Some(el) = web_sys::window()
                 .and_then(|w| w.document())
                 .and_then(|d| d.get_element_by_id(&self.mount_id))
@@ -408,7 +421,18 @@ where
     };
     session_val.replace_backend_with_viewport(backend, viewport);
     session_val.apply_initial_viewport();
+    #[cfg(feature = "web-host-services")]
+    let web_host = {
+        let host = WebHostServices::new();
+        if !should_hydrate {
+            session_val.bind_web_host_services(std::sync::Arc::clone(&host));
+        }
+        host
+    };
     let session = Rc::new(RefCell::new(session_val));
+    #[cfg(feature = "web-host-services")]
+    let host_guard =
+        WebHostRuntimeGuard::install(std::sync::Arc::clone(&web_host), Rc::downgrade(&session));
     if let Some(hook) = mount_hook {
         hook(&MountedSurface {
             session: &session,
@@ -468,23 +492,35 @@ where
         let boot_rendered = async_wake.run_boot_pump(&mut guard)?;
         #[cfg(not(feature = "app-issues"))]
         let boot_rendered = run_initial_frame_and_events(&mut guard)?;
+        #[cfg(feature = "web-host-services")]
+        if should_hydrate && guard.bind_web_host_services(std::sync::Arc::clone(&web_host)) {
+            guard
+                .render_initial()
+                .map_err(|e| JsValue::from_str(&format!("post-hydration host render failed: {e}")))?;
+        }
         if boot_rendered && let Some(t) = snapshot_trigger.as_ref() {
             t.schedule_debounced();
         }
         // OS appearance in the same task as Frame 0: Frame 0 still matches (and hydrates) the
         // default-appearance SSR, and the browser never paints it before the OS polarity lands.
+        #[cfg(feature = "web-host-services")]
+        dispatch_appearance(&mut guard, web_host.system_env().current_theme());
+        #[cfg(not(feature = "web-host-services"))]
         dispatch_appearance(&mut guard, browser_theme_snapshot(&window));
     }
     let _ = container.set_attribute("data-nve-live", "1");
 
-    let session_for_appearance = Rc::downgrade(&session);
-    let appearance_listener = install_appearance_listener(&window, move |theme| {
-        if let Some(session) = session_for_appearance.upgrade()
-            && let Ok(mut guard) = session.try_borrow_mut()
-        {
-            dispatch_appearance(&mut guard, theme);
-        }
-    });
+    #[cfg(not(feature = "web-host-services"))]
+    let appearance_listener = {
+        let session_for_appearance = Rc::downgrade(&session);
+        install_appearance_listener(&window, move |theme| {
+            if let Some(session) = session_for_appearance.upgrade()
+                && let Ok(mut guard) = session.try_borrow_mut()
+            {
+                dispatch_appearance(&mut guard, theme);
+            }
+        })
+    };
 
     let session_for_resize = Rc::downgrade(&session);
     let resize_listener = install_resize_listener(&window, container_for_resize, move |next_vp| {
@@ -518,7 +554,9 @@ where
     let window_handle =
         register_mounted_surface_window(surface_id, app_name, viewport.width, viewport.height);
 
-    ACTIVE_SHELLS.with(|shells| {
+    // Swap out any replaced ActiveShell and drop it OUTSIDE the `ACTIVE_SHELLS` borrow so
+    // re-entrant listener/guard teardown can never trigger a `RefCell` `BorrowMutError`.
+    let replaced = ACTIVE_SHELLS.with(|shells| {
         let mut map = shells.borrow_mut();
         if map.is_empty() || surface_id == DEFAULT_SURFACE_ID {
             PRIMARY_SURFACE_ID.with(|p| p.set(surface_id));
@@ -535,13 +573,19 @@ where
                 #[cfg(feature = "dev")]
                 _hot_reload: hot_reload,
                 _resize_listener: resize_listener,
+                #[cfg(not(feature = "web-host-services"))]
                 _appearance_listener: appearance_listener,
                 _snapshot_guard: snapshot_guard,
+                #[cfg(feature = "web-host-services")]
+                _host_guard: host_guard,
                 #[cfg(feature = "app-issues")]
                 _async_wake: async_wake,
             },
-        );
+        )
     });
+    if let Some(old) = replaced {
+        teardown_active_shell(old);
+    }
 
     Ok(WebAppController {
         app_name,
@@ -556,58 +600,28 @@ where
 
 #[cfg(feature = "app-studio")]
 #[wasm_bindgen]
-pub fn start_studio_workspace_app(
-    mount_id: &str,
-    ws_url: Option<String>,
-) -> Result<WebAppController, JsValue> {
+pub fn start_studio_workspace_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
     start_studio_workspace_app_on_surface(DEFAULT_SURFACE_ID.raw(), mount_id, ws_url)
 }
 
 #[cfg(feature = "app-studio")]
 #[wasm_bindgen]
-pub fn start_studio_workspace_app_on_surface(
-    surface_id: u32,
-    mount_id: &str,
-    ws_url: Option<String>,
-) -> Result<WebAppController, JsValue> {
-    let surface_id = SurfaceId::from_raw(surface_id)
+pub fn start_studio_workspace_app_on_surface(surface_id: u32, mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
+    let sid = SurfaceId::from_raw(surface_id)
         .ok_or_else(|| JsValue::from_str("surface_id must have a non-zero 24-bit index"))?;
-    start_surface_app_inner(
-        "StudioWorkspaceApp",
-        surface_id,
-        mount_id,
-        ws_url,
-        false,
-        WebAppSession::new_studio_workspace,
-        None,
-    )
+    start_surface_app_inner("StudioWorkspaceApp", sid, mount_id, ws_url, false, WebAppSession::new_studio_workspace, None)
 }
 
 #[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
-pub fn start_kitchen_sink_app(
-    mount_id: &str,
-    ws_url: Option<String>,
-) -> Result<WebAppController, JsValue> {
+pub fn start_kitchen_sink_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
     start_kitchen_sink_app_on_surface(DEFAULT_SURFACE_ID.raw(), mount_id, ws_url)
 }
 
 #[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
-pub fn start_kitchen_sink_app_on_surface(
-    surface_id: u32,
-    mount_id: &str,
-    ws_url: Option<String>,
-) -> Result<WebAppController, JsValue> {
-    let surface_id = SurfaceId::from_raw(surface_id)
+pub fn start_kitchen_sink_app_on_surface(surface_id: u32, mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
+    let sid = SurfaceId::from_raw(surface_id)
         .ok_or_else(|| JsValue::from_str("surface_id must have a non-zero 24-bit index"))?;
-    start_surface_app_inner(
-        "KitchenSinkApp",
-        surface_id,
-        mount_id,
-        ws_url,
-        false,
-        WebAppSession::new_kitchen_sink,
-        None,
-    )
+    start_surface_app_inner("KitchenSinkApp", sid, mount_id, ws_url, false, WebAppSession::new_kitchen_sink, None)
 }

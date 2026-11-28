@@ -119,10 +119,11 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
 
     let rect = backend.layout_of(hidden).expect("hidden input layout entry");
     assert_eq!((rect.width, rect.height), (0.0, 0.0));
-    assert!(
-        backend.display_list().ops.is_empty(),
+    assert_eq!(
+        backend.scene().live_op_count(),
+        0,
         "InputKind::Hidden must emit 0 paint ops, got {:?}",
-        backend.display_list().ops
+        backend.materialize_display_list().ops
     );
     assert_eq!(backend.hit_test(&store, 1.0, 1.0), None);
     assert_eq!(backend.hit_test_interaction(&store, 1.0, 1.0), None);
@@ -148,7 +149,7 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     assert!(backend.is_text_input(&store, visible));
     backend.set_focused_node(&store, Some(visible));
     assert_eq!(backend.focused_node(), Some(visible));
-    assert!(!backend.display_list().ops.is_empty());
+    assert!(backend.scene().live_op_count() > 0);
 
     {
         let mut tx = store.tx();
@@ -158,7 +159,7 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     backend.commit(&store, &changes).unwrap();
     assert_eq!(backend.focused_node(), None);
     assert!(!backend.is_text_input(&store, visible));
-    assert!(backend.display_list().ops.is_empty());
+    assert_eq!(backend.scene().live_op_count(), 0);
     let vr = backend.layout_of(visible).expect("now-hidden layout");
     assert_eq!((vr.width, vr.height), (0.0, 0.0));
 }
@@ -316,17 +317,18 @@ fn skia_hover_solid_bg_and_explicit_none_clear_base_gradient_and_hostile_40_tabl
             .filter(|op| matches!(op, PaintOp::FillRoundedRectGradient { .. }))
             .count()
     };
-    assert_eq!(grad_count(&skia.display_list().ops), 3);
+    assert_eq!(grad_count(&skia.materialize_display_list().ops), 3);
 
     // Hover node `a` (solid `.bg(GREEN)` override) -> gradient cleared for `a` (only 2 gradients remain).
     let rect_a = skia.layout_of(n_solid_clear).unwrap();
     skia.pointer_move(&replica, rect_a.x + 5.0, rect_a.y + 5.0);
+    let dl_a = skia.materialize_display_list();
     assert_eq!(
-        grad_count(&skia.display_list().ops),
+        grad_count(&dl_a.ops),
         2,
         "hover solid bg override must clear base gradient"
     );
-    assert!(skia.display_list().ops.iter().any(|op| matches!(
+    assert!(dl_a.ops.iter().any(|op| matches!(
         op,
         PaintOp::FillRoundedRect { color, .. } if *color == ColorRgba::rgb(0, 200, 0)
     )));
@@ -335,7 +337,7 @@ fn skia_hover_solid_bg_and_explicit_none_clear_base_gradient_and_hostile_40_tabl
     let rect_b = skia.layout_of(n_none_clear).unwrap();
     skia.pointer_move(&replica, rect_b.x + 5.0, rect_b.y + 5.0);
     assert_eq!(
-        grad_count(&skia.display_list().ops),
+        grad_count(&skia.materialize_display_list().ops),
         2,
         "explicit ResourceId::NONE background_fill override must clear base gradient"
     );
@@ -343,7 +345,7 @@ fn skia_hover_solid_bg_and_explicit_none_clear_base_gradient_and_hostile_40_tabl
     // Hover node `c` (nested wire gradient) -> gradient angle switches to 180deg.
     let rect_c = skia.layout_of(n_nested_grad).unwrap();
     skia.pointer_move(&replica, rect_c.x + 5.0, rect_c.y + 5.0);
-    assert!(skia.display_list().ops.iter().any(|op| matches!(
+    assert!(skia.materialize_display_list().ops.iter().any(|op| matches!(
         op,
         PaintOp::FillRoundedRectGradient {
             gradient: BackgroundFill::Linear(lg),

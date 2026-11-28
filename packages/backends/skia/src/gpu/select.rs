@@ -13,18 +13,19 @@ use super::metal;
 #[cfg(feature = "skia-vulkan")]
 use super::vulkan;
 #[cfg(feature = "skia")]
-use super::{CpuSkiaSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
+use super::{CpuSkiaSurface, GpuSurfaceBackend, RendererCacheStats};
 use super::{
     FrameLifecycleState, FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig,
     GpuSurfaceError, SkiaPluginContext, SoftwareFramePresenter, SwapchainExtent,
 };
 use crate::raster::PixelBuffer;
+use crate::retained::CompositorScene;
 use crate::text::CosmicTextEngine;
 use crate::DisplayList;
 
 /// Hardware backend selected by the unified candidate ladder.
 #[allow(dead_code)]
-enum SelectedBackend {
+pub(super) enum SelectedBackend {
     #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
     Metal(Box<metal::MetalSwapchain>),
     #[cfg(feature = "skia-vulkan")]
@@ -36,7 +37,7 @@ enum SelectedBackend {
     Software(Box<SoftwareFramePresenter>),
 }
 
-enum SelectionMode<'a, W> {
+pub(super) enum SelectionMode<'a, W> {
     OffscreenSwapchain,
     WindowSwapchain(&'a W),
     #[cfg(feature = "skia")]
@@ -56,7 +57,7 @@ fn format_fallback_reason(
 
 /// Executes the single canonical GPU backend priority & fallback ladder for offscreen swapchains,
 /// native window-attached swapchains, and Skia `GpuSurface` targets.
-fn select_backend<W>(
+pub(super) fn select_backend<W>(
     config: GpuSurfaceConfig,
     mode: SelectionMode<'_, W>,
 ) -> Result<SelectedBackend, GpuSurfaceError>
@@ -202,7 +203,7 @@ where
 }
 
 /// Zero-sized placeholder window type used when calling [`select_backend`] in offscreen modes.
-struct NoWindow;
+pub(super) struct NoWindow;
 
 impl raw_window_handle::HasWindowHandle for NoWindow {
     fn window_handle(
@@ -283,6 +284,49 @@ impl GpuSwapchain {
             #[cfg(feature = "skia")]
             Self::CpuSkia(_) => false,
             Self::Software(_) => false,
+        }
+    }
+
+    /// Returns live Skia cache telemetry (`None` for zero-C++ `Softbuffer` presenters).
+    #[cfg(feature = "skia")]
+    pub fn cache_stats(&self) -> Option<RendererCacheStats> {
+        match self {
+            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
+            Self::Metal(sw) => Some(sw.cache_stats()),
+            #[cfg(feature = "skia-vulkan")]
+            Self::Vulkan(sw) => Some(sw.cache_stats()),
+            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
+            Self::Direct3D12(sw) => Some(sw.cache_stats()),
+            Self::CpuSkia(cpu) => Some(cpu.cache_stats()),
+            Self::Software(_) => None,
+        }
+    }
+
+    #[cfg(feature = "skia")]
+    pub fn reset_cache_stats(&self) {
+        match self {
+            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
+            Self::Metal(sw) => sw.reset_cache_stats(),
+            #[cfg(feature = "skia-vulkan")]
+            Self::Vulkan(sw) => sw.reset_cache_stats(),
+            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
+            Self::Direct3D12(sw) => sw.reset_cache_stats(),
+            Self::CpuSkia(cpu) => cpu.reset_cache_stats(),
+            Self::Software(_) => {}
+        }
+    }
+
+    #[cfg(feature = "skia")]
+    pub fn evict_gpu_caches(&self) {
+        match self {
+            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
+            Self::Metal(sw) => sw.evict_gpu_caches(),
+            #[cfg(feature = "skia-vulkan")]
+            Self::Vulkan(sw) => sw.evict_gpu_caches(),
+            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
+            Self::Direct3D12(sw) => sw.evict_gpu_caches(),
+            Self::CpuSkia(cpu) => cpu.evict_gpu_caches(),
+            Self::Software(_) => {}
         }
     }
 
@@ -429,6 +473,17 @@ impl GpuFramePresenter for GpuSwapchain {
         dispatch_swapchain_mut!(self, inner => GpuFramePresenter::render_display_list_with_plugins(inner, display_list, scale_factor, clear_color, hud_banner, plugins))
     }
 
+    fn render_scene_with_plugins(
+        &mut self,
+        scene: &CompositorScene,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        dispatch_swapchain_mut!(self, inner => GpuFramePresenter::render_scene_with_plugins(inner, scene, scale_factor, clear_color, hud_banner, plugins))
+    }
+
     fn submit_frame(&mut self) -> Result<(), GpuSurfaceError> {
         dispatch_swapchain_mut!(self, inner => GpuFramePresenter::submit_frame(inner))
     }
@@ -439,182 +494,5 @@ impl GpuFramePresenter for GpuSwapchain {
 
     fn abort_frame(&mut self) {
         dispatch_swapchain_mut!(self, inner => GpuFramePresenter::abort_frame(inner))
-    }
-}
-
-/// Concrete enum dispatch over Skia rendering surfaces (`--features skia`), backed by real
-/// offscreen hardware GPU render targets when `skia-metal` / `skia-vulkan` / `skia-d3d` are
-/// active, with automatic fallback to [`CpuSkiaSurface`].
-#[cfg(feature = "skia")]
-pub enum GpuSurface {
-    #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-    Metal(Box<metal::MetalSwapchain>),
-    #[cfg(feature = "skia-vulkan")]
-    Vulkan(Box<vulkan::VulkanSwapchain>),
-    #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-    Direct3D12(Box<d3d12::D3D12Swapchain>),
-    CpuRaster(Box<CpuSkiaSurface>),
-}
-
-#[cfg(feature = "skia")]
-impl GpuSurface {
-    /// Creates a Skia surface according to `config`, initializing a real hardware GPU context
-    /// when compiled and available, and falling back to [`CpuSkiaSurface`] when
-    /// `config.allow_cpu_fallback` is enabled.
-    pub fn new(config: GpuSurfaceConfig) -> Result<Self, GpuSurfaceError> {
-        match select_backend::<NoWindow>(config, SelectionMode::SkiaSurface)? {
-            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            SelectedBackend::Metal(sw) => Ok(Self::Metal(sw)),
-            #[cfg(feature = "skia-vulkan")]
-            SelectedBackend::Vulkan(sw) => Ok(Self::Vulkan(sw)),
-            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            SelectedBackend::Direct3D12(sw) => Ok(Self::Direct3D12(sw)),
-            SelectedBackend::CpuSkia(cpu) => Ok(Self::CpuRaster(cpu)),
-            SelectedBackend::Software(_) => {
-                Err(GpuSurfaceError::UnsupportedBackend(config.preferred_backend))
-            }
-        }
-    }
-
-    /// Creates a CPU-backed Skia raster surface directly (`skia_safe::surfaces::raster_n32_premul`).
-    pub fn new_cpu(width: u32, height: u32) -> Result<Self, GpuSurfaceError> {
-        Ok(Self::CpuRaster(Box::new(CpuSkiaSurface::new(
-            width, height,
-        )?)))
-    }
-
-    pub fn fallback_reason(&self) -> Option<&str> {
-        match self {
-            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            Self::Metal(sw) => sw.fallback_reason(),
-            #[cfg(feature = "skia-vulkan")]
-            Self::Vulkan(sw) => sw.fallback_reason(),
-            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            Self::Direct3D12(sw) => sw.fallback_reason(),
-            Self::CpuRaster(cpu) => cpu.fallback_reason(),
-        }
-    }
-}
-
-#[cfg(feature = "skia")]
-impl GpuSurfaceBackend for GpuSurface {
-    fn kind(&self) -> GpuBackendKind {
-        match self {
-            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            Self::Metal(_) => GpuBackendKind::Metal,
-            #[cfg(feature = "skia-vulkan")]
-            Self::Vulkan(_) => GpuBackendKind::Vulkan,
-            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            Self::Direct3D12(_) => GpuBackendKind::Direct3D12,
-            Self::CpuRaster(_) => GpuBackendKind::CpuRaster,
-        }
-    }
-
-    fn size(&self) -> (u32, u32) {
-        match self {
-            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            Self::Metal(sw) => {
-                let e = sw.extent();
-                (e.width, e.height)
-            }
-            #[cfg(feature = "skia-vulkan")]
-            Self::Vulkan(sw) => {
-                let e = sw.extent();
-                (e.width, e.height)
-            }
-            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            Self::Direct3D12(sw) => {
-                let e = sw.extent();
-                (e.width, e.height)
-            }
-            Self::CpuRaster(cpu) => cpu.size(),
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuSurfaceError> {
-        match self {
-            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            Self::Metal(sw) => {
-                let scale = sw.extent().scale_factor;
-                sw.resize(width, height, scale)
-            }
-            #[cfg(feature = "skia-vulkan")]
-            Self::Vulkan(sw) => {
-                let scale = sw.extent().scale_factor;
-                sw.resize(width, height, scale)
-            }
-            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            Self::Direct3D12(sw) => {
-                let scale = sw.extent().scale_factor;
-                sw.resize(width, height, scale)
-            }
-            Self::CpuRaster(cpu) => GpuSurfaceBackend::resize(cpu.as_mut(), width, height),
-        }
-    }
-
-    fn render_display_list(
-        &mut self,
-        renderer: &SkiaCanvasRenderer,
-        display_list: &DisplayList,
-        scale_factor: f32,
-        clear_color: ColorRgba,
-    ) -> Result<(), GpuSurfaceError> {
-        self.render_display_list_with_plugins(renderer, display_list, scale_factor, clear_color, None)
-    }
-
-    fn render_display_list_with_plugins(
-        &mut self,
-        renderer: &SkiaCanvasRenderer,
-        display_list: &DisplayList,
-        scale_factor: f32,
-        clear_color: ColorRgba,
-        plugins: Option<SkiaPluginContext<'_>>,
-    ) -> Result<(), GpuSurfaceError> {
-        match self {
-            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            Self::Metal(sw) => sw.render_with_renderer_plugins(
-                renderer,
-                display_list,
-                scale_factor,
-                clear_color,
-                plugins,
-            ),
-            #[cfg(feature = "skia-vulkan")]
-            Self::Vulkan(sw) => sw.render_with_renderer_plugins(
-                renderer,
-                display_list,
-                scale_factor,
-                clear_color,
-                plugins,
-            ),
-            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            Self::Direct3D12(sw) => sw.render_with_renderer_plugins(
-                renderer,
-                display_list,
-                scale_factor,
-                clear_color,
-                plugins,
-            ),
-            Self::CpuRaster(cpu) => GpuSurfaceBackend::render_display_list_with_plugins(
-                cpu.as_mut(),
-                renderer,
-                display_list,
-                scale_factor,
-                clear_color,
-                plugins,
-            ),
-        }
-    }
-
-    fn copy_to_pixel_buffer(&mut self, target: &mut PixelBuffer) -> Result<(), GpuSurfaceError> {
-        match self {
-            #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            Self::Metal(sw) => sw.copy_to_pixel_buffer(target),
-            #[cfg(feature = "skia-vulkan")]
-            Self::Vulkan(sw) => sw.copy_to_pixel_buffer(target),
-            #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            Self::Direct3D12(sw) => sw.copy_to_pixel_buffer(target),
-            Self::CpuRaster(cpu) => cpu.copy_to_pixel_buffer(target),
-        }
     }
 }

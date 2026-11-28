@@ -35,6 +35,81 @@ pub fn bitmap_font_metrics(font_size: f32) -> BitmapFontMetrics {
     }
 }
 
+/// Shared 5x7 bitmap text layout & faux-bold pass iterator used by both the software rasterizer
+/// (`raster::text_blend`) and the Skia canvas fallback (`gpu::skia_primitives`) so fontless output
+/// has identical alignment, vertical padding, and faux-bold (`+1.0` logical px) geometry.
+pub(crate) fn for_each_bitmap_glyph_pass(
+    rect: nve_engine::LayoutRect,
+    text: &str,
+    font_size: f32,
+    font_weight: u16,
+    text_align: crate::text::TextAlign,
+    mut emit_glyph: impl FnMut(f32, f32, f32, f32, &[u8; GLYPH_HEIGHT]),
+) {
+    if text.is_empty() || !font_size.is_finite() || font_size <= 0.0 {
+        return;
+    }
+    let metrics = bitmap_font_metrics(font_size);
+    let faux_bold = font_weight >= 600;
+    let vertical_pad = if !text.contains('\n') && rect.height > metrics.glyph_h {
+        ((rect.height - metrics.glyph_h) * 0.5)
+            .min(font_size * 0.25)
+            .floor()
+    } else {
+        0.0
+    };
+    let passes: &[f32] = if faux_bold { &[0.0, 1.0] } else { &[0.0] };
+    let mut cursor_y = rect.y + vertical_pad;
+
+    for line in text.split('\n') {
+        let char_count = line.chars().count();
+        let line_w = if char_count == 0 {
+            0.0
+        } else {
+            (char_count as f32) * metrics.advance_x - (metrics.advance_x - metrics.glyph_w).max(0.0)
+        };
+        let align_offset =
+            crate::text_cache::line_align_offset_logical(text_align, rect.width, line_w);
+        let mut cursor_x = rect.x + align_offset;
+        for ch in line.chars() {
+            if ch != ' ' {
+                let bitmap = glyph_bitmap(ch);
+                for &dx in passes {
+                    emit_glyph(cursor_x + dx, cursor_y, metrics.glyph_w, metrics.glyph_h, &bitmap);
+                }
+            }
+            cursor_x += metrics.advance_x;
+        }
+        cursor_y += metrics.line_height;
+    }
+}
+
+/// Emits every lit `(x, y, cell_w, cell_h)` cell rectangle of a 5x7 glyph bitmap.
+#[cfg(feature = "skia")]
+pub(crate) fn for_each_bitmap_cell_in_glyph(
+    gx: f32,
+    gy: f32,
+    glyph_w: f32,
+    glyph_h: f32,
+    bitmap: &[u8; GLYPH_HEIGHT],
+    mut emit_cell: impl FnMut(f32, f32, f32, f32),
+) {
+    let cell_w = glyph_w / GLYPH_WIDTH as f32;
+    let cell_h = glyph_h / GLYPH_HEIGHT as f32;
+    for (row_idx, &row_bits) in bitmap.iter().enumerate() {
+        if row_bits == 0 {
+            continue;
+        }
+        let ry = gy + row_idx as f32 * cell_h;
+        for col_idx in 0..GLYPH_WIDTH {
+            if ((row_bits >> (GLYPH_WIDTH - 1 - col_idx)) & 1) != 0 {
+                let rx = gx + col_idx as f32 * cell_w;
+                emit_cell(rx, ry, cell_w, cell_h);
+            }
+        }
+    }
+}
+
 /// [`nve_layout::TextMeasurer`] backed by the embedded 5x7 bitmap font metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BitmapFontTextMeasurer;

@@ -56,8 +56,7 @@ fn single_command_buffer_drives_all_backends_views_and_interactions() {
         assert!(tree.contains(expected), "headless missing '{expected}'");
         assert!(html.contains(expected), "web missing '{expected}'");
     }
-    h.skia.rebuild_display_list(h.surface.store());
-    assert!(!h.skia.display_list().ops.is_empty());
+    assert!(h.skia.scene().live_op_count() > 0);
 
     h.press("btn-new-task");
     assert!(h.ascii().contains("AET-105"));

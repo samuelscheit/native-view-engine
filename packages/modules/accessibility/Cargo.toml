@@ -1,0 +1,27 @@
+[package]
+name = "nve-accessibility"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform-agnostic AccessKit accessibility tree projection, incremental diffing, and action translation over NodeStore for Native View Engine"
+
+[features]
+default = []
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-hash = { workspace = true }
+nve-store = { workspace = true }
+nve-tables = { workspace = true }
+nve-engine = { workspace = true }
+accesskit = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "a11y_bench"
+harness = false
+
+[lints]
+workspace = true

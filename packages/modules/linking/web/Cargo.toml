@@ -1,0 +1,24 @@
+[package]
+name = "nve-linking-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Browser Web Linking provider (SERVICE_LINKING) with strict scheme allowlist and safe window.open"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-host-services = { workspace = true }
+nve-linking = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "linking_web_bench"
+harness = false
+
+[lints]
+workspace = true

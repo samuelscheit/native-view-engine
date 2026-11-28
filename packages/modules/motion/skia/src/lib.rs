@@ -26,6 +26,7 @@ const VISUAL_PROPS: [TransitionProperty; 5] = [
     TransitionProperty::Opacity,
 ];
 const COLOR_CHANNEL: usize = 1;
+const OPACITY_CHANNEL: usize = 4;
 
 /// Endpoints of one animated channel (only the channel's own value, not a whole snapshot).
 #[derive(Debug, Clone, Copy)]
@@ -96,19 +97,26 @@ impl NodeMotion {
         }
     }
 
-    /// Steps every channel; returns whether any painted value changed.
-    fn step(&mut self, dt_s: f32, pref: MotionPreference) -> bool {
-        let mut changed = false;
-        for slot in &mut self.channels {
+    /// Steps every channel; returns `(paint_changed, composite_changed)`.
+    fn step(&mut self, dt_s: f32, pref: MotionPreference) -> (bool, bool) {
+        let mut paint_changed = false;
+        let mut composite_changed = false;
+        for (idx, slot) in self.channels.iter_mut().enumerate() {
             if let Some(ch) = slot {
                 let (settled, moved) = step_timer(&mut ch.timer, dt_s, pref);
-                changed |= moved;
+                if moved {
+                    if idx == OPACITY_CHANNEL {
+                        composite_changed = true;
+                    } else {
+                        paint_changed = true;
+                    }
+                }
                 if settled {
                     *slot = None;
                 }
             }
         }
-        changed
+        (paint_changed, composite_changed)
     }
 }
 
@@ -170,6 +178,8 @@ pub struct MotionDriver {
     active_transform: HashMap<NodeId, TransformAnim>,
     changed: HashSet<NodeId>,
     scratch: Vec<NodeId>,
+    seen_epoch_marks: Vec<u64>,
+    seen_epoch: u64,
 }
 
 impl MotionDriver {
@@ -215,17 +225,54 @@ impl MotionDriver {
             return;
         };
         let mut current = prev;
-        let mut motion = self.active.remove(&id).unwrap_or_default();
-        motion.apply_to(&mut current);
-        for (idx, prop) in VISUAL_PROPS.into_iter().enumerate() {
+        let had_active = if let Some(existing) = self.active.get(&id) {
+            existing.apply_to(&mut current);
+            true
+        } else {
+            false
+        };
+        let mut any_diff = false;
+        for idx in 0..VISUAL_PROPS.len() {
             if channel_differs(&prev, &target, idx) {
-                motion.channels[idx] = start_timer(store, id, prop, self.preference).map(|timer| {
-                    ChannelAnim { span: channel_span(&current, &target, idx), timer }
-                });
+                any_diff = true;
+                break;
             }
         }
-        if !motion.is_empty() {
-            self.active.insert(id, motion);
+        if !any_diff {
+            return;
+        }
+        if had_active {
+            let is_empty = if let Some(motion) = self.active.get_mut(&id) {
+                for (idx, prop) in VISUAL_PROPS.into_iter().enumerate() {
+                    if channel_differs(&prev, &target, idx) {
+                        motion.channels[idx] =
+                            start_timer(store, id, prop, self.preference).map(|timer| ChannelAnim {
+                                span: channel_span(&current, &target, idx),
+                                timer,
+                            });
+                    }
+                }
+                motion.is_empty()
+            } else {
+                false
+            };
+            if is_empty {
+                self.active.remove(&id);
+            }
+        } else {
+            let mut motion = NodeMotion::default();
+            for (idx, prop) in VISUAL_PROPS.into_iter().enumerate() {
+                if channel_differs(&prev, &target, idx) {
+                    motion.channels[idx] =
+                        start_timer(store, id, prop, self.preference).map(|timer| ChannelAnim {
+                            span: channel_span(&current, &target, idx),
+                            timer,
+                        });
+                }
+            }
+            if !motion.is_empty() {
+                self.active.insert(id, motion);
+            }
         }
     }
 
@@ -239,7 +286,11 @@ impl MotionDriver {
         let from = self.active_transform.get(&id).map_or(prev, TransformAnim::current);
         match start_timer(store, id, TransitionProperty::Transform, self.preference) {
             Some(timer) => {
-                self.active_transform.insert(id, TransformAnim { from, to: target, timer });
+                if let Some(existing) = self.active_transform.get_mut(&id) {
+                    *existing = TransformAnim { from, to: target, timer };
+                } else {
+                    self.active_transform.insert(id, TransformAnim { from, to: target, timer });
+                }
             }
             None => {
                 self.active_transform.remove(&id);
@@ -305,7 +356,19 @@ impl SkiaFrameHook for MotionDriver {
         if !(dt_s.is_finite() && dt_s > 0.0) {
             return false;
         }
-        self.step_all(dt_s)
+        self.step_all_collecting(dt_s, None, None)
+    }
+
+    fn advance_collecting(
+        &mut self,
+        dt_s: f32,
+        composite_dirty: &mut Vec<NodeId>,
+        paint_dirty: &mut Vec<NodeId>,
+    ) -> bool {
+        if !(dt_s.is_finite() && dt_s > 0.0) {
+            return false;
+        }
+        self.step_all_collecting(dt_s, Some(composite_dirty), Some(paint_dirty))
     }
 
     fn needs_next_frame(&self) -> bool {
@@ -320,7 +383,26 @@ impl SkiaFrameHook for MotionDriver {
         self.preference = pref;
         // A zero-length step under `Reduce` snaps exactly the transitions that opted into
         // `reduced_motion_instant`; the others keep animating.
-        pref.is_reduced() && self.step_all(0.0)
+        pref.is_reduced() && self.step_all_collecting(0.0, None, None)
+    }
+
+    fn set_reduced_motion_collecting(
+        &mut self,
+        reduced: bool,
+        composite_dirty: &mut Vec<NodeId>,
+        paint_dirty: &mut Vec<NodeId>,
+    ) -> bool {
+        let pref = MotionPreference::from_reduced_motion(reduced);
+        if self.preference == pref {
+            return false;
+        }
+        self.preference = pref;
+        pref.is_reduced()
+            && self.step_all_collecting(0.0, Some(composite_dirty), Some(paint_dirty))
+    }
+
+    fn watches_changes(&self, changes: &ChangeSet) -> bool {
+        changes.table(Motion::slot()).is_some()
     }
 
     fn apply_visual(&self, node: NodeId, style: &mut VisualSnapshot) {
@@ -348,17 +430,59 @@ impl SkiaFrameHook for MotionDriver {
 }
 
 impl MotionDriver {
-    /// Steps every running animation by `dt_s`; returns whether any painted value changed.
-    fn step_all(&mut self, dt_s: f32) -> bool {
+    /// Steps every running animation by `dt_s`, deduplicating composite-dirty node IDs in zero
+    /// steady-state allocations via epoch marks; returns whether any painted value changed.
+    fn step_all_collecting(
+        &mut self,
+        dt_s: f32,
+        mut composite_dirty: Option<&mut Vec<NodeId>>,
+        mut paint_dirty: Option<&mut Vec<NodeId>>,
+    ) -> bool {
         let pref = self.preference;
+        self.seen_epoch = self.seen_epoch.wrapping_add(1).max(1);
+        let cur_epoch = self.seen_epoch;
+        let seen_marks = &mut self.seen_epoch_marks;
         let mut changed = false;
-        self.active.retain(|_, motion| {
-            changed |= motion.step(dt_s, pref);
+
+        self.active.retain(|&id, motion| {
+            let (paint_moved, comp_moved) = motion.step(dt_s, pref);
+            if paint_moved {
+                changed = true;
+                if let Some(ref mut out) = paint_dirty {
+                    out.push(id);
+                }
+            }
+            if comp_moved {
+                changed = true;
+                if let Some(ref mut out) = composite_dirty {
+                    let idx = id.index();
+                    if idx >= seen_marks.len() {
+                        seen_marks.resize(idx + 1, 0);
+                    }
+                    if seen_marks[idx] != cur_epoch {
+                        seen_marks[idx] = cur_epoch;
+                        out.push(id);
+                    }
+                }
+            }
             !motion.is_empty()
         });
-        self.active_transform.retain(|_, anim| {
+
+        self.active_transform.retain(|&id, anim| {
             let (settled, moved) = step_timer(&mut anim.timer, dt_s, pref);
-            changed |= moved;
+            if moved {
+                changed = true;
+                if let Some(ref mut out) = composite_dirty {
+                    let idx = id.index();
+                    if idx >= seen_marks.len() {
+                        seen_marks.resize(idx + 1, 0);
+                    }
+                    if seen_marks[idx] != cur_epoch {
+                        seen_marks[idx] = cur_epoch;
+                        out.push(id);
+                    }
+                }
+            }
             !settled
         });
         changed

@@ -185,19 +185,13 @@ mod tests {
             let (footer, _) = Frame0File::boot_into_replica(&out, meta, &mut replica)
                 .expect("skia boot_into_replica");
             assert_eq!(footer.node_count as usize, report.node_count);
-            assert!(!replica.backend().display_list().ops.is_empty());
+            let dl = replica.backend_mut().materialize_display_list();
+            assert!(!dl.ops.is_empty());
 
-            let has_text = replica
-                .backend()
-                .display_list()
-                .ops
-                .iter()
-                .any(|op| match op {
-                    nve_backend_skia::PaintOp::DrawText { text, .. } => {
-                        text.contains(expected_text)
-                    }
-                    _ => false,
-                });
+            let has_text = dl.ops.iter().any(|op| match op {
+                nve_backend_skia::PaintOp::DrawText { text, .. } => text.contains(expected_text),
+                _ => false,
+            });
             assert!(
                 has_text,
                 "expected '{expected_text}' in prerendered {app_name} DisplayList"

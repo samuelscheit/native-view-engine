@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_HAPTICS;
 use nve_host_services::{
-    pack_typed, resolve_typed, HostServiceHandler, HostServiceProvider, NveCodec, NveDecode,
-    ServiceError,
+    pack_typed, resolve_typed, CompletionSink, HandlerReply, HostServiceHandler,
+    HostServiceProvider, NveCodec, NveDecode, ServiceError,
 };
 
 pub use native::NativeHaptics;
@@ -214,8 +214,14 @@ impl HostServiceHandler for MemoryHaptics {
         SERVICE_HAPTICS
     }
 
-    fn handle(&self, method_id: u32, request: &[u8]) -> Result<Vec<u8>, ServiceError> {
-        dispatch_haptics_wire(self, method_id, request)
+    fn handle(
+        &self,
+        method_id: u32,
+        _request_id: u64,
+        request: &[u8],
+        _done: &CompletionSink,
+    ) -> Result<HandlerReply, ServiceError> {
+        dispatch_haptics_wire(self, method_id, request).map(HandlerReply::ready)
     }
 
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {

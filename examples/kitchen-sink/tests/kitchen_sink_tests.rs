@@ -138,8 +138,7 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
 
     assert!(headless.render_ascii_tree(app.store()).contains("Count: 0"));
     assert!(web.render_html(app.store()).contains("Count: 0"));
-    skia.rebuild_display_list(app.store());
-    assert!(!skia.display_list().ops.is_empty());
+    assert!(skia.scene().live_op_count() > 0);
 
     // Press Increment + twice via testID lookup.
     for frame_id in 2..=3 {
@@ -330,12 +329,23 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
 
 #[test]
 fn os_appearance_host_events_retheme_auto_mode_in_place_and_pinned_modes_ignore_the_os_scheme() {
-    use nve_abi::{ColorScheme, ContrastLevel};
+    use nve_abi::{encode_single_push_into, ColorScheme, ContrastLevel, SERVICE_SYSTEM_ENV};
     use nve_tables::tables::Visual;
-    use nve_system_env::ThemeSnapshot;
+    use nve_system_env::{ThemeSnapshot, EVENT_THEME_CHANGED};
 
     let os = |scheme, contrast| {
-        ThemeSnapshot { color_scheme: Some(scheme), contrast, ..ThemeSnapshot::default() }.to_repr_c_bytes()
+        let raw = ThemeSnapshot {
+            color_scheme: Some(scheme),
+            contrast,
+            ..ThemeSnapshot::default()
+        }
+        .to_repr_c_bytes();
+        let mut batch = [0u8; 56];
+        let encoded =
+            encode_single_push_into(&mut batch, SERVICE_SYSTEM_ENV, EVENT_THEME_CHANGED, &raw)
+                .expect("encode canonical theme push batch");
+        assert_eq!(encoded.len(), 56);
+        batch
     };
     let root_bg = |m: &KitchenSinkModule| {
         let store = m.surface().store();
@@ -349,6 +359,13 @@ fn os_appearance_host_events_retheme_auto_mode_in_place_and_pinned_modes_ignore_
     let dark = root_bg(&module);
     press_test_id(module.surface_mut(), &mut headless, "ks-counter-inc", 2);
 
+    let raw_12 = ThemeSnapshot {
+        color_scheme: Some(ColorScheme::Light),
+        contrast: ContrastLevel::Standard,
+        ..ThemeSnapshot::default()
+    }
+    .to_repr_c_bytes();
+    assert!(!module.dispatch_host_events(&raw_12), "raw 12-byte slices without NVHB magic are ignored");
     assert!(module.dispatch_host_events(&os(ColorScheme::Light, ContrastLevel::Standard)));
     assert!(!module.dispatch_host_events(&os(ColorScheme::Light, ContrastLevel::Standard)), "same appearance is a no-op");
     assert!(!module.dispatch_host_events(b"not a theme snapshot"), "foreign batches are ignored");

@@ -79,18 +79,36 @@ struct SubscriberEntry {
     callback: SubscriberFn,
 }
 
-#[derive(Default)]
+/// Default maximum number of undrained pull-queue events retained by [`TypedEventBus`].
+/// Oldest entries are evicted FIFO when full so undrained event types never grow unboundedly.
+pub const DEFAULT_TYPED_EVENT_QUEUE_CAP: usize = 1024;
+
 struct TypedEventBusState {
     subscribers: HashMap<TypeId, Vec<SubscriberEntry>>,
     sub_to_type: BTreeMap<TypedEventSubscription, TypeId>,
     retained: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     queue: VecDeque<TypedHostEvent>,
+    max_queue_len: usize,
+    dropped_events: u64,
+}
+
+impl TypedEventBusState {
+    fn new(max_queue_len: usize) -> Self {
+        Self {
+            subscribers: HashMap::new(),
+            sub_to_type: BTreeMap::new(),
+            retained: HashMap::new(),
+            queue: VecDeque::new(),
+            max_queue_len: max_queue_len.max(1),
+            dropped_events: 0,
+        }
+    }
 }
 
 /// Zero-serialization in-process typed event bus supporting:
 /// - Synchronous fan-out to typed subscribers (`Arc<E>` shared across all listeners),
 /// - Optional per-`TypeId` retained snapshot replay for late subscribers, and
-/// - Pull-based FIFO draining by concrete event type (`drain_typed::<E>`) or all events.
+/// - Bounded FIFO pull-queue draining by concrete event type (`drain_typed::<E>`) or all events.
 pub struct TypedEventBus {
     next_sub_id: AtomicU64,
     state: Mutex<TypedEventBusState>,
@@ -104,10 +122,22 @@ impl Default for TypedEventBus {
 
 impl TypedEventBus {
     pub fn new() -> Self {
+        Self::with_queue_capacity(DEFAULT_TYPED_EVENT_QUEUE_CAP)
+    }
+
+    pub fn with_queue_capacity(max_queue_len: usize) -> Self {
         Self {
             next_sub_id: AtomicU64::new(1),
-            state: Mutex::new(TypedEventBusState::default()),
+            state: Mutex::new(TypedEventBusState::new(max_queue_len)),
         }
+    }
+
+    /// Number of oldest pull-queue events evicted because the queue reached its capacity cap.
+    pub fn dropped_count(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .dropped_events
     }
 
     /// Publishes `event` to the FIFO queue and notifies all subscribers of `E`.
@@ -124,6 +154,22 @@ impl TypedEventBus {
 
     /// Publishes an already `Arc`-wrapped event with optional retention and zero copies.
     pub fn publish_arc<E: Send + Sync + 'static>(&self, event: Arc<E>, retain: bool) -> usize {
+        self.publish_arc_inner(event, retain, true)
+    }
+
+    /// Updates the retained snapshot for `E` and notifies active subscribers without appending
+    /// to the pull queue (prevents unbounded queue growth when callers already consume the
+    /// return value directly, such as `StudioHostServices::ingest_host_batch`).
+    pub fn publish_retained_notify<E: Send + Sync + 'static>(&self, event: E) -> usize {
+        self.publish_arc_inner(Arc::new(event), true, false)
+    }
+
+    fn publish_arc_inner<E: Send + Sync + 'static>(
+        &self,
+        event: Arc<E>,
+        retain: bool,
+        enqueue: bool,
+    ) -> usize {
         let tid = TypeId::of::<E>();
         let any_arc: Arc<dyn Any + Send + Sync> = event;
         let callbacks: Vec<SubscriberFn> = {
@@ -131,10 +177,16 @@ impl TypedEventBus {
             if retain {
                 st.retained.insert(tid, Arc::clone(&any_arc));
             }
-            st.queue.push_back(TypedHostEvent {
-                type_id: tid,
-                payload: Arc::clone(&any_arc),
-            });
+            if enqueue {
+                if st.queue.len() >= st.max_queue_len {
+                    let _ = st.queue.pop_front();
+                    st.dropped_events = st.dropped_events.saturating_add(1);
+                }
+                st.queue.push_back(TypedHostEvent {
+                    type_id: tid,
+                    payload: Arc::clone(&any_arc),
+                });
+            }
             st.subscribers
                 .get(&tid)
                 .map(|subs| subs.iter().map(|s| Arc::clone(&s.callback)).collect())
@@ -238,6 +290,15 @@ impl TypedEventBus {
     /// Drains all queued events of concrete type `E` in FIFO order, leaving other event types
     /// untouched in the queue.
     pub fn drain_typed<E: Send + Sync + 'static>(&self) -> Vec<Arc<E>> {
+        self.drain_typed_where(|_| true)
+    }
+
+    /// Drains queued events of concrete type `E` matching `predicate` in FIFO order, leaving
+    /// non-matching events of type `E` and all other event types untouched.
+    pub fn drain_typed_where<E: Send + Sync + 'static, F: FnMut(&E) -> bool>(
+        &self,
+        mut predicate: F,
+    ) -> Vec<Arc<E>> {
         let tid = TypeId::of::<E>();
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut matched = Vec::new();
@@ -245,12 +306,36 @@ impl TypedEventBus {
         while let Some(ev) = st.queue.pop_front() {
             if ev.type_id == tid {
                 match ev.payload.downcast::<E>() {
-                    Ok(typed) => matched.push(typed),
+                    Ok(typed) if predicate(typed.as_ref()) => matched.push(typed),
+                    Ok(typed) => remaining.push_back(TypedHostEvent {
+                        type_id: ev.type_id,
+                        payload: typed,
+                    }),
                     Err(payload) => remaining.push_back(TypedHostEvent {
                         type_id: ev.type_id,
                         payload,
                     }),
                 }
+            } else {
+                remaining.push_back(ev);
+            }
+        }
+        st.queue = remaining;
+        matched
+    }
+
+    /// Drains queued [`TypedHostEvent`]s matching `predicate` in FIFO order, leaving other events
+    /// untouched.
+    pub fn drain_matching<F: FnMut(&TypedHostEvent) -> bool>(
+        &self,
+        mut predicate: F,
+    ) -> Vec<TypedHostEvent> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut matched = Vec::new();
+        let mut remaining = VecDeque::with_capacity(st.queue.len());
+        while let Some(ev) = st.queue.pop_front() {
+            if predicate(&ev) {
+                matched.push(ev);
             } else {
                 remaining.push_back(ev);
             }

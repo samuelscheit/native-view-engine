@@ -74,7 +74,6 @@ fn assert_parity_pixels(label: &str, buf: &PixelBuffer, scale: f32) {
 #[test]
 fn cpu_skia_and_software_rasterizer_have_rendering_parity_at_1x_and_2x_hidpi() {
     let list = sample_parity_display_list();
-    let renderer = SkiaCanvasRenderer::new();
 
     for scale in [1.0f32, 2.0f32] {
         let w = (280.0 * scale) as u32;
@@ -96,16 +95,11 @@ fn cpu_skia_and_software_rasterizer_have_rendering_parity_at_1x_and_2x_hidpi() {
         sw.copy_to_pixel_buffer(&mut soft_buf).unwrap();
         assert_parity_pixels(&format!("softbuffer@{scale}x"), &soft_buf, scale);
 
-        // 2. CPU Skia via SkiaCanvasRenderer
+        // 2. CPU Skia via Surface-owned cached SkiaCanvasRenderer
         let mut cpu_skia = CpuSkiaSurface::new_with_scale(w, h, scale).unwrap();
-        GpuSurfaceBackend::render_display_list(
-            &mut cpu_skia,
-            &renderer,
-            &list,
-            scale,
-            ColorRgba::BLACK,
-        )
-        .unwrap();
+        cpu_skia
+            .render_cached_with_plugins(&list, scale, ColorRgba::BLACK, None)
+            .unwrap();
         let mut skia_buf = PixelBuffer::new(w, h);
         cpu_skia.copy_to_pixel_buffer(&mut skia_buf).unwrap();
         assert_parity_pixels(&format!("cpu-skia@{scale}x"), &skia_buf, scale);
@@ -193,9 +187,8 @@ fn real_hardware_metal_swapchain_offscreen_renders_with_cpu_parity_and_hidpi_res
     })
     .expect("GpuSurface::new(Metal) should initialize real Metal render target");
     assert_eq!(gpu_surface.kind(), GpuBackendKind::Metal);
-    let renderer = SkiaCanvasRenderer::new();
     gpu_surface
-        .render_display_list(&renderer, &list, 1.0, ColorRgba::BLACK)
+        .render_cached_with_plugins(&list, 1.0, ColorRgba::BLACK, None)
         .unwrap();
     let mut surf_buf = PixelBuffer::new(280, 190);
     gpu_surface.copy_to_pixel_buffer(&mut surf_buf).unwrap();
@@ -241,6 +234,7 @@ fn sample_image_canvas_clip_display_list() -> DisplayList {
                 radius: 12.0,
                 src: AVATAR_MAYA.to_string(),
                 fit: ImageFit::Cover,
+                resolved: None,
             },
             // 3. Secondary clipped card at (110, 10, 160x130) with yellow accent inside clip.
             PaintOp::FillRoundedRect {
@@ -330,8 +324,8 @@ fn assert_image_canvas_clip_parity(label: &str, buf: &PixelBuffer) {
 
 #[test]
 fn image_canvas_and_clip_primitives_have_software_and_cpu_skia_parity() {
+    let _img_guard = crate::image_cache::lock_shared_image_cache();
     let list = sample_image_canvas_clip_display_list();
-    let renderer = SkiaCanvasRenderer::new();
 
     // Software rasterizer
     let mut soft = PixelBuffer::new(280, 170);
@@ -340,7 +334,8 @@ fn image_canvas_and_clip_primitives_have_software_and_cpu_skia_parity() {
 
     // CPU Skia
     let mut cpu_skia = CpuSkiaSurface::new(280, 170).unwrap();
-    GpuSurfaceBackend::render_display_list(&mut cpu_skia, &renderer, &list, 1.0, ColorRgba::BLACK)
+    cpu_skia
+        .render_cached_with_plugins(&list, 1.0, ColorRgba::BLACK, None)
         .unwrap();
     let mut skia_buf = PixelBuffer::new(280, 170);
     cpu_skia.copy_to_pixel_buffer(&mut skia_buf).unwrap();
@@ -350,6 +345,7 @@ fn image_canvas_and_clip_primitives_have_software_and_cpu_skia_parity() {
 #[cfg(all(feature = "skia-metal", target_os = "macos"))]
 #[test]
 fn hardware_metal_gpu_renders_real_draw_image_nve_draw1_and_clips_with_software_parity() {
+    let _img_guard = crate::image_cache::lock_shared_image_cache();
     let list = sample_image_canvas_clip_display_list();
 
     // Software reference

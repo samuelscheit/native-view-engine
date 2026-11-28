@@ -3,14 +3,71 @@
 
 use std::ffi::c_void;
 use std::fmt;
+use std::mem::{align_of, size_of};
 
 use nve_abi_macros::NveAbi;
+use nve_codec::NveCodec;
 
 use crate::ffi::{NveAppHandle, NveBufferSlice};
 use crate::InterfaceId;
 
+/// Typed host capability service identifier (`SERVICE_CLIPBOARD`, `SERVICE_SYSTEM_ENV`, etc.).
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct HostServiceId(pub u32);
+
+impl HostServiceId {
+    #[inline(always)]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for HostServiceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Typed asynchronous host capability request identifier (`NVE_HOST_PENDING` correlation handle).
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct HostRequestId(pub u64);
+
+impl HostRequestId {
+    #[inline(always)]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for HostRequestId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+const _: () = {
+    assert!(size_of::<HostServiceId>() == 4 && align_of::<HostServiceId>() == align_of::<u32>());
+    assert!(size_of::<HostRequestId>() == 8 && align_of::<HostRequestId>() == align_of::<u64>());
+};
+
+pub mod batch;
 #[cfg(test)]
 mod tests;
+
+pub use batch::{
+    align8_payload_len, encode_single_push_into, host_batch_padded_record_len,
+    single_record_batch_len, NveHostBatchError, NveHostEventBatchBuilder, NveHostEventBatchHeader,
+    NveHostEventBatchIter, NveHostEventBatchRef, NveHostEventKind, NveHostEventRecord,
+    NveHostEventRecordHeader, NVE_HOST_BATCH_ALIGN, NVE_HOST_BATCH_HEADER_LEN,
+    NVE_HOST_BATCH_MAGIC, NVE_HOST_BATCH_MAX_BYTES, NVE_HOST_BATCH_MAX_PAYLOAD,
+    NVE_HOST_BATCH_VERSION, NVE_HOST_RECORD_FLAG_RETAIN, NVE_HOST_RECORD_HEADER_LEN,
+};
 
 /// Modular interface ID for the optional host-capability & channel-bus interface (`const NveHostApi*`).
 pub const NVE_IFACE_HOST: InterfaceId = InterfaceId(5);

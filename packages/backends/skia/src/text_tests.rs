@@ -188,8 +188,216 @@ fn parses_font_weights_and_text_align_keywords() {
     assert_eq!(parse_font_weight("50"), Some(100));
     assert_eq!(parse_font_weight("bogus"), None);
 
-    assert_eq!(TextAlign::parse("left"), Some(TextAlign::Left));
-    assert_eq!(TextAlign::parse("center"), Some(TextAlign::Center));
-    assert_eq!(TextAlign::parse("RIGHT"), Some(TextAlign::Right));
-    assert_eq!(TextAlign::parse("justify"), None);
+    assert_eq!(
+        crate::text_cache::normalize_text_align(TextAlign::Start),
+        TextAlign::Left
+    );
+    assert_eq!(
+        crate::text_cache::normalize_text_align(TextAlign::Justify),
+        TextAlign::Left
+    );
+    assert_eq!(
+        crate::text_cache::normalize_text_align(TextAlign::Center),
+        TextAlign::Center
+    );
+    assert_eq!(
+        crate::text_cache::normalize_text_align(TextAlign::End),
+        TextAlign::Right
+    );
+}
+
+#[test]
+fn five_thousand_distinct_glyphs_keep_swash_cache_empty_and_glyph_lru_bounded() {
+    let engine = CosmicTextEngine::new();
+    if !engine.has_system_fonts() {
+        return;
+    }
+    let mut buf = PixelBuffer::new(320, 64);
+    let rect = LayoutRect {
+        x: 4.0,
+        y: 4.0,
+        width: 312.0,
+        height: 56.0,
+    };
+    let samples = [
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+        "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîï",
+        "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικλμνξοπρστυφχψω",
+        "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщ",
+        "日本語テスト漢字仮名交じり文한국어테스트مرحبا",
+    ];
+    // 50 distinct font sizes × ~100+ glyphs across scripts = >5,000 distinct CacheKeys.
+    for size_idx in 0..50u32 {
+        let fs = 10.0 + (size_idx as f32) * 0.5;
+        let text = samples[(size_idx as usize) % samples.len()];
+        engine.rasterize_text_styled_clipped(
+            &mut buf,
+            rect,
+            text,
+            fs,
+            400,
+            TextAlign::Left,
+            1.0,
+            ColorRgba::WHITE,
+            1.0,
+            None,
+        );
+    }
+
+    assert_eq!(
+        engine.debug_swash_image_cache_len(),
+        0,
+        "SwashCache::image_cache must stay empty when using get_image_uncached"
+    );
+    let (entries, live_bytes, max_bytes) = engine.debug_glyph_image_cache_stats();
+    assert!(entries > 0 && entries <= 4096, "entries={entries}");
+    assert!(
+        live_bytes <= max_bytes,
+        "glyph_images live_bytes ({live_bytes}) exceeded max_bytes ({max_bytes})"
+    );
+}
+
+#[test]
+fn non_finite_and_extreme_text_widths_never_panic_or_emit_non_finite_glyphs() {
+    use crate::text::SkiaShapedRuns;
+
+    let engine = CosmicTextEngine::shared();
+    let extreme_vals = [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        -1.0f32,
+        -0.0f32,
+        0.0f32,
+        f32::MAX,
+        1e20f32,
+    ];
+    let mut buf = PixelBuffer::new(128, 64);
+    let mut runs = SkiaShapedRuns::default();
+
+    for &fs in &extreme_vals {
+        for &w in &extreme_vals {
+            for align in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
+                let (mw, mh) = engine.measure_text_with_weight("Edge probe 123", fs, 400, Some(w));
+                assert!(mw.is_finite() && mh.is_finite(), "measure non-finite for fs={fs}, w={w}");
+
+                engine.shape_for_skia_runs(
+                    "Edge probe 123",
+                    fs,
+                    400,
+                    align,
+                    Some(w),
+                    w,
+                    &mut runs,
+                );
+                for g in &runs.glyphs {
+                    assert!(
+                        g.x.is_finite() && g.y.is_finite() && g.font_size.is_finite(),
+                        "non-finite glyph for fs={fs}, w={w}, align={align:?}: {g:?}"
+                    );
+                }
+
+                engine.rasterize_text_styled_clipped(
+                    &mut buf,
+                    LayoutRect {
+                        x: if w.is_nan() { w } else { 4.0 },
+                        y: 4.0,
+                        width: w,
+                        height: 40.0,
+                    },
+                    "Edge probe 123",
+                    fs,
+                    400,
+                    align,
+                    1.0,
+                    ColorRgba::WHITE,
+                    if fs.is_nan() { fs } else { 1.0 },
+                    None,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn skia_and_software_glyph_positions_match_across_rtl_emoji_ligatures_and_wrapped_align() {
+    use crate::text::SkiaShapedRuns;
+    use crate::text_cache::{layout_text, line_align_offset_logical, TextLayoutParams};
+
+    let engine = CosmicTextEngine::shared();
+    if !engine.has_system_fonts() {
+        return;
+    }
+
+    type GlyphParityCase<'a> = (&'a str, f32, u16, TextAlign, Option<f32>, f32);
+    let cases: &[GlyphParityCase<'_>] = &[
+        ("مرحبا hello world", 16.0, 400, TextAlign::Left, Some(180.0), 180.0),
+        ("Rocket 🚀 party 🎉 test", 16.0, 400, TextAlign::Left, Some(220.0), 220.0),
+        ("fi fl ffi ffl office waffle", 18.0, 400, TextAlign::Left, Some(240.0), 240.0),
+        (
+            "Wrapped centered HarfBuzz parity line across multiple rows",
+            14.0,
+            500,
+            TextAlign::Center,
+            Some(130.0),
+            130.0,
+        ),
+        (
+            "Wrapped right-aligned HarfBuzz parity line across multiple rows",
+            14.0,
+            700,
+            TextAlign::Right,
+            Some(130.0),
+            130.0,
+        ),
+    ];
+
+    let mut skia_runs = SkiaShapedRuns::default();
+    for &(text, fs, weight, align, wrap_w, align_w) in cases {
+        let ok = engine.shape_for_skia_runs(
+            text,
+            fs,
+            weight,
+            align,
+            wrap_w,
+            align_w,
+            &mut skia_runs,
+        );
+        assert!(ok, "expected system fonts for case {text:?}");
+        assert!(!skia_runs.glyphs.is_empty(), "expected glyphs for {text:?}");
+
+        let params = TextLayoutParams::new(fs, weight, align, wrap_w, align_w);
+        let mut soft_positions = Vec::new();
+        {
+            let mut font_system = engine.lock_font_system();
+            let buffer = layout_text(&mut font_system, text, params);
+            for run in buffer.layout_runs() {
+                let align_x =
+                    line_align_offset_logical(params.text_align, params.align_width, run.line_w);
+                let origin = (align_x, run.line_y);
+                for glyph in run.glyphs {
+                    let phys = glyph.physical(origin, 1.0);
+                    soft_positions.push((glyph.font_id, glyph.glyph_id, phys.x as f32, phys.y as f32));
+                }
+            }
+        }
+
+        assert_eq!(
+            skia_runs.glyphs.len(),
+            soft_positions.len(),
+            "glyph count mismatch for {text:?}"
+        );
+        for (idx, (sk, &(sf_id, sg_id, sx, sy))) in
+            skia_runs.glyphs.iter().zip(soft_positions.iter()).enumerate()
+        {
+            assert_eq!(sk.font_id, sf_id, "font_id mismatch at glyph {idx} for {text:?}");
+            assert_eq!(sk.glyph_id, sg_id, "glyph_id mismatch at glyph {idx} for {text:?}");
+            assert!(
+                (sk.x - sx).abs() <= 1.0 && (sk.y - sy).abs() <= 1.0,
+                "position mismatch >1px at glyph {idx} for {text:?}: skia=({},{}) soft=({sx},{sy})",
+                sk.x,
+                sk.y
+            );
+        }
+    }
 }

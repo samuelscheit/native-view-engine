@@ -223,6 +223,69 @@ pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Returns live host-service Rust & JS closure/listener slab counts for E2E leak verification:
+/// `[pending_tasks, wake_trampolines, js_pending_microtasks, clip_pending_reads,
+///   clip_dom_listeners, js_clip_pending_reads, js_clip_listeners, sysenv_rust_watchers,
+///   sysenv_js_watchers]`.
+#[wasm_bindgen]
+pub fn host_services_slab_counts() -> Vec<u32> {
+    let (tasks, trampolines, js_tasks) = crate::host_services::wasm_drain::debug_drain_counts();
+    let clip = nve_clipboard_web::WebClipboard::debug_slab_counts();
+    let sysenv = nve_system_env_web::WebThemeWatcher::debug_slab_counts();
+    vec![
+        tasks as u32,
+        trampolines as u32,
+        js_tasks as u32,
+        clip.pending_reads as u32,
+        clip.dom_listeners as u32,
+        clip.js_pending_reads as u32,
+        clip.js_dom_listeners as u32,
+        sysenv.rust_watchers as u32,
+        sysenv.js_watchers as u32,
+    ]
+}
+
+/// Returns the cached `scale_factor_x100` held by `WebSystemEnv` (only updated when the live
+/// re-arming `(resolution: <dpr>dppx)` listener fires), proving live DPR watcher reactivity.
+#[wasm_bindgen]
+pub fn host_services_cached_dpr_x100(surface_id: u32) -> u16 {
+    nve_abi::SurfaceId::from_raw(surface_id)
+        .and_then(|sid| crate::wasm_api::with_active_host_guard(sid, |g| g.cached_scale_factor_x100()))
+        .unwrap_or(0)
+}
+
+/// Returns how many times the live re-arming `matchMedia("(resolution: <dpr>dppx)")` change
+/// listener (excluding `resize` fallbacks) has fired.
+#[wasm_bindgen]
+pub fn host_services_dpr_mql_fires() -> u32 {
+    nve_system_env_web::WebThemeWatcher::debug_dpr_mql_fire_count()
+}
+
+/// Starts a real browser `navigator.clipboard.readText()` async `Pending` call on `surface_id`,
+/// returning its `request_id` (`0` if completed synchronously or surface missing).
+#[wasm_bindgen]
+pub fn host_services_start_clipboard_read(surface_id: u32) -> u64 {
+    nve_abi::SurfaceId::from_raw(surface_id)
+        .and_then(|sid| {
+            crate::wasm_api::with_active_host_guard(sid, |g| g.debug_start_clipboard_read())
+        })
+        .unwrap_or(0)
+}
+
+/// Arms `surface_id`'s `CompletionSink::on_ready` callback to synchronously unmount and tear down
+/// `surface_id` re-entrantly from inside an active JS Promise settlement callback (E2E WASM UAF
+/// and automatic deferred-reap regression probe).
+#[wasm_bindgen]
+pub fn host_services_arm_reentrant_unmount(surface_id: u32) -> bool {
+    nve_abi::SurfaceId::from_raw(surface_id)
+        .and_then(|sid| {
+            crate::wasm_api::with_active_host_guard(sid, |g| {
+                g.debug_arm_reentrant_unmount_on_ready(sid);
+            })
+        })
+        .is_some()
+}
+
 /// Panics with `message`, so the E2E can check that a release bundle prints the panic message and
 /// its `file:line`. Dev bundle only: production bundles carry no trigger.
 #[wasm_bindgen]

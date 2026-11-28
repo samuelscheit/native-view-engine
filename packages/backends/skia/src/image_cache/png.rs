@@ -366,11 +366,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<DecodedImage, ImageDecodeError> {
         }
     }
 
-    Ok(DecodedImage {
-        width: hdr.width,
-        height: hdr.height,
-        rgba,
-    })
+    DecodedImage::from_rgba(hdr.width, hdr.height, rgba)
 }
 
 fn expected_decompressed_size(hdr: PngHeader) -> Result<usize, ImageDecodeError> {

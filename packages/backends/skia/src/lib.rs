@@ -1,24 +1,26 @@
 //! Cross-platform Skia [`StoreBackend`] targeting macOS, Windows, Linux, iOS, and Android.
 //!
 //! Consumes `(&NodeStore, &ChangeSet)` directly with zero copies, computes layout via any
-//! [`StoreLayoutEngine`] (defaulting to [`TaffyStoreLayout`]), compiles a culled retained
-//! [`DisplayList`], rasterizes via a pure-Rust software rasterizer (plus optional GPU `skia` /
-//! `skia-metal` / `skia-vulkan` / `skia-d3d`), and dispatches optional capability modules
-//! (`nve-svg-skia`, `nve-canvas-skia`, 3P plugins) through [`SkiaTableRegistry`] with zero
-//! compile-time module dependencies.
+//! [`StoreLayoutEngine`] (defaulting to [`TaffyStoreLayout`]), maintains a local-space retained
+//! [`CompositorScene`] with flat `Copy` property trees, rasterizes via a pure-Rust software
+//! rasterizer (plus optional GPU `skia` / `skia-metal` / `skia-vulkan` / `skia-d3d`), and
+//! dispatches optional capability modules (`nve-svg-skia`, `nve-canvas-skia`, 3P plugins) through
+//! [`SkiaTableRegistry`] with zero compile-time module dependencies.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 mod display_list;
 mod focus;
-pub mod frame_hook;
 pub mod font;
+pub mod frame_hook;
 pub mod gpu;
 mod hit_test;
 pub mod image_cache;
 mod interaction;
 pub mod raster;
+pub mod retained;
 mod scroll;
+pub mod slab_lru;
 pub mod table_system;
 pub mod text;
 pub mod text_bidi;
@@ -33,6 +35,7 @@ mod text_bidi_tests;
 #[cfg(test)]
 mod text_tests;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -40,15 +43,24 @@ use nve_abi::{ColorRgba, EventBatchBuf, NodeId, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_engine::{BackendApplyStats, BackendError, LayoutRect, StoreBackend, Viewport};
 use nve_layout::{StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
-use nve_store::{ChangeSet, NodeStore, ResolvedRow, Rgba};
-use nve_tables::tables::{ImageFit, Typography};
+use nve_store::{ChangeSet, NodeStore, Rgba};
+use nve_tables::tables::ImageFit;
 
 pub use nve_engine::InteractionTracker;
 
+static NEXT_PLUGIN_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+#[inline]
+pub(crate) fn next_plugin_epoch() -> u64 {
+    NEXT_PLUGIN_EPOCH.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
 use display_list::emit_node_into;
 
 pub use focus::TextFocusState;
 pub use font::{bitmap_font_metrics, BitmapFontMetrics, BitmapFontTextMeasurer};
+pub use frame_hook::{NodeTargets, SkiaFrameHook, SkiaFrameHooks, TargetsOf};
 pub use gpu::d3d12::D3D12SwapchainConfig;
 #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
 pub use gpu::d3d12::D3D12Swapchain;
@@ -63,14 +75,15 @@ pub use gpu::{
     GpuSurfaceError, GpuSwapchain, SoftwareFramePresenter, SwapchainExtent,
 };
 #[cfg(feature = "skia")]
-pub use gpu::{CpuSkiaSurface, GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
+pub use gpu::{
+    CpuSkiaSurface, GpuSurface, GpuSurfaceBackend, RendererCacheStats, SkiaCanvasRenderer,
+};
 #[cfg(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d"))]
 pub use gpu::{GaneshPresenter, NativeSwapchain};
 pub use image_cache::{
     compute_image_placement, decode_image_uri, decode_png, encode_rgb_png, DecodedImage,
-    ImageCache, ImageDecodeError, ImageDrawPlacement,
+    ImageCache, ImageDecodeError, ImageDrawPlacement, ImageSlot, ImageSlotHandle,
 };
-pub use frame_hook::{NodeTargets, SkiaFrameHook, SkiaFrameHooks, TargetsOf};
 pub use nve_tables::interaction::{
     CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
@@ -91,6 +104,7 @@ pub use raster::{
     draw_hud_banner, rasterize_display_list, rasterize_display_list_bitmap,
     rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, PixelBuffer,
 };
+pub use retained::{CompositorScene, SceneDirtyKind, SceneSyncStats};
 pub use table_system::{SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
 pub use text_bidi::{ShapedLineLayout, VisualGraphemeCluster};
@@ -132,6 +146,8 @@ pub enum PaintOp {
         blur_radius: f32,
         spread_radius: f32,
         color: ColorRgba,
+        border_width: f32,
+        inset: bool,
     },
     FillRoundedRect {
         rect: LayoutRect,
@@ -162,12 +178,18 @@ pub enum PaintOp {
         radius: f32,
         src: String,
         fit: ImageFit,
+        /// Optional pre-resolved `(slot, decoded_id)` handle from `ImageCache`
+        /// enabling lock-free, zero-hashing warm Skia image lookups without pinning `Arc<DecodedImage>`.
+        resolved: Option<ImageSlotHandle>,
     },
     /// Delegated capability plugin paint op (`nve-svg-skia`, `nve-canvas-skia`, 3P crates).
     Plugin {
         node_id: NodeId,
         rect: LayoutRect,
         inherited_text_color: Rgba,
+        /// Process-wide monotonic mutation epoch bumped when plugin table rows, commands,
+        /// referenced resources, registered systems, or the backend instance change.
+        plugin_epoch: u64,
     },
 }
 
@@ -179,13 +201,22 @@ pub struct DisplayList {
 pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) layout_tree: HeadlessBackend<L>,
     pub(crate) display_list: DisplayList,
+    pub(crate) scene: CompositorScene,
     pub(crate) viewport: Viewport,
+    pub(crate) viewport_dirty: bool,
     pub(crate) text_engine: Arc<CosmicTextEngine>,
     pub(crate) focus: TextFocusState,
     pub(crate) frame_hooks: SkiaFrameHooks,
     pub(crate) table_registry: SkiaTableRegistry,
     pub(crate) table_events: EventBatchBuf,
+    pub(crate) plugin_epochs: Vec<u64>,
+    pub(crate) base_plugin_epoch: u64,
+    pub(crate) plugin_base_epoch_dirty: bool,
+    #[cfg(test)]
     pub(crate) sort_scratch: Vec<NodeId>,
+    pub(crate) motion_scratch: Vec<NodeId>,
+    pub(crate) motion_paint_scratch: Vec<NodeId>,
+    pub(crate) plugin_dirty_scratch: Vec<NodeId>,
 }
 
 impl Default for SkiaBackend<TaffyStoreLayout> {
@@ -211,19 +242,30 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         Self {
             layout_tree,
             display_list: DisplayList::default(),
+            scene: CompositorScene::new(),
             viewport: Viewport::default(),
+            viewport_dirty: true,
             text_engine,
             focus: TextFocusState::default(),
             frame_hooks: SkiaFrameHooks::default(),
             table_registry: SkiaTableRegistry::new(),
             table_events: EventBatchBuf::new(),
+            plugin_epochs: Vec::new(),
+            base_plugin_epoch: next_plugin_epoch(),
+            plugin_base_epoch_dirty: false,
+            #[cfg(test)]
             sort_scratch: Vec::new(),
+            motion_scratch: Vec::new(),
+            motion_paint_scratch: Vec::new(),
+            plugin_dirty_scratch: Vec::new(),
         }
     }
 
     #[inline]
     pub fn register_table_system<S: SkiaTableSystem>(&mut self, system: S) -> &mut Self {
         self.table_registry.register(system);
+        self.base_plugin_epoch = next_plugin_epoch();
+        self.plugin_base_epoch_dirty = true;
         self
     }
 
@@ -234,6 +276,8 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
     #[inline]
     pub fn table_registry_mut(&mut self) -> &mut SkiaTableRegistry {
+        self.base_plugin_epoch = next_plugin_epoch();
+        self.plugin_base_epoch_dirty = true;
         &mut self.table_registry
     }
 
@@ -268,30 +312,28 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         SkiaBackend {
             layout_tree,
             display_list: DisplayList::default(),
+            scene: CompositorScene::new(),
             viewport: self.viewport,
+            viewport_dirty: true,
             text_engine: self.text_engine,
             focus: self.focus,
             frame_hooks: self.frame_hooks,
             table_registry: self.table_registry,
             table_events: self.table_events,
+            plugin_epochs: self.plugin_epochs,
+            base_plugin_epoch: self.base_plugin_epoch,
+            plugin_base_epoch_dirty: self.plugin_base_epoch_dirty,
+            #[cfg(test)]
             sort_scratch: self.sort_scratch,
+            motion_scratch: self.motion_scratch,
+            motion_paint_scratch: self.motion_paint_scratch,
+            plugin_dirty_scratch: self.plugin_dirty_scratch,
         }
     }
 
     #[inline]
     pub fn viewport(&self) -> Viewport {
         self.viewport
-    }
-
-    #[inline]
-    pub fn display_list(&self) -> &DisplayList {
-        &self.display_list
-    }
-
-    /// Disjoint borrows of `(display_list, table_registry, table_events)` for GPU/Skia rendering.
-    #[inline]
-    pub fn paint_parts_mut(&mut self) -> (&DisplayList, &SkiaTableRegistry, &mut EventBatchBuf) {
-        (&self.display_list, &self.table_registry, &mut self.table_events)
     }
 
     #[inline]
@@ -329,11 +371,12 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         Some(rect)
     }
 
-    /// Compiles the retained [`DisplayList`] directly from `store`.
-    pub fn rebuild_display_list(&mut self, store: &NodeStore) {
+    /// Compiles a fresh ground-truth [`DisplayList`] directly from `store` (test oracle only).
+    #[cfg(test)]
+    pub(crate) fn rebuild_display_list(&mut self, store: &NodeStore) -> &DisplayList {
         self.display_list.ops.clear();
         if !store.is_live(NodeId::ROOT) {
-            return;
+            return &self.display_list;
         }
         let clip_bounds = LayoutRect {
             x: 0.0,
@@ -347,22 +390,44 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             &self.focus,
             &self.frame_hooks,
             &self.table_registry,
+            &self.plugin_epochs,
+            self.base_plugin_epoch,
+            self.viewport.scale_factor,
             self.text_engine.as_ref(),
             clip_bounds,
             (0.0, 0.0),
             false,
             false,
-            ResolvedRow::<Typography>::root(store),
+            None,
             &mut self.sort_scratch,
             &mut self.display_list.ops,
             NodeId::ROOT,
         );
+        &self.display_list
     }
 
-    /// Software-rasterizes the retained `DisplayList` (without plugin dispatch).
+    #[inline]
+    pub(crate) fn bump_plugin_epoch(&mut self, id: NodeId) {
+        let idx = id.index();
+        if idx >= self.plugin_epochs.len() {
+            self.plugin_epochs.resize(idx + 1, 0);
+        }
+        self.plugin_epochs[idx] = next_plugin_epoch();
+    }
+
+    #[inline]
+    pub fn plugin_epoch_of(&self, id: NodeId) -> u64 {
+        self.plugin_epochs
+            .get(id.index())
+            .copied()
+            .unwrap_or(0)
+            .max(self.base_plugin_epoch)
+    }
+
+    /// Software-rasterizes the retained [`CompositorScene`] (without plugin dispatch) with zero
+    /// intermediate `DisplayList` allocation.
     pub fn rasterize(&self, buffer: &mut PixelBuffer, clear_color: ColorRgba) {
-        rasterize_display_list_with_text_engine(
-            &self.display_list,
+        self.scene.rasterize_with_text_engine(
             buffer,
             self.viewport.scale_factor,
             clear_color,
@@ -370,15 +435,15 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         );
     }
 
-    /// Software-rasterizes the retained `DisplayList` including registered [`SkiaTableSystem`] plugins.
+    /// Software-rasterizes the retained [`CompositorScene`] including registered
+    /// [`SkiaTableSystem`] plugins with zero intermediate `DisplayList` allocation.
     pub fn rasterize_with_store(
         &mut self,
         store: &NodeStore,
         buffer: &mut PixelBuffer,
         clear_color: ColorRgba,
     ) {
-        rasterize_display_list_with_plugins(
-            &self.display_list,
+        self.scene.rasterize_with_plugins(
             buffer,
             self.viewport.scale_factor,
             clear_color,
@@ -396,7 +461,10 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
     }
 
     fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
-        self.viewport = viewport;
+        if self.viewport != viewport {
+            self.viewport = viewport;
+            self.viewport_dirty = true;
+        }
         self.layout_tree.set_viewport(surface_id, viewport);
     }
 
@@ -405,12 +473,56 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         store: &NodeStore,
         changes: &ChangeSet,
     ) -> Result<BackendApplyStats, BackendError> {
+        let vp_dirty = self.viewport_dirty;
+        let needs_layout = vp_dirty || changes.needs_layout();
         let mut stats = self.layout_tree.commit(store, changes)?;
+        self.viewport_dirty = false;
         let t_mount = Instant::now();
-        self.reconcile_scroll_offsets(store);
+        self.reconcile_scroll_offsets(store, changes, needs_layout);
         self.reconcile_focus_state(store);
         self.frame_hooks_after_commit(store, changes);
+
+        let mut plugin_dirty = std::mem::take(&mut self.plugin_dirty_scratch);
+        plugin_dirty.clear();
+        if !self.table_registry.iter().is_empty() {
+            for &id in changes.created.iter().chain(changes.removed.iter()) {
+                self.bump_plugin_epoch(id);
+                plugin_dirty.push(id);
+            }
+            let slots_len = self.table_registry.iter().len();
+            let total_res_changed =
+                changes.resources_defined.len() + changes.resources_released.len();
+            let changed_res_set = (total_res_changed > 4).then(|| {
+                let mut set = std::collections::HashSet::with_capacity_and_hasher(
+                    total_res_changed,
+                    crate::slab_lru::FastBuildHasher,
+                );
+                set.extend(changes.resources_defined.iter().copied());
+                set.extend(changes.resources_released.iter().copied());
+                set
+            });
+            for i in 0..slots_len {
+                let slot = self.table_registry.iter()[i].slot();
+                if let Some(tc) = changes.table(slot) {
+                    for &id in tc.nodes.iter().chain(tc.detached.iter()) {
+                        self.bump_plugin_epoch(id);
+                        plugin_dirty.push(id);
+                    }
+                }
+                if total_res_changed > 0 {
+                    self.bump_plugin_nodes_referencing_changed_resources(
+                        store,
+                        slot,
+                        changes,
+                        changed_res_set.as_ref(),
+                        &mut plugin_dirty,
+                    );
+                }
+            }
+        }
         for cmd in &changes.commands {
+            self.bump_plugin_epoch(cmd.node);
+            plugin_dirty.push(cmd.node);
             let _ = self.table_registry.dispatch_command(
                 store,
                 cmd.node,
@@ -420,9 +532,24 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
                 &mut self.table_events,
             );
         }
-        self.rebuild_display_list(store);
+        let base_dirty = std::mem::replace(&mut self.plugin_base_epoch_dirty, false);
+        let chunks_before = self.scene.stats().chunks_emitted;
+        let dirty_kind =
+            self.sync_scene_for_commit(store, changes, vp_dirty, &plugin_dirty, base_dirty);
+        let chunks_delta = self
+            .scene
+            .stats()
+            .chunks_emitted
+            .saturating_sub(chunks_before);
+        self.plugin_dirty_scratch = plugin_dirty;
         stats.mount_us = t_mount.elapsed().as_micros() as u64;
-        stats.mutation_count = self.display_list.ops.len() as u32;
+        stats.mutation_count = match dirty_kind {
+            SceneDirtyKind::None => 0,
+            SceneDirtyKind::CompositeOnly => changes.touched.len() as u32,
+            SceneDirtyKind::PaintOnly | SceneDirtyKind::LayoutOrTree => {
+                chunks_delta.max(changes.removed.len() as u64) as u32
+            }
+        };
         Ok(stats)
     }
 
@@ -441,8 +568,13 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
     fn reset(&mut self) {
         self.layout_tree.reset();
         self.display_list.ops.clear();
+        self.scene.clear();
+        self.viewport_dirty = true;
         self.focus = TextFocusState::default();
         self.frame_hooks.reset();
         self.table_events.clear();
+        self.plugin_epochs.clear();
+        self.base_plugin_epoch = next_plugin_epoch();
+        self.plugin_base_epoch_dirty = false;
     }
 }

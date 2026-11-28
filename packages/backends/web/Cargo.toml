@@ -17,6 +17,7 @@ nve-codec = { workspace = true }
 nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false, features = ["reconcile"], optional = true }
 nve-tables = { workspace = true }
 nve-engine = { workspace = true }
+nve-host-services = { workspace = true }
 nve-store = { workspace = true }
 base64 = { workspace = true }
 

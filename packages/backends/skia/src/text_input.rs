@@ -2,13 +2,17 @@
 //! range selection highlights, vertical caret, IME preedit underline, focus ring), logical-X
 //! grapheme-safe hit-testing, and exact live caret/preedit screen-rect computation over `&NodeStore`.
 
+#[cfg(test)]
 use nve_abi::ColorRgba;
-use nve_tables::tables::{Layout, TextContent, TextInput};
 use nve_engine::LayoutRect;
 use nve_store::{NodeId, NodeStore};
+use nve_tables::tables::{Layout, TextContent, TextInput};
 
-use crate::text::{CosmicTextEngine, TextAlign};
+use crate::text::CosmicTextEngine;
+#[cfg(test)]
+use crate::text::TextAlign;
 use crate::text_grapheme::{clamp_grapheme_boundary, grapheme_boundaries, grapheme_count};
+#[cfg(test)]
 use crate::{
     PaintOp, TextFocusState, FOCUS_RING_COLOR, FOCUS_SELECTION_COLOR, IME_PREEDIT_UNDERLINE_COLOR,
 };
@@ -184,7 +188,7 @@ pub(crate) fn selection_rects_for_range(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compute_ime_cursor_rect(
+pub(crate) fn compute_caret_raw_rect(
     text_engine: &CosmicTextEngine,
     committed: &str,
     caret_byte: usize,
@@ -193,17 +197,10 @@ pub(crate) fn compute_ime_cursor_rect(
     font_weight: u16,
     is_secure: bool,
     text_rect: LayoutRect,
-) -> LayoutRect {
-    let caret_byte = clamp_grapheme_boundary(committed, caret_byte);
-    let scroll_x = compute_text_input_scroll_x(
-        text_engine,
-        committed,
-        caret_byte,
-        font_size,
-        font_weight,
-        is_secure,
-        text_rect.width,
-    );
+    scroll_x: f32,
+) -> (LayoutRect, bool) {
+    let preedit = preedit.filter(|p| !p.is_empty());
+    let has_preedit = preedit.is_some();
     let (caret_x, width) = if is_secure {
         let bullets = "•".repeat(grapheme_count(committed));
         let before = "•".repeat(grapheme_count(&committed[..caret_byte]));
@@ -211,9 +208,7 @@ pub(crate) fn compute_ime_cursor_rect(
             measure_caret_advance(text_engine, &bullets, before.len(), font_size, font_weight),
             CARET_WIDTH,
         )
-    } else if let Some(pre) = preedit
-        && !pre.is_empty()
-    {
+    } else if let Some(pre) = preedit {
         let mut combined = String::with_capacity(committed.len() + pre.len());
         combined.push_str(&committed[..caret_byte]);
         combined.push_str(pre);
@@ -234,14 +229,94 @@ pub(crate) fn compute_ime_cursor_rect(
             CARET_WIDTH,
         )
     };
-    LayoutRect {
-        x: (text_rect.x + caret_x - scroll_x).clamp(text_rect.x, text_rect.x + text_rect.width),
-        y: text_rect.y,
-        width,
-        height: (font_size * 1.35).min(text_rect.height),
+    if !text_rect.x.is_finite()
+        || !text_rect.y.is_finite()
+        || !text_rect.width.is_finite()
+        || !text_rect.height.is_finite()
+        || !caret_x.is_finite()
+        || !scroll_x.is_finite()
+        || !font_size.is_finite()
+    {
+        return (LayoutRect::default(), has_preedit);
+    }
+    let min_x = text_rect.x;
+    let max_x = text_rect.x + text_rect.width.max(0.0);
+    let raw_x = (text_rect.x + caret_x - scroll_x).max(min_x).min(max_x);
+    let raw_h = (font_size.max(0.0) * 1.35).min(text_rect.height.max(0.0));
+    (
+        LayoutRect {
+            x: raw_x,
+            y: text_rect.y,
+            width,
+            height: raw_h,
+        },
+        has_preedit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_ime_cursor_rect(
+    text_engine: &CosmicTextEngine,
+    committed: &str,
+    caret_byte: usize,
+    preedit: Option<&str>,
+    font_size: f32,
+    font_weight: u16,
+    is_secure: bool,
+    text_rect: LayoutRect,
+    scale_factor: f32,
+) -> LayoutRect {
+    if !text_rect.x.is_finite()
+        || !text_rect.y.is_finite()
+        || !text_rect.width.is_finite()
+        || !text_rect.height.is_finite()
+        || !font_size.is_finite()
+    {
+        return LayoutRect::default();
+    }
+    let scale = crate::text_cache::sanitize_scale(scale_factor);
+    let caret_byte = clamp_grapheme_boundary(committed, caret_byte);
+    let scroll_x = compute_text_input_scroll_x(
+        text_engine,
+        committed,
+        caret_byte,
+        font_size,
+        font_weight,
+        is_secure,
+        text_rect.width,
+    );
+    let (raw, has_preedit) = compute_caret_raw_rect(
+        text_engine,
+        committed,
+        caret_byte,
+        preedit,
+        font_size,
+        font_weight,
+        is_secure,
+        text_rect,
+        scroll_x,
+    );
+    if has_preedit {
+        raw
+    } else {
+        // Snap caret geometry to the physical device-pixel grid (assuming axis-aligned unscaled
+        // ancestor transforms) so a 2pt caret always renders as `round(2 * scale)` crisp columns
+        // with zero subpixel smear, and clamp horizontally so snapping never overhangs `PushClip`.
+        let snapped_w = (raw.width.max(0.0) * scale).round().max(1.0) / scale;
+        let max_x = (text_rect.x + text_rect.width.max(0.0) - snapped_w).max(text_rect.x);
+        let snapped_x = ((raw.x * scale).round() / scale).max(text_rect.x).min(max_x);
+        let snapped_y = (raw.y * scale).round() / scale;
+        let snapped_h = (raw.height.max(0.0) * scale).round().max(1.0) / scale;
+        LayoutRect {
+            x: snapped_x,
+            y: snapped_y,
+            width: snapped_w,
+            height: snapped_h,
+        }
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_text_input_ops(
     store: &NodeStore,
@@ -251,6 +326,7 @@ pub(crate) fn emit_text_input_ops(
     text_color: ColorRgba,
     font_size: f32,
     font_weight: u16,
+    scale_factor: f32,
     focus: &TextFocusState,
     text_engine: &CosmicTextEngine,
     ops: &mut Vec<PaintOp>,
@@ -403,6 +479,7 @@ pub(crate) fn emit_text_input_ops(
             font_weight,
             is_secure,
             text_rect,
+            scale_factor,
         );
         ops.push(PaintOp::FillRoundedRect {
             rect: caret,

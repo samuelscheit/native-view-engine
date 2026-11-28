@@ -1,0 +1,553 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
+
+use accesskit::{
+    Action, ActionData, ActionRequest, Affine, AutoComplete, Invalid, Live, Orientation, Point,
+    Rect, Role, ScrollUnit, TextPosition, TextSelection, Toggled, TreeId,
+};
+use nve_abi::InteractionEvent;
+use nve_engine::LayoutRect;
+use nve_store::{ChangeSet, NodeId, NodeStore};
+use nve_tables::tables::{
+    Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
+    AriaTriState, DebugId, Display, Image, InputKind, Interaction, Layout, Link, Scroll,
+    ScrollAxes, TextContent, TextInput, Transform, Visual,
+};
+
+use crate::{
+    aria_role_to_accesskit, byte_offset_to_char_index, char_index_to_byte_offset,
+    encode_store_node_id, encode_text_run_id, A11yAction, A11yGeometryProvider,
+    AccessKitTreeBridge, ResolvedA11yAction, StoreEpoch,
+};
+
+#[derive(Default)]
+struct MapGeo {
+    scale: f32,
+    rects: HashMap<NodeId, LayoutRect>,
+    scroll_offsets: HashMap<NodeId, (f32, f32)>,
+    scroll_contents: HashMap<NodeId, (f32, f32)>,
+    focused: Option<NodeId>,
+    values: HashMap<NodeId, String>,
+    selections: HashMap<NodeId, (usize, usize)>,
+    display_none: HashMap<NodeId, bool>,
+}
+
+impl MapGeo {
+    fn new(scale: f32) -> Self {
+        Self {
+            scale,
+            ..Default::default()
+        }
+    }
+}
+
+impl A11yGeometryProvider for MapGeo {
+    fn scale_factor(&self) -> f32 {
+        self.scale
+    }
+    fn layout_rect(&self, id: NodeId) -> Option<LayoutRect> {
+        self.rects.get(&id).copied()
+    }
+    fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
+        self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0))
+    }
+    fn scroll_content_size(&self, id: NodeId) -> Option<(f32, f32)> {
+        self.scroll_contents.get(&id).copied()
+    }
+    fn focused_node(&self) -> Option<NodeId> {
+        self.focused
+    }
+    fn text_input_value(&self, id: NodeId) -> Option<Cow<'_, str>> {
+        self.values.get(&id).map(|s| Cow::Borrowed(s.as_str()))
+    }
+    fn text_selection_bytes(&self, id: NodeId) -> Option<(usize, usize)> {
+        self.selections.get(&id).copied()
+    }
+    fn is_display_none(&self, id: NodeId) -> bool {
+        self.display_none.get(&id).copied().unwrap_or(false)
+    }
+}
+
+#[test]
+fn all_48_aria_roles_map_exhaustively_and_deterministically() {
+    let all_roles = [
+        (AriaRole::Button, Role::Button),
+        (AriaRole::Link, Role::Link),
+        (AriaRole::Heading, Role::Heading),
+        (AriaRole::Text, Role::Label),
+        (AriaRole::Image, Role::Image),
+        (AriaRole::TextBox, Role::TextInput),
+        (AriaRole::SearchBox, Role::SearchInput),
+        (AriaRole::ScrollArea, Role::ScrollView),
+        (AriaRole::Checkbox, Role::CheckBox),
+        (AriaRole::Switch, Role::Switch),
+        (AriaRole::Radio, Role::RadioButton),
+        (AriaRole::Slider, Role::Slider),
+        (AriaRole::Tab, Role::Tab),
+        (AriaRole::TabList, Role::TabList),
+        (AriaRole::TabPanel, Role::TabPanel),
+        (AriaRole::Dialog, Role::Dialog),
+        (AriaRole::AlertDialog, Role::AlertDialog),
+        (AriaRole::Alert, Role::Alert),
+        (AriaRole::Status, Role::Status),
+        (AriaRole::Tooltip, Role::Tooltip),
+        (AriaRole::Navigation, Role::Navigation),
+        (AriaRole::Main, Role::Main),
+        (AriaRole::Article, Role::Article),
+        (AriaRole::Complementary, Role::Complementary),
+        (AriaRole::Banner, Role::Banner),
+        (AriaRole::ContentInfo, Role::ContentInfo),
+        (AriaRole::Form, Role::Form),
+        (AriaRole::Region, Role::Region),
+        (AriaRole::Group, Role::Group),
+        (AriaRole::List, Role::List),
+        (AriaRole::ListItem, Role::ListItem),
+        (AriaRole::ListBox, Role::ListBox),
+        (AriaRole::Option, Role::ListBoxOption),
+        (AriaRole::Menu, Role::Menu),
+        (AriaRole::MenuItem, Role::MenuItem),
+        (AriaRole::Separator, Role::Splitter),
+        (AriaRole::Presentation, Role::GenericContainer),
+        (AriaRole::Table, Role::Table),
+        (AriaRole::Row, Role::Row),
+        (AriaRole::Cell, Role::Cell),
+        (AriaRole::ColumnHeader, Role::ColumnHeader),
+        (AriaRole::RowHeader, Role::RowHeader),
+        (AriaRole::Code, Role::Code),
+        (AriaRole::CodeBlock, Role::Code),
+        (AriaRole::ProgressBar, Role::ProgressIndicator),
+        (AriaRole::ComboBox, Role::ComboBox),
+        (AriaRole::Grid, Role::Grid),
+        (AriaRole::GridCell, Role::GridCell),
+    ];
+    assert_eq!(all_roles.len(), 48);
+    for (aria, expected) in all_roles {
+        assert_eq!(aria_role_to_accesskit(aria), expected);
+    }
+}
+
+#[test]
+fn full_tree_emits_aria_attrs_relations_password_masking_and_omits_hidden_subtrees() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (heading, label_node, desc_node, slider, password, hidden_a11y, hidden_display, link) = {
+        let mut tx = store.tx();
+        let heading = tx.create();
+        tx.edit::<Accessibility>(heading)
+            .role(Some(AriaRole::Heading))
+            .level(Some(2));
+        tx.edit::<TextContent>(heading).text("Settings");
+
+        let label_node = tx.create();
+        tx.edit::<DebugId>(label_node).id("vol-label");
+        tx.edit::<TextContent>(label_node).text("Volume");
+
+        let desc_node = tx.create();
+        tx.edit::<DebugId>(desc_node).id("vol-desc");
+        tx.edit::<TextContent>(desc_node).text("Adjust output level");
+
+        let slider = tx.create();
+        tx.edit::<Accessibility>(slider)
+            .role(Some(AriaRole::Slider))
+            .orientation(Some(AriaOrientation::Horizontal))
+            .live(Some(AriaLive::Polite))
+            .autocomplete(Some(AriaAutoComplete::List))
+            .checked(Some(AriaTriState::Mixed))
+            .selected(Some(AriaTriState::True))
+            .expanded(Some(AriaTriState::False))
+            .invalid(true)
+            .busy(true)
+            .multiselectable(true)
+            .modal(true)
+            .value_now(Some(42.0))
+            .value_min(Some(0.0))
+            .value_max(Some(100.0))
+            .hint("Drag or use arrows")
+            .relations(Some(AriaRelations {
+                controls: "vol-desc".into(),
+                labelled_by: "vol-label".into(),
+                described_by: "vol-desc".into(),
+                active_descendant: "vol-label".into(),
+            }));
+        tx.edit::<Interaction>(slider).focusable(true);
+
+        let password = tx.create();
+        tx.edit::<TextInput>(password)
+            .secure(true)
+            .placeholder("Enter secret")
+            .required(true)
+            .value("s3cr€t");
+
+        let hidden_a11y = tx.create();
+        let hidden_a11y_child = tx.create();
+        tx.edit::<Accessibility>(hidden_a11y).hidden(true);
+        tx.edit::<TextContent>(hidden_a11y_child).text("Secret aria-hidden");
+        tx.set_children(hidden_a11y, &[hidden_a11y_child]);
+
+        let hidden_display = tx.create();
+        let hidden_display_child = tx.create();
+        tx.edit::<Layout>(hidden_display).display(Display::None);
+        tx.edit::<TextContent>(hidden_display_child).text("Secret display-none");
+        tx.set_children(hidden_display, &[hidden_display_child]);
+
+        let link = tx.create();
+        tx.edit::<Link>(link).href("https://example.com");
+        tx.edit::<Image>(link).alt("Docs icon");
+
+        tx.set_children(
+            NodeId::ROOT,
+            &[
+                heading,
+                label_node,
+                desc_node,
+                slider,
+                password,
+                hidden_a11y,
+                hidden_display,
+                link,
+            ],
+        );
+        tx.commit_into(&mut changes);
+        (
+            heading,
+            label_node,
+            desc_node,
+            slider,
+            password,
+            hidden_a11y,
+            hidden_display,
+            link,
+        )
+    };
+
+    let mut geo = MapGeo::new(2.0);
+    geo.rects.insert(
+        NodeId::ROOT,
+        LayoutRect { x: 0.0, y: 0.0, width: 400.0, height: 300.0 },
+    );
+    geo.rects.insert(
+        password,
+        LayoutRect { x: 10.0, y: 50.0, width: 200.0, height: 32.0 },
+    );
+    geo.focused = Some(password);
+    // Select `"3cr€"` (bytes 1..7 -> char indices 1..5 in `"s3cr€t"`).
+    geo.selections.insert(password, (1, 7));
+
+    let mut bridge = AccessKitTreeBridge::new();
+    let update = bridge.build_full_tree_update(&store, &geo, "Prefs Window");
+    assert!(update.tree.is_some());
+    assert_eq!(update.tree_id, TreeId::ROOT);
+    assert_eq!(update.focus, bridge.encode_store_node_id(password));
+
+    let by_id: HashMap<_, _> = update.nodes.into_iter().collect();
+    let root = &by_id[&bridge.encode_store_node_id(NodeId::ROOT)];
+    assert_eq!(root.role(), Role::Window);
+    assert_eq!(root.label(), Some("Prefs Window"));
+    assert_eq!(root.transform(), Some(&Affine::scale(2.0)));
+    assert!(!root.children().contains(&bridge.encode_store_node_id(hidden_a11y)));
+    assert!(!root.children().contains(&bridge.encode_store_node_id(hidden_display)));
+    assert!(!by_id.contains_key(&bridge.encode_store_node_id(hidden_a11y)));
+    assert!(!by_id.contains_key(&bridge.encode_store_node_id(hidden_display)));
+
+    // Heading: aria-level=2 -> AccessKit 0-based level=1.
+    let h = &by_id[&bridge.encode_store_node_id(heading)];
+    assert_eq!(h.role(), Role::Heading);
+    assert_eq!(h.level(), Some(1));
+    assert_eq!(h.label(), Some("Settings"));
+
+    // Label: text content goes in `value()`, NOT `label()`.
+    let lbl = &by_id[&bridge.encode_store_node_id(label_node)];
+    assert_eq!(lbl.role(), Role::Label);
+    assert_eq!(lbl.value(), Some("Volume"));
+    assert_eq!(lbl.label(), None);
+
+    // Slider: all ARIA attributes & resolved AriaRelations.
+    let sl = &by_id[&bridge.encode_store_node_id(slider)];
+    assert_eq!(sl.role(), Role::Slider);
+    assert_eq!(sl.orientation(), Some(Orientation::Horizontal));
+    assert_eq!(sl.live(), Some(Live::Polite));
+    assert_eq!(sl.auto_complete(), Some(AutoComplete::List));
+    assert_eq!(sl.toggled(), Some(Toggled::Mixed));
+    assert_eq!(sl.is_selected(), Some(true));
+    assert_eq!(sl.is_expanded(), Some(false));
+    assert_eq!(sl.invalid(), Some(Invalid::True));
+    assert!(sl.is_busy());
+    assert!(sl.is_multiselectable());
+    assert!(sl.is_modal());
+    assert_eq!(sl.numeric_value(), Some(42.0));
+    assert_eq!(sl.min_numeric_value(), Some(0.0));
+    assert_eq!(sl.max_numeric_value(), Some(100.0));
+    assert_eq!(sl.description(), Some("Drag or use arrows"));
+    assert_eq!(sl.labelled_by(), &[bridge.encode_store_node_id(label_node)]);
+    assert_eq!(sl.described_by(), &[bridge.encode_store_node_id(desc_node)]);
+    assert_eq!(sl.controls(), &[bridge.encode_store_node_id(desc_node)]);
+    assert_eq!(sl.active_descendant(), Some(bridge.encode_store_node_id(label_node)));
+    assert!(sl.supports_action(Action::Increment));
+    assert!(sl.supports_action(Action::Decrement));
+
+    // PasswordInput: NEVER leaks plaintext; emits bullet mask + synthetic TextRun + selection!
+    let pw = &by_id[&bridge.encode_store_node_id(password)];
+    assert_eq!(pw.role(), Role::PasswordInput);
+    assert_eq!(pw.value(), Some("••••••"));
+    assert_eq!(pw.placeholder(), Some("Enter secret"));
+    assert!(pw.is_required());
+    assert!(pw.supports_action(Action::SetValue));
+    assert!(pw.supports_action(Action::ReplaceSelectedText));
+    let run_id = encode_text_run_id(bridge.epoch(), password);
+    assert_eq!(pw.children(), &[run_id]);
+    let run = &by_id[&run_id];
+    assert_eq!(run.role(), Role::TextRun);
+    assert_eq!(run.value(), Some("••••••"));
+    assert_eq!(run.character_lengths(), &[3, 3, 3, 3, 3, 3]);
+    assert_eq!(
+        run.character_lengths().iter().map(|&n| usize::from(n)).sum::<usize>(),
+        run.value().expect("text run value").len()
+    );
+    assert_eq!(
+        pw.text_selection(),
+        Some(&TextSelection {
+            anchor: TextPosition { node: run_id, character_index: 1 },
+            focus: TextPosition { node: run_id, character_index: 5 },
+        })
+    );
+
+    // Link with alt fallback.
+    let lnk = &by_id[&bridge.encode_store_node_id(link)];
+    assert_eq!(lnk.role(), Role::Link);
+    assert_eq!(lnk.url(), Some("https://example.com"));
+    assert_eq!(lnk.label(), Some("Docs icon"));
+    assert!(lnk.supports_action(Action::Click));
+}
+
+#[test]
+fn incremental_updates_emit_minimal_diffs_and_scroll_mutates_only_scroll_container() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (scroll, btn_a, btn_b) = {
+        let mut tx = store.tx();
+        let scroll = tx.create();
+        tx.edit::<Scroll>(scroll).axes(ScrollAxes::Vertical);
+        let btn_a = tx.create();
+        tx.edit::<Interaction>(btn_a).listen(InteractionEvent::Press);
+        tx.edit::<Accessibility>(btn_a).label("First");
+        let btn_b = tx.create();
+        tx.edit::<Interaction>(btn_b).listen(InteractionEvent::Press);
+        tx.edit::<Accessibility>(btn_b).label("Second");
+        tx.set_children(scroll, &[btn_a, btn_b]);
+        tx.set_children(NodeId::ROOT, &[scroll]);
+        tx.commit_into(&mut changes);
+        (scroll, btn_a, btn_b)
+    };
+
+    let mut geo = MapGeo::new(1.0);
+    geo.rects.insert(NodeId::ROOT, LayoutRect { x: 0.0, y: 0.0, width: 300.0, height: 200.0 });
+    geo.rects.insert(scroll, LayoutRect { x: 0.0, y: 0.0, width: 300.0, height: 200.0 });
+    geo.rects.insert(btn_a, LayoutRect { x: 0.0, y: 0.0, width: 200.0, height: 40.0 });
+    geo.rects.insert(btn_b, LayoutRect { x: 0.0, y: 50.0, width: 200.0, height: 40.0 });
+    geo.scroll_contents.insert(scroll, (300.0, 600.0));
+
+    let mut bridge = AccessKitTreeBridge::new();
+    // Inactive bridge produces None.
+    assert!(bridge.sync_changes(&store, &changes, &geo, "App", false).is_none());
+
+    bridge.activate();
+    let full = bridge.build_full_tree_update(&store, &geo, "App");
+    assert_eq!(full.nodes.len(), 4);
+
+    // 1. COMPOSITE-only opacity/transform edit -> None!
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(btn_a).opacity(0.6);
+        tx.edit::<Transform>(btn_a).translate_x(4.0);
+        tx.commit_into(&mut changes);
+    }
+    assert!(bridge.sync_changes(&store, &changes, &geo, "App", false).is_none());
+
+    // 2. Single label change -> emits ONLY `btn_a` (1 node)!
+    {
+        let mut tx = store.tx();
+        tx.edit::<Accessibility>(btn_a).label("Updated");
+        tx.commit_into(&mut changes);
+    }
+    let inc = bridge.sync_changes(&store, &changes, &geo, "App", false).expect("incremental");
+    assert!(inc.tree.is_none());
+    assert_eq!(inc.nodes.len(), 1);
+    assert_eq!(inc.nodes[0].0, bridge.encode_store_node_id(btn_a));
+    assert_eq!(inc.nodes[0].1.label(), Some("Updated"));
+
+    // 3. Scroll offset change -> emits ONLY the `scroll` container (O(1), zero children re-emitted)!
+    geo.scroll_offsets.insert(scroll, (0.0, 120.0));
+    let scroll_upd = bridge
+        .sync_changes(&store, &ChangeSet::default(), &geo, "App", true)
+        .expect("scroll update");
+    assert_eq!(scroll_upd.nodes.len(), 1);
+    assert_eq!(scroll_upd.nodes[0].0, bridge.encode_store_node_id(scroll));
+    assert_eq!(scroll_upd.nodes[0].1.scroll_y(), Some(120.0));
+    assert_eq!(scroll_upd.nodes[0].1.scroll_y_max(), Some(400.0));
+    assert_eq!(scroll_upd.nodes[0].1.transform(), Some(&Affine::translate((0.0, -120.0))));
+    assert_eq!(
+        scroll_upd.nodes[0].1.bounds(),
+        Some(Rect { x0: 0.0, y0: 120.0, x1: 300.0, y1: 320.0 })
+    );
+
+    // 4. Removal of `btn_b` -> emits ONLY parent `scroll` with updated children (never removed node!).
+    {
+        let mut tx = store.tx();
+        tx.set_children(scroll, &[btn_a]);
+        tx.remove(btn_b);
+        tx.commit_into(&mut changes);
+    }
+    let rem = bridge.sync_changes(&store, &changes, &geo, "App", false).expect("remove update");
+    assert_eq!(rem.nodes.len(), 1);
+    assert_eq!(rem.nodes[0].0, bridge.encode_store_node_id(scroll));
+    assert_eq!(rem.nodes[0].1.children(), &[bridge.encode_store_node_id(btn_a)]);
+
+    // 5. Focus on live `btn_a` updates focus, then focus on removed `btn_b` falls back to ROOT.
+    geo.focused = Some(btn_a);
+    let focus_a = bridge
+        .sync_changes(&store, &ChangeSet::default(), &geo, "App", false)
+        .expect("focus on btn_a");
+    assert_eq!(focus_a.focus, bridge.encode_store_node_id(btn_a));
+
+    geo.focused = Some(btn_b);
+    let focus_upd = bridge
+        .sync_changes(&store, &ChangeSet::default(), &geo, "App", false)
+        .expect("focus fallback");
+    assert_eq!(focus_upd.focus, bridge.encode_store_node_id(NodeId::ROOT));
+
+    // 6. All InputKind variants map to their native AccessKit roles.
+    let kinds = [
+        (InputKind::Text, Role::TextInput),
+        (InputKind::Email, Role::EmailInput),
+        (InputKind::Password, Role::PasswordInput),
+        (InputKind::Tel, Role::PhoneNumberInput),
+        (InputKind::Url, Role::UrlInput),
+        (InputKind::Number, Role::NumberInput),
+        (InputKind::Search, Role::SearchInput),
+        (InputKind::Date, Role::DateInput),
+        (InputKind::Time, Role::TimeInput),
+    ];
+    for (kind, expected) in kinds {
+        let mut s = NodeStore::new();
+        let n = {
+            let mut tx = s.tx();
+            let id = tx.create();
+            tx.edit::<TextInput>(id).input_kind(kind);
+            tx.set_children(NodeId::ROOT, &[id]);
+            tx.commit_into(&mut changes);
+            id
+        };
+        assert_eq!(crate::resolve_node_role(&s, n), expected);
+    }
+}
+
+#[test]
+fn epoch_advancement_rejects_stale_actions_and_translates_all_action_types() {
+    let mut bridge = AccessKitTreeBridge::new();
+    let node = NodeId::new(42, 0);
+    let epoch1 = bridge.epoch();
+    assert_eq!(epoch1, StoreEpoch::INITIAL);
+    let old_id = encode_store_node_id(epoch1, node);
+    let old_run = encode_text_run_id(epoch1, node);
+
+    // Translate Click, Focus, Blur, SetValue, ReplaceSelectedText, SetTextSelection, Scroll*.
+    let click = bridge.translate_action(&ActionRequest {
+        action: Action::Click,
+        target_tree: TreeId::ROOT,
+        target_node: old_id,
+        data: None,
+    });
+    assert_eq!(click, Some(ResolvedA11yAction { target: node, action: A11yAction::Click }));
+
+    let set_val = bridge.translate_action(&ActionRequest {
+        action: Action::SetValue,
+        target_tree: TreeId::ROOT,
+        target_node: old_id,
+        data: Some(ActionData::Value("hello".into())),
+    });
+    assert_eq!(
+        set_val,
+        Some(ResolvedA11yAction {
+            target: node,
+            action: A11yAction::SetValue("hello".into()),
+        })
+    );
+
+    let sel = bridge.translate_action(&ActionRequest {
+        action: Action::SetTextSelection,
+        target_tree: TreeId::ROOT,
+        target_node: old_run,
+        data: Some(ActionData::SetTextSelection(TextSelection {
+            anchor: TextPosition { node: old_run, character_index: 1 },
+            focus: TextPosition { node: old_run, character_index: 4 },
+        })),
+    });
+    assert_eq!(
+        sel,
+        Some(ResolvedA11yAction {
+            target: node,
+            action: A11yAction::SetTextSelection { anchor_char: 1, focus_char: 4 },
+        })
+    );
+
+    let scroll_pg = bridge.translate_action(&ActionRequest {
+        action: Action::ScrollDown,
+        target_tree: TreeId::ROOT,
+        target_node: old_id,
+        data: Some(ActionData::ScrollUnit(ScrollUnit::Page)),
+    });
+    assert_eq!(
+        scroll_pg,
+        Some(ResolvedA11yAction {
+            target: node,
+            action: A11yAction::ScrollBy { dx: 0.0, dy: 240.0 },
+        })
+    );
+
+    let scroll_abs = bridge.translate_action(&ActionRequest {
+        action: Action::SetScrollOffset,
+        target_tree: TreeId::ROOT,
+        target_node: old_id,
+        data: Some(ActionData::SetScrollOffset(Point { x: 10.0, y: 88.5 })),
+    });
+    assert_eq!(
+        scroll_abs,
+        Some(ResolvedA11yAction {
+            target: node,
+            action: A11yAction::SetScrollOffset { x: 10.0, y: 88.5 },
+        })
+    );
+
+    // Non-finite scroll offset is rejected.
+    assert!(bridge
+        .translate_action(&ActionRequest {
+            action: Action::SetScrollOffset,
+            target_tree: TreeId::ROOT,
+            target_node: old_id,
+            data: Some(ActionData::SetScrollOffset(Point { x: f64::NAN, y: 0.0 })),
+        })
+        .is_none());
+
+    // Advance epoch (Tier-2 DylibReload): ALL old-epoch requests MUST return None!
+    bridge.advance_epoch();
+    assert_ne!(bridge.epoch(), epoch1);
+    assert!(bridge
+        .translate_action(&ActionRequest {
+            action: Action::Click,
+            target_tree: TreeId::ROOT,
+            target_node: old_id,
+            data: None,
+        })
+        .is_none());
+
+    // UTF-8 byte <-> char index helpers handle multibyte characters & out-of-range offsets safely.
+    let s = "a€🚀b";
+    assert_eq!(byte_offset_to_char_index(s, 0), 0);
+    assert_eq!(byte_offset_to_char_index(s, 1), 1);
+    assert_eq!(byte_offset_to_char_index(s, 4), 2);
+    assert_eq!(byte_offset_to_char_index(s, 8), 3);
+    assert_eq!(byte_offset_to_char_index(s, 999), 4);
+    assert_eq!(char_index_to_byte_offset(s, 2), 4);
+    assert_eq!(char_index_to_byte_offset(s, 3), 8);
+    assert_eq!(char_index_to_byte_offset(s, 99), s.len());
+}

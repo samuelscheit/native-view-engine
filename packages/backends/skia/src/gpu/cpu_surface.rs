@@ -6,12 +6,13 @@ use std::time::Instant;
 use nve_abi::ColorRgba;
 use skia_safe::{AlphaType, Canvas, ColorType, ImageInfo, Surface};
 
-use super::skia_renderer::{to_skia_color, SkiaCanvasRenderer};
+use super::skia_renderer::{to_skia_color, RendererCacheStats, SkiaCanvasRenderer};
 use super::{
     FrameLifecycleState, FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceError,
     SkiaPluginContext, SwapchainExtent,
 };
 use crate::raster::PixelBuffer;
+use crate::retained::CompositorScene;
 use crate::DisplayList;
 
 /// Reads back a Skia [`Surface`] into a [`PixelBuffer`] reusing `scratch_rgba` to avoid
@@ -55,31 +56,14 @@ pub trait GpuSurfaceBackend {
     fn kind(&self) -> GpuBackendKind;
     fn size(&self) -> (u32, u32);
     fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuSurfaceError>;
-    fn render_display_list(
-        &mut self,
-        renderer: &SkiaCanvasRenderer,
-        display_list: &DisplayList,
-        scale_factor: f32,
-        clear_color: ColorRgba,
-    ) -> Result<(), GpuSurfaceError>;
-    fn render_display_list_with_plugins(
-        &mut self,
-        renderer: &SkiaCanvasRenderer,
-        display_list: &DisplayList,
-        scale_factor: f32,
-        clear_color: ColorRgba,
-        _plugins: Option<SkiaPluginContext<'_>>,
-    ) -> Result<(), GpuSurfaceError> {
-        self.render_display_list(renderer, display_list, scale_factor, clear_color)
-    }
     fn copy_to_pixel_buffer(&mut self, target: &mut PixelBuffer) -> Result<(), GpuSurfaceError>;
 }
 
 /// CPU-backed Skia raster surface (`skia_safe::surfaces::raster_n32_premul`).
 pub struct CpuSkiaSurface {
     extent: SwapchainExtent,
-    surface: Surface,
     renderer: SkiaCanvasRenderer,
+    surface: Surface,
     readback_rgba: Vec<u8>,
     state: FrameLifecycleState,
     frame_index: u64,
@@ -102,6 +86,20 @@ impl CpuSkiaSurface {
         height: u32,
         scale_factor: f32,
     ) -> Result<Self, GpuSurfaceError> {
+        Self::with_text_engine(
+            width,
+            height,
+            scale_factor,
+            crate::text::CosmicTextEngine::shared(),
+        )
+    }
+
+    pub fn with_text_engine(
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+        text_engine: std::sync::Arc<crate::text::CosmicTextEngine>,
+    ) -> Result<Self, GpuSurfaceError> {
         let extent = SwapchainExtent::new(width, height, scale_factor)?;
         let surface =
             skia_safe::surfaces::raster_n32_premul((extent.width as i32, extent.height as i32))
@@ -113,8 +111,8 @@ impl CpuSkiaSurface {
                 })?;
         Ok(Self {
             extent,
+            renderer: SkiaCanvasRenderer::with_text_engine(text_engine),
             surface,
-            renderer: SkiaCanvasRenderer::new(),
             readback_rgba: vec![0u8; (extent.width as usize) * (extent.height as usize) * 4],
             state: FrameLifecycleState::Idle,
             frame_index: 0,
@@ -126,6 +124,50 @@ impl CpuSkiaSurface {
             last_telemetry: None,
             fallback_reason: None,
         })
+    }
+
+    pub fn renderer(&self) -> &SkiaCanvasRenderer {
+        &self.renderer
+    }
+
+    pub fn cache_stats(&self) -> RendererCacheStats {
+        self.renderer.cache_stats()
+    }
+
+    pub fn reset_cache_stats(&self) {
+        self.renderer.reset_cache_stats();
+    }
+
+    pub fn evict_gpu_caches(&self) {
+        self.renderer.evict_gpu_caches();
+    }
+
+    pub fn render_cached_with_plugins(
+        &mut self,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        let canvas = self.surface.canvas();
+        canvas.clear(to_skia_color(clear_color));
+        self.renderer
+            .paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
+        Ok(())
+    }
+
+    pub fn render_scene_cached_with_plugins(
+        &mut self,
+        scene: &CompositorScene,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        let canvas = self.surface.canvas();
+        canvas.clear(to_skia_color(clear_color));
+        self.renderer
+            .paint_scene_opt_plugins(scene, canvas, scale_factor, plugins);
+        Ok(())
     }
 
     pub fn set_fallback_reason(&mut self, reason: Option<String>) {
@@ -153,37 +195,6 @@ impl GpuSurfaceBackend for CpuSkiaSurface {
     fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuSurfaceError> {
         let scale = self.extent.scale_factor;
         <Self as GpuFramePresenter>::resize(self, width, height, scale)
-    }
-
-    fn render_display_list(
-        &mut self,
-        renderer: &SkiaCanvasRenderer,
-        display_list: &DisplayList,
-        scale_factor: f32,
-        clear_color: ColorRgba,
-    ) -> Result<(), GpuSurfaceError> {
-        GpuSurfaceBackend::render_display_list_with_plugins(
-            self,
-            renderer,
-            display_list,
-            scale_factor,
-            clear_color,
-            None,
-        )
-    }
-
-    fn render_display_list_with_plugins(
-        &mut self,
-        renderer: &SkiaCanvasRenderer,
-        display_list: &DisplayList,
-        scale_factor: f32,
-        clear_color: ColorRgba,
-        plugins: Option<SkiaPluginContext<'_>>,
-    ) -> Result<(), GpuSurfaceError> {
-        let canvas = self.surface.canvas();
-        canvas.clear(to_skia_color(clear_color));
-        renderer.paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
-        Ok(())
     }
 
     fn copy_to_pixel_buffer(&mut self, target: &mut PixelBuffer) -> Result<(), GpuSurfaceError> {
@@ -311,6 +322,33 @@ impl GpuFramePresenter for CpuSkiaSurface {
         canvas.clear(to_skia_color(clear_color));
         self.renderer
             .paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
+        if let Some(banner) = hud_banner {
+            self.renderer.paint_hud_banner(canvas, scale_factor, banner);
+        }
+        self.record_us = t0.elapsed().as_micros() as u64;
+        self.state = FrameLifecycleState::Rendered;
+        Ok(())
+    }
+
+    fn render_scene_with_plugins(
+        &mut self,
+        scene: &CompositorScene,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        if self.state != FrameLifecycleState::Begun {
+            return Err(GpuSurfaceError::InvalidFrameState {
+                expected: FrameLifecycleState::Begun.as_str(),
+                actual: self.state.as_str(),
+            });
+        }
+        let t0 = Instant::now();
+        let canvas = self.surface.canvas();
+        canvas.clear(to_skia_color(clear_color));
+        self.renderer
+            .paint_scene_opt_plugins(scene, canvas, scale_factor, plugins);
         if let Some(banner) = hud_banner {
             self.renderer.paint_hud_banner(canvas, scale_factor, banner);
         }

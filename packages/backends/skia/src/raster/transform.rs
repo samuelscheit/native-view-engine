@@ -9,22 +9,83 @@ use crate::raster::clip::{rounded_rect_sdf, ClipStack};
 use crate::raster::PixelBuffer;
 
 const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+const INLINE_TRANSFORM_DEPTH: usize = 16;
+const INLINE_OPACITY_DEPTH: usize = 16;
+
+/// Zero-allocation inline opacity stack (up to depth 16, `Vec` overflow beyond).
+#[derive(Debug, Clone)]
+pub(crate) struct OpacityStack {
+    inline: [f32; INLINE_OPACITY_DEPTH],
+    len: usize,
+    overflow: Vec<f32>,
+}
+
+impl OpacityStack {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self {
+            inline: [1.0; INLINE_OPACITY_DEPTH],
+            len: 1,
+            overflow: Vec::new(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn current(&self) -> f32 {
+        if self.len <= INLINE_OPACITY_DEPTH {
+            self.inline[self.len.saturating_sub(1)]
+        } else {
+            self.overflow.last().copied().unwrap_or(1.0)
+        }
+    }
+
+    #[inline]
+    pub(crate) fn push_mul(&mut self, alpha: f32) {
+        let next = self.current() * alpha;
+        if self.len < INLINE_OPACITY_DEPTH {
+            self.inline[self.len] = next;
+        } else {
+            self.overflow.push(next);
+        }
+        self.len += 1;
+    }
+
+    #[inline]
+    pub(crate) fn pop(&mut self) {
+        if self.len > 1 {
+            self.len -= 1;
+            if self.len >= INLINE_OPACITY_DEPTH {
+                self.overflow.pop();
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct TransformStack {
-    entries: Vec<[f32; 6]>,
+    inline: [[f32; 6]; INLINE_TRANSFORM_DEPTH],
+    len: usize,
+    overflow: Vec<[f32; 6]>,
 }
 
 impl TransformStack {
     pub(crate) fn new() -> Self {
-        let mut entries = Vec::with_capacity(8);
-        entries.push(IDENTITY);
-        Self { entries }
+        let mut inline = [IDENTITY; INLINE_TRANSFORM_DEPTH];
+        inline[0] = IDENTITY;
+        Self {
+            inline,
+            len: 1,
+            overflow: Vec::new(),
+        }
     }
 
     #[inline]
     pub(crate) fn current(&self) -> &[f32; 6] {
-        self.entries.last().unwrap_or(&IDENTITY)
+        if self.len <= INLINE_TRANSFORM_DEPTH {
+            &self.inline[self.len.saturating_sub(1)]
+        } else {
+            self.overflow.last().unwrap_or(&IDENTITY)
+        }
     }
 
     #[inline]
@@ -49,12 +110,20 @@ impl TransformStack {
             logical[5] * scale,
         ];
         let next = affine_concat(self.current(), &phys);
-        self.entries.push(next);
+        if self.len < INLINE_TRANSFORM_DEPTH {
+            self.inline[self.len] = next;
+        } else {
+            self.overflow.push(next);
+        }
+        self.len += 1;
     }
 
     pub(crate) fn pop(&mut self) {
-        if self.entries.len() > 1 {
-            self.entries.pop();
+        if self.len > 1 {
+            self.len -= 1;
+            if self.len >= INLINE_TRANSFORM_DEPTH {
+                self.overflow.pop();
+            }
         }
     }
 }
@@ -187,8 +256,11 @@ pub(crate) fn stroke_rounded_rect_transformed(
     {
         return;
     }
+    let half = (stroke_width * 0.5)
+        .min(rect.width * 0.5)
+        .min(rect.height * 0.5);
     let hw = (stroke_width * 0.5).max(0.5);
-    let (bx0, by0, bx1, by1) = transformed_aabb(m, rect, hw + 1.5);
+    let (bx0, by0, bx1, by1) = transformed_aabb(m, rect, (hw - half).max(0.0) + 1.5);
     let [cx0, cy0, cx1, cy1] = clip.bounds();
     let min_x = (bx0.floor() as i32).clamp(cx0, cx1);
     let max_x = (bx1.ceil() as i32).clamp(cx0, cx1);
@@ -198,11 +270,16 @@ pub(crate) fn stroke_rounded_rect_transformed(
         return;
     }
 
-    let hx = rect.width * 0.5;
-    let hy = rect.height * 0.5;
-    let cx = rect.x + hx;
-    let cy = rect.y + hy;
-    let r = radius.clamp(0.0, hx.min(hy));
+    let cx = rect.x + rect.width * 0.5;
+    let cy = rect.y + rect.height * 0.5;
+    let hx = (rect.width * 0.5 - half).max(0.0);
+    let hy = (rect.height * 0.5 - half).max(0.0);
+    let safe_radius = if radius.is_finite() {
+        radius.max(0.0)
+    } else {
+        0.0
+    };
+    let r = (safe_radius - half).max(0.0).min(hx.min(hy));
     let rounded_clip = clip.has_rounded();
 
     for py in min_y..max_y {

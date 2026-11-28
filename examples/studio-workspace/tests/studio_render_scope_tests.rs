@@ -143,7 +143,16 @@ fn host_scroll_and_theme_events_update_the_mounted_surface_in_place() {
         color_scheme: Some(flipped),
         ..os
     };
-    assert!(module.dispatch_host_events(&theme.to_repr_c_bytes()));
+    let raw_theme = theme.to_repr_c_bytes();
+    let mut theme_batch = [0u8; 56];
+    let encoded_theme = nve_abi::encode_single_push_into(
+        &mut theme_batch,
+        nve_abi::SERVICE_SYSTEM_ENV,
+        nve_system_env::EVENT_THEME_CHANGED,
+        &raw_theme,
+    )
+    .expect("encode canonical theme push batch");
+    assert!(module.dispatch_host_events(encoded_theme));
     let _ = module.render(FrameId(3));
     let renders = probe.take();
     assert!(

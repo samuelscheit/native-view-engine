@@ -139,7 +139,7 @@ fn cross_file_enums_converters_and_match_tables() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "Cross-file duplicate enums, redundant NVE->NVE converters, discriminant matches, core str tables",
-        104,
+        101,
         &violations,
     );
 }
@@ -455,7 +455,7 @@ fn benchmarks_and_counting_alloc_coverage() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "All packages/{core,backends,framework}/* crates ship GlobalAlloc/CountingAlloc guards",
-        10,
+        8,
         &report.alloc_guards,
     );
 }

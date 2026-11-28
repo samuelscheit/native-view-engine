@@ -185,13 +185,15 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             DEFAULT_FONT_WEIGHT,
             is_secure_node(store, id),
             text_rect,
+            self.viewport.scale_factor,
         ))
     }
 
     pub fn set_focused_node(&mut self, store: &NodeStore, node_id: Option<NodeId>) {
         let node_id = node_id
             .filter(|&id| store.is_live(id) && !is_subtree_display_none(store, id));
-        if self.focus.focused_node == node_id {
+        let prev = self.focus.focused_node;
+        if prev == node_id {
             return;
         }
         self.focus = TextFocusState {
@@ -206,7 +208,17 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             ime_preedit_cursor: None,
             uncontrolled_value: None,
         };
-        self.rebuild_display_list(store);
+        let mut dirty = [NodeId::ROOT; 2];
+        let mut n = 0usize;
+        if let Some(p) = prev {
+            dirty[n] = p;
+            n += 1;
+        }
+        if let Some(cur) = node_id {
+            dirty[n] = cur;
+            n += 1;
+        }
+        self.update_scene_paint_nodes(store, &dirty[..n]);
     }
 
     pub fn set_caret_and_selection(
@@ -220,7 +232,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         {
             self.focus.caret_byte_index = clamp_grapheme_boundary(&val, caret);
             self.focus.selection_anchor = clamp_grapheme_boundary(&val, anchor);
-            self.rebuild_display_list(store);
+            self.update_scene_paint_nodes(store, &[id]);
         }
     }
 
@@ -232,7 +244,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     ) {
         self.focus.ime_preedit = preedit.filter(|s| !s.is_empty());
         self.focus.ime_preedit_cursor = cursor;
-        self.rebuild_display_list(store);
+        if let Some(id) = self.focus.focused_node {
+            self.update_scene_paint_nodes(store, &[id]);
+        }
     }
 
     pub fn set_uncontrolled_text_input(
@@ -250,7 +264,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         self.focus.uncontrolled_value = value;
         self.focus.caret_byte_index = clamped;
         self.focus.selection_anchor = clamped;
-        self.rebuild_display_list(store);
+        if let Some(id) = self.focus.focused_node {
+            self.update_scene_paint_nodes(store, &[id]);
+        }
     }
 
     pub(crate) fn reconcile_focus_state(&mut self, store: &NodeStore) {

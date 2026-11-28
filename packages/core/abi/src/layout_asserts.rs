@@ -15,7 +15,9 @@ use crate::ffi::{
     NveBufferSlice, NveComponentApi, NveDevApi,
     NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
 };
-use crate::host::{NveHostApi, NveHostCallbacks, NveHostStatus};
+use crate::host::{
+    NveHostApi, NveHostCallbacks, NveHostEventBatchHeader, NveHostEventRecordHeader, NveHostStatus,
+};
 use crate::runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeConfig, NveRuntimeMetrics,
     NveSceneView, NveRuntimeStatus, NveScrollOffset, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
@@ -103,6 +105,22 @@ const _: () = {
     assert!(align_of::<NveHostApi>() == PTR_ALIGN);
     assert!(offset_of!(NveHostApi, bind_host) == 0);
     assert!(offset_of!(NveHostApi, dispatch_host_events) == PTR_SIZE);
+
+    assert!(size_of::<NveHostEventBatchHeader>() == 8);
+    assert!(offset_of!(NveHostEventBatchHeader, magic) == 0);
+    assert!(offset_of!(NveHostEventBatchHeader, version) == 4);
+    assert!(offset_of!(NveHostEventBatchHeader, count) == 6);
+    assert!(size_of::<NveHostEventRecordHeader>() == 32);
+    assert!(align_of::<NveHostEventRecordHeader>() == 8);
+    assert!(offset_of!(NveHostEventRecordHeader, kind) == 0);
+    assert!(offset_of!(NveHostEventRecordHeader, flags) == 1);
+    assert!(offset_of!(NveHostEventRecordHeader, _pad) == 2);
+    assert!(offset_of!(NveHostEventRecordHeader, status) == 4);
+    assert!(offset_of!(NveHostEventRecordHeader, service_id) == 8);
+    assert!(offset_of!(NveHostEventRecordHeader, method_or_event_or_channel) == 12);
+    assert!(offset_of!(NveHostEventRecordHeader, request_id) == 16);
+    assert!(offset_of!(NveHostEventRecordHeader, len) == 24);
+    assert!(offset_of!(NveHostEventRecordHeader, _pad2) == 28);
 
     // ---- Direct FFI value & event types (value/ffi_types.rs) ----
     assert!(size_of::<NveStrSlice>() == 2 * PTR_SIZE);

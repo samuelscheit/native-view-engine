@@ -46,21 +46,38 @@ pub trait SkiaTableSystem: Send + Sync + 'static {
 }
 
 /// Registry of [`SkiaTableSystem`] plugins installed on a Skia renderer.
-#[derive(Default)]
 pub struct SkiaTableRegistry {
     systems: Vec<Arc<dyn SkiaTableSystem>>,
+    generation: u64,
+}
+
+impl Default for SkiaTableRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SkiaTableRegistry {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            systems: Vec::new(),
+            generation: crate::next_plugin_epoch(),
+        }
     }
 
     pub fn register<S: SkiaTableSystem>(&mut self, system: S) -> &mut Self {
         let slot = system.slot();
         self.systems.retain(|s| s.slot() != slot);
         self.systems.push(Arc::new(system));
+        self.generation = crate::next_plugin_epoch();
         self
+    }
+
+    /// Process-wide monotonic generation bumped on registry construction and every [`Self::register`]
+    /// call so GPU/CPU plugin caches invalidate even when callers mutate the registry directly.
+    #[inline]
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     #[inline]

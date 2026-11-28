@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nve_abi::SurfaceId;
+use nve_abi::{NveHostEventBatchBuilder, SurfaceId};
 use nve_engine::{Frame0Meta, Viewport};
 use nve_interop::{
     SurfacePresentation, WindowDescriptor, WindowFlags, WindowHandleId, WindowManager,
@@ -40,6 +40,7 @@ pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) surface_to_window: BTreeMap<SurfaceId, WindowId>,
     pub(crate) window_manager: WindowManager,
     pub(crate) host_services: Arc<SkiaHostServices>,
+    host_batch_builder: NveHostEventBatchBuilder,
     exit_on_primary_close: bool,
     pub(crate) close_veto_handler: Option<CloseVetoHandler>,
     pub(crate) secondary_app_factory: Option<SecondaryAppFactory<A>>,
@@ -180,6 +181,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             surface_to_window: BTreeMap::new(),
             window_manager: WindowManager::new(),
             host_services,
+            host_batch_builder: NveHostEventBatchBuilder::with_capacity(4096),
             exit_on_primary_close: true,
             close_veto_handler: None,
             secondary_app_factory: None,
@@ -307,6 +309,16 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 return Err(DesktopHostError::Window(err.to_string()));
             }
         };
+        let proxy = match self.proxy.clone() {
+            Some(p) => p,
+            None => {
+                let _ = self.window_manager.close_window(handle_id);
+                return Err(DesktopHostError::EventLoop("event loop proxy unavailable".into()));
+            }
+        };
+        let a11y_adapter =
+            accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, proxy);
+        window.set_visible(true);
         let presenter =
             match create_presenter(&window, self.options.preferred_backend, self.options.vsync) {
                 Ok(p) => p,
@@ -329,6 +341,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             .theme()
             .map(|t| self.host_services.update_theme_from_winit(t, scale));
         let window_id = window.id();
+        let store_gen = session.store_generation();
         let mut sw = SurfaceWindow {
             window: window.clone(),
             presenter,
@@ -341,6 +354,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             last_ime_cursor_rect: None,
             last_cursor: nve_backend_skia::CursorKind::Auto,
             last_telemetry: None,
+            a11y_adapter,
+            a11y_bridge: nve_accessibility::AccessKitTreeBridge::new(),
+            a11y_synced_store_gen: store_gen,
         };
         if let Some(theme) = initial_theme
             && sw
@@ -371,6 +387,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     eprintln!("[nve-skia-shell] host event render error: {err}");
                 }
                 sw.sync_ime_state();
+                sw.sync_a11y_state(false);
                 sw.window.request_redraw();
             }
         }
@@ -448,13 +465,54 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             }
             sw.sync_title();
             sw.sync_ime_state();
+            sw.sync_a11y_state(false);
             if needs_redraw {
                 sw.window.request_redraw();
             }
         }
     }
 
+    /// Drains queued async `CompletionSink` records per window owner tag using one reusable
+    /// [`NveHostEventBatchBuilder`] and dispatches them into each window's app.
+    pub(crate) fn drain_host_service_batches(&mut self) -> bool {
+        let mut any_handled = false;
+        for sw in self.windows.values_mut() {
+            let owner_tag = sw.session.host_owner_tag();
+            self.host_batch_builder.clear();
+            let written = self
+                .host_services
+                .drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder);
+            if written > 0
+                && sw
+                    .session
+                    .dispatch_host_batch(self.host_batch_builder.as_bytes())
+            {
+                any_handled = true;
+                if let Err(err) = sw.session.render_and_rasterize() {
+                    eprintln!("[nve-skia-shell] host batch render error: {err}");
+                }
+                sw.sync_title();
+                sw.sync_ime_state();
+                sw.sync_a11y_state(false);
+                sw.window.request_redraw();
+            }
+        }
+        if let Some(primary) = self.primary_session.as_mut() {
+            let owner_tag = primary.host_owner_tag();
+            self.host_batch_builder.clear();
+            let written = self
+                .host_services
+                .drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder);
+            if written > 0 && primary.dispatch_host_batch(self.host_batch_builder.as_bytes()) {
+                any_handled = true;
+                let _ = primary.render_and_rasterize();
+            }
+        }
+        any_handled
+    }
+
     pub(crate) fn process_pending_remote_frames(&mut self) {
+        let _ = self.drain_host_service_batches();
         if self.windows.is_empty() {
             return;
         }
@@ -473,6 +531,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             if rendered {
                 sw.sync_title();
                 sw.sync_ime_state();
+                sw.sync_a11y_state(false);
                 sw.window.request_redraw();
             } else if banner_changed {
                 sw.session.rasterize_current();
@@ -486,6 +545,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
     }
 
     pub(crate) fn process_app_wakes(&mut self) {
+        let _ = self.drain_host_service_batches();
         if self.windows.is_empty() {
             return;
         }
@@ -497,6 +557,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             if rendered {
                 sw.sync_title();
                 sw.sync_ime_state();
+                sw.sync_a11y_state(false);
                 sw.window.request_redraw();
             }
         }
@@ -550,6 +611,7 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
             HostWakeEvent::RemoteFrame => self.process_pending_remote_frames(),
             HostWakeEvent::AppWake => self.process_app_wakes(),
             HostWakeEvent::WindowCommand(cmd) => self.apply_window_command(event_loop, cmd),
+            HostWakeEvent::AccessKit(ak_ev) => self.handle_accesskit_event(ak_ev),
         }
     }
 

@@ -17,5 +17,9 @@ criterion = { workspace = true }
 name = "host_services_bench"
 harness = false
 
+[[bench]]
+name = "batch"
+harness = false
+
 [lints]
 workspace = true
