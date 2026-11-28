@@ -27,6 +27,8 @@ mod host_reload_tests;
 #[cfg(test)]
 mod host_services_tests;
 #[cfg(test)]
+mod input_selection_tests;
+#[cfg(test)]
 mod input_tests;
 #[cfg(test)]
 mod multi_window_tests;
