@@ -3,16 +3,15 @@
 use std::collections::HashMap;
 
 use accesskit::{ActionRequest, Node, NodeId as AccessKitNodeId, TreeId, TreeInfo, TreeUpdate};
-use nve_abi::table::effect;
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
-use nve_tables::tables::{
-    Accessibility, DebugId, Image, Interaction, Layout, Link, Position, Scroll, TextContent,
-    TextInput,
-};
+use nve_tables::tables::{DebugId, Layout, Position, Scroll};
 
 use crate::action::{
     translate_action_request, ResolvedA11yAction, DEFAULT_SCROLL_STEP_ITEM,
     DEFAULT_SCROLL_STEP_PAGE,
+};
+use crate::dirty::{
+    can_use_targeted_dirty, for_each_a11y_dirty_node, is_composite_only_for_a11y, MarkEpoch,
 };
 use crate::geometry::{
     is_node_display_contents_any, is_node_display_contents_transparent, is_node_excluded,
@@ -23,34 +22,16 @@ use crate::node_build::build_a11y_node;
 
 const MAX_A11Y_DEPTH: usize = 256;
 
-/// O(1) dense epoch mark counter replacing per-frame `HashSet` allocations.
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct MarkEpoch(u32);
-
-impl MarkEpoch {
-    #[inline]
-    fn bump(&mut self, marks: &mut [MarkEpoch]) -> Self {
-        let next = self.0.wrapping_add(1);
-        if next == 0 {
-            marks.fill(Self(0));
-            self.0 = 1;
-        } else {
-            self.0 = next;
-        }
-        *self
-    }
-}
-
 /// Platform-agnostic incremental AccessKit bridge over a [`NodeStore`].
 ///
 /// - **Zero-cost when inactive**: until [`Self::activate`] is called (in response to
 ///   `InitialTreeRequested`), [`Self::sync_changes`] returns `None` with **0 heap allocations**.
-/// - **Zero-cost on `COMPOSITE`-only frames**: opacity/transform animation frames return `None`
-///   with **0 heap allocations**.
-/// - **O(dirty) incremental updates**: single-node label/value/ARIA/focus edits emit only the
-///   changed node(s) without walking the full tree; structural/layout/visibility changes diff
-///   against dense per-node `XXH64` hashes and emit only changed/added nodes + updated parents.
+/// - **Zero-cost on `Visual::opacity`-only frames**: pure opacity/z-index `COMPOSITE` animation
+///   frames return `None` with **0 heap allocations**.
+/// - **O(dirty) incremental updates**: single-node label/value/ARIA/focus/scroll/transform edits
+///   emit only the changed node(s) without walking the full tree; structural/layout/visibility
+///   changes diff against dense per-node `XXH64` hashes and emit only changed/added nodes +
+///   updated parents.
 /// - **Epoch-safe across hot reloads**: [`Self::advance_epoch`] bumps [`StoreEpoch`], rejecting
 ///   stale in-flight actions and forcing a fresh full tree on the next sync.
 pub struct AccessKitTreeBridge {
@@ -102,9 +83,9 @@ impl AccessKitTreeBridge {
             node_hashes: Vec::new(),
             live_ids: Vec::new(),
             visit_marks: Vec::new(),
-            visit_epoch: MarkEpoch(0),
+            visit_epoch: MarkEpoch::ZERO,
             dirty_marks: Vec::new(),
-            dirty_epoch: MarkEpoch(0),
+            dirty_epoch: MarkEpoch::ZERO,
             id_map: HashMap::new(),
             sticky_nodes: Vec::new(),
             walk_stack: Vec::new(),
@@ -197,8 +178,8 @@ impl AccessKitTreeBridge {
             let new_len = idx + 1;
             self.node_hashes.resize(new_len, A11yNodeHash::EMPTY);
             self.live_ids.resize(new_len, NodeId::NULL);
-            self.visit_marks.resize(new_len, MarkEpoch(0));
-            self.dirty_marks.resize(new_len, MarkEpoch(0));
+            self.visit_marks.resize(new_len, MarkEpoch::ZERO);
+            self.dirty_marks.resize(new_len, MarkEpoch::ZERO);
         }
     }
 
@@ -489,16 +470,7 @@ impl AccessKitTreeBridge {
             return None;
         }
 
-        let can_use_targeted_dirty = !force_full_diff
-            && changes.created.is_empty()
-            && changes.removed.is_empty()
-            && changes.children.is_empty()
-            && changes.resources_defined.is_empty()
-            && changes.resources_released.is_empty()
-            && (changes.effects_union() & (effect::LAYOUT | effect::MEASURE)) == 0
-            && changes.table(DebugId::slot()).is_none();
-
-        if can_use_targeted_dirty
+        if can_use_targeted_dirty(changes, force_full_diff)
             && let Some(targeted) = self.try_targeted_dirty_update(
                 store, changes, extra_dirty, geo, window_title, scale,
                 scale_changed || title_changed, raw_focus,
@@ -525,17 +497,7 @@ impl AccessKitTreeBridge {
         let mark = self.dirty_epoch.bump(&mut self.dirty_marks);
         self.dirty_list.clear();
 
-        let relevant_slots = [
-            Accessibility::slot(), TextContent::slot(), TextInput::slot(),
-            Interaction::slot(), Image::slot(), Link::slot(), Scroll::slot(),
-        ];
-        for slot in relevant_slots {
-            if let Some(table) = changes.table(slot) {
-                for &id in table.nodes.iter().chain(table.detached.iter()) {
-                    self.push_dirty_unique(id, mark);
-                }
-            }
-        }
+        for_each_a11y_dirty_node(changes, |id| self.push_dirty_unique(id, mark));
         for &id in extra_dirty {
             self.push_dirty_unique(id, mark);
         }
@@ -616,29 +578,3 @@ impl AccessKitTreeBridge {
     }
 }
 
-/// Returns `true` when `changes` touches zero accessibility-relevant structure, layout, scroll,
-/// text, or semantic tables (e.g. 120 Hz opacity/transform `COMPOSITE`-only frames).
-#[inline]
-fn is_composite_only_for_a11y(changes: &ChangeSet) -> bool {
-    if !changes.created.is_empty()
-        || !changes.removed.is_empty()
-        || !changes.children.is_empty()
-        || !changes.resources_defined.is_empty()
-        || !changes.resources_released.is_empty()
-    {
-        return false;
-    }
-    let relevant_effects =
-        effect::LAYOUT | effect::MEASURE | effect::SEMANTICS | effect::REALIZE | effect::EVENTS;
-    if (changes.effects_union() & relevant_effects) != 0 {
-        return false;
-    }
-    changes.table(Scroll::slot()).is_none()
-        && changes.table(Accessibility::slot()).is_none()
-        && changes.table(TextContent::slot()).is_none()
-        && changes.table(TextInput::slot()).is_none()
-        && changes.table(Interaction::slot()).is_none()
-        && changes.table(DebugId::slot()).is_none()
-        && changes.table(Image::slot()).is_none()
-        && changes.table(Link::slot()).is_none()
-}

@@ -268,6 +268,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                         Ok(true) => {
                             let _ = Self::pump_window_async(sw, false);
                             sw.sync_cursor_state();
+                            if sw.session.has_pending_a11y_dirty() {
+                                sw.sync_a11y_state(false);
+                            }
                             sw.window.request_redraw();
                         }
                         Ok(false) => sw.sync_cursor_state(),
@@ -385,6 +388,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 let dirty = sw.session.handle_pointer_leave();
                 sw.sync_cursor_state();
                 if dirty {
+                    if sw.session.has_pending_a11y_dirty() {
+                        sw.sync_a11y_state(false);
+                    }
                     sw.window.request_redraw();
                 }
             }
@@ -434,7 +440,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             reschedule = exhausted;
                             sw.sync_ime_state();
                             sw.sync_cursor_state();
-                            sw.sync_a11y_state(true);
+                            sw.sync_a11y_state(false);
                             sw.window.request_redraw();
                         }
                         Ok(false) => sw.sync_cursor_state(),
@@ -522,7 +528,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 self.process_pending_remote_frames();
                 self.process_app_wakes();
                 if let Some(sw) = self.windows.get_mut(&window_id) {
-                    let animating = sw.session.tick_animations();
+                    let animating = sw.session.tick_animations_for_a11y(sw.a11y_bridge.is_active());
                     if sw.session.has_pending_a11y_dirty() {
                         sw.sync_a11y_state(false);
                     }

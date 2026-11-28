@@ -5,7 +5,23 @@ use std::borrow::Cow;
 use accesskit::Affine;
 use nve_engine::LayoutRect;
 use nve_store::{NodeId, NodeStore};
-use nve_tables::tables::{is_display_contents, is_node_display_none, Accessibility};
+use nve_tables::tables::{is_display_contents, is_node_display_none, Accessibility, Transform};
+use nve_tables::transform::Transform2D;
+
+/// Converts a 2D node [`Transform2D`] anchored at `rect` into an AccessKit [`Affine`] matrix in
+/// logical surface coordinates.
+#[inline]
+pub fn transform_2d_to_affine(tf: Transform2D, rect: LayoutRect) -> Affine {
+    let m = tf.to_surface_matrix_2d(rect.x, rect.y, rect.width, rect.height);
+    Affine::new([
+        f64::from(m[0]),
+        f64::from(m[1]),
+        f64::from(m[2]),
+        f64::from(m[3]),
+        f64::from(m[4]),
+        f64::from(m[5]),
+    ])
+}
 
 /// Deterministic 64-bit `XXH64` digest of a built [`accesskit::Node`] (and its synthetic `TextRun`
 /// child, if present) used to skip unchanged nodes during incremental AccessKit updates.
@@ -64,8 +80,25 @@ pub trait A11yGeometryProvider {
 
     /// Optional effective 2D affine transform (e.g. animated or static `Transform2D`) in logical
     /// coordinates, composed with sticky/scroll/scale transforms.
-    fn node_affine(&self, _id: NodeId) -> Option<Affine> {
-        None
+    ///
+    /// Defaults to projecting any non-identity static [`Transform`] row from `store` against
+    /// [`Self::layout_rect`]. Hosts with dynamic `StateRules` or frame-hook animations override
+    /// this as the single source of truth.
+    fn node_affine(&self, store: &NodeStore, id: NodeId) -> Option<Affine> {
+        let t = store.try_row::<Transform>(id)?;
+        let tf = Transform2D {
+            translate_x: t.translate_x(),
+            translate_y: t.translate_y(),
+            scale_x: t.scale_x(),
+            scale_y: t.scale_y(),
+            rotate_deg: t.rotate_deg(),
+            origin_x: t.origin_x(),
+            origin_y: t.origin_y(),
+        };
+        if tf.is_identity() {
+            return None;
+        }
+        Some(transform_2d_to_affine(tf, self.layout_rect(id)?))
     }
 
     /// Currently focused [`NodeId`], if any.
@@ -85,20 +118,24 @@ pub trait A11yGeometryProvider {
     }
 
     /// Host-resolved effective `display: none` check (e.g. including `:disabled`/`StateRules`
-    /// overrides beyond raw `Layout::display == Display::None`).
-    fn is_display_none(&self, _id: NodeId) -> bool {
-        false
+    /// overrides and `InputKind::Hidden`). Defaults to static [`is_node_display_none`]; hosts with
+    /// dynamic `StateRules` override this as the single source of truth so a rule restoring a node
+    /// from static `Display::None` is respected.
+    fn is_display_none(&self, store: &NodeStore, id: NodeId) -> bool {
+        is_node_display_none(store, id)
     }
 
     /// Host-resolved effective `display: contents` check (e.g. including `StateRules` overrides).
-    /// Combined with static [`is_display_contents`].
-    fn is_display_contents(&self, _id: NodeId) -> bool {
-        false
+    /// Defaults to static [`is_display_contents`]; hosts with dynamic `StateRules` override this
+    /// as the single source of truth so a rule restoring a node from static `Display::Contents` is
+    /// respected.
+    fn is_display_contents(&self, store: &NodeStore, id: NodeId) -> bool {
+        is_display_contents(store, id)
     }
 }
 
 /// Returns `true` when `id` (and its subtree) must be omitted from the accessibility tree because
-/// it is dead, `display: none`, hidden `TextInput`, or marked `Accessibility::hidden`.
+/// it is dead, effectively `display: none`, hidden `TextInput`, or marked `Accessibility::hidden`.
 #[inline]
 pub(crate) fn is_node_excluded(
     store: &NodeStore,
@@ -111,7 +148,7 @@ pub(crate) fn is_node_excluded(
     if id == NodeId::ROOT {
         return false;
     }
-    if is_node_display_none(store, id) || geo.is_display_none(id) {
+    if geo.is_display_none(store, id) {
         return true;
     }
     store
@@ -119,14 +156,15 @@ pub(crate) fn is_node_excluded(
         .is_some_and(|a| a.hidden())
 }
 
-/// Returns `true` when `id` is a non-root `display: contents` node regardless of `aria-hidden`.
+/// Returns `true` when `id` is a non-root effectively `display: contents` node regardless of
+/// `aria-hidden`.
 #[inline]
 pub(crate) fn is_node_display_contents_any(
     store: &NodeStore,
     geo: &dyn A11yGeometryProvider,
     id: NodeId,
 ) -> bool {
-    id != NodeId::ROOT && (is_display_contents(store, id) || geo.is_display_contents(id))
+    id != NodeId::ROOT && geo.is_display_contents(store, id)
 }
 
 /// Returns `true` when `id` is a non-root, non-excluded `display: contents` node whose visible

@@ -68,11 +68,17 @@ impl A11yGeometryProvider for MapGeo {
     fn text_selection_bytes(&self, id: NodeId) -> Option<(usize, usize)> {
         self.selections.get(&id).copied()
     }
-    fn is_display_none(&self, id: NodeId) -> bool {
-        self.display_none.get(&id).copied().unwrap_or(false)
+    fn is_display_none(&self, store: &NodeStore, id: NodeId) -> bool {
+        self.display_none
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| nve_tables::tables::is_node_display_none(store, id))
     }
-    fn is_display_contents(&self, id: NodeId) -> bool {
-        self.display_contents.get(&id).copied().unwrap_or(false)
+    fn is_display_contents(&self, store: &NodeStore, id: NodeId) -> bool {
+        self.display_contents
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| nve_tables::tables::is_display_contents(store, id))
     }
 }
 
@@ -338,6 +344,7 @@ fn incremental_updates_emit_minimal_diffs_and_scroll_mutates_only_scroll_contain
         let btn_a = tx.create();
         tx.edit::<Interaction>(btn_a).listen(InteractionEvent::Press);
         tx.edit::<Accessibility>(btn_a).label("First");
+        tx.edit::<Visual>(btn_a).opacity(1.0);
         let btn_b = tx.create();
         tx.edit::<Interaction>(btn_b).listen(InteractionEvent::Press);
         tx.edit::<Accessibility>(btn_b).label("Second");
@@ -362,14 +369,42 @@ fn incremental_updates_emit_minimal_diffs_and_scroll_mutates_only_scroll_contain
     let full = bridge.build_full_tree_update(&store, &geo, "App");
     assert_eq!(full.nodes.len(), 4);
 
-    // 1. COMPOSITE-only opacity/transform edit -> None!
+    // 1a. Visual::opacity-only COMPOSITE edit -> 0-alloc None!
     {
         let mut tx = store.tx();
         tx.edit::<Visual>(btn_a).opacity(0.6);
-        tx.edit::<Transform>(btn_a).translate_x(4.0);
         tx.commit_into(&mut changes);
     }
     assert!(bridge.sync_changes(&store, &changes, &geo, "App", false).is_none());
+    assert_eq!(bridge.last_sync_nodes_built(), 0);
+
+    // 1b. Static Transform-only edit -> O(1) targeted transform update!
+    {
+        let mut tx = store.tx();
+        tx.edit::<Transform>(btn_a).translate_x(4.0);
+        tx.commit_into(&mut changes);
+    }
+    let tf_upd = bridge
+        .sync_changes(&store, &changes, &geo, "App", false)
+        .expect("Transform-only edit must emit targeted update");
+    assert_eq!(bridge.last_sync_nodes_built(), 1);
+    assert_eq!(tf_upd.nodes.len(), 1);
+    assert_eq!(tf_upd.nodes[0].0, bridge.encode_store_node_id(btn_a));
+    assert_eq!(tf_upd.nodes[0].1.transform(), Some(&Affine::translate((4.0, 0.0))));
+
+    // 1c. Resetting Transform back to identity clears transform() in O(1)!
+    {
+        let mut tx = store.tx();
+        tx.edit::<Transform>(btn_a).translate_x(0.0);
+        tx.commit_into(&mut changes);
+    }
+    let tf_clear = bridge
+        .sync_changes(&store, &changes, &geo, "App", false)
+        .expect("Transform reset to identity must emit targeted update");
+    assert_eq!(bridge.last_sync_nodes_built(), 1);
+    assert_eq!(tf_clear.nodes.len(), 1);
+    assert_eq!(tf_clear.nodes[0].0, bridge.encode_store_node_id(btn_a));
+    assert_eq!(tf_clear.nodes[0].1.transform(), None);
 
     // 2. Single label change -> emits ONLY `btn_a` (1 node)!
     {
@@ -886,4 +921,75 @@ fn set_text_selection_rejects_mismatched_text_run_owner() {
         None,
         "SetTextSelection targeting TextRun(A) with positions on TextRun(B) must be rejected"
     );
+}
+
+#[test]
+fn effective_display_provider_overrides_static_display_none_and_contents() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (restored_none, restored_contents, inner_btn) = {
+        let mut tx = store.tx();
+        let none_node = tx.create();
+        tx.edit::<Layout>(none_node).display(Display::None);
+        tx.edit::<Accessibility>(none_node)
+            .role(Some(AriaRole::Button))
+            .label("Restored From None");
+
+        let contents_node = tx.create();
+        tx.edit::<Layout>(contents_node).display(Display::Contents);
+        tx.edit::<Accessibility>(contents_node)
+            .role(Some(AriaRole::Group))
+            .label("Restored From Contents");
+        let inner = tx.create();
+        tx.edit::<Accessibility>(inner)
+            .role(Some(AriaRole::Button))
+            .label("Inner Button");
+        tx.set_children(contents_node, &[inner]);
+
+        tx.set_children(NodeId::ROOT, &[none_node, contents_node]);
+        tx.commit_into(&mut changes);
+        (none_node, contents_node, inner)
+    };
+
+    let mut geo = MapGeo::new(1.0);
+    geo.rects.insert(NodeId::ROOT, LayoutRect { x: 0.0, y: 0.0, width: 320.0, height: 240.0 });
+    geo.rects.insert(restored_none, LayoutRect { x: 0.0, y: 0.0, width: 120.0, height: 32.0 });
+    geo.rects.insert(restored_contents, LayoutRect { x: 0.0, y: 40.0, width: 200.0, height: 64.0 });
+    geo.rects.insert(inner_btn, LayoutRect { x: 8.0, y: 48.0, width: 100.0, height: 32.0 });
+
+    // 1. Without provider overrides, static Layout::Display rules apply.
+    let mut bridge = AccessKitTreeBridge::new();
+    let static_full = bridge.build_full_tree_update(&store, &geo, "Display Overrides");
+    let static_map: HashMap<_, _> = static_full.nodes.into_iter().collect();
+    assert!(!static_map.contains_key(&bridge.encode_store_node_id(restored_none)));
+    assert!(!static_map.contains_key(&bridge.encode_store_node_id(restored_contents)));
+    assert_eq!(
+        static_map[&bridge.encode_store_node_id(NodeId::ROOT)].children(),
+        &[bridge.encode_store_node_id(inner_btn)]
+    );
+
+    // 2. Host StateRules restore Display::None -> Display::Flex and Display::Contents -> Display::Block.
+    geo.display_none.insert(restored_none, false);
+    geo.display_contents.insert(restored_contents, false);
+    let restored_upd = bridge
+        .sync_changes(&store, &ChangeSet::default(), &geo, "Display Overrides", true)
+        .expect("restoring display via effective provider must update tree");
+    let restored_map: HashMap<_, _> = restored_upd.nodes.into_iter().collect();
+
+    let root = &restored_map[&bridge.encode_store_node_id(NodeId::ROOT)];
+    assert_eq!(
+        root.children(),
+        &[
+            bridge.encode_store_node_id(restored_none),
+            bridge.encode_store_node_id(restored_contents),
+        ]
+    );
+    let btn = &restored_map[&bridge.encode_store_node_id(restored_none)];
+    assert_eq!(btn.role(), Role::Button);
+    assert_eq!(btn.label(), Some("Restored From None"));
+
+    let grp = &restored_map[&bridge.encode_store_node_id(restored_contents)];
+    assert_eq!(grp.role(), Role::Group);
+    assert_eq!(grp.label(), Some("Restored From Contents"));
+    assert_eq!(grp.children(), &[bridge.encode_store_node_id(inner_btn)]);
 }

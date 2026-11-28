@@ -75,17 +75,27 @@ mod native_bench {
             });
         });
 
-        c.bench_function("a11y_noop_composite_frame_1000_nodes", |b| {
+        c.bench_function("a11y_noop_opacity_composite_frame_1000_nodes", |b| {
             b.iter(|| {
                 tick = tick.wrapping_add(1);
                 let mut tx = store.tx();
                 tx.edit::<Visual>(target)
                     .opacity(0.5 + ((tick & 63) as f32) * 0.005);
+                tx.commit_into(&mut changes);
+                let upd = bridge.sync_changes(&store, &changes, &geo, "Bench", false);
+                black_box(upd.is_some())
+            });
+        });
+
+        c.bench_function("a11y_incremental_single_transform_1000_nodes", |b| {
+            b.iter(|| {
+                tick = tick.wrapping_add(1);
+                let mut tx = store.tx();
                 tx.edit::<Transform>(target)
                     .translate_x(((tick & 63) as f32) * 0.5);
                 tx.commit_into(&mut changes);
                 let upd = bridge.sync_changes(&store, &changes, &geo, "Bench", false);
-                black_box(upd.is_some())
+                black_box(upd.map_or(0, |u| u.nodes.len()))
             });
         });
     }
