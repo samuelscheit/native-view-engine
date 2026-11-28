@@ -4,8 +4,8 @@
 //! - `nve doctor`  — verifies Rust targets, caches (kache/ccache), CMake/Ninja, Xcode/Android/Flutter/Swift SDKs, and RN checkout.
 //! - `nve inspect` — runs a Dioxus `rsx!` app headlessly, simulates native press events, and dumps ShadowTrees + Flexbox rects.
 //! - `nve bench`   — runs 1,000-node initial + incremental multi-backend benchmarks and exports Perfetto/Chrome JSON traces.
-//! - `nve dev`     — starts the 2-tier hot-reload daemon (`--skia` desktop preview, `--pair` live `NVD1` device pairing).
-//! - `nve pair`    — streams live `NVD1` binary deltas over UDP + TCP/WS and ingests remote `InputEvents`.
+//! - `nve dev`     — starts the 2-tier hot-reload daemon (`--skia` desktop preview, `--pair` live `NveWireFrame` device pairing).
+//! - `nve pair`    — streams live `NveWireFrame` binary deltas over UDP + TCP/WS and ingests remote `InputEvents`.
 //! - `nve build`   — builds Apple Tier-3 staticlib targets (`tvos`, `visionos`, `watchos`) and `.xcframework` bundles.
 //! - `nve codegen` — bi-directional RN <-> NVE + Flutter/SwiftUI/Compose/Web component code generation.
 //! - `nve docs`    — validates, statically builds (SSR + WASM), and serves `nve-docs` documentation sites.
@@ -84,20 +84,20 @@ pub(crate) enum Commands {
         /// Launch the live cross-platform desktop preview window (`winit` + `softbuffer`) connected to this daemon.
         #[arg(long, default_value_t = false)]
         skia: bool,
-        /// Enable live `NVD1` device pairing (UDP + TCP/WebSocket delta streaming + remote input backchannel).
+        /// Enable live `NveWireFrame` device pairing (UDP + TCP/WebSocket delta streaming + remote input backchannel).
         #[arg(long, default_value_t = false)]
         pair: bool,
-        /// UDP port for live `NVD1` delta pairing when `--pair` is enabled.
+        /// UDP port for live `NveWireFrame` delta pairing when `--pair` is enabled.
         #[arg(long, default_value_t = 8091)]
         pair_udp_port: u16,
-        /// TCP/WebSocket port for live `NVD1` delta pairing when `--pair` is enabled.
+        /// TCP/WebSocket port for live `NveWireFrame` delta pairing when `--pair` is enabled.
         #[arg(long, default_value_t = 8092)]
         pair_ws_port: u16,
         /// Optional pairing token secret for `--pair` (auto-generated when omitted).
         #[arg(long)]
         pair_token: Option<String>,
     },
-    /// Stream live `NVD1` binary deltas over UDP + TCP/WebSocket and ingest remote `InputEvents`.
+    /// Stream live `NveWireFrame` binary deltas over UDP + TCP/WebSocket and ingest remote `InputEvents`.
     Pair {
         /// Direct path to an already-built app cdylib exporting `nve_get_interface`.
         #[arg(long)]
@@ -108,10 +108,10 @@ pub(crate) enum Commands {
         /// Bind address (`0.0.0.0` allows LAN/phone clients).
         #[arg(long, default_value = "0.0.0.0")]
         host: String,
-        /// UDP port for low-latency MTU-safe `NVD1` datagrams.
+        /// UDP port for low-latency QUIC/WebTransport `NveWireFrame` datagrams.
         #[arg(long, default_value_t = 8091)]
         udp_port: u16,
-        /// TCP / RFC-6455 binary WebSocket port for framed `NVD1` streams.
+        /// TCP / RFC-6455 binary WebSocket port for framed `NveWireFrame` streams.
         #[arg(long, default_value_t = 8092)]
         ws_port: u16,
         /// Optional pairing token secret (auto-generated when omitted).

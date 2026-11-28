@@ -1,4 +1,4 @@
-//! Multi-peer binary CRDT sync adapter for Studio Workspace (`NVC1` wire format).
+//! Multi-peer binary CRDT sync adapter for Studio Workspace (`NveCrdtDelta` wire format).
 //!
 //! Maps Studio's collaborative entities onto convergent join-semilattice primitives:
 //! - [`TaskItem`]s: [`OrSet`] membership + per-field [`LwwRegister`]s
@@ -18,7 +18,7 @@ mod wire;
 pub use transport::{
     CRDT_DIGEST_MAGIC, CRDT_DIGEST_MIN_LEN, CRDT_DIGEST_VERSION, CrdtPeerNode, CrdtPeerTransport,
     CrdtPumpReport, CrdtSyncMetrics, CrdtTransportError, CrdtWireFrame, InMemoryMeshHub,
-    InMemoryMeshTransport, MeshFaultConfig, TOPIC_CRDT_NVC1, version_vector_has_unseen_ops,
+    InMemoryMeshTransport, MeshFaultConfig, TOPIC_CRDT_DELTA, version_vector_has_unseen_ops,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use transport::{LoopbackTcpCrdtCluster, LoopbackTcpCrdtTransport};

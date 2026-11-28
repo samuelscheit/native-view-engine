@@ -54,4 +54,4 @@ cargo test --locked -p nve-backend-web -p nve-web-shell \
 
 ## Multi-Window & Live Browser Pairing
 
-`hosts/web-shell/src/wasm_api.rs` manages multiple concurrent surfaces in `ACTIVE_SHELLS` (`BTreeMap<SurfaceId, ActiveShell>`) coordinated across tabs via `BroadcastChannel`. Opening the web shell with `?pair=ws://127.0.0.1:8092/ws/nvd&token=dev-secret` turns any desktop or mobile browser into a zero-install thin client receiving live `NVT1`/`NVD1` binary deltas and forwarding pointer/keyboard `InputEvents` back to `cargo nve pair`.
+`hosts/web-shell/src/wasm_api.rs` manages multiple concurrent surfaces in `ACTIVE_SHELLS` (`BTreeMap<SurfaceId, ActiveShell>`) coordinated across tabs via `BroadcastChannel`. Opening the web shell with `?pair=ws://127.0.0.1:8092/ws/nvd&token=dev-secret` turns any desktop or mobile browser into a zero-install thin client receiving live `NveWireFrame` binary deltas and forwarding pointer/keyboard `EventBatch` frames back to `cargo nve pair`.

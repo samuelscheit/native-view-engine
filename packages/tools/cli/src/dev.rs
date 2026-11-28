@@ -1,4 +1,4 @@
-//! `nve dev` — 2-tier hot-reload daemon with optional `--skia` desktop preview and `--pair` live `NVD1` streaming.
+//! `nve dev` — 2-tier hot-reload daemon with optional `--skia` desktop preview and `--pair` live `NveWireFrame` streaming.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};

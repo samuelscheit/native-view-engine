@@ -18,7 +18,7 @@ pub use codec::{WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION};
 pub use crdt_sync::{
     CRDT_DIGEST_MAGIC, CRDT_DIGEST_MIN_LEN, CRDT_DIGEST_VERSION, CrdtMergeSummary, CrdtPeerNode,
     CrdtPeerTransport, CrdtPumpReport, CrdtSyncMetrics, CrdtTransportError, CrdtWireFrame,
-    InMemoryMeshHub, InMemoryMeshTransport, MeshFaultConfig, StudioCrdtDoc, TOPIC_CRDT_NVC1,
+    InMemoryMeshHub, InMemoryMeshTransport, MeshFaultConfig, StudioCrdtDoc, TOPIC_CRDT_DELTA,
     version_vector_has_unseen_ops,
 };
 #[cfg(not(target_arch = "wasm32"))]

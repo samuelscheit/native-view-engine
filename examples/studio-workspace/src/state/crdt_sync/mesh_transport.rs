@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use nve_interop::channel::{ChannelPayload, NveChannelBus};
 use nve_interop::crdt::PeerId;
 
-use super::transport::{CrdtPeerTransport, CrdtTransportError, TOPIC_CRDT_NVC1};
+use super::transport::{CrdtPeerTransport, CrdtTransportError, TOPIC_CRDT_DELTA};
 
 /// Deterministic network fault-injection knobs for [`InMemoryMeshHub`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -45,7 +45,7 @@ impl Default for InMemoryMeshHub {
 impl InMemoryMeshHub {
     pub fn new() -> Self {
         let mut bus = NveChannelBus::new();
-        let _ = bus.ensure_channel(TOPIC_CRDT_NVC1);
+        let _ = bus.ensure_channel(TOPIC_CRDT_DELTA);
         Self {
             inner: Arc::new(Mutex::new(MeshHubInner {
                 inboxes: BTreeMap::new(),
@@ -166,7 +166,7 @@ impl CrdtPeerTransport for InMemoryMeshTransport {
     ) -> Result<usize, CrdtTransportError> {
         let mut g = self.hub.inner.lock().unwrap_or_else(|e| e.into_inner());
         let _ = g.bus.publish_bytes(
-            TOPIC_CRDT_NVC1,
+            TOPIC_CRDT_DELTA,
             None,
             ChannelPayload::from_slice(&frame),
             false,

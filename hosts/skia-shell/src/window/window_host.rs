@@ -31,7 +31,7 @@ use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 /// Live multi-window `winit` desktop host supporting direct hardware GPU swapchains (`skia-metal`,
 /// `skia-vulkan`, `skia-d3d`) with `softbuffer` fallback, optional Frame-0 `frame0.nve2` pre-warm,
 /// `WindowManager` lifecycle/modal/veto rules, `NVE_IFACE_HOST = 5` host services, and thin-client
-/// `NVD1` pairing.
+/// `NveWireFrame` pairing.
 pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) options: DesktopPreviewOptions,
     primary_session: Option<DesktopSession<A>>,

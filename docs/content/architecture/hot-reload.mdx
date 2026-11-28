@@ -77,7 +77,7 @@ The host calls `new_dev_api->restore_state(new_handle, snapshot_slice)`, renders
 # Native Skia desktop window connected to ws://127.0.0.1:8089
 cargo nve dev --package nve-studio-workspace --skia
 
-# Also rebuild hosts/web-shell WASM on save and serve live NVD1 pairing on LAN
+# Also rebuild hosts/web-shell WASM on save and serve live NveWireFrame pairing on LAN
 cargo nve dev --package nve-studio-workspace --host 0.0.0.0 --port 8089 --web --pair
 ```
 
@@ -87,5 +87,5 @@ hot-reload socket (`?ws=ws://<host>:8089`). Production bundles (`pkg/studio`, `p
 no hot-reload code.
 
 <Callout kind="info" title="Physical iOS and Android devices">
-On physical iOS devices (where dynamic `dlopen` of unsigned libraries is restricted by the OS), Tier-1 `NVP1` patches still deliver `< 50 ms` style and copy iteration over Wi-Fi, while **live `NVD1` pairing** (`--pair`) streams full logic updates from your workstation to the device thin client at 60fps without rebuilding or re-signing the app.
+On physical iOS devices (where dynamic `dlopen` of unsigned libraries is restricted by the OS), Tier-1 `NVP1` patches still deliver `< 50 ms` style and copy iteration over Wi-Fi, while **live `NveWireFrame` pairing** (`--pair`) streams full logic updates from your workstation to the device thin client at 60fps without rebuilding or re-signing the app.
 </Callout>

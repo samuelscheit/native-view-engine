@@ -1,4 +1,4 @@
-//! Browser `wasm32` `NveWebHost` live binary WebSocket pairing client (`NVT1`/`NVD1`).
+//! Browser `wasm32` `NveWebHost` live binary WebSocket pairing client (`NveWireFrame`).
 //!
 //! Supports both:
 //! 1. Direct Rust-managed WebSocket (`NveWebHost::connect_pair_ws(mount_id, url, token)`), and
@@ -83,11 +83,11 @@ fn update_paired_hud(session: &PairedWebSession) {
     }
 }
 
-/// Live `NVT1`/`NVD1` binary WebSocket thin-client host for browser WASM.
+/// Live `NveWireFrame` binary WebSocket thin-client host for browser WASM.
 ///
-/// Renders remote `NVD1` `CommandBuffer` deltas straight into `WebBackend::submit_frame()` and
+/// Renders remote `NveWireFrame` `CommandBuffer` deltas straight into `WebBackend::submit_frame()` and
 /// streams local DOM clicks, typing, scrolling, focus/blur, resize, and typed keydowns upstream
-/// as binary `NVT1` `InputEvents = 11` binary frames.
+/// as binary `NveWireKind::EventBatch` frames.
 #[wasm_bindgen]
 pub struct NveWebHost {
     mount_id: String,
@@ -105,27 +105,27 @@ impl NveWebHost {
     }
 
     /// Mounts a paired thin-client host into `#<mount_id>` and immediately opens a binary
-    /// `NVT1`/`NVD1` WebSocket connection to `url` using `token`.
+    /// `NveWireFrame` WebSocket connection to `url` using `token`.
     pub fn connect_pair_ws(mount_id: &str, url: &str, token: &str) -> Result<NveWebHost, JsValue> {
         Self::mount_internal(mount_id, token, Some(url))
     }
 
     /// Attaches an externally created browser `WebSocket` (`ws.binaryType = "arraybuffer"`) so
     /// live DOM interactions (clicks, typing, scroll, focus/blur, resize, keydown) automatically
-    /// transmit `NVT1` `InputEvents = 11` binary frames upstream.
+    /// transmit `NveWireKind::EventBatch` binary frames upstream.
     pub fn attach_pair_socket(&self, socket: web_sys::WebSocket) {
         socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
         *self.socket.borrow_mut() = Some(socket);
     }
 
-    /// Builds the initial binary `NVT1` `Hello` binary envelope to send on WebSocket open.
+    /// Builds the initial binary `NveWireFrame` `Hello` envelope to send on WebSocket open.
     pub fn build_pair_hello(&self) -> Vec<u8> {
         self.session.borrow_mut().build_hello()
     }
 
-    /// Feeds one incoming binary `NVT1` WebSocket frame (`Uint8Array` from `ArrayBuffer`),
-    /// decodes any `NVD1` delta directly into `WebBackend::submit_frame()`, and returns the
-    /// primary outbound binary `NVT1` response bytes (`Ack`, `Pong`, `KeyframeRequest`, `Layout`).
+    /// Feeds one incoming binary `NveWireFrame` WebSocket frame (`Uint8Array` from `ArrayBuffer`),
+    /// decodes any scene/command delta directly into `WebBackend::submit_frame()`, and returns the
+    /// primary outbound binary `NveWireFrame` response bytes (`Pong`, `KeyframeRequest`, `EventBatch`).
     pub fn on_pair_binary_message(&self, raw: &[u8]) -> Result<Vec<u8>, JsValue> {
         let mut guard = self.session.borrow_mut();
         let reply = guard
@@ -135,7 +135,7 @@ impl NveWebHost {
         Ok(reply)
     }
 
-    /// Pops any additional queued outbound binary `NVT1` frames (`Nack`, `Layout`, etc.).
+    /// Pops any additional queued outbound binary `NveWireFrame` frames (`KeyframeRequest`, `EventBatch`, etc.).
     pub fn take_outbound_message(&self) -> Option<Vec<u8>> {
         self.session.borrow_mut().take_outbound_message()
     }
@@ -149,7 +149,7 @@ impl NveWebHost {
             .map_err(|e| JsValue::from_str(&e))
     }
 
-    /// Updates viewport dimensions and returns an outbound binary `NVT1` `InputEvents = 11`
+    /// Updates viewport dimensions and returns an outbound binary `NveWireKind::EventBatch`
     /// `Layout` frame (and transmits it immediately if a socket is attached).
     pub fn dispatch_viewport_resize(
         &self,
@@ -381,7 +381,7 @@ fn open_managed_pair_socket(
         let hello = guard.build_hello();
         send_binary_if_open(&ws_open, &hello);
         web_sys::console::log_1(&JsValue::from_str(&format!(
-            "[NVE Pair] Binary WebSocket opened ({url_open}); sent NVT1 Hello ({} bytes)",
+            "[NVE Pair] Binary WebSocket opened ({url_open}); sent NveWireFrame Hello ({} bytes)",
             hello.len()
         )));
         set_hud_status("connecting", "Pair: authenticating…");

@@ -1307,7 +1307,7 @@ async function main() {
     );
 
     // Add a new block via the Docs composer.
-    const addedBlockDraft = "Stream binary NVD1 deltas over WebSocket";
+    const addedBlockDraft = "Stream binary NveWireFrame deltas over WebSocket";
     await typeIntoInput(
       cdp,
       `document.querySelector('[data-testid="doc-new-block-input"]')`,
@@ -1325,12 +1325,12 @@ async function main() {
       () => {
         const hdr = document.querySelector('[data-testid="docs-header"]')?.innerText || "";
         const blk = document.querySelector('[data-testid="doc-block-16"]')?.innerText || "";
-        return hdr.includes("8 blocks | 1/2 checks") && blk.includes("Stream binary NVD1 deltas over WebSocket");
+        return hdr.includes("8 blocks | 1/2 checks") && blk.includes("Stream binary NveWireFrame deltas over WebSocket");
       }
     );
 
     // Edit block #16 inline text and save.
-    const editedBlockText = "Verified binary NVD1 WebSocket streaming";
+    const editedBlockText = "Verified binary NveWireFrame WebSocket streaming";
     await clickElement(
       cdp,
       `document.querySelector('[data-testid="doc-block-edit-16"]')`,
@@ -1358,7 +1358,7 @@ async function main() {
       () =>
         !document.querySelector('[data-testid="doc-block-input-16"]') &&
         (document.querySelector('[data-testid="doc-block-16"]')?.innerText || "").includes(
-          "Verified binary NVD1 WebSocket streaming"
+          "Verified binary NveWireFrame WebSocket streaming"
         )
     );
 
@@ -1415,7 +1415,7 @@ async function main() {
           md.includes("MARKDOWN EXPORT") &&
           md.includes("# RFC-042: Zero-Copy NveSceneView") &&
           md.includes("- [x] Enable crash-safe Frame-0 NVE2 + StateFile local persistence in Studio") &&
-          md.includes("Verified binary NVD1 WebSocket streaming")
+          md.includes("Verified binary NveWireFrame WebSocket streaming")
         );
       }
     );
@@ -1594,7 +1594,7 @@ async function main() {
         }
       );
 
-      // Click Increment + twice -> live InputEvents=11 -> Rust KitchenSinkModule -> NVD1 delta -> DOM.
+      // Click Increment + twice -> live EventBatch -> Rust KitchenSinkModule -> NveWireFrame delta -> DOM.
       await clickElement(cdp, findByTestId("ks-counter-inc"), "Paired Increment + (1st click)");
       await waitForCondition(
         cdp,

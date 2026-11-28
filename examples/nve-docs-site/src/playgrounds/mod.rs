@@ -76,11 +76,11 @@ pub fn build_playground_registry() -> PlaygroundRegistry {
     reg.register(
         PlaygroundMeta::new(
             "crdt-simulator",
-            "Two-Peer Local-First Binary NVC1 CRDT Simulator",
+            "Two-Peer Local-First Binary CRDT Simulator",
             CRDT_SIMULATOR_SOURCE,
         )
         .with_description(
-            "Simulate offline partitions and binary NVC1 delta sync across LwwRegister, PnCounter, and OrSet.",
+            "Simulate offline partitions and binary NveCrdtDelta sync across LwwRegister, PnCounter, and OrSet.",
         )
         .with_default_height(290),
         || rsx! { CrdtSimulatorDemo {} },

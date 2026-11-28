@@ -31,7 +31,7 @@ mod crdt_adapter {
     }
 
     /// Bridges [`StateReconciler<String, Vec<u8>>`] with `nve-interop`'s CRDT `LwwRegister`,
-    /// `HlcClock`, `VersionVector`, and `NVC1` binary delta wire format.
+    /// `HlcClock`, `VersionVector`, and `NveCrdtDelta` binary delta wire format.
     #[derive(Debug, Clone)]
     pub struct CrdtReconcileAdapter {
         namespace: u16,

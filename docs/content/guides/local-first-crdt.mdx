@@ -1,6 +1,6 @@
 ---
 title: "Local-First Storage & CRDTs"
-description: "Zero-unsafe Frame-0 NVE2 keyframe boot (Frame0File), crash-atomic StateFile persistence (NVESTATE), and zero-dependency binary CRDT engine (NVC1)."
+description: "Zero-unsafe Frame-0 NVE2 keyframe boot (Frame0File), crash-atomic StateFile persistence (NVESTATE), and zero-dependency binary CRDT engine (NveCrdtDelta)."
 order: 6
 ---
 
@@ -27,9 +27,9 @@ Booting `frame0.nve2` decodes directly into a pre-sized `StoreWireReplica` and c
 
 Application state (`WorkspaceState` `NWS1`, `SignalArchive` `NVE_SIG1`, `FormDraftStore`) persists via `StateFile`, which wraps an arbitrary binary payload in a 24-byte `NVESTATE` header (`magic: 8B | schema_version: u32 | payload_len: u32 | xxh64: u64` covering header prefix + payload) and writes via exclusive `create_new` sibling temp file → `sync_all()` → atomic `rename()` → parent-directory `sync_all()`. Corrupt files are quarantined to `<file>.corrupt`; I/O and schema-version mismatches never delete user data.
 
-## Zero-Dependency Binary CRDT Engine (`NVC1`)
+## Zero-Dependency Binary CRDT Engine (`NveCrdtDelta`)
 
-`packages/core/interop/src/crdt/` implements a complete suite of state- and delta-based CRDTs with zero external dependencies and compact binary delta sync (`NVC1`):
+`packages/core/interop/src/crdt/` implements a complete suite of state- and delta-based CRDTs with zero external dependencies and compact binary delta sync (`NveCrdtDelta`):
 
 | Primitive | Type | Semantics |
 | :--- | :--- | :--- |
@@ -41,16 +41,16 @@ Application state (`WorkspaceState` `NWS1`, `SignalArchive` `NVE_SIG1`, `FormDra
 
 ### Interactive Multi-Peer CRDT Simulator
 
-Simulate concurrent offline edits, network partitions, and `NVC1` delta healing across peers live:
+Simulate concurrent offline edits, network partitions, and `NveCrdtDelta` delta healing across peers live:
 
 <LiveDemo id="crdt-simulator" hydrate="visible" height={340} />
 
-### `NVC1` Binary Delta Wire Layout
+### `NveCrdtDelta` Binary Delta Wire Layout
 
-Defined in `packages/core/interop/src/crdt/wire.rs` (minimum 30 bytes, strict bounds `MAX_WIRE_BYTES = 16 MiB`, `MAX_RECORDS = 1_000_000`):
+Defined in `packages/core/interop/src/crdt/wire.rs` (minimum 34 bytes, strict bounds `MAX_WIRE_BYTES = 16 MiB`, `MAX_RECORDS = 1_000_000`):
 
 ```text
-magic("NVC1": 4B) | version(u16=1) | sender(u64)
+magic("NVE_CRDT": 8B) | version(u16=2) | sender(u64)
   | vv_len(u32) + [peer: u64, seq: u64]*
   | record_count(u32) + [rec_len: u32, tag: u8, body]*
   | checksum(u64 XXH64 over all preceding bytes)
@@ -58,8 +58,8 @@ magic("NVC1": 4B) | version(u16=1) | sender(u64)
 
 Supported record tags: `1 = LwwSet`, `2 = GCounterSet`, `3 = PnCounterSet`, `4 = OrSetAddU64`, `5 = OrSetRemove`, `6 = RgaInsert`, `7 = RgaDelete`, `8 = OrSetAddStr`.
 
-```rust title="Creating a peer, mutating CRDTs, and encoding an NVC1 delta packet" highlight="4-12"
-use nve_interop::crdt::{CrdtDeltaPacket, HlcClock, LwwRegister, OrSet, RgaList};
+```rust title="Creating a peer, mutating CRDTs, and encoding an NveCrdtDelta packet" highlight="4-12"
+use nve_interop::crdt::{NveCrdtDelta, HlcClock, LwwRegister, OrSet, RgaList};
 
 let mut clock = HlcClock::new(1 /* peer_id */);
 let mut title = LwwRegister::new(String::new(), clock.tick(1_700_000_000_000));

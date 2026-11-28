@@ -51,11 +51,11 @@ const PLAYGROUND_SPECS: [PlaygroundCardSpec; 5] = [
     },
     PlaygroundCardSpec {
         id: "crdt-simulator",
-        tab_label: "NVC1 CRDT Sync",
-        title: "Two-Peer Local-First NVC1 CRDT Simulator",
+        tab_label: "CRDT Sync",
+        title: "Two-Peer Local-First CRDT Simulator",
         guide_route: "/docs/guides/local-first-crdt",
-        summary: "Edit Peer A and Peer B offline while partitioned, then merge binary NVC1 deltas across LwwRegister, PnCounter, and OrSet.",
-        badges: &["NVC1 CRDT", "Local-First", "Binary Delta"],
+        summary: "Edit Peer A and Peer B offline while partitioned, then merge binary NveCrdtDelta packets across LwwRegister, PnCounter, and OrSet.",
+        badges: &["NveCrdtDelta", "Local-First", "Binary Delta"],
     },
 ];
 
@@ -182,14 +182,14 @@ pub fn ExamplesGalleryPage() -> Element {
                                 }
                                 text {
                                     nve_style: TypedStyle::new().font_size(14.0).color(theme.text.secondary).line_height_ratio(1.55),
-                                    "Full multi-pane issue tracker, docs workbench, live X-Ray layout & FFI inspector, 100,000-row virtualized table, binary NVC1 CRDT sync, and NVE_DRAW1 telemetry canvas running in WebAssembly."
+                                    "Full multi-pane issue tracker, docs workbench, live X-Ray layout & FFI inspector, 100,000-row virtualized table, binary NveCrdtDelta sync, and NVE_DRAW1 telemetry canvas running in WebAssembly."
                                 }
                                 view {
                                     nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0).padding_top(2.0),
                                     PillBadge { label: "WASM".to_string(), accent: true }
                                     PillBadge { label: "Native Desktop".to_string() }
                                     PillBadge { label: "100k Fenwick".to_string(), secondary: true }
-                                    PillBadge { label: "NVC1 CRDT".to_string(), secondary: true }
+                                    PillBadge { label: "NveCrdtDelta".to_string(), secondary: true }
                                     PillBadge { label: "NVE_DRAW1".to_string() }
                                 }
                             }

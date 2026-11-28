@@ -568,7 +568,7 @@ pub fn render_headless_screenshot(
 }
 
 /// Opens a live thin-client desktop preview window paired directly to a remote `nve pair` server
-/// over UDP, TCP, or WebSocket (`NVT1`/`NVD1`), with zero local `cdylib` required.
+/// over QUIC, WebTransport, or WebSocket (`NveWireFrame`), with zero local `cdylib` required.
 pub fn run_paired_desktop_preview(
     pair_config: PairConnectConfig,
     options: DesktopPreviewOptions,
@@ -577,7 +577,7 @@ pub fn run_paired_desktop_preview(
     host.run()
 }
 
-/// Headlessly connects to a remote `nve pair` server, receives Frame 1 over `NVT1`/`NVD1`,
+/// Headlessly connects to a remote `nve pair` server, receives Frame 1 over `NveWireFrame`,
 /// rasterizes it to PNG or `P6` PPM, and disconnects cleanly.
 pub fn render_paired_headless_screenshot(
     pair_config: PairConnectConfig,

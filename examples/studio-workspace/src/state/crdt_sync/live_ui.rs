@@ -1,8 +1,8 @@
-//! Interactive multi-peer binary `NVC1` CRDT sync actions for [`WorkspaceState`].
+//! Interactive multi-peer binary `NveCrdtDelta` CRDT sync actions for [`WorkspaceState`].
 //!
 //! Runs real [`StudioCrdtDoc`] peers over [`InMemoryMeshTransport`] (works identically on
 //! native hosts and `wasm32-unknown-unknown`) so Studio's Live Sync panel exercises genuine
-//! binary `NVC1` delta encoding, partition/heal, and vector-clock anti-entropy catch-up.
+//! binary `NveCrdtDelta` encoding, partition/heal, and vector-clock anti-entropy catch-up.
 
 use nve_interop::crdt::PeerId;
 
@@ -11,7 +11,7 @@ use super::StudioCrdtDoc;
 use crate::state::{ChannelKind, WorkspaceState};
 
 impl WorkspaceState {
-    /// Executes a live 2-peer binary `NVC1` CRDT sync round over [`InMemoryMeshTransport`]
+    /// Executes a live 2-peer binary `NveCrdtDelta` CRDT sync round over [`InMemoryMeshTransport`]
     /// and updates `sync_telemetry` with exact wire delta & byte metrics.
     ///
     /// While `crdt_partitioned` is `true`, packets are dropped across the simulated partition
@@ -24,7 +24,7 @@ impl WorkspaceState {
         let mut remote_doc = StudioCrdtDoc::from_snapshot(PeerId(2), now_ms, &self.current);
 
         // If the mesh was partitioned or has queued remote peer activity, synthesize a real
-        // peer reaction/comment mutation on Peer 2 so convergence visibly merges real NVC1 records.
+        // peer reaction/comment mutation on Peer 2 so convergence visibly merges real CRDT records.
         let pending = self.sync_telemetry.crdt_pending_remote_ops;
         let partitioned = self.sync_telemetry.crdt_partitioned;
         if pending > 0
@@ -48,7 +48,7 @@ impl WorkspaceState {
         let mut node2 = CrdtPeerNode::new(remote_doc, t2);
 
         // Exchange NVCD anti-entropy digests first; if Peer 2 has unseen offline ops it replies
-        // automatically with a minimal NVC1 catch-up delta, otherwise both exchange live NVC1 deltas.
+        // automatically with a minimal catch-up delta, otherwise both exchange live CRDT deltas.
         let _ = node1.broadcast_digest();
         let _ = node2.broadcast_digest();
         let rep2 = node2.pump_incoming();
@@ -78,7 +78,7 @@ impl WorkspaceState {
             let converged = node1.doc().project_snapshot(&self.current);
             self.sync_telemetry.crdt_pending_remote_ops = 0;
             self.commit_action(
-                format!("CRDT Sync ({}B NVC1)", bytes_round),
+                format!("CRDT Sync ({}B)", bytes_round),
                 |s| {
                     s.tasks = converged.tasks;
                     s.next_task_id = converged.next_task_id;
@@ -98,7 +98,7 @@ impl WorkspaceState {
     /// Toggles simulated network partition / heal on the live Studio CRDT mesh.
     ///
     /// - Entering partition drops `connected_peers` to `0` and queues a remote peer edit while split.
-    /// - Healing restores `connected_peers` and immediately runs binary `NVC1` anti-entropy catch-up!
+    /// - Healing restores `connected_peers` and immediately runs binary `NveCrdtDelta` anti-entropy catch-up!
     pub fn toggle_crdt_partition(&mut self) {
         let next_partitioned = !self.sync_telemetry.crdt_partitioned;
         self.sync_telemetry.crdt_partitioned = next_partitioned;

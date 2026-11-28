@@ -1,4 +1,4 @@
-//! Binary multi-peer CRDT transport layer (`NVC1` deltas + `NVCD` vector-clock digests)
+//! Binary multi-peer CRDT transport layer (`NveCrdtDelta` deltas + `NVE_DGST` vector-clock digests)
 //! over `nve_interop::sync_transport` and `nve_interop::NveChannelBus`.
 //!
 //! Provides:
@@ -36,7 +36,7 @@ pub const CRDT_DIGEST_VERSION: u16 = 2;
 pub const CRDT_DIGEST_MIN_LEN: usize = 30;
 
 /// `NveChannelBus` binary topic mirrored by [`InMemoryMeshHub`].
-pub const TOPIC_CRDT_NVC1: &str = "crdt.delta";
+pub const TOPIC_CRDT_DELTA: &str = "crdt.delta";
 
 /// Typed error returned by binary CRDT peer transports.
 #[derive(Debug)]
@@ -107,7 +107,7 @@ pub struct CrdtPumpReport {
 /// Binary frame exchanged between CRDT peers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrdtWireFrame {
-    /// Raw `NVC1` binary delta packet (zero wrapper overhead).
+    /// Raw `NveCrdtDelta` binary delta packet (zero wrapper overhead).
     Delta(Vec<u8>),
     /// Compact checksummed `NVCD` vector-clock digest requesting anti-entropy catch-up.
     VectorClockDigest {
@@ -257,7 +257,7 @@ pub fn version_vector_has_unseen_ops(local: &VersionVector, remote: &VersionVect
     local.iter().any(|(peer, seq)| seq > remote.get(peer))
 }
 
-/// Computes the component-wise minimum `VersionVector` across `peers` so one broadcast `NVC1`
+/// Computes the component-wise minimum `VersionVector` across `peers` so one broadcast `NveCrdtDelta`
 /// delta covers every peer's unseen operations.
 fn common_min_vv<'a>(
     known_peers: impl Iterator<Item = &'a VersionVector>,
@@ -277,7 +277,7 @@ fn common_min_vv<'a>(
     out
 }
 
-/// Pluggable binary peer transport carrying `NVC1` deltas and `NVCD` vector-clock digests.
+/// Pluggable binary peer transport carrying `NveCrdtDelta` deltas and `NVE_DGST` vector-clock digests.
 pub trait CrdtPeerTransport {
     fn local_peer(&self) -> PeerId;
     /// Sends a binary wire frame to `target` (`None` = broadcast to all reachable peers).
@@ -347,7 +347,7 @@ impl<T: CrdtPeerTransport> CrdtPeerNode<T> {
         m
     }
 
-    /// Broadcasts an incremental `NVC1` binary delta covering all operations not yet confirmed
+    /// Broadcasts an incremental `NveCrdtDelta` binary delta covering all operations not yet confirmed
     /// on all connected peers. Returns `(deliveries, wire_bytes)`.
     pub fn broadcast_delta(&mut self) -> Result<(usize, usize), CrdtTransportError> {
         let remotes = self.transport.known_remote_peers();
@@ -384,8 +384,8 @@ impl<T: CrdtPeerTransport> CrdtPeerNode<T> {
     }
 
     /// Drains all inbound frames, atomically rejecting corrupt/truncated frames without mutating
-    /// [`StudioCrdtDoc`], merging valid `NVC1` deltas, and replying to `NVCD` digests with minimal
-    /// `NVC1` catch-up deltas.
+    /// [`StudioCrdtDoc`], merging valid `NveCrdtDelta` deltas, and replying to digests with minimal
+    /// `NveCrdtDelta` catch-up deltas.
     pub fn pump_incoming(&mut self) -> CrdtPumpReport {
         let incoming = self.transport.poll_incoming();
         let mut report = CrdtPumpReport::default();

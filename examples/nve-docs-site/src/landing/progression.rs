@@ -35,7 +35,7 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         commit: "d131b04",
         hosts: "10 hosts",
         title: "Hybrid Codegen, Skia GPU & Frame-0 Boot",
-        summary: "6-target Nitro-style Hybrid FFI codegen, Metal/Vulkan/D3D12 Skia swapchains, NVD1 UDP/TCP/WS delta transport, and Frame-0 NVE2 + atomic StateFile cold start.",
+        summary: "6-target Nitro-style Hybrid FFI codegen, Metal/Vulkan/D3D12 Skia swapchains, binary UDP/TCP/WS delta transport, and Frame-0 NVE2 + atomic StateFile cold start.",
     },
     WaveMilestone {
         wave: "Wave 9",
@@ -49,14 +49,14 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         commit: "2d1ceae",
         hosts: "10 hosts",
         title: "Universal NVE_DRAW1, Pairing & Perf Wave",
-        summary: "Binary NVE_DRAW1 canvas across hosts, NVT1/NVD1 thin-client pairing, CommandBuffer -51.9%, GestureArbitrator -73.8%, and WASM release -47.6%.",
+        summary: "Binary NVE_DRAW1 canvas across hosts, NveWireFrame thin-client pairing, CommandBuffer -51.9%, GestureArbitrator -73.8%, and WASM release -47.6%.",
     },
     WaveMilestone {
         wave: "Wave 12",
         commit: "b3ecf8f",
         hosts: "10 hosts",
-        title: "Binary NVC1 CRDTs & Windows 11 Live Parity",
-        summary: "Local-first NVC1 binary CRDTs (HLC, LwwRegister, PnCounter, OrSet, RgaList), WinSock2 pairing client, and full live Windows 11 MSVC/D3D12/RNW verification.",
+        title: "Binary CRDTs & Windows 11 Live Parity",
+        summary: "Local-first NveCrdtDelta binary CRDTs (HLC, LwwRegister, PnCounter, OrSet, RgaList), WinSock2 pairing client, and full live Windows 11 MSVC/D3D12/RNW verification.",
     },
     WaveMilestone {
         wave: "Wave 13",

@@ -1,5 +1,5 @@
 //! Interactive `"crdt-simulator"` demo exercising real `nve_interop::crdt` primitives
-//! (`LwwRegister`, `PnCounter`, `OrSet`, `HlcClock`, `NveCrdtDelta` `NVC1` binary wire format).
+//! (`LwwRegister`, `PnCounter`, `OrSet`, `HlcClock`, `NveCrdtDelta` binary wire format).
 
 use nve_dioxus::prelude::*;
 use nve_interop::crdt::{
@@ -17,7 +17,7 @@ let mut peer_b = PeerReplica::new(PeerId(2));
 peer_a.edit_title("Zero-Copy Engine");
 peer_b.vote_delta(1);
 
-// Encode binary NVC1 delta with XXH64 integrity checksum & merge deterministically:
+// Encode binary NveCrdtDelta with XXH64 integrity checksum & merge deterministically:
 let packet_bytes = peer_a.encode_delta_packet();
 let decoded = NveCrdtDelta::decode(&packet_bytes)?;
 peer_b.apply_packet(&decoded);"#;
@@ -103,13 +103,13 @@ impl PeerReplica {
         });
     }
 
-    fn drain_nvc1_packet(&mut self) -> Vec<u8> {
+    fn drain_crdt_packet(&mut self) -> Vec<u8> {
         let records = std::mem::take(&mut self.pending_records);
         let pkt = NveCrdtDelta::new(self.peer_id, self.vv.clone(), records);
         pkt.encode().unwrap_or_default()
     }
 
-    fn apply_nvc1_bytes(&mut self, bytes: &[u8]) -> usize {
+    fn apply_crdt_bytes(&mut self, bytes: &[u8]) -> usize {
         let Ok(pkt) = NveCrdtDelta::decode(bytes) else {
             return 0;
         };
@@ -195,11 +195,11 @@ impl CrdtSimState {
     }
 
     fn sync_now(&mut self) {
-        let a_to_b = self.peer_a.drain_nvc1_packet();
-        let b_to_a = self.peer_b.drain_nvc1_packet();
+        let a_to_b = self.peer_a.drain_crdt_packet();
+        let b_to_a = self.peer_b.drain_crdt_packet();
         let total = a_to_b.len() + b_to_a.len();
-        self.peer_b.apply_nvc1_bytes(&a_to_b);
-        self.peer_a.apply_nvc1_bytes(&b_to_a);
+        self.peer_b.apply_crdt_bytes(&a_to_b);
+        self.peer_a.apply_crdt_bytes(&b_to_a);
         self.last_sync_bytes = total;
         self.sync_rounds += 1;
     }
@@ -236,7 +236,7 @@ pub fn CrdtSimulatorDemo() -> Element {
             test_id: "pg-crdt-root",
             nve_style: TypedStyle::col().width_pct(100.0).gap(12.0),
 
-            // Convergence & NVC1 binary wire telemetry bar
+            // Convergence & NveCrdtDelta binary wire telemetry bar
             view {
                 nve_style: TypedStyle::row()
                     .width_pct(100.0)
@@ -256,7 +256,7 @@ pub fn CrdtSimulatorDemo() -> Element {
                     }
                     Badge {
                         test_id: Some("pg-crdt-bytes".to_string()),
-                        label: format!("Last NVC1 Sync: {last_bytes} B ({rounds}x)"),
+                        label: format!("Last CRDT Sync: {last_bytes} B ({rounds}x)"),
                         variant: BadgeVariant::Accent,
                     }
                 }
@@ -398,7 +398,7 @@ pub fn CrdtSimulatorDemo() -> Element {
                 }
             }
 
-            // Binary NVC1 Delta Sync / Heal action bar
+            // Binary NveCrdtDelta Sync / Heal action bar
             view {
                 nve_style: TypedStyle::row()
                     .width_pct(100.0)
@@ -411,7 +411,7 @@ pub fn CrdtSimulatorDemo() -> Element {
                     on_press: move |_| {
                         sim.write().sync_now();
                     },
-                    "Sync Binary NVC1 Delta / Heal"
+                    "Sync Binary CRDT Delta / Heal"
                 }
                 Button {
                     test_id: Some("pg-crdt-reset".to_string()),

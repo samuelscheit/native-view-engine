@@ -66,7 +66,7 @@ pub use state::{
     CrdtWireFrame, DensityMode, DocBlock, DocBlockKind, HOST_SURFACES, HostSurfaceSpec,
     InMemoryMeshHub, InMemoryMeshTransport, LayoutEngineMode, MAX_HISTORY, MAX_TELEMETRY_SAMPLES,
     MOBILE_BREAKPOINT_PT, MeshFaultConfig, Priority, Stream100kState, StudioConfig, StudioCrdtDoc,
-    SyncTelemetryState, SyncTransportMode, TOPIC_CRDT_NVC1, TaskItem, TaskStatus,
+    SyncTelemetryState, SyncTransportMode, TOPIC_CRDT_DELTA, TaskItem, TaskStatus,
     WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION, WorkbenchPreset, WorkbenchState,
     WorkspaceDoc, WorkspaceSnapshot, WorkspaceState, default_seed_docs,
     version_vector_has_unseen_ops,

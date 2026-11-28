@@ -79,7 +79,7 @@ impl RowFilter {
         match source_idx % 4 {
             0 => ("CRIT", "frame-budget"),
             1 => ("LAYT", "taffy-pass"),
-            2 => ("SYNC", "nvc1-delta"),
+            2 => ("SYNC", "crdt-delta"),
             _ => ("DRAW", "skia-flush"),
         }
     }

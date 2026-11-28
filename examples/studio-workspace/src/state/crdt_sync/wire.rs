@@ -1,4 +1,4 @@
-//! Binary `NVC1` delta encoding, validation, and idempotent merge for [`StudioCrdtDoc`].
+//! Binary `NveCrdtDelta` encoding, validation, and idempotent merge for [`StudioCrdtDoc`].
 
 use nve_interop::crdt::{
     CrdtRecord, CrdtValue, CrdtWireError, HlcTimestamp, NveCrdtDelta, OpId, OrSet, VersionVector,
@@ -16,10 +16,10 @@ use super::{
 };
 
 impl StudioCrdtDoc {
-    /// Encodes all CRDT operations not yet observed by `since` into an `NVC1` binary frame.
+    /// Encodes all CRDT operations not yet observed by `since` into an `NveCrdtDelta` binary frame.
     ///
     /// # Errors
-    /// Fails when the packet exceeds the `NVC1` record / version-vector limits.
+    /// Fails when the packet exceeds the `NveCrdtDelta` record / version-vector limits.
     pub fn delta_since(&self, since: &VersionVector) -> Result<Vec<u8>, CrdtWireError> {
         let mut records = Vec::new();
 
@@ -206,7 +206,7 @@ impl StudioCrdtDoc {
         packet.encode()
     }
 
-    /// Validates and merges an `NVC1` binary delta packet idempotently.
+    /// Validates and merges an `NveCrdtDelta` binary delta packet idempotently.
     ///
     /// Guarantees atomicity against malformed/corrupt inputs: if validation fails, `self`
     /// is left completely untouched.

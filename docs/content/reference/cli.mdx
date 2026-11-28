@@ -40,7 +40,7 @@ cargo nve bench --rows 1000 --frames 50 --trace /tmp/nve-bench.trace.json
 
 ## `cargo nve dev`
 
-Starts the 2-tier hot-reload daemon (`NVP1` Tier-1 RSX/style patching `< 50 ms` + Tier-2 incremental `cdylib` hot-swap `150–400 ms`), with optional Skia desktop preview, Web WASM rebuilds, and live `NVD1` device pairing.
+Starts the 2-tier hot-reload daemon (`NVP1` Tier-1 RSX/style patching `< 50 ms` + Tier-2 incremental `cdylib` hot-swap `150–400 ms`), with optional Skia desktop preview, Web WASM rebuilds, and live `NveWireFrame` device pairing.
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
@@ -50,9 +50,9 @@ Starts the 2-tier hot-reload daemon (`NVP1` Tier-1 RSX/style patching `< 50 ms` 
 | `--port <PORT>` | `8089` | WebSocket port for Tier-1/Tier-2 hot-reload clients |
 | `--web` / `--no-web` | `false` | Enable or skip rebuilding `hosts/web-shell/build.sh --dev` on save |
 | `--skia` | `false` | Launch live `nve-skia-shell` desktop window connected to the daemon |
-| `--pair` | `false` | Enable live `NVD1` delta pairing (UDP + TCP/WS + remote `InputEvents`) |
-| `--pair-udp-port <PORT>` | `8091` | UDP port for live `NVD1` pairing when `--pair` is active |
-| `--pair-ws-port <PORT>` | `8092` | TCP/WebSocket port for live `NVD1` pairing when `--pair` is active |
+| `--pair` | `false` | Enable live `NveWireFrame` delta pairing (QUIC/UDP + TCP/WS + remote `EventBatch`) |
+| `--pair-udp-port <PORT>` | `8091` | UDP/QUIC port for live `NveWireFrame` pairing when `--pair` is active |
+| `--pair-ws-port <PORT>` | `8092` | TCP/WebSocket port for live `NveWireFrame` pairing when `--pair` is active |
 | `--pair-token <SECRET>` | *(auto)* | Explicit pairing token (auto-generated when omitted) |
 
 ```bash title="Start hot-reload daemon with Skia preview and LAN pairing"
@@ -61,14 +61,14 @@ cargo nve dev --package nve-studio-workspace --skia --pair --pair-token dev-secr
 
 ## `cargo nve pair`
 
-Loads a compiled NVE `cdylib` (building it automatically if `--package` is given) and streams live `NVT1`/`NVD1` frame deltas over UDP and TCP/WebSocket while ingesting remote `InputEvents`.
+Loads a compiled NVE `cdylib` (building it automatically if `--package` is given) and streams live `NveWireFrame` frame deltas over QUIC/WebTransport and TCP/WebSocket while ingesting remote `EventBatch` frames.
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--dylib <PATH>` | *(none)* | Direct path to an already-built `cdylib` exporting `nve_get_interface` |
 | `--package <NAME>` | *(none)* | Workspace crate name to build/load |
 | `--host <ADDR>` | `0.0.0.0` | Bind address for UDP and TCP/WebSocket listeners |
-| `--udp-port <PORT>` | `8091` | UDP port for MTU-safe `NVD1` datagrams |
+| `--udp-port <PORT>` | `8091` | UDP/QUIC port for `NveWireFrame` datagrams and streams |
 | `--ws-port <PORT>` | `8092` | TCP / RFC-6455 binary WebSocket port |
 | `--token <SECRET>` | *(auto)* | Pairing authentication token |
 | `--width <PX>` | `393.0` | Initial logical viewport width |

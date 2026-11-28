@@ -213,7 +213,7 @@ builds.
 | Scroll / virtual lists | Rust app logic, scroll events | unchanged: JS only reports scroll offsets | included |
 | `WebDomMirror` (native) | test oracle + SSR `render_html` | **stays in Rust** as the semantic spec and SSR | 0 |
 | Hot reload (WebSocket, `HotPatchMsg` JSON) | wasm_api + serde_json (~30 KB raw) | dev-only JS module (WebSocket) + Rust `nve_hot_patch(ptr,len)` behind a cargo `dev` feature, binary `NVP1` only | dev bundle only |
-| Pairing (`NVT1` protocol, `PairClientMachine`) | `pairing.rs` (pure logic) + `wasm_pair.rs` glue | protocol stays Rust (testable) behind `pair` feature; WebSocket pump in a dev JS module | dev bundle only |
+| Pairing (`NveWireFrame` protocol, `PairClientMachine`) | `pairing.rs` (pure logic) + `wasm_pair.rs` glue | protocol stays Rust (testable) behind `pair` feature; WebSocket pump in a dev JS module | dev bundle only |
 | Popup / multi-window (`window.open`, BroadcastChannel) | `wasm_popup.rs`, `multi_window.rs` | JS shell (~1 KB) + raw `nve_window_*` exports | <1 KB |
 | Viewport/resize | ResizeObserver Closures | JS ResizeObserver → Layout event (already in prototype for init) | included |
 | `NveSceneView` ptr export | wasm-bindgen fn | plain export, since memory is exported anyway | 0 |

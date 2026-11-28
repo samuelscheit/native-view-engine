@@ -441,14 +441,18 @@ fn table_hygiene_platform_purity_and_codegen_53bit() {
     );
 }
 
-/// Enforces [INV:no-legacy-acronyms] (shrink-only monotonic ratchet; zero-tolerance under `NVE_STRICT_INVARIANTS=1b1d`).
+/// Enforces [INV:no-legacy-acronyms] (zero-tolerance for retired acronyms; shrink-only ratchet for remaining).
 #[test]
 fn no_banned_legacy_4_letter_acronyms_ratchet() {
     let idx = repo_index();
+    assert_no_violations(
+        "Zero retired legacy 4-letter format acronyms (NVT1/NVD1/NVC1/NVERELOC/NVE_MET1) outside DOC_EXCLUDES",
+        &purity::check_retired_zero_tolerance_acronyms(idx),
+    );
     assert_staged_ratchet(
         Stage::Post1B1D,
-        "Zero banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
-        423,
+        "Zero remaining banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
+        266,
         &purity::check_banned_4_letter_acronyms(idx),
     );
 }

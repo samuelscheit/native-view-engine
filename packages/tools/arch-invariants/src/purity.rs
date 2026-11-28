@@ -28,9 +28,14 @@ const MAGIC_SENTINEL_DEFAULTS: &[&str] = &[
     "default(f32::NEG_INFINITY)",
 ];
 
+/// Retired legacy 4-letter format acronyms enforced at hard zero-tolerance (`0` occurrences).
+const RETIRED_ZERO_TOLERANCE_ACRONYMS: &[&str] = &[
+    "NVT1", "NVD1", "NVC1", "NVERELOC", "NVE_MET1",
+];
+
+/// Remaining legacy 4-letter format acronyms tracked under a shrink-only monotonic ratchet.
 const BANNED_4_LETTER_ACRONYMS: &[&str] = &[
-    "NVH1", "NVW1", "NVT1", "NVD1", "NVC1", "NVWS1", "NVB1", "NVNP", "NVNC", "NVERELOC", "NWS1",
-    "NVE_MET1", "NVE1", "NVP1", "NK1",
+    "NVH1", "NVW1", "NVWS1", "NVB1", "NVNP", "NVNC", "NWS1", "NVE1", "NVP1", "NK1",
 ];
 
 const BANNED_CORE_CSS_FN_PREFIXES: &[&str] = &[
@@ -360,8 +365,7 @@ pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec
     .visit_file(ast);
 }
 
-/// Scans all tracked non-binary text files outside `DOC_EXCLUDES` for banned 4-letter acronyms.
-pub fn check_banned_4_letter_acronyms(idx: &RepoIndex) -> Vec<Violation> {
+fn check_acronym_list(idx: &RepoIndex, list: &[&str]) -> Vec<Violation> {
     let mut violations = Vec::new();
     let mut scanned = 0usize;
     for rel in &idx.tracked {
@@ -376,15 +380,15 @@ pub fn check_banned_4_letter_acronyms(idx: &RepoIndex) -> Vec<Violation> {
             continue;
         };
         scanned += 1;
-        scan_banned_acronyms_str(rel, &content, &mut violations);
+        scan_acronyms_in_list(rel, &content, list, &mut violations);
     }
     assert!(scanned > 0, "banned acronym scanner must scan > 0 tracked files");
     violations
 }
 
-pub fn scan_banned_acronyms_str(rel: &str, content: &str, out: &mut Vec<Violation>) {
+fn scan_acronyms_in_list(rel: &str, content: &str, list: &[&str], out: &mut Vec<Violation>) {
     for (idx, line) in content.lines().enumerate() {
-        for &acr in BANNED_4_LETTER_ACRONYMS {
+        for &acr in list {
             if line_contains_ident(line, acr) {
                 out.push(Violation::new(
                     rel,
@@ -395,6 +399,24 @@ pub fn scan_banned_acronyms_str(rel: &str, content: &str, out: &mut Vec<Violatio
             }
         }
     }
+}
+
+/// Scans all tracked non-binary text files outside `DOC_EXCLUDES` for zero-tolerance retired acronyms.
+pub fn check_retired_zero_tolerance_acronyms(idx: &RepoIndex) -> Vec<Violation> {
+    check_acronym_list(idx, RETIRED_ZERO_TOLERANCE_ACRONYMS)
+}
+
+/// Scans all tracked non-binary text files outside `DOC_EXCLUDES` for remaining ratcheted acronyms.
+pub fn check_banned_4_letter_acronyms(idx: &RepoIndex) -> Vec<Violation> {
+    check_acronym_list(idx, BANNED_4_LETTER_ACRONYMS)
+}
+
+pub fn scan_retired_acronyms_str(rel: &str, content: &str, out: &mut Vec<Violation>) {
+    scan_acronyms_in_list(rel, content, RETIRED_ZERO_TOLERANCE_ACRONYMS, out);
+}
+
+pub fn scan_banned_acronyms_str(rel: &str, content: &str, out: &mut Vec<Violation>) {
+    scan_acronyms_in_list(rel, content, BANNED_4_LETTER_ACRONYMS, out);
 }
 
 /// Scans `packages/core/codegen/src/targets` for Dart-web 53-bit `const int 0x...` safety and

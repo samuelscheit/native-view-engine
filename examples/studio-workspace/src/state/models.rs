@@ -328,11 +328,11 @@ pub struct SyncTelemetryState {
     pub compression_tenths: u16,
     /// Smoothed round-trip time in tenths of milliseconds (e.g. `14` => `"1.4ms"`).
     pub rtt_ms_tenths: u32,
-    /// Cumulative `NVC1` binary CRDT deltas transmitted by this peer.
+    /// Cumulative `NveCrdtDelta` binary CRDT deltas transmitted by this peer.
     pub crdt_deltas_sent: u64,
-    /// Cumulative `NVC1` binary CRDT deltas received and merged by this peer.
+    /// Cumulative `NveCrdtDelta` binary CRDT deltas received and merged by this peer.
     pub crdt_deltas_received: u64,
-    /// Total binary CRDT bytes (`NVC1` + `NVCD`) synced across peers.
+    /// Total binary CRDT bytes (`NveCrdtDelta` + `NVE_DGST`) synced across peers.
     pub crdt_bytes_synced: u64,
     /// Whether the interactive CRDT mesh is currently partitioned.
     pub crdt_partitioned: bool,

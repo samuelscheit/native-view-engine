@@ -158,7 +158,7 @@ pub fn BentoArchitectureGrid() -> Element {
                     }
                 }
 
-                // Live Pairing + Local-First NVC1 CRDT + Frame-0 NVE2 Boot
+                // Live Pairing + Local-First NveCrdtDelta + Frame-0 NVE2 Boot
                 view {
                     test_id: "bento-pairing",
                     nve_style: card_surface(2.0),
@@ -174,17 +174,17 @@ pub fn BentoArchitectureGrid() -> Element {
                         }
                         text {
                             nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(theme.text.primary),
-                            "NVT1/NVD1 Streaming + NVC1 CRDTs"
+                            "NveWireFrame Streaming + Binary CRDTs"
                         }
                         text {
                             nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary).line_height_ratio(1.5),
-                            "Stream 60fps binary deltas to zero-cdylib thin clients over UDP/WS, boot Frame 0 from NVE2 keyframes + Taffy layout in < 2 ms, and converge offline state via binary NVC1 CRDTs."
+                            "Stream 60fps binary deltas to zero-cdylib thin clients over QUIC/WS, boot Frame 0 from NVE2 keyframes + Taffy layout in < 2 ms, and converge offline state via binary NveCrdtDelta CRDTs."
                         }
                     }
                     view {
                         nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
-                        PillBadge { label: "NVT1 / NVD1".to_string(), secondary: true }
-                        PillBadge { label: "NVC1 CRDT".to_string(), secondary: true }
+                        PillBadge { label: "NveWireFrame".to_string(), secondary: true }
+                        PillBadge { label: "NveCrdtDelta".to_string(), secondary: true }
                         PillBadge { label: "< 2 ms Frame-0 Boot".to_string() }
                     }
                 }
@@ -262,7 +262,7 @@ pub fn LiveExamplesStrip() -> Element {
         ("UI + 100k List", "/docs/guides/ui-components"),
         ("Router Sandbox", "/docs/guides/routing"),
         ("NVE_DRAW1 Canvas", "/docs/guides/canvas-draw1"),
-        ("NVC1 CRDT Sync", "/docs/guides/local-first-crdt"),
+        ("CRDT Sync", "/docs/guides/local-first-crdt"),
     ];
     let showcase_card = TypedStyle::new()
         .flex_1().min_width_px(0.0).flex_col().justify_content(FlexJustify::SpaceBetween)
@@ -318,7 +318,7 @@ pub fn LiveExamplesStrip() -> Element {
                             nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             PillBadge { label: "WASM App".to_string(), accent: true }
                             PillBadge { label: "100k Fenwick".to_string(), secondary: true }
-                            PillBadge { label: "NVC1 CRDT".to_string() }
+                            PillBadge { label: "NveCrdtDelta".to_string() }
                         }
                         text {
                             nve_style: TypedStyle::new().font_size(18.0).font_weight(700).color(theme.text.primary),

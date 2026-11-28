@@ -53,7 +53,7 @@ twiggy's dominator/paths view stops at `table[0]` for every address-taken functi
 so every lead below was confirmed by an experiment that removes it.
 
 1. **Everything is always linked.** `nve-web-shell` depended unconditionally on both demo apps,
-   the hot-reload socket, the NVT1/NVD1 pairing client, popups/`BroadcastChannel` window sync and
+   the hot-reload socket, the NveWireFrame pairing client, popups/`BroadcastChannel` window sync and
    the per-frame `NveSceneTable` mirror, and `wizer.initialize` renders *both* apps, so nothing could
    be dead-stripped. Measured costs (br, after the other fixes): `dev` (hot reload + pairing)
    +25.9 K on the counter build (+41.5 K before NVP1-only/anyhow fixes), `multi-window` +12.5 K,

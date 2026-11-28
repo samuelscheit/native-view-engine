@@ -81,11 +81,11 @@ Cargo emits `lib<crate>.dylib` on macOS, `lib<crate>.so` on Linux/Android, and `
 
 Run `cargo nve dev` to watch your crate's `src/` directory, apply `< 50 ms` Tier-1 RSX/style patches over WebSocket, and automatically hot-swap the compiled `cdylib` (Tier 2) on Rust logic changes:
 
-```bash title="Launch dev daemon with Skia preview and live NVD1 pairing"
+```bash title="Launch dev daemon with Skia preview and live NveWireFrame pairing"
 cargo nve dev --package nve-studio-workspace --skia --pair
 ```
 
-When `--pair` is enabled, `nve dev` simultaneously streams binary `NVT1`/`NVD1` frame deltas on UDP port `8091` and WebSocket/TCP port `8092`. Any thin client (Skia, macOS, Windows, Qt 6, GTK4, iOS, Android, or Web `?pair=ws://...`) can connect without compiling or loading a local `.dylib`. See [Live Device Pairing](/interop/live-pairing) for full flags.
+When `--pair` is enabled, `nve dev` simultaneously streams binary `NveWireFrame` frame deltas on QUIC/UDP port `8091` and WebSocket/TCP port `8092`. Any thin client (Skia, macOS, Windows, Qt 6, GTK4, iOS, Android, or Web `?pair=ws://...`) can connect without compiling or loading a local `.dylib`. See [Live Device Pairing](/interop/live-pairing) for full flags.
 
 ## Build Your First `NveApp`
 

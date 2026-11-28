@@ -101,7 +101,7 @@ fn same_timestamp_peer_id_tiebreak_and_ack_race() {
 }
 
 #[test]
-fn namespace_isolation_and_corrupt_nvc1_rejection() {
+fn namespace_isolation_and_corrupt_crdt_delta_rejection() {
     let mut peer_ns1 = CrdtReconcileAdapter::new(PeerId::new(1), 1);
     let mut peer_ns2 = CrdtReconcileAdapter::new(PeerId::new(2), 2);
     peer_ns1.register_key("shared");

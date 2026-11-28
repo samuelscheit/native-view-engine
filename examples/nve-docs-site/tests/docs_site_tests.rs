@@ -402,7 +402,7 @@ fn playground_4_canvas_draw1_emits_real_binary_draw_ops_and_updates() {
 }
 
 #[test]
-fn playground_5_crdt_simulator_diverges_offline_and_converges_via_nvc1() {
+fn playground_5_crdt_simulator_diverges_offline_and_converges_via_crdt_delta() {
     let mut h = InteractiveHarness::mount("/docs/guides/local-first-crdt");
 
     assert!(h.text_of("pg-crdt-convergence").contains("Converged"));
@@ -416,7 +416,7 @@ fn playground_5_crdt_simulator_diverges_offline_and_converges_via_nvc1() {
     h.press("pg-crdt-b-edit");
     assert!(h.text_of("pg-crdt-b-title").contains("Peer B Release"));
 
-    // Sync binary NVC1 deltas -> deterministic convergence with non-zero byte size
+    // Sync binary NveCrdtDelta packets -> deterministic convergence with non-zero byte size
     h.press("pg-crdt-sync");
     assert!(h.text_of("pg-crdt-convergence").contains("Converged"));
     assert_eq!(h.text_of("pg-crdt-a-title"), h.text_of("pg-crdt-b-title"));
@@ -435,7 +435,7 @@ fn playground_5_crdt_simulator_diverges_offline_and_converges_via_nvc1() {
     );
     assert!(
         !h.text_of("pg-crdt-bytes").contains("0 B"),
-        "expected non-zero NVC1 byte telemetry, got '{}'",
+        "expected non-zero CRDT delta byte telemetry, got '{}'",
         h.text_of("pg-crdt-bytes")
     );
 }

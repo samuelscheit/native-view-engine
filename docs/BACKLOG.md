@@ -81,7 +81,7 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
   - Ergonomic `use_synced_state` / `use_synced_list` / `use_presence` hooks bridging server-authoritative thin-client rooms (0-JS Web & Native SDUI) and offline-first local CRDT peers (`packages/core/interop/src/crdt`) in the same live collaborative room, with ephemeral 20–30Hz cursors/selections/online presence.
 
 - [ ] **Self-Documenting Protocol & Format Naming Cleanup**
-  - Wave S2 replaced `NVT1`/`NVD1`/`NVC1` with `NveWireFrame`/`NveCrdtDelta`/`NveTimelineArchive`; finish removing stale `NVT1`/`NVD1` comments/log strings (e.g., `hosts/web-shell/src/{wasm_pair,lib}.rs`, `packages/tools/cli/src/{dev,main}.rs`) and replacing remaining cryptic 4-letter format acronyms (`NVWS1`, `NVB1`, `NWS1`, `NVE_MET1`, `NVE1`, `NVP1`, `NK1`, `NVNP`/`NVNC`) across code, wire headers, and docs with clear self-documenting names.
+  - Retired `NVT1`/`NVD1`/`NVC1`/`NVERELOC`/`NVE_MET1` are 100% eliminated and zero-tolerance enforced in `nve-arch-invariants`; replace the remaining cryptic 4-letter format acronyms (`NVH1`, `NVW1`, `NVWS1`, `NVB1`, `NWS1`, `NVE1`, `NVP1`, `NK1`, `NVNP`/`NVNC`) across code, wire headers, and docs with clear self-documenting names.
 
 - [ ] **Flagship Local-First Workspace & Messaging App (`examples/studio-workspace`)**
   - Core modules (`nve-ui`, `nve-router`, `nve-host-services` + `nve-clipboard` + `nve-system-env`, Environment `TraitKey`s, live `NveCrdtDelta` peer transport, 100k Fenwick stream, Docs editor, Meta Workbench, `NWS1` v3 + `StateFile`) and live `/examples/studio/` GitHub Pages deploy are landed; next step is wiring live OS host services + opt-in `<NativeView<CameraPreview>>` / `BlurSurface` in Studio.

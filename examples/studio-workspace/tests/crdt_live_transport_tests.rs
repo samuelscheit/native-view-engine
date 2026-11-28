@@ -1,6 +1,6 @@
-//! Deep integration tests for live multi-peer binary `NVC1` CRDT sync over:
+//! Deep integration tests for live multi-peer binary `NveCrdtDelta` CRDT sync over:
 //! 1. Real OS loopback TCP sockets (`LoopbackTcpCrdtTransport` on `127.0.0.1:0` via `nve_interop::sync_transport`)
-//! 2. Corrupt & truncated `NVC1`/`NVCD` frame rejection over live loopback TCP
+//! 2. Corrupt & truncated `NveCrdtDelta`/`NVE_DGST` frame rejection over live loopback TCP
 //! 3. Deterministic `InMemoryMeshTransport` with packet drop, reverse reordering, and partition/heal
 //! 4. Interactive Studio UI sync telemetry panel (`crdt-sync-now` & `crdt-toggle-partition`) + `nve-ui` chrome
 
@@ -68,7 +68,7 @@ fn loopback_tcp_three_peer_live_sync_partition_reconnect_anti_entropy_convergenc
     let t_p1 = cluster.node_mut(0).doc_mut().add_task(
         50_100,
         "TCP-101",
-        "Live TCP NVC1 delta exchange",
+        "Live TCP NveCrdtDelta exchange",
         "@maya",
         "Net",
         Priority::P0,
@@ -79,7 +79,7 @@ fn loopback_tcp_three_peer_live_sync_partition_reconnect_anti_entropy_convergenc
         ChannelKind::Engineering,
         "liam",
         "11:01",
-        "Synced over 127.0.0.1 NVT1/NVC1!",
+        "Synced over 127.0.0.1 NveWireFrame/NveCrdtDelta!",
     );
     let b_p3 = cluster
         .node_mut(2)
@@ -294,7 +294,7 @@ fn loopback_tcp_three_peer_live_sync_partition_reconnect_anti_entropy_convergenc
 }
 
 #[test]
-fn loopback_tcp_rejects_corrupt_and_truncated_nvc1_frames_without_corrupting_state() {
+fn loopback_tcp_rejects_corrupt_and_truncated_crdt_frames_without_corrupting_state() {
     let base = WorkspaceSnapshot::default();
     let token = "studio-corrupt-wire-test";
 
@@ -332,11 +332,11 @@ fn loopback_tcp_rejects_corrupt_and_truncated_nvc1_frames_without_corrupting_sta
         Priority::P1,
         TaskStatus::Todo,
     );
-    let valid_delta = sender.doc().delta_since(receiver.doc().version_vector()).expect("delta within NVC1 limits");
+    let valid_delta = sender.doc().delta_since(receiver.doc().version_vector()).expect("delta within NveCrdtDelta limits");
 
-    // 1. Truncated NVC1 header
+    // 1. Truncated NveCrdtDelta header
     let truncated = valid_delta[..12].to_vec();
-    // 2. Bit-flipped NVC1 checksum / body
+    // 2. Bit-flipped NveCrdtDelta checksum / body
     let mut flipped = valid_delta.clone();
     let mid = flipped.len() / 2;
     flipped[mid] ^= 0x55;
@@ -406,11 +406,11 @@ fn loopback_tcp_rejects_corrupt_and_truncated_nvc1_frames_without_corrupting_sta
     assert_eq!(receiver.doc().project_snapshot(&base), snapshot_before);
     assert_eq!(receiver.doc().version_vector(), &vv_before);
 
-    // Subsequent valid NVC1 delta over the EXACT same TCP connection still succeeds!
+    // Subsequent valid NveCrdtDelta over the EXACT same TCP connection still succeeds!
     sender
         .transport_mut()
         .send_raw_wire_frame(&valid_delta)
-        .expect("send valid NVC1 delta after corrupt burst");
+        .expect("send valid NveCrdtDelta after corrupt burst");
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while receiver.metrics().deltas_received == 0 && Instant::now() < deadline {
@@ -422,7 +422,7 @@ fn loopback_tcp_rejects_corrupt_and_truncated_nvc1_frames_without_corrupting_sta
     let after = receiver.doc().project_snapshot(&base);
     assert!(
         after.tasks.iter().any(|t| t.id == valid_task_id),
-        "valid NVC1 delta must still merge cleanly after corrupt wire frames"
+        "valid NveCrdtDelta must still merge cleanly after corrupt wire frames"
     );
 }
 
@@ -479,7 +479,7 @@ fn in_memory_mesh_handles_packet_drops_reordering_and_partition_heal() {
     assert!(hub.dropped_frames() > 0, "expected dropped frames under fault config");
 
     // Inject corrupt frame into Peer 2 inbox to verify atomic rejection on mesh transport too.
-    hub.inject_raw_frame(PeerId(1), PeerId(2), b"NVC1_CORRUPT".to_vec());
+    hub.inject_raw_frame(PeerId(1), PeerId(2), b"CRDT_CORRUPT".to_vec());
     let corrupt_rep = nodes[1].pump_incoming();
     assert_eq!(corrupt_rep.corrupt_frames_rejected, 1);
 
@@ -569,17 +569,17 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
 
     render(&mut surface, &mut headless, &mut fid);
     let init_tree = headless.render_ascii_tree(surface.store());
-    assert!(init_tree.contains("NVC1 0/0d | 0B"));
+    assert!(init_tree.contains("CRDT 0/0d | 0B"));
     assert!(init_tree.contains("MESH"));
     assert!(init_tree.contains("Sync Now"));
     assert!(init_tree.contains("Partition"));
 
-    // 1. Trigger live binary NVC1 Sync Now directly from Studio panel!
+    // 1. Trigger live binary NveCrdtDelta Sync Now directly from Studio panel!
     press(&mut surface, &mut headless, &mut fid, "crdt-sync-now");
     let after_sync = headless.render_ascii_tree(surface.store());
     assert!(
-        after_sync.contains("NVC1 1/1d |") && !after_sync.contains("| 0B"),
-        "expected non-zero NVC1 delta & byte metrics after Sync Now:\n{after_sync}"
+        after_sync.contains("CRDT 1/1d |") && !after_sync.contains("| 0B"),
+        "expected non-zero CRDT delta & byte metrics after Sync Now:\n{after_sync}"
     );
 
     // 2. Simulate network partition -> peers drop to 0, badge flips to SPLIT, button flips to Heal Mesh.
@@ -591,14 +591,14 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
 
     // Pressing Sync Now while partitioned delivers 0 new remote deltas.
     press(&mut surface, &mut headless, &mut fid, "crdt-sync-now");
-    assert!(headless.render_ascii_tree(surface.store()).contains("NVC1 1/1d |"));
+    assert!(headless.render_ascii_tree(surface.store()).contains("CRDT 1/1d |"));
 
-    // 3. Heal Mesh -> reconnects peers, runs real NVC1 anti-entropy merge, updates counters & reactions!
+    // 3. Heal Mesh -> reconnects peers, runs real NveCrdtDelta anti-entropy merge, updates counters & reactions!
     press(&mut surface, &mut headless, &mut fid, "crdt-toggle-partition");
     let healed_tree = headless.render_ascii_tree(surface.store());
     assert!(healed_tree.contains("MESH"));
     assert!(healed_tree.contains("2 peers"));
-    assert!(healed_tree.contains("NVC1 2/2d |"));
+    assert!(healed_tree.contains("CRDT 2/2d |"));
     assert!(healed_tree.contains("CRDT Sync ("));
 
     // 4. Verify NWS1 v2 binary codec preserves CRDT sync telemetry fields identically.

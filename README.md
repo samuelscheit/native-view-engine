@@ -54,7 +54,7 @@ nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, Frame0File + StateFile, 2
   ├──► nve-backend-skia + hosts/skia-shell                       (Skia CPU/Metal/Vulkan + winit + IME + --pair-connect)
   ├──► nve-backend-web + hosts/web-shell                         (WASM -> DOM + ARIA/IME + <canvas> + ?pair=ws://)
   ├──► nve-backend-headless + nve-layout-yoga                    (Generic Taffy / real RN Yoga + sub-ms tests)
-  └──► nve-codegen + nve-interop + nve-cli                       (6-target Nitro-style hybrid FFI + NVD1 live pairing)
+  └──► nve-codegen + nve-interop + nve-cli                       (6-target Nitro-style hybrid FFI + NveWireFrame live pairing)
 ```
 
 ## Quick Start
@@ -74,10 +74,10 @@ cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
 cargo run -p nve-skia-shell -- \
   target/debug/libnve_studio_workspace.dylib --no-ws --width 1280 --height 800
 
-# 5. Start the 2-tier hot-reload dev daemon (with optional live NVD1 pairing)
+# 5. Start the 2-tier hot-reload dev daemon (with optional live NveWireFrame pairing)
 cargo nve dev --package nve-studio-workspace --pair
 
-# 6. Or stream any app over bidirectional NVT1/NVD1 UDP + WebSocket pairing to zero-cdylib thin clients
+# 6. Or stream any app over bidirectional NveWireFrame QUIC + WebSocket pairing to zero-cdylib thin clients
 #    (works simultaneously across Skia Desktop, macOS AppKit, Qt 6, GTK4, and Web Browser!)
 cargo nve pair --package nve-studio-workspace --udp-port 8091 --ws-port 8092 --token dev-secret
 cargo run -p nve-skia-shell -- --pair-connect 127.0.0.1:8091 --pair-transport udp --pair-token dev-secret

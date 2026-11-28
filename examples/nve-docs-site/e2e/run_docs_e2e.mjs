@@ -619,9 +619,9 @@ async function run() {
     await cdp.waitFor(
       `document.querySelector('[data-testid="pg-crdt-convergence"]')?.textContent?.includes("Converged") && !document.querySelector('[data-testid="pg-crdt-bytes"]')?.textContent?.includes("0 B")`,
       4000,
-      "CRDT simulator NVC1 sync"
+      "CRDT simulator NveCrdtDelta sync"
     );
-    console.log("    ✓ ⌘K NVS2 search + CRDT binary NVC1 convergence passed with 0 reloads");
+    console.log("    ✓ ⌘K NVS2 search + CRDT binary NveCrdtDelta convergence passed with 0 reloads");
 
     assert(cdp.consoleErrors.length === 0, `Desktop console errors: ${cdp.consoleErrors.join(" | ")}`);
     assert(cdp.pageErrors.length === 0, `Desktop page errors: ${cdp.pageErrors.join(" | ")}`);

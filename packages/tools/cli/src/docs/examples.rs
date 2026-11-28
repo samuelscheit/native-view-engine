@@ -31,7 +31,7 @@ pub(crate) const EXAMPLE_APPS: [ExampleAppSpec; 2] = [
     ExampleAppSpec {
         slug: "studio",
         title: "Aether Workspace + NVE Studio",
-        description: "Multi-pane workspace, 100k Fenwick VirtualList, X-Ray inspector, and NVC1 CRDTs in WASM.",
+        description: "Multi-pane workspace, 100k Fenwick VirtualList, X-Ray inspector, and NveCrdtDelta CRDTs in WASM.",
     },
     ExampleAppSpec {
         slug: "kitchen-sink",

@@ -1,5 +1,5 @@
 //! Multi-peer offline partition & heal convergence tests, out-of-order/duplicate delta
-//! delivery tests, and corrupt `NVC1` rejection tests for [`StudioCrdtDoc`].
+//! delivery tests, and corrupt `NveCrdtDelta` rejection tests for [`StudioCrdtDoc`].
 
 use nve_interop::crdt::{
     CrdtRecord, CrdtValue, CrdtWireError, HlcTimestamp, NVE_CRDT_DELTA_MAGIC,
@@ -140,7 +140,7 @@ fn five_peer_offline_partition_and_heal_converges_deterministically() {
         ChannelKind::Engineering,
         "Devon",
         "09:20",
-        "Shipped NVC1 wire format",
+        "Shipped NveCrdtDelta wire format",
     );
     assert!(peers[3].react_chat_message(10_520, ChannelKind::Engineering, seed_eng_msg, -1));
     let p4_doc = peers[3].add_doc(10_530, "crdt-rfc", "CRDT Sync RFC", "Just now");
@@ -368,7 +368,7 @@ fn out_of_order_duplicate_deltas_and_empty_peer_catchup() {
 }
 
 #[test]
-fn corrupt_nvc1_deltas_are_rejected_without_mutating_state() {
+fn corrupt_crdt_deltas_are_rejected_without_mutating_state() {
     let base = WorkspaceSnapshot::default();
     let mut p1 = StudioCrdtDoc::from_snapshot(PeerId(1), 1_000, &base);
     let mut p2 = StudioCrdtDoc::from_snapshot(PeerId(2), 1_000, &base);

@@ -2,7 +2,7 @@
 //!
 //! Built with shared `nve-ui` primitives (`Card`, `Button`, `Badge`, `Separator`), exposing
 //! Accent swatches, Corner Radius, Density, Live Taffy <-> Yoga Layout Engine switcher,
-//! X-Ray HUD, Live Sync & multi-peer binary `NVC1` CRDT telemetry (with Sync Now and
+//! X-Ray HUD, Live Sync & multi-peer binary `NveCrdtDelta` CRDT telemetry (with Sync Now and
 //! Partition/Heal controls), and deterministic Time-Travel Scrubber.
 //!
 //! [`StudioPanel`] subscribes to the `studio` domain; [`SyncCard`] to `sync` and
@@ -228,7 +228,7 @@ pub(crate) fn StudioPanel(mobile: bool) -> Element {
     }
 }
 
-/// Live sync / pairing + binary `NVC1` CRDT mesh telemetry.
+/// Live sync / pairing + binary `NveCrdtDelta` CRDT mesh telemetry.
 #[component]
 fn SyncCard() -> Element {
     nve_dioxus::render_probe::record_render("SyncCard");
@@ -252,7 +252,7 @@ fn SyncCard() -> Element {
         sync.format_rtt()
     );
     let crdt_summary = format!(
-        "NVC1 {}/{}d | {}B",
+        "CRDT {}/{}d | {}B",
         sync.crdt_deltas_sent, sync.crdt_deltas_received, sync.crdt_bytes_synced
     );
     let split = sync.crdt_partitioned;

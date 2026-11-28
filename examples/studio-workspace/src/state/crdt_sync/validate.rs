@@ -1,4 +1,4 @@
-//! Schema validation of decoded `NVC1` records before [`super::StudioCrdtDoc`] merges them: every
+//! Schema validation of decoded `NveCrdtDelta` records before [`super::StudioCrdtDoc`] merges them: every
 //! namespace, field, and value type must belong to the Studio schema, so a malformed packet is
 //! rejected whole and the document stays untouched.
 
