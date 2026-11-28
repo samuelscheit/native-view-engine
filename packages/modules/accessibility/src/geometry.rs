@@ -2,9 +2,10 @@
 
 use std::borrow::Cow;
 
+use accesskit::Affine;
 use nve_engine::LayoutRect;
 use nve_store::{NodeId, NodeStore};
-use nve_tables::tables::{is_node_display_none, Accessibility};
+use nve_tables::tables::{is_display_contents, is_node_display_none, Accessibility};
 
 /// Deterministic 64-bit `XXH64` digest of a built [`accesskit::Node`] (and its synthetic `TextRun`
 /// child, if present) used to skip unchanged nodes during incremental AccessKit updates.
@@ -44,6 +45,13 @@ pub trait A11yGeometryProvider {
         (0.0, 0.0)
     }
 
+    /// Visual child shift `(shift_x, shift_y)` in logical pixels for a `Scroll` container
+    /// (subtracting any virtualized `Scroll::virtual_top_spacer`). Returns `None` to derive
+    /// automatically from `scroll_offset(id)` and `Scroll::virtual_top_spacer`.
+    fn visual_scroll_shift(&self, _id: NodeId) -> Option<(f32, f32)> {
+        None
+    }
+
     /// Total scrollable `(content_width, content_height)` in logical pixels for a `Scroll` node.
     fn scroll_content_size(&self, _id: NodeId) -> Option<(f32, f32)> {
         None
@@ -52,6 +60,12 @@ pub trait A11yGeometryProvider {
     /// Active `position: sticky` translation `(dx, dy)` in logical pixels, if any.
     fn sticky_delta(&self, _id: NodeId) -> (f32, f32) {
         (0.0, 0.0)
+    }
+
+    /// Optional effective 2D affine transform (e.g. animated or static `Transform2D`) in logical
+    /// coordinates, composed with sticky/scroll/scale transforms.
+    fn node_affine(&self, _id: NodeId) -> Option<Affine> {
+        None
     }
 
     /// Currently focused [`NodeId`], if any.
@@ -73,6 +87,12 @@ pub trait A11yGeometryProvider {
     /// Host-resolved effective `display: none` check (e.g. including `:disabled`/`StateRules`
     /// overrides beyond raw `Layout::display == Display::None`).
     fn is_display_none(&self, _id: NodeId) -> bool {
+        false
+    }
+
+    /// Host-resolved effective `display: contents` check (e.g. including `StateRules` overrides).
+    /// Combined with static [`is_display_contents`].
+    fn is_display_contents(&self, _id: NodeId) -> bool {
         false
     }
 }
@@ -97,4 +117,25 @@ pub(crate) fn is_node_excluded(
     store
         .try_row::<Accessibility>(id)
         .is_some_and(|a| a.hidden())
+}
+
+/// Returns `true` when `id` is a non-root `display: contents` node regardless of `aria-hidden`.
+#[inline]
+pub(crate) fn is_node_display_contents_any(
+    store: &NodeStore,
+    geo: &dyn A11yGeometryProvider,
+    id: NodeId,
+) -> bool {
+    id != NodeId::ROOT && (is_display_contents(store, id) || geo.is_display_contents(id))
+}
+
+/// Returns `true` when `id` is a non-root, non-excluded `display: contents` node whose visible
+/// children should be flattened transparently into its box-generating accessibility parent.
+#[inline]
+pub(crate) fn is_node_display_contents_transparent(
+    store: &NodeStore,
+    geo: &dyn A11yGeometryProvider,
+    id: NodeId,
+) -> bool {
+    !is_node_excluded(store, geo, id) && is_node_display_contents_any(store, geo, id)
 }

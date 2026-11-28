@@ -2119,12 +2119,12 @@ async function main() {
         cdp,
         "Studio NVWS1 frame snapshot and NVB1 NWS1 state persisted automatically to localStorage",
         () => {
-          const snap = localStorage.getItem("nve:snap:studio:v2") || "";
-          const state = localStorage.getItem("nve:state:studio:v2") || "";
+          const snap = localStorage.getItem("nve:snap:studio:v3") || "";
+          const state = localStorage.getItem("nve:state:studio:v3") || "";
           return (
-            snap.startsWith("NVWS1|2|") &&
+            snap.startsWith("NVWS1|3|") &&
             snap.includes("RFC-042: Zero-Copy NveSceneView") &&
-            state.startsWith("NVB1|2|")
+            state.startsWith("NVB1|3|")
           );
         }
       );
@@ -2282,8 +2282,8 @@ async function main() {
         cdp,
         "Kitchen Sink snapshot + binary state persisted to localStorage",
         () =>
-          (localStorage.getItem("nve:snap:kitchen-sink:v1") || "").startsWith("NVWS1|1|") &&
-          (localStorage.getItem("nve:state:kitchen-sink:v1") || "").startsWith("NVB1|1|")
+          (localStorage.getItem("nve:snap:kitchen-sink:v2") || "").startsWith("NVWS1|2|") &&
+          (localStorage.getItem("nve:state:kitchen-sink:v2") || "").startsWith("NVB1|2|")
       );
 
       // Verify returning-user 0ms instant restore even with .wasm BLOCKED!
@@ -2340,8 +2340,8 @@ async function main() {
             ctrl?.restored_from_snapshot() === false &&
             ctrl?.is_hydrated() === true &&
             Number(ctrl?.hydration_mismatch_count()) === 0 &&
-            localStorage.getItem("nve:snap:studio:v2") === null &&
-            localStorage.getItem("nve:state:studio:v2") === null &&
+            localStorage.getItem("nve:snap:studio:v3") === null &&
+            localStorage.getItem("nve:state:studio:v3") === null &&
             text.includes("Issue Board") &&
             text.includes("Done (1)") &&
             !text.includes("Zero-MS Snapshot Task")
@@ -2351,8 +2351,8 @@ async function main() {
       await evalJs(
         cdp,
         `(() => {
-          localStorage.setItem('nve:snap:studio:v2', 'NVWS1|2|0000000000000000||0|0|0|15\\n<div data-nve-id="1">corrupt</div>');
-          localStorage.setItem('nve:state:studio:v2', 'NVB1|2|!!!CORRUPT!!!');
+          localStorage.setItem('nve:snap:studio:v3', 'NVWS1|3|0000000000000000||0|0|0|15\\n<div data-nve-id="1">corrupt</div>');
+          localStorage.setItem('nve:state:studio:v3', 'NVB1|3|!!!CORRUPT!!!');
           return true;
         })()`
       );
@@ -2563,6 +2563,83 @@ async function main() {
     }
     console.log(
       "    PASS Host Services real WASM Pending clipboard unmount & re-entrant callback auto-reap (0 UAF)"
+    );
+
+    // Live WASM `NotAllowedError` (must return PermissionDenied = -3, NEVER stale shadow) AND
+    // missing `navigator.clipboard` fallback (must synchronously return shadow text).
+    const clipErrFallbackResult = await evalJs(
+      cdp,
+      `(async () => {
+        const mod = window.__nveWasmMod;
+        const origClip = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+        const el = document.createElement('div');
+        el.id = 'nve-host-clip-err';
+        el.style.cssText = 'position:fixed;left:-9999px;top:0;width:640px;height:480px;';
+        document.body.appendChild(el);
+        try {
+          // (a) NotAllowedError with populated shadow buffer MUST resolve PermissionDenied (-3).
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {
+              readText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')),
+              writeText: () => Promise.resolve(),
+            },
+          });
+          const cDeny = mod.start_studio_workspace_app_on_surface(94, 'nve-host-clip-err', null);
+          const seededDeny = mod.host_services_set_clipboard_shadow(94, 'stale-secret-must-not-leak');
+          const probeDeny = mod.host_services_clipboard_read_probe(94);
+          let denyRes = 'not-pending';
+          if (probeDeny.startsWith('pending:')) {
+            const reqId = BigInt(probeDeny.slice('pending:'.length));
+            await Promise.resolve();
+            await Promise.resolve();
+            await new Promise((r) => setTimeout(r, 0));
+            denyRes = mod.host_services_take_clipboard_result(94, reqId);
+          }
+          cDeny.unmount();
+          cDeny.free();
+
+          // (b) Missing navigator.clipboard falls back synchronously to shadow text.
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: undefined,
+          });
+          const cMiss = mod.start_studio_workspace_app_on_surface(93, 'nve-host-clip-err', null);
+          const seededMiss = mod.host_services_set_clipboard_shadow(93, 'shadow-fallback-ok');
+          const probeMiss = mod.host_services_clipboard_read_probe(93);
+          cMiss.unmount();
+          cMiss.free();
+
+          await Promise.resolve();
+          await new Promise((r) => setTimeout(r, 0));
+          const afterSlabs = Array.from(mod.host_services_slab_counts());
+          return { seededDeny, probeDeny, denyRes, seededMiss, probeMiss, afterSlabs };
+        } finally {
+          el.remove();
+          if (origClip) {
+            Object.defineProperty(navigator, 'clipboard', origClip);
+          } else {
+            delete navigator.clipboard;
+          }
+        }
+      })()`
+    );
+    if (
+      !clipErrFallbackResult.seededDeny ||
+      !clipErrFallbackResult.probeDeny.startsWith("pending:") ||
+      clipErrFallbackResult.denyRes !== "err:-3" ||
+      !clipErrFallbackResult.seededMiss ||
+      clipErrFallbackResult.probeMiss !== "sync:shadow-fallback-ok" ||
+      JSON.stringify(clipErrFallbackResult.afterSlabs) !== JSON.stringify(baselineSlabs)
+    ) {
+      throw new Error(
+        `WASM clipboard NotAllowedError / missing navigator.clipboard fallback failed: baseline=${JSON.stringify(
+          baselineSlabs
+        )}, got=${JSON.stringify(clipErrFallbackResult)}`
+      );
+    }
+    console.log(
+      "    PASS Host Services live WASM NotAllowedError -> PermissionDenied (-3) & missing navigator.clipboard shadow fallback"
     );
 
     // Live prefers-color-scheme Dark -> Light transition via CDP Emulation.setEmulatedMedia.

@@ -81,8 +81,9 @@ impl WebHostServices {
 
     /// Cancels all in-flight async requests and drops pending browser Promise closures.
     pub fn cancel_pending(&self) -> usize {
+        let cancelled = self.registry.cancel_pending();
         self.clipboard.cancel_pending();
-        self.registry.cancel_pending()
+        cancelled
     }
 
     /// Drains all queued async `Response`, `Push`, and `Channel` records into a canonical
@@ -161,13 +162,15 @@ impl HostServiceProvider for WebHostServices {
     }
 
     fn discard_pending(&self) -> usize {
+        let discarded = self.registry.discard_pending();
         self.clipboard.cancel_pending();
-        self.registry.discard_pending()
+        discarded
     }
 
     fn discard_pending_for_owner(&self, owner_tag: u64) -> usize {
-        self.clipboard.cancel_pending();
-        self.registry.discard_pending_for_owner(owner_tag)
+        let discarded = self.registry.discard_pending_for_owner(owner_tag);
+        self.clipboard.cancel_pending_for_owner(owner_tag);
+        discarded
     }
 }
 
@@ -180,13 +183,20 @@ pub(crate) mod wasm_drain {
     use nve_abi::NveHostEventBatchBuilder;
     #[cfg(feature = "dev")]
     use nve_backend_web::microtask::debug_microtask_counts;
-    use nve_backend_web::microtask::{cancel_owner_microtasks, enqueue_microtask};
+    use nve_backend_web::microtask::{
+        cancel_owner_microtasks, enqueue_macrotask, enqueue_microtask,
+    };
     use nve_system_env_web::WebThemeWatcher;
 
     use super::WebHostServices;
     use crate::session::WebAppSession;
 
-    type WakeTrampoline = Box<dyn Fn()>;
+    /// Microtask retries before yielding to macrotasks when `WebAppSession` is momentarily borrowed.
+    const MICROTASK_BORROW_RETRY_LIMIT: u8 = 4;
+    /// Hard retry cap preventing unbounded spinning if a session borrow is permanently stuck.
+    const MAX_BORROW_RETRIES: u8 = 16;
+
+    type WakeTrampoline = Box<dyn Fn(bool)>;
 
     thread_local! {
         static WAKE_TRAMPOLINES: RefCell<Vec<(usize, WakeTrampoline)>> =
@@ -230,6 +240,52 @@ pub(crate) mod wasm_drain {
         }
 
         #[cfg(feature = "dev")]
+        pub(crate) fn debug_set_clipboard_shadow(&self, text: Option<String>) {
+            self.services.clipboard().set_shadow_text(text);
+        }
+
+        /// Starts a clipboard read without letting `wasm_drain` consume it, or returns sync text.
+        #[cfg(feature = "dev")]
+        pub(crate) fn debug_clipboard_read_probe(&self) -> String {
+            use nve_clipboard_web::decode_read_text_response;
+            use nve_host_services::{HostServiceProvider, InvokeResult};
+            match self
+                .services
+                .invoke_raw(nve_abi::SERVICE_CLIPBOARD, 1, &[])
+            {
+                Ok(InvokeResult::Ready(bytes)) => match decode_read_text_response(&bytes) {
+                    Ok(Some(t)) => format!("sync:{t}"),
+                    Ok(None) => "sync-none".to_owned(),
+                    Err(e) => format!("decode-err:{e}"),
+                },
+                Ok(InvokeResult::Pending { request_id }) => {
+                    // Pause auto-drain so the E2E probe can inspect the resolved status directly.
+                    self.active.set(false);
+                    format!("pending:{request_id}")
+                }
+                Err(err) => format!("err:{}", err.to_status().as_i32()),
+            }
+        }
+
+        #[cfg(feature = "dev")]
+        pub(crate) fn debug_take_clipboard_result(&self, request_id: u64) -> String {
+            use nve_clipboard_web::decode_read_text_response;
+            match self
+                .services
+                .completion_sink()
+                .take_completed_response(request_id)
+            {
+                None => "none".to_owned(),
+                Some(Ok(bytes)) => match decode_read_text_response(&bytes) {
+                    Ok(Some(t)) => format!("ok:{t}"),
+                    Ok(None) => "ok-none".to_owned(),
+                    Err(e) => format!("decode-err:{e}"),
+                },
+                Some(Err(err)) => format!("err:{}", err.to_status().as_i32()),
+            }
+        }
+
+        #[cfg(feature = "dev")]
         pub(crate) fn debug_arm_reentrant_unmount_on_ready(&self, surface_id: nve_abi::SurfaceId) {
             self.services.completion_sink().set_on_ready(Some(Arc::new(move || {
                 crate::wasm_api::teardown_surface_reentrant(surface_id);
@@ -242,6 +298,7 @@ pub(crate) mod wasm_drain {
         ) -> Self {
             let active = Rc::new(Cell::new(true));
             let scheduled = Rc::new(Cell::new(false));
+            let borrow_retries = Rc::new(Cell::new(0u8));
             let batch_builder = Rc::new(RefCell::new(NveHostEventBatchBuilder::with_capacity(
                 1024,
             )));
@@ -250,19 +307,21 @@ pub(crate) mod wasm_drain {
 
             let active_for_wake = Rc::clone(&active);
             let scheduled_for_wake = Rc::clone(&scheduled);
+            let retries_for_wake = Rc::clone(&borrow_retries);
             let services_for_wake = Arc::clone(&services);
             let builder_for_wake = Rc::clone(&batch_builder);
 
-            let schedule_drain = move || {
+            let schedule_drain = move |use_macrotask: bool| {
                 if !active_for_wake.get() || scheduled_for_wake.replace(true) {
                     return;
                 }
                 let active_inner = Rc::clone(&active_for_wake);
                 let scheduled_inner = Rc::clone(&scheduled_for_wake);
+                let retries_inner = Rc::clone(&retries_for_wake);
                 let services_inner = Arc::clone(&services_for_wake);
                 let builder_inner = Rc::clone(&builder_for_wake);
                 let session_inner = session.clone();
-                enqueue_microtask(owner_key, move || {
+                let run = move || {
                     scheduled_inner.set(false);
                     if !active_inner.get() {
                         return;
@@ -272,6 +331,7 @@ pub(crate) mod wasm_drain {
                     };
                     match session_rc.try_borrow_mut() {
                         Ok(mut guard) => {
+                            retries_inner.set(0);
                             let mut builder = builder_inner.borrow_mut();
                             builder.clear();
                             if let Ok(written) = services_inner
@@ -283,15 +343,24 @@ pub(crate) mod wasm_drain {
                             }
                             drop(builder);
                             if services_inner.completion_sink().queued_count() > 0 {
-                                invoke_wake_trampoline(owner_key);
+                                invoke_wake_trampoline(owner_key, false);
                             }
                         }
                         Err(_) => {
-                            // Session momentarily borrowed; re-arm wake so records flush next microtask.
-                            invoke_wake_trampoline(owner_key);
+                            let next = retries_inner.get().saturating_add(1);
+                            retries_inner.set(next);
+                            if next < MAX_BORROW_RETRIES {
+                                let yield_macro = next >= MICROTASK_BORROW_RETRY_LIMIT;
+                                invoke_wake_trampoline(owner_key, yield_macro);
+                            }
                         }
                     }
-                });
+                };
+                if use_macrotask {
+                    enqueue_macrotask(owner_key, run);
+                } else {
+                    enqueue_microtask(owner_key, run);
+                }
             };
 
             WAKE_TRAMPOLINES.with(|list| {
@@ -300,7 +369,7 @@ pub(crate) mod wasm_drain {
                 guard.push((owner_key, Box::new(schedule_drain)));
             });
             services.completion_sink().set_on_ready(Some(Arc::new(move || {
-                invoke_wake_trampoline(owner_key);
+                invoke_wake_trampoline(owner_key, false);
             })));
 
             Self {
@@ -324,10 +393,10 @@ pub(crate) mod wasm_drain {
         }
     }
 
-    fn invoke_wake_trampoline(owner_key: usize) {
+    fn invoke_wake_trampoline(owner_key: usize, use_macrotask: bool) {
         WAKE_TRAMPOLINES.with(|list| {
             if let Some((_, f)) = list.borrow().iter().find(|(k, _)| *k == owner_key) {
-                f();
+                f(use_macrotask);
             }
         });
     }

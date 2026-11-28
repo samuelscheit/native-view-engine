@@ -11,7 +11,7 @@ use std::fmt;
 use std::mem::{align_of, offset_of, size_of};
 
 use nve_abi_macros::NveAbi;
-use nve_codec::{ByteReader, NveCodec, NveDecode};
+use nve_codec::NveCodec;
 
 use super::{HostRequestId, HostServiceId, NveHostStatus};
 
@@ -43,10 +43,14 @@ pub const NVE_HOST_BATCH_MAX_PAYLOAD: usize = 64 * 1024 * 1024;
 /// alone when the builder is empty so head-of-line stalling cannot occur.
 pub const NVE_HOST_BATCH_MAX_BYTES: usize = 4 * 1024 * 1024;
 
-/// Exact encoded byte length of one record (32-byte header + 8-byte-aligned payload).
+/// Exact encoded byte length of one record (32-byte header + 8-byte-aligned payload),
+/// or `None` on arithmetic overflow.
 #[inline]
-pub const fn host_batch_padded_record_len(payload_len: usize) -> usize {
-    NVE_HOST_RECORD_HEADER_LEN + ((payload_len + (NVE_HOST_BATCH_ALIGN - 1)) & !(NVE_HOST_BATCH_ALIGN - 1))
+pub const fn host_batch_padded_record_len(payload_len: usize) -> Option<usize> {
+    let Some(padded) = align8_payload_len(payload_len) else {
+        return None;
+    };
+    NVE_HOST_RECORD_HEADER_LEN.checked_add(padded)
 }
 
 /// Discriminant for records inside an [`NveHostEventBatchRef`].
@@ -69,10 +73,8 @@ impl NveHostEventKind {
     }
 
     #[inline]
-    pub fn try_from_u8(raw: u8) -> Option<Self> {
-        let buf = [raw];
-        let mut reader = ByteReader::new(&buf);
-        <Self as NveDecode>::decode(&mut reader).ok()
+    pub const fn try_from_u8(raw: u8) -> Option<Self> {
+        Self::from_repr(raw)
     }
 }
 

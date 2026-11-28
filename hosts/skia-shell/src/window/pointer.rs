@@ -313,6 +313,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 let anchor = self.replica.backend().focus_state().selection_anchor;
                 let (store, backend) = self.replica.store_and_backend_mut();
                 backend.set_caret_and_selection(store, next_caret, anchor);
+                self.mark_a11y_dirty(node_id);
                 visual_changed = true;
             }
         }

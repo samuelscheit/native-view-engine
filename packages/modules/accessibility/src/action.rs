@@ -3,7 +3,7 @@
 use accesskit::{Action, ActionData, ActionRequest, ScrollUnit, TreeId};
 use nve_store::NodeId;
 
-use crate::id::{decode_a11y_id, DecodedA11yId, StoreEpoch};
+use crate::id::{decode_a11y_id, StoreEpoch};
 
 /// Default logical-pixel step for `ScrollUnit::Item` scroll actions.
 pub const DEFAULT_SCROLL_STEP_ITEM: f32 = 40.0;
@@ -123,8 +123,9 @@ pub fn translate_action_request(
                 if focus_id.owner() != owner {
                     return None;
                 }
-                // `SetTextSelection` may target either the TextInput container or its TextRun.
-                if owner != target && matches!(decoded, DecodedA11yId::Node(_)) {
+                // `SetTextSelection` may target either the TextInput container or its TextRun,
+                // but selection endpoints MUST belong to the same owner node as `target_node`.
+                if owner != target {
                     return None;
                 }
                 A11yAction::SetTextSelection {

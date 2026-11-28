@@ -182,6 +182,30 @@ pub(crate) fn is_node_display_none_effective<L: StoreLayoutEngine>(
                 .is_some_and(|l| l.display() == Display::None))
 }
 
+/// Returns `true` if `id` itself is effectively `display: contents` (including `StateRules`
+/// overrides) and is neither root nor `InputKind::Hidden`.
+#[inline]
+pub(crate) fn is_node_display_contents_effective<L: StoreLayoutEngine>(
+    store: &NodeStore,
+    layout_tree: &HeadlessBackend<L>,
+    id: NodeId,
+) -> bool {
+    if id == NodeId::ROOT || !store.is_live(id) || is_hidden_text_input(store, id) {
+        return false;
+    }
+    let mut patched_display: Option<Display> = None;
+    layout_tree.visit_effective_state_patches(store, id, |pv| {
+        if let Some(d) = pv.get_prop(Layout::DISPLAY) {
+            patched_display = Some(d);
+        }
+    });
+    patched_display == Some(Display::Contents)
+        || (patched_display.is_none()
+            && store
+                .try_row::<Layout>(id)
+                .is_some_and(|l| l.display() == Display::Contents))
+}
+
 /// Returns `true` if `id` or any ancestor up to root is effectively `display: none` (including
 /// `StateRules` pseudo-state overrides and `InputKind::Hidden`).
 #[inline]

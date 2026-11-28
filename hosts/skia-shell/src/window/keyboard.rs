@@ -106,6 +106,54 @@ fn move_caret_visual(backend: &ShellSkiaBackend, text: &str, caret: usize, delta
 }
 
 impl<A: DesktopApp> DesktopSession<A> {
+    /// Dispatches a direct typed `InteractionEvent::KeyDown` event targeting `target` (or its
+    /// nearest ancestor with a `KeyDown`/`KeyUp` listener; never hijacking an unrelated focused
+    /// sibling).
+    pub(super) fn handle_keydown_for_target(
+        &mut self,
+        target: NodeId,
+        key: &str,
+        meta: bool,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Result<bool, DesktopHostError> {
+        if key.is_empty() {
+            return Ok(false);
+        }
+        let store = self.replica.store();
+        let mut node_id = target;
+        let mut cur = target;
+        for _ in 0..256 {
+            if store.is_live(cur) && has_keydown_listener(store, cur) {
+                node_id = cur;
+                break;
+            }
+            let Some(parent) = store.parent(cur) else {
+                break;
+            };
+            if parent == cur {
+                break;
+            }
+            cur = parent;
+        }
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_key_down(
+            self.surface_id,
+            node_id,
+            TimestampUs(now_us()),
+            key,
+            "",
+            EventFlags::from_modifiers(meta, ctrl, shift, alt, false),
+            0,
+        );
+        let handled = self.app.dispatch_events(batch.as_validated());
+        if handled {
+            self.render_and_rasterize()?;
+        }
+        Ok(handled)
+    }
+
     /// Dispatches a direct typed `InteractionEvent::KeyDown` event.
     pub fn handle_keydown(
         &mut self,
@@ -270,6 +318,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     backend.set_caret_and_selection(store, next_caret, next_caret);
                 }
                 if changed {
+                    self.mark_a11y_dirty(focused_id);
                     self.rasterize_current();
                 }
                 Ok(changed)
@@ -288,6 +337,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     backend.set_caret_and_selection(store, next_caret, next_caret);
                 }
                 if changed {
+                    self.mark_a11y_dirty(focused_id);
                     self.rasterize_current();
                 }
                 Ok(changed)
@@ -299,6 +349,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     backend.set_caret_and_selection(store, 0, 0);
                 }
                 if changed {
+                    self.mark_a11y_dirty(focused_id);
                     self.rasterize_current();
                 }
                 Ok(changed)
@@ -311,6 +362,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     backend.set_caret_and_selection(store, end, end);
                 }
                 if changed {
+                    self.mark_a11y_dirty(focused_id);
                     self.rasterize_current();
                 }
                 Ok(changed)
@@ -327,6 +379,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let (store, backend) = self.replica.store_and_backend_mut();
                     backend.set_caret_and_selection(store, next_caret, anchor);
                 }
+                self.mark_a11y_dirty(focused_id);
                 self.rasterize_current();
                 Ok(true)
             }
@@ -342,6 +395,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let (store, backend) = self.replica.store_and_backend_mut();
                     backend.set_caret_and_selection(store, next_caret, anchor);
                 }
+                self.mark_a11y_dirty(focused_id);
                 self.rasterize_current();
                 Ok(true)
             }
@@ -353,6 +407,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let (store, backend) = self.replica.store_and_backend_mut();
                     backend.set_caret_and_selection(store, 0, anchor);
                 }
+                self.mark_a11y_dirty(focused_id);
                 self.rasterize_current();
                 Ok(true)
             }
@@ -365,6 +420,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let (store, backend) = self.replica.store_and_backend_mut();
                     backend.set_caret_and_selection(store, end, anchor);
                 }
+                self.mark_a11y_dirty(focused_id);
                 self.rasterize_current();
                 Ok(true)
             }
@@ -374,6 +430,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let (store, backend) = self.replica.store_and_backend_mut();
                     backend.set_caret_and_selection(store, end, 0);
                 }
+                self.mark_a11y_dirty(focused_id);
                 self.rasterize_current();
                 Ok(true)
             }

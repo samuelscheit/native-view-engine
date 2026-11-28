@@ -52,7 +52,7 @@ pub const WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG: &str = concat!(
     "<script data-nve-snapshot-boot>",
     "(()=>{try{let L=localStorage,D=document,a=D.getElementById('app'),",
     "q=new URL(location).searchParams,g=x=>q.get(x),",
-    "p=(g('app')||'studio').toLowerCase(),v=p=='kitchen-sink'?1:2,",
+    "p=(g('app')||'studio').toLowerCase(),v=p=='kitchen-sink'?2:3,",
     "Z=':'+p+':v'+v,k='nve:snap'+Z,s='nve:state'+Z;",
     "if(g('reset')==1)return delete L[k],delete L[s];",
     "if(!a||g('pair')||g('ssr'))return;",

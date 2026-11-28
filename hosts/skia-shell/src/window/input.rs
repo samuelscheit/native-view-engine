@@ -257,7 +257,12 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.replica.backend().focus_state().selection_anchor,
             self.replica.backend().focus_state().caret_byte_index,
         );
-        next_sel != prev_sel
+        if next_sel != prev_sel {
+            self.mark_a11y_dirty(text_id);
+            true
+        } else {
+            false
+        }
     }
 
     /// Scrolls the `ScrollView` under logical `(x, y)` by `(delta_x, delta_y)` (positive `delta_y`
@@ -286,6 +291,9 @@ impl<A: DesktopApp> DesktopSession<A> {
         let (content_width, content_height) = backend
             .scroll_content_size(store, scroll_node_id)
             .unwrap_or((self.viewport.width, self.viewport.height));
+        if offset_changed {
+            self.mark_a11y_dirty(scroll_node_id);
+        }
 
         let mut batch = EventBatchBuf::with_capacity(1, 0);
         batch.push_scroll(

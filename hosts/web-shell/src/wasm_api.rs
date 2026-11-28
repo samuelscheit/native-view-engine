@@ -67,6 +67,10 @@ struct ActiveShell {
 fn teardown_active_shell(shell: ActiveShell) {
     if let Ok(mut guard) = shell.session.try_borrow_mut() {
         guard.unbind_host();
+    } else {
+        // Re-entrant teardown while `session` is mutably borrowed on the call stack: schedule a
+        // deferred unbind so `host_bridge` and DOM listeners always release once the borrow unwinds.
+        crate::session::defer_session_unbind_host(Rc::clone(&shell.session), 0);
     }
     drop(shell);
 }

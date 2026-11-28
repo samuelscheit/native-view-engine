@@ -276,8 +276,20 @@ impl SkiaHostServices {
         }
     }
 
-    /// Drains queued async responses owned by `owner_tag` (plus unscoped push/channel events)
-    /// into a reusable `builder`, returning the number of encoded records.
+    /// Drains unscoped `Push` and `Channel` broadcasts into a reusable `builder`, returning the
+    /// number of encoded records (so multi-window hosts can broadcast them to every open window).
+    pub fn drain_broadcasts_into(&self, builder: &mut NveHostEventBatchBuilder) -> usize {
+        let Some(cs) = self.inner.host_completion_sink() else {
+            return 0;
+        };
+        if cs.queued_count() == 0 {
+            return 0;
+        }
+        cs.drain_broadcasts_into(builder).unwrap_or(0)
+    }
+
+    /// Drains queued async responses owned strictly by `owner_tag` into a reusable `builder`,
+    /// returning the number of encoded records.
     pub fn drain_batch_for_owner_into(
         &self,
         owner_tag: u64,

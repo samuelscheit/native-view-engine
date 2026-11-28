@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use nve_abi::{NveBufferSlice, NveHostCallbacks, NveHostStatus, NVE_CHANNEL_FLAG_RETAIN};
 
+use crate::ffi_client::FFI_MAX_RESPONSE_BYTES;
 use crate::provider::{HostServiceProvider, InvokeResult, ResponseBuf};
 
 const MAX_RETRY_CACHE_ENTRIES: usize = 16;
@@ -18,7 +19,7 @@ struct CachedRetryEntry {
     request_id: u64,
     service_id: u32,
     method_id: u32,
-    payload: ResponseBuf,
+    payload: Vec<u8>,
 }
 
 /// Bounded lock-free-checked single-retry cache for `Ready` payloads exceeding the caller's initial
@@ -49,7 +50,7 @@ impl OversizedRetryCache {
     }
 
     #[inline]
-    fn take(&self, request_id: u64, service_id: u32, method_id: u32) -> Option<ResponseBuf> {
+    fn take(&self, request_id: u64, service_id: u32, method_id: u32) -> Option<Vec<u8>> {
         if !self.has_entries.load(Ordering::Acquire) {
             return None;
         }
@@ -64,7 +65,7 @@ impl OversizedRetryCache {
         Some(entry.payload)
     }
 
-    fn store(&self, request_id: u64, service_id: u32, method_id: u32, payload: ResponseBuf) {
+    fn store(&self, request_id: u64, service_id: u32, method_id: u32, payload: Vec<u8>) {
         let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|e| {
             !(e.request_id == request_id && e.service_id == service_id && e.method_id == method_id)
@@ -79,6 +80,13 @@ impl OversizedRetryCache {
             payload,
         });
         self.has_entries.store(true, Ordering::Release);
+    }
+
+    pub fn cached_count(&self) -> usize {
+        if !self.has_entries.load(Ordering::Acquire) {
+            return 0;
+        }
+        self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     pub fn clear(&self) {
@@ -116,7 +124,7 @@ pub unsafe fn dispatch_ffi_invoke_with_cache<P: HostServiceProvider>(
     let result = catch_unwind(AssertUnwindSafe(|| {
         let cached = retry_cache.and_then(|c| c.take(request_id, service_id, method_id));
         let outcome = if let Some(bytes) = cached {
-            Ok(InvokeResult::Ready(bytes))
+            Ok(InvokeResult::Ready(ResponseBuf::Heap(bytes)))
         } else {
             // SAFETY: Caller guarantees `host_ctx` points to a live pinned `P` and `request` is valid.
             let (provider, req_bytes) = unsafe { (&*(host_ctx as *const P), request.as_slice()) };
@@ -129,8 +137,10 @@ pub unsafe fn dispatch_ffi_invoke_with_cache<P: HostServiceProvider>(
                     unsafe { *out_len = bytes.len() };
                 }
                 if bytes.len() > out_cap {
-                    if let Some(cache) = retry_cache {
-                        cache.store(request_id, service_id, method_id, bytes);
+                    if bytes.len() <= FFI_MAX_RESPONSE_BYTES
+                        && let Some(cache) = retry_cache
+                    {
+                        cache.store(request_id, service_id, method_id, bytes.into_vec());
                     }
                     return NveHostStatus::BufferTooSmall.as_i32();
                 }

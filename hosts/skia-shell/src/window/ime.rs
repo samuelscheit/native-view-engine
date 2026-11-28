@@ -44,6 +44,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             backend.set_ime_preedit(store, None, None);
             backend.set_uncontrolled_text_input(store, Some(new_value.clone()), new_caret);
         }
+        self.mark_a11y_dirty(node_id);
         let ts = TimestampUs(now_us());
         let mut events = EventBatchBuf::with_capacity(2, new_value.len());
         if let Some(committed) = composition_end {
@@ -89,6 +90,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let (store, backend) = self.replica.store_and_backend_mut();
                         backend.set_ime_preedit(store, None, None);
                     }
+                    self.mark_a11y_dirty(focused_id);
                     let mut events = EventBatchBuf::with_capacity(1, 0);
                     self.push_composition_event(
                         &mut events,
@@ -104,6 +106,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let (store, backend) = self.replica.store_and_backend_mut();
                         backend.set_ime_preedit(store, Some(text.clone()), *cursor);
                     }
+                    self.mark_a11y_dirty(focused_id);
                     let kind = if was_composing {
                         TextInputEvent::CompositionUpdate
                     } else {
@@ -131,6 +134,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let (store, backend) = self.replica.store_and_backend_mut();
                         backend.set_ime_preedit(store, None, None);
                     }
+                    self.mark_a11y_dirty(focused_id);
                     let mut events = EventBatchBuf::with_capacity(1, 0);
                     self.push_composition_event(
                         &mut events,
@@ -167,6 +171,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 if !had {
                     return Ok(false);
                 }
+                self.mark_a11y_dirty(focused_id);
                 let mut events = EventBatchBuf::with_capacity(1, 0);
                 self.push_composition_event(
                     &mut events,

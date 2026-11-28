@@ -419,4 +419,38 @@ mod suite {
         assert_eq!(studio_svc.cancel_pending(), 1);
         studio_svc.bind_host(None);
     }
+
+    #[test]
+    fn web_host_services_discard_pending_for_owner_preserves_sibling_owners() {
+        let clip = Arc::new(WebClipboard::headless());
+        let env = Arc::new(WebSystemEnv::with_initial(
+            ThemeSnapshot::default(),
+            LocaleSnapshot::default(),
+        ));
+        let web_host = WebHostServices::headless(Arc::clone(&clip), env);
+        let sink = web_host
+            .host_completion_sink()
+            .expect("web host completion sink");
+
+        let host_a = sink
+            .register_in_flight_for_owner(101, 1, SERVICE_CLIPBOARD, 1)
+            .expect("register owner 101");
+        let host_b = sink
+            .register_in_flight_for_owner(202, 1, SERVICE_CLIPBOARD, 1)
+            .expect("register owner 202");
+        assert_ne!(host_a, host_b);
+        assert_eq!(sink.in_flight_count(), 2);
+
+        assert_eq!(web_host.discard_pending_for_owner(101), 1);
+        assert_eq!(sink.in_flight_count(), 1);
+        assert!(!sink.complete_ok(host_a, b"stale-a".to_vec()));
+        assert!(sink.complete_ok(host_b, b"alive-b".to_vec()));
+
+        let mut b = NveHostEventBatchBuilder::new();
+        assert_eq!(sink.drain_batch_for_owner_into(202, &mut b).unwrap(), 1);
+        let parsed = nve_abi::NveHostEventBatchRef::parse(b.as_bytes()).unwrap();
+        let rec = parsed.iter().next().unwrap();
+        assert_eq!(rec.request_id.raw(), 1);
+        assert_eq!(rec.payload, b"alive-b");
+    }
 }

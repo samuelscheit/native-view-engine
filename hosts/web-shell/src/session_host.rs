@@ -14,6 +14,36 @@ use nve_host_services::{HostCallbackBridge, HostServiceProvider};
 use crate::host_services::WebHostServices;
 use crate::session::WebAppSession;
 
+/// Defers `WebAppSession::unbind_host()` across microtask/macrotask boundaries when teardown
+/// happens re-entrantly while `session` is mutably borrowed on the call stack.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn defer_session_unbind_host(
+    session: std::rc::Rc<std::cell::RefCell<WebAppSession>>,
+    attempt: u8,
+) {
+    const MAX_ATTEMPTS: u8 = 16;
+    if attempt >= MAX_ATTEMPTS {
+        return;
+    }
+    let owner_key = std::rc::Rc::as_ptr(&session) as usize;
+    let task = move || {
+        let unbound = if let Ok(mut guard) = session.try_borrow_mut() {
+            guard.unbind_host();
+            true
+        } else {
+            false
+        };
+        if !unbound {
+            defer_session_unbind_host(session, attempt.saturating_add(1));
+        }
+    };
+    if attempt < 4 {
+        nve_backend_web::microtask::enqueue_microtask(owner_key, task);
+    } else {
+        nve_backend_web::microtask::enqueue_macrotask(owner_key, task);
+    }
+}
+
 /// Type-erased pinned host-bridge owner held by [`WebAppSession`] so `Drop` unbinds the app
 /// before releasing the underlying `HostCallbackBridge<P>` allocation.
 pub(crate) trait OwnedHostBridge {
