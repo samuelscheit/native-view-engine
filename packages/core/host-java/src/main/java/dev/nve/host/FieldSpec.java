@@ -37,8 +37,8 @@ public final class FieldSpec {
                 || word > TableReader.MAX_WORDS - span) {
             throw new IllegalArgumentException("invalid field spec word=" + word + " shift=" + shift + " bits=" + bits);
         }
-        if (kind.isTwoWord() && (shift != 0 || bits != 32)) {
-            throw new IllegalArgumentException("two-word field must be shift=0 bits=32");
+        if (kind.isTwoWord() && (optEncoding != OptEncoding.REQUIRED || shift != 0 || bits != 32)) {
+            throw new IllegalArgumentException("two-word field must be REQUIRED with shift=0 bits=32");
         }
         if (optEncoding == OptEncoding.WIDE_BIT) {
             if (kind.isTwoWord() || bits != 1 || valWord < 0 || valWord >= TableReader.MAX_WORDS || valWord == word) {

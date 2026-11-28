@@ -45,7 +45,7 @@ final class NveCanvasTablePainter implements NveTablePainter {
 
   @override
   void paint(NvePaintContext ctx, TableReader table, int row, int index, Rect rect, double radius) {
-    final bytes = ctx.resources?.payload(table.resource(row, drawList));
+    final bytes = ctx.resources?.payload(table.resource(row, drawList), expectedKind: drawListResourceKind);
     if (bytes != null && bytes.isNotEmpty) {
       _painter.paint(ctx.canvas, rect, bytes, borderRadius: radius);
     }
@@ -305,9 +305,10 @@ final class NveScenePainter {
 
   void _paintImage(TableReader t, int row, Rect rect, RRect rrect) {
     final id = t.resource(row, ImageTable.src);
-    final payload = _resources?.payload(id);
+    final payload = _resources?.payload(id, expectedKind: imageSrcResourceKind);
     final img = switch (payload == null ? null : decodeImageSource(payload)) {
       NveImageUrl(:final uri) => imageCache.resolveOrRequest(uri, onDecoded: _onImage),
+      NveImageBytes(:final bytes) when bytes.isEmpty => null,
       // The key is the id's content version, so rewritten bytes (even of equal length) decode
       // anew and an old failure never sticks. `decode` runs synchronously inside this call, so
       // the borrowed bytes are copied before the scene read ends.

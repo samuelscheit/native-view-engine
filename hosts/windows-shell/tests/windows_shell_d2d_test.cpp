@@ -269,7 +269,7 @@ void test_paint_cache_images() {
   for (size_t at = file.url.find(' '); at != std::string::npos; at = file.url.find(' ')) file.url.replace(at, 1u, "%20");
   file.key = file.url;
   NVE_CHECK(s.cache.bitmap(s.rt, file) != nullptr);
-  NVE_CHECK(s.cache.bitmap(s.rt, WinImageSource::from(h::ImageSource{{}, png})) != nullptr);
+  NVE_CHECK(s.cache.bitmap(s.rt, WinImageSource::from(h::ImageSource::from_encoded(png))) != nullptr);
   s.cache.release();
   NVE_CHECK(s.cache.bitmap(s.rt, url) != nullptr);  // re-decoded after a release
 }

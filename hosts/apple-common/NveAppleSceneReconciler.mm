@@ -161,7 +161,7 @@ struct NveAppleAdapter {
   id image_for(uint32_t resource) {
     if (const auto hit = inline_images.find(resource); hit != inline_images.end()) return hit->second;
     if (!resources) return nil;
-    NSData *bytes = resources(resource);
+    NSData *bytes = resources(resource, nve::host::kImageSrcKind.value);
     if (bytes == nil || bytes.length == 0u) return nil;
     const std::span<const uint8_t> raw(static_cast<const uint8_t *>(bytes.bytes), bytes.length);
     const std::optional<nve::host::ImageSource> src = nve::host::decode_image_src(raw);

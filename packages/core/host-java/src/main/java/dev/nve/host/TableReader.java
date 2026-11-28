@@ -163,10 +163,14 @@ public final class TableReader {
         return word(r, 0);
     }
 
-    /** {@code true} when {@code f} has an explicit-override bit set in word 0 of row {@code r}. */
+    /**
+     * {@code true} when {@code f} has an explicit-override bit set in word 0 of row {@code r}
+     * (always {@code true} for fields without an explicit bit on a valid row).
+     */
     public boolean isExplicit(int r, FieldSpec f) {
         if (!f.fits(words)) throw new IndexOutOfBoundsException("field word " + f.word + " past " + words + "-word row");
-        return f.hasExplicitBit() && (word(r, 0) & f.explicitMask()) != 0;
+        final int mask = word(r, 0);
+        return !f.hasExplicitBit() || (mask & f.explicitMask()) != 0;
     }
 
     /** {@code EventSet} listener bitmask of row {@code r} at {@code eventsWord} ({@code 0} when {@code 0xFF}). */
@@ -182,14 +186,14 @@ public final class TableReader {
                 word(r, f.word);
                 return true;
             case ZERO_NICHE:
-                return f.kind.isTwoWord()
-                        ? (word(r, f.word) | word(r, f.word + 1)) != 0
-                        : f.extract(word(r, f.word)) != 0;
+                return f.extract(word(r, f.word)) != 0;
             case BIT0_PRESENT:
             case WIDE_BIT:
                 return (f.extract(word(r, f.word)) & 1) != 0;
-            case PLUS_ONE:
-                return f.extract(word(r, f.word)) != 0;
+            case PLUS_ONE: {
+                final int raw = f.extract(word(r, f.word));
+                return f.kind == FieldKind.BOOL ? (raw == 1 || raw == 2) : raw != 0;
+            }
             case TAG_XOR:
                 return (f.extract(word(r, f.word)) & f.tagNicheMask()) != 0;
             default:
@@ -209,7 +213,7 @@ public final class TableReader {
             }
             case PLUS_ONE: {
                 final int raw = f.extract(w);
-                return raw == 0 ? 0 : raw - 1;
+                return (raw == 0 || (f.kind == FieldKind.BOOL && raw > 2)) ? 0 : raw - 1;
             }
             case TAG_XOR: {
                 final int raw = f.extract(w);
@@ -249,7 +253,7 @@ public final class TableReader {
             }
             case PLUS_ONE: {
                 final int raw = f.extract(w);
-                return raw == 0 ? 0 : raw - 1;
+                return (raw == 0 || (f.kind == FieldKind.BOOL && raw > 2)) ? 0 : raw - 1;
             }
             case WIDE_BIT:
                 return (f.extract(w) & 1) == 0 ? 0 : word(r, f.valWord);
@@ -275,13 +279,22 @@ public final class TableReader {
         return isPresent(r, f) ? f32(r, f) : fallback;
     }
 
-    /** Decoded {@code bool} field ({@code false} when optional and absent). */
+    /** Decoded {@code bool} field ({@code false} when optional and absent, or corrupt {@code 0b11} under {@link OptEncoding#PLUS_ONE}). */
     public boolean bool(int r, FieldSpec f) {
+        if (f.optEncoding == OptEncoding.PLUS_ONE) {
+            return f.extract(fieldWord(r, f)) == 2;
+        }
         return (decodedUnsigned(r, f) & 1) != 0;
     }
 
-    /** Decoded {@code bool} field, or {@code fallback} when optional and absent. */
+    /** Decoded {@code bool} field, or {@code fallback} when optional and absent (including corrupt {@code 0b11} under {@link OptEncoding#PLUS_ONE}). */
     public boolean boolOr(int r, FieldSpec f, boolean fallback) {
+        if (f.optEncoding == OptEncoding.PLUS_ONE) {
+            final int raw = f.extract(fieldWord(r, f));
+            if (raw == 1) return false;
+            if (raw == 2) return true;
+            return fallback;
+        }
         return isPresent(r, f) ? bool(r, f) : fallback;
     }
 

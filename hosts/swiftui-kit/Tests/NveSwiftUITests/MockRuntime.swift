@@ -172,6 +172,7 @@ final class MockRuntime: @unchecked Sendable {
     var hitResult: UInt32 = 0
     var scroll: [UInt32: (Float, Float)] = [:]
     var resources: [UInt32: [UInt8]] = [:]
+    var resourceKinds: [UInt32: UInt64] = [:]
     var sceneEpoch: UInt32 = 0
     var dirtyResources: [UInt32] = []
     var state: [UInt8] = []
@@ -198,7 +199,7 @@ final class MockRuntime: @unchecked Sendable {
         let fresh = MockRuntime()
         scene = fresh.scene
         frameId = 1; removed = []; dirty = []; schema = NVE_RUNTIME_SCHEMA_HASH; tickChanged = true
-        failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; sceneEpoch = 0; dirtyResources = []
+        failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; resourceKinds = [:]; sceneEpoch = 0; dirtyResources = []
         state = []; emitted = EventBatchBuilder()
         creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0; loads = []
         propCounts = []; dispatched = []; viewports = []; pairedUri = ""; paired = false; restored = []; patches = []
@@ -366,7 +367,7 @@ final class MockRuntime: @unchecked Sendable {
             let m = MockRuntime.shared
             guard m.acquires > m.releases else { return Int32(NVE_RUNTIME_INVALID_ARG.rawValue) }
             guard let bytes = m.resources[id] else { return Int32(NveRuntimeError.notFound) }
-            kind?.pointee = 0x1234
+            kind?.pointee = m.resourceKinds[id] ?? Key64.of("nve.res.image_src").value
             out?.pointee = NveBufferSlice(ptr: m.pin(bytes), len: bytes.count)
             return 0
         }

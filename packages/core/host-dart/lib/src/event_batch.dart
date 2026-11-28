@@ -9,7 +9,7 @@ import 'generated/nve_abi_const.generated.dart';
 import 'hybrid_runtime.dart' show DynamicValue;
 import 'key64.dart';
 import 'runtime_event.dart';
-import 'table_reader.dart' show f32FromBits, f32ToBits;
+import 'table_reader.dart' show f32FromBits, f32ToBits, nodeIndexMask;
 import 'u64_math.dart' show isWeb, two32;
 import 'utf8.dart' show decodeUtf8PreserveBom, encodeUtf8CodePointAt, isValidUtf8, utf16UnitsAt, utf8EncodedLength;
 
@@ -26,6 +26,8 @@ const int nveEventWireHeaderSize = 14;
 
 const int _internalFramingMask =
     nveEventFlagUtf8Bytes | nveEventFlagInlineKeyUtf8 | nveEventFlagCustomNamed | nveEventFlagKeySplitBytes;
+
+int _canonicalHandle(int raw) => (raw & nodeIndexMask) == 0 ? 0 : (raw & 0xFFFFFFFF);
 
 enum EventBatchErrorKind {
   truncated,
@@ -76,7 +78,8 @@ final class EventBatch {
       final e = events[i];
       final base = i * nveEventSize;
       final ts = e.timestamp;
-      final surface = e.surfaceId != 0 ? e.surfaceId : defaultSurfaceId;
+      final rawSurface = _canonicalHandle(e.surfaceId);
+      final surface = rawSurface != 0 ? rawSurface : _canonicalHandle(defaultSurfaceId);
       var flags = e.flags & ~_internalFramingMask;
       var p0 = 0, p1 = 0, p2 = 0, p3 = 0, p4 = 0, p5 = 0;
       var byteOff = 0, byteLen = 0;
@@ -176,8 +179,8 @@ final class EventBatch {
         ..setUint32(base + 4, ts.hi, Endian.little)
         ..setUint32(base + 8, e.table.lo, Endian.little)
         ..setUint32(base + 12, e.table.hi, Endian.little)
-        ..setUint32(base + 16, surface & 0xFFFFFFFF, Endian.little)
-        ..setUint32(base + 20, e.nodeId & 0xFFFFFFFF, Endian.little)
+        ..setUint32(base + 16, surface, Endian.little)
+        ..setUint32(base + 20, _canonicalHandle(e.nodeId), Endian.little)
         ..setUint32(base + 24, e.event & 0xFFFFFFFF, Endian.little)
         ..setUint32(base + 28, flags & 0xFFFFFFFF, Endian.little)
         ..setUint32(base + 32, p0, Endian.little)
@@ -317,8 +320,8 @@ final class EventBatch {
       final base = i * nveEventSize;
       final ts = Key64(view.getUint32(base + 0, Endian.little), view.getUint32(base + 4, Endian.little));
       final table = Key64(view.getUint32(base + 8, Endian.little), view.getUint32(base + 12, Endian.little));
-      final surface = view.getUint32(base + 16, Endian.little);
-      final node = view.getUint32(base + 20, Endian.little);
+      final surface = _canonicalHandle(view.getUint32(base + 16, Endian.little));
+      final node = _canonicalHandle(view.getUint32(base + 20, Endian.little));
       final event = view.getUint32(base + 24, Endian.little);
       final flags = view.getUint32(base + 28, Endian.little);
       final p0 = view.getUint32(base + 32, Endian.little);

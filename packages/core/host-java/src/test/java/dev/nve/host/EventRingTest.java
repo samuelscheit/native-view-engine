@@ -72,6 +72,7 @@ final class EventRingTest {
         c.that(java.util.Arrays.equals(r.customData(6), new byte[] {9, 8, 7}), "custom data");
         c.eq(r.key(7), "\u00e9", "inline key");
         c.eq(r.code(7), "KeyE", "inline key code");
+        c.eq(r.text(7), "", "inline key physical code never leaks as text()");
         c.eq(r.payloadU32(7, 0), 69, "inline keyCode");
         c.eq(r.key(8), "MediaTrackPrevious", "split key");
         c.eq(r.code(8), "MediaTrackPrevious", "split code");
@@ -181,6 +182,28 @@ final class EventRingTest {
         ByteBuffer.wrap(badSplit).order(ByteOrder.LITTLE_ENDIAN).putInt(14 + 36, 1);  // mid-codepoint
         c.binError(BinCodecException.Kind.INVALID_UTF8, () -> r.attach(badSplit), "split key mid-utf8 boundary");
         c.eq(r.count(), 0, "failed attach leaves reader detached");
+
+        // Non-canonical index-0 handles (`0x01000000`) canonicalize to `0` on read & write, and
+        // `CUSTOM_NAMED | UTF8_BYTES` never leaks through `text()`.
+        final EventRingWriter canonW = new EventRingWriter(ByteBuffer.allocate(256), 0x01000000)
+                .custom(0x01000000, 1L, "ping", "data".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        final byte[] canonBytes = new byte[canonW.length()];
+        final ByteBuffer cdup = canonW.buffer().duplicate();
+        ((java.nio.Buffer) cdup).flip();
+        cdup.get(canonBytes);
+        r.attach(canonBytes);
+        c.that(r.surface(0) == 0 && r.node(0) == 0, "EventRingWriter canonicalizes index-0 handles");
+        // Patch non-canonical handles & CUSTOM_NAMED | UTF8_BYTES directly onto wire bytes.
+        ByteBuffer.wrap(canonBytes).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(14 + NveAbi.EVENT_OFFSET_SURFACE, 0x01000000)
+                .putInt(14 + NveAbi.EVENT_OFFSET_NODE, 0x01000000)
+                .putInt(14 + NveAbi.EVENT_OFFSET_FLAGS, NveAbi.EVENT_FLAG_CUSTOM_NAMED | NveAbi.EVENT_FLAG_UTF8_BYTES);
+        r.attach(canonBytes);
+        c.eq(r.surface(0), 0, "EventRingReader canonicalizes surface 0x01000000 -> 0");
+        c.eq(r.node(0), 0, "EventRingReader canonicalizes node 0x01000000 -> 0");
+        c.eq(r.text(0), "", "CUSTOM_NAMED | UTF8_BYTES never leaks through text()");
+        c.eq(r.customName(0), "ping", "customName intact");
+        c.that(java.util.Arrays.equals(r.customData(0), "data".getBytes(java.nio.charset.StandardCharsets.UTF_8)), "customData intact");
     }
 
     static void steadyState(Check c) {

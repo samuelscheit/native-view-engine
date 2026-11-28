@@ -154,10 +154,18 @@ void _runOptWideAndGrid(Check c) {
   // Invalid optional / wide / inherited FieldSpec rejections.
   c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.f32, bits: 32, opt: OptEncoding.wideBit, valWord: 1), 'wideBit requires bits=1');
   c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.f32, bits: 1, opt: OptEncoding.wideBit), 'wideBit requires valid valWord');
+  c.throwsA<ArgumentError>(() => FieldSpec(1, FieldKind.f32, bits: 1, opt: OptEncoding.wideBit, valWord: 1), 'wideBit valWord != word');
   c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.u32, valWord: 1), 'non-wideBit rejects valWord');
   c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.u32, bits: 1, opt: OptEncoding.bit0Present), 'bit0Present requires bits>=2');
+  c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.u32, opt: OptEncoding.tagXor), 'tagXor rejects u32');
+  c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.length, bits: 16, opt: OptEncoding.tagXor), 'tagXor length requires 32b');
+  c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.gridLine, bits: 32, opt: OptEncoding.tagXor), 'tagXor gridLine requires 16b');
   c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.u32, inherits: true), 'inherits requires explicitBit');
-  c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.u32, explicitBit: 32), 'explicitBit >= 32');
+  c.throwsA<ArgumentError>(() => FieldSpec(1, FieldKind.u32, explicitBit: 32), 'explicitBit >= 32');
+  c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.u32, explicitBit: 0), 'explicitBit rejects word == 0');
+  c.throwsA<ArgumentError>(
+      () => FieldSpec(1, FieldKind.f32, bits: 1, opt: OptEncoding.wideBit, valWord: 0, explicitBit: 0),
+      'explicitBit rejects valWord == 0');
   c.throwsA<ArgumentError>(() => FieldSpec(31, FieldKind.u64), 'u64 at word 31 overflows');
   c.throwsA<ArgumentError>(() => FieldSpec(0, FieldKind.f64, shift: 1), 'f64 requires shift=0');
 
@@ -224,6 +232,9 @@ void _runOptWideAndGrid(Check c) {
 
   c.that(tab.isExplicit(0, fZeroNiche) && !tab.isExplicit(0, fWideF32), 'row 0 explicit bits');
   c.that(!tab.isExplicit(1, fZeroNiche) && tab.isExplicit(1, fWideF32), 'row 1 explicit bit 31');
+  c.that(tab.isExplicit(0, fBit0Signed), 'non-inherited field isExplicit returns true on valid row');
+  c.throwsA<RangeError>(() => tab.isExplicit(99, fBit0Signed), 'isExplicit validates row bounds even without explicitBit');
+  c.throwsA<RangeError>(() => tab.isExplicit(0, FieldSpec(12, FieldKind.u32)), 'isExplicit validates field fit');
   c.eq(tab.eventMask(0, noFieldSlot), 0, 'no eventsWord -> 0');
   c.eq(tab.eventMask(0, 0), 1, 'eventsWord reads word 0');
 
@@ -252,4 +263,8 @@ void _runOptWideAndGrid(Check c) {
   c.that(tab.f64(1, fF64) == 0 && tab.f64(1, fF64).isNegative, 'f64 -0.0');
   c.throwsA<RangeError>(() => tab.u64(0, FieldSpec(11, FieldKind.u64)), 'u64 past row');
   c.throwsA<RangeError>(() => tab.optF32(0, FieldSpec(0, FieldKind.f32, bits: 1, opt: OptEncoding.wideBit, valWord: 12)), 'wideBit valWord past row');
+  // Corrupt PLUS_ONE bool raw 0b11 is absent for both isPresent and optBoolean.
+  final fBoolPlus = FieldSpec(0, FieldKind.boolean, bits: 2, opt: OptEncoding.plusOne);
+  final bt = TableReader(key: visual, slot: 0, words: 1, rowCount: 1, rows: words([3]));
+  c.that(!bt.isPresent(0, fBoolPlus) && bt.optBoolean(0, fBoolPlus) == null, 'plusOne bool raw 0b11 is absent');
 }

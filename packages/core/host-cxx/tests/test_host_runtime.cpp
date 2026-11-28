@@ -524,11 +524,31 @@ void test_host_session_counter() {
 
 void test_resource_codecs() {
   const std::vector<uint8_t> url = encode_image_url("https://x/y.png");
-  CHECK(decode_image_src(url)->url == "https://x/y.png");
+  const auto dec_url = decode_image_src(url);
+  CHECK(dec_url && dec_url->is_url() && !dec_url->is_encoded_bytes() && dec_url->url == "https://x/y.png");
   const uint8_t png[] = {0x89, 'P', 'N', 'G'};
   const std::vector<uint8_t> bytes = encode_image_bytes(png);
   const auto img = decode_image_src(bytes);
-  CHECK(img && !img->is_url() && img->encoded.size() == 4u && img->encoded[1] == 'P');
+  CHECK(img && !img->is_url() && img->is_encoded_bytes() && img->encoded.size() == 4u && img->encoded[1] == 'P');
+  // Empty EncodedBytes `[1, 0]` vs empty Url `[0, 0]`: distinct kinds and non-colliding cache keys.
+  const auto empty_url = decode_image_src(encode_image_url(""));
+  const auto empty_enc = decode_image_src(encode_image_bytes({}));
+  CHECK(empty_url && empty_url->is_url() && !empty_url->is_encoded_bytes() && empty_url->url.empty());
+  CHECK(empty_enc && !empty_enc->is_url() && empty_enc->is_encoded_bytes() && empty_enc->encoded.empty());
+  CHECK(image_cache_key(*empty_url).empty() && image_cache_key(*empty_enc).rfind("bytes:", 0) == 0u);
+  CHECK(image_cache_key(*empty_url) != image_cache_key(*empty_enc));
+  // Every trailing alignment padding byte must be zero (both Url and EncodedBytes).
+  for (size_t i = 0u; i < 3u; ++i) {
+    std::vector<uint8_t> bad_pad_url = encode_image_url("a");
+    bad_pad_url[9u + i] = 1u;
+    CHECK(!decode_image_src(bad_pad_url));
+  }
+  const uint8_t two[] = {0x89, 'P'};
+  for (size_t i = 0u; i < 2u; ++i) {
+    std::vector<uint8_t> bad_pad_bytes = encode_image_bytes(two);
+    bad_pad_bytes[10u + i] = 0xFFu;
+    CHECK(!decode_image_src(bad_pad_bytes));
+  }
   for (size_t cut = 0; cut < url.size(); ++cut) {
     CHECK(!decode_image_src(std::span<const uint8_t>(url.data(), cut)));  // every truncation
   }

@@ -69,6 +69,7 @@ final class _Frame {
     Uint32List? dirty,
     List<TableReader>? tables,
     Uint32List? scroll,
+    Uint32List? dirtyResources,
   }) =>
       SceneReader(
         expectedSchema: _schema,
@@ -83,6 +84,7 @@ final class _Frame {
         removedIds: removed,
         tables: tables ?? [visual(), textTable()],
         scrollOffsets: scroll,
+        dirtyResources: dirtyResources,
       );
 }
 
@@ -240,6 +242,11 @@ void runRuntimeScene(Check c) {
       c, SceneErrorKind.missingSlab, () => f.open(rows: badZeroLenOff).childCount(2), 'zero-len child range past slab');
   expectScene(c, SceneErrorKind.missingSlab, () => f.open(dirty: Uint32List.fromList([4])), 'dirty index >= capacity');
   expectScene(c, SceneErrorKind.invalidTable, () => f.open(tables: [f.visual(), f.visual()]), 'duplicate slot');
+  // dirtyResources must be strictly ascending (unsigned 32-bit order).
+  c.eq(f.open(dirtyResources: Uint32List.fromList([1, 9, 0x80000000])).dirtyResources.length, 3, 'ascending dirtyResources');
+  expectScene(c, SceneErrorKind.missingSlab, () => f.open(dirtyResources: Uint32List.fromList([9, 3])), 'descending dirtyResources');
+  expectScene(c, SceneErrorKind.missingSlab, () => f.open(dirtyResources: Uint32List.fromList([3, 3])), 'duplicate dirtyResources');
+  expectScene(c, SceneErrorKind.missingSlab, () => f.open(dirtyResources: Uint32List.fromList([0x80000000, 1])), 'unsigned order dirtyResources');
   final huge = Uint32List.fromList(f.rows)..[1 * nodeRowWords + 5] = 0xFFFFFFFF;
   expectScene(c, SceneErrorKind.missingSlab, () => f.open(rows: huge).childCount(1), 'hostile child offset cannot wrap');
   final stale = Uint32List.fromList(f.rows)

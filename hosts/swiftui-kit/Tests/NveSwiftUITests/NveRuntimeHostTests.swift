@@ -146,6 +146,7 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(m.patches, [4])
         let flatUrl: [UInt8] = [0, 0, 0, 0, 3, 0, 0, 0, 0x61, 0x2E, 0x62, 0]
         m.resources[5] = flatUrl
+        m.resourceKinds[5] = 0x1234
         let res = try session.withScene { try session.resource(5, in: $0) }
         XCTAssertEqual(res.bytes, flatUrl)
         XCTAssertEqual(res.kind, Key64(0x1234))
@@ -287,6 +288,13 @@ final class NveRuntimeHostTests: XCTestCase {
         m.resources[9] = [1, 0, 0, 0, 3, 0, 0, 0, 0xFF, 0xD8, 0xFF, 0]
         XCTAssertEqual(store.imageSource(9), .encoded([0xFF, 0xD8, 0xFF]))
         XCTAssertNil(store.image(resource: 9), "invalid JPEG bytes decode to nil, never crash")
+
+        // A DrawList resource whose bytes collide with an EncodedBytes ImageSrc wire header
+        // (`[1, 1, 0]`) must be rejected by kind check before decoding.
+        m.resources[10] = [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+        m.resourceKinds[10] = Key64.of("nve.res.draw_list").value
+        XCTAssertNil(store.imageSource(10), "wrong FlatResource kind must not decode as ImageSrc")
+        XCTAssertNil(store.image(resource: 10))
     }
 
     func testImageSourcesFollowDirtyResourcesEpochsAndFrameGaps() throws {

@@ -35,8 +35,8 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
     _session = std::move(*session);
     __weak NveAppleComponentHost *weakSelf = self;
     _reconciler = [[NveAppleSceneReconciler alloc] initWithAdapter:adapter
-                                                         resources:^NSData *(uint32_t resourceId) {
-                                                           return [weakSelf _resourceBytes:resourceId];
+                                                         resources:^NSData *(uint32_t resourceId, uint64_t expectedKind) {
+                                                           return [weakSelf resourceBytesForId:resourceId expectedKind:expectedKind];
                                                          }];
     (void)_session.set_text_measurer(&nve::apple::native_text_measure, nullptr);
     NveAppleHostWakeBox *box = [NveAppleHostWakeBox new];
@@ -329,12 +329,16 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
   _reconciling = NO;
 }
 
-/// Payload of resource `id` from the scene being reconciled (copied: it borrows the guard).
-- (NSData *)_resourceBytes:(uint32_t)resourceId {
-  if (_activeScene == nullptr) return nil;
-  const auto res = _activeScene->resource(resourceId);
-  if (!res || res->bytes.empty()) return nil;
-  return [NSData dataWithBytes:res->bytes.data() length:res->bytes.size()];
+/// Payload of resource `id` matching `expectedKind` (copied: it borrows the scene guard).
+- (NSData *)resourceBytesForId:(uint32_t)resourceId expectedKind:(uint64_t)expectedKind {
+  auto lookup = [&](const nve::host::RuntimeSceneGuard &guard) -> NSData * {
+    const auto res = guard.resource(resourceId);
+    if (!res || res->kind.value != expectedKind || res->bytes.empty()) return nil;
+    return [NSData dataWithBytes:res->bytes.data() length:res->bytes.size()];
+  };
+  if (_activeScene != nullptr) return lookup(*_activeScene);
+  auto guard = _session.acquire_scene();
+  return guard ? lookup(*guard) : nil;
 }
 
 @end

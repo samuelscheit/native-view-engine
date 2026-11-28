@@ -9,11 +9,16 @@ import 'dart:typed_data';
 
 import 'package:nve_host/nve_host.dart';
 
+/// Canonical `FlatResource` kind keys (`Key64`).
+final Key64 imageSrcResourceKind = constId('nve.res.image_src');
+final Key64 drawListResourceKind = constId('nve.res.draw_list');
+
 /// Canonical payload bytes of published resources (`Resource::encode`), valid while the scene
 /// that referenced them is held.
 abstract interface class NveSceneResources {
-  /// Payload of [resourceId], or `null` when unknown / not exposed.
-  Uint8List? payload(int resourceId);
+  /// Payload of [resourceId] when its kind matches [expectedKind], or `null` when unknown,
+  /// mismatched, or not exposed.
+  Uint8List? payload(int resourceId, {required Key64 expectedKind});
 
   /// Content versions of this source's resources. Owned by the source (one per runtime
   /// session), never by a painter: a painter shared across sessions, or a controller swap,
@@ -71,7 +76,7 @@ NveImageSource? decodeImageSource(Uint8List payload) {
     final bytes = Uint8List.sublistView(raw, 0, len);
     return switch (tag) {
       0 => isValidUtf8(bytes) ? NveImageUrl(utf8.decode(bytes)) : null,
-      1 => bytes.isEmpty ? null : NveImageBytes(bytes),
+      1 => NveImageBytes(bytes),
       _ => null,
     };
   } on BinCodecException {

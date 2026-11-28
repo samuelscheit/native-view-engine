@@ -147,11 +147,17 @@ public final class EventsJniTest {
         c.eq(NativeRuntime.dispatchEvents(h, ring.buffer(), ring.length() + 1, out), NveRuntimeAbi.STATUS_INVALID_ARG, "trailing byte");
         c.eq(Files.size(log), before, "rejected rings never reach the app");
 
-        // Repair the custom name byte -> accepted and delivered.
+        // Repair the custom name byte and inject non-canonical `0x01000000` handles -> canonicalized
+        // (surface -> 0 -> default_surface_id=5, node -> 0) and delivered.
         bad.put(arena0, (byte) 'x');
+        bad.putInt(ev0 + NveAbi.EVENT_OFFSET_SURFACE, 0x01000000);
+        bad.putInt(ev0 + NveAbi.EVENT_OFFSET_NODE, 0x01000000);
         c.eq(NativeRuntime.dispatchEvents(h, bad, 79, out), 0, "the same custom event with a UTF-8 name is accepted");
         final long accepted = Files.size(log);
         c.that(accepted > before, "the accepted custom event reached the app");
+        final List<String> allLines = Files.readAllLines(log, java.nio.charset.StandardCharsets.UTF_8);
+        c.that(allLines.get(allLines.size() - 1).startsWith("surface=5 node=0 "),
+                "non-canonical 0x01000000 handles canonicalize (surface->default 5, node->0): " + allLines.get(allLines.size() - 1));
         ring.reset();
         c.eq(NativeRuntime.dispatchEvents(h, ring.buffer(), ring.length(), out), 0, "empty ring is valid");
         c.eq(out[0], 0, "empty ring changes nothing");

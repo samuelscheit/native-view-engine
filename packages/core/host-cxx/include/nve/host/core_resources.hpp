@@ -67,15 +67,24 @@ inline void pad4(std::vector<uint8_t>& out) {
 }
 }  // namespace detail
 
-/// Decoded `ImageSrc`: exactly one of `url` / `encoded` is set.
+/// Decoded `ImageSrc`: `Kind::Url` (`url`) or `Kind::EncodedBytes` (`encoded`).
 struct ImageSource {
+  enum class Kind : uint8_t { Url = 0u, EncodedBytes = 1u };
+  Kind kind = Kind::Url;
   std::string_view url;
   std::span<const uint8_t> encoded;
-  [[nodiscard]] bool is_url() const noexcept { return encoded.empty(); }
+  [[nodiscard]] constexpr bool is_url() const noexcept { return kind == Kind::Url; }
+  [[nodiscard]] constexpr bool is_encoded_bytes() const noexcept { return kind == Kind::EncodedBytes; }
+  [[nodiscard]] static constexpr ImageSource from_url(std::string_view u) noexcept {
+    return ImageSource{Kind::Url, u, {}};
+  }
+  [[nodiscard]] static constexpr ImageSource from_encoded(std::span<const uint8_t> bytes) noexcept {
+    return ImageSource{Kind::EncodedBytes, {}, bytes};
+  }
 };
 
 /// Stable decoded-image cache key shared by every host: the URL itself, or
-/// `bytes:<xxh64 hex>:<len>` for inline bytes (empty for an empty source).
+/// `bytes:<xxh64 hex>:<len>` for inline bytes (never collides with `Url("")`).
 [[nodiscard]] inline std::string image_cache_key(const ImageSource& src) {
   if (src.is_url()) return std::string(src.url);
   char key[48];
@@ -96,10 +105,13 @@ struct ImageSource {
   const size_t padded = (static_cast<size_t>(*len) + 3u) & ~size_t{3u};
   const auto raw = r.take(padded);
   if (!raw || !r.done()) return std::nullopt;
+  for (const uint8_t pad : raw->subspan(*len)) {
+    if (pad != 0u) return std::nullopt;
+  }
   const std::span<const uint8_t> body = raw->first(*len);
-  if (*tag == 1u) return ImageSource{{}, body};
+  if (*tag == 1u) return ImageSource::from_encoded(body);
   if (!body.empty() && nve_utf8_valid(body.data(), body.size()) == 0) return std::nullopt;
-  return ImageSource{std::string_view(reinterpret_cast<const char*>(body.data()), body.size()), {}};
+  return ImageSource::from_url(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()));
 }
 
 [[nodiscard]] inline std::vector<uint8_t> encode_image_url(std::string_view url) {

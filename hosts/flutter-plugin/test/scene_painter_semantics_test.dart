@@ -119,7 +119,7 @@ void main() {
       b.bits(canvasShape, canvasNode, NveCanvasTablePainter.drawList, 7);
       final payload = (DrawListEncoder()..fillRect(0, 0, 50, 50, packRgba(255, 0, 0))).finish();
       final px = await rasterize(100, 100, (canvas) {
-        NveScenePainter().paint(canvas, b.tree(), Offset.zero, resources: _Resources({7: payload}));
+        NveScenePainter().paint(canvas, b.tree(), Offset.zero, resources: _Resources({7: (drawListResourceKind, payload)}));
       });
       expect(pixelAt(px, 100, 30, 30), _red);
       expect(pixelAt(px, 100, 70, 70).$4, 0, reason: 'outside the canvas node');
@@ -136,7 +136,7 @@ void main() {
         ..bits(imageShape, img, ImageTable.src, 9)
         ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
       final png = makeSolidPngBytes(0, 0, 255, width: 4, height: 4);
-      final resources = _Resources({9: _imageSrcBytes(1, png)});
+      final resources = _Resources({9: (imageSrcResourceKind, _imageSrcBytes(1, png))});
       final painter = NveScenePainter();
       var decoded = 0;
       await tester.runAsync(() async {
@@ -168,7 +168,7 @@ void main() {
       final blue = makeSolidPngBytes(0, 0, 255, width: 4, height: 4);
       final green = makeSolidPngBytes(0, 255, 0, width: 4, height: 4);
       expect(green.length, blue.length, reason: 'same byte length: an (id, length) key would collide');
-      final resources = _Resources({9: payload(Uint8List.fromList(List<int>.filled(blue.length, 7)))});
+      final resources = _Resources({9: (imageSrcResourceKind, payload(Uint8List.fromList(List<int>.filled(blue.length, 7))))});
       final painter = NveScenePainter();
       var decoded = 0;
       await tester.runAsync(() async {
@@ -187,15 +187,15 @@ void main() {
         }
 
         expect((await paintFrame(1, [])).$4, 0, reason: 'garbage bytes fail to decode');
-        resources.map[9] = payload(blue);
+        resources.map[9] = (imageSrcResourceKind, payload(blue));
         expect(await paintFrame(2, [9]), _blue, reason: 'rewritten id decodes despite the earlier failure');
-        resources.map[9] = payload(green);
+        resources.map[9] = (imageSrcResourceKind, payload(green));
         expect(await paintFrame(3, [9]), _green, reason: 'equal-length rewrite re-decodes');
         expect(painter.imageCache.length, 1, reason: 'the superseded decode was evicted on invalidation');
         expect(await paintFrame(4, []), _green, reason: 'clean frame keeps the decode');
-        resources.map[9] = payload(blue);
+        resources.map[9] = (imageSrcResourceKind, payload(blue));
         expect(await paintFrame(6, []), _blue, reason: 'frame gap (missed dirty list) re-decodes');
-        resources.map[9] = payload(green);
+        resources.map[9] = (imageSrcResourceKind, payload(green));
         expect(await paintFrame(7, [], epoch: 1), _green, reason: 'new scene epoch re-decodes');
       });
       painter.dispose();
@@ -211,8 +211,8 @@ void main() {
         ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
       Uint8List payload(Uint8List encoded) => _imageSrcBytes(1, encoded);
       // Same resource id, same epoch, consecutive frame ids: only the source tells them apart.
-      final a = _Resources({9: payload(makeSolidPngBytes(0, 0, 255, width: 4, height: 4))});
-      final other = _Resources({9: payload(makeSolidPngBytes(0, 255, 0, width: 4, height: 4))});
+      final a = _Resources({9: (imageSrcResourceKind, payload(makeSolidPngBytes(0, 0, 255, width: 4, height: 4)))});
+      final other = _Resources({9: (imageSrcResourceKind, payload(makeSolidPngBytes(0, 255, 0, width: 4, height: 4)))});
       final painter = NveScenePainter();
       await tester.runAsync(() async {
         Future<(int, int, int, int)> paintWith(_Resources r, int frame) async {
@@ -250,17 +250,58 @@ void main() {
 
     test('image source payloads decode', () {
       expect((decodeImageSource(_imageSrcBytes(0, 'https://x/a.png'.codeUnits)) as NveImageUrl).uri, 'https://x/a.png');
+      expect((decodeImageSource(_imageSrcBytes(0, [])) as NveImageUrl).uri, '', reason: 'empty URL is valid');
       expect((decodeImageSource(_imageSrcBytes(1, [1, 2, 3])) as NveImageBytes).bytes, [1, 2, 3]);
-      expect(decodeImageSource(_imageSrcBytes(1, [])), isNull, reason: 'empty encoded bytes');
+      expect((decodeImageSource(_imageSrcBytes(1, [])) as NveImageBytes).bytes, isEmpty,
+          reason: 'empty EncodedBytes [1, 0] decodes as valid empty NveImageBytes');
       expect(decodeImageSource(_imageSrcBytes(2, [1])), isNull, reason: 'unknown tag');
       expect(decodeImageSource(_imageSrcBytes(0, [0xC3])), isNull, reason: 'invalid UTF-8');
-      final badPad = Uint8List.fromList(_imageSrcBytes(1, [1, 2, 3]))..[11] = 1;
-      expect(decodeImageSource(badPad), isNull, reason: 'non-zero pad byte');
+      final badPadBytes = Uint8List.fromList(_imageSrcBytes(1, [1, 2, 3]))..[11] = 1;
+      expect(decodeImageSource(badPadBytes), isNull, reason: 'non-zero pad byte (EncodedBytes)');
+      final badPadUrl = Uint8List.fromList(_imageSrcBytes(0, [0x61]))..[10] = 1;
+      expect(decodeImageSource(badPadUrl), isNull, reason: 'non-zero pad byte (Url)');
       expect(decodeImageSource(Uint8List.fromList([0, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0])), isNull, reason: 'truncated');
       expect(decodeImageSource(Uint8List.fromList([..._imageSrcBytes(0, [0x61]), 0, 0, 0, 0])), isNull,
           reason: 'trailing bytes');
       expect(decodeImageSource(Uint8List.fromList([0, 1, 0, 0, 0, 0x61])), isNull, reason: 'legacy 5-byte layout');
       expect(decodeImageSource(Uint8List(0)), isNull);
+    });
+
+    test('FlatResource kind validation rejects ImageSrc <-> DrawList collisions and skips empty EncodedBytes', () async {
+      // `[1, 1, 0]` = valid DrawList([Clear(0)]) and valid ImageSrc::EncodedBytes([0]).
+      final colliding = Uint8List.fromList([1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+      final redDrawList = (DrawListEncoder()..fillRect(0, 0, 50, 50, packRgba(255, 0, 0))).finish();
+      final bluePngSrc = _imageSrcBytes(1, makeSolidPngBytes(0, 0, 255, width: 4, height: 4));
+      final resources = _Resources({
+        1: (drawListResourceKind, colliding),
+        2: (imageSrcResourceKind, colliding),
+        3: (imageSrcResourceKind, redDrawList),
+        4: (drawListResourceKind, bluePngSrc),
+        5: (imageSrcResourceKind, _imageSrcBytes(1, [])),
+      });
+      expect(resources.payload(1, expectedKind: imageSrcResourceKind), isNull,
+          reason: 'DrawList [1, 1, 0] rejected by ImageSrc lookup');
+      expect(resources.payload(2, expectedKind: drawListResourceKind), isNull,
+          reason: 'ImageSrc [1, 1, 0] rejected by DrawList lookup');
+
+      final b = SceneBuilder();
+      final root = b.node(const Rect.fromLTWH(0, 0, 100, 100));
+      final badCanvas = b.node(const Rect.fromLTWH(0, 0, 50, 50), parent: root);
+      final badImage = b.node(const Rect.fromLTWH(50, 0, 50, 50), parent: root);
+      final emptyImage = b.node(const Rect.fromLTWH(0, 50, 50, 50), parent: root);
+      final canvasShape = TableShape(NveCanvasTablePainter.key, 2, true, const [0, 0]);
+      final imageShape = TableShape(ImageTable.key, ImageTable.words, !ImageTable.dense, ImageTable.defaults);
+      b
+        ..bits(canvasShape, badCanvas, NveCanvasTablePainter.drawList, 3)
+        ..bits(imageShape, badImage, ImageTable.src, 4)
+        ..bits(imageShape, emptyImage, ImageTable.src, 5);
+      final painter = NveScenePainter();
+      final px = await rasterize(100, 100, (c) => painter.paint(c, b.tree(), Offset.zero, resources: resources));
+      expect(pixelAt(px, 100, 25, 25).$4, 0, reason: 'DrawList bytes tagged ImageSrc must not paint canvas');
+      expect(pixelAt(px, 100, 75, 25).$4, 0, reason: 'ImageSrc bytes tagged DrawList must not paint image');
+      expect(pixelAt(px, 100, 25, 75).$4, 0, reason: 'empty EncodedBytes skips decoding cleanly');
+      expect(painter.imageCache.length, 0);
+      painter.dispose();
     });
   });
 
@@ -345,13 +386,16 @@ final class _Throwing implements NveTablePainter {
 final class _Resources implements NveSceneResources {
   _Resources(this.map);
 
-  final Map<int, Uint8List> map;
+  final Map<int, (Key64, Uint8List)> map;
 
   @override
   final ResourceVersions versions = ResourceVersions();
 
   @override
-  Uint8List? payload(int resourceId) => map[resourceId];
+  Uint8List? payload(int resourceId, {required Key64 expectedKind}) {
+    final entry = map[resourceId];
+    return entry != null && entry.$1 == expectedKind ? entry.$2 : null;
+  }
 }
 
 Uint8List _imageSrcBytes(int tag, List<int> bytes) {

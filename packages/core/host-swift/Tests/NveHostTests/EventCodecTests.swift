@@ -67,6 +67,8 @@ final class EventCodecTests: XCTestCase {
             XCTAssertEqual(e4.keyCode, 69)
             XCTAssertEqual(r.key(at: 4), "é🚀")
             XCTAssertEqual(r.code(at: 4), "KeyE")
+            XCTAssertNil(r.textBytes(at: 4))
+            XCTAssertEqual(r.text(at: 4), "")
 
             let e5 = try XCTUnwrap(r.record(at: 5))
             XCTAssertTrue(e5.flags.contains(.inlineKeyUtf8))
@@ -221,6 +223,18 @@ final class EventCodecTests: XCTestCase {
         canonical.withValidated { r in
             XCTAssertEqual(r.record(at: 0)?.surface, 0)
             XCTAssertEqual(r.record(at: 0)?.node, 0)
+        }
+
+        // `CUSTOM_NAMED | UTF8_BYTES` never leaks through `textBytes` / `text`.
+        let customUtf8Wire = makeSingleRecordWire(
+            flags: nveEventFlagCustomNamed | nveEventFlagUtf8Bytes,
+            p0: 4, off: 0, len: 8, arena: Array("pingdata".utf8)
+        )
+        try EventBatchReader.withValidatedWire(customUtf8Wire) { r in
+            XCTAssertNil(r.textBytes(at: 0))
+            XCTAssertEqual(r.text(at: 0), "")
+            XCTAssertEqual(r.customName(at: 0), "ping")
+            XCTAssertEqual(Array(r.customData(at: 0)), Array("data".utf8))
         }
     }
 

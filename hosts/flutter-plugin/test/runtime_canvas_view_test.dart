@@ -204,22 +204,26 @@ void main() {
     await _settle(tester, c);
 
     // Every interaction `state_rules` resource the kitchen sink publishes resolves through
-    // `resources` while the scene is held, and decodes as a non-empty payload.
+    // `resources` while the scene is held, and rejects mismatched expected kinds.
+    final stateRulesKind = constId('nve.res.state_rules');
     final payloads = c.withTree((t) {
       final table = t.s.findTable(InteractionTable.key);
       final sizes = <int>[];
       for (var row = 0; table != null && row < table.rowCount; row++) {
         final id = table.resource(row, InteractionTable.stateRules);
         if (id != 0) {
-          sizes.add(c.resources.payload(id)?.length ?? -1);
+          sizes.add(c.resources.payload(id, expectedKind: stateRulesKind)?.length ?? -1);
+          expect(c.resources.payload(id, expectedKind: imageSrcResourceKind), isNull);
+          expect(c.resources.payload(id, expectedKind: drawListResourceKind), isNull);
         }
       }
-      expect(c.resources.payload(0), isNull);
+      expect(c.resources.payload(0, expectedKind: stateRulesKind), isNull);
       return sizes;
     });
     expect(payloads, isNotEmpty, reason: 'kitchen sink publishes state rules');
     expect(payloads.every((n) => n > 0), isTrue, reason: '$payloads');
-    expect(() => c.resources.payload(1), throwsStateError, reason: 'borrowed: only inside withTree');
+    expect(() => c.resources.payload(1, expectedKind: stateRulesKind), throwsStateError,
+        reason: 'borrowed: only inside withTree');
 
     expect(c.setProps(const {'unknown': 1}), isFalse, reason: 'unknown props change nothing');
     c.tick();

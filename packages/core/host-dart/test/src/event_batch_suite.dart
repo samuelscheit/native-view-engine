@@ -109,6 +109,7 @@ void runEventBatch(Check c) {
   final kInline = decoded[6];
   c.that((kInline.flags & nveEventFlagInlineKeyUtf8) != 0, 'inline key flag');
   c.eq((kInline.key, kInline.code, kInline.keyCode, kInline.isComposing), ('\uFEFFEnter', 'Enter', 13, true), 'inline key');
+  c.eq(kInline.text, '', 'inline key code never leaks into text');
   final k16 = decoded[7];
   c.that((k16.flags & nveEventFlagInlineKeyUtf8) != 0 && (k16.flags & nveEventFlagUtf8Bytes) == 0, '16 B inline key, empty code');
   c.eq((k16.key, k16.code), ('0123456789abcdef', ''), '16 B key exact');
@@ -201,4 +202,16 @@ void runEventBatch(Check c) {
       c, EventBatchErrorKind.invalidCustomNameLen, () => EventBatch.validateRaw(oneRecord(flags: nveEventFlagCustomNamed, p0: 5, len: 2), Uint8List.fromList([65, 66])), 'custom name len > len');
   _expectErr(
       c, EventBatchErrorKind.invalidUtf8, () => EventBatch.validateRaw(oneRecord(flags: nveEventFlagCustomNamed, p0: 1, len: 1), Uint8List.fromList([0xFF])), 'bad custom name utf8');
+
+  // Non-canonical index-0 handles (`0x01000000`) canonicalize to `0`, and `CUSTOM_NAMED | UTF8_BYTES`
+  // keeps `text == ''`.
+  final canonRec = oneRecord(flags: nveEventFlagCustomNamed | nveEventFlagUtf8Bytes, p0: 4, len: 8);
+  ByteData.sublistView(canonRec)
+    ..setUint32(16, 0x01000000, Endian.little)
+    ..setUint32(20, 0x01000000, Endian.little);
+  final canonEv = EventBatch.validateAndDecode(canonRec, Uint8List.fromList('pingdata'.codeUnits)).single;
+  c.eq((canonEv.surfaceId, canonEv.nodeId), (0, 0), 'non-canonical 0x01000000 handles canonicalize to 0');
+  c.eq((canonEv.text, canonEv.name), ('', 'ping'), 'CUSTOM_NAMED | UTF8_BYTES never leaks into text');
+  final encCanon = EventBatch.encode([const RuntimeEvent.press(0x01000000, 0, 0, surfaceId: 0x01000000)]).decodeEvents().single;
+  c.eq((encCanon.surfaceId, encCanon.nodeId), (0, 0), 'encode canonicalizes index-0 handles');
 }

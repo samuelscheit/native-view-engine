@@ -165,10 +165,11 @@ public struct EventBatchReader {
         return UnsafeRawBufferPointer(rebasing: arena[start..<(start + Int(rec.bytesLen))])
     }
 
-    /// Pre-validated UTF-8 text payload slice (`nil` if not a non-split `UTF8_BYTES` event).
+    /// Pre-validated UTF-8 text payload slice (`nil` if not a plain `UTF8_BYTES` event).
     public func textBytes(at index: Int) -> UnsafeRawBufferPointer? {
         guard let rec = record(at: index),
-              rec.flags.contains(.utf8Bytes), !rec.flags.contains(.keySplitBytes)
+              rec.flags.contains(.utf8Bytes),
+              rec.flags.isDisjoint(with: [.inlineKeyUtf8, .keySplitBytes, .customNamed])
         else { return nil }
         return bytes(at: index)
     }

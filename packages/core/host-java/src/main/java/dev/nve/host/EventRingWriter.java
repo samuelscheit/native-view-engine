@@ -305,8 +305,8 @@ public final class EventRingWriter {
         final int base = HEADER_SIZE + count * EVENT_SIZE;
         buf.putLong(base + NveAbi.EVENT_OFFSET_TIMESTAMP, timestampUs);
         buf.putLong(base + NveAbi.EVENT_OFFSET_TABLE, tableKey);
-        buf.putInt(base + NveAbi.EVENT_OFFSET_SURFACE, surfaceId);
-        buf.putInt(base + NveAbi.EVENT_OFFSET_NODE, nodeId);
+        buf.putInt(base + NveAbi.EVENT_OFFSET_SURFACE, (surfaceId & SceneReader.INDEX_MASK) == 0 ? 0 : surfaceId);
+        buf.putInt(base + NveAbi.EVENT_OFFSET_NODE, (nodeId & SceneReader.INDEX_MASK) == 0 ? 0 : nodeId);
         buf.putInt(base + NveAbi.EVENT_OFFSET_EVENT, eventId);
         buf.putInt(base + NveAbi.EVENT_OFFSET_FLAGS, flags);
         buf.putInt(base + NveAbi.EVENT_OFFSET_BYTES + NveAbi.RAW_EVENT_BYTES_OFFSET_OFFSET, bytesOff);

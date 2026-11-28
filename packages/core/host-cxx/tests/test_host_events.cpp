@@ -110,9 +110,11 @@ void test_owned_events_builders_and_copy() {
     CHECK(is_interaction_event(b.events[1], NVE_INTERACTION_EVENT_KEY_DOWN));
     CHECK((b.events[1].flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) != 0u);
     CHECK(event_key(b.events[1], b) == "ArrowUp" && event_code(b.events[1], b) == "ArrowUp");
+    CHECK(event_text(b.events[1], b).empty());  // inline key physical code never leaks as text()
     CHECK(is_interaction_event(b.events[2], NVE_INTERACTION_EVENT_KEY_UP));
     CHECK((b.events[2].flags & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) != 0u);
     CHECK(event_key(b.events[2], b) == long_key && event_code(b.events[2], b) == "MediaTrackNext");
+    CHECK(event_text(b.events[2], b).empty());
     CHECK(is_text_input_event(b.events[3], NVE_TEXT_INPUT_EVENT_CHANGE));
     CHECK(event_text(b.events[3], b) == "h\xC3\xA9llo");
     CHECK(is_custom_event(b.events[4]) && event_custom_name(b.events[4], b) == "analytics.click");
@@ -198,6 +200,29 @@ void test_nvev_v2_wire_codec() {
   const size_t text_off = src.events()[3].bytes.offset;
   bad_utf8[arena_off + text_off] = 0xFFu;
   CHECK(!OwnedEvents::decode_wire(bad_utf8).has_value());
+
+  // Handle canonicalization (`0x01000000` -> `0`) on wire decode & push, and `CUSTOM_NAMED | UTF8_BYTES`
+  // never leaks through `event_text()`.
+  {
+    OwnedEvents single;
+    const std::string_view payload_txt = "data";
+    CHECK(single.push_custom(0x01000000u, 0x01000000u, 7u, "ping",
+                             std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(payload_txt.data()),
+                                                      payload_txt.size())));
+    CHECK(single.events()[0].surface == 0u && single.events()[0].node == 0u);
+    std::vector<uint8_t> raw = single.to_wire_bytes();
+    nve_store_u32_le(raw.data() + kEventWireHeaderSize + 16u, 0x01000000u);  // surface
+    nve_store_u32_le(raw.data() + kEventWireHeaderSize + 20u, 0x01000000u);  // node
+    nve_store_u32_le(raw.data() + kEventWireHeaderSize + 28u, NVE_EVENT_FLAG_CUSTOM_NAMED | NVE_EVENT_FLAG_UTF8_BYTES);
+    const auto decoded = OwnedEvents::decode_wire(raw);
+    CHECK(decoded.has_value() && decoded->size() == 1u);
+    if (decoded) {
+      const NveEventBatch db = decoded->batch();
+      CHECK(db.events[0].surface == 0u && db.events[0].node == 0u);
+      CHECK(event_text(db.events[0], db).empty());
+      CHECK(event_custom_name(db.events[0], db) == "ping" && event_custom_data(db.events[0], db).size() == 4u);
+    }
+  }
 }
 
 /// A reused `OwnedEvents` allocates nothing once its slabs are sized.

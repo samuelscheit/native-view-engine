@@ -517,6 +517,89 @@ int main() {
       CHECK([nve::apple::payload_dictionary_from_event(span[3], batch)[@"value"][@"msg"] isEqualToString:@"ok"]);
     }
 
+    // 7e. FlatResource kind validation rejects `nve.res.draw_list` payloads on `nve.image` lookups
+    //     (including the colliding `[1, 1, 0]` wire vector and valid `ImageSrc` bytes under the wrong
+    //     kind), `NveAppleSceneReconciler` passes `kImageSrcKind`, and empty `EncodedBytes` (`[1, 0]`)
+    //     never routes through the URL cache.
+    {
+      const Key64 kDrawListKind = Key64::of("nve.res.draw_list");
+      // `[1, 1, 0]` = valid DrawList([Clear(0)]) and valid ImageSrc::EncodedBytes([0]).
+      const std::vector<uint8_t> colliding = {1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0};
+      const std::vector<uint8_t> valid_png_src = nve::host::encode_image_url(png_data_uri(4));
+      auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
+      auto make_img_scene = [&](Key64 kind, std::vector<uint8_t> payload, bool with_draw_holders) -> NSData * {
+        Nve2FrameBuilder b(1u);
+        b.declare_core_tables();
+        constexpr uint8_t kHolderSlot = 30u;
+        const std::array<uint32_t, 1> holder_def = {0u};
+        const std::array<uint8_t, 1> holder_fx = {0u};
+        if (with_draw_holders) {
+          b.declare({Key64::of("test.draw_holder"), Key64::of("test.draw_holder.v1"), kHolderSlot, true, 0u,
+                     holder_def, holder_fx, 0u, 1u, "test.draw_holder"});
+          b.create_nodes({1u, 2u, 3u, 4u});
+        } else {
+          b.create_nodes({1u, 2u});
+        }
+        b.define_resource(9u, kind, payload);
+        std::array<uint32_t, NVE_TABLE_IMAGE_WORDS> img{};
+        std::copy(std::begin(NVE_TABLE_IMAGE_DEFAULTS), std::end(NVE_TABLE_IMAGE_DEFAULTS), img.begin());
+        b.patch(slot(NVE_TABLE_IMAGE_KEY), 2u, set_field(img, NVE_TABLE_IMAGE_SRC, 9u), img);
+        if (with_draw_holders) {
+          b.define_resource(10u, kDrawListKind, colliding);
+          b.define_resource(11u, kDrawListKind, valid_png_src);
+          const std::array<uint32_t, 1> r10 = {10u}, r11 = {11u};
+          b.patch(kHolderSlot, 3u, 1u, r10);
+          b.patch(kHolderSlot, 4u, 1u, r11);
+          b.set_children(1u, {2u, 3u, 4u});
+        } else {
+          b.set_children(1u, {2u});
+        }
+        const std::vector<uint8_t> frame = b.finish();
+        return [NSData dataWithBytes:frame.data() length:frame.size()];
+      };
+      // Rust `WireDecoder` rejects binding a `kDrawListKind` resource directly to `nve.image.src`.
+      RCTNveMacComponentView *v_wire = make_view();
+      CHECK(![v_wire.nveHost replayFrame0:make_img_scene(kDrawListKind, colliding, false)]);
+      // Host-side lookup enforces `expectedKind` on live runtime resources (colliding `[1, 1, 0]` and PNG bytes).
+      RCTNveMacComponentView *v1 = make_view();
+      CHECK([v1.nveHost replayFrame0:make_img_scene(nve::host::kImageSrcKind, valid_png_src, true)]);
+      CHECK(((NveAppleImageView *)[v1 nativeViewForNodeId:2u]).image != nil);
+      CHECK([v1.nveHost resourceBytesForId:9u expectedKind:nve::host::kImageSrcKind.value] != nil);
+      CHECK([v1.nveHost resourceBytesForId:9u expectedKind:kDrawListKind.value] == nil);
+      NSData *draw10 = [v1.nveHost resourceBytesForId:10u expectedKind:kDrawListKind.value];
+      CHECK(draw10 != nil && draw10.length == colliding.size());
+      CHECK([v1.nveHost resourceBytesForId:10u expectedKind:nve::host::kImageSrcKind.value] == nil);
+      CHECK([v1.nveHost resourceBytesForId:11u expectedKind:kDrawListKind.value] != nil);
+      CHECK([v1.nveHost resourceBytesForId:11u expectedKind:nve::host::kImageSrcKind.value] == nil);
+      // Direct `NveAppleSceneReconciler` check: requests `kImageSrcKind`, rejects mismatched kind.
+      {
+        auto sess = nve::host::RuntimeSession::create(nve_runtime_get_interface(NVE_RUNTIME_ABI_VERSION));
+        CHECK(sess.has_value());
+        NSData *f = make_img_scene(nve::host::kImageSrcKind, valid_png_src, false);
+        CHECK(sess->submit_nve2(std::span<const uint8_t>(static_cast<const uint8_t *>(f.bytes), f.length)) == NVE_RUNTIME_OK);
+        __block uint64_t seen_kind = 0u;
+        RCTNveMacComponentView *adapter = make_view();
+        NveAppleSceneReconciler *rec = [[NveAppleSceneReconciler alloc]
+            initWithAdapter:(id<NveAppleComponentViewAdapter>)adapter
+                  resources:^NSData *(uint32_t rid, uint64_t expectedKind) {
+                    seen_kind = expectedKind;
+                    // Pretend resource 9 had kind `kDrawListKind`: provider must reject `kImageSrcKind`.
+                    if (rid != 9u || expectedKind != kDrawListKind.value) return nil;
+                    return [NSData dataWithBytes:valid_png_src.data() length:valid_png_src.size()];
+                  }];
+        auto guard = sess->acquire_scene();
+        CHECK(guard.has_value());
+        [rec syncFromScene:guard->reader()];
+        CHECK(seen_kind == nve::host::kImageSrcKind.value);
+        NveAppleImageView *iv = (NveAppleImageView *)[rec nativeViewForNodeId:2u];
+        CHECK([iv isKindOfClass:[NveAppleImageView class]] && iv.image == nil);
+      }
+      // Empty `EncodedBytes` (`[1, 0]`) under `kImageSrcKind` yields nil and never hits URL cache.
+      RCTNveMacComponentView *v4 = make_view();
+      CHECK([v4.nveHost replayFrame0:make_img_scene(nve::host::kImageSrcKind, nve::host::encode_image_bytes({}), false)]);
+      CHECK(((NveAppleImageView *)[v4 nativeViewForNodeId:2u]).image == nil);
+    }
+
     // 8. Pairing errors surface the runtime's diagnostics.
     CHECK(![scene connectPairedEndpoint:@"" token:@"" surfaceId:1u error:&err] && err.localizedDescription.length > 0);
     CHECK(!scene.isPaired);

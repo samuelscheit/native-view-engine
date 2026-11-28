@@ -276,7 +276,7 @@ void test_url_policy() {
     std::ofstream out(tmp, std::ios::binary);
     out.write(reinterpret_cast<const char*>(red.data()), static_cast<std::streamsize>(red.size()));
   }
-  const auto decodes = [](const std::string& url) { return !decode_image(h::ImageSource{url, {}}).isNull(); };
+  const auto decodes = [](const std::string& url) { return !decode_image(h::ImageSource::from_url(url)).isNull(); };
   std::string encoded = tmp;
   encoded.replace(encoded.find(' '), 1u, "%20");
   NVE_CHECK(decodes(tmp) && decodes("file://" + encoded) && decodes("FILE://localhost" + encoded));
