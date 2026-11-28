@@ -1,0 +1,57 @@
+error: #[derive(ReprEnum)] variant `TupleVar::A` must be unit-only
+ --> tests/ui/repr_enum_non_unit_or_generic.rs:4:10
+  |
+4 | #[derive(ReprEnum)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(ReprEnum)] variant `StructVar::A` must be unit-only
+  --> tests/ui/repr_enum_non_unit_or_generic.rs:10:10
+   |
+10 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(ReprEnum)] enum `EmptyEnum` must have at least one variant
+  --> tests/ui/repr_enum_non_unit_or_generic.rs:16:10
+   |
+16 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(ReprEnum)] does not support generic parameters on `GenericEnum`
+  --> tests/ui/repr_enum_non_unit_or_generic.rs:20:10
+   |
+20 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(ReprEnum)] does not support `where` clauses on `WhereEnum`
+  --> tests/ui/repr_enum_non_unit_or_generic.rs:26:10
+   |
+26 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0084]: unsupported representation for zero-variant enum
+  --> tests/ui/repr_enum_non_unit_or_generic.rs:15:8
+   |
+15 | #[repr(u8)]
+   |        ^^
+16 | #[derive(ReprEnum)]
+17 | enum EmptyEnum {}
+   | -------------- zero-variant enum
+
+error[E0392]: type parameter `T` is never used
+  --> tests/ui/repr_enum_non_unit_or_generic.rs:21:18
+   |
+21 | enum GenericEnum<T> {
+   |                  ^ unused type parameter
+   |
+   = help: consider removing `T`, referring to it in a field, or using a marker such as `PhantomData`
+   = help: if you intended `T` to be a const parameter, use `const T: /* Type */` instead

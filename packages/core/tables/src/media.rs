@@ -27,17 +27,10 @@ pub const MEDIA_FLAG_REDUCED_MOTION_VAL: u8 = 1 << 3;
 
 /// Primary pointer precision predicate.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nve_abi::ReprEnum)]
 pub enum MediaPointer {
     Fine = 1,
     Coarse = 2,
-}
-
-impl MediaPointer {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw { 1 => Some(Self::Fine), 2 => Some(Self::Coarse), _ => None }
-    }
 }
 
 /// Live viewport & user-preference snapshot evaluated natively by [`MediaQuery::matches`].
@@ -223,7 +216,7 @@ impl MediaQuery {
 
     #[inline]
     pub const fn color_scheme_opt(&self) -> Option<ColorScheme> {
-        ColorScheme::from_u8(self.color_scheme)
+        ColorScheme::try_from_u8(self.color_scheme)
     }
 
     #[inline]
@@ -237,7 +230,7 @@ impl MediaQuery {
 
     #[inline]
     pub const fn pointer_opt(&self) -> Option<MediaPointer> {
-        MediaPointer::from_u8(self.pointer)
+        MediaPointer::try_from_u8(self.pointer)
     }
 
     #[inline]

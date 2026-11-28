@@ -124,7 +124,7 @@ pub use flat_op::{
     FlatOpDesc, FlatOpFieldDesc, FlatOpFieldType, FlatOpScopeDesc, FlatOpStreamDesc,
     FloatConstraint,
 };
-pub use nve_abi_macros::NveCodec;
+pub use nve_abi_macros::{NveCodec, ReprEnum};
 pub use reader::{ByteReader, DEFAULT_MAX_DEPTH};
 pub use transport::{
     call_sync_decode, encode_f32_stack, encode_f64_stack, try_with_stack_writer, with_stack_writer,

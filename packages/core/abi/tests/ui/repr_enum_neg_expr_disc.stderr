@@ -1,0 +1,44 @@
+error: #[derive(ReprEnum)] variant `NegParen::A` requires integer literal discriminant
+ --> tests/ui/repr_enum_neg_expr_disc.rs:4:10
+  |
+4 | #[derive(ReprEnum)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(ReprEnum)] variant `NegBinOp::A` requires integer literal discriminant
+  --> tests/ui/repr_enum_neg_expr_disc.rs:10:10
+   |
+10 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: negative integer literal `-1u8` cannot have unsigned suffix
+  --> tests/ui/repr_enum_neg_expr_disc.rs:16:10
+   |
+16 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0600]: cannot apply unary operator `-` to type `u8`
+  --> tests/ui/repr_enum_neg_expr_disc.rs:18:9
+   |
+18 |     A = -1u8,
+   |         ^^^^ cannot apply unary operator `-`
+   |
+   = note: unsigned values cannot be negated
+help: you may have meant the maximum value of `u8`
+   |
+18 -     A = -1u8,
+18 +     A = u8::MAX,
+   |
+
+error[E0308]: mismatched types
+  --> tests/ui/repr_enum_neg_expr_disc.rs:18:9
+   |
+18 |     A = -1u8,
+   |         ^^^^ expected `i32`, found `u8`
+   |
+   = note: enum variant discriminant can only be of a primitive type compatible with the enum's `repr`

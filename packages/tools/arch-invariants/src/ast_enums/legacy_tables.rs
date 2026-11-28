@@ -72,7 +72,7 @@ pub fn scan_match_tables(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<Vi
                     f.line,
                     line_at(raw, f.line),
                     format!(
-                        "Manual integer-discriminant `match` in `fn {}` ({count} arms); derive via `#[derive(WordEnum)]` / `#[derive(NveCodec)]`",
+                        "Manual integer-discriminant `match` in `fn {}` ({count} arms); derive via `#[derive(ReprEnum)]` / `#[derive(WordEnum)]` / `#[derive(NveCodec)]`",
                         f.name
                     ),
                 ));

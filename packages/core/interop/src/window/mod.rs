@@ -55,7 +55,7 @@ impl WindowRect {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, nve_abi::ReprEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowState {
     #[default]
@@ -63,18 +63,6 @@ pub enum WindowState {
     Minimized = 1,
     Maximized = 2,
     Fullscreen = 3,
-}
-
-impl WindowState {
-    pub fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Normal),
-            1 => Some(Self::Minimized),
-            2 => Some(Self::Maximized),
-            3 => Some(Self::Fullscreen),
-            _ => None,
-        }
-    }
 }
 
 nve_abi::define_bitflags! {

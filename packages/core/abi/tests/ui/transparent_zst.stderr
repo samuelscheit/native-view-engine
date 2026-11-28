@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: assertion failed: ::core::mem::size_of::<EmptyTransparent>() > 0usize
+ --> tests/ui/transparent_zst.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^ evaluation of `_` failed here

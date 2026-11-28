@@ -2,15 +2,20 @@
 //! and the golden XXH64 vectors. No owned intermediate spec: every name, type, and doc string
 //! is a `&'a str` into the `nve-abi` descriptors.
 
-use nve_abi::RuntimeFnSignature;
 use nve_abi::schema::{
     AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiEnumVariantDescriptor,
-    AbiFileDescriptor,
+    AbiFileDescriptor, AbiMethodDescriptor, AbiVtableDescriptor,
 };
 use nve_hash::{PRIME1, xxh64};
 
-use super::layout::{RecordLayout, layout_records, layout_records_on};
+use super::layout::{
+    FieldLayout, RecordLayout, VtableHeaderLayout, Width, layout_records, layout_records_on,
+    layout_vtable_headers_on,
+};
 use crate::error::CodegenError;
+
+/// Empty alias slice for Askama templates that need an explicitly typed `&[AbiAliasDescriptor]`.
+pub const NO_ALIASES: &[AbiAliasDescriptor] = &[];
 
 /// A 64-bit value with its `(lo, hi)` `u32` halves: Dart / TypeScript spell only the halves, so
 /// no integer literal above 2^53 ever reaches a JavaScript number.
@@ -68,37 +73,32 @@ impl std::fmt::Display for HexLiteral {
     }
 }
 
-/// Aliases whose C type is a callback signature `NveAbi` does not describe: the templates spell
-/// their function-pointer types by hand.
-pub const CALLBACK_ALIASES: [&str; 2] = ["NveHostInvokeFn", "NveHostChannelPublishFn"];
-
 /// The Core ABI (`nve_abi.generated.h`): app-module vtables, values, events, and the word-table
 /// view every scene reader indexes.
 #[derive(Debug)]
 pub struct AbiModel<'a> {
     pub core: &'a AbiFileDescriptor,
-    /// `NveHostStatus` (`invoke` / `channel_publish` result codes), not part of a file descriptor.
-    pub host_status: &'a AbiEnumDescriptor,
     pub core_hash: U64Split,
     /// Core records with their 32-bit and 64-bit C layouts.
     pub records: Vec<RecordLayout<'a>>,
+    /// Declared Core callback typedef names (`NveHostInvokeFn`, `NveHostChannelPublishFn`, `NveGetInterfaceFn`).
+    callbacks: Vec<&'a str>,
     /// Index into `records` of `NveTableView` (the scene readers' table descriptor).
     table_view: usize,
 }
 
 impl<'a> AbiModel<'a> {
-    pub fn new(
-        core: &'a AbiFileDescriptor,
-        host_status: &'a AbiEnumDescriptor,
-    ) -> Result<Self, CodegenError> {
+    pub fn new(core: &'a AbiFileDescriptor) -> Result<Self, CodegenError> {
         let records = layout_records(&[core])?;
+        let _ = layout_vtable_headers_on(&[], &[], &[core], &records)?;
         super::validate::abi(&[core], &records)?;
         let table_view = find_record(&records, "NveTableView")?;
+        let callbacks = core.callbacks.iter().map(|c| c.name).collect();
         Ok(Self {
             core,
-            host_status,
             core_hash: U64Split::new(nve_abi::NVE_CORE_ABI_SCHEMA_HASH),
             records,
+            callbacks,
             table_view,
         })
     }
@@ -112,18 +112,23 @@ impl<'a> AbiModel<'a> {
     }
 
     pub fn enums(&self) -> impl Iterator<Item = &'a AbiEnumDescriptor> + use<'a> {
-        self.core
-            .enums
-            .iter()
-            .chain(std::iter::once(self.host_status))
+        self.core.enums.iter()
     }
 
-    /// Aliases that are plain types (handles), not callback signatures.
-    pub fn value_aliases(&self) -> impl Iterator<Item = &'a AbiAliasDescriptor> + use<'a> {
+    pub fn all_aliases(&self) -> &'a [AbiAliasDescriptor] {
+        self.core.aliases
+    }
+
+    pub fn all_callbacks(&self) -> &[&'a str] {
+        &self.callbacks
+    }
+
+    /// Modular `nve_get_interface` vtables (`NveSurfaceApi..NveHostApi`).
+    pub fn modules(&self) -> impl Iterator<Item = &'a AbiVtableDescriptor> + use<'a> {
         self.core
-            .aliases
+            .vtables
             .iter()
-            .filter(|a| !CALLBACK_ALIASES.contains(&a.name))
+            .filter(|v| v.interface_id.is_some())
     }
 }
 
@@ -132,49 +137,27 @@ impl<'a> AbiModel<'a> {
 #[derive(Debug)]
 pub struct RuntimeAbiModel<'a> {
     pub file: &'a AbiFileDescriptor,
-    pub base_aliases: &'a [AbiAliasDescriptor],
     pub hash: U64Split,
     pub records: Vec<RecordLayout<'a>>,
-    /// Host callback typedefs (`NveRuntimeWakeFn`, `NveRuntimeMeasureTextFn`).
-    pub callbacks: Vec<RuntimeFn>,
-    /// `NveRuntimeApi` function-pointer slots, in vtable order.
-    pub slots: Vec<RuntimeFn>,
+    /// Combined Core + Runtime aliases for C & Dart type resolution.
+    all_aliases: Vec<AbiAliasDescriptor>,
+    /// Combined Core + Runtime callback names for Dart `NativeFunction` spelling.
+    all_callbacks: Vec<&'a str>,
+    /// Validated target-independent / cross-model layouts of runtime vtable header fields.
+    vtable_headers: Vec<VtableHeaderLayout<'a>>,
+    /// Index into `file.vtables` of `NveRuntimeApi`.
+    vtable: usize,
     /// Index into `records` of `NveSceneView` (the scene every host reads).
     scene_view: usize,
 }
 
-/// One runtime C signature with its validated `dart:ffi` spellings.
-#[derive(Debug)]
-pub struct RuntimeFn {
-    pub sig: &'static RuntimeFnSignature,
-    /// `dart:ffi` native function type (`ffi.Int32 Function(ffi.Pointer<ffi.Void> handle, …)`).
-    pub dart_native: String,
-    /// Dart-side `asFunction` type (`int Function(ffi.Pointer<ffi.Void> handle, …)`).
-    pub dart: String,
-}
-
-impl core::ops::Deref for RuntimeFn {
-    type Target = RuntimeFnSignature;
-    fn deref(&self) -> &RuntimeFnSignature {
-        self.sig
-    }
-}
-
-/// The opaque handle typedef every runtime slot takes (`typedef void* NveRuntimeHandle`).
-pub const RUNTIME_HANDLE: &str = "NveRuntimeHandle";
-
 impl<'a> RuntimeAbiModel<'a> {
-    /// Validates `callbacks` / `slots` (every type a known scalar, record, handle, or callback
-    /// typedef; every parameter named) on top of `base`, whose records the runtime records may
-    /// store by value (`NveRuntimeTextStyle::font_family: NveStrSlice`).
-    pub fn new(
-        file: &'a AbiFileDescriptor,
-        base: &AbiModel<'a>,
-        callbacks: &'static [RuntimeFnSignature],
-        slots: &'static [RuntimeFnSignature],
-    ) -> Result<Self, CodegenError> {
-        let records = layout_records_on(&base.records, &[file])?;
-        super::validate::abi(&[file], &records)?;
+    /// Validates `file` (every record, alias, callback, and vtable slot) on top of `base`, whose
+    /// records/aliases/callbacks the runtime ABI may reference.
+    pub fn new(file: &'a AbiFileDescriptor, base: &AbiModel<'a>) -> Result<Self, CodegenError> {
+        let records = layout_records_on(&base.records, &[base.core], &[file])?;
+        let vtable_headers = layout_vtable_headers_on(&base.records, &[base.core], &[file], &records)?;
+        super::validate::abi_on(&[base.core], &base.records, &[file], &records)?;
         if let Some(r) = records
             .iter()
             .find(|r| base.records.iter().any(|b| b.name == r.name))
@@ -184,36 +167,32 @@ impl<'a> RuntimeAbiModel<'a> {
                 r.name
             )));
         }
-        let names = super::spell::dart::CNames {
-            records: base.records.iter().chain(&records).map(|r| r.name).chain([RUNTIME_HANDLE]).collect(),
-            callbacks: callbacks
-                .iter()
-                .map(|c| c.name)
-                .chain(CALLBACK_ALIASES)
-                .chain(["NveGetInterfaceFn"])
-                .collect(),
-            aliases: base.core.aliases.iter().map(|a| (a.name, a.target)).collect(),
-        };
-        let spell = |sigs: &'static [RuntimeFnSignature]| -> Result<Vec<RuntimeFn>, CodegenError> {
-            sigs.iter()
-                .map(|sig| {
-                    let fail = |why: String| CodegenError::validation(format!("runtime signature `{}`: {why}", sig.name));
-                    Ok(RuntimeFn {
-                        sig,
-                        dart_native: names.c_fn(sig.ret, sig.params, false).map_err(fail)?,
-                        dart: names.c_fn(sig.ret, sig.params, true).map_err(fail)?,
-                    })
-                })
-                .collect()
-        };
+        let vtable = file
+            .vtables
+            .iter()
+            .position(|v| v.name == "NveRuntimeApi")
+            .ok_or_else(|| {
+                CodegenError::validation("the runtime ABI declares no `NveRuntimeApi` vtable")
+            })?;
         let scene_view = find_record(&records, "NveSceneView")?;
+        let mut all_aliases = Vec::with_capacity(base.core.aliases.len() + file.aliases.len());
+        all_aliases.extend_from_slice(base.core.aliases);
+        all_aliases.extend_from_slice(file.aliases);
+        let all_callbacks = base
+            .core
+            .callbacks
+            .iter()
+            .chain(file.callbacks)
+            .map(|c| c.name)
+            .collect();
         Ok(Self {
             file,
-            base_aliases: base.core.aliases,
             hash: U64Split::new(nve_abi::NVE_RUNTIME_SCHEMA_HASH),
             records,
-            callbacks: spell(callbacks)?,
-            slots: spell(slots)?,
+            all_aliases,
+            all_callbacks,
+            vtable_headers,
+            vtable,
             scene_view,
         })
     }
@@ -221,6 +200,44 @@ impl<'a> RuntimeAbiModel<'a> {
     pub fn scene_view(&self) -> &RecordLayout<'a> {
         &self.records[self.scene_view]
     }
+
+    pub fn vtable(&self) -> &'a AbiVtableDescriptor {
+        &self.file.vtables[self.vtable]
+    }
+
+    pub fn vtable_header_fields(&self) -> &[FieldLayout<'a>] {
+        &self.vtable_headers[self.vtable].header_fields
+    }
+
+    pub fn vtable_slots_offset(&self) -> &Width {
+        &self.vtable_headers[self.vtable].slots_offset
+    }
+
+    pub fn slots(&self) -> &'a [AbiMethodDescriptor] {
+        self.vtable().methods
+    }
+
+    pub fn required_slots(&self) -> Vec<&'a AbiMethodDescriptor> {
+        self.slots().iter().filter(|m| !m.optional).collect()
+    }
+
+    pub fn all_aliases(&self) -> &[AbiAliasDescriptor] {
+        &self.all_aliases
+    }
+
+    pub fn all_callbacks(&self) -> &[&'a str] {
+        &self.all_callbacks
+    }
+}
+
+/// Module name of a modular vtable (`module_name`, falling back to `name`).
+pub fn module_name(v: &AbiVtableDescriptor) -> &str {
+    v.module_name.unwrap_or(v.name)
+}
+
+/// Interface ID integer of a modular vtable.
+pub fn interface_id(v: &AbiVtableDescriptor) -> u32 {
+    v.interface_id.map_or(0, |id| id.raw())
 }
 
 /// C constant prefix of an enum's variants (`c_prefix`, else `SCREAMING_NAME_`).

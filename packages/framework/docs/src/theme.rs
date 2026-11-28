@@ -19,15 +19,15 @@ pub struct ThemeModeCell(Arc<AtomicU8>);
 
 impl ThemeModeCell {
     pub fn new(mode: ThemeMode) -> Self {
-        Self(Arc::new(AtomicU8::new(mode.index())))
+        Self(Arc::new(AtomicU8::new(mode.as_u8())))
     }
 
     pub fn get(&self) -> ThemeMode {
-        ThemeMode::from_index(self.0.load(Ordering::Relaxed))
+        ThemeMode::from_u8(self.0.load(Ordering::Relaxed))
     }
 
     pub fn set(&self, mode: ThemeMode) {
-        self.0.store(mode.index(), Ordering::Relaxed);
+        self.0.store(mode.as_u8(), Ordering::Relaxed);
     }
 }
 

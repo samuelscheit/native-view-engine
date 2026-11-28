@@ -34,18 +34,17 @@ impl AppBrand {
 }
 
 /// User color-scheme preference; [`ThemeMode::System`] follows the OS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, nve_abi::ReprEnum)]
+#[repr_enum(fallback = System)]
 pub enum ThemeMode {
     #[default]
-    System,
-    Light,
-    Dark,
+    System = 0,
+    Light = 1,
+    Dark = 2,
 }
 
 impl ThemeMode {
-    /// Every mode, in control order (System first).
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
-
     pub const fn resolve(self, os: ColorScheme) -> ColorScheme {
         match self {
             Self::System => os,
@@ -74,20 +73,6 @@ impl ThemeMode {
             Self::System => "Auto",
             Self::Light => "Light",
             Self::Dark => "Dark",
-        }
-    }
-
-    /// Dense index into [`Self::ALL`] (for atomics and binary snapshots).
-    pub const fn index(self) -> u8 {
-        self as u8
-    }
-
-    /// Inverse of [`Self::index`]; out-of-range indices follow the OS.
-    pub const fn from_index(index: u8) -> Self {
-        match index {
-            1 => Self::Light,
-            2 => Self::Dark,
-            _ => Self::System,
         }
     }
 }

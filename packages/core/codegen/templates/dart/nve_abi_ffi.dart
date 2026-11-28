@@ -3,26 +3,15 @@
 // Web-safe constants live in `nve_abi_const.generated.dart`.
 
 import 'dart:ffi' as ffi;
+{%- for cb in m.core.callbacks %}
+{%- if let Some(doc) = cb.doc %}
 
-/// `NveHostCallbacks::invoke` (`NveHostInvokeFn`).
-typedef NveHostInvokeNative = ffi.Int32 Function(
-  ffi.Pointer<ffi.Void> hostCtx,
-  ffi.Uint32 serviceId,
-  ffi.Uint32 methodId,
-  ffi.Uint64 requestId,
-  NveBufferSlice request,
-  ffi.Pointer<ffi.Uint8> outBuf,
-  ffi.Size outCap,
-  ffi.Pointer<ffi.Size> outLen,
-);
+/// {{ spell::one_line(doc) }}
+{%- else %}
 
-/// `NveHostCallbacks::channel_publish` (`NveHostChannelPublishFn`).
-typedef NveHostChannelPublishNative = ffi.Int32 Function(
-  ffi.Pointer<ffi.Void> hostCtx,
-  ffi.Uint32 channelId,
-  ffi.Uint32 flags,
-  NveBufferSlice payload,
-);
+{%- endif %}
+typedef {{ dart::callback_stem(cb.name) }}Native = {{ dart::fn_sig(m.all_aliases(), model::NO_ALIASES, m.all_callbacks(), cb.params, cb.return_type, false) }};
+{%- endfor %}
 {%- for r in m.records %}
 {%- if let Some(doc) = r.doc %}
 
@@ -32,33 +21,24 @@ typedef NveHostChannelPublishNative = ffi.Int32 Function(
 {%- endif %}
 final class {{ r.name }} extends ffi.{% if r.is_union %}Union{% else %}Struct{% endif %} {
 {%- for f in r.fields %}
-  {{ dart::field(m.core.aliases, f) }}
+  {{ dart::field(m.all_aliases(), model::NO_ALIASES, m.all_callbacks(), f) }}
 {%- endfor %}
 }
 {%- endfor %}
-{%- for iface in m.core.modules %}
+{%- for iface in m.modules() %}
 {%- for method in iface.methods %}
 
-typedef Nve{{ spell::pascal(method.name) }}Native = {{ dart::native(m.core.aliases, method.return_type) }} Function(
-{%- if method.has_self %}
-  ffi.Pointer<ffi.Void> handle,
-{%- endif %}
-{%- for p in method.params %}
-  {{ dart::native(m.core.aliases, p.ty) }} {{ spell::camel(p.name) }},
-{%- endfor %}
-);
+typedef Nve{{ spell::pascal(method.name) }}Native = {{ dart::fn_sig(m.all_aliases(), model::NO_ALIASES, m.all_callbacks(), method.params, method.return_type, false) }};
 {%- endfor %}
 {%- endfor %}
-
-typedef NveGetInterfaceNative = ffi.Pointer<ffi.Void> Function(ffi.Uint32 interfaceId);
-{%- for iface in m.core.modules %}
+{%- for iface in m.modules() %}
 {%- if let Some(doc) = iface.doc %}
 
 /// {{ spell::one_line(doc) }}
 {%- else %}
 
 {%- endif %}
-final class {{ iface.c_name }} extends ffi.Struct {
+final class {{ iface.name }} extends ffi.Struct {
 {%- for method in iface.methods %}
   external ffi.Pointer<ffi.NativeFunction<Nve{{ spell::pascal(method.name) }}Native>> {{ spell::camel(method.name) }};
 {%- endfor %}

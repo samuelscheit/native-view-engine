@@ -61,14 +61,6 @@ pub enum CameraPixelFormat {
 
 impl CameraPixelFormat {
     #[inline]
-    pub fn from_u32(v: u32) -> Result<Self, CameraCodecError> {
-        u8::try_from(v)
-            .ok()
-            .and_then(Self::from_repr)
-            .ok_or(CameraCodecError::InvalidEnum("CameraPixelFormat", v))
-    }
-
-    #[inline]
     pub const fn min_stride_bytes(self, width: u32) -> Option<u32> {
         width.checked_mul(match self {
             Self::Rgba8888 | Self::Bgra8888 => 4,
@@ -157,7 +149,9 @@ impl CameraFrameWireLayout {
             width: self.width,
             height: self.height,
             stride_bytes: self.stride_bytes,
-            pixel_format: CameraPixelFormat::from_u32(u32::from(self.pixel_format))?,
+            pixel_format: CameraPixelFormat::from_repr(self.pixel_format).ok_or(
+                CameraCodecError::InvalidEnum("CameraPixelFormat", u32::from(self.pixel_format)),
+            )?,
             rotation_deg: self.rotation_deg,
             timestamp_ns: self.timestamp_ns,
             native_handle_id: self.native_handle_id,
@@ -303,7 +297,10 @@ impl CameraFrameDescriptor {
         if version != CAMERA_FRAME_VERSION {
             return Err(CameraCodecError::UnsupportedVersion(version));
         }
-        let pixel_format = CameraPixelFormat::from_u32(u32::from(r.read_u8()?))?;
+        let raw_pixel_format = r.read_u8()?;
+        let pixel_format = CameraPixelFormat::from_repr(raw_pixel_format).ok_or(
+            CameraCodecError::InvalidEnum("CameraPixelFormat", u32::from(raw_pixel_format)),
+        )?;
         let rotation_deg = r.read_u16()?;
         let width = r.read_u32()?;
         let height = r.read_u32()?;

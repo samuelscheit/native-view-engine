@@ -23,19 +23,30 @@ pub const MAX_TABLE_WORDS: usize = 32;
 /// Maximum number of table slots per process (`NodeRow::tables` is a `u128`).
 pub const MAX_TABLE_SLOTS: usize = 128;
 
-/// `NveNodeRow::primary_slot` sentinel: a plain container with no realizing table. Any value in
-/// `0..MAX_TABLE_SLOTS` is a `TableSlot` index into `NveSceneView::tables`.
-pub const NVE_PRIMARY_SLOT_NONE: u8 = 0xFF;
+nve_abi_macros::abi_consts! {
+    pub(crate) const TABLE_ABI_CONSTS;
 
-/// `log2` of the node indices one [`NveTableView::row_index_pages`] page covers.
-pub const NVE_ROW_INDEX_PAGE_BITS: u32 = 8;
-/// Entries per [`NveTableView::row_index_pages`] page.
-pub const NVE_ROW_INDEX_PAGE_LEN: u32 = 1 << NVE_ROW_INDEX_PAGE_BITS;
-/// [`NveTableView::row_index_dir`] entry of a node-index range that has no page.
-pub const NVE_ROW_INDEX_NO_PAGE: u32 = u32::MAX;
+    /// `NveNodeRow::primary_slot` sentinel: a plain container with no realizing table. Any value in
+    /// `0..MAX_TABLE_SLOTS` is a `TableSlot` index into `NveSceneView::tables`.
+    #[nve_abi(hex)]
+    pub const NVE_PRIMARY_SLOT_NONE: u8 = 0xFF;
 
-/// Stable 64-bit identity of a table: `xxh64(name)` baked at compile time.
-pub type TableKey = Key64;
+    /// `log2` of the node indices one [`NveTableView::row_index_pages`] page covers.
+    pub const NVE_ROW_INDEX_PAGE_BITS: u32 = 8;
+    /// Entries per [`NveTableView::row_index_pages`] page.
+    pub const NVE_ROW_INDEX_PAGE_LEN: u32 = 1 << NVE_ROW_INDEX_PAGE_BITS;
+    /// [`NveTableView::row_index_dir`] entry of a node-index range that has no page.
+    #[nve_abi(hex)]
+    pub const NVE_ROW_INDEX_NO_PAGE: u32 = u32::MAX;
+}
+
+nve_abi_macros::abi_aliases! {
+    pub(crate) const TABLE_ABI_ALIASES;
+
+    /// Stable 64-bit identity of a table: `xxh64(name)` baked at compile time.
+    #[nve_abi(name = "NveTableKey", target = "u64")]
+    pub type TableKey = Key64;
+}
 
 /// Pipeline stages a word invalidates.
 pub mod effect {

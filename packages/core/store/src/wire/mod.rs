@@ -28,7 +28,7 @@ pub const HEADER_WORDS: usize = 6;
 
 /// The closed opcode set.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, crate::ReprEnum)]
 pub enum Op {
     DeclareTables = 1,
     RemoveNodes = 2,
@@ -40,24 +40,6 @@ pub enum Op {
     SetStrings = 8,
     SetChildren = 9,
     Commands = 10,
-}
-
-impl Op {
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        Some(match v {
-            1 => Self::DeclareTables,
-            2 => Self::RemoveNodes,
-            3 => Self::CreateNodes,
-            4 => Self::DefineResources,
-            5 => Self::ReleaseResources,
-            6 => Self::Patch,
-            7 => Self::Detach,
-            8 => Self::SetStrings,
-            9 => Self::SetChildren,
-            10 => Self::Commands,
-            _ => return None,
-        })
-    }
 }
 
 /// Decoding / apply failure. The replica must be discarded (or resynced) after an error.

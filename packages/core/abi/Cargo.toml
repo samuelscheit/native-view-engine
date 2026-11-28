@@ -18,6 +18,7 @@ rustc-hash = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
+trybuild = { workspace = true }
 
 [[bench]]
 name = "abi_bench"

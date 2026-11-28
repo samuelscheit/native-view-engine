@@ -132,22 +132,10 @@ const fn value_tag_name(t: NveValueTag) -> &'static str {
 
 /// Every `NveHostStatus` (adding a variant fails `host_status_name`'s exhaustive match first).
 fn host_status_entries() -> Vec<(String, i64)> {
-    use NveHostStatus as S;
-    [
-        S::Ok,
-        S::Pending,
-        S::BufferTooSmall,
-        S::Unsupported,
-        S::PermissionDenied,
-        S::InvalidArg,
-        S::NotFound,
-        S::Cancelled,
-        S::IoError,
-        S::InternalError,
-    ]
-    .into_iter()
-    .map(|s| (host_status_name(s).to_owned(), i64::from(s.as_i32())))
-    .collect()
+    NveHostStatus::ALL
+        .into_iter()
+        .map(|s| (host_status_name(s).to_owned(), i64::from(s.as_i32())))
+        .collect()
 }
 
 /// Every `nve_abi::hybrid::NveHybridStatus`, by name and code.
@@ -247,8 +235,8 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         &mut out,
     );
 
-    let tags: Vec<(String, i64)> = (0..8)
-        .filter_map(NveValueTag::from_u32)
+    let tags: Vec<(String, i64)> = NveValueTag::ALL
+        .into_iter()
         .map(|t| (value_tag_name(t).to_owned(), t as i64))
         .collect();
     check_set(

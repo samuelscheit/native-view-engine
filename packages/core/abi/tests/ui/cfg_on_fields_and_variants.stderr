@@ -1,0 +1,23 @@
+error: `#[cfg(...)]` is not supported inside #[derive(NveAbi)] field/variant
+ --> tests/ui/cfg_on_fields_and_variants.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: `#[cfg(...)]` is not supported inside #[derive(NveAbi)] field/variant
+  --> tests/ui/cfg_on_fields_and_variants.rs:11:10
+   |
+11 | #[derive(NveAbi)]
+   |          ^^^^^^
+   |
+   = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: `#[cfg(...)]` is not supported inside #[derive(ReprEnum)] variant
+  --> tests/ui/cfg_on_fields_and_variants.rs:18:10
+   |
+18 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)

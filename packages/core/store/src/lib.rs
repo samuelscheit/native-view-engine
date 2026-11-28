@@ -49,7 +49,7 @@ pub use nve_abi::table::{
     effect, table_flags, FieldDesc, FieldKind, OptEncoding, Storage, TableDesc, TableKey,
     ValueSetDesc, Word,
 };
-pub use nve_abi_macros::{NveTable, WordEnum};
+pub use nve_abi_macros::{NveTable, ReprEnum, WordEnum};
 pub use resource::{words_as_le_bytes, FlatResource, ResourceStore, MAX_RESOURCE_WORDS};
 pub use resource_ingress::{
     padded_word_len, read_bytes_words, read_fixed_str_pack, read_fixed_str_pack_unchecked,

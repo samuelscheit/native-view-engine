@@ -1,0 +1,23 @@
+error: #[derive(ReprEnum)] on `NoRepr` requires `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]`
+ --> tests/ui/repr_enum_missing_repr.rs:3:10
+  |
+3 | #[derive(ReprEnum)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(ReprEnum)] on `CRepr` requires `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]`, found `#[repr(C)]`
+ --> tests/ui/repr_enum_missing_repr.rs:9:10
+  |
+9 | #[derive(ReprEnum)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(ReprEnum)] on `UsizeRepr` requires `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]`, found `#[repr(usize)]`
+  --> tests/ui/repr_enum_missing_repr.rs:15:10
+   |
+15 | #[derive(ReprEnum)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)

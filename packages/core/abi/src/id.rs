@@ -9,6 +9,7 @@ use core::fmt;
 use core::mem::{align_of, size_of};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 
+use nve_abi_macros::NveAbi;
 use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec, NveDecode, NveEncode};
 
 /// Dense slot index into `NodeStore`'s node table (`0` is reserved for null).
@@ -181,7 +182,8 @@ macro_rules! impl_generational_handle {
 /// Indices are recycled only at frame boundaries; the 8-bit generation catches stale IDs across
 /// frames without hash maps or heap allocations.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveAbi)]
+#[nve_abi(name = "NveNodeId")]
 pub struct NodeId(u32);
 
 impl_generational_handle!(
@@ -202,8 +204,13 @@ impl NodeId {
     }
 }
 
-/// Reserved root node ID for every surface (`NodeId::ROOT`).
-pub const ROOT_NODE_ID: NodeId = NodeId::ROOT;
+nve_abi_macros::abi_consts! {
+    pub(crate) const ID_ABI_CONSTS;
+
+    /// Reserved root node ID for every surface (`NodeId::ROOT`).
+    #[nve_abi(name = "NVE_ROOT_NODE_ID")]
+    pub const ROOT_NODE_ID: NodeId = NodeId::ROOT;
+}
 
 /// Generational surface identity: `index: 24 | generation: 8`. Raw `0` is [`SurfaceId::NULL`].
 ///
@@ -211,7 +218,8 @@ pub const ROOT_NODE_ID: NodeId = NodeId::ROOT;
 /// `extern "C"` POD structs never trigger UB; FFI/wire ingress reads canonicalize any index-`0`
 /// bit pattern to [`SurfaceId::NULL`] via [`Self::from_raw_or_null`].
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveAbi)]
+#[nve_abi(name = "NveSurfaceId")]
 pub struct SurfaceId(u32);
 
 impl_generational_handle!(
@@ -222,7 +230,8 @@ impl_generational_handle!(
 
 /// Monotonic 64-bit frame identifier.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveFrameId")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct FrameId(pub u64);
@@ -251,7 +260,8 @@ impl fmt::Display for FrameId {
 
 /// Monotonic timestamp in microseconds.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveTimestampUs")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct TimestampUs(pub u64);
@@ -273,7 +283,8 @@ impl fmt::Display for TimestampUs {
 
 /// Elapsed duration in microseconds.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveDurationUs")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct DurationUs(pub u64);
@@ -339,7 +350,8 @@ impl fmt::Display for TimestampMs {
 
 /// Table-scoped event discriminant (`0..32`).
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveEventId")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct EventId(pub u32);
@@ -364,7 +376,8 @@ impl fmt::Display for EventId {
 
 /// Typed bitflags on a uniform 64-byte `NveEvent` (modifiers, pointer buttons, capture, IME).
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveEventFlags")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct EventFlags(pub u32);
@@ -430,7 +443,8 @@ impl BitAndAssign for EventFlags {
 
 /// Byte offset inside a flat arena or event batch byte buffer.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveArenaOffset")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct ArenaOffset(pub u32);
@@ -451,7 +465,8 @@ impl ArenaOffset {
 
 /// 32-bit byte length across ABI headers and arenas (never element counts).
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveByteLen")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct ByteLen(pub u32);
@@ -547,7 +562,8 @@ impl ZIndex {
 
 /// Modular C ABI interface identifier passed to `nve_get_interface`.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveInterfaceId")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct InterfaceId(pub u32);
@@ -593,21 +609,11 @@ impl fmt::Display for PropFieldId {
 
 const _: () = {
     assert!(size_of::<NodeIndex>() == 4 && align_of::<NodeIndex>() == align_of::<u32>());
-    assert!(size_of::<NodeId>() == 4 && align_of::<NodeId>() == align_of::<u32>());
-    assert!(size_of::<SurfaceId>() == 4 && align_of::<SurfaceId>() == align_of::<u32>());
-    assert!(size_of::<FrameId>() == 8 && align_of::<FrameId>() == align_of::<u64>());
-    assert!(size_of::<TimestampUs>() == 8 && align_of::<TimestampUs>() == align_of::<u64>());
-    assert!(size_of::<DurationUs>() == 8 && align_of::<DurationUs>() == align_of::<u64>());
     assert!(size_of::<DurationMs>() == 4 && align_of::<DurationMs>() == align_of::<u32>());
     assert!(size_of::<TimestampMs>() == 8 && align_of::<TimestampMs>() == align_of::<u64>());
-    assert!(size_of::<EventId>() == 4 && align_of::<EventId>() == align_of::<u32>());
-    assert!(size_of::<EventFlags>() == 4 && align_of::<EventFlags>() == align_of::<u32>());
-    assert!(size_of::<ArenaOffset>() == 4 && align_of::<ArenaOffset>() == align_of::<u32>());
-    assert!(size_of::<ByteLen>() == 4 && align_of::<ByteLen>() == align_of::<u32>());
     assert!(size_of::<ShortLen>() == 2 && align_of::<ShortLen>() == align_of::<u16>());
     assert!(size_of::<PrimarySlot>() == 1 && align_of::<PrimarySlot>() == align_of::<u8>());
     assert!(size_of::<ZIndex>() == 4 && align_of::<ZIndex>() == align_of::<i32>());
-    assert!(size_of::<InterfaceId>() == 4 && align_of::<InterfaceId>() == align_of::<u32>());
     assert!(size_of::<PropFieldId>() == 2 && align_of::<PropFieldId>() == align_of::<u16>());
 };
 

@@ -1,0 +1,23 @@
+error: inline `fn(...)` types are not supported in ABI params, returns, or fields; use a named `abi_callbacks!` typedef
+ --> tests/ui/vtable_inline_fn_and_dup_params.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: `DupParamSlot::ping`: duplicate parameter name `x`
+  --> tests/ui/vtable_inline_fn_and_dup_params.rs:11:10
+   |
+11 | #[derive(NveAbi)]
+   |          ^^^^^^
+   |
+   = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: `WildcardParamSlot::ping`: wildcard `_` parameter is not allowed; name every ABI parameter
+  --> tests/ui/vtable_inline_fn_and_dup_params.rs:18:10
+   |
+18 | #[derive(NveAbi)]
+   |          ^^^^^^
+   |
+   = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

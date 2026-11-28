@@ -1,0 +1,7 @@
+error: #[derive(ReprEnum)] variant `ExprDisc::A` requires integer literal discriminant
+ --> tests/ui/repr_enum_non_literal_disc.rs:4:10
+  |
+4 | #[derive(ReprEnum)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `ReprEnum` (in Nightly builds, run with -Z macro-backtrace for more info)

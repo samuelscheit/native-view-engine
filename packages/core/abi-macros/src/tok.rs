@@ -60,14 +60,89 @@ pub(crate) fn expect_ident(tokens: &[Tok], pos: &mut usize, desc: &str) -> Resul
 pub(crate) fn skip_vis(tokens: &[Tok], pos: &mut usize) {
     if is_ident(tokens, *pos, "pub") {
         *pos += 1;
-        if matches!(tokens.get(*pos), Some(Tok::Group(Delim::Paren, _))) {
-            *pos += 1;
+        if let Some(Tok::Group(Delim::Paren, inner)) = tokens.get(*pos) {
+            let is_vis_restriction = match inner.as_slice() {
+                [Tok::Ident(k)] if matches!(k.as_str(), "crate" | "self" | "super") => true,
+                [Tok::Ident(k), _, ..] if k == "in" => true,
+                _ => false,
+            };
+            if is_vis_restriction {
+                *pos += 1;
+            }
         }
     }
 }
 
 pub(crate) fn is_colon2(tokens: &[Tok], i: usize) -> bool {
     matches!(tokens.get(i), Some(Tok::Punct(':', true))) && is_punct(tokens, i + 1, ':')
+}
+
+pub(crate) fn is_arrow(tokens: &[Tok], i: usize) -> bool {
+    matches!(tokens.get(i), Some(Tok::Punct('-', true))) && is_punct(tokens, i + 1, '>')
+}
+
+/// Resolves an attribute path to its trailing identifier and remaining tokens (zero allocation).
+pub(crate) fn attr_name(inner: &[Tok]) -> (&str, &[Tok]) {
+    let mut i = if is_colon2(inner, 0) { 2 } else { 0 };
+    let mut name = "";
+    while let Some(Tok::Ident(id)) = inner.get(i) {
+        name = id.as_str();
+        i += 1;
+        if is_colon2(inner, i) {
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    (name, &inner[i..])
+}
+
+/// Rejects `#[cfg(...)]` (when `reject_cfg` is true) and `#[cfg_attr(..., <target>)]` targeting
+/// ABI-affecting attributes so conditional compilation cannot drift Rust layouts from descriptors.
+pub(crate) fn check_no_cfg_attr(
+    attr: &str,
+    rest: &[Tok],
+    reject_cfg: bool,
+    disallowed_cfg_targets: &[&str],
+    ctx: &str,
+) -> Result<(), String> {
+    if reject_cfg && attr == "cfg" {
+        return Err(format!("`#[cfg(...)]` is not supported inside {ctx}"));
+    }
+    if attr == "cfg_attr"
+        && let Some(args) = paren_inner(rest)
+        && let Some(comma) = args.iter().position(|t| matches!(t, Tok::Punct(',', _)))
+        && cfg_attr_targets_any(&args[comma + 1..], disallowed_cfg_targets)
+    {
+        return Err(format!(
+            "`#[cfg_attr(...)]` targeting ABI attributes is not supported inside {ctx}"
+        ));
+    }
+    Ok(())
+}
+
+fn cfg_attr_targets_any(tokens: &[Tok], targets: &[&str]) -> bool {
+    let mut pos = 0usize;
+    while pos < tokens.len() {
+        let (name, _) = attr_name(&tokens[pos..]);
+        if targets.contains(&name) {
+            return true;
+        }
+        while pos < tokens.len() && !is_punct(tokens, pos, ',') {
+            if let Tok::Group(Delim::Paren, inner) = &tokens[pos]
+                && name == "cfg_attr"
+                && let Some(comma) = inner.iter().position(|t| matches!(t, Tok::Punct(',', _)))
+                && cfg_attr_targets_any(&inner[comma + 1..], targets)
+            {
+                return true;
+            }
+            pos += 1;
+        }
+        if is_punct(tokens, pos, ',') {
+            pos += 1;
+        }
+    }
+    false
 }
 
 pub(crate) fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {
@@ -258,6 +333,23 @@ fn lex_until(bytes: &[u8], pos: &mut usize, end: Option<u8>) -> Vec<Tok> {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let start = *pos;
+                if b == b'b' && bytes.get(*pos + 1) == Some(&b'"') {
+                    *pos += 2;
+                    while *pos < bytes.len() {
+                        if bytes[*pos] == b'\\' {
+                            *pos += 2;
+                        } else if bytes[*pos] == b'"' {
+                            *pos += 1;
+                            break;
+                        } else {
+                            *pos += 1;
+                        }
+                    }
+                    out.push(Tok::Literal(
+                        std::str::from_utf8(&bytes[start..*pos]).unwrap().to_owned(),
+                    ));
+                    continue;
+                }
                 if b == b'r' && bytes.get(*pos + 1) == Some(&b'#') {
                     *pos += 2;
                 }

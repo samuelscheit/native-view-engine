@@ -3,9 +3,8 @@
 
 use std::ffi::c_void;
 use std::fmt;
-use std::mem::{align_of, size_of};
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 use nve_codec::NveCodec;
 
 use crate::ffi::{NveAppHandle, NveBufferSlice};
@@ -13,7 +12,8 @@ use crate::InterfaceId;
 
 /// Typed host capability service identifier (`SERVICE_CLIPBOARD`, `SERVICE_SYSTEM_ENV`, etc.).
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveHostServiceId")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct HostServiceId(pub u32);
@@ -33,7 +33,8 @@ impl fmt::Display for HostServiceId {
 
 /// Typed asynchronous host capability request identifier (`NVE_HOST_PENDING` correlation handle).
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, NveCodec, NveAbi)]
+#[nve_abi(name = "NveHostRequestId")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct HostRequestId(pub u64);
@@ -51,11 +52,6 @@ impl fmt::Display for HostRequestId {
     }
 }
 
-const _: () = {
-    assert!(size_of::<HostServiceId>() == 4 && align_of::<HostServiceId>() == align_of::<u32>());
-    assert!(size_of::<HostRequestId>() == 8 && align_of::<HostRequestId>() == align_of::<u64>());
-};
-
 pub mod batch;
 #[cfg(test)]
 mod tests;
@@ -72,8 +68,12 @@ pub use batch::{
 /// Modular interface ID for the optional host-capability & channel-bus interface (`const NveHostApi*`).
 pub const NVE_IFACE_HOST: InterfaceId = InterfaceId(5);
 
-/// Flag bit on `channel_publish` / `ChannelMessage` indicating retained state on `NveChannelBus`.
-pub const NVE_CHANNEL_FLAG_RETAIN: u32 = 1 << 0;
+nve_abi_macros::abi_consts! {
+    pub(crate) const HOST_ABI_CONSTS;
+
+    /// Flag bit on `channel_publish` / `ChannelMessage` indicating retained state on `NveChannelBus`.
+    pub const NVE_CHANNEL_FLAG_RETAIN: u32 = 1 << 0;
+}
 
 /// Reserved built-in host service IDs (`0x0001..0x00FF`).
 pub const SERVICE_CHANNEL: u32 = 0x0001;
@@ -91,8 +91,9 @@ pub const SERVICE_HAPTICS: u32 = 0x0016;
 
 /// Signed status codes returned by `NveHostCallbacks::invoke` and `channel_publish`.
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi, ReprEnum)]
 #[nve_abi(c_prefix = "NVE_HOST_")]
+#[repr_enum(fallback = InternalError)]
 pub enum NveHostStatus {
     Ok = 0,
     Pending = 1,
@@ -107,25 +108,6 @@ pub enum NveHostStatus {
 }
 
 impl NveHostStatus {
-    pub const fn as_i32(self) -> i32 {
-        self as i32
-    }
-
-    pub const fn from_i32(code: i32) -> Self {
-        match code {
-            0 => Self::Ok,
-            1 => Self::Pending,
-            -1 => Self::BufferTooSmall,
-            -2 => Self::Unsupported,
-            -3 => Self::PermissionDenied,
-            -4 => Self::InvalidArg,
-            -5 => Self::NotFound,
-            -6 => Self::Cancelled,
-            -7 => Self::IoError,
-            _ => Self::InternalError,
-        }
-    }
-
     pub const fn is_ok(self) -> bool {
         matches!(self, Self::Ok)
     }
@@ -155,25 +137,29 @@ impl fmt::Display for NveHostStatus {
 
 impl std::error::Error for NveHostStatus {}
 
-/// Synchronous or asynchronous host capability invocation callback.
-pub type NveHostInvokeFn = unsafe extern "C" fn(
-    host_ctx: *mut c_void,
-    service_id: u32,
-    method_id: u32,
-    request_id: u64,
-    request: NveBufferSlice,
-    out_buf: *mut u8,
-    out_cap: usize,
-    out_len: *mut usize,
-) -> i32;
+nve_abi_macros::abi_callbacks! {
+    pub(crate) const HOST_ABI_CALLBACKS;
 
-/// Publishes a binary message onto the host's `NveChannelBus`.
-pub type NveHostChannelPublishFn = unsafe extern "C" fn(
-    host_ctx: *mut c_void,
-    channel_id: u32,
-    flags: u32,
-    payload: NveBufferSlice,
-) -> i32;
+    /// Synchronous or asynchronous host capability invocation callback (`NveHostCallbacks::invoke`).
+    pub type NveHostInvokeFn = unsafe extern "C" fn(
+        host_ctx: *mut c_void,
+        service_id: u32,
+        method_id: u32,
+        request_id: u64,
+        request: NveBufferSlice,
+        out_buf: *mut u8,
+        out_cap: usize,
+        out_len: *mut usize,
+    ) -> i32;
+
+    /// Publishes a binary message onto the host's `NveChannelBus` (`NveHostCallbacks::channel_publish`).
+    pub type NveHostChannelPublishFn = unsafe extern "C" fn(
+        host_ctx: *mut c_void,
+        channel_id: u32,
+        flags: u32,
+        payload: NveBufferSlice,
+    ) -> i32;
+}
 
 /// Host-provided binary callback table bound via `NveHostApi::bind_host`.
 #[repr(C)]
@@ -182,9 +168,9 @@ pub type NveHostChannelPublishFn = unsafe extern "C" fn(
 pub struct NveHostCallbacks {
     #[nve_abi(offset64 = 0)]
     pub host_ctx: *mut c_void,
-    #[nve_abi(offset64 = 8, c_type = "NveHostInvokeFn")]
+    #[nve_abi(offset64 = 8)]
     pub invoke: Option<NveHostInvokeFn>,
-    #[nve_abi(offset64 = 16, c_type = "NveHostChannelPublishFn")]
+    #[nve_abi(offset64 = 16)]
     pub channel_publish: Option<NveHostChannelPublishFn>,
 }
 
@@ -205,7 +191,8 @@ impl NveHostCallbacks {
 
 /// Optional binary host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(interface = NVE_IFACE_HOST)]
 pub struct NveHostApi {
     pub bind_host:
         unsafe extern "C" fn(handle: NveAppHandle, callbacks: *const NveHostCallbacks),

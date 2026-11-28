@@ -26,28 +26,11 @@ pub const fn next_theme_mode(mode: ThemeMode) -> ThemeMode {
     }
 }
 
-const fn theme_mode_to_u8(mode: ThemeMode) -> u8 {
-    match mode {
-        ThemeMode::System => 0,
-        ThemeMode::Light => 1,
-        ThemeMode::Dark => 2,
-    }
-}
-
-const fn theme_mode_from_u8(raw: u8) -> Option<ThemeMode> {
-    match raw {
-        0 => Some(ThemeMode::System),
-        1 => Some(ThemeMode::Light),
-        2 => Some(ThemeMode::Dark),
-        _ => None,
-    }
-}
-
 const MAX_STR_LEN: usize = 2048;
 const MAX_MULTI_ITEMS: usize = 16;
 
 /// Gallery navigation sections covering every `nve-ui` component and engine primitive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nve_abi::ReprEnum)]
 #[repr(u8)]
 pub enum GallerySection {
     #[default]
@@ -60,28 +43,6 @@ pub enum GallerySection {
 }
 
 impl GallerySection {
-    pub const ALL: [Self; 6] = [
-        Self::Overview,
-        Self::Forms,
-        Self::Selection,
-        Self::Overlays,
-        Self::Layout,
-        Self::Motion,
-    ];
-
-    #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Overview),
-            1 => Some(Self::Forms),
-            2 => Some(Self::Selection),
-            3 => Some(Self::Overlays),
-            4 => Some(Self::Layout),
-            5 => Some(Self::Motion),
-            _ => None,
-        }
-    }
-
     #[inline]
     pub const fn id(self) -> &'static str {
         match self {
@@ -144,7 +105,7 @@ impl GallerySection {
 }
 
 /// Interactive `UiDensity` selector preset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nve_abi::ReprEnum)]
 #[repr(u8)]
 pub enum DensityPreset {
     Compact = 0,
@@ -154,18 +115,6 @@ pub enum DensityPreset {
 }
 
 impl DensityPreset {
-    pub const ALL: [Self; 3] = [Self::Compact, Self::Comfortable, Self::Spacious];
-
-    #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Compact),
-            1 => Some(Self::Comfortable),
-            2 => Some(Self::Spacious),
-            _ => None,
-        }
-    }
-
     #[inline]
     pub const fn to_ui_density(self) -> UiDensity {
         match self {
@@ -195,7 +144,7 @@ impl DensityPreset {
 }
 
 /// Supported live `nve-i18n` locales in the toolbar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nve_abi::ReprEnum)]
 #[repr(u8)]
 pub enum LocalePreset {
     #[default]
@@ -206,19 +155,6 @@ pub enum LocalePreset {
 }
 
 impl LocalePreset {
-    pub const ALL: [Self; 4] = [Self::EnUs, Self::DeDe, Self::ArEg, Self::JaJp];
-
-    #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::EnUs),
-            1 => Some(Self::DeDe),
-            2 => Some(Self::ArEg),
-            3 => Some(Self::JaJp),
-            _ => None,
-        }
-    }
-
     #[inline]
     pub const fn tag(self) -> &'static str {
         match self {
@@ -266,7 +202,7 @@ impl LocalePreset {
 }
 
 /// Interactive `SpringSpec` preset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nve_abi::ReprEnum)]
 #[repr(u8)]
 pub enum SpringPreset {
     #[default]
@@ -277,19 +213,6 @@ pub enum SpringPreset {
 }
 
 impl SpringPreset {
-    pub const ALL: [Self; 4] = [Self::Snappy, Self::Gentle, Self::Bouncy, Self::Stiff];
-
-    #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Snappy),
-            1 => Some(Self::Gentle),
-            2 => Some(Self::Bouncy),
-            3 => Some(Self::Stiff),
-            _ => None,
-        }
-    }
-
     #[inline]
     pub const fn id(self) -> &'static str {
         match self {
@@ -467,7 +390,7 @@ pub fn encode_kitchen_sink_state(state: &KitchenSinkState) -> Vec<u8> {
     out.extend_from_slice(&KITCHEN_SINK_STATE_MAGIC);
     out.extend_from_slice(&(KITCHEN_SINK_STATE_VERSION as u16).to_le_bytes());
     out.push(state.active_section as u8);
-    out.push(theme_mode_to_u8(state.theme_mode));
+    out.push(state.theme_mode.as_u8());
     out.push(state.density as u8);
     out.push(state.locale as u8);
 
@@ -539,15 +462,15 @@ pub fn decode_kitchen_sink_state(bytes: &[u8]) -> Option<KitchenSinkState> {
     if ver != KITCHEN_SINK_STATE_VERSION {
         return None;
     }
-    let active_section = GallerySection::from_u8(read_u8(bytes, &mut pos)?)?;
-    let theme_mode = theme_mode_from_u8(read_u8(bytes, &mut pos)?)?;
-    let density = DensityPreset::from_u8(read_u8(bytes, &mut pos)?)?;
-    let locale = LocalePreset::from_u8(read_u8(bytes, &mut pos)?)?;
+    let active_section = GallerySection::try_from_u8(read_u8(bytes, &mut pos)?)?;
+    let theme_mode = ThemeMode::try_from_u8(read_u8(bytes, &mut pos)?)?;
+    let density = DensityPreset::try_from_u8(read_u8(bytes, &mut pos)?)?;
+    let locale = LocalePreset::try_from_u8(read_u8(bytes, &mut pos)?)?;
     let flags = read_u8(bytes, &mut pos)?;
     if flags & (1 << 7) != 0 {
         return None;
     }
-    let spring_preset = SpringPreset::from_u8(read_u8(bytes, &mut pos)?)?;
+    let spring_preset = SpringPreset::try_from_u8(read_u8(bytes, &mut pos)?)?;
     let counter = read_i32(bytes, &mut pos)?;
 
     let selected_date = match read_u8(bytes, &mut pos)? {

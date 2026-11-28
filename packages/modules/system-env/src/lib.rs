@@ -110,7 +110,7 @@ impl ThemeSnapshot {
         }
         let color_scheme = ColorScheme::opt_from_u8(bytes[0])
             .map_err(|raw| ServiceError::Codec(format!("invalid color_scheme {raw}")))?;
-        let contrast = ContrastLevel::from_u8(bytes[1])
+        let contrast = ContrastLevel::try_from_u8(bytes[1])
             .ok_or_else(|| ServiceError::Codec(format!("invalid contrast {}", bytes[1])))?;
         let reduced_motion = match bytes[2] {
             0 => false,
@@ -146,21 +146,11 @@ impl ThemeSnapshot {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, nve_abi::ReprEnum)]
 pub enum TextDirection {
     #[default]
     Ltr = 0,
     Rtl = 1,
-}
-
-impl TextDirection {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Ltr),
-            1 => Some(Self::Rtl),
-            _ => None,
-        }
-    }
 }
 
 /// System locale & regional formatting snapshot.
@@ -216,7 +206,7 @@ pub fn pack_locale_ffi(locale: &LocaleSnapshot) -> Result<Vec<u8>, ServiceError>
 pub fn unpack_locale_ffi(bytes: &[u8]) -> Result<LocaleSnapshot, ServiceError> {
     let mut r = ByteReader::new(bytes);
     let dir_raw = r.read_u8()?;
-    let text_direction = TextDirection::from_u8(dir_raw)
+    let text_direction = TextDirection::try_from_u8(dir_raw)
         .ok_or_else(|| ServiceError::Codec(format!("invalid text_direction {dir_raw}")))?;
     let uses_24h_clock = r.read_bool()?;
     let tag = r.read_string(MAX_PAYLOAD_BYTES)?;

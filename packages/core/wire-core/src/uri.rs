@@ -17,7 +17,8 @@ pub const DEFAULT_WIRE_WSS_PATH: &str = "/nve-wire";
 
 /// Transport selection mode for `nve-wire` clients.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nve_codec::ReprEnum)]
+#[repr_enum(fallback = Auto)]
 pub enum NveWireTransportKind {
     /// Race QUIC first, fall back to WSS after 250ms (Happy Eyeballs).
     Auto = 0,
@@ -55,17 +56,6 @@ impl NveWireTransportKind {
             Ok(Self::Ws)
         } else {
             Err(NveWireError::InvalidPayload("unknown transport kind"))
-        }
-    }
-
-    /// Inverse of `kind as u8`; unknown values read as [`Self::Auto`].
-    pub const fn from_u8(raw: u8) -> Self {
-        match raw {
-            1 => Self::Quic,
-            2 => Self::WebTransport,
-            3 => Self::Wss,
-            4 => Self::Ws,
-            _ => Self::Auto,
         }
     }
 

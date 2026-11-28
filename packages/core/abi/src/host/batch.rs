@@ -10,7 +10,7 @@
 use std::fmt;
 use std::mem::{align_of, offset_of, size_of};
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 use nve_codec::NveCodec;
 
 use super::{HostRequestId, HostServiceId, NveHostStatus};
@@ -55,7 +55,7 @@ pub const fn host_batch_padded_record_len(payload_len: usize) -> Option<usize> {
 
 /// Discriminant for records inside an [`NveHostEventBatchRef`].
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi, NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi, NveCodec, ReprEnum)]
 #[nve_abi(c_prefix = "NVE_HOST_EVENT_KIND_")]
 pub enum NveHostEventKind {
     /// Completion of an asynchronous `NVE_HOST_PENDING` request.
@@ -64,18 +64,6 @@ pub enum NveHostEventKind {
     Push = 2,
     /// Inbound `NveChannelBus` binary message.
     Channel = 3,
-}
-
-impl NveHostEventKind {
-    #[inline]
-    pub const fn as_u8(self) -> u8 {
-        self as u8
-    }
-
-    #[inline]
-    pub const fn try_from_u8(raw: u8) -> Option<Self> {
-        Self::from_repr(raw)
-    }
 }
 
 /// 8-byte header at offset 0 of every canonical `NveHostEventBatch` buffer.

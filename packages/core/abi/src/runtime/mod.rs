@@ -2,66 +2,74 @@
 //! `NveSceneView`, `NveNodeRow`, `NveLayoutRect`, `NveRuntimeConfig`,
 //! `NveRuntimeMetrics`, `NveRuntimeStatus`): the one scene ABI every host reads.
 
-mod schema;
 mod vtable;
 
 use core::ffi::c_void;
 use core::mem::{align_of, offset_of, size_of};
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 
+use crate::schema::{
+    concat_abi_slices, hash_abi_descriptor_into, hash_tag_str, AbiCallbackDescriptor,
+    AbiEnumDescriptor, AbiFileDescriptor, AbiRecordDescriptor, AbiVtableDescriptor, NveEnumSchema,
+    NveStructSchema, NveVtableSchema,
+};
 use crate::table::NveTableView;
 use crate::value::NveStrSlice;
 
-pub use schema::{runtime_abi_descriptor, NVE_RUNTIME_SCHEMA_HASH};
-pub use vtable::{
-    NveRuntimeApi, NveRuntimeGetInterfaceFn, RuntimeFnSignature, RUNTIME_API_SLOTS,
-    RUNTIME_CALLBACK_TYPEDEFS,
-};
+pub use vtable::{NveRuntimeApi, NveRuntimeGetInterfaceFn};
 
-/// Current C ABI version expected by `nve_runtime_get_interface(uint32_t abi_version)`.
-pub const NVE_RUNTIME_ABI_VERSION: u32 = 6;
+nve_abi_macros::abi_consts! {
+    const RUNTIME_CONSTS;
 
-/// Exact byte size of one `NveLayoutRect` record (16 bytes).
-pub const NVE_LAYOUT_RECT_SIZE: usize = 16;
+    /// Current C ABI version expected by `nve_runtime_get_interface(uint32_t abi_version)`.
+    pub const NVE_RUNTIME_ABI_VERSION: u32 = 6;
+    /// Exact byte size of one `NveLayoutRect` record (16 bytes).
+    pub const NVE_LAYOUT_RECT_SIZE: usize = 16;
+    /// Exact byte size of one `NveNodeRow` record (32 bytes, matching `nve_store::NodeRow`).
+    pub const NVE_NODE_ROW_SIZE: usize = 32;
+    /// Flag bit in `NveNodeRow::flags` indicating an allocated live node slot (`nve_store::LIVE`).
+    pub const NVE_NODE_ROW_FLAG_LIVE: u8 = 1 << 0;
+    /// `NveRuntimeTextStyle::line_height_unit`: absolute line height in points.
+    pub const NVE_LINE_HEIGHT_POINTS: u8 = 0;
+    /// `NveRuntimeTextStyle::line_height_unit`: multiplier × 100 of `font_size`.
+    pub const NVE_LINE_HEIGHT_PERCENT: u8 = 1;
+    /// `NveRuntimeTextStyle::line_height_unit`: `normal` (the font's own line height).
+    pub const NVE_LINE_HEIGHT_AUTO: u8 = 2;
+    /// Flag bit in `measure_surface`: pure sizing pass; never mutates committed viewport/rects or publishes.
+    pub const NVE_MEASURE_FLAG_DRY_RUN: u32 = 1 << 0;
+    /// Flag bit in `measure_surface`: intrinsic/unconstrained sizing pass.
+    pub const NVE_MEASURE_FLAG_IDEAL: u32 = 1 << 1;
+}
 
-/// Exact byte size of one `NveNodeRow` record (32 bytes, matching `nve_store::NodeRow`).
-pub const NVE_NODE_ROW_SIZE: usize = 32;
+nve_abi_macros::abi_aliases! {
+    const RUNTIME_ALIASES;
 
-/// Flag bit in `NveNodeRow::flags` indicating an allocated live node slot (`nve_store::LIVE`).
-pub const NVE_NODE_ROW_FLAG_LIVE: u8 = 1 << 0;
+    /// Opaque handle to a live `nve-runtime` surface instance.
+    pub type NveRuntimeHandle = *mut c_void;
+}
 
-/// Flag bit in `measure_surface`: pure sizing pass; never mutates committed viewport/rects or publishes.
-pub const NVE_MEASURE_FLAG_DRY_RUN: u32 = 1 << 0;
+nve_abi_macros::abi_callbacks! {
+    const RUNTIME_HOOK_CALLBACKS;
 
-/// Flag bit in `measure_surface`: intrinsic/unconstrained sizing pass.
-pub const NVE_MEASURE_FLAG_IDEAL: u32 = 1 << 1;
+    /// Wake callback; may fire on any thread.
+    pub type NveRuntimeWakeFn = unsafe extern "C" fn(ctx: *mut c_void);
 
-/// Opaque handle to a live `nve-runtime` surface instance.
-pub type NveRuntimeHandle = *mut c_void;
+    /// Native text measurer; owner thread, during layout; measures `text` with the node's resolved
+    /// typography (`style`, borrowed for the call); `max_width` is INFINITY when unconstrained.
+    pub type NveRuntimeMeasureTextFn = unsafe extern "C" fn(
+        ctx: *mut c_void,
+        text: NveStrSlice,
+        style: *const NveRuntimeTextStyle,
+        max_width: f32,
+        out_width: *mut f32,
+        out_height: *mut f32,
+    );
 
-/// Asynchronous wake callback registered by a host to be notified when frames or pairing work
-/// become ready.
-pub type NveRuntimeWakeFn = unsafe extern "C" fn(ctx: *mut c_void);
-
-/// Callback registered via [`NveRuntimeApi::set_intrinsic_size_invalidated_callback`], invoked on
-/// the owner thread outside internal locks whenever layout-affecting commits invalidate cached
-/// intrinsic size.
-pub type NveRuntimeIntrinsicSizeInvalidatedFn = unsafe extern "C" fn(ctx: *mut c_void);
-
-/// Native OS text measurement callback installed via [`NveRuntimeApi::set_text_measurer`].
-///
-/// Called synchronously on the owner thread during layout. `text` and `*style` (including its
-/// `font_family`) are borrowed for the call; `max_width` is `INFINITY` when unconstrained. Writes
-/// the measured logical-point size to `out_width` / `out_height` (both non-null, pre-zeroed).
-pub type NveRuntimeMeasureTextFn = unsafe extern "C" fn(
-    ctx: *mut c_void,
-    text: NveStrSlice,
-    style: *const NveRuntimeTextStyle,
-    max_width: f32,
-    out_width: *mut f32,
-    out_height: *mut f32,
-);
+    /// Intrinsic-size-invalidated callback; owner thread, invoked outside internal locks after
+    /// layout-affecting commits.
+    pub type NveRuntimeIntrinsicSizeInvalidatedFn = unsafe extern "C" fn(ctx: *mut c_void);
+}
 
 /// Fully resolved (inherited) typography of one text node, handed to the host text measurer so
 /// it measures exactly what it paints. Enum fields carry the `nve.typography` values
@@ -103,15 +111,11 @@ pub struct NveRuntimeTextStyle {
     pub font_family: NveStrSlice,
 }
 
-/// `NveRuntimeTextStyle::line_height_unit` values (the `NveLengthUnit` word tags).
-pub const NVE_LINE_HEIGHT_POINTS: u8 = 0;
-pub const NVE_LINE_HEIGHT_PERCENT: u8 = 1;
-pub const NVE_LINE_HEIGHT_AUTO: u8 = 2;
-
 /// Status codes returned by [`NveRuntimeApi`] entry points.
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi, ReprEnum)]
 #[nve_abi(c_prefix = "NVE_RUNTIME_")]
+#[repr_enum(fallback = Error)]
 pub enum NveRuntimeStatus {
     Ok = 0,
     InvalidArg = 1,
@@ -121,27 +125,6 @@ pub enum NveRuntimeStatus {
     Panic = 5,
     NotFound = 6,
     Error = 7,
-}
-
-impl NveRuntimeStatus {
-    #[inline]
-    pub const fn as_i32(self) -> i32 {
-        self as i32
-    }
-
-    #[inline]
-    pub const fn from_i32(code: i32) -> Self {
-        match code {
-            0 => Self::Ok,
-            1 => Self::InvalidArg,
-            2 => Self::Unsupported,
-            3 => Self::Busy,
-            4 => Self::Io,
-            5 => Self::Panic,
-            6 => Self::NotFound,
-            _ => Self::Error,
-        }
-    }
 }
 
 /// Zero-copy 16-byte absolute layout rectangle indexed by `NodeIndex` (`1..node_capacity`).
@@ -460,3 +443,50 @@ const _: () = {
     // 8 on every data model except i386 System V, where `u64` fields are 4-byte aligned.
     assert!(align_of::<NveRuntimeMetrics>() == align_of::<u64>());
 };
+
+concat_abi_slices!(RUNTIME_CALLBACKS: [AbiCallbackDescriptor] = [
+    RUNTIME_HOOK_CALLBACKS,
+    vtable::RUNTIME_ENTRY_CALLBACKS,
+]);
+
+const RUNTIME_ENUMS: &[AbiEnumDescriptor] = &[<NveRuntimeStatus as NveEnumSchema>::SCHEMA];
+
+const RUNTIME_RECORDS: &[AbiRecordDescriptor] = &[
+    AbiRecordDescriptor::Struct(<NveLayoutRect as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveSurfaceMeasure as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveScrollOffset as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveNodeRow as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveRuntimeConfig as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveRuntimeMetrics as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveRuntimeTextStyle as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveSceneView as NveStructSchema>::SCHEMA),
+];
+
+const RUNTIME_VTABLES: &[AbiVtableDescriptor] = &[<NveRuntimeApi as NveVtableSchema>::SCHEMA];
+
+/// Returns the single-source-of-truth Runtime ABI descriptor derived directly from the compiled
+/// `#[derive(NveAbi)]` types in `packages/core/abi/src/runtime/`.
+pub const fn runtime_abi_descriptor() -> AbiFileDescriptor {
+    AbiFileDescriptor {
+        namespace: Some("NveRuntimeAbi"),
+        consts: RUNTIME_CONSTS,
+        aliases: RUNTIME_ALIASES,
+        callbacks: RUNTIME_CALLBACKS,
+        enums: RUNTIME_ENUMS,
+        records: RUNTIME_RECORDS,
+        vtables: RUNTIME_VTABLES,
+    }
+}
+
+/// Computes the deterministic, target-independent compile-time XXH64 fingerprint of
+/// [`runtime_abi_descriptor`] chained with [`crate::ffi::NVE_CORE_ABI_SCHEMA_HASH`].
+pub const fn compute_runtime_schema_hash() -> u64 {
+    let mut h = crate::Xxh64Hasher::new(0);
+    hash_tag_str(&mut h, "nve.runtime_abi.v2");
+    h.update_u64(crate::ffi::NVE_CORE_ABI_SCHEMA_HASH);
+    hash_abi_descriptor_into(&mut h, &runtime_abi_descriptor());
+    h.digest()
+}
+
+/// Deterministic XXH64 fingerprint of the zero-copy runtime scene and vtable ABI.
+pub const NVE_RUNTIME_SCHEMA_HASH: u64 = compute_runtime_schema_hash();

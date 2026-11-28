@@ -193,7 +193,7 @@ impl WireDecoder {
             let end = r.at.checked_add(len).ok_or(WireError::Truncated)?;
             let body = bytes.get(r.at..end).ok_or(WireError::Truncated)?;
             r.at = end;
-            let op = Op::from_u8(head as u8).ok_or(WireError::UnknownOp(head as u8))?;
+            let op = Op::try_from_u8(head as u8).ok_or(WireError::UnknownOp(head as u8))?;
             let inline_count = head >> 16;
             let mut body_r = R { b: body, at: 0 };
             let count = if inline_count != 0xFFFF {

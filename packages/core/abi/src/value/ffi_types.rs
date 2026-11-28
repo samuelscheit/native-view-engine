@@ -1,6 +1,6 @@
 use core::mem::{align_of, size_of};
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 
 use crate::{DecodeError, NveBufferSlice, PropFieldId};
 
@@ -88,7 +88,7 @@ impl NveStrSlice {
 
 /// Discriminant tags shared between `NveValue::tag` and the binary `NveBinValue` wire format.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi, ReprEnum)]
 #[nve_abi(c_prefix = "NVE_VAL_")]
 pub enum NveValueTag {
     Null = 0,
@@ -99,31 +99,6 @@ pub enum NveValueTag {
     Bytes = 5,
     Array = 6,
     Map = 7,
-}
-
-impl NveValueTag {
-    #[inline]
-    pub const fn from_u32(v: u32) -> Option<Self> {
-        match v {
-            0 => Some(Self::Null),
-            1 => Some(Self::Bool),
-            2 => Some(Self::I64),
-            3 => Some(Self::F64),
-            4 => Some(Self::Str),
-            5 => Some(Self::Bytes),
-            6 => Some(Self::Array),
-            7 => Some(Self::Map),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub const fn from_u8(v: u8) -> Result<Self, DecodeError> {
-        match Self::from_u32(v as u32) {
-            Some(t) => Ok(t),
-            None => Err(DecodeError::InvalidEnum("NveValueTag", v as u32)),
-        }
-    }
 }
 
 /// Contiguous slice of `NveValue` items.

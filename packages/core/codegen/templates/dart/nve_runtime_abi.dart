@@ -11,7 +11,7 @@ import 'nve_abi_ffi.generated.dart';
 const Key64 nveRuntimeSchemaHash = Key64({{ m.hash.lo_hex() }}, {{ m.hash.hi_hex() }});
 
 /// `NveRuntimeApi` function-pointer slot count.
-const int nveRuntimeApiSlotCount = {{ m.slots.len() }};
+const int nveRuntimeApiSlotCount = {{ m.slots().len() }};
 {%- for k in m.file.consts %}
 {%- if let Some(doc) = k.doc %}
 
@@ -59,45 +59,54 @@ enum {{ e.name }} {
 {%- endif %}
 final class {{ r.name }} extends ffi.{% if r.is_union %}Union{% else %}Struct{% endif %} {
 {%- for f in r.fields %}
-  {{ dart::field(m.base_aliases, f) }}
+  {{ dart::field(m.all_aliases(), m.file.aliases, m.all_callbacks(), f) }}
 {%- endfor %}
 }
 {%- endfor %}
+{%- for a in m.file.aliases %}
 
-typedef NveRuntimeHandle = ffi.Pointer<ffi.Void>;
-{%- for f in m.callbacks %}
-
-/// `{{ f.name }}`: {{ spell::one_line(f.doc) }}
-typedef {{ dart::callback_stem(f.name) }}Native = {{ f.dart_native }};
+typedef {{ a.name }} = {{ dart::native(m.all_aliases(), model::NO_ALIASES, m.all_callbacks(), a.target) }};
 {%- endfor %}
+{%- for cb in m.file.callbacks %}
+{%- if let Some(doc) = cb.doc %}
 
-typedef NveRuntimeGetInterfaceNative = ffi.Pointer<NveRuntimeApi> Function(ffi.Uint32 abiVersion);
-typedef NveRuntimeGetInterfaceDart = ffi.Pointer<NveRuntimeApi> Function(int abiVersion);
-{%- for f in m.slots %}
+/// `{{ cb.name }}`: {{ spell::one_line(doc) }}
+{%- else %}
 
-/// `{{ f.name }}`: {{ spell::one_line(f.doc) }}
-typedef NveRuntime{{ spell::pascal(f.name) }}Native = {{ f.dart_native }};
-typedef NveRuntime{{ spell::pascal(f.name) }}Dart = {{ f.dart }};
+{%- endif %}
+typedef {{ dart::callback_stem(cb.name) }}Native = {{ dart::fn_sig(m.all_aliases(), m.file.aliases, m.all_callbacks(), cb.params, cb.return_type, false) }};
+typedef {{ dart::callback_stem(cb.name) }}Dart = {{ dart::fn_sig(m.all_aliases(), m.file.aliases, m.all_callbacks(), cb.params, cb.return_type, true) }};
+{%- endfor %}
+{%- for method in m.slots() %}
+{%- if let Some(doc) = method.doc %}
+
+/// `{{ method.name }}`: {{ spell::one_line(doc) }}
+{%- else %}
+
+{%- endif %}
+typedef NveRuntime{{ spell::pascal(method.name) }}Native = {{ dart::fn_sig(m.all_aliases(), m.file.aliases, m.all_callbacks(), method.params, method.return_type, false) }};
+typedef NveRuntime{{ spell::pascal(method.name) }}Dart = {{ dart::fn_sig(m.all_aliases(), m.file.aliases, m.all_callbacks(), method.params, method.return_type, true) }};
 {%- endfor %}
 
 /// Single `NveRuntimeApi` vtable returned by `nve_runtime_get_interface(abi_version)`.
-final class NveRuntimeApi extends ffi.Struct {
-  @ffi.Uint32()
-  external int abiVersion;
-  @ffi.Uint32()
-  external int structSize;
-  @ffi.Uint64()
-  external int schemaHash;
-{%- for f in m.slots %}
-  external ffi.Pointer<ffi.NativeFunction<NveRuntime{{ spell::pascal(f.name) }}Native>> {{ spell::camel(f.name) }};
+final class {{ m.vtable().name }} extends ffi.Struct {
+{%- for f in m.vtable_header_fields() %}
+  {{ dart::field(m.all_aliases(), m.file.aliases, m.all_callbacks(), f) }}
+{%- endfor %}
+{%- for method in m.slots() %}
+  external ffi.Pointer<ffi.NativeFunction<NveRuntime{{ spell::pascal(method.name) }}Native>> {{ spell::camel(method.name) }};
 {%- endfor %}
 }
 
-/// `true` when `api` is non-null and every slot is set (version / hash are checked separately);
+/// `true` when `api` is non-null and every required slot is set (version / hash are checked separately);
 /// mirrors C `nve_runtime_api_slots_complete`.
 bool runtimeApiSlotsComplete(ffi.Pointer<NveRuntimeApi> api) {
   if (api == ffi.nullptr) return false;
+{%- if m.required_slots().is_empty() %}
+  return true;
+{%- else %}
   final a = api.ref;
-  return {% for f in m.slots %}a.{{ spell::camel(f.name) }} != ffi.nullptr{% if !loop.last %} &&
+  return {% for method in m.required_slots() %}a.{{ spell::camel(method.name) }} != ffi.nullptr{% if !loop.last %} &&
       {% endif %}{% endfor %};
+{%- endif %}
 }
