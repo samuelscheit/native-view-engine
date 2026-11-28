@@ -142,8 +142,6 @@ public final class SceneReader {
         requireAscending(s[S_SCROLL_OFFSETS], NveRuntimeAbi.SCROLL_OFFSET_OFFSET_NODE_ID, SCROLL_SIZE, scrollN,
                 "scroll offset node ids");
 
-        long seenLo = 0L;
-        long seenHi = 0L;
         java.util.Arrays.fill(bySlot, -1);
         for (int t = 0; t < tables; t++) {
             final int th = H_TABLES + t * TABLE_HEADER_STRIDE;
@@ -161,14 +159,8 @@ public final class SceneReader {
             } catch (IllegalArgumentException e) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + t + ": " + e.getMessage());
             }
-            final long bit = 1L << (slot & 63);
-            if (slot >= MAX_TABLES || ((slot < 64 ? seenLo : seenHi) & bit) != 0) {
+            if (slot >= MAX_TABLES || bySlot[slot] != -1) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + t + " slot " + slot);
-            }
-            if (slot < 64) {
-                seenLo |= bit;
-            } else {
-                seenHi |= bit;
             }
             if (!r.isSparse() && r.rowCount() > cap) {
                 throw new SceneException(SceneException.Kind.INVALID_TABLE,

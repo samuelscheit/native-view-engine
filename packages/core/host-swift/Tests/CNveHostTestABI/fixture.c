@@ -15,7 +15,7 @@ static const NveTestLayoutRect kRects[4] = {
     {0.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 320.0f, 240.0f}, {10.0f, 20.0f, 100.0f, 50.0f}, {0.0f, 0.0f, 0.0f, 0.0f}};
 static const uint8_t kText[7] = {'h', 0xC3, 0xA9, 0xF0, 0x9F, 0x9A, 0x80};
 static const uint32_t kChildren[2] = {0x01000002u, 0x02000003u};
-static const uint32_t kDirty[3] = {1u, 2u, 99u};
+static const uint32_t kDirty[2] = {1u, 2u};
 static const uint32_t kRemoved[1] = {0x02000003u};
 
 static const NveTestScrollOffset kScroll[1] = {{1u, 0.0f, 12.5f}};
@@ -23,8 +23,8 @@ static const NveTestScrollOffset kScroll[1] = {{1u, 0.0f, 12.5f}};
 static const uint32_t kDirtyResources[2] = {3u, 9u};
 static const uint32_t kMoved[1] = {2u};
 
-static const NveTestRuntimeSceneView kScene = {
-    UINT64_C(0xF00DFACEC0FFEE11), 7u, 4u, 3u, 1u, 7u, 2u, 1u, 1u, 5u, 2u, 1u,
+static const NveTestSceneView kScene = {
+    UINT64_C(0xF00DFACEC0FFEE11), 7u, 4u, 2u, 1u, 7u, 2u, 1u, 1u, 5u, 2u, 1u,
     kRows, kRects, kText, kChildren, kDirty, kRemoved, kTables, kScroll, kDirtyResources, kMoved};
 
-const NveTestRuntimeSceneView* nve_test_scene(void) { return &kScene; }
+const NveTestSceneView* nve_test_scene(void) { return &kScene; }

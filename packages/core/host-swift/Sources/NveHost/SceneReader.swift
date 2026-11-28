@@ -1,11 +1,14 @@
 /// Validated zero-copy reader over a borrowed `NveSceneView` (`scene_acquire` /
 /// `scene_release` of `libnve_runtime`).
 ///
-/// Generic over the generated C structs (`extension NveSceneView: RuntimeSceneViewABI {}`,
+/// Generic over the generated C structs (`extension NveSceneView: SceneViewABI {}`,
 /// `extension NveNodeRow: NodeRowABI {}`, `extension NveLayoutRect: LayoutRectABI {}`), so this
-/// zero-dependency package never hard-codes the record layouts. `open` validates the schema hash,
-/// every pointer/count pair (null, address-space fit, alignment), the text slab's UTF-8 and every
-/// published table once; later reads are O(1) bounds checks with no allocation.
+/// zero-dependency package never hard-codes the record layouts. `open` validates, in
+/// O(changed + tables) (never O(capacity)), the schema hash, every pointer/count pair (null,
+/// address-space fit, alignment), the text slab's UTF-8, every dirty / moved index (`< capacity`),
+/// the strict order of scroll offsets and dirty resources, and every published table (layout,
+/// slot `0..<128`, unique slot) once, like the C++ / Dart / TS / Java readers; child spans are
+/// checked when read. Later reads are O(1) (scroll lookups O(log n)) with no allocation.
 
 /// Shape of the generated C `NveNodeRow` (32 bytes, Rust `nve_store::NodeRow`).
 public protocol NodeRowABI {
@@ -36,7 +39,7 @@ public protocol ScrollOffsetABI {
 }
 
 /// Shape of the generated C `NveSceneView` (pointers implicitly unwrapped, as Swift imports C).
-public protocol RuntimeSceneViewABI {
+public protocol SceneViewABI {
     associatedtype Row: NodeRowABI
     associatedtype Rect: LayoutRectABI
     associatedtype Table: TableViewABI
@@ -72,7 +75,12 @@ public enum SceneError: Error, Equatable, Sendable {
     case nullSlab
     case misalignedSlab
     case invalidUtf8
+    /// Table `index` is malformed, its slot is `>= 128`, or an earlier table took its slot.
     case invalidTable(index: Int)
+    /// A dirty or moved index is `>= node_capacity`.
+    case nodeIndexOutOfRange
+    /// Scroll-offset node ids or dirty resource ids are not strictly ascending.
+    case unsortedIds
 }
 
 /// Node identity (Rust `nve_store::NodeId`): `index: 24 | generation: 8`; raw `0` is the null node.
@@ -121,7 +129,7 @@ public extension NodeRowABI {
     }
 }
 
-public struct SceneReader<View: RuntimeSceneViewABI> {
+public struct SceneReader<View: SceneViewABI> {
     public let frameId: UInt64
     /// Bumped on every runtime scene reset: node / resource ids and caches of an earlier epoch are stale.
     public let sceneEpoch: UInt32
@@ -168,8 +176,16 @@ public struct SceneReader<View: RuntimeSceneViewABI> {
         let scrolls = try buffer(v.scroll_offsets, v.scroll_count)
         let dirtyResources = try buffer(v.dirty_resources, v.dirty_resource_count)
         guard Utf8.isValid(UnsafeRawBufferPointer(text)) else { throw .invalidUtf8 }
-        for (i, t) in tables.enumerated() where TableReader(view: t) == nil {
-            throw .invalidTable(index: i)
+        let outOfRange = { (index: UInt32) in index >= v.node_capacity }
+        guard !dirty.contains(where: outOfRange), !moved.contains(where: outOfRange) else { throw .nodeIndexOutOfRange }
+        guard strictlyAscending(scrolls, \.node_id), strictlyAscending(dirtyResources, \.self) else { throw .unsortedIds }
+        var seen: (lo: UInt64, hi: UInt64) = (0, 0)
+        for (i, t) in tables.enumerated() {
+            guard TableReader(view: t) != nil, t.slot < 128 else { throw .invalidTable(index: i) }
+            let bit = UInt64(1) << UInt64(t.slot & 63)
+            let taken = t.slot < 64 ? seen.lo & bit : seen.hi & bit
+            guard taken == 0 else { throw .invalidTable(index: i) }
+            if t.slot < 64 { seen.lo |= bit } else { seen.hi |= bit }
         }
         return Self(
             frameId: v.frame_id, sceneEpoch: v.scene_epoch, rows: rows, rects: rects, textSlab: text,
@@ -177,10 +193,18 @@ public struct SceneReader<View: RuntimeSceneViewABI> {
             scrollOffsets: scrolls, dirtyResources: dirtyResources)
     }
 
-    /// Visual child shift of scroll container `id` (`(0, 0)` when it has none), O(scroll containers).
+    /// Visual child shift of scroll container `id` (`(0, 0)` when it has none), O(log scroll
+    /// containers): `open` checked the ids are strictly ascending.
     public func scrollOffset(for id: NodeId) -> (x: Float, y: Float) {
-        guard let s = scrollOffsets.first(where: { $0.node_id == id.raw }) else { return (0, 0) }
-        return (s.x, s.y)
+        var lo = 0
+        var hi = scrollOffsets.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            let at = scrollOffsets[mid].node_id
+            if at == id.raw { return (scrollOffsets[mid].x, scrollOffsets[mid].y) }
+            if at < id.raw { lo = mid + 1 } else { hi = mid }
+        }
+        return (0, 0)
     }
 
     public var nodeCapacity: Int { rows.count }
@@ -258,6 +282,16 @@ public struct SceneReader<View: RuntimeSceneViewABI> {
     }
 
     private func isBoundary(_ at: Int) -> Bool { at == textSlab.count || textSlab[at] & 0xC0 != 0x80 }
+
+    private static func strictlyAscending<T>(_ items: UnsafeBufferPointer<T>, _ id: KeyPath<T, UInt32>) -> Bool {
+        var previous: UInt32?
+        for item in items {
+            let next = item[keyPath: id]
+            if let previous, next <= previous { return false }
+            previous = next
+        }
+        return true
+    }
 
     private static func buffer<T>(_ p: UnsafePointer<T>?, _ count: UInt32) throws(SceneError) -> UnsafeBufferPointer<T> {
         if count == 0 { return UnsafeBufferPointer(start: nil, count: 0) }

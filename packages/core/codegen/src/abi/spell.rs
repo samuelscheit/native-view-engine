@@ -65,6 +65,12 @@ pub fn record_prefix(name: &str) -> String {
 }
 
 /// Constant name without the `NVE_` namespace (`NVE_ABI_MAGIC` -> `ABI_MAGIC`).
+/// Constant prefix of one runtime ABI enum's values: its name without the `NveRuntime` / `Nve`
+/// namespace, `SCREAMING` (`NveRuntimeStatus` -> `STATUS`), so each enum owns its own prefix.
+pub fn enum_prefix(name: &str) -> String {
+    screaming(name.strip_prefix("NveRuntime").or_else(|| name.strip_prefix("Nve")).unwrap_or(name))
+}
+
 pub fn bare(name: &str) -> &str {
     name.strip_prefix("NVE_").unwrap_or(name)
 }

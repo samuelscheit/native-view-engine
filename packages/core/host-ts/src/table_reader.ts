@@ -195,7 +195,9 @@ export class TableReader {
     this.rowCount = init.rowCount;
     this.dirtyCount = dirtyCount;
     this.rows = init.rows;
-    this.owners = init.owners ?? null;
+    // An empty table is dense whatever its owners pointer (Rust publishes `NonNull::dangling()`
+    // for an empty `Vec`), like C++ `is_sparse()`.
+    this.owners = init.rowCount > 0 ? (init.owners ?? null) : null;
     this.dirty = init.dirtyRows ?? null;
     this.dir = init.rowIndexDir ?? null;
     this.pages = init.rowIndexPages ?? null;

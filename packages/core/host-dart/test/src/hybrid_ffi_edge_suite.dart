@@ -387,6 +387,13 @@ void _testToDynamicValueErrorPathsAndSpecialNumbers(Check c) {
       BinErrorKind.invalidUtf8,
       'invalid UTF-8 map key kind',
     );
+    // App-emitted values decode lossily: the bad string / key becomes U+FFFD, nothing throws.
+    c.eq(NveValueTree.toDynamicValue(badUtf8Str, lossyUtf8: true).toObject(), '\uFFFD\uFFFD', 'lossy str');
+    c.eq(
+      (NveValueTree.toDynamicValue(badUtf8Map, lossyUtf8: true).toObject()! as Map<String, Object?>).keys.single,
+      '\uFFFD\uFFFD',
+      'lossy map key',
+    );
   });
 }
 

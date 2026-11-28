@@ -6,6 +6,7 @@
 /// cross FFI losslessly without ever double-wrapping in `NVE_VAL_BYTES`.
 library;
 
+import 'dart:convert' show utf8;
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
@@ -68,10 +69,25 @@ final class NveValueTree {
   }
 
   /// Encodes a native [NveValue] tree back into a validated [DynamicValue] (`NveBinValue` bytes).
-  static DynamicValue toDynamicValue(NveValue value) {
+  ///
+  /// Invalid UTF-8 in a string or map key throws, unless [lossyUtf8] replaces it with U+FFFD
+  /// (for app-emitted values, where one malformed string must not drop the whole event batch).
+  static DynamicValue toDynamicValue(NveValue value, {bool lossyUtf8 = false}) {
     final writer = BinWriter();
-    _encodeNativeValue(writer, value, 0);
+    _encodeNativeValue(writer, value, 0, lossyUtf8);
     return DynamicValue(writer.bytes);
+  }
+
+  /// UTF-8 bytes of a native string slice, validated, or repaired to U+FFFD when [lossy].
+  static Uint8List _utf8Of(NveStrSlice s, bool lossy, String what) {
+    final bytes = checkedNativeBytes(s.ptr, s.len);
+    if (isValidUtf8(bytes)) {
+      return bytes;
+    }
+    if (lossy) {
+      return utf8.encode(utf8.decode(bytes, allowMalformed: true));
+    }
+    throw BinCodecException(BinErrorKind.invalidUtf8, 'invalid UTF-8 in $what');
   }
 
   static void _writeObject(HybridArena arena, NveValue target, Object? value, int depth) {
@@ -224,7 +240,7 @@ final class NveValueTree {
     }
   }
 
-  static void _encodeNativeValue(BinWriter writer, NveValue v, int depth) {
+  static void _encodeNativeValue(BinWriter writer, NveValue v, int depth, bool lossy) {
     final tag = NveValueTag.fromCode(v.tag);
     if (tag == null) {
       throw BinCodecException(BinErrorKind.invalidTag, 'tag ${v.tag}');
@@ -242,11 +258,7 @@ final class NveValueTree {
       case NveValueTag.f64:
         writer.writeF64(v.data.f64Val);
       case NveValueTag.str:
-        final s = v.data.strVal;
-        final utf8Bytes = checkedNativeBytes(s.ptr, s.len);
-        if (!isValidUtf8(utf8Bytes)) {
-          throw const BinCodecException(BinErrorKind.invalidUtf8, 'invalid UTF-8 in NveStrSlice');
-        }
+        final utf8Bytes = _utf8Of(v.data.strVal, lossy, 'NveStrSlice');
         writer
           ..u8(BinTag.str.index)
           ..u32(utf8Bytes.length)
@@ -259,7 +271,7 @@ final class NveValueTree {
         _validateNativeContainer(arr.ptr, arr.len, depth, 'NveValueArray');
         final mark = writer.beginArray(arr.len);
         for (var i = 0; i < arr.len; i++) {
-          _encodeNativeValue(writer, arr.ptr[i], depth + 1);
+          _encodeNativeValue(writer, arr.ptr[i], depth + 1, lossy);
         }
         writer.end(mark);
       case NveValueTag.map:
@@ -268,14 +280,11 @@ final class NveValueTree {
         final mark = writer.beginMap(map.len);
         for (var i = 0; i < map.len; i++) {
           final entry = map.ptr[i];
-          final keyUtf8 = checkedNativeBytes(entry.key.ptr, entry.key.len);
-          if (!isValidUtf8(keyUtf8)) {
-            throw const BinCodecException(BinErrorKind.invalidUtf8, 'invalid UTF-8 in NveMapEntry key');
-          }
+          final keyUtf8 = _utf8Of(entry.key, lossy, 'NveMapEntry key');
           writer
             ..u32(keyUtf8.length)
             ..raw(keyUtf8);
-          _encodeNativeValue(writer, entry.value, depth + 1);
+          _encodeNativeValue(writer, entry.value, depth + 1, lossy);
         }
         writer.end(mark);
     }

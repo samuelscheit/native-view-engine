@@ -8,7 +8,7 @@ extension NveTestTableView: TableViewABI {}
 extension NveTestNodeRow: NodeRowABI {}
 extension NveTestLayoutRect: LayoutRectABI {}
 extension NveTestScrollOffset: ScrollOffsetABI {}
-extension NveTestRuntimeSceneView: RuntimeSceneViewABI {}
+extension NveTestSceneView: SceneViewABI {}
 
 final class TableSceneTests: XCTestCase {
     private let schema = Key64(0xF00D_FACE_C0FF_EE11)
@@ -21,7 +21,7 @@ final class TableSceneTests: XCTestCase {
     private let label = try! FieldSpec(word: 3, kind: .str)
     private let scale = try! FieldSpec(word: 5, kind: .f32)
 
-    private func scene() throws -> SceneReader<NveTestRuntimeSceneView> {
+    private func scene() throws -> SceneReader<NveTestSceneView> {
         try SceneReader.open(nve_test_scene(), expectedSchema: schema)
     }
 

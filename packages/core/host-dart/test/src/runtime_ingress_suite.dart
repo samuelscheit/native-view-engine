@@ -127,14 +127,14 @@ void runRuntimeIngress(Check c) {
     void rejects(SceneErrorKind kind, String what, void Function(NveSceneView v) corrupt) {
       reset();
       corrupt(view.ref);
-      final e = c.throwsA<SceneException>(() => readRuntimeScene(view.ref), what);
+      final e = c.throwsA<SceneException>(() => readScene(view.ref), what);
       if (e != null) {
         c.eq(e.kind, kind, '$what kind');
       }
     }
 
     reset();
-    c.eq(readRuntimeScene(view.ref).nodeCapacity, 0, 'all-zero view (before the first frame) reads empty');
+    c.eq(readScene(view.ref).nodeCapacity, 0, 'all-zero view (before the first frame) reads empty');
     rejects(SceneErrorKind.schemaMismatch, 'foreign schema', (v) => v.schemaHash = 7);
     rejects(SceneErrorKind.missingSlab, 'NULL rows with capacity', (v) => v.nodeCapacity = 2);
     rejects(SceneErrorKind.missingSlab, 'NULL text slab with length', (v) => v.textSlabLen = 3);
@@ -144,6 +144,22 @@ void runRuntimeIngress(Check c) {
     rejects(SceneErrorKind.missingSlab, 'NULL scroll offsets with count', (v) => v.scrollCount = 1);
     rejects(SceneErrorKind.missingSlab, 'NULL dirty resources with count', (v) => v.dirtyResourceCount = 1);
     rejects(SceneErrorKind.missingSlab, 'NULL moved indices with count', (v) => v.movedCount = 1);
+    rejects(SceneErrorKind.missingSlab, 'misaligned children slab', (v) {
+      v
+        ..childrenSlabLen = 1
+        ..childrenSlab = (words.cast<ffi.Uint8>() + 2).cast();
+    });
+    rejects(SceneErrorKind.missingSlab, 'misaligned table views', (v) {
+      v
+        ..tableCount = 1
+        ..tables = (table.cast<ffi.Uint8>() + 4).cast();
+    });
+    rejects(SceneErrorKind.missingSlab, 'rows byte size past 32 bits', (v) {
+      v
+        ..nodeCapacity = 0xFFFFFFFF
+        ..rows = words.cast()
+        ..rects = words.cast();
+    });
     reset();
     view.ref
       ..sceneEpoch = 9
@@ -151,7 +167,7 @@ void runRuntimeIngress(Check c) {
       ..dirtyResources = words;
     words[0] = 3;
     words[1] = 7;
-    final withResources = readRuntimeScene(view.ref);
+    final withResources = readScene(view.ref);
     c.eq(withResources.sceneEpoch, 9, 'scene epoch');
     c.eq(withResources.dirtyResources.toList().join(','), '3,7', 'dirty resources');
     words[0] = 0;
@@ -191,7 +207,7 @@ void runRuntimeIngress(Check c) {
     words.asTypedList(4).setAll(0, [1, 0, 0, 0]);
     reset();
     withTable(view.ref, (t) => t.rowCount = 1);
-    c.eq(readRuntimeScene(view.ref).tables.length, 1, 'well-formed table view reads');
+    c.eq(readScene(view.ref).tables.length, 1, 'well-formed table view reads');
 
     // Moved indices are validated like dirty ones and read zero-copy.
     words.asTypedList(2).setAll(0, [1, 0]);
@@ -203,9 +219,9 @@ void runRuntimeIngress(Check c) {
       ..movedCount = 1
       ..movedIndices = words;
     try {
-      c.eq(readRuntimeScene(view.ref).movedIndices.join(','), '1', 'moved indices');
+      c.eq(readScene(view.ref).movedIndices.join(','), '1', 'moved indices');
       words[0] = 2;
-      final e = c.throwsA<SceneException>(() => readRuntimeScene(view.ref), 'moved index >= capacity');
+      final e = c.throwsA<SceneException>(() => readScene(view.ref), 'moved index >= capacity');
       c.eq(e?.kind, SceneErrorKind.missingSlab, 'moved index >= capacity kind');
     } finally {
       NativeHeap.free(view.ref.rows);
@@ -231,12 +247,14 @@ void runRuntimeIngress(Check c) {
           ..rowIndexDir = index
           ..rowIndexPages = index + 2;
       });
-      final sparse = readRuntimeScene(view.ref).tables.single;
+      final sparse = readScene(view.ref).tables.single;
       c.eq(sparse.rowOfNode(300), 1, 'sparse row of node 300');
       c.eq(sparse.rowOf(300 | (3 << 24)), 1, 'sparse row of its live id');
       c.eq(sparse.rowOf(300 | (2 << 24)), null, 'stale generation misses');
       c.eq(sparse.rowOfNode(5), null, 'NO_PAGE directory slot misses');
       c.eq(sparse.rowOfNode(512), null, 'directory slot past the end misses');
+      // 2^32 + 300 would wrap onto node 300 under dart2js's 32-bit shifts.
+      c.eq(sparse.rowOfNode(0x100000000 + 300), null, 'index past 24 bits misses');
     } finally {
       NativeHeap.free(index);
     }

@@ -9,10 +9,10 @@ extension NveTableView: @retroactive TableViewABI {}
 extension NveNodeRow: @retroactive NodeRowABI {}
 extension NveLayoutRect: @retroactive LayoutRectABI {}
 extension NveScrollOffset: @retroactive ScrollOffsetABI {}
-extension NveSceneView: @retroactive RuntimeSceneViewABI {}
+extension NveSceneView: @retroactive SceneViewABI {}
 
 /// Validated zero-copy reader over the scene borrowed from `scene_acquire`.
-public typealias NveRuntimeScene = SceneReader<NveSceneView>
+public typealias NveScene = SceneReader<NveSceneView>
 
 public enum NveRuntimeError: Error, Equatable {
     /// `nve_runtime_get_interface` is not linked into this process.
@@ -157,11 +157,11 @@ public final class NveRuntimeSession {
     }
 
     /// Runs `body` over the validated published scene; the borrow ends when `body` returns.
-    public func withScene<R>(_ body: (NveRuntimeScene) throws -> R) throws -> R {
+    public func withScene<R>(_ body: (NveScene) throws -> R) throws -> R {
         var view = NveSceneView()
         try check(api.pointee.scene_acquire(handle, &view))
         defer { _ = api.pointee.scene_release(handle) }
-        let scene: NveRuntimeScene
+        let scene: NveScene
         do {
             scene = try SceneReader.open(view, expectedSchema: Key64(NVE_RUNTIME_SCHEMA_HASH))
         } catch {
@@ -237,7 +237,7 @@ public final class NveRuntimeSession {
     /// Canonical payload (and kind) of resource `id` referenced by a published `Resource` field.
     /// `scene` proves the `scene_acquire` borrow the runtime's zero-copy slice lives in (it is only
     /// reachable inside `withScene`); the bytes are copied out before that borrow ends.
-    public func resource(_ id: UInt32, in scene: NveRuntimeScene) throws -> (kind: Key64, bytes: [UInt8]) {
+    public func resource(_ id: UInt32, in scene: NveScene) throws -> (kind: Key64, bytes: [UInt8]) {
         _ = scene
         var kind: UInt64 = 0
         var payload = NveBufferSlice(ptr: nil, len: 0)
