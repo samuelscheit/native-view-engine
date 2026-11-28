@@ -32,6 +32,8 @@ TextPaint TextPaint::from(const host::TextStyle& s) {
   p.font_weight = s.font_weight;
   p.font_style = s.font_style;
   p.white_space = s.white_space;
+  p.word_break = s.word_break;
+  p.overflow_wrap = s.overflow_wrap;
   p.text_align = s.text_align;
   p.text_decoration = s.text_decoration;
   return p;
@@ -50,6 +52,8 @@ TextPaint TextPaint::from(const NveRuntimeTextStyle& s) {
   t.font_weight = s.font_weight;
   t.font_style = s.font_style;
   t.white_space = s.white_space;
+  t.word_break = s.word_break;
+  t.overflow_wrap = s.overflow_wrap;
   return from(t);
 }
 
@@ -196,6 +200,7 @@ void NveWinVisualTree::apply_scroll_offsets(const host::SceneReader& scene) {
     v.scroll_x = x;
     v.scroll_y = y;
     damage_ = damage_.unite(v.bounds);  // the scrolled content is clipped to the container
+    touch_descendants(v);               // ... and their bounds moved with it
     changed = true;
   };
   for (const uint32_t id : scrolled_) {  // dropped offsets read {0, 0}
@@ -218,7 +223,19 @@ void NveWinVisualTree::set_scroll_offset(uint32_t id, float x, float y) {
   v->scroll_y = y;
   if (std::find(scrolled_.begin(), scrolled_.end(), id) == scrolled_.end()) scrolled_.push_back(id);
   damage_ = damage_.unite(v->bounds);
+  touch_descendants(*v);
+  settle_damage();  // outside a sync: the bounds are refreshed now
   ++revision_;
+}
+
+void NveWinVisualTree::touch_descendants(const WinNodeVisual& v) {
+  subtree_.assign(v.children.begin(), v.children.end());
+  while (!subtree_.empty()) {
+    const uint32_t id = subtree_.back();
+    subtree_.pop_back();
+    touched_.push_back(id);
+    if (const WinNodeVisual* c = find(id)) subtree_.insert(subtree_.end(), c->children.begin(), c->children.end());
+  }
 }
 
 void NveWinVisualTree::settle_damage() {
@@ -310,7 +327,11 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
     tree->full_damage_ = true;
   }
   v.parent = node.parent;
-  v.local = rect_of(node.local);
+  const Rect local = rect_of(node.local);
+  // Descendants move with a container's origin; their cached damage bounds must follow.
+  if (v.synced && (local.x != v.local.x || local.y != v.local.y)) tree->touch_descendants(v);
+  v.local = local;
+  v.content = rect_of(node.content);
   // Resources are re-read when their id changed or the frame republished them (same id, new bytes).
   if (tree->reread(v, v.shadows_res, node.visual.box_shadows)) {
     v.shadows_res = node.visual.box_shadows;
@@ -355,10 +376,11 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
 
 void NveWinVisualTree::Adapter::move(Handle& handle, const host::NodeGeometry& node) {
   WinNodeVisual& v = *handle;
-  v.local = rect_of(node.local);
+  const Rect local = rect_of(node.local);
+  if (local.x != v.local.x || local.y != v.local.y) tree->touch_descendants(v);  // they move with it
+  v.local = local;
+  v.content = rect_of(node.content);
   tree->touched_.push_back(v.id);
-  // Descendants move with it; their cached damage bounds are stale until their next update.
-  if (!v.children.empty()) tree->full_damage_ = true;
   ++tree->revision_;
 }
 

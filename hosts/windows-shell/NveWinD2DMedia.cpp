@@ -9,7 +9,6 @@
 #include <wincrypt.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -24,11 +23,7 @@ namespace {
 constexpr size_t kMaxBitmaps = 64u;
 
 bool starts_with_ci(std::string_view s, std::string_view prefix) noexcept {
-  if (s.size() < prefix.size()) return false;
-  for (size_t i = 0; i < prefix.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(s[i])) != prefix[i]) return false;
-  }
-  return true;
+  return s.size() >= prefix.size() && host::ascii_iequals(s.substr(0u, prefix.size()), prefix);
 }
 
 /// Base64 payload of a `data:image/...;base64,` URL (native `CryptStringToBinaryA`).
@@ -52,9 +47,16 @@ std::vector<uint8_t> data_url_bytes(std::string_view url) {
   return out;
 }
 
+/// A drive-rooted path `X:\...`: never UNC (`\\host`), NT / device (`\??\`, `\\?\`, `\\.\`), or
+/// drive-relative (`X:foo`).
+bool drive_path(const std::wstring& p) noexcept {
+  return p.size() >= 3u && ::PathGetDriveNumberW(p.c_str()) >= 0 && p[1] == L':' && p[2] == L'\\';
+}
+
 /// Local filesystem path of an image URL (`host::local_image_path`; `file:` URLs decoded by
-/// `PathCreateFromUrlW`). Never a UNC path: the OS would authenticate to that host (NTLM leak)
-/// and block the UI thread on the network.
+/// `PathCreateFromUrlW`), only ever a local drive path: a UNC path would make the OS
+/// authenticate to that host (NTLM leak) and block the UI thread on the network. Checked after
+/// decoding and again after `GetFullPathNameW` (`..`, `/` and device names normalized).
 std::wstring local_file(std::string_view url) {
   const auto local = host::local_image_path(url);
   if (!local) return {};
@@ -68,7 +70,14 @@ std::wstring local_file(std::string_view url) {
   } else {
     path = wide(*local);
   }
-  return path.empty() || ::PathIsUNCW(path.c_str()) || path.starts_with(L"\\\\") ? std::wstring() : path;
+  if (!host::local_decoded_path(narrow(path))) return {};
+  std::replace(path.begin(), path.end(), L'/', L'\\');
+  if (!drive_path(path)) return {};
+  wchar_t full[MAX_PATH * 4] = {};
+  const DWORD n = ::GetFullPathNameW(path.c_str(), static_cast<DWORD>(std::size(full)), full, nullptr);
+  if (n == 0u || n >= std::size(full)) return {};
+  const std::wstring resolved(full, n);
+  return drive_path(resolved) ? resolved : std::wstring();
 }
 
 bool fail(std::string* out_error, const char* message) {
@@ -111,6 +120,8 @@ void D2DPaintCache::release() noexcept {
   layouts_.clear();
   if (wic_ != nullptr) wic_->Release();
   wic_ = nullptr;
+  if (com_) ::CoUninitialize();  // after the last COM object of this initialization
+  com_ = false;
   target_ = nullptr;
 }
 
@@ -141,7 +152,9 @@ ID2D1Bitmap* D2DPaintCache::bitmap(ID2D1RenderTarget* rt, const WinImageSource& 
 
 ID2D1Bitmap* D2DPaintCache::decode(ID2D1RenderTarget* rt, const WinImageSource& src) {
   if (wic_ == nullptr) {
-    (void)::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // S_FALSE / RPC_E_CHANGED_MODE: COM is up
+    // S_OK / S_FALSE count (balanced by `release`); RPC_E_CHANGED_MODE: COM is up in another
+    // apartment model, not ours to uninitialize.
+    if (!com_) com_ = SUCCEEDED(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
     if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_)))) {
       wic_ = nullptr;
       return nullptr;

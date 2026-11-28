@@ -226,6 +226,71 @@ void test_live_kitchen_sink_if_configured() {
   NVE_CHECK(find_text("Count: 3") != nullptr && host.view_count() == views);
 }
 
+/// Damage follows descendants: when a container moves (or scrolls), its children's painted
+/// bounds move with it, so damage covers exactly their old and new areas (no full-surface
+/// repaint), and a later change of a child damages where it is painted now, never its stale
+/// pre-move area. A removed child damages its last painted area.
+void test_damage_follows_moved_and_removed_children() {
+  constexpr uint32_t kBox = 2u, kChild = 3u, kOther = 4u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_DIRECTION, NVE_FLEX_DIRECTION_ROW);
+  w.create(kBox);
+  sized(w, kBox, 40.0f, 40.0f);
+  w.create(kChild);
+  sized(w, kChild, 20.0f, 60.0f);  // taller than the box: it scrolls later
+  w.set(kChild, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 0, 0));
+  w.create(kOther);
+  sized(w, kOther, 10.0f, 10.0f);
+  const uint32_t child[] = {kChild};
+  w.set_children(kBox, child);
+  const uint32_t top[] = {kBox, kOther};
+  w.set_children(1u, top);
+  const auto host_owner = make_host(WinHostConfig{.width = 400.0f, .height = 300.0f});
+  NveWinHost& host = *host_owner;
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  (void)host.take_damage();
+  const Rect before = abs_rect(host, kChild);
+
+  // The box moves 200px right (geometry only): damage = the child's old + new areas.
+  w.set(kBox, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_MARGIN_LEFT, h::length_points(200.0f));
+  flush(host);
+  const Rect after = abs_rect(host, kChild);
+  NVE_CHECK(approx(after.x, before.x + 200.0f, 0.5));
+  const Rect moved = host.take_damage();
+  NVE_CHECK(moved.x <= before.x && moved.right() >= after.right() && moved.bottom() < 300.0f);
+  NVE_CHECK(moved.height <= 61.0f);  // not the surface: the row only
+
+  // A paint-only change of the child: only where it is painted now.
+  w.set(kChild, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(0, 0, 255));
+  flush(host);
+  const Rect repaint = host.take_damage();
+  NVE_CHECK(approx(repaint.x, after.x, 0.5) && approx(repaint.width, after.width, 0.5));
+
+  // A runtime-driven scroll of the box shifts the child's painted bounds too.
+  w.set(kBox, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_Y, NVE_OVERFLOW_SCROLL);
+  flush(host);
+  (void)host.take_damage();
+  const auto [bx, by] = center(host, kBox);
+  NVE_CHECK(host.wheel_at(bx, by, 0.0f, 10.0f));
+  NVE_CHECK(approx(node(host, kBox).scroll_y, 10.0, 0.01) && approx(abs_rect(host, kChild).y, after.y - 10.0f, 0.5));
+  (void)host.take_damage();
+  w.set(kChild, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(0, 255, 0));
+  flush(host);
+  const Rect scrolled_child = abs_rect(host, kChild);
+  const Rect scrolled_repaint = host.take_damage();
+  NVE_CHECK(approx(scrolled_repaint.y, scrolled_child.y, 0.5) && approx(scrolled_repaint.height, scrolled_child.height, 0.5));
+
+  // Removal: the child's last painted area.
+  w.remove(kChild);
+  w.set_children(kBox, std::span<const uint32_t>());
+  flush(host);
+  const Rect removed = host.take_damage();
+  NVE_CHECK(removed.x <= scrolled_child.x && removed.right() >= scrolled_child.right());
+  NVE_CHECK(removed.y <= scrolled_child.y && removed.bottom() >= scrolled_child.bottom());
+}
+
 }  // namespace
 
 void nve_test_win_media_and_input();
@@ -238,6 +303,7 @@ int main() {
   test_counter_model_and_events();
   test_modules_hot_reload_and_state();
   test_live_kitchen_sink_if_configured();
+  test_damage_follows_moved_and_removed_children();
   nve_test_win_media_and_input();
   nve_test_win_canvas_scroll_and_windows();
 #if defined(_WIN32)

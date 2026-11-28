@@ -27,6 +27,7 @@ struct NveRnwComponentRegistrationConfig {
   NveGetInterfaceFn default_interface{nullptr};
   std::string default_dylib_path;
   bool use_content_island{false};
+  // Both receive the view's host: null when no runtime / DirectWrite is available (an empty view).
   std::function<winrt::Microsoft::UI::Content::ContentIsland(
       winrt::Microsoft::ReactNative::Composition::ContentIslandComponentView const&, std::shared_ptr<NveWinHost>)>
       create_content_island;
