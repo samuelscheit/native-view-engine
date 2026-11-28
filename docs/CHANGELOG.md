@@ -4,6 +4,14 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
+## Track 1B-2/3B Slice 3 — Apple Parity (`swiftui-kit`, `apple-common`, `macos-shell`, `ios-shell`) & Zero-Tolerance `alloc_guards`
+
+- **Apple hosts & `NveSwiftUI` parity (`825c5887`, `45c49626`, `hosts/{apple-common,macos-shell,ios-shell,swiftui-kit}`, `nve-codegen`, `nve-cli`)**:
+  - Generated `NveModuleTables.generated.swift` (`packages/core/host-swift/Sources/NveHost/`, expanding `nve codegen abi --check` to **30/30** files), replaced `swiftui-kit`'s empty `NveSurfaceRepresentable` with live scene rendering + ABI v6 `measure_surface` / `set_intrinsic_size_invalidated_callback`, added controlled editable `TextInput`/IME across AppKit/UIKit/SwiftUI (`NveControlledTextState`, `NvePlatformTextInput`, `NvePlatformTextInputUIKit`, deferred teardown/silent-IME reconcile, `EventHandlerBox.isMounted` guard), full CoreText typography (`NveTypography`, CRLF `\.isNewline` truncation), isolated `ctx.drawLayer` `DrawList` canvas rendering (`NveSceneCanvasView`, `NveAppleCanvasView`), atomic `[CompositionEnd, TextChange]` / `Submit` dispatch with post-dispatch re-lookup across synchronous node removal, `max_length` clamping, ABI v6 Frame-0 save/boot, and `--pair-transport` (`udp://`/`tcp://` normalization).
+  - Updated `scripts/check-suites.sh` and `.github/workflows/ci.yml` iOS Simulator ObjC++ `-Werror` checks with `-Ipackages/modules/canvas/cxx/include`, lowering `no_banned_legacy_4_letter_acronyms_ratchet` (`424 → 423`). Verified: `host-swift` (56/56), `swiftui-kit` (56/56 + iOS Simulator `xcodebuild`), `macos-shell` CTest (3/3), iOS Simulator ObjC++ `-Werror`, `nve-cli` (78/78).
+- **Zero-tolerance `alloc_guards` across 100% of core/backends/framework crates (`5389c42b`, `nve-wire`, `nve-docs`, `nve-query-dioxus`, `nve-storage`, `nve-arch-invariants`)**:
+  - Added per-thread `CountingAlloc` zero-alloc guards to `nve-wire`, `nve-docs`, and `nve-storage` plus colocated Criterion benchmarks to `nve-docs`, `nve-query-dioxus`, and `nve-storage`, promoting `report.alloc_guards` from staged ratchet (`2`) to hard zero-tolerance `assert_no_violations` and lowering `all_crate_benches` (`26 → 23`).
+
 ## Track 2 Slice 2B — Delete `style_buf` & Runtime CSS Parser, Binary `RowPatch` Tier-1 Hot Reload & `inline_style_keys` Guard
 
 - **Typed-style-only authoring & binary Tier-1 hot reload (`11b5b3bb`, `nve-tables`, `nve-engine`, `nve-dioxus`, `nve-dioxus-macros`, `nve-backend-web`, `nve-ui`, `nve-docs`, `nve-cli`, `nve-arch-invariants`)**:
