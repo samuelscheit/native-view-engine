@@ -307,6 +307,16 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 return Err(DesktopHostError::Window(err.to_string()));
             }
         };
+        let proxy = match self.proxy.clone() {
+            Some(p) => p,
+            None => {
+                let _ = self.window_manager.close_window(handle_id);
+                return Err(DesktopHostError::EventLoop("event loop proxy unavailable".into()));
+            }
+        };
+        let a11y_adapter =
+            accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, proxy);
+        window.set_visible(true);
         let presenter =
             match create_presenter(&window, self.options.preferred_backend, self.options.vsync) {
                 Ok(p) => p,
@@ -329,6 +339,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             .theme()
             .map(|t| self.host_services.update_theme_from_winit(t, scale));
         let window_id = window.id();
+        let store_gen = session.store_generation();
         let mut sw = SurfaceWindow {
             window: window.clone(),
             presenter,
@@ -341,6 +352,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             last_ime_cursor_rect: None,
             last_cursor: nve_backend_skia::CursorKind::Auto,
             last_telemetry: None,
+            a11y_adapter,
+            a11y_bridge: nve_accessibility::AccessKitTreeBridge::new(),
+            a11y_synced_store_gen: store_gen,
         };
         if let Some(theme) = initial_theme
             && sw
@@ -371,6 +385,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                     eprintln!("[nve-skia-shell] host event render error: {err}");
                 }
                 sw.sync_ime_state();
+                sw.sync_a11y_state(false);
                 sw.window.request_redraw();
             }
         }
@@ -448,6 +463,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             }
             sw.sync_title();
             sw.sync_ime_state();
+            sw.sync_a11y_state(false);
             if needs_redraw {
                 sw.window.request_redraw();
             }
@@ -473,6 +489,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             if rendered {
                 sw.sync_title();
                 sw.sync_ime_state();
+                sw.sync_a11y_state(false);
                 sw.window.request_redraw();
             } else if banner_changed {
                 sw.session.rasterize_current();
@@ -497,6 +514,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             if rendered {
                 sw.sync_title();
                 sw.sync_ime_state();
+                sw.sync_a11y_state(false);
                 sw.window.request_redraw();
             }
         }
@@ -550,6 +568,7 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
             HostWakeEvent::RemoteFrame => self.process_pending_remote_frames(),
             HostWakeEvent::AppWake => self.process_app_wakes(),
             HostWakeEvent::WindowCommand(cmd) => self.apply_window_command(event_loop, cmd),
+            HostWakeEvent::AccessKit(ak_ev) => self.handle_accesskit_event(ak_ev),
         }
     }
 

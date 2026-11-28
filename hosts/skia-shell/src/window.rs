@@ -3,6 +3,7 @@
 //! hot reload (`HotPatchMsg` from `ws://127.0.0.1:8089`), and optional Frame-0 `frame0.nve2`
 //! keyframe pre-warm & atomic refresh.
 
+pub mod a11y;
 pub mod clipboard;
 #[cfg(test)]
 pub mod dioxus_app;
@@ -17,6 +18,8 @@ pub mod text_edit;
 mod window_commands;
 pub mod window_host;
 
+#[cfg(test)]
+mod a11y_tests;
 #[cfg(test)]
 mod dioxus_app_tests;
 #[cfg(test)]

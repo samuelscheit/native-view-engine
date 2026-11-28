@@ -10,6 +10,10 @@ ignore = [
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is pulled transitively via rind/web-transport-quinn with no safe upgrade available" },
     # Transitive via fontdb/cosmic-text (nve-backend-skia) and ab_glyph/sctk-adwaita/winit (nve-skia-shell); no safe upstream upgrade yet.
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is pulled transitively via cosmic-text and winit/sctk-adwaita with no safe upgrade available" },
+    # Transitive via accesskit_unix 0.24.1 -> accesskit_winit 0.34.2 (nve-skia-shell); zvariant*/zbus_names merged into zbus 6 with no upstream accesskit_unix upgrade yet.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is pulled transitively via accesskit_unix/zbus 5.19 with no safe upstream upgrade available" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is pulled transitively via accesskit_unix/zbus 5.19 with no safe upstream upgrade available" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is pulled transitively via accesskit_unix/zbus 5.19 with no safe upstream upgrade available" },
 ]
 
 [licenses]

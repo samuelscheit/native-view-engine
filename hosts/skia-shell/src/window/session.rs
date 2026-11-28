@@ -105,6 +105,8 @@ pub struct DesktopSession<A: DesktopApp> {
     show_hud: bool,
     last_frame_bytes: Vec<u8>,
     frame_counter: FrameId,
+    store_generation: u32,
+    pub(super) a11y_synced_wire_frame: u64,
     last_telemetry: Option<FrameTelemetry>,
     /// Wall-clock instant of the previous animation tick (`None` while idle).
     last_animation_tick: Option<Instant>,
@@ -203,6 +205,8 @@ impl<A: DesktopApp> DesktopSession<A> {
             show_hud,
             last_frame_bytes,
             frame_counter: FrameId::ZERO,
+            store_generation: 1,
+            a11y_synced_wire_frame: 0,
             last_telemetry: None,
             last_animation_tick: None,
             #[cfg(feature = "skia")]
@@ -210,6 +214,11 @@ impl<A: DesktopApp> DesktopSession<A> {
             #[cfg(feature = "skia")]
             gpu_surface,
         }
+    }
+
+    #[inline]
+    pub fn store_generation(&self) -> u32 {
+        self.store_generation
     }
 
     pub fn app(&self) -> &A {
@@ -455,6 +464,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             if bytes.is_empty() {
                 continue;
             }
+            let prev_wire_frame = self.replica.last_changes().frame;
             let res = if is_keyframe {
                 self.replica.submit_nve2_keyframe(&bytes)
             } else {
@@ -462,6 +472,11 @@ impl<A: DesktopApp> DesktopSession<A> {
             };
             match res {
                 Ok(_) => {
+                    let next_wire_frame = self.replica.last_changes().frame;
+                    if is_keyframe || (prev_wire_frame > 0 && next_wire_frame <= prev_wire_frame) {
+                        self.store_generation = self.store_generation.wrapping_add(1).max(1);
+                        self.a11y_synced_wire_frame = 0;
+                    }
                     self.app.on_queued_wire_frame_applied(is_keyframe);
                     self.last_frame_bytes = bytes;
                 }
@@ -476,7 +491,13 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.next_frame_id = self.next_frame_id.next();
             let bytes = self.app.render(frame_id);
             if !bytes.is_empty() {
+                let prev_wire_frame = self.replica.last_changes().frame;
                 self.replica.submit_nve2_frame(bytes)?;
+                let next_wire_frame = self.replica.last_changes().frame;
+                if prev_wire_frame > 0 && next_wire_frame <= prev_wire_frame {
+                    self.store_generation = self.store_generation.wrapping_add(1).max(1);
+                    self.a11y_synced_wire_frame = 0;
+                }
                 self.last_frame_bytes.clear();
                 self.last_frame_bytes.extend_from_slice(bytes);
             }
@@ -577,6 +598,8 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let layout = self.layout_choice.build_layout_engine()?;
                         self.replica =
                             new_shell_skia_replica_with_layout(self.surface_id, self.viewport, layout);
+                        self.store_generation = self.store_generation.wrapping_add(1).max(1);
+                        self.a11y_synced_wire_frame = 0;
                         self.last_frame_bytes.clear();
                         let swap_ms = t0.elapsed().as_millis();
                         self.status_banner = Some(format!(

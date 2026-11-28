@@ -42,6 +42,9 @@ nve-secure-store = { workspace = true }
 nve-linking = { workspace = true }
 nve-system-env = { workspace = true }
 nve-haptics = { workspace = true }
+nve-accessibility = { workspace = true }
+accesskit = { workspace = true }
+accesskit_winit = { workspace = true }
 winit = { workspace = true }
 softbuffer = { workspace = true }
 tungstenite = { workspace = true }

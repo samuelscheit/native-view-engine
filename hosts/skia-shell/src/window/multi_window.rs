@@ -15,6 +15,8 @@ use std::time::Instant;
 #[cfg(test)]
 use nve_abi::ColorRgba;
 use nve_abi::SurfaceId;
+use accesskit_winit::Adapter as AccessKitAdapter;
+use nve_accessibility::AccessKitTreeBridge;
 use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
     GpuSwapchain,
@@ -43,12 +45,19 @@ use super::{DesktopApp, DesktopHostError};
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 /// Cross-thread event loop wake signals for [`super::DesktopWindowHost`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum HostWakeEvent {
     HotReload,
     RemoteFrame,
     AppWake,
     WindowCommand(WindowCommand),
+    AccessKit(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for HostWakeEvent {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Self::AccessKit(event)
+    }
 }
 
 pub(crate) type CloseVetoHandler = Box<dyn FnMut(WindowHandleId, SurfaceId) -> bool>;
@@ -77,6 +86,9 @@ pub struct SurfaceWindow<A: DesktopApp> {
     pub(crate) last_ime_cursor_rect: Option<LayoutRect>,
     pub(crate) last_cursor: CursorKind,
     pub(crate) last_telemetry: Option<FrameTelemetry>,
+    pub(crate) a11y_adapter: AccessKitAdapter,
+    pub(crate) a11y_bridge: AccessKitTreeBridge,
+    pub(crate) a11y_synced_store_gen: u32,
 }
 
 impl<A: DesktopApp> SurfaceWindow<A> {
@@ -175,7 +187,9 @@ impl<A: DesktopApp> SurfaceWindow<A> {
 }
 
 pub(crate) fn build_window_attributes(desc: &WindowDescriptor) -> WindowAttributes {
+    // Windows start hidden so `accesskit_winit::Adapter` attaches before first presentation.
     let mut attrs = Window::default_attributes()
+        .with_visible(false)
         .with_title(desc.title.clone())
         .with_inner_size(LogicalSize::new(desc.bounds.width as f64, desc.bounds.height as f64))
         .with_resizable(desc.flags.contains(WindowFlags::RESIZABLE))

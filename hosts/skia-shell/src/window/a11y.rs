@@ -1,0 +1,527 @@
+//! Thin `accesskit_winit` adapter wiring and [`DesktopSession`] action/tree bridge over the
+//! platform-agnostic [`nve_accessibility`] capability module.
+
+use std::borrow::Cow;
+
+use accesskit::TreeUpdate;
+use nve_abi::{EventBatchBuf, NodeId, TimestampUs};
+use nve_accessibility::{
+    char_index_to_byte_offset, A11yAction, A11yGeometryProvider, AccessKitTreeBridge,
+    ResolvedA11yAction,
+};
+use nve_engine::LayoutRect;
+use nve_store::{ChangeSet, NodeStore};
+use nve_tables::tables::{
+    is_node_display_none, is_subtree_display_none, Interaction, Scroll, TextInput,
+};
+use winit::window::WindowId;
+
+use super::multi_window::SurfaceWindow;
+use super::session::{now_us, DesktopSession, ShellSkiaBackend};
+use super::text_edit::{insert_text_at, sanitize_pasted_multiline, sanitize_pasted_single_line};
+use super::window_host::DesktopWindowHost;
+use super::{DesktopApp, DesktopHostError};
+
+const MAX_SCROLL_ANCESTOR_DEPTH: usize = 256;
+
+/// Zero-copy [`A11yGeometryProvider`] adapter over `(&NodeStore, &ShellSkiaBackend)`.
+pub(crate) struct SkiaA11yGeometry<'a> {
+    store: &'a NodeStore,
+    backend: &'a ShellSkiaBackend,
+    scale_factor: f32,
+    root_has_layout: bool,
+}
+
+impl<'a> SkiaA11yGeometry<'a> {
+    #[inline]
+    pub(crate) fn new(
+        store: &'a NodeStore,
+        backend: &'a ShellSkiaBackend,
+        scale_factor: f32,
+    ) -> Self {
+        let root_has_layout = backend.layout_tree().layout_of(NodeId::ROOT).is_some();
+        Self {
+            store,
+            backend,
+            scale_factor,
+            root_has_layout,
+        }
+    }
+}
+
+impl A11yGeometryProvider for SkiaA11yGeometry<'_> {
+    #[inline]
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    #[inline]
+    fn layout_rect(&self, id: NodeId) -> Option<LayoutRect> {
+        self.backend.layout_tree().layout_of(id)
+    }
+
+    #[inline]
+    fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
+        self.backend.scroll_offset(id)
+    }
+
+    #[inline]
+    fn scroll_content_size(&self, id: NodeId) -> Option<(f32, f32)> {
+        self.backend.scroll_content_size(self.store, id)
+    }
+
+    #[inline]
+    fn sticky_delta(&self, id: NodeId) -> (f32, f32) {
+        self.backend.layout_tree().compute_sticky_delta(self.store, id)
+    }
+
+    #[inline]
+    fn focused_node(&self) -> Option<NodeId> {
+        self.backend.focused_node()
+    }
+
+    #[inline]
+    fn text_input_value(&self, id: NodeId) -> Option<Cow<'_, str>> {
+        self.backend.text_input_value(self.store, id).map(Cow::Owned)
+    }
+
+    #[inline]
+    fn text_selection_bytes(&self, id: NodeId) -> Option<(usize, usize)> {
+        let fs = self.backend.focus_state();
+        if fs.focused_node == Some(id) {
+            Some((fs.selection_anchor, fs.caret_byte_index))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn is_display_none(&self, id: NodeId) -> bool {
+        if id == NodeId::ROOT {
+            return false;
+        }
+        if is_node_display_none(self.store, id) {
+            return true;
+        }
+        self.root_has_layout && self.backend.layout_tree().layout_of(id).is_none()
+    }
+}
+
+/// Scrolls every ancestor `Scroll` container minimally so `target` becomes visible within its
+/// viewport (accounting for `virtual_top_spacer` and rejecting `display: none` subtrees).
+/// Returns `true` if any scroll offset changed.
+fn scroll_node_into_view(
+    store: &NodeStore,
+    backend: &mut ShellSkiaBackend,
+    target: NodeId,
+) -> bool {
+    if !store.is_live(target) || is_subtree_display_none(store, target) {
+        return false;
+    }
+    let Some(target_rect) = backend.layout_tree().layout_of(target) else {
+        return false;
+    };
+    let mut changed = false;
+    let mut cur_x0 = target_rect.x;
+    let mut cur_y0 = target_rect.y;
+    let mut cur_x1 = target_rect.x + target_rect.width;
+    let mut cur_y1 = target_rect.y + target_rect.height;
+
+    let mut ancestor = store.parent(target);
+    for _ in 0..MAX_SCROLL_ANCESTOR_DEPTH {
+        let Some(pid) = ancestor else {
+            break;
+        };
+        if let Some(scroll) = store.try_row::<Scroll>(pid)
+            && let Some(view) = backend.layout_tree().layout_of(pid)
+        {
+            let spacer = scroll
+                .virtual_top_spacer()
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .unwrap_or(0.0);
+            let (sx, sy) = backend.scroll_offset(pid);
+            let shift_x = sx;
+            let shift_y = if spacer > 0.0 {
+                (sy - spacer).max(0.0)
+            } else {
+                sy
+            };
+            let vis_x0 = cur_x0 - shift_x;
+            let vis_x1 = cur_x1 - shift_x;
+            let vis_y0 = cur_y0 - shift_y;
+            let vis_y1 = cur_y1 - shift_y;
+
+            let dx = if vis_x0 < view.x {
+                vis_x0 - view.x
+            } else if vis_x1 > view.x + view.width {
+                (vis_x1 - (view.x + view.width)).min(vis_x0 - view.x)
+            } else {
+                0.0
+            };
+            let dy = if vis_y0 < view.y {
+                vis_y0 - view.y
+            } else if vis_y1 > view.y + view.height {
+                (vis_y1 - (view.y + view.height)).min(vis_y0 - view.y)
+            } else {
+                0.0
+            };
+
+            if dx.abs() > 1e-3 || dy.abs() > 1e-3 {
+                let target_x = (sx + dx).max(0.0);
+                let target_y = if dy.abs() > 1e-3 {
+                    let desired_shift_y = (shift_y + dy).max(0.0);
+                    if spacer > 0.0 {
+                        spacer + desired_shift_y
+                    } else {
+                        desired_shift_y
+                    }
+                } else {
+                    sy
+                };
+                let next = backend.set_scroll_offset(store, pid, target_x, target_y);
+                if (sx - next.0).abs() > 1e-4 || (sy - next.1).abs() > 1e-4 {
+                    changed = true;
+                }
+            }
+            let (nx, ny) = backend.scroll_offset(pid);
+            let new_shift_x = nx;
+            let new_shift_y = if spacer > 0.0 {
+                (ny - spacer).max(0.0)
+            } else {
+                ny
+            };
+            cur_x0 -= new_shift_x;
+            cur_x1 -= new_shift_x;
+            cur_y0 -= new_shift_y;
+            cur_y1 -= new_shift_y;
+        }
+        let next_parent = store.parent(pid);
+        if next_parent == Some(pid) {
+            break;
+        }
+        ancestor = next_parent;
+    }
+    changed
+}
+
+impl<A: DesktopApp> DesktopSession<A> {
+    /// Builds a complete AccessKit [`TreeUpdate`] for the current replica store and records the
+    /// synchronized wire frame counter.
+    pub fn build_a11y_full_tree(
+        &mut self,
+        bridge: &mut AccessKitTreeBridge,
+        window_title: &str,
+    ) -> TreeUpdate {
+        let geo = SkiaA11yGeometry::new(
+            self.replica.store(),
+            self.replica.backend(),
+            self.viewport.scale_factor,
+        );
+        self.a11y_synced_wire_frame = self.replica.last_changes().frame;
+        bridge.build_full_tree_update(self.replica.store(), &geo, window_title)
+    }
+
+    /// Computes a minimal incremental AccessKit [`TreeUpdate`] (returning `None` with 0 allocs
+    /// when `bridge` is inactive or only `COMPOSITE`-tier visuals changed).
+    pub fn sync_a11y_incremental(
+        &mut self,
+        bridge: &mut AccessKitTreeBridge,
+        window_title: &str,
+        force_geometry_or_scroll: bool,
+    ) -> Option<TreeUpdate> {
+        if !bridge.is_active() {
+            return None;
+        }
+        let empty = ChangeSet::default();
+        let last_changes = self.replica.last_changes();
+        let has_fresh_wire = last_changes.frame != self.a11y_synced_wire_frame;
+        let changes = if has_fresh_wire { last_changes } else { &empty };
+        let geo = SkiaA11yGeometry::new(
+            self.replica.store(),
+            self.replica.backend(),
+            self.viewport.scale_factor,
+        );
+        let update = bridge.sync_changes(
+            self.replica.store(),
+            changes,
+            &geo,
+            window_title,
+            force_geometry_or_scroll,
+        );
+        if has_fresh_wire {
+            self.a11y_synced_wire_frame = last_changes.frame;
+        }
+        update
+    }
+
+    /// Dispatches a translated assistive-technology [`ResolvedA11yAction`] into the app and
+    /// backend, returning `Ok(true)` when state or pixels changed.
+    pub fn dispatch_a11y_action(
+        &mut self,
+        resolved: ResolvedA11yAction,
+    ) -> Result<bool, DesktopHostError> {
+        let target = resolved.target;
+        if !self.replica.store().is_live(target) {
+            return Ok(false);
+        }
+        let is_disabled = self
+            .replica
+            .store()
+            .try_row::<Interaction>(target)
+            .is_some_and(|i| i.disabled());
+
+        match resolved.action {
+            A11yAction::Click | A11yAction::Expand | A11yAction::Collapse => {
+                if is_disabled {
+                    return Ok(false);
+                }
+                let (cx, cy) = self
+                    .replica
+                    .backend()
+                    .layout_tree()
+                    .layout_of(target)
+                    .map_or((0.0, 0.0), |r| (r.x + r.width * 0.5, r.y + r.height * 0.5));
+                let mut events = EventBatchBuf::with_capacity(1, 0);
+                events.push_press(self.surface_id, target, TimestampUs(now_us()), cx, cy);
+                self.dispatch_and_redraw(&events)?;
+                Ok(true)
+            }
+            A11yAction::Focus => {
+                if is_disabled {
+                    return Ok(false);
+                }
+                self.focus_node(Some(target))
+            }
+            A11yAction::Blur => {
+                if self.replica.backend().focused_node() == Some(target) {
+                    self.focus_node(None)
+                } else {
+                    Ok(false)
+                }
+            }
+            A11yAction::SetValue(raw_val) => {
+                if is_disabled {
+                    return Ok(false);
+                }
+                if let Some(ti) = self.replica.store().try_row::<TextInput>(target) {
+                    if ti.read_only() {
+                        return Ok(false);
+                    }
+                    let multiline = ti.multiline();
+                    if self.replica.backend().focused_node() != Some(target) {
+                        let _ = self.focus_node(Some(target))?;
+                    }
+                    let sanitized = if multiline {
+                        sanitize_pasted_multiline(&raw_val)
+                    } else {
+                        sanitize_pasted_single_line(&raw_val)
+                    };
+                    let end = sanitized.len();
+                    return self.emit_text_change(target, sanitized, end, None);
+                }
+                let mut events = EventBatchBuf::with_capacity(1, raw_val.len());
+                events.push_text_change(self.surface_id, target, TimestampUs(now_us()), &raw_val);
+                self.dispatch_and_redraw(&events)?;
+                Ok(true)
+            }
+            A11yAction::SetNumericValue(val) => {
+                if is_disabled {
+                    return Ok(false);
+                }
+                let text = format!("{val}");
+                let mut events = EventBatchBuf::with_capacity(1, text.len());
+                events.push_text_change(self.surface_id, target, TimestampUs(now_us()), &text);
+                self.dispatch_and_redraw(&events)?;
+                Ok(true)
+            }
+            A11yAction::ReplaceSelectedText(raw_val) => {
+                if is_disabled {
+                    return Ok(false);
+                }
+                let Some(ti) = self.replica.store().try_row::<TextInput>(target) else {
+                    return Ok(false);
+                };
+                if ti.read_only() {
+                    return Ok(false);
+                }
+                let multiline = ti.multiline();
+                if self.replica.backend().focused_node() != Some(target) {
+                    let _ = self.focus_node(Some(target))?;
+                }
+                let current = self
+                    .replica
+                    .backend()
+                    .text_input_value(self.replica.store(), target)
+                    .unwrap_or_default();
+                let fs = self.replica.backend().focus_state();
+                let caret = fs.caret_byte_index.min(current.len());
+                let selection = fs.selection_range();
+                let sanitized = if multiline {
+                    sanitize_pasted_multiline(&raw_val)
+                } else {
+                    sanitize_pasted_single_line(&raw_val)
+                };
+                let (next_val, next_caret) = insert_text_at(&current, caret, selection, &sanitized);
+                self.emit_text_change(target, next_val, next_caret, None)
+            }
+            A11yAction::SetTextSelection {
+                anchor_char,
+                focus_char,
+            } => {
+                if is_disabled || !self.replica.store().has::<TextInput>(target) {
+                    return Ok(false);
+                }
+                if self.replica.backend().focused_node() != Some(target) {
+                    let _ = self.focus_node(Some(target))?;
+                }
+                let current = self
+                    .replica
+                    .backend()
+                    .text_input_value(self.replica.store(), target)
+                    .unwrap_or_default();
+                let anchor_byte = char_index_to_byte_offset(&current, anchor_char);
+                let focus_byte = char_index_to_byte_offset(&current, focus_char);
+                {
+                    let (store, backend) = self.replica.store_and_backend_mut();
+                    backend.set_caret_and_selection(store, focus_byte, anchor_byte);
+                }
+                self.rasterize_current();
+                Ok(true)
+            }
+            A11yAction::ScrollIntoView => {
+                let changed = {
+                    let (store, backend) = self.replica.store_and_backend_mut();
+                    scroll_node_into_view(store, backend, target)
+                };
+                if changed {
+                    self.rasterize_current();
+                }
+                Ok(changed)
+            }
+            A11yAction::ScrollBy { dx, dy } => self.apply_a11y_scroll(target, dx, dy, false),
+            A11yAction::SetScrollOffset { x, y } => self.apply_a11y_scroll(target, x, y, true),
+            A11yAction::Increment => self.handle_keydown("ArrowUp", false, false, false, false),
+            A11yAction::Decrement => self.handle_keydown("ArrowDown", false, false, false, false),
+            A11yAction::ShowContextMenu => {
+                self.handle_keydown("ContextMenu", false, false, false, false)
+            }
+        }
+    }
+
+    fn apply_a11y_scroll(
+        &mut self,
+        target: NodeId,
+        a: f32,
+        b: f32,
+        absolute: bool,
+    ) -> Result<bool, DesktopHostError> {
+        let prev = self.replica.backend().scroll_offset(target);
+        let (store, backend) = self.replica.store_and_backend_mut();
+        let (new_x, new_y) = if absolute {
+            backend.set_scroll_offset(store, target, a, b)
+        } else {
+            backend.apply_scroll_delta(store, target, a, b)
+        };
+        let offset_changed = (prev.0 - new_x).abs() > 1e-4 || (prev.1 - new_y).abs() > 1e-4;
+        let (cw, ch) = backend
+            .scroll_content_size(store, target)
+            .unwrap_or((self.viewport.width, self.viewport.height));
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_scroll(
+            self.surface_id,
+            target,
+            TimestampUs(now_us()),
+            new_x,
+            new_y,
+            cw,
+            ch,
+        );
+        let handled = self.app.dispatch_events(batch.as_validated());
+        if handled {
+            self.render_and_rasterize()?;
+        } else if offset_changed {
+            self.rasterize_current();
+        }
+        Ok(handled || offset_changed)
+    }
+}
+
+impl<A: DesktopApp> SurfaceWindow<A> {
+    /// Pushes an incremental (or post-reload full) AccessKit update to the OS adapter if an
+    /// assistive technology is currently active. Zero work & zero allocations when inactive.
+    pub(crate) fn sync_a11y_state(&mut self, force_geometry_or_scroll: bool) {
+        let cur_gen = self.session.store_generation();
+        if self.a11y_synced_store_gen != cur_gen {
+            self.a11y_synced_store_gen = cur_gen;
+            self.a11y_bridge.advance_epoch();
+        }
+        if !self.a11y_bridge.is_active() {
+            return;
+        }
+        if let Some(update) = self.session.sync_a11y_incremental(
+            &mut self.a11y_bridge,
+            &self.base_title,
+            force_geometry_or_scroll,
+        ) {
+            self.a11y_adapter.update_if_active(|| update);
+        }
+    }
+}
+
+impl<A: DesktopApp> DesktopWindowHost<A> {
+    /// Handles an asynchronous [`accesskit_winit::Event`] delivered through `EventLoopProxy`.
+    pub(crate) fn handle_accesskit_event(&mut self, event: accesskit_winit::Event) {
+        let window_id: WindowId = event.window_id;
+        match event.window_event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => {
+                if let Some(sw) = self.windows.get_mut(&window_id) {
+                    sw.a11y_synced_store_gen = sw.session.store_generation();
+                    sw.a11y_bridge.activate();
+                    let update = sw
+                        .session
+                        .build_a11y_full_tree(&mut sw.a11y_bridge, &sw.base_title);
+                    sw.a11y_adapter.update_if_active(|| update);
+                }
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                if let Some(sw) = self.windows.get_mut(&window_id) {
+                    sw.a11y_bridge.deactivate();
+                }
+            }
+            accesskit_winit::WindowEvent::ActionRequested(req) => {
+                let mut reschedule = false;
+                if let Some(sw) = self.windows.get_mut(&window_id) {
+                    if self.window_manager.active_modal_blocker(sw.handle_id).is_some() {
+                        return;
+                    }
+                    let cur_gen = sw.session.store_generation();
+                    if sw.a11y_synced_store_gen != cur_gen {
+                        sw.a11y_synced_store_gen = cur_gen;
+                        sw.a11y_bridge.advance_epoch();
+                        sw.sync_a11y_state(true);
+                        return;
+                    }
+                    if let Some(resolved) = sw.a11y_bridge.translate_action(&req) {
+                        match sw.session.dispatch_a11y_action(resolved) {
+                            Ok(true) => {
+                                let (_, exhausted) = Self::pump_window_async(sw, false);
+                                reschedule = exhausted;
+                                sw.sync_ime_state();
+                                sw.sync_cursor_state();
+                                sw.sync_a11y_state(true);
+                                sw.window.request_redraw();
+                            }
+                            Ok(false) => {}
+                            Err(err) => {
+                                eprintln!("[nve-skia-shell] AccessKit action error: {err}");
+                            }
+                        }
+                    }
+                }
+                if reschedule {
+                    self.host_services.request_frame_wake();
+                }
+            }
+        }
+    }
+}

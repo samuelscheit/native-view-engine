@@ -159,3 +159,12 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **`compute_root_layout` re-runs the root positioning pass for unclaimed `position: fixed` boxes on a full cache hit**
   - **Observed**: `compute/mod.rs` clones the cached root output's `OofCandidates` (`Box<Vec>`) and re-lays out every unclaimed fixed box into fresh `hoisted`/`unclaimed` `Vec`s on every call, even when nothing changed (16 heap allocations/frame for 100 fixed toasts; scales with fixed-box count).
   - **Mitigation**: `packages/core/layout/src/taffy_store/mod.rs` tracks `layout_dirty` (set by every cache invalidation, viewport/root change, measurer swap, `invalidate_all`, reset; cleared only after a completed pass) and skips `compute_root_layout` + the rounding walk on clean frames, returning `false` per the `StoreLayoutEngine::compute_layout` self-gating contract (the single clean-frame gate; `HeadlessBackend::commit` relies on it instead of its own effect scan, which previously already spared it this cost); guarded by `packages/core/layout/tests/taffy_hoisted_zero_alloc.rs` and `taffy_store/clean_frame_tests.rs`. Dirty passes still pay Taffy's per-pass scratch (~241 allocations/frame on the 1k-node `taffy_relayout_1k_hoisted` fixture).
+
+### AccessKit (`accesskit_winit 0.34.2` / `accesskit_unix 0.24.1`)
+
+- **`Adapter::with_event_loop_proxy` panics if the `winit::Window` is already visible**
+  - **Observed**: Constructing `accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, proxy)` on a visible window triggers an immediate `assert!(!window.is_visible())` panic.
+  - **Mitigation**: `hosts/skia-shell/src/window/multi_window.rs` (`build_window_attributes`) creates every OS window with `.with_visible(false)`, attaches `Adapter::with_event_loop_proxy` in `spawn_os_window`, and only then calls `window.set_visible(true)`.
+- **`accesskit_unix 0.24.1` pulls `zbus 5.19` with unmaintained standalone `zvariant`/`zvariant_derive`/`zbus_names` advisories**
+  - **Observed**: `cargo deny check` reports `RUSTSEC-2026-0370`, `RUSTSEC-2026-0371`, and `RUSTSEC-2026-0372` (`zvariant*`/`zbus_names` merged into `zbus 6.0.0`) with no upstream `accesskit_unix` release on `zbus 6` yet.
+  - **Mitigation**: Tracked in `deny.toml` `[advisories].ignore` until `accesskit_unix` upgrades to `zbus 6`.
