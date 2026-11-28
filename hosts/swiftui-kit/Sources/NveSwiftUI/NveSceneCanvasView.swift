@@ -96,8 +96,10 @@ public enum NveSceneRenderer {
         into ctx: inout GraphicsContext
     ) {
         guard let bytes = store.drawList(resource: resource, in: scene), !bytes.isEmpty else { return }
-        _ = bytes.withUnsafeBytes { raw in
-            try? NveDrawListRenderer.draw(raw, into: &ctx, in: rect, cornerRadius: cornerRadius)
+        ctx.drawLayer { layerCtx in
+            _ = bytes.withUnsafeBytes { raw in
+                try? NveDrawListRenderer.draw(raw, into: &layerCtx, in: rect, cornerRadius: cornerRadius)
+            }
         }
     }
 

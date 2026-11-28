@@ -152,6 +152,7 @@ using nve::apple::NodeView;
     NSFont *font = nve::apple::platform_font(
         node.style.font_size, node.style.font_weight, node.style.italic, node.style.font_family);
     if (node.kind == NodeKind::TextInput) {
+      [self.nveHost setTextInputMaxLength:node.semantics.max_length forNodeId:node.node_id];
       NSString *nextVal = nve::apple::nsstring_from_sv(node.text);
       const BOOL hasMarked = nve::apple::is_text_input_composing_ime(field);
       const BOOL shouldWrite = [self.nveHost shouldApplyAppText:nextVal

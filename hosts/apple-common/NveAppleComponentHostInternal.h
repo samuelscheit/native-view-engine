@@ -12,11 +12,17 @@
 
 namespace nve::apple {
 
+struct TextEventSpec {
+  NveTextInputEvent kind;
+  std::string text;
+};
+
 struct AppleTextInputState {
   nve::host::ControlledText controlled;
   bool synced{false};
   bool composing{false};
   bool focused{false};
+  uint32_t max_length{0u};
   std::string last_committed;
   std::string pre_comp;
   std::string comp_text;
@@ -56,6 +62,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSError *)_runtimeError:(NSString *)what status:(NveRuntimeStatus)status;
 - (NSError *)_frame0Error:(NSString *)what status:(NveRuntimeStatus)status;
 - (void)_dispatchTextEvent:(NveTextInputEvent)kind nodeId:(uint32_t)nodeId text:(NSString *)text;
+- (void)_dispatchTextEvents:(const std::vector<nve::apple::TextEventSpec> &)specs nodeId:(uint32_t)nodeId;
 /// Runs `block` with this host on the next main-queue turn, unless the host is gone by then (the
 /// block never retains it). For calls made during reconcile, which must not re-enter the runtime.
 - (void)_deferToNextTurn:(void (^)(NveAppleComponentHost *host))block;

@@ -135,10 +135,12 @@ private struct NveSurfaceBody: View {
         }
         .accessibilityLabel(Text(componentName))
         .onAppear {
+            eventSink.isMounted = true
             attachEventForwarder()
             syncProps(propsToken)
         }
         .onDisappear {
+            eventSink.isMounted = false
             eventSink.update(nil)
             controller.onEvent = nil
         }
@@ -152,10 +154,13 @@ private struct NveSurfaceBody: View {
     }
 
     /// Props are applied after the view update (the runtime publishes a frame synchronously).
+    /// Gated on `eventSink.isMounted` so an async update never re-attaches `onEvent` or pushes
+    /// stale props after `onDisappear`.
     private func syncProps(_ token: NvePropsToken) {
         let active = controller
         let sink = eventSink
         DispatchQueue.main.async { [weak sink] in
+            guard let sink, sink.isMounted else { return }
             active.onEvent = { [weak sink] event in sink?.handler?(event) }
             _ = token.apply(to: active)
         }
@@ -164,6 +169,7 @@ private struct NveSurfaceBody: View {
 
 private final class EventHandlerBox: ObservableObject {
     var handler: ((NveEvent) -> Void)?
+    var isMounted = false
     func update(_ next: ((NveEvent) -> Void)?) { handler = next }
 }
 

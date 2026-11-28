@@ -209,16 +209,38 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
   [self _dispatchBatch:NveEventBatch{&aligned, nullptr, 1u, 0u}];
 }
 
+- (void)_dispatchTextEvents:(const std::vector<nve::apple::TextEventSpec> &)specs nodeId:(uint32_t)nodeId {
+  if (specs.empty()) return;
+  if (_reconciling) {
+    auto copy = specs;
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host _dispatchTextEvents:copy nodeId:nodeId]; }];
+    return;
+  }
+  const nve::host::EventFactory factory{_surfaceId};
+  alignas(NVE_EVENT_ALIGN) NveEvent events[4];
+  std::vector<uint8_t> bytes;
+  uint32_t count = 0u;
+  for (const auto &spec : specs) {
+    if (count >= 4u) break;
+    if (spec.text.size() > std::numeric_limits<uint32_t>::max() - bytes.size()) continue;
+    const auto off = static_cast<uint32_t>(bytes.size());
+    const auto len = static_cast<uint32_t>(spec.text.size());
+    bytes.insert(bytes.end(), reinterpret_cast<const uint8_t *>(spec.text.data()),
+                 reinterpret_cast<const uint8_t *>(spec.text.data()) + len);
+    NveEvent ev = factory.base(NVE_TABLE_TEXT_INPUT, nodeId, static_cast<uint32_t>(spec.kind), NVE_EVENT_FLAG_UTF8_BYTES);
+    ev.bytes = RawEventBytes{off, len};
+    events[count++] = ev;
+  }
+  if (count == 0u) return;
+  [self _dispatchBatch:NveEventBatch{events, bytes.empty() ? nullptr : bytes.data(), count,
+                                     static_cast<uint32_t>(bytes.size())}];
+}
+
 - (void)_dispatchTextEvent:(NveTextInputEvent)kind nodeId:(uint32_t)nodeId text:(NSString *)text {
   const char *utf8 = text.UTF8String ?: "";
-  const size_t size = std::strlen(utf8);
-  if (size > std::numeric_limits<uint32_t>::max()) return;
-  const nve::host::EventFactory factory{_surfaceId};
-  alignas(NVE_EVENT_ALIGN) NveEvent ev =
-      factory.base(NVE_TABLE_TEXT_INPUT, nodeId, static_cast<uint32_t>(kind), NVE_EVENT_FLAG_UTF8_BYTES);
-  const auto len = static_cast<uint32_t>(size);
-  ev.bytes = RawEventBytes{0u, len};
-  [self _dispatchBatch:NveEventBatch{&ev, len != 0u ? reinterpret_cast<const uint8_t *>(utf8) : nullptr, 1u, len}];
+  std::vector<nve::apple::TextEventSpec> one;
+  one.push_back({kind, std::string(utf8)});
+  [self _dispatchTextEvents:one nodeId:nodeId];
 }
 
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {

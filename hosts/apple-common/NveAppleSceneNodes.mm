@@ -93,6 +93,7 @@ NodeView node_view(const NodeData &n, const nve::canvas::CanvasData *canvas) {
       a.secure_text_entry = n.input.secure;
       a.multiline = n.input.multiline;
       a.read_only = n.input.read_only;
+      a.max_length = n.input.max_length;
       a.role = A11yRole::TextBox;
       break;
     case nve::host::NodeKind::Image:

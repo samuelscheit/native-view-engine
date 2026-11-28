@@ -405,7 +405,7 @@ final class NveAppleReviewParityTests: XCTestCase {
         XCTAssertEqual(tv.string, "SNAP"); XCTAssertEqual(tv.selectedRange(), NSRange(location: 3, length: 0))
         m.onDispatchEvents = nil
 
-        // Dismantle / teardown clears delegates and closes active focus + IME.
+        // Dismantle / teardown clears delegates synchronously and defers focus/IME events off view update.
         _ = coord.state.handleFocusChange(true)
         _ = coord.state.handleUserEdit(newText: "SNAPz", hasMarkedText: true, markedText: "z")
         m.dispatched.removeAll()
@@ -413,6 +413,8 @@ final class NveAppleReviewParityTests: XCTestCase {
         NveMacTextInputRepresentable.dismantleNSView(host, coordinator: coord)
         XCTAssertNil(tv.delegate)
         XCTAssertNil(tv.onMarkedTextChanged)
+        XCTAssertTrue(m.dispatched.isEmpty, "teardown must not dispatch synchronously inside SwiftUI view update")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         XCTAssertEqual(m.dispatched.last?.map(\.kind), [.compositionEnd, .blur])
 
         // NSTextField stuck-composition resolved on Return + readOnly submit guard.
@@ -522,17 +524,21 @@ final class NveAppleReviewParityTests: XCTestCase {
         }
         XCTAssertGreaterThan(diffPixels, 5, "maxLines=1 wrapped overflow draws ellipsis distinct from raw clip")
 
-        // Hard-newline overflow maxLines = 1 paints ellipsis after "First" (differs from plain "First").
+        // Hard-newline (LF & CRLF grapheme) overflow maxLines = 1 paints "First…" without drawing "Second".
         let nlSpec = NveTypographySpec(fontFamily: "Menlo", fontSize: 14, maxLines: 1)
         let nlImg = try paintText("First\nSecond", width: 140, height: 24, spec: nlSpec)
+        let crlfImg = try paintText("First\r\nSecond", width: 140, height: 24, spec: nlSpec)
         let plainImg = try paintText("First", width: 140, height: 24, spec: nlSpec)
-        var nlDiff = 0
+        var nlDiff = 0, crlfDiff = 0
         for y in 0..<24 {
             for x in 35..<80 {
                 if rgbaPixel(nlImg, x: x, y: y) != rgbaPixel(plainImg, x: x, y: y) { nlDiff += 1 }
+                if rgbaPixel(crlfImg, x: x, y: y) != rgbaPixel(plainImg, x: x, y: y) { crlfDiff += 1 }
             }
         }
-        XCTAssertGreaterThan(nlDiff, 3, "hard-newline overflow paints ellipsis after first line")
+        XCTAssertGreaterThan(nlDiff, 3, "LF hard-newline overflow paints ellipsis after first line")
+        XCTAssertGreaterThan(crlfDiff, 3, "CRLF grapheme hard-newline overflow paints ellipsis after first line")
+        XCTAssertEqual(countDark(crlfImg, in: CGRect(x: 75, y: 0, width: 65, height: 24)), 0, "CRLF must not bleed Second onto line 1")
 
         // Overline paints visible ink in the top band (y in 0..<4) without clipping off-canvas.
         let plainTop = try paintText("aaaa", width: 80, height: 24, spec: NveTypographySpec(fontFamily: "Menlo", fontSize: 16))
@@ -588,7 +594,7 @@ final class NveAppleReviewParityTests: XCTestCase {
         let cyan = packRgba(20, 220, 220)
         let magenta = packRgba(220, 20, 220)
         let allOps = Data(encodeWords([
-            9,
+            10,
             NveDrawListOpcode.clear.rawValue, white,
             NveDrawListOpcode.fillRect.rawValue, Float(2).bitPattern, Float(2).bitPattern, Float(16).bitPattern, Float(16).bitPattern, red,
             NveDrawListOpcode.fillRoundedRect.rawValue, Float(22).bitPattern, Float(2).bitPattern, Float(16).bitPattern, Float(16).bitPattern, Float(4).bitPattern, green,
@@ -599,6 +605,7 @@ final class NveAppleReviewParityTests: XCTestCase {
             NveDrawListOpcode.strokePolyline.rawValue, Float(8).bitPattern, magenta, 1,
             Float(50).bitPattern, Float(42).bitPattern,
             NveDrawListOpcode.clipRect.rawValue, Float(64).bitPattern, Float(2).bitPattern, Float(10).bitPattern, Float(10).bitPattern,
+            NveDrawListOpcode.fillRect.rawValue, Float(60).bitPattern, Float(0).bitPattern, Float(20).bitPattern, Float(20).bitPattern, red,
             NveDrawListOpcode.restoreClip.rawValue,
         ]))
         let opsView = Canvas { ctx, _ in
@@ -615,6 +622,10 @@ final class NveAppleReviewParityTests: XCTestCase {
         XCTAssertGreaterThan(rgbaPixel(opsCg, x: 16, y: 42).1, 180, "2-pt StrokePolyline painted cyan")
         XCTAssertGreaterThan(rgbaPixel(opsCg, x: 50, y: 42).0, 180, "1-pt StrokePolyline painted magenta dot")
         XCTAssertGreaterThan(rgbaPixel(opsCg, x: 50, y: 42).2, 180, "1-pt StrokePolyline painted magenta dot")
+        XCTAssertGreaterThan(rgbaPixel(opsCg, x: 68, y: 6).0, 200, "FillRect inside ClipRect paints red")
+        XCTAssertLessThan(rgbaPixel(opsCg, x: 68, y: 6).1, 60, "FillRect inside ClipRect paints red")
+        XCTAssertGreaterThan(rgbaPixel(opsCg, x: 61, y: 6).1, 200, "FillRect outside ClipRect stays clipped white")
+        XCTAssertGreaterThan(rgbaPixel(opsCg, x: 76, y: 6).1, 200, "FillRect right of ClipRect stays clipped white")
 
         // 3. Bounded cache eviction in NveSceneStore (> 256 resource IDs).
         var s = SceneBuilder()

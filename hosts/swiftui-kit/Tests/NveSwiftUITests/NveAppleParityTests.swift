@@ -7,6 +7,10 @@ import SwiftUI
 import XCTest
 @testable import NveSwiftUI
 
+#if os(macOS)
+import AppKit
+#endif
+
 private func noApp(_ id: UInt32) -> UnsafeRawPointer? { nil }
 
 private struct SampleParityProps: Equatable, NveDirectEncodable {
@@ -452,4 +456,100 @@ final class NveAppleParityTests: XCTestCase {
         XCTAssertGreaterThan(try countDarkPixels(skip: []), 30, "passive drawTextInput paints when not mounted")
         XCTAssertEqual(try countDarkPixels(skip: [input]), 0, "mounted input skips passive canvas drawTextInput")
     }
+
+    // MARK: 7. Scene-Level Canvas Layer Isolation, Deferred Silent IME Snap-Back & Unmount Race
+
+    @MainActor
+    func testSceneRendererCanvasTransparentClearPreservesVisualBackgroundAndParentScene() throws {
+        var s = SceneBuilder()
+        let root = s.node(rect: CGRect(x: 0, y: 0, width: 80, height: 80))
+        let canvasNode = s.node(parent: root, rect: CGRect(x: 10, y: 10, width: 60, height: 60))
+        s.setChildren(root, [canvasNode])
+        s.visual(root) { SceneBuilder.put(&$0, NveTables.Visual.background, SceneBuilder.rgba(20, 200, 40)) }
+        s.visual(canvasNode) { SceneBuilder.put(&$0, NveTables.Visual.background, SceneBuilder.rgba(240, 220, 20)) }
+        s.sparse(NveCanvasTable.key, words: 2, defaults: [0, 0], canvasNode) {
+            SceneBuilder.put(&$0, NveCanvasTable.drawList, UInt32(19))
+            SceneBuilder.put(&$0, NveCanvasTable.generation, UInt32(1))
+        }
+        m.scene = s
+
+        let blue = packRgba(20, 60, 240)
+        m.resources[19] = encodeDrawListWords([
+            2,
+            NveDrawListOpcode.clear.rawValue, packRgba(0, 0, 0, 0),
+            NveDrawListOpcode.fillRect.rawValue, Float(20).bitPattern, Float(20).bitPattern, Float(20).bitPattern, Float(20).bitPattern, blue,
+        ])
+        m.resourceKinds[19] = NveDrawList.kind.value
+
+        let controller = try NveSurfaceController(surfaceId: 51, getInterface: noApp, runtimeApi: MockRuntime.api)
+        controller.store.sync()
+        let view = Canvas { ctx, _ in NveSceneRenderer.draw(store: controller.store, into: &ctx) }
+            .frame(width: 80, height: 80)
+        let r = ImageRenderer(content: view)
+        r.scale = 1
+        let cg = try XCTUnwrap(r.cgImage)
+
+        // Cleared transparent area inside canvas preserves yellow visual.background (layer isolated!).
+        let clearedBg = pixelAt(cg, x: 15, y: 15)
+        XCTAssertEqual(clearedBg.3, 255, "transparent canvas Clear(0) must not punch a hole through visual.background")
+        XCTAssertGreaterThan(clearedBg.0, 200)
+        XCTAssertGreaterThan(clearedBg.1, 180)
+        XCTAssertLessThan(clearedBg.2, 50)
+        // Blue fillRect at canvas-local (20,20)-(40,40) -> global (30,30)-(50,50) renders cleanly over background.
+        let rectPx = pixelAt(cg, x: 40, y: 40)
+        XCTAssertGreaterThan(rectPx.2, 200)
+        XCTAssertLessThan(rectPx.0, 50)
+        // Parent root outside canvas remains green.
+        let rootPx = pixelAt(cg, x: 4, y: 4)
+        XCTAssertGreaterThan(rootPx.1, 180)
+    }
+
+    #if os(macOS)
+    @MainActor
+    func testDeferredSilentImeSnapBackAndUnmountedSyncPropsRaceGuard() throws {
+        // 1. Silent IME end during update defers dispatch AND snaps back rejected commit via processNativeEdit.
+        var s = SceneBuilder()
+        let root = s.node(rect: CGRect(x: 0, y: 0, width: 200, height: 80))
+        let input = s.node(parent: root, rect: CGRect(x: 0, y: 0, width: 160, height: 40))
+        s.setChildren(root, [input])
+        let val = s.str("hello")
+        s.sparse(NveTables.TextInput.key, words: NveTables.TextInput.words, defaults: NveTables.TextInput.defaults, input) {
+            SceneBuilder.put(&$0, NveTables.TextInput.value, val)
+            SceneBuilder.put(&$0, NveTables.TextInput.multiline, UInt32(1))
+        }
+        m.scene = s
+        let controller = try NveSurfaceController(surfaceId: 52, getInterface: noApp, runtimeApi: MockRuntime.api)
+        controller.store.sync()
+        let desc = try XCTUnwrap(controller.store.textInputs().first)
+        let coord = NveMacTextInputRepresentable.Coordinator(descriptor: desc, controller: controller)
+        let tv = NvePlatformNSTextView(frame: NSRect(x: 0, y: 0, width: 160, height: 40))
+        coord.textView = tv
+        tv.string = "hello"
+        _ = coord.state.shouldApplyAppValue("hello", currentShownText: "hello", hasMarkedText: false)
+        _ = coord.state.handleUserEdit(newText: "helloX", hasMarkedText: true, markedText: "X")
+        tv.string = "helloX" // Native IME silently ended without callback; app still publishes "hello".
+        m.dispatched.removeAll()
+
+        coord.state.deferAppValue("hello")
+        coord.scheduleSilentCompositionReconcile()
+        XCTAssertTrue(m.dispatched.isEmpty, "silent composition reconcile must not dispatch synchronously")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        XCTAssertEqual(m.dispatched.last?.map(\.kind), [.compositionEnd, .textChange])
+        XCTAssertEqual(tv.string, "hello", "rejected silent IME commit snaps back to appValue")
+
+        // 2. Unmounting before queued syncProps runs prevents stale prop push and onEvent restoration.
+        let ctrl2 = try NveSurfaceController(surfaceId: 53, getInterface: noApp, runtimeApi: MockRuntime.api)
+        m.propCounts.removeAll()
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 60), styleMask: [.borderless], backing: .buffered, defer: false)
+        let host = NSHostingView(rootView: NveSurfaceRepresentable(componentName: "Card", props: ["k": 1], controller: ctrl2, onEvent: { _ in }))
+        host.frame = NSRect(x: 0, y: 0, width: 120, height: 60)
+        win.contentView = host
+        host.layoutSubtreeIfNeeded()
+        // Immediately unmount BEFORE main queue drains queued syncProps.
+        win.contentView = nil
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertNil(ctrl2.onEvent, "queued syncProps after onDisappear must not restore controller.onEvent")
+        XCTAssertTrue(m.propCounts.isEmpty, "queued syncProps after onDisappear must not push stale props")
+    }
+    #endif
 }

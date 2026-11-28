@@ -57,7 +57,7 @@ std::string committed_segment(std::string_view before, std::string_view after) {
   size_t prefix = 0u;
   const size_t min_len = std::min(before.size(), after.size());
   while (prefix < min_len && before[prefix] == after[prefix]) ++prefix;
-  while (prefix > 0u && (static_cast<uint8_t>(after[prefix]) & 0xC0u) == 0x80u) --prefix;
+  while (prefix > 0u && prefix < after.size() && (static_cast<uint8_t>(after[prefix]) & 0xC0u) == 0x80u) --prefix;
   size_t suffix = 0u;
   while (suffix < (before.size() - prefix) && suffix < (after.size() - prefix) &&
          before[before.size() - 1u - suffix] == after[after.size() - 1u - suffix]) {
@@ -66,6 +66,28 @@ std::string committed_segment(std::string_view before, std::string_view after) {
   while (suffix > 0u && (static_cast<uint8_t>(after[after.size() - suffix]) & 0xC0u) == 0x80u) --suffix;
   const size_t end = after.size() - suffix;
   return end > prefix ? std::string(after.substr(prefix, end - prefix)) : std::string{};
+}
+
+NSString *clamp_max_length(NSString *text, uint32_t max_len, bool &clamped) {
+  clamped = false;
+  NSString *safe = text ?: @"";
+  if (max_len == 0u || safe.length <= max_len) return safe;
+  __block uint32_t count = 0u;
+  __block NSUInteger end = safe.length;
+  __block bool did_clamp = false;
+  [safe enumerateSubstringsInRange:NSMakeRange(0u, safe.length)
+                           options:NSStringEnumerationByComposedCharacterSequences | NSStringEnumerationSubstringNotRequired
+                        usingBlock:^(__unused NSString *sub, NSRange r, __unused NSRange enc, BOOL *stop) {
+                          if (count == max_len) {
+                            end = r.location;
+                            did_clamp = true;
+                            *stop = YES;
+                            return;
+                          }
+                          ++count;
+                        }];
+  clamped = did_clamp;
+  return did_clamp ? [safe substringToIndex:end] : safe;
 }
 
 }  // namespace
@@ -155,9 +177,18 @@ std::optional<std::string> apply_pair_transport(std::string_view uri, std::strin
 
   const std::string cleaned_rest = strip_transport_query(rest, {});
   if (*canon == "auto") {
+    std::string lower_scheme;
+    lower_scheme.reserve(orig_scheme.size());
+    for (char c : orig_scheme) lower_scheme.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+    // Normalize wire-unsupported aliases (`udp://` -> `quic://`, `tcp://` -> `ws://`) to match `parse_wire_uri`.
+    if (lower_scheme == "udp://") {
+      lower_scheme = "quic://";
+    } else if (lower_scheme == "tcp://") {
+      lower_scheme = "ws://";
+    }
     std::string out;
-    out.reserve(orig_scheme.size() + cleaned_rest.size());
-    for (char c : orig_scheme) out.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+    out.reserve(lower_scheme.size() + cleaned_rest.size());
+    out.append(lower_scheme);
     out.append(cleaned_rest);
     return out;
   }
@@ -203,6 +234,15 @@ std::optional<std::string> apply_pair_transport(std::string_view uri, std::strin
   if (was_focused) [self dispatchFocusOnNodeId:nodeId focused:NO];
 }
 
+- (void)setTextInputMaxLength:(uint32_t)maxLength forNodeId:(uint32_t)nodeId {
+  _textInputs[nodeId].max_length = maxLength;
+}
+
+- (BOOL)isTextInputComposingForNodeId:(uint32_t)nodeId {
+  auto it = _textInputs.find(nodeId);
+  return (it != _textInputs.end() && it->second.composing) ? YES : NO;
+}
+
 - (BOOL)shouldApplyAppText:(NSString *)value
                   toNodeId:(uint32_t)nodeId
                  shownText:(NSString *)shown
@@ -214,18 +254,38 @@ std::optional<std::string> apply_pair_transport(std::string_view uri, std::strin
     return NO;
   }
   if (st.composing) {
+    const std::string shown_str = shown.UTF8String ?: "";
+    const std::string committed = nve::apple::committed_segment(st.pre_comp, shown_str);
     st.composing = false;
     st.comp_text.clear();
     st.pre_comp.clear();
+    std::vector<nve::apple::TextEventSpec> batch;
+    batch.push_back({NVE_TEXT_INPUT_EVENT_COMPOSITION_END, committed});
+    const bool emitted = st.controlled.user_edited(shown_str);
+    if (emitted) {
+      st.last_committed = shown_str;
+      if (_reconciling) st.synced = false;
+      batch.push_back({NVE_TEXT_INPUT_EVENT_CHANGE, shown_str});
+    }
+    [self _dispatchTextEvents:batch nodeId:nodeId];
+    auto it = _textInputs.find(nodeId);
+    if (it == _textInputs.end()) return NO;
+    if (emitted) {
+      it->second.pending_app = val_str;
+      return NO;
+    }
   }
-  st.pending_app.reset();
+  auto it = _textInputs.find(nodeId);
+  if (it == _textInputs.end()) return NO;
+  auto &live = it->second;
+  live.pending_app.reset();
   // Short-circuit unchanged app value before scanning `in_flight_` (`A -> B -> A` echo race).
-  if (st.synced && val_str == st.controlled.app_value()) {
+  if (live.synced && val_str == live.controlled.app_value()) {
     return NO;
   }
-  const bool write = st.controlled.app_published(val_str, shown.UTF8String ?: "");
-  st.synced = true;
-  if (write) st.last_committed = val_str;
+  const bool write = live.controlled.app_published(val_str, shown.UTF8String ?: "");
+  live.synced = true;
+  if (write) live.last_committed = val_str;
   return write ? YES : NO;
 }
 
@@ -236,7 +296,6 @@ std::optional<std::string> apply_pair_transport(std::string_view uri, std::strin
                           writeBack:(void (^)(NSString *nextText))writeBack {
   auto &st = _textInputs[nodeId];
   if (st.controlled.writing()) return;
-  const std::string cur = text.UTF8String ?: "";
   if (hasMarkedText) {
     const std::string preedit = markedText.UTF8String ?: "";
     if (!st.composing) {
@@ -251,22 +310,39 @@ std::optional<std::string> apply_pair_transport(std::string_view uri, std::strin
     return;
   }
 
+  bool clamped = false;
+  NSString *safeText = nve::apple::clamp_max_length(text, st.max_length, clamped);
+  const std::string cur = safeText.UTF8String ?: "";
+  if (clamped && writeBack) {
+    const auto scope = st.controlled.host_write();
+    writeBack(safeText);
+  }
+
+  // Compute CompositionEnd + TextChange BEFORE dispatching and emit atomically in one batch so
+  // synchronous dispatch -> renderFrame -> node destruction can never dangle `st` or fire stale `cur`.
+  std::vector<nve::apple::TextEventSpec> batch;
   if (st.composing) {
     const std::string committed = nve::apple::committed_segment(st.pre_comp, cur);
     st.composing = false;
     st.comp_text.clear();
     st.pre_comp.clear();
-    [self dispatchCompositionEndOnNodeId:nodeId text:nve::apple::nsstring_from_sv(committed)];
+    batch.push_back({NVE_TEXT_INPUT_EVENT_COMPOSITION_END, committed});
   }
-
   const bool emitted = st.controlled.user_edited(cur);
   if (emitted) {
     st.last_committed = cur;
     st.pending_app.reset();
-    [self dispatchTextChangeOnNodeId:nodeId text:text ?: @""];
+    batch.push_back({NVE_TEXT_INPUT_EVENT_CHANGE, cur});
+  }
+  if (!batch.empty()) {
+    [self _dispatchTextEvents:batch nodeId:nodeId];
+  }
+
+  auto it = _textInputs.find(nodeId);
+  if (it == _textInputs.end()) return;
+
+  if (emitted) {
     if (_appAttached && !_pairRequested) {
-      auto it = _textInputs.find(nodeId);
-      if (it == _textInputs.end()) return;
       if (NSString *answer = [self textInputValueForNodeId:nodeId]) {
         const bool snap = it->second.controlled.app_answered(answer.UTF8String ?: "");
         it->second.synced = true;
@@ -280,8 +356,7 @@ std::optional<std::string> apply_pair_transport(std::string_view uri, std::strin
     return;
   }
 
-  auto it = _textInputs.find(nodeId);
-  if (it != _textInputs.end() && it->second.pending_app.has_value()) {
+  if (it->second.pending_app.has_value()) {
     const std::string deferred = std::move(*it->second.pending_app);
     it->second.pending_app.reset();
     if ((!it->second.synced || deferred != it->second.controlled.app_value()) &&
@@ -309,16 +384,25 @@ std::optional<std::string> apply_pair_transport(std::string_view uri, std::strin
 
 - (BOOL)handleTextInputSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text hasMarkedText:(BOOL)hasMarkedText {
   if (hasMarkedText) return NO;
+  const std::string cur = text.UTF8String ?: "";
+  std::vector<nve::apple::TextEventSpec> batch;
   auto it = _textInputs.find(nodeId);
-  if (it != _textInputs.end() && it->second.composing) {
-    const std::string cur = text.UTF8String ?: "";
-    const std::string committed = nve::apple::committed_segment(it->second.pre_comp, cur);
-    it->second.composing = false;
-    it->second.comp_text.clear();
-    it->second.pre_comp.clear();
-    [self dispatchCompositionEndOnNodeId:nodeId text:nve::apple::nsstring_from_sv(committed)];
+  if (it != _textInputs.end()) {
+    if (it->second.composing) {
+      const std::string committed = nve::apple::committed_segment(it->second.pre_comp, cur);
+      it->second.composing = false;
+      it->second.comp_text.clear();
+      it->second.pre_comp.clear();
+      batch.push_back({NVE_TEXT_INPUT_EVENT_COMPOSITION_END, committed});
+    }
+    if (cur != it->second.last_committed && it->second.controlled.user_edited(cur)) {
+      it->second.last_committed = cur;
+      it->second.pending_app.reset();
+      batch.push_back({NVE_TEXT_INPUT_EVENT_CHANGE, cur});
+    }
   }
-  [self dispatchSubmitOnNodeId:nodeId text:text ?: @""];
+  batch.push_back({NVE_TEXT_INPUT_EVENT_SUBMIT, cur});
+  [self _dispatchTextEvents:batch nodeId:nodeId];
   return YES;
 }
 

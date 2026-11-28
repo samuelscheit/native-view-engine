@@ -259,8 +259,10 @@ internal struct NveMacTextInputRepresentable: NSViewRepresentable {
 
         let editor = field.currentEditor() as? NSTextView
         let hasMarked = editor.map { $0.hasMarkedText() || $0.markedRange().length > 0 } ?? false
-        coordinator.reconcileEndedComposition(currentText: field.stringValue, hasMarkedText: hasMarked)
-        if coordinator.state.shouldApplyAppValue(props.value, currentShownText: field.stringValue, hasMarkedText: hasMarked) {
+        if !hasMarked && coordinator.state.isComposing {
+            coordinator.state.deferAppValue(props.value)
+            coordinator.scheduleSilentCompositionReconcile()
+        } else if coordinator.state.shouldApplyAppValue(props.value, currentShownText: field.stringValue, hasMarkedText: hasMarked) {
             coordinator.state.withHostWrite {
                 Coordinator.writePreservingSelection(props.value, to: field, editor: editor)
             }
@@ -282,8 +284,10 @@ internal struct NveMacTextInputRepresentable: NSViewRepresentable {
         tv.setAccessibilityHelp(descriptor.accessibilityHint)
 
         let hasMarked = tv.hasMarkedText() || tv.markedRange().length > 0
-        coordinator.reconcileEndedComposition(currentText: tv.string, hasMarkedText: hasMarked)
-        if coordinator.state.shouldApplyAppValue(props.value, currentShownText: tv.string, hasMarkedText: hasMarked) {
+        if !hasMarked && coordinator.state.isComposing {
+            coordinator.state.deferAppValue(props.value)
+            coordinator.scheduleSilentCompositionReconcile()
+        } else if coordinator.state.shouldApplyAppValue(props.value, currentShownText: tv.string, hasMarkedText: hasMarked) {
             coordinator.state.withHostWrite {
                 Coordinator.writePreservingSelection(props.value, to: tv)
             }
@@ -296,6 +300,7 @@ internal struct NveMacTextInputRepresentable: NSViewRepresentable {
         let state = NveControlledTextState()
         weak var textField: NSTextField?
         weak var textView: NvePlatformNSTextView?
+        private var pendingSilentReconcile = false
 
         init(descriptor: NveTextInputDescriptor, controller: NveSurfaceController) {
             self.descriptor = descriptor
@@ -306,15 +311,36 @@ internal struct NveMacTextInputRepresentable: NSViewRepresentable {
             textField?.delegate = nil
             textView?.delegate = nil
             textView?.onMarkedTextChanged = nil
+            let actions: [NveTextInputAction]
             if state.isFocused {
-                emit(state.handleFocusChange(false))
+                actions = state.handleFocusChange(false)
             } else if state.isComposing {
-                emit(state.reconcileEndedCompositionIfNeeded(currentText: state.dispatched, hasMarkedText: false))
+                actions = state.reconcileEndedCompositionIfNeeded(currentText: state.dispatched, hasMarkedText: false)
+            } else {
+                actions = []
+            }
+            guard !actions.isEmpty else { return }
+            let ctrl = controller
+            let sid = ctrl.surfaceId
+            let nid = descriptor.id
+            let ts = NveEvent.nowUs()
+            DispatchQueue.main.async {
+                ctrl.dispatchEvents(actions.map { $0.toEvent(surfaceId: sid, nodeId: nid, timestampUs: ts) })
             }
         }
 
-        func reconcileEndedComposition(currentText: String, hasMarkedText: Bool) {
-            emit(state.reconcileEndedCompositionIfNeeded(currentText: currentText, hasMarkedText: hasMarkedText))
+        func scheduleSilentCompositionReconcile() {
+            guard !pendingSilentReconcile else { return }
+            pendingSilentReconcile = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pendingSilentReconcile = false
+                if let tv = self.textView {
+                    self.handleTextViewEdit(tv)
+                } else if let field = self.textField {
+                    self.handleTextFieldEdit(field, editor: field.currentEditor() as? NSTextView)
+                }
+            }
         }
 
         static func writePreservingSelection(_ text: String, to field: NSTextField, editor: NSTextView?) {
@@ -361,6 +387,10 @@ internal struct NveMacTextInputRepresentable: NSViewRepresentable {
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
             let editor = (obj.userInfo?["NSFieldEditor"] as? NSTextView) ?? (field.currentEditor() as? NSTextView)
+            handleTextFieldEdit(field, editor: editor)
+        }
+
+        func handleTextFieldEdit(_ field: NSTextField, editor: NSTextView?) {
             let marked = markedText(in: editor)
             state.processNativeEdit(
                 currentText: field.stringValue,

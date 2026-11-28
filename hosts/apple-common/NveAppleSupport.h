@@ -72,6 +72,7 @@ struct NodeSemantics {
   std::string placeholder;
   bool secure_text_entry{false};
   bool multiline{false};
+  uint32_t max_length{0u};
 };
 
 /// Paint style of one node resolved from `nve.visual` + inherited `nve.typography`.

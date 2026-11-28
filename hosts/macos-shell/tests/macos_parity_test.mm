@@ -408,6 +408,10 @@ void test_pair_transport_and_deep_links() {
         std::optional<std::string>{"quic://127.0.0.1:9400/pair?k=1"});
   CHECK(nve::apple::apply_pair_transport("wss://127.0.0.1:9400?transport=wss", "auto") ==
         std::optional<std::string>{"wss://127.0.0.1:9400"});
+  CHECK(nve::apple::apply_pair_transport("udp://127.0.0.1:8091", "auto") ==
+        std::optional<std::string>{"quic://127.0.0.1:8091"});
+  CHECK(nve::apple::apply_pair_transport("TCP://127.0.0.1:8092?transport=ws", "auto") ==
+        std::optional<std::string>{"ws://127.0.0.1:8092"});
   CHECK(!nve::apple::apply_pair_transport("http://127.0.0.1:9400", "ws").has_value());
   CHECK(!nve::apple::apply_pair_transport("ftp://127.0.0.1:9400", "quic").has_value());
   CHECK(!nve::apple::apply_pair_transport("ws://127.0.0.1:9400", "invalid").has_value());
@@ -467,6 +471,130 @@ void test_text_input_parity() {
   CHECK([written isEqualToString:@"reset"]);
 }
 
+struct RecordedImeEvent {
+  uint32_t kind;
+  std::string text;
+};
+
+struct ImeLifecycleApp {
+  static constexpr uint32_t kInput = 2u;
+  static inline std::vector<std::vector<RecordedImeEvent>> batches;
+  static inline bool remove_on_comp_end = false;
+
+  bool dirty = true;
+  bool built = false;
+  bool alive = true;
+  std::string value = "hello";
+  std::vector<uint8_t> frame;
+
+  static const void *get_interface(uint32_t id) {
+    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch};
+    return id == NVE_IFACE_SURFACE ? &kSurface : nullptr;
+  }
+  static NveAppHandle create(uint32_t) { return new ImeLifecycleApp(); }
+  static void destroy(NveAppHandle h) { delete static_cast<ImeLifecycleApp *>(h); }
+
+  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
+    auto *app = static_cast<ImeLifecycleApp *>(h);
+    if (!app->dirty) return NveBufferSlice{nullptr, 0u};
+    app->dirty = false;
+    auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
+    Nve2FrameBuilder b(frame_id);
+    if (!app->built) {
+      app->built = true;
+      b.declare_core_tables().create_nodes({1u, kInput});
+      std::array<uint32_t, NVE_TABLE_TEXT_INPUT_WORDS> row{};
+      std::copy(std::begin(NVE_TABLE_TEXT_INPUT_DEFAULTS), std::end(NVE_TABLE_TEXT_INPUT_DEFAULTS), row.begin());
+      const uint32_t m = set_field(row, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 6u);
+      b.patch(slot(NVE_TABLE_TEXT_INPUT_KEY), kInput, m, row);
+      b.set_string(slot(NVE_TABLE_TEXT_INPUT_KEY), kInput, NVE_TABLE_TEXT_INPUT_VALUE.word, app->value);
+      b.set_children(1u, {kInput});
+    } else if (!app->alive) {
+      b.set_children(1u, {}).remove_nodes({kInput});
+    } else {
+      b.set_string(slot(NVE_TABLE_TEXT_INPUT_KEY), kInput, NVE_TABLE_TEXT_INPUT_VALUE.word, app->value);
+    }
+    app->frame = b.finish();
+    return NveBufferSlice{app->frame.data(), app->frame.size()};
+  }
+
+  static uint32_t dispatch(NveAppHandle h, NveEventBatch batch) {
+    auto *app = static_cast<ImeLifecycleApp *>(h);
+    std::vector<RecordedImeEvent> rec;
+    for (const NveEvent &ev : nve::host::batch_events(batch)) {
+      if (ev.table != NVE_TABLE_TEXT_INPUT) continue;
+      const std::string_view payload =
+          (ev.flags & NVE_EVENT_FLAG_UTF8_BYTES) != 0u && batch.bytes != nullptr &&
+                  static_cast<size_t>(ev.bytes.offset) + ev.bytes.len <= batch.bytes_len
+              ? std::string_view(reinterpret_cast<const char *>(batch.bytes + ev.bytes.offset), ev.bytes.len)
+              : std::string_view{};
+      rec.push_back({ev.event, std::string(payload)});
+      if (ev.event == NVE_TEXT_INPUT_EVENT_COMPOSITION_END && remove_on_comp_end) {
+        app->alive = false;
+        app->dirty = true;
+      } else if (ev.event == NVE_TEXT_INPUT_EVENT_CHANGE && app->alive) {
+        app->value = std::string(payload);
+        app->dirty = true;
+      }
+    }
+    if (!rec.empty()) batches.push_back(std::move(rec));
+    return app->dirty ? 1u : 0u;
+  }
+};
+
+void test_live_attached_app_ime_uaf_prefix_and_max_length() {
+  // 1. Node destroyed synchronously inside CompositionEnd: single atomic [CompositionEnd, TextChange] batch, zero UAF!
+  ImeLifecycleApp::batches.clear();
+  ImeLifecycleApp::remove_on_comp_end = true;
+  RCTNveMacComponentView *v1 = make_view();
+  CHECK([v1 attachNveInterface:&ImeLifecycleApp::get_interface surfaceId:71u]);
+  CHECK([v1 nativeViewForNodeId:ImeLifecycleApp::kInput] != nil);
+
+  __block NSString *wb = nil;
+  [v1.nveHost handleTextInputEditOnNodeId:ImeLifecycleApp::kInput text:@"hellok" hasMarkedText:YES markedText:@"k" writeBack:^(NSString *t) { wb = t; }];
+  ImeLifecycleApp::batches.clear();
+  [v1.nveHost handleTextInputEditOnNodeId:ImeLifecycleApp::kInput text:@"hello!" hasMarkedText:NO markedText:nil writeBack:^(NSString *t) { wb = t; }];
+  CHECK(ImeLifecycleApp::batches.size() == 1u);
+  CHECK(ImeLifecycleApp::batches[0].size() == 2u);
+  CHECK(ImeLifecycleApp::batches[0][0].kind == NVE_TEXT_INPUT_EVENT_COMPOSITION_END && ImeLifecycleApp::batches[0][0].text == "!");
+  CHECK(ImeLifecycleApp::batches[0][1].kind == NVE_TEXT_INPUT_EVENT_CHANGE && ImeLifecycleApp::batches[0][1].text == "hello!");
+  CHECK([v1 nativeViewForNodeId:ImeLifecycleApp::kInput] == nil);  // removed synchronously without UAF
+
+  // 2. Strict non-empty prefix deletion in IME (`pre_comp = "hello"` -> `after = "he"`) + `max_length` + Submit `TextChange` + silent IME end.
+  ImeLifecycleApp::batches.clear();
+  ImeLifecycleApp::remove_on_comp_end = false;
+  RCTNveMacComponentView *v2 = make_view();
+  CHECK([v2 attachNveInterface:&ImeLifecycleApp::get_interface surfaceId:72u]);
+  [v2.nveHost handleTextInputEditOnNodeId:ImeLifecycleApp::kInput text:@"hellox" hasMarkedText:YES markedText:@"x" writeBack:^(NSString *t) { wb = t; }];
+  ImeLifecycleApp::batches.clear();
+  [v2.nveHost handleTextInputEditOnNodeId:ImeLifecycleApp::kInput text:@"he" hasMarkedText:NO markedText:nil writeBack:^(NSString *t) { wb = t; }];
+  CHECK(ImeLifecycleApp::batches.size() == 1u && ImeLifecycleApp::batches[0].size() == 2u);
+  CHECK(ImeLifecycleApp::batches[0][0].kind == NVE_TEXT_INPUT_EVENT_COMPOSITION_END && ImeLifecycleApp::batches[0][0].text.empty());
+  CHECK(ImeLifecycleApp::batches[0][1].kind == NVE_TEXT_INPUT_EVENT_CHANGE && ImeLifecycleApp::batches[0][1].text == "he");
+
+  // `max_length = 6` clamps `"12345678"` -> `"123456"` via writeBack and dispatches clamped value.
+  wb = nil;
+  ImeLifecycleApp::batches.clear();
+  [v2.nveHost handleTextInputEditOnNodeId:ImeLifecycleApp::kInput text:@"12345678" hasMarkedText:NO markedText:nil writeBack:^(NSString *t) { wb = t; }];
+  CHECK([wb isEqualToString:@"123456"]);
+  CHECK(ImeLifecycleApp::batches.size() == 1u && ImeLifecycleApp::batches[0][0].text == "123456");
+
+  // Submit with diverged text after silent IME end dispatches [CompositionEnd, TextChange, Submit] in one batch.
+  [v2.nveHost handleTextInputEditOnNodeId:ImeLifecycleApp::kInput text:@"123456z" hasMarkedText:YES markedText:@"z" writeBack:^(NSString *t) { wb = t; }];
+  ImeLifecycleApp::batches.clear();
+  CHECK([v2.nveHost handleTextInputSubmitOnNodeId:ImeLifecycleApp::kInput text:@"12345z" hasMarkedText:NO]);
+  CHECK(ImeLifecycleApp::batches.size() == 1u && ImeLifecycleApp::batches[0].size() == 3u);
+  CHECK(ImeLifecycleApp::batches[0][0].kind == NVE_TEXT_INPUT_EVENT_COMPOSITION_END);
+  CHECK(ImeLifecycleApp::batches[0][1].kind == NVE_TEXT_INPUT_EVENT_CHANGE && ImeLifecycleApp::batches[0][1].text == "12345z");
+  CHECK(ImeLifecycleApp::batches[0][2].kind == NVE_TEXT_INPUT_EVENT_SUBMIT && ImeLifecycleApp::batches[0][2].text == "12345z");
+
+  // `shouldApplyAppText` with `hasMarkedText == NO` while composing dispatches `CompositionEnd` (never drops silently).
+  [v2.nveHost handleTextInputEditOnNodeId:ImeLifecycleApp::kInput text:@"12345zq" hasMarkedText:YES markedText:@"q" writeBack:^(NSString *t) { wb = t; }];
+  ImeLifecycleApp::batches.clear();
+  (void)[v2.nveHost shouldApplyAppText:@"12345z" toNodeId:ImeLifecycleApp::kInput shownText:@"12345z" hasMarkedText:NO];
+  CHECK(ImeLifecycleApp::batches.size() == 1u && ImeLifecycleApp::batches[0][0].kind == NVE_TEXT_INPUT_EVENT_COMPOSITION_END);
+}
+
 }  // namespace
 
 int main() {
@@ -477,6 +605,7 @@ int main() {
     test_frame0_parity();
     test_pair_transport_and_deep_links();
     test_text_input_parity();
+    test_live_attached_app_ime_uaf_prefix_and_max_length();
     std::printf("macos_parity_test: %s (%d failure(s))\n", g_failures == 0 ? "ok" : "FAILED", g_failures);
   }
   return g_failures == 0 ? 0 : 1;

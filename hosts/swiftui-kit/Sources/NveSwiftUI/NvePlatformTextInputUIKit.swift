@@ -150,8 +150,10 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
         field.accessibilityHint = descriptor.accessibilityHint
 
         let hasMarked = field.markedTextRange != nil
-        coordinator.reconcileEndedComposition(currentText: field.text ?? "", hasMarkedText: hasMarked)
-        if coordinator.state.shouldApplyAppValue(props.value, currentShownText: field.text ?? "", hasMarkedText: hasMarked) {
+        if !hasMarked && coordinator.state.isComposing {
+            coordinator.state.deferAppValue(props.value)
+            coordinator.scheduleSilentCompositionReconcile()
+        } else if coordinator.state.shouldApplyAppValue(props.value, currentShownText: field.text ?? "", hasMarkedText: hasMarked) {
             coordinator.state.withHostWrite {
                 Coordinator.writePreservingSelection(props.value, to: field)
             }
@@ -178,8 +180,10 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
         }
 
         let hasMarked = tv.markedTextRange != nil
-        coordinator.reconcileEndedComposition(currentText: tv.text ?? "", hasMarkedText: hasMarked)
-        if coordinator.state.shouldApplyAppValue(props.value, currentShownText: tv.text ?? "", hasMarkedText: hasMarked) {
+        if !hasMarked && coordinator.state.isComposing {
+            coordinator.state.deferAppValue(props.value)
+            coordinator.scheduleSilentCompositionReconcile()
+        } else if coordinator.state.shouldApplyAppValue(props.value, currentShownText: tv.text ?? "", hasMarkedText: hasMarked) {
             coordinator.state.withHostWrite {
                 Coordinator.writePreservingSelection(props.value, to: tv)
             }
@@ -194,6 +198,7 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
         weak var textField: UITextField?
         weak var textView: UITextView?
         weak var placeholderLabel: UILabel?
+        private var pendingSilentReconcile = false
 
         init(descriptor: NveTextInputDescriptor, controller: NveSurfaceController) {
             self.descriptor = descriptor
@@ -204,15 +209,36 @@ internal struct NveUIKitTextInputRepresentable: UIViewRepresentable {
             textField?.removeTarget(self, action: #selector(onTextFieldEditingChanged(_:)), for: .editingChanged)
             textField?.delegate = nil
             textView?.delegate = nil
+            let actions: [NveTextInputAction]
             if state.isFocused {
-                emit(state.handleFocusChange(false))
+                actions = state.handleFocusChange(false)
             } else if state.isComposing {
-                emit(state.reconcileEndedCompositionIfNeeded(currentText: state.dispatched, hasMarkedText: false))
+                actions = state.reconcileEndedCompositionIfNeeded(currentText: state.dispatched, hasMarkedText: false)
+            } else {
+                actions = []
+            }
+            guard !actions.isEmpty else { return }
+            let ctrl = controller
+            let sid = ctrl.surfaceId
+            let nid = descriptor.id
+            let ts = NveEvent.nowUs()
+            DispatchQueue.main.async {
+                ctrl.dispatchEvents(actions.map { $0.toEvent(surfaceId: sid, nodeId: nid, timestampUs: ts) })
             }
         }
 
-        func reconcileEndedComposition(currentText: String, hasMarkedText: Bool) {
-            emit(state.reconcileEndedCompositionIfNeeded(currentText: currentText, hasMarkedText: hasMarkedText))
+        func scheduleSilentCompositionReconcile() {
+            guard !pendingSilentReconcile else { return }
+            pendingSilentReconcile = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pendingSilentReconcile = false
+                if let tv = self.textView {
+                    self.textViewDidChange(tv)
+                } else if let field = self.textField {
+                    self.onTextFieldEditingChanged(field)
+                }
+            }
         }
 
         static func writePreservingSelection(_ text: String, to field: UITextField) {

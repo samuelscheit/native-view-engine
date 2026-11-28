@@ -185,9 +185,9 @@ public extension NveTypographyEngine {
         let tokenStr = CFAttributedStringCreate(nil, "\u{2026}" as CFString, tokenAttrs as CFDictionary)!
         let tokenLine = CTLineCreateWithAttributedString(tokenStr)
 
-        // If a hard newline caused the overflow on this line, append `…` at the break so even a
-        // short first line visibly truncates before clipping to `maxWidth`.
-        if let brk = tail.firstIndex(where: { $0 == "\n" || $0 == "\r" }) {
+        // If a hard newline (`\n`, `\r`, or Swift CRLF grapheme `\r\n`) caused the overflow on this
+        // line, append `…` at the break so even a short first line visibly truncates.
+        if let brk = tail.firstIndex(where: \.isNewline) {
             let prefix = String(tail[..<brk]) + "\u{2026}"
             let attrPrefix = CFAttributedStringCreate(nil, prefix as CFString, attrs)!
             let candidate = CTLineCreateWithAttributedString(attrPrefix)

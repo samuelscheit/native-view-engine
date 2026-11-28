@@ -67,6 +67,12 @@ public final class NveControlledTextState {
         return body()
     }
 
+    /// Records `value` as pending until a deferred IME reconciliation runs, preventing an
+    /// unchanged `appValue` short-circuit from swallowing a rejected silent IME commit.
+    public func deferAppValue(_ value: String) {
+        pendingAppValue = value
+    }
+
     /// Reconciles an IME composition that ended natively without firing a text-change callback
     /// (e.g. CJK/dead-key commit or cancel whose final string equals the marked text).
     public func reconcileEndedCompositionIfNeeded(

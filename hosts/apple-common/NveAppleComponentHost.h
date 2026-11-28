@@ -88,6 +88,8 @@ extern NSErrorUserInfoKey const NveAppleRuntimeStatusErrorKey;
 - (BOOL)handleTextInputSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text hasMarkedText:(BOOL)hasMarkedText;
 - (void)clearTextInputStateForNodeId:(uint32_t)nodeId;
 - (nullable NSString *)textInputValueForNodeId:(uint32_t)nodeId;
+- (void)setTextInputMaxLength:(uint32_t)maxLength forNodeId:(uint32_t)nodeId;
+- (BOOL)isTextInputComposingForNodeId:(uint32_t)nodeId;
 
 /// Tier-2 hot swap: snapshots app state, attaches the rebuilt dylib, restores state. A failed
 /// reload keeps the running app.

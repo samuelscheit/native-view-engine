@@ -30,6 +30,40 @@ using nve::apple::NodeView;
 }
 @end
 
+@interface NveIosTextView : UITextView
+@property (nonatomic, readonly) UILabel *nvePlaceholderLabel;
+- (void)setNvePlaceholder:(nullable NSString *)placeholder font:(UIFont *)font color:(UIColor *)color;
+- (void)updateNvePlaceholderVisibility;
+@end
+
+@implementation NveIosTextView
+- (instancetype)initWithFrame:(CGRect)frame textContainer:(NSTextContainer *)textContainer {
+  if ((self = [super initWithFrame:frame textContainer:textContainer])) {
+    _nvePlaceholderLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _nvePlaceholderLabel.numberOfLines = 0;
+    _nvePlaceholderLabel.userInteractionEnabled = NO;
+    _nvePlaceholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:_nvePlaceholderLabel];
+    [NSLayoutConstraint activateConstraints:@[
+      [_nvePlaceholderLabel.topAnchor constraintEqualToAnchor:self.topAnchor constant:8.0],
+      [_nvePlaceholderLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:5.0],
+      [_nvePlaceholderLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.frameLayoutGuide.trailingAnchor
+                                                                    constant:-5.0],
+    ]];
+  }
+  return self;
+}
+- (void)setNvePlaceholder:(nullable NSString *)placeholder font:(UIFont *)font color:(UIColor *)color {
+  _nvePlaceholderLabel.text = placeholder;
+  _nvePlaceholderLabel.font = font;
+  _nvePlaceholderLabel.textColor = [color colorWithAlphaComponent:0.45];
+  [self updateNvePlaceholderVisibility];
+}
+- (void)updateNvePlaceholderVisibility {
+  _nvePlaceholderLabel.hidden = (self.text.length > 0u) || (_nvePlaceholderLabel.text.length == 0u);
+}
+@end
+
 @interface RCTNveComponentView () <UITextFieldDelegate, UITextViewDelegate, UIScrollViewDelegate>
 @end
 
@@ -73,7 +107,7 @@ using nve::apple::NodeView;
     }
     case NodeKind::TextInput: {
       if (node.semantics.multiline) {
-        UITextView *tv = [[UITextView alloc] initWithFrame:CGRectZero];
+        NveIosTextView *tv = [[NveIosTextView alloc] initWithFrame:CGRectZero textContainer:nil];
         tv.backgroundColor = UIColor.clearColor;
         tv.delegate = self;
         view = tv;
@@ -149,6 +183,7 @@ using nve::apple::NodeView;
     } else {
       _readOnlyInputs.erase(node.node_id);
     }
+    [self.nveHost setTextInputMaxLength:node.semantics.max_length forNodeId:node.node_id];
     NSString *nextVal = nve::apple::nsstring_from_sv(node.text);
     NSString *shown = [view isKindOfClass:[UITextField class]] ? (((UITextField *)view).text ?: @"")
                                                                : (((UITextView *)view).text ?: @"");
@@ -165,6 +200,11 @@ using nve::apple::NodeView;
       UITextView *tv = (UITextView *)view;
       tv.textColor = color;
       tv.font = font;
+      if ([tv isKindOfClass:[NveIosTextView class]]) {
+        [(NveIosTextView *)tv setNvePlaceholder:nve::apple::nsstring_or_nil_from_sv(node.semantics.placeholder)
+                                           font:font
+                                          color:color];
+      }
     }
   }
 
@@ -266,7 +306,18 @@ using nve::apple::NodeView;
   }
 }
 
+- (void)textViewDidChangeSelection:(UITextView *)textView {
+  if (textView.markedTextRange != nil) return;
+  const auto nodeId = static_cast<uint32_t>(textView.tag);
+  if (nodeId != 0u && [self.nveHost isTextInputComposingForNodeId:nodeId]) {
+    [self textViewDidChange:textView];
+  }
+}
+
 - (void)textViewDidChange:(UITextView *)textView {
+  if ([textView isKindOfClass:[NveIosTextView class]]) {
+    [(NveIosTextView *)textView updateNvePlaceholderVisibility];
+  }
   const auto nodeId = static_cast<uint32_t>(textView.tag);
   if (nodeId == 0u) return;
   UITextRange *marked = textView.markedTextRange;
@@ -277,7 +328,12 @@ using nve::apple::NodeView;
                               hasMarkedText:(marked != nil)
                                  markedText:markedText
                                   writeBack:^(NSString *nextText) {
-                                    if (weakTv != nil) nve::apple::write_text_input_preserving_selection(weakTv, nextText);
+                                    UITextView *strongTv = weakTv;
+                                    if (strongTv == nil) return;
+                                    nve::apple::write_text_input_preserving_selection(strongTv, nextText);
+                                    if ([strongTv isKindOfClass:[NveIosTextView class]]) {
+                                      [(NveIosTextView *)strongTv updateNvePlaceholderVisibility];
+                                    }
                                   }];
 }
 
