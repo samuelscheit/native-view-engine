@@ -78,10 +78,10 @@ public final class Nve{{ m.name }} {
 {%- endif %}
 {%- for f in op.scalars %}
 {%- if f.kind.is_float() %}
-                    final float {{ f.camel }} = f32(buf, pos + {{ f.byte_offset }});
-                    if (!Float.isFinite({{ f.camel }})) return Error.NON_FINITE_FLOAT;
+                    final float _f_{{ f.camel }} = f32(buf, pos + {{ f.byte_offset }});
+                    if (!Float.isFinite(_f_{{ f.camel }})) return Error.NON_FINITE_FLOAT;
 {%- if f.kind.is_non_negative() %}
-                    if ({{ f.camel }} < 0.0f) return Error.NEGATIVE_FLOAT;
+                    if (_f_{{ f.camel }} < 0.0f) return Error.NEGATIVE_FLOAT;
 {%- endif %}
 {%- endif %}
 {%- endfor %}

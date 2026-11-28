@@ -45,12 +45,11 @@ export interface Nve{{ m.name }}Sink {
 {%- endfor %}
 }
 
-export function validate{{ m.name }}(bytes: Uint8Array): Nve{{ m.name }}Error | null {
-  const total = bytes.byteLength;
+function validate{{ m.name }}View(view: DataView): Nve{{ m.name }}Error | null {
+  const total = view.byteLength;
   if (total < NVE_{{ m.screaming }}_HEADER_SIZE) {
     return Nve{{ m.name }}Error.Truncated;
   }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, total);
   const opCount = view.getUint32(0, true);
   if (opCount > NVE_{{ m.screaming }}_{{ m.max_ops_screaming }}) {
     return Nve{{ m.name }}Error.OpCountExceedsLimit;
@@ -76,12 +75,12 @@ export function validate{{ m.name }}(bytes: Uint8Array): Nve{{ m.name }}Error | 
 {%- endif %}
 {%- for f in op.scalars %}
 {%- if f.kind.is_float() %}
-        const {{ f.camel }} = view.getFloat32(pos + {{ f.byte_offset }}, true);
-        if (!Number.isFinite({{ f.camel }})) {
+        const _f_{{ f.camel }} = view.getFloat32(pos + {{ f.byte_offset }}, true);
+        if (!Number.isFinite(_f_{{ f.camel }})) {
           return Nve{{ m.name }}Error.NonFiniteFloat;
         }
 {%- if f.kind.is_non_negative() %}
-        if ({{ f.camel }} < 0) {
+        if (_f_{{ f.camel }} < 0) {
           return Nve{{ m.name }}Error.NegativeFloat;
         }
 {%- endif %}
@@ -123,17 +122,31 @@ export function validate{{ m.name }}(bytes: Uint8Array): Nve{{ m.name }}Error | 
   return pos === total ? null : Nve{{ m.name }}Error.TrailingBytes;
 }
 
+export function validate{{ m.name }}(bytes: Uint8Array): Nve{{ m.name }}Error | null {
+  if (bytes.byteLength < NVE_{{ m.screaming }}_HEADER_SIZE) {
+    return Nve{{ m.name }}Error.Truncated;
+  }
+  return validate{{ m.name }}View(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+}
+
 export function decode{{ m.name }}(bytes: Uint8Array, sink: Nve{{ m.name }}Sink): Nve{{ m.name }}Error | null {
-  const err = validate{{ m.name }}(bytes);
+  if (bytes.byteLength < NVE_{{ m.screaming }}_HEADER_SIZE) {
+    return Nve{{ m.name }}Error.Truncated;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const err = validate{{ m.name }}View(view);
   if (err !== null) {
     return err;
   }
-  streamValidated{{ m.name }}(bytes, sink);
+  streamValidated{{ m.name }}View(view, sink);
   return null;
 }
 
 export function streamValidated{{ m.name }}(bytes: Uint8Array, sink: Nve{{ m.name }}Sink): void {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  streamValidated{{ m.name }}View(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), sink);
+}
+
+function streamValidated{{ m.name }}View(view: DataView, sink: Nve{{ m.name }}Sink): void {
   const opCount = view.getUint32(0, true);
   let pos = NVE_{{ m.screaming }}_HEADER_SIZE;
 {%- if let Some(scope) = m.scope %}
