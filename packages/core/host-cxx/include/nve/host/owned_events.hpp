@@ -99,6 +99,14 @@ struct AlignedAllocator {
 [[nodiscard]] constexpr bool event_bubbles(const NveEvent& ev) noexcept {
   return (ev.flags & NVE_EVENT_FLAG_NO_BUBBLE) == 0u;
 }
+/// Bitmask of currently pressed pointer buttons packed into `payload[3]` low 16 bits.
+[[nodiscard]] constexpr uint16_t event_pointer_buttons(const NveEvent& ev) noexcept {
+  return static_cast<uint16_t>(ev.payload[3] & 0xFFFFu);
+}
+/// Pointer device kind (`0 = mouse`, `1 = pen`, `2 = touch`) packed into `payload[3]` bits 16..=23.
+[[nodiscard]] constexpr uint8_t event_pointer_type(const NveEvent& ev) noexcept {
+  return static_cast<uint8_t>((ev.payload[3] >> 16u) & 0xFFu);
+}
 
 [[nodiscard]] inline std::span<const NveEvent> batch_events(NveEventBatch batch) noexcept {
   return batch.events != nullptr && batch.event_count != 0u
@@ -337,9 +345,10 @@ class OwnedEvents {
   }
 
   bool push_pointer(uint32_t surface, uint32_t node, uint64_t ts, NveInteractionEvent kind, float x, float y,
-                    uint32_t pointer_id = 0u, uint32_t flags = 0u) {
+                    uint32_t pointer_id = 0u, uint32_t flags = 0u, uint16_t buttons = 0u, uint8_t pointer_type = 0u) {
+    const uint32_t p3 = static_cast<uint32_t>(buttons) | (static_cast<uint32_t>(pointer_type) << 16u);
     return push_interaction(surface, node, ts, kind, flags & ~kEventInternalFramingMask,
-                            {std::bit_cast<uint32_t>(x), std::bit_cast<uint32_t>(y), pointer_id, 0u, 0u, 0u});
+                            {std::bit_cast<uint32_t>(x), std::bit_cast<uint32_t>(y), pointer_id, p3, 0u, 0u});
   }
 
   bool push_wheel(uint32_t surface, uint32_t node, uint64_t ts, float dx, float dy, uint32_t flags = 0u) {

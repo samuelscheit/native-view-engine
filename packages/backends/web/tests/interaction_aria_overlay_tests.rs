@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use nve_backend_web::overlay_anchor::{needs_js_anchor_fallback, write_overlay_anchor_css};
 use nve_backend_web::{
-    visit_accessibility_attrs, WebBackend, ALL_ACCESSIBILITY_ATTRS, NVE_BASE_RESET_CSS,
+    visit_accessibility_attrs, WebBackend, WebEventState, ALL_ACCESSIBILITY_ATTRS,
+    NVE_BASE_RESET_CSS,
 };
 use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, NodeId, NodeStore};
@@ -184,4 +185,101 @@ fn base_reset_css_pointer_capture_and_css_anchor_positioning_parity() {
     assert!(needs_js_anchor_fallback(true, true, OverlayFlags::OPEN | OverlayFlags::AUTO_SIZE));
     assert!(!needs_js_anchor_fallback(false, true, OverlayFlags::NONE));
     let _ = slider;
+}
+
+#[test]
+fn disabled_capture_is_excluded_and_accessibility_escaping_clearing_and_root_match() {
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (disabled_slider, escaped_node) = {
+        let mut tx = store.tx();
+        // Root Accessibility must be suppressed in SSR (aligned with live DOM).
+        tx.edit::<Accessibility>(NodeId::ROOT)
+            .role(Some(AriaRole::Navigation))
+            .label("root-nav");
+
+        let disabled_slider = tx.create();
+        tx.edit::<Interaction>(disabled_slider)
+            .capture_mode(PointerCaptureMode::OnPrimaryDown)
+            .disabled(true);
+
+        let escaped = tx.create();
+        tx.edit::<Accessibility>(escaped)
+            .role(Some(AriaRole::Button))
+            .label("Save & \"Close\" <now>")
+            .hint("Press <Enter> & \"confirm\"")
+            .value_text("1 < 2 & \"3\"");
+        tx.set_resource(
+            escaped,
+            Accessibility::RELATIONS,
+            Some(AriaRelations {
+                controls: "p&1\"<x>".into(),
+                labelled_by: String::new(),
+                described_by: String::new(),
+                active_descendant: String::new(),
+            }),
+        );
+
+        tx.set_children(NodeId::ROOT, &[disabled_slider, escaped]);
+        tx.commit_into(&mut changes);
+        (disabled_slider, escaped)
+    };
+
+    // 1. Disabled capture target excluded from WebEventState and SSR `data-nve-capture`.
+    let mut ev_state = WebEventState::new();
+    ev_state.sync(&store, &changes, |_, _, _| {});
+    assert!(!ev_state.has_capture_primary(disabled_slider));
+    assert_eq!(ev_state.capture_count, 0);
+
+    let mut web = WebBackend::new();
+    web.commit(&store, &changes).unwrap();
+    let ssr = web.renderer().render_ssr(&store, NodeId::ROOT);
+    assert!(
+        !ssr.contains("data-nve-capture=\"primary\""),
+        "disabled capture target must not emit data-nve-capture: {ssr}"
+    );
+    assert!(
+        !ssr.contains("role=\"navigation\"") && !ssr.contains("aria-label=\"root-nav\""),
+        "NodeId::ROOT Accessibility must stay suppressed in SSR to match live DOM: {ssr}"
+    );
+
+    // 2. HTML escaping in Accessibility SSR attributes.
+    assert!(
+        ssr.contains("aria-label=\"Save &amp; &quot;Close&quot; &lt;now&gt;\""),
+        "expected escaped aria-label in SSR: {ssr}"
+    );
+    assert!(
+        ssr.contains("aria-description=\"Press &lt;Enter&gt; &amp; &quot;confirm&quot;\""),
+        "expected escaped aria-description in SSR: {ssr}"
+    );
+    assert!(
+        ssr.contains("aria-valuetext=\"1 &lt; 2 &amp; &quot;3&quot;\""),
+        "expected escaped aria-valuetext in SSR: {ssr}"
+    );
+    assert!(
+        ssr.contains("aria-controls=\"p&amp;1&quot;&lt;x&gt;\""),
+        "expected escaped aria-controls in SSR: {ssr}"
+    );
+
+    // 3. Re-enabling slider turns capture on; detaching Accessibility clears all emitted attrs.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Interaction>(disabled_slider).disabled(false);
+        tx.detach::<Accessibility>(escaped_node);
+        tx.commit_into(&mut changes);
+    }
+    ev_state.sync(&store, &changes, |_, _, _| {});
+    assert!(ev_state.has_capture_primary(disabled_slider));
+    assert_eq!(ev_state.capture_count, 1);
+
+    let mut remaining = Vec::new();
+    visit_accessibility_attrs(&store, escaped_node, |k, _| remaining.push(k));
+    assert!(remaining.is_empty(), "detached Accessibility must emit 0 attrs");
+
+    web.commit(&store, &changes).unwrap();
+    let ssr2 = web.renderer().render_ssr(&store, NodeId::ROOT);
+    assert!(ssr2.contains("data-nve-capture=\"primary\""));
+    assert!(!ssr2.contains("aria-label=\"Save"));
+    assert!(!ssr2.contains("aria-controls="));
 }

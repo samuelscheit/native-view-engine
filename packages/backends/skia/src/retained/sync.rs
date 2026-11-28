@@ -4,9 +4,9 @@
 
 use std::collections::HashSet;
 
-use nve_layout::{is_overlay_closed, StoreLayoutEngine};
+use nve_layout::{is_overlay_closed, is_subtree_closed_overlay, StoreLayoutEngine};
 use nve_store::{ChangeSet, NodeId, NveTable, ResourceId, TableStorage};
-use nve_tables::tables::{Image, Interaction, TextInput, Visual};
+use nve_tables::tables::{Image, Interaction, TextInput, Transform, Visual};
 
 use super::chunks::CHUNK_LIVE;
 use super::emit::{compute_inherit_hash, SceneSyncEnv};
@@ -101,7 +101,7 @@ impl CompositorScene {
     ) -> bool {
         for &id in &self.dirty_nodes_scratch {
             let now_absent = is_subtree_display_none_effective(env.store, env.layout_tree, id)
-                || is_overlay_closed(env.store, id)
+                || is_subtree_closed_overlay(env.store, id)
                 || env.layout_tree.layout_of(id).is_none();
             let prev_absent = self.live_chunk_idx(id).is_none();
             if now_absent != prev_absent {
@@ -144,6 +144,9 @@ impl CompositorScene {
             if let Some(pcidx) = self.live_chunk_idx(pid) {
                 sort_ordered_children_in_place(pcidx, &self.chunks, &mut self.arenas.ordered_children);
             }
+        }
+        if !self.props.top_layer_chunks.is_empty() && changes.table(Transform::slot()).is_some() {
+            self.refresh_top_layer_overlays(env);
         }
     }
 

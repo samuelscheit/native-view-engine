@@ -2,17 +2,22 @@
 //! hand-built `NodeStore` frame as SSR HTML into `#<mount_id>` and hydrates it in place.
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 
-use nve_abi::{EventSet, InteractionEvent};
+use nve_abi::{EventBatchBuf, EventSet, InteractionEvent, ScrollEvent};
 use nve_backend_web::WebBackend;
 use nve_canvas::Canvas;
 use nve_tables::tables::{
-    register_core_tables, Accessibility, AriaRole, BoxShadow, BoxShadows, DebugId, FlexWrap,
-    Interaction, Layout, Link, TextAlign, TextContent, TextInput, Typography, Visual,
+    register_core_tables, Accessibility, AriaRole, BoxShadow, BoxShadows, DebugId, FlexDirection,
+    FlexWrap, Interaction, Layout, Link, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement,
+    PointerCaptureMode, Position, Scroll, TextAlign, TextContent, TextInput, Typography, Visual,
 };
 use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
-use nve_web_html::{register_web_html_tables, DataAttrList, HtmlDataAttrs};
+use nve_web_html::{
+    register_web_html_tables, DataAttrList, HtmlDataAttrs, HtmlSemantics, PopoverMode,
+    SemanticElement,
+};
 use wasm_bindgen::prelude::*;
 
 fn new_probe_store() -> NodeStore {
@@ -332,4 +337,269 @@ pub fn host_services_take_clipboard_result(surface_id: u32, request_id: u64) -> 
 )]
 pub fn panic_probe(message: &str) {
     panic!("{message}");
+}
+
+/// Stateful live-DOM probe exercising Track 2A web fixes inside Chromium CDP:
+/// post-flush `requested_scroll_seq` (incl. `1 -> 0 -> 1`), `Overlay`-driven `<dialog>`/`:modal`
+/// and `[popover]`/`:popover-open`, `OverlayAnchorFallbackManager` inline cleanup + stale
+/// `anchor-name` stripping, disabled capture exclusion, and mid-drag captured node removal.
+#[wasm_bindgen]
+pub struct Track2aProbe {
+    web: WebBackend,
+    store: NodeStore,
+    changes: ChangeSet,
+    scroller: NodeId,
+    dialog: NodeId,
+    popover: NodeId,
+    anchor: NodeId,
+    anchored_ov: NodeId,
+    disabled_cap: NodeId,
+    live_cap: NodeId,
+}
+
+#[wasm_bindgen]
+impl Track2aProbe {
+    #[wasm_bindgen(constructor)]
+    pub fn new(mount_id: &str) -> Result<Self, JsValue> {
+        let mut web = new_probe_web(WebBackend::mount_into(mount_probe_container(mount_id)?));
+        let mut store = new_probe_store();
+        let mut changes = ChangeSet::default();
+        let (scroller, dialog, popover, anchor, anchored_ov, disabled_cap, live_cap) = {
+            let mut tx = store.tx();
+            let root = NodeId::ROOT;
+            let scroller = NodeId::new(2, 0);
+            let sc_child = NodeId::new(3, 0);
+            let dialog = NodeId::new(4, 0);
+            let popover = NodeId::new(5, 0);
+            let anchor = NodeId::new(6, 0);
+            let anchored_ov = NodeId::new(7, 0);
+            let disabled_cap = NodeId::new(8, 0);
+            let live_cap = NodeId::new(9, 0);
+            for id in [
+                root,
+                scroller,
+                sc_child,
+                dialog,
+                popover,
+                anchor,
+                anchored_ov,
+                disabled_cap,
+                live_cap,
+            ] {
+                let _ = tx.create_at(id);
+            }
+
+            tx.edit::<Layout>(scroller)
+                .flex_direction(FlexDirection::Column)
+                .width(Length::points(200.0))
+                .height(Length::points(100.0));
+            tx.edit::<DebugId>(scroller).test_id("t2a-scroller");
+            tx.edit::<Scroll>(scroller)
+                .requested_scroll_y(Some(140.0))
+                .requested_scroll_seq(1)
+                .listeners(EventSet::one(ScrollEvent::Scroll));
+            tx.edit::<Layout>(sc_child)
+                .flex_shrink(0.0)
+                .width(Length::points(200.0))
+                .height(Length::points(600.0));
+
+            tx.edit::<DebugId>(dialog).test_id("t2a-dialog");
+            tx.edit::<HtmlSemantics>(dialog)
+                .element(Some(SemanticElement::Dialog))
+                .open(false);
+            tx.edit::<Overlay>(dialog)
+                .layer(OverlayLayer::Modal)
+                .options(OverlayFlags::NONE);
+
+            tx.edit::<DebugId>(popover).test_id("t2a-popover");
+            tx.edit::<HtmlSemantics>(popover)
+                .popover(Some(PopoverMode::Manual))
+                .open(false);
+            tx.edit::<Overlay>(popover)
+                .layer(OverlayLayer::Popover)
+                .options(OverlayFlags::NONE);
+
+            tx.edit::<Layout>(anchor)
+                .position(Position::Absolute)
+                .inset_left(Length::points(20.0))
+                .inset_top(Length::points(20.0))
+                .width(Length::points(80.0))
+                .height(Length::points(30.0));
+            tx.edit::<DebugId>(anchor)
+                .id("t2a-anchor")
+                .test_id("t2a-anchor");
+
+            tx.edit::<Layout>(anchored_ov)
+                .position(Position::Fixed)
+                .width(Length::points(120.0))
+                .height(Length::points(60.0));
+            tx.edit::<DebugId>(anchored_ov).test_id("t2a-anchored-ov");
+            tx.edit::<Overlay>(anchored_ov)
+                .layer(OverlayLayer::Popover)
+                .anchor_id("t2a-anchor")
+                .placement(OverlayPlacement::BottomStart)
+                .offset_px(6.0)
+                .options(
+                    OverlayFlags::OPEN
+                        | OverlayFlags::AUTO_SIZE
+                        | OverlayFlags::FLIP
+                        | OverlayFlags::SHIFT,
+                );
+
+            tx.edit::<Layout>(disabled_cap)
+                .position(Position::Fixed)
+                .inset_left(Length::points(20.0))
+                .inset_top(Length::points(160.0))
+                .width(Length::points(80.0))
+                .height(Length::points(40.0));
+            tx.edit::<DebugId>(disabled_cap).test_id("t2a-disabled-cap");
+            tx.edit::<Interaction>(disabled_cap)
+                .capture_mode(PointerCaptureMode::OnPrimaryDown)
+                .disabled(true)
+                .listeners(
+                    EventSet::one(InteractionEvent::PointerDown)
+                        .with(InteractionEvent::PointerMove)
+                        .with(InteractionEvent::PointerUp),
+                );
+
+            tx.edit::<Layout>(live_cap)
+                .position(Position::Fixed)
+                .inset_left(Length::points(140.0))
+                .inset_top(Length::points(160.0))
+                .width(Length::points(80.0))
+                .height(Length::points(40.0));
+            tx.edit::<DebugId>(live_cap).test_id("t2a-live-cap");
+            tx.edit::<Interaction>(live_cap)
+                .capture_mode(PointerCaptureMode::OnPrimaryDown)
+                .listeners(
+                    EventSet::one(InteractionEvent::PointerDown)
+                        .with(InteractionEvent::PointerMove)
+                        .with(InteractionEvent::PointerUp)
+                        .with(InteractionEvent::PointerCancel),
+                );
+
+            tx.set_children(scroller, &[sc_child]);
+            tx.set_children(
+                root,
+                &[
+                    scroller,
+                    dialog,
+                    popover,
+                    anchor,
+                    anchored_ov,
+                    disabled_cap,
+                    live_cap,
+                ],
+            );
+            tx.commit_into(&mut changes);
+            (
+                scroller,
+                dialog,
+                popover,
+                anchor,
+                anchored_ov,
+                disabled_cap,
+                live_cap,
+            )
+        };
+
+        web.commit(&store, &changes)
+            .map_err(|e| JsValue::from_str(&format!("track2a frame 1 failed: {e}")))?;
+        Ok(Self {
+            web,
+            store,
+            changes,
+            scroller,
+            dialog,
+            popover,
+            anchor,
+            anchored_ov,
+            disabled_cap,
+            live_cap,
+        })
+    }
+
+    /// Opens `<dialog>` and `[popover]` strictly via `Overlay::options` (zero `HtmlSemantics`
+    /// writes) and resets `requested_scroll_seq` to `0`.
+    pub fn step_open_overlays_and_reset_scroll_zero(&mut self) -> Result<(), JsValue> {
+        {
+            let mut tx = self.store.tx();
+            tx.edit::<Overlay>(self.dialog).options(OverlayFlags::OPEN);
+            tx.edit::<Overlay>(self.popover).options(OverlayFlags::OPEN);
+            tx.edit::<Scroll>(self.scroller).requested_scroll_seq(0);
+            tx.commit_into(&mut self.changes);
+        }
+        self.web
+            .commit(&self.store, &self.changes)
+            .map_err(|e| JsValue::from_str(&format!("track2a step 2 failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Re-triggers `requested_scroll_seq = 1` (`1 -> 0 -> 1`), closes `<dialog>` & `[popover]`
+    /// via `Overlay::options = NONE`, and detaches `Overlay` from `anchored_ov`.
+    pub fn step_scroll_seq_one_and_close_overlays(&mut self) -> Result<(), JsValue> {
+        {
+            let mut tx = self.store.tx();
+            tx.edit::<Scroll>(self.scroller)
+                .requested_scroll_y(Some(140.0))
+                .requested_scroll_seq(1);
+            tx.edit::<Overlay>(self.dialog).options(OverlayFlags::NONE);
+            tx.edit::<Overlay>(self.popover).options(OverlayFlags::NONE);
+            tx.detach::<Overlay>(self.anchored_ov);
+            tx.commit_into(&mut self.changes);
+        }
+        self.web
+            .commit(&self.store, &self.changes)
+            .map_err(|e| JsValue::from_str(&format!("track2a step 3 failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Removes `live_cap` from the live DOM mid-drag to verify `prune_pointer_state`.
+    pub fn step_remove_live_cap(&mut self) -> Result<(), JsValue> {
+        {
+            let mut tx = self.store.tx();
+            tx.set_children(
+                NodeId::ROOT,
+                &[
+                    self.scroller,
+                    self.dialog,
+                    self.popover,
+                    self.anchor,
+                    self.anchored_ov,
+                    self.disabled_cap,
+                ],
+            );
+            tx.remove(self.live_cap);
+            tx.commit_into(&mut self.changes);
+        }
+        self.web
+            .commit(&self.store, &self.changes)
+            .map_err(|e| JsValue::from_str(&format!("track2a step 4 failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Drains queued events as `"<node_index>:<kind>:cap=<0|1>;"` tokens (zero `serde_json`).
+    pub fn drain_events_summary(&mut self) -> String {
+        let mut batch = EventBatchBuf::new();
+        self.web.drain_events(&mut batch);
+        let mut out = String::new();
+        for ev in batch.as_validated().iter() {
+            let kind = match ev.interaction() {
+                Some(InteractionEvent::PointerDown) => "down",
+                Some(InteractionEvent::PointerMove) => "move",
+                Some(InteractionEvent::PointerUp) => "up",
+                Some(InteractionEvent::PointerCancel) => "cancel",
+                Some(InteractionEvent::Press) => "press",
+                _ => continue,
+            };
+            let _ = write!(
+                out,
+                "{}:{}:cap={};",
+                ev.node().index(),
+                kind,
+                u8::from(ev.is_capture())
+            );
+        }
+        out
+    }
 }

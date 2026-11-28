@@ -1927,6 +1927,182 @@ async function main() {
     }
     console.log("    PASS hostile CommandBuffers on the live DOM (root kept, moves/cycles/repeats, reserved keys, CSS-only props)");
 
+    // 7d2. Track 2A live Chrome DOM behavioral probe:
+    //      - P0#1 + P1#6: post-flush requested_scroll_seq on Frame 1 mount & 1 -> 0 -> 1 reset
+    //      - P0#2: Overlay-only open/close driving real <dialog>:modal and [popover]:popover-open
+    //      - P0#3 + P1#7-web: OverlayAnchorFallbackManager inline style cleanup + anchor-name strip
+    //      - P0#5: disabled capture exclusion + live CDP pointer capture pruned on mid-drag removal
+    const t2aSetup = await evalJs(
+      cdp,
+      `(() => {
+        const host = document.createElement('div');
+        host.id = 'nve-track2a-probe';
+        host.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#fff;';
+        document.body.appendChild(host);
+        const probe = new window.__nveWasmMod.Track2aProbe('nve-track2a-probe');
+        window.__nveTrack2aProbe = probe;
+        window.__nveTrack2aHost = host;
+        const by = (tid) => host.querySelector('[data-testid="' + tid + '"]');
+        const sc = by('t2a-scroller');
+        const dlg = by('t2a-dialog');
+        const pop = by('t2a-popover');
+        const anc = by('t2a-anchor');
+        const ov = by('t2a-anchored-ov');
+        const dcap = by('t2a-disabled-cap');
+        const lcap = by('t2a-live-cap');
+        const supportsAnchor = CSS.supports('anchor-name', '--a') && CSS.supports('position-area', 'bottom center');
+        const f1 = {
+          scrollTop1: sc?.scrollTop ?? -1,
+          dlgModal1: dlg?.matches(':modal') ?? null,
+          popOpen1: pop?.matches(':popover-open') ?? null,
+          ovLeft1: ov?.style.getPropertyValue('left') || '',
+          ovTop1: ov?.style.getPropertyValue('top') || '',
+          ovPosArea1: ov?.style.getPropertyValue('position-area') || '',
+          anchorName1: supportsAnchor ? getComputedStyle(anc).getPropertyValue('anchor-name') : '--nve-a-t2a-anchor',
+          disabledCapAttr: dcap?.getAttribute('data-nve-capture'),
+        };
+        probe.step_open_overlays_and_reset_scroll_zero();
+        const f2 = {
+          dlgModal2: dlg?.matches(':modal') ?? null,
+          popOpen2: pop?.matches(':popover-open') ?? null,
+        };
+        if (sc) sc.scrollTop = 0;
+        const scrollTopReset = sc?.scrollTop ?? -1;
+        probe.step_scroll_seq_one_and_close_overlays();
+        const leakedProps = ['position', 'position-area', 'margin', 'left', 'top', 'max-width', 'max-height']
+          .filter((p) => (ov?.style.getPropertyValue(p) || '') !== '');
+        const f3 = {
+          scrollTopReset,
+          scrollTop3: sc?.scrollTop ?? -1,
+          dlgOpen3: dlg?.open ?? null,
+          dlgModal3: dlg?.matches(':modal') ?? null,
+          popOpen3: pop?.matches(':popover-open') ?? null,
+          leakedProps,
+          anchorName3: supportsAnchor ? getComputedStyle(anc).getPropertyValue('anchor-name') : 'none',
+        };
+        const dRect = dcap.getBoundingClientRect();
+        const lRect = lcap.getBoundingClientRect();
+        probe.drain_events_summary();
+        return {
+          f1,
+          f2,
+          f3,
+          dCenter: { x: dRect.left + dRect.width / 2, y: dRect.top + dRect.height / 2 },
+          lCenter: { x: lRect.left + lRect.width / 2, y: lRect.top + lRect.height / 2 },
+        };
+      })()`
+    );
+
+    // Real Chromium pointer input on disabled capture target: must NOT capture!
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: t2aSetup.dCenter.x,
+      y: t2aSetup.dCenter.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    const dDownEv = await evalJs(cdp, `window.__nveTrack2aProbe.drain_events_summary()`);
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: 340,
+      y: 340,
+      buttons: 1,
+    });
+    const dMoveEv = await evalJs(cdp, `window.__nveTrack2aProbe.drain_events_summary()`);
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: 340,
+      y: 340,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    await evalJs(cdp, `window.__nveTrack2aProbe.drain_events_summary()`);
+
+    // Real Chromium pointer input on enabled capture target + mid-drag DOM removal!
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: t2aSetup.lCenter.x,
+      y: t2aSetup.lCenter.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    const lDownEv = await evalJs(cdp, `window.__nveTrack2aProbe.drain_events_summary()`);
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: 360,
+      y: 360,
+      buttons: 1,
+    });
+    const lMoveEv = await evalJs(cdp, `window.__nveTrack2aProbe.drain_events_summary()`);
+    await evalJs(cdp, `window.__nveTrack2aProbe.step_remove_live_cap()`);
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: 380,
+      y: 380,
+      buttons: 1,
+    });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: 380,
+      y: 380,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    const lAfterRemoveEv = await evalJs(
+      cdp,
+      `(() => {
+        const summary = window.__nveTrack2aProbe.drain_events_summary();
+        window.__nveTrack2aProbe.free();
+        delete window.__nveTrack2aProbe;
+        window.__nveTrack2aHost.remove();
+        delete window.__nveTrack2aHost;
+        return summary;
+      })()`
+    );
+
+    if (
+      t2aSetup.f1.scrollTop1 < 100 ||
+      t2aSetup.f1.dlgModal1 !== false ||
+      t2aSetup.f1.popOpen1 !== false ||
+      !t2aSetup.f1.ovLeft1 ||
+      !t2aSetup.f1.ovTop1 ||
+      t2aSetup.f1.ovPosArea1 !== "none" ||
+      !t2aSetup.f1.anchorName1.includes("--nve-a-t2a-anchor") ||
+      t2aSetup.f1.disabledCapAttr !== null ||
+      t2aSetup.f2.dlgModal2 !== true ||
+      t2aSetup.f2.popOpen2 !== true ||
+      t2aSetup.f3.scrollTopReset !== 0 ||
+      t2aSetup.f3.scrollTop3 < 100 ||
+      t2aSetup.f3.dlgOpen3 !== false ||
+      t2aSetup.f3.dlgModal3 !== false ||
+      t2aSetup.f3.popOpen3 !== false ||
+      t2aSetup.f3.leakedProps.length !== 0 ||
+      t2aSetup.f3.anchorName3.includes("--nve-a-t2a-anchor") ||
+      dDownEv.includes("cap=1") ||
+      dMoveEv.includes("8:") ||
+      !lDownEv.includes("9:down:cap=1;") ||
+      !lMoveEv.includes("9:move:cap=1;") ||
+      lAfterRemoveEv.includes("9:")
+    ) {
+      throw new Error(
+        `Track 2A live DOM probe failed: ${JSON.stringify({
+          t2aSetup,
+          dDownEv,
+          dMoveEv,
+          lDownEv,
+          lMoveEv,
+          lAfterRemoveEv,
+        })}`
+      );
+    }
+    console.log(
+      `    PASS Track 2A live Chrome DOM probe (post-flush scrollTop=${t2aSetup.f1.scrollTop1}->0->${t2aSetup.f3.scrollTop3}, Overlay :modal & :popover-open, fallback inline strip, anchor-name strip, disabled/mid-drag capture hardened)`
+    );
+
     // =========================================================================
     // 8. Generic Web SSG (Cold Visit) + 0ms Instant Snapshot & State Restore (Returning Visit)
     // =========================================================================
@@ -2296,10 +2472,12 @@ async function main() {
           "Kitchen Sink returning-user 0ms instant snapshot painted Count: 3 with .wasm blocked",
           () => {
             const app = document.getElementById("app");
+            const status = document.getElementById("nve-status");
             return (
               app?.dataset.nveRestored === "1" &&
               window.__nveWasmMod === undefined &&
-              (app?.innerText || "").includes("Count: 3")
+              (app?.innerText || "").includes("Count: 3") &&
+              status?.textContent === "Snapshot (offline)"
             );
           }
         );

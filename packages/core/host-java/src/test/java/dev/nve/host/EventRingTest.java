@@ -80,6 +80,7 @@ final class EventRingTest {
         c.eq(r.code(8), "MediaTrackPrevious", "split code");
         c.eq(r.payloadU32(8, 0), 177, "split keyCode");
         c.that(r.event(9) == NveAbi.INTERACTION_EVENT_POINTER_DOWN && r.payloadU32(9, 2) == 2
+                && r.pointerButtons(9) == 0 && r.pointerType(9) == 0
                 && (r.flags(9) & NveAbi.EVENT_FLAG_CAPTURE) != 0, "pointer");
         c.that(r.event(10) == NveAbi.INTERACTION_EVENT_WHEEL && r.payloadF32(10, 1) == -12.5f
                 && (r.flags(10) & NveAbi.EVENT_FLAG_MOD_CTRL) != 0, "wheel");
@@ -93,6 +94,13 @@ final class EventRingTest {
         c.eq(w.length(), expected.length + EventRingWriter.EVENT_SIZE, "null table payload adds only 64 bytes");
         r.attach(w.buffer(), w.length());
         c.that(r.bytesOffset(13) == 0 && r.bytesLen(13) == 0 && r.flags(13) == 0, "internal framing flags stripped & empty bytes = (0,0)");
+        // Pointer buttons + pointerType packed into payload[3] round-trip.
+        w.reset().pointer(NveAbi.INTERACTION_EVENT_POINTER_MOVE, node(8), 24L, 12.5f, 34.5f, 7, 5, 2,
+                NveAbi.EVENT_FLAG_CAPTURE | EventRingWriter.pointerButtonFlag(2));
+        r.attach(w.buffer(), w.length());
+        c.that(r.count() == 1 && r.event(0) == NveAbi.INTERACTION_EVENT_POINTER_MOVE
+                && r.payloadU32(0, 2) == 7 && r.pointerButtons(0) == 5 && r.pointerType(0) == 2,
+                "pointer buttons & pointerType payload[3] round-trip");
         w.reset();
         c.that(w.count() == 0 && w.arenaLength() == 0 && w.length() == EventRingWriter.HEADER_SIZE, "reset");
         r.attach(w.buffer(), w.length());

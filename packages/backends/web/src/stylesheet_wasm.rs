@@ -104,6 +104,14 @@ impl StyleSheetCache {
         self.adopted_mounted = false;
         self.fallback_mounted = false;
     }
+    /// Returns `true` when any compiled CSS rules are queued and not yet flushed to the DOM.
+    #[inline]
+    pub(crate) fn has_pending_rules(&self) -> bool {
+        !self.pending_structural.is_empty()
+            || !self.pending_media.is_empty()
+            || self.pending_state.iter().any(|tier| !tier.is_empty())
+    }
+
     /// Flushes all pending compiled CSS rules into live browser stylesheets in cascade order.
     pub fn flush_to_dom(&mut self, doc: &web_sys::Document) {
         if !self.adopted_mounted && !self.fallback_mounted {
@@ -113,6 +121,9 @@ impl StyleSheetCache {
                 self.fallback_mounted = true;
                 self.mount_fallback_base(doc);
             }
+        }
+        if !self.has_pending_rules() {
+            return;
         }
 
         let structural = std::mem::take(&mut self.pending_structural);

@@ -197,13 +197,15 @@ pub struct WebBackend {
     #[cfg(target_arch = "wasm32")]
     pub(crate) retagged_scratch: Vec<NodeId>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) last_requested_scroll_seq: Vec<u32>,
+    pub(crate) last_requested_scroll_seq: Vec<(NodeId, u32)>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) pending_scroll_sync: Vec<NodeId>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) programmatic_scroll_guard: Rc<RefCell<HashMap<NodeId, (i32, i32)>>>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) overlay_anchors: overlay_anchor::OverlayAnchorFallbackManager,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) overlay_anchor_targets: HashMap<NodeId, NodeId>,
 }
 
 impl Default for WebBackend {
@@ -262,6 +264,8 @@ impl WebBackend {
             programmatic_scroll_guard: Rc::new(RefCell::new(HashMap::default())),
             #[cfg(target_arch = "wasm32")]
             overlay_anchors: overlay_anchor::OverlayAnchorFallbackManager::default(),
+            #[cfg(target_arch = "wasm32")]
+            overlay_anchor_targets: HashMap::default(),
         }
     }
 

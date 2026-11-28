@@ -10,20 +10,22 @@ use nve_tables::tables::TextContent;
 
 use crate::{HeadlessBackend, HeadlessMutation, MAX_TREE_DEPTH};
 
-impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
-    fn name(&self) -> &'static str {
-        "headless"
-    }
-
-    fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
-        self.surface_id = surface_id;
-        self.scene.set_viewport(viewport);
-    }
-
-    fn commit(
+impl<L: StoreLayoutEngine> HeadlessBackend<L> {
+    /// Commits layout and change tracking without reconciling top-layer overlays (used by
+    /// `SkiaBackend`, which reconciles scroll offsets first and then reconciles overlays once).
+    pub fn commit_without_overlays(
         &mut self,
         store: &NodeStore,
         changes: &ChangeSet,
+    ) -> Result<BackendApplyStats, BackendError> {
+        self.commit_inner(store, changes, false)
+    }
+
+    fn commit_inner(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+        reconcile_overlays: bool,
     ) -> Result<BackendApplyStats, BackendError> {
         let t0 = Instant::now();
         if self.track_mutations {
@@ -67,7 +69,11 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
         }
 
         let t_layout = Instant::now();
-        let laid_out = self.scene.commit(store, changes);
+        let laid_out = if reconcile_overlays {
+            self.scene.commit(store, changes)
+        } else {
+            self.scene.commit_without_overlays(store, changes)
+        };
         let layout_us = t_layout.elapsed().as_micros() as u64;
 
         let t_diff = Instant::now();
@@ -115,6 +121,25 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
             diff_us,
             mount_us: 0,
         })
+    }
+}
+
+impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
+    fn name(&self) -> &'static str {
+        "headless"
+    }
+
+    fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
+        self.surface_id = surface_id;
+        self.scene.set_viewport(viewport);
+    }
+
+    fn commit(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+    ) -> Result<BackendApplyStats, BackendError> {
+        self.commit_inner(store, changes, true)
     }
 
     fn drain_events(&mut self, out: &mut EventBatchBuf) {

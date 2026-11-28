@@ -199,8 +199,16 @@ public final class EventRingWriter {
 
     /** Pointer event ({@code NveAbi.INTERACTION_EVENT_POINTER_*}). */
     public EventRingWriter pointer(int interactionEvent, int nodeId, long timestampUs, float x, float y, int pointerId, int flags) {
+        return pointer(interactionEvent, nodeId, timestampUs, x, y, pointerId, 0, 0, flags);
+    }
+
+    /** Pointer event with pressed-button bitmask ({@code payload[3]} low 16 bits) and pointer type ({@code 0=mouse, 1=pen, 2=touch}). */
+    public EventRingWriter pointer(
+            int interactionEvent, int nodeId, long timestampUs, float x, float y,
+            int pointerId, int buttons, int pointerType, int flags) {
+        final int p3 = (buttons & 0xFFFF) | ((pointerType & 0xFF) << 16);
         return writeEvent(TABLE_INTERACTION, interactionEvent, nodeId, timestampUs, flags & ~INTERNAL_FRAMING_MASK,
-                Float.floatToRawIntBits(x), Float.floatToRawIntBits(y), pointerId, 0, 0, 0, 0, 0);
+                Float.floatToRawIntBits(x), Float.floatToRawIntBits(y), pointerId, p3, 0, 0, 0, 0);
     }
 
     public EventRingWriter wheel(int nodeId, long timestampUs, float deltaX, float deltaY, int flags) {

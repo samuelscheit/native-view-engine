@@ -46,6 +46,7 @@ impl WebBackend {
         self.pending_scroll_sync.clear();
         self.programmatic_scroll_guard.borrow_mut().clear();
         self.overlay_anchors.clear();
+        self.overlay_anchor_targets.clear();
         if let Some(ref mut delegator) = self.delegated_events {
             delegator.clear_pointer_state();
         }
@@ -64,7 +65,16 @@ impl WebBackend {
                 .refresh(self.renderer.registry(), &mount_root, &sinks);
         }
 
-        // 1. Notify plugins BEFORE removing destroyed DOM elements so `remove_node` sees `live_element: Some(el)`.
+        // 1. Prune removed/invalidated pointer capture & hover state, notify plugins BEFORE
+        //    removing destroyed DOM elements so `remove_node` sees `live_element: Some(el)`.
+        if let Some(ref mut delegator) = self.delegated_events {
+            let invalidated = delegator.prune_pointer_state(store, &self.event_state.borrow());
+            if let Some((pid, cap_id)) = invalidated
+                && let Some(cap_el) = self.live_elements.get(&cap_id)
+            {
+                let _ = cap_el.release_pointer_capture(pid);
+            }
+        }
         self.renderer
             .remove_plugins(changes, Some(&self.live_elements));
         for &id in &changes.removed {
@@ -231,30 +241,21 @@ impl WebBackend {
             }
         }
 
-        // 6. Imperative state needing connected elements (`showModal()`, popovers, anchored
-        //    overlays, and deferred `requested_scroll_seq` sync after children mount).
-        self.renderer.sync_connected_plugins(store, &self.live_elements);
-        if let Some(tc) = changes.table(Overlay::slot()) {
-            // Ensure anchor elements whose `Overlay` attached on a later frame receive `anchor-name`.
-            if let Some(TableStorage { owners, row_count, .. }) = store.table_storage(DebugId::slot()) {
-                for &oid in &tc.nodes {
-                    if let Some(ov) = store.try_row::<Overlay>(oid) {
-                        let aid = ov.anchor_id();
-                        if !aid.is_empty() {
-                            for &did in owners.iter().take(row_count) {
-                                if !did.is_null()
-                                    && store.is_live(did)
-                                    && store.try_row::<DebugId>(did).is_some_and(|d| d.id() == aid)
-                                    && let Some(ael) = self.live_elements.get(&did).cloned()
-                                {
-                                    self.sync_full_element(store, did, &ael);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // 6. Flush compiled CSS rules BEFORE Step-6 measurements (`getBoundingClientRect`),
+        //    `showModal()`/`showPopover()`, and `scrollLeft`/`scrollTop` writes so newly mounted
+        //    classes (dimensions, overflow, anchor-name) are active before any layout read.
+        self.stylesheet.flush_to_dom(&doc);
+
+        // 7. Reconcile overlay anchor-name ownership (O(M + D), stripping stale `anchor-name`
+        //    on detach/remove/retarget), re-flushing only if anchor re-sync generated new rules.
+        self.reconcile_overlay_anchor_targets(store, changes);
+        if self.stylesheet.has_pending_rules() {
+            self.stylesheet.flush_to_dom(&doc);
         }
+
+        // 8. Imperative state needing connected styled elements (`showModal()`, popovers,
+        //    anchored overlay fallback positioning, and deferred `requested_scroll_seq` sync).
+        self.renderer.sync_connected_plugins(store, &self.live_elements);
         self.overlay_anchors.reposition_all();
         let pending_scroll = std::mem::take(&mut self.pending_scroll_sync);
         for id in pending_scroll {
@@ -265,10 +266,113 @@ impl WebBackend {
                 self.sync_requested_scroll(store, id, &el, false);
             }
         }
-
-        // 7. Flush newly compiled CSS rules into adoptedStyleSheets / <style>.
-        self.stylesheet.flush_to_dom(&doc);
         plugin_muts
+    }
+
+    fn reconcile_overlay_anchor_targets(&mut self, store: &NodeStore, changes: &ChangeSet) {
+        let ov_tc = changes.table(Overlay::slot());
+        let dbg_changed = changes.table(DebugId::slot()).is_some();
+        let has_overlays = store
+            .table_storage(Overlay::slot())
+            .is_some_and(|s| s.row_count > 0);
+        if ov_tc.is_none()
+            && !(dbg_changed && has_overlays)
+            && (self.overlay_anchor_targets.is_empty() || changes.removed.is_empty())
+        {
+            return;
+        }
+        let mut to_resync: Vec<NodeId> = Vec::new();
+        for &id in &changes.removed {
+            if let Some(prev) = self.overlay_anchor_targets.remove(&id) {
+                to_resync.push(prev);
+            }
+        }
+        if let Some(tc) = ov_tc {
+            for &id in &tc.detached {
+                if let Some(prev) = self.overlay_anchor_targets.remove(&id) {
+                    to_resync.push(prev);
+                }
+            }
+        }
+
+        let need_lookup = has_overlays
+            && (dbg_changed
+                || ov_tc.is_some_and(|tc| {
+                    tc.nodes.iter().any(|&oid| {
+                        store
+                            .try_row::<Overlay>(oid)
+                            .is_some_and(|ov| !ov.anchor_id().is_empty())
+                            || self.overlay_anchor_targets.contains_key(&oid)
+                    })
+                }));
+        if need_lookup {
+            let mut by_id: nve_abi::hash::HashMap<&str, NodeId> = nve_abi::hash::HashMap::default();
+            if let Some(TableStorage {
+                owners, row_count, ..
+            }) = store.table_storage(DebugId::slot())
+            {
+                for &did in owners.iter().take(row_count) {
+                    if !did.is_null()
+                        && store.is_live(did)
+                        && let Some(d) = store.try_row::<DebugId>(did)
+                        && !d.id().is_empty()
+                    {
+                        by_id.entry(d.id()).or_insert(did);
+                    }
+                }
+            }
+            let mut sync_overlay = |oid: NodeId| {
+                let new_anchor = store
+                    .try_row::<Overlay>(oid)
+                    .map(|ov| ov.anchor_id())
+                    .filter(|s| !s.is_empty())
+                    .and_then(|aid| by_id.get(aid).copied());
+                let prev_anchor = self.overlay_anchor_targets.get(&oid).copied();
+                if prev_anchor != new_anchor {
+                    if let Some(pa) = prev_anchor {
+                        to_resync.push(pa);
+                    }
+                    if let Some(na) = new_anchor {
+                        self.overlay_anchor_targets.insert(oid, na);
+                        if !self.created_scratch.contains(&na) {
+                            to_resync.push(na);
+                        }
+                    } else {
+                        self.overlay_anchor_targets.remove(&oid);
+                    }
+                }
+            };
+            if dbg_changed {
+                if let Some(TableStorage {
+                    owners, row_count, ..
+                }) = store.table_storage(Overlay::slot())
+                {
+                    for &oid in owners.iter().take(row_count) {
+                        if !oid.is_null() && store.is_live(oid) {
+                            sync_overlay(oid);
+                        }
+                    }
+                }
+            } else if let Some(tc) = ov_tc {
+                for &oid in &tc.nodes {
+                    if store.is_live(oid) {
+                        sync_overlay(oid);
+                    }
+                }
+            }
+        }
+
+        if !to_resync.is_empty() {
+            to_resync.sort_unstable();
+            to_resync.dedup();
+            for aid in to_resync {
+                if store.is_live(aid)
+                    && let Some(ael) = self.live_elements.get(&aid).cloned()
+                {
+                    self.sync_full_element(store, aid, &ael);
+                }
+            }
+        }
     }
 
     /// Swaps `id`'s live element for `fresh` (a tag change). The retagged node itself is
@@ -450,7 +554,7 @@ impl WebBackend {
             } else {
                 let _ = el.remove_attribute("tabindex");
             }
-            if inter.capture_mode() == PointerCaptureMode::OnPrimaryDown {
+            if !inter.disabled() && inter.capture_mode() == PointerCaptureMode::OnPrimaryDown {
                 let _ = el.set_attribute("data-nve-capture", "primary");
             } else {
                 let _ = el.remove_attribute("data-nve-capture");

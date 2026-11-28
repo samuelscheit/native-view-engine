@@ -94,6 +94,8 @@ test('EventBatchBuilder + NVEV v2 wire round-trip (inline/split keys, custom, ra
     22.0,
     3,
     eventFlagsWithPointerButton(NVE_EVENT_FLAG_CAPTURE, 2),
+    5,
+    2,
   );
   b.pushWheel(surface, node, new Key64(100, 0), -3.0, 12.0, NVE_EVENT_FLAG_MOD_ALT);
   b.pushCustom(surface, node, tsBig, 'analytics.click', Uint8Array.of(1, 2, 3, 4));
@@ -165,6 +167,8 @@ test('EventBatchBuilder + NVEV v2 wire round-trip (inline/split keys, custom, ra
     const e12 = view.get(12);
     assert.equal(e12.pointerId, 3);
     assert.equal(e12.pointerButton, 2);
+    assert.equal(e12.pointerButtons, 5);
+    assert.equal(e12.pointerType, 2);
     assert.ok(e12.isCapture);
 
     const e13 = view.get(13);

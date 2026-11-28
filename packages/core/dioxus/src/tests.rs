@@ -524,10 +524,11 @@ fn pointer_event_data_cancel_capture_fixed_and_controlled_scroll_seq() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use nve_abi::{EventFlags, InteractionEvent, NVE_POINTER_TYPE_MOUSE};
+    use crate::prelude::PointerId;
+    use nve_abi::{EventFlags, InteractionEvent, NVE_POINTER_TYPE_PEN};
     use nve_tables::tables::{Interaction, Layout, PointerCaptureMode, Position, Scroll};
 
-    type PointerLog = Vec<(u32, u8, u16, bool, bool)>;
+    type PointerLog = Vec<(PointerId, u8, u16, u8, bool, bool)>;
 
     #[derive(Clone)]
     struct Rec(Rc<RefCell<PointerLog>>);
@@ -556,9 +557,10 @@ fn pointer_event_data_cancel_capture_fixed_and_controlled_scroll_seq() {
                     onpointermove: move |e: PointerEvent| {
                         let d = e.data();
                         on_move.borrow_mut().push((
-                            d.pointer_id.0,
+                            d.pointer_id,
                             d.button,
                             d.buttons,
+                            d.pointer_type,
                             d.captured,
                             d.shift,
                         ));
@@ -566,9 +568,10 @@ fn pointer_event_data_cancel_capture_fixed_and_controlled_scroll_seq() {
                     onpointercancel: move |e: PointerEvent| {
                         let d = e.data();
                         on_cancel.borrow_mut().push((
-                            d.pointer_id.0,
+                            d.pointer_id,
                             d.button,
                             d.buttons,
+                            d.pointer_type,
                             d.captured,
                             d.ctrl,
                         ));
@@ -609,7 +612,7 @@ fn pointer_event_data_cancel_capture_fixed_and_controlled_scroll_seq() {
         20.0,
         7,
         1,
-        NVE_POINTER_TYPE_MOUSE,
+        NVE_POINTER_TYPE_PEN,
         EventFlags::CAPTURE.union(EventFlags::NO_BUBBLE).union(EventFlags::MOD_SHIFT),
     );
     evs.push_pointer_cancel(
@@ -624,6 +627,9 @@ fn pointer_event_data_cancel_capture_fixed_and_controlled_scroll_seq() {
     assert!(surface.dispatch_events(evs.as_validated()));
     assert_eq!(
         rec.0.borrow().as_slice(),
-        &[(7, 0, 1, true, true), (7, 0, 0, true, false)]
+        &[
+            (PointerId(7), 0, 1, NVE_POINTER_TYPE_PEN, true, true),
+            (PointerId(7), 0, 0, 0, true, false),
+        ]
     );
 }

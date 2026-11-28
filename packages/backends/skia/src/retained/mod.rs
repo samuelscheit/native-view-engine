@@ -422,21 +422,54 @@ impl CompositorScene {
                 stf.sticky_y = sty;
             }
         }
+        self.refresh_top_layer_overlays(env);
+        self.stats.last_dirty_kind = Some(SceneDirtyKind::CompositeOnly);
+        self.stats.scroll_fast_paths += 1;
+        true
+    }
+
+    /// Updates top-layer overlay positions after scroll or `CompositeOnly` transforms, and re-emits
+    /// any overlay chunk whose `AUTO_SIZE` bounds (`width`/`height`) changed.
+    pub(super) fn refresh_top_layer_overlays<L: StoreLayoutEngine>(
+        &mut self,
+        env: &SceneSyncEnv<'_, L>,
+    ) {
+        if self.props.top_layer_chunks.is_empty() {
+            return;
+        }
+        let mut resized = false;
         for i in 0..self.props.top_layer_chunks.len() {
             let tcidx = self.props.top_layer_chunks[i];
-            if let Some(meta) = self.chunks.get(tcidx.index())
-                && meta.is_live()
-                && let Some(ro) = env.layout_tree.scene().resolved_overlay(meta.node_id)
-                && let Some(base) = env.layout_tree.layout_of(meta.node_id)
+            let Some(node_id) = self
+                .chunks
+                .get(tcidx.index())
+                .filter(|m| m.is_live())
+                .map(|m| m.node_id)
+            else {
+                continue;
+            };
+            if let Some(ro) = env.layout_tree.scene().resolved_overlay(node_id)
+                && let Some(base) = env.layout_tree.layout_of(node_id)
             {
                 let tf = &mut self.props.transforms[tcidx.index()];
                 tf.sticky_x = ro.origin_x - base.x;
                 tf.sticky_y = ro.origin_y - base.y;
+                if tf.width.to_bits() != ro.width.to_bits()
+                    || tf.height.to_bits() != ro.height.to_bits()
+                {
+                    tf.width = ro.width;
+                    tf.height = ro.height;
+                    if !resized {
+                        self.begin_dirty_queue();
+                        resized = true;
+                    }
+                    self.enqueue_dirty(node_id);
+                }
             }
         }
-        self.stats.last_dirty_kind = Some(SceneDirtyKind::CompositeOnly);
-        self.stats.scroll_fast_paths += 1;
-        true
+        if resized {
+            self.reemit_dirty_nodes_with_inheritance(env);
+        }
     }
 
     /// O(dirty) 120 Hz property update for opacity/transform animations (zero op emission, 0 alloc).
@@ -462,6 +495,7 @@ impl CompositorScene {
             );
             self.props.transforms[cidx.index()].set_transform(eff_tf);
         }
+        self.refresh_top_layer_overlays(env);
         self.stats.last_dirty_kind = Some(SceneDirtyKind::CompositeOnly);
         self.stats.composite_fast_paths += 1;
     }

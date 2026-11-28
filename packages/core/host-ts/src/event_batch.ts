@@ -167,6 +167,8 @@ export class EventView {
   get width(): number { return this.payloadF32(2); }
   get height(): number { return this.payloadF32(3); }
   get pointerId(): number { return this.payloadU32(2); }
+  get pointerButtons(): number { return this.payloadU32(3) & 0xffff; }
+  get pointerType(): number { return (this.payloadU32(3) >>> 16) & 0xff; }
   get keyCode(): number { return this.payloadU32(0); }
 
   get meta(): boolean { return (this.flags & NVE_EVENT_FLAG_MOD_META) !== 0; }
@@ -413,8 +415,12 @@ export class EventBatchBuilder {
   pushKeyUp(surface: number, node: number, timestamp: Key64, key: string, code: string, flags: number, keyCode: number): void {
     this.pushKey(surface, node, timestamp, NVE_INTERACTION_EVENT.KEY_UP, key, code, flags, keyCode);
   }
-  pushPointer(surface: number, node: number, timestamp: Key64, event: NveInteractionEvent, x: number, y: number, pointerId: number, flags: number): void {
-    this.pushTableEvent(NVE_TABLE_INTERACTION, surface, node, timestamp, event, flags, [f32ToBits(x), f32ToBits(y), pointerId >>> 0, 0, 0, 0]);
+  pushPointer(
+    surface: number, node: number, timestamp: Key64, event: NveInteractionEvent,
+    x: number, y: number, pointerId: number, flags: number, buttons = 0, pointerType = 0,
+  ): void {
+    const p3 = ((buttons & 0xffff) | ((pointerType & 0xff) << 16)) >>> 0;
+    this.pushTableEvent(NVE_TABLE_INTERACTION, surface, node, timestamp, event, flags, [f32ToBits(x), f32ToBits(y), pointerId >>> 0, p3, 0, 0]);
   }
   pushWheel(surface: number, node: number, timestamp: Key64, deltaX: number, deltaY: number, flags: number): void {
     this.pushTableEvent(NVE_TABLE_INTERACTION, surface, node, timestamp, NVE_INTERACTION_EVENT.WHEEL, flags, [f32ToBits(deltaX), f32ToBits(deltaY), 0, 0, 0, 0]);

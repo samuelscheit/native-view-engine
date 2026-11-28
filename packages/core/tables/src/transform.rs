@@ -255,3 +255,27 @@ pub fn affine_concat(outer: &[f32; 6], inner: &[f32; 6]) -> [f32; 6] {
         outer[1] * inner[4] + outer[3] * inner[5] + outer[5],
     ]
 }
+
+/// Maps axis-aligned rectangle `(x0, y0, x1, y1)` through 2D affine matrix `m` and returns the
+/// axis-aligned bounding box `(min_x, min_y, max_x, max_y)` of its 4 transformed corners.
+#[inline]
+pub fn affine_map_aabb(m: &[f32; 6], x0: f32, y0: f32, x1: f32, y1: f32) -> (f32, f32, f32, f32) {
+    let corners = [
+        affine_map_point(m, x0, y0),
+        affine_map_point(m, x1, y0),
+        affine_map_point(m, x1, y1),
+        affine_map_point(m, x0, y1),
+    ];
+    let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+    let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for (cx, cy) in corners {
+        if !cx.is_finite() || !cy.is_finite() {
+            return (x0, y0, x1, y1);
+        }
+        min_x = min_x.min(cx);
+        min_y = min_y.min(cy);
+        max_x = max_x.max(cx);
+        max_y = max_y.max(cy);
+    }
+    (min_x, min_y, max_x, max_y)
+}

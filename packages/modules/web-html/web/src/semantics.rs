@@ -3,7 +3,7 @@
 
 use nve_backend_web::html::write_attr as push_attr;
 use nve_backend_web::{WebSystemCommitCtx, WebTableSystem};
-use nve_tables::tables::Accessibility;
+use nve_tables::tables::{Accessibility, Overlay, OverlayFlags};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 use nve_web_html::HtmlSemantics;
 
@@ -35,7 +35,21 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         let Some(row) = store.try_row::<HtmlSemantics>(node) else {
             return;
         };
-        if row.open() {
+        let is_dialog = self.tag_name(store, node) == Some("dialog");
+        let overlay_open = store
+            .try_row::<Overlay>(node)
+            .map(|ov| ov.options().contains(OverlayFlags::OPEN));
+        let effective_open = if is_dialog {
+            overlay_open.unwrap_or(row.open())
+        } else {
+            row.open()
+        };
+        let effective_data_nve_open = if !is_dialog && row.popover().is_some() {
+            overlay_open.unwrap_or(row.data_nve_open())
+        } else {
+            row.data_nve_open()
+        };
+        if effective_open {
             out.push_str(" open");
         }
         if let Some(cb) = row.closed_by() {
@@ -47,14 +61,15 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         if let Some(pa) = row.popover_action() {
             push_attr("popovertargetaction", pa.as_html_attr(), out);
         }
-        if row.data_nve_open() {
+        if effective_data_nve_open {
             push_attr("data-nve-open", "true", out);
         }
     }
 
-    /// `Accessibility::modal` decides `showModal()` vs `show()`: a modal-only edit re-syncs.
+    /// `Accessibility::modal` decides `showModal()` vs `show()`, and `Overlay` drives top-layer
+    /// open/modal state: editing or detaching either table re-syncs `HtmlSemantics`.
     fn watches_slot(&self, slot: TableSlot) -> bool {
-        slot == Accessibility::slot()
+        slot == Accessibility::slot() || slot == Overlay::slot()
     }
 
     fn commit_node(
@@ -71,6 +86,9 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         // the attribute would bypass the top layer (no `:modal`, no backdrop, no inert), and a
         // stale mirrored `open` (e.g. from a retagged `<details open>`) must never be replayed.
         let is_dialog = ctx.resolved_tag(store, node) == "dialog";
+        let overlay_open = store
+            .try_row::<Overlay>(node)
+            .map(|ov| ov.options().contains(OverlayFlags::OPEN));
         if is_dialog {
             ctx.forget_attr(node, "open");
         } else if row.open() {
@@ -93,7 +111,12 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         } else {
             ctx.remove_attr(node, "popovertargetaction");
         }
-        if row.data_nve_open() {
+        let effective_data_nve_open = if !is_dialog && row.popover().is_some() {
+            overlay_open.unwrap_or(row.data_nve_open())
+        } else {
+            row.data_nve_open()
+        };
+        if effective_data_nve_open {
             ctx.set_attr(node, "data-nve-open", "true");
         } else {
             ctx.remove_attr(node, "data-nve-open");

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use nve_abi::{EventBatchBuf, InteractionEvent, NodeId, TextInputEvent, TimestampUs};
 use nve_backend_skia::FocusModality;
-use nve_layout::is_overlay_closed;
+use nve_layout::is_subtree_closed_overlay;
 use nve_store::NodeStore;
 use nve_tables::tables::{is_subtree_display_none, InputKind, Interaction, TextInput};
 
@@ -21,20 +21,6 @@ use super::{DesktopApp, DesktopHostError};
 
 const MULTI_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_MAX_DIST_SQ: f32 = 36.0; // 6.0 logical px
-
-pub(super) fn is_subtree_closed_overlay(store: &NodeStore, id: NodeId) -> bool {
-    let mut cur = Some(id);
-    for _ in 0..256 {
-        let Some(nid) = cur else {
-            break;
-        };
-        if is_overlay_closed(store, nid) {
-            return true;
-        }
-        cur = store.parent(nid).filter(|&p| p != nid);
-    }
-    false
-}
 
 pub(super) fn is_focusable(store: &NodeStore, id: NodeId) -> bool {
     if !store.is_live(id)

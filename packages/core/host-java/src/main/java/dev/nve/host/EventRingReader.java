@@ -189,6 +189,16 @@ public final class EventRingReader {
         return Float.intBitsToFloat(payloadU32(i, slot));
     }
 
+    /** Pressed pointer buttons bitmask packed into {@code payload[3]} low 16 bits. */
+    public int pointerButtons(int i) {
+        return payloadU32(i, 3) & 0xFFFF;
+    }
+
+    /** Pointer device kind ({@code 0=mouse, 1=pen, 2=touch}) packed into {@code payload[3]} bits 16..23. */
+    public int pointerType(int i) {
+        return (payloadU32(i, 3) >>> 16) & 0xFF;
+    }
+
     public int bytesOffset(int i) {
         return buf.getInt(eventAt(i) + NveAbi.EVENT_OFFSET_BYTES + NveAbi.RAW_EVENT_BYTES_OFFSET_OFFSET);
     }

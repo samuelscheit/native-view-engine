@@ -3,7 +3,7 @@
 
 use nve_abi::NodeId;
 use nve_engine::LayoutRect;
-use nve_layout::StoreLayoutEngine;
+use nve_layout::{is_subtree_closed_overlay, StoreLayoutEngine};
 use nve_store::NodeStore;
 use nve_tables::interaction::FocusModality;
 use nve_tables::tables::{is_subtree_display_none, InputKind, Interaction, TextInput, Typography};
@@ -205,6 +205,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let node_id = node_id.filter(|&id| {
             store.is_live(id)
                 && !is_subtree_display_none(store, id)
+                && !is_subtree_closed_overlay(store, id)
                 && !store.try_row::<Interaction>(id).is_some_and(|i| i.disabled())
         });
         let prev = self.focus.focused_node;
@@ -303,12 +304,14 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         }
     }
 
-    pub(crate) fn reconcile_focus_state(&mut self, store: &NodeStore) {
-        let Some(id) = self.focus.focused_node else {
-            return;
-        };
+    pub(crate) fn reconcile_focus_state(&mut self, store: &NodeStore) -> Option<NodeId> {
+        let id = self
+            .focus
+            .focused_node
+            .or_else(|| self.layout_tree.interaction_tracker().focused())?;
         if !store.is_live(id)
             || is_subtree_display_none(store, id)
+            || is_subtree_closed_overlay(store, id)
             || store.try_row::<Interaction>(id).is_some_and(|i| i.disabled())
         {
             self.focus = TextFocusState::default();
@@ -316,27 +319,37 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                 .layout_tree
                 .scene_mut()
                 .set_focus_slice(None, FocusModality::Pointer);
-            return;
+            if store.is_live(id) {
+                self.sync_frame_hooks(store, &[id]);
+                if !is_subtree_display_none(store, id) && !is_subtree_closed_overlay(store, id) {
+                    self.update_scene_paint_nodes(store, &[id]);
+                }
+                return Some(id);
+            }
+            return None;
         }
-        if self.is_text_input(store, id) {
-            if !raw_text_input_value(store, id).is_empty() {
+        if self.focus.focused_node == Some(id) {
+            if self.is_text_input(store, id) {
+                if !raw_text_input_value(store, id).is_empty() {
+                    self.focus.uncontrolled_value = None;
+                }
+                let current_val = self
+                    .focus
+                    .uncontrolled_value
+                    .as_deref()
+                    .unwrap_or_else(|| raw_text_input_value(store, id));
+                self.focus.caret_byte_index =
+                    clamp_grapheme_boundary(current_val, self.focus.caret_byte_index);
+                self.focus.selection_anchor =
+                    clamp_grapheme_boundary(current_val, self.focus.selection_anchor);
+            } else {
+                self.focus.caret_byte_index = 0;
+                self.focus.selection_anchor = 0;
+                self.focus.ime_preedit = None;
+                self.focus.ime_preedit_cursor = None;
                 self.focus.uncontrolled_value = None;
             }
-            let current_val = self
-                .focus
-                .uncontrolled_value
-                .as_deref()
-                .unwrap_or_else(|| raw_text_input_value(store, id));
-            self.focus.caret_byte_index =
-                clamp_grapheme_boundary(current_val, self.focus.caret_byte_index);
-            self.focus.selection_anchor =
-                clamp_grapheme_boundary(current_val, self.focus.selection_anchor);
-        } else {
-            self.focus.caret_byte_index = 0;
-            self.focus.selection_anchor = 0;
-            self.focus.ime_preedit = None;
-            self.focus.ime_preedit_cursor = None;
-            self.focus.uncontrolled_value = None;
         }
+        None
     }
 }

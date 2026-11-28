@@ -16,13 +16,15 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use nve_engine::InteractionTracker;
-use nve_tables::tables::Interaction;
+use nve_tables::tables::{Interaction, Scroll};
 use nve_engine::{LayoutRect, Viewport};
-use nve_store::{ChangeSet, NodeId, NodeStore};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 
 use crate::{HeuristicTextMeasurer, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 
-pub use overlay_scene::{OverlayState, ResolvedOverlay, is_overlay_closed};
+pub use overlay_scene::{
+    OverlayState, ResolvedOverlay, is_overlay_closed, is_subtree_closed_overlay,
+};
 pub use scroll::{ScrollOffsets, compute_scroll_content_size};
 pub use snapshot::{layout_snapshot_of, length_to_dim, visual_snapshot_of};
 
@@ -137,8 +139,13 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     /// running the layout pass yet (useful when callers time layout separately).
     pub fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
         for &id in &changes.removed {
-            self.interaction.remove_node(id);
+            let _ = self.interaction.remove_node_slice(id);
             self.scroll.remove(id);
+        }
+        if let Some(tc) = changes.table(Scroll::slot()) {
+            for &id in &tc.detached {
+                self.scroll.remove(id);
+            }
         }
         for &id in changes.created.iter().chain(&changes.touched) {
             if !store.is_live(id) {
@@ -146,18 +153,25 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             }
             let disabled = store.try_row::<Interaction>(id).is_some_and(|i| i.disabled());
             if self.interaction.is_disabled(id) != disabled {
-                let _ = self.interaction.set_disabled(id, disabled);
+                let _ = self.interaction.set_disabled_slice(id, disabled);
             }
         }
         self.layout.sync_changes(store, changes);
     }
 
-    /// Applies one committed `ChangeSet` and runs the layout engine's self-gated pass.
-    /// Returns whether a layout pass ran.
-    pub fn commit(&mut self, store: &NodeStore, changes: &ChangeSet) -> bool {
+    /// Applies one committed `ChangeSet` and runs the layout engine's self-gated pass without
+    /// running `reconcile_overlays` (used by backends that reconcile scroll offsets first and then
+    /// reconcile overlays once).
+    pub fn commit_without_overlays(&mut self, store: &NodeStore, changes: &ChangeSet) -> bool {
         self.sync_changes(store, changes);
-        let ran = self.recompute_layout(store);
-        self.reconcile_overlays(store);
+        self.recompute_layout(store)
+    }
+
+    /// Applies one committed `ChangeSet`, runs the layout engine's self-gated pass, and reconciles
+    /// open top-layer overlays when relevant state changed. Returns whether a layout pass ran.
+    pub fn commit(&mut self, store: &NodeStore, changes: &ChangeSet) -> bool {
+        let ran = self.commit_without_overlays(store, changes);
+        self.reconcile_overlays_if_needed(store, changes, ran);
         ran
     }
 

@@ -4,12 +4,15 @@
 //! `DebugId::id` through [`crate::overlay::compute_overlay_position`], or viewport-centered for
 //! unanchored modals) using reusable zero-alloc dense storage.
 
+use nve_abi::hash::HashMap;
+use nve_abi::xxh64;
 use nve_engine::LayoutRect;
-use nve_store::{NodeId, NodeStore, NveTable, TableStorage};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableStorage};
 use nve_tables::tables::{
     DebugId, Layout as NveLayout, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement,
-    is_node_display_none,
+    Transform as TransformTable, is_node_display_none,
 };
+use nve_tables::transform::affine_map_aabb;
 
 use crate::overlay::{PositionOptions, Rect, Size, Viewport as OverlayViewport, compute_overlay_position};
 use crate::{MAX_TREE_DEPTH, StoreLayoutEngine};
@@ -42,6 +45,9 @@ pub struct OverlayState {
     /// Dense `NodeId::index() -> index into resolved` (`OVERLAY_NONE` when absent).
     node_to_overlay: Vec<u32>,
     walk_scratch: Vec<NodeId>,
+    /// Reusable `xxh64(DebugId::id) -> NodeId` index rebuilt in O(D) only when open anchored
+    /// overlays exist (0 steady-state allocations).
+    anchor_index: HashMap<u64, NodeId>,
 }
 
 impl OverlayState {
@@ -75,6 +81,7 @@ impl OverlayState {
         }
         self.resolved.clear();
         self.walk_scratch.clear();
+        self.anchor_index.clear();
     }
 
     fn clear_indices(&mut self) {
@@ -104,7 +111,23 @@ pub fn is_overlay_closed(store: &NodeStore, id: NodeId) -> bool {
         .is_some_and(|ov| !ov.options().contains(OverlayFlags::OPEN))
 }
 
-fn find_anchor_node_by_id(store: &NodeStore, anchor_id: &str) -> Option<NodeId> {
+/// Returns `true` when `id` or any ancestor up to root owns a closed [`Overlay`] row.
+#[inline]
+pub fn is_subtree_closed_overlay(store: &NodeStore, id: NodeId) -> bool {
+    let mut cur = Some(id);
+    for _ in 0..MAX_TREE_DEPTH {
+        let Some(nid) = cur else {
+            break;
+        };
+        if is_overlay_closed(store, nid) {
+            return true;
+        }
+        cur = store.parent(nid).filter(|&p| p != nid);
+    }
+    false
+}
+
+fn find_anchor_node_linear(store: &NodeStore, anchor_id: &str) -> Option<NodeId> {
     let TableStorage {
         owners, row_count, ..
     } = store.table_storage(DebugId::slot())?;
@@ -115,6 +138,23 @@ fn find_anchor_node_by_id(store: &NodeStore, anchor_id: &str) -> Option<NodeId> 
         if store.try_row::<DebugId>(nid).is_some_and(|d| d.id() == anchor_id) {
             return Some(nid);
         }
+    }
+    None
+}
+
+fn lookup_anchor_node(
+    store: &NodeStore,
+    anchor_index: &HashMap<u64, NodeId>,
+    anchor_id: &str,
+) -> Option<NodeId> {
+    let hash = xxh64(anchor_id.as_bytes(), 0);
+    if let Some(&nid) = anchor_index.get(&hash) {
+        if store.is_live(nid)
+            && store.try_row::<DebugId>(nid).is_some_and(|d| d.id() == anchor_id)
+        {
+            return Some(nid);
+        }
+        return find_anchor_node_linear(store, anchor_id);
     }
     None
 }
@@ -132,53 +172,168 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         self.overlays.get(id)
     }
 
-    /// Computes the visual (scroll-shifted, sticky-clamped, top-layer-adjusted) rectangle of
-    /// `node_id` in logical viewport coordinates.
+    /// Computes the visual (scroll-shifted, sticky-clamped, `Transform2D`-mapped,
+    /// top-layer-adjusted) bounding rectangle of `node_id` in logical viewport coordinates.
     pub fn visual_rect_of(&self, store: &NodeStore, node_id: NodeId) -> Option<LayoutRect> {
         if let Some(ro) = self.overlays.get(node_id) {
+            let (mut x0, mut y0) = (ro.origin_x, ro.origin_y);
+            let (mut x1, mut y1) = (x0 + ro.width, y0 + ro.height);
+            if let Some(tf) = self.effective_transform(store, node_id) {
+                let m = tf.to_surface_matrix_2d(ro.origin_x, ro.origin_y, ro.width, ro.height);
+                (x0, y0, x1, y1) = affine_map_aabb(&m, x0, y0, x1, y1);
+            }
             return Some(LayoutRect {
-                x: ro.origin_x,
-                y: ro.origin_y,
-                width: ro.width,
-                height: ro.height,
+                x: x0,
+                y: y0,
+                width: (x1 - x0).max(0.0),
+                height: (y1 - y0).max(0.0),
             });
         }
-        let mut rect = self.layout.layout_of(node_id)?;
+        let base_rect = self.layout.layout_of(node_id)?;
         let (own_sx, own_sy) = self.compute_sticky_delta(store, node_id);
-        rect.x += own_sx;
-        rect.y += own_sy;
+        let mut x0 = base_rect.x + own_sx;
+        let mut y0 = base_rect.y + own_sy;
+        let mut x1 = x0 + base_rect.width;
+        let mut y1 = y0 + base_rect.height;
+        if let Some(tf) = self.effective_transform(store, node_id) {
+            let m = tf.to_surface_matrix_2d(x0, y0, base_rect.width, base_rect.height);
+            (x0, y0, x1, y1) = affine_map_aabb(&m, x0, y0, x1, y1);
+        }
         let mut ancestor = store.parent(node_id);
         for _ in 0..MAX_TREE_DEPTH {
             let Some(pid) = ancestor else {
                 break;
             };
             let (sx, sy) = self.scroll.visual_shift(store, pid);
-            rect.x -= sx;
-            rect.y -= sy;
+            x0 -= sx;
+            x1 -= sx;
+            y0 -= sy;
+            y1 -= sy;
             if let Some(ro) = self.overlays.get(pid) {
                 if let Some(base) = self.layout.layout_of(pid) {
-                    rect.x += ro.origin_x - base.x;
-                    rect.y += ro.origin_y - base.y;
+                    let dx = ro.origin_x - base.x;
+                    let dy = ro.origin_y - base.y;
+                    x0 += dx;
+                    x1 += dx;
+                    y0 += dy;
+                    y1 += dy;
+                }
+                if let Some(tf) = self.effective_transform(store, pid) {
+                    let m = tf.to_surface_matrix_2d(ro.origin_x, ro.origin_y, ro.width, ro.height);
+                    (x0, y0, x1, y1) = affine_map_aabb(&m, x0, y0, x1, y1);
                 }
                 break;
             }
             let (stx, sty) = self.compute_sticky_delta(store, pid);
-            rect.x += stx;
-            rect.y += sty;
-            ancestor = store.parent(pid);
+            x0 += stx;
+            x1 += stx;
+            y0 += sty;
+            y1 += sty;
+            if let Some(tf) = self.effective_transform(store, pid)
+                && let Some(p_rect) = self.layout.layout_of(pid)
+            {
+                let m = tf.to_surface_matrix_2d(
+                    p_rect.x + stx,
+                    p_rect.y + sty,
+                    p_rect.width,
+                    p_rect.height,
+                );
+                (x0, y0, x1, y1) = affine_map_aabb(&m, x0, y0, x1, y1);
+            }
+            ancestor = store.parent(pid).filter(|&p| p != pid);
         }
-        Some(rect)
+        Some(LayoutRect {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0.0),
+            height: (y1 - y0).max(0.0),
+        })
+    }
+
+    /// Fast-path guard around [`Self::reconcile_overlays`]: skips all work in `O(1)` when no
+    /// overlay table or relevant ancestor geometry (`layout`, `scroll`, `transform`, `DebugId`,
+    /// tree structure) changed.
+    #[inline]
+    pub fn reconcile_overlays_if_needed(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+        layout_or_scroll_changed: bool,
+    ) {
+        let has_rows = store
+            .table_storage(Overlay::slot())
+            .is_some_and(|s| s.row_count > 0);
+        if !has_rows {
+            if !self.overlays.resolved.is_empty() {
+                self.overlays.clear_indices();
+            }
+            return;
+        }
+        if !layout_or_scroll_changed
+            && changes.removed.is_empty()
+            && changes.children.is_empty()
+            && changes.table(Overlay::slot()).is_none()
+            && changes.table(DebugId::slot()).is_none()
+            && changes.table(TransformTable::slot()).is_none()
+            && changes.table(NveLayout::slot()).is_none()
+        {
+            return;
+        }
+        self.reconcile_overlays(store);
     }
 
     /// Reconciles viewport-space top-layer coordinates for every open `nve.overlay` node in
-    /// deterministic document paint order (zero heap allocations in steady state).
+    /// deterministic document paint order (O(1) fast-exit when no overlay is open; zero heap
+    /// allocations in steady state).
     pub fn reconcile_overlays(&mut self, store: &NodeStore) {
         self.overlays.clear_indices();
-        let has_any = store
-            .table_storage(Overlay::slot())
-            .is_some_and(|s| s.row_count > 0);
-        if !has_any || !store.is_live(NodeId::ROOT) {
+        let Some(TableStorage {
+            owners, row_count, ..
+        }) = store.table_storage(Overlay::slot())
+        else {
             return;
+        };
+        if row_count == 0 || !store.is_live(NodeId::ROOT) {
+            return;
+        }
+        let mut any_open = false;
+        let mut any_anchored = false;
+        for &oid in owners.iter().take(row_count) {
+            if !oid.is_null()
+                && store.is_live(oid)
+                && let Some(ov) = store.try_row::<Overlay>(oid)
+                && ov.options().contains(OverlayFlags::OPEN)
+            {
+                any_open = true;
+                if !ov.anchor_id().is_empty() {
+                    any_anchored = true;
+                    break;
+                }
+            }
+        }
+        if !any_open {
+            return;
+        }
+
+        let mut anchor_index = core::mem::take(&mut self.overlays.anchor_index);
+        anchor_index.clear();
+        if any_anchored
+            && let Some(TableStorage {
+                owners: dbg_owners,
+                row_count: dbg_count,
+                ..
+            }) = store.table_storage(DebugId::slot())
+        {
+            for &nid in dbg_owners.iter().take(dbg_count) {
+                if !nid.is_null()
+                    && store.is_live(nid)
+                    && let Some(d) = store.try_row::<DebugId>(nid)
+                    && !d.id().is_empty()
+                {
+                    let h = xxh64(d.id().as_bytes(), 0);
+                    anchor_index.entry(h).or_insert(nid);
+                }
+            }
         }
 
         // Collect open overlay NodeIds in deterministic DFS document order without allocating.
@@ -194,7 +349,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
                 if !opts.contains(OverlayFlags::OPEN) {
                     continue;
                 }
-                let ro = self.compute_resolved_overlay(store, id, ov);
+                let ro = self.compute_resolved_overlay(store, id, ov, &anchor_index);
                 let slot_idx = self.overlays.resolved.len() as u32;
                 self.overlays.resolved.push(ro);
                 self.overlays.set_index(id, slot_idx);
@@ -205,6 +360,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             }
         }
         self.overlays.walk_scratch = stack;
+        self.overlays.anchor_index = anchor_index;
     }
 
     fn compute_resolved_overlay(
@@ -212,6 +368,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         store: &NodeStore,
         id: NodeId,
         ov: nve_tables::tables::OverlayRef<'_>,
+        anchor_index: &HashMap<u64, NodeId>,
     ) -> ResolvedOverlay {
         let base_rect = self.layout.layout_of(id).unwrap_or_default();
         let opts = ov.options();
@@ -224,7 +381,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
         let anchor_id = ov.anchor_id();
         if !anchor_id.is_empty()
-            && let Some(aid) = find_anchor_node_by_id(store, anchor_id)
+            && let Some(aid) = lookup_anchor_node(store, anchor_index, anchor_id)
             && aid != id
             && let Some(ar) = self.visual_rect_of(store, aid)
         {
@@ -264,9 +421,12 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
         // Unanchored overlay: center modals unless explicit inset overrides are set; clamp to
         // viewport when `SHIFT` is enabled.
-        let has_explicit_inset = store
-            .try_row::<NveLayout>(id)
-            .is_some_and(|l| !l.inset_top().is_auto() || !l.inset_left().is_auto());
+        let has_explicit_inset = store.try_row::<NveLayout>(id).is_some_and(|l| {
+            !l.inset_top().is_auto()
+                || !l.inset_right().is_auto()
+                || !l.inset_bottom().is_auto()
+                || !l.inset_left().is_auto()
+        });
         let (mut ox, mut oy) = if is_modal && !has_explicit_inset {
             (
                 ((vp_w - base_rect.width) * 0.5).max(pad),

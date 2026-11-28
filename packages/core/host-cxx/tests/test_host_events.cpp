@@ -161,20 +161,26 @@ void test_nvev_v2_wire_codec() {
   CHECK(src.push_text_change(2u, 6u, 58u, "caf\xC3\xA9"));
   const std::array<uint8_t, 3> raw_data{1u, 2u, 3u};
   CHECK(src.push_custom(2u, 7u, 59u, "ping", raw_data));
+  CHECK(src.push_pointer(2u, 8u, 60u, NVE_INTERACTION_EVENT_POINTER_DOWN, 11.5f, 22.5f, 9u,
+                         NVE_EVENT_FLAG_CAPTURE | (2u << NVE_EVENT_FLAG_BUTTON_SHIFT), 0x0005u, 2u));
 
   const std::vector<uint8_t> wire = src.to_wire_bytes();
-  CHECK(wire.size() == kEventWireHeaderSize + 5u * NVE_EVENT_SIZE + src.bytes().size());
+  CHECK(wire.size() == kEventWireHeaderSize + 6u * NVE_EVENT_SIZE + src.bytes().size());
   CHECK(wire[0] == 'N' && wire[1] == 'V' && wire[2] == 'E' && wire[3] == 'V');
   CHECK(nve_load_u16_le(wire.data() + 4u) == 2u);
 
   const std::optional<OwnedEvents> dec = OwnedEvents::decode_wire(wire);
-  CHECK(dec.has_value() && dec->size() == 5u);
+  CHECK(dec.has_value() && dec->size() == 6u);
   if (dec) {
     const NveEventBatch b = dec->batch();
     CHECK(event_key(b.events[1], b) == "Enter" && event_code(b.events[1], b) == "Enter");
     CHECK(event_key(b.events[2], b) == "VeryLongCustomKeyName" && event_code(b.events[2], b) == "CodeX");
     CHECK(event_text(b.events[3], b) == "caf\xC3\xA9");
     CHECK(event_custom_name(b.events[4], b) == "ping" && event_custom_data(b.events[4], b).size() == 3u);
+    CHECK(is_interaction_event(b.events[5], NVE_INTERACTION_EVENT_POINTER_DOWN));
+    CHECK(event_payload_f32(b.events[5], 0u) == 11.5f && event_payload_f32(b.events[5], 1u) == 22.5f);
+    CHECK(b.events[5].payload[2] == 9u && event_pointer_buttons(b.events[5]) == 0x0005u &&
+          event_pointer_type(b.events[5]) == 2u);
   }
 
   // Every truncated prefix and trailing byte must fail.
@@ -201,7 +207,7 @@ void test_nvev_v2_wire_codec() {
 
   // Invalid UTF-8 in text arena rejected.
   std::vector<uint8_t> bad_utf8 = wire;
-  const size_t arena_off = kEventWireHeaderSize + 5u * NVE_EVENT_SIZE;
+  const size_t arena_off = kEventWireHeaderSize + 6u * NVE_EVENT_SIZE;
   const size_t text_off = src.events()[3].bytes.offset;
   bad_utf8[arena_off + text_off] = 0xFFu;
   CHECK(!OwnedEvents::decode_wire(bad_utf8).has_value());

@@ -264,7 +264,7 @@ pub(crate) fn render_calendar_dialog(
         })
         .collect();
 
-    let pos_placement = computed.map(|p| crate::positioning::placement_as_str(p.placement).to_owned());
+    let pos_placement = computed.map(|p| p.placement.to_string());
     let pos_x = computed.map(|p| format!("{:.2}", p.x));
     let pos_y = computed.map(|p| format!("{:.2}", p.y));
     let pos_flipped = computed.map(|p| if p.flipped { "true" } else { "false" }.to_owned());

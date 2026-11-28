@@ -191,5 +191,7 @@ public struct EventRecord: Equatable, Sendable {
     public var width: Float { Float(bitPattern: p2) }
     public var height: Float { Float(bitPattern: p3) }
     public var pointerId: UInt32 { p2 }
+    public var pointerButtons: UInt16 { UInt16(truncatingIfNeeded: p3 & 0xFFFF) }
+    public var pointerType: UInt8 { UInt8(truncatingIfNeeded: (p3 >> 16) & 0xFF) }
     public var keyCode: UInt32 { p0 }
 }

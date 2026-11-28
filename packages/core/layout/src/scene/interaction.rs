@@ -127,13 +127,14 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         resolve_cursor_from_view(base, rules, self.interaction.state(id))
     }
 
-    /// Resolves the effective [`CursorKind`] for `id` by walking `id` -> ancestors leaf-to-root
-    /// until the first non-`Auto` cursor is found (converting disabled `Pointer` -> `NotAllowed`).
+    /// Resolves the effective [`CursorKind`] for `id` in a single `O(depth)` leaf-to-root walk,
+    /// converting `Pointer` to `NotAllowed` whenever `id` or any ancestor is disabled.
     pub fn effective_cursor(&self, store: &NodeStore, id: NodeId) -> CursorKind {
         if !store.is_live(id) || is_node_display_none(store, id) {
             return CursorKind::Auto;
         }
         let mut cur = Some(id);
+        let mut found: Option<CursorKind> = None;
         let mut disabled_seen = false;
         for _ in 0..MAX_TREE_DEPTH {
             let Some(nid) = cur else {
@@ -143,22 +144,29 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
                 || store.try_row::<Interaction>(nid).is_some_and(|i| i.disabled())
             {
                 disabled_seen = true;
+                if found == Some(CursorKind::Pointer) {
+                    return CursorKind::NotAllowed;
+                }
             }
-            let resolved = self.local_cursor_of(store, nid);
-            if resolved != CursorKind::Auto {
-                return if disabled_seen && resolved == CursorKind::Pointer {
-                    CursorKind::NotAllowed
-                } else {
-                    resolved
-                };
+            if found.is_none() {
+                let resolved = self.local_cursor_of(store, nid);
+                if resolved != CursorKind::Auto {
+                    if resolved != CursorKind::Pointer {
+                        return resolved;
+                    }
+                    if disabled_seen {
+                        return CursorKind::NotAllowed;
+                    }
+                    found = Some(resolved);
+                }
             }
             cur = store.parent(nid).filter(|&p| p != nid);
         }
-        CursorKind::Auto
+        found.unwrap_or(CursorKind::Auto)
     }
 
-    /// Resolves the active cursor: checks captured node's ancestor chain first, then `hovered_chain`
-    /// leaf-to-root, then `active_chain`, falling back to `CursorKind::Default`.
+    /// Resolves the active cursor in `O(depth)`: checks captured node first, then the deepest
+    /// live hovered node, then the deepest live active node, falling back to `CursorKind::Default`.
     pub fn current_cursor(&self, store: &NodeStore) -> CursorKind {
         if let Some(cap) = self.interaction.captured_node() {
             let c = self.effective_cursor(store, cap);
@@ -168,14 +176,24 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
                 c
             };
         }
-        for &id in self.interaction.hovered_chain() {
-            let c = self.effective_cursor(store, id);
+        if let Some(&leaf) = self
+            .interaction
+            .hovered_chain()
+            .iter()
+            .find(|&&id| store.is_live(id) && !is_node_display_none(store, id))
+        {
+            let c = self.effective_cursor(store, leaf);
             if c != CursorKind::Auto {
                 return c;
             }
         }
-        for &id in self.interaction.active_chain() {
-            let c = self.effective_cursor(store, id);
+        if let Some(&leaf) = self
+            .interaction
+            .active_chain()
+            .iter()
+            .find(|&&id| store.is_live(id) && !is_node_display_none(store, id))
+        {
+            let c = self.effective_cursor(store, leaf);
             if c != CursorKind::Auto {
                 return c;
             }

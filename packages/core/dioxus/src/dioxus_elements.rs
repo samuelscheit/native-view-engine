@@ -49,6 +49,8 @@ pub struct PointerEventData {
     pub pointer_id: PointerId,
     pub button: u8,
     pub buttons: u16,
+    /// Pointer device kind (`NVE_POINTER_TYPE_MOUSE = 0`, `PEN = 1`, `TOUCH = 2`).
+    pub pointer_type: u8,
     pub captured: bool,
     pub shift: bool,
     pub ctrl: bool,

@@ -112,7 +112,7 @@ impl WebEventState {
             }
             if store
                 .try_row::<Interaction>(id)
-                .is_some_and(|i| i.capture_mode() == PointerCaptureMode::OnPrimaryDown)
+                .is_some_and(|i| !i.disabled() && i.capture_mode() == PointerCaptureMode::OnPrimaryDown)
             {
                 next |= NODE_KIND_CAPTURE_PRIMARY;
             }

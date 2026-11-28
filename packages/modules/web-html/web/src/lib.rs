@@ -521,4 +521,82 @@ mod tests {
         assert!(ssr.contains("method=\"post\""));
         assert!(ssr.contains(" novalidate"));
     }
+
+    #[test]
+    fn html_semantics_watches_overlay_slot_and_matches_ssr_open_state() {
+        use nve_tables::tables::{Overlay, OverlayFlags, OverlayLayer};
+        use nve_web_html::PopoverMode;
+
+        assert!(HtmlSemanticsWebSystem.watches_slot(Overlay::slot()));
+        assert!(HtmlSemanticsWebSystem.watches_slot(nve_tables::tables::Accessibility::slot()));
+
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        let (dlg, pop) = {
+            let mut tx = store.tx();
+            let dlg = tx.create();
+            tx.edit::<HtmlSemantics>(dlg)
+                .element(Some(SemanticElement::Dialog))
+                .open(false);
+            tx.edit::<Overlay>(dlg)
+                .layer(OverlayLayer::Modal)
+                .options(OverlayFlags::NONE);
+
+            let pop = tx.create();
+            tx.edit::<HtmlSemantics>(pop).popover(Some(PopoverMode::Manual));
+            tx.edit::<Overlay>(pop)
+                .layer(OverlayLayer::Popover)
+                .options(OverlayFlags::NONE);
+
+            tx.set_children(NodeId::ROOT, &[dlg, pop]);
+            tx.commit_into(&mut changes);
+            (dlg, pop)
+        };
+
+        let mut renderer = WebStoreRenderer::new();
+        register_web_html_systems(renderer.registry_mut());
+        renderer.commit(&store, &changes).unwrap();
+        let ssr_closed = renderer.render_ssr(&store, NodeId::ROOT);
+        assert!(!ssr_closed.contains(" open>"), "closed dialog must not have open attr: {ssr_closed}");
+        assert!(!ssr_closed.contains("data-nve-open=\"true\""));
+
+        // Mutate ONLY Overlay::options (without touching HtmlSemantics!) -> watches_slot must fire!
+        {
+            let mut tx = store.tx();
+            tx.edit::<Overlay>(dlg).options(OverlayFlags::OPEN);
+            tx.edit::<Overlay>(pop).options(OverlayFlags::OPEN);
+            tx.commit_into(&mut changes);
+        }
+        renderer.commit(&store, &changes).unwrap();
+        let ssr_open = renderer.render_ssr(&store, NodeId::ROOT);
+        assert!(ssr_open.contains(" open"), "Overlay::OPEN dialog must emit open in SSR: {ssr_open}");
+        assert!(
+            ssr_open.contains("data-nve-open=\"true\""),
+            "Overlay::OPEN popover must emit data-nve-open in SSR: {ssr_open}"
+        );
+        assert!(
+            renderer
+                .plugin_attrs(pop)
+                .iter()
+                .any(|(k, v)| k == "data-nve-open" && v == "true"),
+            "Overlay-only mutation must trigger HtmlSemanticsWebSystem::commit_node"
+        );
+
+        // Close via Overlay-only mutation -> attrs cleared on both live and SSR.
+        {
+            let mut tx = store.tx();
+            tx.edit::<Overlay>(dlg).options(OverlayFlags::NONE);
+            tx.edit::<Overlay>(pop).options(OverlayFlags::NONE);
+            tx.commit_into(&mut changes);
+        }
+        renderer.commit(&store, &changes).unwrap();
+        let ssr_reclosed = renderer.render_ssr(&store, NodeId::ROOT);
+        assert!(!ssr_reclosed.contains("data-nve-open=\"true\""));
+        assert!(
+            !renderer
+                .plugin_attrs(pop)
+                .iter()
+                .any(|(k, _)| k == "data-nve-open")
+        );
+    }
 }

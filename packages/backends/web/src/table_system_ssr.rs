@@ -136,7 +136,7 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if let Some(ti_idx) = inter.tab_index() {
             let _ = write!(out, " tabindex=\"{ti_idx}\"");
         }
-        if inter.capture_mode() == PointerCaptureMode::OnPrimaryDown {
+        if !inter.disabled() && inter.capture_mode() == PointerCaptureMode::OnPrimaryDown {
             write_attr("data-nve-capture", "primary", out);
         }
     }
@@ -148,7 +148,9 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         };
         write_attr("data-nve-overlay", state, out);
     }
-    crate::aria::visit_accessibility_attrs(store, id, |name, val| write_attr(name, val, out));
+    if id != NodeId::ROOT {
+        crate::aria::visit_accessibility_attrs(store, id, |name, val| write_attr(name, val, out));
+    }
 }
 
 impl WebStoreRenderer {

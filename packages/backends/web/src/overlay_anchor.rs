@@ -150,11 +150,31 @@ mod live {
 export function nve_supports_css_anchor() {
   return typeof CSS !== 'undefined'
     && typeof CSS.supports === 'function'
-    && CSS.supports('anchor-name', '--a');
+    && CSS.supports('anchor-name', '--a')
+    && CSS.supports('position-area', 'bottom center');
 }
 ")]
     extern "C" {
         fn nve_supports_css_anchor() -> bool;
+    }
+
+    const FALLBACK_STYLE_PROPS: [&str; 7] = [
+        "position",
+        "position-area",
+        "margin",
+        "left",
+        "top",
+        "max-width",
+        "max-height",
+    ];
+
+    fn clear_fallback_styles(el: &web_sys::Element) {
+        if let Some(html_el) = el.dyn_ref::<web_sys::HtmlElement>() {
+            let style = html_el.style();
+            for prop in FALLBACK_STYLE_PROPS {
+                let _ = style.remove_property(prop);
+            }
+        }
     }
 
     #[derive(Clone)]
@@ -184,18 +204,29 @@ export function nve_supports_css_anchor() {
 
     impl OverlayAnchorFallbackManager {
         pub(crate) fn remove(&mut self, id: NodeId) {
-            let empty = {
+            let (removed, empty) = {
                 let mut map = self.entries.borrow_mut();
-                map.remove(&id);
-                map.is_empty()
+                let removed = map.remove(&id);
+                (removed, map.is_empty())
             };
+            if let Some(entry) = removed {
+                clear_fallback_styles(&entry.el);
+            }
             if empty {
                 self.listeners = None;
             }
         }
 
         pub(crate) fn clear(&mut self) {
-            self.entries.borrow_mut().clear();
+            let drained: Vec<FallbackEntry> = self
+                .entries
+                .borrow_mut()
+                .drain()
+                .map(|(_, entry)| entry)
+                .collect();
+            for entry in drained {
+                clear_fallback_styles(&entry.el);
+            }
             self.listeners = None;
         }
 
@@ -223,7 +254,6 @@ export function nve_supports_css_anchor() {
                     fallback_placements: Vec::new(),
                 },
             };
-            reposition_entry(&entry);
             self.entries.borrow_mut().insert(id, entry);
             self.ensure_listeners();
         }
@@ -298,11 +328,15 @@ export function nve_supports_css_anchor() {
             buf.clear();
             write_px(mw, &mut buf);
             let _ = style.set_property("max-width", &buf);
+        } else {
+            let _ = style.remove_property("max-width");
         }
         if let Some(mh) = pos.max_height {
             buf.clear();
             write_px(mh, &mut buf);
             let _ = style.set_property("max-height", &buf);
+        } else {
+            let _ = style.remove_property("max-height");
         }
     }
 }

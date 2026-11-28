@@ -134,7 +134,15 @@ fn interaction_tracker_ancestor_chains_capture_and_zero_alloc_steady_state() {
     );
     let _ = t.set_focus(None, FocusModality::Pointer);
 
-    // 6. Steady-state zero-allocation guard across 200 full interaction cycles.
+    // 6. Positive probe proving `CountingAlloc` actually intercepts heap allocations, followed by
+    //    the steady-state zero-allocation guard across 200 full interaction cycles.
+    let (probe_box, probe_allocs) = count_allocs(|| std::hint::black_box(Box::new(0xDEAD_BEEFu64)));
+    assert!(
+        probe_allocs >= 1,
+        "CountingAlloc positive probe must observe >= 1 allocation, saw {probe_allocs}"
+    );
+    drop(probe_box);
+
     let (_, allocs) = count_allocs(|| {
         for _ in 0..200 {
             let _ = t.pointer_move_with(Some(label_a), parent_of);
@@ -154,4 +162,26 @@ fn interaction_tracker_ancestor_chains_capture_and_zero_alloc_steady_state() {
         allocs, 0,
         "steady-state InteractionTracker transitions must perform 0 heap allocations, saw {allocs}"
     );
+}
+
+#[test]
+fn interaction_tracker_breaks_cyclic_parent_chains_without_duplicates() {
+    let a = NodeId::new(10, 0);
+    let b = NodeId::new(11, 0);
+    let cyclic_parent = |id: NodeId| -> Option<NodeId> {
+        if id == a {
+            Some(b)
+        } else if id == b {
+            Some(a)
+        } else {
+            None
+        }
+    };
+
+    let mut t = InteractionTracker::new();
+    let dirty = t.pointer_move_with(Some(a), cyclic_parent);
+    assert_eq!(dirty, &[b, a]);
+    assert_eq!(t.hovered_chain(), &[a, b]);
+    let _ = t.pointer_down_with(Some(a), cyclic_parent);
+    assert_eq!(t.active_chain(), &[a, b]);
 }
