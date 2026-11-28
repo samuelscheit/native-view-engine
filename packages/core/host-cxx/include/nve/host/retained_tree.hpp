@@ -107,6 +107,20 @@ class RetainedTree {
     moved_ = 0u;
     work_.clear();
     if constexpr (SyncHooksAdapter<Adapter>) adapter.begin_sync(scene, incremental_);
+    struct SyncGuard {
+      RetainedTree& self;
+      Adapter& adapter;
+      bool active = true;
+      ~SyncGuard() {
+        self.resource_work_.clear();
+        self.cascade_.clear();
+        self.relink_.clear();
+        if (active) {
+          self.initialized_ = false;  // interrupted sync: force a full resync next time
+          if constexpr (SyncHooksAdapter<Adapter>) adapter.finish_sync();
+        }
+      }
+    } guard{*this, adapter};
 
     if (full) {
       users_.reset();  // every live view re-registers below; stale epochs' ids are dropped
@@ -161,6 +175,7 @@ class RetainedTree {
       }
     }
     relink_.clear();
+    guard.active = false;
     if constexpr (SyncHooksAdapter<Adapter>) adapter.finish_sync();
     return updated_;
   }

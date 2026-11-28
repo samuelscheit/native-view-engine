@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <map>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -544,6 +545,58 @@ void test_ten_thousand_nodes_sync_is_o_changed() {
          kImageUsers, resource_allocs);
 }
 
+/// Adapter with `SyncHooksAdapter` (`begin_sync` / `finish_sync`) that can throw mid-sync.
+struct ThrowingSyncHooksRecorder : MovingRecorder {
+  int begins = 0;
+  int finishes = 0;
+  bool throw_on_update = false;
+  bool in_sync = false;
+
+  void begin_sync(const SceneReader&, bool) {
+    CHECK(!in_sync);
+    in_sync = true;
+    ++begins;
+  }
+  void finish_sync() {
+    CHECK(in_sync);
+    in_sync = false;
+    ++finishes;
+  }
+  void update(Handle& h, const NodeData& n) {
+    MovingRecorder::update(h, n);
+    if (throw_on_update && n.id == 4u) throw std::runtime_error("simulated adapter failure");
+  }
+};
+
+/// `finish_sync()` must run even when an adapter callback throws mid-sync, and the tree must
+/// clean its scratch buffers and recover cleanly on the next sync.
+void test_sync_hooks_finish_runs_on_exception() {
+  Harness<ThrowingSyncHooksRecorder> h;
+  CHECK(h.host != nullptr);
+  if (!h.host) return;
+  mount_column(h);
+  CHECK(h.rec.begins == 1 && h.rec.finishes == 1 && !h.rec.in_sync);
+
+  // Trigger a mid-sync exception on node 4; `finish_sync()` must still balance `begin_sync()`.
+  h.rec.throw_on_update = true;
+  h.w.set(4u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(1, 2, 3));
+  CHECK(h.submit());
+  bool caught = false;
+  try {
+    (void)h.sync();
+  } catch (const std::runtime_error&) {
+    caught = true;
+  }
+  CHECK(caught);
+  CHECK(h.rec.begins == 2 && h.rec.finishes == 2 && !h.rec.in_sync);
+
+  // Re-syncing the same frame recovers with a full pass instead of treating it as already mirrored.
+  h.rec.throw_on_update = false;
+  CHECK(h.sync() == 5u);
+  CHECK(h.rec.begins == 3 && h.rec.finishes == 3 && !h.rec.in_sync);
+  CHECK(h.rec.views[4u].background == rgba(1, 2, 3));
+}
+
 }  // namespace
 
 int main() {
@@ -559,6 +612,7 @@ int main() {
   test_dirty_resource_updates_its_clean_users();
   test_new_scene_epoch_runs_a_full_pass();
   test_ten_thousand_nodes_sync_is_o_changed();
+  test_sync_hooks_finish_runs_on_exception();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_retained_tree_test: %d failure(s)\n", g_failures);
     return 1;

@@ -135,14 +135,20 @@ struct Result {
 
 volatile uint64_t g_sink = 0;  // written once per batch: keeps the results observable
 
+#if defined(_MSC_VER)
+#pragma optimize("", off)
+__declspec(noinline) void msvc_do_not_optimize_sink(volatile void*) noexcept {}
+#pragma optimize("", on)
+#endif
+
 /// Compiler barrier: prevents hoisting pure `body()` loads or folding repeated batch iterations.
 template <class T>
 inline void do_not_optimize(T& value) noexcept {
 #if defined(_MSC_VER)
+  msvc_do_not_optimize_sink(&value);
   _ReadWriteBarrier();
-  (void)value;
 #else
-  asm volatile("" : "+r"(value) :: "memory");
+  asm volatile("" : "+g"(value) :: "memory");
 #endif
 }
 

@@ -59,7 +59,7 @@ if(NVE_HOST_CXX_BUILD_TESTS)
 
   # Compile-time guards: invalid `field()` specs and non-UTF-8 `Key64::of` names must not compile.
   if(MSVC)
-    set(_nve_host_syntax_only ${CMAKE_CXX_COMPILER} /nologo /std:c++20 /Zs
+    set(_nve_host_syntax_only ${CMAKE_CXX_COMPILER} /nologo /std:c++20 /EHsc /utf-8 /Zs
         /I${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail.cpp)
     set(_nve_host_def_flag /D)
   else()
@@ -84,7 +84,7 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     set(_header_tu "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${_header_id}.cpp")
     file(WRITE "${_header_tu}" "#include <${_header}>\n")
     if(MSVC)
-      set(_header_cmd ${CMAKE_CXX_COMPILER} /nologo /std:c++20 /Zs ${_nve_host_warnings}
+      set(_header_cmd ${CMAKE_CXX_COMPILER} /nologo /std:c++20 /EHsc /utf-8 /Zs ${_nve_host_warnings}
           "/Dslots=" "/Dsignals=public" "/Demit=" "/Dforeach=qt_foreach"
           /I${CMAKE_CURRENT_SOURCE_DIR}/include ${_header_tu})
     else()
