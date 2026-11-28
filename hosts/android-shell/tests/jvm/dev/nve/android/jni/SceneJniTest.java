@@ -201,8 +201,9 @@ public final class SceneJniTest {
 
     /**
      * `RuntimeSurface` lifecycle edges: a consumer that closes then throws still closes the
-     * surface; an off-thread close throws and leaves it open; a synchronous executor hitting the
-     * per-render frame cap does not recurse.
+     * surface; an off-thread close throws and leaves it open, also while a frame is in flight on
+     * the owner (it never schedules the deferred close); a second close does nothing; a
+     * synchronous executor hitting the per-render frame cap does not recurse.
      */
     static void surfaceEdges(Expect c, Fixtures fx) throws Exception {
         final ByteBuffer f1 = fx.frame("showcase_1.nve2");
@@ -228,8 +229,30 @@ public final class SceneJniTest {
         closer.join();
         c.that(offThread[0] instanceof IllegalStateException, "off-thread close throws");
         c.that(owned.handle() != 0L, "a refused close leaves the surface open");
+        offThread[0] = null;
+        c.eq(owned.submitFrame(f1, f1.remaining()), 0, "submit before an off-thread close in onFrame");
+        owned.setFrameConsumer((s, sf) -> {
+            final Thread inFrame = new Thread(() -> {
+                try {
+                    sf.close();
+                } catch (Throwable t) {
+                    offThread[0] = t;
+                }
+            });
+            inFrame.start();
+            try {
+                inFrame.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        c.that(owned.render(), "the frame with an off-thread close is delivered");
+        c.that(offThread[0] instanceof IllegalStateException, "off-thread close during onFrame throws");
+        c.that(owned.handle() != 0L, "... and schedules no close after the frame");
         owned.close();
         c.eq(owned.handle(), 0L, "the owner closes it");
+        owned.close();
+        c.eq(owned.handle(), 0L, "a second close does nothing");
 
         final int[] frames = new int[1];
         try (RuntimeSurface endless = new RuntimeSurface(13, 360f, 800f, 1f, Runnable::run)) {

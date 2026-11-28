@@ -45,6 +45,8 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     private final SceneReader reader = new SceneReader();
     private final int surfaceId;
     private final Executor ownerThread;
+    /** The thread that created the native surface: the only one allowed to free it. */
+    private final Thread owner = Thread.currentThread();
     private final AtomicBoolean renderPosted = new AtomicBoolean();
     /** Guards {@link #handle} between {@link #close} and the cross-thread {@link #isPaired}. */
     private final Object handleLock = new Object();
@@ -371,19 +373,24 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
 
     /**
      * Destroys the surface (after the current frame when called inside {@code onFrame}).
+     * Idempotent: closing a closed surface does nothing.
      *
-     * @throws IllegalStateException off the owner thread: the runtime refuses to free the surface
-     *     under its owner, and it stays open
+     * @throws IllegalStateException off the thread that created the surface (before touching any
+     *     owner-thread state: a frame may be in flight there); the surface stays open
      */
     @Override
     public void close() {
         if (handle == 0L) return;
+        if (Thread.currentThread() != owner) {
+            throw new IllegalStateException("close must run on the surface's owner thread (" + owner.getName() + ")");
+        }
         if (inFrame) {
             closeAfterFrame = true;
             return;
         }
         closeAfterFrame = false;
         synchronized (handleLock) {
+            if (handle == 0L) return;
             final int st = NativeRuntime.destroy(handle);
             if (st != NveRuntimeAbi.STATUS_OK) {
                 throw new IllegalStateException("close refused (status " + st + "): it must run on the surface's owner thread");
