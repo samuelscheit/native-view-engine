@@ -545,56 +545,80 @@ void test_ten_thousand_nodes_sync_is_o_changed() {
          kImageUsers, resource_allocs);
 }
 
-/// Adapter with `SyncHooksAdapter` (`begin_sync` / `finish_sync`) that can throw mid-sync.
+/// Adapter with `SyncHooksAdapter` (`begin_sync` / `finish_sync`) that can throw in any hook.
 struct ThrowingSyncHooksRecorder : MovingRecorder {
-  int begins = 0;
-  int finishes = 0;
-  bool throw_on_update = false;
-  bool in_sync = false;
+  int begins = 0, finishes = 0;
+  bool throw_on_begin = false, throw_on_update = false, throw_on_finish = false, in_sync = false;
 
   void begin_sync(const SceneReader&, bool) {
     CHECK(!in_sync);
-    in_sync = true;
     ++begins;
+    if (throw_on_begin) throw std::runtime_error("begin");
+    in_sync = true;
   }
   void finish_sync() {
     CHECK(in_sync);
     in_sync = false;
     ++finishes;
+    if (throw_on_finish) throw std::runtime_error("finish");
   }
   void update(Handle& h, const NodeData& n) {
     MovingRecorder::update(h, n);
-    if (throw_on_update && n.id == 4u) throw std::runtime_error("simulated adapter failure");
+    if (throw_on_update && n.id == 4u) throw std::runtime_error("update");
   }
 };
 
-/// `finish_sync()` must run even when an adapter callback throws mid-sync, and the tree must
-/// clean its scratch buffers and recover cleanly on the next sync.
+/// Throws from `begin_sync()`, node `update()`, unwind `finish_sync()`, and normal-path
+/// `finish_sync()` must all leave the tree recoverable and never skip the retried frame.
 void test_sync_hooks_finish_runs_on_exception() {
   Harness<ThrowingSyncHooksRecorder> h;
   CHECK(h.host != nullptr);
   if (!h.host) return;
   mount_column(h);
   CHECK(h.rec.begins == 1 && h.rec.finishes == 1 && !h.rec.in_sync);
+  const auto expect_throw = [&](const char* msg) {
+    std::string got;
+    try {
+      (void)h.sync();
+    } catch (const std::runtime_error& e) {
+      got = e.what();
+    }
+    CHECK(got == msg);
+  };
 
-  // Trigger a mid-sync exception on node 4; `finish_sync()` must still balance `begin_sync()`.
+  // 1. Throw from `begin_sync()`: `finish_sync()` must NOT run; retry runs a full sync.
+  h.rec.throw_on_begin = true;
+  h.w.set(3u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(7, 8, 9));
+  CHECK(h.submit());
+  expect_throw("begin");
+  CHECK(h.rec.begins == 2 && h.rec.finishes == 1 && !h.rec.in_sync);
+  h.rec.throw_on_begin = false;
+  CHECK(h.sync() == 5u && h.rec.begins == 3 && h.rec.finishes == 2 && !h.rec.in_sync);
+  CHECK(h.rec.views[3u].background == rgba(7, 8, 9));
+
+  // 2. Throw from `update()`: unwind runs `finish_sync()`; retry recovers with a full pass.
   h.rec.throw_on_update = true;
   h.w.set(4u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(1, 2, 3));
   CHECK(h.submit());
-  bool caught = false;
-  try {
-    (void)h.sync();
-  } catch (const std::runtime_error&) {
-    caught = true;
-  }
-  CHECK(caught);
-  CHECK(h.rec.begins == 2 && h.rec.finishes == 2 && !h.rec.in_sync);
-
-  // Re-syncing the same frame recovers with a full pass instead of treating it as already mirrored.
-  h.rec.throw_on_update = false;
-  CHECK(h.sync() == 5u);
-  CHECK(h.rec.begins == 3 && h.rec.finishes == 3 && !h.rec.in_sync);
+  expect_throw("update");
+  CHECK(h.rec.begins == 4 && h.rec.finishes == 3 && !h.rec.in_sync);
+  // 3. Throw from both `update()` and unwind `finish_sync()`: no `std::terminate()`, original wins.
+  h.rec.throw_on_finish = true;
+  expect_throw("update");
+  CHECK(h.rec.begins == 5 && h.rec.finishes == 4 && !h.rec.in_sync);
+  h.rec.throw_on_update = h.rec.throw_on_finish = false;
+  CHECK(h.sync() == 5u && h.rec.begins == 6 && h.rec.finishes == 5 && !h.rec.in_sync);
   CHECK(h.rec.views[4u].background == rgba(1, 2, 3));
+
+  // 4. Throw from normal-path `finish_sync()`: called once, frame not committed, retry runs full.
+  h.rec.throw_on_finish = true;
+  h.w.set(5u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(4, 5, 6));
+  CHECK(h.submit());
+  expect_throw("finish");
+  CHECK(h.rec.begins == 7 && h.rec.finishes == 6 && !h.rec.in_sync);
+  h.rec.throw_on_finish = false;
+  CHECK(h.sync() == 5u && h.rec.begins == 8 && h.rec.finishes == 7 && !h.rec.in_sync);
+  CHECK(h.rec.views[5u].background == rgba(4, 5, 6));
 }
 
 }  // namespace

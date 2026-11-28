@@ -92,21 +92,21 @@ class RetainedTree {
       return 0u;  // this frame is already mirrored
     }
     const bool full = !same_epoch || scene.frame_id() != last_frame_ + 1u;
-    incremental_ = !full;
-    scene_epoch_ = scene.scene_epoch();
+    // Reset before any throwing work (`resize`, `reserve_views`, `begin_sync`) so an exception
+    // before normal-path `finish_sync()` succeeds forces a full resync next time instead of skipping.
+    initialized_ = false;
+    incremental_ = false;
     tables.bind(scene);
     if (++epoch_ == 0u) {
       for (Entry& e : entries_) e.stamp = e.resolved = e.linked = 0u;
       epoch_ = 1u;
     }
-    initialized_ = true;
-    last_frame_ = scene.frame_id();
     if (entries_.size() < scene.node_capacity()) entries_.resize(scene.node_capacity());
     users_.reserve_views(entries_.size());
     updated_ = 0u;
     moved_ = 0u;
     work_.clear();
-    if constexpr (SyncHooksAdapter<Adapter>) adapter.begin_sync(scene, incremental_);
+    if constexpr (SyncHooksAdapter<Adapter>) adapter.begin_sync(scene, !full);
     struct SyncGuard {
       RetainedTree& self;
       Adapter& adapter;
@@ -116,11 +116,18 @@ class RetainedTree {
         self.cascade_.clear();
         self.relink_.clear();
         if (active) {
-          self.initialized_ = false;  // interrupted sync: force a full resync next time
-          if constexpr (SyncHooksAdapter<Adapter>) adapter.finish_sync();
+          self.initialized_ = false;
+          self.incremental_ = false;
+          if constexpr (SyncHooksAdapter<Adapter>) {
+            try {
+              adapter.finish_sync();
+            } catch (...) {
+            }
+          }
         }
       }
     } guard{*this, adapter};
+    incremental_ = !full;
 
     if (full) {
       users_.reset();  // every live view re-registers below; stale epochs' ids are dropped
@@ -176,7 +183,17 @@ class RetainedTree {
     }
     relink_.clear();
     guard.active = false;
-    if constexpr (SyncHooksAdapter<Adapter>) adapter.finish_sync();
+    if constexpr (SyncHooksAdapter<Adapter>) {
+      try {
+        adapter.finish_sync();
+      } catch (...) {
+        incremental_ = false;
+        throw;
+      }
+    }
+    scene_epoch_ = scene.scene_epoch();
+    last_frame_ = scene.frame_id();
+    initialized_ = true;
     return updated_;
   }
 
