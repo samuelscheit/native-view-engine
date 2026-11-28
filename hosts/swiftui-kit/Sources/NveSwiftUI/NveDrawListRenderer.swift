@@ -38,7 +38,7 @@ public enum NveDrawListRenderer {
         if let err = NveDrawList.validate(raw) {
             throw err
         }
-        return NveDrawListHeader(opCount: UInt32(NveDrawList.opCount(of: raw)))
+        return NveDrawListHeader(opCount: NveDrawList.opCount(of: raw))
     }
 
     /// Validates a flat `nve.res.draw_list` `Data` payload.

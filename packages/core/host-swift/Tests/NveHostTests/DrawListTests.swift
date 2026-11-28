@@ -79,6 +79,10 @@ final class DrawListTests: XCTestCase {
 
         let all8 = buildAll8Ops()
         XCTAssertEqual(all8.count, 44 * 4)
+        let counted: UInt32 = NveDrawList.opCount(of: all8)
+        XCTAssertEqual(counted, 8)
+        XCTAssertEqual(NveDrawList.opCount(of: [0xFF, 0xFF, 0xFF, 0xFF]), UInt32.max)
+        XCTAssertEqual(NveDrawList.opCount(of: [1, 2, 3]), 0)
 
         var padded = [UInt8](repeating: 0xAA, count: all8.count + 5)
         for i in 0 ..< all8.count { padded[i + 3] = all8[i] }

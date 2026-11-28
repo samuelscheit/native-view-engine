@@ -601,6 +601,14 @@ fn flat_op_codec_generation_validates_is_deterministic_and_compiles_cpp20() {
     let second = generate_flat_op_codec_files(&STREAM).expect("second deterministic pass");
     assert_eq!(first, second, "flat-op codegen must be deterministic");
     assert_eq!(first.len(), 5, "C++, Swift, Java, Dart, TS");
+    assert!(
+        first[0].content.contains("ColorRgba color{};"),
+        "C++ ColorRgba fields must emit single-braced value initialization"
+    );
+    assert!(
+        !first[0].content.contains("{{}}"),
+        "C++ header must never emit accidental double-braced `{{}}` initializers"
+    );
     for f in &first {
         assert!(!f.content.contains('\r'), "{} contains CR", f.relative_path);
         assert!(f.content.ends_with('\n'), "{} missing trailing LF", f.relative_path);
@@ -693,4 +701,303 @@ fn flat_op_codec_generation_validates_is_deterministic_and_compiles_cpp20() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+#[test]
+fn flat_op_codec_hardening_scoping_opcode_bounds_reserved_ops_no_scope_and_non_neg_coords() {
+    // Exercises: (a) fields colliding with decoder locals (`offset`, `pos`, `length`, `end`, `op`,
+    // `total`, `view`, `bytes`, `sink`, `slice`, `pt_count`), (d) `scope: None`, (e) 0-scalar
+    // `Point2Slice`, (f) `coord_non_negative: true`, and inclusive `i32::MAX` opcode bound.
+    const EDGE_STREAM: FlatOpStreamDesc = FlatOpStreamDesc {
+        name: "EdgeOps",
+        kind_name: "nve.res.edge_ops",
+        max_ops_const_name: "MAX_EDGE_OPS",
+        max_ops: 256,
+        scope: None,
+        ops: &[
+            FlatOpDesc {
+                name: "Span",
+                opcode: 1,
+                fields: &[
+                    FlatOpFieldDesc {
+                        name: "offset",
+                        ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+                    },
+                    FlatOpFieldDesc {
+                        name: "pos",
+                        ty: FlatOpFieldType::F32(FloatConstraint::NonNegative),
+                    },
+                    FlatOpFieldDesc {
+                        name: "length",
+                        ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+                    },
+                    FlatOpFieldDesc {
+                        name: "end",
+                        ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+                    },
+                    FlatOpFieldDesc {
+                        name: "op",
+                        ty: FlatOpFieldType::U32,
+                    },
+                    FlatOpFieldDesc {
+                        name: "total",
+                        ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+                    },
+                    FlatOpFieldDesc {
+                        name: "view",
+                        ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+                    },
+                    FlatOpFieldDesc {
+                        name: "bytes",
+                        ty: FlatOpFieldType::ColorRgba,
+                    },
+                    FlatOpFieldDesc {
+                        name: "sink",
+                        ty: FlatOpFieldType::U32,
+                    },
+                ],
+            },
+            FlatOpDesc {
+                name: "PolyWithLocals",
+                opcode: 2,
+                fields: &[
+                    FlatOpFieldDesc {
+                        name: "pos",
+                        ty: FlatOpFieldType::F32(FloatConstraint::NonNegative),
+                    },
+                    FlatOpFieldDesc {
+                        name: "bytes",
+                        ty: FlatOpFieldType::U32,
+                    },
+                    FlatOpFieldDesc {
+                        name: "sink",
+                        ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+                    },
+                    FlatOpFieldDesc {
+                        name: "slice",
+                        ty: FlatOpFieldType::ColorRgba,
+                    },
+                    FlatOpFieldDesc {
+                        name: "pt_count",
+                        ty: FlatOpFieldType::U32,
+                    },
+                    FlatOpFieldDesc {
+                        name: "points",
+                        ty: FlatOpFieldType::Point2Slice {
+                            max_len: 64,
+                            max_const_name: "MAX_EDGE_POINTS",
+                            coord_constraint: FloatConstraint::Finite,
+                        },
+                    },
+                ],
+            },
+            FlatOpDesc {
+                name: "BarePoints",
+                opcode: i32::MAX as u32,
+                fields: &[FlatOpFieldDesc {
+                    name: "verts",
+                    ty: FlatOpFieldType::Point2Slice {
+                        max_len: 32,
+                        max_const_name: "MAX_BARE_VERTS",
+                        coord_constraint: FloatConstraint::NonNegative,
+                    },
+                }],
+            },
+        ],
+    };
+
+    let files = generate_flat_op_codec_files(&EDGE_STREAM).expect("generate edge flat-op codecs");
+    assert_eq!(files.len(), 5);
+    let [cxx, swift, java, dart, ts] = &files[..] else {
+        unreachable!();
+    };
+
+    // C++: single-braced ColorRgba init, no ScopeGuard, exact failing point byte offset, coord >= 0.
+    assert!(cxx.content.contains("ColorRgba bytes{};"));
+    assert!(!cxx.content.contains("{{}}"));
+    assert!(!cxx.content.contains("ScopeGuard"));
+    assert!(cxx.content.contains("if (px < 0.0f || py < 0.0f)"));
+    assert!(cxx.content.contains("pos + static_cast<size_t>(p) * 8u + 8u"));
+
+    // Swift: prefixed locals, @inlinable, UInt32 opCount, 0-scalar Point2Slice, coord >= 0, no scope.
+    assert!(swift.content.contains("let _f_pos ="));
+    assert!(swift.content.contains("let _f_bytes ="));
+    assert!(swift.content.contains("let _f_sink ="));
+    assert!(swift.content.contains("let _f_slice ="));
+    assert!(swift.content.contains("onBarePoints(verts: NveEdgeOpsPointSlice)"));
+    assert!(swift.content.contains("guard px >= 0, py >= 0 else { return .negativeFloat }"));
+    assert!(swift.content.contains("public static func opCount(of bytes: UnsafeRawBufferPointer) -> UInt32"));
+    assert!(swift.content.contains("@inlinable\n    public static func streamValidated<S: NveEdgeOpsSink>"));
+    assert!(!swift.content.contains("scopeDepth"));
+
+    // Java: prefixed float locals, 0-scalar Point2Slice, coord >= 0, no scope finally.
+    assert!(java.content.contains("final float _f_offset ="));
+    assert!(java.content.contains("final float _f_pos ="));
+    assert!(java.content.contains("void onBarePointsStart(int count);"));
+    assert!(java.content.contains("if (px < 0.0f || py < 0.0f) return Error.NEGATIVE_FLOAT;"));
+    assert!(!java.content.contains("finally"));
+
+    // Dart: shared ByteData view helpers, 0-scalar Point2Slice, coord >= 0, no scope finally.
+    assert!(dart.content.contains("validateView(ByteData data)"));
+    assert!(dart.content.contains("streamValidatedView(ByteData data, NveEdgeOpsSink sink)"));
+    assert!(dart.content.contains("void onBarePointsStart(int count);"));
+    assert!(dart.content.contains("if (px < 0.0 || py < 0.0)"));
+    assert!(!dart.content.contains("finally"));
+
+    // TS: prefixed float locals, shared DataView helpers, 0-scalar Point2Slice, coord >= 0, no finally.
+    assert!(ts.content.contains("const _f_offset ="));
+    assert!(ts.content.contains("const _f_pos ="));
+    assert!(ts.content.contains("const _f_view ="));
+    assert!(ts.content.contains("function validateEdgeOpsView(view: DataView)"));
+    assert!(ts.content.contains("onBarePointsStart(count: number): void;"));
+    assert!(ts.content.contains("if (px < 0 || py < 0)"));
+    assert!(!ts.content.contains("finally"));
+
+    // (b) `opcode > i32::MAX` (and 0) rejected up-front.
+    const BAD_OPCODES: &[&[FlatOpDesc]] = &[
+        &[FlatOpDesc { name: "Probe", opcode: 0, fields: &[] }],
+        &[FlatOpDesc { name: "Probe", opcode: (i32::MAX as u32) + 1, fields: &[] }],
+        &[FlatOpDesc { name: "Probe", opcode: u32::MAX, fields: &[] }],
+    ];
+    for &ops in BAD_OPCODES {
+        let mut bad = EDGE_STREAM;
+        bad.ops = ops;
+        let err = generate_flat_op_codec_files(&bad).expect_err("invalid opcode must fail");
+        assert!(
+            matches!(err, CodegenError::Validation(ref m) if m.contains("opcode")),
+            "unexpected error for opcode {}: {err:?}",
+            ops[0].opcode
+        );
+    }
+
+    // (c) Reserved op names (and reserved stream names) rejected up-front.
+    const RESERVED_OP_CASES: &[&[FlatOpDesc]] = &[
+        &[FlatOpDesc { name: "Return", opcode: 1, fields: &[] }],
+        &[FlatOpDesc { name: "Switch", opcode: 1, fields: &[] }],
+        &[FlatOpDesc { name: "Default", opcode: 1, fields: &[] }],
+        &[FlatOpDesc { name: "None", opcode: 1, fields: &[] }],
+        &[FlatOpDesc { name: "Fallthrough", opcode: 1, fields: &[] }],
+    ];
+    for &ops in RESERVED_OP_CASES {
+        let mut bad = EDGE_STREAM;
+        bad.ops = ops;
+        let err = generate_flat_op_codec_files(&bad).expect_err("reserved op name must fail");
+        assert!(
+            matches!(err, CodegenError::Validation(ref m) if m.contains("reserved keyword")),
+            "unexpected error for op `{}`: {err:?}",
+            ops[0].name
+        );
+    }
+    let mut bad_stream = EDGE_STREAM;
+    bad_stream.name = "Switch";
+    assert!(matches!(
+        generate_flat_op_codec_files(&bad_stream),
+        Err(CodegenError::Validation(ref m)) if m.contains("reserved keyword")
+    ));
+
+    // Compile the generated colliding-field / scope:None / 0-scalar Point2Slice codecs with real compilers.
+    let dir = std::env::temp_dir().join(format!("nve_flat_op_edge_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+
+    if common::tool_available("clang++") {
+        std::fs::write(dir.join("edge.hpp"), &cxx.content).expect("write hpp");
+        let cpp = dir.join("check.cpp");
+        std::fs::write(
+            &cpp,
+            "#include \"edge.hpp\"\n\
+             struct Sink {\n\
+               void on_span(const nve::generated::edge_ops::SpanOp&) {}\n\
+               void on_poly_with_locals(const nve::generated::edge_ops::PolyWithLocalsOp&) {}\n\
+               void on_bare_points(const nve::generated::edge_ops::BarePointsOp&) {}\n\
+             };\n\
+             int check(std::span<const uint8_t> b) { Sink s{}; return nve::generated::edge_ops::decode(b, s).ok() ? 0 : 1; }\n",
+        )
+        .expect("write cpp");
+        let out = Command::new("clang++")
+            .args([
+                "-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-pedantic",
+                "-Wconversion", "-Wsign-conversion", "-Wshadow",
+            ])
+            .arg(&cpp)
+            .output()
+            .expect("run clang++");
+        assert!(
+            out.status.success(),
+            "clang++ rejected edge flat-op header:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    if common::tool_available("javac") {
+        let jdir = dir.join("java");
+        let jgen = jdir.join("dev/nve/host/generated");
+        let jout = jdir.join("out");
+        std::fs::create_dir_all(&jgen).expect("java gen dir");
+        std::fs::create_dir_all(&jout).expect("java out dir");
+        std::fs::write(
+            jdir.join("dev/nve/host/Key64.java"),
+            "package dev.nve.host;\npublic final class Key64 { public static Key64 fromHalves(int lo, int hi) { return new Key64(); } }\n",
+        )
+        .expect("write Key64 stub");
+        let jsrc = jgen.join("NveEdgeOps.java");
+        std::fs::write(&jsrc, &java.content).expect("write java");
+        let out = Command::new("javac")
+            .args(["--release", "11", "-Xlint:all", "-Werror", "-d"])
+            .arg(&jout)
+            .arg(jdir.join("dev/nve/host/Key64.java"))
+            .arg(&jsrc)
+            .output()
+            .expect("run javac");
+        assert!(
+            out.status.success(),
+            "javac rejected edge flat-op codec:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    if common::tool_available("swiftc") {
+        let sdir = dir.join("swift");
+        std::fs::create_dir_all(&sdir).expect("swift dir");
+        let key_stub = sdir.join("Key64.swift");
+        let ssrc = sdir.join("NveEdgeOps.swift");
+        std::fs::write(
+            &key_stub,
+            "public struct Key64: Sendable { public init(lo: UInt32, hi: UInt32) {} }\n",
+        )
+        .expect("write swift Key64 stub");
+        std::fs::write(&ssrc, &swift.content).expect("write swift");
+        let out = Command::new("swiftc")
+            .args(["-typecheck", "-parse-as-library", "-swift-version", "6", "-warnings-as-errors"])
+            .arg(&key_stub)
+            .arg(&ssrc)
+            .output()
+            .expect("run swiftc");
+        assert!(
+            out.status.success(),
+            "swiftc rejected edge flat-op codec:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    if common::tool_available("tsc") {
+        let tdir = dir.join("ts");
+        let tgen = tdir.join("generated");
+        std::fs::create_dir_all(&tgen).expect("ts gen dir");
+        std::fs::write(
+            tdir.join("key64.ts"),
+            "export class Key64 { constructor(_lo: number, _hi: number) {} }\n",
+        )
+        .expect("write ts key64 stub");
+        std::fs::write(tgen.join("nve_edge_ops.generated.ts"), &ts.content).expect("write ts");
+        let tsconfig = tdir.join("tsconfig.json");
+        std::fs::write(
+            &tsconfig,
+            common::ts::STRICT_TSCONFIG.replace("\"./*.ts\"", "\"./**/*.ts\""),
+        )
+        .expect("write tsconfig");
+        common::ts::run_tsc_no_emit(&tsconfig);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

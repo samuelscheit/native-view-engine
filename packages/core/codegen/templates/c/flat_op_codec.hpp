@@ -255,11 +255,11 @@ inline DecodeResult validate(std::span<const uint8_t> bytes) noexcept {
           const float px = detail::read_le_f32_unaligned(pair);
           const float py = detail::read_le_f32_unaligned(pair + 4u);
           if (!std::isfinite(px) || !std::isfinite(py)) {
-            return DecodeResult{Error::NonFiniteFloat, validated_ops, pos + needed_bytes};
+            return DecodeResult{Error::NonFiniteFloat, validated_ops, pos + static_cast<size_t>(p) * 8u + 8u};
           }
 {%- if ps.coord_non_negative %}
           if (px < 0.0f || py < 0.0f) {
-            return DecodeResult{Error::NegativeFloat, validated_ops, pos + needed_bytes};
+            return DecodeResult{Error::NegativeFloat, validated_ops, pos + static_cast<size_t>(p) * 8u + 8u};
           }
 {%- endif %}
         }

@@ -55,11 +55,18 @@ abstract final class Nve{{ m.name }} {
 
   /// Strict full-stream validation; returns `null` when well-formed.
   static Nve{{ m.name }}Error? validate(Uint8List bytes) {
-    final int total = bytes.lengthInBytes;
+    if (bytes.lengthInBytes < headerSize) {
+      return Nve{{ m.name }}Error.truncated;
+    }
+    return validateView(ByteData.sublistView(bytes));
+  }
+
+  /// Strict full-stream validation over a pre-constructed [ByteData] view; returns `null` when well-formed.
+  static Nve{{ m.name }}Error? validateView(ByteData data) {
+    final int total = data.lengthInBytes;
     if (total < headerSize) {
       return Nve{{ m.name }}Error.truncated;
     }
-    final ByteData data = ByteData.sublistView(bytes);
     final int count = data.getUint32(0, Endian.little);
     if (count > {{ m.max_ops_camel }}) {
       return Nve{{ m.name }}Error.opCountExceedsLimit;
@@ -135,17 +142,25 @@ abstract final class Nve{{ m.name }} {
 
   /// Validates `bytes` whole, then streams every op into `sink`; returns `null` on success.
   static Nve{{ m.name }}Error? decode(Uint8List bytes, Nve{{ m.name }}Sink sink) {
-    final Nve{{ m.name }}Error? err = validate(bytes);
+    if (bytes.lengthInBytes < headerSize) {
+      return Nve{{ m.name }}Error.truncated;
+    }
+    final ByteData data = ByteData.sublistView(bytes);
+    final Nve{{ m.name }}Error? err = validateView(data);
     if (err != null) {
       return err;
     }
-    streamValidated(bytes, sink);
+    streamValidatedView(data, sink);
     return null;
   }
 
   /// Streams a previously validated buffer into `sink`.
   static void streamValidated(Uint8List bytes, Nve{{ m.name }}Sink sink) {
-    final ByteData data = ByteData.sublistView(bytes);
+    streamValidatedView(ByteData.sublistView(bytes), sink);
+  }
+
+  /// Streams a previously validated [ByteData] view into `sink`.
+  static void streamValidatedView(ByteData data, Nve{{ m.name }}Sink sink) {
     final int count = data.getUint32(0, Endian.little);
     int pos = headerSize;
 {%- if let Some(scope) = m.scope %}

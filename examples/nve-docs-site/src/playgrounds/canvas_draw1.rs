@@ -1,4 +1,4 @@
-//! Interactive `"canvas-draw1"` demo compiling real binary `NVE_DRAW1` binary draw-lists
+//! Interactive `"canvas-draw1"` demo compiling flat `DrawList` (`nve.res.draw_list`) streams
 //! rendered by `<skia_canvas>` across Skia GPU, HTML5 Canvas2D, CoreGraphics, and Flutter/Compose.
 
 use nve_abi::ColorRgba;
@@ -169,7 +169,7 @@ pub fn CanvasDraw1Demo() -> Element {
                     style: "flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
                     Badge {
                         test_id: Some("pg-canvas-ops".to_string()),
-                        label: format!("NVE_DRAW1 Ops: {op_count}"),
+                        label: format!("DrawList Ops: {op_count}"),
                         variant: BadgeVariant::Accent,
                     }
                     Badge {
@@ -192,7 +192,7 @@ pub fn CanvasDraw1Demo() -> Element {
             // Live SkiaCanvas / HTML5 Canvas2D surface
             view {
                 test_id: "pg-canvas-surface",
-                accessibility_label: "Interactive NVE_DRAW1 vector canvas",
+                accessibility_label: "Interactive DrawList vector canvas",
                 nve_table: table_attr_fn(move |tx, node| {
                     tx.edit::<Canvas>(node).draw_list_ephemeral(draw_list.clone());
                 }),

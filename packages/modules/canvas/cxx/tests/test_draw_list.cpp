@@ -303,6 +303,31 @@ void test_clip_depth_cap_and_unwind() {
     caught = (code == 42);
   }
   CHECK(caught && (tv.ops == std::vector<int>{7, 7, 8, 8}));
+
+  // Throw while overflowed (depth == 64, overflow == 2): exactly 64 restores unwind, NOT 66.
+  struct OverflowThrowingVisitor : Recorder {
+    void on_clear(const DrawClearOp& op) {
+      Recorder::on_clear(op);
+      throw 99;
+    }
+  };
+  DrawListEncoder overflow_throw;
+  for (uint32_t i = 0u; i < kMaxClipDepth + 2u; ++i) {
+    overflow_throw.clip_rect(0.0f, 0.0f, 30.0f, 30.0f);
+  }
+  overflow_throw.clear(DrawColorRgba::rgba(1, 2, 3, 4));
+  OverflowThrowingVisitor ov;
+  bool ov_caught = false;
+  try {
+    (void)decode_draw_list(overflow_throw.finish(), ov);
+  } catch (int code) {
+    ov_caught = (code == 99);
+  }
+  CHECK(ov_caught);
+  CHECK(ov.ops.size() == static_cast<size_t>(kMaxClipDepth) * 2u + 1u);
+  CHECK(ov.ops[kMaxClipDepth] == 1);
+  for (size_t i = 0u; i < kMaxClipDepth; ++i) CHECK(ov.ops[i] == 7);
+  for (size_t i = kMaxClipDepth + 1u; i < ov.ops.size(); ++i) CHECK(ov.ops[i] == 8);
 }
 
 }  // namespace

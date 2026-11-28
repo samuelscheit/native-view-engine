@@ -597,4 +597,54 @@ mod tests {
         assert_eq!(sink.log[MAX_CLIP_DEPTH], "restore");
         assert_eq!(sink.log.len() - fill_idx - 1, MAX_CLIP_DEPTH - 1);
     }
+
+    #[test]
+    fn balanced_web_sink_unwinds_exact_64_restores_on_panic_while_overflowed() {
+        struct PanickingSink {
+            inner: RecordingSink,
+        }
+        impl WebCanvasSink for PanickingSink {
+            fn clear(&mut self, color: ColorRgba) { self.inner.clear(color); }
+            fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: ColorRgba) {
+                self.inner.fill_rect(x, y, w, h, color);
+                panic!("simulated web canvas panic");
+            }
+            fn fill_rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c: ColorRgba) {
+                self.inner.fill_rounded_rect(x, y, w, h, r, c);
+            }
+            fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, c: ColorRgba) {
+                self.inner.fill_circle(cx, cy, r, c);
+            }
+            fn stroke_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, w: f32, c: ColorRgba) {
+                self.inner.stroke_line(x0, y0, x1, y1, w, c);
+            }
+            fn stroke_polyline(&mut self, pts: nve_canvas::PolylinePoints<'_>, w: f32, c: ColorRgba) {
+                self.inner.stroke_polyline(pts, w, c);
+            }
+            fn save_and_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
+                self.inner.save_and_clip_rect(x, y, w, h);
+            }
+            fn restore_clip(&mut self) { self.inner.restore_clip(); }
+        }
+
+        let mut rec = DrawListRecorder::new();
+        for _ in 0..(MAX_CLIP_DEPTH + 2) {
+            rec.clip_rect(0.0, 0.0, 50.0, 50.0);
+        }
+        rec.fill_rect(1.0, 1.0, 4.0, 4.0, ColorRgba::WHITE);
+        let mut words = Vec::new();
+        assert!(rec.finish().write_words(&mut words));
+        let vw = ValidatedWords::<DrawList>::try_new(&words).expect("valid draw list");
+
+        let mut sink = PanickingSink { inner: RecordingSink::default() };
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            execute_draw_list(DrawList::view(vw), &mut sink);
+        }));
+        assert!(res.is_err(), "panic must propagate");
+        assert_eq!(sink.inner.saves, MAX_CLIP_DEPTH);
+        assert_eq!(sink.inner.restores, MAX_CLIP_DEPTH);
+        assert_eq!(sink.inner.live_depth, 0);
+        assert_eq!(sink.inner.log[MAX_CLIP_DEPTH], "fill_rect");
+        assert_eq!(sink.inner.log.len(), MAX_CLIP_DEPTH + 1 + MAX_CLIP_DEPTH);
+    }
 }

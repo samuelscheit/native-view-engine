@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { Key64 } from '@nve/host';
 import {
   NVE_DRAW_LIST_HEADER_SIZE,
   NVE_DRAW_LIST_KIND,
@@ -15,8 +16,7 @@ import {
   decodeDrawList,
   validateDrawList,
   type NveDrawListSink,
-} from '../src/generated/nve_draw_list.generated.ts';
-import { Key64 } from '../src/index.ts';
+} from '@nve/host/draw-list';
 
 function f32Bits(v: number): number {
   const buf = new ArrayBuffer(4);
@@ -212,4 +212,26 @@ test('generated DrawList enforces MAX_CLIP_DEPTH = 64 with overflow tracking and
     (err: unknown) => err instanceof Error && err.message === 'sink failed',
   );
   assert.deepEqual(throwing.ops, ['clip:1,2,3,4', 'clip:1,2,3,4', 'restore', 'restore']);
+
+  // Throw while overflowed (depth == 64, overflow == 2): exactly 64 restores unwind, NOT 66.
+  const overflowThrowWords: number[] = [cap + 2 + 1];
+  for (let i = 0; i < cap + 2; i++) {
+    overflowThrowWords.push(NveDrawListOpcode.ClipRect, 0, 0, f32Bits(10), f32Bits(10));
+  }
+  overflowThrowWords.push(NveDrawListOpcode.Clear, 99);
+  class OverflowThrowingSink extends RecordingSink {
+    override onClear(color: number): void {
+      super.onClear(color);
+      throw new Error('clear boom');
+    }
+  }
+  const overflowThrowing = new OverflowThrowingSink();
+  assert.throws(
+    () => decodeDrawList(packWords(overflowThrowWords), overflowThrowing),
+    (err: unknown) => err instanceof Error && err.message === 'clear boom',
+  );
+  assert.equal(overflowThrowing.ops.length, cap + 1 + cap);
+  assert.equal(overflowThrowing.ops[cap], 'clear:99');
+  assert.ok(overflowThrowing.ops.slice(0, cap).every((op) => op.startsWith('clip:')));
+  assert.ok(overflowThrowing.ops.slice(cap + 1).every((op) => op === 'restore'));
 });

@@ -35,7 +35,7 @@ public struct Nve{{ m.name }}PointSlice {
     internal let bytes: UnsafeRawBufferPointer
     public let count: Int
 
-    @usableFromInline
+    @inlinable
     internal init(bytes: UnsafeRawBufferPointer, count: Int) {
         self.bytes = bytes
         self.count = count
@@ -140,20 +140,24 @@ public enum Nve{{ m.name }} {
         return pos == total ? nil : .trailingBytes(total - pos)
     }
 
-    public static func opCount(of bytes: [UInt8]) -> Int {
+    @inlinable
+    public static func opCount(of bytes: [UInt8]) -> UInt32 {
         bytes.withUnsafeBytes { opCount(of: $0) }
     }
 
-    public static func opCount(of bytes: UnsafeBufferPointer<UInt8>) -> Int {
+    @inlinable
+    public static func opCount(of bytes: UnsafeBufferPointer<UInt8>) -> UInt32 {
         opCount(of: UnsafeRawBufferPointer(bytes))
     }
 
-    public static func opCount(of bytes: UnsafeRawBufferPointer) -> Int {
+    @inlinable
+    public static func opCount(of bytes: UnsafeRawBufferPointer) -> UInt32 {
         guard bytes.count >= headerSize else { return 0 }
-        return Int(readU32(bytes, at: 0))
+        return readU32(bytes, at: 0)
     }
 
     @discardableResult
+    @inlinable
     public static func decode<S: Nve{{ m.name }}Sink>(
         _ bytes: [UInt8],
         into sink: inout S
@@ -162,6 +166,7 @@ public enum Nve{{ m.name }} {
     }
 
     @discardableResult
+    @inlinable
     public static func decode<S: Nve{{ m.name }}Sink>(
         _ bytes: UnsafeBufferPointer<UInt8>,
         into sink: inout S
@@ -170,6 +175,7 @@ public enum Nve{{ m.name }} {
     }
 
     @discardableResult
+    @inlinable
     public static func decode<S: Nve{{ m.name }}Sink>(
         _ bytes: UnsafeRawBufferPointer,
         into sink: inout S
@@ -181,6 +187,7 @@ public enum Nve{{ m.name }} {
         return nil
     }
 
+    @inlinable
     public static func streamValidated<S: Nve{{ m.name }}Sink>(
         _ bytes: [UInt8],
         into sink: inout S
@@ -188,6 +195,7 @@ public enum Nve{{ m.name }} {
         bytes.withUnsafeBytes { streamValidated($0, into: &sink) }
     }
 
+    @inlinable
     public static func streamValidated<S: Nve{{ m.name }}Sink>(
         _ bytes: UnsafeBufferPointer<UInt8>,
         into sink: inout S
@@ -195,6 +203,7 @@ public enum Nve{{ m.name }} {
         streamValidated(UnsafeRawBufferPointer(bytes), into: &sink)
     }
 
+    @inlinable
     public static func streamValidated<S: Nve{{ m.name }}Sink>(
         _ bytes: UnsafeRawBufferPointer,
         into sink: inout S
@@ -228,7 +237,7 @@ public enum Nve{{ m.name }} {
 {%- else if let Some(ps) = op.point_slice %}
                 let ptCount = Int(readU32(bytes, at: pos + {{ ps.count_byte_offset }}))
 {%- for f in op.scalars %}
-                let {{ f.camel }} = {% if f.kind.is_float() %}readF32(bytes, at: pos + {{ f.byte_offset }}){% else %}readU32(bytes, at: pos + {{ f.byte_offset }}){% endif %}
+                let _f_{{ f.camel }} = {% if f.kind.is_float() %}readF32(bytes, at: pos + {{ f.byte_offset }}){% else %}readU32(bytes, at: pos + {{ f.byte_offset }}){% endif %}
 {%- endfor %}
                 pos += {{ op.fixed_bytes }}
                 let ptsEnd = pos + ptCount * 8
@@ -237,7 +246,7 @@ public enum Nve{{ m.name }} {
                     count: ptCount
                 )
                 pos = ptsEnd
-                sink.on{{ op.name }}({% for f in op.scalars %}{{ f.camel }}: {{ f.camel }}, {% endfor %}{{ ps.camel }}: slice)
+                sink.on{{ op.name }}({% for f in op.scalars %}{{ f.camel }}: _f_{{ f.camel }}, {% endfor %}{{ ps.camel }}: slice)
 {%- else if op.is_scope_push() %}
 {%- if let Some(scope) = m.scope %}
                 if scopeDepth < {{ scope.limit_camel }} {
@@ -263,13 +272,15 @@ public enum Nve{{ m.name }} {
         }
     }
 
+    @inlinable
     @inline(__always)
-    private static func readU32(_ bytes: UnsafeRawBufferPointer, at offset: Int) -> UInt32 {
+    internal static func readU32(_ bytes: UnsafeRawBufferPointer, at offset: Int) -> UInt32 {
         UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
     }
 
+    @inlinable
     @inline(__always)
-    private static func readF32(_ bytes: UnsafeRawBufferPointer, at offset: Int) -> Float {
+    internal static func readF32(_ bytes: UnsafeRawBufferPointer, at offset: Int) -> Float {
         Float(bitPattern: readU32(bytes, at: offset))
     }
 }

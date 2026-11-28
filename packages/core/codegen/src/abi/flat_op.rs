@@ -21,19 +21,20 @@ use crate::schema::export::GeneratedFile;
 /// across Java, Dart, Swift (`arm64_32`), C++, and TypeScript without overflow.
 const MAX_SAFE_COUNT: u32 = 0x0FFF_FFFF;
 
-/// Reserved words across C++, Swift, Java, Dart, and TypeScript that cannot be field names.
-const RESERVED_FIELD_NAMES: &[&str] = &[
+/// Reserved words across C++, Swift, Java, Dart, and TypeScript that cannot be op or field names.
+const RESERVED_NAMES: &[&str] = &[
     "abstract", "as", "assert", "async", "auto", "await", "bool", "boolean", "break", "byte",
-    "case", "catch", "char", "class", "const", "continue", "default", "defer", "deinit", "delete",
-    "do", "double", "else", "enum", "export", "extends", "extension", "extern", "false", "final",
-    "finally", "float", "for", "func", "function", "goto", "guard", "if", "implements", "import",
-    "in", "init", "inline", "inout", "instanceof", "int", "interface", "internal", "is", "let",
-    "long", "mutating", "namespace", "native", "new", "nil", "noexcept", "null", "nullptr",
-    "operator", "override", "package", "private", "protected", "protocol", "public", "register",
-    "repeat", "rethrow", "rethrows", "return", "self", "short", "signed", "sizeof", "static",
-    "struct", "subscript", "super", "switch", "synchronized", "template", "this", "throw",
-    "throws", "transient", "true", "try", "typealias", "typedef", "typename", "typeof", "union",
-    "unsigned", "using", "var", "virtual", "void", "volatile", "where", "while", "with", "yield",
+    "case", "catch", "char", "class", "const", "continue", "debugger", "default", "defer",
+    "deinit", "delete", "do", "double", "else", "enum", "export", "extends", "extension",
+    "extern", "fallthrough", "false", "final", "finally", "float", "for", "func", "function",
+    "goto", "guard", "if", "implements", "import", "in", "init", "inline", "inout", "instanceof",
+    "int", "interface", "internal", "is", "let", "long", "mutating", "namespace", "native", "new",
+    "nil", "noexcept", "none", "null", "nullptr", "operator", "override", "package", "private",
+    "protected", "protocol", "public", "register", "repeat", "rethrow", "rethrows", "return",
+    "self", "short", "signed", "sizeof", "static", "struct", "subscript", "super", "switch",
+    "synchronized", "template", "this", "throw", "throws", "transient", "true", "try",
+    "typealias", "typedef", "typename", "typeof", "union", "unsigned", "using", "var", "virtual",
+    "void", "volatile", "where", "while", "with", "yield",
 ];
 
 /// Validated scalar wire kind inside a [`FlatOpScalarField`].
@@ -69,7 +70,7 @@ impl ScalarKind {
     pub const fn cxx_default(self) -> &'static str {
         match self {
             Self::U32 => "0u",
-            Self::ColorRgba => "{}",
+            Self::ColorRgba => "",
             Self::F32Finite | Self::F32NonNegative => "0.0f",
         }
     }
@@ -237,15 +238,38 @@ impl<'a> FlatOpStreamModel<'a> {
         let mut has_point_slice = false;
         let mut has_color = false;
 
+        let stream_snake = spell::snake(desc.name);
+        if RESERVED_NAMES.contains(&stream_snake.as_str()) {
+            return Err(err(format!(
+                "stream name `{}` collides with a reserved keyword",
+                desc.name
+            )));
+        }
+
         for op in desc.ops {
             if !is_pascal_ident(op.name) {
                 return Err(err(format!("op `{}` must match `[A-Z][A-Za-z0-9]*`", op.name)));
             }
+            let op_snake = spell::snake(op.name);
+            let op_camel = spell::camel(op.name);
+            if RESERVED_NAMES.contains(&op_snake.as_str())
+                || RESERVED_NAMES.contains(&op_camel.as_str())
+            {
+                return Err(err(format!(
+                    "op `{}` collides with a reserved keyword",
+                    op.name
+                )));
+            }
             if !seen_op_names.insert(op.name) {
                 return Err(err(format!("duplicate op name `{}`", op.name)));
             }
-            if op.opcode == 0 {
-                return Err(err(format!("op `{}` opcode must be >= 1", op.name)));
+            if op.opcode == 0 || op.opcode > i32::MAX as u32 {
+                return Err(err(format!(
+                    "op `{}` opcode {} must be in 1..={}",
+                    op.name,
+                    op.opcode,
+                    i32::MAX
+                )));
             }
             if !seen_opcodes.insert(op.opcode) {
                 return Err(err(format!("duplicate opcode {} on `{}`", op.opcode, op.name)));
@@ -263,8 +287,8 @@ impl<'a> FlatOpStreamModel<'a> {
                     )));
                 }
                 let camel = spell::camel(field.name);
-                if RESERVED_FIELD_NAMES.contains(&field.name)
-                    || RESERVED_FIELD_NAMES.contains(&camel.as_str())
+                if RESERVED_NAMES.contains(&field.name)
+                    || RESERVED_NAMES.contains(&camel.as_str())
                 {
                     return Err(err(format!(
                         "op `{}` field `{}` collides with a reserved keyword",
@@ -375,8 +399,8 @@ impl<'a> FlatOpStreamModel<'a> {
 
             ops.push(FlatOpModel {
                 name: op.name,
-                snake: spell::snake(op.name),
-                camel: spell::camel(op.name),
+                snake: op_snake,
+                camel: op_camel,
                 screaming: spell::screaming(op.name),
                 opcode: op.opcode,
                 scope_role,
@@ -445,7 +469,7 @@ impl<'a> FlatOpStreamModel<'a> {
 
         Ok(Self {
             name: desc.name,
-            snake: spell::snake(desc.name),
+            snake: stream_snake,
             screaming: spell::screaming(desc.name),
             kind_name: desc.kind_name,
             kind: U64Split::new(Key64::of(desc.kind_name).0),
