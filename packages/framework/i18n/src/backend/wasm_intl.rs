@@ -1,12 +1,16 @@
 //! Browser `Intl.*` bindings for `wasm32` targets via a tiny `wasm_bindgen(inline_js = ...)` shim.
 //!
-//! All calls pass typed scalars/strings with direct binary FFI and catch
-//! runtime errors gracefully so [`crate::backend::NativeI18nBackend`] can fall
-//! back cleanly when an `Intl` API is absent or rejects an input.
+//! All calls pass typed scalars/strings with direct binary FFI, reuse a single
+//! bounded 64-entry FIFO cache (`_cached`) across all `Intl.*` formatters and
+//! `Intl.Locale` week-info lookups so untrusted locale tags cannot cause
+//! unbounded memory growth, and catch runtime errors gracefully so
+//! [`crate::backend::NativeI18nBackend`] can fall back cleanly.
 
 use wasm_bindgen::prelude::*;
 
-use crate::format::{CalendarDate, DateStyle, NumberFormatOptions, RelativeUnit, Weekday};
+use crate::format::{
+    CalendarDate, CalendarTime, DateStyle, NumberFormatOptions, RelativeUnit, TimeStyle, Weekday,
+};
 use crate::locale::LocaleId;
 use crate::plural::{PluralCategory, PluralKind, PluralOperands};
 
@@ -52,15 +56,27 @@ export function nve_intl_plural(locale, isOrdinal, value, fracDigits) {
   }
 }
 
-export function nve_intl_format_number(locale, value, useGrouping, minFrac, maxFrac) {
+export function nve_intl_format_number(locale, value, useGrouping, minFrac, maxFrac, styleCode, roundCode) {
   try {
     if (typeof Intl === "undefined" || typeof Intl.NumberFormat !== "function") return undefined;
-    const key = "n|" + locale + "|" + (useGrouping ? 1 : 0) + "|" + minFrac + "|" + maxFrac;
+    const key = "n|" + locale + "|" + (useGrouping ? 1 : 0) + "|" + minFrac + "|" + maxFrac + "|" + styleCode + "|" + roundCode;
     const nf = _cached(key, () => {
       const opts = { useGrouping: !!useGrouping };
+      if (styleCode === 1) opts.style = "percent";
+      else if (styleCode === 2) opts.notation = "scientific";
       if (minFrac >= 0) opts.minimumFractionDigits = minFrac;
       if (maxFrac >= 0) opts.maximumFractionDigits = maxFrac;
-      return new Intl.NumberFormat(locale, opts);
+      if (roundCode === 1) opts.roundingMode = "halfEven";
+      else if (roundCode === 2) opts.roundingMode = "floor";
+      else if (roundCode === 3) opts.roundingMode = "ceil";
+      else if (roundCode === 4) opts.roundingMode = "trunc";
+      else opts.roundingMode = "halfExpand";
+      try {
+        return new Intl.NumberFormat(locale, opts);
+      } catch {
+        delete opts.roundingMode;
+        return new Intl.NumberFormat(locale, opts);
+      }
     });
     return nf.format(Object.is(value, -0) ? 0 : value);
   } catch {
@@ -104,6 +120,19 @@ export function nve_intl_format_date(locale, year, month, day, styleCode) {
   }
 }
 
+export function nve_intl_format_time(locale, hour, minute, second, styleCode) {
+  try {
+    if (typeof Intl === "undefined" || typeof Intl.DateTimeFormat !== "function") return undefined;
+    const style = styleCode === 0 ? "short" : "medium";
+    const key = "t|" + locale + "|" + style;
+    const dtf = _cached(key, () => new Intl.DateTimeFormat(locale, { timeStyle: style, timeZone: "UTC" }));
+    const dt = new Date(Date.UTC(2026, 0, 1, hour, minute, second));
+    return dtf.format(dt);
+  } catch {
+    return undefined;
+  }
+}
+
 export function nve_intl_format_relative(locale, value, unit) {
   try {
     if (typeof Intl === "undefined" || typeof Intl.RelativeTimeFormat !== "function") return undefined;
@@ -118,10 +147,11 @@ export function nve_intl_format_relative(locale, value, unit) {
 export function nve_intl_first_day_of_week(locale) {
   try {
     if (typeof Intl === "undefined" || typeof Intl.Locale !== "function") return 0;
-    const loc = new Intl.Locale(locale);
-    const info = typeof loc.getWeekInfo === "function" ? loc.getWeekInfo() : loc.weekInfo;
-    if (!info || typeof info.firstDay !== "number") return 0;
-    return info.firstDay;
+    return _cached("w|" + locale, () => {
+      const loc = new Intl.Locale(locale);
+      const info = typeof loc.getWeekInfo === "function" ? loc.getWeekInfo() : loc.weekInfo;
+      return info && typeof info.firstDay === "number" ? info.firstDay : 0;
+    });
   } catch {
     return 0;
   }
@@ -135,6 +165,8 @@ extern "C" {
         use_grouping: bool,
         min_frac: i32,
         max_frac: i32,
+        style_code: u8,
+        round_code: u8,
     ) -> Option<String>;
     fn nve_intl_format_integer(locale: &str, value: i64) -> Option<String>;
     fn nve_intl_format_currency(locale: &str, amount: f64, currency: &str) -> Option<String>;
@@ -143,6 +175,13 @@ extern "C" {
         year: i32,
         month: u8,
         day: u8,
+        style_code: u8,
+    ) -> Option<String>;
+    fn nve_intl_format_time(
+        locale: &str,
+        hour: u8,
+        minute: u8,
+        second: u8,
         style_code: u8,
     ) -> Option<String>;
     fn nve_intl_format_relative(locale: &str, value: i64, unit: &str) -> Option<String>;
@@ -178,7 +217,17 @@ pub fn format_number(locale: &LocaleId, value: f64, opts: NumberFormatOptions) -
         .max_fraction_digits
         .map(|v| i32::try_from(v.min(20)).unwrap_or(20))
         .unwrap_or(-1);
-    nve_intl_format_number(&tag, value, opts.use_grouping, min_frac, max_frac)
+    let style_code = opts.style as u8;
+    let round_code = opts.rounding_mode as u8;
+    nve_intl_format_number(
+        &tag,
+        value,
+        opts.use_grouping,
+        min_frac,
+        max_frac,
+        style_code,
+        round_code,
+    )
 }
 
 pub fn format_integer(locale: &LocaleId, value: i64) -> Option<String> {
@@ -201,6 +250,15 @@ pub fn format_date(locale: &LocaleId, date: CalendarDate, style: DateStyle) -> O
     nve_intl_format_date(&tag, date.year, date.month, date.day, style_code)
 }
 
+pub fn format_time(locale: &LocaleId, time: CalendarTime, style: TimeStyle) -> Option<String> {
+    let tag = locale.canonical_tag();
+    let style_code = match style {
+        TimeStyle::Short => 0,
+        TimeStyle::Medium => 1,
+    };
+    nve_intl_format_time(&tag, time.hour, time.minute, time.second, style_code)
+}
+
 pub fn format_relative_time(
     locale: &LocaleId,
     value: i64,
@@ -213,15 +271,9 @@ pub fn format_relative_time(
 pub fn first_day_of_week(locale: &LocaleId) -> Option<Weekday> {
     let tag = locale.canonical_tag();
     // ISO 8601 weekday numbering returned by `Intl.Locale.weekInfo.firstDay`:
-    // 1 = Monday .. 6 = Saturday, 7 = Sunday.
-    match nve_intl_first_day_of_week(&tag) {
-        1 => Some(Weekday::Monday),
-        2 => Some(Weekday::Tuesday),
-        3 => Some(Weekday::Wednesday),
-        4 => Some(Weekday::Thursday),
-        5 => Some(Weekday::Friday),
-        6 => Some(Weekday::Saturday),
-        7 => Some(Weekday::Sunday),
-        _ => None,
-    }
+    // 1 = Monday .. 6 = Saturday, 7 = Sunday (`idx % 7` maps directly onto `ALL_FROM_SUNDAY`).
+    let iso_day = nve_intl_first_day_of_week(&tag);
+    (1..=7)
+        .contains(&iso_day)
+        .then(|| Weekday::from_sunday_index(usize::from(iso_day)))
 }

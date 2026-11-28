@@ -3,7 +3,7 @@
 
 use nve_i18n::{
     IconMirrorPolicy, LocaleId, PluralCategory, PluralKind, PluralOperands, TextDirection,
-    plural_category, plural_category_for_int, should_mirror_icon,
+    UnicodeHourCycle, Weekday, plural_category, plural_category_for_int, should_mirror_icon,
 };
 
 fn loc(tag: &str) -> LocaleId {
@@ -60,12 +60,89 @@ fn bcp47_rejects_malformed_locales() {
         "de-CH-1901-1901",
         "en US",
         "en-U$",
+        "en-US-u",
+        "en-US-u-",
+        "en-US-u-fw",
+        "en-US-u-fw-monday",
+        "en-US-u-fw-mon-tue",
+        "en-US-u-fw-mon-fw-sun",
+        "en-US-u-hc-h25",
+        "en-US-u-hc-12",
+        "en-US-u-hc-h12-h23",
+        "en-US-u-ca",
+        "en-US-u-ca-gregorian",
+        "en-US-u-ca-1901",
+        "en-US-u-ca-gregory-1901",
+        "en-US-u-ca-gregory-ca-japanese",
+        "en-US-u-nu",
+        "en-US-u-nu-ab",
+        "en-US-u-nu-latn-arab",
+        "en-US-u-nu-123",
+        "en-US-u-zz-foo",
+        "en-US-u-fw-mon-u-hc-h12",
+        "en-US-x-private",
     ] {
         assert!(
             LocaleId::parse(bad).is_err(),
             "expected invalid locale error for '{bad}'"
         );
     }
+}
+
+#[test]
+fn bcp47_unicode_u_extensions_parse_canonicalize_roundtrip_and_parent_strip() {
+    let full = loc("EN_us_U_NU_LATN_HC_H23_FW_MON_CA_JAPANESE");
+    assert_eq!(full.language(), "en");
+    assert_eq!(full.region(), Some("US"));
+    assert!(full.has_extensions());
+    assert_eq!(full.calendar(), Some("japanese"));
+    assert_eq!(full.first_day_of_week_override(), Some(Weekday::Monday));
+    assert_eq!(full.hour_cycle(), Some(UnicodeHourCycle::H23));
+    assert_eq!(full.numbering_system(), Some("latn"));
+    assert_eq!(
+        full.canonical_tag(),
+        "en-US-u-ca-japanese-fw-mon-hc-h23-nu-latn"
+    );
+    assert_eq!(full.to_string(), "en-US-u-ca-japanese-fw-mon-hc-h23-nu-latn");
+    assert_eq!(loc(&full.to_string()), full);
+
+    // Compound multi-subtag calendar (`islamic-umalqura`) followed by `-nu-arab`
+    let islamic = loc("ar-SA-u-ca-ISLAMIC-UMALQURA-nu-ARAB");
+    assert_eq!(islamic.calendar(), Some("islamic-umalqura"));
+    assert_eq!(islamic.numbering_system(), Some("arab"));
+    assert_eq!(islamic.canonical_tag(), "ar-SA-u-ca-islamic-umalqura-nu-arab");
+    assert_eq!(loc(&islamic.canonical_tag()), islamic);
+
+    // All 7 weekdays & 4 hour cycles
+    for (tag, expected_fw) in [
+        ("en-u-fw-sun", Weekday::Sunday),
+        ("en-u-fw-mon", Weekday::Monday),
+        ("en-u-fw-tue", Weekday::Tuesday),
+        ("en-u-fw-wed", Weekday::Wednesday),
+        ("en-u-fw-thu", Weekday::Thursday),
+        ("en-u-fw-fri", Weekday::Friday),
+        ("en-u-fw-sat", Weekday::Saturday),
+    ] {
+        let parsed = loc(tag);
+        assert_eq!(parsed.first_day_of_week_override(), Some(expected_fw));
+        assert_eq!(parsed.canonical_tag(), tag);
+    }
+    for (tag, expected_hc) in [
+        ("de-DE-u-hc-h11", UnicodeHourCycle::H11),
+        ("de-DE-u-hc-h12", UnicodeHourCycle::H12),
+        ("de-DE-u-hc-h23", UnicodeHourCycle::H23),
+        ("de-DE-u-hc-h24", UnicodeHourCycle::H24),
+    ] {
+        let parsed = loc(tag);
+        assert_eq!(parsed.hour_cycle(), Some(expected_hc));
+        assert_eq!(parsed.canonical_tag(), tag);
+    }
+
+    // Parent & fallback chain strip `-u-` extensions first so catalog bundles resolve seamlessly
+    let ext_zh = loc("zh-Hans-CN-u-fw-mon-hc-h23");
+    assert_eq!(ext_zh.parent(), Some(loc("zh-Hans-CN")));
+    let available = vec![loc("zh-Hans"), loc("en-US")];
+    assert_eq!(ext_zh.best_match(&available), Some(&loc("zh-Hans")));
 }
 
 #[test]

@@ -273,7 +273,19 @@ fn date_range_reversed_normalization_hover_preview_and_keyboard_selection() {
     );
     assert!(!range.is_open());
     assert_eq!(range.anchor(), None);
-    assert_eq!(range.formatted_selected(DateStyle::Short).as_deref(), Some("3/10/2024 – 3/15/2024"));
+    let expected_short = format!(
+        "{} – {}",
+        nve_i18n::format_date(&loc("en-US"), d(2024, 3, 10), DateStyle::Short),
+        nve_i18n::format_date(&loc("en-US"), d(2024, 3, 15), DateStyle::Short),
+    );
+    assert_eq!(
+        range.formatted_selected(DateStyle::Short).as_deref(),
+        Some(expected_short.as_str())
+    );
+    assert_eq!(
+        range.formatted_selected(DateStyle::Medium).as_deref(),
+        Some("Mar 10, 2024 – Mar 15, 2024")
+    );
 
     // Keyboard range selection + Escape cancels mid-selection anchor cleanly.
     range.open();

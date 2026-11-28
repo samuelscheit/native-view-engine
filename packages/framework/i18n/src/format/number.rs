@@ -1,147 +1,15 @@
-//! Locale-aware decimal, integer, and currency formatting.
+//! Locale-aware decimal, integer, percentage, scientific, and currency formatting.
 
 #[cfg(feature = "builtin-fallback")]
+use std::fmt::Write as _;
+
+#[cfg(feature = "builtin-fallback")]
+use crate::format::number_types::{numbering_system_digits, push_digits_mapped};
+pub use crate::format::number_types::{
+    Currency, LocaleMetadata, MeasurementSystem, NumberFormatOptions, NumberStyle, RoundingMode,
+};
+#[cfg(feature = "builtin-fallback")]
 use crate::locale::LocaleId;
-
-/// Formatting options for decimal numbers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NumberFormatOptions {
-    /// Whether to insert locale thousands/lakh grouping separators (default `true`).
-    pub use_grouping: bool,
-    /// Minimum fraction digits to display (pads with trailing zeros).
-    pub min_fraction_digits: Option<u32>,
-    /// Maximum fraction digits to display (rounds half-away-from-zero).
-    pub max_fraction_digits: Option<u32>,
-}
-
-impl Default for NumberFormatOptions {
-    fn default() -> Self {
-        Self {
-            use_grouping: true,
-            min_fraction_digits: None,
-            max_fraction_digits: None,
-        }
-    }
-}
-
-/// Well-known ISO-4217 currencies with built-in symbol and minor-unit metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Currency {
-    Usd,
-    Eur,
-    Gbp,
-    Jpy,
-    Chf,
-    Inr,
-    Cny,
-    Krw,
-    Cad,
-    Aud,
-    Brl,
-    Pln,
-    Rub,
-    Sek,
-    Czk,
-    Try,
-    Vnd,
-    Aed,
-    Sar,
-    Kwd,
-    Bhd,
-}
-
-impl Currency {
-    /// Returns the uppercase 3-letter ISO-4217 code.
-    pub const fn as_code(self) -> &'static str {
-        match self {
-            Self::Usd => "USD",
-            Self::Eur => "EUR",
-            Self::Gbp => "GBP",
-            Self::Jpy => "JPY",
-            Self::Chf => "CHF",
-            Self::Inr => "INR",
-            Self::Cny => "CNY",
-            Self::Krw => "KRW",
-            Self::Cad => "CAD",
-            Self::Aud => "AUD",
-            Self::Brl => "BRL",
-            Self::Pln => "PLN",
-            Self::Rub => "RUB",
-            Self::Sek => "SEK",
-            Self::Czk => "CZK",
-            Self::Try => "TRY",
-            Self::Vnd => "VND",
-            Self::Aed => "AED",
-            Self::Sar => "SAR",
-            Self::Kwd => "KWD",
-            Self::Bhd => "BHD",
-        }
-    }
-
-    /// Parses an ISO-4217 3-letter currency code (case-insensitive).
-    pub fn from_code(code: &str) -> Option<Self> {
-        let up = code.to_ascii_uppercase();
-        match up.as_str() {
-            "USD" => Some(Self::Usd),
-            "EUR" => Some(Self::Eur),
-            "GBP" => Some(Self::Gbp),
-            "JPY" => Some(Self::Jpy),
-            "CHF" => Some(Self::Chf),
-            "INR" => Some(Self::Inr),
-            "CNY" => Some(Self::Cny),
-            "KRW" => Some(Self::Krw),
-            "CAD" => Some(Self::Cad),
-            "AUD" => Some(Self::Aud),
-            "BRL" => Some(Self::Brl),
-            "PLN" => Some(Self::Pln),
-            "RUB" => Some(Self::Rub),
-            "SEK" => Some(Self::Sek),
-            "CZK" => Some(Self::Czk),
-            "TRY" => Some(Self::Try),
-            "VND" => Some(Self::Vnd),
-            "AED" => Some(Self::Aed),
-            "SAR" => Some(Self::Sar),
-            "KWD" => Some(Self::Kwd),
-            "BHD" => Some(Self::Bhd),
-            _ => None,
-        }
-    }
-
-    /// Standard ISO-4217 minor-unit decimal digits (e.g. `2` for USD/EUR, `0` for JPY/KRW/VND, `3` for KWD/BHD).
-    pub const fn minor_units(self) -> u32 {
-        match self {
-            Self::Jpy | Self::Krw | Self::Vnd => 0,
-            Self::Kwd | Self::Bhd => 3,
-            _ => 2,
-        }
-    }
-
-    /// Default display symbol for this currency.
-    pub const fn symbol(self) -> &'static str {
-        match self {
-            Self::Usd => "$",
-            Self::Eur => "€",
-            Self::Gbp => "£",
-            Self::Jpy | Self::Cny => "¥",
-            Self::Chf => "CHF",
-            Self::Inr => "₹",
-            Self::Krw => "₩",
-            Self::Cad => "CA$",
-            Self::Aud => "A$",
-            Self::Brl => "R$",
-            Self::Pln => "zł",
-            Self::Rub => "₽",
-            Self::Sek => "kr",
-            Self::Czk => "Kč",
-            Self::Try => "₺",
-            Self::Vnd => "₫",
-            Self::Aed => "AED",
-            Self::Sar => "SAR",
-            Self::Kwd => "KWD",
-            Self::Bhd => "BHD",
-        }
-    }
-}
 
 /// Locale-specific decimal and grouping symbols used by [`crate::BuiltinI18nBackend`].
 #[cfg(feature = "builtin-fallback")]
@@ -155,8 +23,17 @@ pub struct NumberSymbols {
 
 #[cfg(feature = "builtin-fallback")]
 impl NumberSymbols {
-    /// Resolves CLDR decimal and grouping conventions for `locale`.
+    /// Resolves CLDR decimal and grouping conventions for `locale` (honoring `-u-nu-*`).
     pub fn for_locale(locale: &LocaleId) -> Self {
+        if matches!(locale.numbering_system(), Some("arab" | "arabext")) {
+            return Self {
+                decimal_sep: "\u{066B}",
+                group_sep: "\u{066C}",
+                primary_group: 3,
+                secondary_group: 3,
+            };
+        }
+
         let lang = locale.language();
         let region = locale.region();
 
@@ -193,7 +70,10 @@ impl NumberSymbols {
         }
 
         // Space-grouped comma-decimal locales (Slavic, Nordic, Baltic)
-        if matches!(lang, "pl" | "ru" | "uk" | "cs" | "sk" | "sv" | "fi" | "nb" | "nn" | "no" | "et") {
+        if matches!(
+            lang,
+            "pl" | "ru" | "uk" | "cs" | "sk" | "sv" | "fi" | "nb" | "nn" | "no" | "et"
+        ) {
             return Self {
                 decimal_sep: ",",
                 group_sep: "\u{00A0}",
@@ -203,7 +83,10 @@ impl NumberSymbols {
         }
 
         // Dot-grouped comma-decimal locales (Germanic/Romance/Turkish/Vietnamese/Greek)
-        if matches!(lang, "de" | "nl" | "es" | "it" | "pt" | "tr" | "vi" | "el" | "da" | "id") {
+        if matches!(
+            lang,
+            "de" | "nl" | "es" | "it" | "pt" | "tr" | "vi" | "el" | "da" | "id"
+        ) {
             return Self {
                 decimal_sep: ",",
                 group_sep: ".",
@@ -222,17 +105,110 @@ impl NumberSymbols {
     }
 }
 
+/// Resolves builtin regional metadata (`decimal_separator`, `grouping_separator`,
+/// currency hints, and `MeasurementSystem`).
+#[cfg(feature = "builtin-fallback")]
+pub(crate) fn builtin_locale_metadata(locale: &LocaleId) -> LocaleMetadata {
+    let syms = NumberSymbols::for_locale(locale);
+    let measurement_system = match locale.region() {
+        Some("US" | "LR" | "MM") => MeasurementSystem::Us,
+        Some("GB") => MeasurementSystem::Uk,
+        _ => MeasurementSystem::Metric,
+    };
+    let currency_code = match locale.region() {
+        Some("US") => Some("USD"),
+        Some("GB") => Some("GBP"),
+        Some("JP") => Some("JPY"),
+        Some("CH") => Some("CHF"),
+        Some("IN") => Some("INR"),
+        Some("CN") => Some("CNY"),
+        Some("KR") => Some("KRW"),
+        Some("SE") => Some("SEK"),
+        Some("CZ") => Some("CZK"),
+        Some("PL") => Some("PLN"),
+        Some("DE" | "FR" | "ES" | "IT" | "NL" | "AT" | "BE" | "FI" | "PT" | "IE") => Some("EUR"),
+        _ => None,
+    };
+    let currency_symbol = currency_code
+        .and_then(Currency::from_code)
+        .map(|c| c.symbol().to_owned());
+
+    LocaleMetadata {
+        decimal_separator: syms.decimal_sep.to_owned(),
+        grouping_separator: syms.group_sep.to_owned(),
+        currency_symbol,
+        currency_code: currency_code.map(str::to_owned),
+        measurement_system,
+    }
+}
+
+/// Formats `value` directly into `out` with zero heap allocations (when `out` has capacity).
+#[cfg(feature = "builtin-fallback")]
+pub(crate) fn builtin_format_integer_into(locale: &LocaleId, value: i64, out: &mut String) {
+    let syms = NumberSymbols::for_locale(locale);
+    let digits_map = numbering_system_digits(locale.numbering_system());
+    if value < 0 {
+        out.push('-');
+    }
+    let mut buf = [0u8; 20];
+    let digits = write_u64_ascii(value.unsigned_abs(), &mut buf);
+    write_grouped_digits_into(digits, syms, digits_map, out);
+}
+
 #[cfg(feature = "builtin-fallback")]
 pub(crate) fn builtin_format_integer(locale: &LocaleId, value: i64) -> String {
-    let syms = NumberSymbols::for_locale(locale);
-    let neg = value < 0;
-    let abs_digits = value.unsigned_abs().to_string();
-    let grouped = group_digits(&abs_digits, syms);
-    if neg {
-        format!("-{grouped}")
-    } else {
-        grouped
+    let mut out = String::with_capacity(28);
+    builtin_format_integer_into(locale, value, &mut out);
+    out
+}
+
+#[cfg(feature = "builtin-fallback")]
+pub(crate) fn builtin_format_number_into(
+    locale: &LocaleId,
+    value: f64,
+    opts: NumberFormatOptions,
+    out: &mut String,
+) {
+    if value.is_nan() {
+        out.push_str("NaN");
+        return;
     }
+    if value.is_infinite() {
+        if value.is_sign_negative() {
+            out.push_str("-∞");
+        } else {
+            out.push('∞');
+        }
+        return;
+    }
+
+    let syms = NumberSymbols::for_locale(locale);
+    let digits_map = numbering_system_digits(locale.numbering_system());
+    let normalized = if value == 0.0 { 0.0 } else { value };
+
+    match opts.style {
+        NumberStyle::Scientific => {
+            format_scientific_into(normalized, syms, digits_map, opts, out);
+            return;
+        }
+        NumberStyle::Percent => {
+            let scaled = normalized * 100.0;
+            let eff_opts = NumberFormatOptions {
+                style: NumberStyle::Decimal,
+                max_fraction_digits: opts.max_fraction_digits.or(Some(0)),
+                ..opts
+            };
+            format_decimal_into(scaled, syms, digits_map, eff_opts, out);
+            if matches!(locale.language(), "de" | "fr" | "sv" | "fi" | "cs" | "sk") {
+                out.push('\u{00A0}');
+            }
+            out.push('%');
+            return;
+        }
+        NumberStyle::Decimal => {}
+    }
+
+    format_decimal_into(normalized, syms, digits_map, opts, out);
 }
 
 #[cfg(feature = "builtin-fallback")]
@@ -241,52 +217,89 @@ pub(crate) fn builtin_format_number(
     value: f64,
     opts: NumberFormatOptions,
 ) -> String {
-    if value.is_nan() {
-        return "NaN".to_owned();
-    }
-    if value.is_infinite() {
-        return if value.is_sign_negative() {
-            "-∞".to_owned()
-        } else {
-            "∞".to_owned()
-        };
-    }
-
-    let syms = NumberSymbols::for_locale(locale);
-    let normalized = if value == 0.0 { 0.0 } else { value };
-    let negative = normalized.is_sign_negative();
-    let abs = normalized.abs();
-
-    let (int_digits, frac_digits) = format_abs_decimal_parts(abs, opts);
-    let is_zero = int_digits.bytes().all(|b| b == b'0')
-        && frac_digits.as_deref().is_none_or(|f| f.bytes().all(|b| b == b'0'));
-
-    let int_out = if opts.use_grouping {
-        group_digits(&int_digits, syms)
-    } else {
-        int_digits
-    };
-
-    let mut out = String::with_capacity(int_out.len() + 16);
-    if negative && !is_zero {
-        out.push('-');
-    }
-    out.push_str(&int_out);
-    if let Some(frac) = frac_digits
-        && !frac.is_empty()
-    {
-        out.push_str(syms.decimal_sep);
-        out.push_str(&frac);
-    }
+    let mut out = String::with_capacity(28);
+    builtin_format_number_into(locale, value, opts, &mut out);
     out
 }
 
 #[cfg(feature = "builtin-fallback")]
-fn format_abs_decimal_parts(abs: f64, opts: NumberFormatOptions) -> (String, Option<String>) {
+fn format_decimal_into(
+    normalized: f64,
+    syms: NumberSymbols,
+    digits_map: Option<[char; 10]>,
+    opts: NumberFormatOptions,
+    out: &mut String,
+) {
+    let negative = normalized.is_sign_negative();
+    let abs = normalized.abs();
+    let (int_digits, frac_digits) = format_abs_decimal_parts(abs, negative, opts);
+    let is_zero = int_digits.bytes().all(|b| b == b'0')
+        && frac_digits
+            .as_deref()
+            .is_none_or(|f| f.bytes().all(|b| b == b'0'));
+
+    if negative && !is_zero {
+        out.push('-');
+    }
+    if opts.use_grouping {
+        write_grouped_digits_into(&int_digits, syms, digits_map, out);
+    } else {
+        push_digits_mapped(&int_digits, digits_map, out);
+    }
+    if let Some(frac) = frac_digits
+        && !frac.is_empty()
+    {
+        out.push_str(syms.decimal_sep);
+        push_digits_mapped(&frac, digits_map, out);
+    }
+}
+
+#[cfg(feature = "builtin-fallback")]
+fn format_scientific_into(
+    normalized: f64,
+    syms: NumberSymbols,
+    digits_map: Option<[char; 10]>,
+    opts: NumberFormatOptions,
+    out: &mut String,
+) {
+    let negative = normalized.is_sign_negative();
+    let abs = normalized.abs();
+    let (mantissa, exp) = if abs == 0.0 {
+        (0.0, 0i32)
+    } else {
+        let e = abs.log10().floor() as i32;
+        (abs / 10_f64.powi(e), e)
+    };
+    let mant_opts = NumberFormatOptions {
+        use_grouping: false,
+        style: NumberStyle::Decimal,
+        ..opts
+    };
+    let signed_mant = if negative && abs != 0.0 {
+        -mantissa
+    } else {
+        mantissa
+    };
+    format_decimal_into(signed_mant, syms, digits_map, mant_opts, out);
+    out.push('E');
+    if exp < 0 {
+        out.push('-');
+    }
+    let mut buf = [0u8; 20];
+    let exp_str = write_u64_ascii(exp.unsigned_abs() as u64, &mut buf);
+    push_digits_mapped(exp_str, digits_map, out);
+}
+
+#[cfg(feature = "builtin-fallback")]
+fn format_abs_decimal_parts(
+    abs: f64,
+    negative: bool,
+    opts: NumberFormatOptions,
+) -> (String, Option<String>) {
     let raw = match opts.max_fraction_digits {
         Some(max_f) => {
             let p = (max_f as usize).min(18);
-            round_half_away_from_zero(abs, p)
+            round_decimal_digits(abs, negative, p, opts.rounding_mode)
         }
         None => {
             let s = format!("{abs}");
@@ -328,12 +341,11 @@ fn format_abs_decimal_parts(abs: f64, opts: NumberFormatOptions) -> (String, Opt
     (int_part, frac_final)
 }
 
-/// Formats `abs` to `prec` fractional digits using half-away-from-zero decimal
-/// rounding with exact digit carry propagation (e.g. `999.995` -> `1000.00`).
+/// Formats `abs` to `prec` fractional digits using `mode` with exact decimal
+/// carry propagation (e.g. `999.995` -> `1000.00`).
 #[cfg(feature = "builtin-fallback")]
-fn round_half_away_from_zero(abs: f64, prec: usize) -> String {
-    // Expand with 2 extra digits to determine exact rounding digit reliably.
-    let work_prec = (prec + 2).min(20);
+fn round_decimal_digits(abs: f64, negative: bool, prec: usize, mode: RoundingMode) -> String {
+    let work_prec = (prec + 4).min(20);
     let expanded = format!("{abs:.work_prec$}");
     let (int_str, frac_str) = expanded.split_once('.').unwrap_or((&expanded, ""));
 
@@ -342,10 +354,21 @@ fn round_half_away_from_zero(abs: f64, prec: usize) -> String {
     let keep_frac = frac_str.len().min(prec);
     digits.extend(frac_str.as_bytes()[..keep_frac].iter().map(|b| b - b'0'));
 
-    let round_up = frac_str
-        .as_bytes()
-        .get(prec)
-        .is_some_and(|&b| b >= b'5');
+    let rem = frac_str.as_bytes().get(prec..).unwrap_or(&[]);
+    let first_rem = rem.first().copied().unwrap_or(b'0');
+    let any_rem_nonzero = rem.iter().any(|&b| b != b'0');
+    let tail_after_first = rem.get(1..).is_some_and(|s| s.iter().any(|&b| b != b'0'));
+    let last_kept_odd = digits.last().is_some_and(|&d| d % 2 == 1);
+
+    let round_up = match mode {
+        RoundingMode::HalfAwayFromZero => first_rem >= b'5',
+        RoundingMode::HalfEven => {
+            first_rem > b'5' || (first_rem == b'5' && (tail_after_first || last_kept_odd))
+        }
+        RoundingMode::Floor => negative && any_rem_nonzero,
+        RoundingMode::Ceiling => !negative && any_rem_nonzero,
+        RoundingMode::Truncate => false,
+    };
 
     if round_up {
         let mut carry = 1u8;
@@ -380,27 +403,49 @@ fn round_half_away_from_zero(abs: f64, prec: usize) -> String {
 }
 
 #[cfg(feature = "builtin-fallback")]
-fn group_digits(digits: &str, syms: NumberSymbols) -> String {
+fn write_u64_ascii(mut v: u64, buf: &mut [u8; 20]) -> &str {
+    if v == 0 {
+        buf[19] = b'0';
+        return std::str::from_utf8(&buf[19..]).unwrap_or("0");
+    }
+    let mut pos = 20usize;
+    while v > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    std::str::from_utf8(&buf[pos..]).unwrap_or("0")
+}
+
+#[cfg(feature = "builtin-fallback")]
+fn write_grouped_digits_into(
+    digits: &str,
+    syms: NumberSymbols,
+    digits_map: Option<[char; 10]>,
+    out: &mut String,
+) {
     let len = digits.len();
     if len <= syms.primary_group || syms.group_sep.is_empty() {
-        return digits.to_owned();
+        push_digits_mapped(digits, digits_map, out);
+        return;
     }
-
-    let mut groups: Vec<&str> = Vec::new();
-    let mut end = len;
-    let first_start = end.saturating_sub(syms.primary_group);
-    groups.push(&digits[first_start..end]);
-    end = first_start;
 
     let step = syms.secondary_group.max(1);
-    while end > 0 {
-        let start = end.saturating_sub(step);
-        groups.push(&digits[start..end]);
-        end = start;
-    }
+    let prefix_len = len - syms.primary_group;
+    let first_group = {
+        let r = prefix_len % step;
+        if r == 0 { step } else { r }
+    };
 
-    groups.reverse();
-    groups.join(syms.group_sep)
+    push_digits_mapped(&digits[..first_group], digits_map, out);
+    let mut pos = first_group;
+    while pos < prefix_len {
+        out.push_str(syms.group_sep);
+        push_digits_mapped(&digits[pos..pos + step], digits_map, out);
+        pos += step;
+    }
+    out.push_str(syms.group_sep);
+    push_digits_mapped(&digits[prefix_len..], digits_map, out);
 }
 
 #[cfg(feature = "builtin-fallback")]
@@ -458,6 +503,7 @@ pub(crate) fn builtin_format_currency_code(
         use_grouping: true,
         min_fraction_digits: Some(minor_units),
         max_fraction_digits: Some(minor_units),
+        ..NumberFormatOptions::default()
     };
     let mag_str = builtin_format_number(locale, normalized.abs(), opts);
     assemble_currency(locale, negative, &mag_str, symbol)
@@ -468,20 +514,28 @@ pub(crate) fn builtin_format_currency_code(
 #[cfg(feature = "builtin-fallback")]
 pub fn format_currency_minor(locale: &LocaleId, minor_amount: i64, currency: Currency) -> String {
     let syms = NumberSymbols::for_locale(locale);
+    let digits_map = numbering_system_digits(locale.numbering_system());
     let (symbol, minor_units) = resolve_currency_symbol(locale, currency.as_code());
     let negative = minor_amount < 0;
     let abs = minor_amount.unsigned_abs();
 
-    let mag_str = if minor_units == 0 {
-        group_digits(&abs.to_string(), syms)
+    let mut mag_str = String::with_capacity(28);
+    let mut buf = [0u8; 20];
+    if minor_units == 0 {
+        let d = write_u64_ascii(abs, &mut buf);
+        write_grouped_digits_into(d, syms, digits_map, &mut mag_str);
     } else {
         let scale = 10_u64.pow(minor_units);
         let whole = abs / scale;
         let frac = abs % scale;
-        let whole_grouped = group_digits(&whole.to_string(), syms);
+        let d = write_u64_ascii(whole, &mut buf);
+        write_grouped_digits_into(d, syms, digits_map, &mut mag_str);
+        mag_str.push_str(syms.decimal_sep);
         let width = minor_units as usize;
-        format!("{whole_grouped}{}{frac:0width$}", syms.decimal_sep)
-    };
+        let mut frac_buf = String::with_capacity(width);
+        let _ = write!(&mut frac_buf, "{frac:0width$}");
+        push_digits_mapped(&frac_buf, digits_map, &mut mag_str);
+    }
 
     assemble_currency(locale, negative, &mag_str, symbol)
 }

@@ -42,6 +42,8 @@ pub enum I18nError {
     InvalidNumber { input: String },
     /// Invalid Gregorian calendar date (month/day out of range).
     InvalidDate { year: i32, month: u8, day: u8 },
+    /// Invalid wall-clock time (hour/minute/second out of range).
+    InvalidTime { hour: u8, minute: u8, second: u8 },
     /// Unclosed `{` in an ICU MessageFormat template.
     UnmatchedOpenBrace { offset: usize },
     /// Stray `}` without a matching `{` in an ICU MessageFormat template.
@@ -81,6 +83,13 @@ impl fmt::Display for I18nError {
             Self::InvalidNumber { input } => write!(f, "invalid numeric value '{input}'"),
             Self::InvalidDate { year, month, day } => {
                 write!(f, "invalid calendar date {year:04}-{month:02}-{day:02}")
+            }
+            Self::InvalidTime {
+                hour,
+                minute,
+                second,
+            } => {
+                write!(f, "invalid wall-clock time {hour:02}:{minute:02}:{second:02}")
             }
             Self::UnmatchedOpenBrace { offset } => {
                 write!(f, "unmatched '{{' at byte offset {offset}")
