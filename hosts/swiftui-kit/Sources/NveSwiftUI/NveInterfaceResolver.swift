@@ -11,7 +11,7 @@ public enum NveInterfaceResolutionSource: Equatable, Sendable {
     case explicit
     /// Resolved from `NveStaticInterfaceTable` (App Store static `lib*.a` archives on iOS/tvOS/watchOS/visionOS).
     case staticTable
-    /// Dynamically loaded from an explicit `.dylib` path via `dlopen` / `dlsym`.
+    /// A `.dylib` path the runtime loads (`load_app_module`), for dev hot reload / macOS.
     case dynamicLibrary
     /// Dynamically resolved from the current process image via `dlopen(nil, RTLD_NOW)` / `dlsym`.
     case processSymbol
@@ -84,50 +84,33 @@ public final class NveStaticInterfaceTable: @unchecked Sendable {
 /// optional owned `dlopen` handle and provenance.
 public struct NveResolvedInterface {
     public let getInterface: NveGetInterfaceFn
-    public let dylibHandle: UnsafeMutableRawPointer?
     public let source: NveInterfaceResolutionSource
 
-    public init(getInterface: @escaping NveGetInterfaceFn, dylibHandle: UnsafeMutableRawPointer? = nil, source: NveInterfaceResolutionSource) {
+    public init(getInterface: @escaping NveGetInterfaceFn, source: NveInterfaceResolutionSource) {
         self.getInterface = getInterface
-        self.dylibHandle = dylibHandle
         self.source = source
     }
 }
 
-/// Resolves an app's `nve_get_interface` across static archives (`NveStaticInterfaceTable`) and
-/// dynamic libraries (`dlopen`/`dlsym`), preferring explicit and static registrations over `dlopen`.
+/// Resolves an in-process app's `nve_get_interface`: explicit, a static archive
+/// (`NveStaticInterfaceTable`), or the process image. App `.dylib`s are not resolved here: the
+/// runtime loads them (`NveRuntimeSession.loadAppModule`), so the host never `dlopen`s app code.
 public enum NveInterfaceResolver {
     /// Resolves `symbol` using precedence:
     /// 1. Explicit `getInterface` C function pointer.
-    /// 2. `staticTable` registration (when `dylibPath` is nil or empty).
-    /// 3. Dynamic `dlopen`/`dlsym` from `dylibPath` (dev hot reload / macOS) or process image.
+    /// 2. `staticTable` registration.
+    /// 3. The process image (`dlopen(nil)` / `dlsym`: an app linked into the host binary).
     public static func resolve(
         symbol: String,
         getInterface: NveGetInterfaceFn? = nil,
-        dylibPath: String? = nil,
         staticTable: NveStaticInterfaceTable = .shared
     ) -> NveResolvedInterface? {
         if let getInterface {
             return NveResolvedInterface(getInterface: getInterface, source: .explicit)
         }
-
-        let hasDylibPath = dylibPath.map { !$0.isEmpty } ?? false
-        if !hasDylibPath, let registered = staticTable.resolve(symbol: symbol) {
+        if let registered = staticTable.resolve(symbol: symbol) {
             return NveResolvedInterface(getInterface: registered, source: .staticTable)
         }
-
-        if let dylibPath, !dylibPath.isEmpty {
-            guard let lib = dlopen(dylibPath, RTLD_NOW | RTLD_LOCAL) else {
-                return nil
-            }
-            guard let sym = dlsym(lib, symbol) else {
-                dlclose(lib)
-                return nil
-            }
-            return NveResolvedInterface(
-                getInterface: unsafeBitCast(sym, to: NveGetInterfaceFn.self), dylibHandle: lib, source: .dynamicLibrary)
-        }
-
         guard let processHandle = dlopen(nil, RTLD_NOW),
               let sym = dlsym(processHandle, symbol)
         else {

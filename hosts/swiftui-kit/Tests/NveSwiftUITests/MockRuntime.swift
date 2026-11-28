@@ -156,6 +156,8 @@ final class MockRuntime: @unchecked Sendable {
     private var drained: [NveDirectEvent] = []
 
     var creates = 0, destroys = 0, acquires = 0, releases = 0, ticks = 0, attaches = 0, detaches = 0
+    /// `load_app_module` calls: path and `carry_state`.
+    var loads: [(String, UInt32)] = []
     var propCounts: [UInt32] = []
     var dispatched: [[NveEvent]] = []
     var viewports: [(Float, Float, Float)] = []
@@ -176,7 +178,7 @@ final class MockRuntime: @unchecked Sendable {
         frameId = 1; removed = []; dirty = []; schema = NVE_RUNTIME_SCHEMA_HASH; tickChanged = true
         failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; sceneEpoch = 0; dirtyResources = []
         state = []; emitted = []; drained = []
-        creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0
+        creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0; loads = []
         propCounts = []; dispatched = []; viewports = []; pairedUri = ""; paired = false; restored = []; patches = []
         wake = (nil, nil); measurer = (nil, nil)
     }
@@ -334,7 +336,11 @@ final class MockRuntime: @unchecked Sendable {
             out?.pointee = NveBufferSlice(ptr: m.pin(bytes), len: bytes.count)
             return 0
         }
-        a.load_app_module = { _, _, _ in Int32(NVE_RUNTIME_IO.rawValue) }
+        a.load_app_module = { _, path, carry in
+            let m = MockRuntime.shared
+            m.loads.append((String(decoding: UnsafeBufferPointer(start: path.ptr, count: path.len), as: UTF8.self), carry))
+            return m.status()
+        }
         a.save_state_file = { _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
         a.restore_state_file = { _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
         a.clear_state_file = { _, _ in 0 }

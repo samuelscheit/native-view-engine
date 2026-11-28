@@ -42,7 +42,7 @@ public enum NveSceneRenderer {
         if visible && hasArea {
             if let bg = color(t.background(i)) { ctx.fill(shape, with: .color(bg)) }
             if let image = t.imageSource(i) {
-                drawImage(store: store, image, in: rect, clip: shape, into: &ctx)
+                drawImage(store: store, scene: t.scene, image, in: rect, clip: shape, into: &ctx)
             } else if let input = t.textInput(i) {
                 drawTextInput(input, style: t.textStyle(i), in: rect, into: &ctx)
             } else if let text = t.text(i), !text.isEmpty {
@@ -121,11 +121,12 @@ public enum NveSceneRenderer {
         ctx.draw(resolved, in: box)
     }
 
+    /// Draws an image resource read from `scene`, the scene being drawn (never a second borrow).
     private static func drawImage(
-        store: NveSceneStore, _ image: (resource: UInt32, fit: NveImageFit, tint: NveColor?),
+        store: NveSceneStore, scene: NveScene, _ image: (resource: UInt32, fit: NveImageFit, tint: NveColor?),
         in rect: CGRect, clip: Path, into ctx: inout GraphicsContext
     ) {
-        guard let cgImage = store.image(resource: image.resource),
+        guard let cgImage = store.image(resource: image.resource, in: scene),
               let placement = NveImagePlacement.compute(
                   destination: rect, imageSize: CGSize(width: cgImage.width, height: cgImage.height), fit: image.fit)
         else { return }

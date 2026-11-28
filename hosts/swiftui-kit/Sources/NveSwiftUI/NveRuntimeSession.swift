@@ -120,6 +120,17 @@ public final class NveRuntimeSession {
         try check(api.pointee.attach_app_interface(handle, getInterface))
     }
 
+    /// Loads the app cdylib at `path` through the runtime (`load_app_module`: a private staged
+    /// copy, so a rebuilt file always runs new code; the old module unloads after its app is
+    /// destroyed) and attaches it, replacing the running app or pairing. `carryState` restores the
+    /// running app's state into the new app before it goes live. A failure keeps the running app.
+    public func loadAppModule(path: String, carryState: Bool) throws {
+        var path = path
+        try path.withUTF8 { p in
+            try check(api.pointee.load_app_module(handle, NveStrSlice(ptr: p.baseAddress, len: p.count), carryState ? 1 : 0))
+        }
+    }
+
     public func submitNve2(_ bytes: [UInt8]) throws {
         try bytes.withUnsafeBufferPointer { try check(api.pointee.submit_nve2(handle, NveBufferSlice(ptr: $0.baseAddress, len: $0.count))) }
     }

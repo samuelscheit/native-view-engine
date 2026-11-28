@@ -252,6 +252,10 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(store.scrollOffset(for: ids.scroll), CGPoint(x: 0, y: 40))
         XCTAssertEqual(store.lastRemovedCount, 1)
         XCTAssertEqual(store.scroll(ids.scroll, by: CGVector(dx: 0, dy: 10)), CGPoint(x: 0, y: 50))
+        XCTAssertEqual(store.scrollOffset(for: ids.scroll), CGPoint(x: 0, y: 40), "drawn offsets wait for the frame")
+        m.frameId = 2
+        store.sync()
+        XCTAssertEqual(store.scrollOffset(for: ids.scroll), CGPoint(x: 0, y: 50), "the published frame moves them")
         XCTAssertEqual(store.scrollTarget(at: CGPoint(x: 20, y: 150)), ids.scroll)
         XCTAssertNil(store.scrollTarget(at: CGPoint(x: 20, y: 20)))
         m.hitResult = ids.card.raw
@@ -283,6 +287,10 @@ final class NveRuntimeHostTests: XCTestCase {
         store.sync()
         XCTAssertEqual(store.imageSource(4), .url("a"))
         XCTAssertEqual(store.imageSource(5), .url("b"))
+        // Synced again without a new frame: the cache stays (it used to read as a frame gap).
+        m.resources = [4: url("stale"), 5: url("stale")]
+        store.sync()
+        XCTAssertEqual(store.imageSource(4), .url("a"))
         // Rewritten in place: only the listed id is re-read.
         m.resources = [4: url("a2"), 5: url("b2")]
         m.frameId = 2
@@ -335,9 +343,20 @@ final class NveRuntimeHostTests: XCTestCase {
 
         // A rejected app keeps the running one (the runtime swaps atomically).
         m.failNextWith = -1
-        XCTAssertThrowsError(try controller.attach(NveResolvedInterface(getInterface: noApp, source: .dynamicLibrary)))
+        XCTAssertThrowsError(try controller.attach(NveResolvedInterface(getInterface: noApp, source: .staticTable)))
         XCTAssertEqual(controller.resolutionSource, .explicit)
         XCTAssertEqual(m.detaches, 0, "attach swaps, it never detaches first")
+
+        // `.dylib`s go through the runtime's `load_app_module`; a reload carries the app state.
+        try controller.load(dylibPath: "/apps/libnve_app.dylib")
+        XCTAssertEqual(controller.resolutionSource, .dynamicLibrary)
+        m.failNextWith = -1
+        XCTAssertThrowsError(try controller.reload(dylibPath: "/apps/broken.dylib"))
+        XCTAssertEqual(controller.resolutionSource, .dynamicLibrary, "a failed reload keeps the running module")
+        try controller.reload(dylibPath: "/apps/libnve_app.dylib")
+        XCTAssertEqual(m.loads.map(\.0), ["/apps/libnve_app.dylib", "/apps/broken.dylib", "/apps/libnve_app.dylib"])
+        XCTAssertEqual(m.loads.map(\.1), [0, 1, 1], "only reloads carry state")
+        XCTAssertEqual(m.detaches, 0)
 
         // Unconstrained axes take the laid-out root rect (fallback when it is empty).
         let rootRect = m.scene.rects[NodeId.root.index]

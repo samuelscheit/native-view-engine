@@ -42,7 +42,8 @@ public final class NveSceneStore: ObservableObject {
     /// Decoded `ImageSrc` per resource id, valid while the id's bytes are (see `sync()`).
     private var imageSources: [UInt32: CachedImageSource] = [:]
     private var imagesEpoch: UInt32 = 0
-    private var imagesFrame: UInt64 = 0
+    /// Frame the image cache is valid for (`nil`: none synced yet).
+    private var imagesFrame: UInt64?
 
     private struct CachedImageSource {
         let source: NveImageSource
@@ -67,11 +68,15 @@ public final class NveSceneStore: ObservableObject {
     public func sync() {
         _ = try? session.withScene { scene in
             // Resource ids keep their bytes unless listed in `dirtyResources`; a new scene epoch
-            // (ids reused by another app / pairing) or a skipped frame invalidates every entry.
-            if scene.sceneEpoch != imagesEpoch || scene.frameId != imagesFrame &+ 1 {
-                imageSources.removeAll(keepingCapacity: true)
-            } else {
+            // (ids reused by another app / pairing) or a skipped frame invalidates every entry. A
+            // repeated sync of the same frame changes nothing.
+            let sameEpoch = scene.sceneEpoch == imagesEpoch
+            if sameEpoch, scene.frameId == imagesFrame {
+                // already absorbed
+            } else if sameEpoch, let last = imagesFrame, scene.frameId == last &+ 1 {
                 for id in scene.dirtyResources { imageSources.removeValue(forKey: id) }
+            } else {
+                imageSources.removeAll(keepingCapacity: true)
             }
             imagesEpoch = scene.sceneEpoch
             imagesFrame = scene.frameId
@@ -89,13 +94,12 @@ public final class NveSceneStore: ObservableObject {
 
     public func scrollOffset(for id: NodeId) -> CGPoint { scrollOffsets[id] ?? .zero }
 
-    /// Scrolls `id` by `delta` (clamped by the runtime) and returns the new offset.
+    /// Scrolls `id` by `delta` (clamped by the runtime) and returns the runtime's new scroll
+    /// position. The drawn offsets (``scrollOffset(for:)``) change only with the next published
+    /// frame, so they never run ahead of the scene they shift.
     @discardableResult
     public func scroll(_ id: NodeId, by delta: CGVector) -> CGPoint? {
-        guard let offset = try? session.scroll(id, by: delta) else { return nil }
-        scrollOffsets[id] = offset
-        objectWillChange.send()
-        return offset
+        try? session.scroll(id, by: delta)
     }
 
     /// Topmost interactive node at `point` (runtime hit test, scroll-aware).
@@ -124,11 +128,17 @@ public final class NveSceneStore: ObservableObject {
     }
 
     /// Decoded `ImageSrc` of resource `id`, cached until the runtime republishes the id's bytes.
-    public func imageSource(_ id: UInt32) -> NveImageSource? { cachedImageSource(id)?.source }
+    public func imageSource(_ id: UInt32) -> NveImageSource? { cachedImageSource(id, in: nil)?.source }
 
-    private func cachedImageSource(_ id: UInt32) -> CachedImageSource? {
+    /// Reads a missing entry from `scene` when the caller already borrows it (drawing), else
+    /// borrows the published scene for the read.
+    private func cachedImageSource(_ id: UInt32, in scene: NveScene?) -> CachedImageSource? {
         if let cached = imageSources[id] { return cached }
-        let bytes = try? session.withScene { try session.resource(id, in: $0).bytes }
+        let bytes = if let scene {
+            try? session.resource(id, in: scene).bytes
+        } else {
+            try? session.withScene { try session.resource(id, in: $0).bytes }
+        }
         guard let bytes, let src = NveImageSource(resourceBytes: bytes) else { return nil }
         let key: String? = if case let .encoded(data) = src { "nve.res.image_src#\(Xxh64.hash(data))" } else { nil }
         let cached = CachedImageSource(source: src, encodedKey: key)
@@ -136,9 +146,9 @@ public final class NveSceneStore: ObservableObject {
         return cached
     }
 
-    /// `CGImage` for an `nve.image` resource.
-    public func image(resource id: UInt32) -> CGImage? {
-        guard let cached = cachedImageSource(id) else { return nil }
+    /// `CGImage` for an `nve.image` resource; `scene`: the scene the caller already borrows.
+    public func image(resource id: UInt32, in scene: NveScene? = nil) -> CGImage? {
+        guard let cached = cachedImageSource(id, in: scene) else { return nil }
         switch cached.source {
         case let .url(url): return imageCache.image(for: url)
         case let .encoded(bytes): return imageCache.image(encoded: bytes, key: cached.encodedKey ?? "")

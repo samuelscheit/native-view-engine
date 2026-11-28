@@ -384,10 +384,13 @@ suite_android_compose_kit() {
     "$REPO_ROOT/hosts/compose-kit/run-tests.sh" testDebugUnitTest --console=plain
 }
 
+# The live runtime tests (`NveLiveRuntimeTests`) need libnve_runtime + the host fixture app.
 suite_swiftui_kit() {
+  host_runtime_ffi_libs || return 1
   swift test \
     --package-path "$REPO_ROOT/hosts/swiftui-kit" \
-    --scratch-path "$BUILD_ROOT/swiftui-kit"
+    --scratch-path "$BUILD_ROOT/swiftui-kit" \
+    -Xswiftc -warnings-as-errors
 }
 
 # Live runtime widget tests need libnve_runtime + the kitchen sink; the export fixture's generated
