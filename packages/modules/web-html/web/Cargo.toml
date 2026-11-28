@@ -18,5 +18,12 @@ web-sys = { workspace = true, features = ["DomRect", "HtmlDialogElement", "Mouse
 nve-backend-web = { workspace = true, features = ["ssr"] }
 nve-engine = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "web_html_web_bench"
+harness = false
+
 [lints]
 workspace = true

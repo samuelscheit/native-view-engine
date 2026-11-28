@@ -20,5 +20,12 @@ serde = { workspace = true, optional = true }
 [dev-dependencies]
 nve-abi = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "camera_bench"
+harness = false
+
 [lints]
 workspace = true

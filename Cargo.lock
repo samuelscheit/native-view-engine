@@ -2945,6 +2945,7 @@ dependencies = [
 name = "nve-blur"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-store",
 ]
@@ -2953,6 +2954,7 @@ dependencies = [
 name = "nve-blur-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-backend-web",
  "nve-blur",
  "nve-store",
@@ -2962,6 +2964,7 @@ dependencies = [
 name = "nve-camera"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-codec",
  "nve-store",
@@ -2972,6 +2975,7 @@ dependencies = [
 name = "nve-camera-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-backend-web",
  "nve-camera",
  "nve-store",
@@ -3803,6 +3807,7 @@ dependencies = [
 name = "nve-video"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-codec",
  "nve-store",
@@ -3812,6 +3817,7 @@ dependencies = [
 name = "nve-video-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-backend-web",
  "nve-store",
  "nve-video",
@@ -3821,6 +3827,7 @@ dependencies = [
 name = "nve-web-element"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-codec",
  "nve-store",
@@ -3830,6 +3837,7 @@ dependencies = [
 name = "nve-web-element-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-backend-web",
  "nve-store",
  "nve-web-element",
@@ -3839,6 +3847,7 @@ dependencies = [
 name = "nve-web-html"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-codec",
  "nve-store",
@@ -3848,6 +3857,7 @@ dependencies = [
 name = "nve-web-html-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-backend-web",
  "nve-engine",
  "nve-store",
@@ -3905,6 +3915,7 @@ dependencies = [
 name = "nve-webview"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-store",
 ]
@@ -3913,6 +3924,7 @@ dependencies = [
 name = "nve-webview-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-backend-web",
  "nve-store",

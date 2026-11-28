@@ -9,5 +9,12 @@ nve-backend-web = { workspace = true }
 nve-camera = { workspace = true }
 nve-store = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "camera_web_bench"
+harness = false
+
 [lints]
 workspace = true
