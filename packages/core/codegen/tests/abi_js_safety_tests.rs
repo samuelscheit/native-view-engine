@@ -1,11 +1,81 @@
 //! 53-bit JavaScript numeric-literal safety of generated Dart and TypeScript ABI / table /
 //! hash-vector files.
 
-use nve_codegen::{GeneratedFile, generate_all_abi_files};
+use nve_codec::{
+    FlatOpDesc, FlatOpFieldDesc, FlatOpFieldType, FlatOpScopeDesc, FlatOpStreamDesc,
+    FloatConstraint,
+};
+use nve_codegen::{GeneratedFile, generate_all_abi_files, generate_flat_op_codec_files};
 use nve_tables::tables::CORE_TABLE_DESCS;
 
+const SAMPLE_FLAT_OP_STREAM: FlatOpStreamDesc = FlatOpStreamDesc {
+    name: "SampleStream",
+    kind_name: "nve.res.sample_stream",
+    max_ops_const_name: "MAX_SAMPLE_OPS",
+    max_ops: 65_536,
+    scope: Some(FlatOpScopeDesc {
+        limit_name: "MAX_SAMPLE_DEPTH",
+        push_opcode: 3,
+        pop_opcode: 4,
+        max_depth: 64,
+    }),
+    ops: &[
+        FlatOpDesc {
+            name: "Fill",
+            opcode: 1,
+            fields: &[
+                FlatOpFieldDesc {
+                    name: "radius",
+                    ty: FlatOpFieldType::F32(FloatConstraint::NonNegative),
+                },
+                FlatOpFieldDesc {
+                    name: "color",
+                    ty: FlatOpFieldType::ColorRgba,
+                },
+            ],
+        },
+        FlatOpDesc {
+            name: "Poly",
+            opcode: 2,
+            fields: &[
+                FlatOpFieldDesc {
+                    name: "width",
+                    ty: FlatOpFieldType::F32(FloatConstraint::NonNegative),
+                },
+                FlatOpFieldDesc {
+                    name: "points",
+                    ty: FlatOpFieldType::Point2Slice {
+                        max_len: 16_384,
+                        max_const_name: "MAX_SAMPLE_POINTS",
+                        coord_constraint: FloatConstraint::Finite,
+                    },
+                },
+            ],
+        },
+        FlatOpDesc {
+            name: "PushScope",
+            opcode: 3,
+            fields: &[FlatOpFieldDesc {
+                name: "x",
+                ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+            }],
+        },
+        FlatOpDesc {
+            name: "PopScope",
+            opcode: 4,
+            fields: &[],
+        },
+    ],
+};
+
 fn all_files() -> Vec<GeneratedFile> {
-    generate_all_abi_files(CORE_TABLE_DESCS).expect("generate every host ABI file")
+    let mut files =
+        generate_all_abi_files(CORE_TABLE_DESCS).expect("generate every host ABI file");
+    files.extend(
+        generate_flat_op_codec_files(&SAMPLE_FLAT_OP_STREAM)
+            .expect("generate flat-op codec files"),
+    );
+    files
 }
 
 /// Integer-valued numeric literals in JS / Dart source that are not exact JavaScript numbers:
@@ -231,5 +301,5 @@ fn dart_and_typescript_output_is_53_bit_safe() {
         );
         scanned += 1;
     }
-    assert_eq!(scanned, 8, "5 Dart + 3 TypeScript files");
+    assert_eq!(scanned, 10, "6 Dart + 4 TypeScript files");
 }

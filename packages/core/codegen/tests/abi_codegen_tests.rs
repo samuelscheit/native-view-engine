@@ -8,9 +8,13 @@ use std::path::Path;
 use std::process::Command;
 
 use nve_abi::table::{FieldDesc, FieldKind, NO_VAL_WORD, OptEncoding, Storage, TableDesc};
+use nve_codec::{
+    FlatOpDesc, FlatOpFieldDesc, FlatOpFieldType, FlatOpScopeDesc, FlatOpStreamDesc,
+    FloatConstraint,
+};
 use nve_codegen::{
     CodegenError, GeneratedFile, generate_abi_files, generate_all_abi_files, generate_c_abi_header,
-    generate_hash_vector_files, generate_table_files,
+    generate_flat_op_codec_files, generate_hash_vector_files, generate_table_files,
 };
 use nve_tables::tables::CORE_TABLE_DESCS;
 
@@ -83,7 +87,7 @@ fn templates_are_lf_only_and_under_650_lines() {
         }
     }
     // One template per generated file, plus the shared `c/records.h` macros.
-    assert_eq!(checked, 22, "one template per generated file");
+    assert_eq!(checked, 27, "one template per generated file");
 }
 
 #[test]
@@ -525,4 +529,168 @@ fn cnveabi_module_is_defined_once() {
         );
     }
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn flat_op_codec_generation_validates_is_deterministic_and_compiles_cpp20() {
+    const STREAM: FlatOpStreamDesc = FlatOpStreamDesc {
+        name: "MiniDraw",
+        kind_name: "nve.res.mini_draw",
+        max_ops_const_name: "MAX_MINI_OPS",
+        max_ops: 1024,
+        scope: Some(FlatOpScopeDesc {
+            limit_name: "MAX_MINI_CLIP",
+            push_opcode: 3,
+            pop_opcode: 4,
+            max_depth: 16,
+        }),
+        ops: &[
+            FlatOpDesc {
+                name: "Dot",
+                opcode: 1,
+                fields: &[
+                    FlatOpFieldDesc {
+                        name: "x",
+                        ty: FlatOpFieldType::F32(FloatConstraint::Finite),
+                    },
+                    FlatOpFieldDesc {
+                        name: "radius",
+                        ty: FlatOpFieldType::F32(FloatConstraint::NonNegative),
+                    },
+                    FlatOpFieldDesc {
+                        name: "color",
+                        ty: FlatOpFieldType::ColorRgba,
+                    },
+                ],
+            },
+            FlatOpDesc {
+                name: "Path",
+                opcode: 2,
+                fields: &[
+                    FlatOpFieldDesc {
+                        name: "width",
+                        ty: FlatOpFieldType::F32(FloatConstraint::NonNegative),
+                    },
+                    FlatOpFieldDesc {
+                        name: "points",
+                        ty: FlatOpFieldType::Point2Slice {
+                            max_len: 256,
+                            max_const_name: "MAX_MINI_POINTS",
+                            coord_constraint: FloatConstraint::Finite,
+                        },
+                    },
+                ],
+            },
+            FlatOpDesc {
+                name: "Push",
+                opcode: 3,
+                fields: &[FlatOpFieldDesc {
+                    name: "tag",
+                    ty: FlatOpFieldType::U32,
+                }],
+            },
+            FlatOpDesc {
+                name: "Pop",
+                opcode: 4,
+                fields: &[],
+            },
+        ],
+    };
+
+    let first = generate_flat_op_codec_files(&STREAM).expect("generate mini flat-op codecs");
+    let second = generate_flat_op_codec_files(&STREAM).expect("second deterministic pass");
+    assert_eq!(first, second, "flat-op codegen must be deterministic");
+    assert_eq!(first.len(), 5, "C++, Swift, Java, Dart, TS");
+    for f in &first {
+        assert!(!f.content.contains('\r'), "{} contains CR", f.relative_path);
+        assert!(f.content.ends_with('\n'), "{} missing trailing LF", f.relative_path);
+        assert!(!f.content.contains(" \n"), "{} has trailing spaces", f.relative_path);
+        assert!(
+            !f.content.contains("DrawList") && !f.content.contains("StrokePolyline"),
+            "{} must be generic (no hardcoded DrawList identifiers)",
+            f.relative_path
+        );
+    }
+
+    // Invalid descriptors rejected up-front.
+    const DUP_OPS: [FlatOpDesc; 2] = [STREAM.ops[0], STREAM.ops[0]];
+    let mut bad_dup = STREAM;
+    bad_dup.ops = &DUP_OPS;
+    assert!(generate_flat_op_codec_files(&bad_dup).is_err());
+
+    let mut bad_scope_pop = STREAM;
+    bad_scope_pop.scope = Some(FlatOpScopeDesc {
+        limit_name: "MAX_MINI_CLIP",
+        push_opcode: 3,
+        pop_opcode: 1, // Dot has fields; pop op must have zero fields
+        max_depth: 16,
+    });
+    assert!(generate_flat_op_codec_files(&bad_scope_pop).is_err());
+
+    let mut bad_slice_pos = STREAM;
+    bad_slice_pos.ops = &[FlatOpDesc {
+        name: "BadSlice",
+        opcode: 1,
+        fields: &[
+            FlatOpFieldDesc {
+                name: "points",
+                ty: FlatOpFieldType::Point2Slice {
+                    max_len: 8,
+                    max_const_name: "MAX_BAD_PTS",
+                    coord_constraint: FloatConstraint::Finite,
+                },
+            },
+            FlatOpFieldDesc {
+                name: "width",
+                ty: FlatOpFieldType::F32(FloatConstraint::NonNegative),
+            },
+        ],
+    }];
+    bad_slice_pos.scope = None;
+    assert!(generate_flat_op_codec_files(&bad_slice_pos).is_err());
+
+    // Compile generated C++20 header strictly when clang++ is available.
+    if common::tool_available("clang++") {
+        let dir = std::env::temp_dir().join(format!("nve_flat_op_cxx_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        std::fs::write(dir.join("mini.hpp"), &first[0].content).expect("write hpp");
+        let src = dir.join("check.cpp");
+        std::fs::write(
+            &src,
+            "#include \"mini.hpp\"\n\
+             struct Sink {\n\
+               void on_dot(const nve::generated::mini_draw::DotOp&) {}\n\
+               void on_path(const nve::generated::mini_draw::PathOp&) {}\n\
+               void on_push(const nve::generated::mini_draw::PushOp&) {}\n\
+               void on_pop(const nve::generated::mini_draw::PopOp&) {}\n\
+             };\n\
+             int check(std::span<const uint8_t> bytes) {\n\
+               Sink s{};\n\
+               return nve::generated::mini_draw::decode(bytes, s).ok() ? 0 : 1;\n\
+             }\n",
+        )
+        .expect("write cpp");
+        let out = Command::new("clang++")
+            .args([
+                "-std=c++20",
+                "-fsyntax-only",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic",
+                "-Wconversion",
+                "-Wsign-conversion",
+                "-Wshadow",
+            ])
+            .arg(&src)
+            .output()
+            .expect("run clang++");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            out.status.success(),
+            "clang++ rejected generated flat-op header:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }

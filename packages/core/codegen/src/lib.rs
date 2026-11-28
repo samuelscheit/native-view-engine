@@ -25,8 +25,9 @@ pub(crate) mod writer;
 use std::path::Path;
 
 pub use abi::{
-    generate_abi_files, generate_all_abi_files, generate_c_abi_header, generate_hash_vector_files,
-    generate_module_table_header, generate_table_files,
+    generate_abi_files, generate_all_abi_files, generate_c_abi_header,
+    generate_flat_op_codec_files, generate_hash_vector_files, generate_module_table_header,
+    generate_table_files,
 };
 pub use abi::java_host::generate_java_host_files;
 pub use error::CodegenError;

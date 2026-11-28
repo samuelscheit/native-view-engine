@@ -2598,7 +2598,6 @@ dependencies = [
 name = "nve-canvas"
 version = "0.1.0"
 dependencies = [
- "base64",
  "nve-abi",
  "nve-codec",
  "nve-hash",
@@ -2687,6 +2686,7 @@ dependencies = [
  "askama",
  "criterion",
  "nve-abi",
+ "nve-codec",
  "nve-hash",
  "nve-tables",
  "proc-macro2",

@@ -170,7 +170,7 @@ fi
 # 0b1. ABI codegen generate + parity check: the host runtimes and every native host build against
 # the generated (gitignored) host ABI / table / XXH64 vector files.
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (24 host files)"
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (29 host files)"
   run_suite "ABI release clamp" suite_rust_abi_release "nve-abi --release id::tests"
   if rustup target list --installed 2>/dev/null | grep -qx "i686-linux-android" \
     && rustup target list --installed 2>/dev/null | grep -qx "armv7-linux-androideabi"; then
