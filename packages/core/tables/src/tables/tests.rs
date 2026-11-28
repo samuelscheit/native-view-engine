@@ -396,7 +396,8 @@ fn background_fill_and_grid_tracks_reject_non_finite_and_negative_domain_floats(
         assert_eq!(out, vec![0xDEAD_BEEF]);
     }
 
-    // Negative radial radius rejected on both wire validate and producer write_words.
+    // Negative radial radius rejected on both wire validate and producer write_words
+    // (without reserving capacity on an empty output buffer).
     assert!(!BackgroundFillRes::validate(&[
         2,
         0.5f32.to_bits(),
@@ -404,13 +405,16 @@ fn background_fill_and_grid_tracks_reject_non_finite_and_negative_domain_floats(
         (-0.01f32).to_bits(),
         0,
     ]));
-    let mut out = vec![7u32];
+    let mut empty_out = Vec::new();
     let neg_rad = BackgroundFillRes(BackgroundFill::Radial(RadialGradient {
         center_x: 0.5,
         center_y: 0.5,
         radius: -1.0,
         stops: ok_stops,
     }));
+    assert!(!neg_rad.write_words(&mut empty_out));
+    assert_eq!(empty_out.capacity(), 0, "pre-validation must not reserve on invalid fill");
+    let mut out = vec![7u32];
     assert!(!neg_rad.write_words(&mut out));
     assert_eq!(out, vec![7]);
 
@@ -468,41 +472,79 @@ fn background_fill_and_grid_tracks_reject_non_finite_and_negative_domain_floats(
         }
     }
 
-    // Negative Fr weights rejected everywhere (raw wire & producer write_words).
-    assert!(!GridTracks::validate(&[1, 3, (-1.0f32).to_bits(), 0]));
+    // Negative Px/Percent/Fr breadths and Repeat(0, ...) rejected everywhere (wire & write_words).
+    for tag in 1u32..=3 {
+        assert!(!GridTracks::validate(&[1, tag, (-50.0f32).to_bits(), 0]));
+        assert!(!GridTracks::validate(&[
+            1,
+            5 | (tag << 4) | (3u32 << 16),
+            (-10.0f32).to_bits(),
+            0,
+        ]));
+        assert!(!GridTracks::validate(&[
+            1,
+            4 | (tag << 7) | (1u32 << 10),
+            (-1.0f32).to_bits(),
+            10.0f32.to_bits(),
+        ]));
+        assert!(!GridTracks::validate(&[
+            1,
+            4 | (1u32 << 7) | (tag << 10),
+            0.0f32.to_bits(),
+            (-2.0f32).to_bits(),
+        ]));
+    }
+    // Repeat(0, ...) rejected on wire for every single-track variant.
+    assert!(!GridTracks::validate(&[1, 5, 0, 0])); // Repeat(0, Auto)
+    assert!(!GridTracks::validate(&[1, 5 | (1 << 4), 100.0f32.to_bits(), 0])); // Repeat(0, Px)
+    assert!(!GridTracks::validate(&[1, 5 | (3 << 4), 1.0f32.to_bits(), 0])); // Repeat(0, Fr)
     assert!(!GridTracks::validate(&[
         1,
-        5 | (3u32 << 4) | (3u32 << 16),
-        (-0.5f32).to_bits(),
-        0,
-    ]));
-    assert!(!GridTracks::validate(&[
-        1,
-        4 | (1u32 << 7) | (3u32 << 10),
-        0.0f32.to_bits(),
-        (-2.0f32).to_bits(),
-    ]));
-    for neg_fr in [
+        5 | (4 << 4) | (1 << 7) | (3 << 10),
+        10.0f32.to_bits(),
+        1.0f32.to_bits(),
+    ])); // Repeat(0, MinMax)
+
+    for invalid_track in [
+        GridTrack::Px(-50.0),
+        GridTrack::Percent(-10.0),
         GridTrack::Fr(-1.0),
+        GridTrack::MinMax(GridTrackUnit::Px(-50.0), GridTrackUnit::Fr(1.0)),
+        GridTrack::MinMax(GridTrackUnit::Percent(-10.0), GridTrackUnit::Auto),
         GridTrack::MinMax(GridTrackUnit::Px(0.0), GridTrackUnit::Fr(-0.25)),
+        GridTrack::Repeat(2, GridSingleTrack::Px(-50.0)),
+        GridTrack::Repeat(2, GridSingleTrack::Percent(-10.0)),
         GridTrack::Repeat(3, GridSingleTrack::Fr(-1.0)),
         GridTrack::Repeat(
             3,
             GridSingleTrack::MinMax(GridTrackUnit::Fr(-0.1), GridTrackUnit::Auto),
         ),
+        GridTrack::Repeat(0, GridSingleTrack::Auto),
+        GridTrack::Repeat(0, GridSingleTrack::Px(100.0)),
+        GridTrack::Repeat(0, GridSingleTrack::Fr(1.0)),
     ] {
+        let mut empty_buf = Vec::new();
+        assert!(!GridTracks::new(vec![invalid_track]).write_words(&mut empty_buf));
+        assert_eq!(
+            empty_buf.capacity(),
+            0,
+            "pre-validation must not reserve on invalid track {invalid_track:?}"
+        );
         let mut buf = vec![99u32];
-        assert!(!GridTracks::new(vec![neg_fr]).write_words(&mut buf));
+        assert!(!GridTracks::new(vec![invalid_track]).write_words(&mut buf));
         assert_eq!(buf, vec![99]);
     }
 
-    // Valid finite tracks including 0fr pass both write_words and validate.
+    // Valid finite tracks including 0px / 0% / 0fr / Repeat(1, ...) pass both write_words and validate.
     let valid_tracks = GridTracks::new(vec![
+        GridTrack::Px(0.0),
         GridTrack::Px(100.0),
+        GridTrack::Percent(0.0),
         GridTrack::Percent(25.0),
         GridTrack::Fr(0.0),
         GridTrack::Fr(1.5),
         GridTrack::MinMax(GridTrackUnit::Px(0.0), GridTrackUnit::Fr(1.0)),
+        GridTrack::Repeat(1, GridSingleTrack::Auto),
         GridTrack::Repeat(3, GridSingleTrack::Fr(1.0)),
     ]);
     let mut valid_buf = Vec::new();
