@@ -79,19 +79,27 @@ void native_text_measure(void *ctx, NveStrSlice text, const NveRuntimeTextStyle 
     if (probe != host::TextWrap::None) {
       if (max_width == 0.0f) {
         // Min-content probe (CSS Text 3 §5.5): `Word`/`BreakWord` use the widest word;
-        // `Anywhere`/`BreakAll` use the widest composed character sequence.
+        // `Anywhere`/`BreakAll` use the widest non-whitespace composed character sequence.
         __block CGFloat widest = 0.0;
+        NSMutableSet<NSString *> *seen = [NSMutableSet set];
         if (probe == host::TextWrap::Anywhere || probe == host::TextWrap::BreakAll) {
+          NSCharacterSet *nonWs = NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet;
           [str enumerateSubstringsInRange:NSMakeRange(0u, str.length)
                                   options:NSStringEnumerationByComposedCharacterSequences
                                usingBlock:^(NSString *cluster, NSRange, NSRange, BOOL *) {
-                                 if (cluster.length > 0u) {
-                                   widest = std::max(widest, std::ceil(text_bounds(cluster, attrs, CGFLOAT_MAX).width));
+                                 if (cluster.length == 0u ||
+                                     [cluster rangeOfCharacterFromSet:nonWs].location == NSNotFound ||
+                                     [seen containsObject:cluster]) {
+                                   return;
                                  }
+                                 [seen addObject:cluster];
+                                 widest = std::max(widest, std::ceil(text_bounds(cluster, attrs, CGFLOAT_MAX).width));
                                }];
         } else {
           for (NSString *word in [str componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) {
-            if (word.length > 0u) widest = std::max(widest, std::ceil(text_bounds(word, attrs, CGFLOAT_MAX).width));
+            if (word.length == 0u || [seen containsObject:word]) continue;
+            [seen addObject:word];
+            widest = std::max(widest, std::ceil(text_bounds(word, attrs, CGFLOAT_MAX).width));
           }
         }
         limit = widest > 0.0 ? widest : CGFLOAT_MAX;  // whitespace only: nothing to wrap

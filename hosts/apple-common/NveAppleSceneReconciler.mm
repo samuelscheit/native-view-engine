@@ -287,6 +287,7 @@ struct NveAppleAdapter {
 
 - (void)clearNativeNodeViews {
   _tree.clear(_adapter);
+  _adapter.inline_images.clear();
 }
 
 - (void)syncFromScene:(const nve::host::SceneReader &)scene {

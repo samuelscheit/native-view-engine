@@ -68,7 +68,8 @@ std::string png_data_uri(NSInteger pixels = 4) {
 
 /// Revision 1: ROOT(1) -> [image(2), image(3), scroll(4, 100pt) -> [row(5, 400pt), row(6, 200pt)]];
 /// both images read inline-PNG resource 9. Revision 2 detaches the still-live image 3 and shrinks
-/// row 5 to 100pt (row 6 only moves).
+/// row 5 to 100pt (row 6 only moves). Revision 3 rewrites tag-1 inline-PNG resource 9 to 8x8 px
+/// while leaving node 2 clean.
 NSData *detach_scene(uint64_t revision) {
   auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
   auto height = [&](Nve2FrameBuilder &b, uint32_t node, uint32_t bits) {
@@ -94,9 +95,38 @@ NSData *detach_scene(uint64_t revision) {
     height(b, 6u, 0x43480000u);  // 200pt
     b.set_children(1u, {2u, 3u, 4u});
     b.set_children(4u, {5u, 6u});
-  } else {
+  } else if (revision == 2u) {
     b.set_children(1u, {2u, 4u});
     height(b, 5u, 0x42C80000u);
+  } else {
+    NSData *bytes = png(8);
+    b.define_resource(9u, Key64::of("nve.res.image_src"),
+                      image_src(std::string_view(static_cast<const char *>(bytes.bytes), bytes.length), 1u));
+  }
+  const std::vector<uint8_t> frame = b.finish();
+  return [NSData dataWithBytes:frame.data() length:frame.size()];
+}
+
+/// Deferred `z_index` batch restacking scene: ROOT(1) -> box(2) -> [3, 4, 5].
+/// Revision 1 mounts `[3, 4, 5]` with z=0; revision 2 updates z(3)=5, z(5)=-1 without changing
+/// children; revision 3 updates z(4)=10 without changing children.
+NSData *z_order_scene(uint64_t revision) {
+  auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
+  auto set_z = [&](Nve2FrameBuilder &b, uint32_t node, int32_t z) {
+    std::array<uint32_t, NVE_TABLE_VISUAL_WORDS> vis{};
+    std::copy(std::begin(NVE_TABLE_VISUAL_DEFAULTS), std::end(NVE_TABLE_VISUAL_DEFAULTS), vis.begin());
+    b.patch(slot(NVE_TABLE_VISUAL_KEY), node, set_field(vis, NVE_TABLE_VISUAL_Z_INDEX, static_cast<uint32_t>(z)), vis);
+  };
+  Nve2FrameBuilder b(revision);
+  if (revision == 1u) {
+    b.declare_core_tables().create_nodes({1u, 2u, 3u, 4u, 5u});
+    b.set_children(1u, {2u});
+    b.set_children(2u, {3u, 4u, 5u});
+  } else if (revision == 2u) {
+    set_z(b, 3u, 5);
+    set_z(b, 5u, -1);
+  } else {
+    set_z(b, 4u, 10);
   }
   const std::vector<uint8_t> frame = b.finish();
   return [NSData dataWithBytes:frame.data() length:frame.size()];
@@ -310,25 +340,56 @@ int main() {
     CHECK([scene nativeViewForNodeId:3u] == image && near(((NveAppleImageView *)image).image.size.width, 8.0));
     CHECK(scene.nveLastReconciledDirtyCount == 1u && scene.nveLastReconciledRemovedCount == 0u);
 
-    // 7'. Inline images decode once per resource; a still-live detached child leaves its parent;
-    //     scroll content follows a resized child and its moved sibling.
+    // 7'. Inline images decode once per resource, re-decode on tag-1 rewrite, and clear their
+    //     cache in `clearNativeNodeViews`; a still-live detached child leaves its parent; scroll
+    //     content follows a resized child and its moved sibling.
     {
       RCTNveMacComponentView *det = make_view();
-      CHECK([det.nveHost replayFrame0:detach_scene(1u)]);
-      NveAppleImageView *a = (NveAppleImageView *)[det nativeViewForNodeId:2u];
-      NveAppleImageView *b = (NveAppleImageView *)[det nativeViewForNodeId:3u];
-      CHECK([a isKindOfClass:[NveAppleImageView class]] && [b isKindOfClass:[NveAppleImageView class]]);
-      CHECK(a.image != nil && a.image == b.image);  // one decode shared by both nodes
-      NSScrollView *sv = (NSScrollView *)[det nativeViewForNodeId:4u];
-      CHECK([sv isKindOfClass:[NSScrollView class]] && near(sv.documentView.frame.size.height, 600.0));
-      NSView *parent = b.superview;
-      CHECK(parent != nil && [parent.subviews containsObject:b]);
-      CHECK([det.nveHost replayFrame0:detach_scene(2u)]);
-      CHECK([det nativeViewForNodeId:3u] == b);  // still live, so still realized ...
-      CHECK(b.superview == nil && ![parent.subviews containsObject:b]);  // ... but detached
-      CHECK(a.superview == parent && sv.superview == parent);
-      CHECK(near([det nativeViewForNodeId:6u].frame.origin.y, 100.0));
-      CHECK(near(sv.documentView.frame.size.height, 300.0));
+      __weak NSImage *weakImg8 = nil;
+      @autoreleasepool {
+        CHECK([det.nveHost replayFrame0:detach_scene(1u)]);
+        NveAppleImageView *a = (NveAppleImageView *)[det nativeViewForNodeId:2u];
+        NveAppleImageView *b = (NveAppleImageView *)[det nativeViewForNodeId:3u];
+        CHECK([a isKindOfClass:[NveAppleImageView class]] && [b isKindOfClass:[NveAppleImageView class]]);
+        CHECK(a.image != nil && a.image == b.image);  // one decode shared by both nodes
+        NSScrollView *sv = (NSScrollView *)[det nativeViewForNodeId:4u];
+        CHECK([sv isKindOfClass:[NSScrollView class]] && near(sv.documentView.frame.size.height, 600.0));
+        NSView *parent = b.superview;
+        CHECK(parent != nil && [parent.subviews containsObject:b]);
+        CHECK([det.nveHost replayFrame0:detach_scene(2u)]);
+        CHECK([det nativeViewForNodeId:3u] == b);  // still live, so still realized ...
+        CHECK(b.superview == nil && ![parent.subviews containsObject:b]);  // ... but detached
+        CHECK(a.superview == parent && sv.superview == parent);
+        CHECK(near([det nativeViewForNodeId:6u].frame.origin.y, 100.0));
+        CHECK(near(sv.documentView.frame.size.height, 300.0));
+
+        // Rewriting tag-1 inline image under the same resource id 9 evicts cache and re-decodes.
+        NSImage *img4 = a.image;
+        CHECK(near(img4.size.width, 4.0));
+        CHECK([det.nveHost replayFrame0:detach_scene(3u)]);
+        CHECK([det nativeViewForNodeId:2u] == a);
+        CHECK(a.image != nil && a.image != img4 && near(a.image.size.width, 8.0));
+        weakImg8 = a.image;
+        [det.nveHost clearNativeNodeViews];
+      }
+      CHECK([det nativeViewForNodeId:2u] == nil && [det nativeViewForNodeId:3u] == nil);
+      CHECK(weakImg8 == nil);  // `det` is still alive; `_adapter.inline_images` released its NSImage on clear
+    }
+
+    // 7''. Deferred `z_index` batch restacking updates sibling order in `finish_sync` without a
+    //      `set_children` change on the parent.
+    {
+      RCTNveMacComponentView *zview = make_view();
+      CHECK([zview.nveHost replayFrame0:z_order_scene(1u)]);
+      NSView *box = [zview nativeViewForNodeId:2u];
+      NSView *n3 = [zview nativeViewForNodeId:3u];
+      NSView *n4 = [zview nativeViewForNodeId:4u];
+      NSView *n5 = [zview nativeViewForNodeId:5u];
+      CHECK(box != nil && [box.subviews isEqualToArray:(@[ n3, n4, n5 ])]);
+      CHECK([zview.nveHost replayFrame0:z_order_scene(2u)]);
+      CHECK([box.subviews isEqualToArray:(@[ n5, n4, n3 ])]);
+      CHECK([zview.nveHost replayFrame0:z_order_scene(3u)]);
+      CHECK([box.subviews isEqualToArray:(@[ n5, n3, n4 ])]);
     }
 
     // 7a. CSS Text 3 min-content parity across `Word`, `BreakWord`, `Anywhere`, `BreakAll`, and
@@ -368,6 +429,20 @@ int main() {
       break_all.word_break = NVE_WORD_BREAK_BREAK_ALL;
       const auto [mw_ba, mh_ba] = measure(kPhrase, break_all, 0.0f);
       CHECK(mw_ba > 0.0f && mw_ba < ww && mh_ba > mh_word);
+
+      // Whitespace-only min-content parity: `Anywhere` and `BreakAll` skip whitespace clusters
+      // just like `Word`/`BreakWord` (falling back to unconstrained layout instead of space-width wrapping).
+      const auto [ws_word_w, ws_word_h] = measure("   ", base, 0.0f);
+      const auto [ws_any_w, ws_any_h] = measure("   ", anywhere, 0.0f);
+      const auto [ws_ba_w, ws_ba_h] = measure("   ", break_all, 0.0f);
+      CHECK(near(ws_any_w, ws_word_w) && near(ws_any_h, ws_word_h));
+      CHECK(near(ws_ba_w, ws_word_w) && near(ws_ba_h, ws_word_h));
+
+      // Long repeated-character string exercises per-call cluster deduplication.
+      const std::string repeated = std::string(1000u, 'i') + "W";
+      const auto [rep_w, rep_h] = measure(repeated, anywhere, 0.0f);
+      const auto [single_w, single_h] = measure("W", anywhere, INFINITY);
+      CHECK(std::fabs(rep_w - single_w) <= 1.0f && rep_h > single_h);
 
       for (const uint8_t ws : {uint8_t{NVE_WHITE_SPACE_NO_WRAP}, uint8_t{NVE_WHITE_SPACE_PRE}}) {
         NveRuntimeTextStyle nw = base;
