@@ -189,6 +189,22 @@ void test_golden_vectors() {
         dl::Error::NegativeFloat);
   CHECK(dl::validate(words_to_bytes({1u, 6u, fbits(-1.0f), 0u, 0u})).error ==
         dl::Error::NegativeFloat);
+
+  // Polyline bad point reports exact failing point byte offset (pos + p * 8 + 8), not total slice end.
+  const dl::DecodeResult bad_pt = dl::validate(words_to_bytes({
+      1u,
+      6u,
+      fbits(1.0f),
+      0u,
+      3u,
+      fbits(0.0f),
+      fbits(0.0f),
+      fbits(nan),
+      fbits(1.0f),
+      fbits(2.0f),
+      fbits(3.0f),
+  }));
+  CHECK(bad_pt.error == dl::Error::NonFiniteFloat && bad_pt.bytes_consumed == 20u + 2u * 8u);
 }
 
 void test_clip_balance_66_clips_2_restores() {
@@ -213,6 +229,38 @@ void test_clip_balance_66_clips_2_restores() {
   CHECK(r.ops[dl::kMaxClipDepth] == 1u);
   for (size_t i = 0u; i < dl::kMaxClipDepth; ++i) CHECK(r.ops[i] == 7u);
   for (size_t i = dl::kMaxClipDepth + 1u; i < r.ops.size(); ++i) CHECK(r.ops[i] == 8u);
+
+  // Throw while overflowed (depth == 64, overflow == 2): exactly 64 restores unwind, NOT 66.
+  std::vector<uint8_t> overflow_buf;
+  push_u32(overflow_buf, dl::kMaxClipDepth + 2u + 1u);
+  for (uint32_t i = 0u; i < dl::kMaxClipDepth + 2u; ++i) {
+    push_u32(overflow_buf, 7u);
+    push_f32(overflow_buf, 0.0f);
+    push_f32(overflow_buf, 0.0f);
+    push_f32(overflow_buf, 10.0f);
+    push_f32(overflow_buf, 10.0f);
+  }
+  push_u32(overflow_buf, 1u);
+  push_u32(overflow_buf, dl::ColorRgba::rgba(1u, 2u, 3u, 4u).to_u32());
+
+  struct OverflowThrowingRecorder : Recorder {
+    void on_clear(const dl::ClearOp& op) {
+      Recorder::on_clear(op);
+      throw 99;
+    }
+  };
+  OverflowThrowingRecorder throwing;
+  bool caught = false;
+  try {
+    (void)dl::decode(overflow_buf, throwing);
+  } catch (int code) {
+    caught = (code == 99);
+  }
+  CHECK(caught);
+  CHECK(throwing.ops.size() == static_cast<size_t>(dl::kMaxClipDepth) * 2u + 1u);
+  CHECK(throwing.ops[dl::kMaxClipDepth] == 1u);
+  for (size_t i = 0u; i < dl::kMaxClipDepth; ++i) CHECK(throwing.ops[i] == 7u);
+  for (size_t i = dl::kMaxClipDepth + 1u; i < throwing.ops.size(); ++i) CHECK(throwing.ops[i] == 8u);
 }
 
 }  // namespace

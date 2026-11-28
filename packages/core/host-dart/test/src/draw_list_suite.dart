@@ -83,6 +83,14 @@ final class _ThrowingClipSink extends _LogSink {
   }
 }
 
+final class _ThrowingClearSink extends _LogSink {
+  @override
+  void onClear(int color) {
+    super.onClear(color);
+    throw StateError('clear boom');
+  }
+}
+
 Uint8List _all8Ops() {
   final int c1 = _rgba(1, 2, 3, 4);
   final int white = _rgba(255, 255, 255, 255);
@@ -221,4 +229,29 @@ void runDrawList(Check c) {
   c.eq(throwing.ops.length, 4, '2 clips + 2 unwind restores');
   c.eq(throwing.ops[2], 'restore', 'first unwind restore');
   c.eq(throwing.ops[3], 'restore', 'second unwind restore');
+
+  // Throw while overflowed (depth == 64, overflow == 2): exactly 64 restores unwind, NOT 66.
+  final List<int> overflowThrowWords = <int>[NveDrawList.maxClipDepth + 2 + 1];
+  for (int i = 0; i < NveDrawList.maxClipDepth + 2; i++) {
+    overflowThrowWords.addAll(<int>[NveDrawList.opClipRect, _f32(0.0), _f32(0.0), _f32(10.0), _f32(10.0)]);
+  }
+  overflowThrowWords.addAll(<int>[NveDrawList.opClear, 99]);
+  final _ThrowingClearSink overflowSink = _ThrowingClearSink();
+  bool overflowCaught = false;
+  try {
+    NveDrawList.decode(_words(overflowThrowWords), overflowSink);
+  } on StateError {
+    overflowCaught = true;
+  }
+  c.that(overflowCaught, 'overflowed clear exception propagates');
+  c.eq(overflowSink.ops.length, NveDrawList.maxClipDepth + 1 + NveDrawList.maxClipDepth,
+      '64 clips + 1 clear + exact 64 unwind restores (not 66)');
+  c.eq(overflowSink.ops[NveDrawList.maxClipDepth], 'clear:99', 'clear ran at live depth 64');
+  int unwindRestores = 0;
+  for (int i = NveDrawList.maxClipDepth + 1; i < overflowSink.ops.length; i++) {
+    if (overflowSink.ops[i] == 'restore') {
+      unwindRestores++;
+    }
+  }
+  c.eq(unwindRestores, NveDrawList.maxClipDepth, 'exact 64 restores unwound while overflow == 2');
 }

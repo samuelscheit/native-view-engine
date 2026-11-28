@@ -158,6 +158,33 @@ final class DrawListTest {
         final int clearAt = deepLog.ops.indexOf("clear:1");
         c.eq(clearAt, DrawList.MAX_CLIP_DEPTH, "overflow restores do not pop clip #64 before clear");
         c.eq(deepLog.ops.size(), DrawList.MAX_CLIP_DEPTH * 2 + 1, "64 clips + 1 clear + 64 balanced restores");
+
+        // Throw while overflowed (depth == 64, overflow == 2): exactly 64 restores unwind, NOT 66.
+        byte[] overflowThrow = header(DrawList.MAX_CLIP_DEPTH + 2 + 1);
+        for (int i = 0; i < DrawList.MAX_CLIP_DEPTH + 2; i++) overflowThrow = clip(overflowThrow);
+        overflowThrow = f(op(overflowThrow, DrawList.OP_CLEAR), rgba(99));
+        final Log overflowLog = new Log() {
+            @Override
+            public void onClear(int rgba) {
+                super.onClear(rgba);
+                throw new IllegalStateException("clear boom");
+            }
+        };
+        boolean overflowCaught = false;
+        try {
+            DrawList.decode(ByteBuffer.wrap(overflowThrow), 0, overflowThrow.length, overflowLog);
+        } catch (IllegalStateException expected) {
+            overflowCaught = true;
+        }
+        c.that(overflowCaught, "overflowed clear exception propagates");
+        c.eq(overflowLog.ops.size(), DrawList.MAX_CLIP_DEPTH + 1 + DrawList.MAX_CLIP_DEPTH,
+                "64 clips + 1 clear + exact 64 unwind restores (not 66)");
+        c.eq(overflowLog.ops.get(DrawList.MAX_CLIP_DEPTH), "clear:99", "clear ran at live depth 64");
+        int restoreCount = 0;
+        for (int i = DrawList.MAX_CLIP_DEPTH + 1; i < overflowLog.ops.size(); i++) {
+            if ("restore".equals(overflowLog.ops.get(i))) restoreCount++;
+        }
+        c.eq(restoreCount, DrawList.MAX_CLIP_DEPTH, "exact 64 restores unwound while overflow == 2");
     }
 
     private static void allocatesNothing(Check c) {
