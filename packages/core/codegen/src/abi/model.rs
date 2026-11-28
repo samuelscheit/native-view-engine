@@ -325,10 +325,20 @@ pub fn value_sets(tables: &[TableModel<'_>]) -> Result<Vec<&'static ValueSetDesc
             if !ident(set.name) || set.values.is_empty() || prefix == "TABLE" || prefix.starts_with("TABLE_") {
                 return err("needs an identifier name outside `TABLE*` and at least one value".into());
             }
+            // Per-set member spellings each host renders (keyword-escaped), and the values: a
+            // collision after escaping or a repeated value would not compile (Swift raw values)
+            // or would alias two members.
+            let (mut swift, mut dart, mut values) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
             for &(name, value) in set.values {
                 let constant = format!("{prefix}_{}", super::spell::screaming(name));
                 if !ident(name) || !constants.insert(constant.clone()) {
                     return err(format!("bad or duplicate name `{name}` (NVE_{constant})"));
+                }
+                if !swift.insert(super::spell::swift::variant(name)) || !dart.insert(super::spell::dart::variant(name)) {
+                    return err(format!("name `{name}` collides with another member once escaped"));
+                }
+                if !values.insert(value) {
+                    return err(format!("duplicate value {value} (`{name}`)"));
                 }
                 if set.flags && !value.is_power_of_two() {
                     return err(format!("flag `{name}` is not a single bit"));
