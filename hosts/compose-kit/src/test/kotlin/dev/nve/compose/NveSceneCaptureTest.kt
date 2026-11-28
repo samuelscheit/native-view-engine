@@ -8,6 +8,7 @@ import dev.nve.host.generated.NveTables
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -83,38 +84,38 @@ class NveSceneCaptureTest {
     @Test
     fun capturesKindsGeometryStylesAndSemantics() {
         val res = Resources(imageSourceBytes(0, "asset://logo.png".toByteArray()), ByteBuffer.wrap(byteArrayOf(1, 2, 3)))
-        val snap = NveSceneCapture.capture(showcase().reader(), res, NveSceneSnapshot.EMPTY)
+        val snap = capture(showcase(), res)
         assertEquals(0xFF2A170F.toInt(), snap.rootBox.background)
         assertEquals(listOf(0x1000002), snap.rootChildren)
-        val column = snap.nodes.getValue(0x1000002)
+        val column = snap.at(0x1000002)
         assertEquals(NveNodeKind.CONTAINER, column.kind)
         assertEquals(NveBox(0xFF0000FF.toInt(), 0x80FFFFFF.toInt(), 2f, 12f, 0.5f, -3, true), column.box)
         assertEquals(listOf(3, 4, 5, 6, 8, 9).map { 0x1000000 or it }, column.children)
-        val title = snap.nodes.getValue(0x1000003)
+        val title = snap.at(0x1000003)
         assertEquals(NveNodeKind.TEXT, title.kind)
         assertEquals("Hello \uD83D\uDE80", title.text)
         assertEquals(5f to 15f, title.x to title.y)  // relative to the column at (5, 5)
         assertEquals(NveTextStyle(color = 0xFF00FF00.toInt(), fontSize = 24f, fontWeight = 700), title.textStyle)
-        assertEquals(SceneSemantics.DEFAULT_FONT_WEIGHT, snap.nodes.getValue(0x1000009).textStyle.fontWeight, "siblings do not inherit overrides")
+        assertEquals(SceneSemantics.DEFAULT_FONT_WEIGHT, snap.at(0x1000009).textStyle.fontWeight, "siblings do not inherit overrides")
         assertFalse(title.pressable, "disabled interaction is not pressable")
         assertTrue(title.semantics.disabled)
-        val input = snap.nodes.getValue(0x1000004)
+        val input = snap.at(0x1000004)
         assertEquals(NveInput("draft", "Type", secure = true, multiline = false, readOnly = false, inputKind = NveTables.Values.InputKind.EMAIL), input.input)
         assertEquals(20f, input.textStyle.fontSize, "inherits the column's size")
-        val image = snap.nodes.getValue(0x1000005)
+        val image = snap.at(0x1000005)
         assertEquals(NveImage.Url("asset://logo.png"), image.image)
         assertEquals(NveTables.Values.ImageFit.CONTAIN, image.imageFit)
-        val scroll = snap.nodes.getValue(0x1000006)
+        val scroll = snap.at(0x1000006)
         assertEquals(NveNodeKind.SCROLL, scroll.kind)
         assertEquals(NveTables.Values.ScrollAxes.HORIZONTAL, scroll.scrollAxes)
         assertTrue(scroll.scrollsHorizontally && !scroll.scrollsVertically)
-        val row = snap.nodes.getValue(0x1000007)
+        val row = snap.at(0x1000007)
         assertEquals(0f to 0f, row.x to row.y, "scroll content is relative to the scroll container")
         assertTrue(row.semantics.hidden)
-        val canvas = snap.nodes.getValue(0x1000008)
+        val canvas = snap.at(0x1000008)
         assertArrayEquals(byteArrayOf(1, 2, 3), canvas.drawList)
         assertFalse(canvas.box.visible)
-        val button = snap.nodes.getValue(0x1000009)
+        val button = snap.at(0x1000009)
         assertTrue(button.pressable)
         assertEquals(NveSemantics(NveTables.Values.AriaRole.BUTTON, "Submit form", "", "submit-btn"), button.semantics)
         assertEquals(NveNodeKind.TEXT, button.kind)
@@ -124,32 +125,64 @@ class NveSceneCaptureTest {
     fun resourcesAreCopiedOutOfTheFrameAndReusedOnlyWhileProvablyUnchanged() {
         val draw = ByteBuffer.allocateDirect(3).put(byteArrayOf(4, 5, 6)).flip() as ByteBuffer
         val res = Resources(imageSourceBytes(1, byteArrayOf(0x89.toByte(), 'P'.code.toByte())), draw)
-        val first = NveSceneCapture.capture(showcase(TestScene(frameId = 1)).reader(), res, NveSceneSnapshot.EMPTY)
-        val encoded = first.nodes.getValue(0x1000005).image as NveImage.Encoded
+        val state = capture(showcase(TestScene(frameId = 1)), res)
+        val encoded = state.at(0x1000005).image as NveImage.Encoded
         assertArrayEquals(byteArrayOf(0x89.toByte(), 'P'.code.toByte()), encoded.bytes)
-        draw.put(0, 9)  // the frame's buffer is reused by the next frame: the snapshot must not alias it
-        assertArrayEquals(byteArrayOf(4, 5, 6), first.nodes.getValue(0x1000008).drawList)
+        draw.put(0, 9)  // the frame's buffer is reused by the next frame: the state must not alias it
+        val firstDraw = state.at(0x1000008).drawList
+        assertArrayEquals(byteArrayOf(4, 5, 6), firstDraw)
 
         res.calls.clear()
-        val second = NveSceneCapture.capture(showcase(TestScene(frameId = 2)).reader(), res, first)
-        assertSame(encoded, second.nodes.getValue(0x1000005).image, "same image id reuses the decoded copy")
-        assertSame(first.nodes.getValue(0x1000008).drawList, second.nodes.getValue(0x1000008).drawList)
+        capture(showcase(TestScene(frameId = 2)), res, state)
+        assertSame(encoded, state.at(0x1000005).image, "same image id reuses the decoded copy")
+        assertSame(firstDraw, state.at(0x1000008).drawList)
         assertTrue(res.calls.isEmpty(), "unchanged resources are not re-read")
 
         // Same id, new bytes (ephemeral rewrite / recycled slot): listed in dirty_resources.
-        val rewritten = showcase(TestScene(frameId = 3)).also { it.dirtyResources.add(2) }
-        val third = NveSceneCapture.capture(rewritten.reader(), res, second)
-        assertArrayEquals(byteArrayOf(9, 5, 6), third.nodes.getValue(0x1000008).drawList, "dirty draw list re-read")
-        assertSame(encoded, third.nodes.getValue(0x1000005).image, "clean image still reused")
+        capture(showcase(TestScene(frameId = 3)).also { it.dirtyResources.add(2) }, res, state)
+        assertArrayEquals(byteArrayOf(9, 5, 6), state.at(0x1000008).drawList, "dirty draw list re-read")
+        assertSame(encoded, state.at(0x1000005).image, "clean image still reused")
 
         // A skipped frame may have redefined anything: re-read everything.
         res.calls.clear()
-        val gap = NveSceneCapture.capture(showcase(TestScene(frameId = 5)).reader(), res, third)
+        capture(showcase(TestScene(frameId = 5)), res, state)
         assertEquals(setOf(1, 2), res.calls.toSet(), "frame gap re-reads every resource")
         // A new epoch reuses ids for unrelated resources.
         res.calls.clear()
-        NveSceneCapture.capture(showcase(TestScene(frameId = 6, epoch = 1)).reader(), res, gap)
+        capture(showcase(TestScene(frameId = 6, epoch = 1)), res, state)
         assertEquals(setOf(1, 2), res.calls.toSet(), "epoch change re-reads every resource")
+    }
+
+    /**
+     * P0: a resource rewritten in place (same id, new bytes) leaves its users' rows clean. Only
+     * `dirty_resources` names it; the `resource -> nodes` index must rebuild every clean user.
+     */
+    @Test
+    fun cleanNodesBoundToARewrittenResourceAreRebuilt() {
+        val res = Resources(imageSourceBytes(1, byteArrayOf(1)), ByteBuffer.wrap(byteArrayOf(4, 5, 6)))
+        val state = capture(showcase(TestScene(frameId = 1)), res)
+        val title = state.at(0x1000003)
+        res.image = imageSourceBytes(1, byteArrayOf(2, 3))
+        res.draw = ByteBuffer.wrap(byteArrayOf(7))
+        res.calls.clear()
+        capture(showcase(TestScene(frameId = 2)).also { it.dirty = intArrayOf(); it.dirtyResources.add(1) }, res, state)
+        assertArrayEquals(byteArrayOf(2, 3), (state.at(0x1000005).image as NveImage.Encoded).bytes, "image user rebuilt")
+        assertArrayEquals(byteArrayOf(4, 5, 6), state.at(0x1000008).drawList, "clean draw list kept")
+        assertEquals(listOf(1), res.calls, "only the rewritten resource is re-read")
+        assertSame(title, state.at(0x1000003), "nodes bound to nothing dirty are untouched")
+
+        capture(showcase(TestScene(frameId = 3)).also { it.dirty = intArrayOf(); it.dirtyResources.add(2) }, res, state)
+        assertArrayEquals(byteArrayOf(7), state.at(0x1000008).drawList, "draw-list user rebuilt")
+
+        // A user that is also content-dirty is rebuilt once, not twice.
+        res.calls.clear()
+        capture(showcase(TestScene(frameId = 4)).also { it.dirty = intArrayOf(5); it.dirtyResources.add(1) }, res, state)
+        assertEquals(listOf(1), res.calls, "dirty + resource-dirty node read once")
+        // A removed user leaves the index: rewriting its resource rebuilds nothing.
+        res.calls.clear()
+        capture(showcase(TestScene(frameId = 5)).also { it.dirty = intArrayOf(); it.removed.add(0x1000005) }, res, state)
+        capture(showcase(TestScene(frameId = 6)).also { it.dirty = intArrayOf(); it.dirtyResources.add(1) }, res, state)
+        assertTrue(res.calls.isEmpty(), "no users left for resource 1: ${res.calls}")
     }
 
     @Test
@@ -162,7 +195,7 @@ class NveSceneCaptureTest {
         scene.set(typo, 2, NveTables.Typography.SET, NveTables.Values.TypographySet.FONT_SIZE).set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
         val text = scene.table(NveTables.Text.KEY, NveTables.Text.WORDS)
         scene.set(text, 2, NveTables.Text.TEXT, "x")
-        val n = NveSceneCapture.capture(scene.reader(), { null }, NveSceneSnapshot.EMPTY).nodes.getValue(0x1000002)
+        val n = capture(scene, { null }).at(0x1000002)
         assertEquals(listOf(0f, 0f, 0f, 0f), listOf(n.x, n.y, n.width, n.height))
         assertEquals(NveBox(opacity = 1f), n.box)
         assertEquals(SceneSemantics.DEFAULT_FONT_SIZE, n.textStyle.fontSize)
@@ -171,29 +204,30 @@ class NveSceneCaptureTest {
     @Test
     fun brokenOrForeignResourcesRenderEmpty() {
         val res = Resources(imageSourceBytes(7, byteArrayOf(1)), ByteBuffer.allocate(0))
-        val snap = NveSceneCapture.capture(showcase().reader(), res, NveSceneSnapshot.EMPTY)
-        assertNull(snap.nodes.getValue(0x1000005).image, "unknown image tag")
-        val noLookup = NveSceneCapture.capture(showcase().reader(), { null }, NveSceneSnapshot.EMPTY)
-        assertNull(noLookup.nodes.getValue(0x1000005).image)
-        assertNull(noLookup.nodes.getValue(0x1000008).drawList)
+        assertNull(capture(showcase(), res).at(0x1000005).image, "unknown image tag")
+        val noLookup = capture(showcase(), { null })
+        assertNull(noLookup.at(0x1000005).image)
+        assertNull(noLookup.at(0x1000008).drawList)
     }
 
     @Test
-    fun removedNodesLeaveTheSnapshot() {
+    fun removedNodesLeaveTheState() {
         val res = Resources(imageSourceBytes(0, "x".toByteArray()), ByteBuffer.allocate(0))
-        val first = NveSceneCapture.capture(showcase().reader(), res, NveSceneSnapshot.EMPTY)
+        val state = capture(showcase(), res)
         // A frame gap reconciles everything: nodes no longer live are gone.
-        val smaller = TestScene(frameId = 3).node(2, 1, 0f, 0f, 10f, 10f)
-        val second = NveSceneCapture.capture(smaller.reader(), res, first)
-        assertEquals(setOf(0x1000002), second.nodes.keys)
-        assertEquals(3L, second.frameId)
+        capture(TestScene(frameId = 3).node(2, 1, 0f, 0f, 10f, 10f), res, state)
+        assertEquals(setOf(0x1000002), state.ids)
+        assertEquals(3L, state.frameId)
+        assertTrue(state.usersOf(1).isEmpty(), "removed nodes leave the resource index")
     }
 
     @Test
     fun chainedFramesRebuildOnlyWhatChanged() {
         val res = Resources(imageSourceBytes(0, "asset://logo.png".toByteArray()), ByteBuffer.allocate(0))
-        val first = NveSceneCapture.capture(showcase(TestScene(frameId = 1)).reader(), res, NveSceneSnapshot.EMPTY)
-        assertSame(first, NveSceneCapture.capture(showcase(TestScene(frameId = 1)).reader(), res, first), "a redelivered frame is a no-op")
+        val state = capture(showcase(TestScene(frameId = 1)), res)
+        val before = state.ids.associateWith { state.at(it) }
+        val rootChildren = state.rootChildren
+        assertFalse(NveSceneCapture.capture(showcase(TestScene(frameId = 1)).reader(), res, state), "a redelivered frame is a no-op")
 
         // Frame 2: only the title is content-dirty, the button moved, row 7 was removed.
         val next = showcase(TestScene(frameId = 2))
@@ -202,27 +236,31 @@ class NveSceneCaptureTest {
         next.dirty = intArrayOf(3)
         next.moved = intArrayOf(9)
         next.removed.add(0x1000007)
-        val second = NveSceneCapture.capture(next.reader(), res, first)
-        assertEquals("Edited", second.nodes.getValue(0x1000003).text, "dirty node rebuilt")
-        assertSame(first.nodes.getValue(0x1000004), second.nodes.getValue(0x1000004), "untouched node reused as is")
-        assertSame(first.nodes.getValue(0x1000005), second.nodes.getValue(0x1000005))
-        val button = second.nodes.getValue(0x1000009)
+        capture(next, res, state)
+        assertEquals("Edited", state.at(0x1000003).text, "dirty node rebuilt")
+        assertSame(before[0x1000004], state.at(0x1000004), "untouched node reused as is")
+        assertSame(before[0x1000005], state.at(0x1000005))
+        val button = state.at(0x1000009)
+        assertNotSame(before[0x1000009], button)
         assertEquals(35f to 325f, button.x to button.y, "moved node gets its new geometry")
-        assertSame(first.nodes.getValue(0x1000009).semantics, button.semantics, "a moved node keeps its content")
-        assertFalse(0x1000007 in second.nodes, "removed node dropped")
-        assertSame(first.rootChildren, second.rootChildren, "a clean root is reused")
+        assertSame(before.getValue(0x1000009).semantics, button.semantics, "a moved node keeps its content")
+        assertFalse(0x1000007 in state.ids, "removed node dropped")
+        assertSame(rootChildren, state.rootChildren, "a clean root is kept")
     }
 
     @Test
-    fun runtimeScrollOffsetsReachTheSnapshot() {
+    fun runtimeScrollOffsetsReachTheState() {
         val res = Resources(imageSourceBytes(0, "x".toByteArray()), ByteBuffer.allocate(0))
-        val first = NveSceneCapture.capture(showcase().scroll(6, 30f, 0f).reader(), res, NveSceneSnapshot.EMPTY)
-        assertEquals(NveScrollOffset(30f, 0f), first.scrollOffset(0x1000006))
-        assertEquals(NveScrollOffset.ZERO, first.scrollOffset(0x1000002), "unscrolled containers are at 0")
-        val second = NveSceneCapture.capture(showcase(TestScene(frameId = 2)).scroll(6, 30f, 0f).reader(), res, first)
-        assertSame(first.scrollOffsets, second.scrollOffsets, "unchanged offsets reuse the previous map")
-        val third = NveSceneCapture.capture(showcase(TestScene(frameId = 3)).reader(), res, second)
-        assertEquals(NveScrollOffset.ZERO, third.scrollOffset(0x1000006), "scrolled back to the origin")
+        val state = capture(showcase().scroll(6, 30f, 0f), res)
+        assertEquals(NveScrollOffset(30f, 0f), state.at(0x1000006).scrollOffset)
+        assertEquals(NveScrollOffset.ZERO, state.at(0x1000002).scrollOffset, "unscrolled containers are at 0")
+        val scroll = state.at(0x1000006)
+        capture(showcase(TestScene(frameId = 2)).scroll(6, 30f, 0f).also { it.dirty = intArrayOf() }, res, state)
+        assertSame(scroll, state.at(0x1000006), "an unchanged offset leaves the node untouched")
+        capture(showcase(TestScene(frameId = 3)).scroll(6, 0f, 45f).also { it.dirty = intArrayOf() }, res, state)
+        assertEquals(NveScrollOffset(0f, 45f), state.at(0x1000006).scrollOffset, "a clean container follows its new offset")
+        capture(showcase(TestScene(frameId = 4)).also { it.dirty = intArrayOf() }, res, state)
+        assertEquals(NveScrollOffset.ZERO, state.at(0x1000006).scrollOffset, "scrolled back to the origin")
     }
 
     @Test

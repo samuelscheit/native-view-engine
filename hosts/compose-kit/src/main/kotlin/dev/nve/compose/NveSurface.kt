@@ -20,15 +20,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -48,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import dev.nve.host.Rgba
 import dev.nve.host.generated.NveTables
+import kotlin.math.roundToInt
 
 /**
  * Renders a runtime surface: every node of [NveSurfaceController.scene] as a positioned
@@ -63,53 +68,67 @@ fun NveSurface(controller: NveSurfaceController, modifier: Modifier = Modifier) 
         onDispose { controller.setTextMeasurer(null) }
     }
     val scene = controller.scene
+    val root = scene.rootBox
     Box(
         modifier
             .onSizeChanged { controller.setViewport(it.width / density.density, it.height / density.density, density.density) }
-            .nveBox(scene.rootBox),
+            .nveLayer(root)
+            .nveBox(root),
     ) {
-        for (id in scene.rootChildren) NveNodeContent(scene, id, controller)
+        for (id in scene.rootChildren) NveNodeContent(scene, id, controller, root.visible)
     }
 }
 
+/** Observes which nodes (re)compose; tests only (`null` in apps). */
+internal val LocalNodeCompositions = staticCompositionLocalOf<((Int) -> Unit)?> { null }
+
 /**
  * One node, keyed by `(scene epoch, node id)`: a new epoch reuses ids for unrelated nodes, so no
- * remembered state (scroll position, field text, focus) survives into it.
+ * remembered state (scroll position, field text, focus) survives into it. Reads only its own
+ * slot, so a frame that rebuilt other nodes skips it. [parentVisible]: every ancestor is visible.
  */
 @Composable
-private fun NveNodeContent(scene: NveSceneSnapshot, id: Int, controller: NveSurfaceController) {
-    val node = scene.nodes[id] ?: return
+private fun NveNodeContent(scene: NveSceneState, id: Int, controller: NveSurfaceController, parentVisible: Boolean) {
+    val slot = scene.slot(id) ?: return
     key(scene.sceneEpoch, id) {
+        val node = slot.value
+        LocalNodeCompositions.current?.invoke(id)
         val density = LocalDensity.current
-        val visible = node.box.visible
-        val base = Modifier
+        // `visibility: hidden` (here or on any ancestor) keeps the box but takes no input: no
+        // click, no focus, no typing, no scrolling, no semantics.
+        val visible = parentVisible && node.box.visible
+        var base = Modifier
             .offset(node.x.dp, node.y.dp)
             .size(node.width.dp, node.height.dp)
-            .zIndex(node.box.zIndex.toFloat())
-            .graphicsLayer { alpha = if (visible) node.box.opacity else 0f }
+        if (node.box.zIndex != 0) base = base.zIndex(node.box.zIndex.toFloat())
+        base = base
+            .nveLayer(node.box)
             .nveBox(node.box)
-            .nveSemantics(node)
-            // `visibility: hidden` keeps the box but takes no input: no click, no focus, no semantics.
+            .nveSemantics(node, visible)
             .then(if (visible && node.pressable) Modifier.clickable { controller.press(id, node.width / 2f, node.height / 2f) } else Modifier)
             .then(if (visible) Modifier else Modifier.focusProperties { canFocus = false })
         when (node.kind) {
             NveNodeKind.TEXT -> BasicText(node.text, base, style = node.textStyle.toCompose(density))
             NveNodeKind.INPUT -> NveTextField(node, base, controller, enabled = visible && !node.semantics.disabled)
             NveNodeKind.IMAGE -> NveImageContent(node, base)
-            NveNodeKind.CANVAS -> Canvas(base) { node.drawList?.let { NveDrawListRenderer.drawInto(this, it) } }
-            NveNodeKind.SCROLL -> NveScrollContainer(scene, node, base, controller)
-            NveNodeKind.CONTAINER -> Box(base) { for (child in node.children) NveNodeContent(scene, child, controller) }
+            NveNodeKind.CANVAS -> {
+                val painter = remember { NveDrawListPainter() }
+                Canvas(base) { node.drawList?.let { painter.draw(this, it) } }
+            }
+            NveNodeKind.SCROLL -> NveScrollContainer(scene, node, base, controller, visible)
+            NveNodeKind.CONTAINER -> Box(base) { for (child in node.children) NveNodeContent(scene, child, controller, visible) }
         }
     }
 }
 
 @Composable
-private fun NveScrollContainer(scene: NveSceneSnapshot, node: NveNode, base: Modifier, controller: NveSurfaceController) {
+private fun NveScrollContainer(scene: NveSceneState, node: NveNode, base: Modifier, controller: NveSurfaceController, visible: Boolean) {
     val across = rememberScrollState()
+    val down = rememberScrollState()
     var contentW = node.width
     var contentH = node.height
     for (child in node.children) {
-        scene.nodes[child]?.let {
+        scene[child]?.let {
             contentW = maxOf(contentW, it.x + it.width)
             contentH = maxOf(contentH, it.y + it.height)
         }
@@ -117,54 +136,72 @@ private fun NveScrollContainer(scene: NveSceneSnapshot, node: NveNode, base: Mod
     val density = LocalDensity.current.density
     // The collector outlives recompositions: it must read the latest content size, not the first.
     val content by rememberUpdatedState(floatArrayOf(contentW, contentH))
-    val down = rememberScrollState()
-    LaunchedEffect(scene.sceneEpoch, node.id, across, node.scrollAxes, density) {
-        if (node.scrollsHorizontally) trackScroll(across, node, controller, density, horizontal = true) { content }
-    }
-    LaunchedEffect(scene.sceneEpoch, node.id, down, node.scrollAxes, density) {
-        if (node.scrollsVertically) trackScroll(down, node, controller, density, horizontal = false) { content }
+    // The position (dp, both axes) the runtime is known to be at: user deltas are measured
+    // against it, so a missed emission never lets the runtime drift from the native position.
+    val reported = remember { FloatArray(2) }
+    LaunchedEffect(node.id, node.scrollAxes, density) {
+        trackScroll(across, down, node, controller, density, reported) { content }
     }
     // Runtime / app scroll-to and restore: follow `scroll_offsets` unless the user is scrolling.
-    val target = scene.scrollOffset(node.id)
-    LaunchedEffect(scene.sceneEpoch, node.id, target, density) {
-        val x = (target.x * density).toInt()
-        val y = (target.y * density).toInt()
-        if (node.scrollsHorizontally && !across.isScrollInProgress && across.value != x) across.scrollTo(x)
-        if (node.scrollsVertically && !down.isScrollInProgress && down.value != y) down.scrollTo(y)
+    val target = node.scrollOffset
+    LaunchedEffect(node.id, node.scrollAxes, target, density) {
+        if (node.scrollsHorizontally && !across.isScrollInProgress) {
+            reported[0] = target.x
+            val x = (target.x * density).roundToInt()
+            if (across.value != x) across.scrollTo(x)
+        }
+        if (node.scrollsVertically && !down.isScrollInProgress) {
+            reported[1] = target.y
+            val y = (target.y * density).roundToInt()
+            if (down.value != y) down.scrollTo(y)
+        }
     }
     var scroller = base
-    if (node.scrollsVertically) scroller = scroller.verticalScroll(down)
-    if (node.scrollsHorizontally) scroller = scroller.horizontalScroll(across)
-    if (node.scrollAxes == NveTables.Values.ScrollAxes.NONE) scroller = scroller.clip(RoundedCornerShape(0.dp))
+    if (node.scrollsVertically) scroller = scroller.verticalScroll(down, enabled = visible)
+    if (node.scrollsHorizontally) scroller = scroller.horizontalScroll(across, enabled = visible)
+    // `ScrollAxes.NONE` (`overflow: hidden`): no user scrolling, but it clips its content and the
+    // runtime still scrolls it programmatically (a web scroll-to), so the content shifts by it.
+    val clipped = node.scrollAxes == NveTables.Values.ScrollAxes.NONE
+    if (clipped) scroller = scroller.clipToBounds()
+    val box = Modifier.size(contentW.dp, contentH.dp)
     Box(scroller) {
-        Box(Modifier.size(contentW.dp, contentH.dp)) {
-            for (child in node.children) NveNodeContent(scene, child, controller)
+        Box(if (clipped) box.offset((-target.x).dp, (-target.y).dp) else box) {
+            for (child in node.children) NveNodeContent(scene, child, controller, visible)
         }
     }
 }
 
+/**
+ * Reports user scrolls of [node] with both axes read together (a `BOTH` container never sends
+ * a stale `0` for the other axis), as deltas from [reported]. The emission right after a
+ * gesture / fling ends still counts; any other change (runtime scroll-to, a clamp from a content
+ * resize, which the runtime applies on its own) is adopted without an event.
+ */
 private suspend fun trackScroll(
-    state: ScrollState,
+    across: ScrollState,
+    down: ScrollState,
     node: NveNode,
     controller: NveSurfaceController,
     density: Float,
-    horizontal: Boolean,
+    reported: FloatArray,
     content: () -> FloatArray,
 ) {
-    var last = state.value
-    snapshotFlow { state.value }.collect { px ->
-        val delta = (px - last) / density
-        last = px
-        // Clamps from content resizes are not user scrolls (the runtime clamps on its own).
-        if (delta == 0f || !state.isScrollInProgress) return@collect
-        val pos = px / density
-        val (w, h) = content()
-        if (horizontal) {
-            controller.scrolled(node.id, delta, 0f, pos, 0f, w, h)
-        } else {
-            controller.scrolled(node.id, 0f, delta, 0f, pos, w, h)
+    if (!node.scrollsHorizontally && !node.scrollsVertically) return
+    var wasScrolling = false
+    snapshotFlow { Triple(across.value, down.value, across.isScrollInProgress || down.isScrollInProgress) }
+        .collect { (ax, ay, scrolling) ->
+            val x = if (node.scrollsHorizontally) ax / density else reported[0]
+            val y = if (node.scrollsVertically) ay / density else reported[1]
+            val user = scrolling || wasScrolling
+            wasScrolling = scrolling
+            val dx = x - reported[0]
+            val dy = y - reported[1]
+            reported[0] = x
+            reported[1] = y
+            if (!user || (dx == 0f && dy == 0f)) return@collect
+            val (w, h) = content()
+            controller.scrolled(node.id, dx, dy, x, y, w, h)
         }
-    }
 }
 
 @Composable
@@ -208,18 +245,28 @@ internal fun decodeImage(context: Context, image: NveImage): Bitmap? = try {
 
 internal fun argb(rgba: Int): Color = Color(Rgba.toArgb(rgba))
 
+/** Opacity / `visibility: hidden` as one layer, only when the box needs it. */
+private fun Modifier.nveLayer(box: NveBox): Modifier {
+    val alpha = if (box.visible) box.opacity else 0f
+    return if (alpha >= 1f) this else graphicsLayer { this.alpha = alpha }
+}
+
+/** Background, border, and corner clip; a plain unstyled box adds nothing (no shape allocated). */
 private fun Modifier.nveBox(box: NveBox): Modifier {
-    val shape = RoundedCornerShape(box.radius.dp)
+    val fill = (box.background ushr 24) != 0
+    val stroke = box.borderWidth > 0f && (box.borderColor ushr 24) != 0
+    if (!fill && !stroke && box.radius <= 0f) return this
+    val shape: Shape = if (box.radius > 0f) RoundedCornerShape(box.radius.dp) else RectangleShape
     var m = this
-    if ((box.background ushr 24) != 0) m = m.background(argb(box.background), shape)
-    if (box.borderWidth > 0f && (box.borderColor ushr 24) != 0) m = m.border(box.borderWidth.dp, argb(box.borderColor), shape)
+    if (fill) m = m.background(argb(box.background), shape)
+    if (stroke) m = m.border(box.borderWidth.dp, argb(box.borderColor), shape)
     if (box.radius > 0f) m = m.clip(shape)
     return m
 }
 
-private fun Modifier.nveSemantics(node: NveNode): Modifier {
+private fun Modifier.nveSemantics(node: NveNode, visible: Boolean): Modifier {
     val s = node.semantics
-    if (s.hidden || !node.box.visible) return clearAndSetSemantics {}
+    if (s.hidden || !visible) return clearAndSetSemantics {}
     if (s.label.isEmpty() && s.testId.isEmpty() && !s.disabled && s.role == NveTables.Values.AriaRole.NONE) return this
     return semantics {
         if (s.label.isNotEmpty()) contentDescription = s.label

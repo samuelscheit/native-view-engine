@@ -68,6 +68,7 @@ class TestScene(capacity: Int = 16, var frameId: Long = 1L, var epoch: Int = 0) 
         builder.moved(*moved)
         builder.removed(*removed.toIntArray())
         builder.dirtyResources(*dirtyResources.sorted().toIntArray())
+        builder.clearScrolls()
         for ((index, x, y) in scrolls) builder.scroll(id(index), x, y)
         @Suppress("UNCHECKED_CAST")
         return builder.header() to (builder.slabs() as Array<ByteBuffer?>)
@@ -78,6 +79,13 @@ class TestScene(capacity: Int = 16, var frameId: Long = 1L, var epoch: Int = 0) 
         return SceneReader().attach(h, s)
     }
 }
+
+/** Node [id] of the captured state (fails the test when it is absent). */
+fun NveSceneState.at(id: Int): NveNode = this[id] ?: error("no node ${Integer.toHexString(id)}")
+
+/** Applies [scene]'s frame to [into] (a fresh state by default) and returns it. */
+fun capture(scene: TestScene, resources: NveResourceLookup, into: NveSceneState = NveSceneState()): NveSceneState =
+    into.also { NveSceneCapture.capture(scene.reader(), resources, it) }
 
 /** `ImageSource` wire bytes (tag + u32 length + payload). */
 fun imageSourceBytes(tag: Int, payload: ByteArray): ByteBuffer =

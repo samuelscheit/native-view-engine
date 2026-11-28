@@ -1,5 +1,6 @@
 package dev.nve.android
 
+import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -35,13 +36,19 @@ private class FakeFrameHost : FrameHost {
     val resources = HashMap<Int, ByteBuffer>()
     val resourceCalls = ArrayList<Int>()
     private var kind = Key64.ZERO
+    var synchronous = false
+    /** Runs inside [send] after the events are recorded: a local app's frame in answer. */
+    var answer: (() -> Unit)? = null
 
     override fun send(writer: FrameHost.EventWriter): Int {
         val ring = EventRingWriter(ByteBuffer.allocate(1024), 1)
         writer.write(ring)
         rings.add(ByteBuffer.wrap(ring.buffer().array().copyOf(ring.length())).order(ByteOrder.LITTLE_ENDIAN))
+        answer?.invoke()
         return 0
     }
+
+    override fun dispatchesSynchronously(): Boolean = synchronous
 
     override fun scrollBy(nodeId: Int, dx: Float, dy: Float): Int = 0
 
@@ -54,6 +61,10 @@ private class FakeFrameHost : FrameHost {
     override fun resourceKind(): Key64 = kind
 
     fun kinds(): List<Int> = rings.map { it.get(20).toInt() }
+
+    /** `(x, y)` of every scroll event sent. */
+    fun scrolls(): List<Pair<Float, Float>> =
+        rings.filter { it.get(20).toInt() == NveAbi.EVENT_SCROLL }.map { it.getFloat(22) to it.getFloat(26) }
 }
 
 /** `NveSceneRenderer` + `NveViewStyle` on real Android Views (Robolectric). */
@@ -171,6 +182,95 @@ class NveSceneRendererTest {
     }
 
     @Test
+    fun aScrollOffsetPublishedBeforeLayoutIsShownAfterIt() {
+        val s = scene(1).scroll(6, 0f, 40f)
+        apply(s)
+        val sv = view(s, 6) as ScrollView
+        assertEquals("not laid out: a scroll view would clamp to 0", 0, sv.scrollY)
+        layout(sv, 200, 80)
+        assertEquals(40, sv.scrollY)
+        assertTrue("the restore is not user input", host.scrolls().isEmpty())
+
+        val none = scene(2, axes = NveTables.Values.ScrollAxes.NONE).scroll(6, 0f, 30f).also { it.dirty = intArrayOf(6) }
+        apply(none)
+        val frame = view(none, 6)
+        layout(frame, 200, 80)
+        assertEquals("NONE is a clipping frame the runtime still scrolls", 30, frame.scrollY)
+    }
+
+    @Test
+    fun aBothAxesContainerReportsBothAxesInEveryScrollEvent() {
+        val s = scene(1, axes = NveTables.Values.ScrollAxes.BOTH).node(7, 6, 10f, 150f, 500f, 300f)
+        apply(s)
+        val outer = view(s, 6) as ScrollView
+        layout(outer, 200, 80)
+        val inner = outer.getChildAt(0) as HorizontalScrollView
+        inner.scrollTo(30, 0)
+        outer.scrollTo(0, 20)
+        inner.scrollTo(45, 0)
+        assertEquals(listOf(30f to 0f, 30f to 20f, 45f to 20f), host.scrolls())
+    }
+
+    @Test
+    fun aLocalAppRejectingAnEditShowsItsValueAgainButPairedTypingStays() {
+        val s = scene(1)
+        apply(s)
+        val edit = view(s, 4) as EditText
+        host.synchronous = true
+        edit.setText("draftx")
+        assertEquals("rejected: the app kept its value", "draft", edit.text.toString())
+
+        host.answer = {
+            apply(scene(2).also {
+                it.set(it.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS), 4, NveTables.TextInput.VALUE, "drafty")
+                it.dirty = intArrayOf(4)
+            })
+        }
+        edit.setText("drafty")
+        assertEquals("accepted within send", "drafty", edit.text.toString())
+
+        host.answer = null
+        host.synchronous = false
+        edit.setText("typed")
+        assertEquals("paired: the echo comes later", "typed", edit.text.toString())
+        assertEquals(3, host.kinds().count { it == NveAbi.EVENT_TEXT_CHANGE })
+    }
+
+    @Test
+    fun secureInputsAreMaskedForEveryKind() {
+        val number = InputType.TYPE_CLASS_NUMBER
+        val password = InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        val decimal = InputType.TYPE_NUMBER_FLAG_DECIMAL
+        assertEquals(number or decimal, NveViewStyle.inputType(false, false, NveTables.Values.InputKind.NUMBER))
+        assertEquals(number or decimal or password, NveViewStyle.inputType(true, false, NveTables.Values.InputKind.NUMBER))
+        assertEquals(InputType.TYPE_CLASS_PHONE, NveViewStyle.inputType(false, false, NveTables.Values.InputKind.TEL))
+        assertEquals(number or password, NveViewStyle.inputType(true, false, NveTables.Values.InputKind.TEL))
+        assertEquals(
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            NveViewStyle.inputType(true, true, NveTables.Values.InputKind.EMAIL) and InputType.TYPE_TEXT_FLAG_MULTI_LINE.inv(),
+        )
+
+        val s = scene(1)
+        s.set(s.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS), 4, NveTables.TextInput.SECURE, 1)
+            .set(s.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS), 4, NveTables.TextInput.INPUT_KIND, NveTables.Values.InputKind.TEL)
+        apply(s)
+        val edit = view(s, 4) as EditText
+        assertEquals(number or password, edit.inputType)
+        assertTrue("digits are masked", edit.transformationMethod is android.text.method.PasswordTransformationMethod)
+    }
+
+    @Test
+    fun losingItsAccessibilityRowClearsSelection() {
+        val s = scene(1)
+        s.set(s.table(NveTables.Accessibility.KEY, NveTables.Accessibility.WORDS), 5, NveTables.Accessibility.SELECTED, NveTables.Values.AriaTriState.TRUE)
+        apply(s)
+        assertTrue(view(s, 5).isSelected)
+        val next = scene(2).also { it.dirty = intArrayOf(5) }
+        apply(next)
+        assertFalse(view(next, 5).isSelected)
+    }
+
+    @Test
     fun disabledAndHiddenNodesTakeNoInput() {
         val s = scene(1)
         val interaction = s.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS)
@@ -231,5 +331,12 @@ class NveSceneRendererTest {
         assertEquals("a dirty id rebinds its image", listOf(9, 9), host.resourceCalls)
         apply(scene(4).also { it.dirty = intArrayOf(); it.dirtyResources.add(11) })
         assertEquals("unrelated dirty ids touch nothing", listOf(9, 9), host.resourceCalls)
+        apply(scene(5).also { it.dirty = intArrayOf(8); it.dirtyResources.add(9) })
+        assertEquals("a dirty image showing a dirty resource decodes once", listOf(9, 9, 9), host.resourceCalls)
+    }
+
+    private fun layout(v: View, w: Int, h: Int) {
+        v.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
+        v.layout(0, 0, w, h)
     }
 }

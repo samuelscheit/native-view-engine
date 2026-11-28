@@ -1,5 +1,13 @@
 package dev.nve.compose
 
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import dev.nve.host.ImageSource
 import dev.nve.host.Key64
 import dev.nve.host.SceneReader
@@ -82,6 +90,8 @@ data class NveNode(
     val drawListResource: Int = 0,
     /** `nve.scroll.axes` (`NveTables.Values.ScrollAxes`) of a scroll container. */
     val scrollAxes: Int = NveTables.Values.ScrollAxes.NONE,
+    /** Runtime scroll offset (dp, `scroll_offsets`) of a scroll container; `(0, 0)` when not scrolled. */
+    val scrollOffset: NveScrollOffset = NveScrollOffset.ZERO,
 ) {
     val scrollsHorizontally: Boolean
         get() = scrollAxes == NveTables.Values.ScrollAxes.HORIZONTAL || scrollAxes == NveTables.Values.ScrollAxes.BOTH
@@ -89,22 +99,109 @@ data class NveNode(
         get() = scrollAxes == NveTables.Values.ScrollAxes.VERTICAL || scrollAxes == NveTables.Values.ScrollAxes.BOTH
 }
 
-/** Immutable copy of one runtime frame for composition. */
-class NveSceneSnapshot(
-    val frameId: Long,
-    val sceneEpoch: Int,
-    val rootBox: NveBox,
-    val rootChildren: List<Int>,
-    val nodes: Map<Int, NveNode>,
-    /** Runtime scroll offsets (dp, `scroll_offsets`) of scrolled containers by node id. */
-    val scrollOffsets: Map<Int, NveScrollOffset> = emptyMap(),
-) {
-    /** Runtime scroll offset of container [id] (`(0, 0)` when not scrolled). */
-    fun scrollOffset(id: Int): NveScrollOffset = scrollOffsets[id] ?: NveScrollOffset.ZERO
+/**
+ * Composition state of one runtime surface, updated in place by [NveSceneCapture] in O(changed).
+ *
+ * Every node lives in its own [MutableState] slot: a frame writes only the slots of nodes it
+ * rebuilt, so only their composables recompose (each `NveNodeContent` reads just its own slot;
+ * this holder is one stable instance, so unchanged nodes skip). Also keeps the reverse index
+ * `resource id -> node ids` that lets a frame's `dirty_resources` rebuild clean nodes bound to
+ * rewritten resources, and the set of containers with a published scroll offset.
+ */
+@Stable
+class NveSceneState {
+    /** Last applied frame (`0`: none yet, the next frame reconciles everything). Not observable. */
+    var frameId: Long = 0L
+        private set
 
-    companion object {
-        /** No frame yet (`frameId` 0: the next frame always reconciles everything). */
-        val EMPTY = NveSceneSnapshot(0L, 0, NveBox(), emptyList(), emptyMap())
+    /** Scene epoch: a new one re-keys every node, so no remembered state survives into it. */
+    var sceneEpoch: Int by mutableIntStateOf(0)
+        private set
+
+    var rootBox: NveBox by mutableStateOf(NveBox())
+        private set
+
+    var rootChildren: List<Int> by mutableStateOf(emptyList())
+        private set
+
+    private val slots = HashMap<Int, MutableState<NveNode>>()
+    private val users = HashMap<Int, HashSet<Int>>()
+    private var scrolled: Set<Int> = emptySet()
+
+    /** Live node ids (not observable; for tests and tooling). */
+    val ids: Set<Int> get() = slots.keys
+
+    val size: Int get() = slots.size
+
+    /** Current node [id] (an observable read: the caller recomposes when that node changes). */
+    operator fun get(id: Int): NveNode? = slots[id]?.value
+
+    /** Node [id]'s slot, read by its composable only. */
+    internal fun slot(id: Int): State<NveNode>? = slots[id]
+
+    /** Ids of nodes bound to resource [resourceId] (image source or draw list). */
+    internal fun usersOf(resourceId: Int): Set<Int> = users[resourceId] ?: emptySet()
+
+    internal fun put(n: NveNode) {
+        val slot = slots[n.id]
+        val old = slot?.value
+        if (slot == null) slots[n.id] = mutableStateOf(n) else slot.value = n
+        rebind(old?.imageResource ?: 0, n.imageResource, n.id)
+        rebind(old?.drawListResource ?: 0, n.drawListResource, n.id)
+    }
+
+    internal fun remove(id: Int) {
+        val old = slots.remove(id)?.value ?: return
+        rebind(old.imageResource, 0, id)
+        rebind(old.drawListResource, 0, id)
+    }
+
+    /** Drops every node not in [live] (a full reconcile). */
+    internal fun retainOnly(live: Set<Int>) {
+        if (live.size == slots.size) return
+        for (id in slots.keys.filter { it !in live }) remove(id)
+    }
+
+    /** A new epoch: fresh slots (no node state may survive into reused ids). */
+    internal fun clear() {
+        slots.clear()
+        users.clear()
+        scrolled = emptySet()
+    }
+
+    internal fun setRoot(box: NveBox, children: List<Int>) {
+        rootBox = box
+        rootChildren = children
+    }
+
+    internal fun setFrame(frameId: Long, epoch: Int) {
+        this.frameId = frameId
+        sceneEpoch = epoch
+    }
+
+    /** Applies the frame's `scroll_offsets` in O(published + previously scrolled). */
+    internal fun applyScrollOffsets(s: SceneReader) {
+        if (s.scrollCount() == 0 && scrolled.isEmpty()) return
+        val now = HashSet<Int>(s.scrollCount())
+        for (k in 0 until s.scrollCount()) {
+            val id = s.scrollNodeId(k)
+            now.add(id)
+            val n = this[id] ?: continue
+            val offset = NveScrollOffset(s.scrollX(id), s.scrollY(id))
+            if (n.scrollOffset != offset) put(n.copy(scrollOffset = offset))
+        }
+        for (id in scrolled) {
+            if (id in now) continue
+            val n = this[id] ?: continue
+            if (n.scrollOffset != NveScrollOffset.ZERO) put(n.copy(scrollOffset = NveScrollOffset.ZERO))
+        }
+        scrolled = now
+    }
+
+    private fun rebind(old: Int, new: Int, id: Int) {
+        if (old == new) return
+        if (old != 0) users[old]?.let { if (it.remove(id) && it.isEmpty()) users.remove(old) }
+        if (new != 0) users.getOrPut(new) { HashSet(2) }.add(id)
     }
 }
 
@@ -123,63 +220,75 @@ fun interface NveResourceLookup {
 class NveResource(val kind: Key64, val bytes: ByteBuffer)
 
 /**
- * Builds [NveSceneSnapshot]s from runtime frames in O(changed): on the frame right after
- * [previous] (same epoch) only removed, content-dirty (incl. inherited typography), and moved
- * nodes are rebuilt — every other [NveNode] (and its copied resource bytes) is reused as is; a
- * redelivered frame returns [previous]. Any gap or new epoch rebuilds everything.
+ * Applies runtime frames to a [NveSceneState] in O(changed): on the frame right after the last
+ * applied one (same epoch) only removed, content-dirty (incl. inherited typography), moved, and
+ * resource-dirty nodes (clean nodes bound to an id in `dirty_resources`) are rebuilt — every other
+ * slot keeps its [NveNode] (and copied resource bytes) untouched. A redelivered frame is a no-op;
+ * a gap rebuilds every node in place, a new epoch from fresh slots.
  */
 object NveSceneCapture {
-    fun capture(s: SceneReader, resources: NveResourceLookup, previous: NveSceneSnapshot): NveSceneSnapshot {
-        val relation = s.relationTo(previous.frameId, previous.sceneEpoch)
-        if (relation == SceneReader.FRAME_SAME) return previous
+    /** Applies [s] to [into]; `false` when [s] was already applied. */
+    fun capture(s: SceneReader, resources: NveResourceLookup, into: NveSceneState): Boolean {
+        val relation = s.relationTo(into.frameId, into.sceneEpoch)
+        if (relation == SceneReader.FRAME_SAME) return false
+        // One atomic snapshot: composition never observes a half-applied frame.
+        Snapshot.withMutableSnapshot { apply(s, resources, into, relation == SceneReader.FRAME_NEXT) }
+        return true
+    }
+
+    private fun apply(s: SceneReader, resources: NveResourceLookup, into: NveSceneState, chained: Boolean) {
         val t = SceneSemantics.Tables().bind(s)
         val style = SceneSemantics.TextStyle()
         val root = SceneSemantics.ROOT_INDEX
-        val chained = relation == SceneReader.FRAME_NEXT
         // Copied resources stay valid along an unbroken chain of one epoch, minus the ids this
         // frame (re)defined: a skipped frame's dirty list is lost, a new epoch reuses ids.
         val reusable = { id: Int -> chained && id != 0 && !s.isResourceDirty(id) }
-        val nodes: HashMap<Int, NveNode>
         var rootDirty = !chained
         if (chained) {
-            nodes = HashMap(previous.nodes)
-            for (k in 0 until s.removedCount()) nodes.remove(s.removedId(k))
+            for (k in 0 until s.removedCount()) into.remove(s.removedId(k))
+            val rebuilt = HashSet<Int>(s.dirtyCount())
             for (d in 0 until s.dirtyCount()) {
                 val i = s.dirtyIndex(d)
-                if (i == root) rootDirty = true else nodes[s.nodeId(i)] = node(s, t, i, resources, previous.nodes[s.nodeId(i)], reusable, style)
+                if (i == root) {
+                    rootDirty = true
+                    continue
+                }
+                val id = s.nodeId(i)
+                into.put(node(s, t, i, resources, into[id], reusable, style))
+                rebuilt.add(id)
             }
             for (m in 0 until s.movedCount()) {
                 val i = s.movedIndex(m)
                 if (i == root) continue
-                val id = s.nodeId(i)
-                val prev = nodes[id]
-                nodes[id] = prev?.let { geometry(s, i, it) } ?: node(s, t, i, resources, null, reusable, style)
+                val prev = into[s.nodeId(i)]
+                into.put(prev?.let { geometry(s, i, it) } ?: node(s, t, i, resources, null, reusable, style))
+            }
+            // A resource rewritten in place leaves its users' rows clean: rebuild them from the index.
+            for (k in 0 until s.dirtyResourceCount()) {
+                for (id in into.usersOf(s.dirtyResource(k)).toList()) {
+                    val i = s.resolve(id)
+                    if (i <= root || !rebuilt.add(id)) continue
+                    into.put(node(s, t, i, resources, into[id], reusable, style))
+                }
             }
         } else {
-            nodes = HashMap(s.nodeCapacity())
+            if (s.sceneEpoch() != into.sceneEpoch) into.clear()
+            val live = HashSet<Int>(s.nodeCapacity())
             for (i in root + 1 until s.nodeCapacity()) {
-                if (s.isLive(i)) nodes[s.nodeId(i)] = node(s, t, i, resources, previous.nodes[s.nodeId(i)], reusable, style)
+                if (!s.isLive(i)) continue
+                val id = s.nodeId(i)
+                into.put(node(s, t, i, resources, into[id], reusable, style))
+                live.add(id)
             }
+            into.retainOnly(live)
         }
-        val live = s.isLive(root)
-        return NveSceneSnapshot(
-            s.frameId(), s.sceneEpoch(),
-            rootBox = if (!live) NveBox() else if (rootDirty) box(s, t, root) else previous.rootBox,
-            rootChildren = if (!live) emptyList() else if (rootDirty) children(s, root) else previous.rootChildren,
-            nodes = nodes,
-            scrollOffsets = scrollOffsets(s, previous),
-        )
-    }
-
-    /** O(scrolled containers); the previous map is reused when nothing moved. */
-    private fun scrollOffsets(s: SceneReader, previous: NveSceneSnapshot): Map<Int, NveScrollOffset> {
-        if (s.scrollCount() == 0) return emptyMap()
-        val out = HashMap<Int, NveScrollOffset>(s.scrollCount())
-        for (k in 0 until s.scrollCount()) {
-            val id = s.scrollNodeId(k)
-            out[id] = NveScrollOffset(s.scrollX(id), s.scrollY(id))
+        if (!s.isLive(root)) {
+            into.setRoot(NveBox(), emptyList())
+        } else if (rootDirty) {
+            into.setRoot(box(s, t, root), children(s, root))
         }
-        return if (out == previous.scrollOffsets) previous.scrollOffsets else out
+        into.applyScrollOffsets(s)
+        into.setFrame(s.frameId(), s.sceneEpoch())
     }
 
     private fun children(s: SceneReader, i: Int): List<Int> = List(s.childCount(i)) { s.childId(i, it) }
@@ -222,6 +331,7 @@ object NveSceneCapture {
         var drawList: ByteArray? = null
         var drawListResource = 0
         var scrollAxes = NveTables.Values.ScrollAxes.NONE
+        var scrollOffset = NveScrollOffset.ZERO
         when (kind) {
             NveNodeKind.TEXT -> {
                 text = s.text(t.text, s.rowOf(t.text, i), NveTables.Text.TEXT)
@@ -258,7 +368,11 @@ object NveSceneCapture {
                     (if (drawListResource == 0) null else resources.resource(drawListResource))?.let { copy(it.bytes) }
                 }
             }
-            NveNodeKind.SCROLL -> scrollAxes = t.scroll!!.u32(s.rowOf(t.scroll, i), NveTables.Scroll.AXES)
+            NveNodeKind.SCROLL -> {
+                scrollAxes = t.scroll!!.u32(s.rowOf(t.scroll, i), NveTables.Scroll.AXES)
+                val id = s.nodeId(i)
+                scrollOffset = NveScrollOffset(s.scrollX(id), s.scrollY(id))
+            }
             NveNodeKind.CONTAINER -> Unit
         }
         return NveNode(
@@ -267,6 +381,7 @@ object NveSceneCapture {
             pressable = SceneSemantics.pressable(s, t, i), children = children(s, i),
             text = text, textStyle = textStyle, input = input, image = image, imageFit = imageFit,
             imageResource = imageResource, drawList = drawList, drawListResource = drawListResource, scrollAxes = scrollAxes,
+            scrollOffset = scrollOffset,
         )
     }
 

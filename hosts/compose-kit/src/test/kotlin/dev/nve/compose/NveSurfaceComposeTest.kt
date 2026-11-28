@@ -1,10 +1,12 @@
 package dev.nve.compose
 
 import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -13,6 +15,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
 import dev.nve.host.generated.NveAbi
 import dev.nve.host.generated.NveTables
@@ -146,7 +151,7 @@ class NveSurfaceComposeTest {
 
         compose.onNodeWithText("Row A").assertIsDisplayed()
         compose.onNodeWithText("Row B").assertExists()
-        val image = controller.scene.nodes.getValue(0x1000006).image
+        val image = controller.scene.at(0x1000006).image
         assertTrue("data URL decoded to inline bytes: $image", image is NveImage.Encoded)
         compose.onNodeWithTag("field").assertIsNotEnabled()
         assertEquals("hidden nodes leave the semantics tree", 0, compose.onAllNodesWithText("Ghost").fetchSemanticsNodes().size)
@@ -181,5 +186,141 @@ class NveSurfaceComposeTest {
         compose.runOnIdle { controller.render() }
         compose.waitForIdle()
         compose.onNodeWithTag("field").assertTextEquals("other")
+    }
+
+    /** One text field (3) under the column (2); the app keeps `value`. */
+    private fun fieldScene(value: String, frameDirty: IntArray? = null): TestScene {
+        val s = TestScene().node(2, 1, 0f, 0f, 300f, 400f).node(3, 2, 10f, 10f, 200f, 40f)
+        s.set(s.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS), 3, NveTables.TextInput.VALUE, value)
+        s.set(s.table(NveTables.DebugId.KEY, NveTables.DebugId.WORDS), 3, NveTables.DebugId.TEST_ID, "field")
+        s.dirty = frameDirty
+        return s
+    }
+
+    @Test
+    fun pairedFieldsKeepTypingAndIgnoreLateEchoesButAdoptAppRewrites() {
+        val host = FakeRuntimeHost(fieldScene("a"))
+        val controller = NveSurfaceController(host)
+        controller.start(NveSource.Paired("ws://pair.example.test:9000/nve-wire"))
+        compose.setContent { NveSurface(controller, Modifier.size(300.dp, 400.dp)) }
+
+        // The remote echo is asynchronous: the fake re-delivers the old value, the field keeps "ab".
+        compose.onNodeWithTag("field").performTextReplacement("ab")
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("ab")
+        compose.onNodeWithTag("field").performTextReplacement("abc")
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("abc")
+        // A late echo of "ab" (sent earlier) must not clobber the newer "abc".
+        host.scene = fieldScene("ab", intArrayOf(3))
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("abc")
+        // A value the field never sent (the app rewrote it) replaces the text.
+        host.scene = fieldScene("ABC", intArrayOf(3))
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("ABC")
+    }
+
+    @Test
+    fun visibleChildrenOfAHiddenContainerTakeNoInput() {
+        // Hidden column(2) → visible pressable button(3) and a visible field(4).
+        val s = TestScene().node(2, 1, 0f, 0f, 300f, 400f).node(3, 2, 0f, 0f, 120f, 44f).node(4, 2, 0f, 60f, 200f, 40f)
+        val visual = s.table(NveTables.Visual.KEY, NveTables.Visual.WORDS)
+        s.set(visual, 2, NveTables.Visual.VISIBILITY, NveTables.Values.Visibility.HIDDEN).set(visual, 2, NveTables.Visual.OPACITY, 1f)
+        s.set(s.table(NveTables.Text.KEY, NveTables.Text.WORDS), 3, NveTables.Text.TEXT, "Go")
+        s.set(s.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS), 3, NveTables.Interaction.EVENT_MASK, NveTables.Values.EventMask.PRESS)
+        s.set(s.table(NveTables.TextInput.KEY, NveTables.TextInput.WORDS), 4, NveTables.TextInput.VALUE, "x")
+        val debug = s.table(NveTables.DebugId.KEY, NveTables.DebugId.WORDS)
+        s.set(debug, 3, NveTables.DebugId.TEST_ID, "go").set(debug, 4, NveTables.DebugId.TEST_ID, "field")
+        val host = FakeRuntimeHost(s)
+        val controller = NveSurfaceController(host)
+        controller.start(NveSource.App("/libnve_app.so"))
+        compose.setContent { NveSurface(controller, Modifier.size(300.dp, 400.dp)) }
+        compose.waitForIdle()
+        assertEquals("no semantics under a hidden ancestor", 0, compose.onAllNodesWithTag("go", useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(0, compose.onAllNodesWithTag("field", useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertTrue("no press / focus / text event", host.rings.none {
+            val kind = it.get(20).toInt()
+            kind == NveAbi.EVENT_PRESS || kind == NveAbi.EVENT_FOCUS || kind == NveAbi.EVENT_TEXT_CHANGE
+        })
+    }
+
+    @Test
+    fun aBothAxesScrollReportsBothAxesTogether() {
+        // Scroll container(3) scrolling BOTH at runtime offset (30, 45) over a 400x400 row(4).
+        val s = TestScene().node(2, 1, 0f, 0f, 300f, 400f).node(3, 2, 0f, 0f, 200f, 200f).node(4, 3, 0f, 0f, 400f, 400f)
+            .scroll(3, 30f, 45f)
+        s.set(s.table(NveTables.Scroll.KEY, NveTables.Scroll.WORDS), 3, NveTables.Scroll.AXES, NveTables.Values.ScrollAxes.BOTH)
+        s.set(s.table(NveTables.DebugId.KEY, NveTables.DebugId.WORDS), 4, NveTables.DebugId.TEST_ID, "content")
+        val host = FakeRuntimeHost(s)
+        val controller = NveSurfaceController(host)
+        controller.start(NveSource.App("/libnve_app.so"))
+        compose.setContent { NveSurface(controller, Modifier.size(300.dp, 400.dp)) }
+        compose.waitForIdle()
+        assertTrue("restoring the runtime offset sends nothing", host.scrolls.isEmpty())
+
+        compose.onNodeWithTag("content").performTouchInput { swipeUp() }
+        compose.waitForIdle()
+        assertTrue("the vertical gesture reached the runtime", host.scrolls.isNotEmpty())
+        assertTrue("no horizontal delta: ${host.scrolls}", host.scrolls.all { it.second == 0f })
+        val scroll = host.rings.last { it.get(20).toInt() == NveAbi.EVENT_SCROLL }
+        assertEquals("the untouched axis keeps its position (not 0)", 30f, scroll.getFloat(22), 0.5f)
+        assertTrue("vertical position advanced: ${scroll.getFloat(26)}", scroll.getFloat(26) > 45f)
+        val dySum = host.scrolls.sumOf { it.third.toDouble() }.toFloat()
+        assertEquals("deltas add up to the absolute position", scroll.getFloat(26) - 45f, dySum, 0.5f)
+    }
+
+    @Test
+    fun aClippingContainerStillFollowsItsRuntimeScrollOffset() {
+        // ScrollAxes.NONE container(3) at runtime offset (10, 30) over a 400x400 row(4).
+        val s = TestScene().node(2, 1, 0f, 0f, 300f, 400f).node(3, 2, 0f, 0f, 200f, 200f).node(4, 3, 0f, 0f, 400f, 400f)
+            .scroll(3, 10f, 30f)
+        s.set(s.table(NveTables.Scroll.KEY, NveTables.Scroll.WORDS), 3, NveTables.Scroll.AXES, NveTables.Values.ScrollAxes.NONE)
+        s.set(s.table(NveTables.DebugId.KEY, NveTables.DebugId.WORDS), 4, NveTables.DebugId.TEST_ID, "content")
+        val controller = NveSurfaceController(FakeRuntimeHost(s))
+        controller.start(NveSource.App("/libnve_app.so"))
+        compose.setContent { NveSurface(controller, Modifier.size(300.dp, 400.dp)) }
+        compose.waitForIdle()
+        val bounds = compose.onNodeWithTag("content").getUnclippedBoundsInRoot()
+        assertEquals(-10f, bounds.left.value, 0.5f)
+        assertEquals(-30f, bounds.top.value, 0.5f)
+    }
+
+    @Test
+    fun aFrameRecomposesOnlyTheNodesItChanged() {
+        val s = TestScene().node(2, 1, 0f, 0f, 300f, 400f).node(3, 2, 0f, 0f, 200f, 30f).node(4, 2, 0f, 40f, 200f, 30f)
+            .node(5, 2, 0f, 80f, 200f, 30f)
+        val text = s.table(NveTables.Text.KEY, NveTables.Text.WORDS)
+        s.set(text, 3, NveTables.Text.TEXT, "one").set(text, 4, NveTables.Text.TEXT, "two").set(text, 5, NveTables.Text.TEXT, "three")
+        val host = FakeRuntimeHost(s)
+        val controller = NveSurfaceController(host)
+        controller.start(NveSource.App("/libnve_app.so"))
+        val counts = HashMap<Int, Int>()
+        compose.setContent {
+            CompositionLocalProvider(LocalNodeCompositions provides { id: Int -> counts[id] = (counts[id] ?: 0) + 1 }) {
+                NveSurface(controller, Modifier.size(300.dp, 400.dp))
+            }
+        }
+        compose.waitForIdle()
+        val before = HashMap(counts)
+        assertEquals(setOf(0x1000002, 0x1000003, 0x1000004, 0x1000005), before.keys)
+
+        // Next frame: only node 4's text changed.
+        s.set(text, 4, NveTables.Text.TEXT, "TWO")
+        s.dirty = intArrayOf(4)
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        compose.onNodeWithText("TWO").assertIsDisplayed()
+        val delta = counts.mapValues { (id, n) -> n - (before[id] ?: 0) }.filterValues { it != 0 }
+        assertEquals("only the changed node recomposed: $delta", mapOf(0x1000004 to 1), delta)
+
+        // A frame that changes nothing recomposes nothing.
+        val settled = HashMap(counts)
+        s.dirty = intArrayOf()
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        assertEquals(settled, HashMap(counts))
     }
 }

@@ -89,11 +89,17 @@ final class NveViewStyle {
         tv.setGravity(Gravity.TOP | h);
     }
 
-    /** Android input type of a `nve.text_input` row: kind, secure (password), multi-line. */
+    /**
+     * Android input type of a `nve.text_input` row: kind, secure (password), multi-line. Secure
+     * digits use the numeric password variation; the phone class has none, so a secure TEL is a
+     * numeric password too (masked, digits keypad) rather than a plain-text phone field.
+     */
     static int inputType(boolean secure, boolean multiline, int kind) {
         int type;
-        if (kind == NveTables.Values.InputKind.NUMBER) {
-            type = InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL;
+        if (kind == NveTables.Values.InputKind.NUMBER || (secure && kind == NveTables.Values.InputKind.TEL)) {
+            type = InputType.TYPE_CLASS_NUMBER;
+            if (kind == NveTables.Values.InputKind.NUMBER) type |= InputType.TYPE_NUMBER_FLAG_DECIMAL;
+            if (secure) type |= InputType.TYPE_NUMBER_VARIATION_PASSWORD;
         } else if (kind == NveTables.Values.InputKind.TEL) {
             type = InputType.TYPE_CLASS_PHONE;
         } else {
@@ -107,7 +113,6 @@ final class NveViewStyle {
             }
             if (multiline) type |= InputType.TYPE_TEXT_FLAG_MULTI_LINE;
         }
-        if (secure && type == InputType.TYPE_CLASS_NUMBER) type |= InputType.TYPE_NUMBER_VARIATION_PASSWORD;
         return type;
     }
 
@@ -192,6 +197,7 @@ final class NveViewStyle {
         if (row < 0) {
             view.setContentDescription(null);
             view.setAccessibilityDelegate(null);
+            view.setSelected(false);
             view.setImportantForAccessibility(interactive ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
             return;
         }

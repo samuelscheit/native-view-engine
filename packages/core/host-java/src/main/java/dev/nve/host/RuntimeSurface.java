@@ -57,6 +57,8 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     private boolean needsFrame = true;
     private boolean inFrame;
     private boolean closeAfterFrame;
+    /** Events go to an {@code nve pair} server (answered asynchronously), not a local app. */
+    private boolean paired;
     private long lastTickNanos;
     // Scrolls made inside `onFrame`, replayed after release (typed: node ids are raw u32 bits).
     private int[] deferredScrollIds = new int[4];
@@ -105,23 +107,34 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
      */
     public int attachApp(String soPath, boolean carryState) {
         structural("attachApp");
-        return afterStructuralChange(NativeRuntime.attachApp(handle, soPath, carryState));
+        return source(NativeRuntime.attachApp(handle, soPath, carryState), false);
     }
 
     public int detachApp() {
         structural("detachApp");
-        return afterStructuralChange(NativeRuntime.detachApp(handle));
+        return source(NativeRuntime.detachApp(handle), false);
     }
 
     /** Streams the scene from an {@code nve pair} server, replacing any local app. */
     public int pair(String uri, String token) {
         structural("pair");
-        return afterStructuralChange(NativeRuntime.pairConnect(handle, uri, token == null ? "" : token));
+        return source(NativeRuntime.pairConnect(handle, uri, token == null ? "" : token), true);
     }
 
     public int unpair() {
         structural("unpair");
-        return afterStructuralChange(NativeRuntime.pairDisconnect(handle));
+        return source(NativeRuntime.pairDisconnect(handle), false);
+    }
+
+    /** A successful source switch: the next frame is due and dispatch follows the new source. */
+    private int source(int status, boolean remote) {
+        if (status == NveRuntimeAbi.STATUS_OK) paired = remote;
+        return afterStructuralChange(status);
+    }
+
+    @Override
+    public boolean dispatchesSynchronously() {
+        return !paired;
     }
 
     /** Cross-thread safe: never races {@link #close}. */

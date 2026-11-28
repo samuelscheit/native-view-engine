@@ -33,6 +33,13 @@ final class HostTextTest {
         c.that(ImageSource.base64("TQ==TWFu", 0) == null, "data after padding");
         c.that(ImageSource.base64("TW!u", 0) == null, "bad character");
         c.that(ImageSource.base64("=AAA", 0) == null, "leading pad");
+        c.that(ImageSource.base64("TR==", 0) == null, "non-canonical: low bits under two pads");
+        c.that(ImageSource.base64("TWF=", 0) == null, "non-canonical: low bits under one pad");
+        c.that(ImageSource.base64("TQ== =", 0) == null, "pad after a complete quantum");
+        c.eq(new String(source(0, "DATA:Image/PNG;Base64,TQ==").bytes(), java.nio.charset.StandardCharsets.ISO_8859_1), "M",
+                "data URL scheme / type / base64 token are case-insensitive");
+        c.that(source(0, "data:text/plain;base64,TQ==").bytes() == null, "non-image data URL");
+        c.that(source(0, ";base64,TQ==").bytes() == null, "no scheme");
         c.eq(new String(source(0, "data:image/png;base64,TWFu").bytes(), java.nio.charset.StandardCharsets.ISO_8859_1), "Man", "data URL bytes");
         c.that(source(0, "data:image/png,TWFu").bytes() == null, "non-base64 data URL");
         c.that(source(0, "asset://logo.png").bytes() == null, "asset URL is loaded by the host");
